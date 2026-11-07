@@ -129,4 +129,104 @@ module.exports = async function group33ShelfSearch(t) {
     '书架搜索：回车打开第一本匹配的书',
     (await exec('window.__cwTest.state.meta.title')) === '拖拽排序书'
   );
+
+  // 33b（1.1.0）：书卡「章节命中」里的每个章名可单独点，直接打开这本书并定位到那一章；
+  // 书卡其它区域仍按原行为打开（回到上次章节）；搜索清空后恢复普通书卡。
+  // 当前书「拖拽排序书」的章节顺序是 [第三, 未命名, 第二]（第 27 组拖拽排序后还原），
+  // 所以搜「第二」命中的是第 3 章（index=2），与上次打开的章节（第 1 章）不是同一章。
+  const lastIndex = await exec('window.__cwTest.currentIndex()');
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.setShelfQuery('第二')");
+  await sleep(120);
+  const chapterHitCard = await exec(`(() => {
+    const card = Array.from(document.querySelectorAll('#book-grid .book-card[data-path]')).find((el) => {
+      const title = el.querySelector('.book-card-title');
+      return Boolean(title && title.textContent.includes('拖拽排序书'));
+    });
+    if (!card) return null;
+    const line = card.querySelector('.book-card-match');
+    return {
+      path: card.dataset.path,
+      lineText: line ? line.textContent : '',
+      buttons: Array.from(card.querySelectorAll('.book-card-match-chapter')).map((button) => ({
+        tag: button.tagName,
+        type: button.type,
+        index: button.getAttribute('data-chapter-index'),
+        text: button.textContent
+      }))
+    };
+  })()`);
+  check(
+    '书架搜索：章节命中行里的每个章名都是可按的按钮（带 0 起章节序号）',
+    Boolean(chapterHitCard) &&
+      chapterHitCard.lineText.startsWith('章节命中：') &&
+      chapterHitCard.buttons.length >= 1 &&
+      chapterHitCard.buttons.every(
+        (button) =>
+          button.tag === 'BUTTON' &&
+          button.type === 'button' &&
+          /^\d+$/.test(button.index) &&
+          button.text.includes('第二')
+      ),
+    chapterHitCard
+  );
+
+  // 点书卡空白处：命中行存在时仍按原行为打开这本书（回到上次章节，不是命中章）
+  await exec(`(() => {
+    const card = Array.from(document.querySelectorAll('#book-grid .book-card[data-path]')).find((el) => {
+      const title = el.querySelector('.book-card-title');
+      return Boolean(title && title.textContent.includes('拖拽排序书'));
+    });
+    if (card) card.click();
+    return Boolean(card);
+  })()`);
+  await waitFor("window.__cwTest.view() === 'editor'");
+  const blankOpenTitle = await exec('window.__cwTest.state.meta.title');
+  const blankOpenIndex = await exec('window.__cwTest.currentIndex()');
+  check(
+    '书架搜索：命中行存在时，点书卡空白处仍按原行为打开（回到上次章节）',
+    blankOpenTitle === '拖拽排序书' && blankOpenIndex === lastIndex,
+    { title: blankOpenTitle, index: blankOpenIndex, lastIndex }
+  );
+
+  // 搜索清空后恢复普通书卡：命中行 / 可点章名都不见，「新建一本书」回来
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.setShelfQuery('')");
+  await sleep(120);
+  check(
+    '书架搜索：清空后恢复普通书卡（没有命中行 / 可点章名）',
+    (await exec("document.querySelectorAll('.book-card-match').length")) === 0 &&
+      (await exec("document.querySelectorAll('.book-card-match-chapter').length")) === 0 &&
+      (await exec("document.querySelectorAll('.book-card.new-book').length")) === 1
+  );
+
+  // 点命中章：直接打开这本书并定位到命中章（不是上次章节）
+  await exec("window.__cwTest.setShelfQuery('第二')");
+  await sleep(120);
+  const hitIndex = await exec(`(() => {
+    const card = Array.from(document.querySelectorAll('#book-grid .book-card[data-path]')).find((el) => {
+      const title = el.querySelector('.book-card-title');
+      return Boolean(title && title.textContent.includes('拖拽排序书'));
+    });
+    const button = card
+      ? Array.from(card.querySelectorAll('.book-card-match-chapter')).find((el) => el.textContent.includes('第二'))
+      : null;
+    if (!button) return null;
+    const index = Number(button.getAttribute('data-chapter-index'));
+    button.click();
+    return index;
+  })()`);
+  await waitFor("window.__cwTest.view() === 'editor'");
+  const hitOpenTitle = await exec('window.__cwTest.state.meta.title');
+  const hitOpenIndex = await exec('window.__cwTest.currentIndex()');
+  check(
+    '书架搜索：点「章节命中」的章名直达那一章（不是上次章节）',
+    Number.isInteger(hitIndex) &&
+      hitIndex !== lastIndex &&
+      hitOpenTitle === '拖拽排序书' &&
+      hitOpenIndex === hitIndex,
+    { hitIndex, lastIndex, title: hitOpenTitle, index: hitOpenIndex }
+  );
 };

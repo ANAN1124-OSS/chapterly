@@ -15,8 +15,8 @@ const chaptersLib = require('../core/chapters');
 //
 // 契约：host 8 个成员 = 基础 5（$, state, api, call, toast）+ render{bookInfoLib,bookGroupOf,
 // chapterTitle,formatChars,formatRelativeTime} + shelf{shelfGroupList,shelfQueryText,shelfSearchResults,
-// updateShelfSearchUi,renderContinueWriting,renderShelfContent} + actions{openBookByPath,openRepair,
-// openConflictDialog,showBookMenu,updateWindowTitle,promptText,refreshShelf}。
+// updateShelfSearchUi,renderContinueWriting,renderShelfContent} + actions{openBookByPath,openBookAtChapter,
+// openRepair,openConflictDialog,showBookMenu,updateWindowTitle,promptText,refreshShelf}。
 
 const realDocument = globalThis.document;
 test.after(() => {
@@ -27,6 +27,7 @@ test.after(() => {
 const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
 const indexSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
+const stylesSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
 const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'bookinfo-ui.js'), 'utf8');
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
@@ -38,7 +39,7 @@ function makeEl(tag = 'div', id = '') {
     tagName: tag,
     id,
     className: '',
-    textContent: '',
+    _text: '',
     title: '',
     value: '',
     type: '',
@@ -87,6 +88,20 @@ function makeEl(tag = 'div', id = '') {
       return result;
     }
   };
+  Object.defineProperty(el, 'textContent', {
+    // 真实 DOM 的口径：有子节点时读整棵子树的文本（命中行 = 文本前缀 + 每个章名按钮 + 分隔符）；
+    // 没有子节点时读自己写入的字符串。setter 与浏览器一样会清空子节点。
+    get() {
+      if (el.children.length) {
+        return el.children.map((child) => (child && child.textContent != null ? child.textContent : '')).join('');
+      }
+      return el._text;
+    },
+    set(value) {
+      el._text = String(value == null ? '' : value);
+      el.children.length = 0;
+    }
+  });
   Object.defineProperty(el, 'innerHTML', {
     get() { return ''; },
     set() { el.children.length = 0; }
@@ -99,6 +114,7 @@ function makeDocument() {
   let lookups = 0;
   const doc = {
     createElement: (tag) => makeEl(tag),
+    createTextNode: (text) => ({ nodeType: 3, textContent: String(text == null ? '' : text), parentNode: null }),
     getElementById: (id) => { lookups += 1; return map.get(id) || null; }
   };
   return {
@@ -164,7 +180,7 @@ function build(options = {}) {
   };
   const calls = {
     updateBookInfo: [], createBook: [], pickFolder: [],
-    toast: [], openBookByPath: [], openRepair: [], openConflictDialog: [], showBookMenu: [],
+    toast: [], openBookByPath: [], openBookAtChapter: [], openRepair: [], openConflictDialog: [], showBookMenu: [],
     updateWindowTitle: 0, promptText: [], refreshShelf: 0,
     updateShelfSearchUi: [], renderContinueWriting: 0, renderShelfContent: 0
   };
@@ -203,6 +219,7 @@ function build(options = {}) {
     },
     actions: {
       openBookByPath(path) { calls.openBookByPath.push(path); },
+      openBookAtChapter(path, chapterIndex) { calls.openBookAtChapter.push([path, chapterIndex]); },
       openRepair(book) { calls.openRepair.push(book); },
       openConflictDialog(book) { calls.openConflictDialog.push(book); },
       showBookMenu(book, x, y) { calls.showBookMenu.push([book, x, y]); },
@@ -237,7 +254,7 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
     delete broken.shelf[key];
     assert.throws(() => bookinfoUi.create(broken), new RegExp('host\\.shelf 缺少 ' + key));
   }
-  for (const key of ['openBookByPath', 'openRepair', 'openConflictDialog', 'showBookMenu', 'updateWindowTitle', 'promptText', 'refreshShelf']) {
+  for (const key of ['openBookByPath', 'openBookAtChapter', 'openRepair', 'openConflictDialog', 'showBookMenu', 'updateWindowTitle', 'promptText', 'refreshShelf']) {
     const broken = { ...ctx.host, actions: { ...ctx.host.actions } };
     delete broken.actions[key];
     assert.throws(() => bookinfoUi.create(broken), new RegExp('host\\.actions 缺少 ' + key));
@@ -502,6 +519,97 @@ test('renderShelf 书卡：冲突徽标 / 章节命中行 / 损坏书的修复�
   assert.deepEqual(corrupt.calls.openRepair, [corruptBook]);
 });
 
+test('renderShelf 章节命中：每个章名一个原生 button（data-chapter-index），整行文案与容器不变；无命中不渲染空行', () => {
+  const book = makeBook();
+  const ctx = build({
+    books: [book],
+    rows: [{ book, info: { chapterHits: [{ index: 2, name: '第二' }, { index: 0, name: '第三' }] } }]
+  });
+  ctx.ui.renderShelf();
+  const card = ctx.dom.map.get('book-grid').children[0];
+  const hitLine = card.children.find((c) => c.className === 'book-card-match');
+  assert.ok(hitLine, '命中行容器 .book-card-match 必须还在');
+  assert.equal(hitLine.textContent, '章节命中：第3章：第二、第1章：第三', '整行 textContent 与旧版逐字一致（E2E 第 33 组按它断言）');
+  const buttons = hitLine.children.filter((c) => c.tagName === 'button');
+  assert.equal(buttons.length, 2, '每个命中章一个可点元素');
+  assert.deepEqual(buttons.map((b) => b.dataset.chapterIndex), ['2', '0'], 'data-chapter-index 是 0 起的章节序号');
+  for (const button of buttons) {
+    assert.equal(button.type, 'button');
+    assert.equal(button.className, 'book-card-match-chapter');
+    assert.equal(button.getAttribute('role'), null, '原生 button 不需要再补 role');
+    assert.equal(button.getAttribute('aria-label'), button.title);
+    assert.match(button.title, /^打开《书甲》并定位到第\d章：/);
+  }
+
+  // 没有 chapterHits（空数组 / 缺字段）：整行都不出现，不留空容器
+  for (const info of [{ chapterHits: [] }, {}]) {
+    const none = build({ books: [book], rows: [{ book, info }] });
+    none.ui.renderShelf();
+    const noneCard = none.dom.map.get('book-grid').children[0];
+    assert.equal(noneCard.children.some((c) => c.className === 'book-card-match'), false);
+  }
+
+  // 样式：可点章名看起来仍是行内文字，悬停有底色反馈，焦点环走全局 button:focus-visible
+  assert.match(stylesSrc, /\.book-card-match-chapter\s*\{[^}]*cursor:\s*pointer/);
+  assert.match(stylesSrc, /\.book-card-match-chapter:hover\s*\{[^}]*background:\s*var\(--hover-tint\)/);
+  assert.ok(stylesSrc.includes('button:focus-visible'), '原生 button 的键盘焦点环仍走全局规则');
+});
+
+test('renderShelf 章节命中：点击章名走 host.openBookAtChapter 且不触发整卡打开；重建后事件不重复绑定', () => {
+  const book = makeBook();
+  const info = { chapterHits: [{ index: 2, name: '第二' }] };
+  const ctx = build({ books: [book], rows: [{ book, info }] });
+  ctx.ui.renderShelf();
+  const grid = ctx.dom.map.get('book-grid');
+  let card = grid.children[0];
+  let hitLine = card.children.find((c) => c.className === 'book-card-match');
+  let button = hitLine.children.find((c) => c.tagName === 'button');
+  assert.equal(button._listeners.filter((l) => l.type === 'click').length, 1, '每次渲染只绑一条 click');
+
+  // 模拟真实冒泡：按钮处理必须 preventDefault + stopPropagation，卡片不能再收到一次「打开上次章节」
+  const event = {
+    prevented: 0,
+    stopped: 0,
+    preventDefault() { this.prevented += 1; },
+    stopPropagation() { this.stopped += 1; }
+  };
+  button._fire('click', event);
+  assert.equal(event.prevented, 1);
+  assert.equal(event.stopped, 1);
+  assert.deepEqual(ctx.calls.openBookAtChapter, [['/书库/书甲', 2]]);
+  assert.deepEqual(ctx.calls.openBookByPath, [], '点章名不能顺带触发整卡打开');
+  // 如果 stopPropagation 没生效，事件会继续冒泡到卡片；这里断言那样也不会打开书
+  if (!event.stopped) card._fire('click', { target: { closest: () => null } });
+  assert.deepEqual(ctx.calls.openBookByPath, []);
+
+  // 内容没变 → 复用同一节点，监听仍只有一条
+  ctx.ui.renderShelf();
+  card = grid.children[0];
+  hitLine = card.children.find((c) => c.className === 'book-card-match');
+  button = hitLine.children.find((c) => c.tagName === 'button');
+  assert.equal(button._listeners.filter((l) => l.type === 'click').length, 1);
+
+  // 命中章变了 → 重建出新按钮，新节点也只绑一条
+  info.chapterHits = [{ index: 1, name: '第一' }];
+  ctx.ui.renderShelf();
+  const rebuilt = grid.children[0].children
+    .find((c) => c.className === 'book-card-match')
+    .children.find((c) => c.tagName === 'button');
+  assert.equal(rebuilt._listeners.filter((l) => l.type === 'click').length, 1);
+  rebuilt._fire('click', { preventDefault() {}, stopPropagation() {} });
+  assert.deepEqual(ctx.calls.openBookAtChapter, [['/书库/书甲', 2], ['/书库/书甲', 1]]);
+});
+
+test('renderShelf 章节命中：卡片其它区域（标题 / 命中行空白）仍按原行为打开上次章节', () => {
+  const book = makeBook();
+  const ctx = build({ books: [book], rows: [{ book, info: { chapterHits: [{ index: 1, name: '第二章' }] } }] });
+  ctx.ui.renderShelf();
+  const card = ctx.dom.map.get('book-grid').children[0];
+  card._fire('click', { target: { closest: () => null } });
+  assert.deepEqual(ctx.calls.openBookByPath, ['/书库/书甲']);
+  assert.deepEqual(ctx.calls.openBookAtChapter, [], '整卡打开不带章节目标');
+});
+
 test('renderShelf 书卡：点卡片打开书、右键弹菜单；搜索时不显示「新建一本书」', () => {
   const book = makeBook();
   const ctx = build({ books: [book], rows: [{ book, info: {} }] });
@@ -620,10 +728,16 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
     '    $, state, api, call, toast,',
     '    render: { bookInfoLib, bookGroupOf, chapterTitle, formatChars, formatRelativeTime },',
     '    shelf: { shelfGroupList, shelfQueryText, shelfSearchResults, updateShelfSearchUi, renderContinueWriting, renderShelfContent },',
-    '    actions: { openBookByPath, openRepair, openConflictDialog, showBookMenu, updateWindowTitle, promptText, refreshShelf }'
+    '    actions: {',
+    '      openBookByPath,',
+    '      openBookAtChapter: (bookPath, chapterIndex) => openBookByPath(bookPath, { chapterIndex }),',
+    '      openRepair, openConflictDialog, showBookMenu, updateWindowTitle, promptText, refreshShelf'
   ]) {
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);
   }
+  // 「章节命中」直达：openBookByPath 认 target.chapterIndex（0 起、只在本书范围内生效）
+  assert.ok(rendererSrc.includes('target.chapterIndex !== undefined'), 'openBookByPath 要认 chapterIndex');
+  assert.ok(rendererSrc.includes('chapterIndex < state.chapters.length'), 'chapterIndex 要按本书章节数校验');
   assert.ok(rendererSrc.includes(
     'const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, setupBookinfoUi } = bookinfoUi;'
   ), '7 个入口按原名解构');

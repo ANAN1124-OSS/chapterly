@@ -955,13 +955,18 @@
     $, state, api, call, toast,
     render: { bookInfoLib, bookGroupOf, chapterTitle, formatChars, formatRelativeTime },
     shelf: { shelfGroupList, shelfQueryText, shelfSearchResults, updateShelfSearchUi, renderContinueWriting, renderShelfContent },
-    actions: { openBookByPath, openRepair, openConflictDialog, showBookMenu, updateWindowTitle, promptText, refreshShelf }
+    actions: {
+      openBookByPath,
+      openBookAtChapter: (bookPath, chapterIndex) => openBookByPath(bookPath, { chapterIndex }),
+      openRepair, openConflictDialog, showBookMenu, updateWindowTitle, promptText, refreshShelf
+    }
   });
   const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, setupBookinfoUi } = bookinfoUi;
 
   // ---------- 打开书 / 修复 ----------
-  // target 可选：{ chapterId, matchIndex, matchLength } —— 从书架「正文命中」点进来时
-  // 直接打开那一章并选中命中位置（只移动光标 / 选区 + 滚动，不改正文、不写盘）
+  // target 可选：{ chapterId, chapterIndex, matchIndex, matchLength } —— 从书架「正文命中」点进来时
+  // 直接打开那一章并选中命中位置（只移动光标 / 选区 + 滚动，不改正文、不写盘）；
+  // 从「章节命中」点章名时只带 chapterIndex（按 0 起的章节序号），越界 / 坏值回落到上次章节。
   // 书卡右键「在新窗口打开」：主进程负责「同一本书只开一个窗口」；
   // 书已经开在别的窗口时就聚焦那个窗口，本窗口不变。
   async function openBookInNewWindow(book) {
@@ -1029,6 +1034,14 @@
     if (target && target.chapterId) {
       const targetIndex = state.chapters.findIndex((c) => c.id === target.chapterId);
       if (targetIndex >= 0) startIndex = targetIndex;
+    } else if (target && target.chapterIndex !== undefined && target.chapterIndex !== null) {
+      // 「章节命中」直达：0 起的章节序号；只认落在这本书章节范围内的整数，
+      // 越界 / 坏值不夹到首尾，直接回落到上次打开的章节（与旧行为一致）。
+      const rawIndex = Number(target.chapterIndex);
+      if (Number.isFinite(rawIndex)) {
+        const chapterIndex = Math.round(rawIndex);
+        if (chapterIndex >= 0 && chapterIndex < state.chapters.length) startIndex = chapterIndex;
+      }
     }
     await loadChapterAt(startIndex);
     if (target && Number.isFinite(Number(target.matchIndex))) {

@@ -704,6 +704,27 @@ html, body {
   color: var(--accent);
 
   margin-top: 4px;}
+/* 「章节命中」里的每个章名（1.1.0）：原生 button 长得像行内链接，Tab 可到、Enter / 空格打开。
+ * 焦点环走全局 button:focus-visible；悬停给底色 + 实下划线，两处都用现有主题令牌，夜间也成立。 */
+.book-card-match-chapter {
+  padding: 0;
+  border: 0;
+  border-radius: 1px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) ease, color var(--motion-quick) ease;
+}
+.book-card-match-chapter:hover {
+  color: var(--ink);
+  background: var(--hover-tint);
+  text-decoration-color: currentColor;
+}
 .settings-scope-hint { margin: 12px 0 2px; line-height: 1.65; 
   padding: 7px 0 7px 12px;
   border-left: 2px solid var(--line-strong);

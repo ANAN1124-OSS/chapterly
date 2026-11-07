@@ -28,7 +28,8 @@
  *       renderShelfContent                  //   正文命中结果区
  *     },
  *     actions: {                            // 打开书 / 修复 / 更多菜单 / 新建书等动作
- *       openBookByPath,                     //   点书卡打开书
+ *       openBookByPath,                     //   点书卡打开书（回到这本书上次的章节）
+ *       openBookAtChapter,                  //   点「章节命中」里的章名：打开这本书并定位到那一章
  *       openRepair,                         //   损坏书卡的「修复」
  *       openConflictDialog,                 //   冲突徽标点开清单
  *       showBookMenu,                       //   ⋯ / 右键菜单
@@ -72,12 +73,12 @@
       if (shelf[key] === undefined || shelf[key] === null) throw new TypeError('createBookinfoUi 的 host.shelf 缺少 ' + key);
     }
     if (typeof actions !== 'object') throw new TypeError('createBookinfoUi 的 host.actions 必须是对象');
-    for (const key of ['openBookByPath', 'openRepair', 'openConflictDialog', 'showBookMenu', 'updateWindowTitle', 'promptText', 'refreshShelf']) {
+    for (const key of ['openBookByPath', 'openBookAtChapter', 'openRepair', 'openConflictDialog', 'showBookMenu', 'updateWindowTitle', 'promptText', 'refreshShelf']) {
       if (actions[key] === undefined || actions[key] === null) throw new TypeError('createBookinfoUi 的 host.actions 缺少 ' + key);
     }
     const { bookInfoLib, bookGroupOf, chapterTitle, formatChars, formatRelativeTime } = render;
     const { shelfGroupList, shelfQueryText, shelfSearchResults, updateShelfSearchUi, renderContinueWriting, renderShelfContent } = shelf;
-    const { openBookByPath, openRepair, openConflictDialog, showBookMenu, updateWindowTitle, promptText, refreshShelf } = actions;
+    const { openBookByPath, openBookAtChapter, openRepair, openConflictDialog, showBookMenu, updateWindowTitle, promptText, refreshShelf } = actions;
 
   // ---------- 书籍信息（作者 / 简介 / 分组 / 标签，v0.8-3） ----------
   // 只写 书目.json 的可选字段：书文件夹名、章节文件名、正文 txt 都不动。
@@ -319,13 +320,30 @@
         card.appendChild(badge);
       }
 
-      // 书名没命中、靠章名命中时，把命中的章名列出来
+      // 书名没命中、靠章名命中时，把命中的章名列出来。
+      // 每个章名是一枚原生 button（1.1.0）：点它直接打开这本书并定位到那一章；文案前缀与「、」
+      // 分隔符仍是文本节点，所以整行的 textContent 与旧版逐字一致（E2E 第 33 组按 textContent 断言）。
       if (info.chapterHits && info.chapterHits.length) {
         const hitLine = document.createElement('div');
         hitLine.className = 'book-card-match';
-        hitLine.textContent = `章节命中：${info.chapterHits
-          .map((hit) => chapterTitle(hit.index, hit.name))
-          .join('、')}`;
+        hitLine.appendChild(document.createTextNode('章节命中：'));
+        info.chapterHits.forEach((hit, i) => {
+          if (i) hitLine.appendChild(document.createTextNode('、'));
+          const chapterIndex = Number(hit.index);
+          const link = document.createElement('button');
+          link.type = 'button';
+          link.className = 'book-card-match-chapter';
+          link.dataset.chapterIndex = String(chapterIndex);
+          link.textContent = chapterTitle(chapterIndex, hit.name);
+          link.title = `打开《${book.title}》并定位到${link.textContent}`;
+          link.setAttribute('aria-label', `打开《${book.title}》并定位到${link.textContent}`);
+          link.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (Number.isFinite(chapterIndex)) openBookAtChapter(book.path, chapterIndex);
+          });
+          hitLine.appendChild(link);
+        });
         card.appendChild(hitLine);
       }
 
