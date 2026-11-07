@@ -34,7 +34,7 @@
 
 ### 方式一：安装包（推荐，不用命令行）
 
-**下载**：从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-1.0.0-win-x64-setup.exe`，或者直接用本机打包产物 `dist\chapterly-1.0.0-win-x64-setup.exe`。**v1.0.0 尚未发版**：发行包要作者点头发版后才会上线，现在可以先用开发版（`pnpm start`）。
+**下载**：从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-1.0.0-win-x64-setup.exe`（已于 2026-11-07 发布，见 [v1.0.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.0.0)），或者直接用本机打包产物 `dist\chapterly-1.0.0-win-x64-setup.exe`；开发时也可以先用开发版（`pnpm start`）。
 
 安装：
 
