@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { stripBom } = require('./atomic');
 const { pad2 } = require('./common');
+const { parseSnapshotDirName } = require('./snapshot');
 
 const TRASH_DIR = '_trash';
 const BOOK_BAK = '书目.json.bak';
@@ -292,7 +293,12 @@ async function listHistory(bookPath, options = {}) {
       const stampTime = info.time || 0;
       const time = stampTime || Math.round(mtimeMax);
       const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-      groups.push({
+      // 每日快照组（P22-5）：只有「快照-YYYYMMDD 且日期真实存在」的目录才带 snapshotName / snapshotDay，
+      // 渲染层据此决定「默认折叠 + 清空这天的快照」，不用自己切 id 字符串。
+      // 名字对不上严格格式的目录（手写的 快照-2026-10-31-230000 之类）仍然显示为「每日快照」，
+      // 但不折叠、也不给清空按钮 —— 宁可少一个入口，也不碰不是本应用生成的目录。
+      const snapshot = info.source === 'snapshot' ? parseSnapshotDirName(entry.name) : null;
+      const group = {
         id: `dir:${entry.name}`,
         kind: 'dir',
         source: info.source,
@@ -307,7 +313,14 @@ async function listHistory(bookPath, options = {}) {
         totalBytes,
         restorableCount: files.filter((file) => file.restorable).length,
         files
-      });
+      };
+      // 字段只在严格合法的每日快照组上出现（其它来源的组保持原形状）
+      if (snapshot) {
+        group.snapshotName = snapshot.name;
+        group.snapshotDay =
+          `${snapshot.dayKey.slice(0, 4)}-${snapshot.dayKey.slice(4, 6)}-${snapshot.dayKey.slice(6, 8)}`;
+      }
+      groups.push(group);
       continue;
     }
     if (!entry.isFile()) continue;

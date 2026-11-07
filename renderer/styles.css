@@ -2399,6 +2399,35 @@ body.theme-night .long-para-bar { background: var(--warn);
   color: var(--ink-faint);
 }
 .history-restore-group { margin-left: auto; }
+/* P22-5：每日快照组的组头主体是一枚可按的按钮（默认折叠），折叠时只剩来源 / 时间 / 数量 / 大小。
+ * 焦点环沿用全局 button:focus-visible；这里只把它摆成「一行文字」的样子，不加新色。 */
+.history-group-toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.history-group-toggle:hover .history-source { text-decoration: underline; text-underline-offset: 2px; }
+.history-group-chevron {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+.history-group-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
+}
 .history-note {
   padding: 8px 12px 0;
   font-size: 12px;

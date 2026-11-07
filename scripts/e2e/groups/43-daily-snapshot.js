@@ -238,4 +238,228 @@ module.exports = async function group43DailySnapshot(t) {
     '每日快照：关掉后当天快照目录没有多出新章文件',
     (await fs.readdir(snapshotTodayDir)).length === 2
   );
+
+  // 43e. P22-5：本书历史里快照组按天折叠 + 「清空这天的快照」（只移入 Windows 回收站）
+  // 口径：折叠只影响 snapshot 组的显示；清空只把那一个「快照-YYYYMMDD」目录移入回收站，
+  // 章节文件 / 书目 / 其它备份一个字节都不动。绝不为了测试改成硬删 —— 回收站不可用时这里会失败并留下现场。
+  const readTrashDigest = async () => {
+    const names = (await fs.readdir(snapshotTrash)).sort();
+    const out = [];
+    for (const name of names) {
+      const target = path.join(snapshotTrash, name);
+      const stat = await fs.stat(target);
+      if (stat.isDirectory()) {
+        const files = (await fs.readdir(target)).sort();
+        const inner = [];
+        for (const file of files) {
+          inner.push([file, (await fs.readFile(path.join(target, file))).toString('base64')]);
+        }
+        out.push([name, 'dir', inner]);
+      } else {
+        out.push([name, 'file', (await fs.readFile(target)).toString('base64')]);
+      }
+    }
+    return out;
+  };
+  const readChaptersDigest = async () => {
+    const names = (await fs.readdir(historyBookPath)).filter((name) => /\.txt$/i.test(name)).sort();
+    const out = [];
+    for (const name of names) {
+      out.push([name, (await fs.readFile(path.join(historyBookPath, name))).toString('base64')]);
+    }
+    return out;
+  };
+  const metaOutline = (meta) => ({
+    title: meta.title,
+    chapters: (meta.chapters || []).map((chapter) => [chapter.id, chapter.file, chapter.name])
+  });
+
+  const chaptersBeforeClear = await readChaptersDigest();
+  const metaBeforeClear = metaOutline(JSON.parse(await fs.readFile(historyMetaPath, 'utf8')));
+  const trashBeforeClear = await readTrashDigest();
+
+  // 非法目录名一律拒绝：不存在日期 / 带横线 / 路径穿越 / 反斜杠 / 绝对路径 / 其它备份名。
+  // 每次都是 BAD_SNAPSHOT_DIR，而且 _trash 一个文件都没动（清空绝没有「校验失败也删一点」的降级）。
+  const badSnapshotNames = [
+    '快照-20260231',
+    '快照-2026-11-07',
+    '..',
+    '..\\快照-20261107',
+    'C:\\Windows\\快照-20261107',
+    '替换备份-2026-10-31-210000',
+    '其它备份-x'
+  ];
+  const badClearResults = [];
+  for (const bad of badSnapshotNames) {
+    badClearResults.push(
+      JSON.parse(
+        await exec(
+          `window.api.clearSnapshotDay(${JSON.stringify(historyBookPath)}, ${JSON.stringify(bad)}).then((r) => JSON.stringify(r))`
+        )
+      )
+    );
+  }
+  check(
+    '每日快照（清空某天）：非法目录名 / 路径一律拒绝（BAD_SNAPSHOT_DIR），一个文件都不删',
+    badClearResults.every((result) => result && result.ok === false && result.code === 'BAD_SNAPSHOT_DIR') &&
+      JSON.stringify(await readTrashDigest()) === JSON.stringify(trashBeforeClear),
+    badClearResults.map((result) => [result && result.ok, result && result.code])
+  );
+
+  await exec('window.__cwTest.openHistoryForCurrentBook()');
+  await waitFor('window.__cwTest.historyOpen() === true');
+  const snapTodayIndex = await exec(
+    `window.__cwTest.historyGroupIndexBySnapshotName(${JSON.stringify(snapshotDay)})`
+  );
+  const groupsForFold = await exec('window.__cwTest.historyGroups()');
+  const foldGroup = snapTodayIndex >= 0 ? groupsForFold[snapTodayIndex] : null;
+  check(
+    '每日快照（按天折叠）：历史面板里快照组带快照目录名，其它来源组没有这个字段',
+    foldGroup &&
+      foldGroup.snapshotName === snapshotDay &&
+      groupsForFold.filter((group) => group.snapshotName).length === 2 &&
+      groupsForFold.every((group) => group.source === 'snapshot' || group.snapshotName === ''),
+    groupsForFold.map((group) => [group.source, group.snapshotName])
+  );
+
+  const foldToggleTag = await exec(`window.__cwTest.historyGroupToggleTag(${snapTodayIndex})`);
+  const foldExpanded = await exec(`window.__cwTest.historyGroupExpanded(${snapTodayIndex})`);
+  const foldRows = await exec(`window.__cwTest.historyGroupFileRowCount(${snapTodayIndex})`);
+  const foldTexts = await exec('window.__cwTest.historyGroupTexts()');
+  check(
+    '每日快照（按天折叠）：组头是可点的 button、默认 aria-expanded=false、文件行不渲染（数量 / 大小照旧显示）',
+    foldToggleTag === 'BUTTON' &&
+      foldExpanded === 'false' &&
+      foldRows === 0 &&
+      foldGroup &&
+      foldTexts[snapTodayIndex].includes('每日快照') &&
+      foldTexts[snapTodayIndex].includes(`${foldGroup.fileCount} 个文件`),
+    { foldToggleTag, foldExpanded, foldRows, head: foldTexts[snapTodayIndex] }
+  );
+
+  const restoreIndexForFold = await exec("window.__cwTest.historyGroupIndexBySource('restore')");
+  const restoreFoldExpanded =
+    restoreIndexForFold >= 0 ? await exec(`window.__cwTest.historyGroupExpanded(${restoreIndexForFold})`) : 'x';
+  const restoreFoldRows =
+    restoreIndexForFold >= 0 ? await exec(`window.__cwTest.historyGroupFileRowCount(${restoreIndexForFold})`) : -1;
+  const restoreFoldButtons =
+    restoreIndexForFold >= 0
+      ? await exec(
+          `document.querySelectorAll('#history-list .history-group')[${restoreIndexForFold}].querySelectorAll('.history-restore-group').length`
+        )
+      : -1;
+  check(
+    '每日快照（按天折叠）：其它来源组行为不变（没有折叠开关、默认展开、照旧有还原整组）',
+    restoreIndexForFold >= 0 &&
+      restoreFoldExpanded === null &&
+      restoreFoldRows > 0 &&
+      restoreFoldButtons === 1,
+    { restoreIndexForFold, restoreFoldExpanded, restoreFoldRows, restoreFoldButtons }
+  );
+
+  const clearButtonCount = await exec('window.__cwTest.historyClearSnapshotButtonCount()');
+  check(
+    '每日快照（清空某天）：「清空这天的快照」只出现在快照组（两个严格快照目录 → 两个按钮）',
+    clearButtonCount === 2 &&
+      (await exec("document.querySelectorAll('#history-list .history-clear-snapshot').length")) >= 1,
+    clearButtonCount
+  );
+
+  check(
+    '每日快照（按天折叠）：点组头能展开',
+    (await exec(`window.__cwTest.clickHistoryGroupToggle(${snapTodayIndex})`)) === true
+  );
+  const foldExpandedAfter = await exec(`window.__cwTest.historyGroupExpanded(${snapTodayIndex})`);
+  const foldRowsAfter = await exec(`window.__cwTest.historyGroupFileRowCount(${snapTodayIndex})`);
+  const restoreButtonWhenExpanded = await exec(
+    `document.querySelectorAll('#history-list .history-group')[${snapTodayIndex}].querySelectorAll('.history-restore-group').length`
+  );
+  check(
+    '每日快照（按天折叠）：展开后 aria-expanded=true、文件行回来、还原整组也在',
+    foldExpandedAfter === 'true' &&
+      foldGroup &&
+      foldRowsAfter === foldGroup.fileCount &&
+      restoreButtonWhenExpanded === 1,
+    { foldExpandedAfter, foldRowsAfter, restoreButtonWhenExpanded }
+  );
+
+  const foldKeyboard = JSON.parse(
+    await exec(`(() => {
+      const card = document.querySelectorAll('#history-list .history-group')[${snapTodayIndex}];
+      const btn = card && card.querySelector('.history-group-toggle');
+      if (!btn) return JSON.stringify(null);
+      btn.focus();
+      return JSON.stringify({
+        tag: btn.tagName,
+        tabIndex: btn.tabIndex,
+        focused: document.activeElement === btn,
+        expanded: btn.getAttribute('aria-expanded')
+      });
+    })()`)
+  );
+  check(
+    '每日快照（按天折叠）：组头按钮在 Tab 顺序里、能拿到焦点（键盘可达）',
+    foldKeyboard && foldKeyboard.tag === 'BUTTON' && foldKeyboard.tabIndex === 0 && foldKeyboard.focused === true,
+    foldKeyboard
+  );
+
+  // 清空当天快照：二次确认 → 只把这个目录移入回收站 → 清单 / 汇总刷新
+  await exec('window.__cwTest.clearToasts()');
+  check(
+    '每日快照（清空某天）：快照组有「清空这天的快照」按钮',
+    (await exec(`window.__cwTest.clickHistoryClearSnapshot(${snapTodayIndex})`)) === true
+  );
+  await waitFor('window.__cwTest.modalOpen()');
+  const clearDialogTitle = await exec('window.__cwTest.dialog()');
+  const clearDialogMessage = await exec('window.__cwTest.modalMessage()');
+  check(
+    '每日快照（清空某天）：确认框写清回收站 / 只影响这一组 / 不影响其它备份',
+    clearDialogTitle === '清空这天的快照' &&
+      clearDialogMessage.includes(snapshotDay) &&
+      clearDialogMessage.includes('移入 Windows 回收站') &&
+      clearDialogMessage.includes('可以从回收站恢复') &&
+      clearDialogMessage.includes('不影响其它备份'),
+    { clearDialogTitle, clearDialogMessage }
+  );
+  await exec("window.__cwTest.answerModal('ok')");
+  await waitFor(
+    `window.__cwTest.historyGroupIndexBySnapshotName(${JSON.stringify(snapshotDay)}) === -1`
+  );
+  const clearResultGone = await fileExists(snapshotTodayDir);
+  check(
+    '每日快照（清空某天）：当天的快照目录从 _trash 消失（移入回收站），不是硬删',
+    clearResultGone === false
+  );
+  check(
+    '每日快照（清空某天）：其它备份原样保留（未来日期快照 / 未知目录 / 散文件 / 还原前备份）',
+    JSON.stringify(await readTrashDigest()) ===
+      JSON.stringify(trashBeforeClear.filter(([name]) => name !== snapshotDay)),
+    (await fs.readdir(snapshotTrash)).sort()
+  );
+  check(
+    '每日快照（清空某天）：章节正文与书目结构一个字节都没动',
+    JSON.stringify(await readChaptersDigest()) === JSON.stringify(chaptersBeforeClear) &&
+      JSON.stringify(metaOutline(JSON.parse(await fs.readFile(historyMetaPath, 'utf8')))) ===
+        JSON.stringify(metaBeforeClear)
+  );
+
+  const groupsAfterClear = await exec('window.__cwTest.historyGroups()');
+  const summaryAfterClear = await exec('window.__cwTest.historySummary()');
+  check(
+    '每日快照（清空某天）：面板清单刷新、该组消失，汇总组数跟着变',
+    groupsAfterClear.every((group) => group.snapshotName !== snapshotDay) &&
+      groupsAfterClear.length === groupsForFold.length - 1 &&
+      (await exec("document.querySelectorAll('#history-list .history-group').length")) ===
+        groupsAfterClear.length &&
+      summaryAfterClear.includes(`共 ${groupsAfterClear.length} 组备份`),
+    { groups: groupsAfterClear.length, summary: summaryAfterClear }
+  );
+  const clearToasts = await exec('window.__cwTest.toasts()');
+  check(
+    '每日快照（清空某天）：成功 toast 写明已移入回收站',
+    clearToasts.some((item) => item.message.includes('移入回收站') && item.message.includes(snapshotDay)),
+    clearToasts
+  );
+  await exec('window.__cwTest.closeHistory()');
 };
+

@@ -1962,6 +1962,35 @@ function registerIpc() {
   handleBook('book:restore-history-dir', async (bookPath, groupId) =>
     storage.restoreHistoryGroup(bookPath, groupId), { mutation: 'write' }
   );
+  // 清空某一天的每日快照（P22-5）：只把这个目录**移入 Windows 回收站**，绝不硬删。
+  // 参数只认快照目录名（storage.snapshotDirForClear 严格校验「快照-YYYYMMDD」+ 日期真实存在 +
+  // 必须落在本书 _trash 下），不接受任意路径；校验不过 / 回收站不可用都只报错返回，一个文件都不动。
+  handleBook('book:clear-snapshot-day', async (bookPath, groupName) => {
+    const dir = storage.snapshotDirForClear(bookPath, groupName);
+    let stat;
+    try {
+      stat = await fs.lstat(dir);
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        throw new storage.StorageError('HISTORY_GROUP_MISSING', '这个快照目录已经不存在了');
+      }
+      throw err;
+    }
+    // 联接 / 符号链接不是普通文件夹：宁可不清，也不要把书库外面的东西卷进来
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new storage.StorageError('SNAPSHOT_NOT_DIR', '这个快照不是一个普通文件夹，没有清空');
+    }
+    try {
+      await shell.trashItem(dir);
+    } catch (err) {
+      // 回收站不可用（被策略禁用 / 磁盘问题…）：报错返回，不重试、不降级成硬删
+      throw new storage.StorageError(
+        'SNAPSHOT_TRASH_FAILED',
+        `移入回收站失败，快照没有动：${errorText.describeForUi(err).message}`
+      );
+    }
+    return { ok: true, dir: path.basename(dir) };
+  }, { mutation: 'write' });
 
   // 整本智能排版：预检查只算不写；正式整理逐章写盘（写前把原章节备份到 _trash/整理备份-*）
   handleBook('book:format-preview', async (bookPath, options) =>

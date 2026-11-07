@@ -1381,6 +1381,8 @@
           timeText: group.timeText,
           fileCount: group.fileCount,
           restorableCount: group.restorableCount,
+          // 只有严格合法的每日快照组才非空（P22-5：折叠 / 清空只认这个字段）
+          snapshotName: group.snapshotName || '',
           files: group.files.map((file) => ({
             name: file.name,
             inBook: file.inBook,
@@ -1391,6 +1393,44 @@
         })),
       historyGroupIndexBySource: (source) =>
         state.history ? state.history.groups.findIndex((group) => group.source === source) : -1,
+      historyGroupIndexBySnapshotName: (name) =>
+        state.history ? state.history.groups.findIndex((group) => group.snapshotName === name) : -1,
+      // 每日快照组（P22-5）：组头的 aria-expanded / 是否翻成原生 button / 折叠后还剩几行文件
+      historyGroupExpanded: (groupIndex) => {
+        const cards = document.querySelectorAll('#history-list .history-group');
+        const card = cards[groupIndex];
+        const toggle = card ? card.querySelector('.history-group-toggle') : null;
+        return toggle ? toggle.getAttribute('aria-expanded') : null;
+      },
+      historyGroupToggleTag: (groupIndex) => {
+        const cards = document.querySelectorAll('#history-list .history-group');
+        const card = cards[groupIndex];
+        const toggle = card ? card.querySelector('.history-group-toggle') : null;
+        return toggle ? toggle.tagName : '';
+      },
+      historyGroupFileRowCount: (groupIndex) => {
+        const cards = document.querySelectorAll('#history-list .history-group');
+        const card = cards[groupIndex];
+        return card ? card.querySelectorAll('.history-file').length : -1;
+      },
+      historyClearSnapshotButtonCount: () =>
+        document.querySelectorAll('#history-list .history-clear-snapshot').length,
+      clickHistoryGroupToggle(groupIndex) {
+        const cards = document.querySelectorAll('#history-list .history-group');
+        const card = cards[groupIndex];
+        const toggle = card ? card.querySelector('.history-group-toggle') : null;
+        if (!toggle) return false;
+        toggle.click();
+        return true;
+      },
+      clickHistoryClearSnapshot(groupIndex) {
+        const cards = document.querySelectorAll('#history-list .history-group');
+        const card = cards[groupIndex];
+        const button = card ? card.querySelector('.history-clear-snapshot') : null;
+        if (!button) return false;
+        button.click();
+        return true;
+      },
       historyGroupTexts: () =>
         textsOf('#history-list .history-group'),
       historyFileTexts: () =>

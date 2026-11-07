@@ -134,6 +134,7 @@ const BOOK_CHANNELS = [
   'book:search', 'book:replace', 'book:proofread', 'book:sensitive-check',
   'book:list-replace-backups', 'book:restore-replace-backup', 'book:list-history',
   'book:preview-history-file', 'book:restore-history-file', 'book:restore-history-dir',
+  'book:clear-snapshot-day',
   'book:format-preview', 'book:format', 'book:export-plan', 'book:export', 'book:export-epub',
   'book:export-docx', 'book:copy', 'chapter:copy-platform', 'book:repair', 'book:delete',
   'capture:commit-record', 'shell:open-book-folder'

@@ -91,6 +91,8 @@ contextBridge.exposeInMainWorld('api', {
     invoke('book:restore-history-file', bookPath, groupId, fileName),
   restoreHistoryDir: (bookPath, groupId) =>
     invoke('book:restore-history-dir', bookPath, groupId),
+  // 清空某一天的每日快照：第二个参数只传快照目录名（快照-YYYYMMDD），主进程严格校验后移入回收站
+  clearSnapshotDay: (bookPath, groupId) => invoke('book:clear-snapshot-day', bookPath, groupId),
   formatPreviewBook: (bookPath, options) => invoke('book:format-preview', bookPath, options),
   formatBook: (bookPath, options) => invoke('book:format', bookPath, options),
 

@@ -36,6 +36,12 @@
  *   - 「整本替换」里对 sameBookPath 的调用：渲染层解构转发本模块的同一个实现（不复制第二份）；
  *   - 测试钩子宿主契约（testHooksScope 按名字取本模块入口）、Esc 动作表（按名字取关闭函数）。
  *
+ * P22-5（1.1.0 内容批）：每日快照组（core/history.js 严格认出「快照-YYYYMMDD」的组才带 snapshotName）
+ * 默认折叠、组头是带 aria-expanded 的原生 button（键盘可达），并多一个「清空这天的快照」——
+ * 二次确认后只走 api.clearSnapshotDay 把那一个目录移入 Windows 回收站（绝不硬删），成功刷新清单 / 书架，
+ * 失败只 toast、清单保持原样。折叠状态放在 state.history.collapsed（按组 id，面板关掉即失效，不写盘、不进 config）；
+ * 其它来源的组仍然是「默认展开 + 只有还原整组」，行为一个字节没变。
+ *
  * 浏览器里挂成全局 CWHistoryUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
  */
 (function (root, factory) {
@@ -90,6 +96,8 @@
       loading: true,
       error: '',
       preview: null,
+      // 每日快照组的折叠状态（按组 id）：只活在本面板里，关掉即失效，不写盘、不进 config
+      collapsed: {},
       token: 0
     };
     $('history-backdrop').classList.remove('hidden');
@@ -169,12 +177,63 @@
     return { text: '只供查看', className: '' };
   }
 
+  // ---------- 每日快照组（P22-5）：默认折叠 + 清空某天（只移入回收站） ----------
+  // core/history.js 只给「快照-YYYYMMDD 且日期真实存在」的组带 snapshotName；其它来源的组
+  // （替换 / 整理 / 还原前 / 删章 / 书目）一个字节都不变：默认展开、照旧只有「还原整组」。
+  function isSnapshotDayGroup(group) {
+    return Boolean(group && group.kind === 'dir' && group.snapshotName);
+  }
+
+  // 折叠状态只放在 state.history.collapsed（按组 id）：面板一关就没了，不写盘、不进 config。
+  // 没记过 = 折叠（每日快照组的默认），记成 false = 作者展开过。
+  function collapsedMap() {
+    const current = state.history;
+    if (!current) return {};
+    if (!current.collapsed || typeof current.collapsed !== 'object') current.collapsed = {};
+    return current.collapsed;
+  }
+
+  function isGroupCollapsed(group) {
+    if (!isSnapshotDayGroup(group)) return false;
+    return collapsedMap()[group.id] !== false;
+  }
+
+  function toggleSnapshotGroup(group) {
+    const current = state.history;
+    if (!current || !isSnapshotDayGroup(group)) return false;
+    collapsedMap()[group.id] = !isGroupCollapsed(group);
+    renderHistory();
+    return true;
+  }
+
+  function makeRestoreGroupButton(group) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn ghost tiny history-restore-group';
+    button.textContent = `还原整组（${group.restorableCount}）`;
+    button.title = '只还原现在仍在书里的章节；还原前先把当前内容备份一份';
+    button.addEventListener('click', () => confirmHistoryRestore(group, null, true));
+    return button;
+  }
+
+  function makeClearSnapshotButton(group) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn ghost tiny history-clear-snapshot';
+    button.textContent = '清空这天的快照';
+    button.title = `把 ${group.snapshotName} 整组移入 Windows 回收站（可从回收站恢复）；不影响其它备份`;
+    button.addEventListener('click', () => clearSnapshotDay(group));
+    return button;
+  }
+
   function buildHistoryGroup(group) {
     const card = document.createElement('div');
     card.className = 'history-group';
     card.dataset.groupId = group.id;
     card.dataset.source = group.source;
 
+    const snapshotGroup = isSnapshotDayGroup(group);
+    const collapsed = isGroupCollapsed(group);
     const head = document.createElement('div');
     head.className = 'history-group-head';
     const source = document.createElement('span');
@@ -186,15 +245,33 @@
     const count = document.createElement('span');
     count.className = 'history-count';
     count.textContent = `${group.fileCount} 个文件 · ${formatBytes(group.totalBytes)}`;
-    head.append(source, time, count);
-    if (group.kind === 'dir' && group.restorableCount > 0) {
-      const restoreGroupBtn = document.createElement('button');
-      restoreGroupBtn.type = 'button';
-      restoreGroupBtn.className = 'btn ghost tiny history-restore-group';
-      restoreGroupBtn.textContent = `还原整组（${group.restorableCount}）`;
-      restoreGroupBtn.title = '只还原现在仍在书里的章节；还原前先把当前内容备份一份';
-      restoreGroupBtn.addEventListener('click', () => confirmHistoryRestore(group, null, true));
-      head.appendChild(restoreGroupBtn);
+    if (snapshotGroup) {
+      // 组头的主体是一枚原生 button（Tab / Enter / 空格可达）：aria-expanded 跟着折叠状态走，
+      // 折叠时组头照样显示来源 / 时间 / N 个文件 / 大小，只是下面的文件行不渲染。
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'history-group-toggle';
+      toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      toggle.title = collapsed ? '展开这一天的快照' : '收起这一天的快照';
+      const chevron = document.createElement('span');
+      chevron.className = 'history-group-chevron';
+      chevron.setAttribute('aria-hidden', 'true');
+      chevron.textContent = collapsed ? '▸' : '▾';
+      toggle.append(chevron, source, time, count);
+      toggle.addEventListener('click', () => toggleSnapshotGroup(group));
+      head.appendChild(toggle);
+    } else {
+      head.append(source, time, count);
+    }
+    if (snapshotGroup) {
+      // 折叠时连「还原整组」一起收起（避免在看不见文件的情况下整组还原）；「清空这天的快照」始终在组头
+      const actions = document.createElement('span');
+      actions.className = 'history-group-actions';
+      if (!collapsed && group.restorableCount > 0) actions.appendChild(makeRestoreGroupButton(group));
+      actions.appendChild(makeClearSnapshotButton(group));
+      head.appendChild(actions);
+    } else if (group.kind === 'dir' && group.restorableCount > 0) {
+      head.appendChild(makeRestoreGroupButton(group));
     }
     card.appendChild(head);
 
@@ -203,6 +280,7 @@
     note.textContent = group.note;
     card.appendChild(note);
 
+    if (collapsed) return card;
     for (const file of group.files) {
       const row = document.createElement('div');
       row.className = 'history-file';
@@ -362,6 +440,38 @@
     } catch (err) {
       toast(`还原失败：${err.message}`, 'error');
       await reloadAfterPartialFailure(current.path); // 可能已经还原了几章，界面回到磁盘的真相
+      return { ok: false, message: err.message };
+    }
+  }
+
+  // 清空某一天的每日快照（P22-5）：二次确认 → 只把这一个目录移入 Windows 回收站 → 刷新清单 / 汇总。
+  // 只认 core/history.js 严格认出「快照-YYYYMMDD」的组；失败（含回收站不可用）只 toast，清单保持原样。
+  // 文案写清「只影响这一组、可以从回收站恢复」——这里不做任何删除降级。
+  async function clearSnapshotDay(group) {
+    const current = state.history;
+    if (!current || !isSnapshotDayGroup(group)) return { ok: false };
+    const confirmed = await openModal({
+      title: '清空这天的快照',
+      message:
+        `会把这一天的每日快照（${group.snapshotName}，${group.fileCount} 个文件 · ${formatBytes(group.totalBytes)}）` +
+        '整组移入 Windows 回收站，可以从回收站恢复；不影响其它备份。' +
+        '\n\n清空后这一组不再列在本书历史里；章节文件、书目和其它备份都不会动。',
+      buttons: [
+        { label: '取消', value: 'cancel' },
+        { label: '清空', value: 'ok', kind: 'danger' }
+      ],
+      cancelValue: 'cancel'
+    });
+    if (confirmed.action !== 'ok') return { ok: false, canceled: true };
+    try {
+      const data = await call(api.clearSnapshotDay, current.path, group.snapshotName);
+      if (state.history === current) await refreshHistory();
+      await refreshShelf();
+      toast(`已把「${group.snapshotName}」移入回收站，可从回收站恢复`);
+      return { ok: true, data };
+    } catch (err) {
+      // 清空失败（校验不过 / 回收站不可用…）：清单保持原样，不动其它任何备份
+      toast(`清空失败：${err.message}`, 'error');
       return { ok: false, message: err.message };
     }
   }

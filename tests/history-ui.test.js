@@ -38,6 +38,7 @@ function makeEl(tag = 'div', id = '') {
     title: '',
     type: '',
     dataset: {},
+    attributes: {},
     children: [],
     parentNode: null,
     _classes: classes,
@@ -51,6 +52,10 @@ function makeEl(tag = 'div', id = '') {
         if (next) classes.add(n);
         else classes.delete(n);
       }
+    },
+    setAttribute(name, value) { el.attributes[name] = String(value); },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(el.attributes, name) ? el.attributes[name] : null;
     },
     append(...nodes) { nodes.forEach((n) => el.appendChild(n)); },
     appendChild(child) { child.parentNode = el; el.children.push(child); return child; },
@@ -114,6 +119,7 @@ function build(options = {}) {
   };
   const calls = {
     listHistory: [], previewHistoryFile: [], restoreHistoryDir: [], restoreHistoryFile: [],
+    clearSnapshotDay: [],
     openBookFolder: [], refreshShelf: 0, reloadOpenBookFromDisk: 0, reloadAfterPartialFailure: [],
     confirmRestoreWithUnsaved: [], openModal: [], toast: []
   };
@@ -138,6 +144,11 @@ function build(options = {}) {
       calls.restoreHistoryFile.push(args);
       if (options.restoreError) throw new Error(options.restoreError);
       return options.restoreResult || { restored: 2, skipped: 0, file: '' };
+    },
+    clearSnapshotDay(...args) {
+      calls.clearSnapshotDay.push(args);
+      if (options.clearError) throw new Error(options.clearError);
+      return options.clearResult || { ok: true, dir: args[1] };
     },
     openBookFolder(...args) {
       calls.openBookFolder.push(args);
@@ -307,9 +318,9 @@ test('openHistoryForPath：先收顶栏菜单、建 state.history、拉清单并
   assert.equal(dom.map.get('history-title').textContent, '本书历史 · 《书甲》');
   assert.equal(dom.map.get('history-summary').textContent, '共 1 组备份 · 3 个文件 · 3.0 KB（新 → 旧）');
   assert.equal(dom.map.get('history-list').children.length, 1);
-  // state.history 字段齐全
+  // state.history 字段齐全（P22-5 增加 collapsed：每日快照组的折叠状态，只活在面板里）
   assert.deepEqual(Object.keys(ctx.state.history).sort(), [
-    'error', 'fileCount', 'groups', 'loading', 'path', 'preview', 'title', 'token', 'totalBytes'
+    'collapsed', 'error', 'fileCount', 'groups', 'loading', 'path', 'preview', 'title', 'token', 'totalBytes'
   ]);
 });
 
@@ -551,6 +562,247 @@ test('confirmHistoryRestore：删除来源整组放回 → 不重载正文，toa
   assert.equal(ctx.calls.reloadOpenBookFromDisk, 0, '删章放回不改章节列表，不重载正文');
   assert.deepEqual(ctx.calls.toast, [['已把「删掉的.txt」放回书文件夹（章节列表未变，需要时可从目录重建找回）', undefined]]);
   assert.equal(res.ok, true);
+});
+
+// ---------- 每日快照组：折叠 + 清空某天（P22-5） ----------
+// core/history.js 只给「快照-YYYYMMDD 且日期真实存在」的组带 snapshotName；渲染层据此决定
+// 「默认折叠 + 清空这天的快照」，其它来源的组行为一个字节不变（默认展开、只有还原整组）。
+function snapshotGroupFixture(overrides = {}) {
+  return groupFixture({
+    id: 'dir:快照-20261107',
+    source: 'snapshot',
+    sourceLabel: '每日快照',
+    note: '每日快照留下的章节副本。可以预览、还原单章或整组。',
+    timeText: '2026-11-07 22:10',
+    dirName: '快照-20261107',
+    snapshotName: '快照-20261107',
+    snapshotDay: '2026-11-07',
+    fileCount: 2,
+    totalBytes: 2048,
+    restorableCount: 2,
+    ...overrides
+  });
+}
+
+function historyPanelState(overrides = {}) {
+  return {
+    path: '/书库/书甲',
+    title: '书甲',
+    groups: [],
+    fileCount: 0,
+    totalBytes: 0,
+    loading: false,
+    error: '',
+    preview: null,
+    collapsed: {},
+    token: 0,
+    ...overrides
+  };
+}
+
+function findButtonByClass(card, className) {
+  const stack = [card];
+  while (stack.length) {
+    const el = stack.shift();
+    if (!el) continue;
+    if (String(el.className || '').split(/\s+/).includes(className)) return el;
+    if (el.children) stack.push(...el.children);
+  }
+  return null;
+}
+
+test('每日快照组：默认折叠（aria-expanded=false、文件行不渲染、还原整组收起），清空按钮只在快照组', async () => {
+  const dom = makeDom(BASE_IDS);
+  const snapshot = snapshotGroupFixture();
+  const format = groupFixture();
+  const ctx = build({
+    dom,
+    listHistory: () => ({ title: '书甲', groups: [snapshot, format], fileCount: 4, totalBytes: 4096 })
+  });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  const cards = dom.map.get('history-list').children;
+  assert.equal(cards.length, 2);
+
+  // 快照组：组头 = 一枚带 aria-expanded 的原生 button（键盘可达），折叠时只剩组头 + 说明
+  const snapshotCard = cards[0];
+  assert.equal(snapshotCard.dataset.source, 'snapshot');
+  const snapshotHead = snapshotCard.children[0];
+  assert.equal(snapshotHead.className, 'history-group-head');
+  const toggle = snapshotHead.children[0];
+  assert.equal(toggle.className, 'history-group-toggle');
+  assert.equal(toggle.tagName, 'button');
+  assert.equal(toggle.type, 'button');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle.getAttribute('tabindex'), null, '原生 button 不该被 tabindex=-1 踢出 Tab 顺序');
+  // 折叠时组头照样显示「每日快照 · 具体日期 · N 个文件 · 大小」
+  assert.equal(toggle.children[0].className, 'history-group-chevron');
+  assert.equal(toggle.children[0].textContent, '▸');
+  assert.equal(toggle.children[1].textContent, '每日快照');
+  assert.equal(toggle.children[2].textContent, '2026-11-07 22:10');
+  assert.equal(toggle.children[3].textContent, '2 个文件 · 2.0 KB');
+  // 折叠：文件行不渲染（head + note 两个子节点），「还原整组」也收起
+  assert.equal(snapshotCard.children.length, 2);
+  assert.equal(snapshotCard.children[1].className, 'history-note');
+  const actions = snapshotHead.children[1];
+  assert.equal(actions.className, 'history-group-actions');
+  assert.equal(actions.children.length, 1, '折叠时只剩清空按钮');
+  assert.equal(actions.children[0].className, 'btn ghost tiny history-clear-snapshot');
+  assert.equal(actions.children[0].textContent, '清空这天的快照');
+  assert.equal(findButtonByClass(snapshotCard, 'history-restore-group'), null, '折叠时不出现还原整组');
+
+  // 其它来源的组维持原样：没有 toggle、默认展开、照旧有还原整组
+  const formatCard = cards[1];
+  const formatHead = formatCard.children[0];
+  assert.equal(findButtonByClass(formatCard, 'history-group-toggle'), null);
+  assert.equal(formatHead.children[0].className, 'history-source');
+  assert.equal(formatHead.children[3].className, 'btn ghost tiny history-restore-group');
+  assert.equal(formatHead.children[3].textContent, '还原整组（1）');
+  assert.equal(formatCard.children.length, 4, 'head + note + 2 个文件行');
+
+  // 清空按钮只在快照组出现
+  const clearButtons = [snapshotCard, formatCard].filter((card) =>
+    findButtonByClass(card, 'history-clear-snapshot')
+  );
+  assert.deepEqual(clearButtons, [snapshotCard]);
+});
+
+test('每日快照组：点组头展开 / 再点收起，折叠状态只记在 state.history.collapsed', async () => {
+  const dom = makeDom(BASE_IDS);
+  const snapshot = snapshotGroupFixture();
+  const ctx = build({ dom, listHistory: () => ({ title: '书甲', groups: [snapshot], fileCount: 2, totalBytes: 2048 }) });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  assert.equal(ctx.state.history.groups.length, 1);
+
+  // 展开：aria-expanded=true、文件行渲染出来、「还原整组」回到组头
+  dom.map.get('history-list').children[0].children[0].children[0]._fire('click');
+  assert.equal(ctx.state.history.collapsed['dir:快照-20261107'], false);
+  let card = dom.map.get('history-list').children[0];
+  let head = card.children[0];
+  assert.equal(head.children[0].getAttribute('aria-expanded'), 'true');
+  assert.equal(head.children[0].children[0].textContent, '▾');
+  assert.equal(card.children.length, 4, 'head + note + 2 个文件行');
+  assert.equal(card.children[2].className, 'history-file');
+  assert.equal(card.children[2].dataset.fileName, '第一章.txt');
+  const actions = head.children[1];
+  assert.equal(actions.className, 'history-group-actions');
+  assert.equal(actions.children.length, 2);
+  assert.equal(actions.children[0].className, 'btn ghost tiny history-restore-group');
+  assert.equal(actions.children[0].textContent, '还原整组（2）');
+  assert.equal(actions.children[1].className, 'btn ghost tiny history-clear-snapshot');
+
+  // 收起：回到折叠态
+  head.children[0]._fire('click');
+  assert.equal(ctx.state.history.collapsed['dir:快照-20261107'], true);
+  card = dom.map.get('history-list').children[0];
+  head = card.children[0];
+  assert.equal(head.children[0].getAttribute('aria-expanded'), 'false');
+  assert.equal(card.children.length, 2);
+  assert.equal(findButtonByClass(card, 'history-restore-group'), null);
+
+  // 折叠状态不写盘、不进 config：面板一关就没了（重新打开 = 默认折叠）
+  ctx.ui.closeHistoryDialog();
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  assert.equal(dom.map.get('history-list').children[0].children[0].children[0].getAttribute('aria-expanded'), 'false');
+});
+
+test('清空这天的快照：确认框文案逐字 → api.clearSnapshotDay(书路径, 快照目录名) → 刷新清单 / 书架 + toast', async () => {
+  const dom = makeDom(BASE_IDS);
+  const ctx = build({
+    dom,
+    modalAction: { action: 'ok' },
+    listHistory: () => ({ title: '书甲', groups: [snapshotGroupFixture()], fileCount: 2, totalBytes: 2048 })
+  });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  const clearButton = findButtonByClass(dom.map.get('history-list').children[0], 'history-clear-snapshot');
+  assert.ok(clearButton, '快照组要有清空按钮');
+  await clearButton._fire('click');
+
+  assert.equal(ctx.calls.openModal.length, 1);
+  const modal = ctx.calls.openModal[0];
+  assert.equal(modal.title, '清空这天的快照');
+  assert.equal(
+    modal.message,
+    '会把这一天的每日快照（快照-20261107，2 个文件 · 2.0 KB）整组移入 Windows 回收站，' +
+      '可以从回收站恢复；不影响其它备份。\n\n' +
+      '清空后这一组不再列在本书历史里；章节文件、书目和其它备份都不会动。'
+  );
+  assert.deepEqual(modal.buttons, [
+    { label: '取消', value: 'cancel' },
+    { label: '清空', value: 'ok', kind: 'danger' }
+  ]);
+  assert.equal(modal.cancelValue, 'cancel');
+
+  assert.deepEqual(ctx.calls.clearSnapshotDay, [['/书库/书甲', '快照-20261107']]);
+  assert.equal(ctx.calls.listHistory.length, 2, '清空后重新拉一次清单');
+  assert.equal(ctx.calls.refreshShelf, 1);
+  assert.deepEqual(ctx.calls.toast, [['已把「快照-20261107」移入回收站，可从回收站恢复', undefined]]);
+});
+
+test('清空这天的快照：确认框点取消 → 一个 IPC 都不打、清单与书架都不刷新', async () => {
+  const dom = makeDom(BASE_IDS);
+  const ctx = build({
+    dom,
+    modalAction: { action: 'cancel' },
+    listHistory: () => ({ title: '书甲', groups: [snapshotGroupFixture()], fileCount: 2, totalBytes: 2048 })
+  });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  const clearButton = findButtonByClass(dom.map.get('history-list').children[0], 'history-clear-snapshot');
+  await clearButton._fire('click');
+
+  assert.equal(ctx.calls.openModal.length, 1);
+  assert.deepEqual(ctx.calls.clearSnapshotDay, []);
+  assert.equal(ctx.calls.listHistory.length, 1);
+  assert.equal(ctx.calls.refreshShelf, 0);
+  assert.deepEqual(ctx.calls.toast, []);
+  assert.equal(dom.map.get('history-list').children.length, 1);
+});
+
+test('清空这天的快照：失败 → toast「清空失败：…」，清单保持原样（不重新拉清单 / 不刷书架）', async () => {
+  const dom = makeDom(BASE_IDS);
+  const ctx = build({
+    dom,
+    modalAction: { action: 'ok' },
+    clearError: '回收站不可用',
+    listHistory: () => ({ title: '书甲', groups: [snapshotGroupFixture()], fileCount: 2, totalBytes: 2048 })
+  });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  const groupsBefore = ctx.state.history.groups;
+  const clearButton = findButtonByClass(dom.map.get('history-list').children[0], 'history-clear-snapshot');
+  await clearButton._fire('click');
+
+  assert.deepEqual(ctx.calls.clearSnapshotDay, [['/书库/书甲', '快照-20261107']]);
+  assert.deepEqual(ctx.calls.toast, [['清空失败：回收站不可用', 'error']]);
+  assert.equal(ctx.state.history.groups, groupsBefore, '失败时清单一个字节都不动');
+  assert.equal(ctx.calls.listHistory.length, 1);
+  assert.equal(ctx.calls.refreshShelf, 0);
+  assert.equal(dom.map.get('history-list').children.length, 1);
+});
+
+test('快照来源但名字不是严格格式的组：不折叠、不给清空按钮（绝不碰不是本应用生成的目录）', async () => {
+  const dom = makeDom(BASE_IDS);
+  const legacy = groupFixture({
+    id: 'dir:快照-2026-10-31-230000',
+    source: 'snapshot',
+    sourceLabel: '每日快照',
+    dirName: '快照-2026-10-31-230000',
+    timeText: '2026-10-31 23:00'
+  });
+  const ctx = build({ dom, listHistory: () => ({ title: '书甲', groups: [legacy], fileCount: 2, totalBytes: 2048 }) });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  const card = dom.map.get('history-list').children[0];
+  const head = card.children[0];
+  assert.equal(findButtonByClass(card, 'history-group-toggle'), null, '没有 snapshotName 就不折叠');
+  assert.equal(head.children[0].className, 'history-source');
+  assert.equal(card.children.length, 4, '默认展开：head + note + 2 个文件行');
+  assert.equal(findButtonByClass(card, 'history-clear-snapshot'), null, '不给清空入口');
+  assert.equal(head.children[3].className, 'btn ghost tiny history-restore-group');
 });
 
 // ---------- 事件绑定 ----------

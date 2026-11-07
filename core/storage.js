@@ -1381,6 +1381,28 @@ async function previewHistoryFile(bookPath, groupId, fileName) {
   return historyLib.readHistoryFile(bookPath, groupId, fileName);
 }
 
+// 「清空这天的快照」的路径校验（P22-5）：渲染层只传目录名，绝不接受任意路径。
+// - 只认 core/snapshot.js 的 parseSnapshotDirName：必须逐字是「快照-YYYYMMDD」且日期真实存在，
+//   `快照-20260231` / `快照-2026-11-07` / `..` / 反斜杠 / 绝对路径 / 其它备份名一律 StorageError；
+// - 只返回本书 _trash 下的绝对路径（再走一遍 assertInside），名字必须是 basename；
+// - 这里不读正文、不删任何文件（移入回收站是 main.js 的 shell.trashItem 干的），
+//   所以拿不到合法路径时调用方什么都不会动。
+function snapshotDirForClear(bookPath, groupName) {
+  const root = String(bookPath == null ? '' : bookPath).trim();
+  if (!root) throw new StorageError('BAD_BOOK', '缺少书的路径');
+  const info = snapshotLib.parseSnapshotDirName(groupName);
+  if (!info) throw new StorageError('BAD_SNAPSHOT_DIR', '只能清空「快照-YYYYMMDD」这种每日快照目录');
+  if (path.basename(info.name) !== info.name) {
+    throw new StorageError('BAD_SNAPSHOT_DIR', '快照目录名不合法');
+  }
+  const dir = assertInside(root, path.join(TRASH_DIR, info.name));
+  // 双保险：解析出来的绝对路径必须正好是本书 _trash 的直接子目录
+  if (path.dirname(dir) !== path.resolve(root, TRASH_DIR)) {
+    throw new StorageError('BAD_SNAPSHOT_DIR', '快照目录不在本书的 _trash 下');
+  }
+  return dir;
+}
+
 async function renameBook(bookPath, title) {
   const meta = await readBookMeta(bookPath);
   const nextTitle = String(title == null ? '' : title).trim() || meta.title;
@@ -1493,6 +1515,7 @@ module.exports = {
   takeDailySnapshot,
   listBookHistory,
   previewHistoryFile,
+  snapshotDirForClear,
   restoreHistoryFile: locked(restoreHistoryFile),
   restoreHistoryGroup: locked(restoreHistoryGroup),
   renameBook: locked(renameBook),

@@ -433,3 +433,99 @@ test('历史：v0.4.1 形状的旧书目（无 schemaVersion / 无新字段）�
   assert.deepEqual(metaOnDisk.chapters.map((chapter) => chapter.file), ['001-起风.txt', '002-夜雨.txt']);
   assert.deepEqual(metaOnDisk.chapters.map((chapter) => chapter.name), ['起风', '夜雨']);
 });
+
+// ---------- P22-5：每日快照组的目录名字段 + 「清空某天」的路径校验 ----------
+
+test('历史：每日快照组带严格解析出的 snapshotName / snapshotDay，其它组不带', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '书');
+  await fs.mkdir(bookPath, { recursive: true });
+  await writeBackupDir(bookPath, '快照-20261107', { '001-a.txt': '今天的快照' });
+  await writeBackupDir(bookPath, '快照-20260231', { '001-a.txt': '日期不存在' });
+  await writeBackupDir(bookPath, '快照-2026-11-07', { '001-a.txt': '不是应用生成的格式' });
+  await writeBackupDir(bookPath, '替换备份-2026-10-31-210000', { '001-a.txt': '替换备份' });
+
+  const data = await history.listHistory(bookPath, { chapterFiles: ['001-a.txt'] });
+  const byId = (id) => data.groups.find((group) => group.id === id);
+
+  const today = byId('dir:快照-20261107');
+  assert.equal(today.source, 'snapshot');
+  assert.equal(today.snapshotName, '快照-20261107');
+  assert.equal(today.snapshotDay, '2026-11-07');
+
+  // 名字对不上严格格式的目录仍然归到「每日快照」，但不给清除入口（没有 snapshotName 字段）
+  const badDay = byId('dir:快照-20260231');
+  assert.equal(badDay.source, 'snapshot');
+  assert.equal(badDay.snapshotName, undefined);
+  assert.equal(badDay.snapshotDay, undefined);
+  const badFormat = byId('dir:快照-2026-11-07');
+  assert.equal(badFormat.source, 'snapshot');
+  assert.equal(badFormat.snapshotName, undefined);
+  assert.equal(badFormat.snapshotDay, undefined);
+
+  // 其它来源的组没有这个字段（渲染层只看 snapshotName，不用自己切 id）
+  const replace = byId('dir:替换备份-2026-10-31-210000');
+  assert.equal(replace.source, 'replace');
+  assert.equal(replace.snapshotName, undefined);
+
+  // 扫描只读：快照目录和里面的文件一个都没动
+  assert.equal(
+    await fs.readFile(path.join(bookPath, '_trash', '快照-20261107', '001-a.txt'), 'utf8'),
+    '今天的快照'
+  );
+});
+
+test('历史：清空快照的路径校验只认本书 _trash 下的「快照-YYYYMMDD」，不删任何东西', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '书');
+  const snapshotDir = path.join(bookPath, '_trash', '快照-20261107');
+  await fs.mkdir(snapshotDir, { recursive: true });
+  await fs.writeFile(path.join(snapshotDir, '001-a.txt'), '快照正文', 'utf8');
+
+  // 合法：返回绝对路径，正好是本书 _trash 的直接子目录
+  const dir = storage.snapshotDirForClear(bookPath, '快照-20261107');
+  assert.equal(dir, snapshotDir);
+  assert.equal(path.dirname(dir), path.join(bookPath, '_trash'));
+  assert.equal(path.isAbsolute(dir), true);
+  // 只是校验路径：一个文件都没动、也没读正文
+  assert.equal(await fs.readFile(path.join(snapshotDir, '001-a.txt'), 'utf8'), '快照正文');
+
+  for (const bad of [
+    '快照-20260231', // 日期不存在
+    '快照-20261301', // 月份越界
+    '快照-2026110', // 位数不够
+    '快照-202611070', // 位数太多
+    '快照-2026-11-07', // 带横线
+    '快照-2026-11-07-220000', // 自带时间戳（不是按天目录）
+    '..',
+    '.',
+    '../快照-20261107',
+    '..\\快照-20261107',
+    '快照-20261107\\..\\..\\书目.json',
+    'C:\\快照-20261107',
+    'C:\\书\\_trash\\快照-20261107',
+    '/快照-20261107',
+    '替换备份-2026-10-31-210000',
+    '整理备份-2026-10-31-210000',
+    '其它备份-x',
+    '快照-',
+    '',
+    null,
+    undefined,
+    42
+  ]) {
+    assert.throws(
+      () => storage.snapshotDirForClear(bookPath, bad),
+      (err) => err instanceof storage.StorageError && err.code === 'BAD_SNAPSHOT_DIR',
+      `应拒绝：${String(bad)}`
+    );
+  }
+  // 缺书路径：直接 BAD_BOOK，连目录名都不看
+  assert.throws(
+    () => storage.snapshotDirForClear('', '快照-20261107'),
+    (err) => err instanceof storage.StorageError && err.code === 'BAD_BOOK'
+  );
+  // 被拒绝的那些名字一个都没被动过
+  assert.equal(await fs.readFile(path.join(snapshotDir, '001-a.txt'), 'utf8'), '快照正文');
+  assert.deepEqual((await fs.readdir(path.join(bookPath, '_trash'))).sort(), ['快照-20261107']);
+});
