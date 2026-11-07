@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'" />
+  <title>章回</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ============ 书架 ============ -->
+    <section id="shelf-view" class="view shelf-view">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">章</span>
+          <span class="brand-name">章回</span>
+          <span id="app-version" class="version muted small">v1.0.0</span>
+        </div>
+        <div class="topbar-right">
+          <div class="shelf-search">
+            <input id="shelf-search" class="text-input" type="text" placeholder="搜索书名/作者/标签/正文（Ctrl+F）" autocomplete="off" />
+            <button id="btn-shelf-search-clear" class="shelf-search-clear hidden" type="button" title="清除搜索（Esc）">×</button>
+          </div>
+          <span id="books-root-label" class="muted small"></span>
+          <div class="topbar-actions">
+            <button id="btn-add-fragment" class="btn ghost" type="button" title="灵感箱：随手记一条碎片，存到书架根目录的 _碎片 文件夹（纯 txt，不用新建章节）">＋ 碎片</button>
+            <button id="btn-import" class="btn ghost" type="button" title="把一个外部文件夹导入成书架里的一本书">导入小说</button>
+            <button id="btn-settings" class="btn ghost" type="button">设置</button>
+          </div>
+        </div>
+      </header>
+      <div class="shelf-body">
+        <!-- 固定头（v1.0 M3 第二刀）：今日字数 / 继续上次写作 / 分组条不随书卡滚动，
+             只有下面的 .shelf-scroll（搜索命中 + 书卡网格）滚。 -->
+        <div class="shelf-head">
+          <div id="shelf-stats" class="shelf-stats hidden">
+            <div class="shelf-stats-row">
+              <span id="shelf-stats-today" class="shelf-stats-today"></span>
+              <span id="shelf-stats-goal" class="shelf-stats-goal"></span>
+              <span id="shelf-stats-streak" class="shelf-stats-streak" hidden></span>
+            </div>
+            <span class="goal-track" id="shelf-goal-track"><i id="shelf-goal-fill"></i></span>
+          </div>
+          <div id="shelf-continue" class="shelf-continue hidden">
+            <button id="btn-continue-writing" class="continue-writing" type="button" title="打开这本书，回到上次编辑的章节">
+              <span class="continue-body">
+                <span class="continue-label">继续上次写作</span>
+                <span class="continue-main" id="continue-title"></span>
+              </span>
+              <span class="continue-meta" id="continue-meta"></span>
+            </button>
+          </div>
+          <!-- 分组筛选（v0.8-3）：只影响书架显示，不改书文件夹；一本书都没有分组时收起 -->
+          <div id="shelf-group-bar" class="shelf-group-bar hidden">
+            <label for="shelf-group-filter" class="shelf-group-label">分组</label>
+            <select id="shelf-group-filter" class="shelf-group-select" title="只筛选书架显示；分组只写在 书目.json 里，不改书文件夹名"></select>
+          </div>
+        </div>
+        <div class="shelf-scroll">
+          <div id="shelf-search-summary" class="shelf-search-summary muted small hidden"></div>
+          <!-- 正文命中（提案 7.3）：书名 / 章节名之外，再按索引把正文里命中的章节列出来 -->
+          <div id="shelf-content" class="shelf-content hidden" aria-busy="false">
+            <div class="shelf-content-head">
+              <span id="shelf-content-summary" class="shelf-content-summary muted small"></span>
+              <button id="btn-shelf-content-more" class="btn ghost tiny hidden" type="button">显示更多</button>
+            </div>
+            <div id="shelf-content-list" class="shelf-content-list"></div>
+          </div>
+          <div class="book-grid" id="book-grid"></div>
+        </div>
+      </div>
+      <footer class="shelf-footer muted small">
+        一本书 = 一个文件夹；正文就是普通 txt 文件，用记事本也能直接打开。保存只有你按 Ctrl+S 时才发生。
+      </footer>
+    </section>
+
+    <!-- ============ 编辑器 ============ -->
+    <section id="editor-view" class="view editor-view hidden">
+      <aside class="sidebar" id="sidebar">
+        <button id="btn-back" class="btn ghost back-btn" type="button">← 书架</button>
+        <div class="sidebar-book">
+          <div class="book-title" id="book-title" title="书名"></div>
+          <button id="btn-rename-book" class="btn ghost tiny" type="button" title="修改书名（只改书目记录，不改文件夹名）">改名</button>
+        </div>
+        <div class="chapter-list" id="chapter-list"></div>
+        <div class="sidebar-actions">
+          <button id="btn-new-chapter" class="btn" type="button">＋ 新建章节</button>
+          <button id="btn-new-volume" class="btn ghost" type="button" title="新建卷（侧栏按卷分组，章号不变）">＋ 新建卷</button>
+        </div>
+      </aside>
+      <div id="sidebar-resizer" class="sidebar-resizer" title="拖动调整章节栏宽度（双击恢复默认）"></div>
+      <main class="editor-main">
+        <header class="editor-header">
+          <div class="chapter-title" id="chapter-title"></div>
+          <div class="editor-actions">
+            <!-- v0.8.5 R2：顶栏按「写作 / 插入 / 整理与显示 / 导出」分组（纯 class + CSS，不动任何功能） -->
+            <div class="action-group">
+              <button id="btn-find" class="btn ghost" type="button" title="查找替换（Ctrl+F）">查找</button>
+              <button id="btn-focus" class="btn ghost" type="button" title="专注模式：隐藏左栏与顶栏，只留正文（F11 进出，Esc 退出；不写配置）">专注</button>
+              <button id="btn-reading" class="btn ghost" type="button" title="阅读模式：把整本书当只读稿子连续读（字号 / 行距 / 目录 / 上一章 / 下一章；不改字、不写盘、不改书目，Esc 退出）">阅读</button>
+              <button id="btn-proofread" class="btn ghost" type="button" title="校对：只列出可疑的地方，不改正文、不写盘">校对</button>
+              <button id="btn-tts" class="btn ghost" type="button" title="朗读本章：用 Windows 自带语音读正文，只读不改、不写盘（Esc 停止）">朗读</button>
+            </div>
+            <div class="action-group">
+              <button id="btn-capture" class="btn ghost" type="button" title="从剪贴板捕获：读纯文本，自动拆出章节标题与正文，确认后一次新建一章（全局快捷键 Ctrl+Alt+V）">捕获</button>
+              <button id="btn-insert-fragment" class="btn ghost" type="button" title="插入碎片…：把 _碎片 里的一条灵感插到光标处（只改编辑区、不写盘，原碎片保留）">插入碎片…</button>
+              <button id="btn-insert" class="btn ghost" type="button" title="在当前章之后插入新章">＋ 插入</button>
+            </div>
+            <div class="action-group">
+              <!-- 「整理」：点击 = 直接用上次记住的规则整理本章；鼠标悬浮 / Tab 聚焦 = 出现选择卡 -->
+              <div class="dropdown" id="format-dropdown">
+                <button id="btn-format" class="btn ghost" type="button" title="点击：直接用上次记住的规则整理本章（只改编辑区、仍是未保存，Ctrl+S 保存 / Ctrl+Z 撤销）。鼠标悬浮或 Tab 聚焦：打开选择卡（排版设置… / 一键整理本书… / 撤销上次整理）">整理 ▾</button>
+                <div class="dropdown-menu format-card hidden" id="format-menu" aria-label="整理选项">
+                  <div class="format-card-note" id="format-card-note">点「整理」= 直接用记住的规则整理本章</div>
+                  <button type="button" data-action="settings" title="打开「智能排版 · 仅当前章」对话框：调规则 + 预览 + 套用到本章">排版设置…</button>
+                  <button type="button" data-action="apply-book" title="用同一套规则把整本书逐章整理（先预检查 + 确认，写盘前整本备份到 _trash）">一键整理本书…</button>
+                  <button type="button" data-action="undo" id="format-undo-item" title="把最近一次整理退回编辑区（仍在编辑区、未写盘）">撤销上次整理</button>
+                </div>
+              </div>
+              <!-- 「显示」：只改 CSS 的显示项（正文一个字都不动），点一下展开 -->
+              <div class="dropdown" id="display-dropdown">
+                <button id="btn-display" class="btn ghost" type="button" title="正文显示：预设 / 不可见字符 / 超长段落提示 / 当前段落高亮 / 高亮颜色 / 正文显示设置（只改显示，不动正文）">显示 ▾</button>
+                <div class="dropdown-menu hidden" id="display-menu">
+                  <button type="button" data-action="preset-compact">显示：紧凑</button>
+                  <button type="button" data-action="preset-normal">显示：标准</button>
+                  <button type="button" data-action="preset-loose">显示：宽松</button>
+                  <div class="dropdown-sep"></div>
+                  <button type="button" data-action="toggle-invisibles" id="format-invisibles">显示不可见字符（␣ / 行尾空白）</button>
+                  <button type="button" data-action="toggle-long-para" id="format-long-para">超长段落提示（>500 字左侧黄线）</button>
+                  <button type="button" data-action="toggle-caret-para" id="format-caret-para" title="光标所在那一段画一层淡色底 + 左侧细线。开关与颜色都按书记忆（存在 config.json 的 bookDisplay 里，不碰正文 / 书目 / 章节文件）。">当前段落高亮（光标所在段）</button>
+                  <div class="caret-color-row" id="format-caret-colors" title="高亮颜色按书记忆；默认跟随当前背景主题">
+                    <span class="caret-color-label">高亮颜色</span>
+                    <div class="caret-swatches">
+                      <button type="button" class="caret-swatch caret-swatch-theme" data-caret-color="" title="跟随背景主题（默认）" aria-label="跟随背景主题"></button>
+                      <button type="button" class="caret-swatch" data-caret-color="#c8873c" title="琥珀（暖色，接近默认木质色调）" aria-label="琥珀"></button>
+                      <button type="button" class="caret-swatch" data-caret-color="#3f7fbf" title="湖蓝（冷色，夜间也清楚）" aria-label="湖蓝"></button>
+                      <button type="button" class="caret-swatch" data-caret-color="#4f8a5b" title="豆绿（护眼绿）" aria-label="豆绿"></button>
+                      <button type="button" class="caret-swatch" data-caret-color="#b45f6d" title="胭脂（偏红）" aria-label="胭脂"></button>
+                      <button type="button" class="caret-swatch" data-caret-color="#7a63b0" title="藤紫（低饱和紫）" aria-label="藤紫"></button>
+                      <button type="button" class="caret-swatch" data-caret-color="#7d8794" title="石墨（中性灰，最不抢眼）" aria-label="石墨"></button>
+                    </div>
+                    <input id="format-caret-color" class="caret-color-input" type="color" value="#c8873c" title="取色器：自定义高亮颜色（按书记忆）" aria-label="自定义高亮颜色" />
+                  </div>
+                  <div class="dropdown-sep"></div>
+                  <button type="button" data-action="display-settings">正文显示设置…</button>
+                </div>
+              </div>
+            </div>
+            <div class="action-group">
+              <div class="dropdown">
+                <button id="btn-export" class="btn ghost" type="button">导出 ▾</button>
+                <div class="dropdown-menu hidden" id="export-menu">
+                  <button type="button" data-action="copy">复制整本到剪贴板</button>
+                  <button type="button" data-action="txt">导出 TXT…</button>
+                  <button type="button" data-action="epub" title="整本或按卷 / 按章节范围导出成 EPUB 电子书：分卷做目录级、一章一个 XHTML、段首缩进 + 段间空行">导出 EPUB…</button>
+                  <button type="button" data-action="docx" title="整本或按卷 / 按章节范围导出成 Word 文档（.docx）：标题页 + 卷 / 章标题 + 段首缩进 2 字、1.5 倍行距">导出 DOCX…</button>
+                  <button type="button" data-action="sensitive" title="按你自己的词表检查命中位置：只报告、不改正文、不写盘（应用不内置任何词表）">敏感词预检…</button>
+                  <button type="button" data-action="folder">打开本书文件夹</button>
+                  <div class="dropdown-sep"></div>
+                  <button type="button" data-action="history" title="查看书内 _trash 的替换 / 整理 / 删除章节 / 书目备份">本书历史…</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- 保存按钮放在分组外面：窄窗口时它和章节标题同一行，按钮组整体换到第二行（v0.8.5 R2） -->
+          <button id="btn-save" class="btn primary" type="button" disabled>保存</button>
+        </header>
+        <!-- 卷册页首（v1.0 方向 C）：卷名 + 章名做成书页标题，只读显示层，由 renderEditorHeader 同步；
+             专注模式下隐藏。不参与编辑、不写盘、不改正文 / 书目。 -->
+        <div id="page-head" class="page-head hidden" aria-hidden="true">
+          <div id="page-head-vol" class="page-head-vol"></div>
+          <div id="page-head-title" class="page-head-title"></div>
+          <div class="page-head-rule"></div>
+        </div>
+        <!-- 专注模式（提案 3.5）：隐藏左栏与顶栏，只留正文；这一条是极简退出条（Esc / F11 也能退出） -->
+        <div id="focus-bar" class="focus-bar hidden" role="toolbar" aria-label="专注模式">
+          <span id="focus-chapter" class="focus-chapter"></span>
+          <button id="btn-focus-typewriter" class="focus-btn" type="button" data-on="0">打字机</button>
+          <button id="btn-focus-exit" class="focus-btn" type="button" title="退出专注模式（Esc / F11）">退出专注 <span class="focus-kbd">Esc</span><span class="focus-kbd">F11</span></button>
+        </div>
+        <textarea id="editor" class="editor" spellcheck="false"
+                  placeholder="开始写作…（只有按 Ctrl+S 或点「保存」才会写盘）"></textarea>
+        <!-- 只读标记层：不可见字符 / 超长段落只画在这里，正文一个字节都不改（和编辑区同排版，跟着滚动） -->
+        <div id="editor-marks" class="editor-marks hidden" aria-hidden="true"></div>
+        <!-- 查找结果高亮层（v0.8-11，提案 N11）：当前章所有命中画在这里，只读、不参与编辑 / 选择 -->
+        <div id="editor-find-marks" class="editor-marks find-marks hidden" aria-hidden="true"></div>
+        <!-- 超长段落的左侧黄线画在正文左边距里，逐行跟随滚动 -->
+        <div id="editor-marks-gutter" class="editor-marks-gutter hidden" aria-hidden="true"></div>
+        <footer class="statusbar">
+          <span class="dot ok" id="status-dot"></span>
+          <span id="status-text">已保存</span>
+          <span id="status-selection" class="status-selection hidden"></span>
+          <span class="spacer"></span>
+          <button id="btn-write-timer" class="status-timer hidden" type="button" title="写作计时（默认关）：点一下开始，再点暂停；只记时长、不记内容">
+            <span aria-hidden="true">⏱</span>
+            <span id="write-timer-text">写作计时</span>
+          </button>
+          <!-- 状态栏今日字数（v0.13 U-D4）：本身是码字日历入口，点开全局设置并定位到日历 -->
+          <button id="status-stats" class="status-stats hidden" type="button" aria-haspopup="dialog"
+                  title="今日字数：只统计保存动作写下的字数；点开码字日历">
+            <span id="status-stats-text"></span>
+            <span class="goal-track" id="status-goal-track" aria-hidden="true"><i id="status-goal-fill"></i></span>
+          </button>
+          <button id="status-long-para" class="status-long hidden" type="button">超长段落</button>
+          <button id="status-find" class="status-find hidden" type="button" title="查找高亮：单击跳到下一处；F3 下一处 / Shift+F3 上一处；Esc 清除">查找</button>
+          <span id="char-count" class="muted small" title="本章字数（不含空白），未保存的编辑也算"></span>
+          <span class="status-hints">
+            <span class="kbd">Ctrl+G 跳章</span>
+            <span class="kbd">Ctrl+S 保存</span>
+          </span>
+        </footer>
+      </main>
+    </section>
+
+    <!-- ============ 阅读模式（v0.8-4，提案 N4）：整本只读通读，纯显示层，不写盘 ============ -->
+    <section id="reading-view" class="view reading-view hidden">
+      <header class="reading-header">
+        <div class="reading-head-left">
+          <button id="btn-reading-exit" class="btn ghost" type="button" title="退出阅读模式，回到写作页（Esc）">← 退出阅读</button>
+          <div class="reading-book">
+            <div id="reading-book-title" class="reading-book-title"></div>
+            <div id="reading-progress" class="reading-progress muted small"></div>
+          </div>
+        </div>
+        <div class="reading-head-right">
+          <button id="btn-reading-first" class="btn ghost tiny" type="button" title="从第 1 章开始读">从头</button>
+          <label class="reading-field">字号
+            <select id="reading-font-level" class="text-input reading-select" title="只改阅读视图的显示，不写配置（Ctrl+滚轮 / Ctrl+= / Ctrl+-）">
+              <option value="0">小</option>
+              <option value="1">中</option>
+              <option value="2" selected>大</option>
+              <option value="3">特大</option>
+            </select>
+          </label>
+          <label class="reading-field">行距
+            <select id="reading-line-level" class="text-input reading-select" title="只改阅读视图的显示，不写配置">
+              <option value="0">紧凑</option>
+              <option value="1" selected>标准</option>
+              <option value="2">宽松</option>
+            </select>
+          </label>
+          <label class="reading-field reading-toc-field">目录
+            <select id="reading-toc" class="text-input reading-select reading-toc" title="跳到任意一章（只切换阅读位置）"></select>
+          </label>
+          <button id="btn-reading-prev" class="btn ghost tiny" type="button" title="上一章（←）">‹ 上一章</button>
+          <button id="btn-reading-next" class="btn ghost tiny" type="button" title="下一章（→）">下一章 ›</button>
+        </div>
+      </header>
+      <div id="reading-note" class="reading-note muted small hidden"></div>
+      <main class="reading-main">
+        <div id="reading-scroll" class="reading-scroll" tabindex="0">
+          <article id="reading-content" class="reading-content"></article>
+          <div id="reading-end" class="reading-end hidden">— 全书完 —</div>
+          <div id="reading-loading" class="reading-loading muted small hidden">正在读取…</div>
+        </div>
+      </main>
+      <footer class="reading-footer">
+        <span class="muted small">只读模式：这里显示磁盘上的正文，不改字、不写盘、不改书目；← / → 翻章，Ctrl+滚轮 / Ctrl+= / Ctrl+- 调字号，按 Esc 或「退出阅读」回到写作页。</span>
+        <span class="spacer"></span>
+        <span id="reading-summary" class="muted small"></span>
+      </footer>
+    </section>
+  </div>
+
+  <!-- 读屏播报区（Phase D / D7）：toast 是「说完就没」的短暂提示，看不见屏幕的人以前完全收不到
+       「已保存 / 读取失败 / 章节太长」这类反馈。role=status + aria-live=polite = 读屏空闲时播报新增的
+       那一条；aria-atomic=false = 只念变化的部分，不把区域里其它还在淡出的 toast 重念一遍。
+       容器必须一直留在渲染树里：display:none / visibility:hidden 的 live region 不会播报。 -->
+  <div id="toast-area" role="status" aria-live="polite" aria-atomic="false"></div>
+
+  <!-- ============ 朗读本章（悬浮小条：只读正文、不改字、不写盘） ============ -->
+  <div id="tts-bar" class="tts-bar hidden" role="region" aria-label="朗读">
+    <div class="tts-top">
+      <button id="btn-tts-play" class="btn primary tiny" type="button" title="播放 / 暂停">▶ 播放</button>
+      <button id="btn-tts-stop" class="btn ghost tiny" type="button" title="停止（停在当前段落，再点播放从这里继续）">■ 停止</button>
+      <button id="btn-tts-prev" class="btn ghost tiny" type="button" title="上一段">‹ 上一段</button>
+      <button id="btn-tts-next" class="btn ghost tiny" type="button" title="下一段">下一段 ›</button>
+      <span class="tts-sep"></span>
+      <label class="tts-field">语速
+        <select id="tts-rate" class="text-input" title="语速越小读得越慢">
+          <option value="0.8">0.8×</option>
+          <option value="1" selected>1.0×</option>
+          <option value="1.25">1.25×</option>
+          <option value="1.5">1.5×</option>
+          <option value="2">2.0×</option>
+        </select>
+      </label>
+      <label class="tts-field">语音
+        <select id="tts-voice" class="text-input"
+                title="系统里的语音（Windows 设置 → 时间和语言 → 语音 可安装更多）"></select>
+      </label>
+      <label class="check-row inline" title="把编辑区选区移到正在读的段落（只改选区，不改文字）">
+        <input id="tts-follow" type="checkbox" /> 跟随高亮
+      </label>
+      <button id="btn-tts-close" class="btn ghost tiny tts-close" type="button" title="收起朗读条（Esc）">×</button>
+    </div>
+    <div class="tts-status" id="tts-status">未开始</div>
+    <div class="tts-preview" id="tts-preview"></div>
+  </div>
+
+  <!-- ============ 查找替换 ============ -->
+  <div id="find-backdrop" class="backdrop hidden">
+    <div class="modal find-modal" role="dialog" aria-modal="true" aria-labelledby="find-title">
+      <h2 class="modal-title" id="find-title">查找替换</h2>
+      <div class="find-row">
+        <input id="find-query" class="text-input" type="text" placeholder="要查找的内容（字面量，不是正则）" />
+        <label class="check-row inline"><input type="checkbox" id="find-case" /> 区分大小写</label>
+      </div>
+      <div class="find-row">
+        <input id="find-replace" class="text-input" type="text" placeholder="替换为（留空 = 删除）" />
+      </div>
+      <div class="find-row">
+        <label class="field inline">
+          <span>范围</span>
+          <select id="find-scope" class="text-input">
+            <option value="current">当前这一章</option>
+            <option value="book">整本书</option>
+          </select>
+        </label>
+        <button id="btn-find-run" class="btn ghost" type="button">查找</button>
+        <button id="btn-find-replace-one" class="btn ghost" type="button" title="只替换光标处的这一处，然后跳到下一处（只用于当前章，不写盘）">替换这一处</button>
+        <button id="btn-find-replace" class="btn primary" type="button">全部替换</button>
+      </div>
+      <!-- 当前章逐处定位（v0.8-11，提案 N11）：只移动光标 / 选区 + 画只读高亮，不改正文 -->
+      <div class="find-row find-nav-row">
+        <span class="find-nav-label">当前章定位</span>
+        <button id="btn-find-prev" class="btn ghost tiny" type="button" title="上一处（Shift+Enter / Shift+F3；到开头会绕到最后一处）">↑ 上一处</button>
+        <button id="btn-find-next" class="btn ghost tiny" type="button" title="下一处（Enter / F3；到末尾会绕到第一处）">↓ 下一处</button>
+        <span class="find-nav-count" id="find-nav-count">—</span>
+        <span class="muted small find-nav-hint">Enter / F3 下一处 · Shift+Enter / Shift+F3 上一处；关掉面板后也能按</span>
+      </div>
+      <!-- 查找书签（v0.8-11b，提案 N11b）：只把查询词与大小写选项存进 config.json，
+           打开这一章自动高亮；不存正文、不写书库 / 书目 / 章节文件 -->
+      <div class="find-bookmarks">
+        <div class="find-bookmarks-head">
+          <span class="find-nav-label">书签</span>
+          <span class="find-bookmarks-count muted small" id="find-bookmarks-count">本机还没有书签</span>
+          <button id="btn-find-bookmark" class="btn ghost tiny" type="button" title="把当前章的查找词与大小写选项存成书签（只写 config.json，不碰正文）">存成书签</button>
+        </div>
+        <div class="find-bookmark-list" id="find-bookmark-list"></div>
+        <p class="muted small find-bookmarks-hint">
+          书签按「书 + 章」记查询词与大小写，存在 <code>config.json</code>：打开这一章会自动高亮，
+          正文改过就按新正文重新扫描定位。<strong>不存正文</strong>，也不写书库 / 书目 / 章节文件。
+        </p>
+      </div>
+      <div class="find-summary muted small" id="find-summary"></div>
+      <div class="find-results" id="find-results"></div>
+      <div class="find-backup hidden" id="find-backup-row">
+        <span id="find-backup-text"></span>
+        <button id="btn-restore-replace" class="btn ghost tiny" type="button" title="把书内最近一次整本替换的原文还原回来">还原到替换前…</button>
+      </div>
+      <p class="muted small">
+        「替换这一处」只改编辑区（未保存、Ctrl+Z 可撤销），只用于当前章；「全部替换」在整本范围内是显式写盘动作，
+        替换前会把原章节备份到书内 <code>_trash\替换备份-时间戳\</code>，替换后也可以在上面「还原到替换前」一键退回。
+        当前章替换只改编辑区，按 Ctrl+S 才写盘。
+      </p>
+      <div class="modal-buttons">
+        <button id="btn-find-close" class="btn ghost" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 校对（只报告，不改动） ============ -->
+  <div id="proofread-backdrop" class="backdrop hidden">
+    <div class="modal proofread-modal" role="dialog" aria-modal="true" aria-labelledby="proofread-title">
+      <h2 class="modal-title" id="proofread-title">校对</h2>
+      <!-- 内容区自己滚、底栏常驻（v1.0 M4）：说明 + 词表 + 范围 + 汇总 + 结果 + 阈值说明都在
+           这一层里滚，弹层本身不滚，关闭按钮永远在底栏原位。 -->
+      <div class="proofread-scroll">
+        <p class="modal-message">
+          只把可疑的地方列出来，<strong>不改正文、不写盘</strong>：半角标点残留、超长段落、
+          同一个双字词在短距离内反复出现、连续标点、多余空行，以及<strong>你自己的校对词表</strong>
+          （错别字 / 禁用词，可选）。点任意一条会跳到正文对应位置，要不要改、怎么改都由你自己决定。
+        </p>
+        <div class="sensitive-wordlist proofread-wordlist">
+          <span id="proofread-wordlist-text" class="muted small">正在读取校对词表…</span>
+          <button id="btn-proofread-pick" class="btn ghost tiny" type="button">选择词表…</button>
+        </div>
+        <div class="proofread-row">
+          <label class="field inline">
+            <span>范围</span>
+            <select id="proofread-scope" class="text-input">
+              <option value="current">当前这一章</option>
+              <option value="book">整本书</option>
+            </select>
+          </label>
+          <button id="btn-proofread-run" class="btn ghost" type="button">开始校对</button>
+          <span id="proofread-busy" class="muted small hidden">正在检查…</span>
+        </div>
+        <div class="proofread-summary" id="proofread-summary">
+          打开面板会自动检查当前章；切成整本后点「开始校对」。
+        </div>
+        <div class="proofread-results" id="proofread-results"></div>
+        <p class="muted small proofread-threshold">
+          当前阈值：超长段落 500 字、重复用词 300 字内出现 3 次、连续标点 3 个及以上
+          （连排的「……」和「——」按一个标点算）。校对词表是可选的：每行一个词，也可以写
+          <code>错词 → 建议</code>（箭头 <code>=&gt;</code> / <code>-&gt;</code> / <code>→</code> 都认），
+          <code>#</code> 开头是注释；只做字面匹配、区分大小写，同一处重叠时只报最长的那个。
+          当前章未保存的内容也参与检查，但不会写盘；整本检查只读磁盘，不改任何 txt 和
+          <code>书目.json</code>。
+        </p>
+      </div>
+      <div class="modal-buttons">
+        <button id="btn-proofread-close" class="btn primary" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 敏感词预检（只报告，不改动；词表归作者管理） ============ -->
+  <div id="sensitive-backdrop" class="backdrop hidden">
+    <div class="modal proofread-modal" role="dialog" aria-modal="true" aria-labelledby="sensitive-title">
+      <h2 class="modal-title" id="sensitive-title">敏感词预检</h2>
+      <!-- 同校对面板：内容区自己滚、底栏常驻（v1.0 M4）。 -->
+      <div class="proofread-scroll">
+        <p class="modal-message">
+          只按<strong>你自己的词表</strong>检查，<strong>应用不内置任何词表</strong>；把命中的位置列出来，
+          <strong>不改正文、不写盘</strong>。要不要改、怎么改都由你自己决定。
+        </p>
+        <div class="sensitive-wordlist">
+          <span id="sensitive-wordlist-text" class="muted small">正在读取词表…</span>
+          <button id="btn-sensitive-pick" class="btn ghost tiny" type="button">选择词表…</button>
+        </div>
+        <div class="proofread-row">
+          <label class="field inline">
+            <span>范围</span>
+            <select id="sensitive-scope" class="text-input">
+              <option value="current">当前这一章</option>
+              <option value="book">整本书</option>
+            </select>
+          </label>
+          <button id="btn-sensitive-run" class="btn ghost" type="button">开始预检</button>
+          <span id="sensitive-busy" class="muted small hidden">正在检查…</span>
+        </div>
+        <div class="proofread-summary" id="sensitive-summary"></div>
+        <div class="proofread-results" id="sensitive-results"></div>
+        <p class="muted small proofread-threshold">
+          词表每行一个词，空行忽略、重复的词只算一次；只做字面匹配（<strong>区分大小写</strong>），
+          同一处有多个词重叠时只报最长的那个。当前章未保存的内容也参与检查，但不会写盘；
+          整本检查只读磁盘，不改任何 txt 和 <code>书目.json</code>。
+        </p>
+      </div>
+      <div class="modal-buttons">
+        <button id="btn-sensitive-close" class="btn primary" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 导出范围 ============ -->
+  <div id="export-backdrop" class="backdrop hidden">
+    <div class="modal export-modal" role="dialog" aria-modal="true" aria-labelledby="export-title">
+      <h2 class="modal-title" id="export-title">导出 TXT</h2>
+      <div class="export-scroll">
+        <p class="modal-message" id="export-message">
+          选择导出范围。格式和以前一样（标题行 + 空行 + 正文，UTF-8 带 BOM，CRLF）；当前章没保存的内容也会一起导出，但不会写盘。
+        </p>
+        <div class="export-scopes">
+          <label class="export-scope-row">
+            <input type="radio" name="export-scope" value="all" checked />
+            <span>全书 <span class="muted small" id="export-all-count"></span></span>
+          </label>
+          <label class="export-scope-row" id="export-volume-row">
+            <input type="radio" name="export-scope" value="volume" />
+            <span>按卷导出</span>
+            <select id="export-volume" class="text-input"></select>
+          </label>
+          <label class="export-scope-row">
+            <input type="radio" name="export-scope" value="range" />
+            <span>第</span>
+            <input id="export-from" class="text-input export-range-input" type="number" min="1" inputmode="numeric" />
+            <span>章 到 第</span>
+            <input id="export-to" class="text-input export-range-input" type="number" min="1" inputmode="numeric" />
+            <span>章</span>
+          </label>
+        </div>
+        <div class="export-summary" id="export-summary"></div>
+        <div class="export-conversion-note muted small" id="export-conversion-note"></div>
+        <p class="muted small">
+          按卷 / 按章只导出选中的章节，章号仍按全书连续编号（导出的文件里不会重新从第 1 章开始）。保存对话框里的文件名默认带范围，可以自己改。TXT / EPUB / DOCX 都支持按卷 / 按范围导出。
+        </p>
+      </div>
+      <div class="modal-buttons">
+        <button id="btn-export-cancel" class="btn ghost" type="button">取消</button>
+        <button id="btn-export-confirm" class="btn primary" type="button">导出…</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 跳章（Ctrl+G） ============ -->
+  <div id="jump-backdrop" class="backdrop hidden">
+    <div class="modal jump-modal" role="dialog" aria-modal="true" aria-labelledby="jump-title">
+      <h2 class="modal-title" id="jump-title">跳到哪一章</h2>
+      <p class="modal-message">
+        输入章号（如 12、第12章）或章名的一部分，回车跳到那一章。跳章只切换当前章节，不改正文；有未保存内容时会照常先问你。
+      </p>
+      <input id="jump-input" class="modal-input" type="text" autocomplete="off" placeholder="章号，或章名关键词" />
+      <div class="jump-summary" id="jump-summary"></div>
+      <div class="jump-results" id="jump-results"></div>
+      <div class="modal-buttons">
+        <button id="btn-jump-cancel" class="btn ghost" type="button">取消</button>
+        <button id="btn-jump-confirm" class="btn primary" type="button" disabled>跳转</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 同步冲突副本提示 ============ -->
+  <div id="conflict-backdrop" class="backdrop hidden">
+    <div class="modal conflict-modal" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
+      <h2 class="modal-title" id="conflict-title">检测到同步冲突副本</h2>
+      <div class="conflict-scroll">
+        <p class="modal-message">
+          这本书的文件夹里有同步盘（OneDrive / 坚果云等）生成的冲突副本。写作器<strong>不会自动合并</strong>，也不会改动或删除这些文件。
+          请点「打开书文件夹」，对比后把要保留的内容合并回原章节，再把多余的副本移走。
+        </p>
+        <div class="conflict-book" id="conflict-book"></div>
+        <div class="conflict-summary" id="conflict-summary"></div>
+        <div class="conflict-files" id="conflict-files"></div>
+      </div>
+      <div class="modal-buttons">
+        <button id="btn-conflict-open-folder" class="btn ghost" type="button">打开书文件夹</button>
+        <button id="btn-conflict-close" class="btn primary" type="button">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 书籍信息（作者 / 简介 / 分组 / 标签，v0.8-3） ============ -->
+  <div id="bookinfo-backdrop" class="backdrop hidden">
+    <div class="modal bookinfo-modal" role="dialog" aria-modal="true" aria-labelledby="bookinfo-title">
+      <h2 class="modal-title" id="bookinfo-title">书籍信息</h2>
+      <p class="modal-message">
+        作者 / 简介 / 分组 / 标签只写进这本书的 <code>书目.json</code>（可选字段、纯文本）：不会改书文件夹名，也不会动任何章节 txt。旧书没有这些字段照常打开。
+      </p>
+      <div class="bookinfo-book" id="bookinfo-book"></div>
+      <div class="bookinfo-scroll">
+        <label class="field">
+          <span>作者</span>
+          <input id="bookinfo-author" class="modal-input" type="text" maxlength="80" autocomplete="off" placeholder="可留空" />
+        </label>
+        <label class="field">
+          <span>分组</span>
+          <input id="bookinfo-group" class="modal-input" type="text" maxlength="40" autocomplete="off" list="bookinfo-group-list" placeholder="如：玄幻 / 短篇 / 待改（可留空）" />
+          <datalist id="bookinfo-group-list"></datalist>
+        </label>
+        <label class="field">
+          <span>标签</span>
+          <input id="bookinfo-tags" class="modal-input" type="text" maxlength="240" autocomplete="off" placeholder="逗号分隔，最多 10 个，如：爽文，升级流" />
+        </label>
+        <label class="field">
+          <span>简介</span>
+          <textarea id="bookinfo-brief" class="modal-input bookinfo-brief" rows="4" maxlength="1000" placeholder="一句话简介 / 备忘（可留空；换行会保留）"></textarea>
+        </label>
+      </div>
+      <div class="bookinfo-error" id="bookinfo-error"></div>
+      <div class="modal-buttons">
+        <button id="btn-bookinfo-cancel" class="btn ghost" type="button">取消</button>
+        <button id="btn-bookinfo-save" class="btn primary" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 本书历史（_trash 备份） ============ -->
+  <div id="history-backdrop" class="backdrop hidden">
+    <div class="modal history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+      <h2 class="modal-title" id="history-title">本书历史</h2>
+      <p class="modal-message">
+        这里统一列出书内 <code>_trash</code> 里的备份：整本替换、整本整理、还原前备份、删除的章节，以及书文件夹里的上一版书目。
+        所有操作都只读取备份；还原前会先把书里<strong>现在的内容</strong>再备份一份到 <code>_trash\还原前备份-时间戳\</code>，不会静默覆盖。
+      </p>
+      <!-- 列表 + 预览（2026-11-04 拍板 #13）：外面这层 .history-main 只做布局容器 ——
+           宽窗（≥980）左右分栏（列表 58% / 预览 40%），窄窗回落原来的上下布局；
+           DOM 顺序仍是「列表在前、预览在后」，折叠 / 焦点 / Esc 行为一条没变。 -->
+      <div class="history-main">
+        <div class="history-scroll">
+          <div class="history-toolbar">
+            <span id="history-summary" class="muted small"></span>
+            <button id="btn-history-refresh" class="btn ghost tiny" type="button" title="重新扫描 _trash（只读）">刷新</button>
+          </div>
+          <div id="history-list" class="history-list"></div>
+        </div>
+        <!-- 预览格在滚动区外（v1.0 M4）：列表再长，点「预览」也是立刻看到内容，
+             不会像以前那样把预览块排到列表末尾、要再滚一屏才看得见。 -->
+        <div id="history-preview" class="history-preview hidden">
+          <div class="history-preview-head">
+            <span id="history-preview-title"></span>
+            <button id="btn-history-preview-close" class="btn ghost tiny" type="button">收起预览</button>
+          </div>
+          <pre id="history-preview-text" class="history-preview-text"></pre>
+        </div>
+      </div>
+      <div class="modal-buttons">
+        <button id="btn-history-open-folder" class="btn ghost" type="button">打开书文件夹</button>
+        <button id="btn-history-close" class="btn primary" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 灵感箱：记一条碎片 ============ -->
+  <div id="fragment-backdrop" class="backdrop hidden">
+    <div class="modal fragment-modal" role="dialog" aria-modal="true" aria-labelledby="fragment-title">
+      <h2 class="modal-title" id="fragment-title">记一条碎片</h2>
+      <p class="modal-message">
+        灵感先记下来，不用新建一章。内容会原样存成书架根目录 <code>_碎片</code> 文件夹里的一个普通 txt
+        （文件名按当天日期编号，不会覆盖以前的碎片）；资源管理器里直接能看到，也能用记事本打开。
+      </p>
+      <textarea id="fragment-text" class="fragment-text" rows="8" spellcheck="false"
+                placeholder="随手写一句、一段对白、一个场景…（Ctrl+Enter 保存）"></textarea>
+      <div class="fragment-meta">
+        <span id="fragment-counter" class="muted small">0 字</span>
+        <span id="fragment-save-state" class="muted small"></span>
+      </div>
+      <div class="modal-buttons">
+        <button id="btn-fragment-cancel" class="btn ghost" type="button">取消</button>
+        <button id="btn-fragment-save" class="btn primary" type="button">保存碎片</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 灵感箱：插入碎片 ============ -->
+  <div id="fragments-backdrop" class="backdrop hidden">
+    <div class="modal insert-fragment-modal" role="dialog" aria-modal="true" aria-labelledby="fragments-title">
+      <h2 class="modal-title" id="fragments-title">插入碎片</h2>
+      <p class="modal-message">
+        选一条碎片插到光标处：只改编辑区（仍是未保存，Ctrl+S 才写盘），<strong>不会删除原碎片文件</strong>。
+        想先记一条新的，回书架点「＋ 碎片」。
+      </p>
+      <div class="fragment-toolbar">
+        <span id="fragments-summary" class="muted small"></span>
+        <button id="btn-fragments-refresh" class="btn ghost tiny" type="button" title="重新读取 _碎片 文件夹（只读）">刷新</button>
+      </div>
+      <div class="fragment-main">
+        <div id="fragments-list" class="fragment-list"></div>
+        <div class="fragment-preview-wrap">
+          <div id="fragment-preview-name" class="fragment-preview-name muted small">选一条碎片看内容</div>
+          <pre id="fragment-preview" class="fragment-preview"></pre>
+        </div>
+      </div>
+      <div id="fragment-hint" class="fragment-hint muted small">
+        碎片会插在打开面板前光标 / 选区的位置；如果当时选中了一段文字，会用碎片替换选中的部分。
+      </div>
+      <div class="modal-buttons">
+        <button id="btn-fragments-close" class="btn ghost" type="button">关闭</button>
+        <button id="btn-fragment-insert" class="btn primary" type="button" disabled>插入到光标处</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 剪贴板（P0）：单列表视图——每条复制记录两个动作：插正文 / 新建章节 ============ -->
+  <div id="capture-backdrop" class="backdrop hidden">
+    <div class="modal capture-modal" role="dialog" aria-modal="true" aria-labelledby="capture-title">
+      <h2 class="modal-title" id="capture-title">剪贴板</h2>
+      <!-- 列表视图（契约 v1）：复制记录整条展示，右侧「正文」插到当前章光标处、「章节」新建一章。
+           面板只在主进程内存里记队列，不落盘、关闭应用即清空。 -->
+      <div id="capture-queue-view" class="capture-queue">
+        <p class="modal-message" id="capture-queue-summary"></p>
+        <!-- b11（捕获目标位置）：默认全书末尾；「当前章之后」卷跟随当前章（有卷时按现有规则插到该卷末尾） -->
+        <label class="field inline">
+          <span>插入位置</span>
+          <select id="capture-position" class="text-input">
+            <option value="end">全书末尾（默认）</option>
+            <option value="after-current">当前章之后</option>
+          </select>
+          <span class="muted small">同一卷时插到该卷末尾（与「新建章节」同一规则）</span>
+        </label>
+        <div id="capture-queue-list" class="capture-record-list" role="list"></div>
+        <p id="capture-queue-empty" class="muted small capture-queue-empty"></p>
+        <div class="modal-buttons">
+          <!-- b9（捕获超限 >10 万字）：只做跳转（关面板 → 回书架 → 打开导入对话框），不自动写任何文件 -->
+          <button id="btn-capture-import" class="btn ghost hidden" type="button" title="关掉面板、回书架，用「导入小说」把长文按标题或段落拆章">去导入小说…</button>
+          <button id="btn-capture-queue-clear" class="btn ghost" type="button" title="清空本次运行的捕获队列（只清内存，不删任何章节）">清空队列</button>
+          <button id="btn-capture-queue-cancel" class="btn ghost" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 通用模态 ============ -->
+  <div id="modal-backdrop" class="backdrop hidden">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-scroll">
+        <h2 id="modal-title" class="modal-title"></h2>
+        <p id="modal-message" class="modal-message"></p>
+        <input id="modal-input" class="modal-input hidden" type="text" />
+      </div>
+      <div id="modal-buttons" class="modal-buttons"></div>
+    </div>
+  </div>
+
+  <!-- ============ 排版：整理本章 ============ -->
+  <div id="format-backdrop" class="backdrop hidden">
+    <div class="modal format-modal" role="dialog" aria-modal="true" aria-labelledby="format-title">
+      <h2 class="modal-title" id="format-title">智能排版 · 仅当前章</h2>
+      <div class="format-scroll">
+        <p class="modal-message">
+          只处理当前这一章，不改章名、不碰别的章。结果先放进编辑区，仍是「未保存」：Ctrl+S 才写盘，Ctrl+Z 或「排版 → 撤销上次整理」可退回。
+        </p>
+        <div class="format-rules">
+          <label class="field inline">
+            <span>段首缩进</span>
+            <select id="fmt-indent" class="text-input">
+              <option value="2">缩进 2 字符（全角空格）</option>
+              <option value="0">缩进 0 字符（去掉原有缩进）</option>
+              <option value="none">不处理缩进</option>
+            </select>
+          </label>
+          <label class="field inline">
+            <span>段落之间</span>
+            <select id="fmt-blank" class="text-input">
+              <option value="keep">保持原样</option>
+              <option value="single">空一行</option>
+              <option value="singleIndent">空一行（含缩进）</option>
+              <option value="none">不空行（紧凑）</option>
+            </select>
+          </label>
+          <label class="check-row"><input type="checkbox" id="fmt-trailing" /> 删除每行行尾空白</label>
+          <label class="check-row"><input type="checkbox" id="fmt-punct" /> 中文旁边的半角标点转全角（，。；：！？）</label>
+          <div class="check-row-pair">
+            <label class="check-row" title="只在中文语境里转；英文撇号、英文引语不动"><input type="checkbox" id="fmt-quotes" /> 直引号转弯引号（"…" → “…”）</label>
+            <label class="check-row" title="连续三个以上英文句点转成中文省略号；数字、网址里的点不动"><input type="checkbox" id="fmt-ellipsis" /> 省略号（... → ……）</label>
+          </div>
+          <label class="check-row"><input type="checkbox" id="fmt-cjkspace" /> 删除中文之间的多余空格（可能影响语感，默认不勾）</label>
+        </div>
+        <div class="format-summary" id="fmt-summary"></div>
+        <pre class="format-preview" id="fmt-preview"></pre>
+        <p class="muted small">预览只显示整理后的开头，实际套用会处理整章。引号和省略号两项默认关闭，由你自己勾。</p>
+      </div>
+      <div class="modal-buttons">
+        <button id="btn-format-reset" class="btn ghost" type="button" title="恢复默认规则">默认规则</button>
+        <button id="btn-format-cancel" class="btn ghost" type="button">取消</button>
+        <button id="btn-format-apply" class="btn primary" type="button">套用到本章</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 设置 ============ -->
+  <div id="settings-backdrop" class="backdrop hidden">
+    <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h2 class="modal-title" id="settings-title">设置</h2>
+      <button id="btn-settings-close" class="modal-close" type="button" title="关闭设置（Esc）" aria-label="关闭设置">×</button>
+      <p class="settings-scope-hint muted small" id="settings-scope-hint"></p>
+      <div class="settings-scroll">
+      <label class="field settings-row" id="settings-root-field">
+        <span>书架目录</span>
+        <div class="field-row">
+          <input id="settings-root" class="text-input" type="text" readonly
+            title="书架目录只能通过右侧「选择…」在系统对话框里指定（保存时主进程只认刚选中的那个目录）" />
+          <button id="btn-pick-folder" class="btn ghost" type="button">选择…</button>
+        </div>
+      </label>
+      <div class="field-group">字体</div>
+      <label class="field settings-row">
+        <span>正文字体</span>
+        <select id="settings-font" class="text-input">
+          <option value="serif">宋体 / 衬线</option>
+          <option value="sans">黑体 / 无衬线</option>
+          <option value="kai">楷体</option>
+          <option value="custom">自定义字体文件…</option>
+        </select>
+      </label>
+      <label class="field settings-row">
+        <span>自定义字体</span>
+        <div class="field-row">
+          <input id="settings-font-name" class="text-input" type="text" readonly placeholder="未选择，使用上面的内置字体" />
+          <button id="btn-pick-font" class="btn ghost" type="button">选择…</button>
+          <button id="btn-reset-font" class="btn ghost" type="button" title="恢复宋体并忘掉自定义字体">恢复默认</button>
+        </div>
+        <span class="muted small">.ttf / .otf，只读取不复制</span>
+      </label>
+      <label class="field settings-row">
+        <span>字号</span>
+        <select id="settings-size" class="text-input">
+          <option value="16">16</option>
+          <option value="18">18</option>
+          <option value="20">20</option>
+          <option value="22">22</option>
+          <option value="24">24</option>
+        </select>
+      </label>
+      <div class="field-group">排版</div>
+      <label class="field settings-row">
+        <span>行间距</span>
+        <select id="settings-line-height" class="text-input">
+          <option value="1.6">1.6 · 紧凑</option>
+          <option value="1.8">1.8</option>
+          <option value="1.95">1.95 · 标准</option>
+          <option value="2.2">2.2</option>
+          <option value="2.4">2.4 · 宽松</option>
+        </select>
+      </label>
+      <label class="field settings-row">
+        <span>字间距</span>
+        <select id="settings-letter-spacing" class="text-input">
+          <option value="0">0 · 默认</option>
+          <option value="0.02">0.02 · 略松</option>
+          <option value="0.05">0.05 · 中</option>
+          <option value="0.08">0.08 · 宽</option>
+        </select>
+      </label>
+      <label class="field settings-row">
+        <span>左右边距</span>
+        <select id="settings-padding-x" class="text-input">
+          <option value="16">16 px · 很窄</option>
+          <option value="24">24 px</option>
+          <option value="40">40 px</option>
+          <option value="56">56 px · 标准</option>
+          <option value="80">80 px</option>
+          <option value="120">120 px · 很宽</option>
+        </select>
+      </label>
+      <label class="field settings-row">
+        <span>正文宽度</span>
+        <select id="settings-page-width" class="text-input">
+          <option value="0">通栏 · 跟随窗口</option>
+          <option value="1000">1000 px</option>
+          <option value="900">900 px</option>
+          <option value="800">800 px</option>
+          <option value="720">720 px</option>
+        </select>
+      </label>
+      <div class="field-group">背景</div>
+      <label class="field settings-row">
+        <span>背景主题</span>
+        <select id="settings-paper" class="text-input">
+          <option value="paper">原纸白</option>
+          <option value="cream">米黄 · 护眼</option>
+          <option value="green">豆绿 · 护眼</option>
+          <option value="night">夜间 · 深色</option>
+          <option value="kraft">牛皮纸 · 纹理</option>
+          <option value="grid">网格纸 · 纹理</option>
+        </select>
+      </label>
+      <div class="field-group">当前段落高亮</div>
+      <div class="field" id="settings-caret-field">
+        <label class="check-row">
+          <input id="settings-caret-paragraph" type="checkbox" />
+          <span>开启当前段落高亮（光标所在段淡色底 + 左侧细线；默认关。按书设置时只影响这本书，没单独设置过的书用全局默认）</span>
+        </label>
+        <div class="caret-color-row settings-caret-colors" id="settings-caret-colors">
+          <span class="caret-color-label">高亮颜色</span>
+          <div class="caret-swatches">
+            <button type="button" class="caret-swatch caret-swatch-theme" data-settings-caret-color="" title="跟随背景主题（默认）" aria-label="跟随背景主题"></button>
+            <button type="button" class="caret-swatch" data-settings-caret-color="#c8873c" title="琥珀（暖色，接近默认木质色调）" aria-label="琥珀"></button>
+            <button type="button" class="caret-swatch" data-settings-caret-color="#3f7fbf" title="湖蓝（冷色，夜间也清楚）" aria-label="湖蓝"></button>
+            <button type="button" class="caret-swatch" data-settings-caret-color="#4f8a5b" title="豆绿（护眼绿）" aria-label="豆绿"></button>
+            <button type="button" class="caret-swatch" data-settings-caret-color="#b45f6d" title="胭脂（偏红）" aria-label="胭脂"></button>
+            <button type="button" class="caret-swatch" data-settings-caret-color="#7a63b0" title="藤紫（低饱和紫）" aria-label="藤紫"></button>
+            <button type="button" class="caret-swatch" data-settings-caret-color="#7d8794" title="石墨（中性灰，最不抢眼）" aria-label="石墨"></button>
+          </div>
+          <input id="settings-caret-color" class="caret-color-input" type="color" value="#c8873c" title="取色器：自定义高亮颜色" aria-label="自定义高亮颜色" />
+        </div>
+        <div id="settings-caret-hint" class="muted small"></div>
+      </div>
+      <div class="field-group" id="settings-stats-group">写作统计</div>
+      <label class="field settings-row" id="settings-daily-goal-field">
+        <span>每日写作目标</span>
+        <div class="field-row">
+          <input id="settings-daily-goal" class="text-input" type="number" min="0" max="1000000" step="100" value="0" />
+          <span id="settings-goal-state" class="muted small"></span>
+        </div>
+        <span class="muted small">0 = 不设目标；只统计按下保存时写下的字数，不包含还没保存的内容</span>
+      </label>
+      <div class="field" id="settings-duration-field">
+        <label class="check-row">
+          <input id="settings-write-duration" type="checkbox" />
+          <span>记录写作时长（默认关）：只在写作页手动点「写作计时」时累计秒数，<strong>只记时长、不记内容</strong>，存在 <code>stats.json</code>，不写书库</span>
+        </label>
+        <div id="settings-duration-summary" class="muted small"></div>
+      </div>
+      <!-- b8（剪贴板联动）：后台监听剪贴板 + 轻提示。默认关；只驻内存、不落盘、不写日志、不做历史。 -->
+      <div class="field" id="settings-clipboard-field">
+        <label class="check-row">
+          <input id="settings-clipboard-watch" type="checkbox" />
+          <span>后台监听剪贴板（默认关）：打开后每次复制在<strong>本次运行内各记一条</strong>，可逐条捕获、各自成章；<strong>点提示才打开捕获面板</strong>。只驻内存、<strong>不保存正文到磁盘、不写日志</strong>，关闭应用即清空</span>
+        </label>
+      </div>
+      <div class="field" id="settings-stats-chart-field">
+        <span>近 30 天（含今天，最右一根是今天）</span>
+        <div id="settings-stats-summary" class="muted small"></div>
+        <div id="settings-stats-chart" class="stats-chart"></div>
+      </div>
+      <div class="field" id="settings-calendar-field">
+        <span>码字日历（周一开头；只统计按保存时写下的字数）</span>
+        <div class="calendar-head">
+          <button id="calendar-prev" class="btn ghost tiny" type="button" title="上一个月" aria-label="上一个月">‹</button>
+          <span id="calendar-label" class="calendar-label"></span>
+          <button id="calendar-next" class="btn ghost tiny" type="button" title="下一个月" aria-label="下一个月">›</button>
+          <button id="calendar-today" class="btn ghost tiny" type="button" title="回到本月">本月</button>
+          <span id="calendar-streak" class="calendar-streak"></span>
+        </div>
+        <div id="calendar-weekdays" class="calendar-weekdays"></div>
+        <div id="calendar-grid" class="calendar-grid"></div>
+        <div id="calendar-summary" class="muted small"></div>
+        <div class="calendar-legend muted small">
+          颜色越深写得越多；<span class="cal-legend-dot"></span> = 当天达到每日目标；灰色斜线 = 还没到的日期
+        </div>
+      </div>
+      <p class="muted small" id="settings-stats-hint">
+        统计只存在应用配置目录的 <code>stats.json</code>，不写进书库、不改章节 txt；只统计保存动作带来的新增字数，
+        删字不会倒扣当天进度。旧配置没有目标字段时按「不设目标」处理。码字日历 / 连续天数都从这份统计现算，不另存文件。
+        写作时长默认关；开启后只记秒数（不记内容），和字数存在同一份 <code>stats.json</code>。
+      </p>
+      <div class="field-group" id="settings-template-group">新建章节</div>
+      <div class="field" id="settings-template-field">
+        <span>章节模板（新建 / 插入章节时自动填进空章；只改编辑区，<strong>不会自动保存</strong>，Ctrl+S 才写盘，可 Ctrl+Z 撤销）</span>
+        <textarea id="settings-chapter-template" class="text-input template-input" rows="3" maxlength="2000"
+                  placeholder="留空 = 不套用模板。例如：第{n}章：{title}"></textarea>
+        <div class="muted small template-help">
+          可用占位符：<code>{n}</code> 章号 · <code>{title}</code> 章名 · <code>{date}</code> 今天（YYYY-MM-DD）；
+          其他花括号原样保留。导出 TXT / EPUB 本来就会加章节标题，模板里再写一遍会重复。
+        </div>
+        <div id="settings-template-preview" class="muted small template-preview"></div>
+      </div>
+      <div class="field-group">数据安全</div>
+      <div class="field" id="settings-snapshot-field">
+        <label class="check-row">
+          <input id="settings-snapshot-enabled" type="checkbox" />
+          <span>可选每日快照（默认关）：开启后每次保存时，当天第一次把这一章的<strong>上一版</strong>复制到书内 <code>_trash\快照-YYYYMMDD\</code></span>
+        </label>
+      </div>
+      <label class="field settings-row" id="settings-snapshot-days-field">
+        <span>快照保留天数</span>
+        <select id="settings-snapshot-days" class="text-input">
+          <option value="1">1 天 · 只留今天</option>
+          <option value="3">3 天</option>
+          <option value="7">7 天 · 默认</option>
+          <option value="14">14 天</option>
+          <option value="30">30 天</option>
+          <option value="90">90 天</option>
+        </select>
+        <span class="muted small">只清理应用生成的「快照-YYYYMMDD」目录，不动其他备份</span>
+      </label>
+      <p class="muted small">
+        本应用只在你点「保存」时写正文：没有自动保存。每日快照默认关闭；开启后每次保存成功时，
+        当天第一次保存会把这一章的上一版复制到书内 <code>_trash\快照-YYYYMMDD\</code>，并按上面的天数清理旧快照
+        （只清理应用自己生成的快照目录，不动其他备份）。切章、关窗、导出时会提醒你保存，
+        也请自己定期把书库复制到网盘或移动硬盘。
+      </p>
+      <div class="field-group" id="settings-sensitive-group">敏感词预检</div>
+      <label class="field settings-row" id="settings-sensitive-field">
+        <span>敏感词表</span>
+        <div class="field-row">
+          <input id="settings-sensitive-path" class="text-input" type="text" readonly
+                 placeholder="未选择（预检前需要先选一个自己的词表 txt）" />
+          <button id="btn-pick-sensitive" class="btn ghost" type="button">选择…</button>
+          <button id="btn-clear-sensitive" class="btn ghost" type="button">清除</button>
+        </div>
+        <span id="settings-sensitive-status" class="muted small"></span>
+        <span class="muted small">每行一个词；应用不内置任何词表，只按你的词表报告，不改正文</span>
+      </label>
+      <div class="field-group" id="settings-proofread-group">校对词表</div>
+      <label class="field settings-row" id="settings-proofread-field">
+        <span>自定义错别字 / 禁用词</span>
+        <div class="field-row">
+          <input id="settings-proofread-path" class="text-input" type="text" readonly
+                 placeholder="未选择（校对时只跑内置的五条规则）" />
+          <button id="btn-pick-proofread" class="btn ghost" type="button">选择…</button>
+          <button id="btn-clear-proofread" class="btn ghost" type="button">清除</button>
+        </div>
+        <span id="settings-proofread-status" class="muted small"></span>
+        <span class="muted small">可选；每行一个词，可写「错词 → 建议」。应用不内置任何词表，只报告、不改正文</span>
+      </label>
+      <div class="field-group" id="settings-export-group">导出</div>
+      <label class="field settings-row" id="settings-export-field">
+        <span>导出简繁转换</span>
+        <select id="settings-export-conversion" class="text-input">
+          <option value="">不转换（原样导出）</option>
+          <option value="s2t">简体 → 繁体</option>
+          <option value="t2s">繁体 → 简体</option>
+        </select>
+        <span class="muted small">
+          导出 TXT / EPUB 时把副本转成简体或繁体：<strong>只改导出的文件</strong>，书库里的章节 txt 和
+          <code>书目.json</code> 一个字节都不动。内置常用字表 + 常见歧义词（发 / 髮、干 / 乾 / 幹、后 / 後 …）；
+          一简对多繁只取常用写法，导出后请通读校对。找不到的字原样保留，不会猜着换。
+        </span>
+      </label>
+      <div class="field-group" id="settings-logs-group">诊断日志</div>
+      <div class="field" id="settings-logs-field">
+        <span>
+          应用遇到错误（保存失败 / 内部异常 / IPC 出错）时，会把<strong>时间、错误类型、错误码、路径和调用栈</strong>
+          写进日志，方便排查问题；<strong>日志不含任何正文内容</strong>。按天 + 按大小滚动，
+          只保留最近 12 份（每份约 256KB），位置在 <code>%APPDATA%\chapter-writer\logs\</code>，
+          不写书库、不改 <code>书目.json</code> / 章节 txt。
+        </span>
+        <div class="field-row">
+          <button id="btn-open-logs" class="btn ghost" type="button">打开日志文件夹</button>
+          <span id="settings-logs-status" class="muted small"></span>
+        </div>
+      </div>
+      <div class="field-group" id="settings-update-group">检查更新</div>
+      <div class="field" id="settings-update-field">
+        <span>
+          当前版本 <strong id="settings-update-version">v1.0.0</strong>。
+          只在点「检查更新」时访问 GitHub 查一下最新版本（<strong>不会自动联网、不会下载、不会安装</strong>）；
+          发现新版本会给出一个 GitHub Release 下载页，升级仍由你自己下载安装包完成。
+          网络失败 / 超时只显示一句提示，不影响写作。
+        </span>
+        <div class="field-row">
+          <button id="btn-check-update" class="btn ghost" type="button">检查更新</button>
+          <button id="btn-open-update" class="btn ghost hidden" type="button">打开下载页</button>
+          <span id="settings-update-status" class="muted small"></span>
+        </div>
+      </div>
+      </div>
+      <div class="modal-buttons">
+        <button id="btn-reset-book-display" class="btn ghost hidden" type="button" title="忘掉这本书的单独显示设置，恢复用全局默认">恢复本书默认</button>
+        <button id="btn-settings-cancel" class="btn ghost" type="button">取消</button>
+        <button id="btn-settings-save" class="btn primary" type="button">保存设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 章节右键菜单 ============ -->
+  <div id="context-menu" class="context-menu hidden">
+    <button type="button" data-action="status-done">标记为完稿</button>
+    <button type="button" data-action="status-revising">标记为待修</button>
+    <button type="button" data-action="status-draft">标记为草稿</button>
+    <button type="button" data-action="edit-note">编辑备注…</button>
+    <div class="context-menu-sep"></div>
+    <button type="button" data-action="copy-platform" title="只复制正文：段首缩进两格、段间空一行（空行里也带缩进）；不含章名，不写盘">复制本章（平台格式）</button>
+    <div class="context-menu-sep"></div>
+    <button type="button" data-action="rename" title="重命名本章（F2）">重命名<span class="kbd">F2</span></button>
+    <button type="button" data-action="move-volume">移到卷…</button>
+    <button type="button" data-action="insert-before">在此章之前插入</button>
+    <button type="button" data-action="insert-after">在此章之后插入</button>
+    <button type="button" data-action="delete" class="danger-text">删除（移到 _trash）</button>
+  </div>
+
+  <!-- ============ 卷右键菜单 ============ -->
+  <div id="volume-menu" class="context-menu hidden">
+    <button type="button" data-action="new-chapter">在此卷末尾新建章节</button>
+    <button type="button" data-action="move-up">上移卷</button>
+    <button type="button" data-action="move-down">下移卷</button>
+    <button type="button" data-action="rename">重命名卷…</button>
+    <button type="button" data-action="delete" class="danger-text">删除卷（章节回「未分卷」）</button>
+  </div>
+
+  <!-- ============ 书卡右键菜单 ============ -->
+  <div id="book-menu" class="context-menu hidden">
+    <button type="button" data-action="open">打开这本书</button>
+    <button type="button" data-action="open-new-window" title="在另一个窗口打开这本书；同一本书不会开两个窗口">在新窗口打开</button>
+    <button type="button" data-action="info">书籍信息…</button>
+    <button type="button" data-action="folder">打开所在文件夹</button>
+    <button type="button" data-action="history">本书历史…</button>
+    <button type="button" data-action="delete" class="danger-text">删除这本书…</button>
+  </div>
+
+  <script src="../core/common.js"></script>
+  <script src="../core/chapters.js"></script>
+  <script src="../core/bookinfo.js"></script>
+  <script src="../core/template.js"></script>
+  <script src="../core/s2t.js"></script>
+  <script src="../core/caret-color.js"></script>
+  <script src="../core/bookmarks.js"></script>
+  <script src="../core/paragraphs.js"></script>
+  <script src="../core/capture.js"></script>
+  <script src="editor-logic.js"></script>
+<script src="format-ui.js"></script>
+  <script src="find-logic.js"></script>
+  <script src="focus-logic.js"></script>
+  <script src="reading-logic.js"></script>
+  <script src="save-logic.js"></script>
+  <script src="font-logic.js"></script>
+  <script src="stats-logic.js"></script>
+  <script src="list-keyboard.js"></script>
+  <script src="dialog-focus.js"></script>
+  <script src="menu-keyboard.js"></script>
+  <script src="tts-ui.js"></script>
+  <script src="esc-registry.js"></script>
+  <script src="export-ui.js"></script>
+  <script src="jump-ui.js"></script>
+  <script src="stats-ui.js"></script>
+  <script src="import-ui.js"></script>
+  <script src="drag-sort-ui.js"></script>
+  <script src="shelf-ui.js"></script>
+  <script src="statusbar-ui.js"></script>
+<script src="shelf-filter-ui.js"></script>
+<script src="shelf-search-ui.js"></script>
+<script src="shelf-nav-ui.js"></script>
+<script src="focus-mode-ui.js"></script>
+<script src="write-timer-ui.js"></script>
+<script src="fragments-ui.js"></script>
+<script src="find-bookmark-ui.js"></script>
+<script src="find-ui.js"></script>
+<script src="tidy-card-ui.js"></script>
+<script src="settings-ui.js"></script>
+<script src="bookinfo-ui.js"></script>
+<script src="sensitive-ui.js"></script>
+<script src="proofread-ui.js"></script>
+<script src="editor-marks-ui.js"></script>
+<script src="reading-ui.js"></script>
+<script src="history-ui.js"></script>
+<script src="capture-ui.js"></script>
+<script src="renderer.js"></script>
+</body>
+</html>

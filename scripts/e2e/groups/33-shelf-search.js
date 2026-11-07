@@ -1,0 +1,132 @@
+// E2E 第 33 组：从 scripts/e2e-scenario.js 原样搬出来（第 0–51 组拆组，断言一条都没改），
+// 由 scripts/e2e/groups/index.js 按顺序执行；t = 场景上下文 + scripts/e2e/harness.js 的公共工具。
+// 会话状态：回书架（「拖拽排序书」在架上），书架搜索
+// 组内局部变量不进别的文件；要交给后面组的值由场景的 state 袋子传递（见 e2e-scenario.js 文件头）。
+
+module.exports = async function group33ShelfSearch(t) {
+  const { exec, check, waitFor, sleep, win, setWindowSize } = t;
+
+  // 33. 书架搜索：书名 + 章节名（不读正文）
+  await exec('window.__cwTest.save()');
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  const allShelfTitles = await exec('window.__cwTest.shelfTitles()');
+
+  await exec("window.__cwTest.setShelfQuery('拖拽排序书')");
+  await sleep(120);
+  const titleFiltered = await exec('window.__cwTest.shelfFilteredTitles()');
+  check('书架搜索：按书名过滤', JSON.stringify(titleFiltered) === JSON.stringify(['拖拽排序书']), titleFiltered);
+  check(
+    '书架搜索：书名匹配时不显示章节命中行',
+    (await exec('window.__cwTest.shelfCardMatches()')).length === 0
+  );
+
+  await exec("window.__cwTest.setShelfQuery('第三')");
+  await sleep(120);
+  const chapterFiltered = await exec('window.__cwTest.shelfFilteredTitles()');
+  const chapterMatchLines = await exec('window.__cwTest.shelfCardMatches()');
+  check('书架搜索：按章节名过滤到对应的书', chapterFiltered.includes('拖拽排序书'), chapterFiltered);
+  check(
+    '书架搜索：卡片上显示命中的章节名',
+    chapterMatchLines.some((line) => line.includes('第三')),
+    chapterMatchLines
+  );
+  check(
+    '书架搜索：过滤后条数少于全部',
+    chapterFiltered.length < allShelfTitles.length,
+    { filtered: chapterFiltered.length, all: allShelfTitles.length }
+  );
+
+  await exec("window.__cwTest.setShelfQuery('绝对不存在的书名xyz')");
+  await sleep(120);
+  check('书架搜索：没有匹配时列表为空', (await exec('window.__cwTest.shelfFilteredTitles()')).length === 0);
+  check(
+    '书架搜索：没有匹配时给出提示',
+    (await exec('window.__cwTest.shelfSearchSummary()')).includes('没有匹配'),
+    await exec('window.__cwTest.shelfSearchSummary()')
+  );
+  check(
+    '书架搜索：没有匹配时不显示「新建一本书」',
+    (await exec("document.querySelectorAll('.book-card.new-book').length")) === 0
+  );
+
+  await exec("window.__cwTest.setShelfQuery('')");
+  await sleep(120);
+  check(
+    '书架搜索：清空后恢复全部书',
+    (await exec('window.__cwTest.shelfFilteredTitles()')).length === allShelfTitles.length
+  );
+  check(
+    '书架搜索：清空后「新建一本书」回来',
+    (await exec("document.querySelectorAll('.book-card.new-book').length")) === 1
+  );
+
+  // 视觉拍板 #2（2026-11-04）：超宽屏（≥1600）书架内容列封顶 1520px 居中。
+  // 本机逻辑屏宽约 1706 DIP，1660 宽既能触发 media query，又不会顶出屏幕；测完还原窗口。
+  const shelfOrigBounds = win.getBounds();
+  // 窗口 resize 是异步的（偶发拿到上一次的 innerWidth，见 harness.setWindowSize 注释）：
+  // 等渲染层内宽真的进到超宽档再量；下面断言本身一个字没改。
+  await setWindowSize(1660, 960, { minInner: 1600 });
+  await sleep(200);
+  const shelfWide = await exec(`(() => {
+    const grid = document.getElementById('book-grid');
+    const body = document.querySelector('.shelf-body');
+    const head = document.querySelector('.shelf-head');
+    const footer = document.querySelector('.shelf-footer');
+    const gr = grid.getBoundingClientRect();
+    const hr = head.getBoundingClientRect();
+    const fr = footer.getBoundingClientRect();
+    const headCs = getComputedStyle(head);
+    const footCs = getComputedStyle(footer);
+    const card = grid.querySelector('.book-card:not(.new-book)');
+    const cr = card ? card.getBoundingClientRect() : null;
+    return {
+      vw: window.innerWidth,
+      gridW: Math.round(gr.width * 100) / 100,
+      cols: getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length,
+      bodyW: Math.round(body.getBoundingClientRect().width * 100) / 100,
+      headContentLeft: Math.round((hr.left + parseFloat(headCs.paddingLeft)) * 100) / 100,
+      footerContentLeft: Math.round((fr.left + parseFloat(footCs.paddingLeft)) * 100) / 100,
+      cardLeft: cr ? Math.round(cr.left * 100) / 100 : null
+    };
+  })()`);
+  await setWindowSize(shelfOrigBounds.width, shelfOrigBounds.height, { maxInner: 1599 });
+  await sleep(200);
+  check(
+    '书架（拍板 #2）：超宽窗（≥1600）书卡网格封顶 1520px，列数仍 5，固定头 / 页脚 / 首张卡片左边缘对齐',
+    shelfWide.vw >= 1600 &&
+      shelfWide.cols === 5 &&
+      shelfWide.gridW <= 1520.5 &&
+      shelfWide.gridW >= 1500 &&
+      shelfWide.cardLeft !== null &&
+      Math.abs(shelfWide.cardLeft - shelfWide.headContentLeft) <= 1 &&
+      Math.abs(shelfWide.footerContentLeft - shelfWide.headContentLeft) <= 1,
+    shelfWide
+  );
+
+  await exec(
+    "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))"
+  );
+  await sleep(80);
+  check(
+    '书架页 Ctrl+F 聚焦搜索框',
+    (await exec('document.activeElement && document.activeElement.id')) === 'shelf-search',
+    await exec('document.activeElement && document.activeElement.id')
+  );
+
+  await exec("window.__cwTest.setShelfQuery('拖拽排序书')");
+  await exec(
+    "document.getElementById('shelf-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"
+  );
+  await sleep(100);
+  check('书架搜索：Esc 清空搜索', (await exec('window.__cwTest.shelfQuery()')) === '');
+  await exec("window.__cwTest.setShelfQuery('拖拽排序书')");
+  await exec(
+    "document.getElementById('shelf-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))"
+  );
+  await waitFor("window.__cwTest.view() === 'editor'");
+  check(
+    '书架搜索：回车打开第一本匹配的书',
+    (await exec('window.__cwTest.state.meta.title')) === '拖拽排序书'
+  );
+};

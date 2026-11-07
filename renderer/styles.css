@@ -1,0 +1,3633 @@
+:root {
+  --paper: #f4f1ea;
+  --paper-soft: #fbf9f4;
+  --paper-deep: #e7e2d7;
+  --ink: #252118;
+  /* 次要文字色（v0.9 A-4）：章节列表的底色是 --paper-deep（比纸色还深一档），
+   * 原来的 #6f6758 在牛皮纸的 #e5d8bf 上只有 3.97:1、奶油纸 4.40:1——12px 的章节号 / 字数 /
+   * 分卷名都读不清。压到 #5e584a 后牛皮纸 5.09:1、奶油纸 5.65:1、标准纸 5.89:1。 */
+  --ink-soft: #575146;
+  /* 比 --ink-soft 再淡一档（书卡「最后修改」/ 快捷键提示 / 占位提示）：原来 #9a9080 在纸色上
+   * 只有 2.87:1、牛皮纸 2.73:1。压到 #6a6657 后标准纸 5.2:1、牛皮纸 4.6:1，过 AA 4.5:1。 */
+  --ink-faint: #6d6659;
+  --line: #dfd9cb;
+  --line-strong: #cbc3b2;
+  --accent: #8d3a2a;
+  --accent-soft: #b06a56;
+  --danger: #8a3122;
+  --ok: #3f6248;
+  /* 警示色（v0.9 A-4）：原来 #a9741e 在纸白上 3.84:1、在冲突副本徽标自己的底色上 3.35:1，
+   * 而它被当成**文字色**用在冲突提示 / 校对规则名 / 字数不足提示上（都是 11–12px）。
+   * 压到 #8a5c13 后纸白 5.49:1、徽标底色上 4.60:1。 */
+  --warn: #7d5a1c;
+  --input-bg: #fffdf8;
+  --hover-tint: rgba(37, 33, 24, .045);
+  /* 实心按钮 / 品牌标记上的文字色（v0.9 A-4）：浅色主题是白字（在 --accent 上 5.82:1），
+   * 夜间主题改成深色字——夜间 --accent 是浅棕，白字只有 2.97:1。 */
+  --on-accent: #fbf9f4;
+  /* 焦点环（v0.9 A-4）：原来用 --accent-soft，浅色纸上只有 2.64–2.96:1，低于 WCAG 1.4.11
+   * 要求的界面图形 3:1；改用 --accent 的值（浅色纸 5.5:1）。
+   * ⚠ 不要写成 `var(--accent)`：自定义属性里的 var() 在**声明它的元素**（这里是 :root）上就
+   * 替换成具体值了，夜间主题在 body 上覆盖 --accent 对 --focus-ring 完全无效（审计脚本量出来
+   * 夜间焦点环只有 2.54:1，就是这个坑），所以浅色 / 夜间各写一份具体颜色。 */
+  --focus-ring: #8d3a2a;
+  /* 滚动条滑块（v0.9 A-4）：原来直接用 --line-strong，在纸色上只有 1.34–1.54:1（几乎看不见）；
+   * #85827c 在标准纸 3.51:1、牛皮纸 3.11:1、夜间 4.10:1，过界面图形 3:1。同样不用 var() 混色。 */
+  --scroll-thumb: #8a8273;
+  --ui-font: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --editor-font-family: "SimSun", "Songti SC", "Source Han Serif SC", serif;
+  --editor-font-size: 18px;
+  --editor-line-height: 1.95;
+  --editor-letter-spacing: .02em;
+  --editor-max-width: none;
+  --editor-padding-x: 56px;
+  --editor-bg-image: none;
+  /* 当前段落高亮（v0.8-10，提案 N10）：跟着背景主题调色；只作用于影子层 */
+  --caret-para-tint: rgba(141, 58, 42, .055);
+  --caret-para-edge: rgba(141, 58, 42, .30);
+  --editor-caret: #8d3a2a;
+  /* 查找高亮（v0.8-11，提案 N11）：命中底色 / 当前命中底色；5 套浅色纸共用琥珀色，夜间单独调亮 */
+  --find-hit-tint: rgba(141, 58, 42, .10);
+  --find-hit-current-tint: rgba(141, 58, 42, .22);
+  --find-hit-current-edge: rgba(111, 36, 24, .90);
+  /* 界面小件（v0.8.5 R2）：按钮 / 菜单 / 章节列表统一的反馈色与层级。
+   * 只影响观感：悬停 / 按下 / 焦点 / 当前章，不动任何功能与数据。 */
+  --btn-press: rgba(37, 33, 24, .085);
+  --btn-primary-hover: #3a342a;
+  --btn-primary-press: #131009;
+  /* 危险按钮悬停色（v0.9 A-4）：原来是写死的 #8f3836，夜间主题的 --danger 变成浅红、
+   * 文字也变成深色了，写死的深红悬停会把深色字压到 2.16:1；改成令牌，两套主题各自成立。 */
+  --btn-danger-hover: #6f2418;
+  --menu-radius: 2px;
+  --menu-shadow: 0 18px 44px -18px rgba(35, 29, 20, .32), 0 1px 2px rgba(35, 29, 20, .08);
+  --menu-hover: rgba(37, 33, 24, .06);
+  --menu-item-radius: 2px;
+  --chapter-hover: rgba(37, 33, 24, .04);
+  /* 动效（v0.9 A-6）：全界面只有两档时长，新增动效一律用这两个令牌，别再写死秒数。
+   *   --motion-quick   = 指针反馈：悬停 / 按下 / 焦点，以及小件淡入淡出；
+   *   --motion-overlay = 面状进出：悬浮条淡出、toast 滑入（弹层本身不做进出动画）。
+   * 改前这里是 0.1 / 0.12 / 0.15 / 0.16 / 0.2s 五种混着写（外加 renderer.js 里的 0.25s），
+   * 同一个「悬停变色」在不同控件上快慢不一。系统关掉动画时由文件末尾的
+   * prefers-reduced-motion 块统一压到 0.01ms，令牌本身不用改。
+   * 注意：令牌只放时长，缓动曲线写在各自的 transition / animation 里。 */
+  --motion-quick: .12s;
+  --motion-overlay: .16s;
+  /* 当前章高亮（v0.9 A-4）：混色直接写在 .chapter-item.active 的规则里，不在这里做令牌——
+   * 自定义属性里的 var() 在**声明它的元素**（:root）上就替换好了，其余 5 套主题覆盖
+   * --paper-soft 对这些令牌无效（奶油 / 绿 / 牛皮纸 / 网格纸里「当前章」一直用标准纸的浅白底），
+   * 写进规则才会按元素当前的纸色解析。夜间用更高百分比覆盖，见下面 body.theme-night 段。 */
+
+  /* 阅读模式（v0.8-4，提案 N4）与「卷册」纸面令牌：默认值只此一份。
+   * 原来这些另起一个 `:root` 块写在阅读模式段首（B1 并回这里，见文件里那一段的说明）；
+   * 六套背景主题在 body.theme-* 上覆盖各自需要的项——body 比 html 更靠近正文，
+   * 覆盖一定生效，与两处 :root 谁先谁后无关。 */
+  --reading-font-size: 22px;
+  --reading-line-height: 2;
+  /* 阅读栏宽：只驱动 .reading-content 的 max-width（以前声明了 780 却没人用，栏目写死 760）。
+   * 取 760 与改前逐像素一致；想加宽只改这一个值。 */
+  --reading-max-width: 760px;
+  --folio-serif: "Songti SC", "Source Han Serif SC", "SimSun", serif;
+  --folio-sheet: #fbf9f4;
+  --folio-raised: #fdfbf6;
+  --folio-sunk: #efece4;
+  --folio-ink-ghost: #b3ab9b;
+  --folio-line-soft: #ebe6db;
+  --folio-field-border: #d7cfbf;
+  --folio-menu-bg: #fffdf9;
+  --folio-scrim: rgba(30, 26, 20, .42);
+  --folio-shadow-pop: 0 18px 44px -18px rgba(35, 29, 20, .32), 0 1px 2px rgba(35, 29, 20, .08);
+  --folio-btn-bg: #252118;
+  --folio-btn-ink: #f8f5ec;
+  --folio-btn-bg-hover: #3a342a;
+  --folio-btn-bg-active: #131009;
+  --folio-btn-bg-disabled: #ddd7ca;
+  --folio-btn-ink-disabled: #8b8375;
+  --folio-accent-tint: rgba(141, 58, 42, .07);
+  --folio-warn-tint: rgba(125, 90, 28, .09);
+  --folio-radius: 2px;
+}
+
+/* 背景主题：只换纸色/纹理（书架、章节栏、正文一起变），正文墨色默认不动 */
+body.theme-cream {
+  --paper: #f6efe0;
+  --paper-soft: #fdf7e9;
+  --paper-deep: #e9dfc9;
+  --caret-para-tint: rgba(166, 116, 52, .06);
+  --caret-para-edge: rgba(166, 116, 52, .35);
+  --editor-caret: #7a4a22;
+
+  --folio-sheet: #fdf7e9;
+  --line: #e2d7bf;
+  --line-strong: #d3c6aa;
+  --input-bg: #fffbf1;
+  --folio-raised: #fffaf0;
+  --folio-sunk: #f1e8d6;
+  --folio-line-soft: #eee5d3;
+  --folio-field-border: #d8ccb2;
+  --folio-menu-bg: #fffcf4;}
+body.theme-green {
+  --paper: #edf0e7;
+  --paper-soft: #f7f9f1;
+  --paper-deep: #dfe5d6;
+  --caret-para-tint: rgba(74, 112, 76, .07);
+  --caret-para-edge: rgba(74, 112, 76, .32);
+  --editor-caret: #3f6b48;
+
+  --folio-sheet: #f7f9f1;
+  --ink: #20261b;
+  --ink-soft: #4f5747;
+  --ink-faint: #666e5b;
+  --line: #d8dfcd;
+  --line-strong: #c6cfb9;
+  --input-bg: #f9fbf3;
+  --folio-raised: #fbfdf6;
+  --folio-sunk: #e7ebdf;
+  --folio-line-soft: #e5ebdd;
+  --folio-field-border: #ccd5bf;
+  --folio-menu-bg: #fbfdf6;}
+body.theme-kraft {
+  --paper: #e7d9c1;
+  --paper-soft: #f0e4cf;
+  --paper-deep: #d8c7a8;
+  --caret-para-tint: rgba(122, 92, 46, .06);
+  --caret-para-edge: rgba(122, 92, 46, .33);
+  --editor-caret: #5e4322;
+  /* 牛皮纸的细纤维纹理：纯 CSS，不用图片文件 */
+  --editor-bg-image:
+    repeating-linear-gradient(0deg, rgba(122, 92, 46, .045) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(122, 92, 46, .028) 0 1px, transparent 1px 4px);
+
+  --folio-sheet: #f0e4cf;
+  /* 牛皮纸的纸色本身就深（#e7d9c1），冲突副本徽标是「--warn 9% 叠在纸色上」的窄条，
+   * 默认 --warn #7d5a1c 在它上面只有 4.03:1（E2E 第 67 组实测），过不了 AA 4.5:1；
+   * 只在本主题压深到 #6f4f16（徽标条上 4.82:1、纸白上 5.95:1），别的主题不受影响。 */
+  --warn: #6f4f16;
+  --ink: #2a2216;
+  --ink-soft: #54462f;
+  --ink-faint: #6b5c42;
+  --line: #cfbd9c;
+  --line-strong: #bda985;
+  --input-bg: #f2e7d4;
+  --folio-raised: #f4e9d7;
+  --folio-sunk: #e0d0b4;
+  --folio-line-soft: #ddcdb1;
+  --folio-field-border: #c9b593;
+  --folio-menu-bg: #f4ead8;
+  /* 牛皮纸的纸色偏深，默认滚动条滑块 #8a8273 在 #e7d9c1 上只有 2.73:1（E2E 第 67 组实测），
+   * 过不了界面图形 3:1；本主题压深到 #7d7566（3.28:1）。 */
+  --scroll-thumb: #7d7566;}
+body.theme-grid {
+  --paper: #f1f1ec;
+  --paper-soft: #f8f8f4;
+  --paper-deep: #e5e5de;
+  --caret-para-tint: rgba(72, 106, 122, .07);
+  --caret-para-edge: rgba(72, 106, 122, .32);
+  --editor-caret: #3f5f6b;
+  /* 网格纸：24px 方格 */
+  --editor-bg-image:
+    linear-gradient(rgba(96, 122, 138, .10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(96, 122, 138, .10) 1px, transparent 1px);
+  --editor-bg-size: 24px 24px;
+
+  --folio-sheet: #f8f8f4;
+  --ink: #22241f;
+  --ink-soft: #54564e;
+  --ink-faint: #6b6d63;
+  --line: #dcdcd4;
+  --line-strong: #c9c9c0;
+  --input-bg: #fafaf6;
+  --folio-raised: #fbfbf8;
+  --folio-sunk: #ecece6;
+  --folio-line-soft: #e8e8e2;
+  --folio-field-border: #d3d3ca;
+  --folio-menu-bg: #fcfcf9;}
+body.theme-night {
+  --paper: #17181a;
+  --paper-soft: #1c1e20;
+  --paper-deep: #26292c;
+  --ink: #e9e5db;
+  --ink-soft: #c2bcaf;
+  /* 夜间次要文字（v0.9 A-4）：原来 #7e7a72 在纸色上 3.45:1、在输入框底色上 2.96:1；
+   * 提到 #9a968d 后纸色 5.00:1、纸白 4.66:1、输入框 4.60:1。 */
+  --ink-faint: #9a9486;
+  --line: #2e3134;
+  --line-strong: #3f4346;
+  /* 夜间主色（v0.9 A-4）：原来 #c08a5f 被当成「当前章章节号」的文字色时，在当前章那层
+   * （accent 12% + 纸白）上只有 4.33:1；提亮到 #c99a6a 后 4.86:1，当实心按钮底色也照样
+   * 成立（配 --on-accent 深色字 6.4:1）。 */
+  --accent: #c9806a;
+  --accent-soft: #9a6350;
+  /* 夜间危险色（v0.9 A-4）：原来 #d06a6a 在纸白（书卡底色）上只有 4.18:1，而损坏书卡的标题
+   * 就是它；提亮到 #dc7c7c 后 5.05:1，同时仍能当实心按钮底色（配 --on-accent 深色字 5.58:1）。 */
+  --danger: #cf7a66;
+  --ok: #7fae8e;
+  --warn: #c9a45e;
+  --input-bg: #1f2224;
+  --hover-tint: rgba(233, 229, 219, .055);
+  /* 夜间实心按钮 / 品牌标记用深色字（白字在浅棕 --accent 上只有 2.97:1） */
+  --on-accent: #17181a;
+  --caret-para-tint: rgba(201, 128, 106, .10);
+  --caret-para-edge: rgba(201, 128, 106, .34);
+  --editor-caret: #c9806a;
+  /* 夜间：查找高亮提亮、降低饱和，暗底上不刺眼 */
+  --find-hit-tint: rgba(201, 128, 106, .16);
+  --find-hit-current-tint: rgba(201, 128, 106, .30);
+  --find-hit-current-edge: rgba(201, 128, 106, .90);
+  /* 夜间界面小件：按钮 / 菜单 / 当前章都用一层淡淡的暖白，避免纯黑死板 */
+  --btn-press: rgba(233, 229, 219, .10);
+  --btn-primary-hover: #f6f3eb;
+  --btn-primary-press: #cfc9bd;
+  --menu-shadow: 0 18px 44px -18px rgba(0, 0, 0, .68), 0 1px 2px rgba(0, 0, 0, .4);
+  --menu-hover: rgba(233, 229, 219, .06);
+  --chapter-hover: rgba(233, 229, 219, .045);
+  --btn-danger-hover: #b25f4c;
+  /* 夜间焦点环与滚动条滑块（v0.9 A-4）：浅色主题那两行用的是具体颜色而不是 var(--accent)，
+   * 所以夜间要各写一份（原因见 :root 里的注释）。 */
+  --focus-ring: #c9806a;
+  --scroll-thumb: #817f7d;
+  /* 夜间当前章高亮：混色写在 .chapter-item.active 的 body.theme-night 覆盖规则里
+   * （夜间纸色深，百分比要比浅色主题高一档；原因见 :root 的 --chapter-hover 注释）。 */
+  /* 夜间原生控件跟随深色（v0.9 A-4）：书架 / 章节栏 / 设置弹层这些没写自定义滚动条的地方，
+   * 默认 Chromium 会给浅灰滚动条，夜间主题里很扎眼；`color-scheme: dark` 让原生滚动条、
+   * select 下拉、取色器一起变深色（输入框自己有 --input-bg，不受影响）。 */
+  color-scheme: dark;
+
+  --folio-sheet: #1c1e20;
+  --folio-raised: #232628;
+  --folio-sunk: #121314;
+  --folio-ink-ghost: #54514a;
+  --folio-line-soft: #242729;
+  --folio-field-border: #3a3e41;
+  --folio-menu-bg: #232628;
+  --folio-scrim: rgba(0, 0, 0, .58);
+  --folio-shadow-pop: 0 18px 44px -18px rgba(0, 0, 0, .68), 0 1px 2px rgba(0, 0, 0, .4);
+  --folio-btn-bg: #e9e5db;
+  --folio-btn-ink: #17181a;
+  --folio-btn-bg-hover: #f6f3eb;
+  --folio-btn-bg-active: #cfc9bd;
+  --folio-btn-bg-disabled: #2c2f32;
+  --folio-btn-ink-disabled: #6b6960;
+  --folio-accent-tint: rgba(201, 128, 106, .10);
+  --folio-warn-tint: rgba(201, 164, 94, .10);}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--ui-font);
+  overflow: hidden;
+  user-select: none;
+
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;}
+
+#app { height: 100%; position: relative; }
+
+.hidden { display: none !important; }
+.muted { color: var(--ink-faint); }
+.small { font-size: 11.5px; }
+.spacer { flex: 1; }
+
+/* ---------- 视图 ---------- */
+.view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ---------- 书架 ---------- */
+.shelf-view { flex-direction: column; }
+
+.topbar {
+  height: 62px;
+  flex: 0 0 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 26px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.brand { display: flex; align-items: center; gap: 11px; }
+.brand-mark {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 1px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 13px;
+  transform: none;
+
+  font-family: var(--folio-serif);
+  line-height: 1;
+  padding-bottom: 1px;}
+.brand-name { font-size: 16.5px; font-weight: 400; letter-spacing: .1em; 
+  font-family: var(--folio-serif);
+  color: var(--ink);}
+.version { transform: none; 
+  font-size: 10.5px;
+  letter-spacing: .06em;
+  color: var(--ink-faint);}
+.topbar-right { display: flex; align-items: center; gap: 18px; min-width: 0; }
+/* 书架顶栏：搜索框 / 书库路径 / 右侧按钮分三块。路径太长时省略，不把搜索框和按钮挤变形。 */
+#books-root-label {
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
+}
+
+/* 书架搜索（书名 / 章节名）：284px 与设计稿的顶栏搜索框同宽。
+ * 238px 时占位提示「…（Ctrl+F）」会被输入框右边裁成「（Ctrl-」，看着像坏了。 */
+.shelf-search { position: relative; width: 284px; }
+.shelf-search .text-input { padding: 0 26px 0 10px; font-size: 12.5px; 
+  height: 32px;
+  border-radius: var(--folio-radius);}
+.shelf-search-clear {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.shelf-search-clear:hover { background: var(--hover-tint); color: var(--ink); }
+.shelf-search-summary { margin-bottom: 12px; 
+  margin: 10px 0 0;}
+/* 分组筛选（v0.8-3）：只有书架里存在分组时才出现 */
+.shelf-group-bar { display: flex; align-items: center; gap: 6px; margin: 14px 0 0; 
+  flex: 0 0 42px;
+  height: 42px;
+  border-bottom: 1px solid var(--line);}
+.shelf-group-label { font-size: 10px; color: var(--ink-faint); 
+  letter-spacing: .12em;}
+.shelf-group-select {
+  min-width: 130px;
+  max-width: 260px;
+  padding: 0 8px;
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--folio-field-border);
+  border-radius: var(--folio-radius);
+
+  height: 32px;
+  outline: none;
+  width: auto;
+  height: 28px;
+  border-color: transparent;
+  cursor: pointer;}
+/* 分组下拉平时是一条安静的文字（没有描边）；鼠标悬停 / 键盘 Tab 到它时给出可见反馈
+ * （v1.0 把 outline 去掉了，键盘用户以前看不出焦点落在哪）。 */
+.shelf-group-select:hover { border-color: var(--folio-field-border); }
+.shelf-group-select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+/* 书架「正文命中」（提案 7.3）：搜索结果面板，点一条打开那本书的那一章 */
+.shelf-content {
+  margin: 12px 0 0;
+  padding: 10px 14px 6px;
+  background: var(--folio-sheet);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+}
+.shelf-content-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.shelf-content-summary { flex: 1; min-width: 0; }
+.shelf-content-list { display: flex; flex-direction: column; }
+.shelf-content-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 7px 8px;
+  text-align: left;
+  font-family: var(--ui-font);
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--line);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.shelf-content-row:first-child { border-top: none; }
+.shelf-content-row:hover { background: var(--hover-tint); }
+.shelf-content-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.shelf-content-title { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; color: var(--ink-soft); }
+.shelf-content-book { font-weight: 600; color: var(--ink); }
+.shelf-content-chapter { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shelf-content-snippet {
+  font-size: 13px;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shelf-content-snippet mark {
+  /* 正文命中的高亮（v0.9 A-4）：底色是固定的浅琥珀，所以文字必须是固定的深色。 */
+  background: #ffe9a8;
+  color: #2b2822;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+.shelf-content-empty { padding: 6px 4px 8px; }
+
+/* 继续上次写作：书架顶部一条直达入口（只写配置里的 lastBook，不碰书库） */
+.shelf-continue { margin-bottom: 18px; 
+  margin: 16px 0 0;}
+.continue-writing {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 22px;
+  text-align: left;
+  font-family: var(--ui-font);
+  color: var(--ink);
+  background: var(--folio-sheet);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+  cursor: pointer;
+  transition: background-color var(--motion-quick) ease, border-color var(--motion-quick) ease;
+
+  height: 88px;
+  box-shadow: inset 2px 0 0 var(--accent);}
+.continue-writing:hover {
+  border-color: var(--line-strong);
+  box-shadow: inset 2px 0 0 var(--accent);
+
+  background: var(--folio-raised);}
+/* v1.0 M3 第二刀：10px 标签在上、宋体书名在下（设计稿 .resume-main 是两行），
+ * 以前标签和书名挤成一行，书名的起点被标签推着走，5 列时代看起来更像一条工具栏。 */
+.continue-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.continue-label {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: .16em;
+  color: var(--ink-faint);
+}
+.continue-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 23px;
+  font-weight: 400;
+  line-height: 1.05;
+
+  font-family: var(--folio-serif);
+  letter-spacing: .03em;
+  color: var(--ink);}
+.continue-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  text-align: right;
+
+  font-variant-numeric: tabular-nums;}
+
+/* 书架顶部的今日字数（只统计保存动作；没有目标时只显示字数）
+ * v1.0 M3 第二刀：72px 两行——字 / 目标 / 连续天数一行，底下一条通栏 2px 进度线
+ * （设计稿 .today + .track）。以前进度条是行内 120px，像挂在文字后面的一小截。 */
+.shelf-stats {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 13px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+
+  flex: 0 0 72px;
+  height: 72px;}
+.shelf-stats-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.shelf-stats-today { color: var(--ink); font-weight: 400; 
+  font-family: var(--folio-serif);
+  font-size: 20px;
+  letter-spacing: .01em;
+  white-space: nowrap;}
+/* 空态「今天还没写字」是提示语、不是数字：降成 UI 字体的次级字，别让 20px 宋体占满 72px 头部 */
+.shelf-stats.is-quiet .shelf-stats-today {
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  letter-spacing: .02em;
+  color: var(--ink-faint);
+}
+.shelf-stats-goal { color: var(--ink-faint); white-space: nowrap; }
+.shelf-stats .goal-track { width: 100%; display: block; }
+
+/* 细进度条：状态栏 / 书架共用 */
+.goal-track {
+  display: inline-block;
+  width: 64px;
+  height: 2px;
+  flex: 0 0 auto;
+  border-radius: 0;
+  background: var(--paper-deep);
+  overflow: hidden;
+}
+.goal-track > i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 0;
+  background: var(--ink);
+  transition: width var(--motion-quick) ease;
+}
+
+/* 书架主体（v1.0 M3 第二刀）：固定头（今日字数 / 继续写作卡 / 分组条）+ 只滚书卡网格的
+ * .shelf-scroll。设计稿里这三块是固定头，280 本滚到底时它们不该跟着走。 */
+.shelf-body { flex: 1; display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;}
+
+.shelf-head {
+  flex: 0 0 auto;
+  padding: 0 28px;
+}
+
+/* 右侧 18px padding + 10px 常驻滚动条槽（全局 ::-webkit-scrollbar 宽 10px）= 与固定头同一条
+ * 28px 右边线；scrollbar-gutter: stable 让没有滚动条时也不跳。 */
+.shelf-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding: 0 18px 0 28px;
+}
+
+.book-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 18px;
+  align-content: start;
+
+  padding: 14px 0 20px;}
+
+.book-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 0;
+  min-height: 198px;
+  padding: 30px 15px 14px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+  cursor: pointer;
+  transition: background-color var(--motion-quick) ease, border-color var(--motion-quick) ease;
+
+  height: 198px;}
+.book-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: none;
+
+  background: var(--folio-raised);}
+/* 书卡第一行：书名（可省略）+ 右上角分组小签（设计稿 §1.2）。
+ * 以前分组 / 标签挤在同一枚绝对定位的长签里，5 列时被截成「#标签一 · #标…」，
+ * 还跟书名、「⋯」按钮抢同一块位置。现在签里只放分组名，标签另起一行。 */
+.book-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;}
+.book-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.25;
+  word-break: break-all;
+
+  font-family: var(--folio-serif);
+  letter-spacing: .02em;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;}
+/* 底部发丝线 +「章数 · 字数」（左）/「完稿 a/b 章」（右），对应设计稿的 .book-line。
+ * 5 列 231px 卡里「56 章 · 156.24 万字 · 完稿 30/56 章」整串放不下，拆两段各自省略，
+ * 不再折行把「最后修改」挤出卡外。 */
+.book-card-meta { font-size: 10.5px; color: var(--ink-faint); 
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 9px;
+  border-top: 1px solid var(--folio-line-soft);
+  letter-spacing: .01em;
+  font-variant-numeric: tabular-nums;}
+.book-card-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 书籍信息（v0.8-3）：作者 / 分组 + 标签 / 简介，旧书没有这些字段就整行不出现 */
+.book-card-author { font-size: 10.5px; color: var(--ink-faint); word-break: break-all; 
+  margin-top: 6px;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;}
+.book-card-tags {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 4px;
+  font-family: var(--ui-font);
+  font-size: 9.5px;
+  line-height: 1.2;
+  color: var(--ink-faint);
+  border: 1px solid var(--line);
+  border-radius: 1px;
+  letter-spacing: .1em;}
+.book-card-brief {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.72;
+  color: var(--ink-soft);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+
+  margin-top: 9px;
+  font-family: var(--folio-serif);}
+.book-card-time { font-size: 10.5px; color: var(--ink-faint); 
+  letter-spacing: .01em;
+  margin-top: 4px;}
+.book-card-match {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--accent);
+
+  margin-top: 4px;}
+.settings-scope-hint { margin: 12px 0 2px; line-height: 1.65; 
+  padding: 7px 0 7px 12px;
+  border-left: 2px solid var(--line-strong);
+  font-size: 11.5px;
+  color: var(--ink-faint);}
+/* 损坏 / 无法解析的书卡（v0.9 A-4）：底色与描边以前是写死的浅色（#fbf3ee / #d9b3a6），
+ * 夜间主题里会变成深色书架中间一张发白的卡片、标题（--danger）只有 3.22:1。
+ * 改成「主题底色 + 一点危险色」，两套主题都成立。 */
+.book-card.corrupt {
+  border-color: var(--line-strong);
+  background: transparent;
+
+  border-style: dashed;}
+.book-card.corrupt .book-card-title { color: var(--ink-faint); 
+  font-size: 15px;}
+/* 损坏卡没有作者 / 简介，纵向空得多：把「书目损坏：…」的原因整句折行显示出来，
+ * 别在 5 列卡里被省略号截成「书目损坏：书目.json 解析失…」（看不出是哪种损坏）。 */
+.book-card.corrupt .book-card-meta { display: block; white-space: normal; }
+/* 「修复」按设计稿做成小号描边按钮（.btn-line 的样子），别用书架唯一的实心主按钮：
+ * 损坏卡是提示，不是当前页面的主操作。 */
+.book-card.corrupt .btn {
+  align-self: flex-start;
+  margin-top: 4px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line-strong);}
+.book-card.corrupt .btn:hover { color: var(--ink); background: var(--hover-tint); }
+
+/* 同步冲突副本：书卡标黄提示（只提示；不自动合并、不删文件） */
+/* 颜色改成从 --warn 调（v0.9 A-4）：原来写死 rgba(169,116,30,…)，夜间主题不会跟着变亮黄，
+ * 而文字色是 --warn（夜间变成亮黄）——底色和文字各走各的。 */
+.book-card.has-conflict { border-color: color-mix(in srgb, var(--warn) 42%, var(--line)); }
+.book-conflict-badge {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0 9px;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--folio-radius) var(--folio-radius) 0 0;
+  background: var(--folio-warn-tint);
+  color: var(--warn);
+  font-family: var(--ui-font);
+  font-size: 9px;
+  line-height: 1;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  top: -1px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--line);}
+.book-conflict-badge:hover { background: color-mix(in srgb, var(--warn) 18%, var(--folio-sheet)); }
+
+.book-card-more {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-quick) ease, background var(--motion-quick) ease;
+}
+.book-card:hover .book-card-more,
+.book-card-more:focus-visible { opacity: 1; }
+.book-card-more:hover { background: var(--hover-tint); color: var(--ink); }
+
+.book-card.new-book {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-style: dashed;
+  border-width: 1px;
+  color: var(--ink-faint);
+  background: transparent;
+  font-family: var(--ui-font);
+  font-size: 12px;
+}
+.book-card.new-book .plus { font-size: 24px; line-height: 1; color: var(--ink-faint); 
+  font-family: var(--folio-serif);}
+.book-card.new-book:hover { color: var(--ink-soft); background: var(--hover-tint); }
+
+.shelf-empty {
+  grid-column: 1 / -1;
+  padding: 42px 8px;
+  color: var(--ink-faint);
+  font-size: 12.5px;
+}
+
+.shelf-footer {
+  flex: 0 0 36px;
+  padding: 0 40px;
+  border-top: 1px solid var(--line);
+  background: transparent;
+
+  display: flex;
+  align-items: center;
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  letter-spacing: .01em;
+  padding-left: 28px;
+  padding-right: 28px;}
+
+/* ---------- 按钮 ---------- */
+.btn {
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  line-height: 1.2;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--folio-radius);
+  padding: 0 12px;
+  min-height: 30px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) ease, border-color var(--motion-quick) ease,
+    color var(--motion-quick) ease;
+  user-select: none;
+
+  height: 30px;
+  letter-spacing: .02em;}
+.btn:hover:not(:disabled) { background: var(--hover-tint); 
+  border-color: var(--ink-faint);
+  color: var(--ink);}
+.btn:active:not(:disabled) {
+  background: var(--btn-press);
+  box-shadow: none;
+}
+.btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* 键盘焦点环（V-2 M4 键盘视觉，2026-11-03）：卡片 / 列表条目 / 原生按钮与勾选控件。
+ * 这些元素以前没有 :focus-visible 规则，落到 Chromium 的 UA 橙环（1px auto，
+ * 纸上实测 2.13–2.61:1，低于 3:1，也不是 v1.0 的朱红）——键盘用户看得见却看不清，
+ * 且与纸面配色冲突。卡片 / 条目用内嵌环（offset -2）：它们贴着滚动容器边缘，
+ * 外扩环会被 overflow 裁掉；普通按钮 / 勾选控件仍用外扩环，与 .btn / .text-input 一致。 */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.continue-writing:focus-visible,
+.chapter-item:focus-visible,
+.volume-item:focus-visible,
+.book-card:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.btn:disabled { opacity: 1; cursor: default; 
+  color: var(--folio-ink-ghost);
+  border-color: var(--folio-line-soft);}
+.btn:disabled:hover { background: transparent; }
+.btn.primary {
+  background: var(--folio-btn-bg);
+  border-color: var(--folio-btn-bg);
+  color: var(--folio-btn-ink);
+
+  font-weight: 600;
+  letter-spacing: .06em;}
+.btn.primary:hover:not(:disabled) { background: var(--folio-btn-bg-hover); border-color: var(--folio-btn-bg-hover); }
+.btn.primary:active:not(:disabled) { background: var(--folio-btn-bg-active); 
+  border-color: var(--folio-btn-bg-active);}
+.btn.primary:disabled { background: var(--folio-btn-bg-disabled); 
+  border-color: var(--folio-btn-bg-disabled);
+  color: var(--folio-btn-ink-disabled);}
+.btn.ghost { border-color: transparent; color: var(--ink-soft); }
+.btn.ghost:hover:not(:disabled) { background: var(--hover-tint); color: var(--ink); }
+.btn.ghost:active:not(:disabled) { background: var(--btn-press); }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: var(--on-accent); }
+.btn.danger:hover { background: var(--btn-danger-hover); }
+.btn.tiny { font-size: 11px; padding: 0 7px; min-height: 24px; 
+  height: 24px;}
+
+/* ---------- 编辑器布局 ---------- */
+.editor-view { flex-direction: row; 
+  background: var(--paper);}
+
+.sidebar {
+  flex: 0 0 var(--sidebar-width, 250px);
+  width: var(--sidebar-width, 250px);
+  min-width: 180px;
+  max-width: 70vw;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--paper);
+  border-right: 1px solid var(--line);
+}
+
+/* 章节栏与写作区之间的可拖动分隔条 */
+.sidebar-resizer {
+  flex: 0 0 5px;
+  width: 5px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 5;
+  background: transparent;
+  border-right: 0;
+}
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 1px;
+  width: 1px;
+  background: transparent;
+  transition: background var(--motion-quick) ease;
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer.dragging::after {
+  background: var(--accent);
+}
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+body.resizing .editor {
+  pointer-events: none;
+}
+.back-btn { margin: 16px 22px 4px; align-self: flex-start; 
+  height: 28px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  letter-spacing: .02em;}
+.sidebar-book {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 22px 12px;
+  border-bottom: 1px solid var(--folio-line-soft);
+}
+.book-title {
+  flex: 1;
+  font-size: 21px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  font-family: var(--folio-serif);
+  line-height: 1.2;
+  letter-spacing: .04em;
+  color: var(--ink);}
+.chapter-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 12px;
+}
+.chapter-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 30px;
+  padding: 0 8px 0 7px;
+  margin-bottom: 2px;
+  border-radius: var(--folio-radius);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ink-soft);
+  transition: background var(--motion-quick) ease, box-shadow var(--motion-quick) ease;
+
+  height: 30px;
+  margin: 0;
+  border: 1px solid transparent;}
+.chapter-item:hover { background: var(--hover-tint); }
+/* 悬停底色是半透明墨（--hover-tint），压深底之后章节号 / 字数在绿纸、牛皮纸、网格纸上只剩
+ * 4.25–4.32:1（11.5 / 10.5px 元信息按普通文字要求 4.5:1）。悬停时把它们提到 --ink-soft，
+ * 语义正好是「指针停在那一行，这一行的信息更清楚」；不新增动画（本行只过渡 background / box-shadow）。 */
+.chapter-item:hover .chapter-num,
+.chapter-item:hover .chapter-chars { color: var(--ink-soft); }
+/* 当前章（v0.8.5 R2）：比悬停更重的一层底色 + 左侧强调线 + 一圈细内描边，一眼能看出写到哪。
+ * 颜色全部来自主题变量，亮色 / 夜间各自成立；只改外观，不改当前章的选中逻辑。
+ * 混色写在这里而不是做成 :root 令牌（v0.9 A-4）：写进规则才会按**当前元素所在主题**的
+ * --accent / --paper-soft 解析，奶油 / 绿 / 牛皮纸 / 网格纸才会有各自纸色的高亮。 */
+.chapter-item.active {
+  background: var(--folio-raised);
+  border-left-color: var(--accent);
+  box-shadow: none;
+  font-weight: 600;
+
+  border-color: var(--line-strong);}
+.chapter-item.active:hover { background: var(--folio-raised); }
+/* 夜间纸色深，同样的百分比几乎看不出来：抬到 12% / 17% / 34%（原 v0.8.5 的夜间口径）。 */
+body.theme-night .chapter-item.active {
+  background: var(--folio-raised);
+  box-shadow: none;
+}
+body.theme-night .chapter-item.active:hover {
+  background: var(--folio-raised);
+}
+.chapter-num { flex: 0 0 auto; color: var(--ink-faint); font-size: 11.5px; 
+  letter-spacing: .02em;
+  font-variant-numeric: tabular-nums;}
+.chapter-item.active .chapter-num { color: var(--accent); }
+.chapter-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  font-size: 13px;
+  color: var(--ink-soft);}
+.chapter-item.dirty .chapter-name::after {
+  content: " •";
+  color: var(--accent);
+}
+/* 章节状态小圆点：灰 = 草稿（默认）、黄 = 待修、绿 = 完稿；备注用 ✎ 提示 */
+.chapter-status-dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  align-self: center;
+  background: var(--folio-ink-ghost);
+}
+.chapter-item.status-revising .chapter-status-dot { background: var(--warn); }
+.chapter-item.status-done .chapter-status-dot { background: var(--ok); }
+/* 章节画一个当前章小圆点 / 备注 / 字数的彩色提示，只在当前章加一圈与底色同色的描边，让圆点更清楚 */
+.chapter-item.active .chapter-status-dot {
+  box-shadow: none;
+
+  background: var(--accent);}
+body.theme-night .chapter-item.active .chapter-status-dot {
+  box-shadow: none;
+}
+.chapter-note-mark { flex: 0 0 auto; font-size: 10px; color: var(--ink-faint); }
+.chapter-item.active .chapter-note-mark { color: var(--ink-soft); }
+/* 章节列表的字数（来自书目缓存，保存后更新）：紧凑的「1.2万」，窄栏也不会把章名挤没。
+ * 颜色用 --ink-soft（v0.9 A-4）：这一列压在更深的 --paper-deep 上，11px 用 --ink-faint
+ * 在牛皮纸主题只有 3.50:1。 */
+.chapter-chars {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+.chapter-item.active .chapter-chars { color: var(--ink-faint); }
+.sidebar-actions {
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--folio-line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-actions .btn { width: 100%; 
+  height: 30px;
+  font-size: 11.5px;}
+
+/* ---------- 分卷（侧栏分组） ---------- */
+.volume-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 7px;
+  margin: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 10.5px;
+  cursor: pointer;
+  user-select: none;
+
+  height: 28px;
+  border-top: 1px solid var(--folio-line-soft);
+  letter-spacing: .1em;}
+.volume-item:hover { background: var(--hover-tint); }
+.volume-item.orphan-volume { opacity: .85; }
+.volume-item.collapsed { margin-bottom: 6px; }
+.volume-arrow { flex: 0 0 auto; width: 12px; font-size: 10px; }
+.volume-name {
+  flex: 1;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  letter-spacing: .1em;}
+.volume-count { flex: 0 0 auto; font-size: 9.5px; opacity: 1; 
+  color: var(--ink-faint);}
+.volume-item.drop-into { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* ---------- 正文区 ---------- */
+.editor-main {
+  position: relative; /* 只读标记层按编辑区定位 */
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--folio-sheet);
+  /* 纸纹（牛皮纸 / 网格纸）铺在整块纸面上，和设计稿里 `.page` 一样：页首、正文、留白共用一张纸。
+   * 以前只铺在 `.editor`（textarea）上，网格纸会从发丝线下面突然开始；正文宽度 720/1000 居中时
+   * 更是只剩中间一条方格，像贴上去的一块纸。 */
+  background-image: var(--editor-bg-image);
+  background-size: var(--editor-bg-size, auto);
+}
+.editor-header {
+  min-height: 58px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 14px;
+  row-gap: 6px;
+  justify-content: space-between;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--folio-sheet);
+}
+.chapter-title {
+  /* 标题让位给按钮：flex-basis 0 让它在同一行里只吃剩下的宽度（超长就省略号），
+   * 不会被按钮组「挤」成两行、也不会把按钮挤出窗口。 */
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+}
+/* 顶栏分组（v0.8.5 R2）：写作 / 插入 / 整理与显示 / 导出，组间一条 18px 的细线。
+ * 组本身只是 flex 容器，按钮 id / 顺序 / 事件全都不变；窗口变窄时先整体换行、不压扁按钮。 */
+.action-group { display: flex; align-items: center; gap: 6px; }
+.action-group + .action-group::before {
+  content: "";
+  width: 1px;
+  height: 18px;
+  margin: 0 4px 0 2px;
+  background: var(--line);
+  flex: 0 0 auto;
+}
+
+.dropdown { position: relative; }
+/* 下拉菜单 / 悬浮选择卡共用一套外观（v0.8.5 R2）：同一套圆角、描边、投影、内边距与条目高亮，
+ * 三个入口（整理 / 显示 / 导出）看起来是同一件东西；只改视觉，不改展开 / 收起逻辑。 */
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 200px;
+  padding: 5px;
+  background: var(--folio-menu-bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--folio-radius);
+  box-shadow: var(--folio-shadow-pop);
+}
+/* 「整理」悬浮选择卡 / 「显示」菜单：条目较长（一键整理本书… / 显示不可见字符…），给宽一点避免折行 */
+#format-menu,
+#display-menu { min-width: 250px; }
+/* 悬浮选择卡：鼠标从按钮移到卡片中间隔了几像素，给卡片加一块透明的「搭桥」区，
+   这样指针一路都落在 wrapper 的后代上，不会先触发 pointerleave（卡片还没等鼠标到就收起）。
+   卡片与按钮的间距由上面的 calc(100% + 6px) 决定，这里覆盖 6px 间隙 + 上方余量。 */
+#format-menu::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -12px;
+  height: 12px;
+}
+/* 选择卡顶部一句说明：点「整理」= 直接用记住的规则整理本章 */
+.format-card-note {
+  padding: 3px 9px 8px;
+  margin: 0 0 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--ink-faint);
+
+  letter-spacing: .02em;}
+/* 下拉菜单 / 悬浮选择卡 / 右键菜单的条目共用一套基础外观（v0.8.5 R3 去重）：
+ * 三处弹层只各自补「行高 / 过渡 / 禁用态 / 激活态」，不再复制同一串基础声明。 */
+.dropdown-menu button,
+.context-menu button {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 7px 10px;
+  text-align: left;
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  background: none;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.dropdown-menu button {
+  line-height: 1.35;
+  transition: background var(--motion-quick) ease, color var(--motion-quick) ease;
+
+  height: 32px;}
+.dropdown-menu button:hover:not(:disabled),
+.context-menu button:hover { background: var(--hover-tint); 
+  color: var(--ink);}
+.dropdown-menu button:active:not(:disabled) { background: var(--btn-press); }
+.dropdown-menu button:focus-visible,
+.context-menu button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* 当前段落高亮颜色（v0.8-10b，提案 N10b）：色板 + 取色器。
+   「排版 ▾」菜单和「设置 → 当前段落高亮」共用同一套样式；色块只是显示层，点了才写 config。 */
+.caret-color-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 4px 10px 6px;
+}
+.caret-color-row .caret-color-label {
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.caret-swatches { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.caret-swatch,
+.dropdown-menu .caret-swatch {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--swatch, var(--paper-deep));
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.caret-swatch:hover,
+.dropdown-menu .caret-swatch:hover { transform: scale(1.08); }
+.caret-swatch[data-active="1"],
+.dropdown-menu .caret-swatch[data-active="1"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+/* 「跟随主题」色块：用 6 套纸色的拼色圆点表示「跟着主题走」 */
+.caret-swatch-theme {
+  background: conic-gradient(
+    #f7f4ee 0 16.6%,
+    #f7efdc 16.6% 33.3%,
+    #e8efe2 33.3% 50%,
+    #f0e6d2 50% 66.6%,
+    #f4f7f6 66.6% 83.3%,
+    #1f2023 83.3% 100%
+  );
+}
+.caret-color-input {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--paper-soft);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.caret-color-input::-webkit-color-swatch-wrapper { padding: 2px; }
+.caret-color-input::-webkit-color-swatch { border: none; border-radius: 4px; }
+.settings-caret-colors {
+  margin-top: 8px;
+  padding: 2px 0 0;
+}
+#settings-caret-hint { margin-top: 6px; }
+
+.editor {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: var(--editor-max-width);
+  align-self: center;
+  padding: 30px var(--editor-padding-x) 56px;
+  border: none;
+  outline: none;
+  resize: none;
+  /* 纸纹 / 纸色由 .editor-main 统一铺（含页首）。这里透明，避免正文框再刷一层纸纹，
+   * 造成「页首平纸、正文有纹」的接缝，或正文宽度居中时出现一块边界分明的方格纸。 */
+  background: transparent;
+  color: var(--ink);
+  caret-color: var(--editor-caret);
+  font-family: var(--editor-font-family);
+  font-size: var(--editor-font-size);
+  line-height: var(--editor-line-height);
+  letter-spacing: var(--editor-letter-spacing);
+  user-select: text;
+  text-indent: 0;
+
+  padding-top: 20px;}
+.editor::placeholder { color: var(--ink-faint); }
+/* 输入框占位提示（v0.9 A-4）：以前只给正文编辑区写了 ::placeholder，搜索框 / 查找 / 重命名 /
+ * 书籍信息这些输入框走浏览器默认灰（#757575），夜间主题的深色输入框上只有 2.96:1。
+ * 统一跟 --ink-faint 走（浅色纸 4.97:1、夜间输入框 4.60:1）。 */
+.text-input::placeholder,
+input::placeholder,
+textarea::placeholder { color: var(--ink-faint); opacity: 1; }
+.editor::-webkit-scrollbar { width: 10px; }
+.editor::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 6px;
+  border: 2px solid var(--paper);
+}
+
+/* ---------- 编辑器小件（提案 4.1）：只读标记层 ----------
+ * 覆盖在编辑区上的一个「影子层」：字体/字号/行高/字距/宽高都从 textarea 的实测值同步（renderer 里设内联样式），
+ * 文字本身透明，只画底色和标记。正文一个字节都不动，也不参与编辑 / 选择。
+ * 行内元素上下加 padding 是为了让底色铺满行高；只加纵向 padding，不改变排版和换行。
+ * 底色块现在按行高实测算（--marks-line-pad）：以前写死 7px 只对 18px / 1.95 刚好，
+ * 换成 24px / 2.4 之后行距 57.6px、底色块只有 38px，当前段落高亮会断成一条一条。 */
+.editor-marks {
+  position: absolute;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  color: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 4;
+  /* 行盒高度 = 行高 × 字号；SimSun 的行内内容盒正好 1em，所以上下各补 (行距 − 1)/2 em 就铺满整行。 */
+  --marks-line-pad: calc((var(--editor-line-height) - 1) * 1em / 2);
+}
+.editor-marks .long-para,
+.editor-marks .mark-fw,
+.editor-marks .mark-trail,
+.editor-marks .caret-para {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+/* 超长段落：段落本身只作为定位标记（背景在跨行行内元素上不可靠），
+   每一行的左侧黄线由 #editor-marks-gutter 按实测行位置画在左边距里 */
+.editor-marks .long-para { background: none; }
+/* 当前段落高亮（v0.8-10，提案 N10）：光标所在那一段（含折行）画一层淡色底 + 左侧细线。
+   颜色由背景主题的 --caret-para-tint / --caret-para-edge 决定；纵向 padding 让底色铺满行高，
+   不参与排版 / 换行计算。只画在影子层上：不动正文，也不写盘。 */
+.editor-marks .caret-para {
+  padding: var(--marks-line-pad) 0;
+  background: var(--caret-para-tint);
+  box-shadow: inset 3px 0 0 var(--caret-para-edge);
+}
+/* 全角空格：黄底 + 居中的 ␣（绝对定位，不改字宽） */
+.editor-marks .mark-fw {
+  position: relative;
+  padding: var(--marks-line-pad) 0;
+  background: rgba(222, 164, 30, .25);
+}
+.editor-marks .mark-fw > i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-family: "Segoe UI Symbol", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-style: normal;
+  font-size: .8em;
+  line-height: 1;
+  color: #a9741e;
+}
+/* 行尾空白：浅红底 + 末端一个小点 */
+.editor-marks .mark-trail {
+  position: relative;
+  padding: var(--marks-line-pad) 0;
+  background: rgba(190, 96, 86, .16);
+}
+.editor-marks .mark-trail > i {
+  position: absolute;
+  right: -2px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-style: normal;
+  font-size: .8em;
+  line-height: 1;
+  color: #b25a52;
+}
+body.theme-night .editor-marks .long-para {
+  background-image: linear-gradient(90deg, rgba(208, 160, 74, .8) 0 3px, rgba(208, 160, 74, .12) 3px 100%);
+}
+body.theme-night .editor-marks .mark-fw { background: rgba(208, 160, 74, .28); }
+body.theme-night .editor-marks .mark-fw > i { color: #e2b75c; }
+body.theme-night .editor-marks .mark-trail { background: rgba(208, 106, 106, .22); }
+body.theme-night .editor-marks .mark-trail > i { color: #e08a84; }
+
+/* 查找结果高亮层（v0.8-11，提案 N11）：和标记层同一套影子层定位（renderer 里同步字体 / 宽高 / 滚动）。
+ * 当前章所有命中画淡琥珀底，正在看的那一处画更重的底色 + 底部细线；只读、不参与编辑与选择。 */
+.find-marks { z-index: 2; }
+.find-marks .find-hit {
+  padding: 7px 0;
+  border-radius: 2px;
+  background: var(--find-hit-tint);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.find-marks .find-hit.find-hit-current {
+  background: var(--find-hit-current-tint);
+  box-shadow: inset 0 -2px 0 var(--find-hit-current-edge);
+}
+
+/* 超长段落左侧黄线：位置由 renderer 按编辑区实测行框算，滚动时跟着走 */
+.editor-marks-gutter {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: hidden;
+  pointer-events: none;
+}
+.long-para-bar {
+  position: absolute;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--warn);
+
+  opacity: .55;}
+body.theme-night .long-para-bar { background: var(--warn); 
+  opacity: .55;}
+
+/* ---------- 专注模式（提案 3.5）----------
+ * 隐藏左栏、分隔条与顶栏，正文占满；只留右上角一条极简退出条（F11 / 按钮进出，Esc 退出）。
+ * 纯显示层：不改正文、不写盘、不写配置；打字机模式只调 textarea.scrollTop。 */
+#editor-view.focus-mode .sidebar,
+#editor-view.focus-mode .sidebar-resizer,
+#editor-view.focus-mode .editor-header { display: none; }
+/* 顶部留一点空间给极简退出条，免得第一行字被它压住 */
+#editor-view.focus-mode .editor { padding-top: 58px; }
+
+.focus-bar {
+  position: absolute;
+  top: 10px;
+  right: 18px;
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 40px);
+  padding: 3px 4px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--folio-raised);
+  box-shadow: none;
+  /* 静止态 .55：专注模式里这一条是**唯一**看得见的退出入口（Esc / F11 / 按钮）。
+   * 原 .38 时整条 + 边框在纸上几乎化掉、键帽「Esc」读不清；.55 仍安静，但能看出这里有一条，
+   * 鼠标悬停或键盘聚焦时回到 1。不要再调回 .38 以下。 */
+  opacity: .55;
+  transition: opacity var(--motion-overlay) ease;
+}
+.focus-bar:hover,
+.focus-bar:focus-within { opacity: 1; }
+.focus-chapter {
+  max-width: 42vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+.focus-btn {
+  padding: 0 9px;
+  font-family: var(--ui-font);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  cursor: pointer;
+
+  height: 26px;}
+.focus-btn:hover { background: var(--hover-tint); }
+/* 打字机开：用「按下去的纸」表示状态，不占朱红 —— 朱红在本版只给当前章 / 未保存 / 焦点环。 */
+.focus-btn[data-on="1"] {
+  color: var(--ink);
+  background: var(--paper-deep);
+  border-color: var(--line-strong);
+}
+.focus-kbd {
+  padding: 0 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+/* 2026-11-04 拍板 #5：退出条两个键帽（Esc / F11）并排时留 4px，别粘成一个词。 */
+.focus-kbd + .focus-kbd { margin-left: 4px; }
+/* 打字机模式的光标测量层：和正文同样的字体 / 行高 / 宽度，绝对定位放在屏幕外，
+   只用来量「光标所在行」的像素位置（正文一个字节都不改，它也不参与显示 / 选择）。 */
+.focus-mirror {
+  position: absolute;
+  top: 0;
+  left: -10000px;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 4;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-sizing: content-box;
+}
+
+.statusbar {
+  height: 34px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 18px;
+  border-top: 1px solid var(--line);
+  background: var(--folio-sheet);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+/* 状态栏信息层级（v0.8.5 R2）：左边「保存状态」，右边依次是计时 / 统计 / 小标签 / 本章字数 / 快捷键。
+ * 只用细竖线分组、字重与透明度分主次；状态文案、数字与按钮的语义全部没变。 */
+#status-text { font-weight: 400; 
+  color: var(--ink-soft);}
+#char-count {
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+
+  font-size: 11px;
+  color: var(--ink-faint);}
+.status-hints {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  flex: 0 0 8px;
+}
+.dot.ok { background: var(--ok); }
+.dot.dirty { background: var(--accent); }
+.dot.saving { background: var(--accent-soft); }
+.dot.error { background: var(--danger); }
+/* 状态栏今日字数（v0.13 U-D4）：本身是码字日历入口（button）。
+ * 只做「看起来仍像状态栏文字」的复位：负外边距抵消内边距，横向占位与以前逐像素一致；
+ * 24px 最小高度与旁边「写作计时」按钮对齐，键盘焦点环走全局 button:focus-visible 规则。 */
+.status-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 6px;
+  margin: 0 -6px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.status-stats:hover { background: var(--hover-tint); }
+.status-stats .goal-track { width: 54px; height: 2px; }
+/* 写作计时（v0.8-2）：默认关，设置里开启后才出现；只记时长不记内容 */
+.status-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink-faint);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+
+  height: 24px;}
+.status-timer:hover { background: var(--hover-tint); }
+.status-timer.running {
+  border-color: var(--ok);
+  color: var(--ok);
+  background: rgba(79, 122, 82, .12);
+}
+.status-timer.paused { color: var(--ink-soft); }
+/* 选中字数：只在真选了文字时出现，不占平时的地方 */
+.status-selection {
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+/* 超长段落小标签：点一下跳到下一段（只移动光标，不改字） */
+.status-long {
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--paper-soft));
+  color: var(--warn);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.status-long:hover { background: rgba(226, 186, 74, .32); }
+/* 查找高亮小标签（v0.8-11，提案 N11）：有查找会话时出现，点一下跳到下一处，Esc 清除高亮 */
+.status-find {
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.status-find:hover { background: var(--paper-deep); }
+#char-count.count-short { color: var(--warn); }
+/* 快捷键提示：压低对比度，只作提示，不跟正文信息抢注意力 */
+.kbd {
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: transparent;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+  white-space: nowrap;
+
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  letter-spacing: .02em;}
+
+/* ---------- 模态 ---------- */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--folio-scrim);
+}
+/* 通用询问框（保存 / 不保存 / 取消）必须压在排版、设置等弹层之上：
+   关窗时它是在别的弹层开着的情况下弹出来的，z-index 相同会被 DOM 顺序盖住。 */
+#modal-backdrop { z-index: 300; }
+.modal {
+  width: min(560px, 88vw);
+  max-height: 84vh;
+  overflow: auto;
+  padding: 24px 30px 20px;
+  background: var(--folio-sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--folio-radius);
+  box-shadow: var(--folio-shadow-pop);
+}
+.modal-title {
+  margin: 0 0 10px;
+  font-size: 22px;
+  font-weight: 400;
+
+  font-family: var(--folio-serif);
+  letter-spacing: .08em;
+  color: var(--ink);}
+/* 弹层右上「× 关闭」（拍板 #3：本轮只做设置弹层）。
+ * 与「取消」完全同义（含关闭前的预览还原），只是多一个不占底栏、不用滚到底的出口。
+ * 颜色仍走现有令牌；按钮尺寸与朗读条一致（28px），焦点环用自绘 outline 保证在深色纸上也够醒目。 */
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--folio-radius);
+  cursor: pointer;}
+.modal-close:hover { color: var(--ink); border-color: var(--line-strong); background: var(--paper); }
+.modal-close:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.modal-message {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--ink-soft);
+  white-space: pre-line;
+}
+.modal-input {
+  width: 100%;
+  margin-top: 14px;
+  padding: 0 10px;
+  font-family: var(--ui-font);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--input-bg);
+  border: 1px solid var(--folio-field-border);
+  border-radius: var(--folio-radius);
+  outline: none;
+  user-select: text;
+
+  height: 32px;
+  height: 34px;}
+.modal-input:focus { border-color: var(--accent); 
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;}
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+
+  padding-top: 14px;
+  border-top: 1px solid var(--line);}
+/* 通用询问框（保存 / 不保存 / 取消；重命名等 prompt）：内容区自己滚、底栏常驻。
+ * 以前 .modal 自己 overflow:auto，说明一长（或窗口一矮）按钮就被推出可视区；
+ * 现在标题 / 说明 / 输入框收进 .modal-scroll，底栏用通栏发丝线钉在下面。 */
+#modal-backdrop .modal {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;}
+.modal-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;}
+/* 老式弹层底栏（不带发丝线、20px 上边距）：通用 #modal-backdrop、跳转、碎片保存三处同款。
+ * B1 把三份逐字复制并成一条分组选择器；每个选择器各自的特异性不变（id 仍是 id）。 */
+#modal-backdrop .modal-buttons,
+.jump-modal .modal-buttons,
+.fragment-modal .modal-buttons {
+  flex: 0 0 auto;
+  margin: 20px -30px 0;
+  padding: 12px 30px 20px;
+  background: var(--folio-sheet);}
+.settings-modal {
+  width: min(900px, 94vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  height: 618px;
+  max-height: 84vh;
+  padding: 24px 40px 0;
+  /* 拍板 #3：右上 × 绝对定位的参照；标题右侧留出 40px 以免窄窗被按钮压住 */
+  position: relative;}
+.settings-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 6px;
+  padding-bottom: 12px;
+
+  flex: 1;
+  display: block;}
+/* 设置弹层的控件贴在滚动区边缘时，外侧焦点环会被 overflow 裁掉（实测 3–4px，贴边那一侧
+ * 整圈看不见）。滚动区里的输入框 / 按钮改画内嵌环：环落在控件自身盒内，滚到任何位置都完整。
+ * （scroll-padding / scroll-margin 都不作用于 Chromium 的「聚焦滚动」，实测无效，别再加。） */
+.settings-scroll .btn:focus-visible,
+.settings-scroll .text-input:focus-visible,
+.settings-scroll .template-input:focus-visible {
+  outline-offset: -2px;
+}
+/* 设置行（v1.0 M4 收口）：标签在左、控件在右。
+ * 原来是一张两列 CSS Grid 自动排布：标签压在控件上方，且「整行字段 + 分组标题」会把自动排布
+ * 顶回第一列 —— 字号 / 背景主题 / 柱状图 / 章节模板 / 敏感词 / 校对 / 导出 / 诊断日志 各自占半列、
+ * 另一半留空，码字日历又和 54px 的柱状图同一行（日历 470px 高，柱状图下面空一大片）。
+ * 改成单列后每个字段独占一整行，顺序与 DOM 一致，不再有半列空洞。 */
+.settings-scroll .field.settings-row {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: center;
+  margin-top: 8px;}
+.settings-scroll .field.settings-row > span:first-child {
+  grid-column: 1;
+  margin: 0;}
+.settings-scroll .field.settings-row > :not(span:first-child) {
+  grid-column: 2;
+  min-width: 0;}
+.settings-scroll .field.settings-row > span.muted { margin-top: 6px; }
+.settings-scroll .field.settings-row > .field-row { width: 100%; }
+/* 检查更新：状态文字经常是一整句（版本号 / 失败原因），单独占一行，失败时用警示色 */
+#settings-update-field .field-row { flex-wrap: wrap; align-items: center; }
+#settings-update-status { flex: 1 1 100%; line-height: 1.6; }
+#settings-update-status.warn { color: var(--danger); }
+.settings-modal .modal-buttons {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--line);
+  margin: 0 -40px;
+  padding: 14px 40px;
+  background: var(--folio-sheet);}
+.field { display: block; margin-top: 12px; }
+.field > span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+
+  letter-spacing: .02em;}
+.field-row { display: flex; gap: 8px; 
+  align-items: center;}
+.field-row .btn { flex: 0 0 auto; white-space: nowrap; 
+  height: 30px;}
+.field-row .text-input { flex: 1 1 auto; min-width: 0; }
+.field-row input[readonly] { background: var(--paper-deep); color: var(--ink-soft); }
+.field-group {
+  margin-top: 18px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  letter-spacing: .14em;
+  user-select: none;
+
+  font-family: var(--folio-serif);}
+/* 设置里的近 30 天柱状图：纯 CSS，不引库 */
+.stats-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 54px;
+  margin-top: 8px;
+  padding: 6px 8px 0;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--paper);
+}
+.stats-bar {
+  display: flex;
+  align-items: flex-end;
+  flex: 1 1 0;
+  height: 100%;
+  min-width: 0;
+}
+.stats-bar > i {
+  display: block;
+  width: 100%;
+  height: 0;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent-soft);
+}
+.stats-bar.today > i { background: var(--accent); }
+.stats-bar:hover > i { background: var(--accent); }
+
+/* 码字日历（v0.8-1）：纯 CSS，不引库；周一开头，颜色深浅 = 当天写得多不多 */
+.calendar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 7px;
+}
+.calendar-label {
+  min-width: 92px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.calendar-streak {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.calendar-streak.off { color: var(--ink-faint); }
+.calendar-weekdays,
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+.calendar-weekdays {
+  margin-bottom: 2px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-align: center;
+  user-select: none;
+}
+.calendar-grid { user-select: none; }
+.cal-day {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1 / 1;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-size: 11.5px;
+}
+.cal-day::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 5px;
+  background: var(--accent);
+  opacity: 0;
+  pointer-events: none;
+}
+.cal-day > span { position: relative; z-index: 1; }
+.cal-day.empty { border-color: transparent; background: transparent; }
+.cal-day.future {
+  color: var(--ink-faint);
+  background: repeating-linear-gradient(135deg, transparent 0 4px, var(--paper-deep) 4px 5px);
+  opacity: .72;
+}
+.cal-day.written { color: var(--ink); font-weight: 600; }
+.cal-day.lv1::before { opacity: .10; }
+.cal-day.lv2::before { opacity: .22; }
+.cal-day.lv3::before { opacity: .36; }
+.cal-day.lv4::before { opacity: .52; }
+.cal-day.today {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.cal-day.goal-met::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.calendar-summary { margin-top: 7px; }
+.calendar-legend { margin-top: 3px; }
+.cal-legend-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 1px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.shelf-stats-streak { color: var(--ink-faint); margin-left: auto; white-space: nowrap; }
+
+#settings-daily-goal { max-width: 160px; }
+
+/* 章节模板（v0.8-5）：多行文本框 + 展开预览；纯 CSS，不引库 */
+.template-input {
+  min-height: 64px;
+  resize: vertical;
+  line-height: 1.7;
+  white-space: pre-wrap;
+
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--folio-field-border);
+  border-radius: var(--folio-radius);
+  background: var(--input-bg);
+  color: var(--ink);
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  outline: none;}
+.template-help { margin-top: 6px; line-height: 1.6; }
+.template-preview {
+  margin-top: 6px;
+  padding: 6px 8px;
+  min-height: 20px;
+  border: 1px dashed var(--line);
+  border-radius: 2px;
+  background: var(--paper);
+  white-space: pre-wrap;
+  word-break: break-word;
+
+  border-color: var(--line);
+  color: var(--ink-soft);}
+
+.text-input {
+  width: 100%;
+  padding: 0 10px;
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--input-bg);
+  border: 1px solid var(--folio-field-border);
+  border-radius: var(--folio-radius);
+  outline: none;
+  user-select: text;
+
+  height: 32px;}
+.text-input:focus { border-color: var(--accent); 
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;}
+
+/* ---------- 排版 ---------- */
+.dropdown-sep,
+.context-menu-sep {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--line);
+}
+.dropdown-menu button:disabled {
+  opacity: .42;
+  cursor: default;
+}
+.dropdown-menu button:disabled:hover { background: none; }
+
+/* 排版弹层：内容区自己滚，底部按钮固定住 —— 勾选项变多后小窗口里也不会把「套用到本章」挤出屏幕 */
+.format-modal {
+  width: min(680px, 92vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  padding-bottom: 0;}
+/* 三个弹层的滚动区同款：格式 / 导出 / 历史（B1 把 3 份逐字复制并成一条分组选择器） */
+.format-scroll,
+.export-scroll,
+.history-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+/* 弹层底栏（v1.0 M4：发丝线通栏，按钮仍在内容左右边距内）：下面八个弹层同款。
+ * B1 把 8 份逐字复制的规则并成一条分组选择器——每个选择器各自的特异性不变，
+ * 所以与 #modal-backdrop 那条（特异性更高的 id 选择器）的胜负关系也没变。 */
+.format-modal .modal-buttons,
+.export-modal .modal-buttons,
+.bookinfo-modal .modal-buttons,
+.conflict-modal .modal-buttons,
+.history-modal .modal-buttons,
+.proofread-modal .modal-buttons,
+.insert-fragment-modal .modal-buttons,
+.capture-modal .modal-buttons {
+  flex: 0 0 auto;
+  margin: 14px -30px 0;
+  padding: 12px 30px 20px;
+  border-top: 1px solid var(--line);
+  background: var(--folio-sheet);}
+
+/* ---------- 导出范围 ---------- */
+.export-modal {
+  width: min(600px, 92vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  padding-bottom: 0;}
+/* 范围单选卡（v1.0 M4）：三个范围排成一张带发丝线的单选列表（40px 行高），
+ * 不再是三条松散的标签行；选中那行用纸底色压一层，radio 仍是主题色。 */
+.export-scopes {
+  margin-top: 12px;
+  overflow: hidden;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+}
+.export-scope-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+
+  border-top: 1px solid var(--folio-line-soft);}
+.export-scope-row:first-child { border-top: none; }
+.export-scope-row:has(input:checked) { background: var(--paper-deep); }
+.export-scope-row input[type="radio"] {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.export-scope-row .text-input { width: auto; }
+#export-volume { flex: 1 1 auto; min-width: 0; max-width: 280px; }
+.export-range-input {
+  width: 76px !important;
+  text-align: center;
+}
+.export-scope-row .text-input:disabled { opacity: .5; cursor: default; }
+.export-summary {
+  min-height: 20px;
+  margin-top: 14px;
+  padding: 9px 11px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+  white-space: pre-line;
+  user-select: text;
+}
+.export-summary.warn { color: var(--danger); }
+/* 导出简繁转换提示（v0.8 P0 N7）：只读一行，说明这次导出会不会换字形 */
+.export-conversion-note {
+  margin-top: 8px;
+  line-height: 1.6;
+}
+.export-conversion-note.is-on { color: var(--accent); }
+
+/* ---------- 跳章（Ctrl+G） ---------- */
+.jump-modal {
+  width: min(560px, 90vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  padding-bottom: 0;}
+.jump-summary {
+  min-height: 18px;
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+.jump-summary.warn { color: var(--danger); }
+.jump-results {
+  max-height: 260px;
+  margin-top: 8px;
+  overflow: auto;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+}
+.jump-results:empty { display: none; }
+.jump-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--ui-font);
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+
+  border-bottom-color: var(--folio-line-soft);}
+.jump-result:last-child { border-bottom: none; }
+.jump-result:hover { background: var(--hover-tint); }
+.jump-chapter {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  letter-spacing: .01em;
+}
+.jump-status {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+/* ---------- 书籍信息（作者 / 简介 / 分组 / 标签，v0.8-3） ---------- */
+/* 小窗口（本机 1294×766）里字段区滚动、底部按钮常驻可见——别把按钮卷进滚动区。 */
+.bookinfo-modal {
+  width: min(560px, 90vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  padding-bottom: 0;}
+/* 书名从「一块浅色底」改成一行字 + 发丝线：v1.0 的层级只靠字号 / 留白 / 1px 线，不做色块卡片。 */
+.bookinfo-book {
+  flex: 0 0 auto;
+  margin-top: 12px;
+  padding: 2px 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: none;
+  border-bottom: 1px solid var(--line);
+  word-break: break-all;
+}
+.bookinfo-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+
+  flex: 1 1 auto;}
+.bookinfo-modal .field { margin-top: 12px; }
+.bookinfo-modal .modal-input { margin-top: 0; }
+.bookinfo-brief { min-height: 84px; line-height: 1.7; resize: vertical; 
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--folio-field-border);
+  border-radius: var(--folio-radius);
+  background: var(--input-bg);
+  color: var(--ink);
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  outline: none;
+  height: auto;
+  padding: 9px 10px;}
+.bookinfo-error { flex: 0 0 auto; min-height: 18px; margin-top: 10px; font-size: 13px; color: var(--danger); }
+
+/* ---------- 同步冲突副本 ---------- */
+.conflict-modal {
+  width: min(620px, 92vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  padding-bottom: 0;}
+/* v1.0 M4：弹层本身不滚 —— 说明 / 书名 / 计数 / 文件列表都在 .conflict-scroll 里滚，底栏常驻；
+ * 文件列表不再自带 max-height 与第二根滚动条（冲突副本很多时只保留一根弹层滚动条）。 */
+.conflict-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;}
+.conflict-book {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  word-break: break-all;
+}
+.conflict-summary {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--warn);
+}
+.conflict-files {
+  margin-top: 8px;
+  padding: 4px 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+}
+.conflict-file {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  word-break: break-all;
+}
+.conflict-file:last-child { border-bottom: none; }
+
+/* ---------- 本书历史（_trash 备份） ---------- */
+/* 760 → 980（2026-11-04 拍板 #13）：宽窗时左边列表 58% / 右边预览 40% 要放得下，
+ * 窄窗仍受 94vw 约束，弹层 max-height:84vh 与底栏都不变。 */
+.history-modal {
+  width: min(980px, 94vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  padding-bottom: 0;}
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+.history-empty {
+  padding: 20px 14px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+  background: var(--input-bg);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--folio-radius);
+}
+.history-empty.warn { color: var(--danger); }
+.history-group {
+  overflow: hidden;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+
+  border-color: var(--folio-line-soft);}
+.history-group-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 9px 12px;
+  background: var(--paper-deep);
+  border-bottom: 1px solid var(--line);
+}
+.history-source {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.history-time {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.history-count {
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+.history-restore-group { margin-left: auto; }
+.history-note {
+  padding: 8px 12px 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--ink-faint);
+}
+.history-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--line);
+
+  border-color: var(--folio-line-soft);}
+.history-file-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  word-break: break-all;
+  user-select: text;
+}
+.history-file-tag {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+.history-file-tag.current { color: var(--ok); }
+.history-file-tag.deleted { color: var(--warn); }
+.history-file-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+.history-file-actions .btn.tiny { padding: 3px 8px; font-size: 12px; }
+/* 预览格（v1.0 M4）：在滚动区外、底栏上方，点「预览」立刻可见；列表再长也只压缩列表高度。 */
+.history-preview {
+  flex: 0 0 auto;
+  margin-top: 10px;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--folio-radius);
+
+  border-color: var(--line);
+  color: var(--ink-soft);}
+.history-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  background: var(--paper-deep);
+  border-bottom: 1px solid var(--line);
+}
+.history-preview-text {
+  max-height: 24vh;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--editor-font-family);
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink);
+  user-select: text;
+}
+/* 2026-11-04 拍板 #13：历史预览左右分栏 —— 宽窗（≥980）列表左 58% / 预览右 40%，
+ * 窄窗（<980，含应用最小宽 960）自动回落原来的「列表在上、预览在下」。
+ * DOM 顺序没变（列表在前、预览在后），只多了一层 .history-main 做 flex 容器；
+ * 预览收起时走 .hidden（display:none !important），右栏不占位，底栏与 max-height:84vh 不变。 */
+.history-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+@media (min-width: 980px) {
+  .history-main { flex-direction: row; align-items: stretch; gap: 14px; }
+  .history-scroll { flex: 1 1 58%; min-width: 0; }
+  .history-preview {
+    flex: 0 0 40%;
+    margin-top: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .history-preview-text { flex: 1 1 auto; max-height: none; min-height: 0; }
+}
+
+/* ---------- 排版 ---------- */
+/* 排版规则行（v1.0 M4）：标签在左固定 96px、控件在右从同一列起（与设置弹层 .settings-row 同构）。
+ * 以前 select 固定 260px、右半屏全空，而且控件起点跟着标签字数漂；勾选行也缩进到控件列，
+ * 让「规则」整块只有一条左边缘。 */
+.format-rules { margin-top: 12px; }
+.format-rules .field.inline {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  column-gap: 14px;
+  align-items: center;
+  margin-top: 8px;
+}
+.format-rules .field.inline > span { display: block; margin: 0; white-space: nowrap; }
+.format-rules .field.inline .text-input { width: 100%; max-width: 320px; }
+.format-rules .check-row { padding-left: 110px; }
+/* 原生 checkbox 自带 3–4px 外边距，会让勾选框比上面的 select 往右错 4px */
+.format-rules .check-row input { margin: 0; }
+.format-rules .check-row-pair { padding-left: 110px; }
+.format-rules .check-row-pair .check-row { padding-left: 0; }
+.check-row-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin-top: 9px;
+}
+.check-row-pair .check-row { margin-top: 0; }
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  user-select: none;
+
+  height: 28px;}
+.check-row input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.field.inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.field.inline > span { display: inline; margin: 0; white-space: nowrap; }
+.field.inline .text-input { width: 260px; }
+.format-summary {
+  min-height: 18px;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+.format-preview {
+  margin: 8px 0 0;
+  padding: 12px 14px;
+  /* v1.0 M4：预览最多 700 字（约 300px 高）；230px 时常见章会只差一两行就出滚动条，
+     看着像渲染坏了。真超长时预览区自己滚，弹层正文另有自己的滚动条。 */
+  max-height: 300px;
+  overflow: auto;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--folio-radius);
+  font-family: var(--editor-font-family);
+  font-size: 13.5px;
+  line-height: 1.85;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+
+  border-color: var(--line);}
+
+/* ---------- 查找替换 ---------- */
+/* 弹层「底部横向滚动条」（v1.0 M4 修，只改显示层）：
+   ① 范围 / 三个动作按钮在同一 flex 行里，默认不折行 —— 弹层内容区一旦窄于这一行的最小宽度
+      （弹层按 .modal 基础宽度 560px 时内容区只有 488px，而这一行最小宽度约 514px），
+      .modal 的 overflow:auto 就会在底部亮出一条横向滚动条，还会把「全部替换」压在竖向滚动条下面。
+      改成 flex-wrap: wrap：宽度够就还是原来的一行，不够时按钮整行换到下一行，永不横向溢出。
+   ② 结果列表里的章名 / 片段是作者原文（导入时章名照抄），遇到不含空格的超长串
+      （长英文标题、URL、连排符号）不会断行，会把 .find-results 撑出横向滚动条。
+      overflow-wrap: break-word 可继承到弹层内所有文本，长串按需要断行。 */
+.find-modal {
+  width: min(740px, 92vw);
+  overflow-wrap: break-word;
+}
+.find-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.find-row .text-input { flex: 1 1 0; min-width: 0; }
+.find-row .field.inline { margin-top: 0; }
+.check-row.inline { margin-top: 0; white-space: nowrap; }
+/* 当前章逐处定位（v0.8-11，提案 N11）：两个按钮 + 第 X / 共 N 处 + 快捷键提示 */
+.find-nav-row {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+.find-nav-label { font-size: 12.5px; color: var(--ink-soft); }
+.find-nav-row .btn { flex: 0 0 auto; }
+.find-nav-count {
+  min-width: 64px;
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.find-nav-hint { font-size: 11.5px; }
+/* 查找书签（v0.8-11b，提案 N11b）：只列查询条件，不存正文；当前这一章的条目单独标出 */
+.find-bookmarks {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+.find-bookmarks-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.find-bookmarks-head .btn { flex: 0 0 auto; margin-left: auto; }
+.find-bookmarks-count { font-size: 11.5px; }
+.find-bookmark-list {
+  max-height: 126px;
+  margin-top: 6px;
+  overflow: auto;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.find-bookmark {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 8px;
+  border-bottom: 1px solid var(--line);
+
+  border-color: var(--folio-line-soft);}
+.find-bookmark:last-child { border-bottom: none; }
+.find-bookmark.current {
+  background: var(--folio-accent-tint);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.find-bookmark-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 2px;
+  text-align: left;
+  background: none;
+  border: none;
+  font-family: var(--ui-font);
+  color: var(--ink);
+  cursor: pointer;
+}
+.find-bookmark-main:hover .find-bookmark-place { color: var(--accent); }
+.find-bookmark-place {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.find-bookmark-query {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.find-bookmark-delete { flex: 0 0 auto; }
+.find-bookmark-empty { padding: 10px 12px; font-size: 12.5px; color: var(--ink-soft); }
+.find-bookmarks-hint { margin: 4px 0 0; font-size: 11.5px; }
+.find-summary {
+  min-height: 18px;
+  margin-top: 12px;
+  color: var(--ink-soft);
+}
+.find-results {
+  max-height: 260px;
+  margin-top: 8px;
+  overflow: auto;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.find-results:empty { display: none; }
+.find-result {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--ui-font);
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+
+  border-bottom-color: var(--folio-line-soft);}
+.find-result:last-child { border-bottom: none; }
+.find-result:hover { background: var(--hover-tint); }
+.find-chapter { font-weight: 600; margin-right: 6px; }
+.find-count { margin-right: 8px; font-size: 12px; color: var(--ink-soft); }
+.find-snippet { font-size: 12.5px; color: var(--ink-soft); }
+.find-snippet mark {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--folio-accent-tint);
+  color: var(--ink);
+}
+.find-empty { padding: 14px; font-size: 13px; color: var(--ink-soft); }
+.find-backup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  background: var(--paper-deep);
+  border-radius: 8px;
+}
+.find-backup.hidden { display: none; }
+.find-backup .btn { flex: 0 0 auto; }
+
+/* ---------- 校对（只报告，不改动） ---------- */
+/* v1.0 M4：弹层本身不滚 —— 说明 / 词表 / 范围 / 汇总 / 结果 / 阈值说明都在 .proofread-scroll 里滚，
+ * 底栏（关闭）常驻；结果列表不再自带第二根滚动条（以前「弹层滚 + 列表滚」两层嵌套，
+ * 而且底栏被推到窗口外面，1294×766 要滚一屏才看得见「关闭」）。 */
+.proofread-modal {
+  width: min(820px, 94vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  padding-bottom: 0;}
+.proofread-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+.proofread-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.proofread-row .field.inline { margin-top: 0; }
+.proofread-row .field.inline .text-input { width: 168px; }
+.proofread-summary {
+  min-height: 18px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+.proofread-results {
+  margin-top: 8px;
+  overflow: hidden;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+}
+.proofread-results:empty { display: none; }
+.proofread-result {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--ui-font);
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+
+  border-bottom-color: var(--folio-line-soft);}
+.proofread-result:last-child { border-bottom: none; }
+.proofread-result:hover { background: var(--hover-tint); }
+.proofread-result:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.proofread-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.proofread-rule {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid currentColor;
+  border-radius: var(--folio-radius);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+.proofread-rule.rule-halfwidth-punct { color: var(--warn); }
+.proofread-rule.rule-long-paragraph { color: var(--danger); }
+.proofread-rule.rule-repeat-word { color: var(--accent); }
+.proofread-rule.rule-punct-run { color: var(--warn); }
+.proofread-rule.rule-blank-lines { color: var(--ink-faint); }
+.proofread-rule.rule-custom-word { color: var(--danger); }
+.proofread-chapter { font-weight: 600; }
+.proofread-pos { font-size: 12px; color: var(--ink-soft); }
+.proofread-message { margin-top: 3px; font-size: 12.5px; color: var(--ink-soft); }
+.proofread-snippet {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.proofread-snippet mark {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--folio-accent-tint);
+  color: var(--ink);
+}
+.proofread-empty { padding: 16px 14px; font-size: 13px; color: var(--ink-soft); }
+.proofread-more {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--warn);
+  border-top: 1px solid var(--line);
+}
+/* 阈值 / 词表说明（v1.0 M4）：跟着内容区滚，不再把底栏顶出屏幕 */
+.proofread-threshold { margin: 12px 0 0; line-height: 1.7; }
+
+/* ---------- 敏感词预检（结果列表复用校对面板的 .proofread-* 样式） ---------- */
+.sensitive-wordlist {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+  background: var(--paper-deep);
+}
+.sensitive-wordlist #sensitive-wordlist-text,
+.proofread-wordlist #proofread-wordlist-text { flex: 1; min-width: 0; }
+.sensitive-wordlist .warn,
+.proofread-wordlist .warn { color: var(--warn); }
+.sensitive-word { color: var(--danger); font-weight: 600; }
+
+/* ---------- 灵感箱（碎片速记） ---------- */
+.fragment-modal {
+  width: min(640px, 92vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;}
+.fragment-text {
+  display: block;
+  width: 100%;
+  min-height: 190px;
+  margin-top: 14px;
+  padding: 9px 10px;
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--input-bg);
+  border: 1px solid var(--folio-field-border);
+  border-radius: var(--folio-radius);
+  outline: none;
+  resize: vertical;
+  user-select: text;
+
+  height: 32px;
+  height: auto;}
+.fragment-text:focus { border-color: var(--accent); 
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;}
+.fragment-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  min-height: 18px;
+}
+.fragment-error { color: var(--danger); }
+
+.insert-fragment-modal {
+  width: min(880px, 94vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  padding-bottom: 0;}
+.fragment-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+.fragment-main {
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+  max-height: min(400px, 52vh);
+  margin-top: 8px;
+
+  flex: 1 1 auto;}
+.fragment-list {
+  flex: 0 0 330px;
+  min-width: 0;
+  overflow: auto;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+}
+.fragment-item {
+  display: block;
+  width: 100%;
+  padding: 8px 11px;
+  text-align: left;
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  color: var(--ink);
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+
+  border-color: var(--folio-line-soft);}
+.fragment-item:last-child { border-bottom: none; }
+.fragment-item:hover { background: var(--hover-tint); }
+.fragment-item.selected { background: var(--hover-tint); box-shadow: inset 3px 0 0 var(--accent); }
+.fragment-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+/* 灵感箱列表的日期分组小标题（拍板 #9）：只是视觉分隔，不是按钮、不参与键盘漫游。
+ * 颜色用最淡的 --ink-faint（对比度沿用已有配方，不新增规格）。 */
+.fragment-day {
+  margin: 10px 2px 2px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  letter-spacing: .04em;
+}
+.fragment-day:first-child { margin-top: 2px; }
+.fragment-item-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fragment-item-meta { margin-top: 2px; font-size: 11.5px; color: var(--ink-soft); }
+.fragment-item-preview {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fragment-preview-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+}
+.fragment-preview-name { flex: 0 0 auto; }
+.fragment-preview {
+  flex: 1 1 auto;
+  margin: 6px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--editor-font-family);
+  font-size: 13px;
+  line-height: 1.85;
+  color: var(--ink);
+}
+.fragment-empty { padding: 14px; font-size: 13px; line-height: 1.8; color: var(--ink-soft); }
+.fragment-hint { margin-top: 10px; flex: 0 0 auto; }
+
+/* ---------- 剪贴板（P0）：单列表视图 ---------- */
+/* 2026-11-07 契约 v1：面板只剩一列复制记录，每条两个动作「正文」「章节」。
+   配色 / 圆角 / 字号全走现有令牌与 .btn ghost tiny，不新增视觉令牌。 */
+.capture-modal {
+  width: min(880px, 94vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+.capture-queue {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.capture-queue .modal-buttons { margin-top: auto; }
+.capture-record-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px;
+}
+.capture-record {
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.capture-record-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.capture-record-no {
+  flex: 0 0 auto;
+  min-width: 1.6em;
+  text-align: right;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.capture-record-meta {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.capture-record-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  background: var(--paper-deep);
+  border-radius: 4px;
+}
+.capture-record-text {
+  margin-top: 6px;
+  max-height: calc(1.7em * 6);
+  overflow: hidden;
+  font-family: var(--editor-font-family);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.capture-record-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.capture-queue-empty {
+  margin-top: 10px;
+  line-height: 1.8;
+}
+
+/* ---------- 章节拖拽排序 ---------- */
+.chapter-item.dragging { opacity: .45; background: var(--paper-deep); }
+.chapter-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.chapter-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+body.chapter-dragging,
+body.chapter-dragging * { user-select: none; }
+
+/* ---------- Toast ---------- */
+#toast-area {
+  position: fixed;
+  right: 22px;
+  bottom: 46px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+/* 朗读条开着时，toast 抬到条子正上方：抬起量由 renderer/tts-ui.js 量「朗读条实际高度 + 44
+ * （条底距）+ 8（与 toast 的间隙）」后写进 --tts-toast-lift（2026-11-04 拍板 #6）。
+ * 原写死 184px = 44 + 132（两行文案）+ 8 —— 加一个控件、状态文字折行数一变就会压住条子右下角
+ * 的「×」和“正在读的那一行”。184 保留作无 JS / 量不到布局时的回退（最保守值）。 */
+body:has(#tts-bar:not(.hidden)) #toast-area {
+  bottom: var(--tts-toast-lift, 184px);
+}
+.toast {
+  max-width: 460px;
+  padding: 9px 14px;
+  border-radius: var(--folio-radius);
+  background: var(--folio-btn-bg);
+  color: var(--folio-btn-ink);
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: var(--folio-shadow-pop);
+  animation: toast-in var(--motion-overlay) ease-out;
+  /* 只在「一个词/一条长串本身就比整行宽」时才断，英文单词与路径不再被 break-all 从中间劈开。 */
+  overflow-wrap: anywhere;
+  word-break: normal;
+
+  border: 1px solid var(--folio-btn-bg);
+  letter-spacing: .02em;}
+.toast.warn { background: var(--warn); 
+  border-color: var(--warn);
+  color: var(--on-accent);}
+.toast.error { background: var(--danger); 
+  border-color: var(--danger);
+  color: var(--on-accent);}
+/* b8（剪贴板联动）：可点提示——toast 里带一个动作按钮，点了才打开捕获面板。
+ * 颜色全部继承 toast 本身（文字色 / 底色），对比度与普通 toast 用同一份令牌。 */
+.toast.actionable {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+}
+.toast .toast-action {
+  flex: none;
+  padding: 2px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.toast .toast-action:hover {
+  text-decoration: underline;
+}
+.toast .toast-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* toast 淡出（v0.9 A-6）：透明度与时长都放在这里，renderer.js 只负责加这个 class。
+ * 以前是 JS 里写死的内联过渡（`el.style.transition = 'opacity .25s ease'`），比全界面
+ * 慢一拍，而且时长散落在 JS 里没法统一管。注意**不要**写成内联的
+ * `el.style.transition = 'opacity var(--motion-overlay) ease'`：Chromium 的 CSSOM
+ * 在简写属性里遇到 var() 会整条丢掉（实测计算值仍是 all / 0s，toast 直接跳没了）。 */
+.toast.leaving {
+  opacity: 0;
+  transition: opacity var(--motion-overlay) ease;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- 右键菜单 ---------- */
+/* 和顶栏下拉菜单 / 悬浮选择卡共用一套外观变量（v0.8.5 R2），三处弹层看起来统一 */
+.context-menu {
+  position: fixed;
+  z-index: 150;
+  min-width: 184px;
+  padding: 5px;
+  background: var(--folio-menu-bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--folio-radius);
+  box-shadow: var(--folio-shadow-pop);
+}
+.context-menu button {
+  transition: background var(--motion-quick) ease;
+
+  /* 快捷键提示（Phase D / D2）：条目文字在左、键帽在右（目前只有「重命名」带 F2 键帽） */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  height: 32px;}
+.context-menu button .kbd { flex: 0 0 auto; }
+.danger-text { color: var(--danger) !important; }
+
+/* ---------- 朗读（悬浮小条：只读正文、不改字、不写盘） ---------- */
+.tts-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  z-index: 40;
+  width: min(900px, calc(100vw - 44px));
+  padding: 10px 12px;
+  background: var(--folio-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+  box-shadow: var(--folio-shadow-pop);
+}
+.tts-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.tts-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 0 2px;
+  background: var(--line);
+}
+.tts-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.tts-field .text-input {
+  width: auto;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+.tts-field #tts-voice { max-width: 220px; }
+/* 2026-11-04 拍板 #7：朗读条同一行里按钮（.btn.tiny 24px）和下拉（.text-input 32px）参差，
+ * 统一到 28px。只作用于朗读条内部的按钮 / 输入框；× 关闭按钮（.tts-close）、
+ * 「跟随高亮」复选框、tts-status / tts-preview 都不受影响。 */
+.tts-bar .btn:not(.tts-close) {
+  height: 28px;
+  min-height: 28px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.tts-bar .text-input {
+  height: 28px;
+  min-height: 28px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.tts-close { margin-left: auto; font-size: 14px; line-height: 1; }
+.tts-status {
+  min-height: 17px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.tts-status.error { color: var(--danger); }
+.tts-status .muted { color: var(--ink-faint); }
+/* 「正在读这一段」：只做一行小字 + 上方发丝线，不再铺一块 --paper 底色。
+ * 原来是一块比朗读条更深的实心条（像一只禁用的输入框、卡片里再套一块色块），v1.0 用线分层。 */
+.tts-preview {
+  margin-top: 6px;
+  padding-top: 7px;
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--ink-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  border-top: 1px solid var(--line);
+}
+.tts-preview:empty { display: none; }
+
+/* ---------- 阅读模式（v0.8-4，提案 N4）：整本只读通读，纯显示层 ---------- */
+/* 令牌（--reading-* / --folio-*）已在文件顶部的 :root 里声明；这里只剩布局规则，别再起第二个 :root（B1）。 */
+.reading-view {
+  flex-direction: column;
+  background: var(--paper);
+}
+.reading-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 9px 22px;
+  background: var(--folio-sheet);
+  border-bottom: 1px solid var(--line);
+}
+.reading-head-left,
+.reading-head-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.reading-head-left { flex: 1 1 320px; min-width: 0; }
+.reading-head-right { justify-content: flex-end; }
+.reading-book { min-width: 0; }
+.reading-book-title {
+  overflow: hidden;
+  max-width: 360px;
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  font-family: var(--folio-serif);
+  letter-spacing: .04em;}
+.reading-progress { margin-top: 1px; }
+.reading-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.reading-select {
+  width: auto;
+  min-width: 64px;
+  padding: 3px 7px;
+  font-size: 12px;
+}
+.reading-toc-field { display: inline-flex; }
+.reading-toc {
+  min-width: 170px;
+  max-width: 240px;
+  text-overflow: ellipsis;
+}
+.reading-toc-field .reading-toc { min-width: 170px; }
+.reading-note {
+  padding: 6px 22px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, var(--paper));
+  border-bottom: 1px solid var(--line);
+}
+.reading-main {
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: center;
+  min-height: 0;
+}
+.reading-scroll {
+  width: 100%;
+  overflow-y: auto;
+  padding: 6px 0 36px;
+  outline: none;
+  overscroll-behavior: contain;
+}
+.reading-scroll:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.reading-content {
+  max-width: var(--reading-max-width);
+  margin: 0 auto;
+  padding: 0 34px;
+  user-select: text;
+}
+.reading-chapter {
+  padding: 30px 0 16px;
+  border-top: 1px solid var(--folio-line-soft);
+}
+.reading-chapter:first-child { border-top: none; padding-top: 12px; }
+.reading-chapter-title {
+  margin: 0 0 18px;
+  font-family: var(--folio-serif);
+  font-size: calc(var(--reading-font-size) * .95);
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--ink);
+  text-align: center;
+  letter-spacing: .08em;
+}
+.reading-chapter-text {
+  margin: 0;
+  font-family: var(--editor-font-family);
+  font-size: var(--reading-font-size);
+  line-height: var(--reading-line-height);
+  letter-spacing: var(--editor-letter-spacing);
+  color: var(--ink);
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.reading-chapter-empty,
+.reading-chapter-error {
+  font-family: var(--editor-font-family);
+  font-size: calc(var(--reading-font-size) * .82);
+  line-height: 1.8;
+  color: var(--ink-faint);
+}
+.reading-chapter-error { color: var(--danger); }
+.reading-end {
+  margin: 30px 0 10px;
+  font-size: 13px;
+  color: var(--ink-faint);
+  text-align: center;
+  letter-spacing: .2em;
+}
+.reading-loading { padding: 10px 0 4px; text-align: center; }
+.reading-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 22px;
+  background: var(--folio-sheet);
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- 窄窗口适配（v0.8.5 R2）----------
+ * 作者常用窗口 1294×766（内容区约 1267×717）保持原来的宽松间距；窗口再窄时先收紧按钮与分组间距，
+ * 还不够就把顶栏排成两行：第一行「章节标题 + 保存」，第二行整排工具按钮。
+ * 按钮文字永远不折行、不被裁掉；只是布局换行，不隐藏任何按钮、不改事件、不改功能区域。 */
+@media (max-width: 1220px) {
+  .editor-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "title save"
+      "actions actions";
+    align-items: center;
+  }
+  .chapter-title { grid-area: title; max-width: none; }
+  .editor-actions { grid-area: actions; margin-left: 0; justify-content: flex-end; }
+  #btn-save { grid-area: save; justify-self: end; }
+}
+@media (max-width: 1200px) {
+  .editor-header { padding: 8px 14px; column-gap: 16px; }
+  .editor-actions { gap: 4px; }
+  .action-group { gap: 1px; }
+  .action-group + .action-group::before { margin: 0 7px; }
+  .editor-header .btn { padding: 5px 9px; font-size: 12.5px; }
+  .topbar { padding: 0 28px; }
+  .shelf-search { width: 220px; }
+  #books-root-label { max-width: 170px; }
+}
+@media (max-width: 1040px) {
+  /* v1.0 M3 第二刀（多分辨率抽查）：≤1220 起顶栏是两行网格，这里若只留 0 上下内边距，
+   * 第一行「标题 + 保存」会贴着窗口上沿（960 实测保存按钮 top=0）、2px 焦点环被窗口边裁掉，
+   * 最后一行工具按钮离底部分隔线也只剩 1px。改回与 1100 档一致的 8px 上下内边距。 */
+  .editor-header { padding: 8px 26px; row-gap: 4px; }
+  .chapter-title { max-width: none; 
+  letter-spacing: .03em;
+  color: var(--ink);}
+  .editor-actions { gap: 1px; row-gap: 4px; }
+  .editor-header .btn { padding: 0 8px; 
+  height: 28px;
+  min-height: 28px;
+  border-color: transparent;
+  color: var(--ink-soft);}
+  .shelf-search { width: 240px; }
+  #books-root-label { max-width: 210px; 
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: .02em;
+  display: none;}
+  .statusbar { padding: 0 22px; }
+  .status-hints { padding-left: 12px; gap: 4px; }
+}
+
+/* ---------- 减少动效（v0.9 A-5 无障碍）----------
+ * Windows「辅助功能 → 显示 → 在 Windows 中显示动画」关掉时，Chromium 会把
+ * prefers-reduced-motion 报成 reduce。界面里的悬停过渡、弹窗按钮动画、toast 滑入
+ * 都还在（各有 .12–.16s，见 :root 的 --motion-quick / --motion-overlay），
+ * 对前庭敏感 / 需要读屏的用户是多余的干扰：这里统一压到几乎瞬时（保留 0.01ms 而不是 0，
+ * 避免个别浏览器把 0 当成「不写」）。只改动效时长，不改颜色 / 布局 / 任何功能；
+ * 日志、数据、保存一律不受影响。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+
+/* ---------- v1.0 新增：卷册页首等新件 ---------- */
+::selection {
+  background: var(--folio-accent-tint);
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+progress {
+  accent-color: var(--accent);
+}
+.template-input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.shelf-group-select:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+/* 书架路径：文字由渲染层写成「书架：…」，这里不要再加一遍「书架 」前缀
+ * （v1.0 的 ::before 让顶栏读成「书架 书架：D:\…」）。 */
+.topbar .btn.ghost {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.topbar-actions .btn {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.shelf-group-select:hover {
+  background: var(--hover-tint);
+}
+/* 冲突卡顶部 24px 横条占了「⋯」原来的位置（右上 6px）：把「⋯」挪到书名那一行右侧，
+ * 再给书名行补 26px 右侧留白，免得「⋯」悬停出现时压住分组小签 / 书名。 */
+.book-card.has-conflict .book-card-more {
+  top: 30px;
+}
+.book-card.has-conflict .book-card-head {
+  padding-right: 26px;
+}
+.sidebar-book .btn.tiny {
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  height: 26px;
+}
+.volume-item:first-child {
+  border-top: 0;
+}
+.chapter-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+.chapter-item.active .chapter-name {
+  color: var(--ink);
+  font-weight: 600;
+}
+.editor-header .btn.ghost:hover:not(:disabled) {
+  background: var(--hover-tint);
+  color: var(--ink);
+}
+.editor-header #btn-save {
+  height: 30px;
+  min-height: 30px;
+  padding: 0 18px;
+  margin-left: 12px;
+}
+/* 页首与正文同一条纸边（V-1）：正文 .editor 设了 max-width + align-self:center，
+ * 选「正文宽度 720–1000」时会居中；页首若按整宽 + 左右 padding 铺开，章名与发丝线就比正文
+ * 往左错一截（720 时实测差 146–159px）。这里让页首走与 .editor 完全相同的盒模型：
+ * width 100% + max-width: var(--editor-max-width) + align-self: center + 同样的左右 padding
+ * —— 通栏（none）时仍按 --editor-padding-x 对齐，窄到不足 max-width 时自然退回整宽。 */
+.page-head {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: var(--editor-max-width);
+  align-self: center;
+  padding: 24px var(--editor-padding-x) 0;
+  /* 纸色 / 纸纹由 .editor-main 统一提供（页首与正文一张纸），这里透明 */
+  background: transparent;
+  min-width: 0;
+}
+.page-head-vol {
+  min-height: 14px;
+  margin-bottom: 8px;
+  font-size: 10.5px;
+  letter-spacing: .16em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-head-title {
+  font-family: var(--folio-serif);
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 1.25;
+  letter-spacing: .08em;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-head-rule {
+  height: 1px;
+  background: var(--line);
+  margin-top: 16px;
+}
+#editor-view.focus-mode .page-head {
+  display: none;
+}
+.modal-buttons .btn {
+  height: 32px;
+  min-height: 32px;
+}
+.settings-modal .modal-title {
+  margin-bottom: 4px;
+  padding-right: 40px;
+}
+/* 码字日历：单列后整行 800px 宽会把日期格拉成 110px 的大方块，按「一周 7 格 ≈ 56px」封顶 */
+#settings-calendar-field { max-width: 448px; }
+.format-card {
+  background: var(--folio-menu-bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--folio-radius);
+  box-shadow: var(--folio-shadow-pop);
+  padding: 5px;
+}
+.history-file:hover {
+  background: var(--hover-tint);
+}
+
+/* ---------- v1.0 窄窗口适配 ---------- */
+@media (max-width: 1180px) {
+  .book-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .topbar { padding: 0 28px; }
+  .shelf-head, .shelf-footer { padding-left: 28px; padding-right: 28px; }
+  .shelf-search { width: 240px; }
+}
+@media (max-width: 980px) {
+  .book-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #books-root-label { display: none; }
+}
+@media (max-width: 1220px) {
+  .editor-header { flex-wrap: wrap; }
+  .editor-actions { flex-wrap: wrap; }
+}
+
+/* ---------- v1.0 超宽屏适配（2026-11-04 拍板 #2） ---------- */
+/* 目标：≥1600px 的超宽窗里，书架内容列封顶 1520px 居中 —— 5 张书卡不再被拉成 358px、
+ * 右侧也不再剩一大片空白；1294 / 1187 / 960 / 980 / 1180 全部不受影响（只在 ≥1600 生效）。
+ *
+ * 为什么封 .shelf-body 而不是逐块 max-width：书卡网格的有效宽度 =
+ * .shelf-body 宽 − 28（左 padding）− 18（右 padding）− 10（常驻滚动条槽）= body − 56。
+ * 封 body = 1576 时网格正好 1520，并且固定头（今日字数 / 继续写作 / 分组条）与书卡的左右边线
+ * 天然对齐（同在 body 里，共享同一条 28px 左留白）。1576 = 1520 + 28 + 18 + 10。
+ *
+ * 页脚在 .shelf-body 外面（它是 #shelf-view 的直接子节点），所以只给它补对称 padding：
+ * 内容左边缘落在 (整宽 − 1576)/2 + 28 = 与固定头 / 书卡同一条线；盒子仍是整宽，
+ * 上边那条发丝线照旧通栏。 */
+@media (min-width: 1600px) {
+  .shelf-body {
+    width: 100%;
+    max-width: 1576px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .shelf-footer {
+    padding-left: calc(28px + max(0px, (100% - 1576px) / 2));
+    padding-right: calc(28px + max(0px, (100% - 1576px) / 2));
+  }
+}

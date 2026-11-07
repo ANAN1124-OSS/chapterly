@@ -1,0 +1,441 @@
+/* 编辑器小件（提案 4.1）——纯逻辑，不碰 DOM、不读盘、不依赖 Electron。
+ *
+ * 为什么要单独一个文件：这些计算（选中字数、段落导航、超长段落、不可见字符、章节字数对比）
+ * 每次按键 / 选区变化都要跑，走 IPC 去主进程太吵；但逻辑又不能只写在 renderer.js 里
+ * （那样没法单测）。所以放成「浏览器挂到 window，Node 里可以 require」的模块：
+ *   - 渲染层：index.html 先加载 core/common.js、core/chapters.js、core/paragraphs.js，再加载 editor-logic.js
+ *     （window.CWEditorLogic），最后 renderer.js；
+ *   - 单测：tests/editor-logic.test.js 直接 require('../renderer/editor-logic.js')。
+ *
+ * 段落定义是「一个非空行 = 一段，首尾空白（含全角空格）不算」，**唯一实现在 core/paragraphs.js**
+ * （v0.9 B-3 / 审计 F3）：朗读（core/tts.js）与本模块都引用它，所以「朗读说 4 段、选中说 3 段」
+ * 这种对不上的情况从结构上就不会再出现；单测另有跨实现闸门盯着。
+ * 所有位置都是编辑区 value 的字符下标（0 基），可以直接 setSelectionRange。
+ * 本模块**只读**：不改正文、不写盘、不产生任何文件。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('../core/common'), require('../core/chapters'), require('../core/paragraphs'));
+  } else if (root) {
+    root.CWEditorLogic = factory(root.CWCommon, root.CWChapters, root.CWParagraphs);
+  }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (common, chaptersLib, paragraphsLib) {
+  'use strict';
+
+  // core/common.js 必须先加载（index.html 里排在最前面）；缺了直接报错，不要悄悄退回旧副本。
+  if (!common || typeof common.clampInt !== 'function' || typeof common.pad2 !== 'function') {
+    throw new Error('CWEditorLogic：core/common.js 没有先加载');
+  }
+  // 字数口径（去掉所有空白后的字符数）的唯一实现是 core/chapters.js 的 countChars；
+  // 这里只取同一份函数引用，不再自己抄正则（v0.9 B-2 / 审计 F1：core 与渲染层各一份会漂移）。
+  // index.html 里 core/chapters.js 也排在 editor-logic.js 之前（tests/common.test.js 有加载链闸门）。
+  if (!chaptersLib || typeof chaptersLib.countChars !== 'function') {
+    throw new Error('CWEditorLogic：core/chapters.js 没有先加载');
+  }
+  // 段落 / 行 / 去首尾空白的唯一实现是 core/paragraphs.js（v0.9 B-3 / 审计 F3）：
+  // 朗读（core/tts.js）与本模块共用，缺了同样直接报错，不许退回本地副本。
+  if (!paragraphsLib || typeof paragraphsLib.paragraphRanges !== 'function') {
+    throw new Error('CWEditorLogic：core/paragraphs.js 没有先加载');
+  }
+  const { clampInt, pad2, formatCount } = common;
+  const { countChars } = chaptersLib;
+  // 对外继续导出同名函数（既有调用点与单测一行不用改），但拿的是共享实现那一份引用。
+  const { trimmedRange, lineRanges, paragraphRanges } = paragraphsLib;
+
+  // 覆盖层最多渲染这么多字符的标记：再长就只给「超长段落」结论、不往 DOM 里塞标记。
+  // （正常一章远小于这个数；「整本一章」导入的百万字单章会走到这里。）
+  const MAX_MARK_CHARS = 300000;
+  // 超长段落扫描上限：纯字符串遍历，很快；病态输入兜底。
+  const MAX_LONG_PARAGRAPH_CHARS = 2000000;
+  const LONG_PARAGRAPH_DEFAULT = 500; // 提案 4.1：段落 > 500 字提示
+  const LONG_PARAGRAPH_LIMITS = [50, 20000];
+  const MAX_LONG_PARAGRAPH_ITEMS = 200;
+  // 一次最多返回多少个「不可见字符」标记（每个全角空格一个、每段行尾空白一个）
+  const MAX_MARK_ITEMS = 4000;
+  const MARK_ITEM_LIMITS = [10, 20000];
+  // 章节字数对比：上一章少于 500 字不比较（短章之间差多少都正常）；
+  // 比上一章短 40% 及以上才给软提示（和提案里的例子一致）。
+  const COMPARE_MIN_PREVIOUS = 500;
+  const COMPARE_SHORT_PERCENT = 40;
+  // 「行尾空白」认这些字符（全角空格也算空白；纯空白行不标，避免整行泛色）
+  const SPACE_CHARS = ' \t\u3000';
+
+  function toText(value) {
+    return String(value == null ? '' : value);
+  }
+
+  function toCount(value) {
+    const n = Math.round(Number(value));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function clampIndex(length, value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 0;
+    return Math.min(Math.max(Math.floor(n), 0), length);
+  }
+
+  // 选中统计：chars = 选中字数（不含空白），paragraphs = 选区触及的非空行数。
+  // 只选了段首缩进也算「触及那一段」；只选了空行不算段。
+  function selectionStats(text, start, end) {
+    const source = toText(text);
+    const length = source.length;
+    let from = clampIndex(length, start);
+    let to = clampIndex(length, end);
+    if (from > to) {
+      const tmp = from;
+      from = to;
+      to = tmp;
+    }
+    if (from === to) {
+      return { collapsed: true, chars: 0, paragraphs: 0, start: from, end: to };
+    }
+    const chars = countChars(source.slice(from, to));
+    let paragraphs = 0;
+    for (const line of lineRanges(source)) {
+      if (line.blank) continue;
+      if (from < line.end && to > line.start) paragraphs += 1;
+    }
+    return { collapsed: false, chars, paragraphs, start: from, end: to };
+  }
+
+  // 段落导航（Alt+↑/↓）：返回目标段落开头（已去掉段首缩进）的字符下标，没有就返回 null。
+  //   - 光标在段中间：↑ 回到本段开头；↓ 去下一段开头
+  //   - 光标正好在段开头：↑ 去上一段；↓ 去下一段
+  //   - 光标在第一段之前的空白里：↑ 不动；↓ 去第一段开头
+  function paragraphJumpTarget(text, position, direction) {
+    const source = toText(text);
+    const ranges = paragraphRanges(source);
+    if (!ranges.length) return null;
+    const pos = clampIndex(source.length, position);
+    if (Number(direction) < 0) {
+      for (let i = ranges.length - 1; i >= 0; i -= 1) {
+        if (ranges[i].start < pos) return ranges[i].start;
+      }
+      return null;
+    }
+    for (const range of ranges) {
+      if (range.start > pos) return range.start;
+    }
+    return null;
+  }
+
+  // 光标所在自然段（v0.8-10，提案 N10）：本编辑器里一个非空行 = 一段，和 paragraphRanges 同口径。
+  // 返回：
+  //   index     —— 行下标（0 基，含空行）
+  //   line      —— 行号（1 基，和界面上「第 N 行」一致）
+  //   blank     —— 光标落在空行（只有空白也算空行）
+  //   start/end —— 这段去掉首尾空白后的字符区间（空行时是整行的 [start, end)）
+  //   paragraph —— 第几段（1 基；空行 = 0）
+  //   text      —— 这一段去掉首尾空白后的文字（只读，给测试 / 提示用）
+  // 光标正好在一行末尾（换行符之前）算这一行；在换行符之后就是下一行，不会同时属于两行。
+  function caretParagraph(text, position) {
+    const source = toText(text);
+    const pos = clampIndex(source.length, position);
+    const lines = lineRanges(source);
+    let index = lines.length - 1;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (pos <= lines[i].end) {
+        index = i;
+        break;
+      }
+    }
+    const line = lines[index];
+    // 去首尾空白也走 core/paragraphs.js 的同一份实现（v0.9 B-3 / 审计 F3）。
+    // 空行（全空白）时 trimmedRange 返回 null：旧实现「左右各收缩到中间」最后落在行尾，
+    // 所以这里退回 { start: line.end, end: line.end }，行为逐字不变（单测钉住空行的 start / end）。
+    const trimmed = trimmedRange(source, line.start, line.end);
+    const start = trimmed ? trimmed.start : line.end;
+    const end = trimmed ? trimmed.end : line.end;
+    const blank = line.blank;
+    let paragraph = 0;
+    if (!blank) {
+      for (let i = 0; i <= index; i += 1) {
+        if (!lines[i].blank) paragraph += 1;
+      }
+    }
+    return {
+      index,
+      line: line.line,
+      blank,
+      paragraph,
+      start,
+      end,
+      text: source.slice(start, end)
+    };
+  }
+
+  function sanitizeThreshold(value) {
+    return clampInt(value, LONG_PARAGRAPH_DEFAULT, LONG_PARAGRAPH_LIMITS);
+  }
+
+  // 超长段落：字数（去空白）> threshold 的自然段。items 最多 200 条，count 照实。
+  function longParagraphs(text, rawOptions) {
+    const options = typeof rawOptions === 'number' ? { threshold: rawOptions } : rawOptions || {};
+    const threshold = sanitizeThreshold(options.threshold);
+    const source = toText(text);
+    if (source.length > MAX_LONG_PARAGRAPH_CHARS) {
+      return { threshold, items: [], count: 0, truncated: true, tooLarge: true };
+    }
+    const items = [];
+    let count = 0;
+    for (const range of paragraphRanges(source)) {
+      const chars = countChars(source.slice(range.start, range.end));
+      if (chars <= threshold) continue;
+      count += 1;
+      if (items.length < MAX_LONG_PARAGRAPH_ITEMS) {
+        items.push({
+          start: range.start,
+          end: range.end,
+          line: range.line,
+          paragraph: range.paragraph,
+          chars
+        });
+      }
+    }
+    return {
+      threshold,
+      items,
+      count,
+      truncated: count > items.length,
+      tooLarge: false
+    };
+  }
+
+  // 标记层字数门控（v0.8.6 R5，代码审计 F9）：标记层是「整章正文的 DOM 镜像」，正文超过
+  // MAX_MARK_CHARS 时每次按键（80ms 防抖）都会重建约 1MB 文本的 DOM——只开「当前段落高亮」
+  // 也会走到这里。所以渲染层在入口就整层不建；这个纯函数只负责判边界，不碰 DOM、不读盘。
+  // 边界：正好 300000 字仍然画（和 invisibleMarks / longParagraphs 的口径一致：> 才跳过）；
+  // 坏输入按空文本处理（和 toText 的其它函数一致），不会抛错。
+  function marksTooLarge(text) {
+    return toText(text).length > MAX_MARK_CHARS;
+  }
+
+  function sanitizeMaxMarks(value) {
+    return clampInt(value, MAX_MARK_ITEMS, MARK_ITEM_LIMITS);
+  }
+
+  // 不可见字符标记（只给显示层用，正文一个字节都不动）：
+  //   fullwidth = 正文里的全角空格（U+3000），每个字符一条，显示成 ␣；
+  //   trailing  = 行尾连续空白（空格 / 制表符 / 全角空格），每段末尾一条，显示成浅红底 + 末端 ·
+  // 行尾的全角空格只算 trailing，不重复算 fullwidth。纯空白行不标（它本来就是空行）。
+  function invisibleMarks(text, rawOptions) {
+    const options = rawOptions && typeof rawOptions === 'object' ? rawOptions : {};
+    const maxMarks = sanitizeMaxMarks(options.maxMarks);
+    const source = toText(text);
+    const counts = { fullwidth: 0, trailing: 0 };
+    if (source.length > MAX_MARK_CHARS) {
+      return { items: [], counts, maxMarks, truncated: false, tooLarge: true };
+    }
+    const items = [];
+    const push = (item) => {
+      if (items.length < maxMarks) items.push(item);
+    };
+    for (const line of lineRanges(source)) {
+      if (line.blank) continue;
+      let contentEnd = line.end;
+      while (contentEnd > line.start && SPACE_CHARS.includes(source[contentEnd - 1])) {
+        contentEnd -= 1;
+      }
+      for (let i = line.start; i < contentEnd; i += 1) {
+        if (source[i] !== '\u3000') continue;
+        counts.fullwidth += 1;
+        push({ start: i, end: i + 1, line: line.line, type: 'fullwidth' });
+      }
+      if (contentEnd < line.end) {
+        counts.trailing += 1;
+        push({ start: contentEnd, end: line.end, line: line.line, type: 'trailing' });
+      }
+    }
+    const total = counts.fullwidth + counts.trailing;
+    return {
+      items,
+      counts,
+      maxMarks,
+      truncated: total > items.length,
+      tooLarge: false
+    };
+  }
+
+  // 章节字数对比（只读提示）：上一章太少不比较；短 40% 及以上给软提示。
+  function compareChapterChars(current, previous, rawOptions) {
+    const options = rawOptions && typeof rawOptions === 'object' ? rawOptions : {};
+    const minPrevious = clampInt(options.minPrevious, COMPARE_MIN_PREVIOUS, [0, 100000000]);
+    const shortPercent = clampInt(options.shortPercent, COMPARE_SHORT_PERCENT, [1, 99]);
+    const currentChars = toCount(current);
+    const previousChars = toCount(previous);
+    const base = { current: currentChars, previous: previousChars, percent: 0, message: '' };
+    // 上一章没有字数（老书没缓存 / 空章）或太短，就不比较，免得刷没意义的提示
+    if (previousChars <= 0 || previousChars < minPrevious) {
+      return { ...base, compared: false, direction: '' };
+    }
+    const percent = Math.round(((currentChars - previousChars) / previousChars) * 100);
+    if (percent <= -shortPercent) {
+      return {
+        ...base,
+        compared: true,
+        percent,
+        direction: 'shorter',
+        message: `比上章短 ${Math.abs(percent)}%`
+      };
+    }
+    if (percent >= 100) {
+      return { ...base, compared: true, percent, direction: 'longer', message: `比上章长 ${percent}%` };
+    }
+    return { ...base, compared: true, percent, direction: 'similar' };
+  }
+
+  // 章节列表里的紧凑字数：1234 → '1,234'、12345 → '1.2万'（整数省掉 .0）。
+  // 万以内的四位数按拍板 #1 加千分位（与全应用同一份 core/common.js 实现）。
+  function formatCharsShort(value) {
+    const n = toCount(value);
+    if (n < 10000) return formatCount(n);
+    const trim = (text) => text.replace(/\.0$/, '');
+    const wan = n / 10000;
+    if (wan < 9999.95) return `${trim(wan.toFixed(1))}万`;
+    return `${trim((n / 100000000).toFixed(1))}亿`;
+  }
+
+  // ---------- 写作时长（v0.8-2） ----------
+  // 只用于界面显示，不写盘、不参与统计口径：秒数由主进程 / stats.json 提供。
+  // 60 秒以下按秒；1 小时以下按分钟；再往上按「N 小时 M 分钟」；跨天按「N 天 M 小时」。
+  function formatDuration(value) {
+    const total = Math.max(0, Math.round(Number(value) || 0));
+    if (total <= 0) return '0 秒';
+    if (total < 60) return `${total} 秒`;
+    if (total < 3600) return `${Math.floor(total / 60)} 分钟`;
+    if (total < 86400) {
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      return minutes > 0 ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
+    }
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    return hours > 0 ? `${days} 天 ${hours} 小时` : `${days} 天`;
+  }
+
+  // 计时按钮上的秒表：0:07 / 12:34 / 1:02:05（不补前导 0 的小时）。
+  function formatStopwatch(value) {
+    const total = Math.max(0, Math.floor(Number(value) || 0));
+    const seconds = total % 60;
+    const minutes = Math.floor(total / 60) % 60;
+    const hours = Math.floor(total / 3600);
+    return hours > 0 ? `${hours}:${pad2(minutes)}:${pad2(seconds)}` : `${Math.floor(total / 60)}:${pad2(seconds)}`;
+  }
+
+  // 影子层（#editor-marks）的「节点计划」：把正文切成若干段，只有真需要样式的行才单独成
+  // 一个 span，其余连续的行合并成一个文本节点。
+  //
+  // 为什么要这样切（v0.9 A-3 实测）：以前是「一行一个 <span class="marks-line">」——10 万字 /
+  // 约 1500 行时整层重建要 35.1ms；同一个影子块只放一个文本节点只要 6.5ms（布局本身不贵，
+  // 贵的是 1500 个行内盒）。而逐行 span 只是 .long-para / .caret-para 的锚点，干净行根本不需要。
+  // 现在的规则：超长段落行、当前段落高亮行、含标记的行 → 单独成 span；其它行 → 合并进文本节点。
+  //
+  // 返回 [{ kind: 'text', text } | { kind: 'line', line, text, long, caret, marks }]，
+  // marks 里是**相对本行**的片段：[{ type: 'fullwidth' | 'trailing', start, end }]。
+  // 把每个 segment 的正文按顺序拼起来恒等于原正文（单测钉了这条不变量），所以影子层的换行 /
+  // 行高与编辑区完全一致——只画底色，不改一个字。
+  function marksPlan(text, options) {
+    const source = toText(text);
+    const opts = options || {};
+    const longSet =
+      opts.longLines instanceof Set
+        ? opts.longLines
+        : new Set(Array.isArray(opts.longLines) ? opts.longLines : []);
+    const caretLine = Math.max(0, Math.floor(Number(opts.caretLine) || 0));
+    const marks = Array.isArray(opts.marks) ? opts.marks : [];
+    const lines = source.split('\n');
+    const segments = [];
+    let pending = ''; // 干净行攒着的正文（含行尾换行），凑够一段再输出一个文本节点
+    let lineStart = 0;
+    let markIndex = 0;
+    for (let i = 0; i < lines.length; i += 1) {
+      const raw = lines[i];
+      const lineEnd = lineStart + raw.length;
+      const line = i + 1;
+      // 已经结束在上一行之前（含正好在行首结束）的标记先跳过；标记不会跨行存但在这一层兜住
+      while (markIndex < marks.length && marks[markIndex].end <= lineStart) markIndex += 1;
+      let probe = markIndex;
+      const lineMarks = [];
+      while (probe < marks.length && marks[probe].start < lineEnd) {
+        const item = marks[probe];
+        const start = Math.max(item.start, lineStart);
+        const end = Math.min(item.end, lineEnd);
+        if (end > start) {
+          lineMarks.push({ type: item.type, start: start - lineStart, end: end - lineStart });
+        }
+        probe += 1;
+      }
+      const isLong = longSet.has(line);
+      const isCaret = caretLine === line;
+      const hasNewline = i < lines.length - 1;
+      if (raw.length && (isLong || isCaret || lineMarks.length)) {
+        if (pending) {
+          segments.push({ kind: 'text', text: pending });
+          pending = '';
+        }
+        segments.push({
+          kind: 'line',
+          line,
+          text: raw,
+          long: isLong,
+          caret: isCaret,
+          marks: lineMarks
+        });
+        // 换行照旧单独一个文本节点（和原来逐行实现一致：换行不属于任何一行的高亮范围）
+        if (hasNewline) segments.push({ kind: 'text', text: '\n' });
+      } else {
+        if (raw.length) pending += raw;
+        if (hasNewline) pending += '\n';
+      }
+      lineStart = lineEnd + 1;
+    }
+    if (pending) segments.push({ kind: 'text', text: pending });
+    // 相邻的文本节点合并成一个（干净行、换行、空行都进同一段，少建节点）
+    const merged = [];
+    for (const segment of segments) {
+      const last = merged[merged.length - 1];
+      if (segment.kind === 'text' && last && last.kind === 'text') last.text += segment.text;
+      else merged.push(segment.kind === 'text' ? { kind: 'text', text: segment.text } : segment);
+    }
+    return merged;
+  }
+
+  // 「超长段落 N 段」那个小标签点一下：从光标往后找下一段，到末尾就绕回第一段
+  function nextLongParagraph(items, position) {
+    if (!Array.isArray(items) || !items.length) return null;
+    const raw = Number(position);
+    const pos = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+    for (const item of items) {
+      if (item && item.start > pos) return item;
+    }
+    return items[0];
+  }
+
+  return {
+    MAX_MARK_CHARS,
+    MAX_LONG_PARAGRAPH_CHARS,
+    LONG_PARAGRAPH_DEFAULT,
+    LONG_PARAGRAPH_LIMITS,
+    MAX_LONG_PARAGRAPH_ITEMS,
+    MAX_MARK_ITEMS,
+    COMPARE_MIN_PREVIOUS,
+    COMPARE_SHORT_PERCENT,
+    countChars,
+    lineRanges,
+    paragraphRanges,
+    selectionStats,
+    paragraphJumpTarget,
+    caretParagraph,
+    sanitizeThreshold,
+    longParagraphs,
+    marksTooLarge,
+    invisibleMarks,
+    marksPlan,
+    compareChapterChars,
+    formatCharsShort,
+    formatDuration,
+    formatStopwatch,
+    nextLongParagraph
+  };
+});

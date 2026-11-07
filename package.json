@@ -1,0 +1,80 @@
+{
+  "name": "chapterly",
+  "version": "1.0.0",
+  "private": true,
+  "description": "章回 / Chapterly - 整本保存、自动编号的 Windows 桌面纯文本写作工具",
+  "main": "main.js",
+  "scripts": {
+    "start": "node scripts/start.js",
+    "test": "node --test \"tests/**/*.test.js\"",
+    "e2e": "node scripts/run-e2e.js",
+    "demo": "node scripts/demo-data.js",
+    "icon": "python scripts/make-icon.py --ico-only build",
+    "dist": "electron-builder --win nsis",
+    "dist:dir": "electron-builder --win dir"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ANAN1124-OSS/chapterly.git"
+  },
+  "homepage": "https://github.com/ANAN1124-OSS/chapterly",
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "^26.18.0"
+  },
+  "author": "chapterly",
+  "build": {
+    "appId": "local.chapter-writer",
+    "productName": "章回",
+    "copyright": "Copyright © 2026 章回 / Chapterly",
+    "npmRebuild": false,
+    "asar": true,
+    "compression": "normal",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "core/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    },
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "onlyLoadAppFromAsar": true
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "chapterly-${version}-win-x64-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "章回",
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

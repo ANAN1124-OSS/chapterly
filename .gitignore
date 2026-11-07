@@ -1,0 +1,24 @@
+node_modules/
+shots/
+*.log
+.DS_Store
+Thumbs.db
+dist/
+*.blockmap
+项目交接.md
+功能扩展提案.md
+自动迭代手册.md
+进度日志.md
+下一阶段提案.md
+视觉重设计-C卷册-实施手册.md
+版本总账-章回.md
+归档-*.md
+# 构建 / 测试产物的其它常见出口（真正的安装包在 dist/，上面已忽略）：
+# --dir 打包目录、手工归档的 release/、覆盖率报告、本地打出的包、lint 与工具缓存，
+# 体积大且可再生成，一律不进库（B5 补漏：以前只挡了 dist/*.blockmap）。
+out/
+release/
+coverage/
+*.tgz
+.eslintcache
+.cache/
