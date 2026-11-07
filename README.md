@@ -1,10 +1,10 @@
-# 章回 / Chapterly v1.0.0
+# 章回 / Chapterly v1.1.0
 
 给写个人自用的 Windows 桌面写作工具：**整本书一键保存、绝不丢稿**；新建章节自动生成「第12章：」这样的标题，你只填名字。
 
 技术形态：Electron + 原生 HTML/CSS/JS（无框架），Windows 安装包 + 开发版两种用法。
 
-> **版本沿革**：本仓库从 **v1.0.0** 起。产品 1.0.0 的内容承接原「章节写作器」0.12.6 的最终构建；从 **章回 / Chapterly** 这个名字开始，仓库、安装包、快捷方式与界面显示名一起改名，但**数据目录名仍沿用旧名 `%APPDATA%\chapter-writer`**（改名不搬数据、零迁移）。文中出现的 `v0.x` 版本号是旧版本的历史记录，仅作沿革参考。
+> **版本沿革**：本仓库从 **v1.0.0** 起。产品 1.0.0 的内容承接原「章节写作器」0.12.6 的最终构建；从 **章回 / Chapterly** 这个名字开始，仓库、安装包、快捷方式与界面显示名一起改名，但**数据目录名仍沿用旧名 `%APPDATA%\chapter-writer`**（改名不搬数据、零迁移）。**v1.1.0（2026-11-08）** 在 1.0.0 基础上落地一组编辑器 / 书架搜索 / 本书历史的小改进（见下方功能表与 FAQ）：编辑器小件的「不可见字符 / 超长段落提示」两个开关按书记忆、超长段落阈值可自定义、书架搜索的「章节命中」可直接点开那一章、正文命中按章聚合且可展开一章内全部命中、本书历史里每日快照按天折叠并支持清空某天（移入回收站）；数据格式 / 数据目录 / 安装身份都不变。文中出现的 `v0.x` 版本号是旧版本的历史记录，仅作沿革参考。
 
 ---
 
@@ -34,7 +34,7 @@
 
 ### 方式一：安装包（推荐，不用命令行）
 
-**下载**：从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-1.0.0-win-x64-setup.exe`（已于 2026-11-07 发布，见 [v1.0.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.0.0)），或者直接用本机打包产物 `dist\chapterly-1.0.0-win-x64-setup.exe`；开发时也可以先用开发版（`pnpm start`）。
+**下载**：从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-1.1.0-win-x64-setup.exe`（已于 2026-11-08 发布，见 [v1.1.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.1.0)），或者直接用本机打包产物 `dist\chapterly-1.1.0-win-x64-setup.exe`；开发时也可以先用开发版（`pnpm start`）。
 
 安装：
 
