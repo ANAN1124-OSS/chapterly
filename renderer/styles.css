@@ -455,6 +455,22 @@ html, body {
   border-radius: 2px;
 }
 .shelf-content-empty { padding: 6px 4px 8px; }
+/* P22-4：正文命中按「书 + 章」聚合的组头 / 展开按钮（只用现有颜色与间距令牌，不新增主题色） */
+.shelf-content-group {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 8px 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  border-top: 1px solid var(--line);
+}
+.shelf-content-group:first-child { border-top: none; }
+.shelf-content-group + .shelf-content-row { border-top: none; }
+.shelf-content-expand { align-self: flex-start; margin: 2px 8px 8px; }
+.shelf-content-expand-note,
+.shelf-content-expand-error { padding: 0 8px 6px; }
 
 /* 继续上次写作：书架顶部一条直达入口（只写配置里的 lastBook，不碰书库） */
 .shelf-continue { margin-bottom: 18px; 

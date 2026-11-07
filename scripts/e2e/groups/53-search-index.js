@@ -340,6 +340,154 @@ module.exports = async function group53SearchIndex(t) {
       limitedSearch.data.truncated === true
   );
 
+  // 53l（1.1.0）：一章内全部命中——正文结果按「书 + 章」聚合，组头写「本章 N 处」，
+  // 默认仍只列前 3 条；「展开本章全部」就地列出该章全部命中，点第 4 条能定位到第 4 处，收起恢复。
+  await exec("window.__cwTest.setShelfQuery('')");
+  await sleep(150);
+  await exec("window.__cwTest.newBook('章内全部命中测试书')");
+  await waitFor("window.__cwTest.view() === 'editor'");
+  const chapterHitsBookPath = await exec('window.__cwTest.bookPathValue()');
+  await exec("window.__cwTest.renameChapterAt(0, '灯芯章')");
+  const lampText = Array.from(
+    { length: 9 },
+    (_, i) => `灯芯第${i + 1}次亮起，窗外的风停了。`
+  ).join('');
+  await exec(`window.__cwTest.setText(${JSON.stringify(lampText)})`);
+  await exec('window.__cwTest.save()');
+  await waitFor('window.__cwTest.dirty() === false');
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await ensureSearchIndex(true);
+  await exec("window.__cwTest.setShelfQuery('灯芯')");
+  const lampState = await waitShelfContent(
+    '灯芯',
+    (state) => state.results.length >= 1 && state.rowCount >= 1
+  );
+  const lampGroups = await exec(`(() => {
+    return Array.from(document.querySelectorAll('#shelf-content-list .shelf-content-group')).map((el) => el.textContent);
+  })()`);
+  const lampGroup = lampGroups.find((text) => text.includes('章内全部命中测试书'));
+  check(
+    '正文搜索（一章内全部命中）：结果按书 + 章聚合，组头写「本章 9 处」，默认仍只列 3 条',
+    Boolean(lampGroup) &&
+      lampGroup.includes('灯芯章') &&
+      lampGroup.includes('本章 9 处') &&
+      lampState.rowCount === 3 &&
+      lampState.summary.includes('正文命中 9 处'),
+    { group: lampGroup, groups: lampGroups, rows: lampState.rowCount, summary: lampState.summary }
+  );
+
+  const readExpandButton = () =>
+    exec(`(() => {
+      const button = document.querySelector('#shelf-content-list .shelf-content-expand');
+      return button ? { text: button.textContent, expanded: button.getAttribute('aria-expanded') } : null;
+    })()`);
+  const expandButton = await readExpandButton();
+  check(
+    '正文搜索（一章内全部命中）：章内还有未列出的命中时出现「展开本章全部」',
+    Boolean(expandButton) && expandButton.text === '展开本章全部' && expandButton.expanded === 'false',
+    expandButton
+  );
+
+  const waitContentRows = async (expected, timeout = 15000) => {
+    const startedAt = Date.now();
+    let state = null;
+    for (;;) {
+      state = await exec('window.__cwTest.shelfContentState()');
+      if (state && state.rowCount === expected) return state;
+      if (Date.now() - startedAt > timeout) {
+        throw new Error(`等待正文结果行数 ${expected} 超时：${JSON.stringify(state)}`);
+      }
+      await sleep(120);
+    }
+  };
+  await exec(`(() => {
+    const button = document.querySelector('#shelf-content-list .shelf-content-expand');
+    if (button) button.click();
+    return Boolean(button);
+  })()`);
+  const expandedState = await waitContentRows(9);
+  const expandedButton = await readExpandButton();
+  check(
+    '正文搜索（一章内全部命中）：展开后组内就地列出该章全部 9 条，按钮变「收起」',
+    expandedState.rowCount === 9 &&
+      expandedState.summary.includes('正文命中 9 处') &&
+      Boolean(expandedButton) &&
+      expandedButton.text === '收起' &&
+      expandedButton.expanded === 'true',
+    { rows: expandedState.rowCount, button: expandedButton }
+  );
+  const fourthRowText = await exec(`(() => {
+    const rows = Array.from(document.querySelectorAll('#shelf-content-list .shelf-content-row'));
+    return rows.length >= 4 ? rows[3].textContent : '';
+  })()`);
+  check(
+    '正文搜索（一章内全部命中）：展开后的第 4 条就是正文里的第 4 处',
+    String(fourthRowText).includes('灯芯第4次'),
+    fourthRowText
+  );
+
+  await exec(`(() => {
+    const button = document.querySelector('#shelf-content-list .shelf-content-expand');
+    if (button) button.click();
+    return Boolean(button);
+  })()`);
+  const collapsedState = await waitContentRows(3);
+  const collapsedButton = await readExpandButton();
+  check(
+    '正文搜索（一章内全部命中）：点「收起」恢复默认 3 条',
+    collapsedState.rowCount === 3 &&
+      Boolean(collapsedButton) &&
+      collapsedButton.text === '展开本章全部' &&
+      collapsedButton.expanded === 'false',
+    { rows: collapsedState.rowCount, button: collapsedButton }
+  );
+
+  await exec(`(() => {
+    const button = document.querySelector('#shelf-content-list .shelf-content-expand');
+    if (button) button.click();
+    return Boolean(button);
+  })()`);
+  await waitContentRows(9);
+  await exec('window.__cwTest.clickShelfContentResult(3)');
+  await waitFor("window.__cwTest.view() === 'editor'");
+  let fourthLampIndex = -1;
+  let from = 0;
+  for (let i = 0; i < 4; i += 1) {
+    fourthLampIndex = lampText.indexOf('灯芯', from);
+    from = fourthLampIndex + 2;
+  }
+  const openedLamp = {
+    index: await exec('window.__cwTest.currentIndex()'),
+    selection: await exec('window.__cwTest.selection()'),
+    selected: await exec('window.__cwTest.selectionText()'),
+    text: await exec('window.__cwTest.text()'),
+    dirty: await exec('window.__cwTest.dirty()')
+  };
+  check(
+    '正文搜索（一章内全部命中）：点展开后的第 4 条 → 打开该章并定位到第 4 处',
+    openedLamp.index === 0 &&
+      openedLamp.selected === '灯芯' &&
+      openedLamp.selection.start === fourthLampIndex &&
+      openedLamp.text === lampText &&
+      openedLamp.dirty === false,
+    { ...openedLamp, fourthLampIndex }
+  );
+
+  // 收尾：演练书走书架 _trash，不污染后面的多窗口组。
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.setShelfQuery('')");
+  await sleep(150);
+  const chapterHitsRemoved = await exec(
+    `window.api.deleteBook(${JSON.stringify(chapterHitsBookPath)})`
+  );
+  await ensureSearchIndex(true);
+  check(
+    '正文搜索（一章内全部命中）：演练书收尾删除（进 _trash，不真删）',
+    chapterHitsRemoved.ok === true && (await fileExists(chapterHitsBookPath)) === false
+  );
+
   // 53k. 旧数据兼容 + 索引不出现正文 + 配置不新增字段
   await exec("window.__cwTest.setShelfQuery('旧书正文')");
   const legacyHit = await waitShelfContent('旧书正文', (state) => state.results.length >= 1);

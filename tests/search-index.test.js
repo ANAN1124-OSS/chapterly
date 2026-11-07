@@ -546,12 +546,223 @@ test('正文索引：一本书里多个命中按章返回，最多每章 3 条�
   const found = await store.search({ booksRoot, query: '青柠色', limit: 40 });
   assert.equal(found.results.length, search.MAX_SNIPPETS_PER_CHAPTER);
   assert.equal(found.matchedChapters, 1);
-  assert.equal(found.totalMatches, search.MAX_SNIPPETS_PER_CHAPTER);
+  // P22-4：totalMatches 从「已列出的片段数」改成真命中数（本章 6 处，列表仍只列 3 条）。
+  assert.equal(found.totalMatches, 6);
   assert.equal(found.truncated, false);
 });
 
-test('正文索引：200 章规模的书建索引 / 搜索可用（不要求速度，只要求不出错）', async () => {
+// ---------- P22-4：一章内全部命中（每章真命中数 + focus 聚焦一章） ----------
+function nthIndex(text, needle, n) {
+  let at = -1;
+  let from = 0;
+  for (let i = 0; i < n; i += 1) {
+    at = text.indexOf(needle, from);
+    if (at < 0) return -1;
+    from = at + needle.length;
+  }
+  return at;
+}
+
+test('正文索引（P22-4）：单章 10 处命中仍只列 3 条，但 chapterMatchCount / totalMatches 是真命中数', async () => {
   const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const text10 = Array.from({ length: 10 }, (_, i) => `灯芯第${i + 1}次亮起。`).join('');
+  const text2 = '灯芯又亮了一次。灯芯最后暗了下去。';
+  const { bookPath, meta } = await makeBook(booksRoot, '章内计数书', '章内计数书', [
+    { name: '灯芯章', text: text10 },
+    { name: '收尾章', text: text2 }
+  ]);
+  const store = makeStore(userData);
+  const found = await store.search({ booksRoot, query: '灯芯' });
+  assert.equal(found.results.length, search.MAX_SNIPPETS_PER_CHAPTER + 2, '第一章只列 3 条 + 第二章列 2 条');
+  assert.equal(found.results.filter((row) => row.chapterIndex === 0).length, search.MAX_SNIPPETS_PER_CHAPTER);
+  assert.equal(found.results.filter((row) => row.chapterIndex === 1).length, 2);
+  assert.equal(found.matchedChapters, 2);
+  assert.equal(found.totalMatches, 12, 'totalMatches 改成真命中数：10 + 2');
+  assert.equal(found.truncated, false, '每章只列 3 条不算整次 truncated（旧语义不变）');
+
+  const firstRows = found.results.filter((row) => row.chapterIndex === 0);
+  assert.equal(firstRows[0].chapterFile, meta.chapters[0].file);
+  assert.equal(firstRows[0].bookPath, bookPath);
+  for (const row of firstRows) {
+    assert.equal(row.chapterMatchCount, 10, '同一章每行都带本章真命中数');
+    assert.equal(row.chapterCountCapped, false);
+    assert.equal(row.bookTitle, '章内计数书');
+    assert.equal(row.chapterName, '灯芯章');
+  }
+  assert.deepEqual(
+    firstRows.map((row) => row.matchIndex),
+    [nthIndex(text10, '灯芯', 1), nthIndex(text10, '灯芯', 2), nthIndex(text10, '灯芯', 3)],
+    '默认结果仍按位置取前 3 条、顺序不变'
+  );
+  const secondRows = found.results.filter((row) => row.chapterIndex === 1);
+  assert.equal(secondRows[0].chapterFile, meta.chapters[1].file);
+  for (const row of secondRows) assert.equal(row.chapterMatchCount, 2);
+});
+
+test('正文索引（P22-4）：focus 只读目标一章，返回该章全部命中（按位置、带上下文片段）', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const text10 = Array.from({ length: 10 }, (_, i) => `灯芯第${i + 1}次亮起。`).join('');
+  const book = await makeBook(booksRoot, '聚焦书', '聚焦书', [
+    { name: '灯芯章', text: text10 },
+    { name: '别的章', text: '这一章也有灯芯。' }
+  ]);
+  const store = makeStore(userData);
+  const chapterFile = book.meta.chapters[0].file;
+  const focused = await store.search({
+    booksRoot,
+    query: '灯芯',
+    limit: 2, // focus 不受整次 limit 40 / 这里传入的 2 限制
+    focus: { bookPath: book.bookPath, chapterFile }
+  });
+  assert.equal(focused.focus, true);
+  assert.equal(focused.focusError, undefined);
+  assert.equal(focused.limit, search.MAX_FOCUS_SNIPPETS);
+  assert.equal(focused.results.length, 10);
+  assert.equal(focused.totalMatches, 10);
+  assert.equal(focused.matchedChapters, 1);
+  assert.equal(focused.scannedBooks, 1);
+  assert.equal(focused.scannedChapters, 1);
+  assert.equal(focused.truncated, false);
+  assert.equal(focused.results[0].chapterFile, chapterFile);
+  assert.equal(focused.results[0].chapterMatchCount, 10);
+  assert.equal(focused.results[0].chapterCountCapped, false);
+  assert.deepEqual(
+    focused.results.map((row) => row.matchIndex),
+    Array.from({ length: 10 }, (_, i) => nthIndex(text10, '灯芯', i + 1)),
+    '按正文位置升序'
+  );
+  assert.deepEqual(
+    focused.results.map((row) => row.snippet.match),
+    Array.from({ length: 10 }, () => '灯芯'),
+    '每条都带命中上下文片段'
+  );
+  assert.ok(focused.results[9].snippet.before.includes('第9次'));
+  assert.ok(focused.results[9].snippet.before.length > 0);
+});
+
+test('正文索引（P22-4）：focus 的书 / 章不在索引里、或路径越权 → 空结果 + focusError（不读任意路径）', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const book = await makeBook(booksRoot, '聚焦书', '聚焦书', [{ name: '灯芯章', text: '灯芯亮着。' }]);
+  const outside = await makeBook(base, '库外书', '库外书', [{ name: '库外章', text: '灯芯在库外。' }]);
+  const store = makeStore(userData);
+  const chapterFile = book.meta.chapters[0].file;
+
+  const missingBook = await store.search({
+    booksRoot,
+    query: '灯芯',
+    focus: { bookPath: path.join(booksRoot, '没有这本书'), chapterFile }
+  });
+  assert.equal(missingBook.focus, true);
+  assert.equal(missingBook.focusError, '聚焦的书籍不在书架索引里');
+  assert.deepEqual(missingBook.results, []);
+
+  const outsideBook = await store.search({
+    booksRoot,
+    query: '灯芯',
+    focus: { bookPath: outside.bookPath, chapterFile: '001-库外章.txt' }
+  });
+  assert.equal(outsideBook.focusError, '聚焦的书籍不在书架索引里', '书架目录外的书即使真实存在也不认');
+
+  const escapeBook = await store.search({
+    booksRoot,
+    query: '灯芯',
+    focus: { bookPath: path.join(booksRoot, '..', '库外书'), chapterFile: '001-库外章.txt' }
+  });
+  assert.equal(escapeBook.focusError, '聚焦的书籍不在书架索引里', '.. 越权归一化后不在 index.root 下');
+
+  const missingChapter = await store.search({
+    booksRoot,
+    query: '灯芯',
+    focus: { bookPath: book.bookPath, chapterFile: '999-不存在.txt' }
+  });
+  assert.equal(missingChapter.focusError, '聚焦的章节不在书架索引里');
+
+  for (const chapterFileBad of ['../书目.json', '..\\书目.json', '001-灯芯章.txt/../书目.json']) {
+    const bad = await store.search({
+      booksRoot,
+      query: '灯芯',
+      focus: { bookPath: book.bookPath, chapterFile: chapterFileBad }
+    });
+    assert.equal(bad.focusError, '聚焦的书籍或章节无效', chapterFileBad);
+    assert.deepEqual(bad.results, []);
+  }
+
+  const badShape = await store.search({
+    booksRoot,
+    query: '灯芯',
+    focus: { bookPath: 42, chapterFile }
+  });
+  assert.equal(badShape.focusError, '聚焦的书籍或章节无效');
+  const tooLong = await store.search({
+    booksRoot,
+    query: '灯芯',
+    focus: { bookPath: book.bookPath, chapterFile: 'x'.repeat(search.MAX_FOCUS_FIELD_CHARS + 1) }
+  });
+  assert.equal(tooLong.focusError, '聚焦的书籍或章节无效');
+});
+
+test('正文索引（P22-4）：focus 片段上限 200 条 + truncated，totalMatches 仍是真命中数', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const text = Array.from({ length: 260 }, (_, i) => `灯芯${i + 1}。`).join('');
+  const book = await makeBook(booksRoot, '很多命中', '很多命中', [{ name: '灯芯章', text }]);
+  const store = makeStore(userData);
+  const focused = await store.search({
+    booksRoot,
+    query: '灯芯',
+    focus: { bookPath: book.bookPath, chapterFile: book.meta.chapters[0].file }
+  });
+  assert.equal(focused.results.length, search.MAX_FOCUS_SNIPPETS);
+  assert.equal(focused.totalMatches, 260);
+  assert.equal(focused.truncated, true, '超过片段上限要明确标记 truncated');
+  assert.equal(focused.results[0].chapterMatchCount, 260);
+  assert.equal(focused.results[search.MAX_FOCUS_SNIPPETS - 1].matchIndex, nthIndex(text, '灯芯', 200));
+});
+
+test('正文索引（P22-4）：单章计数硬上限 10000，超过后 chapterCountCapped 显示 N+', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const total = search.MAX_CHAPTER_MATCH_COUNT + 3;
+  const text = '灯芯。'.repeat(total);
+  const book = await makeBook(booksRoot, '超多命中', '超多命中', [{ name: '灯芯章', text }]);
+  const store = makeStore(userData);
+  const found = await store.search({ booksRoot, query: '灯芯' });
+  assert.equal(found.results.length, search.MAX_SNIPPETS_PER_CHAPTER);
+  assert.equal(found.totalMatches, search.MAX_CHAPTER_MATCH_COUNT);
+  for (const row of found.results) {
+    assert.equal(row.chapterMatchCount, search.MAX_CHAPTER_MATCH_COUNT);
+    assert.equal(row.chapterCountCapped, true);
+  }
+  const focused = await store.search({
+    booksRoot,
+    query: '灯芯',
+    focus: { bookPath: book.bookPath, chapterFile: book.meta.chapters[0].file }
+  });
+  assert.equal(focused.results.length, search.MAX_FOCUS_SNIPPETS);
+  assert.equal(focused.totalMatches, search.MAX_CHAPTER_MATCH_COUNT);
+  assert.equal(focused.results[0].chapterCountCapped, true);
+  assert.equal(focused.truncated, true);
+});
+
+test('正文索引：200 章规模的书建索引 / 搜索可用（不要求速度，只要求不出错）', async () => {  const base = await mkTmp();
   const userData = path.join(base, 'userdata');
   const booksRoot = path.join(base, 'books');
   await fs.mkdir(userData);

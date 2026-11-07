@@ -101,15 +101,21 @@ function makeHost(options = {}) {
       error: options.error || null,
       shown: options.shown === undefined ? 8 : options.shown,
       query: options.contentQuery === undefined ? '' : options.contentQuery,
-      indexStatus: options.indexStatus === undefined ? null : options.indexStatus
+      indexStatus: options.indexStatus === undefined ? null : options.indexStatus,
+      expanded: options.expanded || {}
     }
   };
-  const calls = { title: [], open: [], sanitize: [], matches: [] };
+  const calls = { title: [], open: [], sanitize: [], matches: [], expand: [] };
   const dom = options.dom || makeDom(SHELF_IDS.concat(SEARCH_IDS));
   const host = {
     state,
     $: dom.$,
     CONTENT_SEARCH_MIN_CHARS: 2,
+    // P22-4：「展开本章全部」由正文搜索模块晚一步交出，这里是可选的惰性转发（默认给一个记录调用的替身）。
+    expandContentChapter(row, expandOptions) {
+      calls.expand.push({ row, options: expandOptions });
+      return Promise.resolve(true);
+    },
     bookInfoLib: {
       sanitizeGroup(value) {
         calls.sanitize.push(value);
@@ -379,6 +385,197 @@ test('renderShelfContent：正文索引在建时摘要带进度（有 total / �
   const noTotal = build({ shelfQuery: '张三', indexStatus: { ready: false } });
   withDom(noTotal.dom, () => noTotal.ui.renderShelfContent());
   assert.match(noTotal.dom.$('shelf-content-summary').textContent, /正在为书架建正文索引，建好后自动更新结果$/);
+});
+
+// ---------- P22-4：正文命中按「书 + 章」聚合 + 展开本章全部 ----------
+function groupKey(row) {
+  return String(row.bookPath) + '\u0000' + String(row.chapterFile);
+}
+
+function contentRow(overrides = {}) {
+  return row({
+    bookPath: 'C:/tmp/books/书甲',
+    chapterFile: '001-第一章.txt',
+    chapterMatchCount: 10,
+    chapterCountCapped: false,
+    ...overrides
+  });
+}
+
+function rowsOf(list) {
+  return list.children.filter((child) => child.className === 'shelf-content-row');
+}
+
+function expandButtonOf(list) {
+  return (
+    list.children.find(
+      (child) => child.tag === 'button' && String(child.className).includes('shelf-content-expand')
+    ) || null
+  );
+}
+
+test('renderShelfContent（P22-4）：按书 + 章分组，组头写「本章 N 处」，章内还有未列出命中时给展开按钮', () => {
+  const firstChapter = [
+    contentRow({ matchIndex: 0 }),
+    contentRow({ matchIndex: 4 }),
+    contentRow({ matchIndex: 8 })
+  ];
+  const secondChapter = [
+    contentRow({
+      chapterFile: '002-第四章.txt',
+      chapterIndex: 3,
+      chapterName: '第四章',
+      chapterMatchCount: 2,
+      matchIndex: 2
+    }),
+    contentRow({
+      chapterFile: '002-第四章.txt',
+      chapterIndex: 3,
+      chapterName: '第四章',
+      chapterMatchCount: 2,
+      matchIndex: 6
+    })
+  ];
+  const ctx = build({
+    shelfQuery: '张三',
+    results: firstChapter.concat(secondChapter),
+    shown: 5,
+    meta: {
+      results: firstChapter.concat(secondChapter),
+      totalMatches: 12,
+      truncated: false,
+      scannedBooks: 1,
+      candidateBooks: 1
+    }
+  });
+  withDom(ctx.dom, () => ctx.ui.renderShelfContent());
+  const list = ctx.dom.$('shelf-content-list');
+  const heads = list.children.filter((child) => child.className === 'shelf-content-group');
+  assert.equal(heads.length, 2, '两章 → 两个组头');
+  assert.equal(heads[0].textContent, '书甲 · 第3章·第三章 · 本章 10 处');
+  assert.equal(heads[1].textContent, '书甲 · 第4章·第四章 · 本章 2 处');
+  assert.equal(rowsOf(list).length, 5, '默认仍只列搜索带回来的 5 条');
+  const button = expandButtonOf(list);
+  assert.ok(button, '第一章 10 处 > 已列 3 条，要有「展开本章全部」');
+  assert.equal(button.tag, 'button');
+  assert.equal(button.type, 'button');
+  assert.equal(button.textContent, '展开本章全部');
+  assert.equal(button.attrs['aria-expanded'], 'false');
+  assert.equal(button.dataset.group, groupKey(firstChapter[0]));
+  assert.equal(
+    list.children.filter((child) => String(child.className).includes('shelf-content-expand')).length,
+    1,
+    '第二章 2 处全部列出，不出现第二个展开按钮'
+  );
+  assert.match(ctx.dom.$('shelf-content-summary').textContent, /^正文命中 12 处（显示 5 条）/);
+
+  const event = { prevented: 0, stopped: 0, preventDefault() { this.prevented += 1; }, stopPropagation() { this.stopped += 1; } };
+  button.handlers.click[0](event);
+  assert.equal(event.prevented, 1);
+  assert.equal(event.stopped, 1);
+  assert.deepEqual(ctx.calls.expand, [{ row: firstChapter[0], options: { collapse: false } }]);
+});
+
+test('renderShelfContent（P22-4）：展开后组内就地列出全部命中、按钮变「收起」，收起点回调 collapse', () => {
+  const defaults = [
+    contentRow({ matchIndex: 0 }),
+    contentRow({ matchIndex: 4 }),
+    contentRow({ matchIndex: 8 })
+  ];
+  const expandedRows = Array.from({ length: 10 }, (_, i) => contentRow({ matchIndex: i * 4 }));
+  const expanded = {};
+  expanded[groupKey(defaults[0])] = { loading: false, rows: expandedRows, error: null, truncated: false };
+  const ctx = build({
+    shelfQuery: '张三',
+    results: defaults,
+    shown: 3,
+    expanded,
+    meta: { results: defaults, totalMatches: 10, truncated: false, scannedBooks: 1, candidateBooks: 1 }
+  });
+  withDom(ctx.dom, () => ctx.ui.renderShelfContent());
+  const list = ctx.dom.$('shelf-content-list');
+  assert.equal(rowsOf(list).length, 10, '展开后列出该章全部 10 条（不是 3 + 10）');
+  assert.equal(rowsOf(list)[0].children[1].children[1].textContent, '张三');
+  const button = expandButtonOf(list);
+  assert.equal(button.textContent, '收起');
+  assert.equal(button.attrs['aria-expanded'], 'true');
+  const event = { prevented: 0, stopped: 0, preventDefault() { this.prevented += 1; }, stopPropagation() { this.stopped += 1; } };
+  button.handlers.click[0](event);
+  assert.deepEqual(ctx.calls.expand, [{ row: defaults[0], options: { collapse: true } }]);
+});
+
+test('renderShelfContent（P22-4）：capped 显示「N+」，达到计数上限也能展开', () => {
+  const rows = [contentRow({ chapterMatchCount: 10000, chapterCountCapped: true })];
+  const ctx = build({ shelfQuery: '张三', results: rows, shown: 1, meta: { results: rows, totalMatches: 10000 } });
+  withDom(ctx.dom, () => ctx.ui.renderShelfContent());
+  const list = ctx.dom.$('shelf-content-list');
+  const head = list.children.find((child) => child.className === 'shelf-content-group');
+  assert.equal(head.textContent, '书甲 · 第3章·第三章 · 本章 10000+ 处');
+  assert.equal(expandButtonOf(list).textContent, '展开本章全部');
+});
+
+test('renderShelfContent（P22-4）：展开中 / 展开失败 / 命中太多截断 / 展开后 0 条四种行内提示', () => {
+  const defaults = [contentRow({ matchIndex: 0 }), contentRow({ matchIndex: 4 }), contentRow({ matchIndex: 8 })];
+  const key = groupKey(defaults[0]);
+
+  const loading = {};
+  loading[key] = { loading: true, rows: [], error: null, truncated: false };
+  const loadingCtx = build({ shelfQuery: '张三', results: defaults, shown: 3, expanded: loading, meta: { results: defaults } });
+  withDom(loadingCtx.dom, () => loadingCtx.ui.renderShelfContent());
+  let list = loadingCtx.dom.$('shelf-content-list');
+  assert.equal(rowsOf(list).length, 3, '展开中仍显示默认 3 条');
+  assert.ok(list.children.some((child) => child.className.includes('shelf-content-expand-note') && child.textContent === '正在展开本章全部命中…'));
+  assert.equal(expandButtonOf(list).textContent, '展开中…');
+  assert.equal(expandButtonOf(list).disabled, true);
+
+  const failed = {};
+  failed[key] = { loading: false, rows: [], error: '索引坏了', truncated: false };
+  const failedCtx = build({ shelfQuery: '张三', results: defaults, shown: 3, expanded: failed, meta: { results: defaults } });
+  withDom(failedCtx.dom, () => failedCtx.ui.renderShelfContent());
+  list = failedCtx.dom.$('shelf-content-list');
+  assert.ok(list.children.some((child) => child.className.includes('shelf-content-expand-error') && child.textContent === '展开失败：索引坏了'));
+
+  const truncated = {};
+  truncated[key] = { loading: false, rows: defaults, error: null, truncated: true };
+  const truncatedCtx = build({ shelfQuery: '张三', results: defaults, shown: 3, expanded: truncated, meta: { results: defaults } });
+  withDom(truncatedCtx.dom, () => truncatedCtx.ui.renderShelfContent());
+  list = truncatedCtx.dom.$('shelf-content-list');
+  assert.ok(list.children.some((child) => child.className.includes('shelf-content-expand-note') && child.textContent === '本章命中太多，只列出前 3 处'));
+
+  const empty = {};
+  empty[key] = { loading: false, rows: [], error: null, truncated: false };
+  const emptyCtx = build({ shelfQuery: '张三', results: defaults, shown: 3, expanded: empty, meta: { results: defaults } });
+  withDom(emptyCtx.dom, () => emptyCtx.ui.renderShelfContent());
+  list = emptyCtx.dom.$('shelf-content-list');
+  assert.ok(list.children.some((child) => child.className.includes('shelf-content-expand-note') && child.textContent === '这一章的命中已经找不到了（正文可能刚被改过）'));
+  assert.equal(expandButtonOf(list).textContent, '展开本章全部');
+});
+
+test('renderShelfContent（P22-4）：没有 expandContentChapter 时仍按章聚合、只不出现展开按钮（可选 host 成员）', () => {
+  const rows = [contentRow(), contentRow({ matchIndex: 2 })];
+  const ctx = build({ shelfQuery: '张三', results: rows, shown: 2, meta: { results: rows } });
+  delete ctx.host.expandContentChapter;
+  withDom(ctx.dom, () => ctx.ui.renderShelfContent());
+  const list = ctx.dom.$('shelf-content-list');
+  assert.equal(rowsOf(list).length, 2, '结果行仍是两条');
+  assert.equal(
+    list.children.filter((child) => child.className === 'shelf-content-group').length,
+    1,
+    '按章聚合的组头仍在（10000 处上限 / 展开按钮只是少一个入口）'
+  );
+  assert.equal(expandButtonOf(list), null, '没有展开入口时不出现按钮');
+  assert.equal(ctx.host.expandContentChapter, undefined);
+});
+
+test('updateShelfSearchUi（P22-4）：摘要里的「正文命中」用主进程真命中数（totalMatches）', () => {
+  const ctx = build({
+    shelfQuery: '灯芯',
+    books: [{}],
+    results: [contentRow()],
+    meta: { results: [contentRow(), contentRow(), contentRow()], totalMatches: 12 }
+  });
+  ctx.ui.updateShelfSearchUi(0);
+  assert.match(ctx.dom.$('shelf-search-summary').textContent, /正文命中 12 处/);
 });
 
 test('updateShelfSearchUi：没查询词时收起摘要并藏清除按钮', () => {

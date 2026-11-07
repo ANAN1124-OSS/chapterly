@@ -17,7 +17,9 @@
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到书架刷新 / 敲搜索框时 ReferenceError）。
  * openContentResult 由渲染层用惰性转发传入：正文搜索模块（shelf-search-ui.js）需要本模块交出的
  * renderShelfContent，本模块又要在结果行点击时用它的 openContentResult；装配顺序照旧，调用都发生在装配之后。
- * create() 不注册任何事件、不建定时器；只在 renderShelfContent 里给结果行绑它自己的 click。
+ * expandContentChapter（P22-4）同样是惰性转发、且是**可选**成员：它由正文搜索模块晚一步交出，
+ * 没有它时正文结果区仍按旧形状平铺、不出现「展开本章全部」。
+ * create() 不注册任何事件、不建定时器；只在 renderShelfContent 里给结果行 / 展开按钮绑它自己的 click。
  *
  * 不搬的（刻意留在 renderer.js）：正文搜索的防抖 / 主进程查询（shelf-search-ui.js）、输入框 / 清除 /
  * 显示更多的事件绑定（事件绑定段）、测试钩子宿主契约段——都按原名取本模块交出的入口。
@@ -105,6 +107,138 @@
     return state.view === 'shelf' && shelfQueryText().length >= CONTENT_SEARCH_MIN_CHARS;
   }
 
+  // ---------- 正文命中：按「书 + 章」聚合（P22-4） ----------
+  // 一次搜索里同一章的结果在 results 里天然连续（索引逐书逐章扫），所以按连续段分组即可；
+  // 组键只用于「展开过哪几章」的状态，不写盘、不进 state 以外的地方。
+  function contentGroupKey(row) {
+    if (!row || typeof row !== 'object') return '';
+    const bookPath = typeof row.bookPath === 'string' ? row.bookPath : '';
+    const chapterFile = typeof row.chapterFile === 'string' ? row.chapterFile : '';
+    if (!bookPath || !chapterFile) return '';
+    return bookPath + '\u0000' + chapterFile;
+  }
+
+  function contentHitCount(row, fallback) {
+    const value = row ? Number(row.chapterMatchCount) : NaN;
+    if (Number.isFinite(value) && value >= 0) return Math.floor(value);
+    return Math.max(0, Math.floor(Number(fallback) || 0));
+  }
+
+  // 摘要里的「正文命中 N 处」用真命中数（P22-4 起主进程会回报 totalMatches）；
+  // 旧结果 / 旧测试没有这个字段时回落到已列出的条数，文案与旧版逐字一致。
+  function contentMatchTotal(meta) {
+    if (meta && typeof meta.totalMatches === 'number' && Number.isFinite(meta.totalMatches) && meta.totalMatches >= 0) {
+      return Math.floor(meta.totalMatches);
+    }
+    return meta && Array.isArray(meta.results) ? meta.results.length : 0;
+  }
+
+  function appendContentRow(list, row, index) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'shelf-content-row';
+    item.dataset.index = String(index);
+    const head = document.createElement('span');
+    head.className = 'shelf-content-title';
+    const bookName = document.createElement('span');
+    bookName.className = 'shelf-content-book';
+    bookName.textContent = row.bookTitle || '';
+    const chapterName = document.createElement('span');
+    chapterName.className = 'shelf-content-chapter';
+    chapterName.textContent = chapterTitle(Number(row.chapterIndex) || 0, row.chapterName || '');
+    head.appendChild(bookName);
+    head.appendChild(chapterName);
+    const snippet = document.createElement('span');
+    snippet.className = 'shelf-content-snippet';
+    const snip = row.snippet || {};
+    if (snip.cutBefore) snippet.appendChild(document.createTextNode('…'));
+    snippet.appendChild(document.createTextNode(snip.before || ''));
+    const mark = document.createElement('mark');
+    mark.textContent = snip.match || '';
+    snippet.appendChild(mark);
+    snippet.appendChild(document.createTextNode(snip.after || ''));
+    if (snip.cutAfter) snippet.appendChild(document.createTextNode('…'));
+    item.appendChild(head);
+    item.appendChild(snippet);
+    item.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void openContentResult(row);
+    });
+    list.appendChild(item);
+    return item;
+  }
+
+  // 一章一组：组头「书名 · 第N章：章名 · 本章 N 处（N+ = 计数到上限）」+ 本组命中行。
+  // 默认只列这次搜索已经带回来的前几条；章内还有没列出的命中时给「展开本章全部」，
+  // 点开后就地替换成该章全部命中（行由正文搜索模块异步取回），按钮变「收起」。
+  function renderContentGroup(list, rows, startIndex, expanded) {
+    const first = rows[0];
+    const key = contentGroupKey(first);
+    const entry = expanded && key ? expanded[key] : null;
+    const total = contentHitCount(first, rows.length);
+    const capped = Boolean(first.chapterCountCapped);
+    const groupHead = document.createElement('div');
+    groupHead.className = 'shelf-content-group';
+    groupHead.dataset.group = key;
+    groupHead.textContent =
+      `${first.bookTitle || ''} · ` +
+      chapterTitle(Number(first.chapterIndex) || 0, first.chapterName || '') +
+      ` · 本章 ${total}${capped ? '+' : ''} 处`;
+    list.appendChild(groupHead);
+
+    const expandedRows = entry && Array.isArray(entry.rows) && entry.rows.length ? entry.rows : null;
+    const shownRows = expandedRows || rows;
+    for (let i = 0; i < shownRows.length; i += 1) {
+      appendContentRow(list, shownRows[i], expandedRows ? i : startIndex + i);
+    }
+
+    if (entry && entry.loading) {
+      const busy = document.createElement('div');
+      busy.className = 'shelf-content-expand-note muted small';
+      busy.textContent = '正在展开本章全部命中…';
+      list.appendChild(busy);
+    } else if (entry && entry.error) {
+      const failed = document.createElement('div');
+      failed.className = 'shelf-content-expand-error muted small';
+      failed.textContent = `展开失败：${entry.error}`;
+      list.appendChild(failed);
+    } else if (expandedRows && entry.truncated) {
+      const note = document.createElement('div');
+      note.className = 'shelf-content-expand-note muted small';
+      note.textContent = `本章命中太多，只列出前 ${expandedRows.length} 处`;
+      list.appendChild(note);
+    } else if (entry && !entry.loading && !expandedRows) {
+      const note = document.createElement('div');
+      note.className = 'shelf-content-expand-note muted small';
+      note.textContent = '这一章的命中已经找不到了（正文可能刚被改过）';
+      list.appendChild(note);
+    }
+
+    const canExpand = typeof host.expandContentChapter === 'function';
+    if (canExpand && (capped || total > rows.length || Boolean(entry))) {
+      const isExpanded = Boolean(expandedRows);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn ghost tiny shelf-content-expand';
+      button.dataset.group = key;
+      if (entry && entry.loading) {
+        button.textContent = '展开中…';
+        button.disabled = true;
+      } else {
+        button.textContent = isExpanded ? '收起' : '展开本章全部';
+      }
+      button.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.disabled) return;
+        void host.expandContentChapter(first, { collapse: isExpanded });
+      });
+      list.appendChild(button);
+    }
+  }
+
   function renderShelfContent() {
     const wrap = $('shelf-content');
     if (!wrap) return;
@@ -132,7 +266,7 @@
     } else if (meta && meta.results && meta.results.length) {
       const shown = Math.min(content.shown, meta.results.length);
       parts.push(
-        `正文命中 ${meta.results.length} 处（显示 ${shown} 条）` +
+        `正文命中 ${contentMatchTotal(meta)} 处（显示 ${shown} 条）` +
           (meta.truncated ? ' · 只查了最近的一部分书' : '') +
           ` · 已查 ${meta.scannedBooks}/${meta.candidateBooks} 本`
       );
@@ -153,40 +287,20 @@
     list.innerHTML = '';
     const results = Array.isArray(content.results) ? content.results : [];
     const visible = results.slice(0, content.shown);
-    for (let i = 0; i < visible.length; i += 1) {
-      const row = visible[i];
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'shelf-content-row';
-      item.dataset.index = String(i);
-      const head = document.createElement('span');
-      head.className = 'shelf-content-title';
-      const bookName = document.createElement('span');
-      bookName.className = 'shelf-content-book';
-      bookName.textContent = row.bookTitle || '';
-      const chapterName = document.createElement('span');
-      chapterName.className = 'shelf-content-chapter';
-      chapterName.textContent = chapterTitle(Number(row.chapterIndex) || 0, row.chapterName || '');
-      head.appendChild(bookName);
-      head.appendChild(chapterName);
-      const snippet = document.createElement('span');
-      snippet.className = 'shelf-content-snippet';
-      const snip = row.snippet || {};
-      if (snip.cutBefore) snippet.appendChild(document.createTextNode('…'));
-      snippet.appendChild(document.createTextNode(snip.before || ''));
-      const mark = document.createElement('mark');
-      mark.textContent = snip.match || '';
-      snippet.appendChild(mark);
-      snippet.appendChild(document.createTextNode(snip.after || ''));
-      if (snip.cutAfter) snippet.appendChild(document.createTextNode('…'));
-      item.appendChild(head);
-      item.appendChild(snippet);
-      item.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void openContentResult(row);
-      });
-      list.appendChild(item);
+    // 全部行都带「书 + 章」信息才按章聚合；旧形状（没有 chapterFile）照旧平铺，行为不变。
+    const grouped = visible.length > 0 && visible.every((row) => Boolean(contentGroupKey(row)));
+    if (grouped) {
+      const expanded = content.expanded && typeof content.expanded === 'object' ? content.expanded : null;
+      let i = 0;
+      while (i < visible.length) {
+        const key = contentGroupKey(visible[i]);
+        let end = i + 1;
+        while (end < visible.length && contentGroupKey(visible[end]) === key) end += 1;
+        renderContentGroup(list, visible.slice(i, end), i, expanded);
+        i = end;
+      }
+    } else {
+      for (let i = 0; i < visible.length; i += 1) appendContentRow(list, visible[i], i);
     }
 
     if (visible.length && results.length > content.shown) {
@@ -222,7 +336,7 @@
     const contentNote = content.loading
       ? ' · 正在搜正文…'
       : content.meta && content.meta.results && content.meta.results.length
-        ? ` · 正文命中 ${content.meta.results.length} 处`
+        ? ` · 正文命中 ${contentMatchTotal(content.meta)} 处`
         : '';
     const groupNote = state.shelfGroup ? '（已按分组筛选）' : '';
     summary.textContent =

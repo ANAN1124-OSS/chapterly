@@ -280,6 +280,9 @@
       meta: null, // 主进程回报的统计：candidateBooks / scannedBooks / truncated / 索引状态
       error: null, // 搜索失败的原因（只影响正文结果，不影响书名过滤）
       shown: CONTENT_PAGE_SIZE, // 已经展示几条（「显示更多」每次 +8）
+      // P22-4：按「书 + 章」展开过的结果（key → { loading, rows, error, truncated }），
+      // 由 shelf-search-ui.js 维护；换查询 / 重新搜索 / 收起都清这里，不写盘。
+      expanded: {},
       indexStatus: null // 索引状态 / 建索引进度（只用于提示，不落盘）
     },
     stats: null, // 每日字数摘要：{ day, todayChars, goal, goalPercent, goalMet, recentTotal, days[], streak }
@@ -926,7 +929,9 @@
   // 模块晚一步交出，用惰性转发保持「先建过滤、后建正文搜索」的原装配顺序（调用都发生在装配完成之后）。
   const shelfFilterUi = shelfFilterUiModule.create({
     $, state, bookInfoLib, chapterTitle, CONTENT_SEARCH_MIN_CHARS,
-    openContentResult: (row) => openContentResult(row)
+    openContentResult: (row) => openContentResult(row),
+    // P22-4：展开一章全部命中由正文搜索模块晚一步交出，这里同样是惰性转发（装配顺序不变）。
+    expandContentChapter: (row, options) => expandContentChapter(row, options)
   });
   const { shelfQueryText, bookGroupOf, shelfGroupList, shelfSearchResults, shelfContentActive, renderShelfContent, updateShelfSearchUi } = shelfFilterUi;
 
@@ -940,6 +945,8 @@
     CONTENT_PAGE_SIZE, CONTENT_SEARCH_DEBOUNCE, CONTENT_RESULT_LIMIT
   });
   const { resetShelfContent, scheduleContentSearch, ensureSearchIndex, openContentResult } = shelfSearchUi;
+  // P22-4：展开一章全部命中（测试钩子 / 静态闸门按原名找的那 4 个入口保持原样，这里单独取第 5 个）。
+  const expandContentChapter = shelfSearchUi.expandContentChapter;
 
   // ---------- 书架交互（v0.9 B-5 第六刀：三个小分区整段搬到 renderer/shelf-ui.js） ----------
   // 「继续上次写作」卡片 / 同步冲突副本提示 / 切章（含未保存拦截）三块整段搬走，行为一字未改。

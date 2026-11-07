@@ -115,13 +115,14 @@ test('host 契约：11 个成员缺任何一个都抛 TypeError，空 host / nul
   assert.doesNotThrow(() => shelfSearchUi.create(host));
 });
 
-test('create() 只建表：不碰 DOM / 不挂监听 / 不建定时器，交出 4 个入口', () => {
+test('create() 只建表：不碰 DOM / 不挂监听 / 不建定时器，交出 5 个入口（P22-4 加展开）', () => {
   // 临时藏起 document / window：不放假的替身，直接验证「没有也不炸」。
   withoutGlobals(['document', 'window'], () => {
     const { host, state, calls } = makeHost();
     const ui = shelfSearchUi.create(host);
     assert.deepEqual(Object.keys(ui).sort(), [
       'ensureSearchIndex',
+      'expandContentChapter',
       'openContentResult',
       'resetShelfContent',
       'scheduleContentSearch'
@@ -360,11 +361,189 @@ test('openContentResult：空行 / 没有书路径 → 什么都不做；正常�
   ]);
 });
 
+// ---------- P22-4：展开一章全部命中（expandContentChapter） ----------
+const FOCUS_BOOK = 'C:/tmp/books/书甲';
+const FOCUS_FILE = '001-第一章.txt';
+const FOCUS_KEY = FOCUS_BOOK + '\u0000' + FOCUS_FILE;
+
+function focusedRow(overrides = {}) {
+  return {
+    bookPath: FOCUS_BOOK,
+    bookTitle: '书甲',
+    chapterFile: FOCUS_FILE,
+    chapterId: 'c1',
+    chapterIndex: 0,
+    chapterName: '第一章',
+    chapterMatchCount: 10,
+    matchIndex: 0,
+    matchLength: 2,
+    snippet: { before: '', match: '灯芯', after: '' },
+    ...overrides
+  };
+}
+
+test('expandContentChapter：只带书 + 章查本章全部（limit 40 + focus），loading → 结果落到 expanded', async () => {
+  const rows = Array.from({ length: 10 }, (_, i) => focusedRow({ matchIndex: i * 4 }));
+  const { host, state, calls } = makeHost({
+    contentQuery: '灯芯',
+    onCall: () => Promise.resolve({ focus: true, results: rows, truncated: false, limit: 200 })
+  });
+  const ui = shelfSearchUi.create(host);
+  const pending = ui.expandContentChapter({ bookPath: FOCUS_BOOK, chapterFile: FOCUS_FILE });
+  const entry = state.shelfContent.expanded[FOCUS_KEY];
+  assert.ok(entry, 'expanded 第一次用时自动建表');
+  assert.equal(entry.loading, true);
+  assert.deepEqual(entry.rows, []);
+  assert.equal(calls.renderShelfContent, 1);
+  const done = await pending;
+  assert.equal(done, true);
+  assert.equal(calls.search.length, 1);
+  assert.equal(calls.search[0].fn, 'search:content');
+  assert.deepEqual(calls.search[0].args, [
+    '灯芯',
+    { limit: 40, focus: { bookPath: FOCUS_BOOK, chapterFile: FOCUS_FILE } }
+  ]);
+  assert.equal(entry.loading, false);
+  assert.deepEqual(entry.rows, rows);
+  assert.equal(entry.truncated, false);
+  assert.equal(entry.error, null);
+  assert.equal(calls.renderShelfContent, 2);
+  assert.equal(calls.renderShelf, 0, '展开只重画正文结果区，不重建整张书架');
+});
+
+test('expandContentChapter：空行 / 没有 chapterFile 直接返回 false，一次查询都不发', async () => {
+  const { host, state, calls } = makeHost({});
+  const ui = shelfSearchUi.create(host);
+  assert.equal(await ui.expandContentChapter(null), false);
+  assert.equal(await ui.expandContentChapter({ bookPath: FOCUS_BOOK }), false);
+  assert.equal(await ui.expandContentChapter({ chapterFile: FOCUS_FILE }), false);
+  assert.deepEqual(calls.search, []);
+  assert.equal(state.shelfContent.expanded, undefined, '无效行不改动展开态');
+});
+
+test('expandContentChapter：收起只删这一章的展开态并重画，不发查询', async () => {
+  const { host, state, calls } = makeHost({ contentQuery: '灯芯' });
+  state.shelfContent.expanded = { [FOCUS_KEY]: { loading: false, rows: [focusedRow()], error: null, truncated: false } };
+  const ui = shelfSearchUi.create(host);
+  assert.equal(await ui.expandContentChapter({ bookPath: FOCUS_BOOK, chapterFile: FOCUS_FILE }, { collapse: true }), true);
+  assert.equal(FOCUS_KEY in state.shelfContent.expanded, false);
+  assert.deepEqual(calls.search, []);
+  assert.equal(calls.renderShelfContent, 1);
+});
+
+test('expandContentChapter：令牌变化 / 换查询 / 离开书架 / 已收起 → 旧响应整包丢弃', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const scenarios = [
+    {
+      name: 'token 变了',
+      mutate: (state) => { state.shelfContent.token += 1; },
+      check: (state) => state.shelfContent.expanded[FOCUS_KEY].loading === true
+    },
+    {
+      name: '查询词变了',
+      mutate: (state) => { state.shelfContent.query = '别的词'; },
+      check: (state) => state.shelfContent.expanded[FOCUS_KEY].loading === true
+    },
+    {
+      name: '离开书架',
+      mutate: (state) => { state.view = 'editor'; },
+      check: (state) => state.shelfContent.expanded[FOCUS_KEY].loading === true
+    },
+    {
+      name: '这一组已被收起',
+      mutate: (state) => { delete state.shelfContent.expanded[FOCUS_KEY]; },
+      check: (state) => state.shelfContent.expanded[FOCUS_KEY] === undefined
+    }
+  ];
+  for (const scenario of scenarios) {
+    const pending = deferred();
+    const { host, state, calls } = makeHost({ contentQuery: '灯芯', onCall: () => pending.promise });
+    const ui = shelfSearchUi.create(host);
+    const run = ui.expandContentChapter({ bookPath: FOCUS_BOOK, chapterFile: FOCUS_FILE });
+    scenario.mutate(state);
+    pending.resolve({ focus: true, results: [focusedRow()], truncated: false });
+    const result = await run;
+    assert.equal(result, false, scenario.name);
+    assert.equal(calls.renderShelfContent, 1, scenario.name + '：旧响应不重画');
+    scenario.check(state);
+  }
+});
+
+test('expandContentChapter：主进程回 focusError / 非 focus 结果 / 查询失败 → 行内错误、不再 loading', async () => {
+  const focusFailed = makeHost({
+    contentQuery: '灯芯',
+    onCall: () => Promise.resolve({ focus: true, focusError: '聚焦的章节读取失败', results: [] })
+  });
+  const failUi = shelfSearchUi.create(focusFailed.host);
+  assert.equal(await failUi.expandContentChapter({ bookPath: FOCUS_BOOK, chapterFile: FOCUS_FILE }), false);
+  assert.equal(focusFailed.state.shelfContent.expanded[FOCUS_KEY].error, '聚焦的章节读取失败');
+  assert.equal(focusFailed.state.shelfContent.expanded[FOCUS_KEY].loading, false);
+  assert.equal(focusFailed.calls.renderShelfContent, 2);
+
+  const notFocus = makeHost({
+    contentQuery: '灯芯',
+    onCall: () => Promise.resolve({ results: [focusedRow()] })
+  });
+  const notFocusUi = shelfSearchUi.create(notFocus.host);
+  assert.equal(await notFocusUi.expandContentChapter({ bookPath: FOCUS_BOOK, chapterFile: FOCUS_FILE }), false);
+  assert.equal(notFocus.state.shelfContent.expanded[FOCUS_KEY].error, '主进程没有返回本章结果');
+
+  const rejected = makeHost({
+    contentQuery: '灯芯',
+    onCall: () => Promise.reject(new Error('索引坏了'))
+  });
+  const rejectUi = shelfSearchUi.create(rejected.host);
+  assert.equal(await rejectUi.expandContentChapter({ bookPath: FOCUS_BOOK, chapterFile: FOCUS_FILE }), false);
+  assert.equal(rejected.state.shelfContent.expanded[FOCUS_KEY].error, '索引坏了');
+
+  const nullResults = makeHost({
+    contentQuery: '灯芯',
+    onCall: () => Promise.resolve({ focus: true, results: null, truncated: true })
+  });
+  const nullUi = shelfSearchUi.create(nullResults.host);
+  assert.equal(await nullUi.expandContentChapter({ bookPath: FOCUS_BOOK, chapterFile: FOCUS_FILE }), true);
+  assert.deepEqual(nullResults.state.shelfContent.expanded[FOCUS_KEY].rows, []);
+  assert.equal(nullResults.state.shelfContent.expanded[FOCUS_KEY].truncated, true);
+});
+
+test('expandContentChapter：已经展开过再点一次直接用缓存重画，不重复查主进程', async () => {
+  const { host, state, calls } = makeHost({ contentQuery: '灯芯' });
+  state.shelfContent.expanded = { [FOCUS_KEY]: { loading: false, rows: [focusedRow()], error: null, truncated: false } };
+  const ui = shelfSearchUi.create(host);
+  assert.equal(await ui.expandContentChapter({ bookPath: FOCUS_BOOK, chapterFile: FOCUS_FILE }), true);
+  assert.deepEqual(calls.search, []);
+  assert.equal(calls.renderShelfContent, 1);
+});
+
+test('resetShelfContent / scheduleContentSearch / runContentSearch：换查询或重新搜索都清掉展开态', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const resetCase = makeHost({ token: 1, contentQuery: '灯芯' });
+  resetCase.state.shelfContent.expanded = { [FOCUS_KEY]: { loading: false, rows: [focusedRow()] } };
+  const resetUi = shelfSearchUi.create(resetCase.host);
+  resetUi.resetShelfContent(true);
+  assert.deepEqual(resetCase.state.shelfContent.expanded, {});
+
+  const scheduleCase = makeHost({ token: 1, contentQuery: '旧词' });
+  scheduleCase.state.shelfContent.expanded = { [FOCUS_KEY]: { loading: false, rows: [focusedRow()] } };
+  const scheduleUi = shelfSearchUi.create(scheduleCase.host);
+  scheduleUi.scheduleContentSearch();
+  assert.deepEqual(scheduleCase.state.shelfContent.expanded, {}, '新的一次搜索开始时清空');
+
+  const runCase = makeHost({ onCall: () => Promise.resolve({ results: [], index: { ready: true } }) });
+  runCase.state.shelfContent.expanded = { [FOCUS_KEY]: { loading: false, rows: [focusedRow()] } };
+  const runUi = shelfSearchUi.create(runCase.host);
+  runUi.scheduleContentSearch();
+  t.mock.timers.tick(320);
+  await flush();
+  assert.deepEqual(runCase.state.shelfContent.expanded, {}, '新结果回来时清空');
+});
+
 test('静态闸门：5 个实现已经不在 renderer.js 里，渲染层只剩接线', () => {
   for (const impl of [
     '  function resetShelfContent(keepQuery = false) {',
     '  function scheduleContentSearch() {',
     '  async function runContentSearch(query, token) {',
+    '  async function expandContentChapter(row, options = {}) {',
     '  async function ensureSearchIndex(options = {}) {',
     '  async function openContentResult(row) {'
   ]) {
@@ -381,6 +560,9 @@ test('静态闸门：5 个实现已经不在 renderer.js 里，渲染层只剩�
     /const \{ resetShelfContent, scheduleContentSearch, ensureSearchIndex, openContentResult \} = shelfSearchUi;/
   );
   assert.equal((rendererSrc.match(/= shelfSearchUi;/g) || []).length, 1);
+  // P22-4：展开入口单独取第 5 个，再惰性转发给 shelf-filter-ui（不把实现搬回 renderer.js）。
+  assert.match(rendererSrc, /const expandContentChapter = shelfSearchUi\.expandContentChapter;/);
+  assert.match(rendererSrc, /expandContentChapter: \(row, options\) => expandContentChapter\(row, options\)/);
   // 测试钩子宿主契约里的两个键还在
   assert.match(rendererSrc, /\r?\n      scheduleContentSearch,\r?\n/);
   assert.match(rendererSrc, /\r?\n      ensureSearchIndex,\r?\n/);

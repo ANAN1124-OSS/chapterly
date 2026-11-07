@@ -703,6 +703,20 @@ const assertBookPath = ipcPaths.assertBookPath;
 // 在入口先挡住超大输入，免得渲染层一次手误 / 注入就把主进程拖到假死；超限回 TEXT_TOO_LARGE。
 const assertText = ipcLimits.assertText;
 
+// 正文搜索「聚焦一章」（P22-4）：renderer 用书架正文命中行里的 bookPath + chapterFile 请求该章全部命中。
+// 这里只做入口形状收口（只收两个字符串字段、各限 260 字，其它字段一律丢掉）；「是不是索引里的书 / 章、
+// 归一化后是否还在书架目录下」由 core/search-index.js 统一校验，绝不拿调用方给的路径直接读盘。
+// 不新增 IPC 通道，preload 白名单与 options 之外的调用形态都不变。
+const MAX_SEARCH_FOCUS_CHARS = 260;
+function sanitizeSearchFocus(focus) {
+  if (!focus || typeof focus !== 'object' || Array.isArray(focus)) return null;
+  const bookPath = typeof focus.bookPath === 'string' ? focus.bookPath.trim() : '';
+  const chapterFile = typeof focus.chapterFile === 'string' ? focus.chapterFile : '';
+  if (!bookPath || !chapterFile) return null;
+  if (bookPath.length > MAX_SEARCH_FOCUS_CHARS || chapterFile.length > MAX_SEARCH_FOCUS_CHARS) return null;
+  return { bookPath, chapterFile };
+}
+
 // mutation：写书的操作（save / delete / rename / format / replace / write）。
 // 有值时统一做跨窗口拦截：别的窗口正开着这本书 → 拒绝并提示先关 / 先切过去。
 function handleBook(channel, fn, { mutation = null } = {}) {
@@ -2357,11 +2371,13 @@ function registerIpc() {
     // A4（审计 E7）：查找词补上 core/ipc-limits.js 的 1 万字上限（search 通道里唯一没走这层的入口）。
     // null / undefined 归一成空串（与旧行为一致：空查询 = 没有命中）；limit 下游已钳 1–60，这里不动。
     const safeQuery = ipcLimits.assertQuery(query);
+    const focus = sanitizeSearchFocus(options && options.focus);
     const cfg = await getConfig();
     return getSearchIndexStore().search({
       booksRoot: cfg.booksRoot,
       query: safeQuery,
       limit: options && options.limit,
+      ...(focus ? { focus } : {}),
       onProgress: sendSearchProgress
     });
   });

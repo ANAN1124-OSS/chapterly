@@ -37,6 +37,16 @@ const MIN_QUERY_CHARS = 2; // 正文搜索至少两个字（单字几乎没有�
 const DEFAULT_RESULT_LIMIT = 40;
 const MAX_RESULT_LIMIT = 60;
 const MAX_SNIPPETS_PER_CHAPTER = 3;
+// P22-4：每章先数清「本章一共几处命中」，再按旧口径只列前 3 条。
+// 计数是单次 indexOf 循环（不逐字正则、不二次读盘），但这毕竟多扫了一遍正文，
+// 所以给单章计数一个硬上限：超过上限只显示「N+」，绝不让异常的长文本拖住整次搜索。
+const MAX_CHAPTER_MATCH_COUNT = 10000;
+// 聚焦一章（opts.focus）时最多返回的片段数；超过就标 truncated（界面提示只列了前 N 处）。
+// 这条路径不受整次 40 条限制，但仍受时间预算保护。
+const MAX_FOCUS_SNIPPETS = 200;
+// focus.bookPath / focus.chapterFile 的长度上限（与 main.js 的入口校验同一口径）。
+// 真实书路径 / 章节文件名远小于这个值，超长一律当作无效聚焦，不读任何路径。
+const MAX_FOCUS_FIELD_CHARS = 260;
 const SNIPPET_RADIUS = 16;
 const MAX_CANDIDATE_BOOKS = 60; // 两字常用词可能命中一大半书：最多读这么多本
 const SEARCH_TIME_BUDGET_MS = 1800; // 超过就带着已有结果返回（结果标 truncated）
@@ -142,6 +152,31 @@ function decodeBloom(text, bits) {
   } catch {
     return null;
   }
+}
+
+// 按位置数完一整章的全部命中：单次 indexOf 循环，不逐字正则、不二次读盘。
+// cap 是计数硬上限（到了就停，capped 表示「后面还有更多」）；onTick 返回 true 表示时间预算用完，
+// 此时 count 只是部分命中，同样标 capped（界面显示「N+」，不冒充精确值）。
+function countChapterMatches(haystack, needle, cap, onTick) {
+  const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  const step = Math.max(1, String(needle == null ? '' : needle).length);
+  let count = 0;
+  let from = 0;
+  let stopped = false;
+  let capped = false;
+  while (count < limit) {
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) break;
+    count += 1;
+    from = at + step;
+    if (onTick && (count & 1023) === 0 && onTick()) {
+      stopped = true;
+      break;
+    }
+  }
+  if (stopped) capped = true;
+  else if (count >= limit) capped = haystack.indexOf(needle, from) >= 0;
+  return { count, capped, stopped };
 }
 
 // 命中位置前后的上下文片段：换行 / 制表压成空格，两端裁掉多余空白。
@@ -752,6 +787,105 @@ function createSearchStore(options = {}) {
     }
 
     const startedAt = Date.now();
+
+    // P22-4：聚焦一章（书架「展开本章全部」）。只认索引里真实存在的书 + 该书章节列表里的 file：
+    // 归一化后必须落在 index.root 下、且属于 index.books；章节文件必须逐字匹配、不带路径分隔符。
+    // 任何一步不成立都直接回空结果 + focusError，绝不按调用方给的字符串去读盘。
+    if (opts.focus !== undefined && opts.focus !== null) {
+      const focusLimit = MAX_FOCUS_SNIPPETS;
+      const focusError = (message) => ({
+        ...makeBase(indexInfo),
+        limit: focusLimit,
+        focus: true,
+        focusError: message,
+        elapsedMs: Date.now() - startedAt
+      });
+      const rawFocus = opts.focus;
+      const rawBookPath =
+        rawFocus && typeof rawFocus === 'object' && !Array.isArray(rawFocus) && typeof rawFocus.bookPath === 'string'
+          ? rawFocus.bookPath.trim()
+          : '';
+      const rawChapterFile =
+        rawFocus && typeof rawFocus === 'object' && !Array.isArray(rawFocus) && typeof rawFocus.chapterFile === 'string'
+          ? rawFocus.chapterFile
+          : '';
+      if (!rawBookPath || !rawChapterFile) return focusError('聚焦的书籍或章节无效');
+      if (
+        rawBookPath.length > MAX_FOCUS_FIELD_CHARS ||
+        rawChapterFile.length > MAX_FOCUS_FIELD_CHARS ||
+        rawBookPath.includes('\u0000') ||
+        rawChapterFile.includes('\u0000') ||
+        rawChapterFile.includes('/') ||
+        rawChapterFile.includes('\\') ||
+        rawChapterFile === '.' ||
+        rawChapterFile === '..'
+      ) {
+        return focusError('聚焦的书籍或章节无效');
+      }
+      const rootKey = normalizePath(index.root);
+      const bookKey = normalizePath(rawBookPath);
+      const rootPrefix = rootKey ? (rootKey.endsWith(path.sep) ? rootKey : rootKey + path.sep) : '';
+      if (!rootPrefix || !bookKey || bookKey === rootKey || !bookKey.startsWith(rootPrefix)) {
+        return focusError('聚焦的书籍不在书架索引里');
+      }
+      const book = index.books.find((item) => normalizePath(item.path) === bookKey);
+      if (!book) return focusError('聚焦的书籍不在书架索引里');
+      const chapter = book.chapters.find((item) => item.file === rawChapterFile);
+      if (!chapter) return focusError('聚焦的章节不在书架索引里');
+
+      // 只读这一章（storage.loadChapterText 自己还会再挡一次越界路径）。
+      let text;
+      try {
+        text = (await storage.loadChapterText(book.path, chapter.file)).text;
+      } catch {
+        return focusError('聚焦的章节读取失败');
+      }
+      const haystack = lowerText(text);
+      const countInfo = countChapterMatches(haystack, normalized, MAX_CHAPTER_MATCH_COUNT, () =>
+        Date.now() - startedAt > timeBudgetMs
+      );
+      const rows = [];
+      let from = 0;
+      let stopped = countInfo.stopped;
+      while (rows.length < focusLimit) {
+        if (Date.now() - startedAt > timeBudgetMs) {
+          stopped = true;
+          break;
+        }
+        const at = haystack.indexOf(normalized, from);
+        if (at < 0) break;
+        rows.push({
+          bookPath: book.path,
+          bookTitle: book.title,
+          folder: book.folder,
+          chapterId: chapter.id,
+          chapterIndex: chapter.index,
+          chapterName: chapter.name,
+          chapterFile: chapter.file,
+          matchIndex: at,
+          matchLength: normalized.length,
+          snippet: snippetAround(text, at, normalized.length),
+          chapterMatchCount: countInfo.count,
+          chapterCountCapped: countInfo.capped
+        });
+        from = at + Math.max(1, normalized.length);
+      }
+      return {
+        ...makeBase(indexInfo),
+        limit: focusLimit,
+        results: rows,
+        focus: true,
+        candidateBooks: 1,
+        scannedBooks: 1,
+        scannedChapters: 1,
+        skippedChapters: 0,
+        matchedChapters: countInfo.count > 0 ? 1 : 0,
+        totalMatches: countInfo.count,
+        truncated: stopped || countInfo.capped || countInfo.count > rows.length,
+        elapsedMs: Date.now() - startedAt
+      };
+    }
+
     const candidates = [];
     for (const book of index.books) {
       const bloom = bloomFor(book);
@@ -772,6 +906,8 @@ function createSearchStore(options = {}) {
     const scanTarget = candidates.slice(0, maxBooks);
     const results = [];
     let matchedChapters = 0;
+    // P22-4：totalMatches 从「已列出的片段数」改成「真命中数」——每章按位置数完再只列前 3 条，
+    // 所以一章 10 处命中时 results 仍最多 3 条，但 totalMatches / 每行 chapterMatchCount 是 10。
     let totalMatches = 0;
     let scannedBooks = 0;
     let scannedChapters = 0;
@@ -800,13 +936,18 @@ function createSearchStore(options = {}) {
         }
         scannedChapters += 1;
         const haystack = lowerText(text);
+        // P22-4：先数清这一章到底几处命中（单次 indexOf 循环），再按旧口径只列前 3 条。
+        // 计数上限 / 时间预算只影响 chapterMatchCount 的精度（capped 时界面显示「N+」），
+        // 默认路径的结果条数 / 顺序 / limit / truncated 语义保持旧行为不变。
+        const countInfo = countChapterMatches(haystack, normalized, MAX_CHAPTER_MATCH_COUNT, () =>
+          Date.now() - startedAt > timeBudgetMs
+        );
         let from = 0;
         let hits = 0;
         while (hits < MAX_SNIPPETS_PER_CHAPTER && results.length < limit) {
           const at = haystack.indexOf(normalized, from);
           if (at < 0) break;
           hits += 1;
-          totalMatches += 1;
           results.push({
             bookPath: book.path,
             bookTitle: book.title,
@@ -814,13 +955,23 @@ function createSearchStore(options = {}) {
             chapterId: chapter.id,
             chapterIndex: chapter.index,
             chapterName: chapter.name,
+            chapterFile: chapter.file,
             matchIndex: at,
             matchLength: normalized.length,
-            snippet: snippetAround(text, at, normalized.length)
+            snippet: snippetAround(text, at, normalized.length),
+            chapterMatchCount: countInfo.count,
+            chapterCountCapped: countInfo.capped
           });
           from = at + Math.max(1, normalized.length);
         }
-        if (hits > 0) matchedChapters += 1;
+        if (countInfo.count > 0) {
+          matchedChapters += 1;
+          totalMatches += countInfo.count;
+        }
+        if (countInfo.stopped) {
+          stoppedByTime = true;
+          break;
+        }
       }
     }
 
@@ -882,6 +1033,9 @@ module.exports = {
   INDEX_VERSION,
   MIN_BLOOM_BITS,
   MAX_SNIPPETS_PER_CHAPTER,
+  MAX_CHAPTER_MATCH_COUNT,
+  MAX_FOCUS_SNIPPETS,
+  MAX_FOCUS_FIELD_CHARS,
   normalizeQuery,
   bigramHash,
   queryBigrams,
