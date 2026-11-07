@@ -17,7 +17,7 @@
  *     editor: {                            // 编辑器本体与纯逻辑
  *       editorEl,                          //   编辑区 textarea（正文 / 光标 / 滚动位置都从它读）
  *       editorLogic,                       //   renderer/editor-logic.js：marksPlan / 段落导航 / 超长段落 / 选中字数
- *       LONG_PARAGRAPH_THRESHOLD,          //   「超长段落」字数阈值（editor-logic 的默认值，本文件只读）
+ *       getLongParagraphThreshold,         //   「超长段落」生效阈值（1.1.0：全局默认 + 按书覆盖，每次现取）
  *       caretColorLib,                     //   core/caret-color.js：当前段落高亮颜色的清洗 / 色板预设
  *       caretColorValue                    //   「当前生效的高亮颜色」唯一口径（跟随主题时为空串）
  *     },
@@ -58,8 +58,12 @@
     }
     const { $, state, toast, persistMarks, editor, find, focus, stats, scroll } = host;
     if (typeof editor !== 'object') throw new TypeError('createEditorMarksUi 的 host.editor 必须是对象');
-    for (const key of ['editorEl', 'editorLogic', 'LONG_PARAGRAPH_THRESHOLD', 'caretColorLib', 'caretColorValue']) {
+    for (const key of ['editorEl', 'editorLogic', 'getLongParagraphThreshold', 'caretColorLib', 'caretColorValue']) {
       if (editor[key] === undefined || editor[key] === null) throw new TypeError('createEditorMarksUi 的 host.editor 缺少 ' + key);
+    }
+    // 生效阈值必须每次现取（设置里改完 / 打开别的书要不重载模块就换值），所以契约是函数，不是常量。
+    if (typeof editor.getLongParagraphThreshold !== 'function') {
+      throw new TypeError('createEditorMarksUi 的 host.editor.getLongParagraphThreshold 必须是函数');
     }
     if (typeof find !== 'object') throw new TypeError('createEditorMarksUi 的 host.find 必须是对象');
     for (const key of ['renderFindHighlights', 'syncFindOverlayScroll']) {
@@ -79,7 +83,7 @@
     if (typeof scroll !== 'object' || scroll.scrollCaretIntoView === undefined || scroll.scrollCaretIntoView === null) {
       throw new TypeError('createEditorMarksUi 的 host.scroll 缺少 scrollCaretIntoView');
     }
-    const { editorEl, editorLogic, LONG_PARAGRAPH_THRESHOLD, caretColorLib, caretColorValue } = editor;
+    const { editorEl, editorLogic, getLongParagraphThreshold, caretColorLib, caretColorValue } = editor;
     const { renderFindHighlights, syncFindOverlayScroll } = find;
     const { focusActive, scheduleTypewriterAlign } = focus;
     const { renderSelectionStats, formatCount } = stats;
@@ -92,6 +96,13 @@
   // 三个开关都关时这一层一直是 hidden，没有任何额外开销。
   function marksEnabled() {
     return Boolean(state.marks.invisibles || state.marks.longParagraphs || state.marks.caretParagraph);
+  }
+
+  // 超长段落阈值（1.1.0）：每次渲染 / 读菜单时向宿主现取生效值（本书覆盖 ?? 全局默认），
+  // 再走 editor-logic 同一份夹紧（50–20000，坏值 500）。这样设置保存 / 打开别的书之后，
+  // 菜单文案、状态栏标签、气泡提示与黄线判定不会各拿各的旧常量。
+  function longParagraphThreshold() {
+    return editorLogic.sanitizeThreshold(getLongParagraphThreshold());
   }
 
   // 当前段落高亮（v0.8-10，提案 N10）：只算「光标落在哪一段」给显示层用。
@@ -263,7 +274,7 @@
     }
     state.marks.tooLargeWarned = false;
     const longResult = state.marks.longParagraphs
-      ? editorLogic.longParagraphs(text, LONG_PARAGRAPH_THRESHOLD)
+      ? editorLogic.longParagraphs(text, longParagraphThreshold())
       : { items: [], count: 0, truncated: false, tooLarge: false };
     const invisibleResult = state.marks.invisibles
       ? editorLogic.invisibleMarks(text)
@@ -366,7 +377,7 @@
   function longParagraphsTitle() {
     const items = state.marks.longItems || [];
     const count = state.marks.longCount || 0;
-    const lines = [`超过 ${LONG_PARAGRAPH_THRESHOLD} 字的段落：`];
+    const lines = [`超过 ${longParagraphThreshold()} 字的段落：`];
     for (const item of items.slice(0, 6)) lines.push(`第 ${item.line} 行 · ${formatCount(item.chars)} 字`);
     if (count > Math.min(items.length, 6)) {
       lines.push(`…还有 ${count - Math.min(items.length, 6)} 段`);
@@ -447,6 +458,7 @@
     const invisibles = $('format-invisibles');
     const long = $('format-long-para');
     const caret = $('format-caret-para');
+    const threshold = longParagraphThreshold();
     if (invisibles) {
       invisibles.textContent = `${state.marks.invisibles ? '✓ ' : ''}显示不可见字符（␣ / 行尾空白）`;
       invisibles.dataset.on = state.marks.invisibles ? '1' : '0';
@@ -454,9 +466,9 @@
         '只在正文上面画标记：全角空格标成 ␣、行尾空白标成浅红底。正文一个字都不会改，也不写盘。';
     }
     if (long) {
-      long.textContent = `${state.marks.longParagraphs ? '✓ ' : ''}超长段落提示（>${LONG_PARAGRAPH_THRESHOLD} 字左侧黄线）`;
+      long.textContent = `${state.marks.longParagraphs ? '✓ ' : ''}超长段落提示（>${threshold} 字左侧黄线）`;
       long.dataset.on = state.marks.longParagraphs ? '1' : '0';
-      long.title = `超过 ${LONG_PARAGRAPH_THRESHOLD} 字的段落，左侧画一条淡黄竖线（为手机阅读排版着想）。只显示，不改正文。`;
+      long.title = `超过 ${threshold} 字的段落，左侧画一条淡黄竖线（为手机阅读排版着想）。阈值可在设置「正文显示设置」里改（50–20000 字，按书生效）。只显示，不改正文。`;
     }
     if (caret) {
       caret.textContent = `${state.marks.caretParagraph ? '✓ ' : ''}当前段落高亮（光标所在段）`;

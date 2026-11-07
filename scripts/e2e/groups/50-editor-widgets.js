@@ -401,6 +401,116 @@ module.exports = async function group50EditorWidgets(t) {
   await exec("window.__cwTest.deleteBookByFolder('按书记忆对照书', { skipConfirm: true })");
   await exec("window.__cwTest.deleteBookByFolder('按书记忆测试书', { skipConfirm: true })");
 
+  // 50h-3. 超长段落阈值可自定义（1.1.0）：全局默认 500 + 按书覆盖；改大 / 改小同一段提示随之消失 / 出现；
+  // 只写 config.json 的 bookDisplay[本书]，正文 / 书目 / 章节文件一个字节不动。
+  const thresholdHashBook = async (bookPath) => {
+    const metaRaw = await fs.readFile(path.join(bookPath, '书目.json'), 'utf8');
+    const hashes = { '书目.json': sha256Of(metaRaw) };
+    for (const chapter of JSON.parse(metaRaw).chapters) {
+      hashes[chapter.file] = sha256Of(await fs.readFile(path.join(bookPath, chapter.file)));
+    }
+    return hashes;
+  };
+  const thresholdMenuText = () => exec("document.getElementById('format-long-para').textContent");
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.newBook('超长阈值测试书')");
+  await waitFor("window.__cwTest.view() === 'editor'");
+  const thresholdBookPath = await exec('window.__cwTest.bookPathValue()');
+  const thresholdBookId = await exec('window.__cwTest.bookId()');
+  // 550 字的单段：默认阈值 500 时算超长，改成 600 后不算，改回 520 又算（两头都能验证）。
+  const thresholdPara = `　　${'测'.repeat(550)}`;
+  await exec(`window.__cwTest.setText(${JSON.stringify(thresholdPara)})`);
+  await exec('window.__cwTest.save()');
+  await waitFor('window.__cwTest.dirty() === false');
+  await exec("window.__cwTest.setMarksToggle('longParagraphs', true)");
+  await waitFor('window.__cwTest.marksFlags().longParagraphs === true');
+  check(
+    '超长段落阈值：默认全局 500，550 字段落提示 + 状态栏标签 + 菜单文案都用 500',
+    (await exec('window.__cwTest.marksLongParaCount()')) === 1 &&
+      (await exec('window.__cwTest.longParaChipVisible()')) === true &&
+      (await exec('window.__cwTest.longParaChipText()')) === '超长段落 1 段' &&
+      (await exec('window.__cwTest.longParaChipTitle()')).includes('超过 500 字') &&
+      (await thresholdMenuText()) === '✓ 超长段落提示（>500 字左侧黄线）'
+  );
+
+  const thresholdHashBefore = await thresholdHashBook(thresholdBookPath);
+  const thresholdDirBefore = (await fs.readdir(thresholdBookPath)).sort().join('|');
+  const thresholdBaseBefore = marksMemConfigBase(await readMarksMemConfig(), thresholdBookId);
+
+  await exec('window.__cwTest.openSettings()');
+  await waitFor("window.__cwTest.settingsScope() === 'book'");
+  check(
+    '超长段落阈值：设置里按书回填 500（改阈值前），并提示只影响这本书',
+    (await exec("document.getElementById('settings-long-para-threshold').value")) === '500' &&
+      (await exec("document.getElementById('settings-long-para-hint').textContent")).includes('只影响这本书')
+  );
+  await exec("document.getElementById('settings-long-para-threshold').value = '600'");
+  await exec("document.getElementById('btn-settings-save').click()");
+  await waitFor('window.__cwTest.settingsOpen() === false');
+  await waitFor('window.__cwTest.bookDisplay().longParagraphThreshold === 600');
+  // 保存设置会按 config 重同步两个开关（这本书没记过 marksLongParagraphs），这里只为看阈值效果重新打开（不写盘）
+  await exec("window.__cwTest.setMarksToggle('longParagraphs', true)");
+  await waitFor('window.__cwTest.marksFlags().longParagraphs === true');
+  check(
+    '超长段落阈值：按书改成 600（改大）后同一段不再提示，标签 / 黄线收起、菜单文案变成 600',
+    (await exec('window.__cwTest.marksLongParaCount()')) === 0 &&
+      (await exec('window.__cwTest.longParaChipVisible()')) === false &&
+      (await exec('window.__cwTest.longParaGutterVisible()')) === false &&
+      (await thresholdMenuText()) === '✓ 超长段落提示（>600 字左侧黄线）'
+  );
+  const thresholdDisplay600 = await exec('window.__cwTest.bookDisplay()');
+
+  await exec('window.__cwTest.openSettings()');
+  await waitFor("window.__cwTest.settingsScope() === 'book'");
+  check(
+    '超长段落阈值：再次打开设置按书回填 600',
+    (await exec("document.getElementById('settings-long-para-threshold').value")) === '600'
+  );
+  await exec("document.getElementById('settings-long-para-threshold').value = '520'");
+  await exec("document.getElementById('btn-settings-save').click()");
+  await waitFor('window.__cwTest.settingsOpen() === false');
+  await waitFor('window.__cwTest.bookDisplay().longParagraphThreshold === 520');
+  await exec("window.__cwTest.setMarksToggle('longParagraphs', true)");
+  await waitFor('window.__cwTest.marksFlags().longParagraphs === true');
+  check(
+    '超长段落阈值：按书改成 520（改小）后同一段重新提示，标签 / 黄线回来、气泡与菜单文案用 520',
+    (await exec('window.__cwTest.marksLongParaCount()')) === 1 &&
+      (await exec('window.__cwTest.longParaChipVisible()')) === true &&
+      (await exec('window.__cwTest.longParaChipText()')) === '超长段落 1 段' &&
+      (await exec('window.__cwTest.longParaBarCount()')) > 0 &&
+      (await exec('window.__cwTest.longParaChipTitle()')).includes('超过 520 字') &&
+      (await thresholdMenuText()) === '✓ 超长段落提示（>520 字左侧黄线）'
+  );
+  const thresholdConfigAfter = await readMarksMemConfig();
+  const thresholdEntryAfter = thresholdConfigAfter.bookDisplay[thresholdBookId];
+  const thresholdDisplayOnly600 = { ...thresholdDisplay600 };
+  const thresholdDisplayOnly520 = { ...thresholdEntryAfter };
+  delete thresholdDisplayOnly600.longParagraphThreshold;
+  delete thresholdDisplayOnly520.longParagraphThreshold;
+  check(
+    '超长段落阈值：config.json 只多 bookDisplay[本书] 的 longParagraphThreshold（两次保存之间只有它从 600 变 520）',
+    Boolean(thresholdBookId) &&
+      thresholdEntryAfter.longParagraphThreshold === 520 &&
+      thresholdConfigAfter.longParagraphThreshold === 500 &&
+      JSON.stringify(thresholdDisplayOnly600) === JSON.stringify(thresholdDisplayOnly520) &&
+      JSON.stringify(marksMemConfigBase(thresholdConfigAfter, thresholdBookId)) ===
+        JSON.stringify(thresholdBaseBefore),
+    { bookDisplay: thresholdEntryAfter }
+  );
+  check(
+    '超长段落阈值：改阈值只写 config.json，正文 / 书目 / 章节文件 SHA256 与目录都不变',
+    JSON.stringify(await thresholdHashBook(thresholdBookPath)) === JSON.stringify(thresholdHashBefore) &&
+      (await fs.readdir(thresholdBookPath)).sort().join('|') === thresholdDirBefore
+  );
+
+  // 恢复本书默认（清掉这次覆盖）后把这本演练书移入书架 _trash，不给后面的组留状态
+  await exec('window.__cwTest.resetBookDisplay()');
+  await waitFor('!(window.__cwTest.bookDisplay().longParagraphThreshold)');
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.deleteBookByFolder('超长阈值测试书', { skipConfirm: true })");
+
   // 50i. 旧数据兼容：v0.4.1 形状的老书照常显示标记，书目不被补字段
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");

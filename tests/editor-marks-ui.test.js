@@ -14,9 +14,10 @@ const caretColorLib = require('../core/caret-color');
 // 在 Node 里一步都测不到。搬出来以后用「假 host + 假 DOM」逐条钉住，再用静态闸门保证渲染层不长回第二份。
 //
 // 契约：host 9 个成员 = 基础 3（$, state, toast）+ persistMarks（两个开关按书写盘回调）+
-// editor{editorEl,editorLogic,LONG_PARAGRAPH_THRESHOLD,caretColorLib,caretColorValue} +
+// editor{editorEl,editorLogic,getLongParagraphThreshold,caretColorLib,caretColorValue} +
 // find{renderFindHighlights,syncFindOverlayScroll} + focus{focusActive,scheduleTypewriterAlign} +
 // stats{renderSelectionStats} + scroll{scrollCaretIntoView}。
+// 1.1.0：超长段落阈值从写死常量改成 host.editor.getLongParagraphThreshold() 每次现取（全局 + 按书）。
 
 const realDocument = globalThis.document;
 const realGetComputedStyle = globalThis.getComputedStyle;
@@ -243,6 +244,7 @@ function build(options = {}) {
   const editorEl = makeEl('textarea');
   editorEl.value = options.text === undefined ? 'abc' : options.text;
   editorEl.selectionStart = options.selectionStart || 0;
+  const thresholdSource = options.threshold === undefined ? editorLogic.LONG_PARAGRAPH_DEFAULT : options.threshold;
   const host = {
     $: dom.$,
     state,
@@ -257,7 +259,9 @@ function build(options = {}) {
     editor: {
       editorEl,
       editorLogic,
-      LONG_PARAGRAPH_THRESHOLD: options.threshold === undefined ? editorLogic.LONG_PARAGRAPH_DEFAULT : options.threshold,
+      // 生效阈值：可以传函数（模拟打开书 / 保存设置后现取值），默认取 options.threshold 或 500
+      getLongParagraphThreshold:
+        typeof thresholdSource === 'function' ? thresholdSource : () => thresholdSource,
       caretColorLib,
       caretColorValue: (cfg) => caretColorLib.normalizeColor(((cfg || state.config || {}).caretParagraphColor))
     },
@@ -298,11 +302,16 @@ test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个�
   }
   // 写盘回调必须是函数：别等到点开关才发现（不是 undefined 也要拦）
   assert.throws(() => editorMarksUi.create({ ...ctx.host, persistMarks: 'x' }), /host\.persistMarks 必须是函数/);
-  for (const key of ['editorEl', 'editorLogic', 'LONG_PARAGRAPH_THRESHOLD', 'caretColorLib', 'caretColorValue']) {
+  for (const key of ['editorEl', 'editorLogic', 'getLongParagraphThreshold', 'caretColorLib', 'caretColorValue']) {
     const broken = { ...ctx.host, editor: { ...ctx.host.editor } };
     delete broken.editor[key];
     assert.throws(() => editorMarksUi.create(broken), new RegExp('host\\.editor 缺少 ' + key));
   }
+  // 生效阈值必须是函数（不是常量）：不是 undefined 也要拦
+  assert.throws(
+    () => editorMarksUi.create({ ...ctx.host, editor: { ...ctx.host.editor, getLongParagraphThreshold: 500 } }),
+    /host\.editor\.getLongParagraphThreshold 必须是函数/
+  );
   for (const key of ['renderFindHighlights', 'syncFindOverlayScroll']) {
     const broken = { ...ctx.host, find: { ...ctx.host.find } };
     delete broken.find[key];
@@ -539,6 +548,40 @@ test('renderMarksMenu：三个开关的文案 / data-on / title 逐字钉住，�
   assert.equal(caret.dataset.on, '1');
 });
 
+test('超长段落阈值（1.1.0）：菜单 / 标签 / 气泡 / 黄线判定都用 host 现取的生效值，坏值走同一份夹紧', () => {
+  // 600 字的段落：阈值 800 时不算超长；打开书 / 保存设置后改成 520，同一段立刻算超长。
+  const text = `　　${'测'.repeat(600)}`;
+  let threshold = 800;
+  const ctx = build({ threshold: () => threshold, longParagraphs: true, text });
+  // 有超长段时黄线会读父容器 / 编辑区的行框（真实 DOM 由布局给出，假 DOM 只补最小外形）
+  ctx.dom.map.get('editor-marks-gutter').parentElement = makeEl('div');
+  ctx.ui.renderEditorMarks();
+  assert.equal(ctx.state.marks.longCount, 0, '800 字阈值下 600 字不算超长');
+  ctx.ui.renderMarksMenu();
+  const long = ctx.dom.map.get('format-long-para');
+  const chip = ctx.dom.map.get('status-long-para');
+  assert.equal(long.textContent, '✓ 超长段落提示（>800 字左侧黄线）');
+  assert.match(long.title, /超过 800 字/);
+  assert.equal(chip.classList.contains('hidden'), true);
+
+  // 动态换值（模拟按书覆盖生效 / 保存设置后重算）：不重建模块，直接重画
+  threshold = 520;
+  ctx.ui.renderEditorMarks();
+  ctx.ui.renderMarksMenu();
+  assert.equal(ctx.state.marks.longCount, 1, '520 字阈值下同一段应算超长');
+  assert.equal(chip.classList.contains('hidden'), false);
+  assert.equal(chip.textContent, '超长段落 1 段');
+  assert.match(chip.title, /超过 520 字的段落/);
+  assert.equal(long.textContent, '✓ 超长段落提示（>520 字左侧黄线）');
+
+  // 坏值 / 越界：与 editor-logic 的 LONG_PARAGRAPH_DEFAULT / LIMITS 同口径（49→50 / 20001→20000 / NaN→500）
+  for (const [raw, expected] of [[49, 50], [20001, 20000], [NaN, editorLogic.LONG_PARAGRAPH_DEFAULT]]) {
+    threshold = raw;
+    ctx.ui.renderMarksMenu();
+    assert.equal(long.textContent, `✓ 超长段落提示（>${expected} 字左侧黄线）`, String(raw));
+  }
+});
+
 test('renderCaretColorRow：色板 data-active / aria-pressed / --swatch；取色器空值退回第一个预设色', () => {
   const dom = makeDocument();
   const ctx = build({ dom, caretColor: '#c0392b' });
@@ -755,9 +798,17 @@ test('静态闸门：renderer.js 不再内嵌编辑器小件实现，只剩装�
   assert.ok(rendererSrc.includes('function persistMarksToggle('), '写盘回调实现不见了');
   assert.ok(rendererSrc.includes('function syncMarksTogglesFromConfig('), '按书生效值同步不见了');
   assert.ok(rendererSrc.includes('syncMarksTogglesFromConfig();'), '打开书 / 恢复默认时没套用生效值');
+  // 1.1.0：超长段落阈值不再写死常量，必须是动态读取的宿主函数
+  assert.equal(rendererSrc.includes('LONG_PARAGRAPH_THRESHOLD'), false, '渲染层不许再有写死的阈值常量');
+  assert.ok(rendererSrc.includes('function getLongParagraphThreshold('), '生效阈值函数不见了');
+  assert.ok(
+    rendererSrc.includes('getLongParagraphThreshold: () => getLongParagraphThreshold()') ||
+      rendererSrc.includes('getLongParagraphThreshold,'),
+    '装配少了动态阈值'
+  );
   for (const line of [
     '    $, state, toast,',
-    '    editor: { editorEl, editorLogic, LONG_PARAGRAPH_THRESHOLD, caretColorLib, caretColorValue },',
+    '    editor: { editorEl, editorLogic, getLongParagraphThreshold, caretColorLib, caretColorValue },',
     '    find: { renderFindHighlights: () => renderFindHighlights(), syncFindOverlayScroll: () => syncFindOverlayScroll() },',
     '    focus: { focusActive: () => focusActive(), scheduleTypewriterAlign: (delay) => scheduleTypewriterAlign(delay) },',
     '    stats: { renderSelectionStats, formatCount },',

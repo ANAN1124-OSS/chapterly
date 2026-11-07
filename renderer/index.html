@@ -816,6 +816,13 @@
           <option value="720">720 px</option>
         </select>
       </label>
+      <label class="field settings-row">
+        <span>超长段落阈值</span>
+        <input id="settings-long-para-threshold" class="text-input" type="number" min="50" max="20000" step="10" value="500"
+          inputmode="numeric" aria-label="超长段落阈值（50 到 20000 字）"
+          title="超过这个字数的段落，左侧画淡黄竖线并计入状态栏「超长段落」；按去掉空白后的字数算" />
+        <span class="muted small" id="settings-long-para-hint"></span>
+      </label>
       <div class="field-group">背景</div>
       <label class="field settings-row">
         <span>背景主题</span>

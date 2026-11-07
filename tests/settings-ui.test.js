@@ -8,13 +8,14 @@ const caretColorLib = require('../core/caret-color');
 const templateLib = require('../core/template');
 const s2tLib = require('../core/s2t');
 const commonLib = require('../core/common');
+const editorLogic = require('../renderer/editor-logic');
 
 // 第 4 步 renderer 九刀·第七刀：设置（原 renderer.js 4305–4787，483 行）搬到 renderer/settings-ui.js。
 // 这一域是胶水中心：作用域切换 / 表单回填与预览 / 保存（全局 + 按书两条路径）/ 数据台账（词表 / 日志 / 更新）。
 // 搬之前只有 E2E 黑盒覆盖（打开设置 → 改项 → 保存 / 取消）；各作用域显隐、保存 payload、网络状态文案、
 // 词表三态、失败兜底在 Node 里一步都测不到。搬出来以后用「假 host + 假 DOM」逐条钉住。
 //
-// 契约：host 8 个成员 = 基础 5（$, state, api, call, toast）+ display{10} + peers{stats,writeTimer,editor,
+// 契约：host 8 个成员 = 基础 5（$, state, api, call, toast）+ display{11} + peers{stats,writeTimer,editor,
 // words,refreshShelf} + texts{commonLib,formatBytes}；分组内每个真实依赖都写进模块头注释。
 
 const realDocument = globalThis.document;
@@ -104,6 +105,7 @@ const BASE_IDS = [
   'settings-backdrop', 'settings-root', 'settings-root-field', 'settings-font', 'settings-font-name',
   'settings-size', 'settings-line-height', 'settings-letter-spacing', 'settings-padding-x', 'settings-page-width',
   'settings-paper', 'settings-caret-paragraph', 'settings-caret-color', 'settings-caret-colors', 'settings-caret-hint',
+  'settings-long-para-threshold', 'settings-long-para-hint',
   'settings-snapshot-enabled', 'settings-snapshot-days', 'settings-daily-goal', 'settings-write-duration',
   'settings-clipboard-watch', 'settings-clipboard-field',
   'settings-chapter-template', 'settings-template-preview', 'settings-export-conversion',
@@ -200,7 +202,8 @@ function build(options = {}) {
       displaySettingsIds: DISPLAY_IDS,
       caretColorLib,
       s2tLib,
-      templateLib
+      templateLib,
+      editorLogic
     },
     peers: {
       stats: { refreshStats() { calls.refreshStats += 1; }, renderStatsChart() { calls.renderStatsChart += 1; } },
@@ -240,7 +243,7 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
     delete broken[key];
     assert.throws(() => settingsUi.create(broken), new RegExp('host 缺少 ' + key.replace('$', '\\$')), '缺 ' + key);
   }
-  for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib']) {
+  for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib', 'editorLogic']) {
     const broken = { ...ctx.host, display: { ...ctx.host.display } };
     delete broken.display[key];
     assert.throws(() => settingsUi.create(broken), new RegExp('host\\.display 缺少 ' + key));
@@ -328,6 +331,7 @@ test('openSettings（全局）：回填全部输入框、按全局作用域显�
       booksRoot: '/书库', editorFont: 'custom', editorCustomFontPath: '', editorCustomFontName: '',
       editorFontSize: 20, editorLineHeight: 2, editorLetterSpacing: 0.05, editorPaddingX: 40, editorPageWidth: 800,
       editorPaper: 'night', caretParagraph: true, caretParagraphColor: '#c0392b',
+      longParagraphThreshold: 620,
       snapshotEnabled: true, snapshotKeepDays: 14, dailyGoal: 1200, writeDurationEnabled: true,
       clipboardWatchEnabled: true,
       chapterTemplate: '第{n}章：{title}', exportConversion: 's2t',
@@ -345,6 +349,9 @@ test('openSettings（全局）：回填全部输入框、按全局作用域显�
   assert.equal(ctx.dom.map.get('settings-paper').value, 'night');
   assert.equal(ctx.dom.map.get('settings-caret-paragraph').checked, true);
   assert.equal(ctx.state.settingsCaretColorDraft, '#c0392b');
+  // 超长段落阈值（1.1.0）：回填全局默认，范围提示与作用域一起更新
+  assert.equal(ctx.dom.map.get('settings-long-para-threshold').value, '620');
+  assert.match(ctx.dom.map.get('settings-long-para-hint').textContent, /^全局默认/);
   assert.equal(ctx.dom.map.get('settings-snapshot-enabled').checked, true);
   assert.equal(ctx.dom.map.get('settings-daily-goal').value, '1200');
   assert.equal(ctx.dom.map.get('settings-chapter-template').value, '第{n}章：{title}');
@@ -369,7 +376,7 @@ test('openSettings（全局）：回填全部输入框、按全局作用域显�
 test('openSettings（按书）：隐藏全局分区、显示重置按钮、换成按书提示，且不读台账', async () => {
   const ctx = build({
     view: 'editor', bookId: 'id-1',
-    config: { booksRoot: '/书库', editorFont: 'serif' },
+    config: { booksRoot: '/书库', editorFont: 'serif', longParagraphThreshold: 640 },
     sensitiveWordsDraft: '/词表/敏感.txt',
     proofreadWordsDraft: '/词表/校对.txt'
   });
@@ -385,6 +392,8 @@ test('openSettings（按书）：隐藏全局分区、显示重置按钮、换�
   assert.equal(ctx.calls.proofreadWordsInfo, 0);
   assert.equal(ctx.calls.logInfo, 0, '按书作用域不读日志');
   assert.match(ctx.dom.map.get('settings-caret-hint').textContent, /^只影响这本书/);
+  assert.equal(ctx.dom.map.get('settings-long-para-threshold').value, '640');
+  assert.match(ctx.dom.map.get('settings-long-para-hint').textContent, /^只影响这本书/);
   assert.match(ctx.dom.map.get('settings-scope-hint').textContent, /^只影响「书甲」的显示设置/);
 });
 
@@ -737,6 +746,48 @@ test('saveSettings（全局）：关闭写作时长前 flush、setConfig payload
   assert.deepEqual(fail.calls.toast, [['保存设置失败：写盘失败', 'error']]);
 });
 
+test('超长段落阈值（1.1.0）：回填按同一夹紧口径，保存 payload 两种作用域都带阈值，取消不写盘', async () => {
+  // 回填：越界 / 坏值按 editor-logic 同一口径（20001→20000 / 49→50 / 缺字段→500）
+  for (const [raw, expected] of [[20001, '20000'], [49, '50'], [undefined, '500']]) {
+    const ctx = build({
+      view: 'shelf',
+      bookId: null,
+      config: { booksRoot: '/书库', longParagraphThreshold: raw }
+    });
+    await ctx.ui.openSettings();
+    assert.equal(ctx.dom.map.get('settings-long-para-threshold').value, expected, String(raw));
+  }
+
+  // 表单里的阈值原样进按书保存路径（真正读输入框的 readDisplayForm 在 renderer.js，E2E 覆盖）
+  const displayForm = {
+    editorFont: 'serif', editorFontSize: 18, editorLineHeight: 1.95, editorLetterSpacing: 0.02,
+    editorPaddingX: 56, editorPageWidth: 0, editorPaper: 'paper',
+    caretParagraph: false, caretParagraphColor: '', longParagraphThreshold: 650
+  };
+  const book = build({ scope: 'book', bookId: 'id-1', displayForm });
+  book.state.settingsScope = 'book';
+  await book.ui.saveSettings();
+  assert.equal(book.calls.setBookDisplay.length, 1);
+  assert.equal(book.calls.setBookDisplay[0][1].longParagraphThreshold, 650);
+  assert.deepEqual(book.calls.setConfig, [], '按书保存不碰全局默认');
+
+  // 取消：打开设置、改输入框、直接关 → 一个写调用都没有（草稿只活在表单里）
+  const cancel = build({ view: 'shelf', bookId: null, displayForm });
+  await cancel.ui.openSettings();
+  cancel.dom.map.get('settings-long-para-threshold').value = '700';
+  cancel.ui.closeSettings();
+  assert.deepEqual(cancel.calls.setConfig, []);
+  assert.deepEqual(cancel.calls.setBookDisplay, []);
+  assert.equal(cancel.dom.map.get('settings-backdrop').classList.contains('hidden'), true);
+
+  // 全局保存：同一份表单进 setConfig（书架设置里改的是全局默认）
+  const globalCtx = build({ view: 'shelf', bookId: null, displayForm });
+  globalCtx.state.settingsScope = 'global';
+  await globalCtx.ui.saveSettings();
+  assert.equal(globalCtx.calls.setConfig.length, 1);
+  assert.equal(globalCtx.calls.setConfig[0].longParagraphThreshold, 650);
+});
+
 // ---------- 事件绑定 ----------
 test('setupSettingsUi：注册设置域的全部监听（含显示项循环 / 色板 / 取色器 / 两个条件按钮）', () => {
   const dom = makeDocument();
@@ -807,7 +858,7 @@ test('静态闸门：renderer.js 不再内嵌设置实现，只剩装配与转�
   assert.ok(rendererSrc.includes('const settingsUiModule = window.CWSettingsUi;'));
   for (const line of [
     '    $, state, api, call, toast,',
-    '    display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib },',
+    '    display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic },',
     '      stats: { refreshStats, renderStatsChart },',
     '      writeTimer: { renderDurationSettings, renderWriteTimer, applyWriteTimerConfig, writeDurationEnabled, flushWriteTimer },',
     '      editor: { renderEditorMarks, renderMarksMenu },',

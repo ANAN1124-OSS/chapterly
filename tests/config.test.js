@@ -333,6 +333,86 @@ test('编辑器小件开关按书记忆（1.1.0）：白名单只认 true / fals
   assert.equal(afterReset.bookDisplay.b_a, undefined);
 });
 
+test('超长段落阈值（1.1.0）：默认 500、夹紧 50–20000、非法值回落；全局默认与按书覆盖分开', async () => {
+  // core 不能 require 渲染层，所以 core 侧留了同口径常量；这里用 editor-logic 的真实常量 / 边界
+  // 钉住两边一致（默认值与 49→50 / 20001→20000 的行为必须同口径）。
+  const editorLogic = require('../renderer/editor-logic');
+  const [limitMin, limitMax] = editorLogic.LONG_PARAGRAPH_LIMITS;
+  assert.equal(DEFAULTS.longParagraphThreshold, editorLogic.LONG_PARAGRAPH_DEFAULT, '默认值必须两处一致');
+  assert.equal(DEFAULTS.longParagraphThreshold, 500);
+  assert.deepEqual(editorLogic.LONG_PARAGRAPH_LIMITS, [50, 20000]);
+
+  // 全局默认：旧配置没有这个键 = 500，别的字段照常读
+  assert.equal(sanitize({}).longParagraphThreshold, 500);
+  const old = sanitize({ booksRoot: 'D:\\旧书架', editorFont: 'kai', editorPaper: 'night' });
+  assert.equal(old.longParagraphThreshold, 500);
+  assert.equal(old.booksRoot, 'D:\\旧书架');
+  assert.equal(old.editorPaper, 'night');
+
+  // 边界：49→50 / 20001→20000 / 正好 50 / 20000 保留 / NaN 与坏类型回落 500
+  assert.equal(sanitize({ longParagraphThreshold: 49 }).longParagraphThreshold, limitMin);
+  assert.equal(sanitize({ longParagraphThreshold: 50 }).longParagraphThreshold, 50);
+  assert.equal(sanitize({ longParagraphThreshold: 20000 }).longParagraphThreshold, 20000);
+  assert.equal(sanitize({ longParagraphThreshold: 20001 }).longParagraphThreshold, limitMax);
+  assert.equal(sanitize({ longParagraphThreshold: NaN }).longParagraphThreshold, 500);
+  for (const bad of ['abc', null, undefined, {}, [], Infinity, -Infinity]) {
+    assert.equal(sanitize({ longParagraphThreshold: bad }).longParagraphThreshold, 500, String(bad));
+  }
+  // 可输入小数：和配置层其它整数字段一样四舍五入（620.4→620 / 620.6→621）
+  assert.equal(sanitize({ longParagraphThreshold: 620.4 }).longParagraphThreshold, 620);
+  assert.equal(sanitize({ longParagraphThreshold: 620.6 }).longParagraphThreshold, 621);
+  assert.equal(sanitize({ longParagraphThreshold: '620' }).longParagraphThreshold, 620, '数字字符串算合法');
+
+  // 按书白名单：同一口径夹紧，坏值回落 500；别的按书字段不受影响
+  const cleaned = sanitize({
+    bookDisplay: {
+      b_small: { longParagraphThreshold: 49 },
+      b_big: { longParagraphThreshold: 20001 },
+      b_bad: { longParagraphThreshold: 'abc' },
+      b_nan: { longParagraphThreshold: NaN },
+      b_ok: { longParagraphThreshold: 620, editorPaper: 'night' }
+    }
+  });
+  assert.equal(cleaned.bookDisplay.b_small.longParagraphThreshold, 50);
+  assert.equal(cleaned.bookDisplay.b_big.longParagraphThreshold, 20000);
+  assert.equal(cleaned.bookDisplay.b_bad.longParagraphThreshold, 500);
+  assert.equal(cleaned.bookDisplay.b_nan.longParagraphThreshold, 500);
+  assert.deepEqual(cleaned.bookDisplay.b_ok, { longParagraphThreshold: 620, editorPaper: 'night' });
+  assert.equal(cleaned.longParagraphThreshold, 500, '按书覆盖不回写全局');
+  assert.equal(sanitize({ bookDisplay: 'not-an-object' }).bookDisplay && Object.keys(sanitize({ bookDisplay: 'not-an-object' }).bookDisplay).length, 0);
+
+  // 写盘往返：全局 800 + A 书 620；B 书没有覆盖 = 回落全局（合并发生在渲染层，这里按同一规则验证）
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+  assert.equal((await store.get()).longParagraphThreshold, 500);
+  await store.set({ longParagraphThreshold: 800 });
+  assert.equal((await store.get()).longParagraphThreshold, 800);
+  assert.deepEqual(await store.setBookDisplay('b_a', { longParagraphThreshold: 620 }), {
+    longParagraphThreshold: 620
+  });
+  assert.deepEqual(await store.getBookDisplay('b_b'), {});
+  const disk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(disk.longParagraphThreshold, 800);
+  assert.deepEqual(disk.bookDisplay.b_a, { longParagraphThreshold: 620 }, '只写按书覆盖这一项');
+  assert.equal(disk.bookDisplay.b_b, undefined);
+  const effective = (globalCfg, display) => ({ ...globalCfg, ...display });
+  assert.equal(effective((await store.get()), await store.getBookDisplay('b_a')).longParagraphThreshold, 620);
+  assert.equal(effective((await store.get()), await store.getBookDisplay('b_b')).longParagraphThreshold, 800);
+
+  // 重启后仍在；写入越界值按同一口径夹紧；「恢复本书默认」清掉覆盖后回落全局
+  const store2 = createConfigStore(dir);
+  assert.equal((await store2.get()).longParagraphThreshold, 800);
+  assert.equal((await store2.getBookDisplay('b_a')).longParagraphThreshold, 620);
+  assert.deepEqual(await store2.setBookDisplay('b_a', { longParagraphThreshold: 49 }), {
+    longParagraphThreshold: 50
+  });
+  assert.equal(await store2.resetBookDisplay('b_a'), true);
+  assert.deepEqual(await store2.getBookDisplay('b_a'), {});
+  const afterReset = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(afterReset.bookDisplay.b_a, undefined);
+  assert.equal(afterReset.longParagraphThreshold, 800, '恢复本书默认不动全局');
+});
+
 test('导出目录记忆：默认空、去首尾空白、坏值回空', () => {
   assert.equal(sanitize({}).lastExportDir, '');
   assert.equal(sanitize({ lastExportDir: '  D:\\xxs  ' }).lastExportDir, 'D:\\xxs');

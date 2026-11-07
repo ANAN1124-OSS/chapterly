@@ -26,7 +26,8 @@
  *       displaySettingsIds,                 //   显示项输入框 id 列表（实时预览循环用）
  *       caretColorLib,                      //   core/caret-color.js：高亮颜色清洗 / 色板预设
  *       s2tLib,                             //   core/s2t.js：导出简繁档位清洗
- *       templateLib                         //   core/template.js：章节模板清洗 / 预览展开
+ *       templateLib,                        //   core/template.js：章节模板清洗 / 预览展开
+ *       editorLogic                         //   renderer/editor-logic.js：超长段落阈值的夹紧口径
  *     },
  *     peers: {                              // 其它域模块 / 跨域动作
  *       stats: { refreshStats, renderStatsChart },                 // 统计域
@@ -63,7 +64,7 @@
     }
     const { $, state, api, call, toast, display, peers, texts } = host;
     if (typeof display !== 'object') throw new TypeError('createSettingsUi 的 host.display 必须是对象');
-    for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib']) {
+    for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib', 'editorLogic']) {
       if (display[key] === undefined || display[key] === null) throw new TypeError('createSettingsUi 的 host.display 缺少 ' + key);
     }
     if (typeof peers !== 'object') throw new TypeError('createSettingsUi 的 host.peers 必须是对象');
@@ -87,7 +88,7 @@
     for (const key of ['commonLib', 'formatBytes']) {
       if (texts[key] === undefined || texts[key] === null) throw new TypeError('createSettingsUi 的 host.texts 缺少 ' + key);
     }
-    const { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib } = display;
+    const { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic } = display;
     const { refreshStats, renderStatsChart } = peers.stats;
     const { renderDurationSettings, renderWriteTimer, applyWriteTimerConfig, writeDurationEnabled, flushWriteTimer } = peers.writeTimer;
     const { renderEditorMarks, renderMarksMenu } = peers.editor;
@@ -190,6 +191,8 @@
     $('settings-caret-paragraph').checked = cfg.caretParagraph === true;
     state.settingsCaretColorDraft = caretColorLib.normalizeColor(cfg.caretParagraphColor);
     renderSettingsCaretColors();
+    // 超长段落阈值（1.1.0）：回填生效值（按书 = 本书覆盖；全局 = 全局默认），坏值 / 缺字段按 500
+    $('settings-long-para-threshold').value = String(editorLogic.sanitizeThreshold(cfg.longParagraphThreshold));
     $('settings-snapshot-enabled').checked = cfg.snapshotEnabled === true;
     setSelectValue('settings-snapshot-days', cfg.snapshotKeepDays, 7);
     const goal = Math.max(0, Math.round(Number(cfg.dailyGoal) || 0));
@@ -503,6 +506,13 @@
       caretHint.textContent = isBook
         ? '只影响这本书：开关与颜色存进 config.json 的 bookDisplay；没单独设置过的书继续用全局默认。'
         : '全局默认：没有单独设置过的书都用这一份；在写作页里改只影响当前这本书。';
+    }
+    // 超长段落阈值同样两种作用域都显示：按书只影响本书，全局改默认（50–20000 字，坏值回落 500）
+    const longParaHint = $('settings-long-para-hint');
+    if (longParaHint) {
+      longParaHint.textContent = isBook
+        ? '只影响这本书：存进 config.json 的 bookDisplay；没单独设置过的书继续用全局默认。范围 50–20000 字。'
+        : '全局默认：没单独设置过的书都用这一档；范围 50–20000 字，超出会夹到边界，留空 / 非数字按 500。';
     }
     const resetBtn = $('btn-reset-book-display');
     if (resetBtn) {

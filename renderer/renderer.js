@@ -18,7 +18,6 @@
   // 编辑器小件的纯逻辑（选中字数 / 段落导航 / 超长段落 / 不可见字符 / 章节字数对比），
   // 在 editor-logic.js 里、Node 单测覆盖；这里只负责显示和事件。
   const editorLogic = window.CWEditorLogic;
-  const LONG_PARAGRAPH_THRESHOLD = editorLogic.LONG_PARAGRAPH_DEFAULT;
   // 查找增强（v0.8-11，提案 N11）的纯逻辑：上一处 / 下一处、高亮窗口、正文切片段、行号。
   // 在 find-logic.js 里、Node 单测覆盖；这里只负责选中、滚动和影子层显示。
   const findLogic = window.CWFindLogic;
@@ -360,7 +359,7 @@
     insertFragmentRange: null, // 打开「插入碎片…」前编辑区的光标 / 选区（插入时按这个位置）
     marks: {
       invisibles: false, // 显示不可见字符（全角空格 ␣ / 行尾空白）
-      longParagraphs: false, // 超长段落提示（>500 字左侧淡黄竖线）
+      longParagraphs: false, // 超长段落提示（阈值可配，默认 >500 字左侧淡黄竖线）
       // 当前段落高亮（v0.8-10b，提案 N10b）：光标所在段淡色底 + 左侧细线。
       // 运行时开关 = 生效配置（全局默认 + 这本书的 bookDisplay 覆盖）；切换会写 config，不碰正文。
       caretParagraph: false,
@@ -717,6 +716,13 @@
     const cfg = state.config || {};
     state.marks.invisibles = cfg.marksInvisibles === true;
     state.marks.longParagraphs = cfg.marksLongParagraphs === true;
+  }
+
+  // 超长段落阈值的生效值（1.1.0）：本书覆盖 ?? 全局默认，走 editor-logic 同一份夹紧（50–20000，坏值 500）。
+  // 不缓存：打开书 / 保存设置 / 恢复默认都会换掉 state.config，标记层与菜单在
+  // syncCaretParagraphFromConfig 里重画时会重新调用这里，自然套用新值；取消设置只还原 config。
+  function getLongParagraphThreshold() {
+    return editorLogic.sanitizeThreshold((state.config || {}).longParagraphThreshold);
   }
 
   function syncCaretParagraphFromConfig() {
@@ -1472,7 +1478,7 @@
   const editorMarksUi = editorMarksUiModule.create({
     $, state, toast,
     persistMarks: (patch) => persistMarksToggle(patch),
-    editor: { editorEl, editorLogic, LONG_PARAGRAPH_THRESHOLD, caretColorLib, caretColorValue },
+    editor: { editorEl, editorLogic, getLongParagraphThreshold, caretColorLib, caretColorValue },
     find: { renderFindHighlights: () => renderFindHighlights(), syncFindOverlayScroll: () => syncFindOverlayScroll() },
     focus: { focusActive: () => focusActive(), scheduleTypewriterAlign: (delay) => scheduleTypewriterAlign(delay) },
     stats: { renderSelectionStats, formatCount },
@@ -2832,6 +2838,8 @@
 
   function readDisplayForm() {
     const draft = state.settingsFontDraft || { path: '', name: '' };
+    // 超长段落阈值（1.1.0）：留空 / 非数字给 NaN，交给配置层回落默认 500（0 会被夹成 50，不是「没填」）。
+    const longParaRaw = String($('settings-long-para-threshold').value || '').trim();
     return {
       editorFont: $('settings-font').value,
       editorCustomFontPath: draft.path,
@@ -2844,7 +2852,9 @@
       editorPaper: $('settings-paper').value,
       // 当前段落高亮（N10b）：按书 / 全局都走同一份表单，保存时分别落到 bookDisplay / config
       caretParagraph: $('settings-caret-paragraph').checked === true,
-      caretParagraphColor: caretColorLib.normalizeColor(state.settingsCaretColorDraft)
+      caretParagraphColor: caretColorLib.normalizeColor(state.settingsCaretColorDraft),
+      // 超长段落阈值：按书保存时只影响这本书，书架设置里改全局默认（配置层再夹紧一次）
+      longParagraphThreshold: longParaRaw === '' ? NaN : Number(longParaRaw)
     };
   }
 
@@ -3041,7 +3051,7 @@
   // 第 4 步九刀·第七刀：实现在 renderer/settings-ui.js（模块头有契约），这里只装配与接线；
   const settingsUi = settingsUiModule.create({
     $, state, api, call, toast,
-    display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib },
+    display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic },
     peers: {
       stats: { refreshStats, renderStatsChart },
       writeTimer: { renderDurationSettings, renderWriteTimer, applyWriteTimerConfig, writeDurationEnabled, flushWriteTimer },

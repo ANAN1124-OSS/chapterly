@@ -18,6 +18,12 @@ const DEFAULT_BOOKS_ROOT = path.join(os.homedir(), 'Documents', '我的小说');
 const FONTS = ['serif', 'sans', 'kai', 'custom'];
 // 背景主题：纯色 4 档 + 两种纸张纹理（对应口袋写作「背景设置」里的配色/纸张纹理/夜间）
 const PAPER_THEMES = ['paper', 'cream', 'green', 'night', 'kraft', 'grid'];
+// 超长段落阈值（1.1.0）：单位 = 字（去空白后的字数），默认 500，允许 50–20000。
+// core 不能 require 渲染层的 renderer/editor-logic.js，所以这里留一份同口径常量；
+// tests/config.test.js 用 editor-logic 导出的 LONG_PARAGRAPH_DEFAULT / LONG_PARAGRAPH_LIMITS 钉住两边一致。
+// 全局默认写 config.longParagraphThreshold，按书覆盖写 config.bookDisplay[本书].longParagraphThreshold。
+const LONG_PARAGRAPH_DEFAULT = 500;
+const LONG_PARAGRAPH_LIMITS = [50, 20000];
 const DEFAULTS = Object.freeze({
   booksRoot: DEFAULT_BOOKS_ROOT,
   windowBounds: { x: 60, y: 40, width: 1200, height: 760 },
@@ -37,9 +43,13 @@ const DEFAULTS = Object.freeze({
   // '#rrggbb' = 作者自定义。两项都可被 config.bookDisplay 按书覆盖，没设置过的书用这里的全局默认。
   caretParagraph: false,
   caretParagraphColor: '',
+  // 超长段落提示的字数阈值（1.1.0）：默认 500，夹紧 50–20000；写坏 / 旧配置缺字段都回落 500。
+  // 这里的值只是「全局默认」；单本书可以在 bookDisplay[本书].longParagraphThreshold 覆盖，
+  // 生效阈值 = 本书覆盖 ?? 全局默认（合并发生在渲染层）。
+  longParagraphThreshold: LONG_PARAGRAPH_DEFAULT,
   // 每本书的显示设置覆盖：{ [bookId]: { 只放改过的项 } }；没有覆盖的书沿用上面的全局值。
   // 编辑器小件两个开关（marksInvisibles / marksLongParagraphs）也存这里：全局默认固定 false，
-  // 只有在这里记过 true / false 的书才有「本书覆盖」。
+  // 只有在这里记过 true / false 的书才有「本书覆盖」；longParagraphThreshold 同样可以按书覆盖。
   bookDisplay: {},
   // 「整理本章」上一次用过的规则，下次打开对话框沿用（不改正文，只是记住勾选）
   formatOptions: { ...formatLib.DEFAULT_OPTIONS },
@@ -101,6 +111,17 @@ function clampFloat(value, min, max, fallback) {
   return Math.round(Math.min(max, Math.max(min, n)) * 100) / 100;
 }
 
+// 超长段落阈值（1.1.0）：只认数字 / 数字字符串（数字字符串兼容手改配置），其余一律回落 500。
+// 不能直接用 clampRoundedInt：Number(null) / Number('') / Number([]) 都是 0，会被夹成下限 50，
+// 而「没填 / 写坏」按需求应回落到默认 500。
+function normalizeLongParagraphThreshold(value, fallback = LONG_PARAGRAPH_DEFAULT) {
+  let n = NaN;
+  if (typeof value === 'number') n = value;
+  else if (typeof value === 'string' && value.trim() !== '') n = Number(value.trim());
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(LONG_PARAGRAPH_LIMITS[1], Math.max(LONG_PARAGRAPH_LIMITS[0], Math.round(n)));
+}
+
 // 单本书的显示设置覆盖：只保留传进来的键（没传的项继续用全局值）
 function sanitizeBookDisplayEntry(raw) {
   const out = {};
@@ -147,6 +168,10 @@ function sanitizeBookDisplayEntry(raw) {
   // 写坏的类型一律当 false（= 回落默认关）。全局默认固定 false，只有本书覆盖会写进这里。
   if (has('marksInvisibles')) out.marksInvisibles = raw.marksInvisibles === true;
   if (has('marksLongParagraphs')) out.marksLongParagraphs = raw.marksLongParagraphs === true;
+  // 超长段落阈值按书覆盖（1.1.0）：与全局默认同一口径夹到 50–20000，非法值回落 500。
+  if (has('longParagraphThreshold')) {
+    out.longParagraphThreshold = normalizeLongParagraphThreshold(raw.longParagraphThreshold);
+  }
   // 覆盖成「自定义字体」但没带字体路径：这一项不算数，回落到全局字体
   if (out.editorFont === 'custom' && !out.editorCustomFontPath) delete out.editorFont;
   return out;
@@ -222,6 +247,8 @@ function sanitize(raw) {
   // 当前段落高亮（v0.8-10b）：旧配置没有这两个键 = 关 / 跟随主题，行为和以前完全一样。
   cfg.caretParagraph = cfg.caretParagraph === true;
   cfg.caretParagraphColor = caretColorLib.normalizeColor(cfg.caretParagraphColor);
+  // 超长段落阈值（1.1.0）：默认 500、夹紧 50–20000，坏值 / 旧配置缺字段都回落 500。
+  cfg.longParagraphThreshold = normalizeLongParagraphThreshold(cfg.longParagraphThreshold);
   cfg.bookDisplay = sanitizeBookDisplay(cfg.bookDisplay);
   cfg.formatOptions = formatLib.sanitizeOptions(cfg.formatOptions);
   // 上次导出的目录：只做基本清洗，路径不存在时由主进程退回「文档」目录
