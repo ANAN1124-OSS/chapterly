@@ -19,8 +19,10 @@ const path = require('node:path');
 const storage = require('../core/storage');
 const repair = require('../core/repair');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-data-safety-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-data-safety-')));
 }
 
 // 临时让 rename 失败（模拟「文件被杀软 / 同步盘占住」）；返回 restore()，必须放 finally。

@@ -20,8 +20,10 @@ const atomic = require('../core/atomic');
 const RETRY_CODES = ['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'];
 const NON_RETRY_CODES = ['ENOENT', 'ENOSPC', 'EXDEV', 'EISDIR'];
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-atomic-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-atomic-')));
 }
 
 // 临时替换 fs/promises 的 rename（atomic.js 调用时查表，所以替换模块对象上的属性就能生效）。

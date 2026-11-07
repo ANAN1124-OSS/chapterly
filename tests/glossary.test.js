@@ -5,8 +5,10 @@ const os = require('node:os');
 const path = require('node:path');
 const glossary = require('../core/glossary');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-glossary-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-glossary-')));
 }
 
 test('校对词表：每行一个词，可选「错词 → 建议」，三种箭头都认', () => {

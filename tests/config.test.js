@@ -6,8 +6,10 @@ const path = require('node:path');
 const { createConfigStore, sanitize, sanitizeLastBook, DEFAULTS } = require('../core/config');
 const { writeJsonAtomic } = require('../core/atomic');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-config-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-config-')));
 }
 
 test('配置默认值：书架在「文档\\我的小说」，窗口 1200x760', async () => {

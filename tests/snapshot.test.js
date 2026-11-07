@@ -6,8 +6,10 @@ const path = require('node:path');
 const snapshot = require('../core/snapshot');
 const storage = require('../core/storage');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp(prefix = 'cw-snapshot-') {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 const DAY = (year, month, day, hour = 12, minute = 0) =>

@@ -5,8 +5,10 @@ const os = require('node:os');
 const path = require('node:path');
 const search = require('../core/search-index');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp(prefix = 'cw-search-') {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 function pad3(n) {

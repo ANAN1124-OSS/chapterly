@@ -6,8 +6,10 @@ const path = require('node:path');
 const storage = require('../core/storage');
 const repair = require('../core/repair');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-repair-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-repair-')));
 }
 
 test('从目录 txt 重建：按创建序号排序、名字回填、损坏 json 被保留', async () => {

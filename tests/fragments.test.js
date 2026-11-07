@@ -5,8 +5,10 @@ const os = require('node:os');
 const path = require('node:path');
 const frag = require('../core/fragments');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-fragments-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-fragments-')));
 }
 
 async function readRoot(dir) {

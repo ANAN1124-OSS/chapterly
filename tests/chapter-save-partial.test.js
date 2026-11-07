@@ -24,8 +24,10 @@ const ROOT = path.join(__dirname, '..');
 const MAIN_SOURCE = fss.readFileSync(path.join(ROOT, 'main.js'), 'utf8').replace(/\r\n/g, '\n');
 const RENDERER_SOURCE = fss.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8').replace(/\r\n/g, '\n');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-partial-save-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-partial-save-')));
 }
 
 function channelBody(source, channel) {

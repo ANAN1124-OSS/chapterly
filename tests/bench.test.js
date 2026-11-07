@@ -22,8 +22,10 @@ const BENCH_SRC = fs.readFileSync(path.join(ROOT, 'scripts', 'bench.js'), 'utf8'
 const DRIVER_SRC = fs.readFileSync(path.join(ROOT, 'scripts', 'bench-driver.js'), 'utf8');
 const MAIN_SRC = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 function tempDir(prefix = 'cw-bench-test-') {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
 function smallOpts(overrides = {}) {

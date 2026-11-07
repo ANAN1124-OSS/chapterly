@@ -5,8 +5,10 @@ const os = require('node:os');
 const path = require('node:path');
 const sensitive = require('../core/sensitive');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-sensitive-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-sensitive-')));
 }
 
 test('敏感词：parseWordList 每行一个词，去空白 / 空行 / 重复，超长行跳过', () => {

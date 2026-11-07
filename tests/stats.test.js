@@ -5,8 +5,10 @@ const os = require('node:os');
 const path = require('node:path');
 const statsLib = require('../core/stats');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-stats-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-stats-')));
 }
 
 function statsWith(days) {

@@ -6,8 +6,10 @@ const path = require('node:path');
 const bookInfo = require('../core/bookinfo');
 const storage = require('../core/storage');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp(prefix = 'cw-bookinfo-') {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 test('书籍信息：作者单行化、去首尾空白、限长；非字符串当空', () => {

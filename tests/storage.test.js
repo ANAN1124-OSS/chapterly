@@ -6,8 +6,10 @@ const path = require('node:path');
 const storage = require('../core/storage');
 const { atomicWriteFile } = require('../core/atomic');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp(prefix = 'cw-test-') {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 test('createBook：建文件夹、初始空章、合法书目', async () => {

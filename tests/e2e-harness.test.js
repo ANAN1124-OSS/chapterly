@@ -35,8 +35,10 @@ function makeHarness(overrides = {}) {
   return { harness, sleeps };
 }
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function tempDir(prefix) {
-  return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 test('harness.check：通过时只记一条，失败时抛错并带上现场（名称 / detail）', () => {

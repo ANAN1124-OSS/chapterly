@@ -28,8 +28,10 @@ const readSource = (rel) => require('node:fs').readFileSync(path.join(__dirname,
 const STORAGE_SOURCE = readSource(path.join('core', 'storage.js'));
 const RENDERER_SOURCE = readSource(path.join('renderer', 'renderer.js'));
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-destructive-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-destructive-')));
 }
 
 // 只让「目标路径匹配」的 rename 失败，其它 rename 走真实实现；返回 restore()，必须放 finally。

@@ -6,8 +6,10 @@ const path = require('node:path');
 const history = require('../core/history');
 const storage = require('../core/storage');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp(prefix = 'cw-history-') {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 async function makeBook(root, title = '历史测试书') {

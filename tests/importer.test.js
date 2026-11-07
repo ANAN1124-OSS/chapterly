@@ -6,8 +6,10 @@ const path = require('node:path');
 const storage = require('../core/storage');
 const importer = require('../core/importer');
 
+const tmpCleanup = require('./tmp-cleanup');
+
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-import-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-import-')));
 }
 
 test('导入现成的章回书：整本复制、内容一致、源文件夹保留', async () => {
