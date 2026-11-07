@@ -41,7 +41,7 @@ test('错误脱敏：UNC / 设备前缀 / file:// / POSIX 绝对路径都收掉�
   // 相对路径、单个斜杠、网址、中文分隔都不动
   assert.equal(redactPaths('相对路径 0001-第1章.txt 与 sub\\x.txt 不动'), '相对路径 0001-第1章.txt 与 sub\\x.txt 不动');
   assert.equal(redactPaths('a/b 不动；UTF-8 / UTF-16 / GBK 不动'), 'a/b 不动；UTF-8 / UTF-16 / GBK 不动');
-  const url = 'https://github.com/ANAN1124-OSS/chapter-writer/releases';
+  const url = 'https://github.com/ANAN1124-OSS/chapterly/releases';
   assert.equal(redactPaths(`打不开下载页 ${url}`), `打不开下载页 ${url}`);
 });
 
