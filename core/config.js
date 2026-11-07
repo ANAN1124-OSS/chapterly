@@ -37,7 +37,9 @@ const DEFAULTS = Object.freeze({
   // '#rrggbb' = 作者自定义。两项都可被 config.bookDisplay 按书覆盖，没设置过的书用这里的全局默认。
   caretParagraph: false,
   caretParagraphColor: '',
-  // 每本书的显示设置覆盖：{ [bookId]: { 只放改过的项 } }；没有覆盖的书沿用上面的全局值
+  // 每本书的显示设置覆盖：{ [bookId]: { 只放改过的项 } }；没有覆盖的书沿用上面的全局值。
+  // 编辑器小件两个开关（marksInvisibles / marksLongParagraphs）也存这里：全局默认固定 false，
+  // 只有在这里记过 true / false 的书才有「本书覆盖」。
   bookDisplay: {},
   // 「整理本章」上一次用过的规则，下次打开对话框沿用（不改正文，只是记住勾选）
   formatOptions: { ...formatLib.DEFAULT_OPTIONS },
@@ -141,6 +143,10 @@ function sanitizeBookDisplayEntry(raw) {
   if (has('caretParagraphColor')) {
     out.caretParagraphColor = caretColorLib.normalizeColor(raw.caretParagraphColor);
   }
+  // 编辑器小件两个开关按书记忆（1.1.0）：和当前段落高亮同一口径——只认真正的 true / false，
+  // 写坏的类型一律当 false（= 回落默认关）。全局默认固定 false，只有本书覆盖会写进这里。
+  if (has('marksInvisibles')) out.marksInvisibles = raw.marksInvisibles === true;
+  if (has('marksLongParagraphs')) out.marksLongParagraphs = raw.marksLongParagraphs === true;
   // 覆盖成「自定义字体」但没带字体路径：这一项不算数，回落到全局字体
   if (out.editorFont === 'custom' && !out.editorCustomFontPath) delete out.editorFont;
   return out;

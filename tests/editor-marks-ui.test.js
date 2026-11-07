@@ -13,9 +13,10 @@ const caretColorLib = require('../core/caret-color');
 // marksPlan 切分 / 超长整层收起 / 干净行整层重建 / IME 拼字不重画 / 色板 aria / 6 处监听这些分支
 // 在 Node 里一步都测不到。搬出来以后用「假 host + 假 DOM」逐条钉住，再用静态闸门保证渲染层不长回第二份。
 //
-// 契约：host 8 个成员 = 基础 3（$, state, toast）+ editor{editorEl,editorLogic,LONG_PARAGRAPH_THRESHOLD,
-// caretColorLib,caretColorValue} + find{renderFindHighlights,syncFindOverlayScroll} +
-// focus{focusActive,scheduleTypewriterAlign} + stats{renderSelectionStats} + scroll{scrollCaretIntoView}。
+// 契约：host 9 个成员 = 基础 3（$, state, toast）+ persistMarks（两个开关按书写盘回调）+
+// editor{editorEl,editorLogic,LONG_PARAGRAPH_THRESHOLD,caretColorLib,caretColorValue} +
+// find{renderFindHighlights,syncFindOverlayScroll} + focus{focusActive,scheduleTypewriterAlign} +
+// stats{renderSelectionStats} + scroll{scrollCaretIntoView}。
 
 const realDocument = globalThis.document;
 const realGetComputedStyle = globalThis.getComputedStyle;
@@ -236,7 +237,7 @@ function build(options = {}) {
     }
   };
   const calls = {
-    toast: [], renderFindHighlights: 0, syncFindOverlayScroll: 0, renderSelectionStats: 0,
+    toast: [], persistMarks: [], renderFindHighlights: 0, syncFindOverlayScroll: 0, renderSelectionStats: 0,
     scheduleTypewriterAlign: [], scrollCaretIntoView: [], resized: 0
   };
   const editorEl = makeEl('textarea');
@@ -246,6 +247,13 @@ function build(options = {}) {
     $: dom.$,
     state,
     toast(message, kind) { calls.toast.push([message, kind]); },
+    // 按书写盘回调（1.1.0）：记录补丁；'throw' / 'reject' 用来测失败提示
+    persistMarks(patch) {
+      calls.persistMarks.push(patch);
+      if (options.persistMarks === 'throw') throw new Error('磁盘满了');
+      if (options.persistMarks === 'reject') return Promise.reject(new Error('磁盘满了'));
+      return Promise.resolve(patch);
+    },
     editor: {
       editorEl,
       editorLogic,
@@ -274,9 +282,11 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...editorMarksUi.REQUIRED_HOST].sort(), ['$', 'editor', 'find', 'focus', 'scroll', 'state', 'stats', 'toast']);
-  assert.equal(editorMarksUi.REQUIRED_HOST.length, 8);
+test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...editorMarksUi.REQUIRED_HOST].sort(), [
+    '$', 'editor', 'find', 'focus', 'persistMarks', 'scroll', 'state', 'stats', 'toast'
+  ]);
+  assert.equal(editorMarksUi.REQUIRED_HOST.length, 9);
   const ctx = build();
   assert.doesNotThrow(() => editorMarksUi.create(ctx.host));
   assert.throws(() => editorMarksUi.create(null), /createEditorMarksUi 需要 host 对象/);
@@ -286,6 +296,8 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
     delete broken[key];
     assert.throws(() => editorMarksUi.create(broken), new RegExp('host 缺少 ' + key.replace('$', '\\$')), '缺 ' + key);
   }
+  // 写盘回调必须是函数：别等到点开关才发现（不是 undefined 也要拦）
+  assert.throws(() => editorMarksUi.create({ ...ctx.host, persistMarks: 'x' }), /host\.persistMarks 必须是函数/);
   for (const key of ['editorEl', 'editorLogic', 'LONG_PARAGRAPH_THRESHOLD', 'caretColorLib', 'caretColorValue']) {
     const broken = { ...ctx.host, editor: { ...ctx.host.editor } };
     delete broken.editor[key];
@@ -567,6 +579,55 @@ test('setMarksToggle / toggleMarks：非法名返回 false；合法名写 state�
   assert.equal(ctx.dom.map.get('format-invisibles').dataset.on, '0');
 });
 
+test('toggleMarks：两个编辑器小件开关按书记忆（写 bookDisplay 补丁），caretParagraph 不在这里写盘', () => {
+  const ctx = build();
+  // setMarksToggle 只改内存：测试钩子 / 恢复快照用它，一个字节都不写
+  ctx.ui.setMarksToggle('invisibles', true);
+  ctx.ui.setMarksToggle('longParagraphs', true);
+  ctx.ui.setMarksToggle('invisibles', false);
+  ctx.ui.setMarksToggle('longParagraphs', false);
+  assert.deepEqual(ctx.calls.persistMarks, [], 'setMarksToggle 不写盘');
+
+  // 从菜单点开关（toggleMarks）才写：开记 true，关记 false（不是删键）
+  assert.equal(ctx.ui.toggleMarks('invisibles'), true);
+  assert.deepEqual(ctx.calls.persistMarks, [{ marksInvisibles: true }]);
+  assert.equal(ctx.ui.toggleMarks('longParagraphs'), true);
+  assert.deepEqual(ctx.calls.persistMarks, [{ marksInvisibles: true }, { marksLongParagraphs: true }]);
+  assert.equal(ctx.ui.toggleMarks('invisibles'), false);
+  assert.deepEqual(ctx.calls.persistMarks[2], { marksInvisibles: false }, '关掉后记 false');
+
+  // 当前段落高亮有自己的写盘入口（renderer.js 的 setCaretParagraphPersisted），这里不重复写
+  assert.equal(ctx.ui.toggleMarks('caretParagraph'), true);
+  assert.equal(ctx.calls.persistMarks.length, 3, 'caretParagraph 不在这里写盘');
+  // 非法名字：state 不动，也不写盘
+  assert.equal(ctx.ui.toggleMarks('nope'), false);
+  assert.equal(ctx.calls.persistMarks.length, 3);
+  assert.deepEqual(ctx.calls.toast, [], '写盘成功不弹提示');
+});
+
+test('toggleMarks：写盘失败（同步抛 / Promise 拒绝）只 toast，不回滚内存态', async () => {
+  const thrown = build({ invisibles: false, persistMarks: 'throw' });
+  assert.equal(thrown.ui.toggleMarks('invisibles'), true);
+  assert.equal(thrown.state.marks.invisibles, true, '内存态仍按新状态显示');
+  assert.deepEqual(thrown.calls.persistMarks, [{ marksInvisibles: true }]);
+  assert.equal(thrown.calls.toast.length, 1);
+  assert.deepEqual(thrown.calls.toast[0], [
+    '保存「显示不可见字符」开关失败：磁盘满了（本次仍按新状态显示，下次打开这本书回到上次保存的值）',
+    'error'
+  ]);
+
+  const rejected = build({ longParagraphs: false, persistMarks: 'reject' });
+  assert.equal(rejected.ui.toggleMarks('longParagraphs'), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rejected.calls.toast.length, 1);
+  assert.match(
+    rejected.calls.toast[0][0],
+    /^保存「超长段落提示」开关失败：磁盘满了（本次仍按新状态显示，下次打开这本书回到上次保存的值）$/
+  );
+  assert.equal(rejected.calls.toast[0][1], 'error');
+  assert.equal(rejected.state.marks.longParagraphs, true);
+});
+
 // ---------- 对齐 / 滚动 / 监听 ----------
 test('syncEditorOverlay：hidden 层返回 null；可见时按编辑区实测值同步位置 / 宽高 / 字体 / 滚动', () => {
   const ctx = build();
@@ -686,6 +747,14 @@ test('静态闸门：renderer.js 不再内嵌编辑器小件实现，只剩装�
   }
   assert.equal(rendererSrc.split('editorMarksUiModule.create(').length - 1, 1, '装配只许一处');
   assert.ok(rendererSrc.includes('const editorMarksUiModule = window.CWEditorMarksUi;'));
+  // 1.1.0：两个开关按书记忆——host 写盘回调 + 打开书 / 恢复默认时套用生效值
+  assert.ok(
+    rendererSrc.includes('    persistMarks: (patch) => persistMarksToggle(patch),'),
+    '装配少了按书写盘回调 persistMarks'
+  );
+  assert.ok(rendererSrc.includes('function persistMarksToggle('), '写盘回调实现不见了');
+  assert.ok(rendererSrc.includes('function syncMarksTogglesFromConfig('), '按书生效值同步不见了');
+  assert.ok(rendererSrc.includes('syncMarksTogglesFromConfig();'), '打开书 / 恢复默认时没套用生效值');
   for (const line of [
     '    $, state, toast,',
     '    editor: { editorEl, editorLogic, LONG_PARAGRAPH_THRESHOLD, caretColorLib, caretColorValue },',
@@ -738,7 +807,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWEditorMark
   vm.runInContext(moduleSrc, context, { filename: 'renderer/editor-marks-ui.js' });
   assert.equal(typeof win.CWEditorMarksUi, 'object');
   assert.deepEqual(Object.keys(win.CWEditorMarksUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWEditorMarksUi.REQUIRED_HOST.length, 8);
+  assert.equal(win.CWEditorMarksUi.REQUIRED_HOST.length, 9);
   assert.equal(typeof win.CWEditorMarksUi.create, 'function');
   assert.equal(win.CWReadingUi, undefined);
   assert.equal(win.CWChapters, undefined);

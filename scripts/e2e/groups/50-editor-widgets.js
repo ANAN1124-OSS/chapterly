@@ -4,6 +4,7 @@
 // 组内局部变量不进别的文件；要交给后面组的值由场景的 state 袋子传递（见 e2e-scenario.js 文件头）。
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 module.exports = async function group50EditorWidgets(t) {
   const {
@@ -287,6 +288,118 @@ module.exports = async function group50EditorWidgets(t) {
       JSON.stringify((await storage.readBookMeta(marksBookPath)).chapters) === marksMetaBefore &&
       !(await fileExists(path.join(marksBookPath, '_trash')))
   );
+
+  // 50h-2. 两个编辑器小件开关按书记忆（1.1.0）：「显示 ▾」切换只写 config.json 的 bookDisplay[本书]，
+  // 不碰正文 / 书目 / 章节文件；打开书按「默认关 + 本书覆盖」生效，没设置过的书回落关。
+  const marksMemConfigPath = path.join(userData, 'config.json');
+  const readMarksMemConfig = async () => JSON.parse(await fs.readFile(marksMemConfigPath, 'utf8'));
+  const sha256Of = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
+  const marksMemBookHash = async () => {
+    const metaRaw = await fs.readFile(path.join(marksMemBookPath, '书目.json'), 'utf8');
+    const hashes = { '书目.json': sha256Of(metaRaw) };
+    for (const chapter of JSON.parse(metaRaw).chapters) {
+      hashes[chapter.file] = sha256Of(await fs.readFile(path.join(marksMemBookPath, chapter.file)));
+    }
+    return hashes;
+  };
+  // 去掉「本书覆盖」和上次打开的书（打开 / 切换书会正常更新 lastBook），其余顶层字段必须一字不差
+  const marksMemConfigBase = (config, bookId) => {
+    const copy = { ...config };
+    delete copy.lastBook;
+    const display = { ...(copy.bookDisplay || {}) };
+    if (bookId) delete display[bookId];
+    copy.bookDisplay = display;
+    return copy;
+  };
+
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.newBook('按书记忆测试书')");
+  await waitFor("window.__cwTest.view() === 'editor'");
+  const marksMemBookPath = await exec('window.__cwTest.bookPathValue()');
+  const marksMemBookId = await exec('window.__cwTest.bookId()');
+  await exec(`window.__cwTest.setText(${JSON.stringify('　　按书记忆的正文。\n\n　　第二段。')})`);
+  await exec('window.__cwTest.save()');
+  await waitFor('window.__cwTest.dirty() === false');
+  const marksMemHashBefore = await marksMemBookHash();
+  const marksMemDirBefore = (await fs.readdir(marksMemBookPath)).sort().join('|');
+  const marksMemConfigBefore = await readMarksMemConfig();
+  const marksMemBaseBefore = marksMemConfigBase(marksMemConfigBefore, marksMemBookId);
+
+  await exec("document.getElementById('btn-display').click()");
+  await waitFor('window.__cwTest.displayMenuOpen() === true');
+  await exec(`document.querySelector('#display-menu button[data-action="toggle-invisibles"]').click()`);
+  await waitFor('window.__cwTest.caretSettings().bookDisplay.marksInvisibles === true');
+  await exec(`document.querySelector('#display-menu button[data-action="toggle-long-para"]').click()`);
+  await waitFor('window.__cwTest.caretSettings().bookDisplay.marksLongParagraphs === true');
+  await exec('window.__cwTest.closeDisplayMenu()');
+  const marksMemConfigOn = await readMarksMemConfig();
+  check(
+    '编辑器小件开关按书记忆：A 书打开两个开关 → config 只多 bookDisplay[A] 的两个 true 字段，正文/书目/章节文件 hash 不变',
+    Boolean(marksMemBookId) &&
+      JSON.stringify(marksMemConfigOn.bookDisplay[marksMemBookId]) ===
+        JSON.stringify({ marksInvisibles: true, marksLongParagraphs: true }) &&
+      JSON.stringify(marksMemConfigBase(marksMemConfigOn, marksMemBookId)) ===
+        JSON.stringify(marksMemBaseBefore) &&
+      JSON.stringify(await marksMemBookHash()) === JSON.stringify(marksMemHashBefore) &&
+      (await fs.readdir(marksMemBookPath)).sort().join('|') === marksMemDirBefore,
+    { bookDisplay: marksMemConfigOn.bookDisplay && marksMemConfigOn.bookDisplay[marksMemBookId] }
+  );
+
+  // 切到另一本没设置过的书：两个开关都回落默认关，config 里不该有它的覆盖
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.newBook('按书记忆对照书')");
+  await waitFor("window.__cwTest.view() === 'editor'");
+  const marksMemBookBId = await exec('window.__cwTest.bookId()');
+  await waitFor('window.__cwTest.marksFlags().invisibles === false && window.__cwTest.marksFlags().longParagraphs === false');
+  const marksMemConfigB = await readMarksMemConfig();
+  check(
+    '编辑器小件开关按书记忆：切到没设置过的 B 书回落默认关（菜单不打勾），config 里没有 B 的覆盖',
+    marksMemBookBId !== marksMemBookId &&
+      !(marksMemConfigB.bookDisplay || {})[marksMemBookBId] &&
+      (await exec("document.getElementById('format-invisibles').dataset.on")) === '0' &&
+      (await exec("document.getElementById('format-long-para').dataset.on")) === '0'
+  );
+
+  // 切回 A 书：两个开关仍是开（按书覆盖生效）
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec(`window.__cwTest.openBookPath(${JSON.stringify(marksMemBookPath)})`);
+  await waitFor("window.__cwTest.view() === 'editor'");
+  await waitFor('window.__cwTest.marksFlags().invisibles === true && window.__cwTest.marksFlags().longParagraphs === true');
+  check(
+    '编辑器小件开关按书记忆：切回 A 书两个开关仍是开（打开书套用本书覆盖）',
+    (await exec('window.__cwTest.bookId()')) === marksMemBookId &&
+      (await exec("document.getElementById('format-invisibles').dataset.on")) === '1' &&
+      (await exec("document.getElementById('format-long-para').dataset.on")) === '1'
+  );
+
+  // 关掉两个开关：记 false（不删键），正文 / 书目 / 章节文件仍然一个字节都没动
+  await exec("document.getElementById('btn-display').click()");
+  await waitFor('window.__cwTest.displayMenuOpen() === true');
+  await exec(`document.querySelector('#display-menu button[data-action="toggle-invisibles"]').click()`);
+  await waitFor('window.__cwTest.caretSettings().bookDisplay.marksInvisibles === false');
+  await exec(`document.querySelector('#display-menu button[data-action="toggle-long-para"]').click()`);
+  await waitFor('window.__cwTest.caretSettings().bookDisplay.marksLongParagraphs === false');
+  await exec('window.__cwTest.closeDisplayMenu()');
+  const marksMemConfigOff = await readMarksMemConfig();
+  check(
+    '编辑器小件开关按书记忆：关掉后记 false（不删键），正文/书目/章节文件仍然没动',
+    JSON.stringify(marksMemConfigOff.bookDisplay[marksMemBookId]) ===
+        JSON.stringify({ marksInvisibles: false, marksLongParagraphs: false }) &&
+      JSON.stringify(marksMemConfigBase(marksMemConfigOff, marksMemBookId)) ===
+        JSON.stringify(marksMemBaseBefore) &&
+      JSON.stringify(await marksMemBookHash()) === JSON.stringify(marksMemHashBefore) &&
+      (await fs.readdir(marksMemBookPath)).sort().join('|') === marksMemDirBefore &&
+      !(await fileExists(path.join(marksMemBookPath, '_trash')))
+  );
+
+  // 收尾：这两本书从书架删掉（进书架 _trash），不给后面的组留状态
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.deleteBookByFolder('按书记忆对照书', { skipConfirm: true })");
+  await exec("window.__cwTest.deleteBookByFolder('按书记忆测试书', { skipConfirm: true })");
 
   // 50i. 旧数据兼容：v0.4.1 形状的老书照常显示标记，书目不被补字段
   await exec('window.__cwTest.backToShelf()');

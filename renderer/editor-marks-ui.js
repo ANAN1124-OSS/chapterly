@@ -10,9 +10,10 @@
  *   setupEditorMarks 里 6 处监听（含 scroll passive / composition / 3 个 type 循环 / document selectionchange /
  *   ResizeObserver / 状态栏超长提示按钮）原样搬进模块。
  *
- * 契约：createEditorMarksUi(host) 由渲染层调用一次。host 8 个成员（含 4 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createEditorMarksUi(host) 由渲染层调用一次。host 9 个成员（含 4 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, toast,                     // 基础 3：DOM 查询 / 共享状态（state.marks、state.focus、state.find）/ 超长提示
+ *     persistMarks,                        // 「不可见字符 / 超长段落」开关写盘回调：本模块只交补丁，不碰 config 细节
  *     editor: {                            // 编辑器本体与纯逻辑
  *       editorEl,                          //   编辑区 textarea（正文 / 光标 / 滚动位置都从它读）
  *       editorLogic,                       //   renderer/editor-logic.js：marksPlan / 段落导航 / 超长段落 / 选中字数
@@ -27,7 +28,8 @@
  *   }
  * 缺任何一个（含分组内成员）直接抛 TypeError。分组在 create 时一次解构，行为等价。
  * create() 不注册事件、不建定时器、不碰 DOM；事件绑定在 setupEditorMarks()，由 bindEvents() 在原位置调用一次
- * （ResizeObserver 若运行环境没有就跳过，与搬前一致）。模块不写盘、不改正文。
+ * （ResizeObserver 若运行环境没有就跳过，与搬前一致）。模块自己不读写配置、不改正文：只有 toggleMarks 把
+ * 「不可见字符 / 超长段落」的开关补丁交给 host.persistMarks（渲染层按当前书写 config.json 的 bookDisplay）。
  *
  * 刻意不搬（留在 renderer.js）：状态栏的 renderSelectionStats 实现（statusbar-ui.js）、查找会话实现、
  * 专注模式实现、Esc 动作表 / 测试钩子宿主契约（都按名字取本模块入口）。
@@ -43,14 +45,18 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'toast', 'editor', 'find', 'focus', 'stats', 'scroll'];
+  const REQUIRED_HOST = ['$', 'state', 'toast', 'persistMarks', 'editor', 'find', 'focus', 'stats', 'scroll'];
 
   function createEditorMarksUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createEditorMarksUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createEditorMarksUi 的 host 缺少 ' + key);
     }
-    const { $, state, toast, editor, find, focus, stats, scroll } = host;
+    // 两个编辑器小件开关按书记忆（1.1.0）：写盘回调必须是函数，否则 create 时就报错，别等到点开关才发现。
+    if (typeof host.persistMarks !== 'function') {
+      throw new TypeError('createEditorMarksUi 的 host.persistMarks 必须是函数');
+    }
+    const { $, state, toast, persistMarks, editor, find, focus, stats, scroll } = host;
     if (typeof editor !== 'object') throw new TypeError('createEditorMarksUi 的 host.editor 必须是对象');
     for (const key of ['editorEl', 'editorLogic', 'LONG_PARAGRAPH_THRESHOLD', 'caretColorLib', 'caretColorValue']) {
       if (editor[key] === undefined || editor[key] === null) throw new TypeError('createEditorMarksUi 的 host.editor 缺少 ' + key);
@@ -461,6 +467,35 @@
     renderCaretColorRow();
   }
 
+  // 两个「编辑器小件」开关按书记忆（1.1.0）：切换时写 config.json 的 bookDisplay[本书]。
+  // 写盘只认 host.persistMarks（renderer.js 那边按当前书调 setBookDisplay），本模块不碰配置格式。
+  // 写盘是异步的：界面先按新状态显示；写失败只 toast，不回滚内存态——本次会话仍按新状态显示，
+  // 下次打开这本书回到上次成功保存的值（文案里写明）。「当前段落高亮」有自己的写盘入口
+  // （renderer.js 的 setCaretParagraphPersisted），这里不重复写。
+  const MARKS_BOOK_DISPLAY = Object.freeze({
+    invisibles: 'marksInvisibles',
+    longParagraphs: 'marksLongParagraphs'
+  });
+  const MARKS_TOGGLE_LABELS = Object.freeze({ invisibles: '显示不可见字符', longParagraphs: '超长段落提示' });
+
+  function persistMarksSwitch(name, on) {
+    const field = MARKS_BOOK_DISPLAY[name];
+    if (!field) return;
+    const failureText = `保存「${MARKS_TOGGLE_LABELS[name]}」开关失败：`;
+    const note = '（本次仍按新状态显示，下次打开这本书回到上次保存的值）';
+    try {
+      const pending = persistMarks({ [field]: on });
+      if (pending && typeof pending.then === 'function') {
+        pending.then(
+          () => {},
+          (err) => toast(`${failureText}${(err && err.message) || err}${note}`, 'error')
+        );
+      }
+    } catch (err) {
+      toast(`${failureText}${(err && err.message) || err}${note}`, 'error');
+    }
+  }
+
   function setMarksToggle(name, on) {
     if (name !== 'invisibles' && name !== 'longParagraphs' && name !== 'caretParagraph') return false;
     state.marks[name] = Boolean(on);
@@ -472,7 +507,12 @@
   }
 
   function toggleMarks(name) {
-    return setMarksToggle(name, !state.marks[name]);
+    if (name !== 'invisibles' && name !== 'longParagraphs' && name !== 'caretParagraph') return false;
+    const toggled = setMarksToggle(name, !state.marks[name]);
+    // setMarksToggle 只改内存（测试钩子 / 恢复快照也用它，不写盘）；从菜单点开关走 toggleMarks，
+    // 两个编辑器小件开关顺手按书记住。
+    if (MARKS_BOOK_DISPLAY[name]) persistMarksSwitch(name, toggled);
+    return toggled;
   }
 
   function setupEditorMarks() {

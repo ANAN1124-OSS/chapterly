@@ -711,8 +711,19 @@
 
   // 打开书 / 回书架 / 保存设置后，把「生效配置」里的开关同步到显示层。
   // 开关本身只在切换的那一下写 config；这里只读配置、不写盘。
+  // 编辑器小件两个开关（不可见字符 / 超长段落）的生效值 = 本书 bookDisplay 覆盖；没设置过 = 默认关。
+  // 只赋值、不渲染：调用方（syncCaretParagraphFromConfig）随后统一刷菜单 / 标记层。
+  function syncMarksTogglesFromConfig() {
+    const cfg = state.config || {};
+    state.marks.invisibles = cfg.marksInvisibles === true;
+    state.marks.longParagraphs = cfg.marksLongParagraphs === true;
+  }
+
   function syncCaretParagraphFromConfig() {
     state.marks.caretParagraph = Boolean(state.config && state.config.caretParagraph === true);
+    // 1.1.0：两个编辑器小件开关也按书记忆。设置弹层的 host 只认这个入口名，打开书 / 保存设置 /
+    // 关设置 / 「恢复本书默认」都走这里，所以顺手把两个开关一起套回显示层（不新增 settings-ui 成员）。
+    syncMarksTogglesFromConfig();
     applyCaretColor(state.config);
     renderMarksMenu();
     if (state.view === 'editor' && state.bookPath && state.index >= 0) {
@@ -733,6 +744,19 @@
     applyEditorStyle();
     renderMarksMenu();
     return state.config;
+  }
+
+  // 编辑器小件两个开关按书记忆（1.1.0）：「显示 ▾」里切换「不可见字符 / 超长段落」时只写
+  // config.json 的 bookDisplay[本书]，不碰正文 / 书目 / 章节文件，也不写全局默认。
+  // 连点两个开关时按点击顺序排队写，避免后发的请求先落盘；写到一半换了书就丢弃（不把 A 书写进 B 书）。
+  let marksPersistQueue = Promise.resolve();
+  function persistMarksToggle(patch) {
+    if (!state.bookId) return Promise.reject(new Error('没有打开的书'));
+    const bookId = state.bookId;
+    marksPersistQueue = marksPersistQueue
+      .catch(() => {})
+      .then(() => (state.bookId === bookId ? persistDisplayPatch(patch) : null));
+    return marksPersistQueue;
   }
 
   // 「排版 ▾」里切换当前段落高亮：先改显示层，再按书写 config；写失败就退回原状态。
@@ -1447,6 +1471,7 @@
   // 第 4 步九刀·第三刀：实现在 renderer/editor-marks-ui.js（模块头有契约），这里只装配与接线；
   const editorMarksUi = editorMarksUiModule.create({
     $, state, toast,
+    persistMarks: (patch) => persistMarksToggle(patch),
     editor: { editorEl, editorLogic, LONG_PARAGRAPH_THRESHOLD, caretColorLib, caretColorValue },
     find: { renderFindHighlights: () => renderFindHighlights(), syncFindOverlayScroll: () => syncFindOverlayScroll() },
     focus: { focusActive: () => focusActive(), scheduleTypewriterAlign: (delay) => scheduleTypewriterAlign(delay) },

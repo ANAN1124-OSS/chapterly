@@ -279,6 +279,60 @@ test('当前段落高亮（N10b）：按书覆盖能存开关 / 颜色，并与�
   assert.equal(cfg.caretParagraphColor, '#c8873c');
 });
 
+test('编辑器小件开关按书记忆（1.1.0）：白名单只认 true / false，按书往返，旧配置照常读', async () => {
+  // 白名单 / 清洗：只有真正的布尔能进 bookDisplay；'true' / 1 / null / 对象一律当 false（默认关）
+  const cleaned = sanitize({
+    bookDisplay: {
+      b_on: { marksInvisibles: true, marksLongParagraphs: false },
+      b_str: { marksInvisibles: 'true', marksLongParagraphs: 1 },
+      b_bad: { marksInvisibles: null, marksLongParagraphs: {} },
+      b_other: { editorPaper: 'night' }
+    }
+  });
+  assert.deepEqual(cleaned.bookDisplay.b_on, { marksInvisibles: true, marksLongParagraphs: false });
+  assert.deepEqual(cleaned.bookDisplay.b_str, { marksInvisibles: false, marksLongParagraphs: false });
+  assert.deepEqual(cleaned.bookDisplay.b_bad, { marksInvisibles: false, marksLongParagraphs: false });
+  assert.deepEqual(cleaned.bookDisplay.b_other, { editorPaper: 'night' }, '别的按书字段不受影响');
+
+  // 旧 config：没有这两个键、没有 bookDisplay 也照常读；全局配置里不会凭空多出这两个键
+  const old = sanitize({ booksRoot: 'D:\\旧书架', editorFont: 'kai', editorPaper: 'night' });
+  assert.deepEqual(old.bookDisplay, {});
+  assert.equal('marksInvisibles' in old, false, '全局默认固定关，不落全局键');
+  assert.equal('marksLongParagraphs' in old, false);
+  assert.equal(old.editorPaper, 'night');
+
+  // 写盘往返：A 书开「不可见字符」→ 只多这一个键；再开「超长段落」→ 两项都在；B 书仍是空（= 回落默认关）
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+  assert.deepEqual(await store.getBookDisplay('b_a'), {});
+  assert.deepEqual(await store.setBookDisplay('b_a', { marksInvisibles: true }), { marksInvisibles: true });
+  assert.deepEqual(await store.setBookDisplay('b_a', { marksLongParagraphs: true }), {
+    marksInvisibles: true,
+    marksLongParagraphs: true
+  });
+  assert.deepEqual(await store.getBookDisplay('b_b'), {}, '没设置过的书没有覆盖');
+  const disk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.deepEqual(disk.bookDisplay.b_a, { marksInvisibles: true, marksLongParagraphs: true });
+  assert.equal(disk.bookDisplay.b_b, undefined);
+  assert.equal('marksInvisibles' in disk, false, '只写按书覆盖，不写全局默认');
+
+  // 重启后仍在；关掉记 false（不是删键）；「恢复本书默认」清掉整个覆盖后回落默认关
+  const store2 = createConfigStore(dir);
+  assert.deepEqual(await store2.getBookDisplay('b_a'), {
+    marksInvisibles: true,
+    marksLongParagraphs: true
+  });
+  assert.deepEqual(await store2.setBookDisplay('b_a', { marksInvisibles: false }), {
+    marksInvisibles: false,
+    marksLongParagraphs: true
+  });
+  assert.equal((await store2.getBookDisplay('b_a')).marksInvisibles, false, '关掉后记 false');
+  assert.equal(await store2.resetBookDisplay('b_a'), true);
+  assert.deepEqual(await store2.getBookDisplay('b_a'), {}, '恢复本书默认后回落全局默认（关）');
+  const afterReset = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(afterReset.bookDisplay.b_a, undefined);
+});
+
 test('导出目录记忆：默认空、去首尾空白、坏值回空', () => {
   assert.equal(sanitize({}).lastExportDir, '');
   assert.equal(sanitize({ lastExportDir: '  D:\\xxs  ' }).lastExportDir, 'D:\\xxs');
