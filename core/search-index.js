@@ -360,7 +360,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
   // 章节文件指纹：并发 stat（大书架一次要 3000+ 次，串行会明显拖慢校验）
   const stats = await mapLimit(rawChapters, 24, async (chapter) => {
     try {
-      const stat = await fs.stat(storage.assertInside(bookPath, chapter.file));
+      const stat = await fs.stat(storage.assertChapterFile(bookPath, chapter.file));
       if (!stat.isFile()) return null;
       return { mtimeMs: stat.mtimeMs, size: stat.size };
     } catch {

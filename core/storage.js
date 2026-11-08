@@ -71,10 +71,38 @@ async function exists(p) {
 function assertInside(bookPath, file) {
   const root = path.resolve(bookPath);
   const target = path.resolve(bookPath, file);
-  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+  // B4（审计 #21 / N4）：前缀比较统一小写 —— Windows 路径不分大小写，
+  // 严格比较会把 `C:\Books\书` 与 `c:\books\书\x.txt` 当成「越界」；
+  // 与 core/ipc-paths.js 的 assertBookPath 口径保持一致（不 realpath，见 README 已知限制）。
+  const rootCmp = root.toLowerCase();
+  const targetCmp = target.toLowerCase();
+  if (targetCmp !== rootCmp && !targetCmp.startsWith(`${rootCmp}${path.sep}`)) {
     throw new StorageError('BAD_PATH', `非法的章节文件路径：${file}`);
   }
   return target;
+}
+
+// 章节文件字段（书目.json 的 chapters[].file）的防退化校验（审计 B4 / #21、N1、N2）。
+// assertInside 只拦「逃逸出书目录」，不拦「退化」：空串 / 子目录 / 绝对路径 / 非 txt /
+// Windows 保留设备名都能通过前缀检查。写盘前一律过这里 —— 宁可把这种书记成损坏
+// （书架显示「点开可以修复」，可从目录重建），也绝不按坏字段写错文件 / 建出嵌套目录。
+// 只读入口同样过它：坏字段会让书显式报 BAD_PATH，而不是静默读错或「缺章」。
+// 注意：不要把「nul.txt 假成功丢稿」当成本函数的理由（勘误 E1 实测 Node 能落成普通文件）；
+// 保留名过滤是为壳层 / 工具兼容性（E2）。
+function assertChapterFile(bookPath, file) {
+  if (typeof file !== 'string' || !file.trim()) {
+    throw new StorageError('BAD_PATH', '章节文件名为空');
+  }
+  if (path.basename(file) !== file) {
+    throw new StorageError('BAD_PATH', `非法的章节文件路径：${file}`);
+  }
+  if (!/\.txt$/i.test(file)) {
+    throw new StorageError('BAD_PATH', `章节文件必须是 .txt：${file}`);
+  }
+  if (chaptersLib.reservedStem(file)) {
+    throw new StorageError('BAD_PATH', `章节文件名不能使用系统保留名：${file}`);
+  }
+  return assertInside(bookPath, file);
 }
 
 // 按章节 id 找下标；找不到统一抛 CHAPTER_NOT_FOUND（界面提示由 preload / main 原样转出）。
@@ -225,7 +253,7 @@ async function bookStats(bookPath, meta, { writeCache = true } = {}) {
     let changed = false;
     for (const chapter of needRead) {
       try {
-        const text = await fs.readFile(assertInside(bookPath, chapter.file), 'utf8');
+        const text = await fs.readFile(assertChapterFile(bookPath, chapter.file), 'utf8');
         chapter.chars = chaptersLib.countChars(stripBom(text));
         totalChars += chapter.chars;
         changed = true;
@@ -253,7 +281,7 @@ async function bookStats(bookPath, meta, { writeCache = true } = {}) {
 async function findMissingChapters(bookPath, meta, concurrency = 16) {
   const flags = await mapLimit(meta.chapters, concurrency, async (chapter) => {
     try {
-      await fs.stat(assertInside(bookPath, chapter.file));
+      await fs.stat(assertChapterFile(bookPath, chapter.file));
       return null;
     } catch (err) {
       if (err.code === 'ENOENT') return chapter.file;
@@ -408,7 +436,7 @@ async function verifyBook(bookPath) {
 }
 
 async function loadChapterText(bookPath, file) {
-  const p = assertInside(bookPath, file);
+  const p = assertChapterFile(bookPath, file);
   let raw;
   try {
     raw = await fs.readFile(p, 'utf8');
@@ -425,13 +453,13 @@ async function loadChapterText(bookPath, file) {
 }
 
 async function statChapter(bookPath, file) {
-  const p = assertInside(bookPath, file);
+  const p = assertChapterFile(bookPath, file);
   const stat = await fs.stat(p);
   return { mtimeMs: stat.mtimeMs, size: stat.size };
 }
 
 async function saveChapterText(bookPath, file, text, { ensureDir: ensureDirectory = true } = {}) {
-  const p = assertInside(bookPath, file);
+  const p = assertChapterFile(bookPath, file);
   await atomicWriteFile(p, chaptersLib.toDiskNewlines(text), 'utf8', { ensureDir: ensureDirectory });
   const stat = await fs.stat(p);
   return { mtimeMs: stat.mtimeMs, chars: chaptersLib.countChars(text) };
@@ -493,7 +521,7 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
   let chapterExists = false;
   if (chapter) {
     try {
-      const stat = await fs.stat(assertInside(bookPath, chapter.file));
+      const stat = await fs.stat(assertChapterFile(bookPath, chapter.file));
       chapterExists = stat.isFile();
     } catch {
       chapterExists = false;
@@ -850,7 +878,7 @@ async function replaceInBook(bookPath, options = {}) {
         await ensureDir(backupDir);
         backupCreated = true;
       }
-      await fs.copyFile(assertInside(bookPath, chapter.file), path.join(backupDir, chapter.file));
+      await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
       await saveChapterText(bookPath, chapter.file, res.text);
       chapter.chars = chaptersLib.countChars(res.text);
       chaptersChanged += 1;
@@ -960,7 +988,7 @@ async function formatBook(bookPath, options = {}, onProgress) {
         backupCreated = true;
       }
       // 先备份原文再写盘：整理也是「改正文」的显式动作，必须留退路
-      await fs.copyFile(assertInside(bookPath, chapter.file), path.join(backupDir, chapter.file));
+      await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
       await saveChapterText(bookPath, chapter.file, res.text);
       chapter.chars = chaptersLib.countChars(res.text);
       addFormatStats(stats, res.stats);
@@ -1227,7 +1255,7 @@ async function refreshChapterChars(bookPath, meta, files) {
   // B4（审计 P4）：还原后刷字数也是整本批量读，并行读、按原顺序写回缓存
   const charCounts = await mapLimit(targets, CHAPTER_READ_CONCURRENCY, async (chapter) => {
     try {
-      const text = await fs.readFile(assertInside(bookPath, chapter.file), 'utf8');
+      const text = await fs.readFile(assertChapterFile(bookPath, chapter.file), 'utf8');
       return chaptersLib.countChars(stripBom(text));
     } catch (err) {
       if (err.code === 'ENOENT') return null;
@@ -1493,6 +1521,7 @@ module.exports = {
   nowIso,
   exists,
   assertInside,
+  assertChapterFile,
   mergeCharsCache,
   listTxtFiles,
   readBookMeta,

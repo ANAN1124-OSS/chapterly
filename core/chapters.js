@@ -18,6 +18,17 @@
   const MAX_NAME_LENGTH = 40;
   const ILLEGAL_CHARS = /[\\/:*?"<>|\u0000-\u001f]/g;
   const EDGE_DOTS_SPACES = /^[.\s]+|[.\s]+$/g;
+  // Windows 保留设备名（文件名主干）：CON / PRN / AUX / NUL / COM1-9 / LPT1-9。
+  // 审计 B4（报告 #21 / N1、N2，勘误 E1、E2）：Node 在 Windows 走扩展长度路径语义，
+  // 这些名字其实能落成普通文件 / 目录（实测 `nul.txt`、`CON` 目录都能建），所以这里
+  // 不是防「假成功丢稿」，而是防「壳层 / 工具不认这种名字」（PowerShell Remove-Item
+  // 对含 `nul` 的目录直接失败）。只匹配整个主干（第一个点之前），
+  // 「CON 的故事」这类正常名不受影响。
+  const RESERVED_STEMS = new Set([
+    'CON', 'PRN', 'AUX', 'NUL',
+    ...Array.from({ length: 9 }, (_, i) => `COM${i + 1}`),
+    ...Array.from({ length: 9 }, (_, i) => `LPT${i + 1}`)
+  ]);
   // 章节状态：只记在 书目.json 里（可选字段），txt 一个字节都不动。
   // draft = 草稿（默认）/ revising = 待修 / done = 完稿
   const CHAPTER_STATUSES = ['draft', 'revising', 'done'];
@@ -46,12 +57,29 @@
     return template.split('{num}').join(number).split('{name}').join(clean);
   }
 
+  // 文件名主干命中 Windows 保留设备名时返回该主干（大写），否则返回空串。
+  // 「主干」= 第一个点之前的部分：`con.txt` 命中，`CON 的故事.txt` 不命中。
+  function reservedStem(name) {
+    const text = String(name == null ? '' : name);
+    const dot = text.indexOf('.');
+    const stem = (dot < 0 ? text : text.slice(0, dot)).trim().toUpperCase();
+    return RESERVED_STEMS.has(stem) ? stem : '';
+  }
+
+  // 命中保留名时把安全后缀插在主干末尾（`CON` → `CON_`，`CON.txt` → `CON_.txt`）。
+  // 不能简单加在整串末尾：Windows 判定的是第一个点之前的主干，`CON.txt_` 仍然是设备名。
+  function escapeReservedStem(name) {
+    if (!reservedStem(name)) return name;
+    const dot = name.indexOf('.');
+    return dot < 0 ? `${name}_` : `${name.slice(0, dot)}_${name.slice(dot)}`;
+  }
+
   function safeName(raw) {
     let s = String(raw == null ? '' : raw).trim();
     s = s.replace(ILLEGAL_CHARS, '').replace(EDGE_DOTS_SPACES, '');
     if (!s) s = '未命名';
     if (s.length > MAX_NAME_LENGTH) s = s.slice(0, MAX_NAME_LENGTH).replace(EDGE_DOTS_SPACES, '');
-    return s || '未命名';
+    return escapeReservedStem(s) || '未命名';
   }
 
   function buildFileName(seq, name) {
@@ -310,6 +338,8 @@
     MAX_NOTE_LENGTH,
     pad3,
     formatTitle,
+    reservedStem,
+    escapeReservedStem,
     safeName,
     buildFileName,
     uniqueFileName,
