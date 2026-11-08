@@ -1244,6 +1244,8 @@
           fontSize: styles ? styles.fontSize : '',
           lineHeight: styles ? parseFloat(styles.lineHeight) : 0,
           fontFamily: styles ? styles.fontFamily : '',
+          // 中西文自动间距（1.3.0 T-08）：阅读容器与正文共用同一个 :root 变量
+          textAutospace: styles ? styles.getPropertyValue('text-autospace') : '',
           userSelect: styles ? styles.userSelect : '',
           scrollTop: scroll ? scroll.scrollTop : 0,
           scrollHeight: scroll ? scroll.scrollHeight : 0,
@@ -1552,6 +1554,9 @@
           fontFamily: styles.fontFamily,
           paddingLeft: styles.paddingLeft,
           paddingRight: styles.paddingRight,
+          // 中西文自动间距（1.3.0 T-08）：Chromium 的计算值 = normal / no-autospace。
+          // 用 getPropertyValue 读，避免 CSSOM 属性名在不同内核版本上大小写不一致。
+          textAutospace: styles.getPropertyValue('text-autospace'),
           backgroundImage: paperStyles.backgroundImage,
           backgroundColor: paperStyles.backgroundColor,
           editorBackgroundImage: styles.backgroundImage,

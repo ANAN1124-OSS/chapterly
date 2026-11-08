@@ -136,7 +136,7 @@ module.exports = async function group34PerBookDisplay(t) {
   const displayKeys = [
     'caretParagraph', 'caretParagraphColor', 'editorCustomFontName', 'editorCustomFontPath',
     'editorFont', 'editorFontSize', 'editorLetterSpacing', 'editorLineHeight', 'editorPaddingX',
-    'editorPageWidth', 'editorPaper', 'longParagraphThreshold'
+    'editorPageWidth', 'editorPaper', 'editorTextAutospace', 'longParagraphThreshold'
   ];
   const baseWithoutBook = (cfg, bookId) => {
     const copy = { ...cfg };

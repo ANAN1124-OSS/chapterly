@@ -39,11 +39,22 @@ module.exports = async function group23DisplayFormat(t) {
   check('从写作页能打开设置', (await exec('window.__cwTest.settingsOpen()')) === true);
   check('写作页里打开设置只作用于这本书', (await exec('window.__cwTest.settingsScope()')) === 'book');
   await exec("window.__cwTest.setSelect('settings-paper', 'green')");
+  // 中西文自动间距（1.3.0 T-08）：设置里的开关实时预览 → 关掉后正文计算值必须是 no-autospace
+  // （Chromium 初始值就是 no-autospace，所以两个方向都显式写，这里正反都量）
+  await exec("window.__cwTest.setCheck('settings-text-autospace', false)");
   const styleGreen = await exec('window.__cwTest.displayStyle()');
-  check('设置里改底色会实时预览', styleGreen.paperClass.includes('theme-green'), styleGreen.paperClass);
+  check(
+    '设置里改底色会实时预览',
+    styleGreen.paperClass.includes('theme-green') && styleGreen.textAutospace === 'no-autospace',
+    { paper: styleGreen.paperClass, textAutospace: styleGreen.textAutospace }
+  );
   await exec('window.__cwTest.closeSettings()');
   const styleRestored = await exec('window.__cwTest.displayStyle()');
-  check('设置取消后恢复原底色', !styleRestored.paperClass.includes('theme-green'), styleRestored.paperClass);
+  check(
+    '设置取消后恢复原底色',
+    !styleRestored.paperClass.includes('theme-green') && styleRestored.textAutospace === 'normal',
+    { paper: styleRestored.paperClass, textAutospace: styleRestored.textAutospace }
+  );
 
   // 拍板 #3：设置弹层右上新增「×」关闭，与底栏「取消」完全同义（含关闭前的预览还原）
   await exec('window.__cwTest.openSettings()');
@@ -115,7 +126,11 @@ module.exports = async function group23DisplayFormat(t) {
     `window.api.getBookDisplay(${JSON.stringify(displayBookId)}).then((r) => (r.ok ? r.data : null))`
   );
   const globalAfterBookSettings = await exec('window.api.getConfig().then((r) => (r.ok ? r.data : null))');
-  check('设置保存后护眼底色写入「这本书」', savedBookPaper.editorPaper === 'green', savedBookPaper);
+  check(
+    '设置保存后护眼底色写入「这本书」',
+    savedBookPaper.editorPaper === 'green' && savedBookPaper.editorTextAutospace === true,
+    savedBookPaper
+  );
   check(
     '设置保存不改全局默认纸色',
     globalAfterBookSettings.editorPaper === 'paper',

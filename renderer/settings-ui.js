@@ -186,6 +186,8 @@
     setSelectValue('settings-letter-spacing', cfg.editorLetterSpacing, 0.02);
     setSelectValue('settings-padding-x', cfg.editorPaddingX, 56);
     setSelectValue('settings-page-width', cfg.editorPageWidth, 0);
+    // 中西文自动间距（1.3.0 T-08）：默认开，只有明确存过 false 的才是关（旧配置没有这个键 = 勾上）
+    $('settings-text-autospace').checked = cfg.editorTextAutospace !== false;
     setSelectValue('settings-paper', cfg.editorPaper, 'paper');
     // 当前段落高亮（N10b）：开关 / 颜色都是显示设置，写作页按书、书架按全局
     $('settings-caret-paragraph').checked = cfg.caretParagraph === true;

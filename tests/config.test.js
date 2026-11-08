@@ -335,6 +335,45 @@ test('编辑器小件开关按书记忆（1.1.0）：白名单只认 true / fals
   assert.equal(afterReset.bookDisplay.b_a, undefined);
 });
 
+test('中西文自动间距（1.3.0 T-08）：默认开、只有真正的 false 才关、可按书覆盖', async () => {
+  // 规范 T-08 / 作业卡 T1：默认开启 + 设置里可关；配置字段 editorTextAutospace（bool，默认 true）。
+  assert.equal(DEFAULTS.editorTextAutospace, true, '默认值必须登记在 DEFAULTS（否则会被白名单丢掉）');
+  // 旧配置没有这个键 = 开；手改写坏的 'false' / 0 / null / 对象也都按开（宁可多留一点间距，不误关）
+  assert.equal(sanitize({}).editorTextAutospace, true);
+  assert.equal(sanitize({ booksRoot: 'D:\\旧书架', editorFont: 'kai' }).editorTextAutospace, true);
+  for (const bad of ['false', 0, 1, null, {}, []]) {
+    assert.equal(sanitize({ editorTextAutospace: bad }).editorTextAutospace, true, `坏值 ${JSON.stringify(bad)} 按默认开`);
+  }
+  assert.equal(sanitize({ editorTextAutospace: false }).editorTextAutospace, false, '只有真正的 false 才关');
+
+  // 按书覆盖：和别的按书显示项同一个口径（只认真正的布尔），没设置过的书沿用全局
+  const cleaned = sanitize({
+    bookDisplay: {
+      b_on: { editorTextAutospace: true },
+      b_off: { editorTextAutospace: false },
+      b_str: { editorTextAutospace: 'false' },
+      b_other: { editorPaper: 'night' }
+    }
+  });
+  assert.deepEqual(cleaned.bookDisplay.b_on, { editorTextAutospace: true });
+  assert.deepEqual(cleaned.bookDisplay.b_off, { editorTextAutospace: false });
+  assert.deepEqual(cleaned.bookDisplay.b_str, { editorTextAutospace: true }, '按书写坏的类型按开');
+  assert.deepEqual(cleaned.bookDisplay.b_other, { editorPaper: 'night' }, '别的按书字段不受影响');
+
+  // 写盘往返：关掉后记 false（不是删键）；重启后仍是 false；恢复本书默认后清掉覆盖回到全局开
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+  assert.equal((await store.get()).editorTextAutospace, true, '新配置默认开');
+  const stored = await store.set({ editorTextAutospace: false });
+  assert.equal(stored.editorTextAutospace, false);
+  assert.equal((await createConfigStore(dir).get()).editorTextAutospace, false, '重启后仍是关');
+  assert.deepEqual(await store.setBookDisplay('b_a', { editorTextAutospace: false }), { editorTextAutospace: false });
+  const disk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(disk.bookDisplay.b_a.editorTextAutospace, false);
+  assert.equal(await store.resetBookDisplay('b_a'), true);
+  assert.deepEqual(await store.getBookDisplay('b_a'), {});
+});
+
 test('超长段落阈值（1.1.0）：默认 500、夹紧 50–20000、非法值回落；全局默认与按书覆盖分开', async () => {
   // core 不能 require 渲染层，所以 core 侧留了同口径常量；这里用 editor-logic 的真实常量 / 边界
   // 钉住两边一致（默认值与 49→50 / 20001→20000 的行为必须同口径）。

@@ -728,6 +728,9 @@
     root.setProperty('--editor-letter-spacing', `${Number.isFinite(spacing) ? spacing : 0.02}em`);
     const pageWidth = Number(cfg.editorPageWidth) || 0;
     root.setProperty('--editor-max-width', pageWidth > 0 ? `${pageWidth}px` : 'none');
+    // 中西文自动间距（1.3.0 T-08，规范 T-08）：Chromium 的初始值是 no-autospace，所以两个方向都显式写
+    // （开 = normal，关 = no-autospace），不依赖浏览器默认。只改渲染层，正文 / 导出 / 复制一个空白都不加。
+    root.setProperty('--editor-text-autospace', cfg.editorTextAutospace === false ? 'no-autospace' : 'normal');
     const paddingX = Number(cfg.editorPaddingX);
     root.setProperty('--editor-padding-x', `${Number.isFinite(paddingX) && paddingX > 0 ? paddingX : 56}px`);
     for (const theme of ['cream', 'green', 'night', 'kraft', 'grid']) {
@@ -2907,6 +2910,7 @@
     'settings-letter-spacing',
     'settings-padding-x',
     'settings-page-width',
+    'settings-text-autospace',
     'settings-paper'
   ];
 
@@ -2924,6 +2928,8 @@
       editorPaddingX: Number($('settings-padding-x').value),
       editorPageWidth: Number($('settings-page-width').value),
       editorPaper: $('settings-paper').value,
+      // 中西文自动间距（1.3.0 T-08）：按书 / 全局同一份表单，默认开（旧配置没有这个键也回填勾上）
+      editorTextAutospace: $('settings-text-autospace').checked === true,
       // 当前段落高亮（N10b）：按书 / 全局都走同一份表单，保存时分别落到 bookDisplay / config
       caretParagraph: $('settings-caret-paragraph').checked === true,
       caretParagraphColor: caretColorLib.normalizeColor(state.settingsCaretColorDraft),

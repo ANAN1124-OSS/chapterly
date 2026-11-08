@@ -1149,7 +1149,9 @@ module.exports = async function group44StatsGoal(t) {
     '阅读模式：默认字号 22px / 行距 2.0，正文可以选中复制',
     parseFloat(readMetricsDefault.fontSize) === 22 &&
       Math.abs(readMetricsDefault.lineHeight / parseFloat(readMetricsDefault.fontSize) - 2) < 0.02 &&
-      readMetricsDefault.userSelect === 'text',
+      readMetricsDefault.userSelect === 'text' &&
+      // 中西文自动间距（1.3.0 T-08）：阅读容器与正文共用同一个变量，默认开
+      readMetricsDefault.textAutospace === 'normal',
     readMetricsDefault
   );
 

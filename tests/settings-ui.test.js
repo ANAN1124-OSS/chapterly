@@ -104,6 +104,7 @@ function makeDocument() {
 const BASE_IDS = [
   'settings-backdrop', 'settings-root', 'settings-root-field', 'settings-font', 'settings-font-name',
   'settings-size', 'settings-line-height', 'settings-letter-spacing', 'settings-padding-x', 'settings-page-width',
+  'settings-text-autospace',
   'settings-paper', 'settings-caret-paragraph', 'settings-caret-color', 'settings-caret-colors', 'settings-caret-hint',
   'settings-long-para-threshold', 'settings-long-para-hint',
   'settings-snapshot-enabled', 'settings-snapshot-days', 'settings-daily-goal', 'settings-write-duration',
@@ -331,6 +332,7 @@ test('openSettings（全局）：回填全部输入框、按全局作用域显�
       booksRoot: '/书库', editorFont: 'custom', editorCustomFontPath: '', editorCustomFontName: '',
       editorFontSize: 20, editorLineHeight: 2, editorLetterSpacing: 0.05, editorPaddingX: 40, editorPageWidth: 800,
       editorPaper: 'night', caretParagraph: true, caretParagraphColor: '#c0392b',
+      editorTextAutospace: true,
       longParagraphThreshold: 620,
       snapshotEnabled: true, snapshotKeepDays: 14, dailyGoal: 1200, writeDurationEnabled: true,
       clipboardWatchEnabled: true,
@@ -348,6 +350,8 @@ test('openSettings（全局）：回填全部输入框、按全局作用域显�
   assert.equal(ctx.dom.map.get('settings-size').value, '20');
   assert.equal(ctx.dom.map.get('settings-paper').value, 'night');
   assert.equal(ctx.dom.map.get('settings-caret-paragraph').checked, true);
+  // 中西文自动间距（1.3.0 T-08）：回填生效值，默认开
+  assert.equal(ctx.dom.map.get('settings-text-autospace').checked, true);
   assert.equal(ctx.state.settingsCaretColorDraft, '#c0392b');
   // 超长段落阈值（1.1.0）：回填全局默认，范围提示与作用域一起更新
   assert.equal(ctx.dom.map.get('settings-long-para-threshold').value, '620');
@@ -376,7 +380,7 @@ test('openSettings（全局）：回填全部输入框、按全局作用域显�
 test('openSettings（按书）：隐藏全局分区、显示重置按钮、换成按书提示，且不读台账', async () => {
   const ctx = build({
     view: 'editor', bookId: 'id-1',
-    config: { booksRoot: '/书库', editorFont: 'serif', longParagraphThreshold: 640 },
+    config: { booksRoot: '/书库', editorFont: 'serif', longParagraphThreshold: 640, editorTextAutospace: false },
     sensitiveWordsDraft: '/词表/敏感.txt',
     proofreadWordsDraft: '/词表/校对.txt'
   });
@@ -394,6 +398,8 @@ test('openSettings（按书）：隐藏全局分区、显示重置按钮、换�
   assert.match(ctx.dom.map.get('settings-caret-hint').textContent, /^只影响这本书/);
   assert.equal(ctx.dom.map.get('settings-long-para-threshold').value, '640');
   assert.match(ctx.dom.map.get('settings-long-para-hint').textContent, /^只影响这本书/);
+  // 中西文自动间距（1.3.0 T-08）：这本书单独关过 → 回填不勾；别的书不勾时回落全局默认开
+  assert.equal(ctx.dom.map.get('settings-text-autospace').checked, false);
   assert.match(ctx.dom.map.get('settings-scope-hint').textContent, /^只影响「书甲」的显示设置/);
 });
 
@@ -762,13 +768,14 @@ test('超长段落阈值（1.1.0）：回填按同一夹紧口径，保存 paylo
   const displayForm = {
     editorFont: 'serif', editorFontSize: 18, editorLineHeight: 1.95, editorLetterSpacing: 0.02,
     editorPaddingX: 56, editorPageWidth: 0, editorPaper: 'paper',
-    caretParagraph: false, caretParagraphColor: '', longParagraphThreshold: 650
+    caretParagraph: false, caretParagraphColor: '', editorTextAutospace: false, longParagraphThreshold: 650
   };
   const book = build({ scope: 'book', bookId: 'id-1', displayForm });
   book.state.settingsScope = 'book';
   await book.ui.saveSettings();
   assert.equal(book.calls.setBookDisplay.length, 1);
   assert.equal(book.calls.setBookDisplay[0][1].longParagraphThreshold, 650);
+  assert.equal(book.calls.setBookDisplay[0][1].editorTextAutospace, false, '按书保存带上中西文间距开关');
   assert.deepEqual(book.calls.setConfig, [], '按书保存不碰全局默认');
 
   // 取消：打开设置、改输入框、直接关 → 一个写调用都没有（草稿只活在表单里）
@@ -786,6 +793,7 @@ test('超长段落阈值（1.1.0）：回填按同一夹紧口径，保存 paylo
   await globalCtx.ui.saveSettings();
   assert.equal(globalCtx.calls.setConfig.length, 1);
   assert.equal(globalCtx.calls.setConfig[0].longParagraphThreshold, 650);
+  assert.equal(globalCtx.calls.setConfig[0].editorTextAutospace, false, '全局保存同样带中西文间距开关');
 });
 
 // ---------- 事件绑定 ----------

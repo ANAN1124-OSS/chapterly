@@ -39,6 +39,10 @@ const DEFAULTS = Object.freeze({
   editorPageWidth: 0, // 0 = 通栏；>0 为正文最大宽度（px）
   editorPaddingX: 56, // 正文左右边距（px）
   editorPaper: 'paper', // paper 原纸白 / cream 米黄 / green 豆绿 / night 夜间 / kraft 牛皮纸 / grid 网格纸
+  // 中西文自动间距（1.3.0 T-08，规范 T-08）：默认开。只作用于渲染层的 text-autospace
+  // （正文 / 阅读容器 / 标记层共用一个 CSS 变量），导出 / 复制不注入任何空白。
+  // 旧配置没有这个键 = 开；写坏的类型也按「开」；只有真正的 false 才关。可被 bookDisplay 按书覆盖。
+  editorTextAutospace: true,
   // 当前段落高亮（v0.8-10b，提案 N10b）：默认关；颜色 '' = 跟随当前背景主题（默认配色不变），
   // '#rrggbb' = 作者自定义。两项都可被 config.bookDisplay 按书覆盖，没设置过的书用这里的全局默认。
   caretParagraph: false,
@@ -158,6 +162,8 @@ function sanitizeBookDisplayEntry(raw) {
   if (has('editorPaper')) {
     out.editorPaper = PAPER_THEMES.includes(raw.editorPaper) ? raw.editorPaper : DEFAULTS.editorPaper;
   }
+  // 中西文自动间距（1.3.0 T-08）：默认开，只有真正的 false 才关（'false' / 0 / null 这类坏值都按开）。
+  if (has('editorTextAutospace')) out.editorTextAutospace = raw.editorTextAutospace !== false;
   // 当前段落高亮（v0.8-10b）：开关只认真正的 true / false（写错类型按全局默认 false），
   // 颜色只认 #rgb / #rrggbb；写坏了一律当「跟随主题」（'' 也是一个有效的按书覆盖值）。
   if (has('caretParagraph')) out.caretParagraph = raw.caretParagraph === true;
@@ -244,6 +250,9 @@ function sanitize(raw) {
     : 0;
   cfg.editorPaddingX = clampRoundedInt(cfg.editorPaddingX, 16, 200, DEFAULTS.editorPaddingX);
   cfg.editorPaper = PAPER_THEMES.includes(cfg.editorPaper) ? cfg.editorPaper : DEFAULTS.editorPaper;
+  // 中西文自动间距（1.3.0 T-08）：默认开。旧配置没有这个键、写坏的类型都按「开」，
+  // 只有真正的 false 才关——这样手改配置写个 'false' 也不会意外把间距关掉。
+  cfg.editorTextAutospace = cfg.editorTextAutospace !== false;
   // 当前段落高亮（v0.8-10b）：旧配置没有这两个键 = 关 / 跟随主题，行为和以前完全一样。
   cfg.caretParagraph = cfg.caretParagraph === true;
   cfg.caretParagraphColor = caretColorLib.normalizeColor(cfg.caretParagraphColor);

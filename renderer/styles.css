@@ -1364,6 +1364,9 @@ body.theme-night .chapter-item.active .chapter-status-dot {
   font-size: var(--editor-font-size);
   line-height: var(--editor-line-height);
   letter-spacing: var(--editor-letter-spacing);
+  /* 中西文自动间距（1.3.0 T-08）：值由渲染层写在 :root 上（normal / no-autospace）。
+   * Chromium 的初始值是 no-autospace，这里给 normal 兜底并保证「显式声明」便于审计。 */
+  text-autospace: var(--editor-text-autospace, normal);
   user-select: text;
   text-indent: 0;
 
@@ -1399,6 +1402,8 @@ textarea::placeholder { color: var(--ink-faint); opacity: 1; }
   overflow-wrap: break-word;
   word-break: normal;
   tab-size: 4;
+  /* 中西文自动间距（1.3.0 T-08）：标记层必须和正文用同一份间距，否则底色块 / 左侧黄线会和字错位。 */
+  text-autospace: var(--editor-text-autospace, normal);
   /* 行盒高度 = 行高 × 字号；SimSun 的行内内容盒正好 1em，所以上下各补 (行距 − 1)/2 em 就铺满整行。 */
   --marks-line-pad: calc((var(--editor-line-height) - 1) * 1em / 2);
 }
@@ -1572,6 +1577,8 @@ body.theme-night .long-para-bar { background: var(--warn);
   overflow-wrap: break-word;
   word-break: normal;
   tab-size: 4;
+  /* 中西文自动间距（1.3.0 T-08）：测量层要和正文同一份间距，量出来的光标行位置才准。 */
+  text-autospace: var(--editor-text-autospace, normal);
   margin: 0;
   padding: 0;
   border: 0;
@@ -3396,6 +3403,8 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   font-size: var(--reading-font-size);
   line-height: var(--reading-line-height);
   letter-spacing: var(--editor-letter-spacing);
+  /* 中西文自动间距（1.3.0 T-08）：阅读容器跟着正文显示设置走（同一个 :root 变量，默认 normal）。 */
+  text-autospace: var(--editor-text-autospace, normal);
   color: var(--ink);
   overflow-wrap: break-word;
   white-space: pre-wrap;
