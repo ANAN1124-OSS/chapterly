@@ -92,10 +92,14 @@ function makeWorld(options = {}) {
       moveChapterTo: 'chapters:move-to',
       moveChapter: 'chapters:move'
     },
-    async call(channel, ...args) {
-      calls.push({ channel, args });
+    async call(target, ...args) {
+      // B1（审计 E6）：模块里改成统一 call(api.xxx, ...)（真实渲染层的 call() 收的就是 api 成员函数），
+      // 老用例注入的是频道字符串，两种写法都要支持：calls 仍只记「频道调用」、onCall 仍按频道注入
+      // （原语义不变）；api 成员函数直接执行，各自的 renders 记录照旧。
+      if (typeof target === 'function') return target(...args);
+      calls.push({ channel: target, args });
       if (options.onCall) {
-        const handler = options.onCall(channel, ...args);
+        const handler = options.onCall(target, ...args);
         if (handler instanceof Error) throw handler;
         if (handler !== undefined) return handler;
       }

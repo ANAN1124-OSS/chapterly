@@ -234,6 +234,56 @@
     return res.data;
   }
 
+  // ---------- 后台失败留痕（B1 / 审计 E2、E6） ----------
+  // 生产包不开放 DevTools：「只写 console」等于没写。这里统一做两件事——
+  //   1) 把 kind / code / message（都只是短字符串，绝不含正文）交给主进程写一条诊断日志；
+  //   2) 需要让作者知道的，由调用方给一句固定提示（见 installFailureGuard / reportChainFailure）。
+  // 主进程侧是白名单 IPC app:report-renderer-error（handle() 校验来源 + 参数白名单 + 脱敏，见 main.js）；
+  // 每秒最多留痕一次，免得同一个错误连击把日志刷满、toast 刷屏。留痕本身失败也绝不影响主流程。
+  const FAILURE_REPORT_MIN_GAP_MS = 1000;
+  let lastFailureReportAt = 0;
+  let failureGuardInstalled = false;
+
+  // 返回 true 表示这次真的上报了（调用方据此决定要不要弹提示，避免连击刷屏）
+  function reportBackgroundFailure(kind, err) {
+    try {
+      console.error(`[后台失败] ${kind}`, err);
+    } catch { /* 控制台不可用不影响主流程 */ }
+    const now = Date.now();
+    if (now - lastFailureReportAt < FAILURE_REPORT_MIN_GAP_MS) return false;
+    lastFailureReportAt = now;
+    const detail = err && typeof err === 'object' ? err : {};
+    try {
+      const pending = api.reportRendererError({
+        kind,
+        code: typeof detail.code === 'string' ? detail.code : '',
+        message: typeof detail.message === 'string' ? detail.message : typeof err === 'string' ? err : ''
+      });
+      // preload 的 invoke 不抛错（失败回 {ok:false}），这里再兜一层：留痕不许自己变成 rejection
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+    } catch { /* 留痕失败不影响主流程 */ }
+    return true;
+  }
+
+  // 关键链的失败出口：先留痕，再给一句可读提示（与仓库里 `xxx失败：${err.message}` 的既有口径一致）
+  function reportChainFailure(label, err) {
+    reportBackgroundFailure('ui-chain', err);
+    toast(`${label}：${(err && err.message) || '未知错误'}`, 'error');
+  }
+
+  // 全局兜底（审计 E2）：init 之后任何没被 catch 的 Promise 拒绝都至少留一条痕迹 + 一句固定提示。
+  // 提示文案写死，绝不拼 event.reason —— reason 里可能有正文 / 本机路径。
+  function installFailureGuard() {
+    if (failureGuardInstalled) return;
+    failureGuardInstalled = true;
+    window.addEventListener('unhandledrejection', (event) => {
+      const reported = reportBackgroundFailure('unhandledrejection', event ? event.reason : null);
+      if (reported) {
+        toast('有一项后台操作失败了，已写进日志。写作和保存不受影响。', 'warn');
+      }
+    });
+  }
+
   // ---------- 状态 ----------
   const state = {
     config: null, // 显示设置的「生效值」= 全局 + 当前书覆盖
@@ -1741,7 +1791,9 @@
       // （书架 / 打开书 / 继续上次写作）主进程会先 flush，重开书不会回到旧章。
       // 「继续上次写作」的书架级记忆在切章当下就写（配置很小），只把书目.json 的大写入防抖。
       try {
-        await api.setLastOpenChapter(state.bookPath, chapter.id, {
+        // B1（审计 E6）：走统一 call() —— preload 在 IPC 异常时回 {ok:false} 而不抛，
+        // 以前裸 await 让这个 catch 几乎永不触发，失败被悄悄丢掉；现在失败会真的进 catch。
+        await call(api.setLastOpenChapter, state.bookPath, chapter.id, {
           title: state.meta && state.meta.title,
           chapterIndex: state.index,
           chapterName: chapter.name
@@ -3145,7 +3197,10 @@
     // 绝不自动写文件 / 自动导入；不存在的导入目标与取消都由导入流程自己提示。
     $('btn-capture-import').addEventListener('click', () => {
       captureUi.close();
-      void backToShelf().then(() => onImportClick());
+      // B1（审计 E2）：回书架失败不再静默 —— 原来这条链 reject 时导入对话框永远不会弹
+      void backToShelf()
+        .then(() => onImportClick())
+        .catch((err) => reportChainFailure('返回书架失败', err));
     });
 
     // B6（审计 P6）：书架搜索原来每敲一个键就整块重建 grid（千本书时每键白建一堆 DOM）。
@@ -3543,10 +3598,13 @@
         if (state.loading) return;
         const target = listKeyboard.chapterSwitchTarget(state.index, event.key, state.chapters.length);
         if (target < 0) return;
-        void switchChapter(target).then((result) => {
-          if (!result || result.ok !== true || result.same) return;
-          focusChapterAfterSwitch(target);
-        });
+        // B1（审计 E2）：切章失败要出声（原来 .then 没有 .catch，前面的步骤 reject 时静默不执行）
+        void switchChapter(target)
+          .then((result) => {
+            if (!result || result.ok !== true || result.same) return;
+            focusChapterAfterSwitch(target);
+          })
+          .catch((err) => reportChainFailure('切换章节失败', err));
         return;
       }
       if (ctrl && String(event.key).toLowerCase() === 'g') {
@@ -3837,6 +3895,8 @@
   }
 
   async function init() {
+    // B1（审计 E2）：最先挂全局兜底，init 里后面任何一步漏掉的 rejection 都还能留痕 + 提示
+    installFailureGuard();
     bindEvents();
     // 弹层焦点管理（v0.9 A-5）：打开带焦点进来、Tab 不跑出弹层、关闭后还给背景
     if (window.CWDialogFocus) window.CWDialogFocus.install();
@@ -3855,9 +3915,12 @@
       // 删完把焦点放回列表原位置，键盘用户不会掉回 body；编辑区不在这个容器里，Delete 删字不受影响。
       allowDelete: true,
       onDelete: (item, position) => {
-        void deleteChapterAt(position).then((deleted) => {
-          if (deleted) focusChapterAfterDelete(position);
-        });
+        // B1（审计 E2）：删除失败不再静默（原来 .then 没有 .catch，焦点恢复那步永不执行）
+        void deleteChapterAt(position)
+          .then((deleted) => {
+            if (deleted) focusChapterAfterDelete(position);
+          })
+          .catch((err) => reportChainFailure('删除这一章失败', err));
       },
       onActivate: (item) => switchChapter(Number(item.dataset.index))
     });

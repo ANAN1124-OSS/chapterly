@@ -226,7 +226,9 @@
       if (currentId) {
         try {
           const currentChapter = state.chapters.find((c) => c.id === currentId);
-          await api.setLastOpenChapter(state.bookPath, currentId, {
+          // B1（审计 E6）：走统一 call()，失败才真的进这个 catch（裸 await api.* 时 preload 回
+          // {ok:false} 不抛错，这里的兜底等于没写）
+          await call(api.setLastOpenChapter, state.bookPath, currentId, {
             title: state.meta && state.meta.title,
             chapterIndex: state.index,
             chapterName: currentChapter ? currentChapter.name : ''
@@ -259,7 +261,8 @@
       if (currentId) {
         try {
           const currentChapter = state.chapters.find((c) => c.id === currentId);
-          await api.setLastOpenChapter(state.bookPath, currentId, {
+          // B1（审计 E6）：同上，统一 call()（失败会被下面的 catch 接住，不再被悄悄丢掉）
+          await call(api.setLastOpenChapter, state.bookPath, currentId, {
             title: state.meta && state.meta.title,
             chapterIndex: state.index,
             chapterName: currentChapter ? currentChapter.name : ''

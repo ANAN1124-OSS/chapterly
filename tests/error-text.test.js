@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const errorText = require('../core/error-text');
 
-const { redactPaths, maskPath, cleanText, cleanCode, fsErrorDetail, describeForUi, FS_CODE_TEXT } = errorText;
+const { redactPaths, maskPath, cleanText, cleanCode, fsErrorDetail, describeForUi, FS_CODE_TEXT, sanitizeFailureReport } = errorText;
 const ROOT = path.join(__dirname, '..');
 
 // 一份真实形状的 Node 文件系统错误（message 里带完整路径，和实测一致）
@@ -163,6 +163,51 @@ test('错误脱敏：fsErrorDetail 只认带分隔符的路径（普通引号内
   assert.equal(fsErrorDetail('，第 3 章'), '');
   assert.equal(fsErrorDetail(''), '');
   assert.equal(fsErrorDetail(null), '');
+});
+
+test('错误脱敏：渲染层失败上报只收 kind / code / message 三个短字符串，路径与超长文本都收掉', () => {
+  const KINDS = new Set(['unhandledrejection', 'ui-chain']);
+  // 正常形状：路径只留最后一节，kind / code 原样过白名单
+  assert.deepEqual(
+    sanitizeFailureReport(
+      {
+        kind: 'ui-chain',
+        code: 'ENOENT',
+        message: "ENOENT: no such file or directory, open 'D:\\我的小说\\斗罗\\0001-第1章.txt'"
+      },
+      KINDS
+    ),
+    { kind: 'ui-chain', code: 'ENOENT', message: "ENOENT: no such file or directory, open '…\\0001-第1章.txt'" }
+  );
+  // kind 不在白名单 / 大小写不符 / 空 → null（日志里只许出现约定好的 few 种 kind）
+  assert.equal(sanitizeFailureReport({ kind: 'boom', code: 'X', message: 'x' }, KINDS), null);
+  assert.equal(sanitizeFailureReport({ kind: 'UNHANDLEDREJECTION', code: 'X', message: 'x' }, KINDS), null);
+  assert.equal(sanitizeFailureReport({ kind: '', code: 'X', message: 'x' }, KINDS), null);
+  // 形状不合法 → null（不抛错：上报失败不该反过来干扰渲染层）
+  for (const bad of [null, undefined, 'text', 42, [], [1, 2]]) {
+    assert.equal(sanitizeFailureReport(bad, KINDS), null);
+  }
+  // 白名单本身不合法 → 一律 null（宁可不记，也不放任意 kind 进日志）
+  assert.equal(sanitizeFailureReport({ kind: 'ui-chain', code: 'X', message: 'x' }, null), null);
+  assert.equal(sanitizeFailureReport({ kind: 'ui-chain', code: 'X', message: 'x' }, []), null);
+  // code / message 都不合法时没有可记的东西 → null；只有一个可记就照记
+  assert.equal(sanitizeFailureReport({ kind: 'ui-chain', code: 'CODE WITH SPACE', message: '' }, KINDS), null);
+  assert.deepEqual(sanitizeFailureReport({ kind: 'ui-chain', code: '', message: '窗口正在销毁' }, KINDS), {
+    kind: 'ui-chain',
+    code: '',
+    message: '窗口正在销毁'
+  });
+  // code 走字符白名单（与 describeForUi 同口径）、message 收控制字符与超长
+  const long = sanitizeFailureReport({ kind: 'ui-chain', code: 'A'.repeat(80), message: `前\u0000后 ${'字'.repeat(400)}` }, KINDS);
+  assert.equal(long.code.length, 40);
+  assert.equal(long.message.includes('\u0000'), false);
+  assert.ok(long.message.length <= 320, '按 cleanText 的上限截断');
+  // 数字 code 会被 safeString 收成字符串（与 describeForUi 同口径），字符不合法才丢
+  assert.deepEqual(sanitizeFailureReport({ kind: 'ui-chain', code: 5, message: '' }, KINDS), {
+    kind: 'ui-chain',
+    code: '5',
+    message: ''
+  });
 });
 
 test('错误脱敏静态闸门：main.js 的 IPC 失败出口走 error-text，全部 core 不许把 err.message 直接拼给界面', () => {

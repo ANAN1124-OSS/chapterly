@@ -176,8 +176,10 @@ test('backToShelf：没未保存修改 → 不弹三选一，清空当前书并�
   assert.equal(ctx.calls.clearFind, 0, '没有查找结果就不用结束会话');
 
   // 顺序：先释放登记 → 清状态 → 结束查找（无）→ 切全局设置 → 三件显示设置 → showView → 刷新书架
+  // B1（审计 E6）：释放登记改走统一 call()（失败才真的进 catch），所以日志里多一条 'call' 打头。
   assert.deepEqual(ctx.log, [
-    'releaseBook', 'effectiveConfig', 'applyEditorStyle', 'syncCaret', 'applySidebarWidth', 'showView:shelf', 'refreshShelf'
+    'call', 'releaseBook', 'effectiveConfig', 'applyEditorStyle', 'syncCaret', 'applySidebarWidth', 'showView:shelf',
+    'refreshShelf'
   ]);
 });
 
@@ -203,7 +205,8 @@ test('backToShelf：未保存 + 保存成功 → 先 askUnsaved、再 saveCurren
   assert.equal(ctx.calls.saveCurrent, 1);
   assert.equal(ctx.calls.releaseBook, 1);
   assert.equal(ctx.state.view, 'shelf');
-  assert.deepEqual(ctx.log.slice(0, 4), ['currentChapterLabel', 'askUnsaved', 'saveCurrent', 'releaseBook']);
+  // B1（审计 E6）：'call' 是释放登记走统一 call() 的那一跳（见上一条用例）
+  assert.deepEqual(ctx.log.slice(0, 5), ['currentChapterLabel', 'askUnsaved', 'saveCurrent', 'call', 'releaseBook']);
   assert.equal(ctx.log[ctx.log.length - 1], 'refreshShelf');
 });
 

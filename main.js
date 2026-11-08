@@ -580,6 +580,11 @@ function notifyInternalError(kind, err) {
   }
 }
 
+// B1（审计 E2 / E6）：渲染层上报「后台失败」时认的 kind 白名单。
+// 渲染层不开放 DevTools，没被 catch 的 Promise 拒绝只写 console 等于没写，所以由这个通道落一条诊断日志；
+// 白名单让日志里的 kind 只有这几种（拼错 / 注入都进不去），其余字段由 core/error-text 统一脱敏。
+const RENDERER_FAILURE_KINDS = new Set(['unhandledrejection', 'ui-chain']);
+
 // 主进程崩溃 / 未处理的 Promise：写日志 + 通知界面，进程不退出（作者可能还有没保存的稿子，
 // 至少让他先 Ctrl+S 再重启）。日志失败也只影响日志。
 process.on('uncaughtException', (err) => notifyInternalError('uncaughtException', err));
@@ -1071,6 +1076,24 @@ function registerIpc() {
     await flushLastOpenBeforeRead(null);
     const cfg = await getConfig();
     return cfg.lastBook || null;
+  });
+
+  // B1（审计 E2）：渲染层没被 catch 的 Promise 拒绝 → 落一条诊断日志（本机路径只留最后一节、
+  // 不含正文，与 fail() 同一条脱敏链路）。来源由 handle() 统一校验（BAD_SENDER，不可信来源回
+  // BAD_SENDER 且不写日志）；参数只收 kind / code / message 三个短字符串，形状不合法回
+  // {accepted:false} 而不是抛错——留痕失败不该反过来干扰渲染层。不新增任何界面文案：
+  // 提示由渲染层自己给固定一句（见 reportBackgroundFailure）。
+  handle('app:report-renderer-error', async (payload) => {
+    const report = errorText.sanitizeFailureReport(payload, RENDERER_FAILURE_KINDS);
+    if (!report) return { accepted: false };
+    // 控制台这一行只打脱敏后的 code / message（与 fail() 一个口径），开发时看得见、日志里也有一条
+    console.error('[renderer-failure]', report.kind, report.code, report.message);
+    logError(
+      'renderer-failure',
+      { code: report.code, message: `[${report.kind}] ${report.message}` },
+      { level: report.kind === 'unhandledrejection' ? 'error' : 'warn' }
+    );
+    return { accepted: true };
   });
 
   // 改配置（v0.9 C-2b）：显示设置 / 统计 / 模板这些随便改，但「指向磁盘」的三项

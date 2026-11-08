@@ -160,6 +160,27 @@ function uiMessage(code, rawMessage) {
   return redacted || '未知错误';
 }
 
+// B1（审计 E2）：渲染层上报的「后台失败」只收三个短字符串——kind 必须在调用方给的允许集合里
+// （白名单由调用方维护，通常是 Set / 数组），code 走字符白名单，message 与界面文案同一套脱敏
+// （本机绝对路径只留最后一节、控制字符与超长文本收掉）。**绝不接受正文**：渲染层不传，
+// 这里也只把它当一句话处理。形状不合法 / 三个字段都空 → 回 null（上报失败不该反过来干扰渲染层）。
+function sanitizeFailureReport(payload, allowedKinds) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const kinds =
+    allowedKinds instanceof Set
+      ? allowedKinds
+      : Array.isArray(allowedKinds)
+        ? new Set(allowedKinds)
+        : null;
+  if (!kinds || !kinds.size) return null;
+  const kind = typeof payload.kind === 'string' ? payload.kind.trim() : '';
+  if (!kinds.has(kind)) return null;
+  const code = cleanCode(payload.code);
+  const message = cleanText(redactPaths(payload.message));
+  if (!code && !message) return null;
+  return { kind, code, message };
+}
+
 // 错误对象 → { code, message }（不读 stack，界面用不上）
 function readRaw(err) {
   if (err == null) return { code: '', message: '' };
@@ -190,5 +211,6 @@ module.exports = {
   cleanText,
   fsErrorDetail,
   cleanCode,
-  describeForUi
+  describeForUi,
+  sanitizeFailureReport
 };

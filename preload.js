@@ -19,6 +19,10 @@ contextBridge.exposeInMainWorld('api', {
   appVersion: () => invoke('app:version'),
   appWarning: () => invoke('app:warning'),
   getRecentBook: () => invoke('app:recent-book'),
+  // B1（审计 E2）：渲染层的后台失败（没被 catch 的 Promise 拒绝）交给主进程写一条诊断日志。
+  // 只带 kind / code / message 三个短字符串；kind 走主进程白名单、其余字段过 core/error-text 脱敏，
+  // 正文与完整本机路径都进不来（主进程侧见 handle('app:report-renderer-error')）。
+  reportRendererError: (payload) => invoke('app:report-renderer-error', payload),
   // 多窗口：这个窗口的会话信息 / 在新窗口打开书 / 回书架时释放「打开中的书」登记
   // windowInfo 只被自检取用（renderer/test-hooks.js 的测试钩子 + tests/test-hooks.test.js 的快照），
   // 产品界面不读它（作者已定：留着，多窗口会话排查要用）；改名字会同时动到那份快照。

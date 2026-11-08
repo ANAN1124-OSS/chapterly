@@ -64,7 +64,10 @@
     }
     // 释放「打开中的书」登记：关掉这个窗口 / 回书架后，别的窗口就能打开这本书
     try {
-      await api.releaseBook();
+      // B1（审计 E6）：走统一 call() —— preload 在 IPC 异常时回 {ok:false} 而不抛，
+      // 以前裸 await 让这个 catch 几乎永不触发；现在失败真的会进 catch（仍按原语义静默，
+      // 由主进程在窗口销毁时兜底）。
+      await call(api.releaseBook);
     } catch {
       /* 释放失败由主进程在窗口销毁时兜底 */
     }
