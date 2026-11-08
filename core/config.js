@@ -479,9 +479,20 @@ function createConfigStore(userDataDir, deps = {}) {
   };
 }
 
+// A3（审计 #9 / O1）：--books-root 只在进程内覆盖「书架根目录」这一个字段，不改 config.json 里存的值。
+// 这里是唯一实现：main.js 的装饰层只调用它一次，任何配置写入口都不许再抄一份同形覆盖——
+// 这条口径决定 assertBookPath 认哪个根目录，漏抄一处就会出现「界面显示 A、路径校验按 B」的漂移。
+// override 为空（正常启动；argValue 没命中返回 null；--books-root= 空串）时原样返回同一个对象
+// （保持「没有覆盖＝零拷贝」的旧行为）；有值时返回浅拷贝，绝不改调用方那只对象。
+function withBooksRootOverride(config, override) {
+  if (!override) return config;
+  return { ...config, booksRoot: override };
+}
+
 module.exports = {
   createConfigStore,
   DEFAULTS,
   sanitize,
-  sanitizeLastBook
+  sanitizeLastBook,
+  withBooksRootOverride
 };

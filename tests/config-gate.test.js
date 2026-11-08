@@ -329,6 +329,11 @@ test('静态闸门：config:set 先 mkdir 目标书架目录、成功后才写�
   assert.ok(mkdirAt < writeAt, 'config:set 必须先 mkdir、成功后才 configStore.set（E3：避免「报错但已保存」）');
   // 建目录的目标必须从「当前配置 + 放行后的 patch」算，而不是写盘后的 config（顺序倒了就算不出来）
   assert.match(body, /sanitizeConfig\(\{ \.\.\.current, \.\.\.gated\.patch \}\)/, 'mkdir 目标要按 sanitize(当前 + patch) 算');
-  // 播放器 / 自动化覆盖（--books-root）仍指向覆盖目录，不能被 patch 带偏
-  assert.match(body, /booksRootOverride/, 'config:set 的 mkdir 目标要兼容 --books-root 覆盖');
+  // 播放器 / 自动化覆盖（--books-root）仍指向覆盖目录，不能被 patch 带偏。
+  // A3（审计 #9 / O1）起覆盖只在 main.js 的 decorateConfig 一处应用，这里钉住「mkdir 目标过装饰层」。
+  assert.match(
+    body,
+    /decorateConfig\(sanitizeConfig\(\{ \.\.\.current, \.\.\.gated\.patch \}\)\)\.booksRoot/,
+    'config:set 的 mkdir 目标要过 booksRootOverride 装饰层'
+  );
 });

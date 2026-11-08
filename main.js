@@ -51,7 +51,7 @@ const screenshotChapter = argValue('chapter');
 const screenshotDialog = argValue('dialog');
 const automation = isE2E || isBench || isContrast || Boolean(screenshotPath);
 
-const { createConfigStore, sanitize: sanitizeConfig } = require('./core/config');
+const { createConfigStore, sanitize: sanitizeConfig, withBooksRootOverride } = require('./core/config');
 const { atomicWriteFile } = require('./core/atomic');
 const storage = require('./core/storage');
 const repair = require('./core/repair');
@@ -771,10 +771,24 @@ function handleBook(channel, fn, { mutation = null } = {}) {
   });
 }
 
+// A3（审计 #9 / O1）：booksRootOverride 的唯一装饰层 —— 任何从配置仓库拿回来的 config 都先过这里再缓存。
+// 这条口径决定 assertBookPath 认哪个根目录：以前 8 处配置写入口各抄一份同形覆盖，新增写入口漏写一处
+// 就会出现「界面显示 A、路径校验按 B」的漂移。打包版刻意保留 --books-root（安装版冒烟把书架指到临时
+// 副本用，见文件顶部「刻意保留的启动参数」），但覆盖只在这一个函数里发生。
+function decorateConfig(raw) {
+  return withBooksRootOverride(raw, booksRootOverride);
+}
+
+// 配置缓存的唯一写入口：配置仓库写完之后要更新内存里的 config，一律走这里（装饰层不会被绕过）。
+function applyConfig(raw) {
+  config = decorateConfig(raw);
+  return config;
+}
+
 async function getConfig() {
   if (!config) {
     configStore = createConfigStore(app.getPath('userData'));
-    config = await configStore.get();
+    config = decorateConfig(await configStore.get());
     configWarning = configStore.takeLoadWarning();
     // A5（审计 E2）：配置读失败（EACCES / EIO / EBUSY…）与损坏归档都留一条本机日志，
     // 只记错误码与中文结论，不含路径、不含配置内容；界面仍走 app:warning 提示一次。
@@ -785,7 +799,6 @@ async function getConfig() {
         message: configWarning.message
       });
     }
-    if (booksRootOverride) config = { ...config, booksRoot: booksRootOverride };
   }
   return config;
 }
@@ -813,7 +826,7 @@ async function rememberExportDir(dir) {
   if (dir === cfg.lastExportDir) return;
   try {
     const updated = await configStore.set({ lastExportDir: dir });
-    config = booksRootOverride ? { ...updated, booksRoot: booksRootOverride } : updated;
+    applyConfig(updated);
   } catch {
     /* 忽略：只是记个位置 */
   }
@@ -849,7 +862,7 @@ async function rememberRecentBook(bookPath, info) {
     // 迟到的切章记录不许盖掉更晚的「上次写作」位置（多窗口：A 保存得更晚，B 的旧切章不能翻上去）
     if (prev && Number.isFinite(Number(prev.at)) && Number(prev.at) > payload.at) return false;
     const updated = await configStore.set({ lastBook: payload });
-    config = booksRootOverride ? { ...updated, booksRoot: booksRootOverride } : updated;
+    applyConfig(updated);
     return true;
   } catch {
     return false; // 记不住位置不影响写作
@@ -1076,12 +1089,11 @@ function registerIpc() {
     // 旧顺序是「configStore.set 写盘成功 → fs.mkdir」，目录建不出来时界面看到「保存失败」，
     // 但配置已经落盘——重启后书架指向一个不存在的目录，作者会以为「书没了」。
     // 目标目录按「当前配置 + 放行后的 patch」走同一份 sanitize 算，和写盘后的 config.booksRoot 一致。
-    const targetRoot = booksRootOverride
-      ? booksRootOverride
-      : sanitizeConfig({ ...current, ...gated.patch }).booksRoot;
+    // 目标目录同样的口径：过装饰层——设置了 --books-root 时它就是覆盖目录，没设置时就是 sanitize 的结果。
+    const targetRoot = decorateConfig(sanitizeConfig({ ...current, ...gated.patch })).booksRoot;
     await fs.mkdir(targetRoot, { recursive: true });
     const next = await configStore.set(gated.patch);
-    config = booksRootOverride ? { ...next, booksRoot: booksRootOverride } : next;
+    applyConfig(next);
     // b8：设置里打开 / 关闭「后台监听剪贴板」立即生效（幂等）
     syncClipboardWatch();
     if (gated.rejected.length) logRejectedConfigPaths(gated.rejected);
@@ -1303,8 +1315,7 @@ function registerIpc() {
       picked: session ? pickedConfigPaths.snapshot(session.id) : null
     });
     const display = await configStore.setBookDisplay(bookId, gated.patch);
-    config = await configStore.get();
-    if (booksRootOverride) config = { ...config, booksRoot: booksRootOverride };
+    applyConfig(await configStore.get());
     if (gated.rejected.length) logRejectedConfigPaths(gated.rejected);
     return display;
   });
@@ -1312,8 +1323,7 @@ function registerIpc() {
   handle('book:reset-display', async (bookId) => {
     await getConfig();
     await configStore.resetBookDisplay(bookId);
-    config = await configStore.get();
-    if (booksRootOverride) config = { ...config, booksRoot: booksRootOverride };
+    applyConfig(await configStore.get());
     return true;
   });
 
@@ -1328,16 +1338,14 @@ function registerIpc() {
   handle('find:bookmark-save', async (entry) => {
     await getConfig();
     const data = await configStore.upsertFindBookmark(entry || {});
-    config = await configStore.get();
-    if (booksRootOverride) config = { ...config, booksRoot: booksRootOverride };
+    applyConfig(await configStore.get());
     return data;
   });
 
   handle('find:bookmark-remove', async (bookId, chapterId) => {
     await getConfig();
     const data = await configStore.removeFindBookmark(bookId, chapterId);
-    config = await configStore.get();
-    if (booksRootOverride) config = { ...config, booksRoot: booksRootOverride };
+    applyConfig(await configStore.get());
     return data;
   });
 
