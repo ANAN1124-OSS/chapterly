@@ -3,7 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { atomicWriteFile, writeJsonAtomic, stripBom } = require('./atomic');
-const { pad2, nowIso, mapLimit } = require('./common');
+const { pad2, nowIso, mapLimit, createKeyedWriteQueue } = require('./common');
 const chaptersLib = require('./chapters');
 const findLib = require('./find');
 const formatLib = require('./format');
@@ -1448,15 +1448,34 @@ async function setLastOpenChapter(bookPath, chapterId) {
 // ---------- 同一本书的「读-改-写」串行化 ----------
 // 背景：渲染层会发 fire-and-forget 的 setLastOpenChapter，如果它和改名/插入等操作并发，
 // 各自「读 meta → 改 → 写回」就会互相覆盖。主进程内用 promise 链把同一本书的写操作排队。
-const bookLocks = new Map();
+// A4（审计 #11 / O3、P6）：链本体收进 core/common.js 的 createKeyedWriteQueue（与 config /
+// fragments / logs / stats 的 createWriteQueue 同一份语义），这里只剩「按书路径分链」这一步；
+// 条目在链 settle 后自动回收，Map 不再只增不删。
+const bookQueue = createKeyedWriteQueue();
+
+function bookLockKey(bookPath) {
+  // Windows 路径不分大小写，key 统一小写，免得 C:\Books\A 与 c:\books\a 变成两把锁
+  return path.resolve(String(bookPath)).toLowerCase();
+}
 
 function withBookLock(bookPath, task) {
-  // Windows 路径不分大小写，key 统一小写，免得 C:\Books\A 与 c:\books\a 变成两把锁
-  const key = path.resolve(String(bookPath)).toLowerCase();
-  const previous = bookLocks.get(key) || Promise.resolve();
-  const run = previous.then(task, task);
-  bookLocks.set(key, run.then(() => undefined, () => undefined));
-  return run;
+  return bookQueue.enqueue(bookLockKey(bookPath), task);
+}
+
+// 删书后的主动回收：只清这一本书的空闲条目；正在跑 / 正在排队的链绝不拆（settle 后自己回收）。
+function clearBookLock(bookPath) {
+  return bookQueue.clearIdle(bookLockKey(bookPath));
+}
+
+// 换书架根目录后的主动回收：旧根下的条目都没有复用价值了，清掉所有空闲条目；
+// 在飞的条目同样留给它自己 settle 后回收。
+function clearBookLocks() {
+  return bookQueue.clearIdle();
+}
+
+// 单测观察用：当前 Map 里还有几条锁（产品逻辑不读它）。
+function bookLockCount() {
+  return bookQueue.pendingCount();
 }
 
 function locked(fn) {
@@ -1522,5 +1541,8 @@ module.exports = {
   trashBook,
   setLastOpenChapter: locked(setLastOpenChapter),
   moveToTrash,
-  withBookLock
+  withBookLock,
+  clearBookLock,
+  clearBookLocks,
+  bookLockCount
 };

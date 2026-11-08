@@ -1079,6 +1079,7 @@ function registerIpc() {
   // 被注入的脚本想借 config:set 让主进程去读写别的目录 / 文件，会被 core/config-gate.js 挡掉。
   handle('config:set', async (patch) => {
     const current = await getConfig();
+    const previousRoot = current.booksRoot;
     const session = flowSession();
     const gated = configGate.filterPathPatch(patch, {
       current,
@@ -1093,7 +1094,12 @@ function registerIpc() {
     const targetRoot = decorateConfig(sanitizeConfig({ ...current, ...gated.patch })).booksRoot;
     await fs.mkdir(targetRoot, { recursive: true });
     const next = await configStore.set(gated.patch);
-    applyConfig(next);
+    const nextConfig = applyConfig(next);
+    // A4（审计 #11 / O3、P6）：换了书架根目录后，旧根下的书锁条目没有复用价值——主动回收空闲条目
+    // （正在跑 / 正在排队的链绝不拆，它们 settle 后自己回收，这里只是尽早腾掉 Map 位置）。
+    if (path.resolve(nextConfig.booksRoot).toLowerCase() !== path.resolve(previousRoot).toLowerCase()) {
+      storage.clearBookLocks();
+    }
     // b8：设置里打开 / 关闭「后台监听剪贴板」立即生效（幂等）
     syncClipboardWatch();
     if (gated.rejected.length) logRejectedConfigPaths(gated.rejected);
@@ -2381,6 +2387,8 @@ function registerIpc() {
     }
     // 删除成功：清掉可能存在的登记（自己的 / 残留的）；书架变动的广播由 handleBook 统一发
     storage.releaseOpenBookPath(target);
+    // A4（审计 #11 / O3、P6）：这本书的锁条目（若有）也一并回收；在飞的链留到 settle 后自己回收。
+    storage.clearBookLock(target);
     return result;
   }, { mutation: 'delete' });
 

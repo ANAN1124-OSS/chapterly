@@ -155,23 +155,78 @@
     return `${date.getFullYear()}${separator}${pad2(date.getMonth() + 1)}${separator}${pad2(date.getDate())}`;
   }
 
-  // 串行写队列：同一个文件的多次写必须按调用顺序落盘（并发 set 各自拿旧 cache 合并会吞掉对方的
-  // patch，例如拖完章节栏分隔条的同时点「保存设置」）。原来 config / fragments / logs / stats
-  // 四个 store 各抄一份一模一样的 7 行（B6 收编）。
-  //   · enqueue(task) 返回这个 task 自己的 Promise——成功 / 失败都如实转给调用方；
-  //   · 队列尾巴永远保持 resolved（失败已被吞掉），一个任务失败不会堵死后面的任务；
-  //   · idle() 等「当前排队的所有任务」跑完（之后再排进来的不在这次等待里）。
-  function createWriteQueue() {
-    let tail = Promise.resolve();
-    function enqueue(task) {
-      const run = tail.then(task, task);
-      tail = run.then(() => undefined, () => undefined);
+  // 串行写队列（两个入口共用这一份实现，A4 审计 #11 统一）：
+  //   · createKeyedWriteQueue()：按 key 分链——同一个 key 的 enqueue 严格串行，不同 key 互不排队。
+  //     书架路径锁（core/storage.js 的 withBookLock）用它；
+  //   · createWriteQueue()：全局单链，就是 key 固定为 '' 的 keyed 队列。原来 config / fragments /
+  //     logs / stats 四个 store 各抄一份一模一样的 7 行（B6 收编）。
+  // 语义（两个入口一致）：
+  //   · enqueue 返回这个 task 自己的 Promise——成功 / 失败都如实转给调用方；
+  //   · 链尾巴永远保持 resolved（失败已被吞掉），一个任务失败不会堵死后面的任务；
+  //   · idle() 等「当前排队的所有任务」跑完（之后再排进来的不在这次等待里）；idle(key) 只等一条链；
+  //   · 链 settle 后条目自动回收（Map 不再只增不删）；clearIdle() 早一步回收空闲条目，
+  //     但正在跑 / 正在排队的条目**绝不拆**——拆了后来者会和它并发，锁就白加了。
+  function createKeyedWriteQueue() {
+    const tails = new Map();
+    function enqueue(key, task) {
+      const k = key == null ? '' : String(key);
+      let entry = tails.get(k);
+      if (!entry) {
+        entry = { tail: Promise.resolve(), pending: 0 };
+        tails.set(k, entry);
+      }
+      const previous = entry.tail;
+      entry.pending += 1;
+      const run = previous.then(task, task);
+      const settled = run.then(() => undefined, () => undefined);
+      entry.tail = settled;
+      settled.then(() => {
+        entry.pending -= 1;
+        // 只有「自己仍是这条 key 的尾巴」且没人接在后面时才回收；后面已经接了任务就留给它 settle 时处理。
+        if (entry.pending === 0 && tails.get(k) === entry) tails.delete(k);
+      });
       return run;
     }
-    function idle() {
-      return tail;
+    function idle(key) {
+      if (key === undefined) {
+        return Promise.all(Array.from(tails.values(), (entry) => entry.tail)).then(() => undefined);
+      }
+      const entry = tails.get(key == null ? '' : String(key));
+      return entry ? entry.tail : Promise.resolve();
     }
-    return { enqueue, idle };
+    // 主动回收空闲条目（删书 / 换书架根目录后调用）；只删 pending === 0 的，返回删掉几条。
+    // 不传 key = 所有空闲条目；传 key = 那一条。
+    function clearIdle(key) {
+      if (key !== undefined) {
+        const k = key == null ? '' : String(key);
+        const entry = tails.get(k);
+        if (entry && entry.pending === 0) {
+          tails.delete(k);
+          return true;
+        }
+        return false;
+      }
+      let removed = 0;
+      tails.forEach((entry, k) => {
+        if (entry.pending === 0) {
+          tails.delete(k);
+          removed += 1;
+        }
+      });
+      return removed;
+    }
+    function pendingCount() {
+      return tails.size;
+    }
+    return { enqueue, idle, clearIdle, pendingCount };
+  }
+
+  function createWriteQueue() {
+    const queue = createKeyedWriteQueue();
+    return {
+      enqueue: (task) => queue.enqueue('', task),
+      idle: () => queue.idle('')
+    };
   }
 
   return {
@@ -188,6 +243,7 @@
     parseDayKey,
     isValidDayKey,
     dayKeyOf,
+    createKeyedWriteQueue,
     createWriteQueue
   };
 });

@@ -267,6 +267,70 @@ test('createWriteQueue：严格按顺序串行、失败不堵队列、enqueue �
   await pending;
 });
 
+test('createKeyedWriteQueue：同 key 串行、不同 key 并行、失败不堵、settle 后条目回收（A4）', async () => {
+  const queue = common.createKeyedWriteQueue();
+  // 不同 key：book-b 立刻能跑，不必等 book-a 的闸门打开
+  let releaseA;
+  const gateA = new Promise((resolve) => { releaseA = resolve; });
+  const a = queue.enqueue('book-a', async () => {
+    await gateA;
+  });
+  let bRan = false;
+  const b = queue.enqueue('book-b', async () => {
+    bRan = true;
+  });
+  await b;
+  assert.equal(bRan, true, '不同 key 不该互相排队');
+  releaseA();
+  await a;
+  // 同一 key：严格按调用顺序串行
+  const order = [];
+  const first = queue.enqueue('book-c', async () => {
+    order.push('c1:start');
+    await common.sleep(15);
+    order.push('c1:end');
+  });
+  const second = queue.enqueue('book-c', async () => {
+    order.push('c2:start');
+  });
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ['c1:start', 'c1:end', 'c2:start'], '同一个 key 必须串行');
+  // 失败不堵同一条链
+  await assert.rejects(
+    () =>
+      queue.enqueue('book-d', async () => {
+        throw new Error('写盘失败');
+      }),
+    /写盘失败/
+  );
+  assert.equal(await queue.enqueue('book-d', async () => 'ok'), 'ok', '一个任务失败不能堵死后面的任务');
+  // idle(key) 只等这一条链；idle() 等全部当前链
+  let done = false;
+  queue.enqueue('book-e', async () => {
+    await common.sleep(5);
+    done = true;
+  });
+  await queue.idle('book-e');
+  assert.equal(done, true, 'idle(key) 必须等到这条链跑完');
+  await queue.idle();
+  // 条目回收：settle 后 Map 清空（回收在 settle 的微任务里，等一拍让它跑完）
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  await flush();
+  assert.equal(queue.pendingCount(), 0, '链 settle 后条目必须回收');
+  // clearIdle：正在飞的条目绝不拆，settle 后照样回收
+  let releaseLive;
+  const liveGate = new Promise((resolve) => { releaseLive = resolve; });
+  const live = queue.enqueue('book-live', async () => {
+    await liveGate;
+  });
+  assert.equal(queue.clearIdle('book-live'), false, '在飞条目绝不拆');
+  assert.equal(queue.pendingCount(), 1, '在飞条目仍在 Map 里');
+  releaseLive();
+  await live;
+  await flush();
+  assert.equal(queue.pendingCount(), 0, 'settle 后必须回收');
+});
+
 test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process / window / document', () => {
   assert.equal(/require\s*\(/.test(COMMON_CODE), false, '不许 require（fs / path / electron 都不行）');
   assert.equal(/\bprocess\s*\./.test(COMMON_CODE), false, '不许碰 process');
@@ -277,6 +341,7 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
   // stripBom / normalizeText / lineStartsOf / positionOf / mapLimit / nowIso 是 B6 收编进来的）
   assert.deepEqual(Object.keys(common).sort(), [
     'clampInt',
+    'createKeyedWriteQueue',
     'createWriteQueue',
     'dayKeyOf',
     'formatCount',
@@ -312,6 +377,7 @@ test('静态闸门：仓库里不许再长出第二份 pad2 / clampInt / sleep /
     { re: /function isValidDayKey\s*\(/, what: '第二份 isValidDayKey 实现' },
     { re: /function dayKeyOf\s*\(/, what: '第二份 dayKeyOf（本地日期键格式化）实现' },
     { re: /function createWriteQueue\s*\(/, what: '第二份写队列实现' },
+    { re: /function createKeyedWriteQueue\s*\(/, what: '第二份 keyed 写队列实现' },
     { re: /padStart\(2, ['"]0['"]\)/, what: '内联补零 String(x).padStart(2, \'0\')' }
   ];
   // 千分位正则本体也钉住：抄一份实现时最先露馅的就是这串（用 String.raw 避免二次转义踩坑）
@@ -338,7 +404,7 @@ test('静态闸门：用到 pad2 / clampInt / sleep / formatCount / stripBom / n
     ).test(source);
   for (const rel of CORE_FILES) {
     const source = read(rel);
-    for (const name of ['pad2', 'clampInt', 'sleep', 'formatCount', 'stripBom', 'normalizeText', 'lineStartsOf', 'positionOf', 'mapLimit', 'nowIso', 'parseDayKey', 'isValidDayKey', 'dayKeyOf', 'createWriteQueue']) {
+    for (const name of ['pad2', 'clampInt', 'sleep', 'formatCount', 'stripBom', 'normalizeText', 'lineStartsOf', 'positionOf', 'mapLimit', 'nowIso', 'parseDayKey', 'isValidDayKey', 'dayKeyOf', 'createKeyedWriteQueue', 'createWriteQueue']) {
       if (!new RegExp(`\\b${name}\\s*\\(`).test(source)) continue;
       assert.ok(wiredFromCommon(source, name), `${rel} 用了 ${name}，但没从 core/common.js 拿`);
     }
