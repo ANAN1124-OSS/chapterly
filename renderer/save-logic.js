@@ -25,7 +25,10 @@
     const count = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
     const chars = opts.charsText == null ? '' : String(opts.charsText);
     const snapshotNote = opts.snapshotTaken ? ' · 今日快照已留' : '';
-    return `已保存：${count} 章 · 本章 ${chars}${snapshotNote}`;
+    // C0（审计 #3 / E1）：旧章字数基线读不到时，这一次的增量没进今日统计——在「已保存」旁
+    // 补一句弱提示（不拦保存、不改其它文案）。正常路径这个字段不存在，提示与以前逐字一致。
+    const baselineNote = opts.charsBaselineMissing ? ' · 本次字数未计入' : '';
+    return `已保存：${count} 章 · 本章 ${chars}${snapshotNote}${baselineNote}`;
   }
 
   // 后台全书校验的结论：只有确实缺章才需要提醒；报告不完整 / 校验失败（调用方 catch 掉）

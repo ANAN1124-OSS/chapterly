@@ -1883,7 +1883,9 @@
           saveLogic.savedToastText({
             chapterCount: state.chapters.length,
             charsText: formatChars(data.chars),
-            snapshotTaken: Boolean(data.snapshot && data.snapshot.taken)
+            snapshotTaken: Boolean(data.snapshot && data.snapshot.taken),
+            // C0（审计 #3 / E1）：字数基线读不到时主进程会带这个标记，提示「本次字数未计入」
+            charsBaselineMissing: Boolean(data.charsBaselineMissing)
           })
         );
       }

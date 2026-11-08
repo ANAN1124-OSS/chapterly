@@ -1634,8 +1634,11 @@ function registerIpc() {
         try {
           const previous = await storage.loadChapterText(bookPath, chapter.file);
           previousChars = chaptersLib.countChars(previous.text);
-        } catch {
+        } catch (err) {
           previousChars = null; // 旧文件读不到就当「不知道」，这次不计入统计
+          // C0（审计 #3 / E1）：正文马上要落盘，派生数据读不到不能挡保存；但以前这里是零日志，
+          // 「今天字数少算了」事后查不到原因。只记错误码 + 脱敏后的信息（core/logs.js 遮罩路径）。
+          logError('save-derived', err, { level: 'warn', code: 'CHARS_BASELINE_MISSING' });
         }
       }
       // 可选每日快照：在写正文之前复制「上一版」。默认关；失败只记原因，绝不阻塞保存。
@@ -1647,6 +1650,8 @@ function registerIpc() {
             now: new Date()
           });
         } catch (err) {
+          // C0（审计 #3 / E1）：快照失败只留痕 + 把原因带回结果，仍然绝不阻塞保存。
+          logError('save-derived', err, { level: 'warn', code: 'SNAPSHOT_FAILED' });
           snapshot = {
             taken: false,
             reason: 'ERROR',
@@ -1668,8 +1673,9 @@ function registerIpc() {
       // 否则搜索 / 校对拿到的是旧内容，而且这次部分成功会让后面重试少建一次索引。
       try {
         getSearchIndexStore().markDirty(bookPath);
-      } catch {
-        /* 索引不可用时忽略 */
+      } catch (err) {
+        // C0（审计 #3 / E1）：索引没标脏 → 搜索 / 校对可能一直拿旧正文；不能挡保存，但必须留痕。
+        logError('save-derived', err, { level: 'warn', code: 'INDEX_DIRTY_FAILED' });
       }
       try {
         await storage.writeBookMeta(bookPath, meta, { ensureDir: false });
@@ -1684,20 +1690,23 @@ function registerIpc() {
         );
       }
       // 每日字数统计：只记这次保存带来的正字数增量（删字不扣今天的进度）。
-      // 统计写盘失败绝不影响正文保存，只把原因带回去（界面不提示）。
+      // C0（审计 #3 / E1）：基线缺失时明确标记（界面在「已保存」旁弱提示「本次字数未计入」）；
+      // 统计写盘失败绝不影响正文保存，只记一条 warn 日志并把原因带回去。
+      const charsDelta = statsLib.saveCharsDelta(previousChars, result.chars);
       let stats = null;
-      let statsDelta = 0;
+      let statsDelta = charsDelta.delta;
       let statsError = null;
-      try {
-        if (previousChars !== null && result.chars > previousChars) statsDelta = result.chars - previousChars;
-        const recorded = await getStatsStore().record({
-          day: statsLib.localDayKey(),
-          bookId: meta.id,
-          delta: statsDelta
-        });
-        stats = statsSummaryPayload(recorded.stats, cfg);
-      } catch (err) {
-        statsError = err.message;
+      const recordedStats = await statsLib.recordSaveChars(getStatsStore(), {
+        day: statsLib.localDayKey(),
+        bookId: meta.id,
+        delta: statsDelta
+      });
+      if (recordedStats.ok) {
+        stats = statsSummaryPayload(recordedStats.recorded.stats, cfg);
+      } else {
+        const statsErr = recordedStats.error;
+        statsError = statsErr.message;
+        logError('save-derived', statsErr, { level: 'warn', code: 'STATS_RECORD_FAILED' });
       }
       // 保存也算「写作过」：书架「继续上次写作」的时间戳跟着更新（只写配置，不碰书库）
       await rememberRecentBook(bookPath, {
@@ -1711,7 +1720,16 @@ function registerIpc() {
         // C5：正文保存成功的回执时间——关窗时主进程用它和「变脏时间」比对（见 app:close-ready）
         session.lastSaveAt = Date.now();
       }
-      return { ...result, file: chapter.file, snapshot, stats, statsDelta, statsError };
+      return {
+        ...result,
+        file: chapter.file,
+        snapshot,
+        stats,
+        statsDelta,
+        statsError,
+        // C0（审计 #3 / E1）：旧章字数读不到 → 这次增量按 0 记，界面据此弱提示「本次字数未计入」
+        charsBaselineMissing: charsDelta.baselineMissing
+      };
     });
   });
 

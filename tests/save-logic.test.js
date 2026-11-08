@@ -42,6 +42,24 @@ test('保存提示：章数取书目里的章节数，坏值按 0、小数向下
   );
 });
 
+test('保存提示：字数基线缺失时在「已保存」旁补一句「本次字数未计入」，其它文案不变', () => {
+  // C0（审计 #3 / E1）：旧章字数读不到 → 这次增量按 0 记，界面给一条弱提示（不拦保存）。
+  assert.equal(
+    saveLogic.savedToastText({ chapterCount: 3, charsText: '18 字', charsBaselineMissing: true }),
+    '已保存：3 章 · 本章 18 字 · 本次字数未计入'
+  );
+  assert.equal(
+    saveLogic.savedToastText({ chapterCount: 1, charsText: '5 字', snapshotTaken: true, charsBaselineMissing: true }),
+    '已保存：1 章 · 本章 5 字 · 今日快照已留 · 本次字数未计入'
+  );
+  // 正常路径（字段不存在 / false）与以前逐字一致
+  assert.equal(
+    saveLogic.savedToastText({ chapterCount: 3, charsText: '18 字', charsBaselineMissing: false }),
+    '已保存：3 章 · 本章 18 字'
+  );
+  assert.equal(saveLogic.savedToastText({ chapterCount: 3, charsText: '18 字' }), '已保存：3 章 · 本章 18 字');
+});
+
 test('后台校验：只有真的缺章才给 warn，文案与改动前一致', () => {
   assert.equal(
     saveLogic.verifyWarnText({ chapterCount: 3, totalChars: 120, missing: ['002-夜雨.txt'] }),

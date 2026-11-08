@@ -318,6 +318,33 @@ function recordChars(rawStats, { day, bookId, delta } = {}) {
   return { stats, added: actualAdded, day: key };
 }
 
+// 保存时「今日字数增量」的口径（审计 #3 / E1）：正文已经原子落盘，旧章字数基线读不到时
+// 不能把保存改判成失败，但必须让调用方知道「这一次的字数没计入」——返回 baselineMissing
+// 供界面弱提示 + 主进程 warn 留痕。previousChars = null / 坏值 = 不知道上一版有多少字，
+// 此时 delta 一律 0（宁可少记，不虚记）。
+function saveCharsDelta(previousChars, currentChars) {
+  const currentRaw = Math.round(Number(currentChars));
+  const current = Number.isFinite(currentRaw) ? Math.max(0, currentRaw) : 0;
+  const known =
+    previousChars !== null &&
+    previousChars !== undefined &&
+    previousChars !== '' &&
+    Number.isFinite(Number(previousChars));
+  if (!known) return { baselineMissing: true, delta: 0 };
+  const previous = Math.max(0, Math.round(Number(previousChars)));
+  return { baselineMissing: false, delta: current > previous ? current - previous : 0 };
+}
+
+// 保存后记一笔每日字数（审计 #3 / E1）：统计写盘失败绝不影响正文保存——把 store 的拒绝
+// 收成 { ok:false, error } 返回，调用方只记一条 warn 日志并把原因带回界面，绝不重抛。
+async function recordSaveChars(store, payload) {
+  try {
+    return { ok: true, recorded: await store.record(payload) };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
 // 把一段写作时长（秒）累计到某一天；seconds <= 0 / 坏值不写盘。
 // 只加时长、不记任何正文或按键；单日上限 MAX_DAY_SECONDS（24 小时）。
 // 时长和字数是同一天的两种记录：这里也保留当天已有的按书字数。
@@ -477,6 +504,8 @@ module.exports = {
   dayTotal,
   daySeconds,
   recordChars,
+  saveCharsDelta,
+  recordSaveChars,
   recordDuration,
   recentDays,
   summary,
