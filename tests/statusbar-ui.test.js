@@ -166,10 +166,14 @@ test('updateCharCountText：没书 / 章节下标为负 / 元素不在 → 清�
   assert.equal(el.textContent, '');
   assert.equal(el.title, '');
   assert.equal(el.classList.contains('count-short'), false);
+  // 1.3.0 T7：中段整段收起（第 N 章 + 本章字数都不显示）
+  assert.equal(noBook.els.get('status-chapter').classList.contains('hidden'), true);
+  assert.equal(noBook.els.get('status-chapter-label').textContent, '');
 
   const negIndex = makeHost({ index: -1 });
   statusbarUi.create(negIndex.host).renderCharCount();
   assert.equal(negIndex.els.get('char-count').textContent, '');
+  assert.equal(negIndex.els.get('status-chapter').classList.contains('hidden'), true);
 });
 
 test('updateCharCountText：正常章节即时算，文案与 title 逐字', () => {
@@ -179,6 +183,9 @@ test('updateCharCountText：正常章节即时算，文案与 title 逐字', () 
   assert.equal(el.textContent, '本章 4 字');
   assert.equal(el.title, '本章字数（不含空白）；未保存的编辑也算。');
   assert.equal(el.classList.contains('count-short'), false);
+  // 1.3.0 T7（规范 C-05 / I-01）：中段「第 N 章 · 本章 X 字」——章节位置与标题栏同一口径
+  assert.equal(els.get('status-chapter-label').textContent, '第1章');
+  assert.equal(els.get('status-chapter').classList.contains('hidden'), false);
 });
 
 test('updateCharCountText：比上一章短 ≥40% → 追加软提示、加 count-short、title 换成完整说明', () => {

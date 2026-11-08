@@ -230,3 +230,46 @@ test('I-07 自绘标题栏：现有顶栏就是拖拽区、交互元素全部 no
   assert.ok(scriptOrder.indexOf('window-chrome-ui.js') > -1, 'index.html 必须加载 window-chrome-ui.js');
   assert.ok(scriptOrder.indexOf('window-chrome-ui.js') < scriptOrder.indexOf('renderer.js'), '必须排在 renderer.js 之前');
 });
+
+test('C-05 / I-01 状态栏：三段布局、成功 2s 淡到 60%、失败可点重试、成功不再弹 toast', () => {
+  // 1.3.0 T7 的决定全在「结构 + 两个数字 + 一条保存反馈」上，行为细节由 tests/save-status-ui.test.js
+  // 逐条钉住；这里只钉住以后最容易被顺手改掉的四件事。
+  const RENDERER = read('renderer/renderer.js');
+  const SAVE_STATUS = read('renderer/save-status-ui.js');
+
+  // ① 左段保存态 / 中段章节 + 本章字数 / 右段今日字数·计时，中间两个弹性空档
+  const start = HTML.indexOf('<footer class="statusbar">');
+  const statusbar = HTML.slice(start, HTML.indexOf('</footer>', start));
+  assert.match(statusbar, /id="status-save"[\s\S]*?id="status-dot"[\s\S]*?id="status-text"[\s\S]*?id="status-retry"/);
+  assert.match(statusbar, /id="status-chapter"[\s\S]*?id="status-chapter-label"[\s\S]*?id="char-count"/);
+  assert.equal((statusbar.match(/class="spacer"/g) || []).length, 2, '三段 = 两个弹性空档');
+
+  // ② 成功 2s 后淡到 60%（2000 在 JS、.6 在 CSS，同一组数字），不消失
+  assert.match(SAVE_STATUS, /const SAVED_FADE_MS = 2000;/);
+  assert.match(CSS, /\.status-save\.saved-faded \{ opacity: \.6; \}/);
+  assert.match(CSS, /\.status-save\.saved-faded:hover,[\s\S]{0,80}?opacity: 1;/, '悬停 / 聚焦要能看回 100%');
+
+  // ③ 失败态：朱红文字 + 可点的「重试」按钮（≥24px，2.5.8 的目标尺寸）
+  assert.match(CSS, /#status-save\.state-error #status-text \{ color: var\(--danger\); \}/);
+  const retryRule = ruleOf(CSS, '.status-retry');
+  assert.match(retryRule, /min-height: 24px;/);
+  assert.match(retryRule, /color: var\(--danger\);/);
+  assert.match(SAVE_STATUS, /addEventListener\('click', onClick\)/);
+  assert.match(RENDERER, /saveStatusUi\.bindRetry\(\);/);
+
+  // ④ 保存成功不再弹 toast：完整摘要改挂状态栏 title（文案仍由 save-logic 生成）
+  assert.match(RENDERER, /saveStatusUi\.setSavedDetail\(\s*\n\s*saveLogic\.savedToastText\(\{/);
+  assert.doesNotMatch(RENDERER, /toast\(\s*\n?\s*saveLogic\.savedToastText/, '成功摘要不许再走 toast');
+  assert.match(SAVE_STATUS, /textEl\.title = savedDetail;/);
+
+  // ⑤ 窄窗（960 = 最小窗口宽）中段整段让位，不缩字号
+  const narrow = mediaOf(CSS, '(max-width: 1040px)');
+  assert.match(narrow, /\.status-chapter \{ display: none; \}/);
+});
+
+test('C-05 中段：章节位置与标题栏同一口径（第N章），没书 / 没章整段收起', () => {
+  const STATUSBAR = read('renderer/statusbar-ui.js');
+  assert.match(STATUSBAR, /label\.textContent = `第\$\{state\.index \+ 1\}章`;/);
+  assert.match(STATUSBAR, /group\.classList\.add\('hidden'\)/);
+  assert.match(STATUSBAR, /group\.classList\.remove\('hidden'\)/);
+});

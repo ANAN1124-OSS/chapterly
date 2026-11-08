@@ -56,15 +56,23 @@
 
   // 本章字数 + 「比上章短」软提示（提案 4.1：章节字数对比）。
   // 当前章按编辑区实时算（未保存也算），上一章按书目缓存；只提示，不改任何东西。
+  // 1.3.0 T7（规范 C-05 / I-01）：这段同时是状态栏中段的「第 N 章 · 本章 X 字」——
+  // 章节位置只读 state.index，和标题栏同一条口径（第N章）；没书 / 没章时整段收起。
   function updateCharCountText() {
     const el = $('char-count');
     if (!el) return;
+    const group = $('status-chapter');
+    const label = $('status-chapter-label');
     if (!state.bookPath || state.index < 0) {
       el.textContent = '';
       el.classList.remove('count-short');
       el.title = '';
+      if (label) label.textContent = '';
+      if (group) group.classList.add('hidden');
       return;
     }
+    if (label) label.textContent = `第${state.index + 1}章`;
+    if (group) group.classList.remove('hidden');
     const liveChars = chaptersLib.countChars(editorEl.value);
     let text = `本章 ${formatChars(liveChars)}`;
     el.classList.remove('count-short');

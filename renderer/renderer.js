@@ -74,6 +74,9 @@
   // 状态栏 + 外部修改检测（v0.9 B-5 第七刀）：本章字数 / 选中字数 / 窗口失焦后的外部修改检测
   // 两段在 statusbar-ui.js 里；这里只接线（入口按名字被章节列表 / 写作时长 / 编辑器小件 / 测试钩子取用）。
   const statusbarUiModule = window.CWStatusbarUi;
+  // 保存态（1.3.0 T7 = 规范 C-05 / I-01）：状态栏四态渲染 / 成功 2s 淡化 / 失败点重试
+  // 在 save-status-ui.js 里；这里只接线（文案仍由 updateStatus 的调用点驱动，见下）。
+  const saveStatusUiModule = window.CWSaveStatusUi;
   // 书架正文搜索（v0.9 B-5 第八刀）：防抖调度 / 主进程查询 / 索引状态 / 打开命中在 shelf-search-ui.js 里；
   const shelfSearchUiModule = window.CWShelfSearchUi;
   // 书架搜索（v0.9 B-5 第九刀）：内存过滤 / 分组筛选 / 正文结果区渲染在 shelf-filter-ui.js 里；
@@ -1557,6 +1560,10 @@
   });
   const { chapterCharsOf, renderCharCount, renderSelectionStats } = statusbarUi;
 
+  // 保存态（1.3.0 T7）：四态文案 / 圆点 / 成功 2s 淡化 / 失败点重试整段在 save-status-ui.js 里。
+  // saveCurrent 是函数声明（会提升），装配时引用没问题；重试仍然走同一条保存路径（非静默）。
+  const saveStatusUi = saveStatusUiModule.create({ $, state, formatClock, saveCurrent });
+
   // ---------- 编辑器小件 ----------
   // 第 4 步九刀·第三刀：实现在 renderer/editor-marks-ui.js（模块头有契约），这里只装配与接线；
   const editorMarksUi = editorMarksUiModule.create({
@@ -1690,25 +1697,10 @@
   const { writeDurationEnabled, renderWriteTimer, renderDurationSettings, startWriteTimer, pauseWriteTimer, flushWriteTimer, resetWriteTimer, applyWriteTimerConfig, writeTimerTodaySeconds, writeTimerSessionSeconds, writeTimerUnsentMs, setupWriteTimerUi } = writeTimerUi;
 
   function updateStatus() {
-    const dot = $('status-dot');
-    dot.className = 'dot';
-    let text = '已保存';
-
-    if (state.saveError) {
-      dot.classList.add('error');
-      text = `保存失败：${state.saveError}`;
-    } else if (state.saving) {
-      dot.classList.add('saving');
-      text = '正在保存…';
-    } else if (state.dirty) {
-      dot.classList.add('dirty');
-      text = `未保存${state.lastEditAt ? ` · ${formatClock(new Date(state.lastEditAt))} 最后编辑` : ''}`;
-    } else {
-      dot.classList.add('ok');
-      text = state.savedAt ? `已保存 ${formatClock(state.savedAt)}` : '已保存';
-    }
-
-    $('status-text').textContent = text;
+    // 保存态四态（正在保存… / 未保存 · HH:MM 最后编辑 / 已保存 HH:MM:SS / 保存失败：原因）
+    // 与圆点、失败态重试按钮、成功 2s 淡化都在 renderer/save-status-ui.js 里；
+    // 这里不再自己拼第二套文案（1.3.0 T7 = 规范 C-05 / I-01）。
+    saveStatusUi.render();
     renderCharCount();
     $('btn-save').disabled = !state.dirty || state.saving;
     // 把未保存状态同步给主进程，供 Windows 关机拦截使用
@@ -1888,12 +1880,15 @@
       if (state.find.total === 0 || state.find.fromBookmark) {
         await restoreFindBookmarkForCurrentChapter();
       }
-      // 保存热路径（代码审计 F2）：保存一成功就先出「已保存」提示——章数直接用书目里的
-      // 章节数（保存不会增减章节，和以前 report.chapterCount 是同一个值），不再为了拿这个
-      // 数字去等一趟全书校验（读书目 + 每章 stat，千章书每次 Ctrl+S 都在付这份成本）。
+      // 保存热路径（代码审计 F2）：保存一成功就先刷新状态栏——章数直接用书目里的章节数
+      // （保存不会增减章节，和以前 report.chapterCount 是同一个值），不再为了拿这个数字去等
+      // 一趟全书校验（千章书每次 Ctrl+S 都在付这份成本）。
+      // 1.3.0 T7（规范 C-05 / I-01）：保存成功**不再弹 toast**，反馈收敛到状态栏；
+      // 原来 toast 里的完整摘要（章数 / 本章字数 / 快照 / 字数未计入）逐字保留，
+      // 改挂到状态栏的 title 上（鼠标悬停可查），不再打断纸面。
       // 不采纳审计里「chars 没变就跳过 writeBookMeta」那条：那会冻结书目 updatedAt。
       if (!silent) {
-        toast(
+        saveStatusUi.setSavedDetail(
           saveLogic.savedToastText({
             chapterCount: state.chapters.length,
             charsText: formatChars(data.chars),
@@ -3327,6 +3322,9 @@
     $('btn-new-volume').addEventListener('click', () => createVolumeFlow());
     $('btn-insert').addEventListener('click', () => createChapterAt(state.index + 1));
     $('btn-save').addEventListener('click', () => saveCurrent());
+    // 状态栏保存失败态：点「重试」或点朱红文案 = 再走一次 saveCurrent()（1.3.0 T7）。
+    // 只挂一次；仍是非静默保存，再次失败照旧有错误 toast。
+    saveStatusUi.bindRetry();
     findUi.setupFindUi();
     focusModeUi.setupFocusModeUi();
     readingUi.setupReadingUi();

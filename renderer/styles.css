@@ -1704,8 +1704,47 @@ body.theme-night .long-para-bar { background: var(--warn);
   font-size: 11px;
   color: var(--ink-faint);
 }
-/* 状态栏信息层级（v0.8.5 R2）：左边「保存状态」，右边依次是计时 / 统计 / 小标签 / 本章字数 / 快捷键。
- * 只用细竖线分组、字重与透明度分主次；状态文案、数字与按钮的语义全部没变。 */
+/* 状态栏左段：保存态（1.3.0 T7 = 规范 C-05 / I-01）——四态文案 + 4 色圆点沿用 1.2.0，
+ * 只加两件：成功 2s 后整段淡到 60%（不消失；悬停 / 键盘聚焦回到 100%，不牺牲可读性）；
+ * 失败态文案改朱红、旁边出「重试」（24px 高，够点）。 */
+.status-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  transition: opacity var(--motion-overlay) ease;
+}
+.status-save.saved-faded { opacity: .6; }
+.status-save.saved-faded:hover,
+.status-save.saved-faded:focus-within { opacity: 1; }
+#status-save.state-error #status-text { color: var(--danger); }
+.status-retry {
+  height: 24px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--danger);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--danger);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.status-retry:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+/* 状态栏中段（1.3.0 T7）：第 N 章 · 本章 X 字。窄窗（≤1040px）整段让位，
+ * 保存态与今日字数 / 写作计时优先；#char-count 自己保留那条细竖线与内边距。 */
+.status-chapter {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  white-space: nowrap;
+}
+#status-chapter-label { font-variant-numeric: tabular-nums; }
+/* 状态栏信息层级（v0.8.5 R2；1.3.0 T7 起三段）：左边「保存状态」，中间「第 N 章 · 本章字数」，
+ * 右边依次是计时 / 统计 / 小标签 / 快捷键。只用细竖线分组、字重与透明度分主次；
+ * 状态文案、数字与按钮的语义全部没变。 */
 #status-text { font-weight: 400; 
   color: var(--ink-soft);}
 #char-count {
@@ -3601,6 +3640,9 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   letter-spacing: .02em;
   display: none;}
   .statusbar { padding: 0 22px; }
+  /* 1.3.0 T7：960（最小窗口宽）时状态栏只剩「保存态 + 今日字数 / 计时」，
+   * 中段「第 N 章 · 本章字数」整段让位；不缩字号、不改颜色、不做横向滚动。 */
+  .status-chapter { display: none; }
   .status-hints { padding-left: 12px; gap: 4px; }
 }
 
