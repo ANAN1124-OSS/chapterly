@@ -60,6 +60,14 @@ function makeEl(tag = 'div', id = '') {
     set className(v) { classes.clear(); String(v || '').split(/\s+/).filter(Boolean).forEach((x) => classes.add(x)); },
     append(...n) { n.forEach((x) => el.appendChild(x)); },
     appendChild(child) { child.parentNode = el; el.children.push(child); return child; },
+    removeChild(child) {
+      const at = el.children.indexOf(child);
+      if (at >= 0) el.children.splice(at, 1);
+      child.parentNode = null;
+      return child;
+    },
+    // 正文宽度历史值 option 的回填清理用（1.3.0 T-06）：真实 DOM 的原生 remove()
+    remove() { if (el.parentNode) el.parentNode.removeChild(el); },
     addEventListener(type, fn) { listeners.push({ type, fn }); },
     setAttribute(k, v) { el._attrs[k] = v; },
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(el._attrs, k) ? el._attrs[k] : null; },
@@ -290,6 +298,78 @@ test('setSelectValue：值合法就写；不在选项里时回到 fallback', () 
   ctx.dom.map.get('settings-font').value = '怪值';
   ctx.ui.setSelectValue('settings-font', 'serif', 'serif');
   assert.equal(ctx.dom.map.get('settings-font').value, 'serif');
+});
+
+// 正文宽度档位（1.3.0 T3 / 规范 T-06）：设置项改成 通栏 / 720 / 800 / 840（840 ≈ 39.6 字，
+// 落回 clreq 推荐 17–40 字）；900 / 1000 从界面下线，但历史配置照常加载 —— 打开设置要显示原值、
+// 不静默改写、也不丢值（config 的 clamp 仍是 600–1600）。
+test('正文宽度档位（T-06）：通栏 / 720 / 800 / 840；历史 900 / 1000 用 hidden 动态 option 原样显示、不改写', async () => {
+  const widthOf = (ctx) => ctx.dom.map.get('settings-page-width');
+  const legacyOf = (ctx) => widthOf(ctx).querySelectorAll('[data-page-width-history]');
+
+  // 1) 新档位：值就在选项里，不挂动态 option
+  for (const width of [0, 720, 800, 840]) {
+    const ctx = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库', editorPageWidth: width } });
+    await ctx.ui.openSettings();
+    assert.equal(widthOf(ctx).value, String(width), '新档位 ' + width + ' 正常回填');
+    assert.equal(legacyOf(ctx).length, 0, '新档位不挂历史 option');
+    ctx.ui.closeSettings();
+  }
+
+  // 2) 历史值 900 / 1000：select 显示原值 + 一个 hidden 动态 option（不静默改成 840 / 0）
+  for (const width of [900, 1000]) {
+    const ctx = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库', editorPageWidth: width } });
+    await ctx.ui.openSettings();
+    assert.equal(widthOf(ctx).value, String(width), '历史配置照常显示原值 ' + width);
+    const legacy = legacyOf(ctx);
+    assert.equal(legacy.length, 1, '历史值挂一个动态 option');
+    assert.equal(legacy[0].value, String(width));
+    assert.equal(legacy[0].hidden, true, '历史 option 隐藏：关闭态显示值，下拉列表里不再提供');
+    assert.match(legacy[0].textContent, new RegExp('^' + width + ' px · 历史值'));
+    // 只打开 / 取消不写盘：值没有被静默改写（保存读的是表单里选中的值，旧值保存回去还是旧值）
+    ctx.ui.closeSettings();
+    assert.deepEqual(ctx.calls.setConfig, [], '取消不写盘');
+  }
+
+  // 3) clamp 允许但不在档位里的值（600–1600 内，例如 650）同样原样保留
+  const custom = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库', editorPageWidth: 650 } });
+  await custom.ui.openSettings();
+  assert.equal(widthOf(custom).value, '650');
+  assert.equal(legacyOf(custom).length, 1);
+
+  // 4) 同一 select 反复回填：历史 option 先清掉再挂，不堆积；切到新档位后不残留
+  await custom.ui.openSettings();
+  assert.equal(legacyOf(custom).length, 1, '重新打开不堆积历史 option');
+  custom.state.config = { booksRoot: '/书库', editorPageWidth: 800 };
+  custom.state.globalConfig = custom.state.config;
+  await custom.ui.openSettings();
+  assert.equal(widthOf(custom).value, '800');
+  assert.equal(legacyOf(custom).length, 0, '切到新档位后历史 option 被清掉');
+
+  // 5) 坏值 / 缺字段按通栏（配置层已经夹过，这里兜底一层）
+  const broken = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库', editorPageWidth: 'x' } });
+  await broken.ui.openSettings();
+  assert.equal(widthOf(broken).value, '0');
+  assert.equal(legacyOf(broken).length, 0);
+});
+
+test('静态闸门（T-06）：index.html 的正文宽度只剩 4 档，模块的档位表与它一致，表单读的是 select 的值', () => {
+  // index.html 的 #settings-page-width 块：选项正好 通栏 / 720 / 800 / 840，900 / 1000 一个都不剩
+  const at = indexSrc.indexOf('id="settings-page-width"');
+  assert.notEqual(at, -1);
+  const block = indexSrc.slice(at, indexSrc.indexOf('</select>', at));
+  const values = [...block.matchAll(/<option value="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(values, ['0', '720', '800', '840'], '正文宽度档位 = 通栏 / 720 / 800 / 840');
+  assert.equal(block.includes('900'), false, '900 已从界面下线');
+  assert.equal(block.includes('1000'), false, '1000 已从界面下线');
+  // 模块里的档位表与 index.html 同源（两处漂移就红）
+  assert.match(moduleSrc, /const PAGE_WIDTH_CHOICES = \[0, 720, 800, 840\];/);
+  // 保存 / 预览读的就是 select 里选中的值：历史值不会被静默改写
+  assert.match(rendererSrc, /editorPageWidth: Number\(\$\('settings-page-width'\)\.value\),/);
+  // config 的 clamp 保留 600–1600（历史 900 / 1000 照常加载）
+  const configSrc = fs.readFileSync(path.join(ROOT, 'core', 'config.js'), 'utf8');
+  assert.equal(configSrc.split('clampRoundedInt(width, 600, 1600, DEFAULTS.editorPageWidth)').length - 1, 1);
+  assert.equal(configSrc.split('clampRoundedInt(pageWidth, 600, 1600, DEFAULTS.editorPageWidth)').length - 1, 1);
 });
 
 test('renderSettingsCaretColors：色板 data-active / aria-pressed / --swatch，取色器空值退回预设色', () => {

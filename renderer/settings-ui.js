@@ -105,6 +105,34 @@
     if (el.value !== wanted) el.value = String(fallback); // 值不在选项里时回到默认
   }
 
+  // 正文宽度档位（1.3.0 T-06 / 规范 T-06）：通栏 / 720 / 800 / 840。
+  // 840 ≈ 39.6 字，落回 clreq 推荐的 17–40 字；界面不再提供 900 / 1000（会到 43–48 字）。
+  // 但**历史配置里可能还存着** 900 / 1000 这类值（config 的 clamp 仍是 600–1600，照常加载）：
+  // 这类值用一个 hidden 的动态 option 原样显示 —— 不静默改成 840、也不把值丢掉；
+  // 保存时读的就是表单里选中的值，所以旧值保存回去还是旧值。
+  const PAGE_WIDTH_CHOICES = [0, 720, 800, 840];
+
+  function setPageWidthValue(value) {
+    const el = $('settings-page-width');
+    if (!el) return;
+    const width = Number(value);
+    const wanted = Number.isFinite(width) && width > 0 ? String(Math.round(width)) : '0';
+    // 上一次回填留下的历史值 option 先清掉（同一弹层换书 / 换配置反复回填时不堆积）
+    for (const stale of Array.from(el.querySelectorAll('[data-page-width-history]'))) {
+      if (stale && typeof stale.remove === 'function') stale.remove();
+    }
+    if (!PAGE_WIDTH_CHOICES.includes(Number(wanted))) {
+      const option = document.createElement('option');
+      option.value = wanted;
+      option.textContent = `${wanted} px · 历史值（保留原值）`;
+      option.hidden = true;
+      option.dataset.pageWidthHistory = '1';
+      el.appendChild(option);
+    }
+    el.value = wanted;
+    if (el.value !== wanted) el.value = '0'; // 兜底：连动态 option 都加不上时按通栏，不留空白
+  }
+
   function settingsScopeForView() {
     return state.view === 'editor' && state.bookId ? 'book' : 'global';
   }
@@ -185,7 +213,8 @@
     setSelectValue('settings-line-height', cfg.editorLineHeight, 1.95);
     setSelectValue('settings-letter-spacing', cfg.editorLetterSpacing, 0.02);
     setSelectValue('settings-padding-x', cfg.editorPaddingX, 56);
-    setSelectValue('settings-page-width', cfg.editorPageWidth, 0);
+    // 正文宽度（1.3.0 T-06）：通栏 / 720 / 800 / 840 四档；历史值 900 / 1000 用 hidden 动态 option 原样显示
+    setPageWidthValue(cfg.editorPageWidth);
     // 中西文自动间距（1.3.0 T-08）：默认开，只有明确存过 false 的才是关（旧配置没有这个键 = 勾上）
     $('settings-text-autospace').checked = cfg.editorTextAutospace !== false;
     setSelectValue('settings-paper', cfg.editorPaper, 'paper');
