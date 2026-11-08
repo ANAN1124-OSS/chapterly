@@ -3958,6 +3958,9 @@
     });
     // 菜单键盘（v0.9 A-5c）：右键 / 顶栏菜单打开时焦点进第一条、方向键走、Esc 收起并还给打开它的元素
     if (window.CWMenuKeyboard) window.CWMenuKeyboard.install();
+    // 自绘标题栏（1.3.0 T6 / 规范 I-07）：窗口失焦时纸色 -2% / 朱红降灰（只挂一个 body class，
+    // 不写配置、不碰正文；系统按钮区的配色在主进程按同一套主题表刷）
+    if (window.CWWindowChromeUi) window.CWWindowChromeUi.createWindowChromeUi().install();
     // 分卷标题行（v0.9 A-5c）：Tab 可达 + Enter / 空格折叠展开，列表重建后焦点回到同一卷
     listKeyboard.installVolumeHeaders({ container: $('chapter-list') });
     try {

@@ -105,6 +105,13 @@
   --folio-accent-tint: rgba(141, 58, 42, .07);
   --folio-warn-tint: rgba(125, 90, 28, .09);
   --folio-radius: 2px;
+  /* 自绘标题栏（1.3.0 T6 / 规范 I-07）：右上角系统按钮区（Windows 画的最小化 / 最大化 / 关闭）
+   * 占多宽、多高。titleBarOverlay 打开时 Chromium 提供 env(titlebar-area-*)；没有这个能力的环境
+   * （老内核 / 没开 overlay）里 env() 走回落值，算出来正好 0 —— 布局与以前一模一样。
+   * 顶栏 / 阅读页顶栏 / 专注条都用它让位，别写死 138px（125% / 150% 缩放下按钮区会变宽）。 */
+  --titlebar-inset-right: max(0px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)));
+  /* 拖拽区高度（= 主进程 titleBarOverlay.height = 40，见 core/window-chrome.js 的 TITLEBAR_HEIGHT）。 */
+  --titlebar-height: 40px;
 }
 
 /* 背景主题：只换纸色/纹理（书架、章节栏、正文一起变），正文墨色默认不动 */
@@ -272,6 +279,76 @@ body.theme-night {
 
 * { box-sizing: border-box; }
 
+/* ---------- 自绘标题栏（1.3.0 T6 / 规范 I-07）----------
+ * 窗口在 main.js 里用 titleBarStyle:'hidden' + titleBarOverlay：原生标题栏没了，系统的最小化 /
+ * 最大化 / 关闭仍由 Windows 画在网页内容右上角（Snap Layouts / Win+方向键 / 双击最大化都还是系统的）。
+ * 网页这边只做三件事，不新增横栏、不重排内容：
+ *   1) 把现有顶栏（书架 .topbar 62px / 写作页 .editor-header 58px / 阅读页 .reading-header /
+ *      专注模式 .focus-bar）声明成拖拽区 -webkit-app-region: drag，里面的按钮 / 输入框 / 下拉
+ *      一律 no-drag（否则点不动）；
+ *   2) 右上角给系统按钮让位：padding-right / right 加上 --titlebar-inset-right（env(titlebar-area-*)）；
+ *   3) 顶栏底色改成 --paper（与窗口边缘同色），系统按钮区才不会有色块（原来是 --folio-sheet）。
+ * 配色（系统按钮区的底色 / 字形色）由主进程按同一套主题表刷，见 core/window-chrome.js。
+ * 拖拽区只在现有顶栏上：书架 / 写作页 / 阅读页的顶栏、专注模式的退出条、专注模式下正文上方的
+ * 58px 留白。弹层（.backdrop）盖住顶栏时窗口拖不动——原生标题栏时代弹层也盖不住标题栏，
+ * 这里按「不新增 DOM」取舍，Alt+Space 仍可移动 / 改大小。
+ */
+.topbar,
+.editor-header,
+.reading-header,
+.focus-bar { -webkit-app-region: drag; }
+
+/* 交互元素一律退出拖拽区（drag 区里的鼠标事件会被拿去拖窗口，按钮就点不动了） */
+.topbar .topbar-actions,
+.topbar .shelf-search,
+.topbar button,
+.topbar input,
+.topbar select,
+.editor-header .editor-actions,
+.editor-header .dropdown,
+.editor-header .btn,
+.editor-header #btn-save,
+.reading-header .btn,
+.reading-header .reading-field,
+.reading-header select,
+.reading-header input,
+.focus-bar .focus-btn { -webkit-app-region: no-drag; }
+
+/* 专注模式：顶栏 / 左栏都藏起来了，正文上方那 58px 留白就是拖拽区（退出条浮在上面，按钮 no-drag） */
+#editor-view.focus-mode .editor-main::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-height);
+  z-index: 1;
+  -webkit-app-region: drag;
+}
+
+/* 非激活降级（规范 I-07）：窗口失焦时朱红降灰 —— 换成同明度、低饱和的一档（浅色纸 5 套共用一个值，
+ * 夜间单独一份）。只由 renderer/window-chrome-ui.js 挂 body.window-inactive，纯显示层。
+ * 实测（tests/window-chrome.test.js + scripts/contrast.js）：失焦态在 6 套主题上仍过 AA 4.5:1。 */
+body.window-inactive {
+  --accent: #774940;
+  --accent-soft: #a86e5e;
+}
+body.theme-night.window-inactive {
+  --accent: #b8897b;
+  --accent-soft: #986452;
+}
+/* 纸色 -2%：整窗压一层 2% 黑（= 每个颜色通道 ×0.98，和主进程给系统按钮区算的失焦纸色同一个数）。
+ * 压在 #app 上而不是改 body 背景：书卡 / 菜单 / 弹层也要一起暗，只有一层纸暗下来会花。
+ * z-index 400 高于 #modal-backdrop(300)；pointer-events:none，不挡任何点击。 */
+body.window-inactive #app::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 400;
+  pointer-events: none;
+  background: rgba(0, 0, 0, .02);
+}
+
 html, body {
   height: 100%;
   margin: 0;
@@ -311,6 +388,8 @@ html, body {
   align-items: center;
   justify-content: space-between;
   padding: 0 26px;
+  /* 自绘标题栏（1.3.0 T6）：右上角给系统按钮让位（没有 titleBarOverlay 时 inset = 0，还是 26px） */
+  padding-right: calc(26px + var(--titlebar-inset-right, 0px));
   border-bottom: 1px solid var(--line);
   background: var(--paper);
 }
@@ -1191,8 +1270,11 @@ body.theme-night .chapter-item.active .chapter-status-dot {
   row-gap: 6px;
   justify-content: space-between;
   padding: 8px 20px;
+  /* 自绘标题栏（1.3.0 T6）：给右上角系统按钮让位；底色与窗口边缘同色（--paper），
+   * 否则系统按钮区（主进程按 --paper 画）会和原来的 --folio-sheet 差一档、右上角出现色块。 */
+  padding-right: calc(20px + var(--titlebar-inset-right, 0px));
   border-bottom: 1px solid var(--line);
-  background: var(--folio-sheet);
+  background: var(--paper);
 }
 .chapter-title {
   /* 标题让位给按钮：flex-basis 0 让它在同一行里只吃剩下的宽度（超长就省略号），
@@ -1533,7 +1615,8 @@ body.theme-night .long-para-bar { background: var(--warn);
 .focus-bar {
   position: absolute;
   top: 10px;
-  right: 18px;
+  /* 自绘标题栏（1.3.0 T6）：右上角是系统按钮区，退出条整体往左让开，别被盖住 */
+  right: calc(18px + var(--titlebar-inset-right, 0px));
   z-index: 21;
   display: flex;
   align-items: center;
@@ -3334,7 +3417,9 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   align-items: center;
   gap: 8px 18px;
   padding: 9px 22px;
-  background: var(--folio-sheet);
+  /* 自绘标题栏（1.3.0 T6）：同上，让位 + 与窗口边缘同色 */
+  padding-right: calc(22px + var(--titlebar-inset-right, 0px));
+  background: var(--paper);
   border-bottom: 1px solid var(--line);
 }
 .reading-head-left,
@@ -3479,13 +3564,19 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   .editor-actions { grid-area: actions; margin-left: 0; justify-content: flex-end; }
   #btn-save { grid-area: save; justify-self: end; }
 }
-@media (max-width: 1200px) {
-  .editor-header { padding: 8px 14px; column-gap: 16px; }
-  .editor-actions { gap: 4px; }
+@media (max-width: 1320px) {
+  /* 自绘标题栏（1.3.0 T6）：窗口右上角 138px 要让给系统按钮，写作页顶栏的可用宽度少了这一条。
+   * 1294（作者窗口）实测：不压缩时顶栏会折成两行（保存按钮掉到第二行）。这里把 ≤1200 档原有的
+   * 「顶栏压缩」提前到 ≤1320——按钮 52 → 44px（仍 ≥40）、分组间距 6 → 4px，一行就能放下
+   * 标题 + 12 个按钮 + 保存，标题还剩 100px 左右。不新增 / 不删除任何按钮，分组与顺序不动。 */
+  .editor-header { padding: 8px 14px; padding-right: calc(14px + var(--titlebar-inset-right, 0px)); column-gap: 16px; }
+  .editor-actions { gap: 4px; min-width: 0; }
   .action-group { gap: 1px; }
   .action-group + .action-group::before { margin: 0 7px; }
   .editor-header .btn { padding: 5px 9px; font-size: 12.5px; }
-  .topbar { padding: 0 28px; }
+}
+@media (max-width: 1200px) {
+  .topbar { padding: 0 28px; padding-right: calc(28px + var(--titlebar-inset-right, 0px)); }
   .shelf-search { width: 220px; }
   #books-root-label { max-width: 170px; }
 }
@@ -3493,7 +3584,7 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   /* v1.0 M3 第二刀（多分辨率抽查）：≤1220 起顶栏是两行网格，这里若只留 0 上下内边距，
    * 第一行「标题 + 保存」会贴着窗口上沿（960 实测保存按钮 top=0）、2px 焦点环被窗口边裁掉，
    * 最后一行工具按钮离底部分隔线也只剩 1px。改回与 1100 档一致的 8px 上下内边距。 */
-  .editor-header { padding: 8px 26px; row-gap: 4px; }
+  .editor-header { padding: 8px 26px; padding-right: calc(26px + var(--titlebar-inset-right, 0px)); row-gap: 4px; }
   .chapter-title { max-width: none; 
   letter-spacing: .03em;
   color: var(--ink);}
@@ -3695,7 +3786,7 @@ progress {
 /* ---------- v1.0 窄窗口适配 ---------- */
 @media (max-width: 1180px) {
   .book-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .topbar { padding: 0 28px; }
+  .topbar { padding: 0 28px; padding-right: calc(28px + var(--titlebar-inset-right, 0px)); }
   .shelf-head, .shelf-footer { padding-left: 28px; padding-right: 28px; }
   .shelf-search { width: 240px; }
 }

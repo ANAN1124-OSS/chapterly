@@ -63,6 +63,8 @@ const findLib = require('./core/find');
 const proofreadLib = require('./core/proofread');
 const jumpLib = require('./core/jump');
 const textMenu = require('./core/textmenu');
+// 自绘标题栏（1.3.0 T6 / 规范 I-07）：6 套主题的窗口控件色 + 标题栏右键菜单模板（纯数据 / 纯函数）
+const windowChrome = require('./core/window-chrome');
 const statsLib = require('./core/stats');
 const epubLib = require('./core/epub');
 const docxLib = require('./core/docx');
@@ -331,7 +333,10 @@ function createSession(browserWin) {
     closeTimer: null,
     forceClose: false,
     boundsTimer: null,
-    e2eCloseReady: undefined
+    e2eCloseReady: undefined,
+    // 这个窗口当前打开的是哪本书（book:get-display / book:set-display 带过来的书 id）。
+    // 只用于算「窗口控件色该跟哪套纸色走」——这本书设过按书覆盖就用它，否则用全局主题。
+    bookId: ''
   };
   windowSessions.set(session.id, session);
   webContentsSessions.set(browserWin.webContents.id, session);
@@ -791,7 +796,65 @@ function decorateConfig(raw) {
 // 配置缓存的唯一写入口：配置仓库写完之后要更新内存里的 config，一律走这里（装饰层不会被绕过）。
 function applyConfig(raw) {
   config = decorateConfig(raw);
+  // 换主题 / 改按书覆盖后，各窗口标题栏（系统按钮区）的底色与字形色跟着重刷一次
+  applyWindowChromeAll();
   return config;
+}
+
+// ---------- 自绘标题栏（1.3.0 T6 / 规范 I-07） ----------
+// 窗口控件区（Windows 画的最小化 / 最大化 / 关闭）底色 + 字形色：跟着「这个窗口当前生效的纸色」走。
+// 生效纸色 = 这本书的 bookDisplay 覆盖（设过才用）?? 全局 config.editorPaper。
+// 书 id 由渲染层在 book:get-display / book:set-display 里带过来（不新增 IPC 通道），
+// 回书架（window:release-book）时清掉，于是书架页跟全局主题走。
+function effectivePaperTheme(session) {
+  const cfg = config || {};
+  const bookId = session && session.bookId;
+  if (bookId && cfg.bookDisplay && typeof cfg.bookDisplay === 'object') {
+    const entry = cfg.bookDisplay[bookId];
+    if (entry && typeof entry.editorPaper === 'string' && windowChrome.THEMES[entry.editorPaper]) {
+      return entry.editorPaper;
+    }
+  }
+  return windowChrome.themeNameOf(cfg.editorPaper);
+}
+
+// 把标题栏配色刷到一个窗口上（失焦态按 win.isFocused() 选）。
+// 旧系统 / 没有 titleBarOverlay 的环境里 setTitleBarOverlay 不存在就静默跳过——窗口外观退回系统默认，
+// 不影响任何功能（拖拽区 / 右键菜单仍是网页里的 CSS + 菜单，照常）。
+function applyWindowChrome(session) {
+  const win = session && session.win;
+  if (!win || win.isDestroyed() || typeof win.setTitleBarOverlay !== 'function') return false;
+  try {
+    win.setTitleBarOverlay(windowChrome.overlayFor(effectivePaperTheme(session), { inactive: !win.isFocused() }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function applyWindowChromeAll() {
+  for (const session of windowSessions.values()) applyWindowChrome(session);
+}
+
+// 标题栏右键菜单（还原 / 最小化 / 最大化 / 关闭）。「移动 / 大小」仍用 Windows 自带的 Alt+Space
+// 系统菜单——这两个动作要走系统模态循环，Electron 没有暴露。
+function titleBarMenuTemplate(win) {
+  const alive = () => win && !win.isDestroyed();
+  return windowChrome.menuTemplate({
+    maximized: Boolean(alive() && win.isMaximized()),
+    restore: () => {
+      if (alive()) win.unmaximize();
+    },
+    minimize: () => {
+      if (alive()) win.minimize();
+    },
+    maximize: () => {
+      if (alive()) win.maximize();
+    },
+    close: () => {
+      if (alive()) win.close();
+    }
+  });
 }
 
 async function getConfig() {
@@ -1043,7 +1106,11 @@ function registerIpc() {
   handle('window:release-book', async () => {
     const session = flowSession();
     if (!session) return { released: false };
-    return { released: storage.releaseOpenBook(session.id) };
+    const released = storage.releaseOpenBook(session.id);
+    // 自绘标题栏（1.3.0 T6）：回书架 = 没有书了，标题栏配色回到全局主题
+    session.bookId = '';
+    applyWindowChrome(session);
+    return { released };
   });
   // 书卡右键「在新窗口打开」：同书已开在别窗口就聚焦那个窗口、绝不开第二个
   handle('window:open-book', async (bookPath) => {
@@ -1338,6 +1405,13 @@ function registerIpc() {
   // 每本书的显示设置覆盖（写作页里改的字体/背景/间距/章节栏宽度只影响这本书）
   handle('book:get-display', async (bookId) => {
     await getConfig();
+    // 自绘标题栏（1.3.0 T6）：记下这个窗口开的是哪本书 —— 标题栏配色要跟这本书生效的纸色走
+    // （这本书设过按书覆盖就用它）。书 id 就从渲染层本来就会调的这两个频道里拿，不新增 IPC。
+    const session = flowSession();
+    if (session) {
+      session.bookId = String(bookId == null ? '' : bookId).trim();
+      applyWindowChrome(session);
+    }
     return configStore.getBookDisplay(bookId);
   });
 
@@ -1347,6 +1421,8 @@ function registerIpc() {
     // 这个窗口刚在字体对话框里选中的」路径；来源不明的路径忽略（保留原值），其它显示项照旧透传。
     const session = flowSession();
     const key = String(bookId == null ? '' : bookId).trim();
+    // 自绘标题栏（1.3.0 T6）：按书改的主题也要立刻反映到系统按钮区（applyConfig 里统一重刷）
+    if (session) session.bookId = key;
     const currentEntry = key && config.bookDisplay ? config.bookDisplay[key] || {} : {};
     const gated = configGate.filterBookDisplayPatch(patch || {}, {
       current: currentEntry,
@@ -1361,6 +1437,8 @@ function registerIpc() {
 
   handle('book:reset-display', async (bookId) => {
     await getConfig();
+    const session = flowSession();
+    if (session) session.bookId = String(bookId == null ? '' : bookId).trim();
     await configStore.resetBookDisplay(bookId);
     applyConfig(await configStore.get());
     return true;
@@ -2664,14 +2742,21 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
     }
   }
 
+  const themeName = windowChrome.themeNameOf(cfg.editorPaper);
   const browserWin = new BrowserWindow({
     ...(bounds || { width: 1200, height: 760 }),
     minWidth: 960,
     minHeight: 620,
     title: '章回',
-    backgroundColor: '#f6f4ef',
+    backgroundColor: windowChrome.backgroundFor(themeName),
     show: false,
     autoHideMenuBar: true,
+    // 自绘标题栏（1.3.0 T6 / 规范 I-07）：隐藏原生标题栏，但系统的最小化 / 最大化 / 关闭仍由
+    // Windows 画（titleBarOverlay）——Snap Layouts、Win+方向键、双击最大化都还是系统的。
+    // 网页内容铺到窗口最上面，拖拽区 / 让位规则在 renderer/styles.css 里（env(titlebar-area-*)）；
+    // 配色跟 6 套纸色走（core/window-chrome.js，失焦时纸色 -2% / 字形淡一档）。不引入 Mica / 亚克力。
+    titleBarStyle: 'hidden',
+    titleBarOverlay: windowChrome.overlayFor(themeName),
     // 安全开关（sandbox / contextIsolation / webSecurity / nodeIntegration…）的唯一来源：
     // core/security-policy.js。这里不另写一份，避免以后两边改歪。
     webPreferences: securityPolicy.windowPreferences(path.join(__dirname, 'preload.js'))
@@ -2703,8 +2788,15 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
   // 能填文字的地方（正文 / 章节名 / 书名 / 搜索框 / 查找替换输入框）右键出中文菜单：剪切 / 复制 / 粘贴 / 全选
   // 章节列表、书架卡片有自带的 HTML 右键菜单，这里只认 isEditable，不会冲突
   browserWin.webContents.on('context-menu', (_event, params) => {
-    if (!textMenu.shouldShow(params) || browserWin.isDestroyed()) return;
-    Menu.buildFromTemplate(textMenu.buildTemplate(params)).popup({ window: browserWin });
+    if (browserWin.isDestroyed()) return;
+    if (textMenu.shouldShow(params)) {
+      Menu.buildFromTemplate(textMenu.buildTemplate(params)).popup({ window: browserWin });
+      return;
+    }
+    // 自绘标题栏（1.3.0 T6）：拖拽区右键 = 窗口菜单（还原 / 最小化 / 最大化 / 关闭），
+    // 和原生标题栏的系统菜单对得上；输入框 / 选中文字仍然优先走上面的文字菜单。
+    if (!windowChrome.isTitleBarHit(params)) return;
+    Menu.buildFromTemplate(titleBarMenuTemplate(browserWin)).popup({ window: browserWin });
   });
   browserWin.webContents.on('before-input-event', (_event, input) => {
     // C6（审计 S6）：打包后的正式版不再绑定 Ctrl+Shift+I（DevTools 关闭）；开发 / E2E 照旧。
@@ -2735,7 +2827,12 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
     } catch {
       /* 忽略 */
     }
+    // 自绘标题栏（1.3.0 T6）：回焦时系统按钮区回到正常纸色 / 字形
+    applyWindowChrome(session);
   });
+  // 失焦降级（规范 I-07）：纸色 -2%、朱红降灰（网页侧在 styles.css 的 body.window-inactive 里），
+  // 系统按钮区跟着换成暗一档的纸色 + 淡一档的字形色。
+  browserWin.on('blur', () => applyWindowChrome(session));
   setupCloseFlow(session);
 
   // 渲染进程崩溃 / 窗口无响应也记一条（主进程的 uncaughtException 抓不到渲染层崩溃）

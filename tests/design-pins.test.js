@@ -186,3 +186,47 @@ test('I-06 空状态三件套：书架 / 章节栏 / 剪贴板 / 查找四处都
     assert.doesNotMatch(source, /new Image\(/);
   }
 });
+
+test('I-07 自绘标题栏：现有顶栏就是拖拽区、交互元素全部 no-drag、右上角按 env(titlebar-area-*) 让位', () => {
+  // 1.3.0 T6 的验收方式是「真窗口里拖 / 双击 / Snap」，这些在 E2E 里量不了（要真实鼠标），
+  // 所以这里按源码钉住三条决定：①拖拽区铺在现有顶栏上、不新增横栏；②按钮 / 输入框 / 下拉
+  // 一律 no-drag（否则点不动）；③系统按钮区靠 env(titlebar-area-*) 让位，不写死像素。
+  const MAIN = read('main.js');
+  const RENDERER = read('renderer/renderer.js');
+
+  // ① 拖拽区 = 现有顶栏（书架 / 写作页 / 阅读页 / 专注条），没有新增一条「标题栏」横栏
+  assert.match(CSS, /\.topbar,\s*\n\.editor-header,\s*\n\.reading-header,\s*\n\.focus-bar \{ -webkit-app-region: drag; \}/);
+  assert.match(CSS, /#editor-view\.focus-mode \.editor-main::before \{[\s\S]*?-webkit-app-region: drag;/, '专注模式顶栏藏起来了，正文上方的留白要能拖');
+  // ② 交互元素退出拖拽区
+  for (const selector of ['.topbar button', '.topbar input', '.topbar .topbar-actions', '.editor-header .btn', '.editor-header #btn-save', '.reading-header .btn', '.focus-bar .focus-btn']) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(CSS, new RegExp(`${escaped}[\\s\\S]{0,400}?-webkit-app-region: no-drag`), `${selector} 必须 no-drag`);
+  }
+  // ③ 让位规则：三个顶栏 + 专注条都读同一个 --titlebar-inset-right（由 env() 算），不写死 138px
+  assert.match(CSS, /--titlebar-inset-right:\s*max\(0px, calc\(100vw - env\(titlebar-area-x, 0px\) - env\(titlebar-area-width, 100vw\)\)\);/);
+  assert.match(CSS, /\.topbar \{[\s\S]*?padding-right:\s*calc\(26px \+ var\(--titlebar-inset-right, 0px\)\);/);
+  assert.match(CSS, /\.editor-header \{[\s\S]*?padding-right:\s*calc\(20px \+ var\(--titlebar-inset-right, 0px\)\);/);
+  assert.match(CSS, /\.reading-header \{[\s\S]*?padding-right:\s*calc\(22px \+ var\(--titlebar-inset-right, 0px\)\);/);
+  assert.match(CSS, /\.focus-bar \{[\s\S]*?right:\s*calc\(18px \+ var\(--titlebar-inset-right, 0px\)\);/);
+  assert.equal((CSS.match(/--titlebar-inset-right/g) || []).length >= 6, true, '让位只许读这一个变量');
+
+  // 顶栏底色与窗口边缘同色（系统按钮区由主进程按 --paper 画，顶栏还是 --folio-sheet 会出现色块）
+  assert.match(CSS, /\.editor-header \{[\s\S]*?background:\s*var\(--paper\);/);
+  assert.match(CSS, /\.reading-header \{[\s\S]*?background:\s*var\(--paper\);/);
+
+  // 主进程：隐藏原生标题栏 + 保留系统按钮 + 不引入 Mica / 亚克力
+  assert.match(MAIN, /titleBarStyle: 'hidden'/);
+  assert.match(MAIN, /titleBarOverlay: windowChrome\.overlayFor\(themeName\)/);
+  assert.doesNotMatch(MAIN, /backgroundMaterial|vibrancy|setBackgroundMaterial/, '不引入 Mica / 亚克力（半透明破坏纸感）');
+
+  // 失焦降级：body class + 2% 暗层 + 朱红降灰（两档，浅色 5 套共用 + 夜间单独）
+  assert.match(RENDERER, /window\.CWWindowChromeUi\.createWindowChromeUi\(\)\.install\(\)/);
+  assert.match(CSS, /body\.window-inactive \{\s*\n\s*--accent: #774940;\s*\n\s*--accent-soft: #a86e5e;/);
+  assert.match(CSS, /body\.theme-night\.window-inactive \{\s*\n\s*--accent: #b8897b;\s*\n\s*--accent-soft: #986452;/);
+  assert.match(CSS, /body\.window-inactive #app::after \{[\s\S]*?pointer-events: none;[\s\S]*?background:\s*rgba\(0, 0, 0, \.02\);/);
+
+  // index.html 里 window-chrome-ui.js 必须排在 renderer.js 之前（renderer 启动时就要用）
+  const scriptOrder = [...HTML.matchAll(/<script src="([^"]+)"><\/script>/g)].map((hit) => hit[1]);
+  assert.ok(scriptOrder.indexOf('window-chrome-ui.js') > -1, 'index.html 必须加载 window-chrome-ui.js');
+  assert.ok(scriptOrder.indexOf('window-chrome-ui.js') < scriptOrder.indexOf('renderer.js'), '必须排在 renderer.js 之前');
+});
