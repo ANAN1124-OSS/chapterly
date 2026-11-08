@@ -235,3 +235,30 @@ test('错误脱敏静态闸门：main.js 的 IPC 失败出口走 error-text，�
   assert.match(logsText, /errorText\.redactPaths\(text\)/);
   assert.match(logsText, /errorText\.redactPaths\(maskLongCjk\(line\), \{ keep: 2 \}\)/);
 });
+
+test('错误脱敏静态闸门：notifyInternalError 的控制台输出走 describeForUi（B2 / S5）', () => {
+  const mainText = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  const start = mainText.indexOf('function notifyInternalError(kind, err) {');
+  assert.notEqual(start, -1, 'main.js 里仍要有 notifyInternalError');
+  const rest = mainText.slice(start);
+  const end = rest.indexOf('// B1（审计 E2 / E6）');
+  assert.notEqual(end, -1, '找不到 notifyInternalError 的结束锚点');
+  const body = rest.slice(0, end);
+
+  // 终端那行必须用 error-text 的脱敏文案（与 fail() 同一口径）：fs 错误的 message 里带完整绝对路径，
+  // 直接打 described.message 等于把用户名 / 书库位置丢进控制台与日志采集。
+  assert.match(body, /const shown = errorText\.describeForUi\(err\);/, '控制台文案必须先过 describeForUi');
+  const consoleAt = body.indexOf('console.error(');
+  assert.notEqual(consoleAt, -1, '控制台留痕入口不能消失（终端里仍要能看出出了哪种错）');
+  const consoleLine = body.slice(consoleAt, body.indexOf(');', consoleAt) + 2);
+  assert.match(consoleLine, /shown\.message/, 'console.error 必须打 describeForUi 的 message');
+  assert.equal(
+    consoleLine.includes('described.message'),
+    false,
+    '不许把 logsLib.describeError 的原始 message 打到控制台（fs 错误会带完整绝对路径）'
+  );
+  // 日志侧 / 界面广播口径不许跟着改：logError 仍收原始错误（core/logs.js 自己遮罩），
+  // 广播仍只用 INTERNAL_ERROR_TEXT 的固定文案（细节只进日志）。
+  assert.match(body, /logError\(kind, err\)/, '日志侧仍走原始错误，由 core/logs.js 脱敏');
+  assert.match(body, /message: INTERNAL_ERROR_TEXT\[kind\]/, '界面广播仍是固定文案，不回传错误细节');
+});

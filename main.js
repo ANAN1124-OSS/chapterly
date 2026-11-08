@@ -566,7 +566,11 @@ const INTERNAL_ERROR_TEXT = {
 function notifyInternalError(kind, err) {
   try {
     const described = logsLib.describeError(err);
-    console.error(`[${kind}]`, described.code || '', described.message);
+    // B2（审计 #16 / S5）：终端 / 日志采集侧也只打脱敏文案——与 fail() 同一口径
+    // （本机绝对路径只留最后一节、控制字符收掉）。日志侧仍走 logError 的原始 message
+    // （core/logs.js 的 sanitizeEntry 负责遮罩），界面广播仍只用下面的固定文案。
+    const shown = errorText.describeForUi(err);
+    console.error(`[${kind}]`, shown.code || '', shown.message);
     logError(kind, err);
     // 所有窗口都提示一句固定文案（哪个窗口都可能正开着稿子）
     broadcast('app:internal-error', {
