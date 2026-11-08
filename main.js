@@ -28,17 +28,6 @@ function argValue(name) {
   return hit ? hit.slice(prefix.length) : null;
 }
 
-const userDataArg = argValue('user-data');
-if (userDataArg) {
-  fsSync.mkdirSync(userDataArg, { recursive: true });
-  app.setPath('userData', userDataArg);
-} else {
-  // 章回：产品从「章节写作器」改名，但数据目录仍沿用旧名 chapter-writer —— 作者既有配置 /
-  // 统计 / 日志 / 搜索索引 / 每日快照配置全部零迁移（换名不换数据位置）。
-  // 自动化（--user-data）优先，隔离测试不受影响。
-  app.setPath('userData', path.join(app.getPath('appData'), 'chapter-writer'));
-}
-
 // C2（审计 S2）：打包版判定只算一次（app.isPackaged 在 app ready 前也可读）。
 // 打包后的正式版不认任何自动化开关 —— 见下面 isE2E / isBench / isContrast / screenshotPath 的注释。
 const packagedApp = app.isPackaged === true;
@@ -100,6 +89,27 @@ const clipboardWatchLib = require('./core/clipboard-watch');
 const { mapLimit } = require('./core/common');
 // B4（审计 P4）：整本操作逐章读盘的并行度（读是 IO 等待；写盘仍串行、按原顺序）
 const CHAPTER_READ_CONCURRENCY = 8;
+
+// ---------- 启动参数：隔离用的 --user-data ----------
+// A2（审计 #8 / E3）：这段从文件顶部（原来的 :31-40）挪到 core 模块 require 之后、app ready 之前。
+// 挪下来只为让目录建不出来时能用到 core/error-text 的脱敏文案（下面才 require 进来）；
+// 这几十行里没有任何代码读 app.getPath('userData')，路径语义与设置时机都没有变化。
+const userDataArg = argValue('user-data');
+if (userDataArg) {
+  try {
+    fsSync.mkdirSync(userDataArg, { recursive: true });
+  } catch (err) {
+    // 目录建不出来就到此为止：配置 / 日志 / 搜索索引 / 每日快照全写在这个目录里，
+    // 带着坏路径继续 setPath 只会表现成「双击没反应」或「设置全丢」。
+    failStartup('配置目录', err);
+  }
+  app.setPath('userData', userDataArg);
+} else {
+  // 章回：产品从「章节写作器」改名，但数据目录仍沿用旧名 chapter-writer —— 作者既有配置 /
+  // 统计 / 日志 / 搜索索引 / 每日快照配置全部零迁移（换名不换数据位置）。
+  // 自动化（--user-data）优先，隔离测试不受影响。
+  app.setPath('userData', path.join(app.getPath('appData'), 'chapter-writer'));
+}
 
 // ---------- 多窗口会话 ----------
 // 每个 BrowserWindow 一个会话：独立的 bookPath（登记在 storage 的打开登记表里）、
@@ -456,6 +466,28 @@ async function saveRecentWindowBounds(session) {
   }
 }
 
+
+// A2（审计 #8 / E3）：启动期「必须当场停」的失败出口 —— 一行可读说明写 stderr，然后退出。
+// 刻意不走 logError：出问题的往往正是 userData 目录（日志也写在里面），往坏目录里再写一次
+// 只会再失败一次；此时界面也还没起来，能用的只有 stderr。
+// 文案只留错误码 + 脱敏后的一句话（error-text 会把绝对路径压成最后一节），
+// 不打原始堆栈、不打印完整路径。
+function failStartup(what, err) {
+  const where = what || '启动';
+  let line = `[chapterly] ${where}初始化失败，程序退出\n`;
+  try {
+    const described = errorText.describeForUi(err);
+    line = `[chapterly] ${where}初始化失败，程序退出（${described.code}）：${described.message}\n`;
+  } catch {
+    /* 连错误都描述不出来就退回上面那句兜底文案 */
+  }
+  try {
+    process.stderr.write(line);
+  } catch {
+    /* 从资源管理器双击启动时没有控制台，stderr 可能不可写：忽略 */
+  }
+  app.exit(1);
+}
 
 // ---------- 崩溃 / 错误日志（提案 7.4） ----------
 // 只记元数据（时间 / 类型 / 级别 / 错误码 / IPC 频道 / message / 栈 / pid / 版本），绝不传正文；
@@ -2805,6 +2837,13 @@ if (!gotLock) {
     }
     // 剪贴板捕获的全局快捷键（Ctrl+Alt+V）：界面按钮之外的第二条入口
     registerCaptureShortcut();
+  }).catch((err) => {
+    // A2（审计 #8 / E4）：whenReady 链顶层兜底。内部只对 getConfig / createWindow 分别兜了，
+    // setupCloseIpc / registerIpc / hardenSession / syncClipboardWatch / registerCaptureShortcut
+    // 任一抛错都会跳过后面全部步骤，停在「没有窗口的半初始化」状态 —— 用户只看到一句通用提示。
+    // 这里统一留一条脱敏日志（logError 内部过 core/logs 的 sanitizeEntry）并退出，失败可观测。
+    logError('startup', err);
+    app.exit(1);
   });
 
   // 退出时主动注销全局快捷键，避免退出瞬间的热键残留
