@@ -2089,8 +2089,11 @@ function registerIpc() {
     }
   }
 
-  // 导出 TXT / EPUB / DOCX 共用的前置：读书目 → 解析范围（空范围明确报错）→ 拼正文
+  // 导出 TXT / EPUB / DOCX 共用的前置：读书目 → 解析范围（空范围明确报错）
   // → 准备「上次导出目录 / 文档」作为默认落点。三个入口只负责各自的保存对话框、格式细节与返回字段。
+  // 审计 #7（O2 / P4）：这里**只做只读前置**，正文（texts / chars / includedUnsaved）不读——
+  // 交给下面 readExportTexts，等保存对话框确认之后再读。用户取消导出时一次正文都不会读，
+  // 对话框停留期间也不会把整本书常驻内存。
   // v0.9 C-5：override / range 在这里统一过 core/ipc-limits.js（超长正文拒绝、坏形状降级），
   // 三个导出与下面的复制 / 校对 / 敏感词预检共用同一套口径，避免某个入口漏掉。
   async function prepareExport(bookPath, override, range) {
@@ -2104,16 +2107,18 @@ function registerIpc() {
         plan.mode === 'all' ? '这本书里还没有章节' : '所选范围里没有章节'
       );
     }
-    const { texts, chars, includedUnsaved } = await collectExportTexts(
-      bookPath,
-      meta,
-      safeOverride,
-      plan.indexes
-    );
     const cfg = await getConfig();
     // 默认落到「上一次导出保存到的目录」；没记过、或那个目录已经不存在了，才退回「文档」
     const defaultDir = exporter.resolveExportDir(cfg.lastExportDir, app.getPath('documents'), isDirectory);
-    return { meta, plan, texts, chars, includedUnsaved, cfg, defaultDir, range: safeRange };
+    return { meta, plan, override: safeOverride, cfg, defaultDir, range: safeRange };
+  }
+
+  // 保存对话框确认之后才走的正文读取（审计 #7）：prepareExport 的后半段，三个导出入口共用。
+  // 调用点必须放在 `if (canceled || !filePath) return { canceled: true };` 之后——顺序反了就等于
+  // 用户取消也白读整本；tests/export-read-order.test.js 的静态闸门钉住这个时序。
+  async function readExportTexts(bookPath, prepared) {
+    const { meta, plan, override } = prepared;
+    return collectExportTexts(bookPath, meta, override, plan.indexes);
   }
 
   // EPUB / DOCX 导出成功后的返回字段（两个入口完全一致，只是 built 来自不同的纯函数）
@@ -2132,11 +2137,8 @@ function registerIpc() {
   }
 
   handleBook('book:export', async (bookPath, override, range) => {
-    const { meta, plan, texts, chars, includedUnsaved, cfg, defaultDir, range: safeRange } = await prepareExport(
-      bookPath,
-      override,
-      range
-    );
+    const prepared = await prepareExport(bookPath, override, range);
+    const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;
     // 文件名默认带上范围：书名.txt / 书名-卷名.txt / 书名-第X-Y章.txt（可在保存对话框里改）
     const defaultName = exporter.exportFileName(meta, safeRange);
     const { canceled, filePath } = await showSaveDialog({
@@ -2145,6 +2147,8 @@ function registerIpc() {
       filters: [{ name: '文本文件', extensions: ['txt'] }]
     });
     if (canceled || !filePath) return { canceled: true };
+    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）
+    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
     const composed = exporter.composeBook(meta, texts, safeRange);
     // 简繁转换只作用于这份导出副本：字数仍按原稿算，磁盘上的章节 txt / 书目一个字节都不动
     const conversion = s2tLib.normalizeMode(cfg.exportConversion);
@@ -2168,11 +2172,8 @@ function registerIpc() {
   // 由 EPUB 里的 CSS 控制，不动任何 txt 字节。和 TXT 导出一样：当前章未保存的内容参与拼接、只读、原子写盘。
   // range 不传 = 全书；只把选中的章节读出来打进包里，章号仍按全书顺序。
   handleBook('book:export-epub', async (bookPath, override, range) => {
-    const { meta, plan, texts, chars, includedUnsaved, cfg, defaultDir, range: safeRange } = await prepareExport(
-      bookPath,
-      override,
-      range
-    );
+    const prepared = await prepareExport(bookPath, override, range);
+    const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;
     const defaultName = epubLib.epubFileName(meta, safeRange);
     const { canceled, filePath } = await showSaveDialog({
       title: '导出 EPUB',
@@ -2180,6 +2181,8 @@ function registerIpc() {
       filters: [{ name: 'EPUB 电子书', extensions: ['epub'] }]
     });
     if (canceled || !filePath) return { canceled: true };
+    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）
+    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
     // 简繁转换：书名 / 卷名 / 章名 / 正文都换成导出用的副本，目录和正文才一致；
     // 书目与章节 txt 一概不动（chars 仍按原稿字数算）。
     const conversion = s2tLib.normalizeMode(cfg.exportConversion);
@@ -2197,11 +2200,8 @@ function registerIpc() {
   // 和 EPUB 导出同一套规则：范围解析复用 exporter.resolveExportRange，只读选中的章，
   // 章号 / 章名仍按全书顺序；当前章未保存内容参与、只读、原子写盘、简繁转换只作用于副本。
   handleBook('book:export-docx', async (bookPath, override, range) => {
-    const { meta, plan, texts, chars, includedUnsaved, cfg, defaultDir, range: safeRange } = await prepareExport(
-      bookPath,
-      override,
-      range
-    );
+    const prepared = await prepareExport(bookPath, override, range);
+    const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;
     const defaultName = docxLib.docxFileName(meta, safeRange);
     const { canceled, filePath } = await showSaveDialog({
       title: '导出 DOCX',
@@ -2209,6 +2209,8 @@ function registerIpc() {
       filters: [{ name: 'Word 文档', extensions: ['docx'] }]
     });
     if (canceled || !filePath) return { canceled: true };
+    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）
+    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
     // 简繁转换：书名 / 卷名 / 章名 / 正文都换成导出用的副本（书目与章节 txt 一概不动）
     const conversion = s2tLib.normalizeMode(cfg.exportConversion);
     const exportMeta = s2tLib.convertMeta(meta, conversion);
