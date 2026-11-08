@@ -1367,6 +1367,10 @@ body.theme-night .chapter-item.active .chapter-status-dot {
   /* 中西文自动间距（1.3.0 T-08）：值由渲染层写在 :root 上（normal / no-autospace）。
    * Chromium 的初始值是 no-autospace，这里给 normal 兜底并保证「显式声明」便于审计。 */
   text-autospace: var(--editor-text-autospace, normal);
+  /* 标点挤压（1.3.0 T2 / 规范 T-09 路线 A）：显式声明 normal，便于审计与未来兼容。
+   * 路线 A 维持系统宋体、不内嵌字体（字体没有 halt / chws，挤压保持静默无效），所以这里
+   * **没有视觉变化**；规范 T-14 禁止 trim-both / trim-all / auto 这些尚未实现的值。 */
+  text-spacing-trim: normal;
   user-select: text;
   text-indent: 0;
 
@@ -1404,6 +1408,8 @@ textarea::placeholder { color: var(--ink-faint); opacity: 1; }
   tab-size: 4;
   /* 中西文自动间距（1.3.0 T-08）：标记层必须和正文用同一份间距，否则底色块 / 左侧黄线会和字错位。 */
   text-autospace: var(--editor-text-autospace, normal);
+  /* 标点挤压（1.3.0 T2 / T-09 路线 A）：与正文同一份显式声明（无视觉变化，只为审计对齐）。 */
+  text-spacing-trim: normal;
   /* 行盒高度 = 行高 × 字号；SimSun 的行内内容盒正好 1em，所以上下各补 (行距 − 1)/2 em 就铺满整行。 */
   --marks-line-pad: calc((var(--editor-line-height) - 1) * 1em / 2);
 }
@@ -1579,6 +1585,8 @@ body.theme-night .long-para-bar { background: var(--warn);
   tab-size: 4;
   /* 中西文自动间距（1.3.0 T-08）：测量层要和正文同一份间距，量出来的光标行位置才准。 */
   text-autospace: var(--editor-text-autospace, normal);
+  /* 标点挤压（1.3.0 T2 / T-09 路线 A）：测量层跟随正文同一份显式声明（无视觉变化）。 */
+  text-spacing-trim: normal;
   margin: 0;
   padding: 0;
   border: 0;
@@ -3405,6 +3413,8 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   letter-spacing: var(--editor-letter-spacing);
   /* 中西文自动间距（1.3.0 T-08）：阅读容器跟着正文显示设置走（同一个 :root 变量，默认 normal）。 */
   text-autospace: var(--editor-text-autospace, normal);
+  /* 标点挤压（1.3.0 T2 / T-09 路线 A）：阅读容器与正文同一份显式声明（无视觉变化）。 */
+  text-spacing-trim: normal;
   color: var(--ink);
   overflow-wrap: break-word;
   white-space: pre-wrap;

@@ -8,6 +8,10 @@
 // 口径：只钉**决定**（排行号无关的结构 + 关键数值 + 关系），不钉注释措辞、不钉格式化，
 // 避免「改一句注释就要改测试」。其余 12 项（#1 千分位、#3 设置 ×、#6 toast 抬起、#8 询问框顺序、
 // #9 灵感箱分组、#16a/b/c 键盘）已经在各自的域单测里有行为 / 静态闸门，这里不重复。
+//
+// 2026-11-08 追加（1.3.0 T2 = 规范 T-09 路线 A）：标点挤压只做「显式声明」——正文 / 标记层 /
+// 打字机测量层 / 阅读容器四处都写 text-spacing-trim: normal，且不许出现 T-14 禁用的未实现值
+//（trim-both / trim-all / auto）。这一条没有行为可测（当前无视觉变化），只能钉源码决定。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -104,4 +108,30 @@ test('#13 历史预览宽窗左右分栏：.history-main 做 flex 容器，≥98
   assert.match(ruleOf(wide, '.history-main'), /flex-direction:\s*row;/, '≥980 改成左右排');
   assert.match(ruleOf(wide, '.history-scroll'), /flex:\s*1 1 58%;/, '列表占 58%');
   assert.match(ruleOf(wide, '.history-preview'), /flex:\s*0 0 40%;/, '预览占 40%');
+});
+
+test('T-09 标点挤压显式声明：正文 / 标记层 / 打字机测量层 / 阅读容器四处都写 text-spacing-trim: normal（路线 A，无视觉变化）', () => {
+  // 四处必须和 text-autospace（T-08）在同一批规则里：标记影子层 / 打字机测量层是「跟着正文量」的，
+  // 少写一处就会和正文走不同的排版口径。值只许 normal —— 规范 T-14 明确禁用尚未实现的值。
+  const selectors = ['.editor', '.editor-marks', '.focus-mirror', '.reading-chapter-text'];
+  for (const selector of selectors) {
+    const block = ruleOf(CSS, selector);
+    assert.ok(block, `styles.css 里必须有 ${selector} 规则`);
+    assert.match(
+      block,
+      /text-spacing-trim:\s*normal;/,
+      `${selector} 必须显式声明 text-spacing-trim: normal（T-09 路线 A 只做显式声明，不靠继承默认值）`
+    );
+  }
+  // 反向闸门：全表只允许这 4 条声明、值只允许 normal（T-14：trim-both / trim-all / auto 尚未被浏览器实现，
+  // 写上去等于静默失效还骗过审计）。
+  const declarations = CSS.match(/text-spacing-trim\s*:\s*[^;}]+/g) || [];
+  assert.equal(
+    declarations.length,
+    selectors.length,
+    `text-spacing-trim 只允许这 ${selectors.length} 处声明（多出来就是第二套来源）`
+  );
+  for (const declaration of declarations) {
+    assert.match(declaration, /:\s*normal$/, `text-spacing-trim 只允许 normal（T-14 禁用的值：${declaration}）`);
+  }
 });
