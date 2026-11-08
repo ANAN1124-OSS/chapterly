@@ -1387,7 +1387,18 @@
     // 条目连布局都跳过。
     const frag = document.createDocumentFragment();
     const volumes = volumeList();
-    if (!volumes.length) {
+    // 1.3.0 T4（规范 I-06）：章节栏真空（0 章）。正常新建 / 删到空都会自动补一章，这里兜的是
+    // 手改书目 / 从外部导入的书；只有「真空」一种状态（打开书是一次性读盘，没有加载中 / 筛选空）。
+    // 文案按三件套写：说明状态 + 学习线索（章节模板）+ 直接路径（现有按钮 / Ctrl+N），不加新按钮。
+    if (!state.chapters.length) {
+      const empty = document.createElement('div');
+      empty.className = 'chapter-list-empty muted small';
+      empty.dataset.emptyKind = 'vacuum';
+      empty.textContent =
+        '这本书还没有章节。点左下「＋ 新建章节」或按 Ctrl+N 开始写第一章；' +
+        '新章会自动套用设置里的章节模板（填了才生效）。';
+      frag.appendChild(empty);
+    } else if (!volumes.length) {
       // 没分卷的书：和以前完全一样，平铺章节
       state.chapters.forEach((chapter, index) => frag.appendChild(makeChapterItem(chapter, index)));
     } else {

@@ -366,12 +366,17 @@ test('renderShelfContent：没有结果时的空态两种文案（截断 / 全�
   let list = truncated.dom.$('shelf-content-list');
   assert.equal(list.children.length, 1);
   assert.equal(list.children[0].className, 'shelf-content-empty muted small');
-  assert.equal(list.children[0].textContent, '最近的一部分书里没有找到；试试更具体一点的词。');
+  assert.equal(list.children[0].dataset.emptyKind, 'filtered');
+  assert.equal(
+    list.children[0].textContent,
+    '最近的一部分书里没有找到。正文索引只查了最近的一部分书；换个更具体一点的词再试，或按 Esc 清空搜索。'
+  );
 
   const full = build({ shelfQuery: '张三', meta: { results: [], truncated: false } });
   withDom(full.dom, () => full.ui.renderShelfContent());
   list = full.dom.$('shelf-content-list');
-  assert.equal(list.children[0].textContent, '书名、章节名和正文里都没找到。');
+  assert.equal(list.children[0].dataset.emptyKind, 'filtered');
+  assert.equal(list.children[0].textContent, '书名、章节名和正文里都没找到。换个更短或更具体的词再试；按 Esc 清空搜索。');
 });
 
 test('renderShelfContent：正文索引在建时摘要带进度（有 total / 没 total 两种）', () => {

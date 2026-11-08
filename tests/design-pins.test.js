@@ -135,3 +135,54 @@ test('T-09 标点挤压显式声明：正文 / 标记层 / 打字机测量层 / 
     assert.match(declaration, /:\s*normal$/, `text-spacing-trim 只允许 normal（T-14 禁用的值：${declaration}）`);
   }
 });
+
+test('I-06 空状态三件套：书架 / 章节栏 / 剪贴板 / 查找四处都有说明状态 + 学习线索 + 直接路径，且标注 loading / vacuum / filtered', () => {
+  // 1.3.0 T4 的验收方式：空态是纯文案 + 少量 DOM，行为在 E2E 里只有「出现 / 收起」，
+  // 真正怕的是以后顺手把「为什么空 / 接下来点哪」删成一句「暂无内容」。这里按源码钉住四处的
+  // 三件套与三类标注；同时钉住「不加插画」——四处空态都不许 new Image / <img。
+  const RENDERER = read('renderer/renderer.js');
+  const BOOKINFO = read('renderer/bookinfo-ui.js');
+  const SHELF_FILTER = read('renderer/shelf-filter-ui.js');
+  const FIND = read('renderer/find-ui.js');
+  const CAPTURE = read('renderer/capture-ui.js');
+
+  // ① 书架：真空 / 筛选空 / 加载中三类都用 data-empty-kind 标出来，文案各含状态 + 线索 + 路径。
+  assert.match(BOOKINFO, /empty\.dataset\.emptyKind = 'vacuum';/);
+  assert.match(BOOKINFO, /empty\.dataset\.emptyKind = 'filtered';/);
+  assert.match(BOOKINFO, /empty\.dataset\.emptyKind = 'loading';/);
+  assert.match(BOOKINFO, /这里还没有书。一本书 = 一个文件夹/);
+  assert.match(BOOKINFO, /点右上「导入小说」/);
+  assert.match(BOOKINFO, /正在正文里继续找，找到后会出现在上方「正文命中」/);
+  assert.match(BOOKINFO, /搜索会看书名 \/ 作者 \/ 分组 \/ 标签 \/ 章节名，也会在正文里找/);
+
+  // ② 章节栏：真空（0 章）——现有按钮 / Ctrl+N 是直接路径，章节模板是学习线索。
+  assert.match(RENDERER, /if \(!state\.chapters\.length\) \{/);
+  assert.match(RENDERER, /className = 'chapter-list-empty muted small'/);
+  assert.match(RENDERER, /empty\.dataset\.emptyKind = 'vacuum'/);
+  assert.match(RENDERER, /点左下「＋ 新建章节」或按 Ctrl\+N/);
+  assert.match(RENDERER, /新章会自动套用设置里的章节模板/);
+  assert.match(CSS, /\.chapter-list-empty\s*\{[\s\S]*?padding:\s*22px 8px;/);
+
+  // ③ 剪贴板：真空——summary 说明只驻内存，空态给设置路径 / 快捷键 / 两个动作。
+  assert.match(CAPTURE, /本次运行还没有记到复制过的文字（只在本机内存，关闭应用即清空）。/);
+  assert.match(CAPTURE, /在「设置 → 写作统计」里打开「后台监听剪贴板」后/);
+  assert.match(CAPTURE, /按 Ctrl\+Alt\+V 捕获当前剪贴板的一段/);
+  assert.match(CAPTURE, /点「正文」或「章节」处理，处理完就从列表移除/);
+  assert.match(CAPTURE, /emptyEl\.dataset\.emptyKind = empty \? 'vacuum' : ''/);
+
+  // ④ 查找无结果 + 书架正文命中空态：筛选空——学习线索是「字面匹配 / 全角半角」，
+  // 直接路径是换词 / 选中正文再按 Ctrl+F / Esc 清空，全部沿用现有入口。
+  assert.match(FIND, /empty\.className = 'find-empty'/);
+  assert.match(FIND, /empty\.dataset\.emptyKind = 'filtered'/);
+  assert.match(FIND, /查找是字面匹配（不做正则），区分全角 \/ 半角/);
+  assert.match(FIND, /先在正文里选中一个词再按 Ctrl\+F/);
+  assert.match(SHELF_FILTER, /empty\.dataset\.emptyKind = 'filtered'/);
+  assert.match(SHELF_FILTER, /换个更短或更具体的词再试/);
+  assert.match(SHELF_FILTER, /按 Esc 清空搜索/);
+
+  // 加插画 = 红（规范 I-06：不加插画、不做营销文案、不新增按钮；路径都用现有入口）。
+  for (const source of [BOOKINFO, SHELF_FILTER, FIND, CAPTURE, RENDERER]) {
+    assert.doesNotMatch(source, /createElement\(['"]img['"]\)/);
+    assert.doesNotMatch(source, /new Image\(/);
+  }
+});

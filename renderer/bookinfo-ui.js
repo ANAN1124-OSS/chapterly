@@ -206,12 +206,20 @@
 
   // B6（审计 P6）：书架 grid 的重建部分（空态 / 书卡 / 「新建一本书」），只在渲染签名变化时调用。
   // 书卡顺序来自 rows（按书架扫描顺序），签名一致时整个 grid 原样保留（焦点 / 滚动位置都不丢）。
+  //
+  // 1.3.0 T4（规范 I-06 空状态三件套）：每个空态都按「说明状态 / 学习线索 / 直接路径」写，并用
+  // data-empty-kind 区分三类——vacuum（真空：一本都没有）/ loading（加载中：正文还在找）/
+  // filtered（筛选空：分组或搜索把书筛掉了）。不加插画、不加新按钮，路径都指向现有入口。
   function buildShelfGrid(grid, query, rows) {
     grid.innerHTML = '';
     if (!state.books.length) {
       const empty = document.createElement('div');
       empty.className = 'shelf-empty';
-      empty.textContent = '这里还没有书。点右边（或下面）的「新建一本书」开始，或者把已有的书文件夹放进书架目录。';
+      empty.dataset.emptyKind = 'vacuum';
+      empty.textContent =
+        '这里还没有书。一本书 = 一个文件夹，正文就是里面的普通 txt 文件，用记事本也能打开。' +
+        '点右上「导入小说」把现有稿子导进来，或点右侧（或下面）的「新建一本书」从零开始；' +
+        '也可以直接把书文件夹放进书架目录。';
       grid.appendChild(empty);
     } else if (!rows.length) {
       const empty = document.createElement('div');
@@ -219,15 +227,22 @@
       const content = state.shelfContent;
       const contentHits = content.meta && content.meta.results ? content.meta.results.length : 0;
       if (!query && state.shelfGroup) {
+        empty.dataset.emptyKind = 'filtered';
         empty.textContent =
-          state.shelfGroup === '__none__' ? '「未分组」里还没有书。' : '这个分组里还没有书。';
+          state.shelfGroup === '__none__'
+            ? '「未分组」里还没有书。把某本书的分组留空（书卡「⋯」→「书籍信息」），它就会出现在这里；也可以切回「全部分组」。'
+            : '这个分组里还没有书。给书填上这个分组（书卡「⋯」→「书籍信息」），它就会出现在这里；也可以切回「全部分组」。';
+      } else if (content.loading) {
+        empty.dataset.emptyKind = 'loading';
+        empty.textContent =
+          '书名 / 作者 / 章节名没有匹配。正在正文里继续找，找到后会出现在上方「正文命中」，不用重新搜。';
       } else {
-        const contentNote = content.loading
-          ? '书名 / 作者 / 章节名没有匹配，正在正文里找…'
-          : contentHits > 0
+        empty.dataset.emptyKind = 'filtered';
+        empty.textContent =
+          contentHits > 0
             ? `书名 / 作者 / 章节名没有匹配；正文找到 ${contentHits} 处，见上方「正文命中」。`
-            : `没有找到匹配「${query}」的书（书名 / 作者 / 分组 / 标签 / 章节名 / 正文都没有）。`;
-        empty.textContent = contentNote;
+            : `没有找到匹配「${query}」的书。搜索会看书名 / 作者 / 分组 / 标签 / 章节名，也会在正文里找；` +
+              '换一个更短或更具体的词再试，按 Esc 清空搜索。';
       }
       grid.appendChild(empty);
     }

@@ -335,9 +335,14 @@
     const box = $('find-results');
     box.innerHTML = '';
     if (!payload.results.length) {
+      // 1.3.0 T4（I-06）：查找无结果 = 筛选空（filtered）。说明状态 + 学习线索（字面匹配 / 全角半角）
+      // + 直接路径（换词 / 选中正文再按 Ctrl+F），不新增按钮，路径都指向现有入口。
       const empty = document.createElement('div');
       empty.className = 'find-empty';
-      empty.textContent = `没有找到「${payload.query}」`;
+      empty.dataset.emptyKind = 'filtered';
+      empty.textContent =
+        `没有找到「${payload.query}」。查找是字面匹配（不做正则），区分全角 / 半角；` +
+        '换个更短或更具体的词再试，或先在正文里选中一个词再按 Ctrl+F，查找框会直接带上它。';
       box.appendChild(empty);
       return;
     }

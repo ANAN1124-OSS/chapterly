@@ -521,7 +521,12 @@ test('renderFindResults：空清单文案 / 行结构（章名 + 处数 + 片段
   const ctx = build({ dom, query: '张三' });
   ctx.ui.renderFindResults({ query: '张三', results: [] });
   assert.equal(dom.map.get('find-results').children[0].className, 'find-empty');
-  assert.equal(dom.map.get('find-results').children[0].textContent, '没有找到「张三」');
+  assert.equal(dom.map.get('find-results').children[0].dataset.emptyKind, 'filtered');
+  assert.equal(
+    dom.map.get('find-results').children[0].textContent,
+    '没有找到「张三」。查找是字面匹配（不做正则），区分全角 / 半角；' +
+      '换个更短或更具体的词再试，或先在正文里选中一个词再按 Ctrl+F，查找框会直接带上它。'
+  );
 
   ctx.ui.renderFindResults({
     query: '张三',

@@ -310,12 +310,15 @@
       more.classList.add('hidden');
     }
     if (!visible.length && !content.loading && !content.error && (!meta || !meta.results || !meta.results.length)) {
+      // 1.3.0 T4（I-06）：正文命中区的空态也按三件套写——说明状态 / 学习线索 / 直接路径。
+      // 这一区只在有查询词时出现，属于「筛选空」（filtered），不是真空。
       const empty = document.createElement('div');
       empty.className = 'shelf-content-empty muted small';
+      empty.dataset.emptyKind = 'filtered';
       empty.textContent =
         meta && meta.truncated
-          ? '最近的一部分书里没有找到；试试更具体一点的词。'
-          : '书名、章节名和正文里都没找到。';
+          ? '最近的一部分书里没有找到。正文索引只查了最近的一部分书；换个更具体一点的词再试，或按 Esc 清空搜索。'
+          : '书名、章节名和正文里都没找到。换个更短或更具体的词再试；按 Esc 清空搜索。';
       list.appendChild(empty);
     }
   }

@@ -372,27 +372,50 @@ test('renderShelf：空书库 / 分组里没书 / 搜索没命中（三种文案
   const empty = build({ books: [], rows: [] });
   empty.ui.renderShelf();
   assert.equal(empty.dom.map.get('book-grid').children[0].className, 'shelf-empty');
-  assert.match(empty.dom.map.get('book-grid').children[0].textContent, /这里还没有书/);
+  assert.equal(empty.dom.map.get('book-grid').children[0].dataset.emptyKind, 'vacuum');
+  assert.equal(
+    empty.dom.map.get('book-grid').children[0].textContent,
+    '这里还没有书。一本书 = 一个文件夹，正文就是里面的普通 txt 文件，用记事本也能打开。' +
+      '点右上「导入小说」把现有稿子导进来，或点右侧（或下面）的「新建一本书」从零开始；' +
+      '也可以直接把书文件夹放进书架目录。'
+  );
 
   const noneGroup = build({ rows: [], shelfGroup: '__none__' });
   noneGroup.ui.renderShelf();
-  assert.equal(noneGroup.dom.map.get('book-grid').children[0].textContent, '「未分组」里还没有书。');
+  assert.equal(noneGroup.dom.map.get('book-grid').children[0].dataset.emptyKind, 'filtered');
+  assert.equal(
+    noneGroup.dom.map.get('book-grid').children[0].textContent,
+    '「未分组」里还没有书。把某本书的分组留空（书卡「⋯」→「书籍信息」），它就会出现在这里；也可以切回「全部分组」。'
+  );
 
   const group = build({ rows: [], shelfGroup: '书友', groups: ['书友'] });
   group.ui.renderShelf();
-  assert.equal(group.dom.map.get('book-grid').children[0].textContent, '这个分组里还没有书。');
+  assert.equal(group.dom.map.get('book-grid').children[0].dataset.emptyKind, 'filtered');
+  assert.equal(
+    group.dom.map.get('book-grid').children[0].textContent,
+    '这个分组里还没有书。给书填上这个分组（书卡「⋯」→「书籍信息」），它就会出现在这里；也可以切回「全部分组」。'
+  );
 
   const loading = build({ rows: [], query: '张三', shelfContent: { meta: null, loading: true } });
   loading.ui.renderShelf();
-  assert.equal(loading.dom.map.get('book-grid').children[0].textContent, '书名 / 作者 / 章节名没有匹配，正在正文里找…');
+  assert.equal(loading.dom.map.get('book-grid').children[0].dataset.emptyKind, 'loading');
+  assert.equal(
+    loading.dom.map.get('book-grid').children[0].textContent,
+    '书名 / 作者 / 章节名没有匹配。正在正文里继续找，找到后会出现在上方「正文命中」，不用重新搜。'
+  );
 
   const contentHit = build({ rows: [], query: '张三', shelfContent: { meta: { results: [1, 2] }, loading: false } });
   contentHit.ui.renderShelf();
+  assert.equal(contentHit.dom.map.get('book-grid').children[0].dataset.emptyKind, 'filtered');
   assert.equal(contentHit.dom.map.get('book-grid').children[0].textContent, '书名 / 作者 / 章节名没有匹配；正文找到 2 处，见上方「正文命中」。');
 
   const none = build({ rows: [], query: '张三', shelfContent: { meta: null, loading: false } });
   none.ui.renderShelf();
-  assert.equal(none.dom.map.get('book-grid').children[0].textContent, '没有找到匹配「张三」的书（书名 / 作者 / 分组 / 标签 / 章节名 / 正文都没有）。');
+  assert.equal(none.dom.map.get('book-grid').children[0].dataset.emptyKind, 'filtered');
+  assert.equal(
+    none.dom.map.get('book-grid').children[0].textContent,
+    '没有找到匹配「张三」的书。搜索会看书名 / 作者 / 分组 / 标签 / 章节名，也会在正文里找；换一个更短或更具体的词再试，按 Esc 清空搜索。'
+  );
 });
 
 test('renderShelf 缓存（B6）：书卡内容没变就复用同一批节点，书名 / 最后修改变了才重建', () => {

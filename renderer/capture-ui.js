@@ -70,8 +70,12 @@
     'insertIntoBody'
   ];
 
+  // 1.3.0 T4（I-06）：空状态三件套。列表为空时 summary 说明状态（真空，只驻内存），下面这行给
+  // 学习线索 + 直接路径——都指向现有入口（设置里的后台监听 / Ctrl+Alt+V / 每条记录的「正文」「章节」），
+  // 不加新按钮、不加插画。
   const EMPTY_TEXT =
-    '打开设置里的后台监听后，复制的新文字会各记一条；也可以直接 Ctrl+Alt+V 捕获当前剪贴板。';
+    '在「设置 → 写作统计」里打开「后台监听剪贴板」后，复制的新文字会各记一条；' +
+    '也可以直接按 Ctrl+Alt+V 捕获当前剪贴板的一段。每条记录右侧点「正文」或「章节」处理，处理完就从列表移除。';
   const EMPTY_PREVIEW = '（没有可预览的文字）';
 
   // 插入位置（b11）：新章插到哪——「全书末尾」（默认）/「当前章之后」。
@@ -175,7 +179,7 @@
     function summaryText(records) {
       const queueCount = (panel.queue || []).length;
       const hasPending = Boolean(panel.pendingText && panel.pendingText.trim());
-      if (!records.length) return '本次运行还没有记到复制过的文字（只在本机内存）。';
+      if (!records.length) return '本次运行还没有记到复制过的文字（只在本机内存，关闭应用即清空）。';
       const parts = [];
       if (queueCount > 0) parts.push(`本次运行共记了 ${queueCount} 段`);
       if (hasPending) parts.push('当前剪贴板一段（未入队）');
@@ -254,6 +258,7 @@
       if (emptyEl) {
         const empty = records.length === 0;
         emptyEl.textContent = empty ? EMPTY_TEXT : '';
+        emptyEl.dataset.emptyKind = empty ? 'vacuum' : '';
         emptyEl.classList.toggle('hidden', !empty);
       }
 

@@ -733,6 +733,7 @@ test('正文：pending 条目 → 直接用当前剪贴板原文，不走队列 
     assert.equal(ui.isOpen(), true);
     assert.equal(ui.records().length, 0, 'pending 记录消失');
     assert.equal(ctx.dom.map.get('capture-queue-empty').classList.contains('hidden'), false, '空态提示出现');
+    assert.equal(ctx.dom.map.get('capture-queue-empty').dataset.emptyKind, 'vacuum');
     assert.ok(ctx.log.some((item) => item.startsWith('toast:info:已插入正文')));
   }));
 
@@ -1030,10 +1031,18 @@ test('清空队列：调 IPC、列表清空、空态文案、面板不关、清�
     assert.ok(ctx.log.includes('api.captureQueueClear'));
     assert.equal(ui.records().length, 0);
     assert.equal(ui.isOpen(), true, '清空只清队列，不关面板');
-    assert.match(ui.queueSummaryText(), /还没有记到/);
+    assert.equal(
+      ui.queueSummaryText(),
+      '本次运行还没有记到复制过的文字（只在本机内存，关闭应用即清空）。'
+    );
     const empty = ctx.dom.map.get('capture-queue-empty');
     assert.equal(empty.classList.contains('hidden'), false);
-    assert.match(empty.textContent, /后台监听/);
+    assert.equal(empty.dataset.emptyKind, 'vacuum');
+    assert.equal(
+      empty.textContent,
+      '在「设置 → 写作统计」里打开「后台监听剪贴板」后，复制的新文字会各记一条；' +
+        '也可以直接按 Ctrl+Alt+V 捕获当前剪贴板的一段。每条记录右侧点「正文」或「章节」处理，处理完就从列表移除。'
+    );
     assert.equal(ctx.dom.map.get('btn-capture-queue-clear').disabled, true, '空列表时清空按钮禁用');
     assert.ok(ctx.log.some((item) => item.startsWith('toast:info:已清空本次运行的捕获队列')));
   }));
