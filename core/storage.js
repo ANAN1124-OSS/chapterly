@@ -14,6 +14,7 @@ const historyLib = require('./history');
 const snapshotLib = require('./snapshot');
 const openBooksLib = require('./open-books');
 const errorText = require('./error-text');
+const previewCacheLib = require('./preview-cache');
 
 const BOOK_FILE = '书目.json';
 const BOOK_BAK = '书目.json.bak';
@@ -32,6 +33,10 @@ const CHAPTER_READ_CONCURRENCY = 8;
 // 一批处理完就把这批正文的引用丢掉。分批只改「什么时候读」，不改顺序 / 结果 / 统计口径
 // （tests/book-batch.test.js 钉住跨批等价与批边界）。
 const CHAPTER_BATCH_SIZE = 32;
+// C2（审计 #2 / P2）：「预览 → 执行」正文快照（只存在主进程内存里，见 core/preview-cache.js）。
+// 预览（整本查找 / 整理预检查）把读到的正文连同当时的 mtime / size 记进快照；执行（整本替换 /
+// 整本整理）命中且文件没变就直接复用，不再读第二遍。有 TTL 与容量上界，超了照旧读盘。
+const chapterPreviewCache = previewCacheLib.createPreviewCache();
 
 class StorageError extends Error {
   constructor(code, message) {
@@ -442,6 +447,17 @@ async function verifyBook(bookPath) {
 
 async function loadChapterText(bookPath, file) {
   const p = assertChapterFile(bookPath, file);
+  // C2（审计 #2 / P2）：先 stat 再读 —— 返回的 mtimeMs 必须是「正文被读出来之前」的那一版。
+  // 预览快照拿它做执行阶段的复用校验；反过来（读完再 stat）若正文恰好在两次 IO 之间被改，
+  // 会记下更新的 mtime，执行阶段就会把旧正文当新正文用。正常文件两种顺序的值相同，
+  // 对外语义（text / mtimeMs / size）与读盘结果都不变。
+  let stat;
+  try {
+    stat = await fs.stat(p);
+  } catch (err) {
+    if (err.code === 'ENOENT') throw new StorageError('CHAPTER_MISSING', `章节文件不存在：${file}`);
+    throw err;
+  }
   let raw;
   try {
     raw = await fs.readFile(p, 'utf8');
@@ -449,7 +465,6 @@ async function loadChapterText(bookPath, file) {
     if (err.code === 'ENOENT') throw new StorageError('CHAPTER_MISSING', `章节文件不存在：${file}`);
     throw err;
   }
-  const stat = await fs.stat(p);
   return {
     text: chaptersLib.normalizeNewlines(stripBom(raw)),
     mtimeMs: stat.mtimeMs,
@@ -808,8 +823,78 @@ async function moveChapter(bookPath, chapterId, toIndex) {
   return { meta: saved, moved: true, from, to };
 }
 
+// C2（审计 #2 / P2）：整本操作的「正文读取上下文」。
+// 预览（整本查找 / 整理预检查）走 record：每读一章顺手把正文 + mtime / size 记进快照；
+// 执行（整本替换 / 整本整理）走 reuse：快照里有这一章、且文件的 mtime / size 与预览时一致，
+// 就直接用预览读到的正文（只多一次 stat），否则照旧读盘。
+// 上下文按书路径登记，只影响下面这个 loadTextOrSkip（整本操作的唯一读取点）：
+// chapter:load / 导出 / 搜索索引 / 校对都走别的读取路径，完全不受影响。
+// 同一本书的写操作由 bookQueue 串行（replaceInBook / formatBook 都过 locked）；两本书各用各的键，
+// 并发互不串。预览 / 执行之间作者改过某一章 → mtime 或 size 变了 → 该章回退读盘。
+const chapterReadContexts = new Map();
+
+async function withChapterReadContext(bookPath, context, task) {
+  const key = previewCacheLib.bookKey(bookPath);
+  chapterReadContexts.set(key, context);
+  try {
+    return await task();
+  } finally {
+    // 只清掉「还是自己」的那一份：并发交错时不要误删别人的上下文（删了只是少一次加速，不丢正确性）
+    if (chapterReadContexts.get(key) === context) chapterReadContexts.delete(key);
+  }
+}
+
+// 预览阶段：一边读一边记快照。预览失败就把半份快照丢掉，不在内存里留没用的正文。
+async function withPreviewSnapshot(bookPath, task) {
+  const snapshot = chapterPreviewCache.begin(bookPath);
+  try {
+    return await withChapterReadContext(bookPath, { snapshot, record: true }, task);
+  } catch (err) {
+    chapterPreviewCache.drop(snapshot);
+    throw err;
+  }
+}
+
+// 执行阶段：有快照就试着复用（命中判定在 loadTextOrSkip 里按 mtime + size 做），用完立即释放。
+// 没有快照（没预览直接执行 / 过期 / 容量淘汰）→ 原样读盘，行为与 C1 之前完全一致。
+async function withReusedSnapshot(bookPath, task) {
+  const snapshot = chapterPreviewCache.take(bookPath);
+  if (!snapshot) return task();
+  try {
+    return await withChapterReadContext(bookPath, { snapshot, record: false }, task);
+  } finally {
+    chapterPreviewCache.drop(snapshot);
+  }
+}
+
+// 上下文里的读：返回 loaded / null（缺文件）；返回 undefined = 「没结论，走普通读盘」。
+async function loadChapterThroughContext(bookPath, chapter, context) {
+  if (context.record) {
+    const loaded = await loadChapterText(bookPath, chapter.file);
+    context.snapshot.remember(chapter.file, loaded);
+    return loaded;
+  }
+  const entry = context.snapshot.lookup(chapter.file);
+  if (!entry) return undefined;
+  let stat;
+  try {
+    stat = await statChapter(bookPath, chapter.file);
+  } catch (err) {
+    // 预览之后这一章被删 / 被移走：按缺章跳过，与读盘路径的 CHAPTER_MISSING 同口径
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  if (entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) return undefined;
+  return { text: entry.text, mtimeMs: stat.mtimeMs, size: stat.size };
+}
+
 async function loadTextOrSkip(bookPath, chapter) {
   try {
+    const context = chapterReadContexts.get(previewCacheLib.bookKey(bookPath));
+    if (context) {
+      const fromContext = await loadChapterThroughContext(bookPath, chapter, context);
+      if (fromContext !== undefined) return fromContext;
+    }
     return await loadChapterText(bookPath, chapter.file);
   } catch (err) {
     if (err.code === 'CHAPTER_MISSING') return null; // 缺文件的章节直接跳过，别让查找整个失败
@@ -842,27 +927,30 @@ async function searchBook(bookPath, options = {}) {
   const results = [];
   let totalMatches = 0;
   // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行），本批处理完即释放，不再整本常驻
-  await forEachChapterBatch(bookPath, meta.chapters, (loadedTexts, start) => {
-    for (let offset = 0; offset < loadedTexts.length; offset += 1) {
-      const chapter = meta.chapters[start + offset];
-      const loaded = loadedTexts[offset];
-      if (!loaded) continue;
-      const matches = findLib.findMatches(loaded.text, query, { caseSensitive });
-      if (!matches.length) continue;
-      totalMatches += matches.length;
-      results.push({
-        chapterId: chapter.id,
-        file: chapter.file,
-        name: chapter.name,
-        count: matches.length,
-        matches: matches.slice(0, 12).map((match) => ({
-          index: match.index,
-          length: match.length,
-          ...findLib.makeSnippet(loaded.text, match.index, match.length)
-        }))
-      });
-    }
-  });
+  // C2（审计 #2 / P2）：预览阶段顺手把读到的正文记进快照，紧接着的执行（整本替换）直接复用
+  await withPreviewSnapshot(bookPath, () =>
+    forEachChapterBatch(bookPath, meta.chapters, (loadedTexts, start) => {
+      for (let offset = 0; offset < loadedTexts.length; offset += 1) {
+        const chapter = meta.chapters[start + offset];
+        const loaded = loadedTexts[offset];
+        if (!loaded) continue;
+        const matches = findLib.findMatches(loaded.text, query, { caseSensitive });
+        if (!matches.length) continue;
+        totalMatches += matches.length;
+        results.push({
+          chapterId: chapter.id,
+          file: chapter.file,
+          name: chapter.name,
+          count: matches.length,
+          matches: matches.slice(0, 12).map((match) => ({
+            index: match.index,
+            length: match.length,
+            ...findLib.makeSnippet(loaded.text, match.index, match.length)
+          }))
+        });
+      }
+    })
+  );
   return { query, caseSensitive, totalMatches, chapterCount: results.length, results };
 }
 
@@ -884,25 +972,29 @@ async function replaceInBook(bookPath, options = {}) {
   try {
     // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行）；写盘仍然逐章串行、按书目顺序，
     // 中途失败时 batchFailure 报告「已经替换几章」的语义与以前完全一致。
-    await forEachChapterBatch(bookPath, meta.chapters, async (loadedTexts, start) => {
-      for (let offset = 0; offset < loadedTexts.length; offset += 1) {
-        const chapter = meta.chapters[start + offset];
-        const loaded = loadedTexts[offset];
-        if (!loaded) continue;
-        const res = findLib.replaceAllLiteral(loaded.text, query, replacement, { caseSensitive });
-        if (!res.count) continue;
-        if (!backupCreated) {
-          backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), REPLACE_BACKUP_PREFIX);
-          await ensureDir(backupDir);
-          backupCreated = true;
+    // C2（审计 #2 / P2）：紧挨着的整本查找预览已经把正文读进快照 → 文件没变的章直接复用，
+    // 替换算法（replaceAllLiteral）仍在执行阶段按最新正文重算，结果与「再读一遍」逐字一致。
+    await withReusedSnapshot(bookPath, () =>
+      forEachChapterBatch(bookPath, meta.chapters, async (loadedTexts, start) => {
+        for (let offset = 0; offset < loadedTexts.length; offset += 1) {
+          const chapter = meta.chapters[start + offset];
+          const loaded = loadedTexts[offset];
+          if (!loaded) continue;
+          const res = findLib.replaceAllLiteral(loaded.text, query, replacement, { caseSensitive });
+          if (!res.count) continue;
+          if (!backupCreated) {
+            backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), REPLACE_BACKUP_PREFIX);
+            await ensureDir(backupDir);
+            backupCreated = true;
+          }
+          await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
+          await saveChapterText(bookPath, chapter.file, res.text);
+          chapter.chars = chaptersLib.countChars(res.text);
+          chaptersChanged += 1;
+          occurrences += res.count;
         }
-        await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
-        await saveChapterText(bookPath, chapter.file, res.text);
-        chapter.chars = chaptersLib.countChars(res.text);
-        chaptersChanged += 1;
-        occurrences += res.count;
-      }
-    });
+      })
+    );
     if (chaptersChanged) await writeBookMeta(bookPath, meta);
   } catch (err) {
     // 中途失败（磁盘满 / 杀软占住 / 某个章节文件只读）：已经替换掉的章不能"当没发生过"，
@@ -953,18 +1045,21 @@ async function previewFormatBook(bookPath, options = {}) {
   const stats = emptyFormatStats();
   const changed = [];
   // C1（审计 #1 / P1）：预览也是按批读（只读不写），结果仍按书目顺序汇总
-  await forEachChapterBatch(bookPath, meta.chapters, (loadedTexts, start) => {
-    for (let offset = 0; offset < loadedTexts.length; offset += 1) {
-      const index = start + offset;
-      const chapter = meta.chapters[index];
-      const loaded = loadedTexts[offset];
-      if (!loaded) continue;
-      const res = formatLib.formatText(loaded.text, options);
-      if (!res.changed) continue;
-      addFormatStats(stats, res.stats);
-      changed.push({ index, file: chapter.file, name: chapter.name || '' });
-    }
-  });
+  // C2（审计 #2 / P2）：预检查读到的正文连同 mtime / size 记进快照，执行（整本整理）直接复用
+  await withPreviewSnapshot(bookPath, () =>
+    forEachChapterBatch(bookPath, meta.chapters, (loadedTexts, start) => {
+      for (let offset = 0; offset < loadedTexts.length; offset += 1) {
+        const index = start + offset;
+        const chapter = meta.chapters[index];
+        const loaded = loadedTexts[offset];
+        if (!loaded) continue;
+        const res = formatLib.formatText(loaded.text, options);
+        if (!res.changed) continue;
+        addFormatStats(stats, res.stats);
+        changed.push({ index, file: chapter.file, name: chapter.name || '' });
+      }
+    })
+  );
   return {
     bookTitle: meta.title,
     chapterCount: meta.chapters.length,
@@ -987,32 +1082,36 @@ async function formatBook(bookPath, options = {}, onProgress) {
   try {
     // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行）；写盘仍然逐章串行、按书目顺序。
     // 进度回调仍在写盘阶段按章上报，done 从 1 连续走到 total（语义不变，只是跟着批次前进）。
-    await forEachChapterBatch(bookPath, meta.chapters, async (loadedTexts, start) => {
-      for (let offset = 0; offset < loadedTexts.length; offset += 1) {
-        const index = start + offset;
-        const chapter = meta.chapters[index];
-        if (typeof onProgress === 'function') {
-          try {
-            onProgress({ done: index + 1, total, index, name: chapter.name || '' });
-          } catch { /* 进度回调出错不影响整理 */ }
+    // C2（审计 #2 / P2）：紧挨着的预检查已经把正文读进快照 → 文件没变的章直接复用，
+    // formatText 仍在执行阶段按最新正文重算，结果 / 统计 / 备份与「再读一遍」逐字一致。
+    await withReusedSnapshot(bookPath, () =>
+      forEachChapterBatch(bookPath, meta.chapters, async (loadedTexts, start) => {
+        for (let offset = 0; offset < loadedTexts.length; offset += 1) {
+          const index = start + offset;
+          const chapter = meta.chapters[index];
+          if (typeof onProgress === 'function') {
+            try {
+              onProgress({ done: index + 1, total, index, name: chapter.name || '' });
+            } catch { /* 进度回调出错不影响整理 */ }
+          }
+          const loaded = loadedTexts[offset];
+          if (!loaded) continue;
+          const res = formatLib.formatText(loaded.text, options);
+          if (!res.changed) continue;
+          if (!backupCreated) {
+            backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), FORMAT_BACKUP_PREFIX);
+            await ensureDir(backupDir);
+            backupCreated = true;
+          }
+          // 先备份原文再写盘：整理也是「改正文」的显式动作，必须留退路
+          await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
+          await saveChapterText(bookPath, chapter.file, res.text);
+          chapter.chars = chaptersLib.countChars(res.text);
+          addFormatStats(stats, res.stats);
+          changed.push({ index, file: chapter.file, name: chapter.name || '' });
         }
-        const loaded = loadedTexts[offset];
-        if (!loaded) continue;
-        const res = formatLib.formatText(loaded.text, options);
-        if (!res.changed) continue;
-        if (!backupCreated) {
-          backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), FORMAT_BACKUP_PREFIX);
-          await ensureDir(backupDir);
-          backupCreated = true;
-        }
-        // 先备份原文再写盘：整理也是「改正文」的显式动作，必须留退路
-        await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
-        await saveChapterText(bookPath, chapter.file, res.text);
-        chapter.chars = chaptersLib.countChars(res.text);
-        addFormatStats(stats, res.stats);
-        changed.push({ index, file: chapter.file, name: chapter.name || '' });
-      }
-    });
+      })
+    );
     if (changed.length) await writeBookMeta(bookPath, meta);
   } catch (err) {
     // 半途失败：已经整理好的章节是真写进去了（每章原子写、改前有备份），
