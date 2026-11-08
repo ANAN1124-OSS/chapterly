@@ -981,7 +981,12 @@ function setupCloseIpc() {
     // 若它仍上报有未保存修改（session.dirty），只有主进程看到过「变脏之后的一次保存成功回执」
     // 才放行；否则拦下并记日志（防止渲染层一个坏回包把没保存的内容丢掉）。
     // 「不保存退出」是作者主动丢弃：渲染层会先把脏状态清成 false 再回 allowed=true（见 renderer）。
-    const savedAfterDirty = session.lastSaveAt > 0 && session.lastSaveAt >= session.dirtyAt;
+    // N3（审计 #22）：回执必须**严格晚于**这次变脏的上升沿才放行。两个时间戳都取 Date.now()（毫秒
+    // 精度），「保存回执」与「再次变脏」落在同一毫秒时先后不可分辨：>= 会按「已保存」放行，最坏丢掉
+    // 这几毫秒内的编辑；改成 > 把方向翻成「宁可多拦一次」——多拦只影响这一次关窗（再点一次关闭即可），
+    // 而正常「保存成功后关闭」路径里渲染层会先把 app:dirty(false) 报上来（session.dirty 为 false），
+    // 不依赖这条回执，所以不受影响。
+    const savedAfterDirty = session.lastSaveAt > 0 && session.lastSaveAt > session.dirtyAt;
     const okToClose = Boolean(allowed) && (!session.dirty || savedAfterDirty);
     if (Boolean(allowed) && !okToClose) {
       logError(

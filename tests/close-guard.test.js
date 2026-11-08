@@ -40,12 +40,26 @@ test('静态闸门：主进程用 session.dirty + 最近保存回执交叉判定
   assert.match(dirtySrc, /if \(!next\) session\.dirtyAt = 0;/, '回到干净要清零');
   // close-ready：allowed 之外还要看 dirty / 回执
   const closeSrc = between(MAIN, "ipcMain.on('app:close-ready'", '\n  });');
-  assert.match(closeSrc, /const savedAfterDirty = session\.lastSaveAt > 0 && session\.lastSaveAt >= session\.dirtyAt;/);
+  assert.match(closeSrc, /const savedAfterDirty = session\.lastSaveAt > 0 && session\.lastSaveAt > session\.dirtyAt;/);
   assert.match(closeSrc, /const okToClose = Boolean\(allowed\) && \(!session\.dirty \|\| savedAfterDirty\);/);
   assert.match(closeSrc, /code: 'CLOSE_DIRTY'/, '被拦下要留一条日志，方便排查「关不掉窗」');
   // e2eCloseReady 记录的必须是主进程判定后的结果（E2E 用它断言，语义不能退化成 allowed）
   assert.match(closeSrc, /session\.e2eCloseReady = okToClose;/);
   assert.match(closeSrc, /e2eLastCloseReady = okToClose;/);
+});
+
+test('静态闸门 + 时序：同毫秒的保存回执不放行关窗（N3：宁可多拦一次）', () => {
+  const closeSrc = between(MAIN, "ipcMain.on('app:close-ready'", '\n  });');
+  const m = closeSrc.match(
+    /const savedAfterDirty = session\.lastSaveAt > 0 && session\.lastSaveAt (>=|>) session\.dirtyAt;/
+  );
+  assert.ok(m, '找不到关窗交叉判定的比较表达式');
+  assert.equal(m[1], '>', '必须严格晚于：同毫秒时宁可多拦一次，不能按「可能丢几毫秒编辑」放行');
+  // 用源码里的运算符复算三种时序（不是把语义再抄一遍）：同毫秒 → 拦；确实晚于 → 放行；无回执 → 拦。
+  const decide = (lastSaveAt, dirtyAt) => lastSaveAt > 0 && (m[1] === '>' ? lastSaveAt > dirtyAt : lastSaveAt >= dirtyAt);
+  assert.equal(decide(1000, 1000), false, '同一毫秒的保存回执与再次变脏 → 不放行');
+  assert.equal(decide(1001, 1000), true, '保存回执确实晚于变脏 → 放行');
+  assert.equal(decide(0, 0), false, '没有保存回执 → 不放行');
 });
 
 test('静态闸门：渲染层「不保存退出」先如实清掉脏状态，再放行关窗（E5/S5）', () => {
