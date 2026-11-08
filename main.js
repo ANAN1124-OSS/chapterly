@@ -2245,11 +2245,12 @@ function registerIpc() {
     if (canceled || !filePath) return { canceled: true };
     // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）
     const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
-    const composed = exporter.composeBook(meta, texts, safeRange);
     // 简繁转换只作用于这份导出副本：字数仍按原稿算，磁盘上的章节 txt / 书目一个字节都不动
     const conversion = s2tLib.normalizeMode(cfg.exportConversion);
-    const text = s2tLib.convertText(composed, conversion);
-    await atomicWriteFile(filePath, exporter.exportBufferFromText(text));
+    // C1（审计 #1 / P3）：compose → 转换 → 出字节在 buildTxtExport 里串成一条链，每步之后
+    // 立刻放掉上一份整本数据（texts 数组同时被就地清空），导出字节与以前逐字节一致。
+    const buffer = exporter.buildTxtExport(meta, texts, safeRange, conversion, s2tLib.convertText);
+    await atomicWriteFile(filePath, buffer);
     // 记住这次导出的目录，下次导出默认还开在这里（记不住也不影响导出结果）
     await rememberExportDir(path.dirname(filePath));
     return {
@@ -2283,10 +2284,10 @@ function registerIpc() {
     // 书目与章节 txt 一概不动（chars 仍按原稿字数算）。
     const conversion = s2tLib.normalizeMode(cfg.exportConversion);
     const exportMeta = s2tLib.convertMeta(meta, conversion);
-    const exportTexts = conversion
-      ? texts.map((text) => s2tLib.convertText(text, conversion))
-      : texts;
-    const built = epubLib.buildEpub({ meta: exportMeta, texts: exportTexts, range: safeRange });
+    // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
+    exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
+    const built = epubLib.buildEpub({ meta: exportMeta, texts, range: safeRange });
+    exporter.releaseTexts(texts);
     await atomicWriteFile(filePath, built.buffer);
     await rememberExportDir(path.dirname(filePath));
     return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, plan);
@@ -2310,10 +2311,10 @@ function registerIpc() {
     // 简繁转换：书名 / 卷名 / 章名 / 正文都换成导出用的副本（书目与章节 txt 一概不动）
     const conversion = s2tLib.normalizeMode(cfg.exportConversion);
     const exportMeta = s2tLib.convertMeta(meta, conversion);
-    const exportTexts = conversion
-      ? texts.map((text) => s2tLib.convertText(text, conversion))
-      : texts;
-    const built = docxLib.buildDocx({ meta: exportMeta, texts: exportTexts, range: safeRange });
+    // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
+    exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
+    const built = docxLib.buildDocx({ meta: exportMeta, texts, range: safeRange });
+    exporter.releaseTexts(texts);
     await atomicWriteFile(filePath, built.buffer);
     await rememberExportDir(path.dirname(filePath));
     return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, plan);

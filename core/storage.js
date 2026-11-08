@@ -27,6 +27,11 @@ const FORMAT_BACKUP_PREFIX = '整理备份-';
 // B4（审计 P4）：整本操作逐章读盘时并行读的章数。读是 IO 等待，串行会让「整本查找 /
 // 替换 / 整理 / 导出 / 校对」在几百章的书上白等；写盘仍然串行且按原顺序（见各函数注释）。
 const CHAPTER_READ_CONCURRENCY = 8;
+// C1（审计 #1 / P1）：整本操作按批读正文的批大小。以前「全书 texts 一次读进数组再处理」，
+// 1000 章 × 1 MB ≈ 1 GB 常驻主进程；现在每批最多 32 章，批内仍然限并发 8，
+// 一批处理完就把这批正文的引用丢掉。分批只改「什么时候读」，不改顺序 / 结果 / 统计口径
+// （tests/book-batch.test.js 钉住跨批等价与批边界）。
+const CHAPTER_BATCH_SIZE = 32;
 
 class StorageError extends Error {
   constructor(code, message) {
@@ -812,37 +817,52 @@ async function loadTextOrSkip(bookPath, chapter) {
   }
 }
 
+// C1（审计 #1 / P1）：按批读整本正文 —— 每批 ≤ CHAPTER_BATCH_SIZE 章，批内仍然限并发
+// （CHAPTER_READ_CONCURRENCY），读出来交给 onBatch(texts, startIndex) 处理；批与批严格串行，
+// 所以处理顺序 / 结果与「一次读完整个数组再处理」逐字一致，只是不再把全书正文同时常驻。
+// 缺文件的章仍返回 null（loadTextOrSkip 语义不变）。读取抛错照旧整本失败；
+// 对整本替换 / 整理来说，此时**前面的批次可能已经写盘**——与「写入中途失败」同一套
+// batchFailure 口径（错误里如实报「已经改了几章 + 备份目录」）。
+async function forEachChapterBatch(bookPath, chapters, onBatch) {
+  for (let start = 0; start < chapters.length; start += CHAPTER_BATCH_SIZE) {
+    const batch = chapters.slice(start, start + CHAPTER_BATCH_SIZE);
+    const texts = await mapLimit(batch, CHAPTER_READ_CONCURRENCY, (chapter) =>
+      loadTextOrSkip(bookPath, chapter)
+    );
+    await onBatch(texts, start);
+  }
+}
+
 // 全书查找：逐章读正文，返回命中章节 + 前几处上下文（只读，不写盘）
 async function searchBook(bookPath, options = {}) {
   const query = String(options.query == null ? '' : options.query);
   if (!query.trim()) throw new StorageError('EMPTY_QUERY', '查找内容不能为空');
   const caseSensitive = Boolean(options.caseSensitive);
   const meta = await readBookMeta(bookPath);
-  // B4（审计 P4）：先把各章正文并行读出来（顺序不变），再按原顺序算命中 / 结果
-  const loadedTexts = await mapLimit(meta.chapters, CHAPTER_READ_CONCURRENCY, (chapter) =>
-    loadTextOrSkip(bookPath, chapter)
-  );
   const results = [];
   let totalMatches = 0;
-  for (let i = 0; i < meta.chapters.length; i += 1) {
-    const chapter = meta.chapters[i];
-    const loaded = loadedTexts[i];
-    if (!loaded) continue;
-    const matches = findLib.findMatches(loaded.text, query, { caseSensitive });
-    if (!matches.length) continue;
-    totalMatches += matches.length;
-    results.push({
-      chapterId: chapter.id,
-      file: chapter.file,
-      name: chapter.name,
-      count: matches.length,
-      matches: matches.slice(0, 12).map((match) => ({
-        index: match.index,
-        length: match.length,
-        ...findLib.makeSnippet(loaded.text, match.index, match.length)
-      }))
-    });
-  }
+  // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行），本批处理完即释放，不再整本常驻
+  await forEachChapterBatch(bookPath, meta.chapters, (loadedTexts, start) => {
+    for (let offset = 0; offset < loadedTexts.length; offset += 1) {
+      const chapter = meta.chapters[start + offset];
+      const loaded = loadedTexts[offset];
+      if (!loaded) continue;
+      const matches = findLib.findMatches(loaded.text, query, { caseSensitive });
+      if (!matches.length) continue;
+      totalMatches += matches.length;
+      results.push({
+        chapterId: chapter.id,
+        file: chapter.file,
+        name: chapter.name,
+        count: matches.length,
+        matches: matches.slice(0, 12).map((match) => ({
+          index: match.index,
+          length: match.length,
+          ...findLib.makeSnippet(loaded.text, match.index, match.length)
+        }))
+      });
+    }
+  });
   return { query, caseSensitive, totalMatches, chapterCount: results.length, results };
 }
 
@@ -862,28 +882,27 @@ async function replaceInBook(bookPath, options = {}) {
   let occurrences = 0;
   let backupCreated = false;
   try {
-    // B4（审计 P4）：正文并行读（顺序不变）；写盘仍然逐章串行、按书目顺序，
+    // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行）；写盘仍然逐章串行、按书目顺序，
     // 中途失败时 batchFailure 报告「已经替换几章」的语义与以前完全一致。
-    const loadedTexts = await mapLimit(meta.chapters, CHAPTER_READ_CONCURRENCY, (chapter) =>
-      loadTextOrSkip(bookPath, chapter)
-    );
-    for (let i = 0; i < meta.chapters.length; i += 1) {
-      const chapter = meta.chapters[i];
-      const loaded = loadedTexts[i];
-      if (!loaded) continue;
-      const res = findLib.replaceAllLiteral(loaded.text, query, replacement, { caseSensitive });
-      if (!res.count) continue;
-      if (!backupCreated) {
-        backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), REPLACE_BACKUP_PREFIX);
-        await ensureDir(backupDir);
-        backupCreated = true;
+    await forEachChapterBatch(bookPath, meta.chapters, async (loadedTexts, start) => {
+      for (let offset = 0; offset < loadedTexts.length; offset += 1) {
+        const chapter = meta.chapters[start + offset];
+        const loaded = loadedTexts[offset];
+        if (!loaded) continue;
+        const res = findLib.replaceAllLiteral(loaded.text, query, replacement, { caseSensitive });
+        if (!res.count) continue;
+        if (!backupCreated) {
+          backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), REPLACE_BACKUP_PREFIX);
+          await ensureDir(backupDir);
+          backupCreated = true;
+        }
+        await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
+        await saveChapterText(bookPath, chapter.file, res.text);
+        chapter.chars = chaptersLib.countChars(res.text);
+        chaptersChanged += 1;
+        occurrences += res.count;
       }
-      await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
-      await saveChapterText(bookPath, chapter.file, res.text);
-      chapter.chars = chaptersLib.countChars(res.text);
-      chaptersChanged += 1;
-      occurrences += res.count;
-    }
+    });
     if (chaptersChanged) await writeBookMeta(bookPath, meta);
   } catch (err) {
     // 中途失败（磁盘满 / 杀软占住 / 某个章节文件只读）：已经替换掉的章不能"当没发生过"，
@@ -933,19 +952,19 @@ async function previewFormatBook(bookPath, options = {}) {
   const meta = await readBookMeta(bookPath);
   const stats = emptyFormatStats();
   const changed = [];
-  // B4（审计 P4）：预览是只读的，正文并行读，结果仍按书目顺序汇总
-  const loadedTexts = await mapLimit(meta.chapters, CHAPTER_READ_CONCURRENCY, (chapter) =>
-    loadTextOrSkip(bookPath, chapter)
-  );
-  for (let i = 0; i < meta.chapters.length; i += 1) {
-    const chapter = meta.chapters[i];
-    const loaded = loadedTexts[i];
-    if (!loaded) continue;
-    const res = formatLib.formatText(loaded.text, options);
-    if (!res.changed) continue;
-    addFormatStats(stats, res.stats);
-    changed.push({ index: i, file: chapter.file, name: chapter.name || '' });
-  }
+  // C1（审计 #1 / P1）：预览也是按批读（只读不写），结果仍按书目顺序汇总
+  await forEachChapterBatch(bookPath, meta.chapters, (loadedTexts, start) => {
+    for (let offset = 0; offset < loadedTexts.length; offset += 1) {
+      const index = start + offset;
+      const chapter = meta.chapters[index];
+      const loaded = loadedTexts[offset];
+      if (!loaded) continue;
+      const res = formatLib.formatText(loaded.text, options);
+      if (!res.changed) continue;
+      addFormatStats(stats, res.stats);
+      changed.push({ index, file: chapter.file, name: chapter.name || '' });
+    }
+  });
   return {
     bookTitle: meta.title,
     chapterCount: meta.chapters.length,
@@ -966,34 +985,34 @@ async function formatBook(bookPath, options = {}, onProgress) {
   let backupDir = null;
   let backupCreated = false;
   try {
-    // B4（审计 P4）：正文并行读（顺序不变）；写盘仍然逐章串行、按书目顺序。
-    // 进度回调仍在写盘阶段按章上报（done / total 语义不变）。
-    const loadedTexts = await mapLimit(meta.chapters, CHAPTER_READ_CONCURRENCY, (chapter) =>
-      loadTextOrSkip(bookPath, chapter)
-    );
-    for (let i = 0; i < meta.chapters.length; i += 1) {
-      const chapter = meta.chapters[i];
-      if (typeof onProgress === 'function') {
-        try {
-          onProgress({ done: i + 1, total, index: i, name: chapter.name || '' });
-        } catch { /* 进度回调出错不影响整理 */ }
+    // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行）；写盘仍然逐章串行、按书目顺序。
+    // 进度回调仍在写盘阶段按章上报，done 从 1 连续走到 total（语义不变，只是跟着批次前进）。
+    await forEachChapterBatch(bookPath, meta.chapters, async (loadedTexts, start) => {
+      for (let offset = 0; offset < loadedTexts.length; offset += 1) {
+        const index = start + offset;
+        const chapter = meta.chapters[index];
+        if (typeof onProgress === 'function') {
+          try {
+            onProgress({ done: index + 1, total, index, name: chapter.name || '' });
+          } catch { /* 进度回调出错不影响整理 */ }
+        }
+        const loaded = loadedTexts[offset];
+        if (!loaded) continue;
+        const res = formatLib.formatText(loaded.text, options);
+        if (!res.changed) continue;
+        if (!backupCreated) {
+          backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), FORMAT_BACKUP_PREFIX);
+          await ensureDir(backupDir);
+          backupCreated = true;
+        }
+        // 先备份原文再写盘：整理也是「改正文」的显式动作，必须留退路
+        await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
+        await saveChapterText(bookPath, chapter.file, res.text);
+        chapter.chars = chaptersLib.countChars(res.text);
+        addFormatStats(stats, res.stats);
+        changed.push({ index, file: chapter.file, name: chapter.name || '' });
       }
-      const loaded = loadedTexts[i];
-      if (!loaded) continue;
-      const res = formatLib.formatText(loaded.text, options);
-      if (!res.changed) continue;
-      if (!backupCreated) {
-        backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), FORMAT_BACKUP_PREFIX);
-        await ensureDir(backupDir);
-        backupCreated = true;
-      }
-      // 先备份原文再写盘：整理也是「改正文」的显式动作，必须留退路
-      await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
-      await saveChapterText(bookPath, chapter.file, res.text);
-      chapter.chars = chaptersLib.countChars(res.text);
-      addFormatStats(stats, res.stats);
-      changed.push({ index: i, file: chapter.file, name: chapter.name || '' });
-    }
+    });
     if (changed.length) await writeBookMeta(bookPath, meta);
   } catch (err) {
     // 半途失败：已经整理好的章节是真写进去了（每章原子写、改前有备份），

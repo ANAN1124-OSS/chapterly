@@ -159,6 +159,36 @@ function exportBuffer(meta, texts) {
   return exportBufferFromText(composeBook(meta, texts));
 }
 
+// C1（审计 #1 / P3）：TXT 导出的整本串峰值收敛。compose → 简繁转换 → UTF-8 字节三段都要
+// 一整份「全书串」，但每一步做完上一份就用不上了：这里把它们串成一条链，每步之后立刻丢掉
+// 上一份引用（内存吃紧时 GC 能先回收），峰值从约 4 份降到约 2 份。
+// texts 数组会被**就地清空**：调用方传进来的都是本次刚读出来的数组，导出返回后不再需要它。
+// 输出与 exportBufferFromText(convertText(composeBook(meta, texts, range), conversion)) 逐字节一致。
+function buildTxtExport(meta, texts, range, conversion, convertText) {
+  const source = Array.isArray(texts) ? texts : [];
+  let composed = composeBook(meta, source, range);
+  source.length = 0; // ① compose 完：整本正文数组可以放了
+  const converted = typeof convertText === 'function' ? convertText(composed, conversion) : composed;
+  composed = null; // ② 转换完：未转换的整本串可以放了
+  return exportBufferFromText(converted); // ③ BOM + 串 → Buffer
+}
+
+// C1（审计 #1 / P3）：EPUB / DOCX 导出只需要转换后的正文，额外建一份 `texts.map(convertText)`
+// 等于多占一整份全书正文；就地替换数组元素即可。conversion 为空 / 没给转换函数时原样返回
+// （连遍历都不做，正常导出零开销）。只改数组元素，不改数组对象本身。
+function convertTextsInPlace(texts, conversion, convertText) {
+  const list = Array.isArray(texts) ? texts : [];
+  if (!conversion || typeof convertText !== 'function') return list;
+  for (let i = 0; i < list.length; i += 1) list[i] = convertText(list[i], conversion);
+  return list;
+}
+
+// C1（审计 #1 / P3）：整本正文数组用完即清（只清元素，数组对象本身不变；非数组原样忽略）。
+// EPUB / DOCX 的 buffer 已经在 build 时产出，之后不再需要任何一章原文。
+function releaseTexts(texts) {
+  if (Array.isArray(texts)) texts.length = 0;
+}
+
 // 按 chapterId（优先）/ chapterFile 找章节下标；找不到返回 -1。
 // 「复制本章」只要指定是哪一章，不用带正文；导出覆盖判断则要求必须有 text（见 chapterIndexOf）。
 function chapterRefIndex(meta, ref) {
@@ -224,6 +254,9 @@ module.exports = {
   exportFileName,
   exportBuffer,
   exportBufferFromText,
+  buildTxtExport,
+  convertTextsInPlace,
+  releaseTexts,
   cachedCharsOf,
   chapterIndexOf,
   chapterRefIndex,
