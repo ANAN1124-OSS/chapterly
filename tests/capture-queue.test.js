@@ -108,7 +108,7 @@ test('空文本 / 全空白不记；与最新一条完全相同不重复记（�
   assert.equal(queue.size(), 3);
 });
 
-test('单条超上限不入队（reason=too-large）；上限值可覆盖，默认 10 万字', () => {
+test('单条超上限不入队（reason=too-large）；上限值可覆盖，默认 30 万字', () => {
   const queue = queueLib.createCaptureQueue({ maxEntryChars: 10 });
   const tooLarge = queue.add('字'.repeat(11));
   assert.equal(tooLarge.added, false);
@@ -117,6 +117,11 @@ test('单条超上限不入队（reason=too-large）；上限值可覆盖，默�
   assert.equal(queue.size(), 0);
   assert.equal(queue.add('字'.repeat(10)).added, true);
   assert.equal(queueLib.createCaptureQueue({ maxEntryChars: 0 }).maxEntryChars, queueLib.DEFAULT_MAX_ENTRY_CHARS, '坏值回默认');
+  // 2026-11-08：默认上限提到 30 万字，且必须与 core/capture.js 的捕获正文上限是同一个数
+  const defaults = queueLib.createCaptureQueue();
+  assert.equal(defaults.maxEntryChars, 300000);
+  assert.equal(defaults.maxEntryChars, capture.MAX_BODY_CHARS, '队列单条上限必须跟着捕获正文上限');
+  assert.equal(defaults.maxTotalChars, 3000000, '总量上限同步放大到 300 万字（10 条满额）');
 });
 
 test('条数上限：超过 maxEntries 淘汰最旧的；列表仍按旧 → 新', () => {

@@ -86,7 +86,7 @@ const captureLib = require('./core/capture');
 const captureQueueLib = require('./core/capture-queue');
 const { createKeyedDebouncer } = require('./core/debounce');
 const clipboardWatchLib = require('./core/clipboard-watch');
-const { mapLimit } = require('./core/common');
+const { mapLimit, formatCount } = require('./core/common');
 // B4（审计 P4）：整本操作逐章读盘的并行度（读是 IO 等待；写盘仍串行、按原顺序）
 const CHAPTER_READ_CONCURRENCY = 8;
 
@@ -1271,15 +1271,16 @@ function registerIpc() {
   handleBook('capture:commit-record', async (bookPath, payload) => {
     const data = payload && typeof payload === 'object' ? payload : {};
     const text = data.text;
-    // 单条上限沿用捕获正文上限（10 万字）：入了队的记录本来就 ≤10 万字，直捕超限在渲染层已被
-    // 引导去「导入小说」；这里再挡一次是防手误 / 绕过界面，超限拆段比硬写进一章更合理。
+    // 单条上限沿用捕获正文上限（2026-11-08 起 30 万字）：入了队的记录本来就 ≤30 万字，直捕超限在
+    // 渲染层已被引导去「导入小说」；这里再挡一次是防手误 / 绕过界面，超限拆段比硬写进一章更合理。
     if (typeof text !== 'string' || !text.trim()) {
       throw new captureLib.CaptureError('BAD_TEXT', '捕获内容格式不对');
     }
     if (text.length > captureLib.MAX_BODY_CHARS) {
       throw new captureLib.CaptureError(
         'TOO_LARGE',
-        `内容太长（${text.length} 字，最多 10 万字）；请先拆成多段再捕获`
+        `内容太长（${formatCount(text.length)} 字，最多 ${formatCount(captureLib.MAX_BODY_CHARS)} 字）；` +
+          '请先拆成多段再捕获'
       );
     }
     const parts = captureLib.splitRecordTitle(text);

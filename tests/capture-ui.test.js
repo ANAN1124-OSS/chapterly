@@ -947,7 +947,7 @@ test('章节：写盘失败 → toast error、记录保留、面板不关、不�
     assert.ok(ctx.log.some((item) => item.startsWith('toast:error:新建章节失败：磁盘只读')));
   }));
 
-test('章节：直捕 >10 万字 → 不调写盘 IPC、toast + 显示「去导入小说…」；普通捕获不显示', () =>
+test('章节：直捕 >30 万字 → 不调写盘 IPC、toast + 显示「去导入小说…」；普通捕获不显示', () =>
   withFakeDocument(async () => {
     const huge = '字'.repeat(capture.MAX_BODY_CHARS + 10);
     const ctx = build({ clipboardText: huge });

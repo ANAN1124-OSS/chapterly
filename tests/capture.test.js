@@ -43,7 +43,8 @@ test('正字数口径走 core/chapters.js 同一份：空白（含全角空格 /
 test('常量与错误类型保留', () => {
   assert.equal(capture.MAX_NAME_LENGTH, 40);
   assert.equal(capture.MAX_TITLE_LENGTH, 40, '旧名字保留（渲染层过去的引用）');
-  assert.equal(capture.MAX_BODY_CHARS, 100000);
+  // 2026-11-08 作者拍板：单条捕获正文上限 10 万 → 30 万字（与标记层 30 万字阈值对齐）
+  assert.equal(capture.MAX_BODY_CHARS, 300000);
   const err = new capture.CaptureError('TOO_LARGE', 'x');
   assert.equal(err.name, 'CaptureError');
   assert.equal(err.code, 'TOO_LARGE');

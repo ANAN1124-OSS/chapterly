@@ -3195,7 +3195,7 @@
     $('capture-position').addEventListener('change', () => {
       captureUi.setPosition($('capture-position').value);
     });
-    // b9（捕获超限 >10 万字）：面板只给分步引导 —— 关面板 → 回书架 → 打开「导入小说」对话框。
+    // b9（捕获超限 >30 万字）：面板只给分步引导 —— 关面板 → 回书架 → 打开「导入小说」对话框。
     // 绝不自动写文件 / 自动导入；不存在的导入目标与取消都由导入流程自己提示。
     $('btn-capture-import').addEventListener('click', () => {
       captureUi.close();

@@ -11,7 +11,7 @@
  * 「正字数」口径走 core/chapters.js 的唯一实现（v0.9 B-2），本文件不复制「剔除空白」的 replace。
  *
  * 边界：章名一般 ≤ 40 字（core/chapters.js 的 MAX_NAME_LENGTH；整条不足 100 字时当章名的
- * 例外允许超过 40 字，这是作者拍板的），单章正文上限 10 万字（超过请走「导入小说」分流）。
+ * 例外允许超过 40 字，这是作者拍板的），单章正文上限 30 万字（超过请走「导入小说」分流）。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -35,7 +35,9 @@
   const MAX_TITLE_LENGTH = MAX_NAME_LENGTH;
   const MIN_BODY_CHARS = 50; // 规则①「其余正文」下限：太少说明多半是误把正文首行当标题
   const TITLE_ONLY_CHARS = 100; // 整条不足 100 字：整条当章名（作者拍板的例外，允许超过 40 字）
-  const MAX_BODY_CHARS = 100000; // 单章正文上限（原始长度）；超过走导入流程
+  // 单条捕获正文上限（原始长度）；超过走导入流程。2026-11-08 按作者要求 10 万 → 30 万字
+  // （与标记层 30 万字阈值对齐）；core/capture-queue.js 的单条上限直接引用这里，别再各写一份。
+  const MAX_BODY_CHARS = 300000;
 
   // 列表预览：整块展示时最多 300 字 / 6 行（先截行再截字）。再多就不是「认出是哪一段」，
   // 而是把正文又铺一遍到渲染层了。

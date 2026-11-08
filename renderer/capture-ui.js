@@ -105,7 +105,7 @@
       position: 'end', // b11：'end'（全书末尾，默认）/ 'after-current'（当前章之后）
       queue: [], // [{ id, chars, at, previewText }] 主进程队列元数据，不含正文
       pendingText: null, // 直捕：当前剪贴板原文（未入队，只有这一条在渲染层内存里）
-      tooLarge: false // 直捕正文 >10 万字点「章节」后置位：显示「去导入小说…」
+      tooLarge: false // 直捕正文 >30 万字点「章节」后置位：显示「去导入小说…」
     };
 
     // 时间只显示「时:分」：队列只记本次运行，日期没有信息量。
@@ -572,7 +572,7 @@
         if (!resolved.ok) return resolved;
         const text = resolved.text;
         const chars = text.length;
-        // 单条 >10 万字本来就不入队；直捕的超长内容点「章节」时这里拦下：不调 IPC，给导入引导。
+        // 单条 >30 万字本来就不入队；直捕的超长内容点「章节」时这里拦下：不调 IPC，给导入引导。
         if (chars > captureLib.MAX_BODY_CHARS) {
           panel.tooLarge = true;
           toast(

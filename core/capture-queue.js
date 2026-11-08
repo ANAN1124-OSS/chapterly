@@ -6,8 +6,9 @@
 //
 // 上限（默认值，可在 create 时覆盖）：
 //   · maxEntries     最多 50 条，超了淘汰最旧的；
-//   · maxEntryChars  单条最多 10 万字（=捕获正文上限），超了不入队（仍可直接捕获）；
-//   · maxTotalChars  总量最多 200 万字，超了淘汰最旧的。
+//   · maxEntryChars  单条最多 30 万字（=捕获正文上限 core/capture.js MAX_BODY_CHARS，直接引用，
+//                    超了不入队（仍可直接捕获 / 用「正文」插进当前章）；
+//   · maxTotalChars  总量最多 300 万字（=10 条满额），超了淘汰最旧的。
 // 顺序：entries 从旧到新，list() 也按复制顺序返回（逐条捕获时从上往下点）。
 'use strict';
 
@@ -16,8 +17,10 @@
 const captureLib = require('./capture');
 
 const DEFAULT_MAX_ENTRIES = 50;
-const DEFAULT_MAX_ENTRY_CHARS = 100000;
-const DEFAULT_MAX_TOTAL_CHARS = 2000000;
+// 单条上限不再另写一份：直接跟 core/capture.js 的捕获正文上限走（2026-11-08 提到 30 万字），
+// 两边各写一份只会漂移（commit-record 按 capture.MAX_BODY_CHARS 挡，队列按这里挡）。
+const DEFAULT_MAX_ENTRY_CHARS = captureLib.MAX_BODY_CHARS;
+const DEFAULT_MAX_TOTAL_CHARS = 3000000;
 // 队列列表只显示首行预览（不是全文）：够认出是哪一段，又不把正文多发一份到渲染层。
 const PREVIEW_LIMIT = 40;
 
