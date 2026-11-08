@@ -5,9 +5,12 @@
  *      书文件夹名 / 章节文件名 / 正文 txt 一个字节都不动；书目损坏的书先拒绝）；
  *   ② 书架渲染（renderShelf + renderShelfGroupBar）：书卡（书名 / 分组签 / 作者 / 标签 / 简介 / 章数字数 /
  *      完稿 / 冲突徽标 / 章节命中 / 最后修改 / 修复按钮 / ⋯ 更多 / 新书卡）、分组筛选条、空态文案、搜索命中态；
- *   ③ 新建书流程（onNewBookClick → createBookWithTitle）。
+ *   ③ 新建书流程（onNewBookClick → createBookWithTitle）；
+ *   ④ 首次运行提示（1.3.0 T5 / 规范 I-10）：书架底部状态行一条 4s 一次性提示，只在书架真空 +
+ *      config.firstRunTipShown 还不是 true 时显示，显示过写回 config.json。
  * **只搬不改行为**：文案 / class / aria / dataset / DOM 结构 / 事件绑定（卡片 click / contextmenu / ⋯ / 徽标 /
  *   修复 / 新书卡）全部一字未改。事件绑定随域搬进 setupBookinfoUi()（弹层 Enter 提交 / 取消 / 保存 / 分组筛选）。
+ *   1.3.0 T4 空状态三件套与 T5 首次运行提示是本轮新增，均为显示层。
  *
  * 契约：createBookinfoUi(host) 由渲染层调用一次。host 8 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
@@ -40,6 +43,7 @@
  *   }
  * 缺任何一个（含分组内成员）直接抛 TypeError。分组在 create 时一次解构，行为等价。
  * create() 不注册事件、不建定时器、不碰 DOM；事件绑定在 setupBookinfoUi()，由 bindEvents() 在原位置调用一次。
+ * 首次运行提示由渲染层在首屏书架刷新完成后显式调 maybeShowFirstRunTip()（4s 定时器只在这个函数里建）。
  * 书卡内部的内联 handler 仍随 renderShelf 一起搬（它们本来就是每次渲染时重建的 DOM 事件）。
  *
  * 刻意不搬（留在 renderer.js）：打开书 / 修复本体、右键菜单 / 导出菜单本体、Esc 动作表（'close-bookinfo'）、
@@ -202,6 +206,55 @@
 
     updateWindowTitle();
     renderShelfContent();
+  }
+
+  // ---------- 首次运行提示（1.3.0 T5 / 规范 I-10） ----------
+  // 不做多步向导：书架空态（T4）承担主引导，这里在书架底部状态行再给一条 4s 一次性提示。
+  // 只在「书架真的是一本都没有 + 配置里还没提示过」时出现一次——有书的老用户升级上来不打扰。
+  // 写作页 34px 状态栏在书架页不可见，而首次运行先看到的就是书架，所以这条落在书架的底部状态行。
+  // 不改正文 / 书目 / 数据格式：只读 config 的 firstRunTipShown，显示过才把标记写回 config.json。
+  const FIRST_RUN_TIP_MS = 4000;
+  const FIRST_RUN_TIP_TEXT =
+    '开始写吧：点「＋ 新建一本书」从零开始；已有稿子就点「导入小说」把 txt 文件夹导进来。';
+  let firstRunTipTimer = null;
+  let firstRunTipChecked = false;
+
+  function hideFirstRunTip() {
+    if (firstRunTipTimer) {
+      clearTimeout(firstRunTipTimer);
+      firstRunTipTimer = null;
+    }
+    const tip = $('shelf-first-run-tip');
+    const base = $('shelf-footer-default');
+    if (tip) tip.textContent = '';
+    if (base) base.classList.remove('hidden');
+  }
+
+  // 由渲染层在首屏书架刷新完成后调用一次。返回值 = 这一次有没有真的显示提示。
+  async function maybeShowFirstRunTip() {
+    if (firstRunTipChecked) return false; // 一个窗口只判断一次（回书架刷新不重来）
+    firstRunTipChecked = true;
+    const cfg = state.globalConfig || state.config || {};
+    if (cfg.firstRunTipShown === true) return false;
+    if (Array.isArray(state.books) && state.books.length) return false; // 有书 = 不是第一次用，不打扰
+    const tip = $('shelf-first-run-tip');
+    const base = $('shelf-footer-default');
+    if (!tip || !base) return false;
+    tip.textContent = FIRST_RUN_TIP_TEXT; // role=status + aria-live：读屏也能收到这一条
+    base.classList.add('hidden');
+    clearTimeout(firstRunTipTimer);
+    firstRunTipTimer = setTimeout(() => {
+      firstRunTipTimer = null;
+      hideFirstRunTip();
+    }, FIRST_RUN_TIP_MS);
+    // 显示即记为「已提示」；写盘失败不影响使用（下次启动最多再提示一次）。
+    try {
+      const next = await call(api.setConfig, { firstRunTipShown: true });
+      if (next) state.globalConfig = next;
+    } catch {
+      /* 记不住不影响使用 */
+    }
+    return true;
   }
 
   // B6（审计 P6）：书架 grid 的重建部分（空态 / 书卡 / 「新建一本书」），只在渲染签名变化时调用。
@@ -494,7 +547,8 @@
       saveBookInfoDialog,
       renderShelf,
       createBookWithTitle,
-      setupBookinfoUi
+      setupBookinfoUi,
+      maybeShowFirstRunTip
     };
   }
 

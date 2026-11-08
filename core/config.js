@@ -63,6 +63,10 @@ const DEFAULTS = Object.freeze({
   // lastOpenChapterId 仍是「打开这本书回到哪一章」的唯一事实来源。
   // { path, title, chapterId, chapterIndex, chapterName, at }；没有写过 = null。
   lastBook: null,
+  // 首次运行提示（1.3.0 T5 / 规范 I-10）：书架空态承担主引导，书架底部状态行再给一条
+  // 4s 一次性提示；显示过就记这里，重开应用不再出现。默认 false = 还没提示过；
+  // 只有真正的 true 才算已提示（写坏的类型按「还没提示过」处理，最多再提示一次）。
+  firstRunTipShown: false,
   // 可选「每日快照」：默认关（不给作者添意外写盘）。开启后每次 Ctrl+S 成功时，
   // 当天第一次保存会把这一章的上一版复制到书内 _trash/快照-YYYYMMDD/。
   snapshotEnabled: false,
@@ -264,6 +268,8 @@ function sanitize(raw) {
   const lastExportDir = typeof cfg.lastExportDir === 'string' ? cfg.lastExportDir.trim() : '';
   cfg.lastExportDir = lastExportDir.length > 1000 ? '' : lastExportDir;
   cfg.lastBook = sanitizeLastBook(cfg.lastBook);
+  // 首次运行提示（1.3.0 T5）：只认真正的 true；缺字段 / 写坏类型都按「还没提示过」。
+  cfg.firstRunTipShown = cfg.firstRunTipShown === true;
   // 每日快照：只认真正的 true（缺字段 / 写错类型都按「关」，不会因为脏配置自动写盘）；
   // 保留天数夹在 1–90 天，坏值回落 7 天。
   cfg.snapshotEnabled = cfg.snapshotEnabled === true;

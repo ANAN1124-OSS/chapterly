@@ -1021,7 +1021,7 @@
       openRepair, openConflictDialog, showBookMenu, updateWindowTitle, promptText, refreshShelf
     }
   });
-  const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, setupBookinfoUi } = bookinfoUi;
+  const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, setupBookinfoUi, maybeShowFirstRunTip } = bookinfoUi;
 
   // ---------- 打开书 / 修复 ----------
   // target 可选：{ chapterId, chapterIndex, matchIndex, matchLength } —— 从书架「正文命中」点进来时
@@ -4005,6 +4005,9 @@
     }
     showView('shelf');
     await refreshShelf();
+    // 1.3.0 T5（规范 I-10）：首次运行提示只出现一次（书架真空 + config 还没记过已提示）。
+    // 这里等标记真的写回 config 再往下走，下次启动就不会再显示。
+    await maybeShowFirstRunTip();
     // 从「在新窗口打开」进来的窗口：启动后直接打开指定的书（由主进程在 URL 里传路径）
     const openAtStart = new URLSearchParams(location.search).get('open');
     if (openAtStart) await openBookByPath(openAtStart);

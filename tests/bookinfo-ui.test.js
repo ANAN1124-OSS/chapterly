@@ -130,6 +130,7 @@ const BASE_IDS = [
   'bookinfo-backdrop', 'bookinfo-book', 'bookinfo-author', 'bookinfo-group', 'bookinfo-tags',
   'bookinfo-brief', 'bookinfo-error', 'bookinfo-group-list',
   'books-root-label', 'book-grid', 'shelf-group-bar', 'shelf-group-filter',
+  'shelf-footer-default', 'shelf-first-run-tip',
   'btn-bookinfo-cancel', 'btn-bookinfo-save'
 ];
 
@@ -173,13 +174,14 @@ function build(options = {}) {
   const state = {
     books: options.books === undefined ? [makeBook()] : options.books,
     config: options.config === undefined ? { booksRoot: '/书库' } : options.config,
+    globalConfig: options.globalConfig === undefined ? { booksRoot: '/书库' } : options.globalConfig,
     shelfGroup: options.shelfGroup === undefined ? '' : options.shelfGroup,
     shelfContent: options.shelfContent === undefined ? { meta: null, loading: false } : options.shelfContent,
     bookInfoBook: null,
     meta: null
   };
   const calls = {
-    updateBookInfo: [], createBook: [], pickFolder: [],
+    updateBookInfo: [], createBook: [], pickFolder: [], setConfig: [],
     toast: [], openBookByPath: [], openBookAtChapter: [], openRepair: [], openConflictDialog: [], showBookMenu: [],
     updateWindowTitle: 0, promptText: [], refreshShelf: 0,
     updateShelfSearchUi: [], renderContinueWriting: 0, renderShelfContent: 0
@@ -194,6 +196,11 @@ function build(options = {}) {
       calls.createBook.push(title);
       if (options.createError) throw new Error(options.createError);
       return { path: '/书库/新书', meta: { title } };
+    },
+    async setConfig(patch) {
+      calls.setConfig.push(patch);
+      if (options.setConfigError) throw new Error(options.setConfigError);
+      return { ...(state.globalConfig || {}), ...patch };
     }
   };
   const host = {
@@ -261,12 +268,12 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
   }
 });
 
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 7 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 8 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0, 'create() 一次 $ 都不该调');
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'closeBookInfoDialog', 'createBookWithTitle', 'openBookInfoDialog', 'readBookInfoForm',
+    'closeBookInfoDialog', 'createBookWithTitle', 'maybeShowFirstRunTip', 'openBookInfoDialog', 'readBookInfoForm',
     'renderShelf', 'saveBookInfoDialog', 'setupBookinfoUi'
   ]);
   assert.equal(moduleCode.includes('setInterval'), false);
@@ -731,6 +738,47 @@ test('setupBookinfoUi：弹层 Enter 提交 / 取消 / 保存 / 分组筛选四�
   });
 });
 
+// ---------- 首次运行提示（1.3.0 T5 / 规范 I-10） ----------
+test('首次运行提示：书架真空且没提示过才显示 4s，显示后写回 config.firstRunTipShown', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const ctx = build({ books: [], globalConfig: { booksRoot: '/书库' } });
+  const tip = ctx.dom.map.get('shelf-first-run-tip');
+  const base = ctx.dom.map.get('shelf-footer-default');
+  assert.equal(await ctx.ui.maybeShowFirstRunTip(), true, '真空 + 没提示过 = 显示');
+  assert.equal(tip.textContent.includes('新建一本书') && tip.textContent.includes('导入小说'), true, '文案指向现有入口');
+  assert.equal(tip.textContent.includes('Ctrl+K'), false, '提示不得提命令面板（已推 1.4.0）');
+  assert.equal(base.classList.contains('hidden'), true, '显示提示时默认说明让位');
+  assert.deepEqual(ctx.calls.setConfig, [{ firstRunTipShown: true }], '显示即记为已提示（只写这一个键）');
+  assert.equal(ctx.state.globalConfig.firstRunTipShown, true, '回写后内存配置也更新');
+
+  t.mock.timers.tick(3999);
+  assert.equal(tip.textContent.length > 0, true, '不到 4s 不收');
+  t.mock.timers.tick(1);
+  assert.equal(tip.textContent, '', '4s 后自动消失');
+  assert.equal(base.classList.contains('hidden'), false, '默认说明回来');
+  assert.equal(await ctx.ui.maybeShowFirstRunTip(), false, '同一窗口只判断一次（刷新书架不重来）');
+  assert.deepEqual(ctx.calls.setConfig, [{ firstRunTipShown: true }], '不再重复写配置');
+});
+
+test('首次运行提示：有书 / 已经提示过都不打扰；写盘失败也照样显示且不抛错', async () => {
+  // 有书的老用户升级上来：一条都不显示、不写配置
+  const withBooks = build({ books: [makeBook()], globalConfig: { booksRoot: '/书库' } });
+  assert.equal(await withBooks.ui.maybeShowFirstRunTip(), false);
+  assert.equal(withBooks.dom.map.get('shelf-first-run-tip').textContent, '');
+  assert.deepEqual(withBooks.calls.setConfig, [], '有书时一个配置写都不发');
+
+  // 配置里已经记过：不显示、不写配置
+  const shown = build({ books: [], globalConfig: { booksRoot: '/书库', firstRunTipShown: true } });
+  assert.equal(await shown.ui.maybeShowFirstRunTip(), false);
+  assert.deepEqual(shown.calls.setConfig, []);
+
+  // 写盘失败（磁盘满 / 只读）：这一轮仍然显示，下一次启动还能再提示一次；不抛错
+  const failing = build({ books: [], globalConfig: { booksRoot: '/书库' }, setConfigError: '磁盘满' });
+  assert.equal(await failing.ui.maybeShowFirstRunTip(), true);
+  assert.equal(failing.dom.map.get('shelf-first-run-tip').textContent.includes('新建一本书'), true);
+  assert.deepEqual(failing.calls.setConfig, [{ firstRunTipShown: true }]);
+});
+
 // ---------- 静态闸门 ----------
 test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现，只剩装配与转发', () => {
   for (const shape of [
@@ -762,8 +810,9 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
   assert.ok(rendererSrc.includes('target.chapterIndex !== undefined'), 'openBookByPath 要认 chapterIndex');
   assert.ok(rendererSrc.includes('chapterIndex < state.chapters.length'), 'chapterIndex 要按本书章节数校验');
   assert.ok(rendererSrc.includes(
-    'const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, setupBookinfoUi } = bookinfoUi;'
-  ), '7 个入口按原名解构');
+    'const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, setupBookinfoUi, maybeShowFirstRunTip } = bookinfoUi;'
+  ), '8 个入口按原名解构');
+  assert.ok(rendererSrc.includes('await maybeShowFirstRunTip();'), '首屏书架刷新后调一次首次运行提示');
   for (const id of ['bookinfo-backdrop', 'btn-bookinfo-cancel', 'btn-bookinfo-save', 'shelf-group-filter']) {
     assert.equal(rendererSrc.includes(`$('${id.replace('bookinfo-backdrop', 'bookinfo-backdrop')}').addEventListener`) && id !== 'bookinfo-backdrop' ? rendererSrc.includes(`$('${id}').addEventListener`) : rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
@@ -791,7 +840,25 @@ test('静态闸门：模块不 require / 不摸 Electron·fs·网络', () => {
     assert.equal(moduleCode.includes(forbidden), false, 'bookinfo-ui.js 不许出现 ' + forbidden);
   }
   assert.equal(/window\.addEventListener|document\.addEventListener/.test(moduleCode), false, '模块不注册全局监听');
-  assert.equal((moduleCode.match(/setTimeout\(/g) || []).length, 0, '模块不建定时器');
+  // 1.3.0 T5：唯一的定时器 = 首次运行提示的 4s 自动收起（只在 maybeShowFirstRunTip 里建）
+  assert.equal((moduleCode.match(/setInterval\(/g) || []).length, 0, '模块不建 setInterval');
+  assert.equal((moduleCode.match(/setTimeout\(/g) || []).length, 1, '模块只许首次运行提示这一个定时器');
+  assert.ok(moduleCode.includes('firstRunTipTimer = setTimeout('), '定时器只能是首次运行提示的 4s 收起');
+});
+
+test('静态闸门：首次运行提示的结构 / 文案 / 4s / 配置键钉住（I-10）', () => {
+  // 书架底部状态行 = 书架页的「状态栏」：默认说明 + 一次性提示两个 span；提示是 live region，读屏能收到。
+  const footer = /<footer class="shelf-footer[\s\S]*?<\/footer>/.exec(indexSrc);
+  assert.ok(footer, 'index.html 必须有书架底部状态行');
+  assert.match(footer[0], /id="shelf-footer-default"/);
+  assert.match(footer[0], /id="shelf-first-run-tip"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.ok(moduleCode.includes('const FIRST_RUN_TIP_MS = 4000;'), '4s 一次性提示');
+  assert.ok(moduleCode.includes('firstRunTipShown'), '已提示标记走 config');
+  assert.ok(moduleCode.includes('state.books.length'), '书架有书时不打扰');
+  assert.match(moduleCode, /firstRunTipChecked\) return false/, '一个窗口只判断一次');
+  for (const forbidden of ['欢迎向导', '多步向导', 'Ctrl+K', '命令面板', 'createElement(\'img\')', 'new Image']) {
+    assert.equal(moduleCode.includes(forbidden), false, '提示实现里不许出现 ' + forbidden);
+  }
 });
 
 test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWBookinfoUi，且不乱造别的全局', () => {

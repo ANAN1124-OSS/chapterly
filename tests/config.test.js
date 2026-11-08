@@ -374,6 +374,29 @@ test('中西文自动间距（1.3.0 T-08）：默认开、只有真正的 false 
   assert.deepEqual(await store.getBookDisplay('b_a'), {});
 });
 
+test('首次运行提示（1.3.0 T5）：默认未提示、只有真正的 true 才算已提示、写盘往返只动这一个字段', async () => {
+  // 规范 I-10 / 作业卡 T5：书架底部状态行的一次性提示只出现一次，已提示标记存 config。
+  assert.equal(DEFAULTS.firstRunTipShown, false, '默认值必须登记在 DEFAULTS（否则会被白名单丢掉）');
+  assert.equal(sanitize({}).firstRunTipShown, false);
+  assert.equal(sanitize({ booksRoot: 'D:\\旧书架' }).firstRunTipShown, false, '旧配置没有这个键 = 还没提示过');
+  for (const bad of ['true', 1, null, {}, []]) {
+    assert.equal(sanitize({ firstRunTipShown: bad }).firstRunTipShown, false, `坏值 ${JSON.stringify(bad)} 按未提示`);
+  }
+  assert.equal(sanitize({ firstRunTipShown: true }).firstRunTipShown, true, '只有真正的 true 才算已提示');
+
+  // 写盘往返：显示过才写 true（不是删键）；重启后仍是已提示；别的记忆保持默认
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+  assert.equal((await store.get()).firstRunTipShown, false, '新配置未提示');
+  const stored = await store.set({ firstRunTipShown: true });
+  assert.equal(stored.firstRunTipShown, true);
+  assert.equal((await createConfigStore(dir).get()).firstRunTipShown, true, '重启后仍是已提示');
+  const disk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(disk.firstRunTipShown, true);
+  assert.equal(disk.lastBook, null, '没有顺手写别的记忆');
+  assert.equal(disk.editorPageWidth, 0);
+});
+
 test('超长段落阈值（1.1.0）：默认 500、夹紧 50–20000、非法值回落；全局默认与按书覆盖分开', async () => {
   // core 不能 require 渲染层，所以 core 侧留了同口径常量；这里用 editor-logic 的真实常量 / 边界
   // 钉住两边一致（默认值与 49→50 / 20001→20000 的行为必须同口径）。

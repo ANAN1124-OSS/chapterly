@@ -71,7 +71,10 @@
         </div>
       </div>
       <footer class="shelf-footer muted small">
-        一本书 = 一个文件夹；正文就是普通 txt 文件，用记事本也能直接打开。保存只有你按 Ctrl+S 时才发生。
+        <!-- 首次运行提示（1.3.0 T5 / 规范 I-10）：书架空态承担主引导，这里再给一条 4s 一次性提示。
+             tip 始终留在渲染树里（空文本时不占位），显示时把默认说明临时藏起来；role=status 让读屏也能收到。 -->
+        <span id="shelf-footer-default">一本书 = 一个文件夹；正文就是普通 txt 文件，用记事本也能直接打开。保存只有你按 Ctrl+S 时才发生。</span>
+        <span id="shelf-first-run-tip" class="shelf-footer-tip" role="status" aria-live="polite"></span>
       </footer>
     </section>
 
