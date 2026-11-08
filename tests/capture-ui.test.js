@@ -1,7 +1,8 @@
 /* 剪贴板面板（2026-11-07 契约 v1：单列表视图）的自检。
  *
  * 行为：Node 里用假 DOM + 假 host 走真实流程——打开面板（队列 / 当前剪贴板 / 空剪贴板）→ 每条记录
- *   整块渲染 + 两个按钮 → 「正文」走 host.insertIntoBody（不写盘、不消费记录）→ 「章节」走
+ *   整块渲染 + 两个按钮 → 「正文」走 host.insertIntoBody（不写盘；成功后消费该条：pending 清内存、
+ *   队列条目走 api.captureQueueRemove）→ 「章节」走
  *   api.captureCommitRecord（payload 正确、成功后换书目 / 刷统计 / 跳新章 / 重拉队列 / 记录消失）→
  *   busy 防重 / 失败保留 / 空队列与空剪贴板 toast。不碰真剪贴板、不写盘。
  * 契约：host 必须正好 9 个成员（契约 §5，新增 insertIntoBody），缺一个 create 当场 TypeError。
@@ -300,6 +301,15 @@ function build(options = {}) {
       const found = queue.find((item) => item.id === Number(id));
       if (!found) return { ok: false, code: 'QUEUE_MISSING', message: '这条复制记录已经不在了' };
       return { ok: true, data: { id: found.id, text: found.text, chars: found.chars, at: found.at } };
+    },
+    // 2026-11-08：「正文」插入成功后消费这一条（与「章节」同一口径）
+    captureQueueRemove: async (id) => {
+      log.push(`api.captureQueueRemove:${id}`);
+      if (options.removeFails) return { ok: false, code: 'IPC_ERROR', message: '主进程不可用' };
+      const at = queue.findIndex((item) => item.id === Number(id));
+      if (at < 0) return { ok: true, data: { removed: false } };
+      queue.splice(at, 1);
+      return { ok: true, data: { removed: true } };
     },
     captureQueueClear: async () => {
       log.push('api.captureQueueClear');
@@ -685,38 +695,64 @@ test('openTriggered：队列空 + 未入队 → 仍是列表 pending（不再回
 
 // ---------- 正文 ----------
 
-test('正文：队列条目 → queue-get 取原文 → host.insertIntoBody；不写盘、不消费记录、面板不关', () =>
+test('正文：队列条目 → queue-get 取原文 → insertIntoBody → 消费该条（captureQueueRemove）；不写盘、面板不关', () =>
   withFakeDocument(async () => {
     const ctx = build({ queue: [{ text: QUEUE_A }, { text: QUEUE_B }] });
     const ui = captureUiModule.create(ctx.host);
     await ui.open();
     const result = await ui.applyBody({ id: 1 });
     assert.equal(result.ok, true);
+    assert.equal(result.consumed, true, '结果要标记这条已被消费');
     assert.equal(ctx.log.filter((item) => item === 'api.captureQueueGet:1').length, 1);
     assert.deepEqual(ctx.insertPayloads, [QUEUE_A], '插的是这一条队列正文');
     assert.equal(ctx.commitPayloads.length, 0, '正文按钮绝不走写盘 IPC');
-    assert.equal(ctx.queue.length, 2, '记录保留');
+    assert.equal(ctx.log.filter((item) => item === 'api.captureQueueRemove:1').length, 1, '插入成功后消费这一条');
+    assert.equal(ctx.queue.length, 1, '被消费的那条从队列删除');
+    assert.equal(ctx.queue[0].id, 2, '只删这一条');
     assert.equal(ui.isOpen(), true, '面板保持打开');
     assert.equal(ui.isBusy(), false);
     assert.deepEqual(
       ui.records().map((item) => item.id),
-      [1, 2]
+      [2],
+      '列表里只剩另一条'
     );
     assert.ok(ctx.log.some((item) => item.startsWith('toast:info:已插入正文')));
   }));
 
-test('正文：pending 条目 → 直接用当前剪贴板原文，不走队列 IPC；记录保留', () =>
+test('正文：pending 条目 → 直接用当前剪贴板原文，不走队列 IPC；成功后记录消失', () =>
   withFakeDocument(async () => {
     const ctx = build({ clipboardText: PENDING_TEXT });
     const ui = captureUiModule.create(ctx.host);
     await ui.open();
     const result = await ui.applyBody({ pending: true });
     assert.equal(result.ok, true);
+    assert.equal(result.consumed, true);
     assert.deepEqual(ctx.insertPayloads, [PENDING_TEXT]);
     assert.equal(ctx.log.some((item) => item.startsWith('api.captureQueueGet')), false);
+    assert.equal(ctx.log.some((item) => item.startsWith('api.captureQueueRemove')), false, 'pending 不碰队列 IPC');
     assert.equal(ui.isOpen(), true);
-    assert.equal(ui.records().length, 1, 'pending 记录保留');
+    assert.equal(ui.records().length, 0, 'pending 记录消失');
+    assert.equal(ctx.dom.map.get('capture-queue-empty').classList.contains('hidden'), false, '空态提示出现');
     assert.ok(ctx.log.some((item) => item.startsWith('toast:info:已插入正文')));
+  }));
+
+test('正文：消费 IPC 失败 → 插入仍算成功，本地列表兜底去掉这一条（不让它被重复插入）', () =>
+  withFakeDocument(async () => {
+    const ctx = build({ queue: [{ text: QUEUE_A }, { text: QUEUE_B }], removeFails: true });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    const result = await ui.applyBody({ id: 1 });
+    assert.equal(result.ok, true);
+    assert.equal(result.consumed, true);
+    assert.ok(ctx.log.includes('api.captureQueueRemove:1'));
+    assert.equal(ctx.queue.length, 2, '模拟主进程没删掉');
+    assert.equal(ui.isOpen(), true);
+    assert.equal(ui.isBusy(), false);
+    assert.deepEqual(
+      ui.records().map((item) => item.id),
+      [2],
+      '本地兜底：正文已经进编辑区，列表里不能再留着这条'
+    );
   }));
 
 test('正文：insertIntoBody 失败 → 保留记录 + toast error + 解锁', () =>
@@ -730,6 +766,7 @@ test('正文：insertIntoBody 失败 → 保留记录 + toast error + 解锁', (
     assert.equal(ui.isOpen(), true);
     assert.equal(ui.isBusy(), false, '失败后必须解锁');
     assert.equal(ctx.queue.length, 1, '失败不消费记录');
+    assert.equal(ctx.log.some((item) => item.startsWith('api.captureQueueRemove')), false, '失败不许删队列');
     assert.ok(ctx.log.some((item) => item.startsWith('toast:error:插入正文失败：编辑器不可用')));
   }));
 
@@ -761,10 +798,9 @@ test('正文：处理中所有动作按钮 / 清空 / 取消全禁用，重复�
     const firstResult = await first;
     assert.equal(firstResult.ok, true);
     assert.equal(ui.isBusy(), false);
-    assert.deepEqual(
-      actionButtons(ctx.dom).map((btn) => btn.disabled),
-      [false, false]
-    );
+    // 成功后会消费这一条：列表清空、没有可点的动作按钮，清空按钮回到禁用
+    assert.deepEqual(actionButtons(ctx.dom), []);
+    assert.equal(ctx.dom.map.get('btn-capture-queue-clear').disabled, true);
   }));
 
 test('正文：记录已被消费 → toast + 重新拉队列（列表跟着变），面板不关', () =>
@@ -1324,6 +1360,7 @@ test('静态闸门：模块不碰 Electron / 文件系统 / localStorage，只�
   for (const apiName of [
     'captureQueueList',
     'captureQueueGet',
+    'captureQueueRemove',
     'captureQueueClear',
     'captureClipboard',
     'captureCommitRecord'

@@ -1,9 +1,9 @@
 // E2E 第 72 组：剪贴板面板（2026-11-07 单列表视图改造，契约 v1 重写）。
 //
 // 覆盖链路：直捕 pending → 列表一条记录 + 「正文」「章节」两个按钮 → 正文插入当前章光标处
-// （多段原样 / 可重复点 / 有选区替换 / 只标脏不自动保存）→ 章节新建的三条标题规则
+// （多段原样 / 有选区替换 / 只标脏不自动保存 / 插入成功后这条记录消失、不能重复点）→ 章节新建的三条标题规则
 // （首行标题行 / <100 字整条当章名 / 长正文整条进正文自动编号）→ 队列路径（后台监听连续复制
-// 两段 → 2 条记录；正文不消费、章节消费并删条目；「当前章之后」插入位置）→ 清空 / Esc / 空队列文案
+// 两段 → 2 条记录；正文、章节都消费；「当前章之后」插入位置）→ 清空 / Esc / 空队列文案
 // → 隐私（列表只有截断的 previewText、日志里没有正文）。
 //
 // 只走临时书库 + 临时 userData（run-e2e.js 已隔离）；真实系统剪贴板集成不在这里碰：
@@ -171,7 +171,7 @@ module.exports = async function group72Capture(t) {
     { previewLength: pendingDom.previewText.length }
   );
 
-  // 72c. 「正文」按钮：插到当前打开章节的光标处，多段与空行原样、面板不关、记录保留、只标脏
+  // 72c. 「正文」按钮：插到当前打开章节的光标处，多段与空行原样、面板不关、插入成功后消费该条、只标脏
   await exec(`window.__cwTest.setText(${JSON.stringify(BASE_TEXT)})`);
   await exec(`window.__cwTest.setCaret(${INSERT_AT})`);
   const expectedAfterInsert = BASE_TEXT.slice(0, INSERT_AT) + DIRECT_TEXT + BASE_TEXT.slice(INSERT_AT);
@@ -184,7 +184,7 @@ module.exports = async function group72Capture(t) {
     { got: textAfterInsert.length, want: expectedAfterInsert.length }
   );
   check(
-    '剪贴板面板：插入后光标停在插入内容末尾（连着点不会插反顺序）',
+    '剪贴板面板：插入后光标停在插入内容末尾（这条已消费，不会误插到前面）',
     (await exec('window.__cwTest.caret()')) === INSERT_AT + DIRECT_TEXT.length
   );
   const afterBodyState = {
@@ -195,10 +195,9 @@ module.exports = async function group72Capture(t) {
     index: await exec('window.__cwTest.currentIndex()')
   };
   check(
-    '剪贴板面板：正文插入后面板保持打开、记录保留、正文标脏、没有新建章节',
+    '剪贴板面板：正文插入后面板保持打开、这一条随即消失（正文也消费记录）、正文标脏、没有新建章节',
     afterBodyState.open === true &&
-      afterBodyState.records.length === 1 &&
-      afterBodyState.records[0].kind === 'pending' &&
+      afterBodyState.records.length === 0 &&
       afterBodyState.dirty === true &&
       afterBodyState.titles.length === 1 &&
       afterBodyState.index === 0,
@@ -213,29 +212,31 @@ module.exports = async function group72Capture(t) {
     { diskBeforeSave }
   );
 
-  // 72c2. 可重复点：再点一次仍插在光标处（记录不消费）
-  const expectedAfterRepeat =
-    expectedAfterInsert.slice(0, INSERT_AT + DIRECT_TEXT.length) +
-    DIRECT_TEXT +
-    expectedAfterInsert.slice(INSERT_AT + DIRECT_TEXT.length);
+  // 72c2. 记录消费后同一段不能再点第二次（避免重复插入）：列表清空、再调返回 NO_PENDING、文字不变
   const repeatResult = JSON.parse(
     await exec('window.__cwTest.captureApplyBody({ pending: true }).then((r) => JSON.stringify(r || null))')
   );
   const textAfterRepeat = await exec('window.__cwTest.text()');
+  const afterBodyDom = await exec(`(() => ({
+    rows: document.querySelectorAll('#capture-queue-list .capture-record').length,
+    emptyHidden: document.getElementById('capture-queue-empty').classList.contains('hidden'),
+    open: window.__cwTest.captureOpen()
+  }))()`);
   check(
-    '剪贴板面板：再点一次「正文」可重复插入（记录不消费、结果插在上一次后面）',
-    repeatResult.ok === true &&
-      textAfterRepeat === expectedAfterRepeat &&
-      textAfterRepeat.split(DIRECT_MARKER).length - 1 === 2,
-    { repeatResult, occurrences: textAfterRepeat.split(DIRECT_MARKER).length - 1 }
-  );
-  check(
-    '剪贴板面板：重复插入后面板仍开着、pending 记录仍在',
-    (await exec('window.__cwTest.captureOpen()')) === true &&
-      (await exec('window.__cwTest.captureRecords()')).length === 1
+    '剪贴板面板：正文消费后列表清空、空态出现，再点不会重复插入（NO_PENDING）',
+    repeatResult.ok === false &&
+      repeatResult.code === 'NO_PENDING' &&
+      textAfterRepeat === expectedAfterInsert &&
+      afterBodyDom.rows === 0 &&
+      afterBodyDom.emptyHidden === false &&
+      afterBodyDom.open === true,
+    { repeatResult, afterBodyDom }
   );
 
-  // 72c3. 有选区时替换选区（不是插在选区两侧）
+  // 72c3. 有选区时替换选区（不是插在选区两侧）：记录已消费，重新打开面板再给一次同一段直捕原文
+  await exec('window.__cwTest.closeCapture()');
+  await exec(`window.__cwTest.openCapture(${JSON.stringify(DIRECT_TEXT)})`);
+  await waitFor('window.__cwTest.captureOpen() === true && window.__cwTest.captureRecords().length === 1');
   const replaceRange = await exec(`(() => {
     const text = window.__cwTest.text();
     const at = text.lastIndexOf(${JSON.stringify(REPLACE_TARGET)});
@@ -243,9 +244,9 @@ module.exports = async function group72Capture(t) {
     return { at };
   })()`);
   const expectedAfterReplace =
-    textAfterRepeat.slice(0, replaceRange.at) +
+    textAfterInsert.slice(0, replaceRange.at) +
     DIRECT_TEXT +
-    textAfterRepeat.slice(replaceRange.at + REPLACE_TARGET.length);
+    textAfterInsert.slice(replaceRange.at + REPLACE_TARGET.length);
   await exec("document.querySelector('#capture-queue-list button[data-action=\"body\"]').click()");
   await waitFor(`window.__cwTest.text() === ${JSON.stringify(expectedAfterReplace)}`);
   const textAfterReplace = await exec('window.__cwTest.text()');
@@ -372,7 +373,7 @@ module.exports = async function group72Capture(t) {
     { chapterName: chapter3.name, title: afterRule3.titles[3], disk3, afterRule3 }
   );
   check(
-    '剪贴板面板：规则③成章后面板保持打开、pending 记录清空（与正文按钮的「记录保留」不同）',
+    '剪贴板面板：规则③成章后面板保持打开、pending 记录清空',
     rule3Result.ok === true &&
       afterRule3.open === true &&
       afterRule3.records.length === 0
@@ -460,7 +461,7 @@ module.exports = async function group72Capture(t) {
     { queueListView, queueRecords }
   );
 
-  // 72e2. 队列「正文」：插入当前章（A 段整条原样），**不消费**队列
+  // 72e2. 队列「正文」：插入当前章（A 段整条原样），**消费**该条（正文也用完即消失）
   const queueChapterBefore = await exec('window.__cwTest.text()');
   await exec(`window.__cwTest.setCaret(${queueChapterBefore.length})`);
   const idA = queueEntries[0].id;
@@ -484,9 +485,10 @@ module.exports = async function group72Capture(t) {
     { got: afterQueueBody.text.length, want: (queueChapterBefore + QUEUE_A_TEXT).length }
   );
   check(
-    '剪贴板面板：正文插入不消费队列（2 条记录都还在，面板保持打开）',
-    afterQueueBody.queue.length === 2 &&
-      afterQueueBody.records.length === 2 &&
+    '剪贴板面板：队列「正文」插入成功后该条被消费（只剩另 1 条，面板保持打开）',
+    afterQueueBody.queue.length === 1 &&
+      afterQueueBody.queue[0].id === idB &&
+      afterQueueBody.records.length === 1 &&
       afterQueueBody.open === true,
     { queue: afterQueueBody.queue.length, records: afterQueueBody.records.length }
   );
@@ -524,15 +526,18 @@ module.exports = async function group72Capture(t) {
   );
   check(
     '剪贴板面板：章节成功后该条队列记录删除、面板保持打开、编辑器跳到新章',
-    afterQueueChapter.queue.length === 1 &&
-      afterQueueChapter.queue[0].id === idA &&
-      afterQueueChapter.records.length === 1 &&
+    afterQueueChapter.queue.length === 0 &&
+      afterQueueChapter.records.length === 0 &&
       afterQueueChapter.open === true &&
       afterQueueChapter.index === 1,
     { afterQueueChapter }
   );
 
-  // 72f. 清空队列：列表清空、空态说明出现、面板不关（只清内存，不碰章节 / 文件）
+  // 72f. 清空队列：先再复制一段（保证列表有东西），清空后列表清空、空态说明出现、面板不关
+  // （只清内存，不碰章节 / 文件）
+  await exec(`window.api.setClipboardWatchTestText(${JSON.stringify('第9章 待清空段')})`);
+  await waitFor('window.__cwTest.captureQueue().then((list) => list.length === 1)');
+  await waitFor('window.__cwTest.captureRecords().length === 1');
   await exec("document.getElementById('btn-capture-queue-clear').click()");
   await waitFor('window.__cwTest.captureQueue().then((list) => list.length === 0)');
   await waitFor('window.__cwTest.captureRecords().length === 0');

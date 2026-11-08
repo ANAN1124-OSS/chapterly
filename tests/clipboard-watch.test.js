@@ -188,6 +188,13 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.match(main, /handle\('capture:queue-list'/, '队列列表 IPC');
   assert.match(main, /handle\('capture:queue-get'/, '按条目取正文 IPC（用户显式点开才取）');
   assert.match(main, /handle\('capture:queue-clear'/, '清空队列 IPC');
+  // 2026-11-08：「正文」插入成功后消费该条（与「章节」口径一致）
+  assert.match(main, /handle\('capture:queue-remove'/, '正文插入成功后消费该条的 IPC');
+  assert.match(
+    main,
+    /handle\('capture:queue-remove'[\s\S]{0,300}?captureQueue\.remove\(Math\.round\(numeric\)\)/,
+    '队列删除只按数字 id，非数字不猜'
+  );
   assert.match(
     main,
     /if \(clipboardWatchEnabledNow\(\)\) \{\n    const decision = clipboardWatcher\.evaluate\(text\);/,
@@ -221,6 +228,7 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.match(preload, /captureFlushWatch: \(\) => invoke\('capture:flush'\)/, '打开面板前补一拍');
   assert.match(preload, /captureQueueList: \(\) => invoke\('capture:queue-list'\)/);
   assert.match(preload, /captureQueueGet: \(id\) => invoke\('capture:queue-get', id\)/);
+  assert.match(preload, /captureQueueRemove: \(id\) => invoke\('capture:queue-remove', id\)/, '正文消费接口');
   assert.match(preload, /captureQueueClear: \(\) => invoke\('capture:queue-clear'\)/);
   // v0.13.2：preload 只留「一条记录 → 新建一章」，不再暴露分析 / 逐行提交
   assert.match(

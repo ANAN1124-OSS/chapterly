@@ -126,6 +126,8 @@ contextBridge.exposeInMainWorld('api', {
   // 2026-11-06 捕获队列：本次运行复制过的几段——列表只回元数据 + 首行预览，正文按条目显式取。
   captureQueueList: () => invoke('capture:queue-list'),
   captureQueueGet: (id) => invoke('capture:queue-get', id),
+  // 「正文」插入成功后消费这一条（2026-11-08：正文与章节一样，点完就消失）
+  captureQueueRemove: (id) => invoke('capture:queue-remove', id),
   captureQueueClear: () => invoke('capture:queue-clear'),
   // 打开面板前补一拍监听：不漏掉「刚复制就点捕获」的那一条（2026-11-07）
   captureFlushWatch: () => invoke('capture:flush'),

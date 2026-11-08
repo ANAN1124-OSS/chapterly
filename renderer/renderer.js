@@ -1571,7 +1571,7 @@
   // 所以这里可以临时 focus 编辑区、插完再 blur 回去——与「替换这一处」/ 灵感碎片插入同一条路。
   // preventScroll：只借焦点执行原生输入，别让编辑区把页面滚到别处（面板是 fixed 弹层）。
   // 只改编辑区、只标脏，不自动保存（与「插入碎片」/「替换这一处」的既有口径一致）；
-  // 面板保持打开、记录保留，可重复点。
+  // 面板保持打开；插入成功后由 capture-ui 消费这一条记录（2026-11-08：正文也「用过就消失」）。
   function insertIntoBody(text) {
     if (!state.bookPath || state.view !== 'editor' || !state.chapters.length) {
       return { ok: false, message: '没有打开的书，插入正文前请先打开一章' };

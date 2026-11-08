@@ -3,7 +3,8 @@
  * 产品行为（契约 §1）：面板只有一列「复制记录」，每条整块展示截断正文 + 字数 + 时间 + 序号，
  * 右侧两个按钮「正文」「章节」：
  *   · 正文 = 把这一条插到当前打开章节的光标处（有选区替换选区），只标脏、不自动保存；
- *            成功后 toast、记录保留、面板不关，可以继续点。
+ *            成功后 toast、面板不关；**这一条随即从列表消失**（2026-11-08 作者要求：与「章节」一样，
+ *            用过就消费——pending 清本层内存、队列条目调 capture:queue-remove 由主进程删）。
  *   · 章节 = 用这一条新建一章（章名怎么拆由主进程 core/capture 的 splitRecordTitle 决定；这里只把
  *            原文、插入位置、队列 id 交给 capture:commit-record）。写成功后编辑器跳到新章、面板不关、
  *            被消费的那条记录消失（主进程写章成功才删队列里的原文）。
@@ -510,7 +511,8 @@
       return resolved;
     }
 
-    // 「正文」：插到当前章光标处。只标脏、不自动保存；面板不关、记录保留、可重复点。
+    // 「正文」：插到当前章光标处。只标脏、不自动保存；插入成功后消费这一条（2026-11-08 作者要求：
+    // 与「章节」一样，点完就从列表消失，避免同一条被重复插入、列表越积越多），面板不关。
     async function applyBody(ref) {
       if (!panel.open) return { ok: false, code: 'CLOSED' };
       if (panel.busy) return { ok: false, code: 'BUSY' };
@@ -531,8 +533,27 @@
           return { ok: false, code: 'INSERT_FAILED', message };
         }
         const chars = Number(result.chars) || captureLib.countChars(resolved.text);
-        toast(`已插入正文（${formatCount(chars)} 字）`);
-        return { ok: true, chars };
+        // 只有插入成功才消费。pending 只在本层内存里，直接清；队列条目交给主进程原子删。
+        // 删失败 / 这条已被别处消费也不把记录留在列表上：正文已经进编辑区，再点一次只会重复插入。
+        if (resolved.pending) {
+          panel.pendingText = null;
+        } else {
+          let removed = false;
+          try {
+            if (api && typeof api.captureQueueRemove === 'function') {
+              const data = await call(api.captureQueueRemove, resolved.id);
+              removed = Boolean(data && data.removed);
+            }
+          } catch {
+            /* 插入已经成功：删队列失败不打断，下面兜底把本地列表里这条去掉 */
+          }
+          if (removed) await reloadQueue(resolved.id);
+          else panel.queue = panel.queue.filter((item) => item.id !== resolved.id);
+        }
+        toast(`已插入正文（${formatCount(chars)} 字），这条记录已从列表移除`);
+        // 键盘连续处理：焦点交给下一条的「正文」（列表空了就落到「取消」），不用每次重新 Tab。
+        focusList();
+        return { ok: true, chars, consumed: true };
       } finally {
         panel.busy = false;
         render();

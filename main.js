@@ -1171,6 +1171,13 @@ function registerIpc() {
 
   handle('capture:queue-clear', async () => ({ cleared: captureQueue.clear() }));
 
+  // 面板「正文」插入成功后消费这一条（2026-11-08 作者要求：正文也消失，与「章节」口径一致）。
+  // 只删内存队列里的这一条，不碰章节 / 文件；id 不合法或已经不在队列里返回 removed:false（不报错）。
+  handle('capture:queue-remove', async (id) => {
+    const numeric = Number(id);
+    return { removed: Number.isFinite(numeric) ? captureQueue.remove(Math.round(numeric)) : false };
+  });
+
   // 打开面板前补一拍监听（2026-11-07 修「复制 4 次只记 2 次」）：轮询已缩到 300ms，
   // 但「复制完立刻点捕获」仍可能落在两拍之间；面板打开前主动读一次，不漏掉刚复制的那条。
   handle('capture:flush', async () => flushClipboardWatchOnce());
