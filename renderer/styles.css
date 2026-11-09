@@ -436,16 +436,18 @@ html, body {
 /* 书架搜索（书名 / 章节名）：284px 与设计稿的顶栏搜索框同宽。
  * 238px 时占位提示「…（Ctrl+F）」会被输入框右边裁成「（Ctrl-」，看着像坏了。 */
 .shelf-search { position: relative; width: 284px; }
-.shelf-search .text-input { padding: 0 26px 0 10px; font-size: 12.5px; 
+/* 1.4.0 P1：清除键 20×20 → 24×24（WCAG 2.5.8 目标尺寸）。搜索框本来就 32px 高，
+ * 右侧留白从 26px 放到 30px、按键 right 从 5px 收到 4px，24px 的键正好落在框内不压字。 */
+.shelf-search .text-input { padding: 0 30px 0 10px; font-size: 12.5px; 
   height: 32px;
   border-radius: var(--folio-radius);}
 .shelf-search-clear {
   position: absolute;
-  right: 5px;
+  right: 4px;
   top: 50%;
   transform: translateY(-50%);
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: none;
   border-radius: 2px;

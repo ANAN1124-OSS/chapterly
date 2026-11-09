@@ -156,7 +156,20 @@ async function run(host) {
           await sleep(350);
         }
       }
-      if (screenshotDialog === 'undo') {
+      if (screenshotDialog === 'command') {
+        // 1.4.0 P0-3：命令面板打开的样子（空查询 = 最近使用 + 命令 / 章节 / 书三组）
+        await win.webContents.executeJavaScript('void window.__cwTest.openCommandPalette()', true);
+        await sleep(500);
+      } else if (screenshotDialog === 'command-search') {
+        // 1.4.0 P0-3：命令面板里输入「保存」过滤后的样子
+        await win.webContents.executeJavaScript('void window.__cwTest.openCommandPalette()', true);
+        await sleep(350);
+        await win.webContents.executeJavaScript(
+          `(() => { const input = document.getElementById('command-input'); input.value = '保存'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+          true
+        );
+        await sleep(300);
+      } else if (screenshotDialog === 'undo') {
         // 1.4.0 P0-2：撤销条（删除章节后 10 秒内的样子）—— 删掉第 2 章，条子出现在左下角。
         await win.webContents.executeJavaScript(
           `void window.__cwTest.deleteChapterAt(1)`,
