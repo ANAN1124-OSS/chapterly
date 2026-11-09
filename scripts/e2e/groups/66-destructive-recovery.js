@@ -16,7 +16,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 module.exports = async function group66DestructiveRecovery(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry } = t;
+  const { exec, check, waitFor, sleep, storage, booksRoot, deleteBookWithRetry } = t;
 
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
@@ -128,14 +128,12 @@ module.exports = async function group66DestructiveRecovery(t) {
   await fs.chmod(failingPath, 0o444);
   let formatResult = null;
   try {
-    const formatPromise = exec('window.__cwTest.runFormatBook()');
-    await waitFor('window.__cwTest.modalOpen()');
+    // 1.4.0 P0-2：整本整理不再弹确认框（直接执行 + 撤销），这里直接等结果
+    formatResult = await exec('window.__cwTest.runFormatBook()');
     check(
-      '破坏性操作：整本整理先弹确认框',
-      (await exec('window.__cwTest.dialog()')) === '一键整理本书'
+      '破坏性操作：整本整理不再弹确认框（撤销优先）',
+      (await exec('window.__cwTest.modalOpen()')) === false
     );
-    await exec("window.__cwTest.answerModal('ok')");
-    formatResult = await formatPromise;
   } finally {
     await fs.chmod(failingPath, 0o666);
   }
@@ -183,15 +181,15 @@ module.exports = async function group66DestructiveRecovery(t) {
   );
 
   // 66e. 恢复写权限后重跑：剩下那一章也整理完，备份目录另起一个
-  const retryPromise = exec('window.__cwTest.runFormatBook()');
-  await waitFor('window.__cwTest.modalOpen()');
+  // 1.4.0 P0-2：重跑也不再弹确认框（直接执行 + 撤销），提示里报剩下要改的章数
+  const retried = await exec('window.__cwTest.runFormatBook()');
+  await sleep(200);
+  const retryToasts = (await exec('window.__cwTest.toasts()')).map((item) => item.message).join(' | ');
   check(
-    '破坏性操作：重跑时确认框只报剩下要改的 1 章',
-    String(await exec('window.__cwTest.modalMessage()')).includes('1 章有改动'),
-    await exec('window.__cwTest.modalMessage()')
+    '破坏性操作：重跑时提示只报剩下要改的 1 章',
+    retryToasts.includes('1 章') && (await exec('window.__cwTest.modalOpen()')) === false,
+    retryToasts.slice(-200)
   );
-  await exec("window.__cwTest.answerModal('ok')");
-  const retried = await retryPromise;
   check(
     '破坏性操作：重跑后两章都整理好了',
     retried && retried.ok === true && retried.changed === 1 &&

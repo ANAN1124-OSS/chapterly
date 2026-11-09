@@ -3474,6 +3474,21 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
 
   height: 32px;}
 .context-menu button .kbd { flex: 0 0 auto; }
+/* 1.4.0 P0-2：右键菜单里内联展开的「移到卷」卷列表（不再弹模态选择框）。
+ * 卷多时自己滚动（最多 8 行 ≈ 256px），不把菜单顶出窗口；小标题沿用 .context-menu-label。 */
+.context-menu-volumes {
+  max-height: 256px;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.context-menu-label {
+  padding: 4px 10px 2px;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
 .danger-text { color: var(--danger) !important; }
 
 /* ---------- 朗读（悬浮小条：只读正文、不改字、不写盘） ---------- */

@@ -176,7 +176,7 @@ function build(options = {}) {
     api: [], toast: [], syncEditorOverlay: [], scrollCaretIntoView: [], onEditorInput: 0,
     hideHeaderMenus: 0, closeProofreadPanel: 0, renderFindBookmarks: 0, refreshFindBookmarks: 0, refreshReplaceBackups: 0,
     switchChapter: [], loadChapterAt: [], openModal: [], askUnsaved: [], saveCurrent: 0, refreshShelf: 0,
-    renderChapterList: 0, reloadAfterPartialFailure: 0
+    renderChapterList: 0, reloadAfterPartialFailure: 0, registerUndo: []
   };
   const api = {
     async findAll(...args) {
@@ -199,6 +199,11 @@ function build(options = {}) {
       calls.api.push(['replaceBook', ...args]);
       if (options.replaceBookError) throw new Error(options.replaceBookError);
       return options.replaceBook || { chaptersChanged: 1, occurrences: 2, backupDir: '/书库/书甲/_trash/替换备份-1' };
+    },
+    // 1.4.0 P0-2：整本替换的撤销走「用替换备份还原」
+    async restoreReplaceBackup(...args) {
+      calls.api.push(['restoreReplaceBackup', ...args]);
+      return { restored: 1, skipped: 0, restoreBackupDir: '/书库/书甲/_trash/还原前备份-1' };
     }
   };
   const host = {
@@ -237,7 +242,9 @@ function build(options = {}) {
       async runReplaceOne() { calls.runReplaceOne = (calls.runReplaceOne || 0) + 1; },
       renderFindBookmarks() { calls.renderFindBookmarks += 1; },
       async refreshFindBookmarks() { calls.refreshFindBookmarks += 1; },
-      async refreshReplaceBackups() { calls.refreshReplaceBackups += 1; }
+      async refreshReplaceBackups() { calls.refreshReplaceBackups += 1; },
+      // 1.4.0 P0-2：整本替换把「用替换备份还原」登记成 10 秒撤销
+      registerUndo(label, run) { calls.registerUndo.push({ label, run }); }
     }
   };
   const ui = findUi.create(host);
@@ -266,7 +273,7 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
     delete broken.nav[key];
     assert.throws(() => findUi.create(broken), new RegExp('host\\.nav 缺少 ' + key));
   }
-  for (const key of ['askUnsaved', 'saveCurrent', 'openModal', 'refreshShelf', 'renderChapterList', 'reloadAfterPartialFailure', 'closeProofreadPanel', 'runReplaceOne', 'renderFindBookmarks', 'refreshFindBookmarks', 'refreshReplaceBackups']) {
+  for (const key of ['askUnsaved', 'saveCurrent', 'openModal', 'registerUndo', 'refreshShelf', 'renderChapterList', 'reloadAfterPartialFailure', 'closeProofreadPanel', 'runReplaceOne', 'renderFindBookmarks', 'refreshFindBookmarks', 'refreshReplaceBackups']) {
     const broken = { ...ctx.host, collab: { ...ctx.host.collab } };
     delete broken.collab[key];
     assert.throws(() => findUi.create(broken), new RegExp('host\\.collab 缺少 ' + key));
@@ -629,7 +636,7 @@ test('runReplaceAll（当前章）：空查询提示 / 无命中不替换 / 成�
   assert.deepEqual(fail.calls.toast, [['替换失败：写盘失败', 'error']]);
 });
 
-test('runReplaceAll（整本）：未保存三选一 / 二次确认 / 成功后备份提示 / 失败重载', async () => {
+test('runReplaceAll（整本）：未保存三选一 / 不再二次确认（登记撤销）/ 成功后备份提示 / 失败重载', async () => {
   // 取消
   const cancel = build({ query: '张三', replace: '李四', scope: 'book', dirty: true, askAction: 'cancel' });
   await cancel.ui.runReplaceAll();
@@ -642,12 +649,11 @@ test('runReplaceAll（整本）：未保存三选一 / 二次确认 / 成功后�
   assert.equal(saveFail.calls.saveCurrent, 1);
   assert.deepEqual(saveFail.calls.openModal, []);
 
-  // 确认取消
-  const modalCancel = build({ query: '张三', replace: '李四', scope: 'book', modalAction: { action: 'cancel' } });
-  await modalCancel.ui.runReplaceAll();
-  assert.equal(modalCancel.calls.openModal.length, 1);
-  assert.match(modalCancel.calls.openModal[0].message, /将在 1 章里替换 1 处/);
-  assert.equal(modalCancel.calls.api.some((c) => c[0] === 'replaceBook'), false);
+  // 1.4.0 P0-2：不再弹二次确认（模态只留两处），直接替换
+  const noConfirm = build({ query: '张三', replace: '李四', scope: 'book' });
+  await noConfirm.ui.runReplaceAll();
+  assert.deepEqual(noConfirm.calls.openModal, [], '整本替换不许再弹确认框');
+  assert.equal(noConfirm.calls.api.some((c) => c[0] === 'replaceBook'), true);
 
   // 无命中 → 提示不替换
   const none = build({ query: '张三', replace: '李四', scope: 'book', searchBook: { totalMatches: 0, chapterCount: 0, results: [] } });
@@ -655,16 +661,25 @@ test('runReplaceAll（整本）：未保存三选一 / 二次确认 / 成功后�
   assert.equal(none.dom.map.get('find-summary').textContent, '整本没有找到「张三」，未做替换');
 
   // 成功
-  const ok = build({ query: '张三', replace: '李四', scope: 'book', modalAction: { action: 'ok' } });
+  const ok = build({ query: '张三', replace: '李四', scope: 'book' });
   await ok.ui.runReplaceAll();
   assert.equal(ok.calls.api.some((c) => c[0] === 'replaceBook'), true);
   assert.deepEqual(ok.calls.loadChapterAt, [0]);
   assert.equal(ok.calls.renderChapterList, 1);
   assert.equal(ok.calls.refreshShelf, 1);
-  assert.match(ok.calls.toast[ok.calls.toast.length - 1][0], /^整本替换完成：1 章 \/ 2 处 · 原文已备份到 _trash/);
+  assert.match(ok.calls.toast[ok.calls.toast.length - 1][0], /^整本替换完成：1 章 \/ 2 处 · 原文已备份到 _trash（10 秒内可撤销）/);
+  // 撤销：登记一条，执行时调 restoreReplaceBackup（用这次替换的备份还原，只传目录名）
+  assert.equal(ok.calls.registerUndo.length, 1, '整本替换要登记 10 秒撤销');
+  assert.match(ok.calls.registerUndo[0].label, /已整本替换 1 章 \/ 2 处/);
+  await ok.calls.registerUndo[0].run();
+  assert.equal(
+    ok.calls.api.some((c) => c[0] === 'restoreReplaceBackup' && c[2] === '替换备份-1'),
+    true,
+    '撤销走替换备份还原（只传目录名，不传绝对路径）'
+  );
 
   // 失败 → toast + 重载
-  const fail = build({ query: '张三', replace: '李四', scope: 'book', modalAction: { action: 'ok' }, replaceBookError: '磁盘满' });
+  const fail = build({ query: '张三', replace: '李四', scope: 'book', replaceBookError: '磁盘满' });
   await fail.ui.runReplaceAll();
   assert.deepEqual(fail.calls.toast, [['整本替换失败：磁盘满', 'error']]);
   assert.equal(fail.calls.reloadAfterPartialFailure, 1);

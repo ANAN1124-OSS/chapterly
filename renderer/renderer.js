@@ -1192,21 +1192,30 @@
     const cross = chaptersLib.crossVolumeTarget(state.meta, index, direction);
     if (!cross) return false;
     const toVolume = volumeDisplayName(cross.volumeId);
-    const res = await openModal({
-      title: '跨卷移动',
-      message: `把「${chapterTitle(index, chapter.name)}」移到「${toVolume}」${direction > 0 ? '卷首' : '卷尾'}？只改书目顺序与卷归属，章节文件不动。`,
-      buttons: [
-        { label: '取消', value: 'cancel' },
-        { label: `移到「${toVolume}」`, value: 'move', kind: 'primary' }
-      ],
-      cancelValue: 'cancel'
-    });
-    if (!res || res.action !== 'move') return false;
-    await moveChapterByDrop(chapter, {
+    // 1.4.0 P0-2（撤销优先于确认）：跨卷移动不再弹确认框 —— 直接挪，10 秒内可撤销。
+    // 只改书目顺序与卷归属，章节文件一个字节不动，撤销就是原路挪回去。
+    const bookPath = state.bookPath;
+    const fromVolumeId = chapterVolumeId(chapter);
+    // 原来的下一章 id（null = 原本就是全书最后一条）：撤销时「插回它前面」与移动前的位置等价
+    // （跨到下一卷卷首时 = 原卷末尾；跨到上一卷卷尾时 = 原卷里的原位）。
+    const beforeId = state.chapters[index + 1] ? state.chapters[index + 1].id : null;
+    const moved = await moveChapterByDrop(chapter, {
       volumeId: cross.volumeId,
       beforeChapterId: cross.beforeChapterId
     });
+    if (!moved || moved.ok !== true) return false;
     focusChapterById(chapter.id);
+    undoUi.activate(`已把「${chapterTitle(index, chapter.name)}」移到「${toVolume}」`, async () => {
+      if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+      const at = state.chapters.findIndex((c) => c.id === chapter.id);
+      if (at < 0) throw new Error('这一章已经不在书里了');
+      const back = await moveChapterByDrop(state.chapters[at], {
+        volumeId: fromVolumeId,
+        beforeChapterId: beforeId
+      });
+      if (!back || back.ok !== true) throw new Error((back && back.message) || '移动没有生效');
+      focusChapterById(chapter.id);
+    });
     return true;
   }
 
@@ -1599,6 +1608,7 @@
     find: { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput },
     nav: { chapterTitle, switchChapter: (index) => switchChapter(index), loadChapterAt, currentChapterLabel: () => currentChapterLabel(), hideHeaderMenus },
     collab: { askUnsaved, saveCurrent, openModal, refreshShelf, renderChapterList, reloadAfterPartialFailure, runReplaceOne,
+      registerUndo: (label, run) => undoUi.activate(label, run),
       closeProofreadPanel: () => closeProofreadPanel(), renderFindBookmarks: () => renderFindBookmarks(),
       refreshFindBookmarks: () => refreshFindBookmarks(), refreshReplaceBackups: () => refreshReplaceBackups() }
   });
@@ -2128,19 +2138,15 @@
 
   async function deleteVolumeFlow(volumeId, skipConfirm = false) {
     if (!state.bookPath || !volumeId) return { ok: false };
-    const count = state.chapters.filter((c) => chapterVolumeId(c) === volumeId).length;
-    if (!skipConfirm) {
-      const res = await openModal({
-        title: '删除卷',
-        message: `确定删除「${volumeDisplayName(volumeId)}」吗？\n卷里的 ${count} 章不会删，会回到「未分卷」，章节文件一个都不动。`,
-        buttons: [
-          // 拍板 #8：取消不再误标 primary（原来它是实心主操作、真正的主操作「删除卷」反而是左一的实心红）。
-          { label: '取消', value: 'cancel' },
-          { label: '删除卷', value: 'delete', kind: 'danger' }
-        ]
-      });
-      if (res.action !== 'delete') return { ok: false, canceled: true };
-    }
+    const bookPath = state.bookPath;
+    const volume = volumeById(volumeId);
+    // 撤销用：卷名 + 卷序 + 卷里章节的 id（按全书顺序），删完直接执行、10 秒内可撤销。
+    const volumeName = (volume && String(volume.name || '').trim()) || '未命名卷';
+    const volumeIndex = Math.max(0, volumeList().findIndex((v) => v.id === volumeId));
+    const chapterIds = state.chapters.filter((c) => chapterVolumeId(c) === volumeId).map((c) => c.id);
+    const count = chapterIds.length;
+    // skipConfirm 只给自动化钩子用（1.4.0 P0-2 起不再有确认框，保留参数是为了钩子签名不变）
+    void skipConfirm;
     try {
       const data = await call(api.deleteVolume, state.bookPath, volumeId);
       // 卷里的章回到「未分卷」，顺序不变：当前章按 id 找回；万一找不到（书目被外部改坏）回第 1 章
@@ -2150,6 +2156,32 @@
       renderChapterList();
       renderEditorHeader();
       updateStatus();
+      undoUi.activate(
+        `已删除卷「${volumeName}」${count ? `，${count} 章回到未分卷` : ''}`,
+        async () => {
+          if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          // 先按原名建卷，再把章按原顺序逐条放回去（moveChapterToVolume 追加到卷尾，顺序自然对）
+          const created = await call(api.createVolume, bookPath, volumeName);
+          const newId = created && created.volume ? created.volume.id : null;
+          if (!newId) throw new Error('没能重建这一卷');
+          for (const chapterId of chapterIds) {
+            await call(api.moveChapterToVolume, bookPath, chapterId, newId);
+          }
+          // 卷序也放回原位置（建卷会追加到末尾）
+          try {
+            await call(api.moveVolume, bookPath, newId, volumeIndex);
+          } catch { /* 卷序放不回去也不影响章节归属，别让整次撤销失败 */ }
+          const reopened = await call(api.openBook, bookPath);
+          state.meta = reopened.meta;
+          state.chapters = reopened.meta.chapters;
+          const keep = (state.chapters[state.index] || {}).id;
+          const back = keep ? state.chapters.findIndex((c) => c.id === keep) : -1;
+          if (back >= 0) state.index = back;
+          renderChapterList();
+          renderEditorHeader();
+          await refreshShelf();
+        }
+      );
       toast(`已删除卷，${count} 章回到「未分卷」（章节文件未动）`);
       return { ok: true };
     } catch (err) {
@@ -2158,33 +2190,58 @@
     }
   }
 
-  async function moveChapterToVolumeFlow(index) {
+  // 移到卷（1.4.0 P0-2：不再弹模态选择框）——点右键菜单里的「移到卷…」，就在同一个菜单下面
+  // 展开这个卷列表，选一个即执行。模态只留两处（未保存拦截 / 删除整本书），这里属于「选择」不是
+  // 「确认」，所以改成菜单内联展开：菜单本来就有键盘通道（menu-keyboard 会把焦点带进第一条）。
+  function openVolumeChooserInMenu(index) {
+    const holder = $('context-menu-volumes');
     const chapter = state.chapters[index];
-    if (!chapter || !state.bookPath) return { ok: false };
+    if (!holder || !chapter) return false;
+    const currentVolume = chapterVolumeId(chapter);
     const volumes = volumeList();
-    if (!volumes.length) {
-      toast('这本书还没有卷，先新建一个卷', 'warn');
-      return { ok: false };
+    holder.textContent = '';
+    const title = document.createElement('div');
+    title.className = 'context-menu-label';
+    title.textContent = `把「${chapterTitle(index, chapter.name)}」移到`;
+    holder.appendChild(title);
+    let count = 0;
+    for (const volume of volumes) {
+      if (!volume || volume.id === currentVolume) continue;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.dataset.action = `move-volume:${volume.id}`;
+      btn.textContent = volumeDisplayName(volume.id);
+      holder.appendChild(btn);
+      count += 1;
     }
-    const buttons = volumes.map((volume) => ({
-      label: `移到「${volumeDisplayName(volume.id)}」`,
-      value: volume.id
-    }));
-    buttons.push({ label: '移回「未分卷」', value: '__none__' });
-    buttons.push({ label: '取消', value: 'cancel' });
-    const res = await openModal({
-      title: '移到卷',
-      message: `把「${chapterTitle(index, chapter.name)}」移到：`,
-      buttons,
-      cancelValue: 'cancel'
-    });
-    if (!res.action || res.action === 'cancel') return { ok: false, canceled: true };
-    return moveChapterToVolume(index, res.action === '__none__' ? null : res.action);
+    if (currentVolume) {
+      const back = document.createElement('button');
+      back.type = 'button';
+      back.dataset.action = 'move-volume:';
+      back.textContent = '移回「未分卷」';
+      holder.appendChild(back);
+      count += 1;
+    }
+    if (!count) {
+      const empty = document.createElement('div');
+      empty.className = 'context-menu-label';
+      empty.textContent = volumes.length ? '这一章已经在唯一的卷里了' : '这本书还没有卷，先「＋ 新建卷」';
+      holder.textContent = '';
+      holder.appendChild(empty);
+    }
+    holder.classList.remove('hidden');
+    // 菜单可能贴着窗口下沿：展开后往窗口里收一下（placeMenuAt 同一套夹紧逻辑）
+    placeMenuAt($('context-menu'), parseFloat($('context-menu').style.left) || 0, parseFloat($('context-menu').style.top) || 0);
+    return true;
   }
 
   async function moveChapterToVolume(index, volumeId) {
     const chapter = state.chapters[index];
     if (!chapter || !state.bookPath) return { ok: false };
+    const bookPath = state.bookPath;
+    // 撤销用：原卷 + 原来的下一章（和跨卷移动同一口径：撤销 = 插回原来那一章前面）
+    const fromVolumeId = chapterVolumeId(chapter);
+    const beforeId = state.chapters[index + 1] ? state.chapters[index + 1].id : null;
     const currentId = (state.chapters[state.index] || {}).id;
     try {
       const data = await call(api.moveChapterToVolume, state.bookPath, chapter.id, volumeId || null);
@@ -2192,7 +2249,18 @@
       renderChapterList();
       renderEditorHeader();
       updateStatus();
-      toast(`已移到「${volumeDisplayName(volumeId)}」`);
+      const target = volumeDisplayName(volumeId);
+      undoUi.activate(`已把「${chapterTitle(index, chapter.name)}」移到「${target}」`, async () => {
+        if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+        const at = state.chapters.findIndex((c) => c.id === chapter.id);
+        if (at < 0) throw new Error('这一章已经不在书里了');
+        const back = await moveChapterByDrop(state.chapters[at], {
+          volumeId: fromVolumeId,
+          beforeChapterId: beforeId
+        });
+        if (!back || back.ok !== true) throw new Error((back && back.message) || '移动没有生效');
+      });
+      toast(`已移到「${target}」`);
       return { ok: true, index: data.index };
     } catch (err) {
       toast(`移动失败：${err.message}`, 'error');
@@ -2591,6 +2659,12 @@
       if (!label) return;
       btn.textContent = `${status === currentStatus ? '✓ ' : ''}标记为${label}`;
     });
+    // 「移到卷」展开的卷列表每次重新打开都收起（上一次的卷可能已经删了 / 改名了）
+    const volumeHolder = $('context-menu-volumes');
+    if (volumeHolder) {
+      volumeHolder.textContent = '';
+      volumeHolder.classList.add('hidden');
+    }
     placeMenuAt(menu, event.clientX, event.clientY);
   }
 
@@ -2757,28 +2831,30 @@
       if (!guard.ok) return guard.canceled ? { ok: false, canceled: true } : guard.saved;
     }
     const others = state.replaceBackups.length - 1;
-    const confirmed = await openModal({
-      title: '还原到替换前',
-      message:
-        `会用「${target.name}」里的 ${target.fileCount} 个章节文件覆盖书里的同名章节。\n\n` +
-        '还原前会先把当前内容再备份到书内 _trash/还原前备份-时间戳/，所以这一步也能找回。\n' +
-        (others > 0 ? `\n注意：这本书还有 ${others} 次更早的替换备份，这里只还原最近的一次。` : ''),
-      buttons: [
-        { label: '取消', value: 'cancel' },
-        { label: '还原', value: 'ok', kind: 'danger' }
-      ],
-      cancelValue: 'cancel'
-    });
-    if (confirmed.action !== 'ok') return { ok: false, canceled: true };
+    // 1.4.0 P0-2（撤销优先于确认）：还原到替换前不再弹二次确认 —— 直接还原
+    // （storage 会先把当前内容备份到 _trash/还原前备份-*），10 秒内可撤销（= 用那份还原前备份再还原一次）。
+    // 未保存拦截仍在前一步：这个动作会从磁盘重载正文，编辑区没写盘的字找不回来。
+    const bookPath = state.bookPath;
     try {
       const data = await call(api.restoreReplaceBackup, state.bookPath, target.name);
       await reloadOpenBookFromDisk();
       await refreshShelf();
       await refreshReplaceBackups();
+      const undoName = data.restoreBackupDir ? String(data.restoreBackupDir).split(/[\\/]/).pop() : '';
+      if (undoName) {
+        undoUi.activate(`已还原到「${target.name}」前的正文`, async () => {
+          if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
+          if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');
+          await reloadOpenBookFromDisk();
+          await refreshShelf();
+          await refreshReplaceBackups();
+        });
+      }
       toast(
         `已还原 ${data.restored} 个章节${
           data.skipped ? `（跳过 ${data.skipped} 个已不存在的章节）` : ''
-        }，当前内容已备份到 _trash`
+        }，当前内容已备份到 _trash${others > 0 ? `（还有 ${others} 次更早的替换备份）` : ''}`
       );
       return { ok: true, data };
     } catch (err) {
@@ -2834,7 +2910,8 @@
   // 第 4 步九刀·第一刀：实现在 renderer/history-ui.js（模块头有契约），这里只装配与接线；
   const historyUi = historyUiModule.create({
     $, state, api, call, toast,
-    collab: { confirmRestoreWithUnsaved, openModal, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk },
+    collab: { confirmRestoreWithUnsaved, openModal, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk,
+      registerUndo: (label, run) => undoUi.activate(label, run) },
     menus: { hideBookMenu, hideExportMenu },
     fmt: { formatBytes }
   });
@@ -3112,22 +3189,13 @@
       preview.chaptersChanged > 6
         ? ` 等共 ${preview.chaptersChanged} 章`
         : `（共 ${preview.chaptersChanged} 章）`;
-    const confirmed = await openModal({
-      title: '一键整理本书',
-      message:
-        `规则：${formatUi.describeRules(options)}\n\n` +
-        `会整理 ${preview.chapterCount} 章，其中 ${preview.chaptersChanged} 章有改动：\n${listText}${moreText}\n\n` +
-        '写盘前会把要改动的原章节备份到书内 _trash/整理备份-时间戳/，可以人工找回。\n' +
-        '整本整理会直接写盘（和「保存」一样是显式动作）；整理完当前章会从磁盘重新载入。',
-      buttons: [
-        { label: '取消', value: 'cancel' },
-        { label: '开始整理', value: 'ok', kind: 'primary' }
-      ],
-      cancelValue: 'cancel'
-    });
-    if (confirmed.action !== 'ok') return { ok: false, canceled: true };
+    // 1.4.0 P0-2（撤销优先于确认）：整本整理不再弹确认框 —— 直接整理（写前照旧备份到
+    // _trash/整理备份-*），10 秒内可撤销（撤销 = 用这份备份还原整组，还原前还会再备份一份）。
+    // 准备信息进 toast，作者不用点确认也知道改了几章。
+    const planText = `规则：${formatUi.describeRules(options)}；会改 ${preview.chaptersChanged} 章（${listText}${moreText}）`;
 
     state.formatBookRunning = true;
+    const bookPath = state.bookPath;
     const currentId = state.chapters[state.index] && state.chapters[state.index].id;
     showFormatBookProgress(`正在整理整本书…（共 ${preview.chaptersChanged} 章要改）`);
     try {
@@ -3144,9 +3212,20 @@
       renderChapterList();
       renderEditorHeader();
       await refreshShelf();
+      // 撤销：用这次整理写盘前的备份整组还原（storage 会先把现在的内容再备份到 _trash/还原前备份-*）
+      const backupName = result.backupDir ? String(result.backupDir).split(/[\\/]/).pop() : '';
+      if (result.chaptersChanged && backupName) {
+        undoUi.activate(`已整理全书 ${result.chaptersChanged} 章`, async () => {
+          if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          const data = await call(api.restoreHistoryDir, bookPath, `dir:${backupName}`);
+          if (!data || !Number(data.restored)) throw new Error('整理备份里没有可还原的章节');
+          await reloadOpenBookFromDisk();
+          await refreshShelf();
+        });
+      }
       toast(
-        `已整理全书：${result.chaptersChanged} 章${
-          result.backupDir ? '，原文已备份到 _trash/整理备份' : ''
+        `已整理全书：${result.chaptersChanged} 章${planText ? `（${planText}）` : ''}${
+          result.backupDir ? ' · 原文已备份到 _trash' : ''
         }`
       );
       return { ok: true, changed: result.chaptersChanged, data: result };
@@ -3453,13 +3532,23 @@
       const btn = event.target.closest('button[data-action]');
       if (!btn) return;
       const index = state.contextIndex;
-      hideContextMenu();
       const action = btn.dataset.action;
+      // 移到卷：点「移到卷…」**不关菜单**，直接在菜单里展开卷列表（1.4.0 P0-2：不再弹模态选择框；
+      // 展开后由下面的 move-volume:<id> 分支执行，执行前才收菜单）。
+      if (action === 'move-volume') {
+        openVolumeChooserInMenu(index);
+        return;
+      }
+      hideContextMenu();
+      if (action.startsWith('move-volume:')) {
+        const volumeId = action.slice('move-volume:'.length) || null;
+        await moveChapterToVolume(index, volumeId);
+        return;
+      }
       if (action === 'rename') await renameChapterAt(index);
       else if (action === 'delete') await deleteChapterAt(index);
       else if (action === 'insert-before') await createChapterAt(index);
       else if (action === 'insert-after') await createChapterAt(index + 1);
-      else if (action === 'move-volume') await moveChapterToVolumeFlow(index);
       else if (action === 'edit-note') await editChapterNoteAt(index);
       else if (action === 'copy-platform') await copyChapterPlatformFlow(index);
       else if (action.startsWith('status-')) await setChapterStatusAt(index, action.slice('status-'.length));

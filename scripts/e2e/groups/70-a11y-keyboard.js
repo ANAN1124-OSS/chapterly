@@ -600,20 +600,17 @@ module.exports = async function group70A11yKeyboard(t) {
   // 注意：sendInputEvent 的方向键要用 Chromium 的加速键名 Down / Up（写成 ArrowDown 发出去是
   // Unidentified，渲染层收到 event.key 不对，Alt+↓ 根本不会触发 —— 本文件 D 段就踩过这个坑）。
   await sendKey('Down', ['alt'], 350);
-  const d1Asked = await waitFor('window.__cwTest.modalOpen() === true', 4000).catch(() => false);
-  const d1Dialog = await exec('window.__cwTest.dialog()');
-  const d1Message = await exec('window.__cwTest.modalMessage()');
-  const d1Buttons = await exec('window.__cwTest.modalButtons()');
-  await exec("window.__cwTest.answerModal('move')");
-  await waitFor(`window.__cwTest.chapterVolumeIds()[0] === ${JSON.stringify(d1VolIds[1])}`, 8000).catch(() => false);
+  // 1.4.0 P0-2：跨卷移动不再弹确认框 —— 直接挪过去，撤销条出现
+  const d1Asked = await waitFor(`window.__cwTest.chapterVolumeIds()[0] === ${JSON.stringify(d1VolIds[1])}`, 8000).catch(() => false);
+  const d1Modal = await exec('window.__cwTest.modalOpen()');
+  const d1UndoShown = await exec("!document.getElementById('undo-bar').classList.contains('hidden')");
+  const d1UndoLabel = await exec("document.getElementById('undo-label').textContent");
   await sleep(150);
   const d1MetaAfter = await storage.readBookMeta(bookPath);
   // 反着按 Alt+↑：乙卷 → 甲卷卷尾（可回退）
   await exec(JS_FOCUS_CHAPTER(0));
   await sendKey('Up', ['alt'], 350);
-  const d1AskedBack = await waitFor('window.__cwTest.modalOpen() === true', 4000).catch(() => false);
-  await exec("window.__cwTest.answerModal('move')");
-  await waitFor(`window.__cwTest.chapterVolumeIds()[0] === ${JSON.stringify(d1VolIds[0])}`, 8000).catch(() => false);
+  const d1AskedBack = await waitFor(`window.__cwTest.chapterVolumeIds()[0] === ${JSON.stringify(d1VolIds[0])}`, 8000).catch(() => false);
   await sleep(150);
   const d1MetaBack = await storage.readBookMeta(bookPath);
   // 已经在首卷第一条：再按 Alt+↑ 必须什么都不发生（不弹框、不写盘）
@@ -624,12 +621,11 @@ module.exports = async function group70A11yKeyboard(t) {
   const d1HashAfter = sha256(await fs.readFile(path.join(bookPath, d1File)));
   const d1MtimeAfter = (await fs.stat(path.join(bookPath, d1File))).mtimeMs;
   check(
-    '跨卷：Alt+↓ 在卷尾先确认再跨到下一卷（只改书目卷归属，正文 hash/mtime 不动；Alt+↑ 可退回，首卷再往上不动）',
+    '跨卷：Alt+↓ 在卷尾直接跨到下一卷（1.4.0 P0-2 起不弹确认；只改书目卷归属，正文 hash/mtime 不动；Alt+↑ 可退回，首卷再往上不动）',
     d1Asked === true &&
-      d1Dialog === '跨卷移动' &&
-      d1Message.includes('U-D1 乙卷') &&
-      Array.isArray(d1Buttons) &&
-      d1Buttons.includes('move') &&
+      d1Modal === false &&
+      d1UndoShown === true &&
+      d1UndoLabel.includes('U-D1 乙卷') &&
       d1AskedBack === true &&
       d1MetaAfter.chapters.length === 1 &&
       d1MetaAfter.chapters[0].file === d1File &&
@@ -642,9 +638,9 @@ module.exports = async function group70A11yKeyboard(t) {
       d1LastAsk === false,
     {
       d1Asked,
-      d1Dialog,
-      d1Message,
-      d1Buttons,
+      d1Modal,
+      d1UndoShown,
+      d1UndoLabel,
       d1AskedBack,
       d1LastAsk,
       d1HashBefore,

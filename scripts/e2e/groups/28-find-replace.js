@@ -65,10 +65,14 @@ module.exports = async function group28FindReplace(t) {
   await exec('window.__cwTest.openFindPanel()');
   await exec("window.__cwTest.setFindFields({ query: '阿明', replacement: '小明', scope: 'book' })");
   const replacePromise = exec('window.__cwTest.findReplaceAll()');
-  await waitFor('window.__cwTest.modalOpen()');
-  check('整本替换会先弹确认框', (await exec('window.__cwTest.dialog()')) === '整本替换确认');
-  await exec("window.__cwTest.answerModal('ok')");
   await replacePromise;
+  // 1.4.0 P0-2（撤销优先于确认）：整本替换不再弹二次确认 —— 直接替换，左下角出现 10 秒撤销条。
+  check('整本替换不再弹确认框（直接执行）', (await exec('window.__cwTest.modalOpen()')) === false);
+  check(
+    '整本替换后出现 10 秒撤销条（可用替换备份还原）',
+    (await exec("!document.getElementById('undo-bar').classList.contains('hidden')")) === true &&
+      (await exec("document.getElementById('undo-label').textContent")).includes('已整本替换')
+  );
   await waitFor("window.__cwTest.findPanelOpen() === false", 15000);
   await sleep(400);
 

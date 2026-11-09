@@ -143,8 +143,7 @@ module.exports = async function group43DailySnapshot(t) {
   const snapshotRestorePromise = exec(
     `window.__cwTest.restoreHistoryFileAt(${snapshotGroupIndex}, ${snapshotFileIndex})`
   );
-  await waitFor('window.__cwTest.modalOpen()');
-  await exec("window.__cwTest.answerModal('ok')");
+  // 1.4.0 P0-2：历史还原不再弹确认框（直接还原，10 秒内可撤销）
   const snapshotRestore = await snapshotRestorePromise;
   check(
     '每日快照：能从本书历史还原当天快照',
@@ -409,19 +408,13 @@ module.exports = async function group43DailySnapshot(t) {
     '每日快照（清空某天）：快照组有「清空这天的快照」按钮',
     (await exec(`window.__cwTest.clickHistoryClearSnapshot(${snapTodayIndex})`)) === true
   );
-  await waitFor('window.__cwTest.modalOpen()');
-  const clearDialogTitle = await exec('window.__cwTest.dialog()');
-  const clearDialogMessage = await exec('window.__cwTest.modalMessage()');
+  // 1.4.0 P0-2：清空某天快照不再弹确认框（整组移入回收站，应用内无撤销资源 —— 记录在案的例外），
+  // 但 toast 必须写清「移入回收站、可恢复」。
+  await waitFor('window.__cwTest.modalOpen() === false', 4000).catch(() => false);
   check(
-    '每日快照（清空某天）：确认框写清回收站 / 只影响这一组 / 不影响其它备份',
-    clearDialogTitle === '清空这天的快照' &&
-      clearDialogMessage.includes(snapshotDay) &&
-      clearDialogMessage.includes('移入 Windows 回收站') &&
-      clearDialogMessage.includes('可以从回收站恢复') &&
-      clearDialogMessage.includes('不影响其它备份'),
-    { clearDialogTitle, clearDialogMessage }
+    '每日快照（清空某天）：不再弹确认框（直接移入回收站）',
+    (await exec('window.__cwTest.modalOpen()')) === false
   );
-  await exec("window.__cwTest.answerModal('ok')");
   await waitFor(
     `window.__cwTest.historyGroupIndexBySnapshotName(${JSON.stringify(snapshotDay)}) === -1`
   );

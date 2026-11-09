@@ -1095,6 +1095,8 @@
     <div class="context-menu-sep"></div>
     <button type="button" data-action="rename" title="重命名本章（F2）">重命名<span class="kbd">F2</span></button>
     <button type="button" data-action="move-volume">移到卷…</button>
+    <!-- 1.4.0 P0-2：点「移到卷…」在这里内联展开卷列表（不再弹模态选择框） -->
+    <div id="context-menu-volumes" class="context-menu-volumes hidden"></div>
     <button type="button" data-action="insert-before">在此章之前插入</button>
     <button type="button" data-action="insert-after">在此章之后插入</button>
     <button type="button" data-action="delete" class="danger-text">删除（移到 _trash）</button>

@@ -617,13 +617,18 @@ test('静态闸门：Alt+↑/↓ 章节上移 / 下移接线（列表接管、�
   assert.ok(RENDERER.includes('await moveChapterByDrag(index, target.toIndex)'), '移动复用现成的 moveChapterByDrag（不抄第二份写盘）');
   assert.ok(RENDERER.includes('focusChapterById(chapter.id)'), '移动后焦点回到同一章（连按才走得动）');
   assert.ok(read('renderer/drag-sort-ui.js').includes('function stepMoveTarget'), '纯逻辑实现留在拖拽模块');
-  // U-D1：卷边界上的 Alt+↑/↓ 跨到相邻的一个卷 —— 目标由 core 纯逻辑算，写盘复用拖拽那条，
-  // 跨卷先确认一次；不许在渲染层抄第二份「改卷归属 / 重排顺序」的代码。
+  // U-D1：卷边界上的 Alt+↑/↓ 跨到相邻的一个卷 —— 目标由 core 纯逻辑算，写盘复用拖拽那条；
+  // 1.4.0 P0-2 起跨卷**不再弹确认框**（直接执行 + 10 秒撤销）；不许在渲染层抄第二份
+  // 「改卷归属 / 重排顺序」的代码。
   assert.ok(
     RENDERER.includes('chaptersLib.crossVolumeTarget(state.meta, index, direction)'),
     '跨卷目标走 core/chapters.js 的 crossVolumeTarget（纯逻辑，可单测）'
   );
-  assert.ok(RENDERER.includes("title: '跨卷移动'"), '跨卷前弹一次确认（复用通用询问弹层）');
+  assert.ok(!RENDERER.includes("title: '跨卷移动'"), '1.4.0 P0-2：跨卷不再弹确认框（撤销优先于确认）');
+  assert.ok(
+    RENDERER.includes('已把「') && RENDERER.includes('移到「${toVolume}」'),
+    '跨卷移动要登记 10 秒撤销（撤销条文案说清挪到哪一卷）'
+  );
   assert.ok(
     RENDERER.includes('await moveChapterByDrop(chapter, {') &&
       RENDERER.includes('volumeId: cross.volumeId') &&

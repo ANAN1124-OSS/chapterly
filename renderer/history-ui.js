@@ -17,7 +17,8 @@
  *     $, state, api, call, toast,                      // 基础 5：DOM 查询 / 共享状态 / IPC 白名单 / IPC 包装 / 提示
  *     collab: {                                        // 与「当前书 / 当前编辑区」协作的渲染层回调
  *       confirmRestoreWithUnsaved,                     //   「还原前」未保存三选一 + 保存失败即停（与整本替换备份还原共用一份实现）
- *       openModal,                                     //   还原二次确认弹窗
+ *       openModal,                                     //   通用询问框（1.4.0 P0-2 起历史还原不再二次确认）
+ *       registerUndo,                                  //   登记 10 秒撤销（历史还原用还原前备份还原；1.4.0 P0-2）
  *       refreshShelf,                                  //   还原后刷新书架
  *       reloadAfterPartialFailure,                     //   还原失败后按磁盘真相重载（可能已还原了几章）
  *       reloadOpenBookFromDisk                         //   这本书开着时，还原成功后从磁盘重载
@@ -62,7 +63,7 @@
     }
     const { $, state, api, call, toast, collab, menus, fmt } = host;
     if (typeof collab !== 'object') throw new TypeError('createHistoryUi 的 host.collab 必须是对象');
-    for (const key of ['confirmRestoreWithUnsaved', 'openModal', 'refreshShelf', 'reloadAfterPartialFailure', 'reloadOpenBookFromDisk']) {
+    for (const key of ['confirmRestoreWithUnsaved', 'openModal', 'registerUndo', 'refreshShelf', 'reloadAfterPartialFailure', 'reloadOpenBookFromDisk']) {
       if (collab[key] === undefined || collab[key] === null) throw new TypeError('createHistoryUi 的 host.collab 缺少 ' + key);
     }
     if (typeof menus !== 'object') throw new TypeError('createHistoryUi 的 host.menus 必须是对象');
@@ -72,7 +73,7 @@
     if (typeof fmt !== 'object' || fmt.formatBytes === undefined || fmt.formatBytes === null) {
       throw new TypeError('createHistoryUi 的 host.fmt 缺少 formatBytes');
     }
-    const { confirmRestoreWithUnsaved, openModal, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk } = collab;
+    const { confirmRestoreWithUnsaved, openModal, registerUndo, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk } = collab;
     const { hideBookMenu, hideExportMenu } = menus;
     const { formatBytes } = fmt;
 
@@ -384,39 +385,10 @@
       );
       if (!guard.ok) return guard.canceled ? { ok: false, canceled: true } : guard.saved;
     }
-    const skippedHint =
-      wholeGroup && group.files.length > group.restorableCount
-        ? `\n\n另有 ${group.files.length - group.restorableCount} 个文件不是当前章节，会跳过（不会复活已删章节）。`
-        : '';
-    let title;
-    let message;
-    if (wholeGroup) {
-      title = '还原整组备份';
-      message =
-        `会用「${group.sourceLabel}」这组备份里的 ${group.restorableCount} 个当前章节覆盖书里的同名章节。` +
-        `${skippedHint}\n\n还原前会先把现在的内容备份到 _trash/还原前备份-时间戳/，这一步也能找回。`;
-    } else if (group.source === 'delete') {
-      title = '把删除的章节放回书文件夹';
-      message =
-        `会把「${file.name}」复制回书文件夹。\n\n` +
-        '它不会自动加回章节列表（避免乱改章号和顺序）；需要的话可以用书卡的「修复 → 从目录重建」找回。' +
-        '书里已有同名文件时不会覆盖。';
-    } else {
-      title = '还原这一章';
-      message =
-        `会用备份里的「${file.name}」覆盖书里这一章。\n\n` +
-        '还原前会先把现在的内容备份到 _trash/还原前备份-时间戳/。';
-    }
-    const confirmed = await openModal({
-      title,
-      message,
-      buttons: [
-        { label: '取消', value: 'cancel' },
-        { label: '还原', value: 'ok', kind: 'danger' }
-      ],
-      cancelValue: 'cancel'
-    });
-    if (confirmed.action !== 'ok') return { ok: false, canceled: true };
+    // 1.4.0 P0-2（撤销优先于确认）：历史还原不再弹二次确认 —— 直接还原。
+    // 覆盖型还原（整组 / 单章覆盖）由 storage 先把现在的内容备份到 _trash/还原前备份-*，10 秒内可撤销；
+    // 「删除章节」那种是把 txt 复制回书文件夹（不覆盖、不加回章节列表，属于加法动作），不需要撤销。
+    const bookPath = current.path;
     try {
       const data = wholeGroup
         ? await call(api.restoreHistoryDir, current.path, group.id)
@@ -424,6 +396,17 @@
       const wasOpen = sameBookPath(state.bookPath, current.path);
       if (wasOpen && Number(data && data.restored) > 0 && group.source !== 'delete') {
         await reloadOpenBookFromDisk();
+      }
+      const undoName = data && data.restoreBackupDir ? String(data.restoreBackupDir).split(/[\\/]/).pop() : '';
+      if (undoName && group.source !== 'delete' && typeof registerUndo === 'function') {
+        registerUndo(`已还原 ${Number(data.restored) || 0} 章（${group.sourceLabel}）`, async () => {
+          if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
+          if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');
+          await reloadOpenBookFromDisk();
+          await refreshShelf();
+          if (state.history === current) await refreshHistory();
+        });
       }
       await refreshShelf();
       if (state.history === current) await refreshHistory();
@@ -450,19 +433,8 @@
   async function clearSnapshotDay(group) {
     const current = state.history;
     if (!current || !isSnapshotDayGroup(group)) return { ok: false };
-    const confirmed = await openModal({
-      title: '清空这天的快照',
-      message:
-        `会把这一天的每日快照（${group.snapshotName}，${group.fileCount} 个文件 · ${formatBytes(group.totalBytes)}）` +
-        '整组移入 Windows 回收站，可以从回收站恢复；不影响其它备份。' +
-        '\n\n清空后这一组不再列在本书历史里；章节文件、书目和其它备份都不会动。',
-      buttons: [
-        { label: '取消', value: 'cancel' },
-        { label: '清空', value: 'ok', kind: 'danger' }
-      ],
-      cancelValue: 'cancel'
-    });
-    if (confirmed.action !== 'ok') return { ok: false, canceled: true };
+    // 1.4.0 P0-2：清空某天快照不再弹确认框 —— 直接把这一个快照目录移入 Windows 回收站。
+    // 这是「整组移入回收站」而不是硬删，外部回收站可还原；应用内没有撤销资源，属于记录在案的例外。
     try {
       const data = await call(api.clearSnapshotDay, current.path, group.snapshotName);
       if (state.history === current) await refreshHistory();

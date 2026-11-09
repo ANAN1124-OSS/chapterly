@@ -183,14 +183,16 @@ module.exports = async function group42BookHistory(t) {
       historyBackupAfter.mtimeMs === historyBackupBefore.mtimeMs
   );
 
-  // 42d. 还原单章：二次确认 → 覆盖磁盘 → 当前编辑区跟着重载 → 先备份当前内容
+  // 42d. 还原单章：1.4.0 P0-2 起不再二次确认（直接覆盖磁盘）→ 当前编辑区跟着重载 → 先备份当前内容
   check(
-    '本书历史：点「还原」会弹确认框',
+    '本书历史：点「还原」直接执行（不再弹确认框）',
     (await exec(`window.__cwTest.clickHistoryFileButton(${replaceIndex}, 0, '还原')`)) === true
   );
-  await waitFor('window.__cwTest.modalOpen()');
-  check('本书历史：单章还原确认框标题', (await exec('window.__cwTest.dialog()')) === '还原这一章');
-  await exec("window.__cwTest.answerModal('ok')");
+  await waitFor('window.__cwTest.modalOpen() === false', 4000).catch(() => false);
+  check(
+    '本书历史：单章还原不弹确认框',
+    (await exec('window.__cwTest.modalOpen()')) === false
+  );
   await waitForHistoryDisk(historyFile1, '替换前的第一章。\n');
   check(
     '本书历史：还原单章后磁盘正文变成备份内容',
@@ -240,12 +242,11 @@ module.exports = async function group42BookHistory(t) {
     `window.__cwTest.clickHistoryGroupRestore(${replaceIndexForGroup})`
   );
   check('本书历史：替换组显示「还原整组」按钮', groupRestoreClicked === true);
-  await waitFor('window.__cwTest.modalOpen()');
+  await waitFor('window.__cwTest.modalOpen() === false', 4000).catch(() => false);
   check(
-    '本书历史：整组还原确认框标题',
-    (await exec('window.__cwTest.dialog()')) === '还原整组备份'
+    '本书历史：整组还原不再弹确认框（撤销优先）',
+    (await exec('window.__cwTest.modalOpen()')) === false
   );
-  await exec("window.__cwTest.answerModal('ok')");
   await waitForHistoryDisk(historyFile2, '替换前的第二章。\n');
   check(
     '本书历史：整组还原把另一章也还原了',
@@ -285,12 +286,11 @@ module.exports = async function group42BookHistory(t) {
     '本书历史：点「放回书文件夹」',
     (await exec(`window.__cwTest.clickHistoryFileButton(${deleteIndex}, 0, '放回书文件夹')`)) === true
   );
-  await waitFor('window.__cwTest.modalOpen()');
+  await waitFor('window.__cwTest.modalOpen() === false', 4000).catch(() => false);
   check(
-    '本书历史：删章还原确认框说明不改章节列表',
-    (await exec('window.__cwTest.dialog()')) === '把删除的章节放回书文件夹'
+    '本书历史：放回删除的章节不再弹确认框（加法动作，不覆盖任何内容）',
+    (await exec('window.__cwTest.modalOpen()')) === false
   );
-  await exec("window.__cwTest.answerModal('ok')");
   await waitForFile(path.join(historyBookPath, '003-已删章节.txt'));
   check(
     '本书历史：删章 txt 已放回书文件夹（内容原样）',
@@ -308,10 +308,8 @@ module.exports = async function group42BookHistory(t) {
 
   // 同一份删章备份再放一次：书里已有同名文件，拒绝覆盖
   const deleteIndexAgain = await exec("window.__cwTest.historyGroupIndexBySource('delete')");
-  const repeatDeletePromise = exec(`window.__cwTest.restoreHistoryFileAt(${deleteIndexAgain}, 0)`);
-  await waitFor('window.__cwTest.modalOpen()');
-  await exec("window.__cwTest.answerModal('ok')");
-  const repeatDelete = await repeatDeletePromise;
+  // 1.4.0 P0-2：放回删除的章节不再弹确认框，直接调；「书里已有同名文件」的错误照样返回
+  const repeatDelete = await exec(`window.__cwTest.restoreHistoryFileAt(${deleteIndexAgain}, 0)`);
   check(
     '本书历史：书里已有同名文件时不覆盖（会报错）',
     repeatDelete && repeatDelete.ok === false && /没有覆盖/.test(repeatDelete.message || ''),

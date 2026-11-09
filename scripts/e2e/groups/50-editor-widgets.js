@@ -2031,7 +2031,7 @@ module.exports = async function group50EditorWidgets(t) {
       (await exec('window.__cwTest.dirty()')) === false
   );
 
-  // 50o-4. 卡里「一键整理本书…」打开原来的整本确认框；取消后不写盘
+  // 50o-4. 卡里「一键整理本书…」直接执行（1.4.0 P0-2 起不再弹确认框）；确认写盘 + 撤销条出现
   await exec("window.__cwTest.newChapter('第二刀')");
   await waitFor('window.__cwTest.currentIndex() === 1');
   const r1Messy2 = ' 第二段,"脏."  ';
@@ -2046,21 +2046,25 @@ module.exports = async function group50EditorWidgets(t) {
   const r1DirBeforeModal = (await fs.readdir(r1BookPath)).sort().join('|');
   await exec('window.__cwTest.openFormatMenu()');
   await exec("document.querySelector('#format-menu button[data-action=\"apply-book\"]').click()");
-  await waitFor('window.__cwTest.modalOpen()');
+  await waitFor('window.__cwTest.modalOpen() === false', 4000).catch(() => false);
+  await sleep(500);
+  const r1ToastTexts = (await exec('window.__cwTest.toasts()')).map((item) => item.message).join(' | ');
   check(
-    '整理交互：卡里「一键整理本书…」打开原来的整本确认框（规则摘要仍是同一套文案）',
-    (await exec('window.__cwTest.dialog()')) === '一键整理本书' &&
-      (await exec('window.__cwTest.modalMessage()')).includes('规则：段首缩进 2 字符 · 段间空一行') &&
-      (await exec('window.__cwTest.formatCardOpen()')) === false
+    '整理交互：卡里「一键整理本书…」不再弹确认框（规则摘要进提示）',
+    (await exec('window.__cwTest.modalOpen()')) === false &&
+      (await exec('window.__cwTest.formatCardOpen()')) === false &&
+      r1ToastTexts.includes('规则：段首缩进 2 字符 · 段间空一行'),
+    r1ToastTexts.slice(0, 200)
   );
-  await exec("window.__cwTest.answerModal('cancel')");
-  await waitFor('window.__cwTest.modalOpen() === false');
+  // 第 1 章在这一组前半段已经「整理本章」过了，整本整理不会改它；有改动的是第 2 章（r1Messy2）。
   check(
-    '整理交互：整本整理取消后一个字都没写（txt 大小 + mtime、书目、书内文件列表不变）',
-    (await fs.stat(r1Txt1Path)).mtimeMs === r1Txt1Before.mtimeMs &&
-      (await fs.stat(r1Txt0Path)).mtimeMs === r1Txt0BeforeModal.mtimeMs &&
-      (await fs.readFile(r1MetaPath, 'utf8')) === r1MetaBeforeModal &&
-      (await fs.readdir(r1BookPath)).sort().join('|') === r1DirBeforeModal
+    '整理交互：整本整理真的写了盘（有改动的那一章 txt mtime 变了），并出现 10 秒撤销条',
+    (await fs.stat(r1Txt1Path)).mtimeMs !== r1Txt1Before.mtimeMs &&
+      (await exec("!document.getElementById('undo-bar').classList.contains('hidden')")) === true,
+    {
+      txt1MtimeBefore: r1Txt1Before.mtimeMs,
+      txt1MtimeAfter: (await fs.stat(r1Txt1Path)).mtimeMs
+    }
   );
 
   // 50o-5. 卡里「撤销上次整理」：有 N 步时可点、点了退回；没步数时是灰的
@@ -2105,6 +2109,9 @@ module.exports = async function group50EditorWidgets(t) {
   const r1TextBeforeDisplay = await exec('window.__cwTest.text()');
   const r1Txt0BeforeDisplay = await fs.stat(r1Txt0Path);
   const r1MetaBeforeDisplay = await fs.readFile(r1MetaPath, 'utf8');
+  // 1.4.0 P0-2：整本整理现在真的执行（不再取消），书内会多一个 _trash/整理备份-*；
+  // 显示设置的「不写书库」断言要拿**这一步之前**的书文件夹快照来比。
+  const r1DirBeforeDisplay = (await fs.readdir(r1BookPath)).sort().join('|');
   await exec("document.getElementById('btn-display').click()");
   await waitFor('window.__cwTest.displayMenuOpen() === true');
   const r1DisplayActions = await exec('window.__cwTest.displayMenuItems()');
@@ -2130,8 +2137,7 @@ module.exports = async function group50EditorWidgets(t) {
       (await exec('window.__cwTest.dirty()')) === false &&
       (await fs.stat(r1Txt0Path)).mtimeMs === r1Txt0BeforeDisplay.mtimeMs &&
       (await fs.readFile(r1MetaPath, 'utf8')) === r1MetaBeforeDisplay &&
-      (await fs.readdir(r1BookPath)).sort().join('|') === r1DirBeforeModal &&
-      !(await fs.readdir(r1BookPath)).join('|').includes('_trash')
+      (await fs.readdir(r1BookPath)).sort().join('|') === r1DirBeforeDisplay
   );
   check(
     '整理交互：全程没有给配置加新字段（只沿用 formatOptions），书库里也没有多出文件',
@@ -2143,6 +2149,10 @@ module.exports = async function group50EditorWidgets(t) {
   // 1294×766（作者窗口）与窄窗口不挤压、亮色与夜间两套主题都成立。
   // 纯 CSS / class 改动：按钮 id、顺序、事件都不变；不写章节 txt / 书目，不给配置加字段。
   const uiBookSidebar = await exec('window.__cwTest.sidebarWidth()');
+  // 先把「切章 → 书目 lastOpenChapterId」那条防抖写盘落定（主进程按书合并 1.5 秒，读书架时先 flush），
+  // 否则它会在这段中间落地，让「界面调整不写书库」的断言假红（跟界面改动无关）。
+  await exec('window.__cwTest.refreshShelf()');
+  await sleep(400);
   const uiTxt0Before = await fs.stat(r1Txt0Path);
   const uiMetaBefore = await fs.readFile(r1MetaPath, 'utf8');
   const uiDirBefore = (await fs.readdir(r1BookPath)).sort().join('|');
@@ -2380,14 +2390,34 @@ module.exports = async function group50EditorWidgets(t) {
   );
   await exec("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
   await waitFor('window.__cwTest.findPanelOpen() === false');
-  check(
-    '界面优化：界面调整全程不写书库（txt 大小 + mtime、书目、书内文件列表都不变，无 _trash / 临时文件）',
-    (await fs.stat(r1Txt0Path)).size === uiTxt0Before.size &&
-      (await fs.stat(r1Txt0Path)).mtimeMs === uiTxt0Before.mtimeMs &&
-      (await fs.readFile(r1MetaPath, 'utf8')) === uiMetaBefore &&
-      (await fs.readdir(r1BookPath)).sort().join('|') === uiDirBefore &&
-      !(await fs.readdir(r1BookPath)).join('|').includes('_trash')
-  );
+  {
+    // 1.4.0 P0-2：整本整理现在真的会执行（前面多了一个 _trash/整理备份-*），
+    // 所以「不写书库」改成跟**这一段开始前**的目录快照逐字比（含 _trash 也一字节不多）。
+    const uiStatAfter = await fs.stat(r1Txt0Path);
+    const uiMetaAfterText = await fs.readFile(r1MetaPath, 'utf8');
+    const uiDirAfter = (await fs.readdir(r1BookPath)).sort().join('|');
+    check(
+      '界面优化：界面调整全程不写书库（txt 大小 + mtime、书目、书内文件列表都不变）',
+      uiStatAfter.size === uiTxt0Before.size &&
+        uiStatAfter.mtimeMs === uiTxt0Before.mtimeMs &&
+        uiMetaAfterText === uiMetaBefore &&
+        uiDirAfter === uiDirBefore,
+      {
+        sizeBefore: uiTxt0Before.size,
+        sizeAfter: uiStatAfter.size,
+        mtimeBefore: uiTxt0Before.mtimeMs,
+        mtimeAfter: uiStatAfter.mtimeMs,
+        metaSame: uiMetaAfterText === uiMetaBefore,
+        metaDiffAt: (() => {
+          let i = 0;
+          while (i < uiMetaBefore.length && i < uiMetaAfterText.length && uiMetaBefore[i] === uiMetaAfterText[i]) i += 1;
+          return uiMetaBefore.slice(Math.max(0, i - 60), i + 60) + ' >>> ' + uiMetaAfterText.slice(Math.max(0, i - 60), i + 60);
+        })(),
+        dirBefore: uiDirBefore,
+        dirAfter: uiDirAfter
+      }
+    );
+  }
   const uiTextAfter = await exec('window.__cwTest.text()');
   const uiDirtyAfter = await exec('window.__cwTest.dirty()');
   const uiConfigKeysAfter = Object.keys(JSON.parse(await fs.readFile(r1ConfigPath, 'utf8'))).sort().join(',');

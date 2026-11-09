@@ -17,11 +17,14 @@ module.exports = async function group30ReplaceBackup(t) {
     Array.isArray(backups) && backups.length >= 1 && backups[0].fileCount === 2,
     backups && backups.map((item) => ({ name: item.name, fileCount: item.fileCount }))
   );
-  const restorePromise = exec('window.__cwTest.restoreReplaceBackupFlow()');
-  await waitFor('window.__cwTest.modalOpen()');
-  check('替换备份：还原前会二次确认', (await exec('window.__cwTest.dialog()')) === '还原到替换前');
-  await exec("window.__cwTest.answerModal('ok')");
-  const restoreResult = await restorePromise;
+  // 1.4.0 P0-2（撤销优先于确认）：还原到替换前不再弹二次确认 —— 直接还原（还原前照旧再备份一份），
+  // 10 秒内可撤销。
+  const restoreResult = await exec('window.__cwTest.restoreReplaceBackupFlow()');
+  check('替换备份：还原不再弹确认框（直接执行）', (await exec('window.__cwTest.modalOpen()')) === false);
+  check(
+    '替换备份：还原后出现 10 秒撤销条',
+    (await exec("!document.getElementById('undo-bar').classList.contains('hidden')")) === true
+  );
   check('替换备份：还原成功', restoreResult && restoreResult.ok === true, restoreResult);
   await sleep(300);
   const restoredMeta = await storage.readBookMeta(sortBookPath);

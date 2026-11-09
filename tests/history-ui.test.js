@@ -119,7 +119,7 @@ function build(options = {}) {
   };
   const calls = {
     listHistory: [], previewHistoryFile: [], restoreHistoryDir: [], restoreHistoryFile: [],
-    clearSnapshotDay: [],
+    clearSnapshotDay: [], registerUndo: [],
     openBookFolder: [], refreshShelf: 0, reloadOpenBookFromDisk: 0, reloadAfterPartialFailure: [],
     confirmRestoreWithUnsaved: [], openModal: [], toast: []
   };
@@ -172,7 +172,9 @@ function build(options = {}) {
       async openModal(opts) { calls.openModal.push(opts); return options.modalAction === undefined ? { action: 'cancel' } : options.modalAction; },
       async refreshShelf() { calls.refreshShelf += 1; },
       async reloadOpenBookFromDisk() { calls.reloadOpenBookFromDisk += 1; },
-      async reloadAfterPartialFailure(path) { calls.reloadAfterPartialFailure.push(path); }
+      async reloadAfterPartialFailure(path) { calls.reloadAfterPartialFailure.push(path); },
+      // 1.4.0 P0-2：历史还原把「用还原前备份再还原一次」登记成 10 秒撤销
+      registerUndo(label, run) { calls.registerUndo.push({ label, run }); }
     },
     menus: {
       hideBookMenu() { calls.hideBookMenu = (calls.hideBookMenu || 0) + 1; },
@@ -220,7 +222,7 @@ test('host 契约：8 个成员 + 3 个分组内的真实依赖，缺任何一�
     assert.throws(() => historyUi.create(nulled), /host 缺少/, key + ' = null 也必须抛');
   }
   // 分组内每个真实依赖单独点名（头注释里的契约不能只写分组名）
-  for (const key of ['confirmRestoreWithUnsaved', 'openModal', 'refreshShelf', 'reloadAfterPartialFailure', 'reloadOpenBookFromDisk']) {
+  for (const key of ['confirmRestoreWithUnsaved', 'openModal', 'registerUndo', 'refreshShelf', 'reloadAfterPartialFailure', 'reloadOpenBookFromDisk']) {
     const broken = { ...ctx.host, collab: { ...ctx.host.collab } };
     delete broken.collab[key];
     assert.throws(() => historyUi.create(broken), new RegExp('host\\.collab 缺少 ' + key), 'collab 缺 ' + key + ' 必须抛');
@@ -499,37 +501,40 @@ test('confirmHistoryRestore：看的是别的书的备份 → 不拿当前书的
   const ctx = build({ dirty: true, bookPath: '/书库/书乙', guardResult: { ok: false, canceled: true } });
   ctx.state.history = { path: '/书库/书甲', title: '书甲', groups: [], fileCount: 0, totalBytes: 0, loading: false, error: '', preview: null, token: 0 };
   const res = await ctx.ui.confirmHistoryRestore(groupFixture(), null, true);
-  // 直接走到二次确认；默认 modalAction = cancel
-  assert.deepEqual(res, { ok: false, canceled: true });
+  // 1.4.0 P0-2：不再弹二次确认，直接把别的书的备份还原掉（不看当前书的脏标记）
+  assert.equal(res.ok, true);
   assert.deepEqual(ctx.calls.confirmRestoreWithUnsaved, []);
-  assert.equal(ctx.calls.openModal.length, 1);
+  assert.deepEqual(ctx.calls.openModal, []);
+  assert.equal(ctx.calls.restoreHistoryDir.length, 1, '直接执行，不再等确认');
 });
 
-test('confirmHistoryRestore：当前书不脏 → 不调共享拦截，直接二次确认', async () => {
-  const ctx = build({ dirty: false, modalAction: { action: 'cancel' } });
+test('confirmHistoryRestore：当前书不脏 → 不调共享拦截，也不再弹二次确认（直接还原）', async () => {
+  const ctx = build({ dirty: false });
   ctx.state.history = { path: '/书库/书甲', title: '书甲', groups: [], fileCount: 0, totalBytes: 0, loading: false, error: '', preview: null, token: 0 };
   await ctx.ui.confirmHistoryRestore(groupFixture(), null, true);
   assert.deepEqual(ctx.calls.confirmRestoreWithUnsaved, []);
-  assert.equal(ctx.calls.openModal.length, 1);
+  assert.deepEqual(ctx.calls.openModal, [], '1.4.0 P0-2：历史还原不再二次确认');
+  assert.equal(ctx.calls.restoreHistoryDir.length, 1);
 });
 
-test('confirmHistoryRestore：整组还原的二次确认文案带「跳过不是当前章节」的提示', async () => {
-  const ctx = build({ modalAction: { action: 'cancel' } });
+test('confirmHistoryRestore：整组还原直接执行（不弹确认）+ 登记 10 秒撤销', async () => {
+  const ctx = build({
+    restoreResult: { restored: 1, skipped: 2, total: 3, restoreBackupDir: '/书库/书甲/_trash/还原前备份-20261109-120000' }
+  });
   ctx.state.history = { path: '/书库/书甲', title: '书甲', groups: [], fileCount: 0, totalBytes: 0, loading: false, error: '', preview: null, token: 0 };
   const group = groupFixture({ files: [{ name: 'a.txt', restorable: true }, { name: 'b.txt', restorable: false }, { name: 'c.txt', restorable: false }], restorableCount: 1 });
   const res = await ctx.ui.confirmHistoryRestore(group, null, true);
-  assert.deepEqual(res, { ok: false, canceled: true });
-  assert.equal(ctx.calls.openModal.length, 1);
-  const modal = ctx.calls.openModal[0];
-  assert.equal(modal.title, '还原整组备份');
-  assert.match(modal.message, /会用「整理备份」这组备份里的 1 个当前章节覆盖书里的同名章节。/);
-  assert.match(modal.message, /另有 2 个文件不是当前章节，会跳过（不会复活已删章节）。/);
-  assert.match(modal.message, /还原前会先把现在的内容备份到 _trash\/还原前备份-时间戳\//);
-  assert.deepEqual(modal.buttons, [
-    { label: '取消', value: 'cancel' },
-    { label: '还原', value: 'ok', kind: 'danger' }
-  ]);
-  assert.deepEqual(ctx.calls.restoreHistoryDir, []);
+  assert.equal(res.ok, true);
+  assert.deepEqual(ctx.calls.openModal, [], '历史还原不再二次确认（模态只留两处）');
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [['/书库/书甲', 'g1']]);
+  // 撤销：用这次还原自动建的「还原前备份-*」再还原一次（只传目录名）
+  assert.equal(ctx.calls.registerUndo.length, 1);
+  assert.match(ctx.calls.registerUndo[0].label, /已还原 1 章（整理备份）/);
+  await ctx.calls.registerUndo[0].run();
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [
+    ['/书库/书甲', 'g1'],
+    ['/书库/书甲', 'dir:还原前备份-20261109-120000']
+  ], '撤销 = 用这次还原自动建的「还原前备份-*」再还原一次（只传目录名）');
 });
 
 test('confirmHistoryRestore：单文件还原成功 → 调 api.restoreHistoryFile、当前书开着就重载、刷新书架与清单', async () => {
@@ -708,11 +713,10 @@ test('每日快照组：点组头展开 / 再点收起，折叠状态只记在 s
   assert.equal(dom.map.get('history-list').children[0].children[0].children[0].getAttribute('aria-expanded'), 'false');
 });
 
-test('清空这天的快照：确认框文案逐字 → api.clearSnapshotDay(书路径, 快照目录名) → 刷新清单 / 书架 + toast', async () => {
+test('清空这天的快照：不再弹确认框（直接移入回收站）→ api.clearSnapshotDay(书路径, 快照目录名) → 刷新清单 / 书架 + toast', async () => {
   const dom = makeDom(BASE_IDS);
   const ctx = build({
     dom,
-    modalAction: { action: 'ok' },
     listHistory: () => ({ title: '书甲', groups: [snapshotGroupFixture()], fileCount: 2, totalBytes: 2048 })
   });
   ctx.state.history = historyPanelState();
@@ -721,45 +725,13 @@ test('清空这天的快照：确认框文案逐字 → api.clearSnapshotDay(书
   assert.ok(clearButton, '快照组要有清空按钮');
   await clearButton._fire('click');
 
-  assert.equal(ctx.calls.openModal.length, 1);
-  const modal = ctx.calls.openModal[0];
-  assert.equal(modal.title, '清空这天的快照');
-  assert.equal(
-    modal.message,
-    '会把这一天的每日快照（快照-20261107，2 个文件 · 2.0 KB）整组移入 Windows 回收站，' +
-      '可以从回收站恢复；不影响其它备份。\n\n' +
-      '清空后这一组不再列在本书历史里；章节文件、书目和其它备份都不会动。'
-  );
-  assert.deepEqual(modal.buttons, [
-    { label: '取消', value: 'cancel' },
-    { label: '清空', value: 'ok', kind: 'danger' }
-  ]);
-  assert.equal(modal.cancelValue, 'cancel');
-
+  // 1.4.0 P0-2：清空某天快照不再二次确认（整组移入 Windows 回收站，外部可还原；应用内无撤销资源）
+  assert.deepEqual(ctx.calls.openModal, [], '清空快照不许再弹确认框');
   assert.deepEqual(ctx.calls.clearSnapshotDay, [['/书库/书甲', '快照-20261107']]);
   assert.equal(ctx.calls.listHistory.length, 2, '清空后重新拉一次清单');
   assert.equal(ctx.calls.refreshShelf, 1);
   assert.deepEqual(ctx.calls.toast, [['已把「快照-20261107」移入回收站，可从回收站恢复', undefined]]);
-});
-
-test('清空这天的快照：确认框点取消 → 一个 IPC 都不打、清单与书架都不刷新', async () => {
-  const dom = makeDom(BASE_IDS);
-  const ctx = build({
-    dom,
-    modalAction: { action: 'cancel' },
-    listHistory: () => ({ title: '书甲', groups: [snapshotGroupFixture()], fileCount: 2, totalBytes: 2048 })
-  });
-  ctx.state.history = historyPanelState();
-  await ctx.ui.refreshHistory();
-  const clearButton = findButtonByClass(dom.map.get('history-list').children[0], 'history-clear-snapshot');
-  await clearButton._fire('click');
-
-  assert.equal(ctx.calls.openModal.length, 1);
-  assert.deepEqual(ctx.calls.clearSnapshotDay, []);
-  assert.equal(ctx.calls.listHistory.length, 1);
-  assert.equal(ctx.calls.refreshShelf, 0);
-  assert.deepEqual(ctx.calls.toast, []);
-  assert.equal(dom.map.get('history-list').children.length, 1);
+  assert.deepEqual(ctx.calls.registerUndo, [], '移入回收站的动作没有应用内撤销（记录在案的例外）');
 });
 
 test('清空这天的快照：失败 → toast「清空失败：…」，清单保持原样（不重新拉清单 / 不刷书架）', async () => {
@@ -862,7 +834,7 @@ test('静态闸门：renderer.js 不再内嵌历史面板实现，只剩装配�
   // host 8 个成员逐行钉住（分组内成员也在装配处点名）
   for (const line of [
     '    $, state, api, call, toast,',
-    '    collab: { confirmRestoreWithUnsaved, openModal, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk },',
+    '    collab: { confirmRestoreWithUnsaved, openModal, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk,',,
     '    menus: { hideBookMenu, hideExportMenu },',
     '    fmt: { formatBytes }'
   ]) {

@@ -46,22 +46,26 @@ module.exports = async function group36FormatBook(t) {
     (await exec('window.__cwTest.chapterTextAt(0)')) === ' 他说,"第一段."'
   );
 
+  // 1.4.0 P0-2（撤销优先于确认）：一键整理本书不再弹确认框 —— 直接整理（写前照旧备份），
+  // 10 秒内可撤销；准备信息进 toast。
   const bookFormatPromise = exec('window.__cwTest.runFormatBook()');
-  await waitFor('window.__cwTest.modalOpen()');
-  check('整本排版：会先弹确认框', (await exec('window.__cwTest.dialog()')) === '一键整理本书');
-  const fmtConfirmMessage = await exec('window.__cwTest.modalMessage()');
-  check(
-    '整本排版：确认框列出规则与要改的章数',
-    fmtConfirmMessage.includes('段首缩进 2 字符') && fmtConfirmMessage.includes('2 章有改动'),
-    fmtConfirmMessage.slice(0, 120)
-  );
-  check(
-    '整本排版：确认框说明会先备份',
-    fmtConfirmMessage.includes('整理备份'),
-    fmtConfirmMessage.slice(0, 120)
-  );
-  await exec("window.__cwTest.answerModal('ok')");
   const bookFormatResult = await bookFormatPromise;
+  check('整本排版：不再弹确认框（直接执行）', (await exec('window.__cwTest.modalOpen()')) === false);
+  const fmtToast = await exec('window.__cwTest.toasts()');
+  check(
+    '整本排版：提示里列出规则与要改的章数',
+    fmtToast.some((item) => item.message.includes('段首缩进 2 字符') && item.message.includes('2 章')),
+    fmtToast.map((item) => item.message)
+  );
+  check(
+    '整本排版：提示里说明原文已备份到 _trash',
+    fmtToast.some((item) => item.message.includes('原文已备份到 _trash')),
+    fmtToast.map((item) => item.message)
+  );
+  check(
+    '整本排版：出现 10 秒撤销条（用整理备份整组还原）',
+    (await exec("!document.getElementById('undo-bar').classList.contains('hidden')")) === true
+  );
   check('整本排版：执行成功', bookFormatResult && bookFormatResult.ok === true, bookFormatResult);
   await sleep(400);
   const fmtMeta = await storage.readBookMeta(fmtBookPath);
@@ -117,13 +121,11 @@ module.exports = async function group36FormatBook(t) {
     (await exec('window.__cwTest.dialog()')) === '整理本书前先处理未保存的修改'
   );
   await exec("window.__cwTest.answerModal('save')");
-  await waitFor("window.__cwTest.dialog() === '一键整理本书'");
-  await exec("window.__cwTest.answerModal('cancel')");
   const fmtDirtyResult = await fmtDirtyPromise;
-  check('整本排版：取消后不写盘', fmtDirtyResult && fmtDirtyResult.canceled === true, fmtDirtyResult);
   check(
-    '整本排版：取消后磁盘上只多了刚保存的未整理内容',
-    (await exec('window.__cwTest.chapterTextAt(0)')) === '临时未保存的内容'
+    '整本排版：保存后直接整理（不再有第二个确认框）',
+    fmtDirtyResult && fmtDirtyResult.ok === true && (await exec('window.__cwTest.modalOpen()')) === false,
+    fmtDirtyResult
   );
 
   // 导出目录记忆：导出过的文件夹下次要记住（写进 config.json；坏值自动清洗）

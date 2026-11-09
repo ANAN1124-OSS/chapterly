@@ -28,7 +28,8 @@
  *       hideHeaderMenus                     //   打开查找面板前收起顶栏菜单
  *     },
  *     collab: {                             // 跨域动作 / 尚未搬走的相邻面板
- *       askUnsaved, saveCurrent, openModal, //   整本替换前的三选一与二次确认
+ *       askUnsaved, saveCurrent, openModal, //   整本替换前的三选一（1.4.0 P0-2 起整本替换不再弹二次确认）
+      registerUndo,                       //   登记 10 秒撤销（整本替换用替换备份还原；1.4.0 P0-2）
  *       refreshShelf, renderChapterList, reloadAfterPartialFailure, // 整本替换后的统计 / 章节栏 / 失败兜底
  *       closeProofreadPanel, runReplaceOne, //   打开查找前关校对框 / 「替换当前处」实现（整本替换域）
  *       renderFindBookmarks, refreshFindBookmarks, refreshReplaceBackups // 打开面板时顺带刷书签与替换备份入口（懒调用）
@@ -68,12 +69,12 @@
       if (nav[key] === undefined || nav[key] === null) throw new TypeError('createFindUi 的 host.nav 缺少 ' + key);
     }
     if (typeof collab !== 'object') throw new TypeError('createFindUi 的 host.collab 必须是对象');
-    for (const key of ['askUnsaved', 'saveCurrent', 'openModal', 'refreshShelf', 'renderChapterList', 'reloadAfterPartialFailure', 'closeProofreadPanel', 'runReplaceOne', 'renderFindBookmarks', 'refreshFindBookmarks', 'refreshReplaceBackups']) {
+    for (const key of ['askUnsaved', 'saveCurrent', 'openModal', 'registerUndo', 'refreshShelf', 'renderChapterList', 'reloadAfterPartialFailure', 'closeProofreadPanel', 'runReplaceOne', 'renderFindBookmarks', 'refreshFindBookmarks', 'refreshReplaceBackups']) {
       if (collab[key] === undefined || collab[key] === null) throw new TypeError('createFindUi 的 host.collab 缺少 ' + key);
     }
     const { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput } = find;
     const { chapterTitle, switchChapter, loadChapterAt, currentChapterLabel, hideHeaderMenus } = nav;
-    const { askUnsaved, saveCurrent, openModal, refreshShelf, renderChapterList, reloadAfterPartialFailure, closeProofreadPanel, runReplaceOne, renderFindBookmarks, refreshFindBookmarks, refreshReplaceBackups } = collab;
+    const { askUnsaved, saveCurrent, openModal, registerUndo, refreshShelf, renderChapterList, reloadAfterPartialFailure, closeProofreadPanel, runReplaceOne, renderFindBookmarks, refreshFindBookmarks, refreshReplaceBackups } = collab;
 
   // ---------- 查找会话（v0.8-11，提案 N11）----------
   // 当前章的「上一处 / 下一处」+「结果持续高亮」：
@@ -525,16 +526,10 @@
         $('find-summary').textContent = `整本没有找到「${options.query}」，未做替换`;
         return;
       }
-      const confirmed = await openModal({
-        title: '整本替换确认',
-        message: `将在 ${preview.chapterCount} 章里替换 ${preview.totalMatches} 处：\n「${options.query}」→「${options.replacement}」\n\n替换前会把原章节备份到书内 _trash/替换备份-时间戳/，可以人工找回。`,
-        buttons: [
-          { label: '取消', value: 'cancel' },
-          { label: '全部替换', value: 'ok', kind: 'primary' }
-        ],
-        cancelValue: 'cancel'
-      });
-      if (confirmed.action !== 'ok') return;
+      // 1.4.0 P0-2（撤销优先于确认）：整本替换不再弹二次确认 —— 直接替换（写前由主进程把原章节
+      // 备份到 _trash/替换备份-*），10 秒内可撤销（撤销 = 用这份替换备份还原）。
+      // 未保存拦截仍在前一步：整本替换会直接写盘。
+      const bookPath = state.bookPath;
       closeFindPanel();
       const result = await call(api.replaceBook, state.bookPath, {
         query: options.query,
@@ -544,9 +539,20 @@
       await loadChapterAt(state.index);
       renderChapterList();
       refreshShelf(); // 字数变了，书架统计后台刷新即可
+      const backupName = result.backupDir ? String(result.backupDir).split(/[\\/]/).pop() : '';
+      if (result.chaptersChanged && backupName && typeof registerUndo === 'function') {
+        registerUndo(`已整本替换 ${result.chaptersChanged} 章 / ${result.occurrences} 处`, async () => {
+          if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          const back = await call(api.restoreReplaceBackup, bookPath, backupName);
+          if (!back || !Number(back.restored)) throw new Error('替换备份里没有可还原的章节');
+          await loadChapterAt(state.index);
+          renderChapterList();
+          refreshShelf();
+        });
+      }
       toast(
         `整本替换完成：${result.chaptersChanged} 章 / ${result.occurrences} 处${
-          result.backupDir ? ' · 原文已备份到 _trash' : ''
+          result.backupDir ? ' · 原文已备份到 _trash（10 秒内可撤销）' : ''
         }`
       );
     } catch (err) {
