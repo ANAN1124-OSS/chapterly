@@ -108,6 +108,8 @@
   const CONTENT_SEARCH_MIN_CHARS = 2;
   // 设置（第 4 步九刀·第七刀）：设置弹层 + 数据台账整段在 settings-ui.js 里；这里只接线
   const settingsUiModule = window.CWSettingsUi;
+  // 设置面板信息架构（1.4.0 P0-1）：5 个分区 / 顶部搜索 / 深链的纯逻辑在 settings-ia.js 里
+  const settingsIaModule = window.CWSettingsIa;
   const CONTENT_PAGE_SIZE = 8;
   // 整理悬浮卡 + 显示菜单（第 4 步九刀·第八刀）：整段在 tidy-card-ui.js 里；这里只接线
   const tidyCardUiModule = window.CWTidyCardUi;
@@ -3137,6 +3139,8 @@
   // 第 4 步九刀·第七刀：实现在 renderer/settings-ui.js（模块头有契约），这里只装配与接线；
   const settingsUi = settingsUiModule.create({
     $, state, api, call, toast,
+    // 1.4.0 P0-1：设置分区 / 搜索 / 深链纯逻辑（不在 host 必需契约里，缺了只退化成老的一长条）
+    ia: settingsIaModule,
     display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic },
     peers: {
       stats: { refreshStats, renderStatsChart },

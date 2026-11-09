@@ -97,6 +97,33 @@ const TARGET_ALLOW = Object.freeze([
 const FOCUS_ALLOW = Object.freeze([]);
 
 // 实测状态：每个状态 = 摆好界面 → 扫当前可见界面（可选：只在某个弹层范围里扫焦点）。
+// 设置分区状态的 setup 生成器（1.4.0 P0-1）：门禁主流程停在写作页，打开设置 = 按书作用域（只有
+// 「显示」）。这里点状态栏「今日字数」走与用户相同的入口 —— 它打开的是**全局设置**并定位到码字
+// 日历（写作分区），然后再点目标分区。只轮询 DOM，不注入 <style>、不改产品状态。
+const settingsTabSetup = (tab) => `(() => {
+  document.getElementById('status-stats').click();
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const tick = () => {
+      const bd = document.getElementById('settings-backdrop');
+      const writing = document.getElementById('settings-tab-writing');
+      const target = document.getElementById('settings-tab-${tab}');
+      const open = bd && !bd.classList.contains('hidden');
+      if (open && writing && writing.getAttribute('aria-selected') === 'true' && target) {
+        if (target.getAttribute('aria-selected') !== 'true') target.click();
+        resolve(true);
+        return;
+      }
+      if (Date.now() - startedAt > 8000) {
+        reject(new Error('设置分区 setup 超时：${tab}'));
+        return;
+      }
+      setTimeout(tick, 50);
+    };
+    tick();
+  });
+})()`;
+
 const STATES = [
   {
     id: 'shelf',
@@ -131,6 +158,52 @@ const STATES = [
     label: '设置弹层',
     setup: 'window.__cwTest.openSettings()',
     wait: 'window.__cwTest.settingsOpen() === true',
+    teardown: 'window.__cwTest.closeSettings()',
+    focusScope: '#settings-backdrop'
+  },
+  // 1.4.0 P0-1：设置改成「左导航 + 单分区」后，一次只渲染一个分区；其余四个分区各扫一遍，
+  // 保证原来 423 条目标里的设置项一条都没从门禁里掉出去（不降判据、也不靠隐藏控件蒙混过关）。
+  {
+    id: 'settingsWriting',
+    label: '设置弹层（写作分区）',
+    // 主流程此时停在写作页（打开设置 = 按书作用域，只有「显示」）：先走状态栏算日历入口拿
+    // 「全局作用域 + 写作分区」，再逐个点其它分区，四个分区的控件都能被门禁扫到。
+    setup: settingsTabSetup('writing'),
+    wait:
+      "window.__cwTest.settingsOpen() === true && window.__cwTest.settingsScope() === 'global' && document.getElementById('settings-tab-writing').getAttribute('aria-selected') === 'true'",
+    teardown: 'window.__cwTest.closeSettings()',
+    focusScope: '#settings-backdrop'
+  },
+  {
+    id: 'settingsContent',
+    label: '设置弹层（内容分区）',
+    // 主流程此时停在写作页（打开设置 = 按书作用域，只有「显示」）：先走状态栏算日历入口拿
+    // 「全局作用域 + 写作分区」，再逐个点其它分区，四个分区的控件都能被门禁扫到。
+    setup: settingsTabSetup('content'),
+    wait:
+      "window.__cwTest.settingsOpen() === true && window.__cwTest.settingsScope() === 'global' && document.getElementById('settings-tab-content').getAttribute('aria-selected') === 'true'",
+    teardown: 'window.__cwTest.closeSettings()',
+    focusScope: '#settings-backdrop'
+  },
+  {
+    id: 'settingsData',
+    label: '设置弹层（数据分区）',
+    // 主流程此时停在写作页（打开设置 = 按书作用域，只有「显示」）：先走状态栏算日历入口拿
+    // 「全局作用域 + 写作分区」，再逐个点其它分区，四个分区的控件都能被门禁扫到。
+    setup: settingsTabSetup('data'),
+    wait:
+      "window.__cwTest.settingsOpen() === true && window.__cwTest.settingsScope() === 'global' && document.getElementById('settings-tab-data').getAttribute('aria-selected') === 'true'",
+    teardown: 'window.__cwTest.closeSettings()',
+    focusScope: '#settings-backdrop'
+  },
+  {
+    id: 'settingsAbout',
+    label: '设置弹层（关于分区）',
+    // 主流程此时停在写作页（打开设置 = 按书作用域，只有「显示」）：先走状态栏算日历入口拿
+    // 「全局作用域 + 写作分区」，再逐个点其它分区，四个分区的控件都能被门禁扫到。
+    setup: settingsTabSetup('about'),
+    wait:
+      "window.__cwTest.settingsOpen() === true && window.__cwTest.settingsScope() === 'global' && document.getElementById('settings-tab-about').getAttribute('aria-selected') === 'true'",
     teardown: 'window.__cwTest.closeSettings()',
     focusScope: '#settings-backdrop'
   },
@@ -1158,11 +1231,13 @@ async function measure(opts, fixtures, log) {
       for (const state of states) {
         const record = { id: state.id, label: state.label, width, ok: true };
         const runState = state;
+        // teardown 放 finally：某个状态自己失败时也要把它打开的弹层收掉，否则后面每个状态
+        // 都会量到「被上层弹层盖住」，把一处失败放大成一片（2026-11-09 实测踩过）。
+        const teardown = runState.teardown;
         try {
           const setup = runState.setup
             ? runState.setup.replace(/__BOOK__/g, JSON.stringify(fixtures.bookPath))
             : null;
-          const teardown = runState.teardown;
           if (setup) await evaluate(cdp, setup);
           await waitEval(cdp, runState.wait, 15000, `${runState.label}（${width}）`);
           const scan = await evaluate(
@@ -1180,14 +1255,15 @@ async function measure(opts, fixtures, log) {
             );
             record.focus = focusScan;
           }
+        } catch (err) {
+          record.ok = false;
+          record.error = String((err && err.message) || err);
+        } finally {
           if (teardown) {
             await evaluate(cdp, teardown).catch((err) => {
               record.teardownError = String((err && err.message) || err);
             });
           }
-        } catch (err) {
-          record.ok = false;
-          record.error = String((err && err.message) || err);
         }
         results.push(record);
         log(
@@ -1304,9 +1380,13 @@ async function main(argv = process.argv.slice(2)) {
   // 3) 判定：按状态分别判（允许清单的条数上限按「同一状态」计），再汇总。
   const targetStates = [];
   const focusStates = [];
+  const failedStates = [];
   for (const record of measured.results || []) {
     const stateLabel = `${record.width} · ${record.label}`;
     if (!record.ok) {
+      // 状态自己没测到（弹层没打开 / 等待超时）也记一笔，最后算门禁失败：
+      // 静默跳过等于把这一屏的控件漏出判据（1.4.0 P0-1 加分区状态时踩过）。
+      failedStates.push(`${stateLabel}：${record.error}`);
       log(`[a11y] 状态失败：${stateLabel}：${record.error}`);
       continue;
     }
@@ -1377,6 +1457,10 @@ async function main(argv = process.argv.slice(2)) {
     apca
   });
   if (measured.measureError) summary.ok = false;
+  if (failedStates.length) {
+    summary.ok = false;
+    for (const item of failedStates) summary.problems.push(`状态测量失败：${item}`);
+  }
 
   // 4) 报告 JSON（shots/ 是 gitignored，可以留着对照）
   const report = {

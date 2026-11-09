@@ -362,7 +362,7 @@ module.exports = async function runScenario(ctx) {
   await e2eGroups.runGroups(groupContext(), [59]);
 
   // 60 起的组（v0.9 B-7）：断言原样拆到 scripts/e2e/groups/，这里只按组号顺序跑；
-  // 顺序与原文件一致（60 → 61 → … → 72，之后才是 55 多窗口）。组的上下文与第 52 组同一份。
+  // 顺序与原文件一致（60 → 61 → … → 73，之后才是 55 多窗口）。组的上下文与第 52 组同一份。
   // 第 72 组（剪贴板面板）2026-11-07 随面板改单列表视图整组重写，仍由 idsFrom(60) 排在组尾。
   await e2eGroups.runGroups(groupContext(), e2eGroups.idsFrom(60));
 

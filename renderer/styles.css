@@ -1994,6 +1994,85 @@ body.theme-night .long-para-bar { background: var(--warn);
 
   flex: 1;
   display: block;}
+/* 设置面板信息架构（1.4.0 P0-1）：顶部搜索 + 左侧 5 个分区 + 右侧只显示当前分区。
+ * 尺寸沿用原 900×618 弹层，只在内部切出一条 96px 导航列；颜色全部用现有纸色令牌，不新增颜色。 */
+.settings-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;}
+.settings-search {
+  flex: 1 1 auto;
+  min-width: 0;
+
+  height: 30px;
+  padding: 0 10px;
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--input-bg);
+  border: 1px solid var(--folio-field-border);
+  border-radius: var(--folio-radius);
+  outline: none;}
+.settings-search:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;}
+.settings-search-status { flex: 0 0 auto; }
+.settings-body {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 18px;
+  min-height: 0;
+  margin-top: 8px;}
+.settings-nav {
+  display: flex;
+  flex: 0 0 96px;
+  flex-direction: column;
+  gap: 2px;
+
+  min-width: 0;
+  padding: 2px 12px 0 0;
+  border-right: 1px solid var(--line);}
+.settings-tab {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--folio-radius);
+  cursor: pointer;}
+.settings-tab:hover { color: var(--ink); background: var(--paper); }
+.settings-tab[aria-selected="true"] {
+  color: var(--ink);
+  background: var(--paper);
+  border-color: var(--line-strong);}
+.settings-tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.settings-body .settings-scroll { flex: 1 1 auto; min-width: 0; }
+/* 分区显隐走 hidden 属性：字段自己的 .hidden（作用域显隐）一律不碰，两条显隐互不覆盖 */
+.settings-section { display: block; }
+.settings-section[hidden] { display: none; }
+/* 每个分区的第一块不再画顶部发丝线：它头上就是搜索栏，不是「上一组结束了」 */
+.settings-section > .field-group:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+/* 搜索过滤：只给不命中的行 / 分组加 search-hidden，清空搜索时整批摘掉。
+ * 用 id 选择器提特异性：设置行自己的 `.settings-scroll .field.settings-row { display:grid }`
+ * 是 3 个类（0,3,0），普通类选择器压不住它（实测：被过滤的行仍然有盒子）。 */
+#settings-scroll .search-hidden { display: none; }
+.settings-empty {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 24px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-soft);}
+.settings-empty.hidden { display: none; }
 /* 设置弹层的控件贴在滚动区边缘时，外侧焦点环会被 overflow 裁掉（实测 3–4px，贴边那一侧
  * 整圈看不见）。滚动区里的输入框 / 按钮改画内嵌环：环落在控件自身盒内，滚到任何位置都完整。
  * （scroll-padding / scroll-margin 都不作用于 Chromium 的「聚焦滚动」，实测无效，别再加。） */
@@ -2091,6 +2170,10 @@ body.theme-night .long-para-bar { background: var(--warn);
   gap: 6px;
   margin: 8px 0 7px;
 }
+/* 1.4.0 P0-1：设置分区化后，码字日历（写作分区）第一次被无障碍门禁量到 —— 翻月按钮只有 20×24
+ *（WCAG 2.5.8 要求 24×24）。这里只把宽度补到 24、去掉左右内边距（字形仍居中），
+ * 字号 / 颜色 / 间距 / 位置都不动，也没进允许清单。 */
+.calendar-head .btn.tiny { min-width: 24px; padding: 0; }
 .calendar-label {
   min-width: 92px;
   text-align: center;

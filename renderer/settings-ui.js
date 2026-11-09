@@ -39,6 +39,10 @@
  *     texts: { commonLib, formatBytes }    // 共享纯格式化：commonLib = core/common.js（pad2 = commonLib.pad2）/ formatBytes（日志体积文案）
  *   }
  * 缺任何一个（含分组内成员）直接抛 TypeError。分组在 create 时一次解构，行为等价。
+ *
+ * 1.4.0 P0-1 补一句话：设置面板的「5 个分区 / 顶部搜索 / 深链切分区」纯逻辑在
+ * renderer/settings-ia.js，由渲染层通过可选的 host.ia 传入（不在 REQUIRED_HOST 里）。
+ * 不传时（老单测的假 host）退化成原来的「一长条设置」，行为一个字不变。
  * create() 不注册事件、不建定时器、不碰 DOM；事件绑定在 setupSettingsUi()，由 bindEvents() 在
  * 原设置块的位置调用一次（渲染层里写作计时 / 日历的绑定位置不变）。
  *
@@ -56,6 +60,14 @@
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'display', 'peers', 'texts'];
+
+  // 1.4.0 P0-1：设置面板信息架构（分区 / 搜索 / 深链）的纯逻辑在 renderer/settings-ia.js，
+  // 由渲染层通过 host.ia 传进来（正式路径 window.CWSettingsIa）。它**不在 REQUIRED_HOST 里**：
+  // 老单测的假 host 不传，本模块就退回原来的一长条设置，行为一个字不变。
+  function resolveSettingsIa(host) {
+    if (host && host.ia && typeof host.ia.planSearch === 'function') return host.ia;
+    return null;
+  }
 
   function createSettingsUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createSettingsUi 需要 host 对象');
@@ -96,6 +108,134 @@
     const { refreshShelf } = peers;
     const { commonLib, formatBytes } = texts;
     const pad2 = commonLib.pad2;
+
+  // ---------- 设置面板信息架构（1.4.0 P0-1：左导航 / 顶部搜索 / 深链） ----------
+  // ia 是纯逻辑模块（见文件头）；拿不到时下面每个函数都直接 return，界面就退回原来的一长条。
+  const ia = resolveSettingsIa(host);
+  const DEFAULT_SETTINGS_TAB = ia ? ia.DEFAULT_TAB : 'display';
+  // 当前分区只存在内存里（不写 config、不进保存 payload）；每次打开设置回到默认分区。
+  let settingsActiveTab = DEFAULT_SETTINGS_TAB;
+
+  function settingsTabNodes() {
+    const nav = $('settings-nav');
+    if (!nav || typeof nav.querySelectorAll !== 'function') return [];
+    return Array.from(nav.querySelectorAll('[data-settings-tab]'));
+  }
+
+  function settingsSectionNode(tab) {
+    return $('settings-section-' + tab);
+  }
+
+  // 只切分区显隐：字段自己的 .hidden（作用域逐项隐藏）一律不碰，两条显隐互不覆盖。
+  function applySettingsTabs() {
+    if (!ia) return;
+    const allowed = ia.sectionsForScope(state.settingsScope);
+    const active = ia.resolveTab(state.settingsScope, settingsActiveTab);
+    settingsActiveTab = active;
+    for (const node of settingsTabNodes()) {
+      const tab = node.dataset ? node.dataset.settingsTab : '';
+      const usable = allowed.indexOf(tab) >= 0;
+      node.classList.toggle('hidden', !usable);
+      const selected = usable && tab === active;
+      node.setAttribute('aria-selected', selected ? 'true' : 'false');
+      node.setAttribute('tabindex', selected ? '0' : '-1');
+    }
+    for (const tab of ia.TAB_IDS) {
+      const section = settingsSectionNode(tab);
+      if (section) section.hidden = tab !== active;
+    }
+    const scroller = $('settings-scroll');
+    if (scroller) scroller.scrollTop = 0;
+  }
+
+  function setSettingsTab(tab, options = {}) {
+    if (!ia) return settingsActiveTab;
+    settingsActiveTab = ia.resolveTab(state.settingsScope, tab);
+    applySettingsTabs();
+    if (options.focus) {
+      const node = $('settings-tab-' + settingsActiveTab);
+      if (node && typeof node.focus === 'function') node.focus();
+    }
+    return settingsActiveTab;
+  }
+
+  // 搜索时把「分区里的每个顶层块」当成一行：field-group 标题算分组，其余都算行。
+  // 行的文本用 textContent（label + 说明文字一起匹配），分组标题用于「命中整组」。
+  function settingsSearchUnits() {
+    const units = [];
+    if (!ia) return units;
+    for (const tab of ia.TAB_IDS) {
+      const section = settingsSectionNode(tab);
+      if (!section || !section.children) continue;
+      let groupId = tab + ':0';
+      let groupIndex = 0;
+      let rowIndex = 0;
+      for (const child of Array.from(section.children)) {
+        if (!child) continue;
+        const isGroup = Boolean(child.classList && child.classList.contains('field-group'));
+        if (isGroup) {
+          groupIndex += 1;
+          groupId = tab + ':' + groupIndex;
+          units.push({ id: tab + ':g' + groupIndex, kind: 'group', groupId, text: child.textContent || '', section: tab, el: child });
+        } else {
+          rowIndex += 1;
+          units.push({ id: tab + ':r' + groupIndex + ':' + rowIndex, kind: 'row', groupId, text: child.textContent || '', section: tab, el: child });
+        }
+      }
+    }
+    return units;
+  }
+
+  function settingsSearchInput() {
+    return $('settings-search');
+  }
+
+  // 清空搜索并把分区恢复成「只显示当前分区」
+  function resetSettingsSearch() {
+    const input = settingsSearchInput();
+    if (input) input.value = '';
+    applySettingsSearch();
+  }
+
+  function applySettingsSearch() {
+    if (!ia) return;
+    const input = settingsSearchInput();
+    const query = input ? String(input.value || '') : '';
+    const units = settingsSearchUnits();
+    const plan = ia.planSearch(query, units);
+    const clearBtn = $('btn-settings-search-clear');
+    if (clearBtn) clearBtn.classList.toggle('hidden', !plan.active);
+    const emptyBox = $('settings-empty');
+    if (emptyBox) emptyBox.classList.toggle('hidden', !plan.empty);
+    const status = $('settings-search-status');
+    if (status) status.textContent = ia.searchStatusText(plan);
+    if (!plan.active) {
+      for (const unit of units) if (unit.el && unit.el.classList) unit.el.classList.remove('search-hidden');
+      applySettingsTabs();
+      return;
+    }
+    const visible = {};
+    for (const id of plan.visible) visible[id] = true;
+    for (const unit of units) {
+      if (!unit.el || !unit.el.classList) continue;
+      unit.el.classList.toggle('search-hidden', visible[unit.id] !== true);
+    }
+    // 搜索是跨分区的：命中的分区都露出来（没命中的藏起来），避免「搜索命中却在别的分区里」
+    const allowed = ia.sectionsForScope(state.settingsScope);
+    for (const tab of ia.TAB_IDS) {
+      const section = settingsSectionNode(tab);
+      if (!section) continue;
+      section.hidden = allowed.indexOf(tab) < 0 || plan.sections.indexOf(tab) < 0;
+    }
+    for (const node of settingsTabNodes()) {
+      const tab = node.dataset ? node.dataset.settingsTab : '';
+      node.classList.toggle('hidden', allowed.indexOf(tab) < 0);
+      // 搜索结果不属于任何一个分区：搜索期间 nav 不保留选中态（都 aria-selected=false、
+      // 不可 Tab），清空搜索后由 applySettingsTabs() 按当前分区恢复。
+      node.setAttribute('aria-selected', 'false');
+      node.setAttribute('tabindex', '-1');
+    }
+  }
 
   // ---------- 设置 ----------
   function setSelectValue(id, value, fallback) {
@@ -162,13 +302,20 @@
   const SETTINGS_SECTIONS = { calendar: 'settings-calendar-field' };
 
   // 弹层打开后把某个分区滚进可视区（只滚设置弹层自己的 .settings-scroll；不写任何东西）。
-  // 分区不在当前作用域（例如按书设置里日历被隐藏）时不滚，返回 false。
+  // 1.4.0 P0-1：先切到锚点所属分区（calendar → 写作）再滚；分区不在当前作用域
+  //（例如按书设置里日历被隐藏）时不切也不滚，返回 false。
   function revealSettingsSection(section) {
-    const id = SETTINGS_SECTIONS[section];
+    const link = ia ? ia.resolveDeepLink(section, state.settingsScope) : null;
+    if (link && !link.available) return false;
+    const id = link ? link.field : SETTINGS_SECTIONS[section];
     if (!id) return false;
     const field = $(id);
     if (!field) return false;
     if (field.classList && field.classList.contains('hidden')) return false;
+    if (link && link.tab !== settingsActiveTab) {
+      settingsActiveTab = link.tab;
+      applySettingsTabs();
+    }
     if (typeof field.scrollIntoView === 'function') {
       try {
         field.scrollIntoView({ block: 'center' });
@@ -549,6 +696,9 @@
     if (resetBtn) {
       resetBtn.classList.toggle('hidden', !isBook || !Object.keys(state.bookDisplay || {}).length);
     }
+    // 1.4.0 P0-1：分区导航跟着作用域走（按书只剩「显示」，当前分区不可用时自动退回「显示」）；
+    // 搜索态下重算一次，避免作用域切换后把别的分区露出来。
+    applySettingsSearch();
     const hint = $('settings-scope-hint');
     if (!hint) return;
     hint.textContent = isBook
@@ -579,6 +729,10 @@
     // 打开时刷新一次今天 / 近 30 天，避免跨过午夜后还显示昨天的数字
     await refreshStats();
     fillSettingsFields(cfg);
+    // 1.4.0 P0-1：每次打开都回到默认分区、清空搜索框（深链入口在下面再切分区并滚过去）
+    settingsActiveTab = DEFAULT_SETTINGS_TAB;
+    const searchInput = settingsSearchInput();
+    if (searchInput) searchInput.value = '';
     updateSettingsScopeUi();
     $('settings-backdrop').classList.remove('hidden');
     // 入口指定了分区（U-D4 的码字日历）时立刻滚到那里 —— 放在异步台账读取之前，
@@ -603,6 +757,9 @@
 
   function closeSettings({ restore = true } = {}) {
     $('settings-backdrop').classList.add('hidden');
+    // 关掉时顺手清空搜索（只动界面，不写配置）：下次打开不会带着上次的过滤词
+    const searchInput = settingsSearchInput();
+    if (searchInput && String(searchInput.value || '') !== '') searchInput.value = '';
     if (restore && state.settingsBackup) {
       state.config = state.settingsBackup;
       applyEditorStyle();
@@ -692,6 +849,60 @@
     // 右上「×」与底栏「取消」完全同义（含关闭前的预览还原，拍板 #3）
     $('btn-settings-close').addEventListener('click', closeSettings);
     $('btn-settings-save').addEventListener('click', saveSettings);
+    // 1.4.0 P0-1：左导航切分区（Tab 可达；方向键 / Home / End 按标准 tablist 走，点击也切）
+    const nav = $('settings-nav');
+    if (nav) {
+      nav.addEventListener('click', (event) => {
+        const target = event && event.target;
+        const btn = target && typeof target.closest === 'function' ? target.closest('[data-settings-tab]') : null;
+        if (!btn || !btn.dataset) return;
+        // 正在搜索时点分区 = 先退出搜索模式，再看这个分区
+        const input = settingsSearchInput();
+        if (input && String(input.value || '') !== '') resetSettingsSearch();
+        setSettingsTab(btn.dataset.settingsTab);
+      });
+      nav.addEventListener('keydown', (event) => {
+        if (!ia) return;
+        if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].indexOf(event.key) < 0) return;
+        const tabs = settingsTabNodes().filter((node) => !node.classList.contains('hidden'));
+        if (!tabs.length) return;
+        const active = typeof document !== 'undefined' && document ? document.activeElement : null;
+        let at = tabs.indexOf(active);
+        if (at < 0) at = tabs.findIndex((node) => node.getAttribute('aria-selected') === 'true');
+        if (at < 0) at = 0;
+        let next = at;
+        if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = tabs.length - 1;
+        else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (at + 1) % tabs.length;
+        else next = (at - 1 + tabs.length) % tabs.length;
+        event.preventDefault();
+        event.stopPropagation();
+        setSettingsTab(tabs[next].dataset.settingsTab, { focus: true });
+      });
+    }
+    // 顶部搜索：输入即过滤（跨分区）；搜索框里 Esc 先清空搜索，搜索框已空时这一次 Esc
+    // 不拦，照旧交给全局 Esc 链关弹层（esc-registry 的关闭语义一个字不改）。
+    const searchInput = settingsSearchInput();
+    if (searchInput) {
+      searchInput.addEventListener('input', applySettingsSearch);
+      searchInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        if (String(searchInput.value || '') === '') return;
+        event.preventDefault();
+        event.stopPropagation();
+        resetSettingsSearch();
+        if (typeof searchInput.focus === 'function') searchInput.focus();
+      });
+    }
+    for (const id of ['btn-settings-search-clear', 'btn-settings-search-clear-empty']) {
+      const btn = $(id);
+      if (!btn) continue;
+      btn.addEventListener('click', () => {
+        resetSettingsSearch();
+        const input = settingsSearchInput();
+        if (input && typeof input.focus === 'function') input.focus();
+      });
+    }
     // 章节模板：边打字边更新预览（只读草稿，保存仍要点「保存设置」）
     const templateField = $('settings-chapter-template');
     if (templateField) templateField.addEventListener('input', renderChapterTemplatePreview);

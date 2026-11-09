@@ -354,11 +354,14 @@ test('静态闸门：组索引能单独 require（不依赖 Electron），组号
     '69-motion',
     '70-a11y-keyboard',
     '71-menu-keyboard',
-    '72-capture'
+    '72-capture',
+    // 1.4.0 P0-1（2026-11-09）：设置面板信息架构新增第 73 组，追加在尾部；
+    // 上面 52–72 的组文件 / 组号 / 顺序一个都没动。
+    '73-settings-ia'
   ];
-  const TAIL_IDS = [52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72];
-  assert.deepEqual(required.slice(-TAIL_FILES.length), TAIL_FILES, '尾部 21 组（52–72）的组文件与顺序不许变');
-  assert.deepEqual(ids.slice(-TAIL_IDS.length), TAIL_IDS, '尾部 21 组（52–72）的组号与顺序不许变');
+  const TAIL_IDS = [52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73];
+  assert.deepEqual(required.slice(-TAIL_FILES.length), TAIL_FILES, '尾部 22 组（52–73）的组文件与顺序不许变');
+  assert.deepEqual(ids.slice(-TAIL_IDS.length), TAIL_IDS, '尾部 22 组（52–73）的组号与顺序不许变');
   const headFiles = required.slice(0, -TAIL_FILES.length);
   const headIds = ids.slice(0, -TAIL_IDS.length);
   assert.equal(headFiles.length, headIds.length, '0–51 的组号与组文件必须一一对应');

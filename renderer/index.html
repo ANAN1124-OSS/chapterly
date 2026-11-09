@@ -751,15 +751,28 @@
       <h2 class="modal-title" id="settings-title">设置</h2>
       <button id="btn-settings-close" class="modal-close" type="button" title="关闭设置（Esc）" aria-label="关闭设置">×</button>
       <p class="settings-scope-hint muted small" id="settings-scope-hint"></p>
-      <div class="settings-scroll">
-      <label class="field settings-row" id="settings-root-field">
-        <span>书架目录</span>
-        <div class="field-row">
-          <input id="settings-root" class="text-input" type="text" readonly
-            title="书架目录只能通过右侧「选择…」在系统对话框里指定（保存时主进程只认刚选中的那个目录）" />
-          <button id="btn-pick-folder" class="btn ghost" type="button">选择…</button>
-        </div>
-      </label>
+      <div class="settings-toolbar">
+        <input id="settings-search" class="text-input settings-search" type="search" autocomplete="off" spellcheck="false"
+          placeholder="搜索设置项（字体 / 排版 / 快照 / 更新…）" aria-label="搜索设置项" />
+        <button id="btn-settings-search-clear" class="btn ghost tiny hidden" type="button" title="清空搜索（Esc）">清空</button>
+        <span id="settings-search-status" class="muted small settings-search-status" role="status" aria-live="polite"></span>
+      </div>
+      <div class="settings-body">
+      <nav class="settings-nav" id="settings-nav" role="tablist" aria-label="设置分类">
+        <button class="settings-tab" id="settings-tab-display" type="button" role="tab" data-settings-tab="display"
+          aria-controls="settings-section-display" aria-selected="true" tabindex="0">显示</button>
+        <button class="settings-tab" id="settings-tab-writing" type="button" role="tab" data-settings-tab="writing"
+          aria-controls="settings-section-writing" aria-selected="false" tabindex="-1">写作</button>
+        <button class="settings-tab" id="settings-tab-content" type="button" role="tab" data-settings-tab="content"
+          aria-controls="settings-section-content" aria-selected="false" tabindex="-1">内容</button>
+        <button class="settings-tab" id="settings-tab-data" type="button" role="tab" data-settings-tab="data"
+          aria-controls="settings-section-data" aria-selected="false" tabindex="-1">数据</button>
+        <button class="settings-tab" id="settings-tab-about" type="button" role="tab" data-settings-tab="about"
+          aria-controls="settings-section-about" aria-selected="false" tabindex="-1">关于</button>
+      </nav>
+      <div class="settings-scroll" id="settings-scroll">
+      <section class="settings-section" id="settings-section-display" data-settings-section="display" role="tabpanel"
+        aria-labelledby="settings-tab-display">
       <div class="field-group">字体</div>
       <label class="field settings-row">
         <span>正文字体</span>
@@ -879,6 +892,9 @@
         </div>
         <div id="settings-caret-hint" class="muted small"></div>
       </div>
+      </section>
+      <section class="settings-section" id="settings-section-writing" data-settings-section="writing" role="tabpanel"
+        aria-labelledby="settings-tab-writing">
       <div class="field-group" id="settings-stats-group">写作统计</div>
       <label class="field settings-row" id="settings-daily-goal-field">
         <span>每日写作目标</span>
@@ -928,6 +944,9 @@
         删字不会倒扣当天进度。旧配置没有目标字段时按「不设目标」处理。码字日历 / 连续天数都从这份统计现算，不另存文件。
         写作时长默认关；开启后只记秒数（不记内容），和字数存在同一份 <code>stats.json</code>。
       </p>
+      </section>
+      <section class="settings-section" id="settings-section-content" data-settings-section="content" role="tabpanel"
+        aria-labelledby="settings-tab-content">
       <div class="field-group" id="settings-template-group">新建章节</div>
       <div class="field" id="settings-template-field">
         <span>章节模板（新建 / 插入章节时自动填进空章；只改编辑区，<strong>不会自动保存</strong>，Ctrl+S 才写盘，可 Ctrl+Z 撤销）</span>
@@ -939,6 +958,41 @@
         </div>
         <div id="settings-template-preview" class="muted small template-preview"></div>
       </div>
+      <div class="field-group" id="settings-sensitive-group">敏感词预检</div>
+      <label class="field settings-row" id="settings-sensitive-field">
+        <span>敏感词表</span>
+        <div class="field-row">
+          <input id="settings-sensitive-path" class="text-input" type="text" readonly
+                 placeholder="未选择（预检前需要先选一个自己的词表 txt）" />
+          <button id="btn-pick-sensitive" class="btn ghost" type="button">选择…</button>
+          <button id="btn-clear-sensitive" class="btn ghost" type="button">清除</button>
+        </div>
+        <span id="settings-sensitive-status" class="muted small"></span>
+        <span class="muted small">每行一个词；应用不内置任何词表，只按你的词表报告，不改正文</span>
+      </label>
+      <div class="field-group" id="settings-proofread-group">校对词表</div>
+      <label class="field settings-row" id="settings-proofread-field">
+        <span>自定义错别字 / 禁用词</span>
+        <div class="field-row">
+          <input id="settings-proofread-path" class="text-input" type="text" readonly
+                 placeholder="未选择（校对时只跑内置的五条规则）" />
+          <button id="btn-pick-proofread" class="btn ghost" type="button">选择…</button>
+          <button id="btn-clear-proofread" class="btn ghost" type="button">清除</button>
+        </div>
+        <span id="settings-proofread-status" class="muted small"></span>
+        <span class="muted small">可选；每行一个词，可写「错词 → 建议」。应用不内置任何词表，只报告、不改正文</span>
+      </label>
+      </section>
+      <section class="settings-section" id="settings-section-data" data-settings-section="data" role="tabpanel"
+        aria-labelledby="settings-tab-data">
+      <label class="field settings-row" id="settings-root-field">
+        <span>书架目录</span>
+        <div class="field-row">
+          <input id="settings-root" class="text-input" type="text" readonly
+            title="书架目录只能通过右侧「选择…」在系统对话框里指定（保存时主进程只认刚选中的那个目录）" />
+          <button id="btn-pick-folder" class="btn ghost" type="button">选择…</button>
+        </div>
+      </label>
       <div class="field-group">数据安全</div>
       <div class="field" id="settings-snapshot-field">
         <label class="check-row">
@@ -964,30 +1018,6 @@
         （只清理应用自己生成的快照目录，不动其他备份）。切章、关窗、导出时会提醒你保存，
         也请自己定期把书库复制到网盘或移动硬盘。
       </p>
-      <div class="field-group" id="settings-sensitive-group">敏感词预检</div>
-      <label class="field settings-row" id="settings-sensitive-field">
-        <span>敏感词表</span>
-        <div class="field-row">
-          <input id="settings-sensitive-path" class="text-input" type="text" readonly
-                 placeholder="未选择（预检前需要先选一个自己的词表 txt）" />
-          <button id="btn-pick-sensitive" class="btn ghost" type="button">选择…</button>
-          <button id="btn-clear-sensitive" class="btn ghost" type="button">清除</button>
-        </div>
-        <span id="settings-sensitive-status" class="muted small"></span>
-        <span class="muted small">每行一个词；应用不内置任何词表，只按你的词表报告，不改正文</span>
-      </label>
-      <div class="field-group" id="settings-proofread-group">校对词表</div>
-      <label class="field settings-row" id="settings-proofread-field">
-        <span>自定义错别字 / 禁用词</span>
-        <div class="field-row">
-          <input id="settings-proofread-path" class="text-input" type="text" readonly
-                 placeholder="未选择（校对时只跑内置的五条规则）" />
-          <button id="btn-pick-proofread" class="btn ghost" type="button">选择…</button>
-          <button id="btn-clear-proofread" class="btn ghost" type="button">清除</button>
-        </div>
-        <span id="settings-proofread-status" class="muted small"></span>
-        <span class="muted small">可选；每行一个词，可写「错词 → 建议」。应用不内置任何词表，只报告、不改正文</span>
-      </label>
       <div class="field-group" id="settings-export-group">导出</div>
       <label class="field settings-row" id="settings-export-field">
         <span>导出简繁转换</span>
@@ -1002,6 +1032,9 @@
           一简对多繁只取常用写法，导出后请通读校对。找不到的字原样保留，不会猜着换。
         </span>
       </label>
+      </section>
+      <section class="settings-section" id="settings-section-about" data-settings-section="about" role="tabpanel"
+        aria-labelledby="settings-tab-about">
       <div class="field-group" id="settings-logs-group">诊断日志</div>
       <div class="field" id="settings-logs-field">
         <span>
@@ -1028,6 +1061,12 @@
           <button id="btn-open-update" class="btn ghost hidden" type="button">打开下载页</button>
           <span id="settings-update-status" class="muted small"></span>
         </div>
+      </div>
+      </section>
+      <div class="settings-empty hidden" id="settings-empty" role="status" aria-live="polite">
+        <span>没有匹配的设置。</span>
+        <button id="btn-settings-search-clear-empty" class="btn ghost tiny" type="button">清空搜索</button>
+      </div>
       </div>
       </div>
       <div class="modal-buttons">
@@ -1112,6 +1151,7 @@
 <script src="find-bookmark-ui.js"></script>
 <script src="find-ui.js"></script>
 <script src="tidy-card-ui.js"></script>
+<script src="settings-ia.js"></script>
 <script src="settings-ui.js"></script>
 <script src="bookinfo-ui.js"></script>
 <script src="sensitive-ui.js"></script>

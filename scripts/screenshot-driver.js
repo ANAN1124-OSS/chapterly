@@ -173,12 +173,60 @@ async function run(host) {
         screenshotDialog === 'settings-export' ||
         screenshotDialog === 'settings-caret' ||
         screenshotDialog === 'settings-logs' ||
-        screenshotDialog === 'settings-update'
+        screenshotDialog === 'settings-update' ||
+        screenshotDialog === 'settings-ia-search' ||
+        screenshotDialog === 'settings-ia-empty'
       ) {
         await win.webContents.executeJavaScript(
           `document.getElementById('btn-settings').click();`,
           true
         );
+        // 1.4.0 P0-1：设置改成「左导航 + 单分区」后，下面那些「滚到某组」的开发截图要先切到
+        // 该组所在的分区，否则元素在 hidden 分区里、scrollIntoView 什么也不做（截图会拍到别的分区）。
+        const SETTINGS_DIALOG_TABS = {
+          'settings-snapshot': 'data',
+          'settings-stats': 'writing',
+          'settings-calendar': 'writing',
+          'settings-template': 'content',
+          'settings-sensitive': 'content',
+          'settings-proofread': 'content',
+          'settings-export': 'data',
+          'settings-logs': 'about',
+          'settings-update': 'about'
+        };
+        const dialogTab = SETTINGS_DIALOG_TABS[screenshotDialog];
+        if (dialogTab) {
+          await sleep(350);
+          await win.webContents.executeJavaScript(
+            `(() => { const btn = document.getElementById('settings-tab-' + ${JSON.stringify(dialogTab)}); if (btn) btn.click(); })()`,
+            true
+          );
+          await sleep(250);
+        }
+        // 1.4.0 P0-1：新增两个信息架构截图状态 —— 顶部搜索命中（跨分区）/ 搜索空结果
+        if (screenshotDialog === 'settings-ia-search') {
+          await sleep(350);
+          await win.webContents.executeJavaScript(
+            `(() => {
+               const input = document.getElementById('settings-search');
+               input.value = '快照';
+               input.dispatchEvent(new Event('input', { bubbles: true }));
+             })()`,
+            true
+          );
+          await sleep(300);
+        } else if (screenshotDialog === 'settings-ia-empty') {
+          await sleep(350);
+          await win.webContents.executeJavaScript(
+            `(() => {
+               const input = document.getElementById('settings-search');
+               input.value = '不存在的设置项';
+               input.dispatchEvent(new Event('input', { bubbles: true }));
+             })()`,
+            true
+          );
+          await sleep(300);
+        }
         if (screenshotDialog === 'settings-snapshot') {
           // 开发截图用：设置弹层很长，滚到底展示「数据安全 / 每日快照」
           await sleep(300);
