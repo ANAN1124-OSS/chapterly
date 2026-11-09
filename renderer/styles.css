@@ -3428,7 +3428,9 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
  * 10 秒后由 renderer/undo-ui.js 收起；出现 / 消失都用 --motion-overlay，守动效令牌。 */
 .undo-bar {
   position: fixed;
-  left: 22px;
+  /* 写作页左侧是章节栏：条子从章节栏右边起，别压住侧栏底部的「＋ 新建卷」；
+   * 书架页没有侧栏（--sidebar-width 取兜底 0），left 仍是 22px。 */
+  left: calc(var(--sidebar-width, 0px) + 22px);
   bottom: 46px;
   z-index: 200;
   display: flex;

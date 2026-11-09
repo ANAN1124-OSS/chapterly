@@ -156,7 +156,14 @@ async function run(host) {
           await sleep(350);
         }
       }
-      if (screenshotDialog === 'unsaved') {
+      if (screenshotDialog === 'undo') {
+        // 1.4.0 P0-2：撤销条（删除章节后 10 秒内的样子）—— 删掉第 2 章，条子出现在左下角。
+        await win.webContents.executeJavaScript(
+          `void window.__cwTest.deleteChapterAt(1)`,
+          true
+        );
+        await sleep(600);
+      } else if (screenshotDialog === 'unsaved') {
         await win.webContents.executeJavaScript(
           `window.__cwTest.setText('（这是一段还没有保存的正文，演示关窗拦截）'); void window.__cwTest.handleCloseRequest();`,
           true
