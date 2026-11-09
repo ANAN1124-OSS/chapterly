@@ -30,6 +30,7 @@
       applySidebarWidth, backToShelf, calendarSummaryText, call, canUndoFormat, caretColorLib,
       captureUi,
       caretColorValue, chapterNote, chapterStatus, chapterTitle, chapterVolumeId, checkUpdate,
+      commandPalette, openCommandPalette,
       clearFindSession, closeBookInfoDialog, closeConflictDialog, closeFindPanel, closeFragmentDialog,
       closeHistoryDialog, closeHistoryPreview, closeInsertFragmentDialog, closeJumpDialog,
       closeProofreadPanel, closeSensitivePanel, closeSettings, closeTtsBar, confirmHistoryRestore,
@@ -128,6 +129,21 @@
       },
       async deleteChapterAt(index, options) {
         await deleteChapterAt(index, options && options.skipConfirm);
+      },
+      // 1.4.0 P0-3：命令面板（Ctrl+K）—— 打开 / 收起 / 当前条目 / 可见条目都交给自检用
+      openCommandPalette: () => openCommandPalette(),
+      closeCommandPalette: () => commandPalette.close(),
+      commandPaletteOpen: () => commandPalette.isOpen(),
+      commandPaletteItems: () =>
+        commandPalette.visibleRows().map((item) => ({
+          id: item.id,
+          title: item.title,
+          group: item.group,
+          kbd: item.kbd || ''
+        })),
+      commandPaletteActive: () => {
+        const item = commandPalette.activeItem();
+        return item ? item.id : null;
       },
       async switchTo(index, dirtyAction) {
         return switchChapter(index, { dirtyAction });

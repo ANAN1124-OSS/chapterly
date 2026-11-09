@@ -3423,6 +3423,52 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* ---------- 命令面板（1.4.0 P0-3 / 规范 I-03：Ctrl+K） ---------- */
+/* 纸色面 + 发丝线，和设置 / 跳章一套弹层外观；不用新颜色，动效走 --motion-overlay 令牌。
+ * 面板靠上（顶部 12vh）：长列表往下长，不跳位置。 */
+.command-panel {
+  width: min(680px, 92vw);
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 20px 16px;
+  margin-top: 12vh;
+}
+.command-input { width: 100%; height: 36px; }
+.command-list {
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.command-group {
+  padding: 8px 8px 4px;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.command-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--folio-radius);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background var(--motion-quick) ease;
+}
+.command-row[aria-selected="true"] { background: var(--hover-tint); }
+.command-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.command-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-hint { flex: 0 0 auto; color: var(--ink-faint); font-size: 11.5px; }
+.command-kbd { flex: 0 0 auto; }
+.command-empty { margin: 4px 8px 0; }
+
 /* ---------- 全局撤销条（1.4.0 P0-2：删除 / 移动等动作直接执行后可撤销） ---------- */
 /* 底部偏左：右下角是 toast，左上留给正文；纸色 + 发丝线，颜色全部走现有令牌（不新增颜色）。
  * 10 秒后由 renderer/undo-ui.js 收起；出现 / 消失都用 --motion-overlay，守动效令牌。 */

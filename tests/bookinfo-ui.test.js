@@ -268,13 +268,13 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
   }
 });
 
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 8 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 9 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0, 'create() 一次 $ 都不该调');
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'closeBookInfoDialog', 'createBookWithTitle', 'maybeShowFirstRunTip', 'openBookInfoDialog', 'readBookInfoForm',
-    'renderShelf', 'saveBookInfoDialog', 'setupBookinfoUi'
+    'closeBookInfoDialog', 'createBookWithTitle', 'maybeShowFirstRunTip', 'onNewBookClick', 'openBookInfoDialog',
+    'readBookInfoForm', 'renderShelf', 'saveBookInfoDialog', 'setupBookinfoUi'
   ]);
   assert.equal(moduleCode.includes('setInterval'), false);
 });
@@ -810,8 +810,8 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
   assert.ok(rendererSrc.includes('target.chapterIndex !== undefined'), 'openBookByPath 要认 chapterIndex');
   assert.ok(rendererSrc.includes('chapterIndex < state.chapters.length'), 'chapterIndex 要按本书章节数校验');
   assert.ok(rendererSrc.includes(
-    'const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, setupBookinfoUi, maybeShowFirstRunTip } = bookinfoUi;'
-  ), '8 个入口按原名解构');
+    'const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, onNewBookClick, setupBookinfoUi, maybeShowFirstRunTip } = bookinfoUi;'
+  ), '9 个入口按原名解构');
   assert.ok(rendererSrc.includes('await maybeShowFirstRunTip();'), '首屏书架刷新后调一次首次运行提示');
   for (const id of ['bookinfo-backdrop', 'btn-bookinfo-cancel', 'btn-bookinfo-save', 'shelf-group-filter']) {
     assert.equal(rendererSrc.includes(`$('${id.replace('bookinfo-backdrop', 'bookinfo-backdrop')}').addEventListener`) && id !== 'bookinfo-backdrop' ? rendererSrc.includes(`$('${id}').addEventListener`) : rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);

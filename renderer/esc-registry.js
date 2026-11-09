@@ -35,7 +35,8 @@
   // 探针（probe）：渲染层每次按键现算的一份「现在谁开着」快照，这里只读不写。字段含义：
   //   modal              通用询问框开着（它可能在别的弹层之上，z-index 300）
   //   modalInput         询问框带输入框（只有这种才把 Enter 当「确定」）
-  //   conflict / bookinfo / history / historyPreview / format / export / settings / jump / find
+  //   conflict / bookinfo / history / historyPreview / format / export / settings / jump / find / command
+  //   （command = 命令面板开着，1.4.0 P0-3；它是锁键层，和设置那批一个口径）
   //                      对应弹层可见；historyPreview 是历史面板里那格预览（弹层里的弹层）
   //   formatCard / displayMenu  顶栏「整理」卡 / 「显示」菜单展开
   //   findTotal          当前查找会话的高亮处数（查找面板关着时 Esc 先清高亮）
@@ -71,6 +72,10 @@
     { id: 'export', lock: true, open: (p) => Boolean(p.export), keys: { Escape: { action: 'close-export' } } },
     { id: 'settings', lock: true, open: (p) => Boolean(p.settings), keys: { Escape: { action: 'close-settings' } } },
     { id: 'jump', lock: true, open: (p) => Boolean(p.jump), keys: { Escape: { action: 'close-jump' } } },
+    // ②b 命令面板（1.4.0 P0-3）：和上面那批一个口径 —— 锁键（面板开着时别的快捷键不响），Esc 收起。
+    //     ↑↓ / Home / End / Enter 由面板自己的输入框接（它能拿到焦点，元素级监听在
+    //     renderer/command-palette-ui.js 里），不在这张表的 keys 里重复一遍。
+    { id: 'command', lock: true, open: (p) => Boolean(p.command), keys: { Escape: { action: 'close-command' } } },
     // ③ 查找面板：只接 Esc；「回车 = 查找 / 下一处」是面板自己的事，留在渲染层
     { id: 'find', open: (p) => Boolean(p.find), esc: 'close-find' },
     // ④ 顶栏「整理」卡 / 「显示」菜单：Esc 先收起它们，并把焦点还给按钮

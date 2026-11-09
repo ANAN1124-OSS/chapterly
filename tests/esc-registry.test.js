@@ -64,6 +64,7 @@ test('顺序闸门：Esc 链的层顺序 = 优先级（通用询问框 → 弹�
       'export',
       'settings',
       'jump',
+      'command',
       'find',
       'menus',
       'find-highlight',

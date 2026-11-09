@@ -547,6 +547,7 @@
       saveBookInfoDialog,
       renderShelf,
       createBookWithTitle,
+      onNewBookClick,
       setupBookinfoUi,
       maybeShowFirstRunTip
     };

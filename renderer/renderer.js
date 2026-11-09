@@ -81,6 +81,10 @@
   // 全局撤销条 DOM / 定时器在 undo-ui.js；这里只接线（删除章节等动作直接执行后登记撤销）。
   const undoActionModule = window.CWUndoAction;
   const undoUiModule = window.CWUndoUi;
+  // 命令面板（1.4.0 P0-3 / 规范 I-03）：检索与排序纯逻辑在 command-registry.js，
+  // 面板 DOM / 键盘在 command-palette-ui.js；这里只给条目表与执行入口。
+  const commandRegistryModule = window.CWCommandRegistry;
+  const commandPaletteModule = window.CWCommandPaletteUi;
   // 书架正文搜索（v0.9 B-5 第八刀）：防抖调度 / 主进程查询 / 索引状态 / 打开命中在 shelf-search-ui.js 里；
   const shelfSearchUiModule = window.CWShelfSearchUi;
   // 书架搜索（v0.9 B-5 第九刀）：内存过滤 / 分组筛选 / 正文结果区渲染在 shelf-filter-ui.js 里；
@@ -1032,7 +1036,7 @@
       openRepair, openConflictDialog, showBookMenu, updateWindowTitle, promptText, refreshShelf
     }
   });
-  const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, setupBookinfoUi, maybeShowFirstRunTip } = bookinfoUi;
+  const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, onNewBookClick, setupBookinfoUi, maybeShowFirstRunTip } = bookinfoUi;
 
   // ---------- 打开书 / 修复 ----------
   // target 可选：{ chapterId, chapterIndex, matchIndex, matchLength } —— 从书架「正文命中」点进来时
@@ -1587,6 +1591,33 @@
   // 纯逻辑（单槽 / TTL / 键位判定）在 undo-action.js，条子渲染在 undo-ui.js；
   // 这里只装配：切书 / 回书架时 clear()，Ctrl+Z 命中时 runUndo()（见 bindEvents）。
   const undoUi = undoUiModule.create({ $, slot: undoActionModule.createUndoSlot(), toast });
+
+  // ---------- 命令面板（1.4.0 P0-3 / 规范 I-03：Ctrl+K） ----------
+  // 一份 action 表的单一事实源：面板行尾键帽、按钮 tooltip、README 的快捷键表都指这里的 kbd。
+  // 命令只调现有入口，不新写业务；章节 / 书是动态的，每次打开 / 输入时现取（见 buildCommandItems）。
+  const commandRegistry = commandRegistryModule.createRegistry({});
+  const commandPalette = commandPaletteModule.create({
+    $,
+    doc: document,
+    registry: commandRegistry,
+    items: () => buildCommandItems(),
+    onRun: (item) => {
+      runCommandItem(item);
+    },
+    onClose: (opener) => {
+      // 关掉后把焦点还给打开它的元素；没有（或已经不可见）就交回编辑区 / 主题内容
+      if (opener && typeof opener.focus === 'function' && opener.isConnected !== false) {
+        opener.focus();
+        return;
+      }
+      if (state.view === 'editor' && editorEl) {
+        editorEl.focus();
+        return;
+      }
+      const main = document.querySelector('main, .shelf-main, body');
+      if (main && typeof main.focus === 'function') main.focus();
+    }
+  });
 
   // ---------- 编辑器小件 ----------
   // 第 4 步九刀·第三刀：实现在 renderer/editor-marks-ui.js（模块头有契约），这里只装配与接线；
@@ -2505,6 +2536,8 @@
       modal: Boolean(state.modal),
       modalInput: Boolean(state.modal && state.modal.opts && state.modal.opts.input),
       historyPreview: Boolean(state.history && state.history.preview),
+      // 命令面板（1.4.0 P0-3）：锁键层，和设置那批同口径
+      command: Boolean(commandPalette && commandPalette.isOpen()),
       formatCard: formatCardOpen(),
       displayMenu: displayMenuOpen(),
       findTotal: Number((state.find && state.find.total) || 0),
@@ -2533,6 +2566,7 @@
     'close-format': () => closeFormatDialog(),
     'close-export': () => closeExportDialog(),
     'close-settings': () => closeSettings(),
+    'close-command': () => commandPalette.close(),
     'close-jump': () => closeJumpDialog(),
     'close-find': () => closeFindPanel(),
     // 顶栏「整理」卡 / 「显示」菜单：先看焦点在谁里面，再把焦点还给对应按钮
@@ -2571,6 +2605,113 @@
     if (!run) return false;
     run();
     return true;
+  }
+
+  // ---------- 命令面板：条目表（1.4.0 P0-3） ----------
+  // 三处键位冗余的「单一事实源」：面板行尾键帽 / 按钮 tooltip / README 快捷键表都从这里对齐。
+  // 每条 = { id, title, group, kbd?, hint?, keywords?, when?, run }：
+  //   · when() 现算这条命令现在可不可用（按视图 / 有没有打开书），不给就不用判断；
+  //   · run() 只调现有入口（不在这里写业务）。
+  function commandDefs() {
+    const inEditor = () => state.view === 'editor' && Boolean(state.bookPath);
+    const hasBook = () => Boolean(state.bookPath);
+    return [
+      { id: 'cmd:shelf', title: '回到书架', group: 'command', keywords: ['shelf', '书架'], run: () => { void backToShelf(); } },
+      { id: 'cmd:new-book', title: '新建一本书', group: 'command', keywords: ['new book', '新建'], when: () => state.view === 'shelf', run: () => { void onNewBookClick(); } },
+      { id: 'cmd:import', title: '导入小说…', group: 'command', keywords: ['import', '导入'], when: () => state.view === 'shelf', run: () => { void onImportClick(); } },
+      { id: 'cmd:settings', title: '打开设置（全局）', group: 'command', keywords: ['settings', '设置'], run: () => { void openSettings(); } },
+      { id: 'cmd:book-display', title: '正文显示设置（这本书）', group: 'command', keywords: ['display', '显示', '按书'], when: inEditor, run: () => { void openSettings({ scope: 'book' }); } },
+      { id: 'cmd:save', title: '保存本章', group: 'command', kbd: 'Ctrl+S', keywords: ['save', '保存'], when: inEditor, run: () => { void saveCurrent(); } },
+      { id: 'cmd:new-chapter', title: '新建章节', group: 'command', kbd: 'Ctrl+N', keywords: ['new chapter', '新建章节'], when: inEditor, run: () => { void createChapterAt(state.chapters.length); } },
+      { id: 'cmd:rename-chapter', title: '重命名本章', group: 'command', kbd: 'F2', keywords: ['rename', '重命名'], when: inEditor, run: () => { void renameChapterAt(state.index); } },
+      { id: 'cmd:delete-chapter', title: '删除本章（可撤销）', group: 'command', kbd: 'Delete', keywords: ['delete', '删除'], when: inEditor, run: () => { void deleteChapterAt(state.index); } },
+      { id: 'cmd:format-chapter', title: '整理本章', group: 'command', keywords: ['format', '整理', '排版'], when: inEditor, run: () => { void formatCurrentChapterFromConfig(); } },
+      { id: 'cmd:find', title: '查找替换', group: 'command', kbd: 'Ctrl+F', keywords: ['find', '查找', '替换'], when: inEditor, run: () => { openFindPanel(); } },
+      { id: 'cmd:jump', title: '跳到章…', group: 'command', kbd: 'Ctrl+G', keywords: ['jump', '跳章'], when: inEditor, run: () => { openJumpDialog(); } },
+      { id: 'cmd:focus', title: '专注模式', group: 'command', kbd: 'F11', keywords: ['focus', '专注'], when: inEditor, run: () => { toggleFocusMode(); } },
+      { id: 'cmd:reading', title: '阅读模式', group: 'command', keywords: ['reading', '阅读'], when: inEditor, run: () => { void openReadingMode(); } },
+      { id: 'cmd:tts', title: '朗读本章', group: 'command', keywords: ['tts', '朗读'], when: inEditor, run: () => { openTtsBar(); } },
+      { id: 'cmd:proofread', title: '校对', group: 'command', keywords: ['proofread', '校对'], when: hasBook, run: () => { void openProofreadPanel(); } },
+      { id: 'cmd:sensitive', title: '敏感词预检', group: 'command', keywords: ['sensitive', '敏感词'], when: hasBook, run: () => { void openSensitivePanel(); } },
+      { id: 'cmd:history', title: '本书历史', group: 'command', keywords: ['history', '历史', '备份'], when: hasBook, run: () => { void openHistoryForCurrentBook(); } },
+      { id: 'cmd:fragments', title: '插入碎片…', group: 'command', keywords: ['fragment', '碎片', '灵感箱'], when: hasBook, run: () => { void openInsertFragmentDialog(); } },
+      { id: 'cmd:capture', title: '剪贴板捕获', group: 'command', kbd: 'Ctrl+Alt+V', keywords: ['capture', '剪贴板'], when: inEditor, run: () => { void captureUi.open(); } },
+      { id: 'cmd:bookinfo', title: '书籍信息', group: 'command', keywords: ['book info', '书籍信息', '作者', '标签'], when: hasBook, run: () => {
+        const book = (state.books || []).find((item) => sameBookPath(item.path, state.bookPath))
+          || { path: state.bookPath, title: (state.meta && state.meta.title) || '', status: 'ok' };
+        void openBookInfoDialog(book);
+      } },
+      { id: 'cmd:folder', title: '打开本书文件夹', group: 'command', keywords: ['folder', '文件夹'], when: hasBook, run: () => { void openBookFolderFlow(); } },
+      { id: 'cmd:check-update', title: '检查更新', group: 'command', keywords: ['update', '更新'], when: () => state.view === 'shelf', run: () => { void checkUpdate(); } }
+    ];
+  }
+
+  // 动态条目：章节（当前书）+ 书（书架）。点一条就等于「切到那一章 / 打开那一本」。
+  function buildCommandItems() {
+    const out = [];
+    for (const def of commandDefs()) {
+      if (typeof def.when === 'function' && !def.when()) continue;
+      out.push({
+        id: def.id,
+        title: def.title,
+        group: 'command',
+        kbd: def.kbd || '',
+        hint: '',
+        keywords: def.keywords || [],
+        run: def.run
+      });
+    }
+    if (state.view === 'editor' && state.bookPath) {
+      state.chapters.forEach((chapter, index) => {
+        out.push({
+          id: `chapter:${chapter.id}`,
+          title: chapterTitle(index, chapter.name),
+          group: 'chapter',
+          hint: index === state.index ? '当前章' : `第 ${index + 1} 章`,
+          keywords: [chapter.name || '', `ch${index + 1}`],
+          run: () => {
+            void switchChapter(index).then((result) => {
+              if (!result || result.ok !== true) return;
+              focusChapterAfterSwitch(index);
+            });
+          }
+        });
+      });
+    }
+    for (const book of state.books || []) {
+      out.push({
+        id: `book:${book.path}`,
+        title: `打开《${book.title || '未命名'}》`,
+        group: 'book',
+        hint: `${book.chapterCount || 0} 章`,
+        keywords: [book.title || '', 'book', '书'],
+        run: () => {
+          void openBookByPath(book.path);
+        }
+      });
+    }
+    return out;
+  }
+
+  function runCommandItem(item) {
+    if (!item || typeof item.run !== 'function') return false;
+    try {
+      item.run();
+      return true;
+    } catch (err) {
+      toast(`执行命令失败：${err.message}`, 'error');
+      return false;
+    }
+  }
+
+  // Ctrl+K：打开面板（lock 弹层开着时不抢 —— 与 Esc 链同一口径；输入法组字中不处理）
+  function openCommandPalette() {
+    if (state.modal) return false;
+    for (const name of ESC_BACKDROPS) {
+      const el = $(`${name}-backdrop`);
+      if (el && !el.classList.contains('hidden')) return false;
+    }
+    return commandPalette.open(document.activeElement);
   }
 
   // ---------- 关闭拦截 ----------
@@ -3456,6 +3597,8 @@
     saveStatusUi.bindRetry();
     // 撤销条（1.4.0 P0-2）：给「撤销」按钮挂点击（幂等，只挂一次）。
     undoUi.setup();
+    // 命令面板（1.4.0 P0-3）：输入框 / 列表 / 遮罩只挂一次。
+    commandPalette.setup();
     findUi.setupFindUi();
     focusModeUi.setupFocusModeUi();
     readingUi.setupReadingUi();
@@ -3689,6 +3832,27 @@
         }
         return;
       }
+      // 命令面板（1.4.0 P0-3 / 规范 I-03）：Ctrl+K 打开；再按一次收起。锁键弹层开着时不抢
+      // （与 Esc 链同一口径：通用询问框 / 冲突 / 历史 / 排版 / 导出 / 设置 / 跳章 / 命令面板本身）。
+      if (
+        event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey &&
+        String(event.key).toLowerCase() === 'k'
+      ) {
+        // 面板开着时这一支走不到（esc-registry 的 command 层是锁键层，会先吞掉按键）；
+        // 「再按一次 Ctrl+K 收起」由面板自己的输入框处理（command-palette-ui.js）。
+        if (!state.modal && !event.isComposing) {
+          const blocked = ESC_BACKDROPS.some((name) => {
+            const el = $(`${name}-backdrop`);
+            return Boolean(el && !el.classList.contains('hidden'));
+          });
+          if (!blocked) {
+            event.preventDefault();
+            openCommandPalette();
+            return;
+          }
+        }
+        return;
+      }
       // 查找面板：Esc 已由注册表接走；面板里按回车 = 查找 / 下一处。
       // 其他按键继续往下走（Ctrl+S 仍可保存）。
       if (
@@ -3864,6 +4028,8 @@
       createVolumeFlow,
       deleteBookFlow,
       deleteChapterAt,
+      commandPalette,
+      openCommandPalette,
       deleteFindBookmark,
       deleteVolumeFlow,
       displayMenuOpen,
