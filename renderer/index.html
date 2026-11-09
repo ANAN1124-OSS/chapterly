@@ -283,6 +283,13 @@
        容器必须一直留在渲染树里：display:none / visibility:hidden 的 live region 不会播报。 -->
   <div id="toast-area" role="status" aria-live="polite" aria-atomic="false"></div>
 
+  <!-- 全局撤销条（1.4.0 P0-2）：删除 / 移动等动作直接执行后 10 秒内可撤销（Ctrl+Z 亦可）。
+       底部偏左，避开右下角的 toast；role=status 让读屏也能收到「已删除…」这一句。 -->
+  <div id="undo-bar" class="undo-bar hidden" role="status" aria-live="polite" aria-atomic="true" aria-hidden="true">
+    <span id="undo-label" class="undo-label"></span>
+    <button id="btn-undo" class="btn ghost tiny undo-btn" type="button" title="撤销上一步（Ctrl+Z）">撤销</button>
+  </div>
+
   <!-- ============ 朗读本章（悬浮小条：只读正文、不改字、不写盘） ============ -->
   <div id="tts-bar" class="tts-bar hidden" role="region" aria-label="朗读">
     <div class="tts-top">
@@ -1161,6 +1168,8 @@
 <script src="history-ui.js"></script>
 <script src="capture-ui.js"></script>
 <script src="window-chrome-ui.js"></script>
+<script src="undo-action.js"></script>
+<script src="undo-ui.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

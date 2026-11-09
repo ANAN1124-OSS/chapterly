@@ -3423,6 +3423,34 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* ---------- 全局撤销条（1.4.0 P0-2：删除 / 移动等动作直接执行后可撤销） ---------- */
+/* 底部偏左：右下角是 toast，左上留给正文；纸色 + 发丝线，颜色全部走现有令牌（不新增颜色）。
+ * 10 秒后由 renderer/undo-ui.js 收起；出现 / 消失都用 --motion-overlay，守动效令牌。 */
+.undo-bar {
+  position: fixed;
+  left: 22px;
+  bottom: 46px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(520px, calc(100vw - 44px));
+  padding: 7px 8px 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+  background: var(--folio-sheet);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: var(--folio-shadow-pop);
+  animation: toast-in var(--motion-overlay) ease-out;
+}
+.undo-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.undo-btn { flex: none; min-height: 24px; }
+
 /* ---------- 右键菜单 ---------- */
 /* 和顶栏下拉菜单 / 悬浮选择卡共用一套外观变量（v0.8.5 R2），三处弹层看起来统一 */
 .context-menu {

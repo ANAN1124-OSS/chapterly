@@ -74,6 +74,8 @@ contextBridge.exposeInMainWorld('api', {
   updateChapterMeta: (bookPath, chapterId, patch) =>
     invoke('chapter:update-meta', bookPath, chapterId, patch),
   deleteChapter: (bookPath, chapterId) => invoke('chapter:delete', bookPath, chapterId),
+  // 撤销删除（1.4.0 P0-2）：只传本书 _trash 下的文件名 + 原位置 + 章节元数据，绝不传绝对路径
+  restoreDeletedChapter: (bookPath, payload) => invoke('chapter:restore-deleted', bookPath, payload),
   moveChapter: (bookPath, chapterId, toIndex) => invoke('chapter:move', bookPath, chapterId, toIndex),
   createVolume: (bookPath, name) => invoke('volume:create', bookPath, name),
   renameVolume: (bookPath, volumeId, name) => invoke('volume:rename', bookPath, volumeId, name),

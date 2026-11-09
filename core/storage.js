@@ -809,6 +809,128 @@ async function deleteChapter(bookPath, chapterId) {
   };
 }
 
+// 撤销「删除章节」（1.4.0 P0-2：删除直接执行 + 10 秒内撤销）。
+// 把 _trash 里那一个 txt 放回书文件夹，并按原位置插回 书目.json 的 chapters。
+// 只收「本书 _trash 下的文件名」，绝不接收绝对路径；函数自己再做四道校验：
+//   1) trashName / chapter.file 都是纯 basename + .txt；解析后父目录正好是本书 _trash / 书文件夹；
+//   2) chapter.id 不与现有章节撞车、chapter.file 不在书文件夹里已存在（绝不覆盖）；
+//   3) trashName 必须是 moveToTrash 的命名（<时间戳>-<可选序号>-<原文件名>），
+//      防止拿别的备份 / 别的章的文件冒充这一次删除；
+//   4) 删空自动补的空章：只有它仍在书目里、磁盘内容确实为空、且调用方明确要求替换时才挪走。
+//      —— 作者在这 10 秒里已经往补章里写了字，宁可多一章，也不静默丢字。
+// 返回 { meta, index, chapter, autoChapterRemoved }；失败抛 StorageError，界面据此提示。
+async function restoreDeletedChapterFromTrash(bookPath, payload) {
+  const input = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const rawChapter =
+    input.chapter && typeof input.chapter === 'object' && !Array.isArray(input.chapter) ? input.chapter : null;
+  if (!rawChapter) throw new StorageError('RESTORE_BAD_INPUT', '撤销删除缺少章节信息');
+  const id = typeof rawChapter.id === 'string' ? rawChapter.id.trim() : '';
+  if (!id) throw new StorageError('RESTORE_BAD_INPUT', '撤销删除缺少章节 id');
+  const file = String(rawChapter.file || '').trim();
+  // assertChapterFile：basename / .txt / 系统保留名 / 逃逸出书目录，一律挡住
+  assertChapterFile(bookPath, file);
+
+  const trashDir = path.join(bookPath, TRASH_DIR);
+  const trashName = typeof input.trashName === 'string' ? input.trashName.trim() : '';
+  if (
+    !trashName ||
+    path.basename(trashName) !== trashName ||
+    !/\.txt$/i.test(trashName) ||
+    trashName.includes('..') ||
+    trashName.includes('/') ||
+    trashName.includes('\\')
+  ) {
+    throw new StorageError('RESTORE_BAD_TRASH', '撤销删除只能从本书 _trash 里放回单章 txt');
+  }
+  // moveToTrash 的命名 = `<时间戳>-[序号-]<原文件名>`：必须真的指向这一章的文件名
+  if (!trashName.endsWith(`-${file}`)) {
+    throw new StorageError('RESTORE_BAD_TRASH', '撤销删除的备份文件与章节文件名对不上');
+  }
+  const source = path.resolve(trashDir, trashName);
+  if (path.dirname(source).toLowerCase() !== path.resolve(trashDir).toLowerCase()) {
+    throw new StorageError('RESTORE_BAD_TRASH', '撤销删除的备份文件不在本书 _trash 下');
+  }
+
+  const meta = await readBookMeta(bookPath);
+  if (meta.chapters.some((chapter) => chapter && chapter.id === id)) {
+    throw new StorageError('RESTORE_DUPLICATE', '书里已经有这一章，没有重复放回');
+  }
+  if (meta.chapters.some((chapter) => chapter && chapter.file === file)) {
+    throw new StorageError('RESTORE_DUPLICATE', '书里已经有同名章节文件，没有覆盖');
+  }
+  if (!(await exists(source))) {
+    throw new StorageError('RESTORE_MISSING', '这个备份已经不在 _trash 里了');
+  }
+  const target = assertChapterFile(bookPath, file);
+  if (await exists(target)) {
+    throw new StorageError('RESTORE_TARGET_EXISTS', `书文件夹里已经有 ${file}，没有覆盖`);
+  }
+
+  // 删空自动补的那张空章：仍然在书目里 + 磁盘内容为空，才允许一并撤掉。
+  let autoChapter = null;
+  const autoFile = typeof input.autoChapterFile === 'string' ? input.autoChapterFile.trim() : '';
+  if (autoFile) {
+    autoChapter = meta.chapters.find((chapter) => chapter && chapter.file === autoFile) || null;
+    if (autoChapter) {
+      try {
+        const text = await fs.readFile(assertChapterFile(bookPath, autoFile), 'utf8');
+        if (stripBom(text).trim() !== '') autoChapter = null;
+      } catch {
+        autoChapter = null;
+      }
+    }
+  }
+
+  await fs.rename(source, target);
+  let autoTrashPath = null;
+  try {
+    if (autoChapter) {
+      autoTrashPath = await moveToTrash(bookPath, autoChapter.file);
+    }
+    const restored = chaptersLib.cleanChapterMeta({
+      id,
+      file,
+      name: typeof rawChapter.name === 'string' ? rawChapter.name : '',
+      createdAt:
+        typeof rawChapter.createdAt === 'string' && rawChapter.createdAt ? rawChapter.createdAt : nowIso(),
+      status: rawChapter.status,
+      note: rawChapter.note
+    });
+    if (
+      rawChapter.volumeId &&
+      Array.isArray(meta.volumes) &&
+      meta.volumes.some((volume) => volume && volume.id === rawChapter.volumeId)
+    ) {
+      restored.volumeId = rawChapter.volumeId;
+    }
+    const list = autoChapter
+      ? meta.chapters.filter((chapter) => !(chapter && chapter.file === autoChapter.file))
+      : meta.chapters;
+    const rawIndex = Number(input.index);
+    const index = Number.isFinite(rawIndex) ? Math.max(0, Math.min(Math.floor(rawIndex), list.length)) : list.length;
+    const updated = chaptersLib.insertChapter({ ...meta, chapters: list }, index, restored);
+    const saved = await writeBookMeta(bookPath, updated, { structural: true });
+    return { meta: saved, index, chapter: restored, autoChapterRemoved: Boolean(autoChapter) };
+  } catch (err) {
+    // 书目没写成功 = 这次撤销没有发生：刚放回的章节重新移回 _trash，补章也放回原处。
+    // 放不回去时在错误里说清文件现在在哪（绝不静默）。
+    const notes = [];
+    try {
+      await fs.rename(target, source);
+    } catch {
+      notes.push(`「${file}」现在在书文件夹里，_trash 里那一份也还在`);
+    }
+    if (autoTrashPath) {
+      try {
+        await fs.rename(autoTrashPath, path.join(bookPath, autoChapter.file));
+      } catch {
+        notes.push(`自动补的「${autoChapter.file}」在 ${trashDirLabel(trashDir)} 里`);
+      }
+    }
+    throw batchFailure(err, { code: 'RESTORE_FAILED', action: '撤销删除', notes });
+  }
+}
+
 // 拖拽排序：只改 书目.json 里的数组顺序，章节文件永不重命名（显示章号按数组顺序现算）
 async function moveChapter(bookPath, chapterId, toIndex) {
   const meta = await readBookMeta(bookPath);
@@ -1670,6 +1792,7 @@ module.exports = {
   updateChapterMeta: locked(updateChapterMeta),
   updateBookInfo: locked(updateBookInfo),
   deleteChapter: locked(deleteChapter),
+  restoreDeletedChapterFromTrash: locked(restoreDeletedChapterFromTrash),
   moveChapter: locked(moveChapter),
   searchBook,
   replaceInBook: locked(replaceInBook),

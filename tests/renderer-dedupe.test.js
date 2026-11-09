@@ -22,8 +22,9 @@ const countOf = (source, needle) => source.split(needle).length - 1;
 
 test('C2：章节 / 分卷写盘后统一 applyMetaAndRelocate，不再散落 9 份「换书目 + 重定位」', () => {
   assert.equal(countOf(RENDERER_SRC, 'function applyMetaAndRelocate('), 1, '收口函数只该定义一次');
-  // 1 处定义 + 9 个调用点（新建章 / 新建卷 / 重命名卷 / 移动卷 / 删除卷 / 移到卷 / 重命名章 / 删章 / 改章节信息）
-  assert.equal(countOf(RENDERER_SRC, 'applyMetaAndRelocate('), 10, '调用点应为 9 个');
+  // 1 处定义 + 10 个调用点（新建章 / 新建卷 / 重命名卷 / 移动卷 / 删除卷 / 移到卷 / 重命名章 / 删章 / 改章节信息
+  // + 1.4.0 P0-2 的「撤销删除」）
+  assert.equal(countOf(RENDERER_SRC, 'applyMetaAndRelocate('), 11, '调用点应为 10 个');
   // 只该剩换书（openBookByPath 要连 bookPath / bookId / 折叠状态一起换，不适用）与 helper 本体两处
   assert.equal(countOf(RENDERER_SRC, 'state.meta = data.meta;'), 2, '散落的换书目应已收进 helper');
   assert.equal(countOf(RENDERER_SRC, 'state.chapters = data.meta.chapters;'), 2, '散落的换章节数组应已收进 helper');

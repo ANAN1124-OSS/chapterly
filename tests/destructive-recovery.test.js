@@ -367,10 +367,11 @@ test('静态闸门：三个批次操作的中途失败都要带「改了几章 +
 test('静态闸门：渲染层删「当前章」前必须先问未保存的修改', () => {
   const body = functionBody(RENDERER_SOURCE, 'async function deleteChapterAt(', '  ');
   const askAt = body.indexOf('askUnsaved(');
-  const confirmAt = body.indexOf("title: '删除章节'");
   assert.ok(askAt >= 0, '删当前章前必须问未保存的修改（不能静默丢编辑区里的字）');
-  assert.ok(confirmAt >= 0);
-  assert.ok(askAt < confirmAt, '未保存的询问要排在删除确认之前');
+  // 1.4.0 P0-2（撤销优先）：删除不再弹「删除章节」确认框，改成直接执行 + 10 秒撤销；
+  // 未保存拦截是保留的两处确认之一，顺序与文案都不许变。
+  assert.equal(body.indexOf("title: '删除章节'"), -1, 'P0-2 起删除直接执行，不许再加回删除确认框');
+  assert.ok(body.indexOf('activateDeleteUndo(') > askAt, '删完要登记撤销（10 秒窗口）');
   assert.match(body, /wasCurrent/);
   assert.match(body, /skipConfirm/);
   assert.match(body, /saveLabel: '保存后删除'/);

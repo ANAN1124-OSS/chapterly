@@ -1932,6 +1932,11 @@ function registerIpc() {
   handleBook('chapter:delete', async (bookPath, chapterId) => storage.deleteChapter(bookPath, chapterId), {
     mutation: 'delete'
   });
+  // 撤销删除（1.4.0 P0-2）：只把本书 _trash 下的那一个 txt 放回书文件夹，并按原位置插回书目。
+  // 入参形状由 core/storage.js 的 restoreDeletedChapterFromTrash 自己校验（不信任渲染层给的路径）。
+  handleBook('chapter:restore-deleted', async (bookPath, payload) =>
+    storage.restoreDeletedChapterFromTrash(bookPath, payload), { mutation: 'write' }
+  );
   handleBook('chapter:move', async (bookPath, chapterId, toIndex) =>
     storage.moveChapter(bookPath, chapterId, toIndex), { mutation: 'write' }
   );

@@ -15,8 +15,8 @@
 //
 // 自足：自己造一本 2 章的演练书，收尾走书架 _trash 删掉；不写配置、不碰真实书架。
 //
-// U-D9（v0.13）在本组末尾补两条真实按键断言：章节列表焦点按 Delete 走现有「删除章节」确认框
-// （复用右键同一条 deleteChapterAt，章节数 -1、文件进 _trash、焦点留在列表）；编辑区焦点按
+// U-D9（v0.13）在本组末尾补两条真实按键断言：章节列表焦点按 Delete 直接删除这一章
+// （1.4.0 P0-2 起不再弹确认框；章节数 -1、文件进 _trash、撤销条出现、焦点留在列表）；编辑区焦点按
 // Delete 仍只是删字（删除键只在 #chapter-list 的焦点域内生效）。
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -557,14 +557,11 @@ module.exports = async function group70A11yKeyboard(t) {
   await exec(`window.__cwTest.setText(${JSON.stringify(textBeforeDelete)})`);
   await waitFor('window.__cwTest.dirty() === false', 4000).catch(() => false);
 
-  // 章节列表：焦点停在第一条按 Delete → 走现有的「删除章节」确认框 → 章节数 -1、文件进 _trash、
-  // 焦点留在列表里（不是掉回 body；这条靠渲染层的 focusChapterAfterDelete）。
+  // 章节列表：焦点停在第一条按 Delete → 直接删除（1.4.0 P0-2 起不再弹「删除章节」确认框）
+  // → 章节数 -1、文件进 _trash、撤销条出现、焦点留在列表里（不是掉回 body；这条靠 focusChapterAfterDelete）。
   await exec(JS_FOCUS_CHAPTER(0));
   const titlesBeforeDelete = await exec('window.__cwTest.chapterTitles()');
   await sendKey('Delete', [], 250);
-  await waitFor('window.__cwTest.modalOpen() === true', 4000);
-  const deleteDialog = await exec('window.__cwTest.dialog()');
-  await exec("window.__cwTest.answerModal('delete')");
   await waitFor('window.__cwTest.chapterTitles().length === 1', 8000);
   await sleep(200);
   const titlesAfterDelete = await exec('window.__cwTest.chapterTitles()');
@@ -572,13 +569,16 @@ module.exports = async function group70A11yKeyboard(t) {
   const focusInList = await exec(
     "(() => { const a = document.activeElement; return Boolean(a && a.closest && a.closest('#chapter-list .chapter-item')); })()"
   );
+  const modalAfterDelete = await exec('window.__cwTest.modalOpen()');
+  const undoBarShown = await exec("!document.getElementById('undo-bar').classList.contains('hidden')");
   check(
-    '键盘可达：章节列表焦点按 Delete 走确认框删除这一章（章节数 -1、文件进 _trash、焦点留在列表）',
-    deleteDialog === '删除章节' &&
+    '键盘可达：章节列表焦点按 Delete 直接删除这一章（不再弹确认框；章节数 -1、文件进 _trash、撤销条出现、焦点留在列表）',
+    modalAfterDelete === false &&
+      undoBarShown === true &&
       titlesAfterDelete.length === titlesBeforeDelete.length - 1 &&
       trashNames.some((name) => name.endsWith('.txt')) &&
       focusInList === true,
-    { deleteDialog, titlesBeforeDelete, titlesAfterDelete, trashNames, focusInList }
+    { modalAfterDelete, undoBarShown, titlesBeforeDelete, titlesAfterDelete, trashNames, focusInList }
   );
 
   // ---------- G. U-D1：Alt+↓ 在卷尾跨到相邻的一卷（真实按键 → 先确认 → 只改书目） ----------

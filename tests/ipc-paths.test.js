@@ -129,7 +129,7 @@ const PATHISH = /(path|paths|dir|dirs|file|files|folder|name|ref)$/i;
 const BOOK_CHANNELS = [
   'book:open', 'book:verify', 'book:rename', 'book:update-info', 'book:set-last',
   'chapter:load', 'chapter:stat', 'chapter:save', 'chapter:create', 'chapter:rename',
-  'chapter:update-meta', 'chapter:delete', 'chapter:move', 'volume:create', 'volume:rename',
+  'chapter:update-meta', 'chapter:delete', 'chapter:restore-deleted', 'chapter:move', 'volume:create', 'volume:rename',
   'volume:delete', 'chapter:move-to-volume', 'volume:move', 'chapter:move-to',
   'book:search', 'book:replace', 'book:proofread', 'book:sensitive-check',
   'book:list-replace-backups', 'book:restore-replace-backup', 'book:list-history',

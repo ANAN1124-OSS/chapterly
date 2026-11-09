@@ -77,6 +77,10 @@
   // 保存态（1.3.0 T7 = 规范 C-05 / I-01）：状态栏四态渲染 / 成功 2s 淡化 / 失败点重试
   // 在 save-status-ui.js 里；这里只接线（文案仍由 updateStatus 的调用点驱动，见下）。
   const saveStatusUiModule = window.CWSaveStatusUi;
+  // 撤销层（1.4.0 P0-2：撤销优先）：单槽 + 10s TTL + Ctrl+Z 焦点保护纯逻辑在 undo-action.js，
+  // 全局撤销条 DOM / 定时器在 undo-ui.js；这里只接线（删除章节等动作直接执行后登记撤销）。
+  const undoActionModule = window.CWUndoAction;
+  const undoUiModule = window.CWUndoUi;
   // 书架正文搜索（v0.9 B-5 第八刀）：防抖调度 / 主进程查询 / 索引状态 / 打开命中在 shelf-search-ui.js 里；
   const shelfSearchUiModule = window.CWShelfSearchUi;
   // 书架搜索（v0.9 B-5 第九刀）：内存过滤 / 分组筛选 / 正文结果区渲染在 shelf-filter-ui.js 里；
@@ -640,6 +644,8 @@
 
   // ---------- 视图切换 ----------
   function showView(view) {
+    // 撤销窗口（1.4.0 P0-2）只对当前写作现场有效：回书架 / 进阅读页就收起，绝不跨视图执行
+    if (view !== 'editor') undoUi.clear();
     if (view !== 'editor') closeTtsBar();
     // 离开写作页就退出专注模式（不还原滚动位置：书已经关了）
     if (view !== 'editor' && state.focus.on) setFocusMode(false, { restore: false });
@@ -1075,6 +1081,8 @@
       toast(`注意：${data.missing.length} 个章节文件缺失，可在「导出 → 打开本书文件夹」里检查`, 'warn');
     }
 
+    // 换书：撤销条不跨书（撤销闭包里还会再核对一次 state.bookPath）
+    undoUi.clear();
     // 换书前先停掉上一本的写作计时：把没上报的整秒记下，新书从 0 开始
     await resetWriteTimer({ flush: true });
     state.bookPath = bookPath;
@@ -1565,6 +1573,11 @@
   // 保存态（1.3.0 T7）：四态文案 / 圆点 / 成功 2s 淡化 / 失败点重试整段在 save-status-ui.js 里。
   // saveCurrent 是函数声明（会提升），装配时引用没问题；重试仍然走同一条保存路径（非静默）。
   const saveStatusUi = saveStatusUiModule.create({ $, state, formatClock, saveCurrent });
+
+  // 撤销层（1.4.0 P0-2）：删除章节等「确认型」动作直接执行后登记一条撤销（10 秒窗口）。
+  // 纯逻辑（单槽 / TTL / 键位判定）在 undo-action.js，条子渲染在 undo-ui.js；
+  // 这里只装配：切书 / 回书架时 clear()，Ctrl+Z 命中时 runUndo()（见 bindEvents）。
+  const undoUi = undoUiModule.create({ $, slot: undoActionModule.createUndoSlot(), toast });
 
   // ---------- 编辑器小件 ----------
   // 第 4 步九刀·第三刀：实现在 renderer/editor-marks-ui.js（模块头有契约），这里只装配与接线；
@@ -2216,16 +2229,17 @@
     }
   }
 
-  // 返回 true = 真的删了（走完确认并写盘成功）；false = 没删（取消 / 保存失败 / 出错）。
-  // U-D9 的键盘入口靠它决定「删完要不要把焦点放回列表」；右键菜单等入口不看返回值，行为不变。
+  // 返回 true = 真的删了（写盘成功）；false = 没删（取消未保存拦截 / 保存失败 / 出错）。
+  // 1.4.0 P0-2（撤销优先）：删除改为「直接执行 + 10 秒撤销」——不再弹「确定删除？」确认框。
+  // 只有「删的是当前章且还有没保存的字」仍走未保存拦截（两处保留确认之一）：撤销找得回磁盘上
+  // 那一版，但找不回编辑区里还没写盘的字，所以这一步不能省。skipConfirm 只给自动化钩子用。
   async function deleteChapterAt(index, skipConfirm = false) {
     const chapter = state.chapters[index];
     if (!chapter) return false;
+    const bookPath = state.bookPath;
+    if (!bookPath) return false;
     const wasCurrent = index === state.index;
     const currentId = wasCurrent ? null : (state.chapters[state.index] || {}).id;
-    // 删的是「当前章」且还有没保存的字：先拦一下（和切章 / 关窗 / 整本整理 / 整本替换一个规矩）。
-    // 磁盘上的版本会进 _trash，但编辑区里没写盘的那部分不在那儿 —— 静默丢掉就真找不回来了。
-    // skipConfirm 只给自动化钩子用（测试里本来就不弹框），正常入口一律走这段。
     if (!skipConfirm && wasCurrent && state.dirty) {
       const action = await askUnsaved({
         title: '删除前先处理未保存的修改',
@@ -2241,23 +2255,12 @@
         if (!saved.ok) return false;
       }
     }
-    if (!skipConfirm) {
-      const res = await openModal({
-        title: '删除章节',
-        message: `确定删除「${chapterTitle(index, chapter.name)}」吗？\n文件会被移到本书的 _trash 文件夹，不会真正删除。`,
-        buttons: [
-          { label: '删除', value: 'delete', kind: 'danger' },
-          { label: '取消', value: 'cancel', kind: 'primary' }
-        ],
-        cancelValue: 'cancel'
-      });
-      if (res.action !== 'delete') return false;
-    }
     try {
-      const data = await call(api.deleteChapter, state.bookPath, chapter.id);
+      const data = await call(api.deleteChapter, bookPath, chapter.id);
       const at = applyMetaAndRelocate(data, currentId);
+      // 主进程回传的是绝对路径：只取文件名（撤销只传 basename，绝不把本机路径再递回去）。
+      const trashName = String(data.trashPath || '').split(/[\\/]/).pop();
       if (data.newChapter) toast('最后一章被删除，已自动补一个空章');
-      else toast('已移入 _trash');
       if (wasCurrent) {
         state.dirty = false;
         await loadChapterAt(data.index);
@@ -2267,11 +2270,54 @@
         renderEditorHeader();
         updateStatus();
       }
+      if (trashName) activateDeleteUndo({ bookPath, chapter, index, trashName, wasCurrent, newChapter: data.newChapter });
       return true;
     } catch (err) {
       toast(`删除失败：${err.message}`, 'error');
       return false;
     }
+  }
+
+  // 删除章节后的撤销登记（1.4.0 P0-2）：10 秒内点撤销条 / 按 Ctrl+Z 把章节文件与书目位置一起找回。
+  // 撤销执行前 flushWriteTimer()、再核对还是同一本书；失败由 renderer/undo-ui.js 报「撤销失败：…」，绝不静默。
+  function activateDeleteUndo(info) {
+    const title = chapterTitle(info.index, info.chapter.name);
+    undoUi.activate(`已删除「${title}」`, async () => {
+      if (state.bookPath !== info.bookPath) throw new Error('已经换了书，不能撤销');
+      await flushWriteTimer();
+      const dirtyNow = Boolean(state.dirty);
+      const current = state.chapters[state.index];
+      const autoFile = info.newChapter && info.newChapter.file ? info.newChapter.file : '';
+      // 删空自动补的空章：只在「它仍空着、编辑区也没动过它」时一并撤掉。
+      // 作者在这 10 秒里已经往补章里写了字，就保留它（宁可多一章，也不静默丢字）。
+      const canRemoveAuto = Boolean(autoFile) && !(dirtyNow && current && current.file === autoFile);
+      const data = await call(api.restoreDeletedChapter, info.bookPath, {
+        trashName: info.trashName,
+        index: info.index,
+        chapter: {
+          id: info.chapter.id,
+          file: info.chapter.file,
+          name: info.chapter.name,
+          createdAt: info.chapter.createdAt,
+          volumeId: info.chapter.volumeId,
+          status: info.chapter.status,
+          note: info.chapter.note
+        },
+        autoChapterFile: canRemoveAuto ? autoFile : null
+      });
+      // 有未保存的字就不切章（切章会把它丢掉），只把书目换回来；
+      // 其它情况按「当前章 id」重定位，免得撤销把一章插到当前章前面后下标错位。
+      const willLoad = info.wasCurrent && !dirtyNow;
+      const keepId = current && !willLoad ? current.id : null;
+      const at = applyMetaAndRelocate(data, keepId);
+      if (at >= 0) state.index = at;
+      renderChapterList();
+      renderEditorHeader();
+      if (willLoad) await loadChapterAt(data.index);
+      else updateStatus();
+      const note = autoFile && !data.autoChapterRemoved ? '（自动补的空章里已经有内容，保留）' : '';
+      toast(`已撤销删除：${chapterTitle(data.index, data.chapter.name)}${note}`);
+    });
   }
 
   // 章节状态 / 备注：只写 书目.json 的可选字段，正文一个字都不动。
@@ -3329,6 +3375,8 @@
     // 状态栏保存失败态：点「重试」或点朱红文案 = 再走一次 saveCurrent()（1.3.0 T7）。
     // 只挂一次；仍是非静默保存，再次失败照旧有错误 toast。
     saveStatusUi.bindRetry();
+    // 撤销条（1.4.0 P0-2）：给「撤销」按钮挂点击（幂等，只挂一次）。
+    undoUi.setup();
     findUi.setupFindUi();
     focusModeUi.setupFocusModeUi();
     readingUi.setupReadingUi();
@@ -3641,6 +3689,16 @@
           $('shelf-search').focus();
           $('shelf-search').select();
         }
+        return;
+      }
+      // 全局撤销（1.4.0 P0-2）：删除等动作留下的撤销优先于原生文本撤销；
+      // 焦点在编辑区 / 输入框 / 下拉框 / contenteditable 里时一律不抢（isTypingTarget）。
+      if (
+        undoUi.hasPending() &&
+        undoActionModule.isUndoKey(event, undoActionModule.isTypingTarget(document.activeElement))
+      ) {
+        event.preventDefault();
+        void undoUi.runUndo();
         return;
       }
       if (ctrl && String(event.key).toLowerCase() === 'z') {

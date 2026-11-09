@@ -3,7 +3,8 @@
 // 单测（tests/destructive-recovery.test.js）已经把「删章回滚 / 整理·替换·还原中途失败的现场」
 // 钉在 core/storage.js 这一层；这一组走**真实 Electron + 真实 IPC**，确认在真窗口里：
 //   1. 删「当前章」且还有未保存的字 → 先弹「删除前先处理未保存的修改」，取消后一个字都不丢；
-//      选「不保存，直接删除」才进删除确认，删掉的只是磁盘上的那一版（在 _trash 里）。
+//      选「不保存，直接删除」后直接执行（1.4.0 P0-2 起不再有第二个「删除章节」确认框），
+//      删掉的只是磁盘上的那一版（在 _trash 里），并出现 10 秒撤销条。
 //   2. 整本整理中途写盘失败（真实只读章节文件 → 真实 EPERM）：错误提示要带
 //      「已经整理好 N 章 + 整理备份-…」；界面要按磁盘重载（编辑区不许停在旧正文上）；
 //      恢复写权限后重跑，剩下那章照常整理完。
@@ -76,10 +77,19 @@ module.exports = async function group66DestructiveRecovery(t) {
     (await exec('window.__cwTest.dialog()')) === '删除前先处理未保存的修改'
   );
   await exec("window.__cwTest.answerModal('discard')");
-  await waitFor("window.__cwTest.dialog() === '删除章节'");
-  await exec("window.__cwTest.answerModal('delete')");
+  // 1.4.0 P0-2：删「当前章」选「不保存，直接删除」后直接执行，不再有第二个「删除章节」确认框；
+  // 删完出现 10 秒撤销条（本组不点撤销，留证据：条子可见、弹层仍是关着的）。
   await delOk;
   await waitFor('window.__cwTest.chapterTitles().length === 1');
+  check(
+    '破坏性操作：删除不再二次确认（直接执行 + 撤销条出现）',
+    (await exec('window.__cwTest.modalOpen()')) === false &&
+      (await exec("!document.getElementById('undo-bar').classList.contains('hidden')")) === true,
+    {
+      modal: await exec('window.__cwTest.modalOpen()'),
+      undoBar: await exec("!document.getElementById('undo-bar').classList.contains('hidden')")
+    }
+  );
   const trashNames = await fs.readdir(path.join(bookPath, '_trash'));
   const trashed = trashNames.filter((name) => name.endsWith(file0));
   check(
