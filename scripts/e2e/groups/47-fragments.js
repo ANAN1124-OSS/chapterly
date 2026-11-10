@@ -198,6 +198,176 @@ module.exports = async function group47Fragments(t) {
       !(await fileExists(path.join(fragBookPath, '_trash')))
   );
 
+  // 47d-2. 拖拽插入（1.5.0 功能-3）：碎片行可拖、dataTransfer 只带名字、落点跟着指针、全程不写盘
+  await exec('window.__cwTest.setCaret(3)');
+  // 列表最新在前：第 2 行 = -1.txt（「第一段\n第二段」）
+  const fragDragIndex = 1;
+  const fragDragName = `${fragStamp}-1.txt`;
+  const fragDragText = '第一段\n第二段';
+  const fragDragTxtPath = path.join(
+    fragBookPath,
+    (await storage.readBookMeta(fragBookPath)).chapters[0].file
+  );
+  const fragDragStatBefore = await fs.stat(fragDragTxtPath);
+  const fragDragBytesBefore = await fs.readFile(fragDragTxtPath);
+  const fragDragSrcBytesBefore = await fs.readFile(path.join(fragDir, fragDragName));
+  await exec('window.__cwTest.openInsertFragmentDialog()');
+  await waitFor('window.__cwTest.insertFragmentDialogOpen() && window.__cwTest.fragmentRowCount() === 2');
+  const fragDragStart = await exec(`(() => {
+    const row = document.querySelectorAll('#fragments-list .fragment-item')[${fragDragIndex}];
+    const dt = new DataTransfer();
+    row.dispatchEvent(new DragEvent('dragstart', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    const backdrop = document.getElementById('fragments-backdrop');
+    const editor = document.getElementById('editor');
+    const r = editor.getBoundingClientRect();
+    const under = document.elementFromPoint(
+      r.left + Math.min(60, r.width / 2),
+      r.top + Math.min(24, r.height / 2)
+    );
+    return {
+      name: row.dataset.name,
+      draggable: row.draggable === true,
+      types: Array.from(dt.types).sort(),
+      custom: dt.getData('application/x-cw-fragment'),
+      plain: dt.getData('text/plain'),
+      ghost: backdrop.classList.contains('drag-ghost'),
+      underId: under ? under.id : ''
+    };
+  })()`);
+  check(
+    '灵感箱拖拽：碎片行可拖，dataTransfer 只带碎片名（自定义 MIME + text/plain，没有全文）',
+    fragDragStart.name === fragDragName &&
+      fragDragStart.draggable === true &&
+      fragDragStart.types.join(',') === 'application/x-cw-fragment,text/plain' &&
+      fragDragStart.custom === fragDragName &&
+      fragDragStart.plain === fragDragName,
+    fragDragStart
+  );
+  check(
+    '灵感箱拖拽：拖拽期间面板让路（透明 + 不拦指针），编辑区能被指针命中',
+    fragDragStart.ghost === true && fragDragStart.underId === 'editor',
+    { ghost: fragDragStart.ghost, underId: fragDragStart.underId }
+  );
+
+  // 松手没落在正文（只有 dragend、没有 drop）：面板恢复可点，正文一个字不动
+  await exec(`(() => {
+    const row = document.querySelectorAll('#fragments-list .fragment-item')[${fragDragIndex}];
+    row.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true }));
+  })()`);
+  check(
+    '灵感箱拖拽：没落在正文就松手 → ghost 摘掉、面板还开着，正文不动',
+    (await exec("document.getElementById('fragments-backdrop').classList.contains('drag-ghost')")) === false &&
+      (await exec('window.__cwTest.insertFragmentDialogOpen()')) === true &&
+      (await exec('window.__cwTest.text()')) === '开头。结尾。'
+  );
+
+  // 拖到正文左侧：落点在第 0 字（打开面板前光标是 3，落下后必须按指针位置，不是旧光标）
+  const fragDropLeft = await exec(`(() => {
+    const ta = document.getElementById('editor');
+    const row = document.querySelectorAll('#fragments-list .fragment-item')[${fragDragIndex}];
+    const r = ta.getBoundingClientRect();
+    const name = ${JSON.stringify(fragDragName)};
+    const dt = new DataTransfer();
+    row.dispatchEvent(new DragEvent('dragstart', {
+      dataTransfer: dt, bubbles: true, cancelable: true
+    }));
+    const x = r.left + 10;
+    const y = r.top + 14;
+    const over = new DragEvent('dragover', {
+      dataTransfer: dt, clientX: x, clientY: y, bubbles: true, cancelable: true
+    });
+    ta.dispatchEvent(over);
+    const drop = new DragEvent('drop', {
+      dataTransfer: dt, clientX: x, clientY: y, bubbles: true, cancelable: true
+    });
+    ta.dispatchEvent(drop);
+    row.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true }));
+    return {
+      overPrevented: over.defaultPrevented,
+      dropPrevented: drop.defaultPrevented,
+      transferred: dt.getData('application/x-cw-fragment'),
+      x,
+      y
+    };
+  })()`);
+  const fragDragExpectedLeft = fragDragText + '开头。结尾。';
+  await waitFor(`window.__cwTest.text() === ${JSON.stringify(fragDragExpectedLeft)}`);
+  const fragDragStatAfter = await fs.stat(fragDragTxtPath);
+  const fragDragBytesAfter = await fs.readFile(fragDragTxtPath);
+  check(
+    '灵感箱拖拽：dragover / drop 都被 preventDefault，碎片按落点插到正文最前（不是旧光标 3）',
+    // 合成事件里 dropEffect / effectAllowed 读回来恒为 none（Chromium 只在真实拖拽里维护）：
+      // 这里只核对同一个 DataTransfer 带着碎片名、且 dragover / drop 都被 preventDefault
+      fragDropLeft.overPrevented === true &&
+      fragDropLeft.dropPrevented === true &&
+      fragDropLeft.transferred === fragDragName &&
+      (await exec('window.__cwTest.text()')) === fragDragExpectedLeft,
+    { drop: fragDropLeft, text: await exec('window.__cwTest.text()') }
+  );
+  check(
+    '灵感箱拖拽：插入后仍未保存、面板关闭，章节 txt（内容 + mtime）/ 书目 / 原碎片一个字节没动',
+    (await exec('window.__cwTest.dirty()')) === true &&
+      (await exec('window.__cwTest.statusText()')).includes('未保存') &&
+      (await exec('window.__cwTest.insertFragmentDialogOpen()')) === false &&
+      (await exec("document.getElementById('fragments-backdrop').classList.contains('drag-ghost')")) === false &&
+      fragDragBytesAfter.equals(fragDragBytesBefore) &&
+      fragDragStatAfter.mtimeMs === fragDragStatBefore.mtimeMs &&
+      (await fs.readFile(path.join(fragDir, fragDragName))).equals(fragDragSrcBytesBefore) &&
+      (await exec('window.__cwTest.fragmentList()')).length === 2,
+    {
+      text: await exec('window.__cwTest.text()'),
+      dirty: await exec('window.__cwTest.dirty()'),
+      mtimeBefore: fragDragStatBefore.mtimeMs,
+      mtimeAfter: fragDragStatAfter.mtimeMs
+    }
+  );
+
+  // 原生 Ctrl+Z（execCommand undo）撤掉这次拖入：正文回到插入前，未保存状态清掉
+  const fragDragUndo = await exec('window.__cwTest.undoEditor()');
+  check(
+    '灵感箱拖拽：可 Ctrl+Z 撤销（原生撤销链）→ 正文回到插入前，未保存状态清掉',
+    fragDragUndo &&
+      fragDragUndo.ok === true &&
+      fragDragUndo.text === '开头。结尾。' &&
+      fragDragUndo.dirty === false &&
+      (await exec('window.__cwTest.text()')) === '开头。结尾。' &&
+      (await exec('window.__cwTest.dirty()')) === false,
+    fragDragUndo
+  );
+
+  // 同一个碎片拖到右侧：插到末尾（证明落点跟着指针走，不是固定位置）
+  await exec('window.__cwTest.setCaret(0)');
+  await exec('window.__cwTest.openInsertFragmentDialog()');
+  await waitFor('window.__cwTest.insertFragmentDialogOpen() && window.__cwTest.fragmentRowCount() === 2');
+  await exec(`(() => {
+    const ta = document.getElementById('editor');
+    const row = document.querySelectorAll('#fragments-list .fragment-item')[${fragDragIndex}];
+    const r = ta.getBoundingClientRect();
+    const dt = new DataTransfer();
+    row.dispatchEvent(new DragEvent('dragstart', {
+      dataTransfer: dt, bubbles: true, cancelable: true
+    }));
+    const x = r.right - 14;
+    const y = r.top + 14;
+    ta.dispatchEvent(new DragEvent('dragover', {
+      dataTransfer: dt, clientX: x, clientY: y, bubbles: true, cancelable: true
+    }));
+    ta.dispatchEvent(new DragEvent('drop', {
+      dataTransfer: dt, clientX: x, clientY: y, bubbles: true, cancelable: true
+    }));
+    row.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true }));
+  })()`);
+  const fragDragExpectedRight = '开头。结尾。' + fragDragText;
+  await waitFor(`window.__cwTest.text() === ${JSON.stringify(fragDragExpectedRight)}`);
+  check(
+    '灵感箱拖拽：同一个碎片拖到正文右侧 → 插到末尾（落点随指针变化）',
+    (await exec('window.__cwTest.text()')) === fragDragExpectedRight &&
+      (await exec('window.__cwTest.dirty()')) === true
+  );
+  // 撤销回 '开头。结尾。'，后面 47e 仍按这个正文口径继续
+  await exec('window.__cwTest.undoEditor()');
+  await waitFor("window.__cwTest.text() === '开头。结尾。' && window.__cwTest.dirty() === false");
+
   // 47e. 自己放进 _碎片 的普通 txt 也能插入；刷新只读
   await fs.writeFile(path.join(fragDir, '手工碎片.txt'), '手工放进来的灵感', 'utf8');
   await exec('window.__cwTest.openInsertFragmentDialog()');

@@ -7,6 +7,9 @@
  * **只搬不改行为**：碎片文件全部由主进程 core/fragments.js 读写（原子写 / 防覆盖有单测）；这里只做两个弹层，
  * 文案 / class / dataset / 空态 / 保存防重 / execCommand 撤销链与手动拼接兜底 / 预览 2 万字上限 /
  * 插入位置按「打开面板前的选区」全部一字未改；插入只改编辑区、绝不写盘、绝不删除原碎片。
+ * 1.5.0 功能-3：插入面板的碎片行可以**拖进正文**。拖拽和「插入到光标处」共用同一个 insertFragmentAt()
+ * （仍是 execCommand('insertText')，原生 Ctrl+Z 撤销链不变）；dataTransfer 只带碎片名，完整内容按名字现读；
+ * 落点用 document.caretPositionFromPoint（textarea 在 Chromium 里只有它会回字符下标），取不到退回当前光标。
  * 事件绑定随域搬进 setupFragmentsUi()（＋碎片 / 保存 / 取消 / 计数 / Ctrl+Enter / 插入面板 4 个按钮）。
  *
  * 契约：createFragmentsUi(host) 由渲染层调用一次。host 8 个成员（2 个语义分组 + 基础 5 + 1 个胶水）：
@@ -58,6 +61,12 @@
     }
     const { chaptersLib, formatRelativeTime, formatCount } = common;
     const { editorEl, onEditorInput, scrollCaretIntoView } = editor;
+
+  // 拖拽插入（1.5.0 功能-3）：自定义 MIME 只放碎片名（长碎片不塞进 dataTransfer，避免拖拽数据过大）。
+  // 面板是模态的：拖拽期间给 #fragments-backdrop 挂这个 class（透明 + 不拦指针），
+  // 落在编辑区的 drop 才收得到；不摘掉拖拽源（display:none 可能让原生拖拽提前结束）。
+  const FRAGMENT_DRAG_TYPE = 'application/x-cw-fragment';
+  const DRAG_GHOST_CLASS = 'drag-ghost';
 
   // ---------- 灵感箱（碎片速记；提案 3.4） ----------
   // 碎片是书架根目录 _碎片 里的普通 txt：文件名 / 原子写 / 防覆盖都在主进程 core/fragments.js（有单测）。
@@ -217,6 +226,9 @@
       item.type = 'button';
       item.className = 'fragment-item';
       item.dataset.name = fragment.name;
+      // 1.5.0 功能-3：行本身可拖进正文（拖拽只带名字，完整内容落点再读）
+      item.draggable = true;
+      item.title = '点一下选中预览；也可以直接拖进正文，落在哪儿就插到哪儿';
       const name = document.createElement('div');
       name.className = 'fragment-item-name';
       name.textContent = fragment.name;
@@ -233,6 +245,8 @@
       item.addEventListener('click', () => {
         selectFragmentByName(fragment.name);
       });
+      item.addEventListener('dragstart', (event) => handleFragmentDragStart(event, fragment.name));
+      item.addEventListener('dragend', handleFragmentDragEnd);
       list.appendChild(item);
     }
   }
@@ -284,44 +298,172 @@
     }
   }
 
-  // 插入：用 execCommand('insertText') 走原生输入，保住 Ctrl+Z；失败时手动拼接兜底。
+  // 插入核心（对话框与拖拽共用）：focus + setSelectionRange 后用 execCommand('insertText')
+  // 走原生输入，保住 Ctrl+Z；execCommand 不可用 / 结果对不上时手动拼接兜底（会丢原生撤销链，但不丢内容）。
   // 只改编辑区（onEditorInput 会标未保存），绝不自动保存、绝不删除原碎片。
-  function insertSelectedFragment() {
-    const fragment = state.fragmentSelected;
-    if (!fragment) return { ok: false, message: '先选一条碎片' };
-    if (!state.bookPath) return { ok: false, message: '先打开一本书' };
+  function insertFragmentAt(fragment, start, end) {
     const length = editorEl.value.length;
-    const range = state.insertFragmentRange || { start: editorEl.selectionStart || 0, end: editorEl.selectionEnd || 0 };
-    const start = Math.max(0, Math.min(Number(range.start) || 0, length));
-    const end = Math.max(start, Math.min(Number(range.end) || start, length));
+    const from = Math.max(0, Math.min(Number(start) || 0, length));
+    const to = Math.max(from, Math.min(Number(end) || from, length));
     const before = editorEl.value;
     editorEl.focus();
-    editorEl.setSelectionRange(start, end);
+    editorEl.setSelectionRange(from, to);
     let inserted = false;
     try {
       inserted = document.execCommand('insertText', false, fragment.text);
     } catch {
       inserted = false;
     }
-    const expectedLength = before.length - (end - start) + fragment.text.length;
+    const expectedLength = before.length - (to - from) + fragment.text.length;
     if (!inserted || editorEl.value.length !== expectedLength) {
       // 极端兜底：execCommand 不可用时手动拼接（会丢原生撤销链，但不会丢内容）
-      editorEl.value = before.slice(0, start) + fragment.text + before.slice(end);
-      editorEl.setSelectionRange(start + fragment.text.length, start + fragment.text.length);
+      editorEl.value = before.slice(0, from) + fragment.text + before.slice(to);
+      editorEl.setSelectionRange(from + fragment.text.length, from + fragment.text.length);
     }
     onEditorInput();
     scrollCaretIntoView(editorEl.selectionStart || 0);
-    closeInsertFragmentDialog();
-    toast(`已插入碎片 ${fragment.name}（${formatCount(fragment.chars)} 字）· 仍是未保存，Ctrl+S 写盘`);
     return {
       ok: true,
       name: fragment.name,
       chars: fragment.chars,
-      start,
-      end,
+      start: from,
+      end: to,
       dirty: state.dirty,
       textLength: editorEl.value.length
     };
+  }
+
+  function insertSelectedFragment() {
+    const fragment = state.fragmentSelected;
+    if (!fragment) return { ok: false, message: '先选一条碎片' };
+    if (!state.bookPath) return { ok: false, message: '先打开一本书' };
+    const range = state.insertFragmentRange || { start: editorEl.selectionStart || 0, end: editorEl.selectionEnd || 0 };
+    const result = insertFragmentAt(fragment, range.start, range.end);
+    closeInsertFragmentDialog();
+    toast(`已插入碎片 ${fragment.name}（${formatCount(fragment.chars)} 字）· 仍是未保存，Ctrl+S 写盘`);
+    return result;
+  }
+
+  // ---- 拖拽插入（1.5.0 功能-3）----
+  // 只认「从碎片列表开始的那次拖拽」（拖拽状态里有碎片名 + dataTransfer 带自定义 MIME / text/plain）；
+  // 外部文本 / 文件拖进来一律不拦、不插。
+  function isOwnFragmentDrag(event) {
+    if (!state.fragmentDragName) return false;
+    const dt = event && event.dataTransfer;
+    if (!dt) return false;
+    let types = [];
+    try {
+      types = Array.from(dt.types || []);
+    } catch {
+      types = [];
+    }
+    return types.indexOf(FRAGMENT_DRAG_TYPE) !== -1 || types.indexOf('text/plain') !== -1;
+  }
+
+  // 落点：Chromium 里 textarea 只有 caretPositionFromPoint 会回「textarea + 字符下标」
+  // （caretRangeFromPoint 对 textarea 会回到 BODY）；两个都取不到就退回当前光标，不猜。
+  function caretOffsetFromPointEvent(event) {
+    const length = editorEl.value.length;
+    const clamp = (value) => Math.max(0, Math.min(Number(value) || 0, length));
+    const x = event ? Number(event.clientX) : NaN;
+    const y = event ? Number(event.clientY) : NaN;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return clamp(editorEl.selectionStart);
+    const offsetOf = (point) => {
+      if (!point) return null;
+      const node = point.offsetNode || point.startContainer || null;
+      const offset = point.offsetNode ? point.offset : point.startOffset;
+      if (node === editorEl && Number.isFinite(Number(offset))) return Number(offset);
+      return null;
+    };
+    try {
+      if (typeof document.caretPositionFromPoint === 'function') {
+        const offset = offsetOf(document.caretPositionFromPoint(x, y));
+        if (offset !== null) return clamp(offset);
+      }
+      if (typeof document.caretRangeFromPoint === 'function') {
+        const offset = offsetOf(document.caretRangeFromPoint(x, y));
+        if (offset !== null) return clamp(offset);
+      }
+    } catch {
+      /* 落点算不出来就退回当前光标 */
+    }
+    return clamp(editorEl.selectionStart);
+  }
+
+  function handleFragmentDragStart(event, name) {
+    const fragment = (state.fragments || []).find((item) => item.name === name);
+    if (!fragment) return;
+    state.fragmentDragName = fragment.name;
+    state.fragmentDragDropped = false;
+    const dt = event && event.dataTransfer;
+    if (dt) {
+      try {
+        dt.effectAllowed = 'copy';
+        // 只写碎片名：落点按名字现读完整内容，长碎片不塞进 dataTransfer
+        dt.setData(FRAGMENT_DRAG_TYPE, fragment.name);
+        dt.setData('text/plain', fragment.name);
+      } catch {
+        /* 个别引擎会拦自定义 MIME：拖拽状态本身仍然可用 */
+      }
+    }
+    $('fragments-backdrop').classList.add(DRAG_GHOST_CLASS);
+  }
+
+  function handleFragmentDragEnd() {
+    // 落点已在处理时不要收 ghost：等 drop 收尾，免得面板闪一下
+    if (state.fragmentDragDropped) return;
+    state.fragmentDragName = null;
+    $('fragments-backdrop').classList.remove(DRAG_GHOST_CLASS);
+  }
+
+  function onEditorDragOver(event) {
+    if (!isOwnFragmentDrag(event)) return;
+    event.preventDefault(); // 不 preventDefault 就不会触发 drop
+    event.stopPropagation();
+    try {
+      event.dataTransfer.dropEffect = 'copy';
+    } catch {
+      /* 只影响光标样式 */
+    }
+  }
+
+  async function onEditorDrop(event) {
+    if (!isOwnFragmentDrag(event)) return null;
+    event.preventDefault();
+    event.stopPropagation();
+    const name = state.fragmentDragName;
+    const offset = caretOffsetFromPointEvent(event);
+    const bookPath = state.bookPath;
+    state.fragmentDragDropped = true;
+    try {
+      if (!bookPath) {
+        toast('先打开一本书再插入碎片', 'warn');
+        return { ok: false, message: '先打开一本书' };
+      }
+      const fragment = (state.fragments || []).find((item) => item.name === name);
+      if (!fragment) {
+        toast('这条碎片已经不在列表里了', 'warn');
+        return { ok: false, message: '这条碎片已经不在列表里了' };
+      }
+      // 完整内容按名字现读：dataTransfer 里只有名字
+      const data = await call(api.readFragment, fragment.name);
+      if (state.bookPath !== bookPath) {
+        // 读的过程中换了书：绝不把内容写进另一本书的编辑区
+        toast('已经换了书，插入取消', 'warn');
+        return { ok: false, message: '已经换了书，插入取消' };
+      }
+      const result = insertFragmentAt({ name: data.name, text: data.text, chars: data.chars }, offset, offset);
+      closeInsertFragmentDialog();
+      toast(`已插入碎片 ${data.name}（${formatCount(data.chars)} 字）· 仍是未保存，Ctrl+S 写盘`);
+      return result;
+    } catch (err) {
+      toast(`插入碎片失败：${err.message}`, 'error');
+      return { ok: false, message: err.message, code: err.code };
+    } finally {
+      state.fragmentDragName = null;
+      state.fragmentDragDropped = false;
+      $('fragments-backdrop').classList.remove(DRAG_GHOST_CLASS);
+    }
   }
 
   // 事件绑定（与搬前 bindEvents() 里的灵感箱块逐行一致；由渲染层在原位置调用一次）
@@ -341,6 +483,10 @@
     $('btn-fragments-close').addEventListener('click', closeInsertFragmentDialog);
     $('btn-fragment-insert').addEventListener('click', () => insertSelectedFragment());
     $('btn-fragments-refresh').addEventListener('click', () => refreshFragments());
+    // 1.5.0 功能-3：碎片拖进正文。dragover 必须 preventDefault 才会收到 drop；
+    // drop 只认从碎片列表开始的那次拖拽（外部文本 / 文件一律不拦）。
+    editorEl.addEventListener('dragover', onEditorDragOver);
+    editorEl.addEventListener('drop', onEditorDrop);
   }
 
 

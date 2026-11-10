@@ -128,6 +128,27 @@ function makeFragment(overrides = {}) {
   };
 }
 
+// 1.5.0 功能-3：DataSet 的最小替身（只用到 setData / getData / types / dropEffect）
+function makeDataTransfer() {
+  const data = new Map();
+  return {
+    types: [],
+    dropEffect: 'none',
+    effectAllowed: 'none',
+    writes: [],
+    setData(type, value) {
+      const key = String(type);
+      const text = String(value);
+      data.set(key, text);
+      this.writes.push([key, text]);
+      if (!this.types.includes(key)) this.types.push(key);
+    },
+    getData(type) {
+      return data.has(String(type)) ? data.get(String(type)) : '';
+    }
+  };
+}
+
 function build(options = {}) {
   const dom = options.dom || makeDocument();
   for (const id of BASE_IDS) dom.ensure(id);
@@ -524,6 +545,137 @@ test('insertSelectedFragment：没选碎片 / 没书早退；成功替换选区�
   assert.equal(clamp.editorEl.value, 'XYQ', '越界起点夹到正文末尾');
 });
 
+// ---------- 1.5.0 功能-3：碎片拖进正文 ----------
+test('拖拽插入：行可拖（dataTransfer 只带名字）、面板让路、落在落点处插入且不写盘不删碎片', async () => {
+  const ctx = build({ editorText: 'ABCDEF', selection: 3, selectionEnd: 3 });
+  ctx.dom.doc.caretPositionFromPoint = () => ({ offsetNode: ctx.editorEl, offset: 2 });
+  ctx.ui.setupFragmentsUi();
+  assert.equal(ctx.ui.openInsertFragmentDialog(), true);
+  await ctx.ui.refreshFragments();
+  assert.equal(ctx.state.insertFragmentRange.start, 3, '打开面板时记下的光标是 3');
+
+  const list = ctx.dom.map.get('fragments-list');
+  const row = rowEls(list)[0];
+  assert.equal(row.draggable, true, '碎片行可拖');
+  assert.match(row.title, /拖进正文/, '行提示说明可拖');
+  ctx.calls.api.length = 0;
+
+  const dt = makeDataTransfer();
+  row._fire('dragstart', { dataTransfer: dt });
+  assert.equal(ctx.state.fragmentDragName, row.dataset.name);
+  assert.deepEqual(dt.writes, [
+    ['application/x-cw-fragment', row.dataset.name],
+    ['text/plain', row.dataset.name]
+  ]);
+  assert.equal(dt.getData('text/plain'), row.dataset.name, 'dataTransfer 里只有碎片名，没有全文');
+  assert.equal(ctx.dom.map.get('fragments-backdrop').classList.contains('drag-ghost'), true, '面板让路（透明 + 不拦指针）');
+
+  // dragover 必须 preventDefault（否则浏览器不派发 drop），拖拽光标改成 copy
+  const over = {
+    dataTransfer: dt, clientX: 10, clientY: 20, prevented: 0,
+    preventDefault() { over.prevented += 1; }, stopPropagation() {}
+  };
+  ctx.editorEl._fire('dragover', over);
+  assert.equal(over.prevented, 1);
+  assert.equal(dt.dropEffect, 'copy');
+
+  // drop：落点 2（不是打开面板前记下的 3）
+  const drop = {
+    dataTransfer: dt, clientX: 10, clientY: 20, prevented: 0,
+    preventDefault() { drop.prevented += 1; }, stopPropagation() {}
+  };
+  const result = await ctx.editorEl._fire('drop', drop);
+  assert.equal(drop.prevented, 1);
+  assert.equal(result.ok, true);
+  assert.equal(result.start, 2);
+  assert.equal(result.end, 2);
+  assert.equal(ctx.editorEl.value, 'AB这是碎片正文CDEF');
+  assert.equal(ctx.calls.onEditorInput, 1, '插入后走一次输入处理（标未保存 / 数字数）');
+  assert.deepEqual(ctx.calls.scrollCaretIntoView, [2 + '这是碎片正文'.length]);
+  assert.equal(ctx.dom.map.get('fragments-backdrop').classList.contains('hidden'), true, '插入成功后与点「插入」一致：面板关闭');
+  assert.equal(ctx.dom.map.get('fragments-backdrop').classList.contains('drag-ghost'), false);
+  assert.deepEqual(ctx.calls.api, [['read', row.dataset.name]], '只按名字读一次；不写盘');
+  assert.equal(ctx.state.fragments.length, 1, '原碎片还在列表里');
+  assert.equal(rowEls(list).length, 1, '列表行没被删掉');
+  assert.match(ctx.calls.toast.at(-1)[0], /^已插入碎片 /);
+});
+
+test('拖拽落点：取不到落点时退回当前光标；外部文本拖拽不拦不插；碎片已不在列表则警告且不读', async () => {
+  const ctx = build({ editorText: 'ABCDEF', selection: 4, selectionEnd: 4 });
+  ctx.dom.doc.caretPositionFromPoint = () => null;
+  // Chromium 的 caretRangeFromPoint 对 textarea 会回到 BODY：这里显式模拟「不是编辑区」
+  ctx.dom.doc.caretRangeFromPoint = () => ({ startContainer: { nodeName: 'BODY' }, startOffset: 0 });
+  ctx.ui.setupFragmentsUi();
+  ctx.ui.openInsertFragmentDialog();
+  await ctx.ui.refreshFragments();
+  ctx.calls.api.length = 0;
+  const row = rowEls(ctx.dom.map.get('fragments-list'))[0];
+  const dt = makeDataTransfer();
+  row._fire('dragstart', { dataTransfer: dt });
+  const drop = {
+    dataTransfer: dt, clientX: 1, clientY: 2, prevented: 0,
+    preventDefault() { drop.prevented += 1; }, stopPropagation() {}
+  };
+  await ctx.editorEl._fire('drop', drop);
+  assert.equal(ctx.editorEl.value, 'ABCD这是碎片正文EF', '取不到落点才退回当前光标 4');
+  assert.deepEqual(ctx.calls.api, [['read', row.dataset.name]]);
+
+  // 外部文本拖进编辑区：没有碎片拖拽状态 → 不 preventDefault、不读碎片、正文不动
+  const foreign = build({ editorText: 'ABC', selection: 1, selectionEnd: 1 });
+  foreign.dom.doc.caretPositionFromPoint = () => ({ offsetNode: foreign.editorEl, offset: 1 });
+  foreign.ui.setupFragmentsUi();
+  const foreignDt = makeDataTransfer();
+  foreignDt.setData('text/plain', '外部文本');
+  const ev = {
+    dataTransfer: foreignDt, clientX: 5, clientY: 6, prevented: 0,
+    preventDefault() { ev.prevented += 1; }, stopPropagation() {}
+  };
+  assert.equal(await foreign.editorEl._fire('drop', ev), null);
+  assert.equal(ev.prevented, 0);
+  assert.deepEqual(foreign.calls.api, []);
+  assert.equal(foreign.editorEl.value, 'ABC');
+
+  // 拖到一半碎片被删（列表里没了）：只警告，不读文件、不动正文
+  const gone = build({ editorText: 'ABCDEF', selection: 2, selectionEnd: 2 });
+  gone.dom.doc.caretPositionFromPoint = () => ({ offsetNode: gone.editorEl, offset: 2 });
+  gone.ui.setupFragmentsUi();
+  gone.ui.openInsertFragmentDialog();
+  await gone.ui.refreshFragments();
+  gone.calls.api.length = 0;
+  const goneRow = rowEls(gone.dom.map.get('fragments-list'))[0];
+  const goneDt = makeDataTransfer();
+  goneRow._fire('dragstart', { dataTransfer: goneDt });
+  gone.state.fragments = [];
+  const goneDrop = {
+    dataTransfer: goneDt, clientX: 3, clientY: 4, prevented: 0,
+    preventDefault() { goneDrop.prevented += 1; }, stopPropagation() {}
+  };
+  const goneRes = await gone.editorEl._fire('drop', goneDrop);
+  assert.equal(goneRes.ok, false);
+  assert.match(goneRes.message, /不在列表里/);
+  assert.deepEqual(gone.calls.api, [], '不读文件、不写盘');
+  assert.equal(gone.editorEl.value, 'ABCDEF');
+  assert.deepEqual(gone.calls.toast.at(-1), ['这条碎片已经不在列表里了', 'warn']);
+});
+
+test('拖拽结束没落在正文：面板恢复可点（ghost 摘掉、面板仍开着），正文不动', async () => {
+  const ctx = build({ editorText: 'ABCDEF', selection: 2, selectionEnd: 2 });
+  ctx.ui.setupFragmentsUi();
+  ctx.ui.openInsertFragmentDialog();
+  await ctx.ui.refreshFragments();
+  const row = rowEls(ctx.dom.map.get('fragments-list'))[0];
+  const backdrop = ctx.dom.map.get('fragments-backdrop');
+  ctx.calls.api.length = 0;
+  row._fire('dragstart', { dataTransfer: makeDataTransfer() });
+  assert.equal(backdrop.classList.contains('drag-ghost'), true);
+  row._fire('dragend', {});
+  assert.equal(backdrop.classList.contains('drag-ghost'), false, '没落点时面板回到原样');
+  assert.equal(backdrop.classList.contains('hidden'), false, '面板还开着，可以继续点「插入到光标处」');
+  assert.equal(ctx.state.fragmentDragName, null);
+  assert.equal(ctx.editorEl.value, 'ABCDEF');
+  assert.deepEqual(ctx.calls.api, [], '取消拖拽不读盘、不写盘');
+});
+
 // ---------- 事件绑定 ----------
 test('setupFragmentsUi：8 个绑定全部注册；Ctrl+Enter 保存、按钮收起 / 刷新走真实函数', async () => {
   const ctx = build();
@@ -532,6 +684,8 @@ test('setupFragmentsUi：8 个绑定全部注册；Ctrl+Enter 保存、按钮收
     'btn-fragments-close', 'btn-fragment-insert', 'btn-fragments-refresh'];
   for (const id of ids) assert.equal(ctx.dom.map.get(id)._listeners.length >= 1, true, id);
   assert.deepEqual(ctx.dom.map.get('fragment-text')._listeners.map((l) => l.type), ['input', 'keydown']);
+  // 1.5.0 功能-3：拖拽插入的两个绑定挂在编辑区（不是 document / window）
+  assert.deepEqual(ctx.editorEl._listeners.map((l) => l.type), ['dragover', 'drop']);
 
   // ＋碎片 → 打开弹层
   ctx.dom.map.get('btn-add-fragment')._fire('click');

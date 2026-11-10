@@ -439,6 +439,8 @@
     fragmentSelected: null, // 插入面板里当前选中的碎片 { name, text, chars }
     fragmentBusy: false, // 正在保存碎片（防重复写）
     insertFragmentRange: null, // 打开「插入碎片…」前编辑区的光标 / 选区（插入时按这个位置）
+    fragmentDragName: null, // 1.5.0 功能-3：正拖向正文的碎片名（拖拽期间只在内存，落点按名字现读）
+    fragmentDragDropped: false, // 1.5.0 功能-3：drop 已被接住（dragend 据此不收回「面板让路」状态）
     marks: {
       invisibles: false, // 显示不可见字符（全角空格 ␣ / 行尾空白）
       longParagraphs: false, // 超长段落提示（阈值可配，默认 >500 字左侧淡黄竖线）

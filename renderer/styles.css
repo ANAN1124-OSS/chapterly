@@ -3557,6 +3557,9 @@ body.theme-night .long-para-bar { background: var(--warn);
   overflow: hidden;
 
   padding-bottom: 0;}
+/* 1.5.0 功能-3：把碎片拖进正文时面板让路 —— 只做「透明 + 不拦指针」，
+ * 落在编辑区的 dragover / drop 才收得到；不摘掉拖拽源（display:none 可能让原生拖拽提前结束）。 */
+#fragments-backdrop.drag-ghost { opacity: 0; pointer-events: none; }
 .fragment-toolbar {
   flex: 0 0 auto;
   display: flex;
