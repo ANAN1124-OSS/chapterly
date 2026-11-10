@@ -390,3 +390,167 @@ test('校对：带词表时结果仍可回归，且不修改调用方数组', ()
   assert.deepEqual(a, b);
   assert.deepEqual(entries, copy);
 });
+
+// ---------- 1.5.0 功能-2：六条规则 + 单条开关 ----------
+
+test('校对：1.5.0 规则表——新四条插在自定义词表之前，默认开关与文案齐全', () => {
+  assert.deepEqual(proofread.RULE_ORDER, [
+    'halfwidth-punct',
+    'long-paragraph',
+    'repeat-word',
+    'punct-run',
+    'blank-lines',
+    'cjk-latin-spacing',
+    'ellipsis',
+    'dash',
+    'fullwidth-digit',
+    'custom-word'
+  ]);
+  assert.equal(proofread.DEFAULT_RULES['cjk-latin-spacing'], false, '中英间距是风格偏好，默认关');
+  for (const rule of proofread.RULE_ORDER) {
+    if (rule === 'cjk-latin-spacing') continue;
+    assert.equal(proofread.DEFAULT_RULES[rule], true, `${rule} 默认开`);
+  }
+  assert.deepEqual(Object.keys(proofread.RULE_LABELS).sort(), [...proofread.RULE_ORDER].sort());
+  assert.equal(proofread.RULE_LABELS['cjk-latin-spacing'], '中英间距');
+  assert.equal(proofread.RULE_LABELS.ellipsis, '省略号');
+  assert.equal(proofread.RULE_LABELS.dash, '破折号');
+  assert.equal(proofread.RULE_LABELS['fullwidth-digit'], '全角数字');
+  // 结果里带「这次真正生效的开关」，渲染层面板照着画
+  assert.deepEqual(proofread.proofreadText('风停了。').rules, { ...proofread.DEFAULT_RULES });
+});
+
+test('校对：sanitizeRules——只认布尔、缺省补默认、脏值回落、不改入参', () => {
+  assert.deepEqual(proofread.sanitizeRules(undefined), { ...proofread.DEFAULT_RULES });
+  assert.deepEqual(proofread.sanitizeRules(null), { ...proofread.DEFAULT_RULES });
+  assert.deepEqual(proofread.sanitizeRules('不是对象'), { ...proofread.DEFAULT_RULES });
+  assert.deepEqual(proofread.sanitizeRules([]), { ...proofread.DEFAULT_RULES });
+  const raw = { ellipsis: false, dash: 'no', 'fullwidth-digit': 0 };
+  const rules = proofread.sanitizeRules(raw);
+  assert.equal(rules.ellipsis, false);
+  assert.equal(rules.dash, true, '非布尔按默认（dash 默认开）');
+  assert.equal(rules['fullwidth-digit'], true, '数字 0 不算 false');
+  assert.deepEqual(raw, { ellipsis: false, dash: 'no', 'fullwidth-digit': 0 }, '不改调用方对象');
+});
+
+test('校对：中英间距——默认关；开启后汉字与拉丁字母 / 数字的每个边界报一条', () => {
+  const text = '他用iPhone手机，OK。';
+  assert.equal(only(proofread.proofreadText(text), 'cjk-latin-spacing').length, 0, '默认不查');
+  const result = proofread.proofreadText(text, { rules: { 'cjk-latin-spacing': true } });
+  const hits = only(result, 'cjk-latin-spacing');
+  assert.deepEqual(
+    hits.map((issue) => [issue.index, issue.match]),
+    [
+      [1, '用i'],
+      [7, 'e手']
+    ]
+  );
+  assert.equal(hits[0].message, '「用i」之间建议加一个空格');
+  assert.equal(hits[0].suggestion, '用 i');
+  assert.equal(text.slice(hits[0].index, hits[0].index + hits[0].match.length), '用i');
+  assert.equal(hits[0].line, 1);
+  // 反例：已经加空格 / 纯英文 / 中文标点挨着英文（「他说，iPhone」「OK。」）都不算缺空格
+  for (const clean of ['他用 iPhone 手机', 'Hello, world.', '他说，iPhone', '3.14', '第 3 章']) {
+    assert.equal(
+      only(proofread.proofreadText(clean, { rules: { 'cjk-latin-spacing': true } }), 'cjk-latin-spacing')
+        .length,
+      0,
+      clean
+    );
+  }
+});
+
+test('校对：省略号——3 个及以上半角点 / 「。。。」各报一条，中文省略号与两个点不报', () => {
+  const three = only(proofread.proofreadText('他说...'), 'ellipsis');
+  assert.equal(three.length, 1);
+  assert.equal(three[0].index, 2);
+  assert.equal(three[0].match, '...');
+  assert.equal(three[0].message, '省略号「...」建议改成「……」');
+  assert.equal(three[0].suggestion, '……');
+  const six = only(proofread.proofreadText('六个点......'), 'ellipsis');
+  assert.equal(six.length, 1);
+  assert.equal(six[0].match, '......');
+  // 「。。。」同时被 ④ 连续标点报一次：两条各说一件事（这条给改法）
+  const full = proofread.proofreadText('他说。。。');
+  assert.deepEqual(only(full, 'ellipsis').map((issue) => issue.match), ['。。。']);
+  assert.deepEqual(only(full, 'punct-run').map((issue) => issue.match), ['。。。']);
+  // 反例：中文省略号 / 两个半角点 / 两个句号 / 网址里的点
+  for (const clean of ['他说……没说完。', '他说..', '两个句号。。', 'www.a.com']) {
+    assert.equal(only(proofread.proofreadText(clean), 'ellipsis').length, 0, clean);
+  }
+});
+
+test('校对：破折号——「--」「---」与单个「—」建议「——」，标准「——」/ 日期 / 分隔线不报', () => {
+  const two = only(proofread.proofreadText('他说--然后走了'), 'dash');
+  assert.equal(two.length, 1);
+  assert.equal(two[0].index, 2);
+  assert.equal(two[0].match, '--');
+  assert.equal(two[0].message, '破折号「--」建议用两个「——」');
+  assert.equal(two[0].suggestion, '——');
+  assert.equal(only(proofread.proofreadText('他说---然后走了'), 'dash')[0].match, '---');
+  const single = only(proofread.proofreadText('他来了—然后走了'), 'dash');
+  assert.equal(single.length, 1);
+  assert.equal(single[0].match, '—');
+  // 反例：标准破折号 / 日期区间 / 单独的分隔线 / 英文连字符
+  for (const clean of ['他——没说完。', '12-30 出发', '----', 'A-B 测试']) {
+    assert.equal(only(proofread.proofreadText(clean), 'dash').length, 0, clean);
+  }
+});
+
+test('校对：全角数字——一整段合成一条并给出半角建议，半角数字不报', () => {
+  const result = proofread.proofreadText('２０２４年１２月，这是第１章。');
+  const hits = only(result, 'fullwidth-digit');
+  assert.deepEqual(
+    hits.map((issue) => [issue.index, issue.match, issue.suggestion]),
+    [
+      [0, '２０２４', '2024'],
+      [5, '１２', '12'],
+      [12, '１', '1']
+    ]
+  );
+  assert.equal(hits[0].message, '全角数字「２０２４」建议改成半角「2024」');
+  assert.equal(only(proofread.proofreadText('2024 年 12 月'), 'fullwidth-digit').length, 0);
+});
+
+test('校对：单条开关——关掉某条后它一条都不产出，其它规则照常', () => {
+  const text = '他说...然后走了--真的。';
+  const all = proofread.proofreadText(text);
+  assert.equal(all.byRule.ellipsis, 1);
+  assert.equal(all.byRule.dash, 1);
+  const off = proofread.proofreadText(text, { rules: { ellipsis: false } });
+  assert.equal(off.byRule.ellipsis, 0);
+  assert.equal(off.byRule.dash, 1);
+  assert.equal(off.total, all.total - 1);
+  assert.deepEqual(off.issues.filter((issue) => issue.rule === 'ellipsis'), []);
+  assert.equal(off.rules.ellipsis, false);
+  assert.equal(all.rules.ellipsis, true);
+  // 全关 = 0 条（统计口径还在：byRule 每条都是 0）
+  const rules = {};
+  for (const rule of proofread.RULE_ORDER) rules[rule] = false;
+  const none = proofread.proofreadText(text, { rules });
+  assert.equal(none.total, 0);
+  assert.deepEqual(none.issues, []);
+  for (const rule of proofread.RULE_ORDER) assert.equal(none.byRule[rule], 0);
+  // 自定义词表也能关：关掉后不做词表扫描，但词数照实统计（面板还要显示词表状态）
+  const gloss = [{ term: '真的', suggestion: '确实' }];
+  assert.equal(proofread.proofreadText(text, {}, gloss).byRule['custom-word'], 1);
+  const noGloss = proofread.proofreadText(text, { rules: { 'custom-word': false } }, gloss);
+  assert.equal(noGloss.byRule['custom-word'], 0);
+  assert.equal(noGloss.customWordCount, 1);
+});
+
+test('校对：新规则的位置 / 片段都能在原文原样取到，且按位置与规则顺序排', () => {
+  const text = '他喊...然后——走了--不、２０２４年。他用iPhone手机。';
+  const rules = { 'cjk-latin-spacing': true };
+  const normalized = text.replace(/\r\n?/g, '\n');
+  const result = proofread.proofreadText(text, { rules });
+  const fresh = result.issues.filter((issue) =>
+    ['cjk-latin-spacing', 'ellipsis', 'dash', 'fullwidth-digit'].includes(issue.rule)
+  );
+  assert.ok(fresh.length >= 5, JSON.stringify(fresh.map((issue) => issue.rule)));
+  for (const issue of fresh) {
+    assert.equal(normalized.slice(issue.index, issue.index + issue.match.length), issue.match, issue.rule);
+  }
+  const indexes = result.issues.map((issue) => issue.index);
+  assert.deepEqual(indexes, [...indexes].sort((a, b) => a - b));
+});

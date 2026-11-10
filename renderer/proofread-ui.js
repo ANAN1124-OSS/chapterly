@@ -1,7 +1,8 @@
 /* 校对（第 4 步 renderer 九刀·第四刀：从 renderer.js 的「校对」分区整段搬出来）。
  *
  * 搬走的段（原 renderer.js 3991–4343，353 行）—— 只报告不改动的校对面板（v0.8 提案 5.1）：
- *   规则表（PROOFREAD_ROW_LIMIT / PROOFREAD_RULE_ORDER / PROOFREAD_RULE_LABELS）、词表状态文案与刷新、
+ *   规则表（PROOFREAD_ROW_LIMIT / PROOFREAD_RULE_META）、规则开关（1.5.0：只存内存，不写配置）、
+ *   词表状态文案与刷新、
  *   面板开 / 关 / 范围、当前章内容快照、摘要与结果列表（含截断提示）、位置定位（matchRangeAt）、
  *   点一条跳到对应章 / 位置（jumpToProofreadIssue）、跑校对（当前章用编辑区内容、整本只读磁盘）、
  *   选校对词表（persist=false 进设置草稿 / persist=true 立刻写配置并重跑）。
@@ -71,22 +72,23 @@
   // 规则 / 阈值都在主进程 core/proofread.js（单测覆盖）；这里只负责面板、结果列表和「点一条跳过去」。
   // 和查找一样：当前章用编辑区里的内容（未保存也算，只参与检查）；整本由主进程逐章只读磁盘。
   const PROOFREAD_ROW_LIMIT = 300;
-  const PROOFREAD_RULE_ORDER = [
-    'halfwidth-punct',
-    'long-paragraph',
-    'repeat-word',
-    'punct-run',
-    'blank-lines',
-    'custom-word'
+  // 一份表出三样：面板行顺序 / 中文名 / 默认开关。core/proofread.js 的 RULE_ORDER /
+  // RULE_LABELS / DEFAULT_RULES 是同一份口径（tests/proofread.test.js 有一致性闸门）。
+  const PROOFREAD_RULE_META = [
+    { id: 'halfwidth-punct', label: '半角标点', defaultOn: true },
+    { id: 'long-paragraph', label: '超长段落', defaultOn: true },
+    { id: 'repeat-word', label: '重复用词', defaultOn: true },
+    { id: 'punct-run', label: '连续标点', defaultOn: true },
+    { id: 'blank-lines', label: '多余空行', defaultOn: true },
+    { id: 'cjk-latin-spacing', label: '中英间距', defaultOn: false },
+    { id: 'ellipsis', label: '省略号', defaultOn: true },
+    { id: 'dash', label: '破折号', defaultOn: true },
+    { id: 'fullwidth-digit', label: '全角数字', defaultOn: true },
+    { id: 'custom-word', label: '自定义词表', defaultOn: true }
   ];
-  const PROOFREAD_RULE_LABELS = {
-    'halfwidth-punct': '半角标点',
-    'long-paragraph': '超长段落',
-    'repeat-word': '重复用词',
-    'punct-run': '连续标点',
-    'blank-lines': '多余空行',
-    'custom-word': '自定义词表'
-  };
+  const PROOFREAD_RULE_ORDER = PROOFREAD_RULE_META.map((meta) => meta.id);
+  const PROOFREAD_RULE_LABELS = {};
+  for (const meta of PROOFREAD_RULE_META) PROOFREAD_RULE_LABELS[meta.id] = meta.label;
 
   // 校对词表状态文案（面板 / 设置共用）：未设置、文件没了、编码坏了都直说。
   // 词表是**可选**的：没有词表照样跑内置五条规则。
@@ -139,6 +141,7 @@
     if (!$('find-backdrop').classList.contains('hidden')) closeFindPanel();
     $('proofread-scope').value = state.proofreadScope === 'book' ? 'book' : 'current';
     $('proofread-backdrop').classList.remove('hidden');
+    renderProofreadRules();
     // 先读一次词表状态（只读），再自动检查当前章；词表有问题只显示提示，不影响内置规则
     await refreshProofreadWordList();
     await runProofread();
@@ -170,6 +173,74 @@
     state.proofreadBusy = Boolean(busy);
     $('proofread-busy').classList.toggle('hidden', !busy);
     $('btn-proofread-run').disabled = Boolean(busy);
+  }
+
+  // ---------- 规则开关（1.5.0 功能-2） ----------
+  // 校对跑到一半被点了开关：记一笔，这一轮结束后按最新开关补跑一次（不并发、也不吞点击）
+  let proofreadRerunPending = false;
+  // 每条规则一行「名字 + 本次命中数」，点一下临时关掉。开关只存在 state.proofreadRules
+  // （本次会话内存）：不写配置、不新增字段，重开应用回默认（中英间距默认关）。
+  function proofreadRuleState() {
+    if (!state.proofreadRules || typeof state.proofreadRules !== 'object') state.proofreadRules = {};
+    for (const meta of PROOFREAD_RULE_META) {
+      if (typeof state.proofreadRules[meta.id] !== 'boolean') {
+        state.proofreadRules[meta.id] = meta.defaultOn;
+      }
+    }
+    return state.proofreadRules;
+  }
+
+  // 本次结果的命中数（还没跑过就是「—」；关掉的规则重跑后归零）
+  function proofreadRuleCount(rule) {
+    const counts = state.proofread && state.proofread.byRule;
+    if (!counts) return '—';
+    return String(Number(counts[rule]) || 0);
+  }
+
+  function renderProofreadRules() {
+    const box = $('proofread-rules');
+    if (!box) return false;
+    const rules = proofreadRuleState();
+    box.innerHTML = '';
+    for (const meta of PROOFREAD_RULE_META) {
+      const on = rules[meta.id] !== false;
+      const count = proofreadRuleCount(meta.id);
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'proofread-rule-toggle';
+      if (!on) row.classList.add('off');
+      row.dataset.rule = meta.id;
+      row.setAttribute('aria-pressed', on ? 'true' : 'false');
+      row.setAttribute('aria-label', `${meta.label}：${on ? '已开启' : '已关闭'}，本次命中 ${count} 处`);
+      row.title = on ? `关掉「${meta.label}」` : `重新打开「${meta.label}」`;
+      const name = document.createElement('span');
+      name.className = 'proofread-rule-name';
+      name.textContent = meta.label;
+      const hits = document.createElement('span');
+      hits.className = 'proofread-rule-count';
+      hits.textContent = count;
+      row.append(name, hits);
+      row.addEventListener('click', () => toggleProofreadRule(meta.id));
+      box.appendChild(row);
+    }
+    return true;
+  }
+
+  // 点一下开关：翻转 → 立刻重画 → 面板开着就重跑一次（只读，结果跟着开关走）
+  function toggleProofreadRule(rule) {
+    const rules = proofreadRuleState();
+    if (!Object.prototype.hasOwnProperty.call(rules, rule)) return false;
+    rules[rule] = !rules[rule];
+    renderProofreadRules();
+    if (!state.bookPath || $('proofread-backdrop').classList.contains('hidden')) return rules[rule];
+    if (state.proofreadBusy) proofreadRerunPending = true;
+    else void runProofread();
+    return rules[rule];
+  }
+
+  // 传给主进程的选项：只带规则开关，阈值仍走默认（renderer 不暴露阈值）
+  function proofreadOptions() {
+    return { rules: { ...proofreadRuleState() } };
   }
 
   function proofreadChapterTitle(issue) {
@@ -331,6 +402,7 @@
     }
     if (state.proofreadBusy) return { ok: false, message: '正在校对中' };
     const scope = proofreadScope();
+    const runOptions = proofreadOptions();
     state.proofreadScope = scope;
     setProofreadBusy(true);
     $('proofread-summary').textContent =
@@ -340,10 +412,10 @@
       let payload;
       if (scope === 'book') {
         const override = currentChapterRef();
-        payload = await call(api.proofreadBook, state.bookPath, {}, override);
+        payload = await call(api.proofreadBook, state.bookPath, runOptions, override);
         payload.scope = 'book';
       } else {
-        const res = await call(api.proofreadText, editorEl.value, {});
+        const res = await call(api.proofreadText, editorEl.value, runOptions);
         const chapter = state.chapters[state.index];
         // 当前章的结果也带上章信息，点结果时才能定位（和整本结果结构保持一致）
         payload = {
@@ -375,6 +447,7 @@
       state.proofread = payload;
       if (payload.wordList) state.proofreadWordList = payload.wordList;
       renderProofreadWordList();
+      renderProofreadRules();
       renderProofreadSummary();
       renderProofreadResults();
       return { ok: true, total: payload.total, scope: payload.scope, customWordCount: payload.customWordCount };
@@ -385,6 +458,11 @@
       return { ok: false, message: err.message };
     } finally {
       setProofreadBusy(false);
+      // 跑的过程中被点过开关（面板还开着）：立刻按最新开关再跑一次
+      if (proofreadRerunPending) {
+        proofreadRerunPending = false;
+        if (!$('proofread-backdrop').classList.contains('hidden')) void runProofread();
+      }
     }
   }
 

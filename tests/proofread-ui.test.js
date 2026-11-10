@@ -37,6 +37,7 @@ function makeEl(tag = 'div', id = '') {
     tagName: tag,
     id,
     className: '',
+    _attrs: {},
     textContent: '',
     value: '',
     disabled: false,
@@ -67,6 +68,9 @@ function makeEl(tag = 'div', id = '') {
       return child;
     },
     addEventListener(type, fn) { listeners.push({ type, fn }); },
+    setAttribute(name, value) { el._attrs[name] = String(value); },
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(el._attrs, name) ? el._attrs[name] : null; },
+    removeAttribute(name) { delete el._attrs[name]; },
     focus() { el._focus = (el._focus || 0) + 1; },
     setSelectionRange(start, end) { el.selectionStart = start; el.selectionEnd = end; },
     _fire(type, event) {
@@ -99,10 +103,24 @@ function makeDocument() {
   };
 }
 
+// 1.5.0 功能-2：默认规则开关（与 core/proofread.DEFAULT_RULES 一致；下面有一致性测试钉住）
+const DEFAULT_RULES = {
+  'halfwidth-punct': true,
+  'long-paragraph': true,
+  'repeat-word': true,
+  'punct-run': true,
+  'blank-lines': true,
+  'cjk-latin-spacing': false,
+  ellipsis: true,
+  dash: true,
+  'fullwidth-digit': true,
+  'custom-word': true
+};
+
 const BASE_IDS = [
   'proofread-backdrop', 'proofread-scope', 'proofread-wordlist-text', 'proofread-busy',
   'btn-proofread-run', 'proofread-summary', 'proofread-results', 'find-backdrop',
-  'btn-proofread', 'btn-proofread-close'
+  'btn-proofread', 'btn-proofread-close', 'proofread-rules'
 ];
 
 function makeChapters() {
@@ -367,7 +385,9 @@ test('runProofread（当前章）：用编辑区内容调 proofreadText，结果
   assert.equal(res.ok, true);
   assert.equal(res.total, 1);
   assert.equal(res.scope, 'current');
-  assert.deepEqual(ctx.calls.proofreadText, [['正文的的内容', {}]]);
+  assert.deepEqual(ctx.calls.proofreadText, [
+    ['正文的的内容', { rules: { ...DEFAULT_RULES } }]
+  ]);
   const payload = ctx.state.proofread;
   assert.equal(payload.scope, 'current');
   assert.equal(payload.chapterId, 'c1');
@@ -405,7 +425,7 @@ test('runProofread（整本）：调 proofreadBook 并带上「当前章编辑�
   assert.equal(ctx.calls.proofreadBook.length, 1);
   const [bookPath, opts, override] = ctx.calls.proofreadBook[0];
   assert.equal(bookPath, '/书库/书甲');
-  assert.deepEqual(opts, {});
+  assert.deepEqual(opts, { rules: { ...DEFAULT_RULES } });
   assert.deepEqual(override, { chapterId: 'c1', chapterFile: 'c1.txt', text: '未保存的当前章' });
   assert.equal(ctx.state.proofread.scope, 'book');
   assert.equal(dom.map.get('proofread-summary').textContent, '全书 2 章共 2 处可疑，涉及 1 章：半角标点 2');
@@ -639,4 +659,142 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWProofreadU
   assert.deepEqual(Object.keys(win.CWProofreadUi).sort(), ['REQUIRED_HOST', 'create']);
   assert.equal(win.CWProofreadUi.REQUIRED_HOST.length, 8);
   assert.equal(win.CWEditorMarksUi, undefined);
+});
+
+// ---------- 1.5.0 功能-2：规则开关 ----------
+
+test('规则表一致性：面板画的 10 行与 core/proofread 的 RULE_ORDER / 文案 / 默认开关逐个对齐', async () => {
+  const core = require('../core/proofread');
+  const dom = makeDocument();
+  const ctx = build({ dom });
+  await ctx.ui.runProofread();
+  const box = dom.map.get('proofread-rules');
+  assert.deepEqual(box.children.map((row) => row.dataset.rule), [...core.RULE_ORDER]);
+  assert.deepEqual(
+    box.children.map((row) => row.children[0].textContent),
+    core.RULE_ORDER.map((rule) => core.RULE_LABELS[rule])
+  );
+  assert.deepEqual(
+    box.children.map((row) => row.getAttribute('aria-pressed') === 'true'),
+    core.RULE_ORDER.map((rule) => core.DEFAULT_RULES[rule])
+  );
+});
+
+test('规则开关：默认只关「中英间距」；命中数取本次 byRule，没跑过是「—」', async () => {
+  const dom = makeDocument();
+  const ctx = build({
+    dom,
+    textResult: {
+      total: 3,
+      byRule: { ellipsis: 2, dash: 1 },
+      truncated: false,
+      issues: []
+    }
+  });
+  assert.deepEqual(ctx.dom.map.get('proofread-rules').children, [], 'create() 不画 DOM');
+  await ctx.ui.runProofread();
+  const box = dom.map.get('proofread-rules');
+  const row = (rule) => box.children.find((item) => item.dataset.rule === rule);
+  assert.equal(row('ellipsis').children[1].textContent, '2');
+  assert.equal(row('dash').children[1].textContent, '1');
+  assert.equal(row('cjk-latin-spacing').children[1].textContent, '0');
+  assert.equal(row('cjk-latin-spacing').classList.contains('off'), true);
+  assert.equal(row('cjk-latin-spacing').getAttribute('aria-pressed'), 'false');
+  assert.equal(row('ellipsis').classList.contains('off'), false);
+  assert.equal(row('ellipsis').getAttribute('aria-pressed'), 'true');
+  // 每行给屏幕阅读器一份完整说明（名字 + 状态 + 本次命中数）
+  assert.match(row('ellipsis').getAttribute('aria-label'), /省略号：已开启，本次命中 2 处/);
+  assert.match(row('cjk-latin-spacing').getAttribute('aria-label'), /中英间距：已关闭，本次命中 0 处/);
+});
+
+test('规则开关：点一下翻转、立刻按新开关重跑，命中数跟着归零；再点回来恢复', async () => {
+  let byRule = { ellipsis: 1, dash: 1 };
+  const dom = makeDocument();
+  const ctx = build({
+    dom,
+    textResult: { total: 2, byRule, truncated: false, issues: [] }
+  });
+  await ctx.ui.runProofread();
+  // 模拟面板开着（真实流程是 openProofreadPanel 里去掉 hidden）
+  dom.map.get('proofread-backdrop').classList.remove('hidden');
+  const box = dom.map.get('proofread-rules');
+  const row = (rule) => box.children.find((item) => item.dataset.rule === rule);
+  assert.equal(ctx.calls.proofreadText.length, 1);
+
+  // 关掉省略号：重跑一次，选项里 ellipsis=false
+  row('ellipsis')._fire('click');
+  assert.equal(ctx.state.proofreadRules.ellipsis, false);
+  assert.equal(row('ellipsis').getAttribute('aria-pressed'), 'false');
+  assert.equal(row('ellipsis').classList.contains('off'), true);
+  await flush();
+  await flush();
+  assert.equal(ctx.calls.proofreadText.length, 2, '面板开着要立刻重跑');
+  assert.deepEqual(ctx.calls.proofreadText[1][1], {
+    rules: { ...DEFAULT_RULES, ellipsis: false }
+  });
+
+  // 再点回来
+  row('ellipsis')._fire('click');
+  assert.equal(ctx.state.proofreadRules.ellipsis, true);
+  assert.equal(row('ellipsis').getAttribute('aria-pressed'), 'true');
+  await flush();
+  await flush();
+  assert.equal(ctx.calls.proofreadText.length, 3);
+  assert.deepEqual(ctx.calls.proofreadText[2][1], { rules: { ...DEFAULT_RULES } });
+});
+
+test('规则开关：面板没开时只改内存不跑校对；整本范围也带同一份开关', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, scope: 'book' });
+  await ctx.ui.runProofread();
+  assert.equal(ctx.calls.proofreadBook.length, 1);
+  assert.deepEqual(ctx.calls.proofreadBook[0][1], { rules: { ...DEFAULT_RULES } });
+
+  // 关掉面板再点：不再重跑
+  dom.map.get('proofread-backdrop').classList.add('hidden');
+  const box = dom.map.get('proofread-rules');
+  box.children.find((item) => item.dataset.rule === 'dash')._fire('click');
+  await flush();
+  await flush();
+  assert.equal(ctx.state.proofreadRules.dash, false);
+  assert.equal(ctx.calls.proofreadBook.length, 1);
+  // 不写配置：整段开关只在内存
+  assert.equal(ctx.calls.setConfig.length, 0);
+});
+
+test('规则开关：校对进行中被点开关不吞点击，跑完立刻按最新开关补跑一次', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom });
+  const original = ctx.host.api.proofreadText;
+  let release;
+  let calls = 0;
+  ctx.host.api.proofreadText = async (...args) => {
+    calls += 1;
+    if (calls === 1) await new Promise((resolve) => { release = resolve; });
+    return original(...args);
+  };
+  const opening = ctx.ui.openProofreadPanel();
+  await flush();
+  await flush();
+  assert.equal(calls, 1);
+  assert.equal(ctx.state.proofreadBusy, true, '第一轮还卡在 IPC 上');
+  const box = dom.map.get('proofread-rules');
+  box.children.find((row) => row.dataset.rule === 'ellipsis')._fire('click');
+  assert.equal(ctx.state.proofreadRules.ellipsis, false);
+  assert.equal(calls, 1, '正在跑时不并发第二次');
+  release();
+  await opening;
+  await flush();
+  await flush();
+  assert.equal(calls, 2, '跑完按新开关补跑一次');
+  assert.deepEqual(ctx.calls.proofreadText[1][1], { rules: { ...DEFAULT_RULES, ellipsis: false } });
+});
+
+test('规则开关：不写配置、不新增字段——模块里没有把 proofreadRules 传进 setConfig', () => {
+  assert.equal(moduleCode.includes('proofreadRulesPath'), false);
+  assert.equal(moduleCode.includes('proofreadRules:'), false, '没有把开关写进任何配置 patch');
+  assert.equal(/setConfig\([^)]*proofreadRules/.test(moduleCode), false);
+  // 面板里有规则容器 + 「开关不保存」小字
+  assert.match(indexSrc, /id="proofread-rules"/);
+  assert.match(indexSrc, /开关只对本次会话有效/);
 });

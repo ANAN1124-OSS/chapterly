@@ -2045,7 +2045,11 @@ function registerIpc() {
     // v0.9 C-5：当前章未保存内容（override）先过边界（坏形状当没有；正文超 500 万字拒绝）
     const safeOverride = ipcLimits.sanitizeOverride(override);
     const limits = proofreadLib.sanitizeOptions(options);
-    // 校对词表只读一次，整本每章共用（没设置 / 读不了 = 只跑内置五条规则，面板会提示）
+    // 1.5.0：规则开关（只在这份请求里生效，不落配置）。sanitizeOptions 只管阈值，
+    // 把清洗后的 rules 拼回去，整本每章用同一份开关。
+    const bookRules = proofreadLib.sanitizeRules(options && options.rules);
+    const chapterOptions = { ...limits, rules: bookRules };
+    // 校对词表只读一次，整本每章共用（没设置 / 读不了 = 只跑内置规则，面板会提示）
     const cfg = await getConfig();
     const list = await glossaryLib.readGlossaryFile(cfg.proofreadWordsPath);
     const wordList = glossaryLib.publicGlossaryInfo(list);
@@ -2058,7 +2062,7 @@ function registerIpc() {
     let total = 0;
     let truncated = false;
     const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
-      const result = proofreadLib.proofreadText(text, limits, customEntries);
+      const result = proofreadLib.proofreadText(text, chapterOptions, customEntries);
       total += result.total;
       for (const rule of proofreadLib.RULE_ORDER) byRule[rule] += result.byRule[rule] || 0;
       if (result.total) {

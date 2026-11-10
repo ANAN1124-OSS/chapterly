@@ -1464,4 +1464,96 @@ module.exports = async function group46Proofread(t) {
     (await exec('window.__cwTest.exportDialogOpen()')) === false &&
       !(await fileExists(docxCancelPath))
   );
+
+  // 46m. 1.5.0 功能-2：六条规则 + 单条开关。
+  // 默认只关「中英间距」；关掉「省略号」后这一条命中归零、其余规则照旧；
+  // 打开「中英间距」后按边界报；全程只读（txt 字节 / mtime / 书目不变），开关不写配置。
+  await exec("window.__cwTest.newBook('校对规则开关测试书')");
+  await waitFor("window.__cwTest.view() === 'editor'");
+  const prBookPath = await exec('window.__cwTest.bookPathValue()');
+  await exec("window.__cwTest.renameChapterAt(0, '开关')");
+  const prText = '他说...然后走了--真的。\n他用iPhone手机。\n２０２４年１２月。';
+  await exec(`window.__cwTest.setText(${JSON.stringify(prText)})`);
+  await exec('window.__cwTest.save()');
+  await waitFor('window.__cwTest.dirty() === false');
+  const prMetaBefore = await storage.readBookMeta(prBookPath);
+  const prFile = prMetaBefore.chapters[0].file;
+  const prStatBefore = await fs.stat(path.join(prBookPath, prFile));
+  const prDiskBefore = await fs.readFile(path.join(prBookPath, prFile), 'utf8');
+  const prRuleToggle = (rule) =>
+    `document.querySelector('#proofread-rules .proofread-rule-toggle[data-rule="${rule}"]')`;
+
+  await exec('window.__cwTest.openProofreadPanel()');
+  await waitFor("window.__cwTest.proofreadSummary().includes('共 4 处可疑')");
+  const prStart = await exec('window.__cwTest.proofreadPayload()');
+  const prRows = await exec(
+    "Array.from(document.querySelectorAll('#proofread-rules .proofread-rule-toggle')).map((el) => el.dataset.rule + ':' + el.getAttribute('aria-pressed')).join(',')"
+  );
+  check(
+    '校对规则（1.5.0）：九条内置规则 + 词表共 10 行开关，默认只关「中英间距」',
+    prStart &&
+      prStart.byRule['ellipsis'] === 1 &&
+      prStart.byRule['dash'] === 1 &&
+      prStart.byRule['fullwidth-digit'] === 2 &&
+      prStart.byRule['cjk-latin-spacing'] === 0 &&
+      prStart.total === 4 &&
+      (await exec("document.querySelectorAll('#proofread-rules .proofread-rule-toggle').length")) === 10 &&
+      prRows ===
+        'halfwidth-punct:true,long-paragraph:true,repeat-word:true,punct-run:true,blank-lines:true,cjk-latin-spacing:false,ellipsis:true,dash:true,fullwidth-digit:true,custom-word:true' &&
+      (await exec(`${prRuleToggle('ellipsis')}.children[1].textContent`)) === '1' &&
+      (await exec(`${prRuleToggle('fullwidth-digit')}.children[1].textContent`)) === '2',
+    { rows: prRows, total: prStart && prStart.total }
+  );
+
+  // 关掉「省略号」：重跑后这一条归零，其余规则一条不少；文案 / aria 跟着变
+  await exec(`${prRuleToggle('ellipsis')}.click()`);
+  await waitFor("window.__cwTest.proofreadPayload().byRule['ellipsis'] === 0");
+  const prOff = await exec('window.__cwTest.proofreadPayload()');
+  check(
+    '校对规则（1.5.0）：关掉「省略号」后这一条归零、其它规则照旧，aria 与行内命中数同步',
+    prOff.byRule['ellipsis'] === 0 &&
+      prOff.byRule['dash'] === 1 &&
+      prOff.byRule['fullwidth-digit'] === 2 &&
+      prOff.total === 3 &&
+      (await exec(`${prRuleToggle('ellipsis')}.getAttribute('aria-pressed')`)) === 'false' &&
+      (await exec(`${prRuleToggle('ellipsis')}.classList.contains('off')`)) === true &&
+      (await exec(`${prRuleToggle('ellipsis')}.children[1].textContent`)) === '0',
+    { off: prOff && prOff.byRule }
+  );
+
+  // 打开「中英间距」（默认关）：按汉字↔拉丁字母边界报（「用i」「e手」两条）
+  await exec(`${prRuleToggle('cjk-latin-spacing')}.click()`);
+  await waitFor("window.__cwTest.proofreadPayload().byRule['cjk-latin-spacing'] === 2");
+  const prSpacing = await exec('window.__cwTest.proofreadPayload()');
+  check(
+    '校对规则（1.5.0）：打开「中英间距」后按边界报两条（汉字 ↔ 拉丁字母 / 数字）',
+    prSpacing.byRule['cjk-latin-spacing'] === 2 &&
+      prSpacing.total === 5 &&
+      (await exec(`${prRuleToggle('cjk-latin-spacing')}.getAttribute('aria-pressed')`)) === 'true',
+    { spacing: prSpacing && prSpacing.byRule }
+  );
+
+  // 收尾：把两条规则都恢复默认，别把会话状态带给后面的组
+  await exec(`${prRuleToggle('cjk-latin-spacing')}.click()`);
+  await waitFor("window.__cwTest.proofreadPayload().byRule['cjk-latin-spacing'] === 0");
+  await exec(`${prRuleToggle('ellipsis')}.click()`);
+  await waitFor("window.__cwTest.proofreadPayload().byRule['ellipsis'] === 1");
+  await exec('window.__cwTest.closeProofreadPanel()');
+  const prStatAfter = await fs.stat(path.join(prBookPath, prFile));
+  const prDiskAfter = await fs.readFile(path.join(prBookPath, prFile), 'utf8');
+  const prMetaAfter = await storage.readBookMeta(prBookPath);
+  const prCfg = JSON.parse(await fs.readFile(path.join(userData, 'config.json'), 'utf8'));
+  check(
+    '校对规则（1.5.0）：开关与重跑全程只读——txt 字节 / mtime / 书目 / config 都没有被写',
+    prStatAfter.size === prStatBefore.size &&
+      prStatAfter.mtimeMs === prStatBefore.mtimeMs &&
+      prDiskAfter === prDiskBefore &&
+      JSON.stringify(prMetaAfter.chapters) === JSON.stringify(prMetaBefore.chapters) &&
+      prCfg.proofreadRules === undefined &&
+      Object.keys(prCfg).filter((key) => /rule/i.test(key)).length === 0,
+    { keys: Object.keys(prCfg).filter((key) => /rule/i.test(key)) }
+  );
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.deleteBookByFolder('校对规则开关测试书', { skipConfirm: true })");
 };

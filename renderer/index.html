@@ -424,8 +424,9 @@
       <div class="proofread-scroll">
         <p class="modal-message">
           只把可疑的地方列出来，<strong>不改正文、不写盘</strong>：半角标点残留、超长段落、
-          同一个双字词在短距离内反复出现、连续标点、多余空行，以及<strong>你自己的校对词表</strong>
-          （错别字 / 禁用词，可选）。点任意一条会跳到正文对应位置，要不要改、怎么改都由你自己决定。
+          同一个双字词在短距离内反复出现、连续标点、多余空行、中英间距（默认关）、省略号、
+          破折号、全角数字，以及<strong>你自己的校对词表</strong>（错别字 / 禁用词，可选）。
+          点任意一条会跳到正文对应位置，要不要改、怎么改都由你自己决定。
         </p>
         <div class="sensitive-wordlist proofread-wordlist">
           <span id="proofread-wordlist-text" class="muted small">正在读取校对词表…</span>
@@ -442,13 +443,21 @@
           <button id="btn-proofread-run" class="btn ghost" type="button">开始校对</button>
           <span id="proofread-busy" class="muted small hidden">正在检查…</span>
         </div>
+        <!-- 1.5.0 功能-2：每条规则一行「开关 + 本次命中数」，点一下临时关掉；
+             开关只存内存（不写配置、不新增字段），重开应用回默认。 -->
+        <div class="proofread-rules" id="proofread-rules" role="group" aria-label="校对规则开关"></div>
+        <p class="muted small proofread-rules-note">
+          点一下规则可以临时关掉；开关只对本次会话有效，<strong>不写配置</strong>，重开应用恢复默认。
+        </p>
         <div class="proofread-summary" id="proofread-summary">
           打开面板会自动检查当前章；切成整本后点「开始校对」。
         </div>
         <div class="proofread-results" id="proofread-results"></div>
         <p class="muted small proofread-threshold">
           当前阈值：超长段落 500 字、重复用词 300 字内出现 3 次、连续标点 3 个及以上
-          （连排的「……」和「——」按一个标点算）。校对词表是可选的：每行一个词，也可以写
+          （连排的「……」和「——」按一个标点算）；省略号认 3 个及以上半角点或「。。。」，
+          破折号认「--」「---」和单个「—」，全角数字一整段报一条，中英间距按每个相邻边界报。
+          校对词表是可选的：每行一个词，也可以写
           <code>错词 → 建议</code>（箭头 <code>=&gt;</code> / <code>-&gt;</code> / <code>→</code> 都认），
           <code>#</code> 开头是注释；只做字面匹配、区分大小写，同一处重叠时只报最长的那个。
           当前章未保存的内容也参与检查，但不会写盘；整本检查只读磁盘，不改任何 txt 和
