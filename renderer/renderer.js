@@ -21,6 +21,9 @@
   // 卷章目录筛选的纯逻辑（2026-11-10 目录重设计）：标题 / 章名 / 章号的多词匹配，
   // 在 chapter-filter-logic.js 里、Node 单测覆盖；这里只负责把结果画进目录。
   const chapterFilterLogic = window.CWChapterFilterLogic;
+  // 章节多选的选择模型（1.5.0 功能-1）：toggle / extendTo / clear / isSelected / prune / idsInOrder
+  // 在 chapter-selection.js 里、Node 单测覆盖；这里只接线（状态放 state.selectedIds / selectAnchorId）。
+  const chapterSelectionLib = window.CWChapterSelection;
   // 查找增强（v0.8-11，提案 N11）的纯逻辑：上一处 / 下一处、高亮窗口、正文切片段、行号。
   // 在 find-logic.js 里、Node 单测覆盖；这里只负责选中、滚动和影子层显示。
   const findLogic = window.CWFindLogic;
@@ -329,6 +332,11 @@
     contextVolumeId: null, // 当前右键的卷（卷菜单用）
     collapsedVolumes: new Set(), // 折叠起来的卷（'' = 未分卷组；只记在内存里，换书重置）
     chapterFilter: '', // 卷章目录的筛选词（只记在内存里；换书 / 新建章时清空）
+    // 1.5.0 功能-1：章节多选（只记内存，不写书目 / 不写配置 / 不跨书）。
+    // selectedIds 是章节 id 的 Set；selectAnchorId 是 Shift 连选的起点（上次单击的章）。
+    selectedIds: new Set(),
+    selectAnchorId: null,
+    batchMenu: false, // 批量条打开的那张右键菜单（只显示能作用到全部已选章的动作）
     importing: false,
     sidebarWidth: 250,
     sidebarDragging: false,
@@ -1118,6 +1126,9 @@
     state.chapters = data.meta.chapters;
     state.collapsedVolumes = new Set(); // 换书重置折叠状态
     state.chapterFilter = ''; // 换书清空目录筛选（否则新书会带着上一本的筛选词，看起来像丢章）
+    state.selectedIds = new Set(); // 换书清空多选（1.5.0 功能-1：多选不跨书）
+    state.selectAnchorId = null;
+    state.batchMenu = false;
     state.dirty = false;
     state.saveError = null;
     state.baseText = '';
@@ -1670,6 +1681,8 @@
     list.addEventListener('pointerdown', (event) => {
       // ⋯ 只服务点击：不要在它上面起拖拽（老实现靠 stopPropagation 挡住）
       if (chapterMoreAt(event)) return;
+      // 1.5.0 功能-1：Ctrl / Shift 是「多选」，不是拖拽起手（否则一按就进拖拽、点击被 suppress）
+      if (event.ctrlKey || event.metaKey || event.shiftKey) return;
       const hit = chapterItemAt(event);
       if (!hit) return;
       // 委托后 event.currentTarget 是容器，拖拽要的条目元素显式传进去
@@ -1677,9 +1690,15 @@
     });
     list.addEventListener('click', (event) => {
       const hit = chapterItemAt(event);
-      if (!hit) return;
+      // 点列表空白：清空多选（没有多选时什么都不做，不拦其它行为）
+      if (!hit) {
+        clearChapterSelection();
+        return;
+      }
       const more = chapterMoreAt(event);
       if (more) {
+        // ⋯ 落在已选章上：菜单动作作用于全部已选；落在未选章上：先切成单选（与右键一致）
+        ensureChapterSelected(hit.index);
         const rect = more.getBoundingClientRect();
         showContextMenu({ clientX: rect.right - 4, clientY: rect.bottom - 2 }, hit.index);
         return;
@@ -1688,6 +1707,30 @@
         state.suppressChapterClick = 0;
         return; // 刚拖拽完，别把这次点击当成切章
       }
+      // Ctrl+单击：切换选中，不切章；Shift+单击：从 anchor 连到这一章，不切章（1.5.0 功能-1）
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        const id = chapterIdAt(hit.index);
+        if (id) setChapterSelection(chapterSelectionLib.toggle(chapterSelectionSnapshot(), id));
+        return;
+      }
+      if (event.shiftKey) {
+        event.preventDefault();
+        const id = chapterIdAt(hit.index);
+        if (id) {
+          setChapterSelection(
+            chapterSelectionLib.extendTo(
+              chapterSelectionSnapshot(),
+              chapterIdsInBookOrder(),
+              id,
+              currentChapterId()
+            )
+          );
+        }
+        return;
+      }
+      // 普通单击：清空多选 + 照旧切章
+      clearChapterSelection();
       void switchChapter(hit.index);
     });
     list.addEventListener('dblclick', (event) => {
@@ -1699,7 +1742,61 @@
       const hit = chapterItemAt(event);
       if (!hit) return;
       event.preventDefault();
+      // 落在已选章上：保留多选，菜单动作作用于全部已选；落在未选章上：先切成单选
+      ensureChapterSelected(hit.index);
       showContextMenu(event, hit.index);
+    });
+    // 键盘：Ctrl+Space 切换焦点章的多选（方向键仍由 list-keyboard.js 负责，互不抢键）。
+    // Shift+方向键扩选成本高，本批先不做（已记进进度日志）。
+    list.addEventListener('keydown', (event) => {
+      if (event.key !== ' ' || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      const hit = chapterItemAt(event);
+      if (!hit) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const id = chapterIdAt(hit.index);
+      if (id) setChapterSelection(chapterSelectionLib.toggle(chapterSelectionSnapshot(), id));
+    });
+  }
+
+  // 批量条「改状态 / 移卷」复用同一张右键菜单（只留能作用到全部已选章的动作）：
+// 这样不用为批量再写一套弹层 / 不用新增颜色和焦点管理，键盘通道（menu-keyboard）也直接继承。
+  function openBatchMenu(button, kind) {
+    const indexes = selectedChapterIndexes();
+    if (!indexes.length) return;
+    state.batchMenu = true;
+    const rect = button.getBoundingClientRect();
+    showContextMenu({ clientX: rect.left, clientY: rect.top - 6 }, indexes[0]);
+    if (kind === 'move') openVolumeChooserInMenu(-1);
+  }
+
+  function setupChapterBatchBar() {
+    const bar = $('chapter-batch-bar');
+    if (!bar) return;
+    bar.addEventListener('click', (event) => {
+      const btn = event.target.closest('button[id^="btn-batch-"]');
+      if (!btn) return;
+      if (btn.id === 'btn-batch-clear') {
+        clearChapterSelection();
+        return;
+      }
+      if (btn.id === 'btn-batch-copy') {
+        void copySelectedChapters();
+        return;
+      }
+      if (btn.id === 'btn-batch-export') {
+        exportSelectedChapters();
+        return;
+      }
+      if (btn.id === 'btn-batch-status') {
+        openBatchMenu(btn, 'status');
+        return;
+      }
+      if (btn.id === 'btn-batch-move') {
+        openBatchMenu(btn, 'move');
+        return;
+      }
+      if (btn.id === 'btn-batch-delete') void deleteSelectedChapters();
     });
   }
 
@@ -1819,6 +1916,94 @@
       .join('\n');
   }
 
+  // ---------- 章节多选（1.5.0 功能-1）----------
+  // 选择模型（四种点法 / anchor 失效回落 / 按目录顺序取已选）全在 renderer/chapter-selection.js，
+  // 这里只做三件事：把 state 里的 Set 交给纯函数算新值、把结果同步到 DOM（高亮 + 批量条）、
+  // 以及批量动作（删除 / 移到卷 / 改状态 / 导出 / 复制）。红线：多选只记内存，不写书目 / 配置 / 跨书。
+  function chapterSelectionSnapshot() {
+    return { ids: state.selectedIds, anchorId: state.selectAnchorId };
+  }
+
+  function chapterIdAt(index) {
+    const chapter = state.chapters[index];
+    return chapter && chapter.id != null ? String(chapter.id) : '';
+  }
+
+  function currentChapterId() {
+    return chapterIdAt(state.index);
+  }
+
+  function chapterIdsInBookOrder() {
+    return state.chapters.map((chapter) => (chapter && chapter.id != null ? String(chapter.id) : ''));
+  }
+
+  // 已选章节的**书内下标**（按目录顺序）：批量删除 / 移动 / 改状态 / 导出 / 复制都从这里取，
+  // 作者怎么点的都不影响执行顺序。
+  function selectedChapterIndexes() {
+    if (!state.selectedIds.size) return [];
+    const indexes = [];
+    state.chapters.forEach((chapter, index) => {
+      if (chapter && chapter.id != null && state.selectedIds.has(String(chapter.id))) indexes.push(index);
+    });
+    return indexes;
+  }
+
+  function syncChapterBatchBar() {
+    const count = state.selectedIds.size;
+    const bar = $('chapter-batch-bar');
+    if (bar) bar.classList.toggle('hidden', count === 0);
+    const countEl = $('chapter-batch-count');
+    if (countEl) countEl.textContent = `已选 ${count} 章`;
+  }
+
+  // 选择变化时只改条目上的两个标记（class + aria-selected），不重建整张列表：
+  // 千章书里 Ctrl+点一下不会让滚动位置跳走，也不会把当前章那一条重新滚进视口。
+  function syncChapterSelectionUi() {
+    const list = $('chapter-list');
+    if (list) {
+      for (const item of list.querySelectorAll('.chapter-item')) {
+        const id = item.dataset ? String(item.dataset.chapterId || '') : '';
+        const on = id !== '' && state.selectedIds.has(id);
+        item.classList.toggle('selected', on);
+        item.setAttribute('aria-selected', on ? 'true' : 'false');
+      }
+    }
+    syncChapterBatchBar();
+  }
+
+  function setChapterSelection(next) {
+    state.selectedIds = next.ids;
+    state.selectAnchorId = next.anchorId;
+    syncChapterSelectionUi();
+  }
+
+  // 返回是否真的清了（用来避免每次点空白都白跑一遍 DOM）
+  function clearChapterSelection() {
+    if (!state.selectedIds.size && state.selectAnchorId === null) return false;
+    state.selectedIds = new Set();
+    state.selectAnchorId = null;
+    syncChapterSelectionUi();
+    return true;
+  }
+
+  // 章节数组换了（删章 / 换书 / 保存后重建）以后收口：已不存在的 id / anchor 丢掉。
+  // 在 renderChapterList 建表**之前**跑，保证列表里不会出现一条指向已删章的高亮。
+  function pruneChapterSelection() {
+    const pruned = chapterSelectionLib.prune(chapterSelectionSnapshot(), chapterIdsInBookOrder());
+    if (pruned.ids.size !== state.selectedIds.size || pruned.anchorId !== state.selectAnchorId) {
+      state.selectedIds = pruned.ids;
+      state.selectAnchorId = pruned.anchorId;
+    }
+  }
+
+  // 右键 / ⋯ 落在未选中的章上：先把它切成单选（与资源管理器一致），再弹菜单。
+  function ensureChapterSelected(index) {
+    const id = chapterIdAt(index);
+    if (!id) return;
+    if (state.selectedIds.has(id)) return;
+    setChapterSelection({ ids: new Set([id]), anchorId: id });
+  }
+
   function makeChapterItem(chapter, index) {
     const status = chapterStatus(chapter);
     const note = chapterNote(chapter);
@@ -1826,6 +2011,7 @@
     const label = chapterListLabel(index, chapter.name);
     const item = document.createElement('div');
     item.className = `chapter-item status-${status}` + (index === state.index ? ' active' : '');
+    if (chapterSelectionLib.isSelected(chapterSelectionSnapshot(), chapter.id)) item.classList.add('selected');
     if (index === state.index && state.dirty) item.classList.add('dirty');
     item.dataset.index = String(index);
     item.dataset.status = status;
@@ -1838,6 +2024,11 @@
     item.tabIndex = index === state.index ? 0 : -1;
     item.setAttribute('role', 'button');
     item.setAttribute('aria-label', `打开${chapterTitle(index, chapter.name)}`);
+    // 多选是另一套标记（不和 .active 当前章互覆盖）：1.5.0 功能-1
+    item.setAttribute(
+      'aria-selected',
+      chapterSelectionLib.isSelected(chapterSelectionSnapshot(), chapter.id) ? 'true' : 'false'
+    );
 
     const dot = document.createElement('span');
     dot.className = 'chapter-status-dot';
@@ -1891,6 +2082,8 @@
 
   function renderChapterList() {
     markCommandsDirty(); // 章节列表是命令面板「章节」条目的源：这里一变就作废缓存（1.5.0 P0-6）
+    // 1.5.0 功能-1：建表前先把多选收口 —— 已删的章 / 换了书以后，选中集合里不能留下幽灵 id。
+    pruneChapterSelection();
     const list = $('chapter-list');
     // 先离线拼好整条列表，再一次性挂上去：千章书一次重建 1000 条时，逐条 appendChild
     // 会让容器反复失效（实测能省掉几毫秒）；配合 CSS 的 content-visibility，屏幕外的
@@ -1992,6 +2185,7 @@
       if (active) active.scrollIntoView({ block: 'nearest' });
     }
     syncChapterFilterUi();
+    syncChapterBatchBar();
     renderBookMeta();
     renderVolumeToggle();
     updateCurrentChapterPill();
@@ -2802,18 +2996,26 @@
   // 「确认」，所以改成菜单内联展开：菜单本来就有键盘通道（menu-keyboard 会把焦点带进第一条）。
   function openVolumeChooserInMenu(index) {
     const holder = $('context-menu-volumes');
-    const chapter = state.chapters[index];
+    // 1.5.0 功能-1：index < 0 = 批量条打开的菜单（作用于全部已选章）；否则按「这一章是否在多选里」判断
+    const batch = index < 0 || chapterMenuIsBatch(index);
+    const indexes = batch ? selectedChapterIndexes() : [index];
+    const chapter = state.chapters[indexes[0]];
     if (!holder || !chapter) return false;
     const currentVolume = chapterVolumeId(chapter);
     const volumes = volumeList();
     holder.textContent = '';
     const title = document.createElement('div');
     title.className = 'context-menu-label';
-    title.textContent = `把「${chapterTitle(index, chapter.name)}」移到`;
+    title.textContent =
+      batch && indexes.length > 1
+        ? `把选中的 ${indexes.length} 章移到`
+        : `把「${chapterTitle(indexes[0], chapter.name)}」移到`;
     holder.appendChild(title);
     let count = 0;
     for (const volume of volumes) {
-      if (!volume || volume.id === currentVolume) continue;
+      if (!volume) continue;
+      // 单章：当前卷不用再列；批量：全部卷都列（已在该卷里的章移动时自动跳过，只移动真正换卷的）
+      if (!batch && volume.id === currentVolume) continue;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.dataset.action = `move-volume:${volume.id}`;
@@ -2821,7 +3023,10 @@
       holder.appendChild(btn);
       count += 1;
     }
-    if (currentVolume) {
+    const anyInVolume = batch
+      ? indexes.some((at) => chapterVolumeId(state.chapters[at]))
+      : Boolean(currentVolume);
+    if (anyInVolume) {
       const back = document.createElement('button');
       back.type = 'button';
       back.dataset.action = 'move-volume:';
@@ -3060,6 +3265,287 @@
     return { ok: true, status: chapterStatus(state.chapters[index]), changed: res.changed };
   }
 
+  // ---------- 章节多选：批量动作（1.5.0 功能-1）----------
+  // 全部复用现有 IPC，不新增频道 / 字段：删除逐章 api.deleteChapter（收集 _trash 文件名 + 撤销凭证），
+  // 移到卷逐章 api.moveChapterToVolume，改状态逐章 api.updateChapterMeta，导出走现有范围对话框，
+  // 复制走 api.copyBook 的「选中章下标」可选参数（主进程按书名 / 章名 / 正文同一套格式拼接）。
+  // 破坏性动作只有一条撤销：一次恢复全部章 / 一次移回全部章（顺序见各函数里的注释）。
+  async function deleteSelectedChapters() {
+    if (!state.bookPath) return false;
+    const indexes = selectedChapterIndexes();
+    if (!indexes.length) return false;
+    // 只选了一章：复用单章删除（未保存拦截 / _trash / 撤销文案 / 焦点恢复全都不变）
+    if (indexes.length === 1) {
+      const deleted = await deleteChapterAt(indexes[0]);
+      if (deleted) clearChapterSelection();
+      return deleted;
+    }
+    const bookPath = state.bookPath;
+    const firstIndex = indexes[0];
+    const currentSelected = indexes.includes(state.index);
+    const keepCurrentId = currentSelected ? '' : currentChapterId();
+    // 「当前章有未保存修改」只问一次（和单章删除同一条拦截；批量里只问当前章，别的章没有编辑区内容）
+    if (currentSelected && state.dirty) {
+      const action = await askUnsaved({
+        title: '删除前先处理未保存的修改',
+        message:
+          `选中的章里有正在写的「${currentChapterLabel()}」，它还有未保存的修改。\n` +
+          '删除会把磁盘上的章节文件移到本书的 _trash，编辑区里还没保存的字不会跟着进去。',
+        saveLabel: '保存后删除',
+        discardLabel: '不保存，直接删除'
+      });
+      if (action === 'cancel') return false;
+      if (action === 'save') {
+        const saved = await saveCurrent();
+        if (!saved.ok) return false;
+      }
+    }
+    // 从后往前删：前面还没删的章下标不会被后来的删除挤动，收集到的 index 就是**原始位置**；
+    // 撤销时反过来从前往后按原下标插回，章序才和删除前一致。
+    const deleted = [];
+    let failed = null;
+    for (let n = indexes.length - 1; n >= 0; n -= 1) {
+      const index = indexes[n];
+      const chapter = state.chapters[index];
+      if (!chapter) continue;
+      const neighborBeforeId = index > 0 && state.chapters[index - 1] ? state.chapters[index - 1].id : '';
+      const neighborAfterId = state.chapters[index + 1] ? state.chapters[index + 1].id : '';
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const data = await call(api.deleteChapter, bookPath, chapter.id);
+        deleted.push({
+          chapter,
+          index,
+          trashName: String(data.trashPath || '').split(/[\\/]/).pop(),
+          undoToken: typeof data.undoToken === 'string' ? data.undoToken : '',
+          neighborBeforeId,
+          neighborAfterId,
+          newChapter: data.newChapter || null
+        });
+        applyMetaAndRelocate(data, currentSelected ? null : keepCurrentId);
+      } catch (err) {
+        failed = err;
+        break;
+      }
+    }
+    // 选中集合是一次性动作的上下文：执行完就收起（失败也收起，避免重试时重复删已删的章）
+    state.selectedIds = new Set();
+    state.selectAnchorId = null;
+    const missed = state.chapters.findIndex((chapter, index) => index === state.index && !chapter);
+    if (currentSelected) {
+      state.index = Math.min(firstIndex, Math.max(0, state.chapters.length - 1));
+      state.dirty = false;
+      await loadChapterAt(state.index);
+    } else if (missed >= 0 || !state.chapters[state.index]) {
+      // 当前章在书目里找不到了（极端情况：书目被外部改坏）：回第一处原下标，别停在一个空下标上
+      state.index = Math.min(firstIndex, Math.max(0, state.chapters.length - 1));
+      await loadChapterAt(state.index);
+    } else {
+      renderChapterList();
+      renderEditorHeader();
+      updateStatus();
+    }
+    syncChapterBatchBar();
+    if (deleted.length) {
+      activateBatchDeleteUndo(bookPath, deleted);
+      const suffix = failed ? `（有 ${indexes.length - deleted.length} 章没删成：${failed.message}）` : '，10 秒内可撤销';
+      toast(`已把 ${deleted.length} 章移到本书 _trash${suffix}`, failed ? 'warn' : undefined);
+    }
+    if (failed && !deleted.length) toast(`删除失败：${failed.message}`, 'error');
+    return deleted.length > 0;
+  }
+
+  // 批量删除的撤销：按删除的**逆序**（从前往后）逐章按原始下标插回，最后一条撤销动作即可全部找回。
+  // 顺序为什么是「从前往后」：删除是从后往前做的，原始下标在那一刻有效；倒过来插回才逐条落回原位。
+  function activateBatchDeleteUndo(bookPath, deleted) {
+    const count = deleted.length;
+    const ordered = deleted.slice().sort((a, b) => a.index - b.index);
+    undoUi.activate(`已删除 ${count} 章`, async () => {
+      if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+      await flushWriteTimer();
+      const keepId = currentChapterId();
+      let lastData = null;
+      for (const entry of ordered) {
+        const autoFile = entry.newChapter && entry.newChapter.file ? entry.newChapter.file : '';
+        const current = state.chapters[state.index];
+        // 删空自动补的空章：只在它还空着、编辑区也没动过它时一起收走（与单章撤销同一口径）
+        const canRemoveAuto = Boolean(autoFile) && !(state.dirty && current && current.file === autoFile);
+        // eslint-disable-next-line no-await-in-loop
+        lastData = await call(api.restoreDeletedChapter, bookPath, {
+          trashName: entry.trashName,
+          undoToken: entry.undoToken || '',
+          index: entry.index,
+          chapter: {
+            id: entry.chapter.id,
+            file: entry.chapter.file,
+            name: entry.chapter.name,
+            createdAt: entry.chapter.createdAt,
+            volumeId: entry.chapter.volumeId,
+            status: entry.chapter.status,
+            note: entry.chapter.note
+          },
+          autoChapterFile: canRemoveAuto ? autoFile : null
+        });
+        applyMetaAndRelocate(lastData, keepId || undefined);
+      }
+      const at = keepId ? state.chapters.findIndex((chapter) => chapter && String(chapter.id) === keepId) : -1;
+      renderChapterList();
+      renderEditorHeader();
+      if (at >= 0) {
+        state.index = at;
+        updateStatus();
+      } else {
+        // 当前停在「删除整本后自动补的空章」上，它已经被收走：回第一处原下标重新读一章
+        state.index = Math.min(ordered[0] ? ordered[0].index : 0, Math.max(0, state.chapters.length - 1));
+        await loadChapterAt(state.index);
+      }
+      toast(`已撤销删除：${count} 章已放回原位`);
+    });
+  }
+
+  async function moveSelectedChaptersToVolume(volumeId) {
+    if (!state.bookPath) return { ok: false };
+    const indexes = selectedChapterIndexes();
+    if (!indexes.length) return { ok: false };
+    if (indexes.length === 1) {
+      const res = await moveChapterToVolume(indexes[0], volumeId);
+      if (res && res.ok) clearChapterSelection();
+      return res;
+    }
+    const bookPath = state.bookPath;
+    const targetName = volumeDisplayName(volumeId);
+    const keepCurrentId = currentChapterId();
+    // 已经在目标卷里的章不动（否则只是给它们换顺序）：只移动真正换卷的那些
+    const moves = indexes
+      .map((index) => {
+        const chapter = state.chapters[index];
+        return {
+          chapter,
+          fromVolumeId: chapterVolumeId(chapter),
+          beforeId: state.chapters[index + 1] ? state.chapters[index + 1].id : null
+        };
+      })
+      .filter((move) => move.chapter && move.fromVolumeId !== (volumeId || null));
+    if (!moves.length) {
+      toast(`选中的章节已经在「${targetName}」里了`, 'warn');
+      return { ok: false };
+    }
+    const done = [];
+    let failed = null;
+    for (const move of moves) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const data = await call(api.moveChapterToVolume, bookPath, move.chapter.id, volumeId || null);
+        applyMetaAndRelocate(data, keepCurrentId);
+        done.push(move);
+      } catch (err) {
+        failed = err;
+        break;
+      }
+    }
+    state.selectedIds = new Set();
+    state.selectAnchorId = null;
+    renderChapterList();
+    renderEditorHeader();
+    updateStatus();
+    syncChapterBatchBar();
+    if (done.length) {
+      // 一条撤销：按原顺序逐条插回原来的下一章前面（跨卷移动撤销的同一口径）。
+      undoUi.activate(`已把 ${done.length} 章移到「${targetName}」`, async () => {
+        if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+        for (const move of done) {
+          const at = state.chapters.findIndex(
+            (chapter) => chapter && String(chapter.id) === String(move.chapter.id)
+          );
+          if (at < 0) throw new Error('有一章已经不在书里了');
+          // eslint-disable-next-line no-await-in-loop
+          const back = await moveChapterByDrop(state.chapters[at], {
+            volumeId: move.fromVolumeId,
+            beforeChapterId: move.beforeId
+          });
+          if (!back || back.ok !== true) throw new Error((back && back.message) || '移动没有生效');
+        }
+      });
+      toast(`已把 ${done.length} 章移到「${targetName}」`);
+    }
+    if (failed && !done.length) toast(`移动失败：${failed.message}`, 'error');
+    return { ok: done.length > 0 };
+  }
+
+  async function setSelectedChaptersStatus(status) {
+    const label = CHAPTER_STATUS_LABELS[status];
+    if (!label) return { ok: false };
+    const indexes = selectedChapterIndexes();
+    if (!indexes.length) return { ok: false };
+    if (indexes.length === 1) {
+      const res = await setChapterStatusAt(indexes[0], status);
+      clearChapterSelection();
+      return res;
+    }
+    const bookPath = state.bookPath;
+    let changed = 0;
+    let failed = 0;
+    for (const index of indexes) {
+      const chapter = state.chapters[index];
+      if (!chapter) continue;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const data = await call(api.updateChapterMeta, bookPath, chapter.id, { status });
+        applyMetaAndRelocate(data);
+        if (data.changed) changed += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    state.selectedIds = new Set();
+    state.selectAnchorId = null;
+    renderChapterList();
+    renderEditorHeader();
+    syncChapterBatchBar();
+    if (changed) toast(`已把 ${changed} 章标记为${label}（只改书目，正文没动）`);
+    else if (!failed) toast(`选中的章节本来就是${label}`);
+    if (failed) toast(`${failed} 章改状态失败`, 'error');
+    return { ok: changed > 0 || failed === 0, changed, failed };
+  }
+
+  // 导出选中章：只支持**连续范围**（与现有「第 X–Y 章」导出一致）。非连续时明确提示，不静默扩大。
+  function exportSelectedChapters() {
+    const indexes = selectedChapterIndexes();
+    if (!indexes.length) return;
+    const contiguous = indexes.every((value, i) => i === 0 || value === indexes[i - 1] + 1);
+    if (!contiguous) {
+      toast('导出只支持连续范围，请用 Shift 连选或改用范围导出', 'warn');
+      return;
+    }
+    openExportDialog('txt', { from: indexes[0] + 1, to: indexes[indexes.length - 1] + 1 });
+  }
+
+  // 复制选中章：主进程按目录顺序拼「标题 \r\n\r\n 正文」（与导出拼接格式一致），一次写剪贴板。
+  // 当前章有未保存内容时用编辑区文本（与导出 / 复制整本同一口径）；空选择不写。
+  async function copySelectedChapters() {
+    if (!state.bookPath) return null;
+    const indexes = selectedChapterIndexes();
+    if (!indexes.length) {
+      toast('先选章节再复制', 'warn');
+      return null;
+    }
+    const current = state.chapters[state.index];
+    const override =
+      state.dirty && indexes.includes(state.index) && current
+        ? { chapterId: current.id, text: editorEl.value }
+        : null;
+    try {
+      const data = await call(api.copyBook, state.bookPath, override, indexes);
+      const parts = [`${data.chapterCount} 章`, `${formatCount(Number(data.chars) || 0)} 字`];
+      if (data.includedUnsaved) parts.push('含当前章未保存内容');
+      toast(`已复制选中的章节（${parts.join(' · ')}）`);
+      return data;
+    } catch (err) {
+      toast(`复制失败：${err.message}`, 'error');
+      return null;
+    }
+  }
+
   async function editChapterNoteAt(index) {
     const chapter = state.chapters[index];
     if (!chapter) return null;
@@ -3159,6 +3645,8 @@
       findTotal: Number((state.find && state.find.total) || 0),
       // 撤销条（1.5.0 P0-4 / H-5）：最低优先级的一层 —— 只接 Esc，弹层开着时 Esc 仍先关弹层。
       undoBar: Boolean($('undo-bar') && !$('undo-bar').classList.contains('hidden')),
+      // 章节多选（1.5.0 功能-1）：排在撤销条之后、兜底之前；右键菜单开着时先收菜单。
+      chapterSelection: state.selectedIds.size > 0,
       // 右键菜单比撤销条更「在上面」：Esc 先收菜单，下一按才收条子。
       contextMenu: Boolean($('context-menu') && !$('context-menu').classList.contains('hidden')),
       tts: Boolean(state.tts && state.tts.open),
@@ -3213,6 +3701,8 @@
     'close-tts': () => closeTtsBar(),
     // 撤销条（1.5.0 P0-4 / H-5）：没有弹层 / 菜单 / 朗读 / 阅读 / 专注时，Esc 收起它并还焦点。
     'close-undo-bar': () => undoUi.dismiss(),
+    // 章节多选（1.5.0 功能-1）：只清多选，不切章、不收起别的面板（面板的 Esc 在更前面的层）。
+    'clear-chapter-selection': () => clearChapterSelection(),
     'exit-reading': () => exitReadingMode(),
     'exit-focus': () => setFocusMode(false),
     'hide-header-menus': () => hideHeaderMenus(),
@@ -3440,17 +3930,43 @@
     if (menu) menu.classList.add('hidden');
   }
 
+  // 1.5.0 功能-1：这张菜单是不是「批量菜单」——批量条打开的一定是；右键落在多选中的章上也是。
+  // 选中的章只有 1 章时仍走单章路径（文案 / 撤销 / 单章行为与 1.4.0 完全一致）。
+  function chapterMenuIsBatch(index) {
+    if (state.batchMenu) return true;
+    if (!Number.isInteger(index) || index < 0) return false;
+    if (state.selectedIds.size <= 1) return false;
+    const id = chapterIdAt(index);
+    return id !== '' && state.selectedIds.has(id);
+  }
+
+  // 只能作用在「一章」上的菜单动作：批量打开时收起（重命名 5 章同一个名字 / 给 5 章各插一章都不合理）
+  const CHAPTER_MENU_SINGLE_ACTIONS = ['rename', 'insert-before', 'insert-after', 'edit-note', 'copy-platform'];
+
   function showContextMenu(event, index) {
     state.contextIndex = index;
     const menu = $('context-menu');
+    const batch = chapterMenuIsBatch(index);
+    const selectedCount = state.selectedIds.size;
     // 当前状态的那一项前面打勾，避免记不清这章标的是什么
     const currentStatus = chapterStatus(state.chapters[index]);
     menu.querySelectorAll('button[data-action^="status-"]').forEach((btn) => {
       const status = btn.dataset.action.slice('status-'.length);
       const label = CHAPTER_STATUS_LABELS[status];
       if (!label) return;
-      btn.textContent = `${status === currentStatus ? '✓ ' : ''}标记为${label}`;
+      const suffix = batch ? `（${selectedCount} 章）` : '';
+      btn.textContent = `${status === currentStatus ? '✓ ' : ''}标记为${label}${suffix}`;
     });
+    // 单章动作在批量菜单里收起；打开单章菜单时恢复（上一次可能是批量打开的）
+    for (const action of CHAPTER_MENU_SINGLE_ACTIONS) {
+      menu.querySelectorAll(`button[data-action="${action}"]`).forEach((btn) => {
+        btn.classList.toggle('hidden', batch);
+      });
+    }
+    const deleteBtn = menu.querySelector('button[data-action="delete"]');
+    if (deleteBtn) {
+      deleteBtn.textContent = batch ? `删除选中的 ${selectedCount} 章（移到 _trash）` : '删除（移到 _trash）';
+    }
     // 「移到卷」展开的卷列表每次重新打开都收起（上一次的卷可能已经删了 / 改名了）
     const volumeHolder = $('context-menu-volumes');
     if (volumeHolder) {
@@ -3462,6 +3978,7 @@
 
   function hideContextMenu() {
     hideMenu('context-menu');
+    state.batchMenu = false;
   }
 
   function showVolumeMenu(event, volumeId) {
@@ -4346,25 +4863,34 @@
       if (!btn) return;
       const index = state.contextIndex;
       const action = btn.dataset.action;
+      // 1.5.0 功能-1：落在多选中的章上（或批量条打开的菜单）→ 批量动作。
+      // 单章动作（重命名 / 插入 / 备注 / 复制本章）在批量菜单里已经收起，只剩能作用到全部已选章的三类。
+      const batch = chapterMenuIsBatch(index);
       // 移到卷：点「移到卷…」**不关菜单**，直接在菜单里展开卷列表（1.4.0 P0-2：不再弹模态选择框；
       // 展开后由下面的 move-volume:<id> 分支执行，执行前才收菜单）。
       if (action === 'move-volume') {
-        openVolumeChooserInMenu(index);
+        openVolumeChooserInMenu(batch ? -1 : index);
         return;
       }
       hideContextMenu();
       if (action.startsWith('move-volume:')) {
         const volumeId = action.slice('move-volume:'.length) || null;
-        await moveChapterToVolume(index, volumeId);
+        if (batch) await moveSelectedChaptersToVolume(volumeId);
+        else await moveChapterToVolume(index, volumeId);
         return;
       }
       if (action === 'rename') await renameChapterAt(index);
-      else if (action === 'delete') await deleteChapterAt(index);
-      else if (action === 'insert-before') await createChapterAt(index);
+      else if (action === 'delete') {
+        if (batch) await deleteSelectedChapters();
+        else await deleteChapterAt(index);
+      } else if (action === 'insert-before') await createChapterAt(index);
       else if (action === 'insert-after') await createChapterAt(index + 1);
       else if (action === 'edit-note') await editChapterNoteAt(index);
       else if (action === 'copy-platform') await copyChapterPlatformFlow(index);
-      else if (action.startsWith('status-')) await setChapterStatusAt(index, action.slice('status-'.length));
+      else if (action.startsWith('status-')) {
+        if (batch) await setSelectedChaptersStatus(action.slice('status-'.length));
+        else await setChapterStatusAt(index, action.slice('status-'.length));
+      }
     });
 
     $('volume-menu').addEventListener('click', async (event) => {
@@ -4388,6 +4914,8 @@
     setupChapterDirectory();
     // 1.5.0 P0-2：章节条目的事件委托（整表重建不再逐条绑监听）
     setupChapterListEvents();
+    // 1.5.0 功能-1：多选批量条（选中 ≥1 章时出现）
+    setupChapterBatchBar();
 
     // 导入进度（大书库导入可能要几十秒，分章/复制逐项汇报）
     api.onImportProgress((progress) => {
@@ -4682,6 +5210,7 @@
       chapterTitle,
       chapterVolumeId,
       checkUpdate,
+      clearChapterSelection,
       clearFindSession,
       closeBookInfoDialog,
       closeConflictDialog,
@@ -4924,6 +5453,15 @@
       // 删完把焦点放回列表原位置，键盘用户不会掉回 body；编辑区不在这个容器里，Delete 删字不受影响。
       allowDelete: true,
       onDelete: (item, position) => {
+        // 1.5.0 功能-1：焦点章在多选里（且选了不止一章）→ Delete 删整批，只登记一条撤销
+        if (state.selectedIds.size > 1 && state.selectedIds.has(chapterIdAt(position))) {
+          void deleteSelectedChapters()
+            .then((deleted) => {
+              if (deleted) focusChapterAfterDelete(position);
+            })
+            .catch((err) => reportChainFailure('批量删除失败', err));
+          return;
+        }
         // B1（审计 E2）：删除失败不再静默（原来 .then 没有 .catch，焦点恢复那步永不执行）
         void deleteChapterAt(position)
           .then((deleted) => {
@@ -4931,7 +5469,11 @@
           })
           .catch((err) => reportChainFailure('删除这一章失败', err));
       },
-      onActivate: (item) => switchChapter(Number(item.dataset.index))
+      // 键盘 Enter / 空格 = 普通单击：清空多选再切章（与鼠标点一下同一口径）
+      onActivate: (item) => {
+        clearChapterSelection();
+        switchChapter(Number(item.dataset.index));
+      }
     });
     listKeyboard.install({
       container: $('book-grid'),

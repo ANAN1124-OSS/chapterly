@@ -365,11 +365,13 @@ test('静态闸门：组索引能单独 require（不依赖 Electron），组号
     // 2026-11-10：卷章目录重设计新增第 76 组，同样追加在尾部。
     '76-chapter-directory',
     // 2026-11-10：章号编号方式新增第 77 组，同样追加在尾部。
-    '77-chapter-numbering'
+    '77-chapter-numbering',
+    // 1.5.0 功能-1（2026-11-10）：章节多选 + 批量动作新增第 78 组，同样追加在尾部。
+    '78-chapter-selection'
   ];
-  const TAIL_IDS = [52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77];
-  assert.deepEqual(required.slice(-TAIL_FILES.length), TAIL_FILES, '尾部 26 组（52–77）的组文件与顺序不许变');
-  assert.deepEqual(ids.slice(-TAIL_IDS.length), TAIL_IDS, '尾部 26 组（52–77）的组号与顺序不许变');
+  const TAIL_IDS = [52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78];
+  assert.deepEqual(required.slice(-TAIL_FILES.length), TAIL_FILES, '尾部 27 组（52–78）的组文件与顺序不许变');
+  assert.deepEqual(ids.slice(-TAIL_IDS.length), TAIL_IDS, '尾部 27 组（52–78）的组号与顺序不许变');
   const headFiles = required.slice(0, -TAIL_FILES.length);
   const headIds = ids.slice(0, -TAIL_IDS.length);
   assert.equal(headFiles.length, headIds.length, '0–51 的组号与组文件必须一一对应');
@@ -383,7 +385,7 @@ test('静态闸门：组索引能单独 require（不依赖 Electron），组号
     );
   }
   // 场景尾部那一批：idsFrom(n) = 组号 ≥ n 的所有组（按注册顺序）。语义对所有 n 都成立，不写死切片。
-  for (const n of [0, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 71, 72, 73, 74, 75, 76, 77]) {
+  for (const n of [0, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 71, 72, 73, 74, 75, 76, 77, 78]) {
     assert.deepEqual(registry.idsFrom(n), ids.filter((id) => id >= n), `idsFrom(${n}) 语义不对`);
   }
 

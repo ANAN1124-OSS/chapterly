@@ -1249,6 +1249,64 @@ body.resizing .editor {
   /* 筛选空态用 \n 分两行：第一行说结果、第二行给动作，别让「关键词」被拦腰折断 */
   white-space: pre-line;
 }
+/* 1.5.0 功能-1：章节多选高亮（与 .active 当前章是两套：这里不碰 .active 的底色 / 左边强调线，
+ * 两者同时出现时用「内描边」把多选也标出来）。只用现有纸面令牌，夜间自动跟着走。 */
+.chapter-item.selected {
+  background: var(--folio-sunk);
+}
+.chapter-item.selected:hover { background: var(--folio-sunk); }
+.chapter-item.selected .chapter-name { color: var(--ink); }
+.chapter-item.selected .chapter-num,
+.chapter-item.selected .chapter-chars { color: var(--ink-soft); }
+/* 当前章 + 已多选：底色仍是当前章那一层，再补一圈细内描边（不与 ::before 的强调线打架） */
+.chapter-item.active.selected {
+  background: var(--folio-raised);
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+.chapter-item.active.selected:hover { background: var(--folio-raised); }
+/* 批量条：章节列表底部的 32px 工具条（选中 ≥1 章才出现）。
+ * 目标尺寸 ≥24px（WCAG 2.5.8），小字 + 两字按钮是为了 250px 宽的侧栏一排放得下六个动作；
+ * 完整动作名留在 aria-label / title 里。 */
+.chapter-batch-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 6px;
+  border-top: 1px solid var(--folio-line-soft);
+  background: var(--paper-soft);
+}
+.chapter-batch-count {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-family: var(--ui-font);
+  font-size: 10.5px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chapter-batch-btn {
+  flex: 0 0 auto;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: var(--ui-font);
+  font-size: 10.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chapter-batch-btn:hover { background: var(--hover-tint); color: var(--ink); }
+.chapter-batch-btn.danger-text { color: var(--danger) !important; }
+.chapter-batch-btn.danger-text:hover { background: var(--hover-tint); }
+
 /* 章行：状态点 / 章号 / 章名 / 字数四列。章号是等宽右对齐的数字列，方便纵向扫。
  * 行高 32px、含 contain-intrinsic-size（大书 content-visibility 跳过屏幕外条目）。 */
 .chapter-item {

@@ -212,7 +212,9 @@
   }
 
   // format = 'txt'（默认）| 'epub' | 'docx'：三个入口共用同一套范围选择，标题 / 说明跟着换。
-  function openExportDialog(format = 'txt') {
+  // preset（1.5.0 功能-1，可选）：{ from, to } 1-based 全书章节位置 —— 章节多选「导出选中章」用它
+  // 预选「第 X–Y 章」范围（多选只支持连续范围，非连续由调用方先提示，不静默扩大）。
+  function openExportDialog(format = 'txt', preset = null) {
     hideExportMenu();
     if (!state.bookPath) return;
     if (!state.chapters.length) {
@@ -242,6 +244,14 @@
     $('export-to').max = String(total);
     $('export-from').min = '1';
     $('export-to').min = '1';
+    // 1.5.0 功能-1：批量「导出选中章」预选范围（from/to 是 1-based 全书位置；越界由
+    // validateExportRange 在这里当场提示，不会静默改成别的范围）
+    if (preset && Number.isInteger(preset.from) && Number.isInteger(preset.to)) {
+      const rangeRadio = document.querySelector('input[name="export-scope"][value="range"]');
+      if (rangeRadio) rangeRadio.checked = true;
+      $('export-from').value = String(preset.from);
+      $('export-to').value = String(preset.to);
+    }
     // 重新打开时先清掉上一次的摘要 / 计划：否则「上次的 2 章」会先显示出来，
     // 作者手快按「导出…」时计划还没回来，会误报「所选范围里没有章节」。
     lastExportPlan = null;

@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   composeBook,
+  composeSelected,
   resolveExportRange,
   exportFileName,
   exportBuffer,
@@ -389,6 +390,33 @@ test('默认文件名：EPUB 复用同一套范围规则，只换后缀（v0.8 P
   assert.equal(exportFileName(meta, null, ''), '测试书.txt');
   assert.equal(exportFileName(meta, null, '  '), '测试书.txt');
   assert.equal(exportFileName(meta, null, '.txt'), '测试书.txt');
+});
+
+// 1.5.0 功能-1：复制选中章（可跳选）。格式 = 每块「标题 + 空行 + 正文」、块间一空行、末尾一个换行；
+// 顺序按传入下标（调用方按目录顺序清洗过），不按点击顺序；不含卷名行。
+test('composeSelected：只拼选中的章、按目录顺序、跳过卷名行', () => {
+  const meta = volumeMeta();
+  const texts = ['甲章正文\n', '乙章正文', '丙章正文\n\n', '丁章正文'];
+  const text = composeSelected(meta, texts, [3, 1]);
+  assert.equal(
+    text,
+    '第2章：甲\r\n\r\n乙章正文\r\n\r\n第4章：丙\r\n\r\n丁章正文\r\n'
+  );
+  assert.ok(!/第[1-4]卷/.test(text), '多选复制不带卷名行');
+  assert.ok(!/[^\r]\n/.test(text), '不应出现裸 \\n');
+  assert.ok(text.endsWith('\r\n'));
+});
+
+test('composeSelected：空正文只留标题、重复下标去重、坏下标丢掉、空选择返回空串', () => {
+  const meta = metaOf('起风', '夜雨', '归途');
+  assert.equal(composeSelected(meta, ['', '', ''], [0]), '第1章：起风\r\n');
+  assert.equal(
+    composeSelected(meta, ['甲', '乙'], [1, 1, 0]),
+    '第1章：起风\r\n\r\n甲\r\n\r\n第2章：夜雨\r\n\r\n乙\r\n'
+  );
+  assert.equal(composeSelected(meta, ['甲'], [-1, 3, 'x', null, undefined]), '');
+  assert.equal(composeSelected(meta, ['甲'], []), '');
+  assert.equal(composeSelected(meta, null, [0]), '第1章：起风\r\n', '正文缺失按空章处理');
 });
 
 test('导出预览字数缓存：合法非负数直接用，缺失 / 坏值返回 null（F3）', () => {

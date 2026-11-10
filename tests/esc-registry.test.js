@@ -77,6 +77,7 @@ test('顺序闸门：Esc 链的层顺序 = 优先级（通用询问框 → 弹�
       'reading',
       'focus',
       'undo-bar',
+      'chapter-selection',
       'fallback'
     ],
     '层顺序就是优先级：改顺序等于改行为，必须在这里显式看到'
@@ -188,6 +189,35 @@ test('菜单层：整理卡 / 显示菜单收起并归还焦点；菜单层在�
   assert.equal(esc.resolve(probeOpen('formatCard', 'proofread'), 'Escape').action, 'close-header-menus');
   assert.equal(esc.resolve(probeOpen('formatCard', 'sensitive'), 'Escape').action, 'close-header-menus');
   assert.equal(esc.resolve(probeOpen('formatCard', 'fragment'), 'Escape').action, 'close-header-menus');
+});
+
+test('章节多选层（1.5.0 功能-1）：Esc 清空多选；排在撤销条之后、兜底之前，不锁键', () => {
+  assert.deepEqual(esc.resolve({ chapterSelection: true }, 'Escape'), {
+    layer: 'chapter-selection',
+    key: 'Escape',
+    action: 'clear-chapter-selection',
+    preventDefault: true,
+    swallow: false
+  });
+  // 不锁键：其它键继续往下走（Ctrl+S 保存、Ctrl+K 命令面板、F11 专注都不受影响）
+  for (const key of ['s', 'k', 'F11', 'Enter', 'Tab']) {
+    assert.equal(esc.resolve({ chapterSelection: true }, key), null, `多选时 ${key} 必须继续往下走`);
+  }
+  // 弹层 / 面板 / 菜单都比多选更「在上面」：Esc 先关它们，多选留着
+  assert.equal(esc.resolve({ chapterSelection: true, settings: true }, 'Escape').layer, 'settings');
+  assert.equal(esc.resolve({ chapterSelection: true, find: true }, 'Escape').layer, 'find');
+  assert.equal(esc.resolve({ chapterSelection: true, formatCard: true }, 'Escape').layer, 'menus');
+  assert.equal(esc.resolve({ chapterSelection: true, reading: true }, 'Escape').layer, 'reading');
+  // 撤销条在多选之前：一按 Esc 先收撤销条，下一按才清多选
+  assert.equal(esc.resolve({ chapterSelection: true, undoBar: true }, 'Escape').layer, 'undo-bar');
+  // 右键菜单比多选更「在上面」：先收菜单（兜底层），第二按才清多选
+  assert.deepEqual(esc.resolve({ chapterSelection: true, contextMenu: true }, 'Escape'), {
+    layer: 'fallback',
+    key: 'Escape',
+    action: 'hide-menus',
+    preventDefault: false,
+    swallow: false
+  });
 });
 
 test('撤销条层（1.5.0 P0-4 / H-5）：最低优先级、只接 Esc、不锁键；弹层开着时先关弹层', () => {

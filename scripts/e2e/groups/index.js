@@ -96,7 +96,9 @@ const groups = [
   // 卷章目录重设计（2026-11-10）：筛选 / 卷头吸顶 / 全部折叠 / 回到当前章；idsFrom(60) 自动带上。
   { id: 76, run: require('./76-chapter-directory') },
   // 章号编号方式（2026-11-10）：全书连续 / 每卷重新编号；idsFrom(60) 自动带上。
-  { id: 77, run: require('./77-chapter-numbering') }
+  { id: 77, run: require('./77-chapter-numbering') },
+  // 章节多选 + 批量动作（1.5.0 功能-1）：Ctrl / Shift / Esc / 批量删移改导复；idsFrom(60) 自动带上。
+  { id: 78, run: require('./78-chapter-selection') }
 ];
 
 // 按给定组号依次跑（组号 → 组文件；顺序就是参数顺序，调用点决定「在哪一段」）。

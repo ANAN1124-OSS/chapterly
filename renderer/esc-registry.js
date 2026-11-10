@@ -43,6 +43,7 @@
   //   fragment / fragments / proofread / sensitive  灵感箱 / 插入碎片 / 校对 / 敏感词
   //   tts / reading / focus  朗读条开着 / 阅读模式 / 专注模式
   //   undoBar            左下角撤销条可见（1.5.0 P0-4：最低优先级的一层，只接 Esc）
+  //   chapterSelection   章节列表有多选（1.5.0 功能-1：只接 Esc，排在撤销条之后）
   //   contextMenu        右键菜单开着（比撤销条更「在上面」：Esc 先收菜单）
   //
   // 层的两种形态：
@@ -104,6 +105,14 @@
     //     所以「只在没有任何弹层开着时生效」是层序给的结果，不需要往锁层里加东西。
     //     右键菜单开着时让给兜底层（先收菜单、条子留着），下一按 Esc 才收条子 —— 菜单比条子更「在上面」。
     { id: 'undo-bar', open: (p) => Boolean(p.undoBar) && !p.contextMenu, esc: 'close-undo-bar' },
+    // ⑨c 章节多选（1.5.0 功能-1）：点空白会清空，Esc 在没有弹层 / 菜单时也清空。
+    //     排在撤销条之后、兜底之前：右键菜单开着时第一下 Esc 先收菜单（让给兜底层），下一按才清多选；
+//     弹层开着时 Esc 仍先关弹层，多选不受影响。
+    {
+      id: 'chapter-selection',
+      open: (p) => Boolean(p.chapterSelection) && !p.contextMenu,
+      esc: 'clear-chapter-selection'
+    },
     // ⑩ 兜底：右键菜单 / 顶栏菜单收起。**不 preventDefault**（改前最后那个 else if 就是这么写的）
     { id: 'fallback', open: () => true, esc: 'hide-menus', preventDefault: false }
   ];

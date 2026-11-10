@@ -351,6 +351,26 @@ test('全书查找 / 替换的 options：非对象按默认，坏字段类型拒
   );
 });
 
+test('复制选中章的下标（1.5.0 功能-1）：不是数组 = 整本；数组 = 清洗后按目录升序；空数组仍是空', () => {
+  // 没传 / 坏形状 = 旧行为（整本复制），不能把「不是数组」当成「选了 0 章」而丢内容
+  assert.equal(ipcLimits.sanitizeChapterIndexes(null, { total: 5 }), null);
+  assert.equal(ipcLimits.sanitizeChapterIndexes(undefined, { total: 5 }), null);
+  assert.equal(ipcLimits.sanitizeChapterIndexes('0,1', { total: 5 }), null);
+  assert.equal(ipcLimits.sanitizeChapterIndexes({ 0: 1 }, { total: 5 }), null);
+  // 数字 / 纯数字字符串都收；负数 / 越界 / 小数按整数截断 / 坏串丢掉；去重 + 升序
+  assert.deepEqual(ipcLimits.sanitizeChapterIndexes([3, 1, 1, '2'], { total: 5 }), [1, 2, 3]);
+  assert.deepEqual(ipcLimits.sanitizeChapterIndexes([-1, 5, 2, 'x', '', null, undefined, true], { total: 5 }), [2]);
+  assert.deepEqual(ipcLimits.sanitizeChapterIndexes([2.9, '04'], { total: 5 }), [2, 4]);
+  // 空数组 = 什么都不复制（调用方据此回 empty，不写剪贴板），绝不退化成整本
+  assert.deepEqual(ipcLimits.sanitizeChapterIndexes([], { total: 5 }), []);
+  // 空书 / 坏 total：任何下标都越界
+  assert.deepEqual(ipcLimits.sanitizeChapterIndexes([0, 1], { total: 0 }), []);
+  assert.deepEqual(ipcLimits.sanitizeChapterIndexes([0, 1], { total: 'x' }), []);
+  // 上限：与章节列表同一数量级，超出部分不无限吃内存
+  const many = Array.from({ length: ipcLimits.MAX_CHAPTER_ITEMS + 10 }, (_, i) => i);
+  assert.equal(ipcLimits.sanitizeChapterIndexes(many, { total: ipcLimits.MAX_CHAPTER_ITEMS + 10 }).length, ipcLimits.MAX_CHAPTER_ITEMS);
+});
+
 test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-limits.js', () => {
   assert.match(MAIN_SOURCE, /const ipcLimits = require\('\.\/core\/ipc-limits'\);/);
   // 正文类频道：必须先 assertText（内部含 500 万字上限）
@@ -433,6 +453,22 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
   for (const channel of ['book:copy', 'chapter:copy-platform', 'book:proofread', 'book:sensitive-check']) {
     assert.ok(bodyOf(channel).includes('sanitizeOverride('), `${channel} 必须清洗 override / ref`);
   }
+  // 1.5.0 功能-1：book:copy 的可选第三参数（复制选中章的下标）必须过 sanitizeChapterIndexes，
+  // 且空数组要直接回 empty（不能把空选择当整本复制）
+  assert.ok(
+    /ipcLimits\.sanitizeChapterIndexes\(indexes,\s*\{\s*total:\s*meta\.chapters\.length\s*\}\)/.test(
+      bodyOf('book:copy')
+    ),
+    'book:copy 的 indexes 必须清洗'
+  );
+  assert.ok(
+    /if \(selected && !selected\.length\) \{[\s\S]*?empty: true[\s\S]*?\}/.test(bodyOf('book:copy')),
+    'book:copy 传空数组时必须早退回 empty（不写剪贴板）'
+  );
+  assert.ok(
+    bodyOf('book:copy').includes('exporter.composeSelected('),
+    'book:copy 的选中章要用 composeSelected 拼接'
+  );
   assert.ok(bodyOf('book:export-plan').includes('sanitizeRange('), 'book:export-plan 必须清洗 range');
   assert.ok(
     /const safeRange = ipcLimits\.sanitizeRange\(range\);/.test(bodyOf('book:export-plan')),

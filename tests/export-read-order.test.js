@@ -74,11 +74,12 @@ test('静态闸门：三个导出入口都在保存对话框确认之后才读�
 });
 
 test('静态闸门：book:copy 不走保存对话框，保持原样直接读（#7 只动导出三入口）', () => {
-  const body = sliceFrom(MAIN, "  handleBook('book:copy', async (bookPath, override) => {");
+  // 1.5.0 功能-1 起多了可选第三参数 indexes（只复制选中的章）；签名随行为一起更新。
+  const body = sliceFrom(MAIN, "  handleBook('book:copy', async (bookPath, override, indexes) => {");
   assert.doesNotMatch(body, /showSaveDialog/, '复制整本不该弹保存对话框');
   assert.match(
     body,
-    /collectExportTexts\(bookPath, meta, safeOverride\)/,
-    'book:copy 保持原来的直接读取'
+    /collectExportTexts\(bookPath, meta, safeOverride, selected\)/,
+    'book:copy 保持原来的直接读取（只把可选的下标集合传下去）'
   );
 });

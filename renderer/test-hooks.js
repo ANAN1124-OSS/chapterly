@@ -30,6 +30,7 @@
       applySidebarWidth, backToShelf, calendarSummaryText, call, canUndoFormat, caretColorLib,
       captureUi,
       caretColorValue, chapterNote, chapterStatus, chapterTitle, chapterVolumeId, checkUpdate,
+      clearChapterSelection,
       commandPalette, openCommandPalette,
       clearFindSession, closeBookInfoDialog, closeConflictDialog, closeFindPanel, closeFragmentDialog,
       closeHistoryDialog, closeHistoryPreview, closeInsertFragmentDialog, closeJumpDialog,
@@ -209,6 +210,25 @@
           emptyKind: empty ? empty.dataset.emptyKind || '' : ''
         };
       },
+      // 章节多选（1.5.0 功能-1）：只照实读 state / DOM（不另存一份），E2E 用它核「点了哪几章 / 条子出没出来」。
+      chapterSelection: () => {
+        const bar = $('chapter-batch-bar');
+        const countEl = $('chapter-batch-count');
+        const items = qsa('#chapter-list .chapter-item');
+        const marked = items
+          .filter((el) => el.classList.contains('selected'))
+          .map((el) => Number(el.dataset.index));
+        return {
+          ids: Array.from(state.selectedIds),
+          anchorId: state.selectAnchorId,
+          count: state.selectedIds.size,
+          barVisible: Boolean(bar && !bar.classList.contains('hidden')),
+          countText: countEl ? countEl.textContent : '',
+          markedIndexes: marked,
+          ariaSelected: items.map((el) => el.getAttribute('aria-selected'))
+        };
+      },
+      clearChapterSelection: () => clearChapterSelection(),
       chapterFiles: () => state.chapters.map((c) => c.file),
       // 章节状态 / 备注
       chapterStatuses: () => state.chapters.map((c) => chapterStatus(c)),

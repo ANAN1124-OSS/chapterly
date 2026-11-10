@@ -160,6 +160,28 @@ function sanitizeRange(range) {
   return { mode, from: toNumber(range.from), to: toNumber(range.to), volumeId };
 }
 
+// 1.5.0 功能-1：复制选中章（book:copy 的可选第三参数）。
+// 口径：不是数组 = 没传 = 整本复制（旧行为，逐字节不变）；数组 = 只复制这些下标，
+//   · 数字 / 纯数字字符串都收，非整数 / 负数 / 越界（>= total）/ 非数字一律丢掉；
+//   · 去重、升序（复制顺序按目录，不按点击）；
+//   · 最多 20000 条（与 Ctrl+G 的章节列表上限同一数量级）；
+//   · 传了空数组 = 什么都不复制（主进程直接回 empty，绝不把空数组当「整本」）。
+function sanitizeChapterIndexes(indexes, { total = 0 } = {}) {
+  if (!Array.isArray(indexes)) return null;
+  const limit = Number.isFinite(total) && total > 0 ? Math.floor(total) : 0;
+  const picked = [];
+  for (const raw of indexes) {
+    if (picked.length >= MAX_CHAPTER_ITEMS) break;
+    const value = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
+    if (!Number.isFinite(value)) continue;
+    const index = Math.floor(value);
+    if (index < 0 || index >= limit) continue;
+    if (picked.indexOf(index) < 0) picked.push(index);
+  }
+  picked.sort((a, b) => a - b);
+  return picked;
+}
+
 // Ctrl+G 章节列表：非数组照旧报 BAD_CHAPTERS（文案不变）；超过 20000 条只看前 20000 条；
 // 每条只留 id / name（jump.js 只用这两个字段），章名限长，坏条目变成 null（jump.js 会跳过）。
 function sanitizeChapterList(chapters, { max = MAX_CHAPTER_ITEMS } = {}) {
@@ -308,6 +330,7 @@ module.exports = {
   assertReplaceOutput,
   sanitizeOverride,
   sanitizeRange,
+  sanitizeChapterIndexes,
   sanitizeChapterList,
   sanitizeRestorePayload,
   sanitizeSearchOptions,

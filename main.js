@@ -2442,13 +2442,23 @@ function registerIpc() {
     return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, plan);
   });
 
-  handleBook('book:copy', async (bookPath, override) => {
+  handleBook('book:copy', async (bookPath, override, indexes) => {
     const meta = await storage.readBookMeta(bookPath);
     const safeOverride = ipcLimits.sanitizeOverride(override);
-    const { texts, chars, includedUnsaved } = await collectExportTexts(bookPath, meta, safeOverride);
-    const text = exporter.composeBook(meta, texts);
+    // 1.5.0 功能-1：可选第三参数 = 只复制这些章（章节多选「复制选中章」）。
+    // 没传 = 整本复制，行为与 1.4.0 逐字节一致；传了空数组 = 什么都不写（不拿空数组当整本）。
+    const selected = ipcLimits.sanitizeChapterIndexes(indexes, { total: meta.chapters.length });
+    if (selected && !selected.length) {
+      return { chapterCount: 0, chars: 0, includedUnsaved: false, empty: true };
+    }
+    const { texts, chars, includedUnsaved } = await collectExportTexts(bookPath, meta, safeOverride, selected);
+    const text = selected ? exporter.composeSelected(meta, texts, selected) : exporter.composeBook(meta, texts);
     await activeClipboard.writeText(text);
-    return { chapterCount: meta.chapters.length, chars, includedUnsaved };
+    return {
+      chapterCount: selected ? selected.length : meta.chapters.length,
+      chars,
+      includedUnsaved
+    };
   });
 
   // 复制本章（平台格式）：只取这一章的正文，段首缩进两个全角空格、段间空一行（空行也带缩进），

@@ -150,6 +150,32 @@ function composeBook(meta, texts, range) {
   return `${blocks.join('\r\n\r\n')}\r\n`;
 }
 
+// 1.5.0 功能-1：复制**选中章**（可跳选）。格式与 composeBook 的章节块一致（标题 + 空行 + 正文，
+// 块之间空一行、末尾一个换行），但只按传入的下标拼，没有卷名行（多选复制是「把这几章正文拿走」，
+// 不是整本导出）。indexes 由调用方（主进程）先按书目长度清洗过；这里仍做一次防御性过滤 + 去重 + 排序，
+// 保证「按目录顺序，不是点击顺序」。
+function composeSelected(meta, texts, indexes) {
+  const chapters = chapterList(meta);
+  const picked = [];
+  for (const raw of Array.isArray(indexes) ? indexes : []) {
+    // 只认数字 / 非空纯数字字符串：null / undefined / '' 交给 Number 会变成 0（那会悄悄多复制第 1 章）
+    const value =
+      typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
+    if (!Number.isFinite(value)) continue;
+    const index = Math.floor(value);
+    if (index < 0 || index >= chapters.length) continue;
+    if (picked.indexOf(index) < 0) picked.push(index);
+  }
+  picked.sort((a, b) => a - b);
+  if (!picked.length) return '';
+  const blocks = picked.map((index) => {
+    const chapter = chapters[index];
+    const title = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
+    return blockFor(title, Array.isArray(texts) ? texts[index] : '');
+  });
+  return `${blocks.join('\r\n\r\n')}\r\n`;
+}
+
 // 导出文件用：UTF-8 带 BOM，方便记事本等老工具识别
 function exportBufferFromText(text) {
   return Buffer.from(`${BOM}${String(text == null ? '' : text)}`, 'utf8');
@@ -250,6 +276,7 @@ function resolveExportDir(remembered, fallback, exists) {
 module.exports = {
   BOM,
   composeBook,
+  composeSelected,
   resolveExportRange,
   exportFileName,
   exportBuffer,
