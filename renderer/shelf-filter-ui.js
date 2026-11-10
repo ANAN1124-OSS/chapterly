@@ -268,7 +268,10 @@
       parts.push(
         `正文命中 ${contentMatchTotal(meta)} 处（显示 ${shown} 条）` +
           (meta.truncated ? ' · 只查了最近的一部分书' : '') +
-          ` · 已查 ${meta.scannedBooks}/${meta.candidateBooks} 本`
+          ` · 已查 ${meta.scannedBooks}/${meta.candidateBooks} 本` +
+          // 功能-5（2026-11-11）：书架不读每本书的编号设置，这里的章号一律按全书顺序；
+          // 书设为按卷编号时写作页显示的是卷内号 —— 只写清已知差异，不改显示语义。
+          ' · 章号按全书顺序显示（书设为「每卷重新编号」时，写作页显示的是卷内号，两处不同）'
       );
     } else if (meta) {
       parts.push(

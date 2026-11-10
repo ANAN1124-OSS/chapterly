@@ -327,7 +327,7 @@ test('renderShelfContent：结果行 DOM（书名 / 章名 / 高亮片段 / 省�
   });
   withDom(ctx.dom, () => ctx.ui.renderShelfContent());
   const summary = ctx.dom.$('shelf-content-summary').textContent;
-  assert.match(summary, /^正文命中 3 处（显示 2 条） · 只查了最近的一部分书 · 已查 3\/5 本$/);
+  assert.match(summary, /^正文命中 3 处（显示 2 条） · 只查了最近的一部分书 · 已查 3\/5 本 · 章号按全书顺序显示（书设为「每卷重新编号」时，写作页显示的是卷内号，两处不同）$/);
 
   const list = ctx.dom.$('shelf-content-list');
   assert.equal(list.children.length, 2);

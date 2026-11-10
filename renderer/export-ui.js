@@ -234,8 +234,10 @@
     if (numberingHint) {
       const byVolume = Boolean(state.meta && state.meta.chapterNumbering === 'volume');
       numberingHint.classList.toggle('hidden', !byVolume);
+      // 功能-5（2026-11-11）：只把已知差异写清——范围输入按全书顺序，和写作页的卷内号不同；
+      // 导出文件里的章标题才按各卷自己的章号。不改任何范围计算 / 导出语义。
       numberingHint.textContent = byVolume
-        ? '这本书按卷编号：「第 X 章到第 Y 章」按全书章节顺序计算；导出文件里的章标题用各卷自己的章号。'
+        ? '这本书按卷编号：「第 X 章到第 Y 章」按全书章节顺序计算（填的是全书第几章，不是写作页目录里的卷内号）；导出文件里的章标题用各卷自己的章号。'
         : '';
     }
     $('export-from').value = '1';
