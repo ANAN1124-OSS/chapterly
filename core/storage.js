@@ -907,10 +907,15 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     if (autoChapter) {
       autoTrashPath = await moveToTrash(bookPath, autoChapter.file);
     }
+    // 1.5.0 P0-3（审计 E3）：章名是 书目.json 里唯一会原样透传的自由文本（status / note 由
+    // cleanChapterMeta 清洗，createdAt / volumeId 是短标识）。撤销的 name 来自渲染层，写回前按建章同一套
+    // 规则过一遍 chaptersLib.safeName：非法字符 / 控制字符去掉、超长夹到 40 字、Windows 保留名加安全后缀。
+    // 空名（含只有空白）保持空串 —— 「空名 = 未命名」是显示口径，不能凭空给作者改出一个新章名。
+    const rawName = typeof rawChapter.name === 'string' ? rawChapter.name : '';
     const restored = chaptersLib.cleanChapterMeta({
       id,
       file,
-      name: typeof rawChapter.name === 'string' ? rawChapter.name : '',
+      name: rawName.trim() ? chaptersLib.safeName(rawName) : '',
       createdAt:
         typeof rawChapter.createdAt === 'string' && rawChapter.createdAt ? rawChapter.createdAt : nowIso(),
       status: rawChapter.status,

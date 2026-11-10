@@ -5,12 +5,18 @@
 //   2. 删空自动补章：补章仍空着才一并撤掉；作者往补章里写过字就保留（宁可多一章，不静默丢字）；
 //   3. 路径安全：只认本书 _trash 下的 basename，绝对路径 / 目录穿越 / 别的文件名一律拒绝；
 //   4. 失败不破坏现场：目标已存在 / 备份不在 / id 重复都报错，书文件夹与 _trash 一个字节不动。
+// 1.5.0 P0-3（审计 E3 / O-8）起再加两件：
+//   5. 章名写回前按建章规则清洗（chaptersLib.safeName：非法 / 控制字符、40 字上限、保留名），空名保持空串；
+//   6. 主进程真实形状（sanitizeRestorePayload → storage）：坏 payload 在校验层被拒、零副作用，
+//      正常 payload 附带的未知字段被白名单丢掉后照旧撤销。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
+const chapters = require('../core/chapters');
+const ipcLimits = require('../core/ipc-limits');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -244,4 +250,101 @@ test('撤销删除：index 越界按夹取处理（不会插到不存在的位�
     chapter
   });
   assert.equal(restored.index, restored.meta.chapters.length - 1);
+});
+
+// ---------- 1.5.0 P0-3（审计 E3 / O-8）：章名清洗 + payload 白名单 ----------
+//
+// 主进程里 chapter:restore-deleted = sanitizeRestorePayload(payload) → storage 的两段式；
+// 这里用同一个形状跑（不需要起 Electron），既证明「正常撤销照旧」，也证明「坏 payload 一个字节都不写」。
+
+// 与 main.js 的 handleBook('chapter:restore-deleted') 同形：先白名单，再下传 storage。
+// （main.js 的 handler 是 async，校验层的同步抛错在那里会变成 rejected promise，交给 fail()；
+//  这里同样用 async 包一层，测试口径与真实 IPC 一致。）
+const restoreThroughIpc = async (bookPath, payload) =>
+  storage.restoreDeletedChapterFromTrash(bookPath, ipcLimits.sanitizeRestorePayload(payload));
+
+async function snapshotBook(bookPath) {
+  return {
+    entries: (await fs.readdir(bookPath)).sort(),
+    meta: await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'),
+    trash: (await fs.readdir(path.join(bookPath, '_trash'))).sort()
+  };
+}
+
+test('撤销删除：章名写回前按建章规则清洗（超长夹到 40 字 / 非法与控制字符去掉 / 空名保持空）', async () => {
+  const root = await mkTmp();
+  const { bookPath, meta } = await makeBook(root);
+  const chapter = snapshot(meta, 1);
+  const file1 = chapter.file;
+  const deleted = await storage.deleteChapter(bookPath, chapter.id);
+  const trashName = path.basename(deleted.trashPath);
+
+  // 目录穿越片段 + 60 个「夜」+ Windows 非法字符 + 控制字符：这一串绝不能原样进 书目.json
+  const dirty = `../${'夜'.repeat(60)}\u0000\u0007a:b*c?d"e<f>g|h/i\\j`;
+  const restored = await restoreThroughIpc(bookPath, { trashName, index: 1, chapter: { ...chapter, name: dirty } });
+  assert.equal(restored.chapter.file, file1, '章节文件名不变');
+  assert.equal(restored.chapter.name, chapters.safeName(dirty), '写回的是 safeName 的清洗结果');
+  assert.equal(restored.chapter.name.length, 40, '超长章名夹到 40 字');
+  assert.equal(/[\\/:*?"<>|\u0000-\u001f]/.test(restored.chapter.name), false, '非法 / 控制字符被清掉');
+  const after = await storage.readBookMeta(bookPath);
+  assert.deepEqual(after.chapters.map((c) => c.file), meta.chapters.map((c) => c.file), '位置不变');
+  assert.equal(after.chapters[1].name, restored.chapter.name, '书目里存的就是清洗后的名字');
+
+  // 空名（含只有空白）保持空串：撤销是恢复原状，不能凭空把「未命名」写成章名
+  const first = after.chapters[0];
+  const deletedAgain = await storage.deleteChapter(bookPath, first.id);
+  const blank = await restoreThroughIpc(bookPath, {
+    trashName: path.basename(deletedAgain.trashPath),
+    index: 0,
+    chapter: { ...first, name: '   ' }
+  });
+  assert.equal(blank.chapter.name, '');
+  assert.equal((await storage.readBookMeta(bookPath)).chapters[0].name, '');
+});
+
+test('撤销删除：坏 payload 在 IPC 校验层被拒，书文件夹与书目一个字节不动（正常 payload 照旧）', async () => {
+  const root = await mkTmp();
+  const { bookPath, meta } = await makeBook(root);
+  const chapter = snapshot(meta, 1);
+  const deleted = await storage.deleteChapter(bookPath, chapter.id);
+  const trashName = path.basename(deleted.trashPath);
+  const before = await snapshotBook(bookPath);
+
+  const badPayloads = [
+    { trashName: path.join(bookPath, '_trash', trashName), index: 1, chapter }, // 绝对路径
+    { trashName: `../${trashName}`, index: 1, chapter }, // 目录穿越
+    { trashName: '书目.json', index: 1, chapter }, // 非章节 txt
+    { trashName, index: 1.5, chapter }, // 非整数下标
+    { trashName, index: -1, chapter }, // 负下标
+    { trashName, index: 1, chapter: { ...chapter, id: '' } }, // 缺 id
+    { trashName, index: 1, chapter: { ...chapter, file: `../${chapter.file}` } }, // 章节文件名带目录
+    { trashName, index: 1, chapter: { ...chapter, file: chapter.file.replace(/\.txt$/, '.md') } }, // 非 txt
+    { trashName, index: 1, chapter: { ...chapter, id: 'i'.repeat(ipcLimits.MAX_ID_CHARS + 1) } }, // id 超长
+    { trashName, index: 1, chapter: { ...chapter, file: 'x'.repeat(ipcLimits.MAX_FILE_NAME_CHARS) + '.txt' } },
+    {} // 什么都没给
+  ];
+  for (const payload of badPayloads) {
+    await assert.rejects(
+      () => restoreThroughIpc(bookPath, payload),
+      (err) => err.code === 'BAD_RESTORE',
+      `坏 payload 必须被 IPC 校验层拒绝：${JSON.stringify(payload).slice(0, 80)}`
+    );
+  }
+  assert.deepEqual(await snapshotBook(bookPath), before, '坏 payload 不许动书文件夹 / _trash / 书目一个字节');
+
+  // 正常 payload（附带的未知字段被白名单丢掉）照旧撤销：位置、正文、章名都对
+  const restored = await restoreThroughIpc(bookPath, {
+    trashName,
+    index: 1,
+    chapter,
+    autoChapterFile: null,
+    bookPath: 'C:\\伪造的书',
+    fileSeq: 999
+  });
+  assert.equal(restored.index, 1);
+  assert.equal(restored.chapter.file, chapter.file);
+  assert.equal(restored.chapter.name, chapter.name);
+  const after = await storage.readBookMeta(bookPath);
+  assert.deepEqual(after.chapters.map((c) => c.file), meta.chapters.map((c) => c.file));
+  assert.equal((await storage.loadChapterText(bookPath, chapter.file)).text, '');
 });

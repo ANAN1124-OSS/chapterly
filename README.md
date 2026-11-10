@@ -605,7 +605,7 @@ chapterly/
 │  ├─ ipc-paths.js          # 渲染层路径参数的统一校验：assertBookPath（书只能是书架目录的直接子目录，空书架目录直接报错）、importSourceDirs（导入目录只认对话框，显式路径只在自检 / 截图模式生效）（纯逻辑，不 require electron、不读盘）
 │  ├─ config-gate.js        # 配置里「指向磁盘」的三项（书架目录 / 两份词表）的来源校验：filterPathPatch（只放行「对话框刚选中的 / 与原值相同 / 清空」）、createPickedPathStore（按窗口记对话框选中的路径）（纯逻辑，不 require electron、不读盘）
 │  ├─ error-text.js         # 错误文案脱敏（v0.9 C-4）：redactPaths（本机绝对路径只留最后一节，UNC / 设备前缀 / file:// / POSIX 都认，http(s) 网址不动）、describeForUi（常见文件系统错误码换中文 + 控制字符 / 超长收尾，错误码原样保留）（纯逻辑，不 require electron、不读盘、不抛错）
-│  ├─ ipc-limits.js         # 文本类 IPC 的输入上限（v0.9 C-5）：正文 500 万字 / 查找词与替换词各 1 万字 / 替换结果 2000 万字估算 / 跳章章节列表 2 万条与章名限长 / override 与导出 range 归一（纯逻辑，不 require electron、不读盘、不联网）
+│  ├─ ipc-limits.js         # 文本类 IPC 的输入上限（v0.9 C-5）：正文 500 万字 / 查找词与替换词各 1 万字 / 替换结果 2000 万字估算 / 跳章章节列表 2 万条与章名限长 / override 与导出 range 归一 / 撤销删除 payload 白名单与文件名上限（1.5.0 P0-3）（纯逻辑，不 require electron、不读盘、不联网）
 │  ├─ repair.js             # 从 .bak 恢复 / 从目录 txt 重建
 │  ├─ importer.js           # 导入小说（整本书复制 / 从 txt 重建书目；单本 txt 先看大小再读：128 MB 上限 + 含 NUL 的非纯文本拒绝，纯逻辑可单测）
 │  ├─ exporter.js           # 整本 / 按卷 / 按章范围拼接 + 单章「平台格式」（导出 / 复制共用）+ 导出预览的字数缓存判定

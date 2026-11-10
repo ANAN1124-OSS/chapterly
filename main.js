@@ -1938,9 +1938,14 @@ function registerIpc() {
   });
   // 撤销删除（1.4.0 P0-2）：只把本书 _trash 下的那一个 txt 放回书文件夹，并按原位置插回书目。
   // 入参形状由 core/storage.js 的 restoreDeletedChapterFromTrash 自己校验（不信任渲染层给的路径）。
+  // 1.5.0 P0-3（审计 E3 / O-8）：先过 core/ipc-limits.js 的白名单 —— 只留
+  // trashName / index / chapter{id,file,name,createdAt,volumeId,status,note} / autoChapterFile，
+  // 必填字段不合法直接抛 BAD_RESTORE（fail() 统一文案），一个字节都不会写盘；
+  // 交给 storage 的必须是清洗后的 payload，不是原始参数。
   handleBook('chapter:restore-deleted', async (bookPath, payload) =>
-    storage.restoreDeletedChapterFromTrash(bookPath, payload), { mutation: 'write' }
-  );
+    storage.restoreDeletedChapterFromTrash(bookPath, ipcLimits.sanitizeRestorePayload(payload)), {
+    mutation: 'write'
+  });
   handleBook('chapter:move', async (bookPath, chapterId, toIndex) =>
     storage.moveChapter(bookPath, chapterId, toIndex), { mutation: 'write' }
   );

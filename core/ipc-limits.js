@@ -26,6 +26,11 @@ const MAX_REPLACE_OUTPUT_CHARS = 20000000;
 const MAX_CHAPTER_ITEMS = 20000;
 const MAX_CHAPTER_NAME_CHARS = 2000;
 const MAX_ID_CHARS = 200;
+// 撤销删除（chapter:restore-deleted）：_trash / 书文件夹里的章节 txt 文件名按 Windows 的 260 字符封顶
+// （正常章节名在 core/chapters.js 已夹到 40 字，加时间戳前缀也远到不了这里）。
+const MAX_FILE_NAME_CHARS = 260;
+// createdAt 这类时间戳字段只留短字符串（ISO 8601 二十几字节就够了）；超过的没有理由写进 书目.json。
+const MAX_TIME_CHARS = 64;
 
 const RANGE_MODES = ['all', 'volume', 'range'];
 
@@ -194,6 +199,77 @@ function sanitizeChapterList(chapters, { max = MAX_CHAPTER_ITEMS } = {}) {
   });
 }
 
+// 撤销删除（chapter:restore-deleted）的 payload —— 1.5.0 P0-3（审计 E3 / O-8）。
+//
+// 这条通道的副作用是「把本书 _trash 里的一个 txt 挪回书文件夹 + 往 书目.json 插一条章节」，
+// 是少数「渲染层给什么、主进程就照着写成什么」的入口之一：chapter.name / createdAt / volumeId 都会
+// 原样落进书目。所以在进 storage 之前先把形状收成白名单：只留
+//   trashName / index / chapter{id,file,name,createdAt,volumeId,status,note} / autoChapterFile，
+// 其它字段（多余的路径、伪造的 file / fileSeq / 未知键）一概不往 storage 递。
+// storage 自己仍有四道校验（见 restoreDeletedChapterFromTrash 的注释）；这里只负责「形状 + 上限 + basename」，
+// 不替代那一层「这个 trashName 是不是本次删除产生的那一份」的判断。
+//
+// 必填字段不合法一律抛 BAD_RESTORE（main.js 的 fail() 统一转成中文提示，且一行都不会写盘）；
+// 可选字段类型 / 长度不对就丢掉，让 storage 走它的默认口径（createdAt 缺失 = nowIso，卷 id 不存在 = 未分卷），
+// 不把一次正常撤销变成报错。空章名保持空串（= 未命名），不在这里补名字。
+function restoreFileName(value) {
+  if (typeof value !== 'string') return '';
+  const name = value.trim();
+  if (!name || name.length > MAX_FILE_NAME_CHARS) return '';
+  if (name.includes('/') || name.includes('\\') || name.includes('..')) return '';
+  if (/[\u0000-\u001f\u007f]/.test(name)) return '';
+  return /\.txt$/i.test(name) ? name : '';
+}
+
+function badRestorePayload(detail) {
+  return new IpcLimitError('BAD_RESTORE', `撤销删除的参数不合法：${detail}`);
+}
+
+function sanitizeRestorePayload(payload) {
+  const input = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const rawChapter = input.chapter;
+  if (!rawChapter || typeof rawChapter !== 'object' || Array.isArray(rawChapter)) {
+    throw badRestorePayload('缺少章节信息');
+  }
+  const id = typeof rawChapter.id === 'string' ? rawChapter.id.trim() : '';
+  if (!id) throw badRestorePayload('缺少章节 id');
+  if (id.length > MAX_ID_CHARS) throw badRestorePayload('章节 id 太长');
+  const file = restoreFileName(rawChapter.file);
+  if (!file) throw badRestorePayload('章节文件名必须是书文件夹里的单个 txt');
+  const trashName = restoreFileName(input.trashName);
+  if (!trashName) throw badRestorePayload('备份文件名必须是本书 _trash 里的单个 txt');
+
+  const chapter = { id, file };
+  // 章名：先按 MAX_CHAPTER_NAME_CHARS 夹一刀（真正的 40 字上限 / 非法字符 / 保留名清洗在
+  // chaptersLib.safeName，语义归 storage，这里不抢）。
+  const name = typeof rawChapter.name === 'string' ? rawChapter.name : '';
+  chapter.name = name.length > MAX_CHAPTER_NAME_CHARS ? name.slice(0, MAX_CHAPTER_NAME_CHARS) : name;
+  const createdAt = typeof rawChapter.createdAt === 'string' ? rawChapter.createdAt.trim() : '';
+  if (createdAt && createdAt.length <= MAX_TIME_CHARS) chapter.createdAt = createdAt;
+  const volumeId = typeof rawChapter.volumeId === 'string' ? rawChapter.volumeId.trim() : '';
+  if (volumeId && volumeId.length <= MAX_ID_CHARS) chapter.volumeId = volumeId;
+  const status = typeof rawChapter.status === 'string' ? rawChapter.status.trim() : '';
+  if (status && status.length <= MAX_ID_CHARS) chapter.status = status;
+  // 备注：业务上限（200 字 + 压成一行）在 core/chapters.js 的 sanitizeChapterNote；这里只保证字符串有界。
+  const note = typeof rawChapter.note === 'string' ? rawChapter.note : '';
+  if (note) chapter.note = note.length > MAX_CHAPTER_NAME_CHARS ? note.slice(0, MAX_CHAPTER_NAME_CHARS) : note;
+
+  const clean = { trashName, chapter, autoChapterFile: null };
+  if (input.index != null) {
+    const index = input.index;
+    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index > MAX_CHAPTER_ITEMS) {
+      throw badRestorePayload('撤销位置必须是非负整数');
+    }
+    clean.index = index;
+  }
+  if (input.autoChapterFile != null && input.autoChapterFile !== '') {
+    const autoFile = restoreFileName(input.autoChapterFile);
+    if (!autoFile) throw badRestorePayload('自动补章的文件名必须是单个 txt');
+    clean.autoChapterFile = autoFile;
+  }
+  return clean;
+}
+
 // 全书查找 / 替换的 options：非对象按 {}（旧行为：没有选项就用默认），字段类型收紧
 function sanitizeSearchOptions(options) {
   const source = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
@@ -220,6 +296,7 @@ module.exports = {
   MAX_CHAPTER_ITEMS,
   MAX_CHAPTER_NAME_CHARS,
   MAX_ID_CHARS,
+  MAX_FILE_NAME_CHARS,
   IpcLimitError,
   textProblem,
   queryProblem,
@@ -232,6 +309,7 @@ module.exports = {
   sanitizeOverride,
   sanitizeRange,
   sanitizeChapterList,
+  sanitizeRestorePayload,
   sanitizeSearchOptions,
   sanitizeReplaceOptions
 };

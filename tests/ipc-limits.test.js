@@ -212,6 +212,121 @@ test('跳章章节列表：超过 2 万条只看前 2 万条，章名限长，�
   assert.equal(longId[0].id.length, ipcLimits.MAX_ID_CHARS);
 });
 
+test('撤销删除的 payload：白名单收口（多余字段丢弃 / 超长夹取 / 可选字段降级）', () => {
+  const chapter = {
+    id: 'ch-1',
+    file: '002-第二章.txt',
+    name: '第二章',
+    createdAt: '2026-11-10T13:00:00.000Z',
+    volumeId: 'vol-1',
+    status: 'done',
+    note: '这章要改'
+  };
+  const trashName = '2026-11-10T13-00-00-000Z-002-第二章.txt';
+
+  // 1) 正常通过：只留白名单字段，形状与 storage 的入参一致
+  assert.deepEqual(
+    ipcLimits.sanitizeRestorePayload({ trashName, index: 2, chapter, autoChapterFile: '003-空章.txt' }),
+    { trashName, index: 2, chapter, autoChapterFile: '003-空章.txt' }
+  );
+
+  // 2) 白名单：顶层 / chapter 里多出来的键（伪造路径、fileSeq、未知字段）一个都不留，
+  //    也不能靠 __proto__ 之类往结果对象上挂料
+  const smelly = JSON.parse(
+    JSON.stringify({
+      trashName,
+      index: 1,
+      autoChapterFile: null,
+      bookPath: 'C:\\别人的书',
+      path: 'D:\\我的小说\\001.txt',
+      fileSeq: 999,
+      chapter: { ...chapter, fileSeq: 9, path: 'D:\\我的小说\\001.txt', extra: { nested: true } }
+    })
+  );
+  const cleaned = ipcLimits.sanitizeRestorePayload(smelly);
+  assert.deepEqual(Object.keys(cleaned).sort(), ['autoChapterFile', 'chapter', 'index', 'trashName']);
+  assert.deepEqual(Object.keys(cleaned.chapter).sort(), [
+    'createdAt', 'file', 'id', 'name', 'note', 'status', 'volumeId'
+  ]);
+  assert.equal(cleaned.autoChapterFile, null, 'null 的自动补章 = 不撤');
+
+  // 3) 超长 name / note：夹到上限（真正的 40 字 / 200 字语义在 core/chapters.js，这里只保证有界）
+  const longName = ipcLimits.sanitizeRestorePayload({
+    trashName,
+    chapter: { ...chapter, name: '夜'.repeat(ipcLimits.MAX_CHAPTER_NAME_CHARS + 50) }
+  });
+  assert.equal(longName.chapter.name.length, ipcLimits.MAX_CHAPTER_NAME_CHARS);
+  const longNote = ipcLimits.sanitizeRestorePayload({
+    trashName,
+    chapter: { ...chapter, note: '注'.repeat(ipcLimits.MAX_CHAPTER_NAME_CHARS + 50) }
+  });
+  assert.equal(longNote.chapter.note.length, ipcLimits.MAX_CHAPTER_NAME_CHARS);
+
+  // 4) 可选字段类型 / 长度不对就丢掉（不把一次正常撤销变成报错）：
+  //    createdAt 超长 → 让 storage 用 nowIso；volumeId / status 不是短字符串 → 不挂载
+  const degraded = ipcLimits.sanitizeRestorePayload({
+    trashName,
+    chapter: {
+      id: 'ch-1',
+      file: '002-第二章.txt',
+      name: 42,
+      createdAt: 'x'.repeat(200),
+      volumeId: { bad: true },
+      status: 1,
+      note: ['not', 'text']
+    }
+  });
+  assert.deepEqual(degraded.chapter, { id: 'ch-1', file: '002-第二章.txt', name: '' });
+  // 空名保持空串（= 未命名），不在这里补「未命名」
+  assert.equal(ipcLimits.sanitizeRestorePayload({ trashName, chapter: { ...chapter, name: '   ' } }).chapter.name, '   ');
+  // 省略 index / autoChapterFile 时结果里不留键（storage 走自己的默认：追加到末尾 / 不撤补章）
+  const minimal = ipcLimits.sanitizeRestorePayload({ trashName, chapter });
+  assert.deepEqual(Object.keys(minimal).sort(), ['autoChapterFile', 'chapter', 'trashName']);
+  assert.equal(minimal.autoChapterFile, null);
+});
+
+test('撤销删除的 payload：坏参数一律 BAD_RESTORE（文件名 / index / 缺字段）', () => {
+  const chapter = { id: 'ch-1', file: '002-第二章.txt', name: '第二章' };
+  const good = { trashName: '2026-11-10T13-00-00-000Z-002-第二章.txt', index: 1, chapter };
+  const badRestore = (payload) =>
+    assert.throws(
+      () => ipcLimits.sanitizeRestorePayload(payload),
+      (err) => err instanceof ipcLimits.IpcLimitError && err.code === 'BAD_RESTORE'
+    );
+
+  // 5) trashName：只能是本书 _trash 里的单个 basename + .txt
+  for (const trashName of [
+    'D:\\code\\书\\_trash\\2026-11-10-002-第二章.txt', // 绝对路径
+    '..\\2026-11-10-002-第二章.txt', // 目录穿越
+    '_trash/2026-11-10-002-第二章.txt', // 带目录
+    '2026-11-10-002-第二章.md', // 不是 txt
+    '  ', // 空
+    `a\u0000b.txt`, // 控制字符
+    `x-${'长'.repeat(ipcLimits.MAX_FILE_NAME_CHARS)}.txt` // 超过文件名上限
+  ]) {
+    badRestore({ ...good, trashName });
+  }
+  // 6) chapter.file：只收书文件夹里的单个 txt（绝对路径 / 无 .txt / 控制字符一律拒绝）
+  for (const file of ['C:\\书\\002-第二章.txt', '..\\002-第二章.txt', '002-第二章.md', '002-\u0001.txt']) {
+    badRestore({ ...good, chapter: { ...chapter, file } });
+  }
+  // 7) 缺字段：没有 payload / 没有 chapter / 没有 id / id 超长
+  badRestore(undefined);
+  badRestore({ trashName: good.trashName });
+  badRestore({ trashName: good.trashName, chapter: { file: chapter.file } });
+  badRestore({ trashName: good.trashName, chapter: { id: 'i'.repeat(ipcLimits.MAX_ID_CHARS + 1), file: chapter.file } });
+  // 8) index：非负整数；1.5 / -1 / '1' / 超上限都拒绝（省略 = storage 追加到末尾）
+  for (const index of [1.5, -1, '1', Number.NaN, Number.POSITIVE_INFINITY, ipcLimits.MAX_CHAPTER_ITEMS + 1]) {
+    badRestore({ ...good, index });
+  }
+  // 9) autoChapterFile：不合法就拒绝（'' / null 表示不撤，合法）
+  badRestore({ ...good, autoChapterFile: '../003-空章.txt' });
+  badRestore({ ...good, autoChapterFile: '003-空章.md' });
+  assert.equal(ipcLimits.sanitizeRestorePayload({ ...good, autoChapterFile: '' }).autoChapterFile, null);
+  // 正常 payload 仍然过
+  assert.equal(ipcLimits.sanitizeRestorePayload(good).chapter.file, chapter.file);
+});
+
 test('全书查找 / 替换的 options：非对象按默认，坏字段类型拒绝', () => {
   assert.deepEqual(ipcLimits.sanitizeSearchOptions(undefined), { query: '', caseSensitive: false });
   assert.deepEqual(ipcLimits.sanitizeSearchOptions('x'), { query: '', caseSensitive: false });
@@ -272,6 +387,20 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
   // 全书查找 / 替换：options 走 sanitize*Options
   assert.ok(bodyOf('book:search').includes('sanitizeSearchOptions('), 'book:search 必须清洗 options');
   assert.ok(bodyOf('book:replace').includes('sanitizeReplaceOptions('), 'book:replace 必须清洗 options');
+  // 撤销删除（1.5.0 P0-3 / 审计 E3 + O-8）：payload 必须过 sanitizeRestorePayload，
+  // 而且交给 storage 的必须是清洗后的值（原始 payload 一个字段都不能再往下递）
+  const restoreBody = bodyOf('chapter:restore-deleted');
+  assert.ok(restoreBody.includes('sanitizeRestorePayload('), 'chapter:restore-deleted 必须清洗 payload');
+  assert.match(
+    restoreBody,
+    /restoreDeletedChapterFromTrash\(bookPath, ipcLimits\.sanitizeRestorePayload\(payload\)\)/,
+    'chapter:restore-deleted 交给 storage 的必须是清洗后的 payload'
+  );
+  assert.equal(
+    /restoreDeletedChapterFromTrash\(bookPath, payload\)/.test(MAIN_SOURCE),
+    false,
+    'main.js 里不该再有「原始 payload 直接下传」的写法'
+  );
   // 正文全文搜索（审计 E7）：主进程 search:content 的查找词也要过 1 万字上限（以前只有这一条没走）
   assert.ok(bodyOf('search:content').includes('assertQuery('), 'search:content 必须校验查找词');
   assert.ok(
