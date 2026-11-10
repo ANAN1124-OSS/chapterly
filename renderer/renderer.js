@@ -84,6 +84,10 @@
   // 全局撤销条 DOM / 定时器在 undo-ui.js；这里只接线（删除章节等动作直接执行后登记撤销）。
   const undoActionModule = window.CWUndoAction;
   const undoUiModule = window.CWUndoUi;
+  // 撤销前的备份核对（1.5.0 P0-5 / 审计 V-2）：整本替换备份还原 / 历史还原 / 整本整理的撤销，
+  // 登记时用 api.listHistory 记一份指纹（目录名 + 文件数 + 最大 mtime），撤销前再核一次；
+  // 纯逻辑与「读不到清单怎么办」的口径都在 backup-guard.js 里，这里只装配与接线。
+  const backupGuardModule = window.CWBackupGuard;
   // 命令面板（1.4.0 P0-3 / 规范 I-03）：检索与排序纯逻辑在 command-registry.js，
   // 面板 DOM / 键盘在 command-palette-ui.js；这里只给条目表与执行入口。
   const commandRegistryModule = window.CWCommandRegistry;
@@ -2133,6 +2137,9 @@
   // 纯逻辑（单槽 / TTL / 键位判定）在 undo-action.js，条子渲染在 undo-ui.js；
   // 这里只装配：切书 / 回书架时 clear()，Ctrl+Z 命中时 runUndo()（见 bindEvents）。
   const undoUi = undoUiModule.create({ $, slot: undoActionModule.createUndoSlot(), toast });
+  // 1.5.0 P0-5（审计 V-2）：撤销前的备份指纹核对（只读 api.listHistory，不改备份目录格式）。
+  // 登记撤销时记指纹、撤销执行前核一次；清单读不到时登记侧不拦、执行侧取消（见 backup-guard.js）。
+  const backupGuard = backupGuardModule.create({ call, api });
 
   // ---------- 命令面板（1.4.0 P0-3 / 规范 I-03：Ctrl+K） ----------
   // 一份 action 表的单一事实源：面板行尾键帽、按钮 tooltip、README 的快捷键表都指这里的 kbd。
@@ -2911,6 +2918,8 @@
       const at = applyMetaAndRelocate(data, currentId);
       // 主进程回传的是绝对路径：只取文件名（撤销只传 basename，绝不把本机路径再递回去）。
       const trashName = String(data.trashPath || '').split(/[\\/]/).pop();
+      // 1.5.0 P0-5（审计 V-1）：主进程给这次删除发了一张一次性凭证，撤销时必须原样交回。
+      const undoToken = typeof data.undoToken === 'string' ? data.undoToken : '';
       if (data.newChapter) toast('最后一章被删除，已自动补一个空章');
       if (wasCurrent) {
         state.dirty = false;
@@ -2927,6 +2936,7 @@
           chapter,
           index,
           trashName,
+          undoToken,
           wasCurrent,
           newChapter: data.newChapter,
           neighborBeforeId,
@@ -2975,6 +2985,8 @@
               : Math.min(info.index, state.chapters.length);
       const data = await call(api.restoreDeletedChapter, info.bookPath, {
         trashName: info.trashName,
+        // 1.5.0 P0-5（审计 V-1）：主进程只认「删除时发的那张一次性凭证」；伪造 / 过期 / 跨书 / 重复用都被拒。
+        undoToken: info.undoToken || '',
         index: restoreIndex,
         chapter: {
           id: source.id,
@@ -3572,8 +3584,11 @@
       await refreshReplaceBackups();
       const undoName = data.restoreBackupDir ? String(data.restoreBackupDir).split(/[\\/]/).pop() : '';
       if (undoName) {
+        // 1.5.0 P0-5（审计 V-2）：登记撤销时记下这份「还原前备份」的指纹；撤销前核对它还是不是那一份。
+        const expectedBackup = await backupGuard.fingerprint(bookPath, undoName);
         undoUi.activate(`已还原到「${target.name}」前的正文`, async () => {
           if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          await backupGuard.assertUnchanged(bookPath, expectedBackup);
           const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
           if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');
           await reloadOpenBookFromDisk();
@@ -3640,6 +3655,8 @@
   // 第 4 步九刀·第一刀：实现在 renderer/history-ui.js（模块头有契约），这里只装配与接线；
   const historyUi = historyUiModule.create({
     $, state, api, call, toast,
+    // 1.5.0 P0-5（审计 V-2）：历史还原的撤销也要核对备份没变
+    guard: backupGuard,
     collab: { confirmRestoreWithUnsaved, openModal, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk,
       registerUndo: (label, run) => undoUi.activate(label, run) },
     menus: { hideBookMenu, hideExportMenu },
@@ -3945,8 +3962,11 @@
       // 撤销：用这次整理写盘前的备份整组还原（storage 会先把现在的内容再备份到 _trash/还原前备份-*）
       const backupName = result.backupDir ? String(result.backupDir).split(/[\\/]/).pop() : '';
       if (result.chaptersChanged && backupName) {
+        // 1.5.0 P0-5（审计 V-2）：登记撤销时记下整理备份的指纹；撤销前核对它还是不是那一份。
+        const expectedBackup = await backupGuard.fingerprint(bookPath, backupName);
         undoUi.activate(`已整理全书 ${result.chaptersChanged} 章`, async () => {
           if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          await backupGuard.assertUnchanged(bookPath, expectedBackup);
           const data = await call(api.restoreHistoryDir, bookPath, `dir:${backupName}`);
           if (!data || !Number(data.restored)) throw new Error('整理备份里没有可还原的章节');
           await reloadOpenBookFromDisk();

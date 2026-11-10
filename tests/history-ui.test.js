@@ -4,14 +4,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const historyUi = require('../renderer/history-ui');
+const backupGuardLib = require('../renderer/backup-guard');
 
 // 第 4 步 renderer 九刀·第一刀：本书历史面板（原 renderer.js 4355–4668 / 当前 HEAD 4369–4668，300 行）
 // 搬到 renderer/history-ui.js。搬之前这块只有 E2E 的黑盒覆盖（打开历史 → 预览 → 还原 / 删除备份放回）；
 // 失败兜底 / token 作废 / 未保存三选一 / 整组还原跳过提示 / 还原后重载这些分支在 Node 里一步都测不到。
 // 搬出来以后用「假 host + 假 DOM」逐条钉住，再用静态闸门保证渲染层不长回第二份、index.html 顺序不许反。
 //
-// 契约要点：host 8 个成员 = 基础 5（$, state, api, call, toast）+ 3 个语义分组
-// （collab / menus / fmt，分组内每个真实依赖都单列，见模块头注释）。
+// 契约要点：host 9 个成员 = 基础 5（$, state, api, call, toast）+ guard（1.5.0 P0-5 备份指纹核对）
+// + 3 个语义分组（collab / menus / fmt，分组内每个真实依赖都单列，见模块头注释）。
 
 const realDocument = globalThis.document;
 test.after(() => {
@@ -156,12 +157,15 @@ function build(options = {}) {
       return { opened: true, dir: '/书库/书甲/_trash' };
     }
   };
+  const call = async (fn, ...args) => fn(...args);
   const host = {
     $: dom.$,
     state,
     api,
-    call: async (fn, ...args) => fn(...args),
+    call,
     toast(message, kind) { calls.toast.push([message, kind]); },
+    // 1.5.0 P0-5（审计 V-2）：真实实现 + 本测试的 api.listHistory 假数据（可逐次改返回值模拟「备份被改」）
+    guard: backupGuardLib.create({ call, api }),
     collab: {
       // 「还原前」未保存拦截与整本替换备份还原共用一份实现（renderer.js 的 confirmRestoreWithUnsaved）：
       // 本模块只判「看的是不是当前这本」，三选一 / 保存失败即停都在那一份里，这里用 Spy 钉住调用与返回值透传。
@@ -206,9 +210,9 @@ function groupFixture(overrides = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：8 个成员 + 3 个分组内的真实依赖，缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...historyUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'fmt', 'menus', 'state', 'toast']);
-  assert.equal(historyUi.REQUIRED_HOST.length, 8);
+test('host 契约：9 个成员 + 3 个分组内的真实依赖，缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...historyUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'fmt', 'guard', 'menus', 'state', 'toast']);
+  assert.equal(historyUi.REQUIRED_HOST.length, 9);
   const ctx = build();
   assert.doesNotThrow(() => historyUi.create(ctx.host));
   assert.throws(() => historyUi.create(null), /createHistoryUi 需要 host 对象/);
@@ -231,6 +235,13 @@ test('host 契约：8 个成员 + 3 个分组内的真实依赖，缺任何一�
     const broken = { ...ctx.host, menus: { ...ctx.host.menus } };
     delete broken.menus[key];
     assert.throws(() => historyUi.create(broken), new RegExp('host\\.menus 缺少 ' + key), 'menus 缺 ' + key + ' 必须抛');
+  }
+  // 1.5.0 P0-5（审计 V-2）：备份指纹核对（guard）的每个真实依赖单独点名
+  assert.throws(() => historyUi.create({ ...ctx.host, guard: 'x' }), /host\.guard 必须是对象/);
+  for (const key of ['fingerprint', 'assertUnchanged']) {
+    const broken = { ...ctx.host, guard: { ...ctx.host.guard } };
+    delete broken.guard[key];
+    assert.throws(() => historyUi.create(broken), new RegExp('host\\.guard 缺少 ' + key), 'guard 缺 ' + key + ' 必须抛');
   }
   const noFmt = { ...ctx.host, fmt: {} };
   assert.throws(() => historyUi.create(noFmt), /host\.fmt 缺少 formatBytes/);
@@ -535,6 +546,146 @@ test('confirmHistoryRestore：整组还原直接执行（不弹确认）+ 登记
     ['/书库/书甲', 'g1'],
     ['/书库/书甲', 'dir:还原前备份-20261109-120000']
   ], '撤销 = 用这次还原自动建的「还原前备份-*」再还原一次（只传目录名）');
+});
+
+// ---------- 1.5.0 P0-5（审计 V-2）：撤销前的备份核对 ----------
+const UNDO_DIR = '还原前备份-20261109-120000';
+
+function backupGroupFixture(overrides = {}) {
+  return {
+    id: `dir:${UNDO_DIR}`,
+    kind: 'dir',
+    source: 'restore',
+    sourceLabel: '还原前备份',
+    stamp: '20261109-120000',
+    time: 1000,
+    timeText: '2026-11-09 12:00',
+    dirName: UNDO_DIR,
+    fileName: '',
+    note: '还原前自动留下的反向备份',
+    fileCount: 1,
+    totalBytes: 10,
+    restorableCount: 1,
+    files: [
+      {
+        name: 'a.txt',
+        trashName: 'a.txt',
+        size: 10,
+        mtimeMs: 1000,
+        inBook: true,
+        restorable: true,
+        previewable: true,
+        reason: '',
+        source: 'restore'
+      }
+    ],
+    ...overrides
+  };
+}
+
+function historyState() {
+  return {
+    path: '/书库/书甲',
+    title: '书甲',
+    groups: [],
+    fileCount: 0,
+    totalBytes: 0,
+    loading: false,
+    error: '',
+    preview: null,
+    token: 0
+  };
+}
+
+test('confirmHistoryRestore：撤销前核对备份指纹——目录没变才允许用「还原前备份」再还原一次', async () => {
+  let groups = [backupGroupFixture()];
+  const ctx = build({
+    restoreResult: { restored: 1, skipped: 0, total: 1, restoreBackupDir: `/书库/书甲/_trash/${UNDO_DIR}` },
+    listHistory: () => ({ title: '书甲', groups })
+  });
+  ctx.state.history = historyState();
+  assert.equal((await ctx.ui.confirmHistoryRestore(groupFixture(), null, true)).ok, true);
+  assert.equal(ctx.calls.registerUndo.length, 1);
+
+  // 指纹一致：撤销照旧（第二次 restoreHistoryDir 才是撤销）
+  await ctx.calls.registerUndo[0].run();
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [
+    ['/书库/书甲', 'g1'],
+    ['/书库/书甲', `dir:${UNDO_DIR}`]
+  ]);
+  assert.ok(ctx.calls.listHistory.length >= 3, '登记时记一次、撤销前再核一次');
+});
+
+test('confirmHistoryRestore：撤销前核对备份指纹——备份被增删 / 改写就报「备份已变化，撤销取消」，不覆盖正文', async () => {
+  let groups = [backupGroupFixture()];
+  const ctx = build({
+    restoreResult: { restored: 1, skipped: 0, total: 1, restoreBackupDir: `/书库/书甲/_trash/${UNDO_DIR}` },
+    listHistory: () => ({ title: '书甲', groups })
+  });
+  ctx.state.history = historyState();
+  assert.equal((await ctx.ui.confirmHistoryRestore(groupFixture(), null, true)).ok, true);
+
+  // 文件数变了（10 秒里有人往备份目录里补了一个文件）
+  groups = [
+    backupGroupFixture({
+      fileCount: 2,
+      files: [
+        { name: 'a.txt', trashName: 'a.txt', size: 10, mtimeMs: 1000, inBook: true, restorable: true, reason: '' },
+        { name: 'b.txt', trashName: 'b.txt', size: 10, mtimeMs: 1000, inBook: true, restorable: true, reason: '' }
+      ]
+    })
+  ];
+  await assert.rejects(() => ctx.calls.registerUndo[0].run(), /备份已变化，撤销取消/);
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [['/书库/书甲', 'g1']], '备份变了就不许再调还原');
+  assert.equal(ctx.calls.reloadOpenBookFromDisk, 1, '只有第一次还原重载过，撤销没有动编辑区');
+
+  // 文件数一样但内容被改写（mtime 变了）同样拒绝
+  const ctx2 = build({
+    restoreResult: { restored: 1, skipped: 0, total: 1, restoreBackupDir: `/书库/书甲/_trash/${UNDO_DIR}` },
+    listHistory: () => ({ title: '书甲', groups })
+  });
+  ctx2.state.history = historyState();
+  groups = [backupGroupFixture()];
+  assert.equal((await ctx2.ui.confirmHistoryRestore(groupFixture(), null, true)).ok, true);
+  groups = [
+    backupGroupFixture({
+      files: [{ name: 'a.txt', trashName: 'a.txt', size: 10, mtimeMs: 9999, inBook: true, restorable: true, reason: '' }]
+    })
+  ];
+  await assert.rejects(() => ctx2.calls.registerUndo[0].run(), /备份已变化，撤销取消/);
+  assert.deepEqual(ctx2.calls.restoreHistoryDir, [['/书库/书甲', 'g1']]);
+});
+
+test('confirmHistoryRestore：撤销前清单读不到 → 证明不了没变，也取消（不猜）', async () => {
+  let listCount = 0;
+  const ctx = build({
+    restoreResult: { restored: 1, skipped: 0, total: 1, restoreBackupDir: `/书库/书甲/_trash/${UNDO_DIR}` },
+    listHistory: () => {
+      listCount += 1;
+      if (listCount >= 3) throw new Error('磁盘忙'); // 第 3 次 = 撤销前核对
+      return { title: '书甲', groups: [backupGroupFixture()] };
+    }
+  });
+  ctx.state.history = historyState();
+  assert.equal((await ctx.ui.confirmHistoryRestore(groupFixture(), null, true)).ok, true);
+  await assert.rejects(() => ctx.calls.registerUndo[0].run(), /备份清单读取失败，撤销取消/);
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [['/书库/书甲', 'g1']]);
+});
+
+test('confirmHistoryRestore：登记时清单读不到（指纹 null）→ 撤销不核对，照旧放行', async () => {
+  const ctx = build({
+    restoreResult: { restored: 1, skipped: 0, total: 1, restoreBackupDir: `/书库/书甲/_trash/${UNDO_DIR}` },
+    listHistoryError: '读不到清单'
+  });
+  ctx.state.history = historyState();
+  assert.equal((await ctx.ui.confirmHistoryRestore(groupFixture(), null, true)).ok, true);
+  assert.equal(ctx.calls.registerUndo.length, 1);
+  // 撤销时 api.listHistory 仍然抛错，但没有指纹就不拦（否则一次读取失败会把正常撤销变砖）
+  await ctx.calls.registerUndo[0].run();
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [
+    ['/书库/书甲', 'g1'],
+    ['/书库/书甲', `dir:${UNDO_DIR}`]
+  ]);
 });
 
 test('confirmHistoryRestore：单文件还原成功 → 调 api.restoreHistoryFile、当前书开着就重载、刷新书架与清单', async () => {
@@ -872,6 +1023,12 @@ test('静态闸门：index.html 在 renderer.js 之前加载 history-ui.js，且
   assert.notEqual(rendererAt, -1);
   assert.ok(at < rendererAt, 'history-ui.js 必须排在 renderer.js 之前');
   assert.equal(indexSrc.split('history-ui.js').length - 1, 1, '只加载一次');
+  // 1.5.0 P0-5（审计 V-2）：history-ui 通过 host.guard 用 CWBackupGuard，脚本必须先于它加载、且只加载一次
+  const guardAt = indexSrc.indexOf('<script src="backup-guard.js"></script>');
+  assert.notEqual(guardAt, -1, 'index.html 没加载 backup-guard.js');
+  assert.ok(guardAt < at, 'backup-guard.js 必须排在 history-ui.js 之前');
+  assert.ok(guardAt < rendererAt, 'backup-guard.js 必须排在 renderer.js 之前');
+  assert.equal(indexSrc.split('backup-guard.js').length - 1, 1, 'backup-guard.js 只加载一次');
 });
 
 test('静态闸门：模块不 require / 不摸 Electron·fs·网络，也不注册 window/document 级监听', () => {
@@ -894,7 +1051,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWHistoryUi�
   vm.runInContext(moduleSrc, context, { filename: 'renderer/history-ui.js' });
   assert.equal(typeof win.CWHistoryUi, 'object');
   assert.deepEqual(Object.keys(win.CWHistoryUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWHistoryUi.REQUIRED_HOST.length, 8);
+  assert.equal(win.CWHistoryUi.REQUIRED_HOST.length, 9);
   assert.equal(typeof win.CWHistoryUi.create, 'function');
   assert.equal(win.CWShelfNavUi, undefined, '单独加载 history-ui 不该顺手造出别的全局');
   assert.equal(win.CWChapters, undefined);

@@ -83,6 +83,10 @@ const ipcPaths = require('./core/ipc-paths');
 const configGate = require('./core/config-gate');
 const errorText = require('./core/error-text');
 const ipcLimits = require('./core/ipc-limits');
+// 撤销删除的进程内凭证（1.5.0 P0-5 / 审计 V-1）：删除成功发一张一次性 token，撤销必须带回来。
+// 只在主进程内存里，不落盘、不进 书目.json；10 分钟过期，长于撤销条的 10 秒 TTL。
+const ipcRestoreToken = require('./core/ipc-restore-token');
+const restoreTokens = ipcRestoreToken.createStore();
 const captureLib = require('./core/capture');
 // 2026-11-06 捕获队列：后台监听打开后，每次复制在本次运行内各记一条（纯逻辑，只在主进程内存）。
 const captureQueueLib = require('./core/capture-queue');
@@ -1933,7 +1937,19 @@ function registerIpc() {
   handleBook('chapter:update-meta', async (bookPath, chapterId, patch) =>
     storage.updateChapterMeta(bookPath, chapterId, patch), { mutation: 'write' }
   );
-  handleBook('chapter:delete', async (bookPath, chapterId) => storage.deleteChapter(bookPath, chapterId), {
+  // 1.5.0 P0-5（审计 V-1）：删除成功后发一张进程内一次性凭证（crypto.randomUUID），
+  // 只在内存 Map 里记 { bookPath, trashName, chapterId, expiresAt }（10 分钟，带上限与过期清理）。
+  // 撤销时必须原样带回来 —— 只靠 trashName 的四道自证证明不了「这个备份是本次删除产生的」。
+  // 返回形状只**扩展**一个 undoToken 字段：频道名 / preload 方法名 / 原有的 meta·trashPath·
+  // newChapter·index 一个都不变。
+  handleBook('chapter:delete', async (bookPath, chapterId) => {
+    const result = await storage.deleteChapter(bookPath, chapterId);
+    const trashName = result && result.trashPath ? path.basename(result.trashPath) : '';
+    const undoToken = trashName
+      ? restoreTokens.issue({ bookPath, trashName, chapterId })
+      : '';
+    return { ...result, undoToken };
+  }, {
     mutation: 'delete'
   });
   // 撤销删除（1.4.0 P0-2）：只把本书 _trash 下的那一个 txt 放回书文件夹，并按原位置插回书目。
@@ -1942,8 +1958,21 @@ function registerIpc() {
   // trashName / index / chapter{id,file,name,createdAt,volumeId,status,note} / autoChapterFile，
   // 必填字段不合法直接抛 BAD_RESTORE（fail() 统一文案），一个字节都不会写盘；
   // 交给 storage 的必须是清洗后的 payload，不是原始参数。
-  handleBook('chapter:restore-deleted', async (bookPath, payload) =>
-    storage.restoreDeletedChapterFromTrash(bookPath, ipcLimits.sanitizeRestorePayload(payload)), {
+  // 1.5.0 P0-5（审计 V-1）：白名单之后还要验撤销凭证（存在 / 未过期 / 同一本书 / 同一个 trashName），
+  // 验过立刻作废（一次性）；storage 还原失败时把凭证放回去，作者还能原地再试一次。
+  handleBook('chapter:restore-deleted', async (bookPath, payload) => {
+    const clean = ipcLimits.sanitizeRestorePayload(payload);
+    const rawToken =
+      payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.undoToken : '';
+    const claim = restoreTokens.take(rawToken, { bookPath, trashName: clean.trashName });
+    if (!claim.ok) throw ipcRestoreToken.errorFor(claim.reason);
+    try {
+      return await storage.restoreDeletedChapterFromTrash(bookPath, clean);
+    } catch (err) {
+      restoreTokens.release(claim.record);
+      throw err;
+    }
+  }, {
     mutation: 'write'
   });
   handleBook('chapter:move', async (bookPath, chapterId, toIndex) =>

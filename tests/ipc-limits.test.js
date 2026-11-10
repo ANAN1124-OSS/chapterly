@@ -388,19 +388,41 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
   assert.ok(bodyOf('book:search').includes('sanitizeSearchOptions('), 'book:search 必须清洗 options');
   assert.ok(bodyOf('book:replace').includes('sanitizeReplaceOptions('), 'book:replace 必须清洗 options');
   // 撤销删除（1.5.0 P0-3 / 审计 E3 + O-8）：payload 必须过 sanitizeRestorePayload，
-  // 而且交给 storage 的必须是清洗后的值（原始 payload 一个字段都不能再往下递）
+  // 而且交给 storage 的必须是清洗后的值（原始 payload 一个字段都不能再往下递）。
+  // 1.5.0 P0-5（审计 V-1）：白名单之后还要验进程内一次性凭证（undoToken），
+  // 但校验顺序不变 —— 坏的 trashName / index 仍然先报 BAD_RESTORE。
   const restoreBody = bodyOf('chapter:restore-deleted');
-  assert.ok(restoreBody.includes('sanitizeRestorePayload('), 'chapter:restore-deleted 必须清洗 payload');
+  assert.ok(restoreBody.includes('sanitizeRestorePayload(payload)'), 'chapter:restore-deleted 必须清洗 payload');
   assert.match(
     restoreBody,
-    /restoreDeletedChapterFromTrash\(bookPath, ipcLimits\.sanitizeRestorePayload\(payload\)\)/,
+    /const clean = ipcLimits\.sanitizeRestorePayload\(payload\);/,
+    'chapter:restore-deleted 清洗结果要先落在一个变量上（凭证按清洗后的 trashName 核对）'
+  );
+  assert.match(
+    restoreBody,
+    /restoreDeletedChapterFromTrash\(bookPath, clean\)/,
     'chapter:restore-deleted 交给 storage 的必须是清洗后的 payload'
+  );
+  assert.match(
+    restoreBody,
+    /restoreTokens\.take\(rawToken, \{ bookPath, trashName: clean\.trashName \}\)/,
+    'chapter:restore-deleted 必须验撤销凭证（存在 / 未过期 / 同书 / 同备份名）'
+  );
+  assert.match(
+    restoreBody,
+    /restoreTokens\.release\(claim\.record\)/,
+    'storage 还原失败时要把凭证放回去（否则一次失败就烧掉作者唯一的退路）'
   );
   assert.equal(
     /restoreDeletedChapterFromTrash\(bookPath, payload\)/.test(MAIN_SOURCE),
     false,
     'main.js 里不该再有「原始 payload 直接下传」的写法'
   );
+  // 删除侧：发凭证必须用主进程从 storage 结果里拿到的 basename，且只扩展 undoToken 字段
+  const deleteBody = bodyOf('chapter:delete');
+  assert.match(deleteBody, /restoreTokens\.issue\(/, 'chapter:delete 必须发撤销凭证');
+  assert.match(deleteBody, /path\.basename\(result\.trashPath\)/, '凭证里的 trashName 必须来自 storage 结果');
+  assert.match(deleteBody, /undoToken/, 'chapter:delete 的返回形状要带 undoToken（只加字段，不换频道）');
   // 正文全文搜索（审计 E7）：主进程 search:content 的查找词也要过 1 万字上限（以前只有这一条没走）
   assert.ok(bodyOf('search:content').includes('assertQuery('), 'search:content 必须校验查找词');
   assert.ok(

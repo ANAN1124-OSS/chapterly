@@ -12,9 +12,13 @@
  * **只搬不改行为**：文案 / class / DOM 结构 / 返回值形状 / token 作废逻辑 / 失败兜底全部一字未改
  * （indent / 空行也保持原样）；面板 CSS 与 index.html 的 DOM 一个字节没动。
  *
- * 契约：createHistoryUi(host) 由渲染层调用一次。host 8 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createHistoryUi(host) 由渲染层调用一次。host 9 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, api, call, toast,                      // 基础 5：DOM 查询 / 共享状态 / IPC 白名单 / IPC 包装 / 提示
+ *     guard: {                                          // 1.5.0 P0-5（审计 V-2）：撤销前的备份指纹核对
+ *       fingerprint,                                   //   登记撤销时记 { dirName, fileCount, mtimeMs }（读不到 = null）
+ *       assertUnchanged                                //   撤销执行前再核一次，备份变了抛「备份已变化，撤销取消」
+ *     },
  *     collab: {                                        // 与「当前书 / 当前编辑区」协作的渲染层回调
  *       confirmRestoreWithUnsaved,                     //   「还原前」未保存三选一 + 保存失败即停（与整本替换备份还原共用一份实现）
  *       openModal,                                     //   通用询问框（1.4.0 P0-2 起历史还原不再二次确认）
@@ -54,14 +58,18 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'collab', 'menus', 'fmt'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'guard', 'collab', 'menus', 'fmt'];
 
   function createHistoryUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createHistoryUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createHistoryUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, collab, menus, fmt } = host;
+    const { $, state, api, call, toast, guard, collab, menus, fmt } = host;
+    if (typeof guard !== 'object') throw new TypeError('createHistoryUi 的 host.guard 必须是对象');
+    for (const key of ['fingerprint', 'assertUnchanged']) {
+      if (typeof guard[key] !== 'function') throw new TypeError('createHistoryUi 的 host.guard 缺少 ' + key);
+    }
     if (typeof collab !== 'object') throw new TypeError('createHistoryUi 的 host.collab 必须是对象');
     for (const key of ['confirmRestoreWithUnsaved', 'openModal', 'registerUndo', 'refreshShelf', 'reloadAfterPartialFailure', 'reloadOpenBookFromDisk']) {
       if (collab[key] === undefined || collab[key] === null) throw new TypeError('createHistoryUi 的 host.collab 缺少 ' + key);
@@ -399,8 +407,12 @@
       }
       const undoName = data && data.restoreBackupDir ? String(data.restoreBackupDir).split(/[\\/]/).pop() : '';
       if (undoName && group.source !== 'delete' && typeof registerUndo === 'function') {
+        // 1.5.0 P0-5（审计 V-2）：登记撤销时记下这份「还原前备份」的指纹（目录名 + 文件数 + 最大 mtime）；
+        // 撤销执行前再核一次，目录被增删 / 改写就报「备份已变化，撤销取消」并早退，不拿变了的备份覆盖正文。
+        const expectedBackup = await guard.fingerprint(bookPath, undoName);
         registerUndo(`已还原 ${Number(data.restored) || 0} 章（${group.sourceLabel}）`, async () => {
           if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          await guard.assertUnchanged(bookPath, expectedBackup);
           const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
           if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');
           await reloadOpenBookFromDisk();
