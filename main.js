@@ -2393,7 +2393,8 @@ function registerIpc() {
   // 导出 EPUB（提案 6.3 / v0.8 P0 N8）：整本或按卷 / 按章节范围 → 一本 EPUB 3
   // （分卷做目录级、一章一个 XHTML、没有封面图就生成纯文字封面页）。排版沿用「段首缩进 + 空一行」，
   // 由 EPUB 里的 CSS 控制，不动任何 txt 字节。和 TXT 导出一样：当前章未保存的内容参与拼接、只读、原子写盘。
-  // range 不传 = 全书；只把选中的章节读出来打进包里，章号仍按全书顺序。
+  // range 不传 = 全书；只把选中的章节读出来打进包里。范围输入按全书顺序算；章标题走
+  // chapters.formatTitle，按这本书的编号方式（按卷编号的书是各卷自己的卷内号）。
   handleBook('book:export-epub', async (bookPath, override, range) => {
     const prepared = await prepareExport(bookPath, override, range);
     const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;
@@ -2421,7 +2422,7 @@ function registerIpc() {
 
   // 导出 DOCX（v0.8 P0 N9）：整本或按卷 / 按章节范围 → 一份 Word 能直接打开的书稿。
   // 和 EPUB 导出同一套规则：范围解析复用 exporter.resolveExportRange，只读选中的章，
-  // 章号 / 章名仍按全书顺序；当前章未保存内容参与、只读、原子写盘、简繁转换只作用于副本。
+  // 章标题走 chapters.formatTitle（范围按全书顺序，标题按书的编号方式）；当前章未保存内容参与、只读、原子写盘、简繁转换只作用于副本。
   handleBook('book:export-docx', async (bookPath, override, range) => {
     const prepared = await prepareExport(bookPath, override, range);
     const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;

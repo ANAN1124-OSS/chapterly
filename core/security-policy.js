@@ -9,8 +9,9 @@
 //   · 单测断言这份常量（改宽了会立刻红），
 //   · E2E 在真实 Electron 里用 webContents.getLastWebPreferences() 复核（三头对得上才算过）。
 //
-// 本轮范围（C-1）只做「安全开关 + 窗口行为」：CSP 与外部内容（C-4）、IPC 参数校验（C-2 / C-5）、
-// 日志脱敏的完整审计（C-4 / C-5）仍在施工队列里，见 下一阶段提案.md §6。
+// 当时列在「施工队列」的后续项现已全部落地，不再是待办：CSP 与外部内容在 renderer/index.html 的
+// Content-Security-Policy meta（C-4）；IPC 参数校验在 core/ipc-limits.js（C-2 / C-5）；
+// 回给界面 / 日志的错误文本脱敏在 core/error-text.js（C-4 / C-5）。本模块仍是这些安全开关的唯一事实来源。
 
 // 窗口的 webPreferences：每一项都是「收紧方向」，没有任何一项是为了方便而放宽。
 // 说明：

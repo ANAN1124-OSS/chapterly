@@ -42,7 +42,8 @@ function cachedCharsOf(chapter) {
 //   { mode: 'volume', volumeId }                    → 某一卷（volumeId 为 null = 未分卷）
 //   { mode: 'range', from, to }                     → 第 from–to 章（1 基、含两端，按全书顺序）
 // 返回 { mode, indexes, count, from, to, label, volumeId, empty }：
-//   indexes 是「全书 chapters 数组里的下标」，导出时章号仍按全书连续编号；
+//   indexes 是「全书 chapters 数组里的下标」（范围输入按全书顺序计）；章标题由 formatTitle 给出，
+//   按这本书的编号方式（连续 = 全书号，按卷 = 各卷自己的卷内号），这里不另算章号；
 //   越界自动收进 [1, 总章数]；from > to 或卷里没章节时 count = 0（调用方据此提示，不写空文件）。
 function resolveExportRange(meta, range) {
   const chapters = chapterList(meta);
@@ -125,7 +126,7 @@ function exportFileName(meta, range, extension) {
 
 // meta.chapters 与 texts 一一对应（texts 顺序同 chapters）
 // 有分卷的书：每卷第一段前面多输出一行卷名（卷名照抄原文，不加「第N卷」前缀）
-// range 可选（见 resolveExportRange）：只输出范围内的章节，章号仍按全书顺序。
+// range 可选（见 resolveExportRange）：只输出范围内的章节；范围按全书顺序算，章标题按书的编号方式（formatTitle）。
 function composeBook(meta, texts, range) {
   const chapters = chapterList(meta);
   const volumes = new Map(
