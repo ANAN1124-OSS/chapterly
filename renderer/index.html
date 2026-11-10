@@ -810,6 +810,25 @@
     </div>
   </div>
 
+  <!-- ============ 快捷键一览（1.5.0 功能-4：写作页按 ?） ============ -->
+  <!-- 列表由渲染层的 renderShortcutRows() 从命令表里带键位的条目现生成（与命令面板同一份
+       数据，不维护第二份快捷键表）；打开 / 关闭的键盘接线在全局 keydown +
+       esc-registry 的 shortcuts 锁键层，焦点进出与 Tab 由 dialog-focus 统一兜。 -->
+  <div id="shortcuts-backdrop" class="backdrop hidden">
+    <div class="modal shortcuts-modal" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+      <h2 class="modal-title" id="shortcuts-title">快捷键一览</h2>
+      <button id="btn-shortcuts-close" class="modal-close" type="button" title="关闭快捷键一览（Esc）" aria-label="关闭快捷键一览">×</button>
+      <p class="muted small shortcuts-hint">
+        焦点不在正文 / 输入框时，按 <span class="kbd">?</span> 打开、<span class="kbd">Esc</span> 关闭；在正文或任何输入框里按
+        <span class="kbd">?</span> 仍是普通字符。下面只列命令表里带键位的命令，与命令面板（<span class="kbd">Ctrl+K</span>）同一份数据。
+      </p>
+      <div id="shortcuts-list" class="shortcuts-list" role="list" aria-label="快捷键列表"></div>
+      <div class="modal-buttons">
+        <button id="btn-shortcuts-ok" class="btn ghost" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ 设置 ============ -->
   <div id="settings-backdrop" class="backdrop hidden">
     <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">

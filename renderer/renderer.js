@@ -3631,7 +3631,7 @@
   // 改顺序 / 加一层请改注册表，别再把 if 块抄回 keydown 里。
   const ESC_BACKDROPS = [
     'conflict', 'bookinfo', 'history', 'format', 'export', 'settings', 'jump', 'find',
-    'fragment', 'fragments', 'proofread', 'sensitive', 'capture'
+    'fragment', 'fragments', 'proofread', 'sensitive', 'capture', 'shortcuts'
   ];
 
   function escProbe() {
@@ -3677,6 +3677,8 @@
     'close-export': () => closeExportDialog(),
     'close-settings': () => closeSettings(),
     'close-command': () => commandPalette.close(),
+    // 快捷键一览（1.5.0 功能-4）：锁键层，Esc 收起并把焦点还给打开前的元素。
+    'close-shortcuts': () => closeShortcutsPage(),
     'close-jump': () => closeJumpDialog(),
     'close-find': () => closeFindPanel(),
     // 顶栏「整理」卡 / 「显示」菜单：先看焦点在谁里面，再把焦点还给对应按钮
@@ -3847,14 +3849,120 @@
     }
   }
 
-  // Ctrl+K：打开面板（lock 弹层开着时不抢 —— 与 Esc 链同一口径；输入法组字中不处理）
-  function openCommandPalette() {
-    if (state.modal) return false;
+  // 当前有没有弹层（含不锁键的面板）开着。Ctrl+K 与 `?` 共用：两个弹层不叠在一起，
+  // 与 Esc 链「锁键层先接走」的口径一致。state.modal 单独算（它可能压在别的弹层之上）。
+  function anyBackdropOpen() {
+    if (state.modal) return true;
     for (const name of ESC_BACKDROPS) {
       const el = $(`${name}-backdrop`);
-      if (el && !el.classList.contains('hidden')) return false;
+      if (el && !el.classList.contains('hidden')) return true;
     }
+    return false;
+  }
+
+  // Ctrl+K：打开面板（lock 弹层开着时不抢 —— 与 Esc 链同一口径；输入法组字中不处理）
+  function openCommandPalette() {
+    if (anyBackdropOpen()) return false;
     return commandPalette.open(document.activeElement);
+  }
+
+  // ---------- 快捷键一览（1.5.0 功能-4：写作页按 ?） ----------
+  // 数据源 = 命令表的同一份条目（commandDefs 的 kbd），按命令面板的 GROUP_LABELS 分组；
+  // **不维护第二份快捷键表** —— 命令表加了带键位的命令，这一页自动多一行。
+  // 这里不用 buildCommandItems()：那份按当前视图过滤（书架页会把保存 / 新建章节等编辑类命令滤掉，
+  // 一览页在书架页按 ? 就成了空表）；两处读的是同一份 commandDefs，文案与键位不会分叉。
+  function shortcutRows() {
+    const labels = commandPaletteModule.GROUP_LABELS || {};
+    const rows = [];
+    for (const def of commandDefs()) {
+      if (!def || !def.kbd) continue;
+      rows.push({
+        id: def.id,
+        title: def.title,
+        kbd: def.kbd,
+        group: def.group || 'command',
+        groupLabel: labels[def.group] || '其它'
+      });
+    }
+    return rows;
+  }
+
+  function renderShortcutRows() {
+    const list = $('shortcuts-list');
+    if (!list) return 0;
+    list.textContent = '';
+    const rows = shortcutRows();
+    let lastGroup = null;
+    for (const row of rows) {
+      if (row.groupLabel !== lastGroup) {
+        lastGroup = row.groupLabel;
+        const head = document.createElement('div');
+        head.className = 'shortcut-group';
+        head.setAttribute('role', 'presentation');
+        head.textContent = row.groupLabel;
+        list.appendChild(head);
+      }
+      const item = document.createElement('div');
+      item.className = 'shortcut-row';
+      item.setAttribute('role', 'listitem');
+      item.dataset.shortcutId = row.id;
+      const title = document.createElement('span');
+      title.className = 'shortcut-title';
+      title.textContent = row.title;
+      const kbd = document.createElement('span');
+      kbd.className = 'kbd shortcut-kbd';
+      kbd.textContent = row.kbd;
+      item.appendChild(title);
+      item.appendChild(kbd);
+      list.appendChild(item);
+    }
+    if (!rows.length) {
+      const empty = document.createElement('div');
+      empty.className = 'shortcut-empty muted small';
+      empty.textContent = '命令表里暂时没有带键位的命令';
+      list.appendChild(empty);
+    }
+    return rows.length;
+  }
+
+  function shortcutsOpen() {
+    const backdrop = $('shortcuts-backdrop');
+    return Boolean(backdrop && !backdrop.classList.contains('hidden'));
+  }
+
+  // 打开前的焦点（关闭时归还；dialog-focus 也会兜一层，这里显式还给编辑区 / 原按钮）
+  let shortcutsOpener = null;
+
+  function openShortcutsPage() {
+    const backdrop = $('shortcuts-backdrop');
+    if (!backdrop || shortcutsOpen()) return false;
+    renderShortcutRows();
+    const active = document.activeElement;
+    shortcutsOpener = active && active !== document.body && active !== document.documentElement ? active : null;
+    backdrop.classList.remove('hidden');
+    // 焦点先落在右上「×」上：标题会被读屏连同弹层一起念出来，Tab 一次就到下面唯一的「关闭」。
+    const closeButton = $('btn-shortcuts-close');
+    if (closeButton && typeof closeButton.focus === 'function') closeButton.focus();
+    return true;
+  }
+
+  function closeShortcutsPage() {
+    const backdrop = $('shortcuts-backdrop');
+    if (!backdrop || backdrop.classList.contains('hidden')) return false;
+    backdrop.classList.add('hidden');
+    const opener = shortcutsOpener;
+    shortcutsOpener = null;
+    const active = document.activeElement;
+    // 焦点还留在刚关掉的弹层里 / 掉到 body 上 → 还给打开前的元素（编辑区或原按钮）。
+    // 业务代码要是已经把焦点给了别处，就不抢。
+    const lost = !active || active === document.body || active === document.documentElement || backdrop.contains(active);
+    if (lost) {
+      const target = opener && opener.isConnected ? opener : (state.view === 'editor' && state.bookPath ? editorEl : null);
+      if (target && typeof target.focus === 'function') {
+        try { target.focus(); } catch { /* 元素刚好不可聚焦：交给 dialog-focus 兜底 */ }
+      }
+    }
+    return true;
   }
 
   // ---------- 关闭拦截 ----------
@@ -4918,6 +5026,9 @@
     setupChapterListEvents();
     // 1.5.0 功能-1：多选批量条（选中 ≥1 章时出现）
     setupChapterBatchBar();
+    // 1.5.0 功能-4：快捷键一览的两个「关闭」出口（Esc 由 esc-registry 的 shortcuts 锁键层接）
+    $('btn-shortcuts-close').addEventListener('click', closeShortcutsPage);
+    $('btn-shortcuts-ok').addEventListener('click', closeShortcutsPage);
 
     // 导入进度（大书库导入可能要几十秒，分章/复制逐项汇报）
     api.onImportProgress((progress) => {
@@ -5036,6 +5147,21 @@
         }
         return;
       }
+      // 快捷键一览（1.5.0 功能-4）：写作页按 ? / 中文输入法的 ？ 打开；Esc 由上面的快捷键锁键层收起。
+      // 焦点在输入类目标（正文 textarea / 搜索框）里时 ? 是普通字符，不抢；任何弹层开着时也不开
+      // （锁键弹层已经被上面的 Esc 链吞掉，这里兜住不锁键的面板，避免两层叠在一起）。
+      // 不判 shiftKey：`?` 本身就是 Shift+/ 打出来的，判了反而永远不响。
+      if (
+        (event.key === '?' || event.key === '？') &&
+        !event.ctrlKey && !event.altKey && !event.metaKey
+      ) {
+        if (event.isComposing) return;
+        if (undoActionModule.isTypingTarget(document.activeElement)) return;
+        if (anyBackdropOpen()) return;
+        event.preventDefault();
+        openShortcutsPage();
+        return;
+      }
       // 命令面板（1.4.0 P0-3 / 规范 I-03）：Ctrl+K 打开；再按一次收起。锁键弹层开着时不抢
       // （与 Esc 链同一口径：通用询问框 / 冲突 / 历史 / 排版 / 导出 / 设置 / 跳章 / 命令面板本身）。
       if (
@@ -5045,16 +5171,9 @@
         // 面板开着时这一支走不到（esc-registry 的 command 层是锁键层，会先吞掉按键）；
         // 「再按一次 Ctrl+K 收起」由面板自己的输入框处理（command-palette-ui.js）。
         // 长按不重复开关（1.5.0 P0-4 / H-9）：event.repeat 派发的按键只吞掉、不再开合面板。
-        if (!state.modal && !event.isComposing && !event.repeat) {
-          const blocked = ESC_BACKDROPS.some((name) => {
-            const el = $(`${name}-backdrop`);
-            return Boolean(el && !el.classList.contains('hidden'));
-          });
-          if (!blocked) {
-            event.preventDefault();
-            openCommandPalette();
-            return;
-          }
+        if (!event.isComposing && !event.repeat && !anyBackdropOpen()) {
+          event.preventDefault();
+          openCommandPalette();
         }
         return;
       }

@@ -177,6 +177,13 @@ async function run(host) {
           true
         );
         await sleep(300);
+      } else if (screenshotDialog === 'shortcuts') {
+        // 1.5.0 功能-4：`?` 快捷键一览打开的样子（先把焦点移出编辑区：编辑区里 ? 是普通字符）
+        await win.webContents.executeJavaScript(
+          "(() => { const el = document.getElementById('editor'); if (el) el.blur(); document.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true })); })()",
+          true
+        );
+        await sleep(450);
       } else if (screenshotDialog === 'undo') {
         // 1.4.0 P0-2：撤销条（删除章节后 10 秒内的样子）—— 删掉第 2 章，条子出现在左下角。
         await win.webContents.executeJavaScript(

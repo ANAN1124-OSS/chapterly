@@ -652,10 +652,11 @@ test('静态闸门：模块只碰键盘 / 焦点，不许碰鼠标事件、定�
   assert.ok(source.includes("addEventListener('keydown'"), '唯一的入口是容器的 keydown');
 });
 
-test('静态闸门：15 个弹层都有无障碍名称（标题 id + aria-labelledby），且指向真标题', () => {
+test('静态闸门：16 个弹层都有无障碍名称（标题 id + aria-labelledby），且指向真标题', () => {
   const backdrops = [...INDEX.matchAll(/<div id="([a-z-]+-backdrop)" class="backdrop/g)].map((m) => m[1]);
   // 1.4.0 P0-3：新增 #command-backdrop（命令面板 Ctrl+K），14 → 15
-  assert.equal(backdrops.length, 15, '弹层数量变了就要同步这条测试');
+  // 1.5.0 功能-4：新增 #shortcuts-backdrop（`?` 快捷键一览），15 → 16
+  assert.equal(backdrops.length, 16, '弹层数量变了就要同步这条测试');
   for (const id of backdrops) {
     const start = INDEX.indexOf(`<div id="${id}"`);
     const seg = INDEX.slice(start, start + 5000);

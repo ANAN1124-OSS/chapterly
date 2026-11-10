@@ -3861,6 +3861,33 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
 .command-kbd { flex: 0 0 auto; }
 .command-empty { margin: 4px 8px 0; }
 
+/* ---------- 快捷键一览（1.5.0 功能-4：写作页按 ?） ---------- */
+/* 只读列表：分组标签 / 行高 / 圆角与命令面板同一套，键帽比状态栏的 .kbd 稍大一号
+   （这是「查键位」的页面，10px 的提示字号在这里读着费劲）。颜色全部走现有令牌。 */
+.shortcuts-modal { width: min(560px, 92vw); }
+.shortcuts-hint { margin: 0 0 8px; line-height: 1.9; }
+.shortcuts-list { max-height: 52vh; overflow: auto; margin: 0; padding: 0; }
+.shortcut-group {
+  padding: 8px 8px 4px;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--folio-radius);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.shortcut-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shortcut-kbd { flex: 0 0 auto; height: 20px; padding: 0 6px; font-size: 11.5px; color: var(--ink-soft); }
+.shortcut-empty { margin: 4px 8px 0; }
+
 /* ---------- 全局撤销条（1.4.0 P0-2：删除 / 移动等动作直接执行后可撤销） ---------- */
 /* 底部偏左：右下角是 toast，左上留给正文；纸色 + 发丝线，颜色全部走现有令牌（不新增颜色）。
  * 10 秒后由 renderer/undo-ui.js 收起；出现 / 消失都用 --motion-overlay，守动效令牌。 */

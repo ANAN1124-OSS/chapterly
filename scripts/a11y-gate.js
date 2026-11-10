@@ -251,6 +251,18 @@ const STATES = [
     focusScope: '#capture-backdrop'
   },
   {
+    // 1.5.0 功能-4：`?` 快捷键一览。用真实全局 keydown 打开（编辑区失焦后 `?` 才接），
+    // 收起走右上「×」按钮（不依赖 Esc 链，量的是弹层本身的目标 / 焦点）。
+    id: 'shortcuts',
+    label: '快捷键一览弹层',
+    setup:
+      "document.getElementById('editor').blur();" +
+      "document.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }))",
+    wait: "document.getElementById('shortcuts-backdrop').classList.contains('hidden') === false",
+    teardown: "document.getElementById('btn-shortcuts-close').click()",
+    focusScope: '#shortcuts-backdrop'
+  },
+  {
     id: 'reading',
     label: '阅读模式',
     setup: 'window.__cwTest.openReading()',

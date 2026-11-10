@@ -65,6 +65,7 @@ test('顺序闸门：Esc 链的层顺序 = 优先级（通用询问框 → 弹�
       'settings',
       'jump',
       'command',
+      'shortcuts',
       'find',
       'menus',
       'find-highlight',
@@ -88,7 +89,7 @@ test('顺序闸门：Esc 链的层顺序 = 优先级（通用询问框 → 弹�
   assert.equal(new Set(actions).size, actions.length, '动作 id 不许重复');
 });
 
-test('锁键弹层：通用询问框 / 7 个弹层吞掉所有按键，Esc 才做动作', () => {
+test('锁键弹层：通用询问框 / 8 个弹层吞掉所有按键，Esc 才做动作', () => {
   const cases = [
     ['modal', 'modal-cancel'],
     ['conflict', 'close-conflict'],
@@ -97,7 +98,9 @@ test('锁键弹层：通用询问框 / 7 个弹层吞掉所有按键，Esc 才�
     ['format', 'close-format'],
     ['export', 'close-export'],
     ['settings', 'close-settings'],
-    ['jump', 'close-jump']
+    ['jump', 'close-jump'],
+    // 1.5.0 功能-4：`?` 快捷键一览页也是锁键层（面板开着时 Ctrl+S 等快捷键不响）
+    ['shortcuts', 'close-shortcuts']
   ];
   for (const [name, action] of cases) {
     const hit = esc.resolve(probeOpen(name), 'Escape');
@@ -117,6 +120,37 @@ test('锁键弹层：通用询问框 / 7 个弹层吞掉所有按键，Esc 才�
   // 弹层锁优先于菜单：顶栏卡与弹层同时开着时先关弹层（改前就是弹层写在前）
   assert.equal(esc.resolve(probeOpen('settings', 'formatCard', 'displayMenu'), 'Escape').action, 'close-settings');
   assert.equal(esc.resolve(probeOpen('find', 'formatCard'), 'Escape').action, 'close-find');
+});
+
+test('快捷键一览层（1.5.0 功能-4）：锁键层，Esc 收起；排在命令面板之后', () => {
+  assert.deepEqual(esc.resolve({ shortcuts: true }, 'Escape'), {
+    layer: 'shortcuts',
+    key: 'Escape',
+    action: 'close-shortcuts',
+    preventDefault: true,
+    swallow: true
+  });
+  // 锁键：开着时别的快捷键一律被吞（Ctrl+S 不保存、F11 不进专注、Ctrl+K 不开命令面板）
+  for (const key of ['s', 'k', 'F11', 'Enter', 'Tab', '?']) {
+    assert.deepEqual(
+      esc.resolve({ shortcuts: true }, key),
+      { layer: 'shortcuts', key, action: null, preventDefault: false, swallow: true },
+      `快捷键一览开着时 ${key} 不许漏到下面的快捷键`
+    );
+  }
+  // 它只会在没有别的弹层时打开；万一叠上了，Esc 仍先关更「在上面」的那层
+  assert.equal(esc.resolve({ shortcuts: true, settings: true }, 'Escape').layer, 'settings');
+  assert.equal(esc.resolve({ shortcuts: true, command: true }, 'Escape').layer, 'command');
+  // index.html 的弹层结构：backdrop + role=dialog + 标题 + 两个关闭出口
+  assert.match(INDEX_SOURCE, /<div id="shortcuts-backdrop" class="backdrop hidden">/, '快捷键一览要有自己的 backdrop');
+  const panel = INDEX_SOURCE.slice(
+    INDEX_SOURCE.indexOf('id="shortcuts-backdrop"'),
+    INDEX_SOURCE.indexOf('id="settings-backdrop"')
+  );
+  assert.ok(panel.includes('role="dialog"') && panel.includes('aria-modal="true"'), '快捷键一览要是真正的模态');
+  assert.ok(panel.includes('aria-labelledby="shortcuts-title"') && panel.includes('id="shortcuts-title"'), '弹层要有可读标题');
+  assert.ok(panel.includes('id="btn-shortcuts-close"') && panel.includes('id="btn-shortcuts-ok"'), '要有 × 与「关闭」两个出口');
+  assert.ok(panel.includes('id="shortcuts-list"'), '列表容器要在 HTML 里（内容由渲染层生成）');
 });
 
 test('历史面板：有预览先收预览，再按一次才关面板', () => {
