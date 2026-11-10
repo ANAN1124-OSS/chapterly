@@ -141,3 +141,27 @@ test('按卷编号跳章：没有这一章号 → outOfRange；连续模式返�
   assert.equal(continuous.numbering, 'continuous');
   assert.deepEqual(continuous.matches, [{ index: 0, chapterId: 'x', name: '第一章', matchType: 'number' }]);
 });
+
+test('按卷编号跳章：章缺 number 时明确报错（不再回落全书下标）', () => {
+  const missing = [
+    { id: 'v1c1', name: '起风', number: 1 },
+    { id: 'v1c2', name: '夜雨' }
+  ];
+  assert.throws(
+    () => jump.findMatches(missing, '1', { numbering: 'volume' }),
+    (err) => err && err.code === 'JUMP_NUMBER_MISSING' && /第 2 项/.test(err.message)
+  );
+  // 0 / 负数 / 非数字 / NaN 都算「没有有效 number」
+  for (const bad of [0, -1, 'abc', NaN]) {
+    assert.throws(
+      () => jump.findMatches([{ id: 'a', name: '甲', number: bad }], '1', { numbering: 'volume' }),
+      (err) => err && err.code === 'JUMP_NUMBER_MISSING'
+    );
+  }
+  // null / 非对象条目仍是合法的「坏条目占位」：照旧跳过，不参与报错（与连续模式同一口径）
+  const withJunk = jump.findMatches([null, '不是对象', ...VOLUME_CHAPTERS], '1', { numbering: 'volume' });
+  assert.equal(withJunk.total, 2);
+  // 连续模式（默认）仍按全书下标，不要求 number —— 旧调用方零适配
+  const continuous = jump.findMatches([{ id: 'x', name: '第一章' }], '1');
+  assert.deepEqual(continuous.matches, [{ index: 0, chapterId: 'x', name: '第一章', matchType: 'number' }]);
+});

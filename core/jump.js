@@ -47,9 +47,11 @@ function chapterIdOf(chapter) {
   return chapter && typeof chapter === 'object' && chapter.id != null ? String(chapter.id) : '';
 }
 
-function chapterNumberLabelOf(chapter, index) {
-  const value = Number(chapter && chapter.number);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : index + 1;
+// 按卷编号跳章要求每章都带调用方算好的卷内号（渲染层用 chaptersLib.chapterNumber）。
+// 缺 number 时**不再**回落成「全书下标 + 1」——那会静默跳到别的卷的章；改由调用处明确报错。
+function hasValidChapterNumber(chapter) {
+  const value = Number(chapter && typeof chapter === 'object' ? chapter.number : NaN);
+  return Number.isFinite(value) && value >= 1;
 }
 
 function makeMatch(chapter, index, matchType) {
@@ -92,11 +94,22 @@ function findMatches(chapters, rawQuery, options) {
     const numbering = options && options.numbering === 'volume' ? 'volume' : 'continuous';
     result.numbering = numbering;
     if (numbering === 'volume') {
-      // 按卷编号：同一章号可能在每一卷都出现一次 —— 全部列出来，让作者按卷名选
+      // 按卷编号：同一章号可能在每一卷都出现一次 —— 全部列出来，让作者按卷名选。
+      // 1.5.0 功能-5（审计建议 14 小项）：章号必须由调用方算好；缺 number 说明契约被破坏，
+      // 以前会回落成全书下标 + 1（可能悄悄跳到别的卷），现在明确报错。
+      for (let index = 0; index < list.length; index += 1) {
+        const chapter = list[index];
+        if (!chapter || typeof chapter !== 'object') continue;
+        if (!hasValidChapterNumber(chapter)) {
+          const err = new Error(`按卷编号跳章缺少章号（第 ${index + 1} 项没有有效的 number）`);
+          err.code = 'JUMP_NUMBER_MISSING';
+          throw err;
+        }
+      }
       const hits = [];
       list.forEach((chapter, index) => {
         if (!chapter || typeof chapter !== 'object') return;
-        if (chapterNumberLabelOf(chapter, index) === number) hits.push({ chapter, index });
+        if (Math.floor(Number(chapter.number)) === number) hits.push({ chapter, index });
       });
       result.total = hits.length;
       result.matches = hits.slice(0, limit).map((item) => makeMatch(item.chapter, item.index, 'number'));
