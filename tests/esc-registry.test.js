@@ -282,9 +282,19 @@ test('接线闸门：12 段复制块已收掉，keydown 里不再手写弹层判
       `${name} 的 Esc 复制块回到了 renderer.js：Esc 判断只许留在 esc-registry.js`
     );
   }
-  // keydown 里只该剩「shelf-search 搜索框自己清空」那一个 Escape 判断
+  // keydown 里只该剩「输入框自己清空」这一类 Escape 判断：书架搜索框 + 卷章目录筛选框
+  // （2026-11-10 目录重设计新增）。弹层判断一个都不许回到 renderer.js。
   const escapes = (RENDERER_SOURCE.match(/event\.key === 'Escape'/g) || []).length;
-  assert.equal(escapes, 1, `renderer.js 里只该剩书架搜索框那一个 Esc 判断（现在 ${escapes} 处）`);
+  assert.equal(escapes, 2, `renderer.js 里只该剩两个输入框自己的 Esc 判断（现在 ${escapes} 处）`);
+  assert.ok(
+    RENDERER_SOURCE.includes("$('shelf-search').addEventListener('keydown', (event) => {"),
+    '书架搜索框的 Esc 判断要留着'
+  );
+  assert.ok(
+    RENDERER_SOURCE.includes('function setupChapterDirectory()') &&
+      RENDERER_SOURCE.includes("input.addEventListener('keydown', (event) => {"),
+    '卷章目录筛选框的 Esc 判断要在 setupChapterDirectory 里（只清筛选词，不接弹层）'
+  );
   // Esc 链与关窗清理都必须走注册表，且只调一次
   assert.equal((RENDERER_SOURCE.match(/escLib\.resolve\(/g) || []).length, 1, 'Esc 链必须只有一处调用注册表');
   assert.equal((RENDERER_SOURCE.match(/escLib\.cleanupActions\(/g) || []).length, 1, '关窗清理必须只有一处调用注册表');

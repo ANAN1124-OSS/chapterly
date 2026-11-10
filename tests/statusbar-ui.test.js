@@ -233,6 +233,7 @@ test('renderCharCount：超大单章（>20 万字符）走 400ms 防抖，连打
     const { host, els, editorEl } = makeHost({
       text: 'x'.repeat(200001),
       chaptersLib: {
+        ...chaptersLib,
         countChars(text) {
           counted += 1;
           return chaptersLib.countChars(text);

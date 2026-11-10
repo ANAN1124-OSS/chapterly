@@ -227,6 +227,15 @@
     const allRadio = document.querySelector('input[name="export-scope"][value="all"]');
     if (allRadio) allRadio.checked = true;
     $('export-all-count').textContent = `（${total} 章）`;
+    // 按卷编号：范围还是按全书顺序（输入的是第几个章节），导出标题才用卷内章号
+    const numberingHint = $('export-numbering-hint');
+    if (numberingHint) {
+      const byVolume = Boolean(state.meta && state.meta.chapterNumbering === 'volume');
+      numberingHint.classList.toggle('hidden', !byVolume);
+      numberingHint.textContent = byVolume
+        ? '这本书按卷编号：「第 X 章到第 Y 章」按全书章节顺序计算；导出文件里的章标题用各卷自己的章号。'
+        : '';
+    }
     $('export-from').value = '1';
     $('export-to').value = String(total);
     $('export-from').max = String(total);

@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const bookmarkUi = require('../renderer/find-bookmark-ui');
 const bookmarksLib = require('../core/bookmarks');
+const chaptersLib = require('../core/chapters');
 
 // 第 4 步 renderer 九刀·补刀 9b：查找书签（原 renderer.js 1265–1544，280 行）搬到 renderer/find-bookmark-ui.js。
 // 搬之前只有 E2E 黑盒覆盖（存书签 / 删除 / 跳书签 / 打开章节自动高亮）；列表结构 / 令牌作废旧列表 /
@@ -154,6 +155,7 @@ function build(options = {}) {
     toast(message, kind) { calls.toast.push([message, kind]); },
     find: {
       bookmarksLib,
+      chaptersLib,
       editorEl,
       readFindOptions: () => {
         calls.readFindOptions += 1;
@@ -200,7 +202,7 @@ test('host 契约：7 个成员 + 分组内每个真实依赖；缺任何一个�
     delete broken[key];
     assert.throws(() => bookmarkUi.create(broken), new RegExp('host 缺少 ' + key.replace('$', '\\$')), '缺 ' + key);
   }
-  for (const key of ['bookmarksLib', 'editorEl', 'readFindOptions', 'findSessionMatchesOptions', 'findPanelOpen', 'closeFindPanel', 'renderFindStatusChip', 'startFindSession', 'clearFindSession']) {
+  for (const key of ['bookmarksLib', 'chaptersLib', 'editorEl', 'readFindOptions', 'findSessionMatchesOptions', 'findPanelOpen', 'closeFindPanel', 'renderFindStatusChip', 'startFindSession', 'clearFindSession']) {
     const broken = { ...ctx.host, find: { ...ctx.host.find } };
     delete broken.find[key];
     assert.throws(() => bookmarkUi.create(broken), new RegExp('host\\.find 缺少 ' + key));
@@ -482,7 +484,7 @@ test('静态闸门：renderer.js 不再内嵌查找书签实现，只剩装配�
   assert.ok(rendererSrc.includes('const findBookmarkUiModule = window.CWFindBookmarkUi;'));
   for (const line of [
     '    $, state, api, call, toast,',
-    '    find: { bookmarksLib, editorEl, readFindOptions, findSessionMatchesOptions, findPanelOpen, closeFindPanel, renderFindStatusChip, startFindSession, clearFindSession },',
+    '    find: { bookmarksLib, chaptersLib, editorEl, readFindOptions, findSessionMatchesOptions, findPanelOpen, closeFindPanel, renderFindStatusChip, startFindSession, clearFindSession },',
     '    nav: { switchChapter: (index) => switchChapter(index), openBookByPath }'
   ]) {
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);

@@ -48,14 +48,14 @@
     }
     const { $, state, api, call, toast, find, nav } = host;
     if (typeof find !== 'object') throw new TypeError('createFindBookmarkUi 的 host.find 必须是对象');
-    for (const key of ['bookmarksLib', 'editorEl', 'readFindOptions', 'findSessionMatchesOptions', 'findPanelOpen', 'closeFindPanel', 'renderFindStatusChip', 'startFindSession', 'clearFindSession']) {
+    for (const key of ['bookmarksLib', 'chaptersLib', 'editorEl', 'readFindOptions', 'findSessionMatchesOptions', 'findPanelOpen', 'closeFindPanel', 'renderFindStatusChip', 'startFindSession', 'clearFindSession']) {
       if (find[key] === undefined || find[key] === null) throw new TypeError('createFindBookmarkUi 的 host.find 缺少 ' + key);
     }
     if (typeof nav !== 'object') throw new TypeError('createFindBookmarkUi 的 host.nav 必须是对象');
     for (const key of ['switchChapter', 'openBookByPath']) {
       if (nav[key] === undefined || nav[key] === null) throw new TypeError('createFindBookmarkUi 的 host.nav 缺少 ' + key);
     }
-    const { bookmarksLib, editorEl, readFindOptions, findSessionMatchesOptions, findPanelOpen, closeFindPanel, renderFindStatusChip, startFindSession, clearFindSession } = find;
+    const { bookmarksLib, chaptersLib, editorEl, readFindOptions, findSessionMatchesOptions, findPanelOpen, closeFindPanel, renderFindStatusChip, startFindSession, clearFindSession } = find;
     const { switchChapter, openBookByPath } = nav;
 
   // ---------- 查找书签（v0.8-11b，提案 N11b）----------
@@ -188,7 +188,8 @@
       bookTitle: state.meta ? state.meta.title : '',
       chapterId: chapter.id,
       chapterName: chapter.name || '',
-      chapterIndex: state.index + 1,
+      // 书签面板只显示位置：按卷编号时记卷内章号（旧书签没有这个语义，仍按原值显示）
+      chapterIndex: chaptersLib ? chaptersLib.chapterNumber(state.meta, state.index) : state.index + 1,
       query: options.query,
       caseSensitive: Boolean(options.caseSensitive)
     };

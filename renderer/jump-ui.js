@@ -32,7 +32,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['api', '$', 'call', 'state', 'chapterTitle', 'CHAPTER_STATUS_LABELS', 'chapterStatus', 'switchChapter'];
+  const REQUIRED_HOST = ['api', '$', 'call', 'state', 'chapterTitle', 'chaptersLib', 'CHAPTER_STATUS_LABELS', 'chapterStatus', 'switchChapter'];
 
   function createJumpUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createJumpUi 需要 host 对象');
@@ -41,16 +41,28 @@
         throw new TypeError('createJumpUi 的 host 缺少 ' + key);
       }
     }
-    const { api, $, call, state, chapterTitle, CHAPTER_STATUS_LABELS, chapterStatus, switchChapter } = host;
+    const { api, $, call, state, chapterTitle, chaptersLib, CHAPTER_STATUS_LABELS, chapterStatus, switchChapter } = host;
   // ---------- Ctrl+G 跳章 ----------
   // 匹配规则在主进程的 core/jump.js（单测覆盖）：输入纯章号按章号找，否则按章名关键词找。
   // 这里只负责对话框、结果列表和「跳过去」；切章仍走 switchChapter，未保存拦截照常生效。
   const JUMP_RESULT_LIMIT = 8;
 
   function jumpChapterPayload() {
-    return (state.chapters || []).map((chapter) => ({
+    const meta = state.meta || {};
+    const volumes = Array.isArray(meta.volumes) ? meta.volumes : [];
+    const volumeNameOf = (chapter) => {
+      const id = chapter && typeof chapter.volumeId === 'string' ? chapter.volumeId : '';
+      const volume = id ? volumes.find((item) => item && item.id === id) : null;
+      if (volume) return String(volume.name || '').trim() || '未命名卷';
+      // 没有卷（或卷已不存在）的章：按卷编号时它自成一个分组，跳章结果要标明「未分卷」
+      return volumes.length ? '未分卷' : '';
+    };
+    return (state.chapters || []).map((chapter, index) => ({
       id: chapter.id,
-      name: chapter.name == null ? '' : String(chapter.name)
+      name: chapter.name == null ? '' : String(chapter.name),
+      // 跳章的纯数字匹配要按「显示用的章号」算：按卷编号时同一章号每卷都可能出现
+      number: chaptersLib.chapterNumber(meta, index),
+      volumeName: volumeNameOf(chapter)
     }));
   }
 
@@ -63,15 +75,24 @@
     list.innerHTML = '';
     let text;
     let warn = false;
+    const byVolume = Boolean(result && result.numbering === 'volume');
     if (!query) {
-      text = `共 ${total} 章。输入章号（如 12、第12章）或章名的一部分；回车跳转。`;
+      text = byVolume
+        ? `共 ${total} 章（按卷编号）。输入章号 / 章名的一部分；同号章会列出所在卷。`
+        : `共 ${total} 章。输入章号（如 12、第12章）或章名的一部分；回车跳转。`;
     } else if (!matches.length) {
       warn = true;
       text = state.jumpOutOfRange
-        ? `本书共 ${total} 章，没有第 ${Number(result && result.number) || '?'} 章（可输入 1–${total}）。`
+        ? byVolume
+          ? `本书按卷编号，没有找到「第 ${Number(result && result.number) || '?'} 章」（每卷从第 1 章起算）。`
+          : `本书共 ${total} 章，没有第 ${Number(result && result.number) || '?'} 章（可输入 1–${total}）。`
         : `没有匹配「${query}」的章节。`;
     } else if (result && result.number != null) {
-      text = `按章号跳转：${chapterTitle(matches[0].index, matches[0].name)}`;
+      if (byVolume && matches.length > 1) {
+        text = `本书按卷编号：「第 ${result.number} 章」找到 ${matches.length} 处（按卷 / 未分卷分组），回车跳第一条。`;
+      } else {
+        text = `按章号跳转：${byVolume && matches[0].volumeName ? `${matches[0].volumeName} · ` : ''}${chapterTitle(matches[0].index, matches[0].name)}`;
+      }
     } else {
       const hitCount = Number(result && result.total) || matches.length;
       text = `找到 ${hitCount} 章匹配${hitCount > matches.length ? `（列出前 ${matches.length} 章）` : ''}；回车跳第一条，也可以点下面任意一条。`;
@@ -88,7 +109,8 @@
       row.dataset.index = String(match.index);
       const label = document.createElement('span');
       label.className = 'jump-chapter';
-      label.textContent = chapterTitle(match.index, match.name);
+      const titleText = chapterTitle(match.index, match.name);
+      label.textContent = byVolume && match.volumeName ? `${match.volumeName} · ${titleText}` : titleText;
       const status = document.createElement('span');
       status.className = 'jump-status';
       status.textContent = CHAPTER_STATUS_LABELS[chapterStatus(chapter)] || '';
@@ -113,7 +135,10 @@
       return;
     }
     try {
-      const result = await call(api.jumpMatch, jumpChapterPayload(), query, { limit: JUMP_RESULT_LIMIT });
+      const result = await call(api.jumpMatch, jumpChapterPayload(), query, {
+        limit: JUMP_RESULT_LIMIT,
+        numbering: state.meta && state.meta.chapterNumbering === 'volume' ? 'volume' : 'continuous'
+      });
       if (token !== state.jumpToken) return; // 输入已经又变了，旧结果丢掉
       state.jumpMatches = (result && Array.isArray(result.matches)) ? result.matches : [];
       state.jumpOutOfRange = Boolean(result && result.outOfRange);

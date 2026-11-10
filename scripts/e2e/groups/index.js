@@ -92,7 +92,11 @@ const groups = [
   // 撤销优先（1.4.0 P0-2，2026-11-09）：删除章节直接执行 + 10 秒撤销；idsFrom(60) 自动带上。
   { id: 74, run: require('./74-undo') },
   // 命令面板（1.4.0 P0-3，2026-11-09）：Ctrl+K / 混排 / 键盘 / 锁键；idsFrom(60) 自动带上。
-  { id: 75, run: require('./75-command-palette') }
+  { id: 75, run: require('./75-command-palette') },
+  // 卷章目录重设计（2026-11-10）：筛选 / 卷头吸顶 / 全部折叠 / 回到当前章；idsFrom(60) 自动带上。
+  { id: 76, run: require('./76-chapter-directory') },
+  // 章号编号方式（2026-11-10）：全书连续 / 每卷重新编号；idsFrom(60) 自动带上。
+  { id: 77, run: require('./77-chapter-numbering') }
 ];
 
 // 按给定组号依次跑（组号 → 组文件；顺序就是参数顺序，调用点决定「在哪一段」）。

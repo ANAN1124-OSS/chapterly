@@ -111,3 +111,33 @@ test('跳章：超长查询被截断，不会把整段正文当关键词', () =>
   assert.equal(result.query.length, jump.MAX_QUERY_LENGTH);
   assert.equal(result.total, 0);
 });
+
+const VOLUME_CHAPTERS = [
+  { id: 'v1c1', name: '起风', number: 1, volumeName: '卷一 · 归途' },
+  { id: 'v1c2', name: '夜雨', number: 2, volumeName: '卷一 · 归途' },
+  { id: 'v2c1', name: '渡口', number: 1, volumeName: '卷二 · 渡海' },
+  { id: 'v2c2', name: '上岸', number: 2, volumeName: '卷二 · 渡海' }
+];
+
+test('按卷编号跳章：同一章号在每卷各有一章 → 全部列出并带卷名', () => {
+  const result = jump.findMatches(VOLUME_CHAPTERS, '1', { numbering: 'volume' });
+  assert.equal(result.number, 1);
+  assert.equal(result.numbering, 'volume');
+  assert.equal(result.outOfRange, false);
+  assert.equal(result.total, 2);
+  assert.deepEqual(result.matches, [
+    { index: 0, chapterId: 'v1c1', name: '起风', matchType: 'number', volumeName: '卷一 · 归途' },
+    { index: 2, chapterId: 'v2c1', name: '渡口', matchType: 'number', volumeName: '卷二 · 渡海' }
+  ]);
+});
+
+test('按卷编号跳章：没有这一章号 → outOfRange；连续模式返回形状与以前一致（不带卷名）', () => {
+  const missing = jump.findMatches(VOLUME_CHAPTERS, '9', { numbering: 'volume' });
+  assert.equal(missing.outOfRange, true);
+  assert.equal(missing.total, 0);
+  assert.deepEqual(missing.matches, []);
+  const continuous = jump.findMatches([{ id: 'x', name: '第一章' }], '1');
+  assert.equal(continuous.number, 1);
+  assert.equal(continuous.numbering, 'continuous');
+  assert.deepEqual(continuous.matches, [{ index: 0, chapterId: 'x', name: '第一章', matchType: 'number' }]);
+});

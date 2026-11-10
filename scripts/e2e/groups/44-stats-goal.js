@@ -1084,7 +1084,7 @@ module.exports = async function group44StatsGoal(t) {
   await exec('window.__cwTest.save()');
   await waitFor('window.__cwTest.dirty() === false');
   await exec("window.__cwTest.newChapter('尾声')");
-  await waitFor("window.__cwTest.currentTitle() === '尾声'");
+  await waitFor("window.__cwTest.currentTitle() === '第3章：尾声'");
   await exec(`window.__cwTest.setText(${JSON.stringify(readTexts[2])})`);
   await exec('window.__cwTest.save()');
   await waitFor('window.__cwTest.dirty() === false');

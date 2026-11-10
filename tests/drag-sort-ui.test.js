@@ -477,7 +477,7 @@ test('moveChapterByDrag：同下标不写盘；成功时改 state / toast / 记�
   assert.equal(w2.state.meta.volumes.length, 1, 'meta 的其它字段要保留');
   assert.equal(w2.state.index, 0);
   assert.deepEqual([w2.renders.list, w2.renders.header, w2.renders.status], [1, 1, 1]);
-  assert.equal(w2.toasts[0].message, '已移动章节：第3章 → 第1章（章节文件没有改名）');
+  assert.equal(w2.toasts[0].message, '已移动章节：第 3 位 → 第 1 位（章节文件没有改名）');
   assert.deepEqual(w2.renders.lastOpen, [['C:\\books\\某书', 'c3', { title: undefined, chapterIndex: 0, chapterName: '三' }]]);
 });
 

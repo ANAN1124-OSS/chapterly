@@ -156,6 +156,14 @@ async function run(host) {
           await sleep(350);
         }
       }
+      // 开发截图可临时改章节栏宽度（只影响本次截图，不写配置）
+      if (argValue('sidebar-width')) {
+        await win.webContents.executeJavaScript(
+          `window.__cwTest.setSidebarWidth(${Number(argValue('sidebar-width'))})`,
+          true
+        );
+        await sleep(200);
+      }
       if (screenshotDialog === 'command') {
         // 1.4.0 P0-3：命令面板打开的样子（空查询 = 最近使用 + 命令 / 章节 / 书三组）
         await win.webContents.executeJavaScript('void window.__cwTest.openCommandPalette()', true);
@@ -176,6 +184,75 @@ async function run(host) {
           true
         );
         await sleep(600);
+      } else if (screenshotDialog === 'settings-book') {
+        // 按书设置（章号编号方式 2026-11-10）：打开当前书的设置并滚到「章号」
+        await win.webContents.executeJavaScript('void window.__cwTest.openSettings()', true);
+        await sleep(700);
+        await win.webContents.executeJavaScript(
+          `(() => { const el = document.getElementById('settings-numbering-field'); if (el) el.scrollIntoView({ block: 'center' }); })()`,
+          true
+        );
+        await sleep(400);
+      } else if (screenshotDialog === 'jump-volume') {
+        // 按卷编号时 Ctrl+G 输入 1：两卷的第 1 章都列出来
+        await win.webContents.executeJavaScript('void window.__cwTest.openJumpDialog()', true);
+        await sleep(450);
+        await win.webContents.executeJavaScript("void window.__cwTest.setJumpQuery('1')", true);
+        await sleep(600);
+      } else if (screenshotDialog === 'chapter-filter') {
+        // 2026-11-10 卷章目录重设计：筛选框输入后的样子（默认筛「渡」，可用 --filter= 覆盖）
+        const filterQuery = argValue('filter') || '渡';
+        await win.webContents.executeJavaScript(
+          `window.__cwTest.setChapterFilter(${JSON.stringify(filterQuery)})`,
+          true
+        );
+        await sleep(350);
+      } else if (screenshotDialog === 'chapter-filter-focus') {
+        // 筛选框的焦点环（Tab 进去的样子）
+        await win.webContents.executeJavaScript(
+          `(() => { const input = document.getElementById('chapter-filter'); input.focus(); return input === document.activeElement; })()`,
+          true
+        );
+        await sleep(300);
+      } else if (screenshotDialog === 'chapter-scroll') {
+        // 目录滚动到第二卷：卷头吸顶 + 当前章仍高亮
+        await win.webContents.executeJavaScript(
+          `(() => { const list = document.getElementById('chapter-list'); list.scrollTop = 430; return list.scrollTop; })()`,
+          true
+        );
+        await sleep(380);
+      } else if (screenshotDialog === 'chapter-hover') {
+        // 悬停一行看行尾「⋯」更多按钮（真鼠标事件，CSS :hover 才成立）
+        const point = await win.webContents.executeJavaScript(
+          `(() => { const el = document.querySelector('#chapter-list .chapter-item[data-index="3"]'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width - 40), y: Math.round(r.top + r.height / 2) }; })()`,
+          true
+        );
+        if (point) {
+          win.webContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y });
+          await sleep(350);
+        }
+      } else if (screenshotDialog === 'chapter-pill') {
+        // 当前章滚出目录：先切到最后一章，再把列表滚到顶，底部「回到第 N 章」浮标出现
+        const lastIndex = Number(
+          await win.webContents.executeJavaScript('window.__cwTest.state.chapters.length - 1', true)
+        );
+        await win.webContents.executeJavaScript(
+          `void window.__cwTest.switchTo(${lastIndex}, 'discard')`,
+          true
+        );
+        await sleep(320);
+        await win.webContents.executeJavaScript(
+          `document.getElementById('chapter-list').scrollTop = 0;`,
+          true
+        );
+        await sleep(420);
+      } else if (screenshotDialog === 'chapter-collapsed') {
+        // 全部折叠（当前章在折叠卷里时，浮标仍给一条回去的路）
+        await win.webContents.executeJavaScript(
+          `document.getElementById('btn-toggle-volumes').click()`,
+          true
+        );
+        await sleep(350);
       } else if (screenshotDialog === 'unsaved') {
         await win.webContents.executeJavaScript(
           `window.__cwTest.setText('（这是一段还没有保存的正文，演示关窗拦截）'); void window.__cwTest.handleCloseRequest();`,

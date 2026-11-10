@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('api', {
   verifyBook: (bookPath) => invoke('book:verify', bookPath),
   renameBook: (bookPath, title) => invoke('book:rename', bookPath, title),
   updateBookInfo: (bookPath, patch) => invoke('book:update-info', bookPath, patch),
+  setChapterNumbering: (bookPath, numbering) => invoke('book:set-chapter-numbering', bookPath, numbering),
   setLastOpenChapter: (bookPath, chapterId, info) => invoke('book:set-last', bookPath, chapterId, info),
 
   loadChapter: (bookPath, file) => invoke('chapter:load', bookPath, file),

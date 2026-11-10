@@ -18,6 +18,9 @@
   // 编辑器小件的纯逻辑（选中字数 / 段落导航 / 超长段落 / 不可见字符 / 章节字数对比），
   // 在 editor-logic.js 里、Node 单测覆盖；这里只负责显示和事件。
   const editorLogic = window.CWEditorLogic;
+  // 卷章目录筛选的纯逻辑（2026-11-10 目录重设计）：标题 / 章名 / 章号的多词匹配，
+  // 在 chapter-filter-logic.js 里、Node 单测覆盖；这里只负责把结果画进目录。
+  const chapterFilterLogic = window.CWChapterFilterLogic;
   // 查找增强（v0.8-11，提案 N11）的纯逻辑：上一处 / 下一处、高亮窗口、正文切片段、行号。
   // 在 find-logic.js 里、Node 单测覆盖；这里只负责选中、滚动和影子层显示。
   const findLogic = window.CWFindLogic;
@@ -321,6 +324,7 @@
     contextBook: null,
     contextVolumeId: null, // 当前右键的卷（卷菜单用）
     collapsedVolumes: new Set(), // 折叠起来的卷（'' = 未分卷组；只记在内存里，换书重置）
+    chapterFilter: '', // 卷章目录的筛选词（只记在内存里；换书 / 新建章时清空）
     importing: false,
     sidebarWidth: 250,
     sidebarDragging: false,
@@ -1094,6 +1098,7 @@
     state.bookId = data.meta.id;
     state.chapters = data.meta.chapters;
     state.collapsedVolumes = new Set(); // 换书重置折叠状态
+    state.chapterFilter = ''; // 换书清空目录筛选（否则新书会带着上一本的筛选词，看起来像丢章）
     state.dirty = false;
     state.saveError = null;
     state.baseText = '';
@@ -1268,6 +1273,317 @@
   }
 
   // ---------- 章节列表 ----------
+  // 2026-11-10 卷章目录重设计：书架返回 / 书名 / 全书概览 / 筛选 / 卷章树 / 底部一行操作。
+  // 这里只加显示层的东西：筛选词存在 state.chapterFilter（内存），换书 / 新建章时清空；
+  // 打开 / 保存 / 折叠 / 拖拽 / 右键 / 键盘的全部旧入口一个不改。
+  function chapterFilterQuery() {
+    return chapterFilterLogic.normalizeQuery(state.chapterFilter);
+  }
+
+  function chapterFilterActive() {
+    return chapterFilterQuery() !== '';
+  }
+
+  function chapterIndexMatchesFilter(index) {
+    const chapter = state.chapters[index];
+    if (!chapter) return false;
+    const query = chapterFilterQuery();
+    if (!query) return true;
+    return chapterFilterLogic.matchChapter(chapter, index, chapterTitle(index, chapter.name), query);
+  }
+
+  function matchingChapterIndexes() {
+    const out = [];
+    state.chapters.forEach((chapter, index) => {
+      if (chapterIndexMatchesFilter(index)) out.push(index);
+    });
+    return out;
+  }
+
+  // 目录概览的字数口径：书目缓存里有的章才算（和章节行 / 状态栏同一份 chapter.chars），
+  // 一本书都没保存过（全 null）就只显示章数，不假装 0 字。
+  function chapterCharsTotal(indexes) {
+    let total = 0;
+    let known = 0;
+    for (const index of indexes) {
+      const chars = chapterCharsOf(state.chapters[index]);
+      if (chars != null) {
+        total += chars;
+        known += 1;
+      }
+    }
+    return { total, known };
+  }
+
+  function formatCharsLabel(chars) {
+    return chars >= 10000 ? `${editorLogic.formatCharsShort(chars)}字` : `${formatCount(chars)} 字`;
+  }
+
+  function renderBookMeta() {
+    const el = $('book-meta');
+    if (!el) return;
+    const total = state.chapters.length;
+    if (!total) {
+      el.textContent = '';
+      el.title = '';
+      return;
+    }
+    if (chapterFilterActive()) {
+      const matched = matchingChapterIndexes().length;
+      const query = chapterFilterQuery();
+      // 筛选时这一行就是结果计数：读屏也跟着播报（属性先于文案设置，变化才会被读出来）
+      el.setAttribute('aria-live', 'polite');
+      el.textContent = `找到 ${matched} 章 · 共 ${total} 章`;
+      el.title = `筛选「${query}」：找到 ${matched} 章（全书 ${total} 章）`;
+      return;
+    }
+    el.setAttribute('aria-live', 'off');
+    const all = state.chapters.map((chapter, index) => index);
+    const { total: chars, known } = chapterCharsTotal(all);
+    el.textContent = known ? `${total} 章 · ${formatCharsLabel(chars)}` : `${total} 章`;
+    el.title = known
+      ? `全书 ${total} 章；${formatCount(chars)} 字（书目缓存，保存后更新）`
+      : `全书 ${total} 章`;
+  }
+
+  // 筛选词 → 输入框 / 清除键 / 概览行。目录重绘和事件处理共用这一份口径。
+  function syncChapterFilterUi() {
+    const input = $('chapter-filter');
+    const clear = $('btn-clear-filter');
+    const value = String(state.chapterFilter == null ? '' : state.chapterFilter);
+    if (input && input.value !== value) input.value = value;
+    if (clear) clear.classList.toggle('hidden', !chapterFilterActive());
+  }
+
+  function setChapterFilter(value) {
+    state.chapterFilter = String(value == null ? '' : value);
+    syncChapterFilterUi();
+    renderChapterList();
+  }
+
+  // 筛选命中的章名：把命中的那段文字包进 <mark>（只包最先命中的一个词；章号命中时章名不变），
+  // 让作者一眼看出「为什么这一条留下来了」。textContent 仍是完整章名（标题统一测试不受影响）。
+  function appendChapterName(el, name, query) {
+    const terms = String(query || '').split(' ').filter(Boolean);
+    const text = String(name == null ? '' : name);
+    const lower = text.toLowerCase();
+    let best = null;
+    for (const term of terms) {
+      const at = lower.indexOf(String(term).toLowerCase());
+      if (at >= 0 && (!best || at < best.at)) best = { at, length: String(term).length };
+    }
+    if (!best) {
+      el.textContent = text;
+      return;
+    }
+    el.textContent = '';
+    el.appendChild(document.createTextNode(text.slice(0, best.at)));
+    const mark = document.createElement('mark');
+    mark.className = 'chapter-hit';
+    mark.textContent = text.slice(best.at, best.at + best.length);
+    el.appendChild(mark);
+    el.appendChild(document.createTextNode(text.slice(best.at + best.length)));
+  }
+
+  // 卷头（吸顶）的「全部折叠 / 全部展开」：只在有卷且没在筛选时出现。
+  // 折叠状态只存在内存里（换书重置），和单卷折叠走同一份 state.collapsedVolumes。
+  function volumeGroupKeys() {
+    const volumes = volumeList();
+    // 没分卷的书没有「卷」可折叠：不给「全部折叠」按钮（否则会把整张平铺目录收没）
+    if (!volumes.length) return [];
+    const ids = new Set(volumes.map((volume) => volume.id));
+    const keys = volumes.map((volume) => volume.id);
+    const hasOrphans = state.chapters.some((chapter) => {
+      const volumeId = chapterVolumeId(chapter);
+      return !(volumeId && ids.has(volumeId));
+    });
+    if (hasOrphans) keys.push('');
+    return keys;
+  }
+
+  function renderVolumeToggle() {
+    const btn = $('btn-toggle-volumes');
+    if (!btn) return;
+    const keys = volumeGroupKeys();
+    if (!keys.length || chapterFilterActive()) {
+      btn.classList.add('hidden');
+      return;
+    }
+    btn.classList.remove('hidden');
+    const allCollapsed = keys.every((key) => state.collapsedVolumes.has(key));
+    btn.textContent = allCollapsed ? '全部展开' : '全部折叠';
+    btn.title = allCollapsed ? '展开全部卷（只影响侧栏显示）' : '折叠全部卷（只影响侧栏显示）';
+  }
+
+  function toggleAllVolumes() {
+    const keys = volumeGroupKeys();
+    if (!keys.length) return;
+    const allCollapsed = keys.every((key) => state.collapsedVolumes.has(key));
+    keys.forEach((key) => {
+      if (allCollapsed) state.collapsedVolumes.delete(key);
+      else state.collapsedVolumes.add(key);
+    });
+    renderChapterList();
+  }
+
+  function activeChapterItem() {
+    const list = $('chapter-list');
+    return list ? list.querySelector('.chapter-item.active') : null;
+  }
+
+  // 当前章被折叠时，在它所在的卷头上留 2px 朱红细线：目录收起后也知道自己写的那一卷在哪。
+  // 只在「当前卷确实被折叠」时加，展开 / 筛选（强制展开）时都不加，避免多出一个无信息量的标记。
+  function syncCurrentVolumeMarker() {
+    const list = $('chapter-list');
+    if (!list) return;
+    const key = currentChapterGroupKey();
+    const collapsed = key !== null && state.collapsedVolumes.has(key);
+    list.querySelectorAll('.volume-item').forEach((row) => {
+      row.classList.toggle('has-current', collapsed && row.dataset.volumeId === key);
+    });
+  }
+
+  // 当前章所在的卷组 key（'' = 未分卷；null = 这本书没有卷，不存在「被折叠」）
+  function currentChapterGroupKey() {
+    if (state.index < 0 || !state.chapters[state.index]) return null;
+    const volumes = volumeList();
+    if (!volumes.length) return null;
+    const ids = new Set(volumes.map((volume) => volume.id));
+    const volumeId = chapterVolumeId(state.chapters[state.index]);
+    return volumeId && ids.has(volumeId) ? volumeId : '';
+  }
+
+  // 「回到当前章」浮标：当前章被滚出目录 / 被吸顶卷头盖住 / 当前卷被折叠时，
+  // 出现在目录底部给一条回去的路。只读 DOM 位置，不滚也不写任何状态；
+  // 筛选时收起（筛选是一次「找别的章」的动作，不抢眼）。
+  function updateCurrentChapterPill() {
+    const pill = $('btn-return-current');
+    const list = $('chapter-list');
+    if (!pill || !list) return;
+    const chapter = state.chapters[state.index];
+    if (!chapter) {
+      pill.classList.add('hidden');
+      return;
+    }
+    const filtering = chapterFilterActive();
+    const active = list.querySelector('.chapter-item.active');
+    if (filtering) {
+      // 当前章在筛选结果里 → 位置看得见，浮标收起。
+      // 当前章被筛掉 → 浮标变成「清空筛选并回去」的唯一鼠标入口（筛选时不出「全部折叠」）。
+      if (active) {
+        pill.classList.add('hidden');
+        return;
+      }
+      pill.textContent = `回到第${chaptersLib.chapterNumber(state.meta, state.index)}章（清空筛选）`;
+      pill.title = `当前章不在筛选结果里：点一下清空筛选并回到「${chapterTitle(state.index, chapter.name)}」`;
+      pill.classList.remove('hidden');
+      return;
+    }
+    if (!active) {
+      // 当前章在折叠的卷里：列表里没有这一条，但浮标仍然是回得去的（点一下展开并定位）
+      const key = currentChapterGroupKey();
+      if (key === null || !state.collapsedVolumes.has(key)) {
+        pill.classList.add('hidden');
+        return;
+      }
+      pill.textContent = `回到第${chaptersLib.chapterNumber(state.meta, state.index)}章`;
+      pill.title = `当前章在已折叠的「${volumeDisplayName(key)}」里：点一下展开并定位`;
+      pill.classList.remove('hidden');
+      return;
+    }
+    const listRect = list.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    // 卷头吸顶高度 34px：条目压在卷头下面同样算看不见
+    const coverTop = listRect.top + (list.querySelector('.volume-item') ? 34 : 0);
+    const visible = activeRect.top >= coverTop - 0.5 && activeRect.bottom <= listRect.bottom + 0.5;
+    if (visible) {
+      pill.classList.add('hidden');
+      return;
+    }
+    pill.textContent = `回到第${chaptersLib.chapterNumber(state.meta, state.index)}章`;
+    pill.title = `回到当前章：${chapterTitle(state.index, chapter.name)}`;
+    pill.classList.remove('hidden');
+  }
+
+  function scrollToCurrentChapter() {
+    // 筛选把当前章藏起来时，浮标同时承担「清空筛选」：先回到完整目录，再滚到当前章
+    if (chapterFilterActive()) setChapterFilter('');
+    let active = activeChapterItem();
+    if (!active) {
+      // 当前卷被折叠：先展开再滚（与点卷头是同一份折叠状态）
+      const key = currentChapterGroupKey();
+      if (key !== null && state.collapsedVolumes.has(key)) {
+        state.collapsedVolumes.delete(key);
+        renderChapterList();
+        active = activeChapterItem();
+      }
+    }
+    if (!active) return;
+    const reduce =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    active.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
+    updateCurrentChapterPill();
+  }
+
+  // 目录工具条：输入即筛（章名 / 第N章 / 纯章号，多词 AND）、Esc 清空、回车跳到第一条、
+  // ↓ 把焦点交给目录第一行。全部走现有入口（switchChapter / listKeyboard），没有新写业务。
+  function setupChapterDirectory() {
+    const input = $('chapter-filter');
+    const clear = $('btn-clear-filter');
+    const pill = $('btn-return-current');
+    const toggleVolumes = $('btn-toggle-volumes');
+    if (input) {
+      input.addEventListener('input', () => setChapterFilter(input.value));
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          if (!input.value) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setChapterFilter('');
+          return;
+        }
+        if (event.key === 'Enter') {
+          const first = matchingChapterIndexes()[0];
+          if (first == null) return;
+          event.preventDefault();
+          void switchChapter(first);
+          return;
+        }
+        if (event.key === 'ArrowDown') {
+          const list = $('chapter-list');
+          const items = list ? Array.from(list.querySelectorAll('.chapter-item')) : [];
+          if (!items.length) return;
+          event.preventDefault();
+          listKeyboard.applyTabStops(items, 0);
+          if (typeof items[0].focus === 'function') items[0].focus();
+        }
+      });
+    }
+    if (clear) {
+      clear.addEventListener('click', () => {
+        setChapterFilter('');
+        if (input) input.focus();
+      });
+    }
+    if (pill) pill.addEventListener('click', scrollToCurrentChapter);
+    if (toggleVolumes) toggleVolumes.addEventListener('click', toggleAllVolumes);
+    const list = $('chapter-list');
+    if (list) {
+      // 滚动事件只更新浮标：requestAnimationFrame 合并到一帧，拖滚动条时不做重复测量。
+      let pending = 0;
+      list.addEventListener('scroll', () => {
+        if (pending) return;
+        pending = window.requestAnimationFrame(() => {
+          pending = 0;
+          updateCurrentChapterPill();
+        });
+      }, { passive: true });
+    }
+    // 窗口高度变了，当前章可能从「看得见」变成「看不见」：浮标跟着重量一次（不依赖滚动事件）
+    window.addEventListener('resize', updateCurrentChapterPill, { passive: true });
+  }
+
   function volumeList() {
     return state.meta && Array.isArray(state.meta.volumes) ? state.meta.volumes : [];
   }
@@ -1287,15 +1603,24 @@
   }
 
   function toggleVolumeCollapse(volumeId) {
+    // 筛选时所有卷强制展开（命中结果要一眼看得见）：卷头点击先不接，
+    // 免得留下一个看不见的折叠状态，清空筛选后才突然生效。
+    if (chapterFilterActive()) return;
     const key = volumeId || '';
     if (state.collapsedVolumes.has(key)) state.collapsedVolumes.delete(key);
     else state.collapsedVolumes.add(key);
     renderChapterList();
   }
 
-  function makeVolumeHeader(volumeId, name, count) {
+  // 卷头（吸顶）：左侧折叠箭头 + 宋体卷名；右侧「6 章 · 1.1万字」。
+  // 只加显示节点，折叠 / 右键 / 键盘仍在同一行上；E2E 与对比度脚本读的
+  // .volume-item / .volume-name / .volume-count 都还在。
+  function makeVolumeHeader(volumeId, name, count, chars, totalCount, totalChars) {
     const key = volumeId || '';
     const collapsed = state.collapsedVolumes.has(key);
+    const filtering = chapterFilterActive();
+    const allCount = Number.isFinite(totalCount) ? totalCount : count;
+    const allChars = Number.isFinite(totalChars) ? totalChars : chars;
     const row = document.createElement('div');
     row.className = 'volume-item' + (collapsed ? ' collapsed' : '') + (volumeId ? '' : ' orphan-volume');
     row.dataset.volumeId = key;
@@ -1305,12 +1630,36 @@
     const label = document.createElement('span');
     label.className = 'volume-name';
     label.textContent = name;
+    const meta = document.createElement('span');
+    meta.className = 'volume-meta';
     const num = document.createElement('span');
     num.className = 'volume-count';
-    num.textContent = `${count} 章`;
+    if (filtering) {
+      // 筛选时不能把「整卷合计」静默换成「命中合计」：写清楚两个数，扫读时不会以为内容丢了
+      num.textContent = `命中 ${count} / 共 ${allCount} 章`;
+      meta.title =
+        `筛选命中 ${count} 章（本卷共 ${allCount} 章）` +
+        (chars > 0 ? `；命中 ${formatCount(chars)} 字` : '') +
+        (allChars > 0 ? `，整卷 ${formatCount(allChars)} 字` : '');
+    } else {
+      num.textContent = `${count} 章`;
+      meta.title = '卷内章数与字数（按上次保存的字数统计）';
+    }
+    meta.appendChild(num);
+    if (!filtering && chars > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'volume-meta-sep';
+      sep.setAttribute('aria-hidden', 'true');
+      sep.textContent = '·';
+      const charsEl = document.createElement('span');
+      charsEl.className = 'volume-chars';
+      charsEl.textContent = formatCharsLabel(chars);
+      meta.appendChild(sep);
+      meta.appendChild(charsEl);
+    }
     row.appendChild(arrow);
     row.appendChild(label);
-    row.appendChild(num);
+    row.appendChild(meta);
     row.title = '单击折叠 / 展开；右键更多（重命名卷 / 在此卷新建章节 / 删除卷）';
     row.addEventListener('click', () => toggleVolumeCollapse(volumeId));
     row.addEventListener('contextmenu', (event) => {
@@ -1338,7 +1687,14 @@
   }
 
   function chapterItemTitleText(chapter, index) {
-    return `单击切换；双击重命名；右键更多\n${chapterItemTip(chapter, index)}`;
+    // 第一行就是完整章名：250px 下章名会省略号，悬停 / 长按先看到全名，再看能做什么
+    return [
+      chapterTitle(index, chapter.name),
+      '单击切换；双击重命名；右键更多',
+      chapterItemTip(chapter, index)
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   function makeChapterItem(chapter, index) {
@@ -1353,6 +1709,7 @@
     item.dataset.status = status;
     // 章节 id（v0.9 A-2）：切章只挪高亮、不重建列表时用它核对「列表还是不是这份章节数组」
     item.dataset.chapterId = String(chapter.id == null ? '' : chapter.id);
+    item.dataset.title = chapterTitle(index, chapter.name);
     item.title = chapterItemTitleText(chapter, index);
     // 键盘可达（v0.9 A-5b）：章节条目本身可 Tab 到、Enter / 空格切章；整张列表只有当前章
     // 是 Tab 停留点（roving tabindex），方向键在列表内移焦点——1000 章不会变成 1000 个 Tab 站。
@@ -1367,10 +1724,14 @@
     const num = document.createElement('span');
     num.className = 'chapter-num';
     num.textContent = label.num;
+    // 视觉上只露纯章号（9 / 18）；完整「第N章：」文本留在 DOM 里（标题统一测试 / 读屏）。
+    // 按卷编号时这里是卷内章号，和标题 / 导出 / 状态栏同一份 chaptersLib.chapterNumber。
+    num.dataset.num = label.num ? String(chaptersLib.chapterNumber(state.meta, index)) : '';
 
     const name = document.createElement('span');
     name.className = 'chapter-name';
-    name.textContent = label.name;
+    if (chapterFilterActive()) appendChapterName(name, label.name, chapterFilterQuery());
+    else name.textContent = label.name;
 
     item.appendChild(dot);
     item.appendChild(num);
@@ -1390,6 +1751,22 @@
       charsEl.title = `本章 ${formatCount(chars)} 字（书目缓存；保存后更新）`;
       item.appendChild(charsEl);
     }
+    // 行尾「⋯」更多：只服务鼠标（悬停出现，24×24），打开的是同一张右键菜单；
+    // 键盘用户仍走 Shift+F10 / 右键键，所以它不进 Tab 序（tabIndex -1、aria-hidden）。
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'chapter-more';
+    more.tabIndex = -1;
+    more.setAttribute('aria-hidden', 'true');
+    more.title = '更多：双击重命名；右键菜单（标记状态 / 备注 / 移到卷 / 删除）';
+    more.textContent = '⋯';
+    more.addEventListener('pointerdown', (event) => event.stopPropagation());
+    more.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const rect = more.getBoundingClientRect();
+      showContextMenu({ clientX: rect.right - 4, clientY: rect.bottom - 2 }, index);
+    });
+    item.appendChild(more);
     item.addEventListener('click', () => {
       if (state.suppressChapterClick && Date.now() < state.suppressChapterClick) {
         state.suppressChapterClick = 0;
@@ -1413,6 +1790,12 @@
     // 条目连布局都跳过。
     const frag = document.createDocumentFragment();
     const volumes = volumeList();
+    const query = chapterFilterQuery();
+    const filtering = query !== '';
+    // 筛选只影响「显示哪些章」：折叠状态在筛选时全部展开（要先看见命中结果），
+    // 命中为 0 时给一条筛选空态（与书架 / 查找同一套三件套文案口径）。
+    const matched = matchingChapterIndexes();
+    const matchedSet = new Set(matched);
     // 1.3.0 T4（规范 I-06）：章节栏真空（0 章）。正常新建 / 删到空都会自动补一章，这里兜的是
     // 手改书目 / 从外部导入的书；只有「真空」一种状态（打开书是一次性读盘，没有加载中 / 筛选空）。
     // 文案按三件套写：说明状态 + 学习线索（章节模板）+ 直接路径（现有按钮 / Ctrl+N），不加新按钮。
@@ -1424,50 +1807,110 @@
         '这本书还没有章节。点左下「＋ 新建章节」或按 Ctrl+N 开始写第一章；' +
         '新章会自动套用设置里的章节模板（填了才生效）。';
       frag.appendChild(empty);
+    } else if (filtering && !matched.length) {
+      const empty = document.createElement('div');
+      empty.className = 'chapter-list-empty muted small';
+      empty.dataset.emptyKind = 'filtered';
+      empty.textContent =
+        `没有匹配「${query}」的章节。\n换个关键词，或按 Esc 清空筛选。`;
+      frag.appendChild(empty);
     } else if (!volumes.length) {
-      // 没分卷的书：和以前完全一样，平铺章节
-      state.chapters.forEach((chapter, index) => frag.appendChild(makeChapterItem(chapter, index)));
+      // 没分卷的书：平铺章节（筛选时只留命中的那几条）
+      state.chapters.forEach((chapter, index) => {
+        if (filtering && !matchedSet.has(index)) return;
+        frag.appendChild(makeChapterItem(chapter, index));
+      });
     } else {
       const buckets = new Map(volumes.map((v) => [v.id, []]));
+      const totals = new Map(volumes.map((v) => [v.id, []]));
       const orphans = [];
+      const totalOrphans = [];
       state.chapters.forEach((chapter, index) => {
+        // 先记整卷合计（筛选时卷头要同时显示「命中 N / 共 M 章」，不能只剩命中数）
         const volumeId = chapterVolumeId(chapter);
+        if (volumeId && totals.has(volumeId)) totals.get(volumeId).push(index);
+        else totalOrphans.push(index);
+        if (filtering && !matchedSet.has(index)) return;
         if (volumeId && buckets.has(volumeId)) buckets.get(volumeId).push({ chapter, index });
         else orphans.push({ chapter, index });
       });
+      const charsOfItems = (items) =>
+        chapterCharsTotal(items.map((item) => item.index)).total;
       if (orphans.length) {
-        frag.appendChild(makeVolumeHeader(null, '未分卷', orphans.length));
-        if (!state.collapsedVolumes.has('')) {
+        frag.appendChild(
+          makeVolumeHeader(
+            null,
+            '未分卷',
+            orphans.length,
+            charsOfItems(orphans),
+            totalOrphans.length,
+            chapterCharsTotal(totalOrphans).total
+          )
+        );
+        if (filtering || !state.collapsedVolumes.has('')) {
           orphans.forEach(({ chapter, index }) => frag.appendChild(makeChapterItem(chapter, index)));
         }
       }
       for (const volume of volumes) {
         const items = buckets.get(volume.id) || [];
-        frag.appendChild(makeVolumeHeader(volume.id, volumeDisplayName(volume.id), items.length));
-        if (!state.collapsedVolumes.has(volume.id)) {
+        // 筛选时整卷没有命中的卷头不占位置；不筛选时空卷也要留着（新建的卷要在侧栏里看得见）
+        if (filtering && !items.length) continue;
+        const all = totals.get(volume.id) || [];
+        frag.appendChild(
+          makeVolumeHeader(
+            volume.id,
+            volumeDisplayName(volume.id),
+            items.length,
+            charsOfItems(items),
+            all.length,
+            chapterCharsTotal(all).total
+          )
+        );
+        if (filtering || !state.collapsedVolumes.has(volume.id)) {
           items.forEach(({ chapter, index }) => frag.appendChild(makeChapterItem(chapter, index)));
         }
       }
     }
     list.replaceChildren(frag);
+    // 筛选时卷头只作分组标签（折叠箭头收起、不接点击）：见 toggleVolumeCollapse
+    list.classList.toggle('filtering', filtering);
+    syncCurrentVolumeMarker();
     // 当前章在折叠的卷里时列表里一条 tabIndex 0 都没有：给第一个条目补一个 Tab 停留点
     listKeyboard.ensureTabStop(list, '.chapter-item');
-    const active = list.querySelector('.chapter-item.active');
-    if (active) active.scrollIntoView({ block: 'nearest' });
+    if (filtering) {
+      // 筛选结果从第一条读起：不把当前章滚到底部，免得用户输一个词只看得到最后一条
+      list.scrollTop = 0;
+    } else {
+      const active = list.querySelector('.chapter-item.active');
+      if (active) active.scrollIntoView({ block: 'nearest' });
+    }
+    syncChapterFilterUi();
+    renderBookMeta();
+    renderVolumeToggle();
+    updateCurrentChapterPill();
   }
 
   // 章节栏当前应该显示多少条：折叠的卷不渲染；volumeId 指向不存在的卷按「未分卷」算
   // （和下面 renderChapterList 的 bucketing 同一套规则，切章快路径用它判断列表是否过期）。
+  // 筛选时只数命中的章，且所有卷都展开（与 renderChapterList 里 filtering 分支一致）。
   function visibleChapterCount() {
     const volumes = volumeList();
-    if (!volumes.length) return state.chapters.length;
     const ids = new Set(volumes.map((volume) => volume.id));
+    const filtering = chapterFilterActive();
     let count = 0;
-    for (const chapter of state.chapters) {
+    state.chapters.forEach((chapter, index) => {
+      if (filtering) {
+        if (chapterIndexMatchesFilter(index)) count += 1;
+        return;
+      }
+      if (!volumes.length) {
+        count += 1;
+        return;
+      }
       const volumeId = chapterVolumeId(chapter);
       const key = volumeId && ids.has(volumeId) ? volumeId : '';
       if (!state.collapsedVolumes.has(key)) count += 1;
-    }
+    });
     return count;
   }
 
@@ -1486,6 +1929,13 @@
     const rendered = list.querySelectorAll('.chapter-item').length;
     const expectedId = current ? String(current.id == null ? '' : current.id) : '';
     if (!next || rendered !== visibleChapterCount() || next.dataset.chapterId !== expectedId) {
+      // 筛选是「找章」的临时视图：切到的章不在筛选结果里时（Ctrl+PgDn / 命令面板 / 跳章），
+      // 收起筛选再重建，保证目录里始终有当前章可看。只在「本来就要整表重建」的兜底里清，
+      // 正常切章仍走下面的快路径（不重建 1000 条）。
+      if (state.chapterFilter && !chapterIndexMatchesFilter(state.index)) {
+        state.chapterFilter = '';
+        syncChapterFilterUi();
+      }
       renderChapterList();
       return;
     }
@@ -1504,6 +1954,9 @@
     next.classList.toggle('dirty', Boolean(state.dirty));
     next.tabIndex = 0; // roving tabindex：Tab 停留点跟着当前章走（v0.9 A-5b）
     next.scrollIntoView({ block: 'nearest' });
+    // 快路径同样要更新「回到当前章」浮标 / 折叠卷的当前卷标记（切章后旧状态会留在原地）
+    syncCurrentVolumeMarker();
+    updateCurrentChapterPill();
   }
 
   // B5（审计 P5）：保存后只更新「当前章这一条」的字数节点 + tooltip，不再整表重建
@@ -1530,6 +1983,8 @@
       charsEl.title = `本章 ${formatCount(chars)} 字（书目缓存；保存后更新）`;
     }
     item.title = chapterItemTitleText(chapter, index);
+    // 概览行的总字数也跟着这一条更新（千章书只重算一次累加，不重建目录）
+    renderBookMeta();
     return true;
   }
 
@@ -1648,7 +2103,7 @@
   // 第 4 步九刀·补刀 9b：实现在 renderer/find-bookmark-ui.js（模块头有契约），这里只装配与接线；
   const findBookmarkUi = findBookmarkUiModule.create({
     $, state, api, call, toast,
-    find: { bookmarksLib, editorEl, readFindOptions, findSessionMatchesOptions, findPanelOpen, closeFindPanel, renderFindStatusChip, startFindSession, clearFindSession },
+    find: { bookmarksLib, chaptersLib, editorEl, readFindOptions, findSessionMatchesOptions, findPanelOpen, closeFindPanel, renderFindStatusChip, startFindSession, clearFindSession },
     nav: { switchChapter: (index) => switchChapter(index), openBookByPath }
   });
   const { renderFindBookmarks, refreshFindBookmarks, saveFindBookmark, deleteFindBookmark, jumpToFindBookmark, restoreFindBookmarkForCurrentChapter, setupFindBookmarkUi } = findBookmarkUi;
@@ -1995,6 +2450,7 @@
     call,
     state,
     chapterTitle,
+    chaptersLib,
     CHAPTER_STATUS_LABELS,
     chapterStatus,
     switchChapter
@@ -2018,7 +2474,7 @@
     if (!templateLib.hasTemplate(template)) return { applied: false, reason: 'NO_TEMPLATE' };
     if (!templateLib.isBlankText(editorEl.value)) return { applied: false, reason: 'NOT_EMPTY' };
     const text = templateLib.applyTemplate(template, {
-      chapterNumber: chapterIndex + 1,
+      chapterNumber: chaptersLib.chapterNumber(state.meta, chapterIndex),
       chapterName: chapterName || '',
       now: new Date()
     });
@@ -2080,6 +2536,11 @@
     try {
       const data = await call(api.createChapter, state.bookPath, insertIndex, name, volumeId || null);
       applyMetaAndRelocate(data);
+      // 新章名不一定命中当前筛选：清掉筛选，保证刚建好的章在目录里看得见（输入框同步清空）
+      if (state.chapterFilter) {
+        state.chapterFilter = '';
+        syncChapterFilterUi();
+      }
       await loadChapterAt(data.index);
       // 章节模板：只填进编辑区（未保存、可 Ctrl+Z），绝不自动写盘
       const templateResult = applyChapterTemplate(data.index, data.chapter.name);
@@ -2667,8 +3128,8 @@
           id: `chapter:${chapter.id}`,
           title: chapterTitle(index, chapter.name),
           group: 'chapter',
-          hint: index === state.index ? '当前章' : `第 ${index + 1} 章`,
-          keywords: [chapter.name || '', `ch${index + 1}`],
+          hint: index === state.index ? '当前章' : `第 ${chaptersLib.chapterNumber(state.meta, index)} 章`,
+          keywords: [chapter.name || '', `ch${chaptersLib.chapterNumber(state.meta, index)}`, `ch${index + 1}`],
           run: () => {
             void switchChapter(index).then((result) => {
               if (!result || result.ok !== true) return;
@@ -3403,11 +3864,22 @@
 
   // ---------- 设置 ----------
   // 第 4 步九刀·第七刀：实现在 renderer/settings-ui.js（模块头有契约），这里只装配与接线；
+  // 2026-11-10 章号模式：设置里的「章号」写回 书目.json 后，用新 meta 把目录 / 标题 / 状态栏
+  // 全部重画一次（只改显示，不动正文、不切章）。
+  function applyChapterNumberingMeta(meta) {
+    if (!meta || typeof meta !== 'object') return;
+    state.meta = meta;
+    if (Array.isArray(meta.chapters)) state.chapters = meta.chapters;
+    renderChapterList();
+    renderEditorHeader();
+    updateStatus();
+  }
+
   const settingsUi = settingsUiModule.create({
     $, state, api, call, toast,
     // 1.4.0 P0-1：设置分区 / 搜索 / 深链纯逻辑（不在 host 必需契约里，缺了只退化成老的一长条）
     ia: settingsIaModule,
-    display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic },
+    display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic, applyChapterNumbering: applyChapterNumberingMeta },
     peers: {
       stats: { refreshStats, renderStatsChart },
       writeTimer: { renderDurationSettings, renderWriteTimer, applyWriteTimerConfig, writeDurationEnabled, flushWriteTimer },
@@ -3714,6 +4186,8 @@
     setupEditorMarks();
 
     setupSidebarResizer();
+    // 卷章目录：筛选 / 清除 / 回到当前章（卷章树本身由 renderChapterList 负责）
+    setupChapterDirectory();
 
     // 导入进度（大书库导入可能要几十秒，分章/复制逐项汇报）
     api.onImportProgress((progress) => {

@@ -166,9 +166,14 @@ function sanitizeChapterList(chapters, { max = MAX_CHAPTER_ITEMS } = {}) {
     if (!chapter || typeof chapter !== 'object' || Array.isArray(chapter)) return null;
     let id;
     let name;
+    let number;
+    let volumeName;
     try {
       id = chapter.id;
       name = chapter.name;
+      // 按卷编号跳章（2026-11-10）：显示章号与卷名随 payload 过来，供 core/jump 多卷匹配。
+      number = chapter.number;
+      volumeName = chapter.volumeName;
     } catch {
       return null; // 带 getter 的坏对象：当成无效条目，不让整次跳章失败
     }
@@ -176,6 +181,14 @@ function sanitizeChapterList(chapters, { max = MAX_CHAPTER_ITEMS } = {}) {
     if (typeof id === 'string') clean.id = id.length > MAX_ID_CHARS ? id.slice(0, MAX_ID_CHARS) : id;
     if (typeof name === 'string') {
       clean.name = name.length > MAX_CHAPTER_NAME_CHARS ? name.slice(0, MAX_CHAPTER_NAME_CHARS) : name;
+    }
+    const n = Number(number);
+    if (Number.isFinite(n) && n >= 1) {
+      clean.number = Math.min(Math.floor(n), MAX_CHAPTER_ITEMS);
+    }
+    if (typeof volumeName === 'string' && volumeName.trim()) {
+      clean.volumeName =
+        volumeName.length > MAX_CHAPTER_NAME_CHARS ? volumeName.slice(0, MAX_CHAPTER_NAME_CHARS) : volumeName;
     }
     return Object.keys(clean).length ? clean : null;
   });

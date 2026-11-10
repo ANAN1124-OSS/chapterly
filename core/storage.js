@@ -172,6 +172,11 @@ async function readBookMeta(bookPath) {
   if (typeof meta.titleTemplate !== 'string' || !meta.titleTemplate.trim()) {
     meta.titleTemplate = chaptersLib.TITLE_TEMPLATE;
   }
+  // 章号编号方式（2026-11-10）：旧书目没有这个字段 = 全书连续（零迁移）。
+  // 只认 'volume'；'continuous' / 坏值一律不落进内存（连续是默认，不必占字段）。
+  if (meta.chapterNumbering !== undefined && meta.chapterNumbering !== 'volume') {
+    delete meta.chapterNumbering;
+  }
   if (!Number.isFinite(Number(meta.fileSeq))) meta.fileSeq = meta.chapters.length;
   if (typeof meta.title !== 'string') meta.title = path.basename(bookPath);
   // 分卷：清掉非法卷、把指向不存在卷的章归为「未分卷」，并把章节顺序归一成「未分卷 → 第1卷 → …」
@@ -728,6 +733,19 @@ async function updateBookInfo(bookPath, patch = {}) {
   }
   const saved = await writeBookMeta(bookPath, bookInfoLib.cleanBookInfo({ ...meta, ...fields }), { structural: true });
   return { meta: saved, info: bookInfoLib.readBookInfo(saved), changed: true };
+}
+
+// 章号编号方式（2026-11-10）：全书连续（默认，删字段）/ 按卷独立（chapterNumbering: 'volume'）。
+// 只写 书目.json 的可选字段；不动章节顺序、文件名、正文。连续 = 删除字段，旧书 / 改回连续都不留痕。
+async function setChapterNumbering(bookPath, numbering) {
+  const mode = chaptersLib.sanitizeChapterNumbering(numbering);
+  const meta = await readBookMeta(bookPath);
+  const before = meta.chapterNumbering === 'volume' ? 'volume' : 'continuous';
+  if (before === mode) return { meta, numbering: mode, changed: false };
+  if (mode === 'volume') meta.chapterNumbering = 'volume';
+  else delete meta.chapterNumbering;
+  const saved = await writeBookMeta(bookPath, meta, { structural: true });
+  return { meta: saved, numbering: mode, changed: true };
 }
 
 function timestampForFile(date = new Date()) {
@@ -1791,6 +1809,7 @@ module.exports = {
   renameChapter: locked(renameChapter),
   updateChapterMeta: locked(updateChapterMeta),
   updateBookInfo: locked(updateBookInfo),
+  setChapterNumbering: locked(setChapterNumbering),
   deleteChapter: locked(deleteChapter),
   restoreDeletedChapterFromTrash: locked(restoreDeletedChapterFromTrash),
   moveChapter: locked(moveChapter),

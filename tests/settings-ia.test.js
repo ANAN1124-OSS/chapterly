@@ -39,7 +39,7 @@ test('分组映射：完整覆盖 index.html 里的每一个设置项，且没�
   const fieldIds = settingsIdsInHtml().filter(isFieldId).sort();
   const mapped = Object.keys(ia.FIELD_SECTION).sort();
   assert.deepEqual(mapped, fieldIds, '分组映射表必须与 index.html 的设置项一一对应');
-  assert.equal(fieldIds.length, 58, '1.4.0 基线：设置项 58 个（弹层 id 共 76 个）');
+  assert.equal(fieldIds.length, 61, '1.4.0 基线 + 章号 3 项：设置项 61 个（弹层 id 共 79 个）');
 });
 
 test('分组映射：每个分区都非空，且只落在 5 个合法分区里', () => {

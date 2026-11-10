@@ -47,13 +47,25 @@ function chapterIdOf(chapter) {
   return chapter && typeof chapter === 'object' && chapter.id != null ? String(chapter.id) : '';
 }
 
+function chapterNumberLabelOf(chapter, index) {
+  const value = Number(chapter && chapter.number);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : index + 1;
+}
+
 function makeMatch(chapter, index, matchType) {
-  return {
+  const volumeName =
+    chapter && typeof chapter === 'object' && chapter.volumeName != null
+      ? String(chapter.volumeName).trim()
+      : '';
+  const match = {
     index,
     chapterId: chapterIdOf(chapter),
     name: chapterNameOf(chapter),
     matchType
   };
+  // 按卷编号时才带卷名（连续模式的返回形状与以前完全一致，老测试 / 老调用方零适配）
+  if (volumeName) match.volumeName = volumeName;
+  return match;
 }
 
 // 主线：返回 { query, number, chapterCount, outOfRange, total, matches }。
@@ -77,6 +89,20 @@ function findMatches(chapters, rawQuery, options) {
   const number = parseChapterNumber(query);
   if (number != null) {
     result.number = number;
+    const numbering = options && options.numbering === 'volume' ? 'volume' : 'continuous';
+    result.numbering = numbering;
+    if (numbering === 'volume') {
+      // 按卷编号：同一章号可能在每一卷都出现一次 —— 全部列出来，让作者按卷名选
+      const hits = [];
+      list.forEach((chapter, index) => {
+        if (!chapter || typeof chapter !== 'object') return;
+        if (chapterNumberLabelOf(chapter, index) === number) hits.push({ chapter, index });
+      });
+      result.total = hits.length;
+      result.matches = hits.slice(0, limit).map((item) => makeMatch(item.chapter, item.index, 'number'));
+      if (!hits.length) result.outOfRange = true;
+      return result;
+    }
     const index = number - 1;
     const chapter = list[index];
     if (index >= list.length || !chapter || typeof chapter !== 'object') {

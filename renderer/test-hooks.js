@@ -183,6 +183,32 @@
           return `${num ? num.textContent : ''}${name ? name.textContent : ''}`;
         }),
       chapterNames: () => state.chapters.map((c) => c.name),
+      // 卷章目录（2026-11-10 重设计）：筛选词 / 目录命中情况 / 回到当前章浮标。
+      // 只读取与调用现有入口，不另写一套筛选逻辑。
+      chapterFilter: () => state.chapterFilter,
+      // 走真实的输入框事件（和作者打字同一条路径），不另写一套筛选逻辑
+      setChapterFilter: (value) => {
+        const input = $('chapter-filter');
+        if (!input) return state.chapterFilter;
+        input.value = String(value == null ? '' : value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return state.chapterFilter;
+      },
+      chapterDirectoryInfo: () => {
+        const list = $('chapter-list');
+        const items = list ? qsa('#chapter-list .chapter-item') : [];
+        const active = list ? list.querySelector('.chapter-item.active') : null;
+        const pill = $('btn-return-current');
+        const empty = list ? list.querySelector('.chapter-list-empty') : null;
+        return {
+          total: state.chapters.length,
+          rendered: items.length,
+          activeIndex: active ? Number(active.dataset.index) : null,
+          filter: state.chapterFilter,
+          pillVisible: Boolean(pill && !pill.classList.contains('hidden')),
+          emptyKind: empty ? empty.dataset.emptyKind || '' : ''
+        };
+      },
       chapterFiles: () => state.chapters.map((c) => c.file),
       // 章节状态 / 备注
       chapterStatuses: () => state.chapters.map((c) => chapterStatus(c)),

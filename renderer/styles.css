@@ -1076,59 +1076,200 @@ body.resizing {
 body.resizing .editor {
   pointer-events: none;
 }
-.back-btn { margin: 16px 22px 4px; align-self: flex-start; 
-  height: 28px;
-  font-size: 11.5px;
-  color: var(--ink-faint);
-  letter-spacing: .02em;}
-.sidebar-book {
+/* ===== 卷章目录（2026-11-10 重设计）=====
+ * 结构：书架返回 + 书名/概览 → 筛选框 → 可滚动的卷章树 → 底部一行操作。
+ * 信息层级只靠字号差 / 字重差 / 留白 / 发丝线；朱红仍只给当前章与未保存。
+ * 行高 32px（卷头 34px）是量出来的：250px 默认宽下章名能放 10 个汉字，再高会牺牲密度。 */
+.sidebar-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 22px 12px;
-  border-bottom: 1px solid var(--folio-line-soft);
+  justify-content: space-between;
+  padding: 8px 12px 0 16px;
 }
+.back-btn {
+  margin: 0;
+  height: 26px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  letter-spacing: .02em;
+  border-color: transparent;
+}
+.back-btn:hover { color: var(--ink); background: var(--hover-tint); }
+.sidebar-head .btn.tiny {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  border-color: transparent;
+}
+.sidebar-head .btn.tiny:hover { color: var(--ink); background: var(--hover-tint); }
+.sidebar-book {
+  padding: 0 16px 10px;
+}
+.book-title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.book-title-line .btn.tiny {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 2px;
+  border-color: transparent;
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+.book-title-line .btn.tiny:hover { color: var(--ink); background: var(--hover-tint); }
 .book-title {
   flex: 1;
-  font-size: 21px;
+  min-width: 0;
+  font-size: 20px;
   font-weight: 400;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 
   font-family: var(--folio-serif);
-  line-height: 1.2;
+  line-height: 1.3;
   letter-spacing: .04em;
-  color: var(--ink);}
+  color: var(--ink);
+}
+/* 全书概览：章数 / 总字数；筛选时同一行改成命中数（不新增一行，不挤目录）。
+ * 右端是「全部折叠 / 全部展开」（有卷才出现），和 Obsidian / Scrivener 的目录工具条同一条思路。 */
+.book-meta-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 2px;
+  min-height: 16px;
+}
+.book-meta {
+  flex: 1;
+  min-width: 0;
+  min-height: 14px;
+  font-size: 10.5px;
+  letter-spacing: .02em;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.book-meta-toggle {
+  flex: 0 0 auto;
+  height: 24px;
+  margin: -4px 0 -4px 0;
+  padding: 0 2px;
+  border: 0;
+  border-radius: var(--folio-radius);
+  background: transparent;
+  color: var(--ink-faint);
+  font-family: var(--ui-font);
+  font-size: 10.5px;
+  letter-spacing: .02em;
+  cursor: pointer;
+}
+.book-meta-toggle:hover { color: var(--ink); }
+.book-meta-toggle:disabled { opacity: .5; cursor: default; }
+.chapter-tools {
+  padding: 0 12px 10px;
+}
+.chapter-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--folio-field-border);
+  border-radius: var(--folio-radius);
+  background: var(--input-bg);
+  transition: border-color var(--motion-quick) ease, box-shadow var(--motion-quick) ease;
+}
+.chapter-filter:focus-within {
+  /* 只把 1px 描边换成朱红：全栏其余分隔线都是 1px，焦点不再变成唯一的 2px 重线 */
+  border-color: var(--focus-ring);
+  box-shadow: none;
+}
+.chapter-filter-icon { flex: 0 0 auto; color: var(--ink-faint); }
+.chapter-filter-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font-family: var(--ui-font);
+  font-size: 11.5px;
+  color: var(--ink);
+  outline: none;
+}
+.chapter-filter-input::placeholder { color: var(--ink-faint); opacity: 1; }
+/* 焦点环画在整条输入框容器上（focus-within 的 1px 朱红描边）；输入框自身不要再叠一圈
+ * 全局 2px 焦点环——同一条边框画两层会变成全栏唯一的 2px 重线。 */
+.chapter-filter-input:focus { outline: none; }
+/* 原生 × 会与自己的清除键叠在一起：隐藏原生，保留 Esc / 自己的 24×24 清除键。 */
+.chapter-filter-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.chapter-filter-clear {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--folio-radius);
+  background: transparent;
+  color: var(--ink-faint);
+  font-family: var(--ui-font);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.chapter-filter-clear:hover { color: var(--ink); background: var(--hover-tint); }
+.chapter-list-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .chapter-list {
   flex: 1;
   overflow-y: auto;
-  padding: 0 12px;
+  padding: 0 0 10px;
+  scroll-padding-top: 38px;
 }
 /* 1.3.0 T4（I-06）：章节栏真空。只用现有 muted / small 两级文字色，不加插画 / 背景。 */
 .chapter-list-empty {
   padding: 22px 8px;
+  margin: 0 12px;
   line-height: 1.7;
+  /* 筛选空态用 \n 分两行：第一行说结果、第二行给动作，别让「关键词」被拦腰折断 */
+  white-space: pre-line;
 }
+/* 章行：状态点 / 章号 / 章名 / 字数四列。章号是等宽右对齐的数字列，方便纵向扫。
+ * 行高 32px、含 contain-intrinsic-size（大书 content-visibility 跳过屏幕外条目）。 */
 .chapter-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   content-visibility: auto;
-  contain-intrinsic-size: auto 30px;
-  padding: 0 8px 0 7px;
-  margin-bottom: 2px;
+  contain-intrinsic-size: auto 32px;
+  height: 32px;
+  margin: 0 6px;
+  padding: 0 6px 0 8px;
+  border: 1px solid transparent;
   border-radius: var(--folio-radius);
-  border-left: 3px solid transparent;
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
   color: var(--ink-soft);
+  scroll-margin-top: 38px;
   transition: background var(--motion-quick) ease, box-shadow var(--motion-quick) ease;
-
-  height: 30px;
-  margin: 0;
-  border: 1px solid transparent;}
+}
 .chapter-item:hover { background: var(--hover-tint); }
 /* 悬停底色是半透明墨（--hover-tint），压深底之后章节号 / 字数在绿纸、牛皮纸、网格纸上只剩
  * 4.25–4.32:1（11.5 / 10.5px 元信息按普通文字要求 4.5:1）。悬停时把它们提到 --ink-soft，
@@ -1155,12 +1296,39 @@ body.theme-night .chapter-item.active {
 body.theme-night .chapter-item.active:hover {
   background: var(--folio-raised);
 }
-.chapter-num { flex: 0 0 auto; color: var(--ink-faint); font-size: 11.5px; 
-  letter-spacing: .02em;
-  font-variant-numeric: tabular-nums;}
+/* 夜间：当前章那一圈用朱红系描边（line-strong 在夜里几乎看不出「选中」）；
+ * 卷头文字压到 ink-faint（纸底深一档在夜间反而比纸色亮，卷头会被看成比章名更重），
+ * 让「卷头是元信息、章名是正文」的层级和白天的观感一致。 */
+body.theme-night .chapter-item.active { border-color: var(--accent-soft); }
+body.theme-night .volume-item { color: var(--ink-faint); }
+/* 章号列：26px 右对齐的「目录页码位」。DOM 里仍是完整「第N章：」（标题统一测试 / 读屏要它），
+ * 视觉上只用 ::before 显示纯章号（9 / 18），把「第」「章」「：」约 20px 让给章名。 */
+.chapter-num {
+  flex: 0 0 26px;
+  color: var(--ink-faint);
+  font-size: 0;
+  text-align: right;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.chapter-num::before {
+  content: attr(data-num);
+  font-size: 10.5px;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
 .chapter-item.active .chapter-num { color: var(--accent); }
+/* 原文已带号的章（「第1章 …」/「Chapter N」）没有「第N章：」前缀：
+ * 空出来的 46px 章号列直接让给标题，别让一整行字缩在右边（对齐只对需要章号的行成立）。
+ * 楔子 / 番外 / 大结局 / 前传等不带号特殊标题现在也会补号，不再走这条。 */
+.chapter-num:empty {
+  flex: 0 0 0;
+  width: 0;
+  overflow: hidden;
+}
 .chapter-name {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1197,55 +1365,179 @@ body.theme-night .chapter-item.active .chapter-status-dot {
  * 在牛皮纸主题只有 3.50:1。 */
 .chapter-chars {
   flex: 0 0 auto;
+  min-width: 30px;
+  text-align: right;
   font-size: 10.5px;
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
+  transition: opacity var(--motion-quick) ease;
 }
 .chapter-item.active .chapter-chars { color: var(--ink-faint); }
-.sidebar-actions {
-  padding: 12px 18px 16px;
-  border-top: 1px solid var(--folio-line-soft);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+/* 行尾「⋯」：悬停才出现的更多入口（右键与键盘菜单仍在，这一颗只服务鼠标）。
+ * 24×24 满足 WCAG 2.5.8；tabindex=-1，键盘仍走右键菜单 / Shift+F10，不新增 Tab 站。 */
+.chapter-more {
+  position: absolute;
+  right: 2px;
+  top: 4px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--folio-radius);
+  background: transparent;
+  color: var(--ink-faint);
+  font-family: var(--ui-font);
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: .06em;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-quick) ease, color var(--motion-quick) ease;
 }
-.sidebar-actions .btn { width: 100%; 
-  height: 30px;
-  font-size: 11.5px;}
+.chapter-item:hover .chapter-chars { opacity: 0; }
+.chapter-item:hover .chapter-more { opacity: 1; pointer-events: auto; }
+.chapter-more:hover, .chapter-more:focus-visible { color: var(--ink); background: var(--paper-deep); }
+/* 「回到当前章」：单独一条 32px 带，排在目录与底部操作之间 —— 不悬浮、不压章行，
+ * 出现时目录自然让出这一条的高度（滚动离开当前章时才有）。 */
+.current-pill {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-top: 1px solid var(--folio-line-soft);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: var(--ui-font);
+  font-size: 10.5px;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  text-align: center;
+  cursor: pointer;
+}
+.current-pill::before {
+  content: "↑";
+  margin-right: 4px;
+  color: var(--ink-faint);
+}
+.current-pill:hover { color: var(--ink); background: var(--hover-tint); }
+/* 浮标出现时，它自己的上边线就是目录与底部操作的唯一分隔线（避免两条线并排） */
+.current-pill:not(.hidden) + .sidebar-actions { border-top-color: transparent; }
+/* 底部操作合成一行：新建章节是主入口，新建卷收成小按钮，省下的高度留给目录。 */
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--folio-line-soft);
+}
+.sidebar-actions .btn {
+  height: 32px;
+  font-size: 11.5px;
+}
+.sidebar-actions #btn-new-chapter {
+  flex: 1;
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+.sidebar-actions #btn-new-chapter:hover { background: var(--hover-tint); }
+.sidebar-actions #btn-new-volume {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0 10px;
+  color: var(--ink-faint);
+  border-color: transparent;
+}
+.sidebar-actions #btn-new-volume:hover { color: var(--ink); background: var(--hover-tint); }
 
-/* ---------- 分卷（侧栏分组） ---------- */
+/* ---------- 分卷（侧栏分组，卷头在滚动时吸顶） ---------- */
 .volume-item {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 7px;
+  height: 34px;
   margin: 0;
-  border-radius: 0;
+  padding: 0 14px 0 10px;
   border: 0;
-  background: transparent;
-  color: var(--ink-faint);
-  font-size: 10.5px;
+  border-top: 1px solid var(--folio-line-soft);
+  border-bottom: 1px solid var(--folio-line-soft);
+  border-radius: 0;
+  background: var(--paper-deep);
+  color: var(--ink-soft);
+  font-size: 11.5px;
   cursor: pointer;
   user-select: none;
-
-  height: 28px;
-  border-top: 1px solid var(--folio-line-soft);
-  letter-spacing: .1em;}
-.volume-item:hover { background: var(--hover-tint); }
+  letter-spacing: .04em;
+}
+.volume-item:hover {
+  /* 卷头是实心纸色底：用一层半透明墨叠上去（直接改 background 会变成半透明、露出下面的章行） */
+  background-image: linear-gradient(var(--hover-tint), var(--hover-tint));
+}
+.volume-item:hover .volume-name,
+.volume-item:hover .volume-arrow { color: var(--ink); }
 .volume-item.orphan-volume { opacity: .85; }
-.volume-item.collapsed { margin-bottom: 6px; }
-.volume-arrow { flex: 0 0 auto; width: 12px; font-size: 10px; }
+.volume-item.collapsed { margin-bottom: 2px; }
+.volume-arrow {
+  flex: 0 0 auto;
+  width: 11px;
+  font-size: 9px;
+  color: var(--ink-faint);
+  transition: color var(--motion-quick) ease;
+}
 .volume-name {
   flex: 1;
+  min-width: 0;
   font-weight: 400;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 
-  letter-spacing: .1em;}
-.volume-count { flex: 0 0 auto; font-size: 9.5px; opacity: 1; 
-  color: var(--ink-faint);}
+  font-family: var(--folio-serif);
+  font-size: 12.5px;
+  letter-spacing: .03em;
+}
+.volume-meta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-left: 4px;
+  font-size: 10px;
+  /* 卷头底色是纸底深一档的 --paper-deep：浅色主题里 ink-faint 在这块底色上只有 4.40:1，
+   * 低于普通文字 4.5:1，所以统一跟随卷头的 ink-soft（6.09:1）；夜间由下面的覆盖降到 ink-faint。 */
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.volume-count { flex: 0 0 auto; opacity: 1; color: inherit; }
+.volume-chars { flex: 0 0 auto; opacity: 1; color: inherit; }
+.volume-meta-sep { opacity: 1; color: inherit; }
 .volume-item.drop-into { box-shadow: inset 0 0 0 2px var(--accent); }
+/* 当前章被折叠时，它所在的卷头留 2px 朱红细线（与当前章行的左线同一条视觉语言） */
+.volume-item.has-current::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+}
+/* 筛选命中的章名：命中的那几个字用朱红 + 极淡底，理由看得见，但不加粗、不改行高 */
+.chapter-hit {
+  background: var(--folio-accent-tint);
+  color: var(--accent);
+  border-radius: 1px;
+}
+/* 筛选时卷头只是分组标签：所有卷强制展开，箭头收起、不接点击（否则会留下看不见的折叠状态）。 */
+.chapter-list.filtering .volume-arrow { visibility: hidden; }
+.chapter-list.filtering .volume-item { cursor: default; }
+.chapter-list.filtering .volume-item:hover { background-image: none; }
+.chapter-list.filtering .volume-item:hover .volume-name { color: var(--ink-soft); }
 
 /* ---------- 正文区 ---------- */
 .editor-main {
@@ -2404,6 +2696,10 @@ body.theme-night .long-para-bar { background: var(--warn);
   text-align: center;
 }
 .export-scope-row .text-input:disabled { opacity: .5; cursor: default; }
+.export-numbering-hint {
+  margin-top: 8px;
+  line-height: 1.6;
+}
 .export-summary {
   min-height: 20px;
   margin-top: 14px;
@@ -3903,11 +4199,6 @@ progress {
 }
 .book-card.has-conflict .book-card-head {
   padding-right: 26px;
-}
-.sidebar-book .btn.tiny {
-  font-size: 10.5px;
-  color: var(--ink-faint);
-  height: 26px;
 }
 .volume-item:first-child {
   border-top: 0;

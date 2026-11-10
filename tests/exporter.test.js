@@ -34,6 +34,28 @@ test('整本拼接：标题行 + 空行 + 正文，章间一空行，\\r\\n', ()
   assert.ok(!/[^\r]\n/.test(text), '不应出现裸 \\n');
 });
 
+test('按卷编号：TXT 导出的章标题用卷内章号（卷名行照旧，文件名 / 范围仍按全书顺序）', () => {
+  const meta = {
+    title: '测试书',
+    titleTemplate: '第{num}章：{name}',
+    chapterNumbering: 'volume',
+    volumes: [{ id: 'v1', name: '卷一' }, { id: 'v2', name: '卷二' }],
+    chapters: [
+      { id: 'a', file: '0.txt', name: '起风', volumeId: 'v1' },
+      { id: 'b', file: '1.txt', name: '夜雨', volumeId: 'v1' },
+      { id: 'c', file: '2.txt', name: '渡口', volumeId: 'v2' }
+    ]
+  };
+  const text = composeBook(meta, ['甲', '乙', '丙']);
+  assert.match(text, /卷一\r\n\r\n第1章：起风/);
+  assert.match(text, /第2章：夜雨/);
+  assert.match(text, /卷二\r\n\r\n第1章：渡口/);
+  // 范围是全书下标：第 3 个章节（卷二第 1 章）仍然按全书顺序选中
+  const plan = resolveExportRange(meta, { mode: 'range', from: 3, to: 3 });
+  assert.deepEqual(plan.indexes, [2]);
+  assert.equal(exportFileName(meta, { mode: 'range', from: 3, to: 3 }, 'txt'), '测试书-第3章.txt');
+});
+
 test('空章只输出标题行，不留半截格式', () => {
   const meta = metaOf('起风', '', '夜雨');
   const text = composeBook(meta, ['正文', '', '']);
@@ -314,7 +336,7 @@ test('拼按卷导出：只输出这一卷，章号仍是全书章号，卷名�
   );
   assert.equal(
     composeBook(meta, texts, { mode: 'volume', volumeId: null }),
-    '楔子\r\n\r\n楔子正文\r\n'
+    '第1章：楔子\r\n\r\n楔子正文\r\n'
   );
 });
 
@@ -326,7 +348,7 @@ test('拼章节范围：跨卷时每卷前一行卷名，未选中的章不出�
     '第1卷：单篇\r\n\r\n第3章：乙\r\n\r\n乙正文\r\n\r\n第2卷：长篇\r\n\r\n第4章：丙\r\n\r\n丙正文\r\n'
   );
   const single = composeBook(meta, texts, { mode: 'range', from: 1, to: 1 });
-  assert.equal(single, '楔子\r\n\r\n楔子正文\r\n');
+  assert.equal(single, '第1章：楔子\r\n\r\n楔子正文\r\n');
   assert.ok(!single.includes('甲正文'), '范围外的正文不能混进来');
 });
 

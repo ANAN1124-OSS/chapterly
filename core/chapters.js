@@ -35,12 +35,58 @@
   const CHAPTER_STATUS_LABELS = { draft: '草稿', revising: '待修', done: '完稿' };
   const DEFAULT_CHAPTER_STATUS = 'draft';
   const MAX_NOTE_LENGTH = 200;
-  // 原文自带章节标题（导进来的书）：显示时原样保留，不再叠加「第N章：」
-  const RAW_TITLE_RE =
-    /^(?:第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*[章节回卷集篇部话幕]|楔子|序章|序言|引子|前言|前传|外传|尾声|后记|番外|终章|大结局|附录|开篇|Chapter\s+\d+)/i;
+  // 原文自带章节标题（导进来的书）分两类：
+  //   1. 已经带号的（「第1章 …」「第一章 …」「Chapter N」）：原样保留，避免「第1章：第1章 …」叠号；
+  //   2. 不带号的特殊标题（楔子 / 番外 / 大结局 / 前传 …）：2026-11-10 起补「第N章：」，不再整段原样返回。
+  // 两条正则由同一份 source 派生，避免词表漂移；RAW_TITLE_RE 继续作为两者合集导出（旧调用 / 测试不断）。
+  const NUMBERED_TITLE_SOURCE =
+    '第\\s*[0-9零〇一二三四五六七八九十百千万两]+\\s*[章节回卷集篇部话幕]|Chapter\\s+\\d+';
+  const SPECIAL_TITLE_SOURCE =
+    '楔子|序章|序言|引子|前言|前传|外传|尾声|后记|番外|终章|大结局|附录|开篇';
+  const NUMBERED_TITLE_RE = new RegExp(`^(?:${NUMBERED_TITLE_SOURCE})`, 'i');
+  const SPECIAL_TITLE_RE = new RegExp(`^(?:${SPECIAL_TITLE_SOURCE})`, 'i');
+  const RAW_TITLE_RE = new RegExp(`^(?:${NUMBERED_TITLE_SOURCE}|${SPECIAL_TITLE_SOURCE})`, 'i');
 
   function pad3(n) {
     return String(n).padStart(3, '0');
+  }
+
+  // 章号编号方式（2026-11-10）：全书连续（默认，旧书零迁移）/ 每卷从第 1 章重新编号。
+  // 只影响「显示与导出用的章号」，不动章节顺序、文件名、正文一个字节。
+  const CHAPTER_NUMBERING_MODES = ['continuous', 'volume'];
+  const DEFAULT_CHAPTER_NUMBERING = 'continuous';
+
+  function sanitizeChapterNumbering(value) {
+    return value === 'volume' ? 'volume' : DEFAULT_CHAPTER_NUMBERING;
+  }
+
+  // 章属于哪一卷（空串 = 未分卷）。指向不存在卷的 id 按未分卷算，和 normalizeChapterOrder 同一口径。
+  function chapterVolumeKey(meta, chapter) {
+    const volumeId = chapter && typeof chapter.volumeId === 'string' ? chapter.volumeId : '';
+    if (!volumeId) return '';
+    const volumes = meta && Array.isArray(meta.volumes) ? meta.volumes : [];
+    return volumes.some((volume) => volume && volume.id === volumeId) ? volumeId : '';
+  }
+
+  // 本章在「它所在的那一卷」里排第几（1 起）：只数它前面、同属一卷的章节。
+  // 未分卷组也算一组；书里没有卷时，全部章节同属「未分卷」，结果与全书连续一致。
+  function volumeLocalNumber(meta, index) {
+    const chapters = meta && Array.isArray(meta.chapters) ? meta.chapters : [];
+    const safeIndex = Math.max(0, Math.min(Number(index) || 0, chapters.length - 1));
+    const target = chapters[safeIndex];
+    if (!target) return safeIndex + 1;
+    const key = chapterVolumeKey(meta, target);
+    let number = 0;
+    for (let i = 0; i <= safeIndex; i += 1) {
+      if (chapterVolumeKey(meta, chapters[i]) === key) number += 1;
+    }
+    return number;
+  }
+
+  // 显示 / 导出的章号（1 起）。旧书没有 chapterNumbering 字段 = continuous，行为与以前完全一致。
+  function chapterNumber(meta, index) {
+    const mode = meta && meta.chapterNumbering === 'volume' ? 'volume' : 'continuous';
+    return mode === 'volume' ? volumeLocalNumber(meta, index) : Math.max(1, (Number(index) || 0) + 1);
   }
 
   function formatTitle(meta, index, name) {
@@ -48,12 +94,17 @@
       meta && typeof meta.titleTemplate === 'string' && meta.titleTemplate.trim()
         ? meta.titleTemplate
         : TITLE_TEMPLATE;
-    const number = String(index + 1);
+    const number = String(chapterNumber(meta, index));
     const clean = String(name == null ? '' : name).trim();
-    // 原文自带的章节标题（如「第1章 关于本作品」）原样显示，避免「第1章：第1章 …」重复
-    if (clean && RAW_TITLE_RE.test(clean)) return clean;
+    // 原文已经带号（第1章 … / 第一章 … / Chapter N）原样显示，避免「第1章：第1章 …」重复
+    if (clean && NUMBERED_TITLE_RE.test(clean)) return clean;
     // 没有名字的章节：显示「第N章」，不再显示「第N章：未命名」
     if (!clean) return `第${number}章`;
+    // 不带号的特殊标题（楔子 / 番外 / 大结局 / 前传 …）：补章号。
+    // 模板缺 {num} 或 {name} 时回落默认，避免自定义模板把「大结局」这个词吞掉。
+    if (SPECIAL_TITLE_RE.test(clean) && (!template.includes('{num}') || !template.includes('{name}'))) {
+      return `第${number}章：${clean}`;
+    }
     return template.split('{num}').join(number).split('{name}').join(clean);
   }
 
@@ -332,6 +383,12 @@
     TITLE_TEMPLATE,
     MAX_NAME_LENGTH,
     RAW_TITLE_RE,
+    CHAPTER_NUMBERING_MODES,
+    DEFAULT_CHAPTER_NUMBERING,
+    sanitizeChapterNumbering,
+    chapterVolumeKey,
+    volumeLocalNumber,
+    chapterNumber,
     CHAPTER_STATUSES,
     CHAPTER_STATUS_LABELS,
     DEFAULT_CHAPTER_STATUS,

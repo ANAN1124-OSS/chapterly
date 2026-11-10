@@ -368,7 +368,7 @@ function buildBundle(input) {
       const href = `text/chapter-${pad4(number)}.xhtml`;
       const id = `ch${number}`;
       // 章名 / 章号规则和 TXT 导出完全一致（core/chapters.formatTitle）：
-      // 范围导出时章号仍按全书顺序，不会从第 1 章重新编号。
+      // 按卷编号时标题用各卷自己的章号；包内文件名 / id 仍按全书下标（内部标识，不显示）。
       const chapterTitle = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
       const text = texts[index] == null ? '' : texts[index];
       files.push({

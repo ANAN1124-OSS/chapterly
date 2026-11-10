@@ -127,7 +127,7 @@ const PATHISH = /(path|paths|dir|dirs|file|files|folder|name|ref)$/i;
 // 直接过 handleBook 的频道（第一参数必然是 bookPath → 统一过 assertBookPath）。
 // 这份清单是审计结论本身：新增「书相关」频道必须同时加到这里。
 const BOOK_CHANNELS = [
-  'book:open', 'book:verify', 'book:rename', 'book:update-info', 'book:set-last',
+  'book:open', 'book:verify', 'book:rename', 'book:update-info', 'book:set-chapter-numbering', 'book:set-last',
   'chapter:load', 'chapter:stat', 'chapter:save', 'chapter:create', 'chapter:rename',
   'chapter:update-meta', 'chapter:delete', 'chapter:restore-deleted', 'chapter:move', 'volume:create', 'volume:rename',
   'volume:delete', 'chapter:move-to-volume', 'volume:move', 'chapter:move-to',

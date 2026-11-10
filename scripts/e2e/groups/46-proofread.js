@@ -61,7 +61,7 @@ module.exports = async function group46Proofread(t) {
     '校对：准备了一本 3 章的书（第 1 章有 4 类可疑、第 2 章超长段落、第 3 章干净）',
     JSON.stringify(pfDiskBefore) === JSON.stringify(pfTexts) &&
       pfLongText.length === 520 &&
-      (await exec('window.__cwTest.chapterTitles()')).join(',') === '第1章：海边,第2章：长夜,尾声',
+      (await exec('window.__cwTest.chapterTitles()')).join(',') === '第1章：海边,第2章：长夜,第3章：尾声',
     {
       texts: pfDiskBefore.map((text) => text.length),
       diskEqual: JSON.stringify(pfDiskBefore) === JSON.stringify(pfTexts),
@@ -869,7 +869,7 @@ module.exports = async function group46Proofread(t) {
       epubRangeVolumeIds.length === 3 &&
       (await exec('window.__cwTest.volumeNames()')).join(',') === '上卷,下卷,空卷' &&
       JSON.stringify(await exec('window.__cwTest.chapterTitles()')) ===
-        JSON.stringify(['楔子', '第2章：上卷一', '第3章：上卷二', '第4章：下卷三', '第5章：下卷四']),
+        JSON.stringify(['第1章：楔子', '第2章：上卷一', '第3章：上卷二', '第4章：下卷三', '第5章：下卷四']),
     await exec('window.__cwTest.chapterTitles()')
   );
 
@@ -1254,7 +1254,7 @@ module.exports = async function group46Proofread(t) {
   );
   check(
     'DOCX 导出：全书文档含 5 章标题 + 2 个卷标题 + 正文，章号按全书',
-    ['楔子', '第2章：上卷一', '第3章：上卷二', '第4章：下卷三', '第5章：下卷四'].every((title) =>
+    ['第1章：楔子', '第2章：上卷一', '第3章：上卷二', '第4章：下卷三', '第5章：下卷四'].every((title) =>
       docxFull.document.includes(`>${title}</w:t>`)
     ) &&
       ['上卷', '下卷'].every((name) => docxFull.document.includes(`>${name}</w:t>`)) &&

@@ -1524,6 +1524,10 @@ function registerIpc() {
   handleBook('book:update-info', async (bookPath, patch) => storage.updateBookInfo(bookPath, patch), {
     mutation: 'write'
   });
+  // 章号编号方式（2026-11-10）：全书连续 / 按卷独立，只写 书目.json 的可选字段。
+  handleBook('book:set-chapter-numbering', async (bookPath, numbering) => storage.setChapterNumbering(bookPath, numbering), {
+    mutation: 'write'
+  });
   handleBook('book:set-last', async (bookPath, chapterId, info) => {
     // B3（审计 P3）：只记「最新一次」，1.5 秒内的连续切章合并成一次写盘（lastOpenWrites）。
     // 章节是否还存在 / 书是否被挪走留给落盘时校验（返回 { ok:false } 与旧行为一致，渲染层本来就不看）。

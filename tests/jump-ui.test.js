@@ -97,6 +97,9 @@ function makeHost(options = {}) {
     },
     state,
     chapterTitle: (index, name) => `第${index + 1}章：${name}`,
+    chaptersLib: {
+      chapterNumber: (meta, index) => (meta && meta.chapterNumbering === 'volume' ? index + 1 : index + 1)
+    },
     CHAPTER_STATUS_LABELS: STATUS_LABELS,
     chapterStatus: (chapter) => (chapter && chapter.status) || 'draft',
     async switchChapter(index) {
@@ -117,7 +120,7 @@ function makeHost(options = {}) {
 test('host 契约：8 个成员缺任何一个都抛 TypeError，空 host / null 也抛', () => {
   const { host } = makeHost();
   assert.deepEqual([...jumpUi.REQUIRED_HOST].sort(), [
-    '$', 'CHAPTER_STATUS_LABELS', 'api', 'call', 'chapterStatus', 'chapterTitle', 'state', 'switchChapter'
+    '$', 'CHAPTER_STATUS_LABELS', 'api', 'call', 'chapterStatus', 'chapterTitle', 'chaptersLib', 'state', 'switchChapter'
   ].sort());
   assert.throws(() => jumpUi.create(null), /createJumpUi 需要 host 对象/);
   assert.throws(() => jumpUi.create('x'), /createJumpUi 需要 host 对象/);
@@ -148,9 +151,9 @@ test('jumpChapterPayload：章名清洗（null → 空串、数字转字符串�
 
   const dirty = makeHost({ chapters: [{ id: 'a', name: null }, { id: 'b', name: 12 }, { id: 'c' }] });
   assert.deepEqual(jumpUi.create(dirty.host).jumpChapterPayload(), [
-    { id: 'a', name: '' },
-    { id: 'b', name: '12' },
-    { id: 'c', name: '' }
+    { id: 'a', name: '', number: 1, volumeName: '' },
+    { id: 'b', name: '12', number: 2, volumeName: '' },
+    { id: 'c', name: '', number: 3, volumeName: '' }
   ]);
   // chapters 不是数组（旧状态）也不炸
   const broken = makeHost();
@@ -283,7 +286,11 @@ test('refreshJumpMatches：命中写 state 并渲染；旧令牌的迟到结果�
   assert.equal(state.jumpToken, 2);
   assert.deepEqual(calls[0], {
     channel: 'book:jump-match',
-    rest: [['第一章', '第二章'].map((name, i) => ({ id: `c${i + 1}`, name })), '第一章', { limit: 8 }]
+    rest: [
+      ['第一章', '第二章'].map((name, i) => ({ id: `c${i + 1}`, name, number: i + 1, volumeName: '' })),
+      '第一章',
+      { limit: 8, numbering: 'continuous' }
+    ]
   });
   pending[0]({ matches: [{ index: 0, name: '第一章' }], total: 1 });
   await first;

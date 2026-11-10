@@ -5,6 +5,65 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ch = require('../core/chapters');
 
+test('章号编号方式：默认全书连续；只有显式 volume 才按卷独立，坏值回落默认', () => {
+  assert.equal(ch.DEFAULT_CHAPTER_NUMBERING, 'continuous');
+  assert.equal(ch.sanitizeChapterNumbering(undefined), 'continuous');
+  assert.equal(ch.sanitizeChapterNumbering('continuous'), 'continuous');
+  assert.equal(ch.sanitizeChapterNumbering('volume'), 'volume');
+  assert.equal(ch.sanitizeChapterNumbering('per-volume'), 'continuous');
+  assert.equal(ch.sanitizeChapterNumbering(null), 'continuous');
+  assert.equal(ch.sanitizeChapterNumbering(1), 'continuous');
+  assert.deepEqual(ch.CHAPTER_NUMBERING_MODES, ['continuous', 'volume']);
+});
+
+test('chapterNumber：连续模式按全书下标；按卷模式只数同一卷里前面的章（未分卷也算一组）', () => {
+  // 正常顺序：未分卷 → 卷一 → 卷二
+  const meta = {
+    volumes: [{ id: 'v1', name: '卷一' }, { id: 'v2', name: '卷二' }],
+    chapters: [
+      { id: 'o1', volumeId: null },
+      { id: 'a1', volumeId: 'v1' },
+      { id: 'a2', volumeId: 'v1' },
+      { id: 'b1', volumeId: 'v2' },
+      { id: 'o2', volumeId: '' },
+      { id: 'bad', volumeId: '已删除的卷' },
+      { id: 'b2', volumeId: 'v2' }
+    ]
+  };
+  // 连续模式：1..7，与以前完全一致
+  assert.deepEqual(meta.chapters.map((_, i) => ch.chapterNumber(meta, i)), [1, 2, 3, 4, 5, 6, 7]);
+  // 按卷模式：未分卷组 1、2、3（o1 / o2 / bad 的坏卷 id 也算未分卷）；卷一 1、2；卷二 1、2
+  const byVolume = { ...meta, chapterNumbering: 'volume' };
+  assert.deepEqual(byVolume.chapters.map((_, i) => ch.chapterNumber(byVolume, i)), [1, 1, 2, 1, 2, 3, 2]);
+});
+
+test('formatTitle：按卷模式用卷内章号，界面与导出同一份口径', () => {
+  const meta = {
+    chapterNumbering: 'volume',
+    titleTemplate: '第{num}章：{name}',
+    volumes: [{ id: 'v1', name: '卷一' }, { id: 'v2', name: '卷二' }],
+    chapters: [
+      { id: 'a1', volumeId: 'v1' },
+      { id: 'a2', volumeId: 'v1' },
+      { id: 'b1', volumeId: 'v2' },
+      { id: 'b2', volumeId: 'v2' }
+    ]
+  };
+  assert.equal(ch.formatTitle(meta, 0, '起风'), '第1章：起风');
+  assert.equal(ch.formatTitle(meta, 1, '夜雨'), '第2章：夜雨');
+  assert.equal(ch.formatTitle(meta, 2, '渡口'), '第1章：渡口');
+  assert.equal(ch.formatTitle(meta, 3, ''), '第2章');
+  assert.equal(ch.formatTitle({ ...meta, chapterNumbering: 'continuous' }, 2, '渡口'), '第3章：渡口');
+  // 原文已带号标题不受模式影响；不带号特殊标题按卷内章号补号
+  assert.equal(ch.formatTitle(meta, 2, '第3章 旧标题'), '第3章 旧标题');
+  assert.equal(ch.formatTitle(meta, 2, '楔子'), '第1章：楔子');
+});
+
+test('没有卷的书即使选了按卷模式，章号仍与全书连续一致', () => {
+  const meta = { chapterNumbering: 'volume', chapters: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] };
+  assert.deepEqual([0, 1, 2].map((i) => ch.chapterNumber(meta, i)), [1, 2, 3]);
+});
+
 test('formatTitle：章号按数组下标现算，不在数据里存 N', () => {
   assert.equal(ch.formatTitle({}, 0, '起风'), '第1章：起风');
   assert.equal(ch.formatTitle({}, 11, '夜雨'), '第12章：夜雨');
@@ -14,11 +73,26 @@ test('formatTitle：章号按数组下标现算，不在数据里存 N', () => {
   assert.equal(ch.formatTitle({}, 0, null), '第1章');
 });
 
-test('formatTitle：原文自带章节标题原样显示，不叠加「第N章：」', () => {
+test('formatTitle：原文已带号的标题原样显示，不叠加「第N章：」', () => {
   assert.equal(ch.formatTitle({}, 0, '第1章 关于本作品'), '第1章 关于本作品');
   assert.equal(ch.formatTitle({}, 3, '第一章：雪夜'), '第一章：雪夜');
-  assert.equal(ch.formatTitle({}, 0, '楔子'), '楔子');
+  assert.equal(ch.formatTitle({}, 3, '第12回 风起'), '第12回 风起');
   assert.equal(ch.formatTitle({}, 5, 'Chapter 6 The End'), 'Chapter 6 The End');
+});
+
+test('formatTitle：楔子 / 番外 / 大结局 / 前传等不带号特殊标题补「第N章：」', () => {
+  const words = [
+    '楔子', '序章', '序言', '引子', '前言', '前传', '外传',
+    '尾声', '后记', '番外', '终章', '大结局', '附录', '开篇'
+  ];
+  for (const word of words) {
+    assert.equal(ch.formatTitle({}, 5, word), `第6章：${word}`);
+  }
+  // 带后缀 / 标点的原文标题：章号加在整个原词前，原词一字不改
+  assert.equal(ch.formatTitle({}, 18, '大结局（上）'), '第19章：大结局（上）');
+  assert.equal(ch.formatTitle({}, 18, '番外篇：后日谈'), '第19章：番外篇：后日谈');
+  assert.equal(ch.formatTitle({}, 0, '前传'), '第1章：前传');
+  assert.equal(ch.formatTitle({}, 2, ' 大结局 '), '第3章：大结局');
 });
 
 test('formatTitle：支持自定义模板', () => {
@@ -26,19 +100,23 @@ test('formatTitle：支持自定义模板', () => {
   assert.equal(ch.formatTitle(meta, 2, '起风'), 'Chapter 3 - 起风');
 });
 
-test('formatTitle：自定义模板下原文标题 / 空名仍按 core 口径，坏模板回落默认', () => {
+test('formatTitle：自定义模板下原文已带号标题原样 / 特殊标题按模板 / 空名仍按 core 口径', () => {
   const meta = { titleTemplate: 'Chapter {num} - {name}' };
-  // 原文自带标题永远原样显示（哪怕书目写了自定义模板），避免「Chapter 3 - 第3章 …」重复
+  // 原文已带号标题永远原样显示（哪怕书目写了自定义模板），避免「Chapter 3 - 第3章 …」重复
   assert.equal(ch.formatTitle(meta, 0, '第1章 关于本作品'), '第1章 关于本作品');
-  assert.equal(ch.formatTitle(meta, 3, '楔子'), '楔子');
+  // 特殊标题跟模板走：章号 + 原词都在
+  assert.equal(ch.formatTitle(meta, 3, '楔子'), 'Chapter 4 - 楔子');
   // 空名无论模板怎么写都只显示「第N章」（渲染层章节列表也走这条，不再补「未命名」）
   assert.equal(ch.formatTitle(meta, 4, '  '), '第5章');
   assert.equal(ch.formatTitle(meta, 4, null), '第5章');
   // 模板只有空白 / 不是字符串 = 用默认模板
   assert.equal(ch.formatTitle({ titleTemplate: '   ' }, 1, '夜雨'), '第2章：夜雨');
   assert.equal(ch.formatTitle({ titleTemplate: 123 }, 1, '夜雨'), '第2章：夜雨');
-  // 模板里没有 {name}：界面与导出都只出章号，不偷偷补名字
+  // 模板里没有 {name}：普通章只出章号；特殊标题回落默认，避免把「大结局」吞掉
   assert.equal(ch.formatTitle({ titleTemplate: '第{num}节' }, 2, '起风'), '第3节');
+  assert.equal(ch.formatTitle({ titleTemplate: '第{num}节' }, 2, '大结局'), '第3章：大结局');
+  // 模板里没有 {num}：特殊标题同样回落默认，章号不能丢
+  assert.equal(ch.formatTitle({ titleTemplate: '{name}' }, 2, '大结局'), '第3章：大结局');
   // 重复占位符全部展开；不认识的占位符原样保留
   assert.equal(
     ch.formatTitle({ titleTemplate: '{num}-{num} {name}{unknown}' }, 0, '起风'),
@@ -64,7 +142,9 @@ test('UMD：Node require 行为不变，浏览器加载挂到 window.CWChapters'
     [1, '第2章 旧标题'],
     [2, ''],
     [3, null],
-    [4, '  ']
+    [4, '  '],
+    [5, '楔子'],
+    [6, '大结局']
   ]) {
     assert.equal(browserCh.formatTitle(meta, index, name), ch.formatTitle(meta, index, name));
     assert.equal(browserCh.formatTitle(null, index, name), ch.formatTitle(null, index, name));

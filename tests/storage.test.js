@@ -1037,3 +1037,47 @@ test('ensureDir:false：目录存在时照常原子写（保存校验通过后�
   await storage.saveChapterText(bookPath, meta.chapters[0].file, '正文', { ensureDir: false });
   assert.equal((await storage.loadChapterText(bookPath, meta.chapters[0].file)).text, '正文');
 });
+
+test('章号编号方式：按卷独立写进书目.json，改回连续删字段；旧书没有字段 = 连续', async () => {
+  resetRegistry();
+  const chapters = require('../core/chapters');
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '编号演练');
+  const created = await storage.readBookMeta(bookPath);
+  await storage.renameChapter(bookPath, created.chapters[0].id, '起风');
+  const v1 = await storage.createVolume(bookPath, '卷一');
+  const v2 = await storage.createVolume(bookPath, '卷二');
+  // 卷一：起风 + 夜雨；卷二：渡口
+  await storage.moveChapterToVolume(bookPath, created.chapters[0].id, v1.volume.id);
+  const second = await storage.createChapterWithText(bookPath, {
+    insertIndex: 1, name: '夜雨', text: 'x', volumeId: v1.volume.id
+  });
+  await storage.createChapterWithText(bookPath, {
+    insertIndex: 2, name: '渡口', text: 'y', volumeId: v2.volume.id
+  });
+  let meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapterNumbering, undefined, '旧书 / 默认没有这个字段');
+  assert.deepEqual(meta.chapters.map((_, i) => chapters.chapterNumber(meta, i)), [1, 2, 3]);
+
+  const set = await storage.setChapterNumbering(bookPath, 'volume');
+  assert.equal(set.numbering, 'volume');
+  assert.equal(set.changed, true);
+  meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapterNumbering, 'volume');
+  assert.deepEqual(meta.chapters.map((_, i) => chapters.chapterNumber(meta, i)), [1, 2, 1]);
+  assert.equal(chapters.formatTitle(meta, 2, '渡口'), '第1章：渡口');
+  const disk = JSON.parse(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'));
+  assert.equal(disk.chapterNumbering, 'volume');
+
+  const again = await storage.setChapterNumbering(bookPath, 'volume');
+  assert.equal(again.changed, false, '同值再存不写盘');
+
+  const back = await storage.setChapterNumbering(bookPath, 'continuous');
+  assert.equal(back.numbering, 'continuous');
+  meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapterNumbering, undefined);
+  assert.equal(chapters.formatTitle(meta, 2, '渡口'), '第3章：渡口');
+  const disk2 = JSON.parse(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'));
+  assert.equal('chapterNumbering' in disk2, false, '连续模式不留字段');
+  assert.equal(second.chapter.name, '夜雨');
+});

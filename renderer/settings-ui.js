@@ -76,7 +76,7 @@
     }
     const { $, state, api, call, toast, display, peers, texts } = host;
     if (typeof display !== 'object') throw new TypeError('createSettingsUi 的 host.display 必须是对象');
-    for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib', 'editorLogic']) {
+    for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib', 'editorLogic', 'applyChapterNumbering']) {
       if (display[key] === undefined || display[key] === null) throw new TypeError('createSettingsUi 的 host.display 缺少 ' + key);
     }
     if (typeof peers !== 'object') throw new TypeError('createSettingsUi 的 host.peers 必须是对象');
@@ -100,7 +100,7 @@
     for (const key of ['commonLib', 'formatBytes']) {
       if (texts[key] === undefined || texts[key] === null) throw new TypeError('createSettingsUi 的 host.texts 缺少 ' + key);
     }
-    const { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic } = display;
+    const { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic, applyChapterNumbering } = display;
     const { refreshStats, renderStatsChart } = peers.stats;
     const { renderDurationSettings, renderWriteTimer, applyWriteTimerConfig, writeDurationEnabled, flushWriteTimer } = peers.writeTimer;
     const { renderEditorMarks, renderMarksMenu } = peers.editor;
@@ -365,6 +365,11 @@
     // 中西文自动间距（1.3.0 T-08）：默认开，只有明确存过 false 的才是关（旧配置没有这个键 = 勾上）
     $('settings-text-autospace').checked = cfg.editorTextAutospace !== false;
     setSelectValue('settings-paper', cfg.editorPaper, 'paper');
+    // 章号（2026-11-10）：按书存 书目.json，不在 config 里；默认连续
+    const numberingSelect = $('settings-chapter-numbering');
+    if (numberingSelect) {
+      numberingSelect.value = state.meta && state.meta.chapterNumbering === 'volume' ? 'volume' : 'continuous';
+    }
     // 当前段落高亮（N10b）：开关 / 颜色都是显示设置，写作页按书、书架按全局
     $('settings-caret-paragraph').checked = cfg.caretParagraph === true;
     state.settingsCaretColorDraft = caretColorLib.normalizeColor(cfg.caretParagraphColor);
@@ -407,7 +412,23 @@
       el.textContent = '预览：（未设置模板，新建章节仍是空章）';
       return;
     }
-    const nextNumber = state.view === 'editor' && state.bookPath ? state.chapters.length + 1 : 1;
+    // 新章默认接在「当前章所在卷」的末尾：按卷编号时预览要算同卷章数 + 1，不是全书章数 + 1
+    let nextNumber = 1;
+    if (state.view === 'editor' && state.bookPath && state.chapters.length) {
+      const meta = state.meta || {};
+      const volumes = Array.isArray(meta.volumes) ? meta.volumes : [];
+      const keyOf = (chapter) => {
+        const id = chapter && typeof chapter.volumeId === 'string' ? chapter.volumeId : '';
+        return id && volumes.some((volume) => volume && volume.id === id) ? id : '';
+      };
+      if (meta.chapterNumbering === 'volume') {
+        const current = state.chapters[state.index] || state.chapters[state.chapters.length - 1];
+        const key = keyOf(current);
+        nextNumber = state.chapters.filter((chapter) => keyOf(chapter) === key).length + 1;
+      } else {
+        nextNumber = state.chapters.length + 1;
+      }
+    }
     const text = templateLib.applyTemplate(template, {
       chapterNumber: nextNumber,
       chapterName: '示例章名',
@@ -692,6 +713,9 @@
         ? '只影响这本书：存进 config.json 的 bookDisplay；没单独设置过的书继续用全局默认。范围 50–20000 字。'
         : '全局默认：没单独设置过的书都用这一档；范围 50–20000 字，超出会夹到边界，留空 / 非数字按 500。';
     }
+    // 章号是这本书的属性（存 书目.json），全局设置里没有对象可改
+    const numberingField = $('settings-numbering-field');
+    if (numberingField) numberingField.classList.toggle('hidden', !isBook);
     const resetBtn = $('btn-reset-book-display');
     if (resetBtn) {
       resetBtn.classList.toggle('hidden', !isBook || !Object.keys(state.bookDisplay || {}).length);
@@ -799,6 +823,14 @@
     try {
       const form = readDisplayForm();
       if (state.settingsScope === 'book' && state.bookId) {
+        // 章号是书目字段（不是 bookDisplay）：先按需写 书目.json，再存显示设置
+        const numberingEl = $('settings-chapter-numbering');
+        const numberingWanted = numberingEl && numberingEl.value === 'volume' ? 'volume' : 'continuous';
+        const numberingNow = state.meta && state.meta.chapterNumbering === 'volume' ? 'volume' : 'continuous';
+        if (numberingWanted !== numberingNow) {
+          const saved = await call(api.setChapterNumbering, state.bookPath, numberingWanted);
+          if (saved && saved.meta) applyChapterNumbering(saved.meta);
+        }
         const display = await call(api.setBookDisplay, state.bookId, form);
         state.bookDisplay = display || {};
         state.config = effectiveConfig();

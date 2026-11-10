@@ -152,8 +152,9 @@ test('分卷：有名字的卷生成卷名页 + 二级目录，未分卷章节�
   assertWellFormedXml(cover, 'volume-0001');
 
   const nav = textOf(byName, 'OEBPS/nav.xhtml');
-  // 「楔子」属于原文自带标题（core/chapters.RAW_TITLE_RE），显示时原样保留
-  assert.match(nav, /<li><a href="text\/chapter-0001\.xhtml">楔子<\/a><\/li>/);
+  // 「楔子」是不带号特殊标题，2026-11-10 起补「第N章：」；已带号标题仍原样
+  assert.ok(textOf(byName, 'OEBPS/text/chapter-0001.xhtml').includes('<h1 class="chapter-title">第1章：楔子</h1>'));
+  assert.match(nav, /<li><a href="text\/chapter-0001\.xhtml">第1章：楔子<\/a><\/li>/);
   assert.match(nav, /<a href="text\/volume-0001\.xhtml">上卷<\/a>/);
   assert.match(nav, /<li><a href="text\/chapter-0002\.xhtml">第2章：上卷一<\/a><\/li>/);
   // 卷名页在 spine 里排在该卷第一章前面
@@ -312,7 +313,7 @@ test('EPUB 按卷导出：未分卷（volumeId=null）只打未分卷章，不�
   assert.deepEqual(spine, ['cover', 'ch1']);
   const nav = textOf(byName, 'OEBPS/nav.xhtml');
   assert.equal((nav.match(/<ol>/g) || []).length, 1);
-  assert.ok(nav.includes('楔子') && !nav.includes('上卷'));
+  assert.ok(nav.includes('第1章：楔子') && !nav.includes('上卷'));
   assert.ok(textOf(byName, 'OEBPS/cover.xhtml').includes('未分卷 · 共 1 章'));
 });
 

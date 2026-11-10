@@ -269,7 +269,7 @@ test('C-05 / I-01 状态栏：三段布局、成功 2s 淡到 60%、失败可点
 
 test('C-05 中段：章节位置与标题栏同一口径（第N章），没书 / 没章整段收起', () => {
   const STATUSBAR = read('renderer/statusbar-ui.js');
-  assert.match(STATUSBAR, /label\.textContent = `第\$\{state\.index \+ 1\}章`;/);
+  assert.match(STATUSBAR, /label\.textContent = `第\$\{chaptersLib\.chapterNumber\(state\.meta, state\.index\)\}章`;/);
   assert.match(STATUSBAR, /group\.classList\.add\('hidden'\)/);
   assert.match(STATUSBAR, /group\.classList\.remove\('hidden'\)/);
 });

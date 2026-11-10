@@ -172,7 +172,7 @@ function build(options = {}) {
     renderDurationSettings: 0, renderWriteTimer: 0, applyWriteTimerConfig: 0, flushWriteTimer: 0,
     renderEditorMarks: 0, renderMarksMenu: 0, refreshShelf: 0,
     refreshSensitiveWordList: 0, refreshProofreadWordList: 0, pickSensitiveWords: [], pickProofreadWords: [],
-    applyEditorStyle: [], syncCaretParagraphFromConfig: 0, applySidebarWidth: [], loadCustomFont: [],
+    applyEditorStyle: [], syncCaretParagraphFromConfig: 0, applySidebarWidth: [], loadCustomFont: [], applyChapterNumbering: [],
     hideHeaderMenus: 0, showView: [],
     logInfo: 0, sensitiveWordsInfo: 0, proofreadWordsInfo: 0, checkUpdate: 0, openUpdateDownload: 0, pickFolder: 0, pickFont: 0,
     closeSettings: 0, openSettings: 0, previewSettings: [],
@@ -212,7 +212,8 @@ function build(options = {}) {
       caretColorLib,
       s2tLib,
       templateLib,
-      editorLogic
+      editorLogic,
+      applyChapterNumbering(meta) { calls.applyChapterNumbering.push(meta); }
     },
     peers: {
       stats: { refreshStats() { calls.refreshStats += 1; }, renderStatsChart() { calls.renderStatsChart += 1; } },
@@ -252,7 +253,7 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
     delete broken[key];
     assert.throws(() => settingsUi.create(broken), new RegExp('host 缺少 ' + key.replace('$', '\\$')), '缺 ' + key);
   }
-  for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib', 'editorLogic']) {
+  for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib', 'editorLogic', 'applyChapterNumbering']) {
     const broken = { ...ctx.host, display: { ...ctx.host.display } };
     delete broken.display[key];
     assert.throws(() => settingsUi.create(broken), new RegExp('host\\.display 缺少 ' + key));
@@ -946,7 +947,7 @@ test('静态闸门：renderer.js 不再内嵌设置实现，只剩装配与转�
   assert.ok(rendererSrc.includes('const settingsUiModule = window.CWSettingsUi;'));
   for (const line of [
     '    $, state, api, call, toast,',
-    '    display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic },',
+    '    display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic, applyChapterNumbering: applyChapterNumberingMeta },',
     '      stats: { refreshStats, renderStatsChart },',
     '      writeTimer: { renderDurationSettings, renderWriteTimer, applyWriteTimerConfig, writeDurationEnabled, flushWriteTimer },',
     '      editor: { renderEditorMarks, renderMarksMenu },',

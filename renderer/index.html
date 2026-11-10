@@ -81,15 +81,36 @@
     <!-- ============ 编辑器 ============ -->
     <section id="editor-view" class="view editor-view hidden">
       <aside class="sidebar" id="sidebar">
-        <button id="btn-back" class="btn ghost back-btn" type="button">← 书架</button>
-        <div class="sidebar-book">
-          <div class="book-title" id="book-title" title="书名"></div>
-          <button id="btn-rename-book" class="btn ghost tiny" type="button" title="修改书名（只改书目记录，不改文件夹名）">改名</button>
+        <!-- 卷章目录（2026-11-10 重设计）：顶部书名 + 全书概览，中部筛选 + 卷章树，底部一行操作。
+             只用现有 id / class 之外的新容器，拖拽、右键、键盘、快捷键都不动。 -->
+        <div class="sidebar-head">
+          <button id="btn-back" class="btn ghost back-btn" type="button">← 书架</button>
         </div>
-        <div class="chapter-list" id="chapter-list"></div>
+        <div class="sidebar-book">
+          <div class="book-title-line">
+            <div class="book-title" id="book-title" title="书名"></div>
+            <button id="btn-rename-book" class="btn ghost tiny" type="button" title="修改书名（只改书目记录，不改文件夹名）">改名</button>
+          </div>
+          <div class="book-meta-line">
+            <div class="book-meta" id="book-meta"></div>
+            <button id="btn-toggle-volumes" class="book-meta-toggle hidden" type="button" title="折叠或展开全部卷（只影响侧栏显示）">全部折叠</button>
+          </div>
+        </div>
+        <div class="chapter-tools">
+          <div class="chapter-filter">
+            <svg class="chapter-filter-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.3 10.3 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <input id="chapter-filter" class="chapter-filter-input" type="search" autocomplete="off" spellcheck="false" placeholder="筛选章名或章号" aria-label="筛选章名或章号" aria-controls="chapter-list" />
+            <button id="btn-clear-filter" class="chapter-filter-clear hidden" type="button" title="清空筛选（Esc）" aria-label="清空筛选">×</button>
+          </div>
+        </div>
+        <div class="chapter-list-wrap">
+          <div class="chapter-list" id="chapter-list"></div>
+        </div>
+        <!-- 回到当前章：滚出可视区 / 当前卷折叠时出现；单独占一条，不压在章行上 -->
+        <button id="btn-return-current" class="current-pill hidden" type="button">回到当前章</button>
         <div class="sidebar-actions">
           <button id="btn-new-chapter" class="btn" type="button">＋ 新建章节</button>
-          <button id="btn-new-volume" class="btn ghost" type="button" title="新建卷（侧栏按卷分组，章号不变）">＋ 新建卷</button>
+          <button id="btn-new-volume" class="btn ghost" type="button" title="新建卷（侧栏按卷分组，章号不变）" aria-label="新建卷">＋ 新建卷</button>
         </div>
       </aside>
       <div id="sidebar-resizer" class="sidebar-resizer" title="拖动调整章节栏宽度（双击恢复默认）"></div>
@@ -494,6 +515,8 @@
             <span>章</span>
           </label>
         </div>
+        <!-- 按卷编号时提醒：范围仍按全书顺序；导出标题用卷内章号（2026-11-10） -->
+        <div class="export-numbering-hint muted small hidden" id="export-numbering-hint"></div>
         <div class="export-summary" id="export-summary"></div>
         <div class="export-conversion-note muted small" id="export-conversion-note"></div>
         <p class="muted small">
@@ -865,6 +888,16 @@
           <option value="840">840 px</option>
         </select>
       </label>
+      <!-- 章号（2026-11-10）：按书存 书目.json；全书连续 / 每卷从第 1 章重新编号。
+           只影响显示与导出的章号，不改章节顺序 / 文件名 / 正文；书架全局设置里不出现。 -->
+      <label class="field settings-row" id="settings-numbering-field">
+        <span>章号</span>
+        <select id="settings-chapter-numbering" class="text-input" aria-label="章号编号方式">
+          <option value="continuous">全书连续（第1、2、3…章）</option>
+          <option value="volume">每卷重新编号（每卷从第1章起）</option>
+        </select>
+        <span class="muted small" id="settings-numbering-hint">只影响这本书：目录 / 标题 / 导出的章号；不改章节顺序和文件名。</span>
+      </label>
       <label class="field settings-row">
         <span>超长段落阈值</span>
         <input id="settings-long-para-threshold" class="text-input" type="number" min="50" max="20000" step="10" value="500"
@@ -1144,6 +1177,7 @@
   <script src="../core/paragraphs.js"></script>
   <script src="../core/capture.js"></script>
   <script src="editor-logic.js"></script>
+  <script src="chapter-filter-logic.js"></script>
 <script src="format-ui.js"></script>
   <script src="find-logic.js"></script>
   <script src="focus-logic.js"></script>

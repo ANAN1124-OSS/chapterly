@@ -45,8 +45,14 @@ test('静态闸门：书架搜索输入走 250ms 防抖 + 下一帧渲染，不�
 });
 
 test('静态闸门：Esc / 清空仍立即重渲染；E2E 测试钩子仍同步渲染', () => {
-  // keydown 里 Esc / Enter 的处理：Esc 立即 renderShelf（不等防抖）
-  const escRender = sliceBetween(RENDERER, "if (event.key === 'Escape') {", 'return;');
+  // keydown 里 Esc / Enter 的处理：Esc 立即 renderShelf（不等防抖）。
+  // 2026-11-10 卷章目录新增了第二个输入框 Esc（筛选清空），所以这里从书架搜索框的
+  // keydown 起切，不再抓全文件第一个 Escape。
+  const escRender = sliceBetween(
+    RENDERER,
+    "$('shelf-search').addEventListener('keydown', (event) => {",
+    'return;'
+  );
   assert.ok(escRender.includes('renderShelf();'), 'Esc 清空后要立即重渲染（旧行为）');
   const clearBlock = sliceBetween(
     RENDERER,

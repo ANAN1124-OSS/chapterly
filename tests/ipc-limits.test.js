@@ -191,6 +191,19 @@ test('跳章章节列表：超过 2 万条只看前 2 万条，章名限长，�
       throw new Error('boom');
     }
   };
+  // 按卷编号跳章要的 number / volumeName 也保留；坏值不落进 core
+  assert.deepEqual(
+    ipcLimits.sanitizeChapterList([
+      { id: 'a', name: '起风', number: 3, volumeName: '卷一 · 归途' },
+      { id: 'b', name: '夜雨', number: '2', volumeName: '  ' },
+      { id: 'c', name: '远行', number: -1, volumeName: 42 }
+    ]),
+    [
+      { id: 'a', name: '起风', number: 3, volumeName: '卷一 · 归途' },
+      { id: 'b', name: '夜雨', number: 2 },
+      { id: 'c', name: '远行' }
+    ]
+  );
   assert.deepEqual(ipcLimits.sanitizeChapterList(['x', null, [], 42, evil, { id: 'ch_ok', name: '正常' }]), [
     null, null, null, null, null, { id: 'ch_ok', name: '正常' }
   ]);

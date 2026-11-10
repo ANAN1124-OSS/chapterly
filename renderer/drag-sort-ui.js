@@ -257,7 +257,7 @@
       renderChapterList();
       renderEditorHeader();
       updateStatus();
-      toast(`已移动章节：第${data.from + 1}章 → 第${data.to + 1}章（章节文件没有改名）`);
+      toast(`已移动章节：第 ${data.from + 1} 位 → 第 ${data.to + 1} 位（章节文件没有改名）`);
       if (currentId) {
         try {
           const currentChapter = state.chapters.find((c) => c.id === currentId);
