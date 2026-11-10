@@ -71,6 +71,13 @@ function installDocument() {
   return created;
 }
 
+// 与 core/chapters.js 的 chapterVolumeKey 同一口径：卷存在才算这一卷，否则 = 未分卷（空串）
+function chapterVolumeKeyOf(meta, chapter) {
+  const volumes = meta && Array.isArray(meta.volumes) ? meta.volumes : [];
+  const id = chapter && typeof chapter.volumeId === 'string' ? chapter.volumeId : '';
+  return id && volumes.some((volume) => volume && volume.id === id) ? id : '';
+}
+
 const STATUS_LABELS = { draft: '草稿', revising: '待修', done: '完稿' };
 
 function makeHost(options = {}) {
@@ -97,8 +104,22 @@ function makeHost(options = {}) {
     },
     state,
     chapterTitle: (index, name) => `第${index + 1}章：${name}`,
+    // 章号 / 章→卷的真实口径在 core/chapters.js（单测覆盖）。这里按同一口径实现，
+    // 两条分支必须能区分开 —— 旧 mock 的 volume / continuous 返回同一个值，回归测不出来。
     chaptersLib: {
-      chapterNumber: (meta, index) => (meta && meta.chapterNumbering === 'volume' ? index + 1 : index + 1)
+      chapterNumber: (meta, index) => {
+        if (!meta || meta.chapterNumbering !== 'volume') return index + 1;
+        const chapters = Array.isArray(meta.chapters) ? meta.chapters : [];
+        const target = chapters[index];
+        if (!target) return index + 1;
+        const key = chapterVolumeKeyOf(meta, target);
+        let number = 0;
+        for (let i = 0; i <= index; i += 1) {
+          if (chapterVolumeKeyOf(meta, chapters[i]) === key) number += 1;
+        }
+        return number;
+      },
+      chapterVolumeKey: chapterVolumeKeyOf
     },
     CHAPTER_STATUS_LABELS: STATUS_LABELS,
     chapterStatus: (chapter) => (chapter && chapter.status) || 'draft',
@@ -159,6 +180,42 @@ test('jumpChapterPayload：章名清洗（null → 空串、数字转字符串�
   const broken = makeHost();
   broken.state.chapters = null;
   assert.deepEqual(jumpUi.create(broken.host).jumpChapterPayload(), []);
+});
+
+test('jumpChapterPayload：按卷编号时 number 是卷内号、volumeName 与目录同一份章→卷判定', () => {
+  const { host, state } = makeHost({
+    chapters: [
+      { id: 'a', name: '起风', volumeId: 'v1' },
+      { id: 'b', name: '夜雨', volumeId: 'v1' },
+      { id: 'c', name: '渡口', volumeId: 'v2' },
+      { id: 'd', name: '迷路', volumeId: 'ghost' }
+    ]
+  });
+  state.meta = {
+    chapterNumbering: 'volume',
+    volumes: [{ id: 'v1', name: '卷一 · 归途' }, { id: 'v2', name: '卷二 · 渡海' }],
+    chapters: state.chapters
+  };
+  assert.deepEqual(jumpUi.create(host).jumpChapterPayload(), [
+    { id: 'a', name: '起风', number: 1, volumeName: '卷一 · 归途' },
+    { id: 'b', name: '夜雨', number: 2, volumeName: '卷一 · 归途' },
+    { id: 'c', name: '渡口', number: 1, volumeName: '卷二 · 渡海' },
+    // 指向已删除卷的章 = 未分卷组（1.5.0 P0-1 审计 A2 的统一口径），卷内号重新从 1 数
+    { id: 'd', name: '迷路', number: 1, volumeName: '未分卷' }
+  ]);
+
+  // 连续模式同一份数据仍按全书位置报号（改口径不许影响默认模式）
+  state.meta = { ...state.meta, chapterNumbering: 'continuous' };
+  assert.deepEqual(
+    jumpUi.create(host).jumpChapterPayload().map((item) => item.number),
+    [1, 2, 3, 4]
+  );
+  // 没有卷的书：volumeName 留空（不写「未分卷」）
+  state.meta = { chapters: state.chapters };
+  assert.deepEqual(
+    jumpUi.create(host).jumpChapterPayload().map((item) => item.volumeName),
+    ['', '', '', '']
+  );
 });
 
 test('renderJumpMatches：五种汇总文案逐字写死 + warn / 确认按钮状态', () => {

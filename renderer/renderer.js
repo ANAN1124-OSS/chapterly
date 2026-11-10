@@ -1289,7 +1289,14 @@
     if (!chapter) return false;
     const query = chapterFilterQuery();
     if (!query) return true;
-    return chapterFilterLogic.matchChapter(chapter, index, chapterTitle(index, chapter.name), query);
+    // 章号按界面显示的编号方式算（按卷编号 = 卷内号），和目录 / 顶栏 / 状态栏同一份口径
+    return chapterFilterLogic.matchChapter(
+      chapter,
+      index,
+      chapterTitle(index, chapter.name),
+      query,
+      chaptersLib.chapterNumber(state.meta, index)
+    );
   }
 
   function matchingChapterIndexes() {
@@ -1599,7 +1606,10 @@
   }
 
   function chapterVolumeId(chapter) {
-    return (chapter && chapter.volumeId) || null;
+    // 1.5.0 P0-1（审计 E1 / A2）：章→卷只认 core/chapters.js 的 chapterVolumeKey 一份实现。
+    // 指向已删除卷的章按「未分卷」算，和目录分组 / 卷内章号 / 折叠同一口径；
+    // 对外仍保持 null = 未分卷（测试钩子 / 拖拽排序按 null 比对）。
+    return chaptersLib.chapterVolumeKey(state.meta, chapter) || null;
   }
 
   function toggleVolumeCollapse(volumeId) {
@@ -3876,7 +3886,7 @@
   }
 
   const settingsUi = settingsUiModule.create({
-    $, state, api, call, toast,
+    $, state, api, call, toast, chaptersLib,
     // 1.4.0 P0-1：设置分区 / 搜索 / 深链纯逻辑（不在 host 必需契约里，缺了只退化成老的一长条）
     ia: settingsIaModule,
     display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic, applyChapterNumbering: applyChapterNumberingMeta },

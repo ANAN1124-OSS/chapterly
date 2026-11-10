@@ -21,18 +21,22 @@
     return String(value == null ? '' : value).trim().replace(/\s+/g, ' ');
   }
 
-  // 一章的「可搜文本」：标题 + 章名 + 章号；大小写不敏感（中英混排时英文同样能筛）
-  function haystack(chapter, index, title) {
-    const number = String((Number(index) || 0) + 1);
+  // 一章的「可搜文本」：标题 + 章名 + 章号；大小写不敏感（中英混排时英文同样能筛）。
+  // number 是「界面上显示的章号」（按卷编号时 = 卷内号），由调用方传 chaptersLib.chapterNumber；
+  // 省略时退回全书下标 + 1，保证旧调用与旧单测不改也成立。
+  function haystack(chapter, index, title, number) {
+    const parsed = Number(number);
+    const shown = Number.isFinite(parsed) && parsed > 0 ? parsed : (Number(index) || 0) + 1;
+    const num = String(shown);
     const name = chapter && chapter.name != null ? String(chapter.name) : '';
     const fullTitle = title == null ? '' : String(title);
-    return [fullTitle, name, number, `第${number}章`].join('\n').toLowerCase();
+    return [fullTitle, name, num, `第${num}章`].join('\n').toLowerCase();
   }
 
-  function matchChapter(chapter, index, title, query) {
+  function matchChapter(chapter, index, title, query, number) {
     const q = normalizeQuery(query).toLowerCase();
     if (!q) return true;
-    const hay = haystack(chapter, index, title);
+    const hay = haystack(chapter, index, title, number);
     return q.split(' ').every((term) => hay.includes(term));
   }
 

@@ -50,12 +50,13 @@
   function jumpChapterPayload() {
     const meta = state.meta || {};
     const volumes = Array.isArray(meta.volumes) ? meta.volumes : [];
+    // 1.5.0 P0-1（审计 E1 / A2）：章→卷统一用 core/chapters.js 的 chapterVolumeKey，
+    // 指向已删除卷的章与真正未分卷的章落在同一组（不再各自 find / some 一份）。
     const volumeNameOf = (chapter) => {
-      const id = chapter && typeof chapter.volumeId === 'string' ? chapter.volumeId : '';
-      const volume = id ? volumes.find((item) => item && item.id === id) : null;
-      if (volume) return String(volume.name || '').trim() || '未命名卷';
-      // 没有卷（或卷已不存在）的章：按卷编号时它自成一个分组，跳章结果要标明「未分卷」
-      return volumes.length ? '未分卷' : '';
+      const key = chaptersLib.chapterVolumeKey(meta, chapter);
+      if (!key) return volumes.length ? '未分卷' : '';
+      const volume = volumes.find((item) => item && item.id === key);
+      return volume ? String(volume.name || '').trim() || '未命名卷' : '未分卷';
     };
     return (state.chapters || []).map((chapter, index) => ({
       id: chapter.id,

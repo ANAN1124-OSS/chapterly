@@ -13,9 +13,10 @@
  * 事件绑定随域搬进 setupSettingsUi()（设置 3 个按钮 + 章节模板预览 + 重置本书显示 + 选目录 + 词表/日志/更新 +
  *   自定义字体 + 显示项实时预览/高亮色板；写作计时与日历的绑定不属设置域，留在 renderer）。
  *
- * 契约：createSettingsUi(host) 由渲染层调用一次。host 8 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createSettingsUi(host) 由渲染层调用一次。host 9 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（config、bookDisplay、settings* 草稿）/ IPC 白名单 / IPC 包装 / 提示
+ *     chaptersLib,                         // core/chapters.js：章→卷判定（chapterVolumeKey，1.5.0 P0-1 起唯一一份）
  *     display: {                            // 显示层与显示设置表单
  *       applyEditorStyle,                   //   把生效显示配置写到 CSS 变量 / body class
  *       syncCaretParagraphFromConfig,       //   当前段落高亮开关 / 颜色同步到显示层
@@ -59,7 +60,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'display', 'peers', 'texts'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'display', 'peers', 'texts', 'chaptersLib'];
 
   // 1.4.0 P0-1：设置面板信息架构（分区 / 搜索 / 深链）的纯逻辑在 renderer/settings-ia.js，
   // 由渲染层通过 host.ia 传进来（正式路径 window.CWSettingsIa）。它**不在 REQUIRED_HOST 里**：
@@ -74,7 +75,7 @@
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createSettingsUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, display, peers, texts } = host;
+    const { $, state, api, call, toast, display, peers, texts, chaptersLib } = host;
     if (typeof display !== 'object') throw new TypeError('createSettingsUi 的 host.display 必须是对象');
     for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib', 'editorLogic', 'applyChapterNumbering']) {
       if (display[key] === undefined || display[key] === null) throw new TypeError('createSettingsUi 的 host.display 缺少 ' + key);
@@ -416,11 +417,9 @@
     let nextNumber = 1;
     if (state.view === 'editor' && state.bookPath && state.chapters.length) {
       const meta = state.meta || {};
-      const volumes = Array.isArray(meta.volumes) ? meta.volumes : [];
-      const keyOf = (chapter) => {
-        const id = chapter && typeof chapter.volumeId === 'string' ? chapter.volumeId : '';
-        return id && volumes.some((volume) => volume && volume.id === id) ? id : '';
-      };
+      // 1.5.0 P0-1（审计 E1 / A2）：章→卷统一用 core/chapters.js 的 chapterVolumeKey，
+      // 指向已删除卷的章按未分卷算，和目录分组 / 卷内章号同一口径。
+      const keyOf = (chapter) => chaptersLib.chapterVolumeKey(meta, chapter);
       if (meta.chapterNumbering === 'volume') {
         const current = state.chapters[state.index] || state.chapters[state.chapters.length - 1];
         const key = keyOf(current);

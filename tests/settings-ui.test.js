@@ -9,14 +9,15 @@ const templateLib = require('../core/template');
 const s2tLib = require('../core/s2t');
 const commonLib = require('../core/common');
 const editorLogic = require('../renderer/editor-logic');
+const chaptersLib = require('../core/chapters');
 
 // 第 4 步 renderer 九刀·第七刀：设置（原 renderer.js 4305–4787，483 行）搬到 renderer/settings-ui.js。
 // 这一域是胶水中心：作用域切换 / 表单回填与预览 / 保存（全局 + 按书两条路径）/ 数据台账（词表 / 日志 / 更新）。
 // 搬之前只有 E2E 黑盒覆盖（打开设置 → 改项 → 保存 / 取消）；各作用域显隐、保存 payload、网络状态文案、
 // 词表三态、失败兜底在 Node 里一步都测不到。搬出来以后用「假 host + 假 DOM」逐条钉住。
 //
-// 契约：host 8 个成员 = 基础 5（$, state, api, call, toast）+ display{11} + peers{stats,writeTimer,editor,
-// words,refreshShelf} + texts{commonLib,formatBytes}；分组内每个真实依赖都写进模块头注释。
+// 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ chaptersLib + display{11} +
+// peers{stats,writeTimer,editor,words,refreshShelf} + texts{commonLib,formatBytes}；分组内每个真实依赖都写进模块头注释。
 
 const realDocument = globalThis.document;
 const realDateNow = Date.now;
@@ -198,6 +199,7 @@ function build(options = {}) {
     api,
     call: async (fn, ...args) => fn(...args),
     toast(message, kind) { calls.toast.push([message, kind]); },
+    chaptersLib,
     display: {
       applyEditorStyle(cfg) { calls.applyEditorStyle.push(cfg); },
       syncCaretParagraphFromConfig() { calls.syncCaretParagraphFromConfig += 1; },
@@ -242,9 +244,9 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...settingsUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'display', 'peers', 'state', 'texts', 'toast']);
-  assert.equal(settingsUi.REQUIRED_HOST.length, 8);
+test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...settingsUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'chaptersLib', 'display', 'peers', 'state', 'texts', 'toast']);
+  assert.equal(settingsUi.REQUIRED_HOST.length, 9);
   const ctx = build();
   assert.doesNotThrow(() => settingsUi.create(ctx.host));
   assert.throws(() => settingsUi.create(null), /createSettingsUi 需要 host 对象/);
@@ -946,7 +948,7 @@ test('静态闸门：renderer.js 不再内嵌设置实现，只剩装配与转�
   assert.equal(rendererSrc.split('settingsUiModule.create(').length - 1, 1, '装配只许一处');
   assert.ok(rendererSrc.includes('const settingsUiModule = window.CWSettingsUi;'));
   for (const line of [
-    '    $, state, api, call, toast,',
+    '    $, state, api, call, toast, chaptersLib,',
     '    display: { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic, applyChapterNumbering: applyChapterNumberingMeta },',
     '      stats: { refreshStats, renderStatsChart },',
     '      writeTimer: { renderDurationSettings, renderWriteTimer, applyWriteTimerConfig, writeDurationEnabled, flushWriteTimer },',
@@ -1015,6 +1017,6 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWSettingsUi
   vm.runInContext(moduleSrc, context, { filename: 'renderer/settings-ui.js' });
   assert.equal(typeof win.CWSettingsUi, 'object');
   assert.deepEqual(Object.keys(win.CWSettingsUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWSettingsUi.REQUIRED_HOST.length, 8);
+  assert.equal(win.CWSettingsUi.REQUIRED_HOST.length, 9);
   assert.equal(win.CWBookinfoUi, undefined);
 });
