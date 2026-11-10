@@ -76,6 +76,7 @@ test('顺序闸门：Esc 链的层顺序 = 优先级（通用询问框 → 弹�
       'tts',
       'reading',
       'focus',
+      'undo-bar',
       'fallback'
     ],
     '层顺序就是优先级：改顺序等于改行为，必须在这里显式看到'
@@ -187,6 +188,39 @@ test('菜单层：整理卡 / 显示菜单收起并归还焦点；菜单层在�
   assert.equal(esc.resolve(probeOpen('formatCard', 'proofread'), 'Escape').action, 'close-header-menus');
   assert.equal(esc.resolve(probeOpen('formatCard', 'sensitive'), 'Escape').action, 'close-header-menus');
   assert.equal(esc.resolve(probeOpen('formatCard', 'fragment'), 'Escape').action, 'close-header-menus');
+});
+
+test('撤销条层（1.5.0 P0-4 / H-5）：最低优先级、只接 Esc、不锁键；弹层开着时先关弹层', () => {
+  assert.deepEqual(esc.resolve({ undoBar: true }, 'Escape'), {
+    layer: 'undo-bar',
+    key: 'Escape',
+    action: 'close-undo-bar',
+    preventDefault: true,
+    swallow: false
+  });
+  // 不锁键：别的键照常往下走（Ctrl+S / Ctrl+K / F11 不受影响）
+  for (const key of ['s', 'k', 'F11', 'Enter', 'Tab']) {
+    assert.equal(esc.resolve({ undoBar: true }, key), null, `撤销条开着时 ${key} 必须继续往下走`);
+  }
+  // 最低优先级：任何弹层 / 面板 / 模式 / 高亮都排在它前面
+  assert.equal(esc.resolve({ undoBar: true, settings: true }, 'Escape').layer, 'settings');
+  assert.equal(esc.resolve({ undoBar: true, find: true }, 'Escape').layer, 'find');
+  assert.equal(esc.resolve({ undoBar: true, findTotal: 2 }, 'Escape').layer, 'find-highlight');
+  assert.equal(esc.resolve({ undoBar: true, formatCard: true }, 'Escape').layer, 'menus');
+  assert.equal(esc.resolve({ undoBar: true, proofread: true }, 'Escape').layer, 'proofread');
+  assert.equal(esc.resolve({ undoBar: true, tts: true }, 'Escape').layer, 'tts');
+  assert.equal(esc.resolve({ undoBar: true, reading: true }, 'Escape').layer, 'reading');
+  assert.equal(esc.resolve({ undoBar: true, focus: true }, 'Escape').layer, 'focus');
+  // 右键菜单比撤销条更「在上面」：Esc 先收菜单（兜底层），条子留着；下一按才收条子
+  assert.deepEqual(esc.resolve({ undoBar: true, contextMenu: true }, 'Escape'), {
+    layer: 'fallback',
+    key: 'Escape',
+    action: 'hide-menus',
+    preventDefault: false,
+    swallow: false
+  });
+  // 什么都没开：仍然走兜底（撤销条没显示时不受影响）
+  assert.equal(esc.resolve({}, 'Escape').layer, 'fallback');
 });
 
 test('兜底层：什么都没开时 Esc 只收起菜单，且**不** preventDefault', () => {

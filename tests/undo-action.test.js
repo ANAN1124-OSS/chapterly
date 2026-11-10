@@ -97,15 +97,64 @@ test('撤销层：isTypingTarget 认 input / select / textarea（含编辑区）
   assert.equal(undoAction.isTypingTarget(null), false);
 });
 
-// ---------- 纯逻辑：单槽 + TTL ----------
+// ---------- 纯逻辑：小栈（深度 3）+ 每条自己的 TTL ----------
 
-test('撤销槽：只留最近一条，新动作覆盖旧的（单槽）', () => {
+test('撤销槽：新动作压在最上面，旧的一条仍可回退（栈，不再是单槽）', () => {
   const slot = undoAction.createUndoSlot();
   const first = slot.push({ label: '删除第一章', run: () => {} });
   const second = slot.push({ label: '删除第二章', run: () => {} });
   assert.equal(first.id + 1, second.id);
   assert.equal(slot.peek().label, '删除第二章');
+  assert.equal(slot.size(), 2, '两条都还在（1.5.0 P0-4 / H-1：连续动作不再互相顶掉退路）');
   assert.equal(slot.remainingMs() > 0, true);
+  assert.equal(slot.take().label, '删除第二章', 'take 弹最新那条');
+  assert.equal(slot.peek().label, '删除第一章');
+  assert.equal(slot.take().label, '删除第一章');
+  assert.equal(slot.hasPending(), false);
+});
+
+test('撤销槽：深度 3，第 4 条顶掉最旧的那条并在返回值上给出 evicted 标记', () => {
+  const slot = undoAction.createUndoSlot();
+  const labels = ['甲', '乙', '丙', '丁'].map((label) => ({ label, run: () => {} }));
+  const pushed = labels.map((item) => slot.push(item));
+  assert.equal(pushed[2].evicted, null, '第 3 条还装得下');
+  assert.equal(slot.size(), 3);
+  assert.equal(pushed[3].evicted.label, '甲', '第 4 条顶掉最旧的「甲」');
+  assert.equal(typeof pushed[3].evicted.run, 'undefined', '被顶掉的那条只留提示字段，不留还会被调用的闭包');
+  assert.equal(slot.peek().label, '丁');
+  assert.equal(slot.take().label, '丁');
+  assert.equal(slot.take().label, '丙');
+  assert.equal(slot.take().label, '乙');
+  assert.equal(slot.hasPending(), false, '甲真的被顶掉了');
+  assert.equal(slot.maxDepth, 3);
+  assert.equal(undoAction.MAX_DEPTH, 3);
+});
+
+test('撤销槽：过期逐条清理，remainingMs 按当前条目自己的登记时刻算', () => {
+  let now = 0;
+  const slot = undoAction.createUndoSlot({ ttlMs: 10000, now: () => now });
+  slot.push({ label: '甲', run: () => {} });
+  now = 3000;
+  slot.push({ label: '乙', run: () => {} });
+  assert.equal(slot.remainingMs(), 10000, '乙从自己登记的 3000 起算');
+  now = 10000;
+  assert.equal(slot.size(), 1, '甲正好到期被清掉，乙还在');
+  assert.equal(slot.peek().label, '乙');
+  assert.equal(slot.remainingMs(), 3000);
+  assert.equal(slot.expire(), false, '甲已经在 prune 里清掉，这一轮没有新的过期');
+  now = 13000;
+  assert.equal(slot.peek(), null);
+  assert.equal(slot.size(), 0);
+});
+
+test('撤销槽：take(entry) 只取走指定那一条，不误伤这期间新登记的条目', () => {
+  const slot = undoAction.createUndoSlot();
+  const first = slot.push({ label: '整理全书', run: () => {} });
+  slot.push({ label: '整本替换', run: () => {} });
+  assert.equal(slot.take(first).label, '整理全书');
+  assert.equal(slot.peek().label, '整本替换', '更新的那条还在');
+  assert.equal(slot.take({ label: '不是条目' }), null, '外来对象取不走任何东西');
+  assert.equal(slot.peek().label, '整本替换');
 });
 
 test('撤销槽：10 秒 TTL（到点 peek 清空），remainingMs 跟着走', () => {
@@ -204,6 +253,76 @@ test('撤销条：撤销失败 → toast 写清原因、条子不收起（可在
   assert.equal(toasts[0].kind, 'error');
 });
 
+test('撤销条：成功后继续显示下一条（栈里更早的退路），撤完才收起', async () => {
+  const { host, els } = makeHost();
+  const ui = undoUiModule.create(host);
+  ui.setup();
+  const ran = [];
+  ui.activate('已删除「第二章」', () => {
+    ran.push('二');
+  });
+  ui.activate('已删除「第三章」', () => {
+    ran.push('三');
+  });
+  assert.equal(els.get('undo-label').textContent, '已删除「第三章」', '条子显示最新那条');
+  els.get('btn-undo').fire('click', { preventDefault() {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(ran, ['三']);
+  assert.equal(els.get('undo-bar').classList.contains('hidden'), false, '更早的退路还在，条子不收起');
+  assert.equal(els.get('undo-label').textContent, '已删除「第二章」', '条子换成下一条的文案');
+  els.get('btn-undo').fire('click', { preventDefault() {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(ran, ['三', '二']);
+  assert.equal(els.get('undo-bar').classList.contains('hidden'), true, '栈空了才收起');
+});
+
+test('撤销条：第 4 条顶掉最旧时 toast 提一句（不静默吞掉一步退路）', () => {
+  const { host, toasts } = makeHost();
+  const ui = undoUiModule.create(host);
+  for (const label of ['甲', '乙', '丙']) ui.activate(label, () => {});
+  assert.equal(toasts.length, 0, '深度 3 以内不打扰');
+  ui.activate('丁', () => {});
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0].message, /上一步（甲）的撤销已被新动作替换/);
+});
+
+test('撤销条：失败重试不把 10 秒重新续满（按这条自己的剩余时间过期）', async () => {
+  const { host, els, slot } = makeHost({ ttlMs: 400 });
+  const ui = undoUiModule.create(host);
+  ui.setup();
+  ui.activate('删除', async () => {
+    throw new Error('文件被占用');
+  });
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  els.get('btn-undo').fire('click', { preventDefault() {} }); // 失败：保留，但不续时
+  await new Promise((resolve) => setTimeout(resolve, 260)); // 总计 480ms > 这条自己的 400ms
+  assert.equal(slot.hasPending(), false, '到期就清掉，不能因为重试又续满 10 秒');
+  assert.equal(els.get('undo-bar').classList.contains('hidden'), true);
+});
+
+test('撤销条：× 关闭后条子消失、清空退路，焦点还给打开之前的元素', () => {
+  const originalDoc = globalThis.document;
+  const focused = [];
+  const editor = { tagName: 'TEXTAREA', focus: () => focused.push('editor') };
+  globalThis.document = { activeElement: editor, body: {} };
+  try {
+    const { host, els, slot } = makeHost();
+    const ui = undoUiModule.create(host);
+    assert.equal(ui.setup(), true);
+    ui.activate('删除', () => {});
+    // 模拟鼠标点 ×：焦点先落到关闭按钮上
+    globalThis.document.activeElement = els.get('btn-undo-close');
+    els.get('btn-undo-close').fire('click', { preventDefault() {} });
+    assert.equal(els.get('undo-bar').classList.contains('hidden'), true);
+    assert.equal(slot.hasPending(), false, '手动关掉 = 退路也一起收掉');
+    assert.deepEqual(focused, ['editor'], '焦点回打开撤销条之前的元素');
+    assert.equal(ui.dismiss(), false, '已经没退路时再关一次也不报错');
+  } finally {
+    if (originalDoc === undefined) delete globalThis.document;
+    else globalThis.document = originalDoc;
+  }
+});
+
 test('撤销条：TTL 到期自动收起并清空槽（用很小的 ttl 测定时器）', async () => {
   const { host, els, slot } = makeHost({ ttlMs: 25 });
   const ui = undoUiModule.create(host);
@@ -230,6 +349,8 @@ test('静态闸门：index.html 有撤销条结构，且两个模块排在 rende
   assert.match(indexSrc, /<div id="undo-bar" class="undo-bar hidden" role="status"[^>]*aria-live="polite"/);
   assert.match(indexSrc, /<span id="undo-label" class="undo-label"><\/span>/);
   assert.match(indexSrc, /<button id="btn-undo" class="btn ghost tiny undo-btn" type="button"/);
+  // 1.5.0 P0-4（H-5）：手动关闭入口，24×24 由 aria-label 说明用途
+  assert.match(indexSrc, /<button id="btn-undo-close"[^>]*type="button"[^>]*aria-label="关闭撤销提示"/);
   assert.match(indexSrc, /aria-hidden="true"/);
   const actionAt = indexSrc.indexOf('<script src="undo-action.js">');
   const uiAt = indexSrc.indexOf('<script src="undo-ui.js">');
@@ -245,6 +366,17 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   assert.match(rendererCode, /api\.restoreDeletedChapter/);
   assert.match(rendererCode, /if \(view !== 'editor'\) undoUi\.clear\(\)/);
   assert.match(rendererCode, /undoUi\.clear\(\);\n    \/\/ 换书前先停掉上一本的写作计时/);
+  // 1.5.0 P0-4（E4 / H-1 / H-2 / H-5 / H-9）的接线不许丢：手动关闭、长按不抖、撤销按 id / 邻居重算落点
+  assert.match(rendererCode, /'close-undo-bar': \(\) => undoUi\.dismiss\(\)/);
+  assert.match(rendererCode, /!event\.repeat/, 'Ctrl+K 要判 event.repeat（长按不许开-关抖动）');
+  assert.match(
+    rendererCode,
+    /state\.chapters\.findIndex\(\(item\) => item && item\.id === info\.chapter\.id\)/,
+    '撤销前按 id 在书目里重查'
+  );
+  assert.match(rendererCode, /neighborBeforeId/);
+  assert.match(rendererCode, /neighborAfterId/);
+  assert.match(rendererCode, /Math\.min\(info\.index, state\.chapters\.length\)/, '找不到邻居才退回捕获下标');
 });
 
 test('静态闸门：删除章节不再弹「删除章节」确认框（P0-2 只留两处确认）', () => {
@@ -261,6 +393,8 @@ test('静态闸门：删除章节不再弹「删除章节」确认框（P0-2 只
 test('静态闸门：CSS 用现有纸色令牌，撤销按钮至少 24×24（WCAG 2.5.8）', () => {
   assert.match(stylesSrc, /\.undo-bar \{[\s\S]*?background: var\(--folio-sheet\)[\s\S]*?color: var\(--ink\)/);
   assert.match(stylesSrc, /\.undo-btn \{ flex: none; min-height: 24px; \}/);
+  // 1.5.0 P0-4（H-5）：× 也是 24×24 的可点目标
+  assert.match(stylesSrc, /\.undo-close \{[\s\S]*?width: 24px;[\s\S]*?height: 24px;/);
 });
 
 test('静态闸门：storage 撤销只认 _trash 下的 basename，不接收绝对路径', () => {

@@ -2887,6 +2887,10 @@
     if (!bookPath) return false;
     const wasCurrent = index === state.index;
     const currentId = wasCurrent ? null : (state.chapters[state.index] || {}).id;
+    // 1.5.0 P0-4（审计 H-2）：记下删除那一刻的左右邻居 id。撤销时若这一章的下标已经不对
+    // （10 秒里又删了别的章 / 调过序），就按「找回那个邻居、插回它旁边」重算落点。
+    const neighborBeforeId = index > 0 && state.chapters[index - 1] ? state.chapters[index - 1].id : '';
+    const neighborAfterId = state.chapters[index + 1] ? state.chapters[index + 1].id : '';
     if (!skipConfirm && wasCurrent && state.dirty) {
       const action = await askUnsaved({
         title: '删除前先处理未保存的修改',
@@ -2917,7 +2921,18 @@
         renderEditorHeader();
         updateStatus();
       }
-      if (trashName) activateDeleteUndo({ bookPath, chapter, index, trashName, wasCurrent, newChapter: data.newChapter });
+      if (trashName) {
+        activateDeleteUndo({
+          bookPath,
+          chapter,
+          index,
+          trashName,
+          wasCurrent,
+          newChapter: data.newChapter,
+          neighborBeforeId,
+          neighborAfterId
+        });
+      }
       return true;
     } catch (err) {
       toast(`删除失败：${err.message}`, 'error');
@@ -2938,17 +2953,37 @@
       // 删空自动补的空章：只在「它仍空着、编辑区也没动过它」时一并撤掉。
       // 作者在这 10 秒里已经往补章里写了字，就保留它（宁可多一章，也不静默丢字）。
       const canRemoveAuto = Boolean(autoFile) && !(dirtyNow && current && current.file === autoFile);
+      // 1.5.0 P0-4（审计 H-2）：撤销时按 id 重查书目，优先用「现在」的字段与落点；
+      // 这一章已经不在列表里（正常情况）就用删除时的左右邻居重算落点，最后才退回删除那一刻的下标。
+      // 目标：10 秒内改名 / 调序 / 又删了别的章，撤销仍落回原来的上下文，而不是把旧下标硬塞进去。
+      const foundAt = state.chapters.findIndex((item) => item && item.id === info.chapter.id);
+      const liveChapter = foundAt >= 0 ? state.chapters[foundAt] : null;
+      const source = liveChapter || info.chapter;
+      const afterAt = info.neighborAfterId
+        ? state.chapters.findIndex((item) => item && item.id === info.neighborAfterId)
+        : -1;
+      const beforeAt = info.neighborBeforeId
+        ? state.chapters.findIndex((item) => item && item.id === info.neighborBeforeId)
+        : -1;
+      const restoreIndex =
+        foundAt >= 0
+          ? foundAt
+          : afterAt >= 0
+            ? afterAt
+            : beforeAt >= 0
+              ? beforeAt + 1
+              : Math.min(info.index, state.chapters.length);
       const data = await call(api.restoreDeletedChapter, info.bookPath, {
         trashName: info.trashName,
-        index: info.index,
+        index: restoreIndex,
         chapter: {
-          id: info.chapter.id,
-          file: info.chapter.file,
-          name: info.chapter.name,
-          createdAt: info.chapter.createdAt,
-          volumeId: info.chapter.volumeId,
-          status: info.chapter.status,
-          note: info.chapter.note
+          id: source.id,
+          file: source.file,
+          name: source.name,
+          createdAt: source.createdAt,
+          volumeId: source.volumeId,
+          status: source.status,
+          note: source.note
         },
         autoChapterFile: canRemoveAuto ? autoFile : null
       });
@@ -3089,6 +3124,10 @@
       formatCard: formatCardOpen(),
       displayMenu: displayMenuOpen(),
       findTotal: Number((state.find && state.find.total) || 0),
+      // 撤销条（1.5.0 P0-4 / H-5）：最低优先级的一层 —— 只接 Esc，弹层开着时 Esc 仍先关弹层。
+      undoBar: Boolean($('undo-bar') && !$('undo-bar').classList.contains('hidden')),
+      // 右键菜单比撤销条更「在上面」：Esc 先收菜单，下一按才收条子。
+      contextMenu: Boolean($('context-menu') && !$('context-menu').classList.contains('hidden')),
       tts: Boolean(state.tts && state.tts.open),
       reading: state.view === 'reading',
       focus: Boolean(state.focus && state.focus.on)
@@ -3139,6 +3178,8 @@
     'close-proofread': () => closeProofreadPanel(),
     'close-sensitive': () => closeSensitivePanel(),
     'close-tts': () => closeTtsBar(),
+    // 撤销条（1.5.0 P0-4 / H-5）：没有弹层 / 菜单 / 朗读 / 阅读 / 专注时，Esc 收起它并还焦点。
+    'close-undo-bar': () => undoUi.dismiss(),
     'exit-reading': () => exitReadingMode(),
     'exit-focus': () => setFocusMode(false),
     'hide-header-menus': () => hideHeaderMenus(),
@@ -4403,7 +4444,8 @@
       ) {
         // 面板开着时这一支走不到（esc-registry 的 command 层是锁键层，会先吞掉按键）；
         // 「再按一次 Ctrl+K 收起」由面板自己的输入框处理（command-palette-ui.js）。
-        if (!state.modal && !event.isComposing) {
+        // 长按不重复开关（1.5.0 P0-4 / H-9）：event.repeat 派发的按键只吞掉、不再开合面板。
+        if (!state.modal && !event.isComposing && !event.repeat) {
           const blocked = ESC_BACKDROPS.some((name) => {
             const el = $(`${name}-backdrop`);
             return Boolean(el && !el.classList.contains('hidden'));

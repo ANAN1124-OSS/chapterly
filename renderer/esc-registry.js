@@ -42,6 +42,8 @@
   //   findTotal          当前查找会话的高亮处数（查找面板关着时 Esc 先清高亮）
   //   fragment / fragments / proofread / sensitive  灵感箱 / 插入碎片 / 校对 / 敏感词
   //   tts / reading / focus  朗读条开着 / 阅读模式 / 专注模式
+  //   undoBar            左下角撤销条可见（1.5.0 P0-4：最低优先级的一层，只接 Esc）
+  //   contextMenu        右键菜单开着（比撤销条更「在上面」：Esc 先收菜单）
   //
   // 层的两种形态：
   //   lock: true → 开着时吞掉所有按键；keys 里登记的键（可带 when 条件）先做动作
@@ -97,6 +99,11 @@
     { id: 'reading', open: (p) => p.reading === true, esc: 'exit-reading' },
     // ⑨ 专注模式：Esc 退出（F11 是另一条键，不属于 Esc 链）
     { id: 'focus', open: (p) => Boolean(p.focus), esc: 'exit-focus' },
+    // ⑨b 撤销条（1.5.0 P0-4 / H-5）：**最低优先级**，排在所有弹层 / 面板 / 模式之后、兜底之前。
+    //     它不是弹层、不锁键（别的键照常走快捷键）；只接 Esc。弹层开着时 Esc 仍先关弹层，
+    //     所以「只在没有任何弹层开着时生效」是层序给的结果，不需要往锁层里加东西。
+    //     右键菜单开着时让给兜底层（先收菜单、条子留着），下一按 Esc 才收条子 —— 菜单比条子更「在上面」。
+    { id: 'undo-bar', open: (p) => Boolean(p.undoBar) && !p.contextMenu, esc: 'close-undo-bar' },
     // ⑩ 兜底：右键菜单 / 顶栏菜单收起。**不 preventDefault**（改前最后那个 else if 就是这么写的）
     { id: 'fallback', open: () => true, esc: 'hide-menus', preventDefault: false }
   ];

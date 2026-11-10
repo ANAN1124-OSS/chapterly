@@ -3796,6 +3796,18 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   overflow-wrap: anywhere;
 }
 .undo-btn { flex: none; min-height: 24px; }
+/* 手动关闭（1.5.0 P0-4 / H-5）：24×24 目标（WCAG 2.5.8），字形用现有 ink-faint，不新增颜色令牌。 */
+.undo-close {
+  flex: none;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  color: var(--ink-faint);
+  line-height: 1;
+}
+.undo-close:hover { color: var(--ink); }
 
 /* ---------- 右键菜单 ---------- */
 /* 和顶栏下拉菜单 / 悬浮选择卡共用一套外观变量（v0.8.5 R2），三处弹层看起来统一 */
