@@ -483,6 +483,20 @@
     testMode: new URLSearchParams(location.search).has('test')
   };
 
+  // ---------- 命令面板条目缓存（1.5.0 P0-6 / 审计 O-1） ----------
+  // 以前 buildCommandItems() 每次 input 都全量重建：千章书 = 1000+ 个对象 + 每章一次章号计算，
+  // 敲一个字就做一遍。这里缓存「条目数组 + 构建时算好的归一文本」，只在数据变了时作废。
+  // 只缓存数据，不缓存 DOM：面板照旧每次从条目重画（分批 / 选中态不受影响）。
+  //   · markCommandsDirty() 由 state.chapters / state.books / state.meta 变化的同一处调用；
+  //   · 取用前再比一次几样东西的引用（视图 / 书 / 书目 / 章节数组 / 当前章），漏掉一处也兜得住。
+  const commandItemsCache = { items: null, key: null, invalidate: null };
+  function markCommandsDirty() {
+    commandItemsCache.items = null;
+    commandItemsCache.key = null;
+    // 面板自己也有快照：数据变了就作废，下次重画（或下次打开）重新取一次。
+    if (typeof commandItemsCache.invalidate === 'function') commandItemsCache.invalidate();
+  }
+
   // ---------- Toast ----------
   function toast(message, kind = 'info') {
     const area = $('toast-area');
@@ -992,6 +1006,7 @@
       state.books = [];
       toast(`读取书架失败：${err.message}`, 'error');
     }
+    markCommandsDirty(); // 书架变了：命令面板里的「书」条目要重建（1.5.0 P0-6）
     renderShelf();
     // 正文索引：回书架时顺手让主进程校验 / 增量更新（后台，不 await、不挡书架显示）。
     // 第一次打开大书架会建索引，进度通过 search:progress 回到这里显示。
@@ -1875,6 +1890,7 @@
   }
 
   function renderChapterList() {
+    markCommandsDirty(); // 章节列表是命令面板「章节」条目的源：这里一变就作废缓存（1.5.0 P0-6）
     const list = $('chapter-list');
     // 先离线拼好整条列表，再一次性挂上去：千章书一次重建 1000 条时，逐条 appendChild
     // 会让容器反复失效（实测能省掉几毫秒）；配合 CSS 的 content-visibility，屏幕外的
@@ -2143,13 +2159,14 @@
 
   // ---------- 命令面板（1.4.0 P0-3 / 规范 I-03：Ctrl+K） ----------
   // 一份 action 表的单一事实源：面板行尾键帽、按钮 tooltip、README 的快捷键表都指这里的 kbd。
-  // 命令只调现有入口，不新写业务；章节 / 书是动态的，每次打开 / 输入时现取（见 buildCommandItems）。
+  // 命令只调现有入口，不新写业务；章节 / 书是动态的，但条目按「数据版本」缓存
+  // （1.5.0 P0-6 / O-1：千章书连续输入不重建对象，见 commandItemsForPalette / markCommandsDirty）。
   const commandRegistry = commandRegistryModule.createRegistry({});
   const commandPalette = commandPaletteModule.create({
     $,
     doc: document,
     registry: commandRegistry,
-    items: () => buildCommandItems(),
+    items: () => commandItemsForPalette(),
     onRun: (item) => {
       runCommandItem(item);
     },
@@ -2167,6 +2184,8 @@
       if (main && typeof main.focus === 'function') main.focus();
     }
   });
+  // 数据一变就同时作废面板里的快照（面板只在打开 / 失效后的下一次重画时再取一次）。
+  commandItemsCache.invalidate = () => commandPalette.invalidateItems();
 
   // ---------- 编辑器小件 ----------
   // 第 4 步九刀·第三刀：实现在 renderer/editor-marks-ui.js（模块头有契约），这里只装配与接线；
@@ -2598,6 +2617,8 @@
   function applyMetaAndRelocate(data, currentId) {
     state.meta = data.meta;
     state.chapters = data.meta.chapters;
+    // 书目 / 章节数组换了：命令面板的章节标题与章号要按新书目重建（1.5.0 P0-6）。
+    markCommandsDirty();
     if (!currentId) return -1;
     const at = state.chapters.findIndex((c) => c && c.id === currentId);
     if (at >= 0) state.index = at;
@@ -3247,6 +3268,28 @@
     ];
   }
 
+  // 命令面板的条目快照（1.5.0 P0-6 / 审计 O-1）：构建一次，按「数据版本」复用。
+  // 缓存键只放 buildCommandItems 读的东西 —— 视图 / 书 / 书目 / 章节数组 / 当前章；
+  // 数组里的对象被原地改（章节改名、书名字数变化）时由 renderChapterList /
+  // applyMetaAndRelocate / refreshShelf 里的 markCommandsDirty() 兜住。
+  // prepare() 顺手把归一文本算好，之后每次输入只做粗筛 + 少量打分。
+  function commandItemsForPalette() {
+    const key = [state.view, state.bookPath, state.meta, state.chapters, state.books, state.index];
+    const cachedKey = commandItemsCache.key;
+    if (
+      commandItemsCache.items &&
+      cachedKey &&
+      cachedKey.length === key.length &&
+      key.every((value, index) => cachedKey[index] === value)
+    ) {
+      return commandItemsCache.items;
+    }
+    const items = commandRegistryModule.prepare(buildCommandItems());
+    commandItemsCache.items = items;
+    commandItemsCache.key = key;
+    return items;
+  }
+
   // 动态条目：章节（当前书）+ 书（书架）。点一条就等于「切到那一章 / 打开那一本」。
   function buildCommandItems() {
     const out = [];
@@ -3287,6 +3330,13 @@
         hint: `${book.chapterCount || 0} 章`,
         keywords: [book.title || '', 'book', '书'],
         run: () => {
+          // H-3（1.5.0 P0-6）：当前这本书已经打开时，不要再走一次 api.openBook ——
+          // 那会从磁盘重载正文，编辑区里没保存的字就白丢了。提示 + 把焦点还给编辑区。
+          if (sameBookPath(book.path, state.bookPath)) {
+            toast('这本书已经打开了');
+            if (state.view === 'editor' && editorEl && typeof editorEl.focus === 'function') editorEl.focus();
+            return;
+          }
           void openBookByPath(book.path);
         }
       });

@@ -285,3 +285,40 @@ test('静态：面板不写盘、不发 IPC、不新增全局监听；只读 reg
   }
   assert.equal(source.includes('window.addEventListener'), false, '面板不新增全局监听（Ctrl+K 在渲染层）');
 });
+// ---------- 1.5.0 P0-6 / 审计 O-1：条目快照 ----------
+// 面板打开时取一次条目；输入过滤只在这份数组上跑（不再每敲一个字重建上千条对象）；
+// 渲染层发现数据变了就调 invalidateItems()，下一次重画再取；关闭 / 再打开重新取。
+
+test('条目快照：打开取一次，输入不重建；invalidateItems 后重画才再取；每次打开重新取', () => {
+  let calls = 0;
+  const { ui, $ } = build({
+    items: () => {
+      calls += 1;
+      return ITEMS.map((item) => ({ ...item, run: () => {} }));
+    }
+  });
+  const input = $('command-input');
+  const type = (value) => {
+    input.value = value;
+    input._listeners.filter((l) => l.type === 'input').forEach((l) => l.fn({ target: input }));
+  };
+  ui.open(null);
+  ui.setup();
+  assert.equal(calls, 1, '打开时取一次');
+  type('保');
+  type('保存');
+  type('');
+  assert.equal(calls, 1, '连续输入不再重建条目');
+  assert.equal($('command-list').querySelectorAll('.command-row').length, ITEMS.length, '过滤结果照旧');
+  assert.equal(ui.invalidateItems(), true);
+  type('星海');
+  assert.equal(calls, 2, '数据变了：下一次重画再取一次');
+  assert.deepEqual(
+    $('command-list').querySelectorAll('.command-row').map((row) => row.dataset.commandId),
+    ['book:1'],
+    '取到新快照后过滤仍正确'
+  );
+  ui.close();
+  ui.open(null);
+  assert.equal(calls, 3, '每次打开都取一份新快照');
+});

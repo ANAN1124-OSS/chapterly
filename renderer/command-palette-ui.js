@@ -8,7 +8,9 @@
  *
  * 契约：createCommandPaletteUi(host) 只调用一次；host = { $, registry, closeOnRun? }
  *   · host.registry：command-registry.js 的实例（search / recordUse）
- *   · host.items()：每次打开 / 输入时现取条目（章节与书是动态的）——返回数组
+ *   · host.items()：返回条目数组。**只在打开面板 / 调 invalidateItems() 后的下一次重画时取一次**
+ *     （1.5.0 P0-6 / 审计 O-1：以前每敲一个字都重建上千条对象）；章节 / 书变了由渲染层
+ *     调 invalidateItems() 作废快照，面板不必自己知道数据什么时候变。
  *   · host.onRun(item)：执行一条（由渲染层给，里面调真正的入口函数）
  *   · host.onClose()：收起后的收尾（归还焦点、清搜索）
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到按 Ctrl+K 时 ReferenceError）。
@@ -46,6 +48,21 @@
     let active = 0;
     let opener = null;
     let bound = false;
+    // 条目快照（1.5.0 P0-6 / O-1）：打开面板时取一次，输入过滤只在这个数组上跑；
+    // 数据变了由渲染层调 invalidateItems() 置空，下一次重画再取。
+    let itemsSnapshot = null;
+
+    function takeItems() {
+      if (itemsSnapshot !== null) return itemsSnapshot;
+      const source = typeof items === 'function' ? items() : items;
+      itemsSnapshot = Array.isArray(source) ? source : [];
+      return itemsSnapshot;
+    }
+
+    function invalidateItems() {
+      itemsSnapshot = null;
+      return true;
+    }
 
     function backdrop() {
       return $('command-backdrop');
@@ -80,7 +97,7 @@
       if (!list) return false;
       list.textContent = '';
       const query = inputEl() ? inputEl().value : '';
-      rows = registry.search(typeof items === 'function' ? items() : items, query).slice(0, MAX_ROWS);
+      rows = registry.search(takeItems(), query).slice(0, MAX_ROWS);
       if (!rows.length) {
         active = 0;
         if (emptyEl()) {
@@ -170,6 +187,8 @@
       opener = fromElement && fromElement.focus ? fromElement : (doc && doc.activeElement) || null;
       open = true;
       active = 0;
+      // 每次打开都取一份新快照：上次看面板之后书架 / 书目可能变过。
+      invalidateItems();
       bd.classList.remove('hidden');
       bd.setAttribute('aria-hidden', 'false');
       const el = inputEl();
@@ -186,6 +205,7 @@
       open = false;
       rows = [];
       active = 0;
+      itemsSnapshot = null;
       if (bd) {
         bd.classList.add('hidden');
         bd.setAttribute('aria-hidden', 'true');
@@ -294,7 +314,9 @@
       inputChanged,
       activeItem,
       visibleRows,
-      setActive
+      setActive,
+      // 渲染层在 state.chapters / state.books / state.meta 变化时调用（1.5.0 P0-6）
+      invalidateItems
     };
   }
 

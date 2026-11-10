@@ -117,3 +117,73 @@ test('脏输入不炸：缺字段 / 非数组 / 空查询 / 空白标题都安�
   assert.equal(registryModule.scoreItem({ title: '设置' }, ''), 1, '空查询对任何条目都算命中（排序交给外面）');
   assert.equal(registry.recordUse(''), false, '空 id 不记');
 });
+// ---------- 1.5.0 P0-6 / 审计 O-1：构建时预处理 + 粗筛 ----------
+// 面板的条目上千条时，每次输入不该再全量打分；prepare() 把归一文本缓存好，
+// search() 先用 includes / 子序列粗筛。这里钉住「粗筛是打分的超集」：
+// 结果集与逐条打分完全一致（包括 bkm → Bookmark 这种子序列命中）。
+
+test('prepare：缓存归一文本、返回新数组、不改入参；粗筛结果与逐条打分一致', () => {
+  const registry = registryModule.createRegistry({});
+  const source = [
+    { id: 'cmd:save', title: '保存本章', group: 'command', kbd: 'Ctrl+S', keywords: ['save'] },
+    { id: 'cmd:bookmark', title: 'Bookmark 书签', group: 'command', keywords: ['bookmark', '书签'] },
+    { id: 'chapter:c1', title: '第1章：起风', group: 'chapter', keywords: ['起风', 'ch1'] },
+    { id: 'book:/x/星海旅人', title: '打开《星海旅人》', group: 'book', keywords: ['星海旅人'] }
+  ];
+  const prepared = registryModule.prepare(source);
+  assert.notEqual(prepared, source, '返回新数组');
+  assert.equal(prepared.length, source.length);
+  assert.equal(source[0].searchText, undefined, '不改入参对象');
+  assert.equal(prepared[0].searchText, '保存本章\nsave\ncmd:save', '标题 / 关键词 / id 归一后拼起来');
+  assert.match(prepared[2].searchText, /ch1/, '关键词里的小写缩写也在');
+  assert.deepEqual(registryModule.prepare(null), [], '非数组安全');
+  assert.deepEqual(registryModule.prepare([null, { id: '', title: '' }]).length, 1, '非对象条目跳过；空标题照留，交给 search 过滤');
+
+  for (const query of ['', '保存', 'bkm', 'bkmark', '第1章', '星海', 'ＳＡＶＥ', 'ctrl+s', 'zzz', '书']) {
+    assert.deepEqual(
+      registry.search(prepared, query).map((item) => item.id),
+      registry.search(source, query).map((item) => item.id),
+      `粗筛不许改变结果：${JSON.stringify(query)}`
+    );
+  }
+});
+
+test('粗筛是打分的超集：scoreItem 命中的条目 coarseMatch 一定放行（含子序列 / 跨字段）', () => {
+  const source = [
+    { id: 'cmd:bookmark', title: 'Bookmark 书签', group: 'command', keywords: ['书签'] },
+    { id: 'cmd:save', title: '保存本章', group: 'command', keywords: ['save'] },
+    { id: 'chapter:ch2', title: '第2章：灯塔', group: 'chapter', keywords: ['灯塔', 'ch2'] }
+  ];
+  const prepared = registryModule.prepare(source);
+  const queries = ['bkm', 'bkmk', 'bm', '保存', 'ch2', '灯塔', '第2', 'save', 'sv'];
+  for (const query of queries) {
+    const normalized = registryModule.normalize(query);
+    for (const item of prepared) {
+      if (registryModule.scoreItem(item, normalized) > 0) {
+        assert.equal(registryModule.coarseMatch(item, normalized), true, `${query} 丢了 ${item.id}`);
+      }
+    }
+  }
+  // bkm 是子序列命中，不是子串命中：粗筛必须认它，否则「bkm → Bookmark」会消失。
+  const bkm = registryModule.createRegistry({}).search(prepared, 'bkm');
+  assert.deepEqual(bkm.map((item) => item.id), ['cmd:bookmark']);
+  // 没 prepare 的旧调用方仍可用（粗筛现算归一文本）。
+  assert.deepEqual(registryModule.createRegistry({}).search(source, 'bkm').map((item) => item.id), ['cmd:bookmark']);
+});
+
+test('空查询顺序不变：prepare 前后一致，最近的仍排最前', () => {
+  const registry = registryModule.createRegistry({});
+  const source = [
+    { id: 'cmd:save', title: '保存本章', group: 'command' },
+    { id: 'chapter:1', title: '第1章：起风', group: 'chapter' },
+    { id: 'book:1', title: '打开《星海旅人》', group: 'book' }
+  ];
+  const prepared = registryModule.prepare(source);
+  registry.recordUse('chapter:1');
+  assert.deepEqual(
+    registry.search(prepared, '').map((item) => item.id),
+    registry.search(source, '').map((item) => item.id),
+    '空查询不看 searchText：最近 + 组顺序不变'
+  );
+  assert.equal(registry.search(prepared, '')[0].id, 'chapter:1', '最近的仍排最前');
+});

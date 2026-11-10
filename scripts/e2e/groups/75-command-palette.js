@@ -185,6 +185,51 @@ module.exports = async function group75CommandPalette(t) {
     recentAfterRun
   );
 
+  // ---------- ⑦b 点「当前已打开的书」不重新加载（1.5.0 P0-6 / 审计 H-3） ----------
+  // 这本书此刻就在编辑区：再点一次不能走 api.openBook 从磁盘重载（编辑区里没保存的字会白丢），
+  // 只提示「这本书已经打开了」并把焦点还给编辑区。
+  const H3_TEXT = 'H-3：未保存的正文不能被命令面板重载';
+  await exec(`window.__cwTest.setText(${JSON.stringify(H3_TEXT)})`);
+  await waitFor('window.__cwTest.dirty() === true');
+  // 演练书是直接调存储层建的（不经过 IPC），书架快照里还没有它 —— 先刷一次再搜。
+  await exec('window.__cwTest.refreshShelf()');
+  await waitFor(
+    `window.__cwTest.state.books.some((book) => book.path === ${JSON.stringify(bookPath)})`,
+    4000
+  );
+  await sendCtrlK();
+  await waitFor('window.__cwTest.commandPaletteOpen() === true', 4000);
+  await exec(`(() => {
+    const input = document.getElementById('command-input');
+    input.value = '命令面板演练';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await sleep(200);
+  const currentBookRows = await readPalette(exec);
+  await sendKey('Return', [], 400);
+  await sleep(200);
+  const afterCurrentBookRun = {
+    text: await exec('window.__cwTest.text()'),
+    dirty: await exec('window.__cwTest.dirty()'),
+    toasts: (await exec('window.__cwTest.toasts()')).slice(-3),
+    open: await exec('window.__cwTest.commandPaletteOpen()'),
+    view: await exec('window.__cwTest.view()')
+  };
+  check(
+    '命令面板：点当前已打开的书不重新加载（未保存正文还在 + 提示「这本书已经打开了」）',
+    currentBookRows.items.length === 1 &&
+      currentBookRows.items[0].id === `book:${bookPath}` &&
+      afterCurrentBookRun.text === H3_TEXT &&
+      afterCurrentBookRun.toasts.some((item) => item.message.includes('这本书已经打开了')) &&
+      afterCurrentBookRun.open === false &&
+      afterCurrentBookRun.view === 'editor' &&
+      afterCurrentBookRun.dirty === true,
+    { rows: currentBookRows.items.map((item) => item.id), ...afterCurrentBookRun }
+  );
+  // 收尾：把这段测试正文存掉，别把「未保存」带进 ⑧ / 后面的清理。
+  await exec('window.__cwTest.save()');
+  await waitFor('window.__cwTest.dirty() === false', 4000);
+
   // ---------- ⑧ 书架页也能开（书与命令仍在） ----------
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
