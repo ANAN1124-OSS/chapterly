@@ -18,8 +18,9 @@
  * suppressChapterClick），字段语义与搬运前一致。
  *
  * 事件监听（window 的 pointermove / pointerup / pointercancel）由 setupChapterDrag 一次装上，
- * 仍然是渲染层在事件绑定段调用它；章节条目的 pointerdown 仍由 renderChapterList 的标记里
- * 绑到 startChapterDrag —— 这两处调用点一个字没改。
+ * 仍然是渲染层在事件绑定段调用它。1.5.0 P0-2 起章节条目的 pointerdown 由 #chapter-list
+ * 容器事件委托分派（整表重建不再逐条绑），调用方把条目元素当第 3 个参数传进来：
+ * startChapterDrag(event, index, itemEl) —— 省略时仍退回 event.currentTarget（老调用不变）。
  *
  * 红线不变：章节文件永不改名 / 移动；只改 书目.json 顺序；不写盘、不改正文、不改 dirty。
  * 浏览器里挂成全局 CWDragSortUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
@@ -65,7 +66,7 @@
   // 只改 书目.json 的顺序，章节文件永不重命名；拖拽用 pointer 事件（比 HTML5 DnD 好测、也不挑渲染层）。
   let chapterDrag = null;
 
-  function startChapterDrag(event, index) {
+  function startChapterDrag(event, index, itemEl) {
     if (event.button !== 0) return;
     if (state.saving || state.loading || !state.bookPath) return;
     if (state.chapters.length < 2) return;
@@ -76,7 +77,8 @@
       active: false,
       targetIndex: index,
       drop: null,
-      item: event.currentTarget
+      // 委托后 event.currentTarget 是 #chapter-list 容器；由调用方显式给条目元素
+      item: itemEl || event.currentTarget
     };
   }
 

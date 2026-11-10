@@ -1362,7 +1362,40 @@
     if (clear) clear.classList.toggle('hidden', !chapterFilterActive());
   }
 
+  // 1.5.0 P0-2（审计 P1）：目录筛选原来每敲一个键就整表重建（千章书每键全表 DOM）。
+  // 查询词仍立刻写回 state（计数 / 清除键 / 回车 / Esc 都用最新值），「目录重排」走
+  // 250ms 防抖 + 下一帧（与书架搜索同一套节奏）。清空 / Esc / 点浮标这类显式动作仍立即重画。
+  let chapterFilterTimer = 0;
+  let chapterFilterFrame = 0;
+
+  function cancelScheduledChapterFilter() {
+    if (chapterFilterTimer) {
+      clearTimeout(chapterFilterTimer);
+      chapterFilterTimer = 0;
+    }
+    if (chapterFilterFrame) {
+      cancelAnimationFrame(chapterFilterFrame);
+      chapterFilterFrame = 0;
+    }
+  }
+
+  function scheduleChapterFilterRender(value) {
+    state.chapterFilter = String(value == null ? '' : value);
+    syncChapterFilterUi();
+    renderBookMeta(); // 计数即时：列表可以等停手，概览行不能慢半拍
+    if (chapterFilterTimer) clearTimeout(chapterFilterTimer);
+    chapterFilterTimer = setTimeout(() => {
+      chapterFilterTimer = 0;
+      if (chapterFilterFrame) return;
+      chapterFilterFrame = requestAnimationFrame(() => {
+        chapterFilterFrame = 0;
+        renderChapterList();
+      });
+    }, 250);
+  }
+
   function setChapterFilter(value) {
+    cancelScheduledChapterFilter();
     state.chapterFilter = String(value == null ? '' : value);
     syncChapterFilterUi();
     renderChapterList();
@@ -1541,7 +1574,8 @@
     const pill = $('btn-return-current');
     const toggleVolumes = $('btn-toggle-volumes');
     if (input) {
-      input.addEventListener('input', () => setChapterFilter(input.value));
+      // 1.5.0 P0-2：输入即写回 state（计数 / 回车 / Esc 立刻拿到最新词），目录重排等停手
+      input.addEventListener('input', () => scheduleChapterFilterRender(input.value));
       input.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') {
           if (!input.value) return;
@@ -1589,6 +1623,65 @@
     }
     // 窗口高度变了，当前章可能从「看得见」变成「看不见」：浮标跟着重量一次（不依赖滚动事件）
     window.addEventListener('resize', updateCurrentChapterPill, { passive: true });
+  }
+
+  // 1.5.0 P0-2（审计 P1）：1000 章原来每条 6 个监听（点击 / 双击 / 右键 / pointerdown + ⋯ 两个），
+  // 一次整表重建就是 6000 个闭包；改成 #chapter-list 容器挂一套，按 dataset.index 分派。
+  // 必须保住的旧行为：roving tabindex、aria-label、startChapterDrag、state.suppressChapterClick、
+  // list-keyboard 方向键、右键菜单、⋯ 按钮（同一张菜单）。
+  function chapterItemAt(event) {
+    const target = event.target;
+    if (!target || typeof target.closest !== 'function') return null;
+    const item = target.closest('.chapter-item');
+    if (!item) return null;
+    const index = Number(item.dataset && item.dataset.index);
+    if (!Number.isInteger(index) || index < 0 || index >= state.chapters.length) return null;
+    return { item, index };
+  }
+
+  function chapterMoreAt(event) {
+    const target = event.target;
+    if (!target || typeof target.closest !== 'function') return null;
+    return target.closest('.chapter-more');
+  }
+
+  function setupChapterListEvents() {
+    const list = $('chapter-list');
+    if (!list) return;
+    list.addEventListener('pointerdown', (event) => {
+      // ⋯ 只服务点击：不要在它上面起拖拽（老实现靠 stopPropagation 挡住）
+      if (chapterMoreAt(event)) return;
+      const hit = chapterItemAt(event);
+      if (!hit) return;
+      // 委托后 event.currentTarget 是容器，拖拽要的条目元素显式传进去
+      startChapterDrag(event, hit.index, hit.item);
+    });
+    list.addEventListener('click', (event) => {
+      const hit = chapterItemAt(event);
+      if (!hit) return;
+      const more = chapterMoreAt(event);
+      if (more) {
+        const rect = more.getBoundingClientRect();
+        showContextMenu({ clientX: rect.right - 4, clientY: rect.bottom - 2 }, hit.index);
+        return;
+      }
+      if (state.suppressChapterClick && Date.now() < state.suppressChapterClick) {
+        state.suppressChapterClick = 0;
+        return; // 刚拖拽完，别把这次点击当成切章
+      }
+      void switchChapter(hit.index);
+    });
+    list.addEventListener('dblclick', (event) => {
+      const hit = chapterItemAt(event);
+      if (hit) renameChapterAt(hit.index);
+    });
+    list.addEventListener('contextmenu', (event) => {
+      // 卷头右键有卷头自己的监听（showVolumeMenu），这里只接章节条目
+      const hit = chapterItemAt(event);
+      if (!hit) return;
+      event.preventDefault();
+      showContextMenu(event, hit.index);
+    });
   }
 
   function volumeList() {
@@ -1770,26 +1863,10 @@
     more.setAttribute('aria-hidden', 'true');
     more.title = '更多：双击重命名；右键菜单（标记状态 / 备注 / 移到卷 / 删除）';
     more.textContent = '⋯';
-    more.addEventListener('pointerdown', (event) => event.stopPropagation());
-    more.addEventListener('click', (event) => {
-      event.stopPropagation();
-      const rect = more.getBoundingClientRect();
-      showContextMenu({ clientX: rect.right - 4, clientY: rect.bottom - 2 }, index);
-    });
     item.appendChild(more);
-    item.addEventListener('click', () => {
-      if (state.suppressChapterClick && Date.now() < state.suppressChapterClick) {
-        state.suppressChapterClick = 0;
-        return; // 刚拖拽完，别把这次点击当成切章
-      }
-      switchChapter(index);
-    });
-    item.addEventListener('pointerdown', (event) => startChapterDrag(event, index));
-    item.addEventListener('dblclick', () => renameChapterAt(index));
-    item.addEventListener('contextmenu', (event) => {
-      event.preventDefault();
-      showContextMenu(event, index);
-    });
+    // 1.5.0 P0-2（审计 P1）：条目不再逐条绑 6 个监听 —— 点击 / 双击 / 右键 / pointerdown
+    // 全部由 #chapter-list 容器委托（setupChapterListEvents）按 dataset.index 分派。
+    // roving tabindex / aria-label / ⋯ 按钮 / 右键菜单 / suppressChapterClick 逐项保持原行为。
     return item;
   }
 
@@ -4198,6 +4275,8 @@
     setupSidebarResizer();
     // 卷章目录：筛选 / 清除 / 回到当前章（卷章树本身由 renderChapterList 负责）
     setupChapterDirectory();
+    // 1.5.0 P0-2：章节条目的事件委托（整表重建不再逐条绑监听）
+    setupChapterListEvents();
 
     // 导入进度（大书库导入可能要几十秒，分章/复制逐项汇报）
     api.onImportProgress((progress) => {

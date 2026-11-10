@@ -540,11 +540,11 @@ test('静态闸门：renderer.js 只剩接线，拖拽实现一份都不许留',
   ]) {
     assert.equal(rendererCode.includes(line), true, '接线缺少：' + line);
   }
-  // 两个调用点一个字没改
+  // 1.5.0 P0-2：章节条目不再逐条绑指针事件，改由 #chapter-list 容器委托分派一次
   assert.equal(
-    rendererCode.split("item.addEventListener('pointerdown', (event) => startChapterDrag(event, index));").length - 1,
+    rendererCode.split('startChapterDrag(event, hit.index, hit.item)').length - 1,
     1,
-    '章节列表的 pointerdown 绑定只该有一处'
+    '章节列表的 pointerdown 委托只该有一处（且要把条目元素显式传给拖拽模块）'
   );
   assert.equal((rendererCode.match(/^\s{4}setupChapterDrag\(\);$/gm) || []).length, 1, '事件绑定的 setupChapterDrag() 只该有一处');
   // 测试钩子的宿主契约里仍然有这三个键

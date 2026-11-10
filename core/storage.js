@@ -744,6 +744,8 @@ async function setChapterNumbering(bookPath, numbering) {
   if (before === mode) return { meta, numbering: mode, changed: false };
   if (mode === 'volume') meta.chapterNumbering = 'volume';
   else delete meta.chapterNumbering;
+  // 1.5.0 P0-2：这里就地改了编号方式，卷内章号表的缓存键必须一起失效
+  chaptersLib.invalidateChapterNumberCache(meta);
   const saved = await writeBookMeta(bookPath, meta, { structural: true });
   return { meta: saved, numbering: mode, changed: true };
 }

@@ -173,3 +173,18 @@ test('保存快路径：单条更新核对 data-index + chapter id，改字数�
   assert.match(functionSource(RENDERER_CODE, 'makeChapterItem'), /chapterItemTitleText\(chapter, index\)/);
 });
 
+// 1.5.0 P0-2（审计 P1）：章节列表事件委托 —— 条目本身不再带监听，容器一套分派。
+const delegationSrc = functionSource(RENDERER_CODE, 'setupChapterListEvents');
+const chapterItemAtSrc = functionSource(RENDERER_CODE, 'chapterItemAt');
+
+test('事件委托：章节条目不再逐条绑监听，改由 #chapter-list 容器一套分派', () => {
+  assert.equal(makeChapterItemSrc.includes('addEventListener('), false, 'makeChapterItem 里不许再逐条绑事件');
+  for (const type of ['pointerdown', 'click', 'dblclick', 'contextmenu']) {
+    assert.ok(delegationSrc.includes("list.addEventListener('" + type + "'"), '容器委托缺 ' + type);
+  }
+  assert.ok(chapterItemAtSrc.includes("closest('.chapter-item')"), '要按最近的 .chapter-item 分派');
+  assert.ok(delegationSrc.includes('startChapterDrag(event, hit.index, hit.item)'), '拖拽起手要把条目元素显式传进去');
+  assert.ok(delegationSrc.includes('state.suppressChapterClick'), '拖完误切章的抑制要保住');
+  assert.ok(delegationSrc.includes('showContextMenu('), '⋯ / 右键菜单要保住');
+  assert.ok(delegationSrc.includes('renameChapterAt('), '双击重命名要保住');
+});

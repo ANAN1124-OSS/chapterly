@@ -294,3 +294,75 @@ test('渲染层章节状态 / 备注直接用 core 的实现（不再有第二�
     'index.html 必须先加载 core/chapters.js，再加载 renderer.js'
   );
 });
+
+// ---------- 1.5.0 P0-2：卷内章号表缓存（审计 P1） ----------
+
+function cacheBook() {
+  return {
+    chapterNumbering: 'volume',
+    volumes: [{ id: 'v1', name: '卷一' }, { id: 'v2', name: '卷二' }],
+    chapters: [
+      { id: 'o1', volumeId: null, name: '一' },
+      { id: 'a1', volumeId: 'v1', name: '二' },
+      { id: 'a2', volumeId: 'v1', name: '三' },
+      { id: 'b1', volumeId: 'v2', name: '四' },
+      { id: 'o2', volumeId: '', name: '五' }
+    ]
+  };
+}
+
+test('章号缓存：同一份 meta 连算结果不变，按卷 / 连续两种口径都对', () => {
+  const meta = cacheBook();
+  const expected = [1, 1, 2, 1, 2];
+  for (let round = 0; round < 3; round += 1) {
+    assert.deepEqual(meta.chapters.map((_, i) => ch.chapterNumber(meta, i)), expected);
+  }
+  const continuous = { ...meta, chapterNumbering: 'continuous' };
+  assert.deepEqual(meta.chapters.map((_, i) => ch.chapterNumber(continuous, i)), [1, 2, 3, 4, 5]);
+});
+
+test('章号缓存：插入 / 删除 / 改卷 / 归一都拿新 meta，章号立即正确、旧 meta 不受影响', () => {
+  const meta = cacheBook();
+  assert.deepEqual(meta.chapters.map((_, i) => ch.chapterNumber(meta, i)), [1, 1, 2, 1, 2]);
+
+  const inserted = ch.insertChapter(meta, 1, { id: 'a0', volumeId: 'v1', name: '新' });
+  assert.deepEqual(inserted.chapters.map((_, i) => ch.chapterNumber(inserted, i)), [1, 1, 2, 3, 1, 2]);
+  assert.deepEqual(meta.chapters.map((_, i) => ch.chapterNumber(meta, i)), [1, 1, 2, 1, 2], '旧 meta 的缓存不能被新 meta 污染');
+
+  const removed = ch.removeChapter(inserted, 'a0');
+  assert.deepEqual(removed.chapters.map((_, i) => ch.chapterNumber(removed, i)), [1, 1, 2, 1, 2]);
+
+  // 改卷但还没归一：卷内号按「前面同卷数 + 1」算（这里 o2 在卷一里排第 3）
+  const moved = ch.updateChapter(meta, 'o2', { volumeId: 'v1' });
+  assert.deepEqual(moved.chapters.map((_, i) => ch.chapterNumber(moved, i)), [1, 1, 2, 1, 3]);
+  const normalized = ch.normalizeChapterOrder(moved);
+  assert.deepEqual(normalized.chapters.map((_, i) => ch.chapterNumber(normalized, i)), [1, 1, 2, 3, 1]);
+});
+
+test('章号缓存：就地改 meta 要调 invalidateChapterNumberCache，长度 / 编号变化自动失效', () => {
+  const meta = cacheBook();
+  assert.deepEqual(meta.chapters.map((_, i) => ch.chapterNumber(meta, i)), [1, 1, 2, 1, 2]);
+  // 1) 就地改某一章的卷归属（长度不变）：不手动失效会读到旧表
+  meta.chapters[4].volumeId = 'v1';
+  ch.invalidateChapterNumberCache(meta);
+  assert.deepEqual(meta.chapters.map((_, i) => ch.chapterNumber(meta, i)), [1, 1, 2, 1, 3]);
+  // 2) 原地 push：长度变化让缓存自动失效
+  meta.chapters.push({ id: 'b2', volumeId: 'v2', name: '六' });
+  assert.equal(ch.chapterNumber(meta, 5), 2);
+  // 3) 原地换编号方式：numbering 参与校验，切回连续立即生效
+  meta.chapterNumbering = 'continuous';
+  assert.deepEqual(meta.chapters.map((_, i) => ch.chapterNumber(meta, i)), [1, 2, 3, 4, 5, 6]);
+  // 非整数下标（老调用）仍退回「下标 + 1」，和改前一致
+  assert.equal(ch.chapterNumber({ chapterNumbering: 'volume', chapters: meta.chapters }, 1.7), 2.7);
+});
+
+test('章号缓存：按卷全表只建一次表，chapterVolumeKey 调用次数从平方级降到 0', () => {
+  const meta = cacheBook();
+  ch.resetChapterNumberStats();
+  meta.chapters.forEach((_, i) => ch.chapterNumber(meta, i));
+  const first = ch.readChapterNumberStats();
+  assert.equal(first.tableBuilds, 1, '一份 meta 只该建一次表');
+  assert.equal(first.volumeKeyCalls, 0, '建表只查卷 id 集合，不再逐章调 chapterVolumeKey');
+  meta.chapters.forEach((_, i) => ch.chapterNumber(meta, i));
+  assert.deepEqual(ch.readChapterNumberStats(), first, '缓存命中后不该再建表 / 再判定');
+});

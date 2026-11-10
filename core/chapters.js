@@ -60,27 +60,108 @@
     return value === 'volume' ? 'volume' : DEFAULT_CHAPTER_NUMBERING;
   }
 
+  // 性能自检用的轻量计数（1.5.0 P0-2，scripts/bench-chapters.js 读它证明平方级消失）：
+  // 只在本进程里累加，不写盘、不进书目；业务代码不读。
+  const numberStats = { volumeKeyCalls: 0, tableBuilds: 0 };
+
+  function resetChapterNumberStats() {
+    numberStats.volumeKeyCalls = 0;
+    numberStats.tableBuilds = 0;
+  }
+
+  function readChapterNumberStats() {
+    return { volumeKeyCalls: numberStats.volumeKeyCalls, tableBuilds: numberStats.tableBuilds };
+  }
+
   // 章属于哪一卷（空串 = 未分卷）。指向不存在卷的 id 按未分卷算，和 normalizeChapterOrder 同一口径。
   function chapterVolumeKey(meta, chapter) {
+    numberStats.volumeKeyCalls += 1;
     const volumeId = chapter && typeof chapter.volumeId === 'string' ? chapter.volumeId : '';
     if (!volumeId) return '';
     const volumes = meta && Array.isArray(meta.volumes) ? meta.volumes : [];
     return volumes.some((volume) => volume && volume.id === volumeId) ? volumeId : '';
   }
 
+  // 卷内章号表缓存（1.5.0 P0-2，审计 P1）：meta -> 每章「卷内第几章」数组。
+  // 以前 volumeLocalNumber 每次从 0 数到 index（内部 chapterVolumeKey 是 volumes.some，O(V)），
+  // 逐章合计 O(N²·V)：1000 章 / 20 卷重建一次目录约 24ms，命令面板每章还要再算 3 次。
+  // 现在每份 meta 首次 O(N) 建表（卷 id 先收进 Set），之后 O(1)；缓存不写盘、不进 书目.json、
+  // 不跨书（meta 换对象自然换缓存）。
+  // 失效口径：
+  //   - insertChapter / removeChapter / updateChapter / normalizeChapterOrder / moveVolume 都返回
+  //     新 meta（WeakMap 键不同 = 自动失效），这里仍显式清一次旧键，防将来改成原地改；
+  //   - applyChapterMeta / sanitizeVolumes 只收章节 / 卷数组、不碰 meta，调用方拿结果去建新 meta；
+  //   - 就地改 meta 的调用方（storage.setChapterNumbering 改编号方式等）必须调
+  //     invalidateChapterNumberCache(meta)。
+  // 校验还兜住 chapters / volumes 换引用或变长度、编号模式切换，缓存脏了不会被误读。
+  const chapterNumberCache = new WeakMap();
+
+  function invalidateChapterNumberCache(meta) {
+    if (meta && typeof meta === 'object') chapterNumberCache.delete(meta);
+  }
+
+  function buildVolumeNumberTable(meta) {
+    const chapters = meta && Array.isArray(meta.chapters) ? meta.chapters : [];
+    const volumes = meta && Array.isArray(meta.volumes) ? meta.volumes : [];
+    const volumeIds = new Set();
+    for (const volume of volumes) {
+      if (volume && typeof volume.id === 'string') volumeIds.add(volume.id);
+    }
+    const counts = new Map();
+    const table = new Array(chapters.length);
+    for (let index = 0; index < chapters.length; index += 1) {
+      const chapter = chapters[index];
+      const volumeId = chapter && typeof chapter.volumeId === 'string' ? chapter.volumeId : '';
+      const key = volumeId && volumeIds.has(volumeId) ? volumeId : '';
+      const count = (counts.get(key) || 0) + 1;
+      counts.set(key, count);
+      table[index] = count;
+    }
+    numberStats.tableBuilds += 1;
+    return table;
+  }
+
+  function volumeNumberTable(meta) {
+    const chapters = meta && Array.isArray(meta.chapters) ? meta.chapters : [];
+    const volumes = meta && Array.isArray(meta.volumes) ? meta.volumes : [];
+    const numbering = meta && meta.chapterNumbering === 'volume' ? 'volume' : 'continuous';
+    const cached = meta && typeof meta === 'object' ? chapterNumberCache.get(meta) : null;
+    if (
+      cached &&
+      cached.chaptersRef === chapters &&
+      cached.chaptersLength === chapters.length &&
+      cached.volumesRef === volumes &&
+      cached.volumesLength === volumes.length &&
+      cached.numbering === numbering
+    ) {
+      return cached.table;
+    }
+    const table = buildVolumeNumberTable(meta);
+    if (meta && typeof meta === 'object') {
+      chapterNumberCache.set(meta, {
+        chaptersRef: chapters,
+        chaptersLength: chapters.length,
+        volumesRef: volumes,
+        volumesLength: volumes.length,
+        numbering,
+        table
+      });
+    }
+    return table;
+  }
+
   // 本章在「它所在的那一卷」里排第几（1 起）：只数它前面、同属一卷的章节。
   // 未分卷组也算一组；书里没有卷时，全部章节同属「未分卷」，结果与全书连续一致。
+  // 老实现逐章从 0 数（O(index·V)），这里读卷内章号表（O(1)，首次 O(N+V)）。
   function volumeLocalNumber(meta, index) {
     const chapters = meta && Array.isArray(meta.chapters) ? meta.chapters : [];
     const safeIndex = Math.max(0, Math.min(Number(index) || 0, chapters.length - 1));
     const target = chapters[safeIndex];
     if (!target) return safeIndex + 1;
-    const key = chapterVolumeKey(meta, target);
-    let number = 0;
-    for (let i = 0; i <= safeIndex; i += 1) {
-      if (chapterVolumeKey(meta, chapters[i]) === key) number += 1;
-    }
-    return number;
+    const table = volumeNumberTable(meta);
+    const value = table[safeIndex];
+    // 非整数下标（老调用才会传）：和以前一样退回「下标 + 1」，不把数组访问的 undefined 漏出去
+    return Number.isFinite(value) ? value : safeIndex + 1;
   }
 
   // 显示 / 导出的章号（1 起）。旧书没有 chapterNumbering 字段 = continuous，行为与以前完全一致。
@@ -164,15 +245,18 @@
     const rawIndex = Number(insertIndex);
     const index = Number.isFinite(rawIndex) ? Math.max(0, Math.min(Math.floor(rawIndex), list.length)) : list.length;
     list.splice(index, 0, chapter);
+    invalidateChapterNumberCache(meta);
     return { ...meta, chapters: list };
   }
 
   function removeChapter(meta, chapterId) {
     const list = (meta.chapters || []).filter((c) => c.id !== chapterId);
+    invalidateChapterNumberCache(meta);
     return { ...meta, chapters: list };
   }
 
   function updateChapter(meta, chapterId, patch) {
+    invalidateChapterNumberCache(meta);
     return {
       ...meta,
       chapters: (meta.chapters || []).map((c) => (c.id === chapterId ? { ...c, ...patch } : c))
@@ -275,6 +359,7 @@
   }
 
   function normalizeChapterOrder(meta) {
+    invalidateChapterNumberCache(meta);
     const volumes = sanitizeVolumes(meta && meta.volumes);
     const rank = new Map(volumes.map((v, i) => [v.id, i + 1]));
     const list = Array.isArray(meta && meta.chapters) ? meta.chapters.slice() : [];
@@ -356,6 +441,7 @@
 
   // 调整卷的先后顺序（只改 volumes 数组顺序，章节按新卷序重新归一；章节文件不动）
   function moveVolume(meta, volumeId, toIndex) {
+    invalidateChapterNumberCache(meta);
     const volumes = sanitizeVolumes(meta && meta.volumes).slice();
     const from = volumes.findIndex((v) => v.id === volumeId);
     const total = volumes.length;
@@ -389,6 +475,9 @@
     chapterVolumeKey,
     volumeLocalNumber,
     chapterNumber,
+    invalidateChapterNumberCache,
+    resetChapterNumberStats,
+    readChapterNumberStats,
     CHAPTER_STATUSES,
     CHAPTER_STATUS_LABELS,
     DEFAULT_CHAPTER_STATUS,

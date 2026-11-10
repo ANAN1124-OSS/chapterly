@@ -88,4 +88,38 @@ module.exports = async function group27DragSort(t) {
       JSON.stringify(await exec('window.__cwTest.chapterNames()')) === JSON.stringify(stepBefore) &&
       (await exec('window.__cwTest.currentIndex()')) === 0
   );
+
+  // 27c. 真实指针拖拽（1.5.0 P0-2：条目事件改由 #chapter-list 容器委托）：
+  // pointerdown 起手 → pointermove 越过 5px 阈值 → pointerup 落点，必须照旧能拖动并落盘。
+  // 当前顺序是 [第三, 第一, 第二]：把第 1 条拖到末尾，正好还原成新书顺序，
+  // 后面的组（28 / 30）继续按这个顺序用这本书。
+  const pointerDrag = await exec(`(() => {
+    const items = Array.from(document.querySelectorAll('#chapter-list .chapter-item'));
+    if (items.length < 3) return { ok: false, reason: 'not-enough-items' };
+    const from = items[0].getBoundingClientRect();
+    const to = items[2].getBoundingClientRect();
+    const at = (y) => ({ bubbles: true, cancelable: true, clientX: from.left + 30, clientY: y, button: 0, pointerId: 1 });
+    items[0].dispatchEvent(new PointerEvent('pointerdown', at(from.top + from.height / 2)));
+    window.dispatchEvent(new PointerEvent('pointermove', at(to.top + to.height - 4)));
+    const dragging = items[0].classList.contains('dragging') && document.body.classList.contains('chapter-dragging');
+    const marked = document.querySelectorAll(
+      '#chapter-list .chapter-item.drop-before, #chapter-list .chapter-item.drop-after, #chapter-list .volume-item.drop-into'
+    ).length;
+    window.dispatchEvent(new PointerEvent('pointerup', at(to.top + to.height - 4)));
+    return { ok: true, dragging, marked };
+  })()`);
+  await waitFor(
+    `window.__cwTest.chapterNames().join('|') === ${JSON.stringify(namesBeforeMove.join('|'))}`,
+    8000
+  );
+  check(
+    '拖拽排序：真实指针拖拽（容器委托）把第 1 章拖到末尾',
+    pointerDrag &&
+      pointerDrag.ok === true &&
+      pointerDrag.dragging === true &&
+      pointerDrag.marked > 0 &&
+      JSON.stringify(await exec('window.__cwTest.chapterNames()')) === JSON.stringify(namesBeforeMove)
+  );
+  // 拖拽后 300ms 内点击会被抑制：清掉，别让后面的组第一次点章节被吞
+  await exec('window.__cwTest.state.suppressChapterClick = 0');
 };
