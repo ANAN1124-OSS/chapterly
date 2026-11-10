@@ -55,6 +55,10 @@ const FULL_VALIDATE_INTERVAL_MS = 10000; // 后台深度校验的节流（外部
 // 保证「一直在书架搜、不回书架」也能发现外部改过的 txt。
 const SEARCH_DEEP_INTERVAL_MS = 60000;
 const PROGRESS_INTERVAL_MS = 150;
+// P2-1（作业卡 1.5.0）：整本建位图时按批读正文的批大小，对齐 core/storage.js 的 32 章批。
+// 以前是「全书 texts 一次进数组」，1000 章 × 1 MB ≈ 1 GB 常驻主进程；现在一批处理完就丢引用。
+// 分批只改「什么时候读」，不改章的顺序、字数统计口径与位图字节（tests/search-index.test.js 钉住）。
+const BLOOM_BUILD_BATCH = 32;
 
 // nowIso / mapLimit 从 core/common.js 来（B6）：和 storage 导入时同一份实现
 // （限并发、ISO 时间戳）；这里不再各抄一份。
@@ -127,14 +131,32 @@ function bloomHas(bloom, bits, hash) {
   return true;
 }
 
-// 一本书的所有章节文本 → Bloom 位图。位图只回答「有没有」，不保存任何正文。
-function makeBookBloom(texts) {
+// P2-1（作业卡 1.5.0）：位图累积器。整本建索引时逐批把双字并进同一个 Set，
+// 批与批之间只留 Set、不留正文数组（1000 章 × 1 MB 的书以前是约 1 GB 常驻）。
+// 位图位数要等全书项数知道后才定，所以 Set 必须留到 finish()；
+// 「有没有」的判定不受影响：插入顺序与逐章顺序一致，位图字节与旧实现完全相同。
+function createBookBloom() {
   const set = new Set();
-  for (const text of texts) addBigramsToSet(lowerText(text), set);
-  const params = bloomParams(set.size);
-  const bloom = Buffer.alloc(Math.ceil(params.bits / 8));
-  for (const hash of set) bloomAdd(bloom, params.bits, hash);
-  return { bloom, bits: params.bits, items: set.size };
+  return {
+    addText(text) {
+      addBigramsToSet(lowerText(text), set);
+      return set.size;
+    },
+    finish() {
+      const params = bloomParams(set.size);
+      const bloom = Buffer.alloc(Math.ceil(params.bits / 8));
+      for (const hash of set) bloomAdd(bloom, params.bits, hash);
+      return { bloom, bits: params.bits, items: set.size };
+    }
+  };
+}
+
+// 一本书的所有章节文本 → Bloom 位图。位图只回答「有没有」，不保存任何正文。
+// 兼容入口（单测 / 旧调用用）：内部走同一个累积器，结果与逐批累积逐字节相同。
+function makeBookBloom(texts) {
+  const builder = createBookBloom();
+  for (const text of texts) builder.addText(text);
+  return builder.finish();
 }
 
 function encodeBloom(bloom) {
@@ -442,20 +464,37 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
   }
 
   if (onProgress) onProgress({ phase: 'book', book: base.title, chapters: chapters.length });
-  const texts = await mapLimit(chapters, 6, async (chapter) => {
-    try {
-      return (await storage.loadChapterText(bookPath, chapter.file)).text;
-    } catch {
-      return null; // 读不到正文：整本位图作废（宁可每次都当候选，也不能漏报）
+  // P2-1：逐批读正文 → 并进位图 Set → 丢引用。批内仍限并发 6、批间串行，章的先后顺序不变
+  //（Set 插入顺序不变 ⇒ 位图字节与「整本 texts 一次建」完全相同）。
+  const builder = createBookBloom();
+  const counts = new Array(chapters.length).fill(null);
+  let missingText = false;
+  for (let start = 0; start < chapters.length && !missingText; start += BLOOM_BUILD_BATCH) {
+    const batch = chapters.slice(start, start + BLOOM_BUILD_BATCH);
+    const texts = await mapLimit(batch, 6, async (chapter) => {
+      try {
+        return (await storage.loadChapterText(bookPath, chapter.file)).text;
+      } catch {
+        return null; // 读不到正文：整本位图作废（宁可每次都当候选，也不能漏报）
+      }
+    });
+    for (let offset = 0; offset < texts.length; offset += 1) {
+      const text = texts[offset];
+      if (text == null) {
+        missingText = true;
+        break;
+      }
+      builder.addText(text);
+      if (chapters[start + offset].chars == null) counts[start + offset] = chaptersLib.countChars(text);
     }
-  });
-  if (texts.some((text) => text == null)) {
-    // 有章节读不了：不给位图，搜索时这本书永远进候选、逐章核对
+  }
+  if (missingText) {
+    // 有章节读不了：不给位图，搜索时这本书永远进候选、逐章核对（字数也不补，与旧实现一致）
     return { entry: { ...base, bloom: '', bloomBits: 0, itemCount: 0 }, rebuilt: true };
   }
-  const built = makeBookBloom(texts);
+  const built = builder.finish();
   for (let i = 0; i < chapters.length; i += 1) {
-    if (chapters[i].chars == null) chapters[i].chars = chaptersLib.countChars(texts[i]);
+    if (chapters[i].chars == null && counts[i] != null) chapters[i].chars = counts[i];
   }
   return {
     entry: {

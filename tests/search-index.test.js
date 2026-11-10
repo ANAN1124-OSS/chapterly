@@ -351,6 +351,71 @@ test('正文索引：重建判定只看正文指纹（序号 / 章名变化不�
   assert.equal(added.rebuilt, true, '出现 old 里没有的章必须重建');
 });
 
+// P2-1（作业卡 1.5.0）：整本建位图改成 32 章一批读正文、逐批并进同一个 Set，
+// 不再把全书 texts 常驻内存。这里钉四件事：
+//   1. 跨批（70 章 = 3 批）的位图编码 / 位数 / 项数与「整本一次建」逐字节一致；
+//   2. 批边界上的字数补写一章不漏（含第 32 / 64 章这种边界章）；
+//   3. 任一章读不了（哪怕在第 2 批）→ 整本不给位图、字数不补，且在第 2 批就停，
+//      不再把后面整本的正文都读一遍；
+//   4. 静态闸门：buildBookEntry 里不能再出现「整本 chapters 一次 mapLimit」。
+test('正文索引：整本建位图按批累积，跨批边界结果与整本一次建逐字节一致', async () => {
+  const base = await mkTmp();
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(booksRoot);
+  const CHAPTERS = 70; // 32 章/批 → 批边界在 31/32/63 前后
+  const chapters = [];
+  for (let i = 0; i < CHAPTERS; i += 1) {
+    chapters.push({
+      name: `第${i + 1}节`,
+      text: `第${i + 1}段。阿明在旧车站等了 ${i + 1} 分钟，雨还在下。${i % 7 === 0 ? '青柠色的雨伞。' : ''}`
+    });
+  }
+  const { bookPath } = await makeBook(booksRoot, '分批书', '分批书', chapters);
+  const built = await search.buildBookEntry(bookPath, '分批书', null, {});
+  assert.equal(built.rebuilt, true);
+  // 期望值 = 同一批正文一次性交给兼容入口（走「整本一次」路径），两边字节必须完全相同
+  const wholeBook = search.makeBookBloom(chapters.map((chapter) => chapter.text));
+  assert.equal(built.entry.bloom, search.encodeBloom(wholeBook.bloom));
+  assert.equal(built.entry.bloomBits, wholeBook.bits);
+  assert.equal(built.entry.itemCount, wholeBook.items);
+  assert.equal(built.entry.chapters.length, CHAPTERS);
+  for (let i = 0; i < CHAPTERS; i += 1) {
+    const expectedChars = chapters[i].text.replace(/\s/g, '').length;
+    assert.equal(built.entry.chapters[i].chars, expectedChars, `第 ${i + 1} 章字数要补上`);
+  }
+
+  // 读不了正文的章（在第 2 批里）：整本位图作废、字数不补，后面的批不再读
+  const storage = require('../core/storage');
+  const originalLoad = storage.loadChapterText;
+  const meta = await readMeta(bookPath);
+  const failingFile = meta.chapters[32].file;
+  let reads = 0;
+  storage.loadChapterText = async (targetBookPath, file) => {
+    reads += 1;
+    if (file === failingFile) throw new Error('模拟读不出来');
+    return originalLoad(targetBookPath, file);
+  };
+  try {
+    const broken = await search.buildBookEntry(bookPath, '分批书', null, {});
+    assert.equal(broken.rebuilt, true);
+    assert.equal(broken.entry.bloom, '');
+    assert.equal(broken.entry.bloomBits, 0);
+    assert.equal(broken.entry.itemCount, 0);
+    for (const chapter of broken.entry.chapters) assert.equal(chapter.chars, null, '失败时字数不补（旧口径）');
+    assert.ok(reads < CHAPTERS, `第 2 批就读不下去，不应该读完整本（实际读了 ${reads} 章）`);
+  } finally {
+    storage.loadChapterText = originalLoad;
+  }
+
+  // 静态闸门：不允许退回「整本 texts 数组一次常驻」
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'search-index.js'), 'utf8');
+  const anchor = source.indexOf('async function buildBookEntry');
+  const body = source.slice(anchor, source.indexOf('function createSearchStore', anchor));
+  assert.equal(/mapLimit\(chapters,/.test(body), false, '整本 chapters 不能再一次性 mapLimit');
+  assert.equal(body.includes('BLOOM_BUILD_BATCH'), true);
+  assert.equal(body.includes('missingText'), true);
+});
+
 test('正文索引：外部改 txt（mtime / size 变了）会被发现并更新索引', async () => {
   const base = await mkTmp();
   const userData = path.join(base, 'userdata');
