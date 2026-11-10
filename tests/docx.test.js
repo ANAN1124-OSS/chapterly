@@ -51,8 +51,8 @@ function rangeTexts() {
 }
 
 // 一次构建出 zip 视图，省得每个用例重复解包
-function build(input = {}) {
-  const res = docx.buildDocx({
+async function build(input = {}) {
+  const res = await docx.buildDocx({
     meta: metaOf(),
     texts: ['风从海面吹来。', '雨下了一夜。'],
     modified: FIXED,
@@ -64,7 +64,7 @@ function build(input = {}) {
   return { res, buffer: res.buffer, zip, byName };
 }
 
-function buildRange(range) {
+async function buildRange(range) {
   return build({ meta: rangeMeta(), texts: rangeTexts(), range });
 }
 
@@ -74,8 +74,8 @@ function textOf(byName, name) {
   return entry.data.toString('utf8');
 }
 
-test('DOCX 包结构：最小 OOXML 部件齐全、内容类型 / 关系指向真实存在的部件', () => {
-  const { res, zip, byName } = build();
+test('DOCX 包结构：最小 OOXML 部件齐全、内容类型 / 关系指向真实存在的部件', async () => {
+  const { res, zip, byName } = await build();
   assert.deepEqual(zip.names, REQUIRED_PARTS);
   assert.equal(res.chapterCount, 2);
   assert.equal(res.volumeCount, 0);
@@ -100,8 +100,8 @@ test('DOCX 包结构：最小 OOXML 部件齐全、内容类型 / 关系指向�
   }
 });
 
-test('DOCX 正文：标题页（书名 / 作者 / 章数）、分页、卷 / 章标题与正文都在', () => {
-  const { byName } = build({
+test('DOCX 正文：标题页（书名 / 作者 / 章数）、分页、卷 / 章标题与正文都在', async () => {
+  const { byName } = await build({
     meta: metaOf({ author: '示例作者', volumes: [{ id: 'v1', name: '第一卷' }] }),
     texts: ['第一段。\n\n第二段。', '第二章正文。']
   });
@@ -121,8 +121,8 @@ test('DOCX 正文：标题页（书名 / 作者 / 章数）、分页、卷 / 章
   assert.equal((document.match(/<w:p>/g) || []).length, 9, document);
 });
 
-test('DOCX 样式：正文段首缩进 2 字、1.5 倍行距、宋体 / 黑体，标题居中加粗', () => {
-  const { byName } = build();
+test('DOCX 样式：正文段首缩进 2 字、1.5 倍行距、宋体 / 黑体，标题居中加粗', async () => {
+  const { byName } = await build();
   const styles = textOf(byName, 'word/styles.xml');
   assert.ok(styles.includes('<w:style w:type="paragraph" w:styleId="BodyText">'));
   assert.ok(styles.includes('<w:ind w:firstLineChars="200" w:firstLine="480"/>'));
@@ -138,9 +138,9 @@ test('DOCX 样式：正文段首缩进 2 字、1.5 倍行距、宋体 / 黑体�
   assertWellFormedXml(styles, 'styles.xml');
 });
 
-test('DOCX 正文：特殊字符转义、控制字符剔除，包仍然合法', () => {
+test('DOCX 正文：特殊字符转义、控制字符剔除，包仍然合法', async () => {
   const nasty = '第一段 & 第二段。\n\n「引号」<尖括号> "双引号" \u0000\u0008 结尾';
-  const { zip, byName } = build({
+  const { zip, byName } = await build({
     meta: metaOf({ title: 'A & B <书>', chapters: [{ id: 'c1', file: '001.txt', name: '甲 & 乙 <章>' }] }),
     texts: [nasty]
   });
@@ -158,8 +158,8 @@ test('DOCX 正文：特殊字符转义、控制字符剔除，包仍然合法', 
   }
 });
 
-test('DOCX 按卷导出：只写选中卷的章，章号 / 章名仍按全书，卷标题只生成选中卷', () => {
-  const { res, byName } = buildRange({ mode: 'volume', volumeId: 'v1' });
+test('DOCX 按卷导出：只写选中卷的章，章号 / 章名仍按全书，卷标题只生成选中卷', async () => {
+  const { res, byName } = await buildRange({ mode: 'volume', volumeId: 'v1' });
   assert.equal(res.chapterCount, 2);
   assert.equal(res.volumeCount, 1);
   assert.equal(res.rangeMode, 'volume');
@@ -175,8 +175,8 @@ test('DOCX 按卷导出：只写选中卷的章，章号 / 章名仍按全书，
   assert.ok(!document.includes('下卷第一章正文。'));
 });
 
-test('DOCX 按章节范围导出：跨卷时两个卷标题都在，范围外一章不进文档', () => {
-  const { res, byName } = buildRange({ mode: 'range', from: 2, to: 4 });
+test('DOCX 按章节范围导出：跨卷时两个卷标题都在，范围外一章不进文档', async () => {
+  const { res, byName } = await buildRange({ mode: 'range', from: 2, to: 4 });
   assert.equal(res.chapterCount, 3);
   assert.equal(res.volumeCount, 2);
   assert.equal(res.rangeLabel, '第2-4章');
@@ -197,23 +197,23 @@ test('DOCX 按章节范围导出：跨卷时两个卷标题都在，范围外一
   }
 });
 
-test('DOCX 范围导出：没有章节的范围明确报错，不产出坏文件（空书仍是 EMPTY_BOOK）', () => {
-  assert.throws(() => buildRange({ mode: 'range', from: 4, to: 2 }), /EMPTY_EXPORT_RANGE/);
-  assert.throws(() => buildRange({ mode: 'volume', volumeId: 'nope' }), /EMPTY_EXPORT_RANGE/);
-  assert.throws(
+test('DOCX 范围导出：没有章节的范围明确报错，不产出坏文件（空书仍是 EMPTY_BOOK）', async () => {
+  await assert.rejects(() => buildRange({ mode: 'range', from: 4, to: 2 }), /EMPTY_EXPORT_RANGE/);
+  await assert.rejects(() => buildRange({ mode: 'volume', volumeId: 'nope' }), /EMPTY_EXPORT_RANGE/);
+  await assert.rejects(
     () => docx.buildDocx({ meta: { title: '空书', chapters: [] }, texts: [], range: { mode: 'all' } }),
     /EMPTY_BOOK/
   );
 });
 
-test('DOCX 只读：不改 meta / texts；同样内容 + 同样时间字节完全一样', () => {
+test('DOCX 只读：不改 meta / texts；同样内容 + 同样时间字节完全一样', async () => {
   const meta = rangeMeta();
   const texts = rangeTexts();
   const metaBefore = JSON.stringify(meta);
   const textsBefore = JSON.stringify(texts);
-  const first = docx.buildDocx({ meta, texts, modified: FIXED, zipDate: ZIP_DATE });
-  const second = docx.buildDocx({ meta, texts, modified: FIXED, zipDate: ZIP_DATE });
-  const volume = docx.buildDocx({
+  const first = await docx.buildDocx({ meta, texts, modified: FIXED, zipDate: ZIP_DATE });
+  const second = await docx.buildDocx({ meta, texts, modified: FIXED, zipDate: ZIP_DATE });
+  const volume = await docx.buildDocx({
     meta,
     texts,
     modified: FIXED,
@@ -228,7 +228,7 @@ test('DOCX 只读：不改 meta / texts；同样内容 + 同样时间字节完�
   assert.equal(volume.rangeMode, 'volume');
 });
 
-test('DOCX 默认文件名：按卷 / 按范围复用 TXT 的范围命名规则，只换后缀', () => {
+test('DOCX 默认文件名：按卷 / 按范围复用 TXT 的范围命名规则，只换后缀', async () => {
   const meta = rangeMeta();
   assert.equal(docx.docxFileName(meta), '范围书.docx');
   assert.equal(docx.docxFileName(meta, { mode: 'all' }), '范围书.docx');
@@ -239,8 +239,8 @@ test('DOCX 默认文件名：按卷 / 按范围复用 TXT 的范围命名规则�
   assert.equal(docx.docxFileName({ title: 'a/b:c*?', chapters: [] }), 'abc.docx');
 });
 
-test('DOCX 未分卷 / 空正文 / 原文标题章名：只写该章标题，缺正文也不报错', () => {
-  const { res, byName } = build({
+test('DOCX 未分卷 / 空正文 / 原文标题章名：只写该章标题，缺正文也不报错', async () => {
+  const { res, byName } = await build({
     meta: {
       title: '原文书',
       chapters: [
@@ -263,13 +263,13 @@ test('DOCX 未分卷 / 空正文 / 原文标题章名：只写该章标题，缺
 
 // v0.9 C-3（安全审计 C6）：书名 / 章名可以是 `../`、反斜杠、盘符（书可能来自别处），
 // 它们只该进 document.xml 的正文，zip 条目名必须是固定的七个部位。
-test('敌意书名 / 章名只进 document.xml，进不了条目名（zip-slip 回归）', () => {
+test('敌意书名 / 章名只进 document.xml，进不了条目名（zip-slip 回归）', async () => {
   const meta = {
     title: '../../逃逸:书名<>',
     id: 'b_evil',
     chapters: [{ id: 'c1', file: '001.txt', name: '..\\..\\邪章' }]
   };
-  const { buffer } = docx.buildDocx({ meta, texts: ['正文一'], modified: FIXED, zipDate: ZIP_DATE });
+  const { buffer } = await docx.buildDocx({ meta, texts: ['正文一'], modified: FIXED, zipDate: ZIP_DATE });
   const zip = readZip(buffer);
   assert.deepEqual(zip.names, REQUIRED_PARTS);
   for (const name of zip.names) {

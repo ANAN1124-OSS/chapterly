@@ -283,15 +283,15 @@ function docxFiles(input) {
   return buildBundle(input).files;
 }
 
-// 产出可写盘的 DOCX 字节。
+// 产出可写盘的 DOCX 字节（异步：zip 压缩在线程池里跑，整本导出不卡主进程）。
 // input = { meta, texts, range?, language?, modified?, zipDate? }
 //   meta / texts 和 TXT / EPUB 导出一致（texts 与 meta.chapters 顺序对齐）；
 //   range 可选（见 core/exporter.resolveExportRange）：只导出选中的卷 / 章节范围；
 //   modified 默认现在；传固定值（再配 zipDate）可让同样的内容导出成完全一样的字节（单测用）。
-function buildDocx(input) {
+async function buildDocx(input) {
   const bundle = buildBundle(input);
   const zipDate = (input && input.zipDate) || bundle.date;
-  const buffer = buildZip(bundle.files, { date: zipDate });
+  const buffer = await buildZip(bundle.files, { date: zipDate });
   return {
     buffer,
     chapterCount: bundle.chapterCount,

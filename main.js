@@ -2436,7 +2436,7 @@ function registerIpc() {
     const exportMeta = s2tLib.convertMeta(meta, conversion);
     // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
     exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
-    const built = epubLib.buildEpub({ meta: exportMeta, texts, range: safeRange });
+    const built = await epubLib.buildEpub({ meta: exportMeta, texts, range: safeRange });
     exporter.releaseTexts(texts);
     await atomicWriteFile(filePath, built.buffer);
     await rememberExportDir(path.dirname(filePath));
@@ -2463,7 +2463,7 @@ function registerIpc() {
     const exportMeta = s2tLib.convertMeta(meta, conversion);
     // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
     exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
-    const built = docxLib.buildDocx({ meta: exportMeta, texts, range: safeRange });
+    const built = await docxLib.buildDocx({ meta: exportMeta, texts, range: safeRange });
     exporter.releaseTexts(texts);
     await atomicWriteFile(filePath, built.buffer);
     await rememberExportDir(path.dirname(filePath));

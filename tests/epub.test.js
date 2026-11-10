@@ -20,8 +20,8 @@ function metaOf(overrides = {}) {
 }
 
 // 一次构建出 zip 视图，省得每个用例重复解包
-function build(input = {}) {
-  const res = epub.buildEpub({
+async function build(input = {}) {
+  const res = await epub.buildEpub({
     meta: metaOf(),
     texts: ['风从海面吹来。', '雨下了一夜。'],
     modified: FIXED,
@@ -38,13 +38,13 @@ function textOf(byName, name) {
   return entry.data.toString('utf8');
 }
 
-test('CRC32：和标准校验值一致（zip 写坏会在这里先暴露）', () => {
+test('CRC32：和标准校验值一致（zip 写坏会在这里先暴露）', async () => {
   assert.equal(epub.crc32(Buffer.from('123456789')), 0xcbf43926);
   assert.equal(checkCrc32(Buffer.from('123456789')), 0xcbf43926);
 });
 
-test('ZIP：mimetype 是第一个条目、不压缩、没有扩展字段', () => {
-  const { buffer, zip } = build();
+test('ZIP：mimetype 是第一个条目、不压缩、没有扩展字段', async () => {
+  const { buffer, zip } = await build();
   assert.equal(zip.entries[0].name, 'mimetype');
   assert.equal(zip.entries[0].method, 0);
   assert.equal(zip.entries[0].data.toString('utf8'), 'application/epub+zip');
@@ -57,23 +57,23 @@ test('ZIP：mimetype 是第一个条目、不压缩、没有扩展字段', () =>
   assert.ok(zip.entries.length >= 7, `条目太少：${zip.names.join(', ')}`);
 });
 
-test('ZIP：所有条目路径都是 ASCII（避免老阅读器不认中文文件名）', () => {
-  const { zip } = build();
+test('ZIP：所有条目路径都是 ASCII（避免老阅读器不认中文文件名）', async () => {
+  const { zip } = await build();
   for (const entry of zip.entries) {
     assert.match(entry.name, /^[\x20-\x7e]+$/, `条目名不是 ASCII：${entry.name}`);
   }
 });
 
-test('EPUB 结构：container.xml 指向 OEBPS/content.opf', () => {
-  const { byName } = build();
+test('EPUB 结构：container.xml 指向 OEBPS/content.opf', async () => {
+  const { byName } = await build();
   const container = textOf(byName, 'META-INF/container.xml');
   assert.ok(container.includes('full-path="OEBPS/content.opf"'));
   assert.ok(container.includes('media-type="application/oebps-package+xml"'));
   assertWellFormedXml(container, 'container.xml');
 });
 
-test('OPF：书名 / 语言 / 唯一标识 / 修改时间都写对了', () => {
-  const { byName } = build();
+test('OPF：书名 / 语言 / 唯一标识 / 修改时间都写对了', async () => {
+  const { byName } = await build();
   const opf = textOf(byName, 'OEBPS/content.opf');
   assert.ok(opf.includes('<dc:title>测试书</dc:title>'));
   assert.ok(opf.includes('<dc:language>zh-CN</dc:language>'));
@@ -81,8 +81,8 @@ test('OPF：书名 / 语言 / 唯一标识 / 修改时间都写对了', () => {
   assert.match(opf, /<dc:identifier id="pub-id">urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}<\/dc:identifier>/);
 });
 
-test('OPF：manifest 与 spine 一致（idref 都有 item、href 都有文件、id/href 不重复）', () => {
-  const { byName, zip } = build();
+test('OPF：manifest 与 spine 一致（idref 都有 item、href 都有文件、id/href 不重复）', async () => {
+  const { byName, zip } = await build();
   const opf = textOf(byName, 'OEBPS/content.opf');
   const ids = [...opf.matchAll(/<item id="([^"]+)"/g)].map((match) => match[1]);
   const hrefs = [...opf.matchAll(/<item [^>]*href="([^"]+)"/g)].map((match) => match[1]);
@@ -97,8 +97,8 @@ test('OPF：manifest 与 spine 一致（idref 都有 item、href 都有文件、
   assert.ok(zip.names.includes('OEBPS/cover.xhtml'));
 });
 
-test('章节 XHTML：标题沿用 formatTitle，正文按段拆、CRLF 归一、空行丢弃', () => {
-  const { byName } = build({ texts: ['\n第一段\r\n\r\n第二段。\r\n　\r\n第三段  \r\n', '乙'] });
+test('章节 XHTML：标题沿用 formatTitle，正文按段拆、CRLF 归一、空行丢弃', async () => {
+  const { byName } = await build({ texts: ['\n第一段\r\n\r\n第二段。\r\n　\r\n第三段  \r\n', '乙'] });
   const html = textOf(byName, 'OEBPS/text/chapter-0001.xhtml');
   assert.ok(html.includes('<h1 class="chapter-title">第1章：起风</h1>'));
   assert.ok(html.includes('<p>第一段</p>\n  <p>第二段。</p>\n  <p>第三段</p>'));
@@ -106,7 +106,7 @@ test('章节 XHTML：标题沿用 formatTitle，正文按段拆、CRLF 归一、
   assertWellFormedXml(html, 'chapter-0001');
 });
 
-test('段落切分：CRLF / CR / 纯空白行 / 首尾空白', () => {
+test('段落切分：CRLF / CR / 纯空白行 / 首尾空白', async () => {
   assert.deepEqual(epub.paragraphsFromText('\r\n第一段\r第二段\n\n  \n第三段  \n'), [
     '第一段',
     '第二段',
@@ -116,11 +116,11 @@ test('段落切分：CRLF / CR / 纯空白行 / 首尾空白', () => {
   assert.deepEqual(epub.paragraphsFromText(null), []);
 });
 
-test('章名和正文里的 XML 特殊字符全部转义', () => {
+test('章名和正文里的 XML 特殊字符全部转义', async () => {
   const meta = metaOf({
     chapters: [{ id: 'c1', file: '001.txt', name: 'A&B <夜> "雨" \'风\'' }]
   });
-  const { byName } = build({ meta, texts: ['1 < 2 & 3 > 2'] });
+  const { byName } = await build({ meta, texts: ['1 < 2 & 3 > 2'] });
   const html = textOf(byName, 'OEBPS/text/chapter-0001.xhtml');
   assert.ok(html.includes('A&amp;B &lt;夜&gt; &quot;雨&quot; &apos;风&apos;'), html);
   assert.ok(html.includes('<p>1 &lt; 2 &amp; 3 &gt; 2</p>'), html);
@@ -128,14 +128,14 @@ test('章名和正文里的 XML 特殊字符全部转义', () => {
   assertWellFormedXml(html, 'chapter-0001');
 });
 
-test('XML 非法控制字符被剔除（否则整本书在阅读器里打不开）', () => {
-  const { byName } = build({ texts: ['正文\u0000有\u0007控制符\u000b'] });
+test('XML 非法控制字符被剔除（否则整本书在阅读器里打不开）', async () => {
+  const { byName } = await build({ texts: ['正文\u0000有\u0007控制符\u000b'] });
   const html = textOf(byName, 'OEBPS/text/chapter-0001.xhtml');
   assert.ok(html.includes('<p>正文有控制符</p>'), JSON.stringify(html.slice(0, 200)));
   assertWellFormedXml(html, 'chapter-0001');
 });
 
-test('分卷：有名字的卷生成卷名页 + 二级目录，未分卷章节留在顶层', () => {
+test('分卷：有名字的卷生成卷名页 + 二级目录，未分卷章节留在顶层', async () => {
   const meta = {
     title: '分卷书',
     id: 'b_volume',
@@ -146,7 +146,7 @@ test('分卷：有名字的卷生成卷名页 + 二级目录，未分卷章节�
       { id: 'c3', file: '003.txt', name: '上卷二', volumeId: 'v1' }
     ]
   };
-  const { byName } = build({ meta, texts: ['甲', '乙', '丙'] });
+  const { byName } = await build({ meta, texts: ['甲', '乙', '丙'] });
   const cover = textOf(byName, 'OEBPS/text/volume-0001.xhtml');
   assert.ok(cover.includes('<h1 class="part-title">上卷</h1>'));
   assertWellFormedXml(cover, 'volume-0001');
@@ -164,7 +164,7 @@ test('分卷：有名字的卷生成卷名页 + 二级目录，未分卷章节�
   assert.equal((nav.match(/<ol>/g) || []).length, 2, '分卷目录应该有二层 ol');
 });
 
-test('NCX：playOrder 按文档顺序连续、分卷嵌套、depth = 2', () => {
+test('NCX：playOrder 按文档顺序连续、分卷嵌套、depth = 2', async () => {
   const meta = {
     title: '分卷书',
     volumes: [{ id: 'v1', name: '上卷' }],
@@ -173,7 +173,7 @@ test('NCX：playOrder 按文档顺序连续、分卷嵌套、depth = 2', () => {
       { id: 'c2', file: '002.txt', name: '上卷一', volumeId: 'v1' }
     ]
   };
-  const { byName } = build({ meta, texts: ['甲', '乙'] });
+  const { byName } = await build({ meta, texts: ['甲', '乙'] });
   const ncx = textOf(byName, 'OEBPS/toc.ncx');
   const orders = [...ncx.matchAll(/playOrder="(\d+)"/g)].map((match) => Number(match[1]));
   assert.deepEqual(orders, [1, 2, 3]);
@@ -183,38 +183,38 @@ test('NCX：playOrder 按文档顺序连续、分卷嵌套、depth = 2', () => {
   assertWellFormedXml(ncx, 'toc.ncx');
 });
 
-test('没有分卷的书：目录是一层，NCX depth = 1', () => {
-  const { byName } = build();
+test('没有分卷的书：目录是一层，NCX depth = 1', async () => {
+  const { byName } = await build();
   const nav = textOf(byName, 'OEBPS/nav.xhtml');
   assert.equal((nav.match(/<ol>/g) || []).length, 1);
   const ncx = textOf(byName, 'OEBPS/toc.ncx');
   assert.ok(ncx.includes('<meta name="dtb:depth" content="1"/>'));
 });
 
-test('封面页：纯文字封面带书名和章数 / 卷数', () => {
-  const { byName } = build();
+test('封面页：纯文字封面带书名和章数 / 卷数', async () => {
+  const { byName } = await build();
   const cover = textOf(byName, 'OEBPS/cover.xhtml');
   assert.ok(cover.includes('<h1 class="cover-title">测试书</h1>'));
   assert.ok(cover.includes('<p class="cover-meta">共 2 章</p>'));
   assertWellFormedXml(cover, 'cover');
 });
 
-test('封面页：有分卷时章数后面带上卷数', () => {
+test('封面页：有分卷时章数后面带上卷数', async () => {
   const meta = {
     title: '分卷书',
     volumes: [{ id: 'v1', name: '上卷' }],
     chapters: [{ id: 'c1', file: '001.txt', name: '上卷一', volumeId: 'v1' }]
   };
-  const { byName } = build({ meta, texts: ['甲'] });
+  const { byName } = await build({ meta, texts: ['甲'] });
   assert.ok(textOf(byName, 'OEBPS/cover.xhtml').includes('共 1 章 · 1 卷'));
 });
 
-test('没有章节的书：明确报错，不产出坏书', () => {
-  assert.throws(() => epub.buildEpub({ meta: { title: '空书', chapters: [] }, texts: [] }), /EMPTY_BOOK/);
+test('没有章节的书：明确报错，不产出坏书', async () => {
+  await assert.rejects(() => epub.buildEpub({ meta: { title: '空书', chapters: [] }, texts: [] }), /EMPTY_BOOK/);
   assert.throws(() => epub.epubFiles({ meta: { title: '空书' }, texts: [] }), /EMPTY_BOOK/);
 });
 
-test('默认文件名：书名.epub，非法字符清洗，空书名兜底', () => {
+test('默认文件名：书名.epub，非法字符清洗，空书名兜底', async () => {
   assert.equal(epub.epubFileName({ title: '我的:书/名?' }), '我的书名.epub');
   assert.equal(epub.epubFileName({ title: '   ' }), '未命名.epub');
   assert.equal(epub.epubFileName(null), '未命名.epub');
@@ -244,12 +244,12 @@ function rangeTexts() {
   return ['楔子正文。', '上卷第一章正文。', '上卷第二章正文。', '下卷第一章正文。', '下卷第二章正文。'];
 }
 
-function buildRange(range) {
+async function buildRange(range) {
   return build({ meta: rangeMeta(), texts: rangeTexts(), range });
 }
 
-test('EPUB 按卷导出：只打这一卷的章节，卷名页 / 目录 / spine 都只含这一卷', () => {
-  const { res, zip, byName } = buildRange({ mode: 'volume', volumeId: 'v1' });
+test('EPUB 按卷导出：只打这一卷的章节，卷名页 / 目录 / spine 都只含这一卷', async () => {
+  const { res, zip, byName } = await buildRange({ mode: 'volume', volumeId: 'v1' });
   assert.equal(res.chapterCount, 2);
   assert.equal(res.volumeCount, 1);
   assert.equal(res.rangeMode, 'volume');
@@ -274,8 +274,8 @@ test('EPUB 按卷导出：只打这一卷的章节，卷名页 / 目录 / spine 
   assertWellFormedXml(textOf(byName, 'OEBPS/text/chapter-0003.xhtml'), 'chapter-0003');
 });
 
-test('EPUB 按章节范围导出：跨卷时两卷的卷名页都在，范围外的章一个都不进包', () => {
-  const { res, zip, byName } = buildRange({ mode: 'range', from: 2, to: 4 });
+test('EPUB 按章节范围导出：跨卷时两卷的卷名页都在，范围外的章一个都不进包', async () => {
+  const { res, zip, byName } = await buildRange({ mode: 'range', from: 2, to: 4 });
   assert.equal(res.chapterCount, 3);
   assert.equal(res.volumeCount, 2);
   assert.equal(res.rangeLabel, '第2-4章');
@@ -300,8 +300,8 @@ test('EPUB 按章节范围导出：跨卷时两卷的卷名页都在，范围外
   assert.ok(textOf(byName, 'OEBPS/text/chapter-0004.xhtml').includes('下卷第一章正文。'));
 });
 
-test('EPUB 按卷导出：未分卷（volumeId=null）只打未分卷章，不生成卷名页', () => {
-  const { res, zip, byName } = buildRange({ mode: 'volume', volumeId: null });
+test('EPUB 按卷导出：未分卷（volumeId=null）只打未分卷章，不生成卷名页', async () => {
+  const { res, zip, byName } = await buildRange({ mode: 'volume', volumeId: null });
   assert.equal(res.chapterCount, 1);
   assert.equal(res.volumeCount, 0);
   assert.equal(res.rangeLabel, '未分卷');
@@ -317,37 +317,37 @@ test('EPUB 按卷导出：未分卷（volumeId=null）只打未分卷章，不�
   assert.ok(textOf(byName, 'OEBPS/cover.xhtml').includes('未分卷 · 共 1 章'));
 });
 
-test('EPUB 范围导出：没有章节的范围明确报错，不产出坏书（空书仍是 EMPTY_BOOK）', () => {
-  assert.throws(() => buildRange({ mode: 'range', from: 4, to: 2 }), /EMPTY_EXPORT_RANGE/);
-  assert.throws(() => buildRange({ mode: 'volume', volumeId: 'nope' }), /EMPTY_EXPORT_RANGE/);
-  assert.throws(
+test('EPUB 范围导出：没有章节的范围明确报错，不产出坏书（空书仍是 EMPTY_BOOK）', async () => {
+  await assert.rejects(() => buildRange({ mode: 'range', from: 4, to: 2 }), /EMPTY_EXPORT_RANGE/);
+  await assert.rejects(() => buildRange({ mode: 'volume', volumeId: 'nope' }), /EMPTY_EXPORT_RANGE/);
+  await assert.rejects(
     () => epub.buildEpub({ meta: { title: '空书', chapters: [] }, texts: [], range: { mode: 'all' } }),
     /EMPTY_BOOK/
   );
 });
 
-test('EPUB 范围导出：只读，不改 meta；同样范围导出的 identifier 稳定，不同范围不同', () => {
+test('EPUB 范围导出：只读，不改 meta；同样范围导出的 identifier 稳定，不同范围不同', async () => {
   const meta = rangeMeta();
   const before = JSON.stringify(meta);
-  const volume = epub.buildEpub({
+  const volume = await epub.buildEpub({
     meta,
     texts: rangeTexts(),
     range: { mode: 'volume', volumeId: 'v1' },
     modified: FIXED
   });
-  const range = epub.buildEpub({
+  const range = await epub.buildEpub({
     meta,
     texts: rangeTexts(),
     range: { mode: 'range', from: 2, to: 3 },
     modified: FIXED
   });
-  const again = epub.buildEpub({
+  const again = await epub.buildEpub({
     meta,
     texts: rangeTexts(),
     range: { mode: 'volume', volumeId: 'v1' },
     modified: FIXED
   });
-  const full = epub.buildEpub({ meta, texts: rangeTexts(), modified: FIXED });
+  const full = await epub.buildEpub({ meta, texts: rangeTexts(), modified: FIXED });
   assert.equal(JSON.stringify(meta), before, '范围解析 / 导出不能改 meta');
   assert.equal(volume.identifier, again.identifier, '同样的范围每次导出 identifier 要一样');
   assert.notEqual(volume.identifier, range.identifier);
@@ -357,16 +357,16 @@ test('EPUB 范围导出：只读，不改 meta；同样范围导出的 identifie
   }
 });
 
-test('EPUB 全书导出：不传范围与 {mode:"all"} 字节完全一样（旧调用不受影响）', () => {
+test('EPUB 全书导出：不传范围与 {mode:"all"} 字节完全一样（旧调用不受影响）', async () => {
   const meta = rangeMeta();
-  const first = epub.buildEpub({ meta, texts: rangeTexts(), modified: FIXED });
-  const second = epub.buildEpub({ meta, texts: rangeTexts(), modified: FIXED, range: { mode: 'all' } });
+  const first = await epub.buildEpub({ meta, texts: rangeTexts(), modified: FIXED });
+  const second = await epub.buildEpub({ meta, texts: rangeTexts(), modified: FIXED, range: { mode: 'all' } });
   assert.ok(first.buffer.equals(second.buffer), '全书导出的字节不该因为新增 range 参数而变化');
   assert.equal(first.identifier, second.identifier);
   assert.equal(first.rangeMode, 'all');
 });
 
-test('EPUB 默认文件名：按卷 / 按范围复用 TXT 的范围命名规则，只换后缀', () => {
+test('EPUB 默认文件名：按卷 / 按范围复用 TXT 的范围命名规则，只换后缀', async () => {
   const meta = rangeMeta();
   assert.equal(epub.epubFileName(meta), '范围书.epub');
   assert.equal(epub.epubFileName(meta, { mode: 'all' }), '范围书.epub');
@@ -377,40 +377,40 @@ test('EPUB 默认文件名：按卷 / 按范围复用 TXT 的范围命名规则�
   assert.equal(epub.epubFileName({ title: 'a/b:c*?', chapters: [] }), 'abc.epub');
 });
 
-test('同样内容 + 同样时间：导出的字节完全一样（便于校验与回归）', () => {
-  const first = epub.buildEpub({ meta: metaOf(), texts: ['甲', '乙'], modified: FIXED });
-  const second = epub.buildEpub({ meta: metaOf(), texts: ['甲', '乙'], modified: FIXED });
+test('同样内容 + 同样时间：导出的字节完全一样（便于校验与回归）', async () => {
+  const first = await epub.buildEpub({ meta: metaOf(), texts: ['甲', '乙'], modified: FIXED });
+  const second = await epub.buildEpub({ meta: metaOf(), texts: ['甲', '乙'], modified: FIXED });
   assert.ok(first.buffer.equals(second.buffer), '同样的输入不该导出不同的字节');
 });
 
-test('正文数量少于章节：缺的章仍然生成一张只有标题的页面', () => {
-  const { byName } = build({ texts: ['只有第一章'] });
+test('正文数量少于章节：缺的章仍然生成一张只有标题的页面', async () => {
+  const { byName } = await build({ texts: ['只有第一章'] });
   const second = textOf(byName, 'OEBPS/text/chapter-0002.xhtml');
   assert.ok(second.includes('<h1 class="chapter-title">第2章：夜雨</h1>'));
   assert.ok(!second.includes('<p>'));
 });
 
-test('章节指向不存在的卷：按未分卷平铺，不生成卷名页', () => {
+test('章节指向不存在的卷：按未分卷平铺，不生成卷名页', async () => {
   const meta = {
     title: '坏卷书',
     volumes: [],
     chapters: [{ id: 'c1', file: '001.txt', name: '甲', volumeId: 'missing' }]
   };
-  const { byName } = build({ meta, texts: ['正文'] });
+  const { byName } = await build({ meta, texts: ['正文'] });
   assert.ok(!byName.has('OEBPS/text/volume-0001.xhtml'));
   const nav = textOf(byName, 'OEBPS/nav.xhtml');
   assert.equal((nav.match(/<ol>/g) || []).length, 1);
   assert.ok(nav.includes('第1章：甲'));
 });
 
-test('导进来的原文标题（第1章 关于本作品）原样当章名，不叠加「第N章：」', () => {
+test('导进来的原文标题（第1章 关于本作品）原样当章名，不叠加「第N章：」', async () => {
   const meta = { title: '原文书', chapters: [{ id: 'c1', file: '001.txt', name: '第1章 关于本作品' }] };
-  const { byName } = build({ meta, texts: ['正文'] });
+  const { byName } = await build({ meta, texts: ['正文'] });
   assert.ok(textOf(byName, 'OEBPS/text/chapter-0001.xhtml').includes('<h1 class="chapter-title">第1章 关于本作品</h1>'));
 });
 
-test('所有 XML 文件都通过合法性检查（含特殊字符的正文）', () => {
-  const { zip } = build({ texts: ['第一段 & 第二段。\n\n「引号」<尖括号> "双引号"', '乙'] });
+test('所有 XML 文件都通过合法性检查（含特殊字符的正文）', async () => {
+  const { zip } = await build({ texts: ['第一段 & 第二段。\n\n「引号」<尖括号> "双引号"', '乙'] });
   let checked = 0;
   for (const entry of zip.entries) {
     if (!/\.(xhtml|opf|ncx|xml)$/.test(entry.name)) continue;
@@ -420,7 +420,7 @@ test('所有 XML 文件都通过合法性检查（含特殊字符的正文）', 
   assert.ok(checked >= 7, `XML 文件太少：${checked}`);
 });
 
-test('自检工具能发现没转义的 & 和没闭合的标签', () => {
+test('自检工具能发现没转义的 & 和没闭合的标签', async () => {
   assert.throws(() => assertWellFormedXml('<p>a & b</p>', 't'), /没有转义的 &/);
   assert.throws(() => assertWellFormedXml('<p><b>x</p></b>', 't'), /不匹配/);
   assert.throws(() => assertWellFormedXml('<p>x', 't'), /没有闭合/);
@@ -430,7 +430,7 @@ test('自检工具能发现没转义的 & 和没闭合的标签', () => {
 // v0.9 C-3（安全审计 C6）：书可能来自别处（导入的文件夹里 书目.json 是别人的），
 // 书名 / 卷名 / 章名可以是 `../`、反斜杠、盘符、控制字符。它们只该进正文，
 // 一个字节都不该进 zip 条目名（否则解压时会写到包外面）。
-test('敌意书名 / 卷名 / 章名只进正文，进不了 zip 条目名（zip-slip 回归）', () => {
+test('敌意书名 / 卷名 / 章名只进正文，进不了 zip 条目名（zip-slip 回归）', async () => {
   const meta = {
     title: '../../逃逸:书名<>',
     id: 'b_evil',
@@ -441,7 +441,7 @@ test('敌意书名 / 卷名 / 章名只进正文，进不了 zip 条目名（zip
       { id: 'c2', file: '002.txt', name: '../../卷内章', volumeId: 'v1' }
     ]
   };
-  const { buffer } = epub.buildEpub({ meta, texts: ['正文一', '正文二'], modified: FIXED });
+  const { buffer } = await epub.buildEpub({ meta, texts: ['正文一', '正文二'], modified: FIXED });
   const zip = readZip(buffer);
   for (const name of zip.names) {
     assert.equal(entryNameProblem(name), '', `条目名不合法：${name}`);

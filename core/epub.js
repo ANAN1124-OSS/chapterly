@@ -434,15 +434,15 @@ function epubFiles(input) {
   return buildBundle(input).files;
 }
 
-// 产出可写盘的 EPUB 字节。
+// 产出可写盘的 EPUB 字节（异步：zip 压缩在线程池里跑，整本导出不卡主进程）。
 // input = { meta, texts, range?, language?, identifier?, modified?, zipDate? }
 //   meta / texts 就绪与 TXT 导出相同的「书目 + 各章正文（顺序对齐）」；
 //   range 可选（见 core/exporter.resolveExportRange）：只导出选中的卷 / 章节；
 //   modified 默认现在，传固定值可让同样的内容导出成完全一样的字节（单测用）。
-function buildEpub(input) {
+async function buildEpub(input) {
   const bundle = buildBundle(input);
   const zipDate = (input && input.zipDate) || bundle.date;
-  const buffer = buildZip(bundle.files, { date: zipDate });
+  const buffer = await buildZip(bundle.files, { date: zipDate });
   return {
     buffer,
     chapterCount: bundle.chapterCount,

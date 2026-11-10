@@ -11,6 +11,12 @@
 // 只允许 ASCII 可打印字符，不允许反斜杠 / 冒号 / 绝对路径 / `.` `..` 段 / 空段，
 // 名字最长 255 字节。不合法直接抛错，宁可导出失败也不产出能把文件写到别处的包。
 const zlib = require('node:zlib');
+const { promisify } = require('node:util');
+
+// 1.5.0 P2-4：压缩改走 zlib 的异步实现（libuv 线程池），整本导出时不再把主进程卡住。
+// 参数与旧版 `zlib.deflateRawSync(raw, { level: 9 })` 完全一致（level / memLevel / strategy /
+// windowBits 都是 zlib 默认值），产物逐字节相同 —— tests/zip.test.js 有一条固定 sha256 基准锁住这一点。
+const deflateRaw = promisify(zlib.deflateRaw);
 
 // zip 条目名字节上限：解压到常见文件系统都够用（我们自己生成的名字都不到 40 字节）
 const MAX_ENTRY_NAME_BYTES = 255;
@@ -78,7 +84,8 @@ function dosDateTime(value) {
 
 // entries = [{ name, data(Buffer|string), store?: boolean }]
 // store=true 的条目原样存（EPUB 的 mimetype 必须这样，阅读器靠它判断是不是 EPUB）。
-function buildZip(entries, options) {
+// 返回 Promise<Buffer>：每个条目依次 await 异步 deflate（一次只压一个，峰值内存与旧实现相同）。
+async function buildZip(entries, options) {
   const list = Array.isArray(entries) ? entries : [];
   // zip 的中央目录用 2 字节记条目数：超了不写坏包，直接报错（不写 zip64，本应用用不到）
   if (list.length > 0xffff) throw new Error('ZIP 条目太多（上限 65535 项）');
@@ -94,7 +101,7 @@ function buildZip(entries, options) {
     let method = 0;
     let payload = raw;
     if (!(entry.store === true) && raw.length > 0) {
-      const deflated = zlib.deflateRawSync(raw, { level: 9 });
+      const deflated = await deflateRaw(raw, { level: 9 });
       // 小文件压完反而更大时仍然原样存，省得白白变胖
       if (deflated.length < raw.length) {
         method = 8;
