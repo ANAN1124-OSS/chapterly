@@ -245,3 +245,60 @@ test('清理快照：没有 _trash 时安全返回空结果', async () => {
   const result = await storage.cleanupSnapshots(bookPath, { keepDays: 7, now: DAY(2026, 10, 31) });
   assert.deepEqual(result, { removed: [], failed: [], kept: 0 });
 });
+
+// P2-3（1.5.0）：还原 / 快照都是「整个文件读进内存 → 原子写回」，先按 stat.size 设闸门。
+test('读取上限：纯逻辑边界（上限放行、超限拒绝、文案带体量与上限）', () => {
+  const MAX = storage.MAX_CHAPTER_READ_BYTES;
+  assert.equal(MAX, 128 * 1024 * 1024, '口径对齐 core/importer.js 的 128 MB 导入上限');
+  assert.equal(storage.readSizeProblem(MAX, { code: 'SNAPSHOT_TOO_LARGE', label: '文件' }), null);
+  assert.equal(storage.readSizeProblem(0, { code: 'SNAPSHOT_TOO_LARGE', label: '文件' }), null);
+  const over = storage.readSizeProblem(MAX + 1, {
+    code: 'BACKUP_TOO_LARGE',
+    label: '替换备份里的「001-起风.txt」',
+    tail: '没有覆盖书里的正文'
+  });
+  assert.equal(over.code, 'BACKUP_TOO_LARGE');
+  assert.ok(over.message.includes('替换备份里的「001-起风.txt」'), over.message);
+  assert.ok(over.message.includes('超过单文件读取上限 128 MB'), over.message);
+  assert.ok(over.message.endsWith('没有覆盖书里的正文'), over.message);
+  // stat 拿不到 / 坏尺寸不拦（交给读盘按原样报错）
+  for (const bad of [NaN, -1, undefined, 'x']) {
+    assert.equal(storage.readSizeProblem(bad, { code: 'X', label: '文件' }), null, String(bad));
+  }
+  // 体量文案与 core/importer.js 的 formatImportSize 同口径（<10 保留 1 位小数）
+  assert.ok(
+    storage
+      .readSizeProblem(3 * 1024 * 1024 * 1024, { code: 'X', label: '文件' })
+      .message.includes('3.0 GB')
+  );
+});
+
+test('每日快照：正文超过读取上限时明确拒绝，不读进内存、不建快照目录', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '快照超大章');
+  const meta = await storage.readBookMeta(bookPath);
+  const file = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file, '正常正文。');
+  const source = path.join(bookPath, file);
+  // 稀疏文件：只把长度改到上限 +1，不真的写 128 MB 字节（与 tests/importer.test.js 同一做法）
+  await fs.truncate(source, storage.MAX_CHAPTER_READ_BYTES + 1);
+
+  await assert.rejects(
+    () => storage.takeDailySnapshot(bookPath, file, { keepDays: 7, now: DAY(2026, 11, 11) }),
+    (err) =>
+      err.code === 'SNAPSHOT_TOO_LARGE' &&
+      err.message.includes('128 MB') &&
+      err.message.includes(file) &&
+      !err.message.includes(root)
+  );
+  // 一个字节都没写：快照目录根本不存在，章节文件长度原样（也没被整份读进内存）
+  assert.equal(await storage.exists(path.join(bookPath, '_trash')), false, '超限时不该建任何快照目录');
+  assert.equal((await fs.stat(source)).size, storage.MAX_CHAPTER_READ_BYTES + 1);
+
+  // 恢复正常大小后照常留快照（正常路径不变）
+  await fs.writeFile(source, '正常正文。', 'utf8');
+  const taken = await storage.takeDailySnapshot(bookPath, file, { keepDays: 7, now: DAY(2026, 11, 11) });
+  assert.equal(taken.taken, true);
+  assert.equal(taken.bytes, Buffer.byteLength('正常正文。'));
+  assert.equal(await storage.exists(path.join(bookPath, '_trash', '快照-20261111', file)), true);
+});

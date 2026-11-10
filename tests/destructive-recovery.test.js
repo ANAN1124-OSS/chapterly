@@ -330,6 +330,49 @@ test('还原到替换前：中途失败报告已还原章数与还原前备份�
   assert.equal((await storage.loadChapterText(bookPath, f1)).text, '阿明二。');
 });
 
+// P2-3（1.5.0）：还原到替换前也是「整份备份读进内存 → 原子写回」，超限要整批拒绝、一个字节不写。
+test('还原到替换前：备份文件超过读取上限时整批拒绝，书里正文与备份都不动', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '还原超大备份');
+  await storage.createChapter(bookPath, 1, '第二章');
+  const meta = await storage.readBookMeta(bookPath);
+  const [f0, f1] = meta.chapters.map((chapter) => chapter.file);
+  await storage.saveChapterText(bookPath, f0, '阿明一。');
+  await storage.saveChapterText(bookPath, f1, '阿明二。');
+  const replaced = await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' });
+  const backupName = path.basename(replaced.backupDir);
+
+  // 备份里第一章被外部换成超大文件（稀疏文件，只改长度）；第二章正常——
+  // 预检必须整批拒绝，不能先还原第二章再在第一章上失败。
+  const huge = path.join(replaced.backupDir, f0);
+  await fs.truncate(huge, storage.MAX_CHAPTER_READ_BYTES + 1);
+
+  let failed = null;
+  try {
+    failed = await storage.restoreReplaceBackup(bookPath, backupName).then(
+      () => null,
+      (err) => err
+    );
+  } finally {
+    // 稀疏文件收尾：把长度改回去，免得临时目录残留 128 MB 的账
+    await fs.truncate(huge, 0).catch(() => {});
+  }
+
+  assert.ok(failed, '超限备份必须明确报错，不能假装还原成功');
+  assert.equal(failed.code, 'BACKUP_TOO_LARGE');
+  assert.match(failed.message, /128 MB/);
+  assert.ok(failed.message.includes(f0));
+  assert.ok(!failed.message.includes(root), '错误信息不带本机路径');
+  // 书里正文一个字节没动（第二章也没被提前还原）
+  assert.equal((await storage.loadChapterText(bookPath, f0)).text, '小明一。');
+  assert.equal((await storage.loadChapterText(bookPath, f1)).text, '小明二。');
+  // 一个字节都没写：没建「还原前备份-*」，替换备份本身也没被消耗
+  const trashNames = await fs.readdir(path.join(bookPath, '_trash'));
+  assert.deepEqual(trashNames.filter((name) => name.startsWith('还原前备份-')), []);
+  assert.equal((await storage.listReplaceBackups(bookPath)).length, 1);
+  assert.deepEqual(await tmpEntries(bookPath), []);
+});
+
 // ---------- 3. 静态闸门（防回退） ----------
 
 test('静态闸门：删章必须「先移文件 → 再写书目」，失败分支必须回滚', () => {

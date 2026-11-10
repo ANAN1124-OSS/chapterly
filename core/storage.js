@@ -57,6 +57,73 @@ function batchFailure(err, { code, action, notes = [] }) {
   return new StorageError(code, parts.join('；'));
 }
 
+// P2-3（1.5.0）：还原（替换备份 / 本书历史）与每日快照都是「整个文件读进主进程内存 → 原子写回」。
+// 章节文件被外部程序换成超大文件（误放的视频 / 日志 / 数据库导出）时，会直接把主进程内存打爆
+// 而崩掉整个应用。所以读之前先看 stat.size，超限明确拒绝、一个字节都不写。
+// 口径对齐 core/importer.js 的导入上限（1000 万字中文小说约 30 MB，128 MB 有三倍以上余量）。
+// 这里不 require('./importer')：importer 依赖 storage，反向引用会成环；体量文案口径保持一致。
+const MAX_CHAPTER_READ_BYTES = 128 * 1024 * 1024;
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB'];
+
+// 体量文案（与 core/importer.js 的 formatImportSize 同口径：1 位小数直到 10 以上）
+function formatByteSize(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return '0 B';
+  let value = n;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  if (unit === 0) return `${Math.round(value)} B`;
+  const shown = value < 10 ? value.toFixed(1) : String(Math.round(value));
+  return `${shown} ${BYTE_UNITS[unit]}`;
+}
+
+// 纯逻辑：把一个「整文件读进内存」的尺寸判成 null（放行）或 { code, message }（拒绝）。
+// stat 拿不到 / 坏尺寸（NaN、负数）不在这里拦，交给后面的读盘按原样报错。
+function readSizeProblem(bytes, { code, label, tail = '' } = {}) {
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size < 0) return null;
+  if (size <= MAX_CHAPTER_READ_BYTES) return null;
+  const limit = formatByteSize(MAX_CHAPTER_READ_BYTES);
+  return {
+    code,
+    message: `${label}有 ${formatByteSize(size)}，超过单文件读取上限 ${limit}${tail ? `，${tail}` : ''}`
+  };
+}
+
+// 读还原 / 快照的来源文件前的大小闸门：先 stat，超限抛 StorageError（不读内容、不写盘）。
+// 返回 stat 供调用方复用；ENOENT 等 IO 错误原样上抛，交给各调用点按原逻辑处理。
+async function assertSourceSize(source, options) {
+  const stat = await fs.stat(source);
+  const problem = readSizeProblem(stat.size, options);
+  if (problem) throw new StorageError(problem.code, problem.message);
+  return stat;
+}
+
+// 读还原用的源文件：先过大小闸门再读。
+async function loadChapterSource(source, options) {
+  await assertSourceSize(source, options);
+  return fs.readFile(source);
+}
+
+// 整批还原前的一次性预检：同一批里任何一个源文件超限就整批拒绝 —— 此时还一个字节都没写，
+// 作者看到的是「没有还原」，而不是「还原到一半停下」。
+// 只做闸门：stat 失败（文件刚被删 / 被占用）留给后面的读盘 / 批次失败逻辑按原样报错。
+async function preflightRestoreSources(entries, options) {
+  for (const { source, label } of entries) {
+    let stat;
+    try {
+      stat = await fs.stat(source);
+    } catch {
+      continue;
+    }
+    const problem = readSizeProblem(stat.size, { ...options, label });
+    if (problem) throw new StorageError(problem.code, problem.message);
+  }
+}
+
 // 备份目录 → 界面上可以显示的相对位置（形如 `_trash/整理备份-2026-11-01-223000`）
 function trashDirLabel(dir) {
   return dir ? `${TRASH_DIR}/${path.basename(dir)}` : '';
@@ -1371,6 +1438,16 @@ async function restoreReplaceBackup(bookPath, backupName) {
     throw new StorageError('BACKUP_NO_TARGET', '备份里的章节都不在书里了，没有可还原的内容');
   }
 
+  // P2-3：先按 stat.size 把整批要还原的备份文件看一遍。任何一个超限就整批拒绝 ——
+  // 此时一个字节都还没写（还原前备份目录也不建），不是「还原到一半停下」。
+  await preflightRestoreSources(
+    restorable.map((entry) => ({
+      source: path.join(backupDir, entry.name),
+      label: `替换备份里的「${entry.name}」`
+    })),
+    { code: 'BACKUP_TOO_LARGE', tail: '没有覆盖书里的正文' }
+  );
+
   const restoreDir = await uniqueTrashDir(trashDir, RESTORE_BACKUP_PREFIX);
   let restored = 0;
   let skipped = 0;
@@ -1383,7 +1460,12 @@ async function restoreReplaceBackup(bookPath, backupName) {
       }
       const target = assertInside(bookPath, entry.name);
       if (await backupCurrentToRestoreDir(bookPath, entry.name, restoreDir)) safetyCopied = true;
-      const buffer = await fs.readFile(path.join(backupDir, entry.name));
+      // P2-3：预检之后还能再变（TOCTOU），所以读盘这一步也走带大小闸门的入口
+      const buffer = await loadChapterSource(path.join(backupDir, entry.name), {
+        code: 'BACKUP_TOO_LARGE',
+        label: `替换备份里的「${entry.name}」`,
+        tail: '没有覆盖书里的正文'
+      });
       await atomicWriteFile(target, buffer);
       restored += 1;
     }
@@ -1457,6 +1539,8 @@ async function cleanupSnapshots(bookPath, { keepDays = snapshotLib.DEFAULT_KEEP_
 // 保存前留一份当天快照。返回 { taken, reason, dir, file, bytes, cleanup }：
 // - TAKEN：这一次真的复制了；ALREADY_TODAY：今天已经有这一章的快照，不重复复制；
 // - MISSING：章节文件还不存在（不建空快照）；DISABLED 由调用方（main.js）处理。
+// - 正文文件超过单文件读取上限（>128 MB）抛 SNAPSHOT_TOO_LARGE：不读进内存、不建快照，
+//   由 main.js 记日志并带回保存结果（快照失败照旧绝不阻塞保存）。
 // 复制了（TAKEN）或当天已有一份（ALREADY_TODAY）时，都会顺手清理过期快照目录；
 // 章节文件还不存在（MISSING）时直接返回、不清理（此时没有新快照要维护）。
 // 只有开启该功能（config.snapshotEnabled）时才会被调用。
@@ -1468,6 +1552,12 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
   const source = assertInside(bookPath, raw);
   let buffer;
   try {
+    // P2-3：先看大小再读 —— 这一章被外部换成超大文件时，不能把主进程内存打爆
+    await assertSourceSize(source, {
+      code: 'SNAPSHOT_TOO_LARGE',
+      label: `这一章正文（${raw}）`,
+      tail: '这次没有留快照（保存继续）'
+    });
     buffer = await fs.readFile(source);
   } catch (err) {
     if (err.code === 'ENOENT') {
@@ -1592,7 +1682,12 @@ async function copyHistoryEntryToBook(bookPath, group, entry, restoreDir) {
   await backupCurrentToRestoreDir(bookPath, entry.name, restoreDir);
   const target = assertInside(bookPath, entry.name);
   const source = historyLib.resolveHistoryPath(bookPath, group.id, entry.name);
-  const buffer = await fs.readFile(source);
+  // P2-3：备份文件被外部换成超大文件时，先 stat 再读，绝不把整份读进内存
+  const buffer = await loadChapterSource(source, {
+    code: 'HISTORY_TOO_LARGE',
+    label: `备份文件「${entry.name}」`,
+    tail: '没有覆盖书里的正文'
+  });
   await atomicWriteFile(target, buffer);
 }
 
@@ -1608,6 +1703,11 @@ async function restoreHistoryFile(bookPath, groupId, fileName) {
   if (!entry.restorable) {
     throw new StorageError('HISTORY_NOT_CURRENT', entry.reason || '这个文件不是当前章节，不能还原');
   }
+  // P2-3：先验备份文件大小，超限时连「还原前备份」目录都不建（一个字节都不写）
+  await preflightRestoreSources(
+    [{ source: historyLib.resolveHistoryPath(bookPath, group.id, entry.name), label: `备份文件「${entry.name}」` }],
+    { code: 'HISTORY_TOO_LARGE', tail: '没有覆盖书里的正文' }
+  );
   const trashDir = path.join(bookPath, TRASH_DIR);
   const restoreDir = await uniqueTrashDir(trashDir, RESTORE_BACKUP_PREFIX);
   await ensureDir(restoreDir);
@@ -1627,6 +1727,16 @@ async function restoreHistoryFile(bookPath, groupId, fileName) {
 async function restoreHistoryGroup(bookPath, groupId) {
   const { meta, group } = await loadRestorableHistoryGroup(bookPath, groupId);
   if (group.kind === 'file') return restoreDeletedChapter(bookPath, group, group.files[0]);
+  // P2-3：整组还原前先验所有要还原的源文件大小；任一超限就整批拒绝、一个字节都不写
+  await preflightRestoreSources(
+    group.files
+      .filter((file) => file.restorable)
+      .map((file) => ({
+        source: historyLib.resolveHistoryPath(bookPath, group.id, file.name),
+        label: `备份文件「${file.name}」`
+      })),
+    { code: 'HISTORY_TOO_LARGE', tail: '没有覆盖书里的正文' }
+  );
   const trashDir = path.join(bookPath, TRASH_DIR);
   const restoreDir = await uniqueTrashDir(trashDir, RESTORE_BACKUP_PREFIX);
   let restored = 0;
@@ -1783,6 +1893,9 @@ module.exports = {
   TRASH_DIR,
   CORRUPT_PREFIX,
   StorageError,
+  // P2-3：还原 / 快照读文件前的大小闸门（测试用稀疏文件验证超限路径）
+  MAX_CHAPTER_READ_BYTES,
+  readSizeProblem,
   nowIso,
   exists,
   assertInside,

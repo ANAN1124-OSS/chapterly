@@ -331,6 +331,75 @@ test('历史：还原整组只还原当前章节，已删章节不复活，逐�
   assert.equal(meta.schemaVersion, 1);
 });
 
+// P2-3（1.5.0）：历史还原读备份文件前先看 stat.size，超限明确拒绝且一个字节都不写。
+test('历史：备份文件超过读取上限时明确拒绝，不建还原前备份、正文不动', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '历史超大备份');
+  const meta = await storage.readBookMeta(bookPath);
+  const file1 = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file1, '第一章现稿。\n');
+  const dir = await writeBackupDir(bookPath, '替换备份-2026-11-11-010000', {
+    [file1]: '第一章备份。\n'
+  });
+  const backupFile = path.join(dir, file1);
+  // 稀疏文件：只把长度改到上限 +1，不真的写 128 MB 字节
+  await fs.truncate(backupFile, storage.MAX_CHAPTER_READ_BYTES + 1);
+
+  let failed = null;
+  try {
+    failed = await storage
+      .restoreHistoryFile(bookPath, 'dir:替换备份-2026-11-11-010000', file1)
+      .then(() => null, (err) => err);
+  } finally {
+    await fs.truncate(backupFile, 0).catch(() => {});
+  }
+
+  assert.ok(failed, '超限备份必须明确报错');
+  assert.equal(failed.code, 'HISTORY_TOO_LARGE');
+  assert.match(failed.message, /128 MB/);
+  assert.ok(failed.message.includes(file1));
+  assert.ok(!failed.message.includes(root));
+  // 正文一个字节没动；连「还原前备份-*」目录都没建
+  assert.equal((await storage.loadChapterText(bookPath, file1)).text, '第一章现稿。\n');
+  const trashNames = await fs.readdir(path.join(bookPath, '_trash'));
+  assert.deepEqual(trashNames.filter((name) => name.startsWith('还原前备份-')), []);
+});
+
+test('历史：整组还原时任一备份超限就整批拒绝（顺序在前的正常章也不许先写）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '历史超大整组');
+  await storage.createChapter(bookPath, 1, '夜雨');
+  let meta = await storage.readBookMeta(bookPath);
+  const [file1, file2] = meta.chapters.map((chapter) => chapter.file);
+  await storage.saveChapterText(bookPath, file1, '第一章现稿。\n');
+  await storage.saveChapterText(bookPath, file2, '第二章现稿。\n');
+  const dir = await writeBackupDir(bookPath, '整理备份-2026-11-11-010000', {
+    [file1]: '第一章整理前。\n',
+    [file2]: '第二章整理前。\n'
+  });
+  // 第二章（排序在后）超限：预检必须在写第一章之前就拒绝
+  const backupFile2 = path.join(dir, file2);
+  await fs.truncate(backupFile2, storage.MAX_CHAPTER_READ_BYTES + 1);
+
+  let failed = null;
+  try {
+    failed = await storage
+      .restoreHistoryGroup(bookPath, 'dir:整理备份-2026-11-11-010000')
+      .then(() => null, (err) => err);
+  } finally {
+    await fs.truncate(backupFile2, 0).catch(() => {});
+  }
+
+  assert.ok(failed, '整组里有一个超限就必须整批拒绝');
+  assert.equal(failed.code, 'HISTORY_TOO_LARGE');
+  assert.ok(failed.message.includes(file2));
+  // 两章都还是现稿（第一章没有被提前写回），也没建还原前备份目录
+  assert.equal((await storage.loadChapterText(bookPath, file1)).text, '第一章现稿。\n');
+  assert.equal((await storage.loadChapterText(bookPath, file2)).text, '第二章现稿。\n');
+  const trashNames = await fs.readdir(path.join(bookPath, '_trash'));
+  assert.deepEqual(trashNames.filter((name) => name.startsWith('还原前备份-')), []);
+});
+
 test('历史：还原删章备份只把 txt 放回书文件夹，不改章节列表、不覆盖同名文件', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await makeBook(root, '找回删章书');

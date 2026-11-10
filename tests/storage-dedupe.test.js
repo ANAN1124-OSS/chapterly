@@ -34,8 +34,10 @@ test('copyHistoryEntryToBook / backupCurrentToRestoreDir：三处还原共用「
   assert.equal(countOf('copyHistoryEntryToBook('), 3, '定义 + 2 处调用（单文件 / 整组）');
   assert.equal(countOf('function backupCurrentToRestoreDir('), 1, '反向备份只该有这一份实现');
   assert.equal(countOf('backupCurrentToRestoreDir('), 3, '定义 + 2 处调用（替换备份还原 / copyHistoryEntryToBook 内）');
-  // resolveHistoryPath 只剩 helper 与「删除章放回」那一处（那个流程不覆盖已有文件，不适用本 helper）
-  assert.equal(countOf('historyLib.resolveHistoryPath('), 2, '备份路径解析不该再有第三份');
+  // resolveHistoryPath 只剩 helper 与「删除章放回」那一处（那个流程不覆盖已有文件，不适用本 helper）；
+  // 1.5.0 P2-3 的两处还原预检（单文件 / 整组）也走同一个解析入口 —— 只是多一道 stat.size 闸门，
+  // 不是第二份解析实现（实现仍只有 core/history.js 一份、storage 里这一处调用形式也只有一种）。
+  assert.equal(countOf('historyLib.resolveHistoryPath('), 4, '备份路径解析不该再有第二份实现');
   assert.equal(countOf('fs.copyFile(target, path.join(restoreDir'), 1, '反向备份只该在 backupCurrentToRestoreDir 里做一次');
   assert.ok(
     /await copyHistoryEntryToBook\(bookPath, group, entry, restoreDir\);\s*\n\s*restored \+= 1;/.test(SRC),
