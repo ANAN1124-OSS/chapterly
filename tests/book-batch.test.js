@@ -223,3 +223,26 @@ test('静态闸门：三个导出入口释放中间引用（TXT 走 buildTxtExpo
     assert.doesNotMatch(body, /texts\.map\(\(text\) => s2tLib\.convertText/);
   }
 });
+
+// P2-2（1.5.0）：整本校对 / 整本导出也按 32 章分批读。
+// 读法对齐 core/storage.js 的 CHAPTER_BATCH_SIZE（32 章）：批内仍限并发 CHAPTER_READ_CONCURRENCY、
+// 批间严格串行 —— 只改「什么时候读」，顺序 / 内容 / 统计口径与「一次读完再处理」逐字一致
+// （本轮用 git show HEAD:main.js 的旧实现并排跑 70 章临时书对过账：整本 / 稀疏下标 / override /
+// 空数组六种入参的 texts / chars / includedUnsaved 全同，TXT 导出字节全同，校对回调序列与总数全同）。
+test('静态闸门：整本校对 / 整本导出按 32 章分批读（P2-2）', () => {
+  assert.match(mainSource, /const CHAPTER_BATCH_SIZE = 32;/, '批大小 32 要与 core/storage.js 的 CHAPTER_BATCH_SIZE 同值');
+  const targets = [
+    ['walkChapterTexts', '  async function walkChapterTexts(bookPath, meta, override, onChapter) {'],
+    ['collectExportTexts', '  async function collectExportTexts(bookPath, meta, override, indexes) {']
+  ];
+  for (const [name, anchor] of targets) {
+    const body = sliceFrom(mainSource, anchor);
+    assert.doesNotMatch(body, /mapLimit\(meta\.chapters,/, `${name} 不许再一次 mapLimit 整本书`);
+    assert.match(body, /for \(let start = 0; start < .+; start \+= CHAPTER_BATCH_SIZE\) \{/, `${name} 要按批推进`);
+    assert.match(body, /chapters\.slice\(start, start \+ CHAPTER_BATCH_SIZE\)/, `${name} 每批最多 32 章`);
+    assert.match(body, /mapLimit\(batch, CHAPTER_READ_CONCURRENCY/, `${name} 批内仍限并发（批间串行）`);
+  }
+  // 两个整本检查（校对 / 敏感词）都走 walkChapterTexts，分批只在它里面做一次
+  const walkCalls = mainSource.match(/walkChapterTexts\(bookPath, meta, safeOverride/g) || [];
+  assert.equal(walkCalls.length, 2, '校对 / 敏感词两个整本检查都走同一条分批读路径');
+});

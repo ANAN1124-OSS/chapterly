@@ -95,6 +95,10 @@ const clipboardWatchLib = require('./core/clipboard-watch');
 const { mapLimit, formatCount } = require('./core/common');
 // B4（审计 P4）：整本操作逐章读盘的并行度（读是 IO 等待；写盘仍串行、按原顺序）
 const CHAPTER_READ_CONCURRENCY = 8;
+// P2-2（1.5.0）：整本读正文的批大小，对齐 core/storage.js 的 CHAPTER_BATCH_SIZE（32 章）。
+// 批内仍限并发 CHAPTER_READ_CONCURRENCY，批间严格串行 —— 只改「什么时候读」：
+// 顺序 / 内容 / 统计口径与「一次读完整个数组」逐字一致，只是不再让整本书的正文同时常驻。
+const CHAPTER_BATCH_SIZE = 32;
 
 // ---------- 启动参数：隔离用的 --user-data ----------
 // A2（审计 #8 / E3）：这段从文件顶部（原来的 :31-40）挪到 core 模块 require 之后、app ready 之前。
@@ -2014,25 +2018,33 @@ function registerIpc() {
   // 缺文件的章节跳过并计数（不让整本检查失败）。只读，不写盘。
   // B4（审计 P4）：各章正文并行读（上限 CHAPTER_READ_CONCURRENCY），回调仍按书目顺序逐章触发，
   // 统计 / 顺序与串行版完全一致。
+  // P2-2（1.5.0）：再按 CHAPTER_BATCH_SIZE 章一批读（批内仍限并发、批间串行）——一批的回调跑完，
+  // 这批正文就可以回收，整本书的正文不再同时常驻。回调顺序 / 跳过计数与「一次读完再逐章」完全一致；
+  // 读盘抛错仍然整本失败（整本检查只读，失败时上层不产出任何结果，不会留下半份统计）。
   async function walkChapterTexts(bookPath, meta, override, onChapter) {
     const overrideIndex = exporter.chapterIndexOf(meta, override);
-    const loaded = await mapLimit(meta.chapters, CHAPTER_READ_CONCURRENCY, async (chapter, index) => {
-      if (index === overrideIndex) return { text: override.text };
-      try {
-        return { text: (await storage.loadChapterText(bookPath, chapter.file)).text };
-      } catch (err) {
-        if (err.code === 'CHAPTER_MISSING') return { missing: true };
-        throw err;
-      }
-    });
+    const chapters = meta.chapters;
     let skippedChapters = 0;
-    for (let index = 0; index < meta.chapters.length; index += 1) {
-      const item = loaded[index];
-      if (item.missing) {
-        skippedChapters += 1;
-        continue;
+    for (let start = 0; start < chapters.length; start += CHAPTER_BATCH_SIZE) {
+      const batch = chapters.slice(start, start + CHAPTER_BATCH_SIZE);
+      const loaded = await mapLimit(batch, CHAPTER_READ_CONCURRENCY, async (chapter, offset) => {
+        const index = start + offset;
+        if (index === overrideIndex) return { text: override.text };
+        try {
+          return { text: (await storage.loadChapterText(bookPath, chapter.file)).text };
+        } catch (err) {
+          if (err.code === 'CHAPTER_MISSING') return { missing: true };
+          throw err;
+        }
+      });
+      for (let offset = 0; offset < loaded.length; offset += 1) {
+        const item = loaded[offset];
+        if (item.missing) {
+          skippedChapters += 1;
+          continue;
+        }
+        onChapter(item.text, chapters[start + offset], start + offset);
       }
-      onChapter(item.text, meta.chapters[index], index);
     }
     return skippedChapters;
   }
@@ -2234,17 +2246,28 @@ function registerIpc() {
   // 拼导出/复制用的正文：默认读磁盘；override 是编辑区里当前章的最新内容（未保存也算，只参与拼接不写盘）
   // chars 回报的是「正文字数」（去掉空白/换行，和编辑页字数统计同一口径），不是文件字节数
   // indexes 可选：只读选中的章（按范围导出用），没选中的位置留空字符串但保持下标对齐
+  // P2-2（1.5.0）：按 CHAPTER_BATCH_SIZE 章一批读（批内仍限并发 CHAPTER_READ_CONCURRENCY、批间串行）。
+  // texts 仍按书目下标填、没选中的位置留空串，顺序 / 内容 / chars 与「一次读完再求和」逐字一致。
   async function collectExportTexts(bookPath, meta, override, indexes) {
     const selected = Array.isArray(indexes) ? new Set(indexes) : null;
     const overrideIndex = exporter.chapterIndexOf(meta, override);
+    const chapters = meta.chapters;
     // B4（审计 P4）：选中章的正文并行读；texts 仍按书目下标填，顺序 / 空串占位完全不变
-    const texts = await mapLimit(meta.chapters, CHAPTER_READ_CONCURRENCY, async (chapter, i) => {
-      if (selected && !selected.has(i)) return '';
-      if (i === overrideIndex) return override.text;
-      return (await storage.loadChapterText(bookPath, chapter.file)).text;
-    });
+    const texts = new Array(chapters.length).fill('');
     let chars = 0;
-    for (const text of texts) chars += chaptersLib.countChars(text);
+    for (let start = 0; start < chapters.length; start += CHAPTER_BATCH_SIZE) {
+      const batch = chapters.slice(start, start + CHAPTER_BATCH_SIZE);
+      const loaded = await mapLimit(batch, CHAPTER_READ_CONCURRENCY, async (chapter, offset) => {
+        const index = start + offset;
+        if (selected && !selected.has(index)) return '';
+        if (index === overrideIndex) return override.text;
+        return (await storage.loadChapterText(bookPath, chapter.file)).text;
+      });
+      for (let offset = 0; offset < loaded.length; offset += 1) {
+        texts[start + offset] = loaded[offset];
+        chars += chaptersLib.countChars(loaded[offset]);
+      }
+    }
     return {
       texts,
       chars,
