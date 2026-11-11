@@ -851,12 +851,18 @@ function applyWindowChromeAll() {
   for (const session of windowSessions.values()) applyWindowChrome(session);
 }
 
-// 标题栏右键菜单（还原 / 最小化 / 最大化 / 关闭）。「移动 / 大小」仍用 Windows 自带的 Alt+Space
+// 标题栏右键菜单（命令面板 / 还原 / 最小化 / 最大化 / 关闭）。「移动 / 大小」仍用 Windows 自带的 Alt+Space
 // 系统菜单——这两个动作要走系统模态循环，Electron 没有暴露。
 function titleBarMenuTemplate(win) {
   const alive = () => win && !win.isDestroyed();
   return windowChrome.menuTemplate({
     maximized: Boolean(alive() && win.isMaximized()),
+    // 1.6.0 F4b：顶栏右键也能开命令面板（Ctrl+K 之外的鼠标入口）。这里只发一条空通知，
+    // 面板能不能开（弹层 / 锁键层）由渲染层用和 Ctrl+K 同一个入口判断，主进程不碰 UI 状态。
+    commandPalette: () => {
+      if (!alive() || !win.webContents || win.webContents.isDestroyed()) return;
+      win.webContents.send('app:command-palette');
+    },
     restore: () => {
       if (alive()) win.unmaximize();
     },

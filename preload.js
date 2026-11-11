@@ -187,6 +187,9 @@ contextBridge.exposeInMainWorld('api', {
   onInternalError: (cb) => on('app:internal-error', cb),
   // 正文索引的建 / 校验进度（只用于书架搜索提示）
   onSearchProgress: (cb) => on('search:progress', cb),
+  // 1.6.0 F4b：顶栏右键菜单的「命令面板」——主进程只发一条空通知，
+  // 开面板 / 锁键层判定留在渲染层（与 Ctrl+K 同一个入口）。
+  onCommandPalette: (cb) => on('app:command-palette', cb),
   reportDirty: (dirty) => ipcRenderer.send('app:dirty', Boolean(dirty)),
   closeReady: (allowed) => ipcRenderer.send('app:close-ready', Boolean(allowed))
 });

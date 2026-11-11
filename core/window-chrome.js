@@ -85,11 +85,15 @@ function isTitleBarHit(params) {
 // 标题栏右键菜单模板（纯数据 + 外部传进来的动作，方便单测）。
 // 原生标题栏的系统菜单里还有「移动 / 大小」（要走 Windows 的模态循环，Electron 没暴露），
 // 这两项继续用 Windows 自带的 Alt+Space 系统菜单；这里给最常用的四项。
+// 1.6.0 F4b：最上面加「命令面板」——标题栏右键也能开面板（Ctrl+K 之外的鼠标入口）。
+// 它只透传动作；面板开关 / 锁键层判定留在渲染层（和 Ctrl+K 同一个入口）。
 function menuTemplate(actions) {
   const a = actions && typeof actions === 'object' ? actions : {};
   const maximized = a.maximized === true;
   const can = (fn) => typeof fn === 'function';
   return [
+    { label: '命令面板', accelerator: 'Ctrl+K', enabled: can(a.commandPalette), click: a.commandPalette },
+    { type: 'separator' },
     { label: '还原', enabled: maximized && can(a.restore), click: a.restore },
     { label: '最小化', enabled: can(a.minimize), click: a.minimize },
     { label: '最大化', enabled: !maximized && can(a.maximize), click: a.maximize },

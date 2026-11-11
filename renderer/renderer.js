@@ -5145,6 +5145,8 @@
 
     // 主进程拦截到关窗/退出时，由这里决定「保存并退出 / 不保存退出 / 取消」
     api.onCloseRequested(handleCloseRequest);
+    // 1.6.0 F4b：顶栏右键「命令面板」——和 Ctrl+K 同一个入口（弹层 / 锁键层开着时不抢）
+    api.onCommandPalette(() => openCommandPalette());
   // 别的窗口改了书架数据（新建 / 删除 / 保存 / 导入 / 整理）：停在书架就刷新；
   // 写作页里的窗口不打断作者，回书架时会统一刷新（backToShelf 里本来就会刷新）。
   api.onShelfChanged(() => {

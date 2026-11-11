@@ -271,7 +271,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   当前章条目的缓存引用（activeChapterItem）、输入路径字数统计传 defer、escProbe 只在
   //   Esc / 锁键层时现算；三者都要读 renderer.js 内部的 DOM 引用与按键上下文，搬出去只能靠
   //   注入一堆回调，反而更绕。新增行里约一半是解释「为什么不能再退回旧写法」的注释。
-  const RENDERER_LINE_BUDGET = 5782;
+  // 1.6.0 F4b：5782 → 5784（+2）：顶栏右键「命令面板」的订阅。必须调 renderer.js 内部的
+  //   openCommandPalette()（它带 anyBackdropOpen 锁键层判定，和 Ctrl+K 同一个入口）；
+  //   搬出去就得把面板状态与锁键层一起注入，反而绕。只有一行注释 + 一行订阅。
+  const RENDERER_LINE_BUDGET = 5784;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

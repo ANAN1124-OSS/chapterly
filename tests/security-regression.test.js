@@ -189,7 +189,7 @@ test('preload：invoke 频道与 main.js 注册的 handle 频道一一对应（�
   assert.equal(new Set(handlers).size, handlers.length, 'main.js 里有重复注册的频道');
 });
 
-test('preload：单向通知 / 上报频道与 main.js 一一对应（9 条通知 + 2 条上报）', () => {
+test('preload：单向通知 / 上报频道与 main.js 一一对应（10 条通知 + 2 条上报）', () => {
   const { exposed, calls } = loadPreload();
   for (const fn of Object.values(exposed.api)) fn(() => {});
   const { sent, received } = mainChannels();
@@ -198,7 +198,8 @@ test('preload：单向通知 / 上报频道与 main.js 一一对应（9 条通�
   assert.deepEqual([...calls.sent].sort(), [...received].sort(), 'preload 上报的频道与主进程 ipcMain.on 的频道不一致');
   // b8 新增 clipboard:changed（剪贴板后台监听 → 轻提示，只带字数）；
   // 2026-11-07 新增 clipboard:recorded（每次入队 → 面板开着时即时刷新列表，只带条数）
-  assert.equal(calls.subscribed.length, 9);
+  // 1.6.0 F4b 新增 app:command-palette（顶栏右键菜单 → 打开命令面板，空通知）
+  assert.equal(calls.subscribed.length, 10);
   assert.equal(calls.sent.length, 2);
 });
 

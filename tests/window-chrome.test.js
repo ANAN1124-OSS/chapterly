@@ -112,7 +112,7 @@ test('标题栏命中：只认顶部 40px 的非编辑区；输入框 / 有选�
   assert.equal(chrome.isTitleBarHit(undefined), false);
 });
 
-test('窗口菜单：还原 / 最小化 / 最大化 / 关闭四项 + 一条分隔线，可用状态跟最大化状态走', () => {
+test('窗口菜单：命令面板 + 还原 / 最小化 / 最大化 / 关闭，可用状态跟最大化状态走', () => {
   const calls = [];
   const actions = {
     maximized: false,
@@ -124,25 +124,46 @@ test('窗口菜单：还原 / 最小化 / 最大化 / 关闭四项 + 一条分�
   const normal = chrome.menuTemplate(actions);
   assert.deepEqual(
     normal.map((item) => item.label),
-    ['还原', '最小化', '最大化', undefined, '关闭']
+    ['命令面板', undefined, '还原', '最小化', '最大化', undefined, '关闭']
   );
-  assert.equal(normal[3].type, 'separator');
-  assert.equal(normal[0].enabled, false, '没最大化时「还原」不可用');
-  assert.equal(normal[2].enabled, true);
+  assert.equal(normal[1].type, 'separator');
+  assert.equal(normal[5].type, 'separator');
+  assert.equal(normal[0].enabled, false, '没传命令面板动作时该项不可用（不许点了没反应）');
+  assert.equal(normal[2].enabled, false, '没最大化时「还原」不可用');
+  assert.equal(normal[4].enabled, true);
   normal.forEach((item) => {
     if (item.enabled === true && typeof item.click === 'function') item.click();
   });
   assert.deepEqual(calls, ['minimize', 'maximize', 'close']);
 
   const maximized = chrome.menuTemplate({ ...actions, maximized: true });
-  assert.equal(maximized[0].enabled, true, '最大化后「还原」可用');
-  assert.equal(maximized[2].enabled, false, '最大化后「最大化」不可用');
+  assert.equal(maximized[2].enabled, true, '最大化后「还原」可用');
+  assert.equal(maximized[4].enabled, false, '最大化后「最大化」不可用');
   // 没传动作 / 传错类型：整份菜单都不可用，不抛错
   for (const bad of [undefined, null, 'x', 42]) {
     const template = chrome.menuTemplate(bad);
-    assert.equal(template.length, 5);
+    assert.equal(template.length, 7);
     assert.ok(template.filter((item) => item.label).every((item) => item.enabled === false));
   }
+});
+
+test('窗口菜单：命令面板排第一、带 Ctrl+K 键帽提示，点一下只透传动作', () => {
+  const calls = [];
+  const items = chrome.menuTemplate({
+    maximized: false,
+    commandPalette: () => calls.push('palette')
+  });
+  assert.equal(items[0].label, '命令面板');
+  assert.equal(items[0].accelerator, 'Ctrl+K', '菜单里要能看见 Ctrl+K（和命令面板同一个键位）');
+  assert.equal(items[0].enabled, true);
+  assert.equal(typeof items[0].click, 'function');
+  items[0].click();
+  assert.deepEqual(calls, ['palette']);
+
+  // 动作缺失时 click 不该是个空函数（Electron 会把可点的项画成正常样式，点了没反应）
+  const bare = chrome.menuTemplate({ maximized: false });
+  assert.equal(bare[0].enabled, false);
+  assert.equal(typeof bare[0].click, 'undefined');
 });
 
 test('main.js：窗口用 titleBarStyle hidden + titleBarOverlay，底色 / 失焦重刷都走 core/window-chrome', () => {
