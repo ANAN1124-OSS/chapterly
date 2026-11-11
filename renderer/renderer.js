@@ -24,6 +24,9 @@
   // 章节多选的选择模型（1.5.0 功能-1）：toggle / extendTo / clear / isSelected / prune / idsInOrder
   // 在 chapter-selection.js 里、Node 单测覆盖；这里只接线（状态放 state.selectedIds / selectAnchorId）。
   const chapterSelectionLib = window.CWChapterSelection;
+  // 换书守卫的决策（1.6.0 H1 / 审计 E-01）：换到另一本书之前先处理未保存的修改。
+  // 三种选择 × 保存成败的纯分支在 open-book-guard.js 里、Node 单测覆盖；这里只负责弹窗与保存。
+  const openBookGuard = window.CWOpenBookGuard;
   // 查找增强（v0.8-11，提案 N11）的纯逻辑：上一处 / 下一处、高亮窗口、正文切片段、行号。
   // 在 find-logic.js 里、Node 单测覆盖；这里只负责选中、滚动和影子层显示。
   const findLogic = window.CWFindLogic;
@@ -1094,6 +1097,21 @@
   }
 
   async function openBookByPath(bookPath, target = null) {
+    // 1.6.0 H1（审计 E-01，丢稿）：换书前先处理当前章节的未保存修改 —— 保存并继续 / 丢弃 / 取消。
+    // 「取消」或「保存失败」都停在原地（正文、dirty、撤销条全不动）；决策是 open-book-guard.js
+    // 里的纯函数（Node 单测覆盖），这里只负责弹窗与保存。四个换书入口都走这一个函数。
+    const dirtyBeforeSwitch = state.dirty === true;
+    if (openBookGuard.decideOpenBook({ dirty: dirtyBeforeSwitch }).action === 'prompt') {
+      const choice = await askUnsaved({
+        title: '换书前先处理未保存的修改',
+        message: `「${currentChapterLabel()}」还有未保存的修改。换到另一本书后，编辑区里这些字不会跟着过去。`
+      });
+      let saveResult = null;
+      if (choice === 'save') saveResult = await saveCurrent();
+      const guard = openBookGuard.decideOpenBook({ dirty: dirtyBeforeSwitch, choice, saveResult });
+      // 失败提示 saveCurrent 已经弹过（与还原 / 删除前拦截同口径），这里只负责别继续换。
+      if (guard.action !== 'proceed') return;
+    }
     let data;
     try {
       data = await call(api.openBook, bookPath);

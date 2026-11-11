@@ -230,6 +230,87 @@ module.exports = async function group75CommandPalette(t) {
   await exec('window.__cwTest.save()');
   await waitFor('window.__cwTest.dirty() === false', 4000);
 
+  // ---------- ⑦c 换书守卫（1.6.0 H1 / 审计 E-01）：换到另一本书前先处理未保存的修改 ----------
+  // 有未保存的字时换书不能直接从磁盘重开另一本（那些字既没写盘、也不进撤销，换过去就没了）：
+  //   ② 先出三选一（取消 / 不保存丢弃 / 保存并继续），选「取消」→ 正文 / dirty / 当前书全都不动；
+  //   ③ 选「保存并继续」→ 旧书先落盘，再打开新书。
+  const guardBook = await storage.createBook(booksRoot, '换书守卫演练');
+  const guardBookPath = guardBook.path;
+  await exec('window.__cwTest.refreshShelf()');
+  await waitFor(
+    `window.__cwTest.state.books.some((book) => book.path === ${JSON.stringify(guardBookPath)})`,
+    4000
+  );
+  const GUARD_TEXT = '换书守卫：这段没保存的字不能因为换书丢掉';
+  const bookIdBefore = await exec('window.__cwTest.bookId()');
+  await exec(`window.__cwTest.setText(${JSON.stringify(GUARD_TEXT)})`);
+  await waitFor('window.__cwTest.dirty() === true');
+
+  // ② 换另一本书：先出三选一，选「取消」原地不动
+  const openGuardBookFromPalette = async () => {
+    await sendCtrlK();
+    await waitFor('window.__cwTest.commandPaletteOpen() === true', 4000);
+    await exec(`(() => {
+      const input = document.getElementById('command-input');
+      input.value = '换书守卫演练';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await sleep(200);
+    await sendKey('Return', [], 300);
+    await waitFor('window.__cwTest.modalOpen() === true', 4000);
+  };
+  await openGuardBookFromPalette();
+  const switchDialog = JSON.parse(
+    await exec(`JSON.stringify({
+      title: window.__cwTest.dialog(),
+      buttons: window.__cwTest.modalButtons(),
+      message: window.__cwTest.modalMessage()
+    })`)
+  );
+  await exec("window.__cwTest.answerModal('cancel')");
+  await waitFor('window.__cwTest.modalOpen() === false', 4000);
+  await sleep(150);
+  const afterCancel = {
+    text: await exec('window.__cwTest.text()'),
+    dirty: await exec('window.__cwTest.dirty()'),
+    bookId: await exec('window.__cwTest.bookId()'),
+    view: await exec('window.__cwTest.view()')
+  };
+  check(
+    '换书守卫：有未保存修改时换另一本书先出三选一，选「取消」后正文与 dirty 都保留（E-01）',
+    switchDialog.title === '换书前先处理未保存的修改' &&
+      JSON.stringify(switchDialog.buttons) === JSON.stringify(['cancel', 'discard', 'save']) &&
+      switchDialog.message.includes('还有未保存的修改') &&
+      afterCancel.text === GUARD_TEXT &&
+      afterCancel.dirty === true &&
+      afterCancel.bookId === bookIdBefore &&
+      afterCancel.view === 'editor',
+    { switchDialog, afterCancel }
+  );
+
+  // ③ 选「保存并继续」：旧书先落盘，再打开新书
+  await openGuardBookFromPalette();
+  await exec("window.__cwTest.answerModal('save')");
+  await waitFor('window.__cwTest.modalOpen() === false', 6000);
+  await waitFor(`window.__cwTest.bookId() !== ${JSON.stringify(bookIdBefore)}`, 8000);
+  const guardBookId = await exec('window.__cwTest.bookId()');
+  const oldBookFiles = (await fs.readdir(bookPath, { recursive: true })).filter((name) =>
+    /\.txt$/i.test(name)
+  );
+  const oldBookText = (
+    await Promise.all(oldBookFiles.map((name) => fs.readFile(path.join(bookPath, name), 'utf8')))
+  ).join('\n');
+  check(
+    '换书守卫：选「保存并继续」→ 旧书已落盘再换到新书（E-01）',
+    Boolean(guardBookId) &&
+      guardBookId !== bookIdBefore &&
+      guardBookId === guardBook.meta.id &&
+      (await exec('window.__cwTest.dirty()')) === false &&
+      (await exec('window.__cwTest.view()')) === 'editor' &&
+      oldBookText.includes(GUARD_TEXT),
+    { guardBookId, bookIdBefore, savedOnDisk: oldBookText.includes(GUARD_TEXT) }
+  );
+
   // ---------- ⑧ 书架页也能开（书与命令仍在） ----------
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
@@ -247,7 +328,13 @@ module.exports = async function group75CommandPalette(t) {
   await sendKey('Escape', [], 200);
   await waitFor('window.__cwTest.commandPaletteOpen() === false', 4000);
 
-  // ---------- 收尾：删掉演练书，书架数量复原 ----------
+  // ---------- 收尾：删掉两本演练书，书架数量复原 ----------
+  const removedGuardBook = await deleteBookWithRetry(guardBookPath);
+  check(
+    '换书守卫：演练书已移入书架 _trash（没有真删）',
+    Boolean(removedGuardBook && removedGuardBook.ok === true),
+    removedGuardBook
+  );
   const removed = await deleteBookWithRetry(bookPath);
   check('命令面板：演练书已移入书架 _trash（没有真删）', Boolean(removed && removed.ok === true), removed);
   await exec('window.__cwTest.backToShelf()');
