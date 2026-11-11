@@ -135,6 +135,85 @@ module.exports = async function group78ChapterSelection(t) {
   check('章节多选：Ctrl+Space 切换焦点章的多选（不切章）', sel.count === 1 && sel.markedIndexes.join(',') === '2', sel);
   await exec('window.__cwTest.clearChapterSelection()');
 
+  // ---------- ④b 键盘路径（1.6.0 F1）：Shift+↑/↓ 扩选、Ctrl+A 全选、aria-live ----------
+  // 键位只在章节列表里接管；焦点移动仍交给 list-keyboard 的 roving tabindex。
+  const KEY_ON = (index, keyName, extra = '') => `(() => {
+  const el = document.querySelectorAll('#chapter-list .chapter-item')[${index}];
+  if (!el) return false;
+  el.focus();
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(keyName)}, bubbles: true, cancelable: true, ${extra} }));
+  return true;
+})()`;
+  const focusedIndex = () =>
+    exec("document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.index : null");
+  const currentAtKeyboard = await exec('window.__cwTest.currentIndex()');
+  await exec('window.__cwTest.clearChapterSelection()');
+  await exec(KEY_ON(0, 'ArrowDown', 'shiftKey: true'));
+  sel = await selection(exec);
+  const anchorAfterFirstShift = sel.anchorId;
+  check(
+    '章节多选：Shift+↓ 从焦点章扩选到下一章（焦点跟过去、不切章）',
+    sel.count === 2 && sel.markedIndexes.join(',') === '0,1' &&
+      (await focusedIndex()) === '1' &&
+      (await exec('window.__cwTest.currentIndex()')) === currentAtKeyboard,
+    { sel, focused: await focusedIndex() }
+  );
+  await exec(KEY_ON(1, 'ArrowDown', 'shiftKey: true'));
+  sel = await selection(exec);
+  check(
+    '章节多选：再按 Shift+↓ 从同一个 anchor 继续扩到 3 章（不切章）',
+    sel.count === 3 && sel.markedIndexes.join(',') === '0,1,2' &&
+      sel.anchorId === anchorAfterFirstShift && (await focusedIndex()) === '2',
+    { sel, anchorAfterFirstShift }
+  );
+  await exec(KEY_ON(2, 'ArrowUp', 'shiftKey: true'));
+  sel = await selection(exec);
+  check(
+    '章节多选：Shift+↑ 往回缩不清掉已选中的章（并集），焦点回上一章',
+    sel.count === 3 && sel.markedIndexes.join(',') === '0,1,2' &&
+      sel.anchorId === anchorAfterFirstShift && (await focusedIndex()) === '1',
+    { sel, focused: await focusedIndex() }
+  );
+  // Ctrl+A：焦点在列表里 → 全选（焦点章不动、不切章）
+  await exec('window.__cwTest.clearChapterSelection()');
+  await exec(KEY_ON(2, 'a', 'ctrlKey: true'));
+  sel = await selection(exec);
+  check(
+    '章节多选：列表内 Ctrl+A 全选 5 章、批量条文案跟着变、不切章',
+    sel.count === 5 && sel.markedIndexes.join(',') === '0,1,2,3,4' &&
+      sel.countText === '已选 5 章' && sel.barVisible === true &&
+      (await exec('window.__cwTest.currentIndex()')) === currentAtKeyboard,
+    sel
+  );
+  // 焦点在编辑区时 Ctrl+A 不接管（正文原生全选），多选原样保留
+  await exec('window.__cwTest.clearChapterSelection()');
+  await exec(CLICK(2, 'ctrlKey: true'));
+  await exec("document.getElementById('editor').focus()");
+  await exec(
+    "document.getElementById('editor').dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true, cancelable: true }))"
+  );
+  sel = await selection(exec);
+  check(
+    '章节多选：焦点在编辑区时 Ctrl+A 不抢（多选原样保留）',
+    sel.count === 1 && sel.markedIndexes.join(',') === '2',
+    sel
+  );
+  // 批量条键盘可达 + aria-live（Tab 能进按钮 / 已选 N 章会被播报）
+  const barA11y = JSON.parse(await exec(`JSON.stringify({
+    live: document.getElementById('chapter-batch-count').getAttribute('aria-live'),
+    role: document.getElementById('chapter-batch-count').getAttribute('role'),
+    atomic: document.getElementById('chapter-batch-count').getAttribute('aria-atomic'),
+    barVisible: !document.getElementById('chapter-batch-bar').classList.contains('hidden'),
+    tabs: Array.from(document.querySelectorAll('#chapter-batch-bar button')).map((b) => b.tabIndex)
+  })`));
+  check(
+    '章节多选：批量条按钮都在 Tab 序里、已选 N 章走 aria-live 播报',
+    barA11y.live === 'polite' && barA11y.role === 'status' && barA11y.atomic === 'true' &&
+      barA11y.barVisible === true && barA11y.tabs.length === 6 && barA11y.tabs.every((n) => n >= 0),
+    barA11y
+  );
+  await exec('window.__cwTest.clearChapterSelection()');
+
   // ---------- ⑤ 普通单击：清空多选 + 照旧切章 ----------
   await exec(CLICK(1, 'ctrlKey: true'));
   await exec(CLICK(3, 'ctrlKey: true'));
@@ -339,6 +418,35 @@ module.exports = async function group78ChapterSelection(t) {
     '章节多选：没删过的章节 txt 大小 / mtime 未变、删过的两章撤销后正文一字不差',
     untouched && restoredBodyOk && metaAfter.chapters.map((c) => c.file).join(',') === files0.join(','),
     { untouched, restoredBodyOk, files: metaAfter.chapters.map((c) => c.file) }
+  );
+
+  // ---------- ⑬ 键盘全选 → Delete → 一次撤销（1.6.0 F1 验收：键盘能走完批量删除链） ----------
+  await exec('window.__cwTest.clearChapterSelection()');
+  await exec(KEY_ON(0, 'a', 'ctrlKey: true'));
+  const selBeforeKeyDelete = await selection(exec);
+  const trashBeforeKeyDelete = (await fs.readdir(path.join(bookPath, '_trash'))).filter((n) => n.endsWith('.txt')).length;
+  await exec("document.querySelectorAll('#chapter-list .chapter-item')[0].focus()");
+  await exec(
+    "document.querySelectorAll('#chapter-list .chapter-item')[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }))"
+  );
+  // 整本删空会自动补一个空章（与单章删除同一口径），所以目录剩 1 章
+  await waitFor('window.__cwTest.chapterTitles().length === 1', 10000);
+  const trashAfterKeyDelete = (await fs.readdir(path.join(bookPath, '_trash'))).filter((n) => n.endsWith('.txt')).length;
+  const undoLabelKeyDelete = await exec("document.getElementById('undo-label').textContent");
+  check(
+    '章节多选：键盘全选 + Delete 一次删掉 5 章（一条撤销、只进 _trash）',
+    selBeforeKeyDelete.count === 5 && trashAfterKeyDelete === trashBeforeKeyDelete + 5 &&
+      undoLabelKeyDelete === '已删除 5 章' &&
+      (await exec('window.__cwTest.chapterSelection().count')) === 0,
+    { selBeforeKeyDelete, trashBeforeKeyDelete, trashAfterKeyDelete, undoLabelKeyDelete }
+  );
+  await exec("document.getElementById('btn-undo').click()");
+  await waitFor('window.__cwTest.chapterTitles().length === 5', 10000);
+  const metaAfterKeyDeleteUndo = await storage.readBookMeta(bookPath);
+  check(
+    '章节多选：键盘路径的批量删除一次撤销按原位置恢复全部章',
+    JSON.stringify(metaAfterKeyDeleteUndo.chapters.map((c) => c.file)) === JSON.stringify(files0),
+    { files: metaAfterKeyDeleteUndo.chapters.map((c) => c.file), files0 }
   );
 
   // ---------- 收尾：回书架、删掉演练书 ----------

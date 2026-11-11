@@ -108,7 +108,7 @@
           <!-- 1.5.0 功能-1：章节多选的批量条（选中 ≥1 章时出现，32px 高；只在本次运行内有效）。
                按钮顺序 = 从「轻」到「破坏性」：复制 / 导出 / 状态 / 移卷 / 删除 / 清除。 -->
           <div id="chapter-batch-bar" class="chapter-batch-bar hidden" role="toolbar" aria-label="章节批量操作">
-            <span id="chapter-batch-count" class="chapter-batch-count">已选 0 章</span>
+            <span id="chapter-batch-count" class="chapter-batch-count" role="status" aria-live="polite" aria-atomic="true">已选 0 章</span>
             <button id="btn-batch-copy" class="chapter-batch-btn" type="button" title="按目录顺序复制选中章的标题和正文" aria-label="复制选中章">复制</button>
             <button id="btn-batch-export" class="chapter-batch-btn" type="button" title="导出选中的章节（只支持连续范围）" aria-label="导出选中章">导出</button>
             <button id="btn-batch-status" class="chapter-batch-btn" type="button" title="批量改选中章的状态（草稿 / 待修 / 完稿）" aria-label="改选中章状态">状态</button>

@@ -18,6 +18,12 @@
  *                                                       fallbackAnchorId（当前章），再不行只选 target
  *   clear()                                             点空白 / Esc：空集合
  *   isSelected(selection, id)                           只读判断
+ * 1.6.0 F1 键盘多选二期（仍零 DOM）：
+ *   selectAll(order)                                    Ctrl+A：全选这一串，anchor 落第一条
+ *   moveFocus(order, focusId, step)                     ↑/↓ 该把焦点挪到哪一章（两端夹住）
+ *   extendFocus(selection, order, focusId, step, …)     Shift+↑/↓：挪一格 + 从 anchor 并集扩选，
+ *                                                       返回 { ids, anchorId, focusId }
+ *
  * 另外给渲染层两个小工具：
  *   prune(selection, order)                             章节数组变了以后丢掉已不存在的 id（anchor 也清）
  *   idsInOrder(selection, order)                        按**目录顺序**（不是点击顺序）列出已选 id，
@@ -157,5 +163,55 @@
     return normalizeOrder(order).filter((id) => selected.has(id));
   }
 
-  return { createSelection, toggle, extendTo, clear, isSelected, count, resolveAnchor, prune, idsInOrder };
+  // Ctrl+A（1.6.0 F1）：把「列表里这一串」全选，anchor 落到第一条——之后再按 Shift+↓ 还有起点。
+  // 传进来的 order 由渲染层按**当前渲染出来的行**给（筛选 / 折叠时只全选看得见的那几章，
+  // 和文件管理器一致）。空目录 / 坏输入返回空选择，不抛。
+  function selectAll(order) {
+    const list = normalizeOrder(order);
+    return { ids: new Set(list), anchorId: list.length ? list[0] : null };
+  }
+
+  // ↑/↓（1.6.0 F1）该把焦点挪到哪一章：一次挪 step 格、两端夹住不绕回。
+  // 焦点章不在目录里（筛选 / 折叠后那一行没了）返回 null——调用方当「没这回事」，
+  // 不猜它原本在哪，也不顺手跳到第一行。
+  function moveFocus(order, focusId, step) {
+    const list = normalizeOrder(order);
+    const focus = normalizeId(focusId);
+    const at = focus === null ? -1 : list.indexOf(focus);
+    if (at < 0) return null;
+    const delta = Math.trunc(Number(step));
+    if (!Number.isFinite(delta) || delta === 0) return list[at];
+    return list[Math.min(list.length - 1, Math.max(0, at + delta))];
+  }
+
+  // Shift+↑/↓（1.6.0 F1）：焦点挪一格 + 把 anchor 到新焦点的范围并进选择（与鼠标 Shift 连选
+  // 同一口径，并集、不误删）。返回 { ids, anchorId, focusId }：
+  //   · focusId 是焦点该落到的那一章（DOM 焦点仍由 list-keyboard 的 roving tabindex 挪）；
+  //   · 首按时选择里还没有 anchor（或 anchor 已失效），起点用**按下 Shift 前焦点那一章**
+  //     （fallbackAnchorId，没给就用 focusId），不是正在写的当前章——键盘用户按的是看到的那行。
+  // 焦点已经到头（挪不动）时返回原选择 + 原 focusId，不制造越界 id。
+  function extendFocus(selection, order, focusId, step, fallbackAnchorId) {
+    const next = normalizeSelection(selection);
+    const focus = normalizeId(focusId);
+    const target = moveFocus(order, focus, step);
+    if (target === null) return { ids: next.ids, anchorId: next.anchorId, focusId: null };
+    const anchorFallback = normalizeId(fallbackAnchorId) || focus;
+    const extended = extendTo(next, order, target, anchorFallback);
+    return { ids: extended.ids, anchorId: extended.anchorId, focusId: target };
+  }
+
+  return {
+    createSelection,
+    toggle,
+    extendTo,
+    clear,
+    isSelected,
+    count,
+    resolveAnchor,
+    prune,
+    idsInOrder,
+    selectAll,
+    moveFocus,
+    extendFocus
+  };
 });

@@ -774,3 +774,89 @@ test('分卷键盘：折叠后没有同名卷时不乱抢焦点（保持浏览�
   assert.equal(rows[0].focused, false, '没有待恢复的卷时不动焦点');
   inst.destroy();
 });
+
+// ---------- 1.6.0 F1：Shift+↑/↓ 扩选（键盘多选二期） ----------
+// 列表只负责把焦点挪到相邻条目并回报「从哪到哪」，选中范围怎么算留在 chapter-selection.js。
+// 书架（没装 onExtend）一个字都不碰。
+
+test('键盘可达：Shift+↑/↓ 扩选——装了 onExtend 时移焦点并回报相邻下标，不再走普通 onMove', () => {
+  const items = makeItems(3, '.chapter-item');
+  const container = makeContainer(items);
+  const extended = [];
+  const moved = [];
+  const inst = listKeyboard.install({
+    container,
+    itemSelector: '.chapter-item',
+    arrows: true,
+    onMove: (el) => moved.push(el.dataset.index),
+    onExtend: (item, from, target, to) => extended.push([from, to, target.dataset.index])
+  });
+  let prevented = 0;
+  const send = (target, name, extra) =>
+    container.fire({
+      type: 'keydown',
+      key: name,
+      shiftKey: true,
+      target,
+      preventDefault: () => (prevented += 1),
+      ...(extra || {})
+    });
+
+  send(items[0], 'ArrowDown');
+  assert.deepEqual(extended, [[0, 1, '1']], 'Shift+↓ 回报「0 → 1」，不猜范围');
+  assert.equal(items[1].focused, true, '焦点跟着扩选挪到下一章');
+  assert.deepEqual(items.map((el) => el.tabIndex), [-1, 0, -1], 'roving tabindex 跟着焦点');
+  assert.equal(items[1].scrolled, true, '扩到的条目滚进可视区');
+  assert.deepEqual(moved, [], '扩选不触发普通 onMove（宿主不用把「移焦点」当切章）');
+  assert.equal(prevented, 1, '接管了 Shift+方向键就 preventDefault');
+
+  send(items[1], 'ArrowDown');
+  assert.deepEqual(extended[1], [1, 2, '2']);
+  send(items[2], 'ArrowDown');
+  assert.equal(extended.length, 2, '末条再按 Shift+↓ 不回报（焦点不动）');
+  send(items[0], 'ArrowUp');
+  assert.equal(extended.length, 2, '首条 Shift+↑ 也不回报');
+  // Ctrl+Shift / Alt+Shift 是别的含义，列表不接管
+  send(items[0], 'ArrowDown', { ctrlKey: true });
+  send(items[0], 'ArrowDown', { altKey: true });
+  assert.equal(extended.length, 2);
+  inst.destroy();
+});
+
+test('键盘可达：没装 onExtend（书架书卡）时 Shift+↑/↓ 一个字都不碰', () => {
+  const items = makeItems(3, '.book-card');
+  const container = makeContainer(items);
+  const inst = listKeyboard.install({ container, itemSelector: '.book-card', arrows: true });
+  let prevented = 0;
+  container.fire({
+    type: 'keydown',
+    key: 'ArrowDown',
+    shiftKey: true,
+    target: items[0],
+    preventDefault: () => (prevented += 1)
+  });
+  assert.equal(prevented, 0, '没装 onExtend 就不拦默认行为');
+  assert.equal(items[1].focused, false, '焦点也不动');
+  assert.deepEqual(items.map((el) => el.tabIndex), [-1, -1, -1]);
+  inst.destroy();
+});
+
+test('静态闸门：Shift 扩选 / Ctrl+A 全选接在纯模型上，批量条有 aria-live 播报', () => {
+  assert.ok(RENDERER.includes('onExtend:'), '章节列表 install 要装 onExtend');
+  const extendAt = RENDERER.indexOf('onExtend:');
+  const extendSeg = RENDERER.slice(extendAt, extendAt + 900);
+  assert.ok(extendSeg.includes('chapterSelectionLib.extendFocus('), '扩选必须走纯模型的 extendFocus');
+  assert.equal(extendSeg.includes('state.selectedIds.add('), false, '不许在渲染层自己算范围');
+  assert.equal(extendSeg.includes('slice('), false, '不许在渲染层自己切片');
+  const ctrlAt = RENDERER.indexOf("String(event.key).toLowerCase() === 'a'");
+  assert.ok(ctrlAt > 0, '全局 keydown 要认 Ctrl+A');
+  const ctrlSeg = RENDERER.slice(ctrlAt, ctrlAt + 900);
+  assert.ok(ctrlSeg.includes("closest('#chapter-list')"), '只在焦点位于章节列表时接管');
+  assert.ok(ctrlSeg.includes('chapterSelectionLib.selectAll('), '全选必须走纯模型的 selectAll');
+  assert.ok(
+    INDEX.includes('id="chapter-batch-count"') && /id="chapter-batch-count"[^>]*aria-live="polite"/.test(INDEX),
+    '「已选 N 章」要有 aria-live="polite" 播报'
+  );
+  // 列表只在有 onExtend 时接管 Shift+方向键，书架不受影响
+  assert.ok(read('renderer/list-keyboard.js').includes('onExtend'), 'list-keyboard 要有 onExtend 钩子');
+});

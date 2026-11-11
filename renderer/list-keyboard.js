@@ -9,6 +9,10 @@
 //
 // 纯逻辑（isActivateKey / nextIndex / keyAction / applyTabStops）与 DOM 接线分开，
 // 前者可在 Node 里逐个断言；后者只做「找条目 → 调纯逻辑 → 改焦点与 tabIndex」。
+//
+// 1.6.0 F1（键盘多选二期）：宿主装了 onExtend 时，Shift+↑/↓ 也走这条通道——列表只把焦点挪到
+// 相邻条目、把「从哪到哪」回报给宿主（选中范围怎么算在选择模型里）；没装 onExtend（书架书卡）
+// 时 Shift+方向键一个字都不碰，keyAction 的「带修饰键一律不管」也不变。
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.CWListKeyboard = factory();
@@ -174,6 +178,26 @@
           event.preventDefault();
           if (typeof event.stopPropagation === 'function') event.stopPropagation();
           opts.onAltMove(item, position, direction);
+        }
+        return;
+      }
+      // 1.6.0 F1：Shift+↑/↓ 扩选。列表只负责挪焦点 + 回报「从哪到哪」（onExtend），
+      // 选中范围由调用方的选择模型算；没装 onExtend 时整段跳过（keyAction 照旧把带 Shift 的键当没这回事）。
+      if (
+        event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey &&
+        typeof opts.onExtend === 'function' &&
+        (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+      ) {
+        const target = opts.arrows ? nextIndex(position, event.key, items.length) : null;
+        if (target !== null && target !== position) {
+          event.preventDefault();
+          applyTabStops(items, target);
+          const targetItem = items[target];
+          if (targetItem && typeof targetItem.focus === 'function') targetItem.focus();
+          if (targetItem && typeof targetItem.scrollIntoView === 'function') {
+            targetItem.scrollIntoView({ block: 'nearest' });
+          }
+          opts.onExtend(item, position, targetItem, target);
         }
         return;
       }

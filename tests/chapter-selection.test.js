@@ -122,3 +122,74 @@ test('坏输入：null / 非数组 order / 空 id / 重复 id 都不抛，返回
   const numeric = selection.toggle(selection.createSelection(), 12);
   assert.equal(selection.isSelected(numeric, '12'), true);
 });
+
+// ---------- 1.6.0 F1：键盘路径（全选 / 焦点移动 / Shift 扩选） ----------
+// 键盘只多三种按键：Ctrl+A 全选、Shift+↑/↓ 从锚点扩选、焦点本身由 list-keyboard 挪。
+// 模型仍只算「哪些章选中 + anchor 在哪 + 焦点该落到哪」，键位与 DOM 在 renderer.js 里接线。
+
+test('selectAll（Ctrl+A）：全选目录里这一串，anchor 落到第一条（之后还能继续 Shift 扩）', () => {
+  const all = selection.selectAll(order);
+  assert.deepEqual(selection.idsInOrder(all, order), order);
+  assert.equal(all.anchorId, 'a', 'anchor 落到第一条，Ctrl+A 之后按 Shift+↓ 有起点');
+  assert.equal(selection.count(all), 5);
+  // 空目录 / 坏输入：给一份可用的空选择，不抛
+  assert.equal(selection.count(selection.selectAll([])), 0);
+  assert.equal(selection.selectAll([]).anchorId, null);
+  assert.equal(selection.selectAll(null).ids.size, 0);
+  assert.equal(selection.selectAll('不是数组').ids.size, 0);
+  // 重复 id 去重；数字 id 统一成字符串；空串不算一章
+  const mixed = selection.selectAll(['a', 'a', 12, '']);
+  assert.deepEqual(selection.idsInOrder(mixed, ['a', '12']), ['a', '12']);
+  assert.equal(mixed.anchorId, 'a');
+});
+
+test('moveFocus：焦点一格一格走、到头夹住；焦点章不在目录里返回 null（不瞎猜）', () => {
+  assert.equal(selection.moveFocus(order, 'b', 1), 'c');
+  assert.equal(selection.moveFocus(order, 'b', -1), 'a');
+  assert.equal(selection.moveFocus(order, 'a', -1), 'a', '第一条往上不绕回');
+  assert.equal(selection.moveFocus(order, 'e', 1), 'e', '最后一条往下不绕回');
+  assert.equal(selection.moveFocus(order, 'e', -2), 'c', '一次挪多格也夹在两端之间');
+  assert.equal(selection.moveFocus(order, 'b', 0), 'b', 'step 0 原地不动');
+  assert.equal(selection.moveFocus(order, 'zzz', 1), null, '焦点章不在目录里时返回 null，由调用方当没这回事');
+  assert.equal(selection.moveFocus(order, null, 1), null);
+  assert.equal(selection.moveFocus([], 'a', 1), null);
+  assert.equal(selection.moveFocus('不是数组', 'a', 1), null);
+});
+
+test('extendFocus（Shift+↓）：首按从焦点章起算，之后从同一 anchor 并集扩，焦点跟着走', () => {
+  const first = selection.extendFocus(selection.createSelection(), order, 'a', 1);
+  assert.deepEqual(selection.idsInOrder(first, order), ['a', 'b']);
+  assert.equal(first.focusId, 'b', '焦点落到扩到的这一章');
+  assert.equal(first.anchorId, 'a', 'anchor 停在按下 Shift 前焦点那一章');
+  const second = selection.extendFocus(first, order, first.focusId, 1);
+  assert.deepEqual(selection.idsInOrder(second, order), ['a', 'b', 'c']);
+  assert.equal(second.focusId, 'c');
+  assert.equal(second.anchorId, 'a', 'anchor 不跟着焦点跑（再按还能往回想）');
+  // Shift+↑ 往回：并集不误删已经选中的章（与鼠标 Shift 连选同一口径）
+  const back = selection.extendFocus(second, order, second.focusId, -1);
+  assert.deepEqual(selection.idsInOrder(back, order), ['a', 'b', 'c'], '往回缩也不清掉已选中的 c');
+  assert.equal(back.focusId, 'b');
+  assert.equal(back.anchorId, 'a');
+  // Ctrl+Space 点出来的单独一章就是 anchor（不需要 anchor 失效回落）
+  const toggled = selection.toggle(selection.createSelection(), 'd');
+  const fromToggle = selection.extendFocus(toggled, order, 'd', -1);
+  assert.deepEqual(selection.idsInOrder(fromToggle, order), ['c', 'd']);
+  assert.equal(fromToggle.focusId, 'c');
+  assert.equal(fromToggle.anchorId, 'd');
+});
+
+test('extendFocus 边界：末条按 Shift+↓ 焦点不动、选择不炸；坏焦点 / 空目录收敛', () => {
+  const atEnd = selection.extendFocus({ ids: new Set(['e']), anchorId: 'e' }, order, 'e', 1);
+  assert.equal(atEnd.focusId, 'e', '已经到末条：焦点停在原地');
+  assert.deepEqual(selection.idsInOrder(atEnd, order), ['e'], '选择原样，不制造越界 id');
+  const noFocus = selection.extendFocus(selection.createSelection(), order, 'zzz', 1);
+  assert.equal(noFocus.focusId, null);
+  assert.equal(noFocus.ids.size, 0, '焦点章不在目录里：不扩选');
+  const empty = selection.extendFocus(selection.createSelection(), [], 'a', 1);
+  assert.equal(empty.focusId, null);
+  assert.equal(empty.ids.size, 0);
+  // 纯函数：入参不被改
+  const base = { ids: new Set(['a']), anchorId: 'a' };
+  selection.extendFocus(base, order, 'a', 1);
+  assert.deepEqual(Array.from(base.ids), ['a'], 'extendFocus 不改入参');
+});

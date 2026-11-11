@@ -1767,7 +1767,7 @@
       showContextMenu(event, hit.index);
     });
     // 键盘：Ctrl+Space 切换焦点章的多选（方向键仍由 list-keyboard.js 负责，互不抢键）。
-    // Shift+方向键扩选成本高，本批先不做（已记进进度日志）。
+    // 1.6.0 F1：Shift+↑/↓ 扩选由下面 install() 的 onExtend 接，Ctrl+A 全选在全局 keydown 里。
     list.addEventListener('keydown', (event) => {
       if (event.key !== ' ' || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
       const hit = chapterItemAt(event);
@@ -1955,6 +1955,17 @@
 
   function chapterIdsInBookOrder() {
     return state.chapters.map((chapter) => (chapter && chapter.id != null ? String(chapter.id) : ''));
+  }
+
+  // 当前**渲染出来**的章节 id（按 DOM 顺序）：筛选 / 折叠后只含看得见的行。
+  // Ctrl+A 与 Shift+↑/↓ 用它当 order —— 键盘只作用于看得见的章，不偷选隐藏的；
+  // 按下标取 dataset.chapterId（筛选后 DOM 位置 ≠ 书内下标）。
+  function renderedChapterIds() {
+    const list = $('chapter-list');
+    if (!list) return [];
+    return Array.from(list.querySelectorAll('.chapter-item')).map((row) =>
+      row.dataset ? String(row.dataset.chapterId || '') : ''
+    );
   }
 
   // 已选章节的**书内下标**（按目录顺序）：批量删除 / 移动 / 改状态 / 导出 / 复制都从这里取，
@@ -5251,6 +5262,20 @@
         return;
       }
       const ctrl = event.ctrlKey && !event.altKey && !event.shiftKey;
+      // 1.6.0 F1：章节列表里的 Ctrl+A = 全选（只认当前渲染出来的行，筛选 / 折叠时不偷选隐藏的章）。
+      // 焦点在编辑区 / 输入框 / 别的区域时一律不管——原生全选正文 / 输入框的行为不变。
+      if (ctrl && String(event.key).toLowerCase() === 'a') {
+        const inList = event.target && typeof event.target.closest === 'function'
+          ? event.target.closest('#chapter-list')
+          : null;
+        if (!inList) return;
+        if (state.view !== 'editor' || !state.bookPath) return;
+        const renderedIds = renderedChapterIds();
+        if (!renderedIds.length) return;
+        event.preventDefault();
+        setChapterSelection(chapterSelectionLib.selectAll(renderedIds));
+        return;
+      }
       // 写作页切章（v0.13 U-D12）：Ctrl+PageUp / PageDown = 上一章 / 下一章。保存语义与点章节栏
       // 完全一致——只调 switchChapter（未保存走现成的询问框、保存走 saveCurrent），不新增静默保存、
       // 也不绕过它直接 loadChapterAt。首章 PageUp / 末章 PageDown 什么都不做（不绕回、不提示）；
@@ -5607,6 +5632,20 @@
             if (deleted) focusChapterAfterDelete(position);
           })
           .catch((err) => reportChainFailure('删除这一章失败', err));
+      },
+      // 1.6.0 F1：Shift+↑/↓ 扩选。焦点已经由 list-keyboard 挪到相邻行，这里只算选中范围；
+      // 顺序取**当前渲染出来的行**（筛选时只扩看得见的章），首按从焦点章起算，
+      // 之后从同一个 anchor 并集扩——范围怎么算全在 chapter-selection.js 的 extendFocus 里。
+      onExtend: (item, from, targetItem, to) => {
+        const next = chapterSelectionLib.extendFocus(
+          chapterSelectionSnapshot(),
+          renderedChapterIds(),
+          chapterIdAt(Number(item.dataset.index)),
+          to > from ? 1 : -1,
+          chapterIdAt(Number(item.dataset.index))
+        );
+        if (next.focusId === null) return;
+        setChapterSelection({ ids: next.ids, anchorId: next.anchorId });
       },
       // 键盘 Enter / 空格 = 普通单击：清空多选再切章（与鼠标点一下同一口径）
       onActivate: (item) => {
