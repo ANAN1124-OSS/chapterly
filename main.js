@@ -76,6 +76,7 @@ const ttsLib = require('./core/tts');
 const logsLib = require('./core/logs');
 const searchIndexLib = require('./core/search-index');
 const updateLib = require('./core/update');
+const updateResponseLib = require('./core/update-response');
 const openBooksLib = require('./core/open-books');
 const fontPolicy = require('./core/font-policy');
 const securityPolicy = require('./core/security-policy');
@@ -657,6 +658,8 @@ function sendSearchProgress(info) {
 // E2E / 截图自检可以注入假网络（update:test-mock 只在 automation 下注册），不会真连 GitHub。
 let updateMock = null;
 let lastUpdateLaunch = null;
+// 1.6.0 H5（审计 S-02）：in-flight 单飞 —— 连点「检查更新」只发一次请求（GitHub 限流按 IP 算）。
+const updateCheckSingleFlight = updateResponseLib.createSingleFlight();
 
 async function fetchReleaseResponse({ url, timeoutMs }) {
   if (automation && updateMock) {
@@ -691,9 +694,11 @@ async function fetchReleaseResponse({ url, timeoutMs }) {
       signal: controller.signal
     });
     const length = Number(res.headers.get('content-length') || 0);
-    if (length > updateLib.MAX_RESPONSE_CHARS) return { status: res.status, text: '' };
-    const text = await res.text();
-    return { status: res.status, text: text.slice(0, updateLib.MAX_RESPONSE_CHARS + 1) };
+    if (length > updateLib.MAX_RESPONSE_CHARS) return { status: res.status, text: '', tooLarge: true };
+    // 没有 content-length（或头不可信）时走**流式限长读**：1 MB 处停下并 cancel，
+    // 不再 res.text() 整包读进内存（S-02）。正常小响应读回来的文本与旧实现逐字一致。
+    const limited = await updateResponseLib.readResponseTextLimited(res, updateLib.MAX_RESPONSE_CHARS);
+    return { status: res.status, text: limited.text, tooLarge: limited.tooLarge };
   } finally {
     clearTimeout(timer);
   }
@@ -2682,10 +2687,12 @@ function registerIpc() {
   // 自动更新轻量版（提案 7.1）：手动检查 GitHub Release → 提示有新版本 → 打开下载页。
   // 不自动下载 / 安装；检查结果只在内存里（lastUpdateLaunch），渲染层不能传任意 URL 进来。
   handle('update:check', async () => {
-    const result = await updateLib.checkForUpdates({
-      currentVersion: app.getVersion(),
-      fetchText: fetchReleaseResponse
-    });
+    const result = await updateCheckSingleFlight(() =>
+      updateLib.checkForUpdates({
+        currentVersion: app.getVersion(),
+        fetchText: fetchReleaseResponse
+      })
+    );
     const releaseUrl = result && result.status === 'update' ? updateLib.safeReleaseUrl(result.releaseUrl) : '';
     lastUpdateLaunch = releaseUrl
       ? { url: releaseUrl, latestVersion: result.latestVersion, at: Date.now() }

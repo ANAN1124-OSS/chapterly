@@ -271,6 +271,11 @@ async function checkForUpdates(options = {}) {
   if (status < 200 || status >= 300) {
     return { ...base, status: 'error', code: 'HTTP_ERROR', message: httpMessage(status) };
   }
+  // 1.6.0 H5（审计 S-02）：fetchText 侧已经有「内容超限」的明确结论（流式读停在 1 MB），
+  // 直接回 TOO_LARGE，不去解析半个 JSON、也不把整包文本再读一遍。
+  if (response.tooLarge === true) {
+    return { ...base, status: 'error', code: 'TOO_LARGE', message: MESSAGES.TOO_LARGE };
+  }
   if (typeof response.text !== 'string' || !response.text.trim()) {
     return { ...base, status: 'error', code: 'BAD_RESPONSE', message: MESSAGES.BAD_RESPONSE };
   }

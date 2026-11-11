@@ -279,3 +279,131 @@ test('检查更新：模块本身不联网、不写盘，只通过传入的 fetc
   // 纯函数：调用前后 require 缓存不变（没有偷偷加载 fs / net / http）
   assert.deepEqual(new Set(Object.keys(require.cache)), before);
 });
+
+// ---------- 1.6.0 H5（审计 S-02）：更新响应的限长与单飞 ----------
+// 旧实现只认 `content-length`：头里没有这个字段时 `res.text()` 会把整包读进内存再截断，
+// 一个恶意的 / 坏的响应就能把主进程的内存顶起来。这里钉住三件事：
+//   ① 流式读正文，1 MB（MAX_RESPONSE_CHARS）处停下并 cancel 掉流，返回 tooLarge 标记；
+//   ② 跨 chunk 的多字节字符不乱码，正常小响应原样返回；
+//   ③ in-flight 单飞：并发两次只发一次请求，结束后再点一次会重新发。
+// core/update 侧新增 tooLarge 契约：明确回 TOO_LARGE，不尝试解析半个 JSON。
+const updateResponseLib = require('../core/update-response');
+
+test('检查更新：响应声明超限（tooLarge）→ 明确 TOO_LARGE，不尝试解析', async () => {
+  assert.equal(updateLib.MAX_RESPONSE_CHARS, 1024 * 1024);
+  const result = await updateLib.checkForUpdates({
+    currentVersion: '0.4.1',
+    fetchText: fakeFetch({ status: 200, text: '', tooLarge: true })
+  });
+  assert.equal(result.status, 'error');
+  assert.equal(result.code, 'TOO_LARGE');
+  assert.ok(result.message && result.message.length > 0, '要给作者一句能看懂的提示');
+});
+
+test('更新响应限长：没有 content-length 的流式响应在 1 MB 处停下并取消流（不整包读）', async () => {
+  const encoder = new TextEncoder();
+  const chunk = encoder.encode('x'.repeat(65536));
+  const totalChunks = 128; // 8 MB：整包读完要 128 次 pull
+  let pulls = 0;
+  let cancelled = false;
+  const stream = new ReadableStream({
+    pull(controller) {
+      if (pulls >= totalChunks) {
+        controller.close();
+        return;
+      }
+      pulls += 1;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled = true;
+    }
+  });
+  const response = new Response(stream);
+  assert.equal(response.headers.get('content-length'), null, '这个桩响应必须没有 content-length');
+  const out = await updateResponseLib.readResponseTextLimited(response, updateLib.MAX_RESPONSE_CHARS);
+  assert.equal(out.tooLarge, true, '超限要明确标记');
+  assert.equal(out.text.length, updateLib.MAX_RESPONSE_CHARS + 1, '只读到上限多一点，不整包收下');
+  assert.equal(cancelled, true, '到上限就 cancel 掉流，别继续拉');
+  assert.ok(pulls < 64, `1 MB 只该拉约 16 个 64 KB chunk，实际 ${pulls} 次`);
+});
+
+test('更新响应限长：跨 chunk 的多字节字符不乱码，正常小响应原样返回', async () => {
+  const text = '{"tag_name":"v1.0.0","name":"章回 · 发布说明"}';
+  const bytes = Buffer.from(text, 'utf8');
+  const stream = new ReadableStream({
+    start(controller) {
+      // 故意在汉字中间切断（UTF-8 一个汉字 3 字节）
+      controller.enqueue(new Uint8Array(bytes.subarray(0, 25)));
+      controller.enqueue(new Uint8Array(bytes.subarray(25)));
+      controller.close();
+    }
+  });
+  const out = await updateResponseLib.readResponseTextLimited(new Response(stream), 1024);
+  assert.deepEqual(out, { text, tooLarge: false });
+  // 非流式 / 旧桩（只有 text()）：照旧能用
+  const legacy = await updateResponseLib.readResponseTextLimited({ text: async () => text }, 1024);
+  assert.deepEqual(legacy, { text, tooLarge: false });
+  // 坏入参不炸
+  assert.deepEqual(await updateResponseLib.readResponseTextLimited(null, 1024), { text: '', tooLarge: false });
+  assert.deepEqual(await updateResponseLib.readResponseTextLimited({ text: async () => 42 }, 1024), {
+    text: '',
+    tooLarge: false
+  });
+});
+
+test('检查更新：in-flight 单飞 —— 并发两次只发一次请求，结束后再点会重新发', async () => {
+  const single = updateResponseLib.createSingleFlight();
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const task = async () => {
+    calls += 1;
+    await gate;
+    return { ok: true, n: calls };
+  };
+  const first = single(task);
+  const second = single(task);
+  assert.equal(calls, 1, '第二次并发点击不能真的再发一次请求');
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(calls, 1);
+  assert.equal(a, b, '并发两次拿到同一个结果对象');
+  assert.deepEqual(a, { ok: true, n: 1 });
+  // 请求结束后再点一次：重新发
+  const third = await single(async () => {
+    calls += 1;
+    return { ok: true, n: calls };
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(third, { ok: true, n: 2 });
+  // 失败也要能释放（不能一次失败以后再点都返回同一个旧错误）
+  const boom = single(async () => {
+    calls += 1;
+    throw new Error('network down');
+  });
+  await assert.rejects(boom, /network down/);
+  const after = await single(async () => {
+    calls += 1;
+    return { ok: true, n: calls };
+  });
+  assert.equal(calls, 4);
+  assert.deepEqual(after, { ok: true, n: 4 });
+});
+
+test('源码闸门：main.js 的更新检查走限长流式读 + 单飞，不再直接 res.text()', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs
+    .readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+    .replace(/\r\n/g, '\n');
+  assert.match(source, /updateResponseLib\.readResponseTextLimited\(/, '更新响应要走限长流式读');
+  assert.match(source, /updateResponseLib\.createSingleFlight\(/, '更新检查要加 in-flight 单飞');
+  const start = source.indexOf('async function fetchReleaseResponse(');
+  const end = source.indexOf('\n}\n', start);
+  assert.ok(start > 0 && end > start, '找不到 fetchReleaseResponse');
+  const body = source.slice(start, end);
+  assert.equal(/await res\.text\(\)/.test(body), false, 'fetchReleaseResponse 里不能再直接 res.text() 整包读');
+});
