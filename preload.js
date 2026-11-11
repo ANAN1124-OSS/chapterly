@@ -118,7 +118,9 @@ contextBridge.exposeInMainWorld('api', {
   // 仅自检：模拟「在系统对话框里选中了书架目录 / 词表路径」，生产环境主进程不会注册这个频道。
   // 参数顺序与主进程一致：路径在前、字段名在后（静态闸门盯第一参数）。
   testPickConfigPath: (pickedPath, field) => invoke('config:test-pick', pickedPath, field),
-  getStats: () => invoke('stats:get'),
+  // 1.6.0 F2：可选筛选参数 { bookId, year } —— 只影响返回里的 aggregate（汇总行 / CSV），
+  // 今天字数 / 近 30 天 / 日历仍是全书架口径；不传 = 全部书全部年。
+  getStats: (filter) => invoke('stats:get', filter),
   // 码字日历：只读某个月的每日字数（year/month 由渲染层传，主进程清洗），不写盘
   getStatsCalendar: (calendar) => invoke('stats:calendar', calendar),
   // 写作时长（v0.8-2）：只上报「整秒数」，主进程按配置决定记不记；不传正文/按键

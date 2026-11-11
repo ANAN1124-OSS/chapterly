@@ -27,7 +27,7 @@
     // 活绑定（模块级 let）不在这里，走 host.x 每次读最新值，见上面头注释
     const {
       $, alignTypewriter, answerModalValue, api, applyCaretColor, applyEditorStyle, applyFormatToEditor,
-      applySidebarWidth, backToShelf, calendarSummaryText, call, canUndoFormat, caretColorLib,
+      applySidebarWidth, applyStatsFilter, backToShelf, buildStatsCsv, calendarSummaryText, call, canUndoFormat, caretColorLib,
       captureUi,
       caretColorValue, chapterNote, chapterStatus, chapterTitle, chapterVolumeId, checkUpdate,
       clearChapterSelection,
@@ -1679,6 +1679,27 @@
       statsChartBarHeights: () =>
         qsa('#settings-stats-chart .stats-bar > i').map((el) => el.style.height),
       statsChartSummary: () => $('settings-stats-summary').textContent,
+      // 累计汇总 / CSV（1.6.0 F2）：切书 / 切年只改统计口径，不写 stats.json
+      statsFilterState: () => {
+        const read = (id) => {
+          const el = $(id);
+          if (!el) return { value: '', options: [] };
+          const options = Array.prototype.map.call(el.options || [], (item) => ({
+            value: item.value,
+            label: item.textContent
+          }));
+          return { value: el.value, options };
+        };
+        return { book: read('stats-filter-book'), year: read('stats-filter-year') };
+      },
+      applyStatsFilter: (bookId, year) => applyStatsFilter(bookId, year),
+      statsTotalsText: () => $('settings-stats-totals').textContent,
+      buildStatsCsv: () => buildStatsCsv(),
+      statsCsvText: () => $('stats-csv-text').value,
+      statsCsvVisible: () => {
+        const el = $('stats-csv-text');
+        return Boolean(el) && el.hidden !== true;
+      },
       // 码字日历 / 连续天数（v0.8-1）
       statsCalendar: () => (state.calendar ? JSON.parse(JSON.stringify(state.calendar)) : null),
       statsStreak: () => (state.streak ? JSON.parse(JSON.stringify(state.streak)) : null),

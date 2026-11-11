@@ -399,6 +399,80 @@ function summary(rawStats, { now = new Date(), goal = DEFAULT_GOAL, days = DEFAU
   };
 }
 
+// ---------- 统计汇总（1.6.0 F2：按书 / 按年 / 按月现算） ----------
+// 只读现算，不写盘、不改 stats.json 结构；渲染层的两个下拉只是把筛选条件传进来。
+// 口径与码字日历 / 连续天数一致：当天有正字数才算「写作天数」（只有计时没有字的那天不算），
+// 日均 = 总字数 ÷ 写作天数（四舍五入）。
+const MIN_FILTER_YEAR = 1970;
+const MAX_FILTER_YEAR = 2100;
+const MAX_FILTER_BOOK_ID = 200;
+
+// 筛选条件清洗：书 id 只认非空短字符串，年份只认 1970–2100 的整数（"2026" / 2025.6 也认）；
+// 坏值一律当作「不筛」，绝不让界面传进来的东西把统计算成空。
+function sanitizeStatsFilter(raw) {
+  const out = { bookId: '', year: 0 };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const bookId = typeof raw.bookId === 'string' ? raw.bookId.trim() : '';
+  if (bookId && bookId.length <= MAX_FILTER_BOOK_ID) out.bookId = bookId;
+  const year = Math.round(Number(raw.year));
+  if (Number.isFinite(year) && year >= MIN_FILTER_YEAR && year <= MAX_FILTER_YEAR) out.year = year;
+  return out;
+}
+
+// 汇总一天的字数（已经 sanitize 过，直接加 books 里的正数）
+function aggregate(rawStats, filter) {
+  const stats = sanitizeStats(rawStats);
+  const safe = sanitizeStatsFilter(filter);
+  const days = [];
+  const monthIndex = new Map();
+  const bookTotals = new Map();
+  const yearTotals = new Map();
+  let totalChars = 0;
+  let writtenDays = 0;
+  for (const day of Object.keys(stats.days).sort()) {
+    const entry = stats.days[day];
+    const dayChars = totalOfEntry(entry);
+    const dayYear = Number(day.slice(0, 4));
+    // 下拉选项只反映「有什么数据」，不受当前筛选影响——否则选了某本书就再也切不回去。
+    for (const [id, chars] of Object.entries(entry.books || {})) {
+      if (!(chars > 0)) continue;
+      const bucket = bookTotals.get(id) || { id, chars: 0, writtenDays: 0 };
+      bucket.chars += chars;
+      bucket.writtenDays += 1;
+      bookTotals.set(id, bucket);
+    }
+    yearTotals.set(dayYear, (yearTotals.get(dayYear) || 0) + dayChars);
+    if (safe.year && dayYear !== safe.year) continue;
+    // 按书筛：只算这本书当天的字数（别人的字、别人的写作天数都不算）
+    const chars = safe.bookId
+      ? Math.max(0, Math.round(Number((entry.books || {})[safe.bookId]) || 0))
+      : dayChars;
+    if (chars <= 0) continue;
+    totalChars += chars;
+    writtenDays += 1;
+    days.push({ day, chars });
+    const month = day.slice(0, 7);
+    const bucket = monthIndex.get(month) || { month, chars: 0, writtenDays: 0 };
+    bucket.chars += chars;
+    bucket.writtenDays += 1;
+    monthIndex.set(month, bucket);
+  }
+  const books = Array.from(bookTotals.values()).sort(
+    (a, b) => b.chars - a.chars || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+  const years = Array.from(yearTotals, ([year, chars]) => ({ year, chars }))
+    .filter((item) => item.chars > 0)
+    .sort((a, b) => b.year - a.year);
+  return {
+    filter: safe,
+    totals: { totalChars, writtenDays, averageChars: writtenDays > 0 ? Math.round(totalChars / writtenDays) : 0 },
+    days,
+    // 天按日期升序扫，Map 的插入顺序就是月份升序，下游不用再排一次。
+    months: Array.from(monthIndex.values()),
+    options: { books, years }
+  };
+}
+
 function cloneStats(stats) {
   return JSON.parse(JSON.stringify(stats));
 }
@@ -509,6 +583,7 @@ module.exports = {
   recordDuration,
   recentDays,
   summary,
+  aggregate,
   monthView,
   streak,
   createStatsStore

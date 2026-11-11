@@ -662,6 +662,7 @@
       'settings-duration-field',
       'settings-clipboard-field',
       'settings-stats-chart-field',
+      'settings-stats-totals-field',
       'settings-calendar-field',
       'settings-stats-hint'
     ]) {

@@ -165,13 +165,14 @@ test('host 契约：16 个成员缺任何一个都抛 TypeError，空 host / nul
   assert.throws(() => statsUi.create(nulled), /createStatsUi 的 host 缺少 call/);
 });
 
-test('create() 只建表：没有 document 也能创建，7 个成员都在', () => {
+test('create() 只建表：没有 document 也能创建，10 个成员都在', () => {
   const { host } = makeHost();
   delete globalThis.document;
   const ui = statsUi.create(host);
   assert.deepEqual(Object.keys(ui).sort(), [
-    'goToCurrentCalendarMonth', 'loadStatsCalendar', 'refreshStats', 'renderStatsCalendar',
-    'renderStatsChart', 'renderStatsUi', 'shiftStatsCalendar'
+    'applyStatsFilter', 'buildStatsCsv', 'goToCurrentCalendarMonth', 'loadStatsCalendar',
+    'refreshStats', 'renderStatsCalendar', 'renderStatsChart', 'renderStatsUi',
+    'setupStatsUi', 'shiftStatsCalendar'
   ].sort());
 });
 
@@ -191,7 +192,8 @@ test('refreshStats：走 api.getStats，写 state.stats / streak / calendar，�
   const { host, state, calls, renders } = makeHost({ onCall: (channel) => (channel === 'stats:get' ? payload : undefined) });
   const ui = statsUi.create(host);
   const got = await ui.refreshStats();
-  assert.deepEqual(calls, [{ channel: 'stats:get', payload: undefined }]);
+  // 1.6.0 F2：取数带上「全部书 / 全部年」筛选（主进程按它现算汇总，不改 stats.json）
+  assert.deepEqual(calls, [{ channel: 'stats:get', payload: { bookId: '', year: 0 } }]);
   assert.equal(got, payload);
   assert.equal(state.stats, payload);
   assert.equal(state.streak, payload.streak);
@@ -503,4 +505,150 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWStatsUi，
   assert.equal(typeof win.CWStatsUi.create, 'function');
   assert.equal(win.CWExportUi, undefined, '单独加载 stats-ui 不该顺手造出别的全局');
   assert.equal(win.CWStatsLogic, undefined);
+});
+// ---------- 统计筛选 + CSV（1.6.0 F2） ----------
+// 两个下拉（全部书 / 某书；全部年 / 某年）驱动主进程的 aggregate，汇总行只显示筛选后的
+// 总字数 / 写作天数 / 日均；CSV 由渲染层拼字符串（本窗口没有落盘通道，见执行卡 §9）。
+
+function aggregateFixture() {
+  return {
+    filter: { bookId: '', year: 0 },
+    totals: { totalChars: 1050, writtenDays: 4, averageChars: 263 },
+    days: [
+      { day: '2025-12-31', chars: 150 },
+      { day: '2026-01-01', chars: 200 },
+      { day: '2026-01-02', chars: 300 },
+      { day: '2026-02-10', chars: 400 }
+    ],
+    months: [
+      { month: '2025-12', chars: 150, writtenDays: 1 },
+      { month: '2026-01', chars: 500, writtenDays: 2 },
+      { month: '2026-02', chars: 400, writtenDays: 1 }
+    ],
+    options: {
+      books: [
+        { id: 'b1', chars: 700, writtenDays: 3 },
+        { id: 'b2', chars: 350, writtenDays: 2 }
+      ],
+      years: [
+        { year: 2026, chars: 900 },
+        { year: 2025, chars: 150 }
+      ]
+    }
+  };
+}
+
+test('统计筛选：两个下拉的选项来自 aggregate.options，书名走书架标题、认不出给 id 前缀', async () => {
+  installDocument();
+  const payload = { todayChars: 10, goal: 0, goalPercent: 0, goalMet: false, days: [], recentTotal: 10, todaySeconds: 0 };
+  payload.aggregate = aggregateFixture();
+  const { host, state } = makeHost({ onCall: (channel) => (channel === 'stats:get' ? payload : undefined) });
+  state.books = [{ id: 'b1', title: '书甲' }];
+  const ui = statsUi.create(host);
+  await ui.refreshStats();
+
+  const books = host.$('stats-filter-book');
+  assert.deepEqual(books.children.map((el) => el.value), ['', 'b1', 'b2']);
+  assert.deepEqual(books.children.map((el) => el.textContent), ['全部书', '书甲 · 700 字', '不在书架（b2） · 350 字']);
+  const years = host.$('stats-filter-year');
+  assert.deepEqual(years.children.map((el) => el.value), ['0', '2026', '2025']);
+  assert.deepEqual(years.children.map((el) => el.textContent), ['全部年', '2026 年 · 900 字', '2025 年 · 150 字']);
+  assert.equal(host.$('settings-stats-totals').textContent, '总字数 1050 字 · 写作天数 4 天 · 日均 263 字 · 覆盖 3 个月');
+});
+
+test('统计筛选：切换下拉带 filter 重新取数、汇总行跟着变、CSV 文本被清掉', async () => {
+  installDocument();
+  const unfiltered = { todayChars: 10, goal: 0, goalPercent: 0, goalMet: false, days: [], recentTotal: 10, todaySeconds: 0 };
+  unfiltered.aggregate = aggregateFixture();
+  const filtered = {
+    ...unfiltered,
+    aggregate: {
+      ...aggregateFixture(),
+      filter: { bookId: 'b1', year: 2026 },
+      totals: { totalChars: 600, writtenDays: 2, averageChars: 300 },
+      days: [{ day: '2026-01-01', chars: 200 }, { day: '2026-02-10', chars: 400 }],
+      months: [
+        { month: '2026-01', chars: 200, writtenDays: 1 },
+        { month: '2026-02', chars: 400, writtenDays: 1 }
+      ]
+    }
+  };
+  const { host, state, calls } = makeHost({
+    onCall: (channel, payload) => (channel === 'stats:get' ? (payload.bookId ? filtered : unfiltered) : undefined)
+  });
+  state.books = [{ id: 'b1', title: '书甲' }, { id: 'b2', title: '书乙' }];
+  const ui = statsUi.create(host);
+  await ui.refreshStats();
+  host.$('stats-csv-text').value = '上一份 CSV';
+  host.$('stats-csv-text').hidden = false;
+
+  await ui.applyStatsFilter('b1', 2026);
+  assert.deepEqual(calls[1], { channel: 'stats:get', payload: { bookId: 'b1', year: 2026 } });
+  assert.equal(host.$('settings-stats-totals').textContent, '总字数 600 字 · 写作天数 2 天 · 日均 300 字 · 覆盖 2 个月');
+  assert.equal(host.$('stats-filter-book').value, 'b1');
+  assert.equal(host.$('stats-filter-year').value, '2026');
+  assert.equal(host.$('stats-csv-text').value, '', '换筛选后旧 CSV 不能留着冒充新数据');
+  assert.equal(host.$('stats-csv-text').hidden, true);
+
+  // 回到「全部书 / 全部年」：filter 归零，旧选项不会被重复追加
+  await ui.applyStatsFilter('', 0);
+  assert.deepEqual(calls[2], { channel: 'stats:get', payload: { bookId: '', year: 0 } });
+  assert.equal(host.$('stats-filter-book').children.length, 3);
+  assert.equal(host.$('settings-stats-totals').textContent, '总字数 1050 字 · 写作天数 4 天 · 日均 263 字 · 覆盖 3 个月');
+});
+
+test('统计 CSV：按当前汇总生成文本（BOM / 表头 / 合计），空数据给一句提示不生成空文件', async () => {
+  installDocument();
+  const payload = { todayChars: 0, goal: 0, goalPercent: 0, goalMet: false, days: [], recentTotal: 0, todaySeconds: 0 };
+  payload.aggregate = aggregateFixture();
+  const { host } = makeHost({ onCall: (channel) => (channel === 'stats:get' ? payload : undefined) });
+  const ui = statsUi.create(host);
+  await ui.refreshStats();
+
+  const text = ui.buildStatsCsv();
+  assert.equal(text.charCodeAt(0), 0xfeff);
+  assert.deepEqual(text.slice(1).split('\r\n'), [
+    '日期,字数',
+    '2025-12-31,150',
+    '2026-01-01,200',
+    '2026-01-02,300',
+    '2026-02-10,400',
+    '合计,1050',
+    ''
+  ]);
+  assert.equal(host.$('stats-csv-text').value, text);
+  assert.equal(host.$('stats-csv-text').hidden, false);
+  assert.ok(host.$('stats-csv-hint').textContent.includes('全选复制'));
+
+  // 没有记录：不留空 textarea，只把提示换成「还没有记录」
+  const empty = { todayChars: 0, goal: 0, goalPercent: 0, goalMet: false, days: [], recentTotal: 0, todaySeconds: 0 };
+  empty.aggregate = { ...aggregateFixture(), totals: { totalChars: 0, writtenDays: 0, averageChars: 0 }, days: [], months: [] };
+  const second = makeHost({ onCall: (channel) => (channel === 'stats:get' ? empty : undefined) });
+  const ui2 = statsUi.create(second.host);
+  await ui2.refreshStats();
+  assert.equal(ui2.buildStatsCsv(), '');
+  assert.equal(second.host.$('stats-csv-text').hidden, true);
+  assert.ok(second.host.$('stats-csv-hint').textContent.includes('还没有'));
+});
+
+test('统计筛选：筛选值不在选项里（书被删 / 年份没记录）时仍显示它，汇总行和下拉不打架', async () => {
+  installDocument();
+  const payload = { todayChars: 0, goal: 0, goalPercent: 0, goalMet: false, days: [], recentTotal: 0, todaySeconds: 0 };
+  payload.aggregate = {
+    ...aggregateFixture(),
+    filter: { bookId: 'b_gone', year: 2031 },
+    totals: { totalChars: 0, writtenDays: 0, averageChars: 0 },
+    days: [],
+    months: []
+  };
+  const { host } = makeHost({ onCall: (channel) => (channel === 'stats:get' ? payload : undefined) });
+  const ui = statsUi.create(host);
+  await ui.applyStatsFilter('b_gone', 2031);
+  assert.equal(host.$('stats-filter-book').value, 'b_gone');
+  assert.equal(host.$('stats-filter-year').value, '2031');
+  assert.ok(host.$('stats-filter-book').children.some((el) => el.textContent.includes('不在书架（b_gone）')));
+  assert.ok(host.$('stats-filter-year').children.some((el) => el.textContent === '2031 年 · 0 字'));
+  assert.equal(host.$('settings-stats-totals').textContent, '这段时间还没有记录。');
+  assert.equal(ui.buildStatsCsv(), '', '没有一天记录时不生成 CSV 文本');
+  assert.ok(host.$('stats-csv-hint').textContent.includes('还没有'));
 });

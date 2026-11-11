@@ -1723,4 +1723,128 @@ module.exports = async function group44StatsGoal(t) {
       tplDirEntries.filter((name) => name.endsWith('.txt')).length === 6,
     tplDirEntries
   );
+
+  // 44m. 统计筛选（按书 / 按年）+ CSV 文本（1.6.0 F2）
+  // stats.json 结构不变：筛选只在主进程现算汇总，渲染层画成一行 + 一份 CSV 文本（只读）。
+  // 期望值全部用「显式循环」从磁盘独立算一遍（不调 aggregate 自身），避免自己证明自己。
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec('window.__cwTest.openSettings()');
+  await waitFor('window.__cwTest.settingsOpen() === true');
+  await waitFor('window.__cwTest.statsFilterState().book.options.length > 1');
+  // 防抖落盘（上次打开章节之类）先过去，再取「只读」基线；stats.json 本身不会被打开设置写到。
+  await sleep(1600);
+  const filterStatsFileBefore = await fs.readFile(statsPath);
+  const filterDisk = await readStatsDisk();
+  // 与 renderer.js 的 formatChars 同口径（千分位 + 万 / 亿）：断言里自己算一遍，不引用产品函数
+  const groupCount = (n) => String(Math.floor(Math.max(0, Number(n) || 0))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const scaledCount = (scaled) => {
+    const [int, dec] = scaled.toFixed(2).split('.');
+    return `${groupCount(int)}.${dec}`;
+  };
+  const formatCharsForTest = (n) => {
+    const value = Math.max(0, Math.floor(Number(n) || 0));
+    if (value < 10000) return `${groupCount(value)} 字`;
+    if (value < 100000000) return `${scaledCount(value / 10000)} 万字`;
+    return `${scaledCount(value / 100000000)} 亿字`;
+  };
+  const dayCharsOf = (entry) =>
+    Object.values((entry && entry.books) || {}).reduce((sum, n) => sum + Math.max(0, Number(n) || 0), 0);
+  const bookCharsOf = (entry, id) => Math.max(0, Number(((entry && entry.books) || {})[id]) || 0);
+  const filterDiskDays = Object.keys(filterDisk.days || {}).sort();
+  const allFilterDays = filterDiskDays.filter((day) => dayCharsOf(filterDisk.days[day]) > 0);
+  const allFilterChars = filterDiskDays.reduce((sum, day) => sum + dayCharsOf(filterDisk.days[day]), 0);
+  const filterSeedBookId = statsSeedLib.SEED_BOOK_ID;
+  const seedFilterDays = filterDiskDays.filter((day) => bookCharsOf(filterDisk.days[day], filterSeedBookId) > 0);
+  const seedFilterChars = filterDiskDays.reduce((sum, day) => sum + bookCharsOf(filterDisk.days[day], filterSeedBookId), 0);
+  const filterThisYear = statsLib.parseDayKey(calendarSeed.todayKey).year;
+  // 种子月是「两个月前」，跨年时它落在上一年：挑一个在数据里存在的年份来筛。
+  const filterPickYear = calendarSeed.seedYear < filterThisYear ? calendarSeed.seedYear : filterThisYear;
+  const pickYearDays = filterDiskDays.filter((day) => day.startsWith(`${filterPickYear}-`) && dayCharsOf(filterDisk.days[day]) > 0);
+  const pickYearChars = filterDiskDays
+    .filter((day) => day.startsWith(`${filterPickYear}-`))
+    .reduce((sum, day) => sum + dayCharsOf(filterDisk.days[day]), 0);
+  const filterInitial = await exec('window.__cwTest.statsFilterState()');
+  const filterInitialText = await exec('window.__cwTest.statsTotalsText()');
+  check(
+    '统计筛选：设置里有按书 / 按年两个下拉，默认全部书全部年，选项覆盖有记录的书与年份',
+    filterInitial.book.value === '' &&
+      filterInitial.year.value === '0' &&
+      filterInitial.book.options[0].label === '全部书' &&
+      filterInitial.year.options[0].label === '全部年' &&
+      filterInitial.book.options.some((item) => item.value === filterSeedBookId) &&
+      filterInitial.year.options.some((item) => item.value === String(filterPickYear)) &&
+      filterInitialText.includes(`总字数 ${formatCharsForTest(allFilterChars)}`) &&
+      filterInitialText.includes(`写作天数 ${allFilterDays.length} 天`) &&
+      filterInitialText.includes('日均') &&
+      filterInitialText.includes('覆盖'),
+    { state: filterInitial, text: filterInitialText, allFilterChars, allFilterDays: allFilterDays.length }
+  );
+
+  await exec(`window.__cwTest.applyStatsFilter(${JSON.stringify(filterSeedBookId)}, 0)`);
+  const filterBookState = await exec('window.__cwTest.statsFilterState()');
+  const filterBookText = await exec('window.__cwTest.statsTotalsText()');
+  check(
+    '统计筛选：按书筛选的汇总行只算这本书（字数 / 写作天数都换成这本书的）',
+    filterBookState.book.value === filterSeedBookId &&
+      filterBookState.year.value === '0' &&
+      filterBookText.includes(`总字数 ${formatCharsForTest(seedFilterChars)}`) &&
+      filterBookText.includes(`写作天数 ${seedFilterDays.length} 天`) &&
+      filterBookText !== filterInitialText,
+    { state: filterBookState, text: filterBookText, seedFilterChars, seedFilterDays: seedFilterDays.length }
+  );
+
+  await exec(`window.__cwTest.applyStatsFilter('', ${filterPickYear})`);
+  const filterYearState = await exec('window.__cwTest.statsFilterState()');
+  const filterYearText = await exec('window.__cwTest.statsTotalsText()');
+  check(
+    '统计筛选：按年筛选的汇总行只算这一年（书选回「全部书」，跨年数据各归各年）',
+    filterYearState.book.value === '' &&
+      filterYearState.year.value === String(filterPickYear) &&
+      (pickYearDays.length === 0
+        ? filterYearText.includes('还没有记录')
+        : filterYearText.includes(`总字数 ${formatCharsForTest(pickYearChars)}`) &&
+          filterYearText.includes(`写作天数 ${pickYearDays.length} 天`)),
+    { state: filterYearState, text: filterYearText, pickYearChars, pickYearDays: pickYearDays.length }
+  );
+
+  await exec("window.__cwTest.applyStatsFilter('', 0)");
+  const csvText = await exec('window.__cwTest.buildStatsCsv()');
+  const csvVisible = await exec('window.__cwTest.statsCsvVisible()');
+  const csvArea = await exec('window.__cwTest.statsCsvText()');
+  const csvLines = typeof csvText === 'string' ? csvText.slice(1).split('\r\n') : [];
+  const csvExpectedRows = allFilterDays.map((day) => `${day},${dayCharsOf(filterDisk.days[day])}`);
+  check(
+    '统计 CSV：按当前筛选生成（BOM + 表头 + 每天一行 + 合计），且已放进只读 textarea 供全选复制',
+    csvVisible === true &&
+      typeof csvText === 'string' &&
+      csvText.charCodeAt(0) === 0xfeff &&
+      csvLines[0] === '日期,字数' &&
+      csvLines[csvLines.length - 1] === '' &&
+      csvLines[csvLines.length - 2] === `合计,${allFilterChars}` &&
+      csvLines.length === allFilterDays.length + 3 &&
+      JSON.stringify(csvLines.slice(1, 1 + allFilterDays.length)) === JSON.stringify(csvExpectedRows) &&
+      // textarea 的 value 会把 CRLF 归一成 LF（HTML 规范）：按行内容比对，换行符不算错
+      typeof csvArea === 'string' &&
+      csvArea.replace(/\r\n/g, '\n') === csvText.replace(/\r\n/g, '\n') &&
+      csvArea.charCodeAt(0) === 0xfeff,
+    {
+      visible: csvVisible,
+      bom: typeof csvText === 'string' ? csvText.charCodeAt(0) : null,
+      head: csvLines.slice(0, 3),
+      tail: csvLines.slice(-2),
+      rows: allFilterDays.length,
+      areaLines: typeof csvArea === 'string' ? csvArea.split(/\r?\n/).length : -1
+    }
+  );
+
+  await exec('window.__cwTest.closeSettings()');
+  const filterStatsFileAfter = await fs.readFile(statsPath);
+  const filterConfigAfter = await readConfigDisk();
+  check(
+    '统计筛选 / CSV：切书切年与生成 CSV 全程只读——stats.json 逐字节没变、不新增配置字段',
+    filterStatsFileAfter.equals(filterStatsFileBefore) &&
+      !Object.keys(filterConfigAfter).some((key) => /statsfilter|aggregate|statsCsv/i.test(key)),
+    { statsSame: filterStatsFileAfter.equals(filterStatsFileBefore), keys: Object.keys(filterConfigAfter) }
+  );
 };

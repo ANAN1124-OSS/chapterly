@@ -634,3 +634,118 @@ test('写作时长：存储 addDuration 原子落盘、与字数共用文件、�
   assert.equal((await store2.summary({ now: new Date(2026, 9, 31, 12) })).todaySeconds, 0);
   assert.equal((await store2.addDuration({ day: '2026-10-31', seconds: 8 })).added, 8);
 });
+
+// ---------- 统计汇总（1.6.0 F2：按书 / 按年 / 按月现算，不改 stats.json 结构） ----------
+// aggregate() 只吃 sanitizeStats 之后的那份数据结构，永远不写盘；坏值（负字数 /
+// 非法日期 / 超长书 id）在读取时已经洗掉，这里只钉「筛选口径」与「选项不随筛选变」。
+
+function aggregateFixture() {
+  return statsWith({
+    '2025-12-31': { books: { b1: 100, b2: 50 } },
+    '2026-01-01': { books: { b1: 200 }, seconds: 120 },
+    '2026-01-02': { books: { b2: 300 } },
+    '2026-02-10': { books: { b1: 400, b2: 0 } },
+    '2026-03-05': { seconds: 60 },
+    '2026-04-01': { books: { b1: -5 } },
+    'bad-day': { books: { b1: 999 } }
+  });
+}
+
+const ZERO_TOTALS = { totalChars: 0, writtenDays: 0, averageChars: 0 };
+
+test('统计汇总：空数据 / 坏统计给零值，不抛错也不造行', () => {
+  const empty = statsLib.aggregate(null);
+  assert.deepEqual(empty.filter, { bookId: '', year: 0 });
+  assert.deepEqual(empty.totals, ZERO_TOTALS);
+  assert.deepEqual(empty.days, []);
+  assert.deepEqual(empty.months, []);
+  assert.deepEqual(empty.options, { books: [], years: [] });
+  assert.deepEqual(statsLib.aggregate(undefined, { bookId: 'b1', year: 2026 }).totals, ZERO_TOTALS);
+  assert.deepEqual(statsLib.aggregate({ version: 1, days: 'nope' }).totals, ZERO_TOTALS);
+});
+
+test('统计汇总：不筛 = 全部书全部年；只有时长的天不算写作天数', () => {
+  const view = statsLib.aggregate(aggregateFixture());
+  assert.deepEqual(view.totals, { totalChars: 1050, writtenDays: 4, averageChars: 263 });
+  assert.deepEqual(view.days, [
+    { day: '2025-12-31', chars: 150 },
+    { day: '2026-01-01', chars: 200 },
+    { day: '2026-01-02', chars: 300 },
+    { day: '2026-02-10', chars: 400 }
+  ]);
+  assert.deepEqual(view.months, [
+    { month: '2025-12', chars: 150, writtenDays: 1 },
+    { month: '2026-01', chars: 500, writtenDays: 2 },
+    { month: '2026-02', chars: 400, writtenDays: 1 }
+  ]);
+});
+
+test('统计汇总：按书筛选只算这本书（别人的字不算、别人的天不算）', () => {
+  const b1 = statsLib.aggregate(aggregateFixture(), { bookId: 'b1' });
+  assert.deepEqual(b1.filter, { bookId: 'b1', year: 0 });
+  assert.deepEqual(b1.totals, { totalChars: 700, writtenDays: 3, averageChars: 233 });
+  assert.deepEqual(b1.days.map((item) => item.day), ['2025-12-31', '2026-01-01', '2026-02-10']);
+  // 前后空格算同一本书；库里没有的 id 是空汇总，不是「不筛」
+  assert.deepEqual(statsLib.aggregate(aggregateFixture(), { bookId: ' b2 ' }).totals, {
+    totalChars: 350,
+    writtenDays: 2,
+    averageChars: 175
+  });
+  assert.deepEqual(statsLib.aggregate(aggregateFixture(), { bookId: 'b_none' }).totals, ZERO_TOTALS);
+});
+
+test('统计汇总：按年筛选跨年各归各年，书 × 年可以叠加', () => {
+  assert.deepEqual(statsLib.aggregate(aggregateFixture(), { year: 2025 }).totals, {
+    totalChars: 150,
+    writtenDays: 1,
+    averageChars: 150
+  });
+  assert.deepEqual(statsLib.aggregate(aggregateFixture(), { year: '2026' }).totals, {
+    totalChars: 900,
+    writtenDays: 3,
+    averageChars: 300
+  });
+  const both = statsLib.aggregate(aggregateFixture(), { bookId: 'b1', year: 2026 });
+  assert.deepEqual(both.totals, { totalChars: 600, writtenDays: 2, averageChars: 300 });
+  assert.deepEqual(both.months, [
+    { month: '2026-01', chars: 200, writtenDays: 1 },
+    { month: '2026-02', chars: 400, writtenDays: 1 }
+  ]);
+});
+
+test('统计汇总：非法筛选（坏年份 / 非字符串书 id / 超长 id / 非对象）当作不筛', () => {
+  const all = statsLib.aggregate(aggregateFixture()).totals;
+  for (const filter of [
+    { year: 1800 },
+    { year: 3000 },
+    { year: 'abc' },
+    { year: NaN },
+    { bookId: 'x'.repeat(201) },
+    { bookId: 42 },
+    { bookId: '' },
+    'nope',
+    42,
+    null
+  ]) {
+    assert.deepEqual(statsLib.aggregate(aggregateFixture(), filter).totals, all, JSON.stringify(filter));
+  }
+  // 字符串数字 / 小数年份也认（四舍五入到整年），2025 只有一天
+  assert.deepEqual(statsLib.aggregate(aggregateFixture(), { year: '2025.4' }).totals, {
+    totalChars: 150,
+    writtenDays: 1,
+    averageChars: 150
+  });
+});
+
+test('统计汇总：筛选只改数字，选项（书 / 年）始终是全量', () => {
+  const view = statsLib.aggregate(aggregateFixture(), { bookId: 'b2', year: 2026 });
+  assert.deepEqual(view.options.books, [
+    { id: 'b1', chars: 700, writtenDays: 3 },
+    { id: 'b2', chars: 350, writtenDays: 2 }
+  ]);
+  assert.deepEqual(view.options.years, [
+    { year: 2026, chars: 900 },
+    { year: 2025, chars: 150 }
+  ]);
+  assert.deepEqual(view.totals, { totalChars: 300, writtenDays: 1, averageChars: 300 });
+});

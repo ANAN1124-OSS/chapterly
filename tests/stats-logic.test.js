@@ -345,3 +345,47 @@ test('UMD：浏览器沙箱里挂 window.CWStatsLogic，行为与 Node require �
   assert.deepEqual(plain(browser.shiftYearMonth({ year: 2026, month: 1 }, -1)), { year: 2025, month: 12 });
   assert.deepEqual([...browser.weekdayLabels(view)], statsLogic.weekdayLabels(view));
 });
+
+// ---------- 统计 CSV（1.6.0 F2） ----------
+// 渲染层只拼字符串：按天一行 + 末行合计，UTF-8 BOM + CRLF（Excel / 记事本都认）。
+// 写盘通道不在本窗口（见执行卡 §9 待拍板），所以这一层必须是纯函数、可单测。
+
+test('统计 CSV：UTF-8 BOM + CRLF，按天一行，末行合计', () => {
+  const text = statsLogic.statsCsvText([
+    { day: '2026-01-01', chars: 120 },
+    { day: '2026-01-02', chars: 80 }
+  ]);
+  assert.equal(text.charCodeAt(0), 0xfeff, '必须带 BOM（与 TXT 导出口径一致）');
+  assert.equal(text.split('\r\n').length, 5, '表头 + 2 行 + 合计 + 结尾空串');
+  assert.deepEqual(text.slice(1).split('\r\n'), ['日期,字数', '2026-01-01,120', '2026-01-02,80', '合计,200', '']);
+  // 没有数据也只有一个表头和一个 0 合计（纯函数永远给出合法 CSV，界面自己决定要不要展示）
+  const blank = statsLogic.statsCsvText([]);
+  assert.deepEqual(blank.slice(1).split('\r\n'), ['日期,字数', '合计,0', '']);
+  assert.deepEqual(statsLogic.statsCsvText(null).slice(1).split('\r\n'), ['日期,字数', '合计,0', '']);
+});
+
+test('统计 CSV：字段转义（引号 / 逗号 / 换行 / 中文），空值与数字按原样', () => {
+  assert.equal(statsLogic.csvField('普通'), '普通');
+  assert.equal(statsLogic.csvField('第1章：开头'), '第1章：开头');
+  assert.equal(statsLogic.csvField('a,b'), '"a,b"');
+  assert.equal(statsLogic.csvField('a"b'), '"a""b"');
+  assert.equal(statsLogic.csvField('a\nb'), '"a\nb"');
+  assert.equal(statsLogic.csvField('a\r\nb'), '"a\r\nb"');
+  assert.equal(statsLogic.csvField('第1章, "试"'), '"第1章, ""试"""');
+  assert.equal(statsLogic.csvField(120), '120');
+  assert.equal(statsLogic.csvField(0), '0');
+  assert.equal(statsLogic.csvField(null), '');
+  assert.equal(statsLogic.csvField(undefined), '');
+});
+
+test('统计 CSV：坏行（没日期 / 非对象）丢掉，负字数夹到 0', () => {
+  const text = statsLogic.statsCsvText([
+    { day: '2026-01-01', chars: 10 },
+    { day: '', chars: 999 },
+    { chars: 888 },
+    null,
+    { day: '2026-01-02', chars: -5 },
+    { day: '2026-01-03', chars: '7' }
+  ]);
+  assert.deepEqual(text.slice(1).split('\r\n'), ['日期,字数', '2026-01-01,10', '2026-01-02,0', '2026-01-03,7', '合计,17', '']);
+});

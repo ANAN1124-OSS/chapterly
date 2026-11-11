@@ -56,9 +56,15 @@
   // ---------- 每日字数统计（提案 3.2） ----------
   // 只统计「保存动作」带来的新增字数：没保存的编辑不计数，删字也不会倒扣今天。
   // 日期 / 增量都在主进程算，渲染层只负责显示；统计文件在 userData，不碰书库。
+  //
+  // 1.6.0 F2：设置里多了「按书 / 按年」两个下拉。筛选只作用于主进程现算的 aggregate
+  // （汇总行 + CSV），书架头 / 状态栏 / 近 30 天 / 码字日历仍是全书架口径——今天写多少字
+  // 不该因为「只看某本书」就变成别的数字。
+  let statsFilter = { bookId: '', year: 0 };
+
   async function refreshStats() {
     try {
-      const payload = await call(api.getStats);
+      const payload = await call(api.getStats, { bookId: statsFilter.bookId, year: statsFilter.year });
       state.stats = payload;
       state.streak = payload && payload.streak ? payload.streak : null;
       state.calendar = payload && payload.calendar ? payload.calendar : null;
@@ -67,6 +73,20 @@
     }
     renderStatsUi();
     return state.stats;
+  }
+
+  // 切换筛选：清掉上一份 CSV（免得旧数据冒充新筛选的结果）→ 重新取数 → 重绘汇总行。
+  async function applyStatsFilter(bookId, year) {
+    statsFilter = {
+      bookId: typeof bookId === 'string' ? bookId : '',
+      year: Math.round(Number(year) || 0)
+    };
+    const area = $('stats-csv-text');
+    if (area) {
+      area.value = '';
+      area.hidden = true;
+    }
+    return refreshStats();
   }
 
   function renderStatsUi() {
@@ -120,8 +140,121 @@
     }
     renderStatsChart();
     renderStatsCalendar();
+    renderStatsTotals();
     renderDurationSettings();
     renderWriteTimer();
+  }
+
+  // ---------- 累计汇总（1.6.0 F2：按书 / 按年筛选 + CSV） ----------
+  // 数据全来自主进程的 aggregate（只读现算）；这里只填两个下拉、写一行汇总、拼 CSV 文本。
+  // 保存后的 data.stats 没有 aggregate，这时整块原样不动（保留上一次筛选结果，不闪空）。
+  function statsBookLabel(id, chars) {
+    const books = Array.isArray(state.books) ? state.books : [];
+    const found = books.find((book) => book && book.id === id);
+    let name = found && typeof found.title === 'string' ? found.title.trim() : '';
+    if (!name) name = id === '_unknown' ? '未标注来源' : `不在书架（${String(id).slice(0, 8)}）`;
+    return `${name} · ${formatChars(chars)}`;
+  }
+
+  function fillStatsFilterSelect(el, items, current) {
+    if (!el) return;
+    el.innerHTML = '';
+    for (const item of items) {
+      const option = document.createElement('option');
+      option.value = item.value;
+      option.textContent = item.label;
+      el.appendChild(option);
+    }
+    // 选项里一定包含当前筛选值（见 renderStatsTotals 的补齐），所以下拉永远和筛选条件一致。
+    el.value = current;
+  }
+
+  function renderStatsTotals() {
+    const view = state.stats && state.stats.aggregate ? state.stats.aggregate : null;
+    if (!view) return;
+    const totals = view.totals || {};
+    const options = view.options || {};
+    const bookOptions = [{ value: '', label: '全部书' }].concat(
+      (options.books || []).map((item) => ({ value: item.id, label: statsBookLabel(item.id, item.chars) }))
+    );
+    const yearOptions = [{ value: '0', label: '全部年' }].concat(
+      (options.years || []).map((item) => ({ value: String(item.year), label: `${item.year} 年 · ${formatChars(item.chars)}` }))
+    );
+    // 当前筛选值不在选项里（那本书刚被删 / 那一年没记录）也要留在下拉上，
+    // 否则界面显示「全部」而汇总行给的是筛选后的空数字，两边各说各话。
+    if (statsFilter.bookId && !bookOptions.some((item) => item.value === statsFilter.bookId)) {
+      bookOptions.push({ value: statsFilter.bookId, label: statsBookLabel(statsFilter.bookId, 0) });
+    }
+    if (statsFilter.year > 0 && !yearOptions.some((item) => item.value === String(statsFilter.year))) {
+      yearOptions.push({ value: String(statsFilter.year), label: `${statsFilter.year} 年 · 0 字` });
+    }
+    const bookSelect = $('stats-filter-book');
+    const yearSelect = $('stats-filter-year');
+    fillStatsFilterSelect(bookSelect, bookOptions, statsFilter.bookId);
+    fillStatsFilterSelect(yearSelect, yearOptions, String(statsFilter.year));
+
+    const totalsEl = $('settings-stats-totals');
+    const hintEl = $('stats-csv-hint');
+    const writtenDays = Math.max(0, Math.round(Number(totals.writtenDays) || 0));
+    if (totalsEl) {
+      if (writtenDays <= 0) {
+        totalsEl.textContent = '这段时间还没有记录。';
+      } else {
+        const months = Array.isArray(view.months) ? view.months.length : 0;
+        totalsEl.textContent =
+          `总字数 ${formatChars(totals.totalChars)} · 写作天数 ${writtenDays} 天 · ` +
+          `日均 ${formatChars(totals.averageChars)}` +
+          (months > 0 ? ` · 覆盖 ${months} 个月` : '');
+      }
+    }
+    if (hintEl) {
+      hintEl.textContent = writtenDays > 0 ? '按天一行，UTF-8 BOM；生成后全选复制，存成 .csv 即可。' : '';
+    }
+  }
+
+  // 生成 CSV 文本：走 renderer/stats-logic 的纯函数（BOM + CRLF + 末行合计），这里只放到
+  // 只读 textarea 里供全选复制。写盘通道本窗口没有（执行卡 §9 待拍板），绝不自己加 IPC。
+  function buildStatsCsv() {
+    const view = state.stats && state.stats.aggregate ? state.stats.aggregate : null;
+    const rows = view && Array.isArray(view.days) ? view.days : [];
+    const area = $('stats-csv-text');
+    const hintEl = $('stats-csv-hint');
+    if (!rows.length) {
+      if (area) {
+        area.value = '';
+        area.hidden = true;
+      }
+      if (hintEl) hintEl.textContent = '这段时间还没有记录，没有可导出的行。';
+      return '';
+    }
+    const text = statsLogic.statsCsvText(rows);
+    if (area) {
+      // textarea 的 value 会把 CRLF 归一成 LF（HTML 规范），粘贴 / 另存都不受影响；
+      // 纯函数本身仍按 CRLF 出文本（将来落盘时口径一致）。
+      area.value = text;
+      area.hidden = false;
+    }
+    if (hintEl) hintEl.textContent = '按天一行，UTF-8 BOM；已生成，全选复制后存成 .csv 即可。';
+    return text;
+  }
+
+  // 绑定两个下拉与「生成 CSV」（只绑一次；模块被 create 一次，页面生命周期内不需要解绑）。
+  let statsFiltersBound = false;
+  function setupStatsUi() {
+    if (statsFiltersBound) return;
+    const bookSelect = $('stats-filter-book');
+    const yearSelect = $('stats-filter-year');
+    const buildBtn = $('stats-csv-build');
+    if (!bookSelect || !yearSelect || !buildBtn) return;
+    statsFiltersBound = true;
+    const onFilterChange = () => {
+      void applyStatsFilter(bookSelect.value, yearSelect.value);
+    };
+    bookSelect.addEventListener('change', onFilterChange);
+    yearSelect.addEventListener('change', onFilterChange);
+    buildBtn.addEventListener('click', () => {
+      buildStatsCsv();
+    });
   }
 
   // 设置里的近 30 天柱状图：纯 CSS 高度，不引第三方库。今天那根高亮。
@@ -263,6 +396,9 @@
   }
     return {
       refreshStats,
+      applyStatsFilter,
+      buildStatsCsv,
+      setupStatsUi,
       renderStatsUi,
       renderStatsChart,
       loadStatsCalendar,

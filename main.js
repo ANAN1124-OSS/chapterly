@@ -1249,13 +1249,16 @@ function registerIpc() {
 
   // 每日字数统计摘要：今天多少字 + 近 30 天（含今天）+ 当月码字日历 + 连续写作天数。
   // 统计文件在 userData，不在书库；月视图只读，切换月份走 stats:calendar。
-  handle('stats:get', async () => {
+  handle('stats:get', async (filter) => {
     const cfg = await getConfig();
     const stats = await getStatsStore().get();
     const now = new Date();
     return {
       ...statsSummaryPayload(stats, cfg, now),
-      calendar: statsLib.monthView(stats, { now, goal: cfg.dailyGoal })
+      calendar: statsLib.monthView(stats, { now, goal: cfg.dailyGoal }),
+      // 1.6.0 F2：按书 / 按年汇总（只读现算，不写 stats.json；筛选由渲染层的两个下拉传进来，
+      // 坏值在 core/stats 里当作「不筛」）。summary 仍是全书架口径，书架头 / 状态栏不受筛选影响。
+      aggregate: statsLib.aggregate(stats, filter)
     };
   });
   handle('stats:calendar', async (request) => {

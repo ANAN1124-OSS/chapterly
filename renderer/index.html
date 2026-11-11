@@ -1017,6 +1017,22 @@
         <div id="settings-stats-summary" class="muted small"></div>
         <div id="settings-stats-chart" class="stats-chart"></div>
       </div>
+      <!-- 1.6.0 F2：按书 / 按年汇总（只读现算，不改 stats.json）；CSV 由渲染层拼字符串 -->
+      <div class="field" id="settings-stats-totals-field">
+        <span>累计汇总（可选某本书 / 某一年；只统计保存时写下的字数）</span>
+        <div class="field-row stats-filter-row">
+          <label class="stats-filter-label" for="stats-filter-book">书</label>
+          <select id="stats-filter-book" class="text-input stats-filter-select" title="只改汇总与 CSV 的统计口径，不写盘"></select>
+          <label class="stats-filter-label" for="stats-filter-year">年</label>
+          <select id="stats-filter-year" class="text-input stats-filter-select" title="只改汇总与 CSV 的统计口径，不写盘"></select>
+        </div>
+        <div id="settings-stats-totals" class="muted small"></div>
+        <div class="field-row stats-csv-row">
+          <button id="stats-csv-build" class="btn ghost tiny" type="button">生成 CSV</button>
+          <span id="stats-csv-hint" class="muted small"></span>
+        </div>
+        <textarea id="stats-csv-text" class="text-input stats-csv-text" rows="4" readonly hidden aria-label="统计 CSV 文本"></textarea>
+      </div>
       <div class="field" id="settings-calendar-field">
         <span>码字日历（周一开头；只统计按保存时写下的字数）</span>
         <div class="calendar-head">

@@ -91,6 +91,8 @@
     'settings-stats-chart-field': 'writing',
     'settings-stats-chart': 'writing',
     'settings-stats-summary': 'writing',
+    'settings-stats-totals-field': 'writing',
+    'settings-stats-totals': 'writing',
     'settings-calendar-field': 'writing',
     'settings-stats-hint': 'writing',
     // 内容 · 新建章节模板 / 敏感词预检 / 校对词表

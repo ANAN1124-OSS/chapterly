@@ -412,6 +412,9 @@ async function listBooks(booksRoot) {
       return {
         path: bookPath,
         folder,
+        // 1.6.0 F2：书 id 给「统计按书筛选」用（stats.json 的 days.books 按 meta.id 分桶）；
+        // 只多回一个字段，不改 书目.json 结构，也不影响排序。
+        id: typeof meta.id === 'string' ? meta.id : '',
         status: 'ok',
         title: meta.title || folder,
         schemaVersion: meta.schemaVersion,
@@ -436,6 +439,7 @@ async function listBooks(booksRoot) {
       return {
         path: bookPath,
         folder,
+        id: '',
         status: 'corrupt',
         title: folder,
         author: '',

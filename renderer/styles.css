@@ -2515,6 +2515,39 @@ body.theme-night .long-para-bar { background: var(--warn);
 .stats-bar.today > i { background: var(--accent); }
 .stats-bar:hover > i { background: var(--accent); }
 
+/* 统计筛选（1.6.0 F2）：两个下拉 + 汇总行 + CSV 文本。只复用现有令牌，不加新颜色。 */
+.stats-filter-row {
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.stats-filter-label {
+  flex: 0 0 auto;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+}
+.stats-filter-select {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 132px;
+  max-width: 240px;
+}
+#settings-stats-totals { margin-top: 6px; line-height: 1.6; }
+.stats-csv-row {
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.stats-csv-row .muted { flex: 1 1 auto; min-width: 0; }
+.stats-csv-text {
+  height: auto;
+  min-height: 88px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  line-height: 1.5;
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
+}
+
 /* 码字日历（v0.8-1）：纯 CSS，不引库；周一开头，颜色深浅 = 当天写得多不多 */
 .calendar-head {
   display: flex;

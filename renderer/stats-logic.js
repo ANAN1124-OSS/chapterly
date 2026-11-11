@@ -192,6 +192,35 @@
     return { blanksBefore: firstWeekday, cells, blanksAfter };
   }
 
+  // ---------- 统计 CSV（1.6.0 F2） ----------
+  // 渲染层只拼字符串（写盘通道本窗口没有，见执行卡 §9 待拍板）。口径与 TXT 导出对齐：
+  // UTF-8 BOM 开头 + CRLF 换行，Excel / 记事本打开都不乱码。
+  const CSV_BOM = '\uFEFF';
+  const CSV_HEADER = ['日期', '字数'];
+
+  // RFC 4180 的字段转义：含引号 / 逗号 / 换行才加引号，内部引号翻倍。
+  function csvField(value) {
+    const text = value == null ? '' : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  // 按天一行 + 末行合计。坏行（没有日期键 / 非对象）直接丢掉，字数夹到非负整数；
+  // 一行数据都没有时也给出合法 CSV（表头 + 合计 0），界面自己决定要不要展示。
+  function statsCsvText(days) {
+    const rows = [];
+    let total = 0;
+    for (const item of Array.isArray(days) ? days : []) {
+      if (!item || typeof item !== 'object') continue;
+      const day = typeof item.day === 'string' ? item.day.trim() : '';
+      if (!day) continue;
+      const chars = Math.max(0, Math.round(Number(item.chars) || 0));
+      rows.push([day, chars]);
+      total += chars;
+    }
+    rows.push(['合计', total]);
+    return CSV_BOM + [CSV_HEADER, ...rows].map((row) => row.map(csvField).join(',')).join('\r\n') + '\r\n';
+  }
+
   return {
     WEEKDAY_LABELS,
     MIN_YEAR,
@@ -206,6 +235,9 @@
     calendarStreakLabel,
     calendarSummaryText,
     statsTodayText,
-    calendarCells
+    calendarCells,
+    CSV_BOM,
+    csvField,
+    statsCsvText
   };
 });

@@ -2484,6 +2484,8 @@
     calendarStreakLabel: () => statsLogic.calendarStreakLabel(state.streak)
   });
   const { refreshStats, renderStatsUi, renderStatsChart, shiftStatsCalendar, goToCurrentCalendarMonth } = statsUi;
+  // 1.6.0 F2：统计筛选 / CSV 是设置页里那一块自己的入口（不进上面那 5 个通用入口）
+  const { applyStatsFilter, buildStatsCsv, setupStatsUi } = statsUi;
 
   // 剪贴板面板「正文」按钮：把一条记录插到**当前打开章节**的光标处（有选区就替换选区）。
   // 为什么先把焦点交给编辑区：原生 insertText 只对真正拿到焦点的文本框生效，
@@ -4749,6 +4751,8 @@
   function bindEvents() {
     settingsUi.setupSettingsUi();
     writeTimerUi.setupWriteTimerUi();
+    // 统计筛选（1.6.0 F2）：两个下拉 + 「生成 CSV」（只绑定、不写盘）
+    setupStatsUi();
     // 码字日历：翻月 / 回到本月（只读；点击不会写 stats.json）
     $('calendar-prev').addEventListener('click', () => {
       void shiftStatsCalendar(-1);
@@ -5480,6 +5484,9 @@
       refreshSensitiveWordList,
       refreshShelf,
       refreshStats,
+      // 统计筛选 / CSV（1.6.0 F2）：E2E 用它切书 / 切年、读汇总行与 CSV 文本
+      applyStatsFilter,
+      buildStatsCsv,
       renameChapterAt,
       renameVolumeFlow,
       renderCaretColorRow,
