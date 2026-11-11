@@ -77,6 +77,8 @@ const logsLib = require('./core/logs');
 const searchIndexLib = require('./core/search-index');
 const updateLib = require('./core/update');
 const updateResponseLib = require('./core/update-response');
+// 关窗看门狗阈值 + 强制退出顺序（1.6.0 A1 / 审计 E-03）：纯数据 / 纯函数，单测钉住
+const closeGuard = require('./core/close-guard');
 const openBooksLib = require('./core/open-books');
 const fontPolicy = require('./core/font-policy');
 const securityPolicy = require('./core/security-policy');
@@ -1023,26 +1025,30 @@ function setupCloseFlow(session) {
     clearTimeout(session.closeTimer);
     session.closeTimer = setTimeout(async () => {
       if (!session.closePending || browserWin.isDestroyed()) return;
-      const { response } = await showMessageBox(
-        {
-          type: 'warning',
-          title: '编辑器无响应',
-          message: '保存流程没有在 3 秒内完成。',
-          detail: '继续等待通常更安全；强制退出可能丢失未保存的内容。',
-          buttons: ['继续等待', '强制退出'],
-          defaultId: 0,
-          cancelId: 0
-        },
-        browserWin
-      );
+      const { response } = await showMessageBox(closeGuard.timeoutPrompt(), browserWin);
       if (response === 1) {
         session.closePending = false;
         session.forceClose = true;
-        if (!browserWin.isDestroyed()) browserWin.destroy();
+        // A1（审计 E-03）：点「强制退出」不再立刻 destroy —— 先 send('app:force-close') 通知
+        // 渲染层把能存的存下来，等 500 ms 再 destroy。阈值 / 顺序 / 文案都在
+        // core/close-guard.js，单测钉住（tests/close-guard.test.js）。
+        const plan = closeGuard.forceClosePlan({ destroyed: browserWin.isDestroyed() });
+        await closeGuard.runForceCloseSteps(plan, {
+          send: () => {
+            try {
+              if (!browserWin.isDestroyed()) browserWin.webContents.send(plan.channel);
+            } catch {
+              /* 窗口刚好在这一下销毁：没有渲染层可通知，继续走 destroy */
+            }
+          },
+          wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          canDestroy: () => !browserWin.isDestroyed(),
+          destroy: () => browserWin.destroy()
+        });
       } else {
         session.closePending = false;
       }
-    }, 3000);
+    }, closeGuard.CLOSE_TIMEOUT_MS);
   });
 }
 

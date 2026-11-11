@@ -74,3 +74,76 @@ test('静态闸门：渲染层「不保存退出」先如实清掉脏状态，�
   // 取消分支仍然明确拒绝关窗
   assert.match(RENDERER, /if \(action === 'cancel'\) \{[\s\S]{0,80}api\.closeReady\(false\);/, '取消仍要拒绝关窗');
 });
+
+// ---------- A1（审计 E-03）：关窗看门狗阈值与强制退出顺序 ----------
+// 3 秒对「慢盘 / 大文件保存」太紧：保存还没写完就弹「编辑器无响应」，作者很容易点「强制退出」
+// 把刚写的几万字丢掉。改成 8 秒；就算真的要点强制退出，也先告诉渲染层「要强关了」并给 500 ms
+// 落盘时间，到点才 destroy。阈值 / 顺序 / 文案全抽到 core/close-guard.js（纯函数），
+// 单测钉住，不用真等 8 秒。
+
+const closeGuardLib = require(path.join(ROOT, 'core', 'close-guard.js'));
+
+test('A1 关窗看门狗：阈值 8 秒，强制退出的计划是「先 send → 等 500 ms → 再 destroy」', () => {
+  assert.equal(closeGuardLib.CLOSE_TIMEOUT_MS, 8000, '看门狗阈值必须是 8 秒');
+  assert.equal(closeGuardLib.FORCE_CLOSE_CHANNEL, 'app:force-close');
+  assert.equal(closeGuardLib.FORCE_CLOSE_GRACE_MS, 500);
+  const plan = closeGuardLib.forceClosePlan();
+  assert.deepEqual(plan.steps, ['send', 'wait', 'destroy'], '顺序：先通知、再等、最后才 destroy');
+  assert.equal(plan.channel, 'app:force-close');
+  assert.equal(plan.graceMs, 500);
+  // 窗口已经销毁：send / destroy 都要跳过（不往死掉的 webContents 上发、也不再 destroy）
+  const dead = closeGuardLib.forceClosePlan({ destroyed: true });
+  assert.equal(dead.send, false);
+  assert.equal(dead.destroy, false);
+  // 每次给新的 steps 数组：调用方改了不能污染下一次
+  plan.steps.push('extra');
+  assert.deepEqual(closeGuardLib.forceClosePlan().steps, ['send', 'wait', 'destroy']);
+});
+
+test('A1 强制退出执行器：严格按 plan.steps 调 send → wait(500) → destroy，顺序不同结果不同', async () => {
+  const calls = [];
+  await closeGuardLib.runForceCloseSteps(closeGuardLib.forceClosePlan(), {
+    send: () => calls.push('send'),
+    wait: (ms) => calls.push('wait:' + ms),
+    canDestroy: () => true,
+    destroy: () => calls.push('destroy')
+  });
+  assert.deepEqual(calls, ['send', 'wait:500', 'destroy'], '先给 500 ms 二次机会，最后才 destroy');
+  // 顺序错了就得跟着错（执行器不许自己重排）——这一步就是「顺序错则失败」的锚点
+  const wrong = [];
+  await closeGuardLib.runForceCloseSteps(
+    { steps: ['destroy', 'send', 'wait'], channel: 'app:force-close', graceMs: 500, send: true, wait: true, destroy: true },
+    { send: () => wrong.push('send'), wait: () => wrong.push('wait'), canDestroy: () => true, destroy: () => wrong.push('destroy') }
+  );
+  assert.notDeepEqual(wrong, calls);
+  assert.deepEqual(wrong, ['destroy', 'send', 'wait']);
+  // 执行中窗口已经死掉：不再 destroy（send 与等待照计划走完）
+  const deadCalls = [];
+  await closeGuardLib.runForceCloseSteps(closeGuardLib.forceClosePlan(), {
+    send: () => deadCalls.push('send'),
+    wait: () => deadCalls.push('wait'),
+    canDestroy: () => false,
+    destroy: () => deadCalls.push('destroy')
+  });
+  assert.deepEqual(deadCalls, ['send', 'wait'], '窗口已销毁：跳过 destroy');
+});
+
+test('A1 静态闸门：主进程改走 8 秒 + plan / 执行器；提示文案写「已等 8 秒」', () => {
+  const prompt = closeGuardLib.timeoutPrompt();
+  assert.equal(prompt.type, 'warning');
+  assert.equal(prompt.message, '保存还没有完成（已等 8 秒）。');
+  assert.deepEqual(prompt.buttons, ['继续等待', '强制退出']);
+  assert.equal(prompt.defaultId, 0, '默认停在「继续等待」');
+  assert.equal(prompt.cancelId, 0, 'Esc / 关弹窗也停在「继续等待」');
+  const closeFlow = between(MAIN, 'function setupCloseFlow(session) {', '\n}\n');
+  assert.equal(closeFlow.includes('}, 3000);'), false, '3 秒看门狗必须已经改掉');
+  assert.equal(closeFlow.includes('3 秒内完成'), false, '旧文案也要一起换掉');
+  assert.match(closeFlow, /closeGuard\.CLOSE_TIMEOUT_MS/, '超时时刻由 core/close-guard.js 给');
+  assert.match(closeFlow, /closeGuard\.timeoutPrompt\(\)/, '提示文案由纯函数给（单测能钉住）');
+  const forceAt = closeFlow.indexOf('closeGuard.runForceCloseSteps(');
+  assert.ok(forceAt > 0, '强制退出必须走执行器（顺序可测）');
+  const forceSeg = closeFlow.slice(forceAt, forceAt + 900);
+  assert.match(forceSeg, /send:[\s\S]*webContents\.send\(plan\.channel\)/, '先 send app:force-close');
+  assert.match(forceSeg, /destroy:[\s\S]*destroy\(\)/, '最后才 destroy');
+  assert.equal(forceSeg.indexOf('webContents.send') < forceSeg.indexOf('destroy:'), true, '源码顺序也必须是先通知');
+});
