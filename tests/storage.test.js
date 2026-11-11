@@ -1140,3 +1140,118 @@ test('章节加载：正常章节的 text / mtimeMs / size 三字段不变', asy
   assert.equal(statOnly.size, onDisk.size);
   assert.deepEqual(Object.keys(statOnly).sort(), ['mtimeMs', 'size']);
 });
+
+// ---------- 书架扫描只读化（1.6.0 A2 / 审计 E-06） ----------
+// 书架扫描只是为了补 chars 缓存：**不许改 updatedAt**（改了就等于「打开书架」把书往前挪、
+// 也会让同步工具以为书目被改过）。缺字数的章节用 8 路并发读，老书首次扫描别再串行 1000 次。
+test('书架扫描：回填字数缓存不改 updatedAt，书架顺序稳定', async () => {
+  const root = await mkTmp();
+  const older = await storage.createBook(root, '甲书');
+  const newer = await storage.createBook(root, '乙书');
+  await storage.saveChapterText(older.path, '001-未命名.txt', '甲书的正文十个字');
+  await storage.saveChapterText(newer.path, '001-未命名.txt', '乙书正文');
+  // 造「老版本」书目：没有 chars 缓存，updatedAt 是固定值（甲早乙晚）
+  const stamps = new Map([
+    [older.path, '2026-01-01T00:00:00.000Z'],
+    [newer.path, '2026-02-01T00:00:00.000Z']
+  ]);
+  for (const book of [older, newer]) {
+    const meta = await storage.readBookMeta(book.path);
+    const legacy = {
+      ...meta,
+      updatedAt: stamps.get(book.path),
+      chapters: meta.chapters.map((chapter) => ({ id: chapter.id, file: chapter.file, name: chapter.name }))
+    };
+    await fs.writeFile(path.join(book.path, '书目.json'), JSON.stringify(legacy), 'utf8');
+  }
+
+  const first = await storage.listBooks(root);
+  assert.deepEqual(first.map((book) => book.folder), ['乙书', '甲书'], '书架按 updatedAt 倒序');
+  assert.ok(first.every((book) => book.totalChars > 0), '扫描要回填字数');
+  for (const book of [older, newer]) {
+    const meta = await storage.readBookMeta(book.path);
+    assert.equal(meta.updatedAt, stamps.get(book.path), '回填字数缓存不许改 updatedAt');
+    assert.ok(meta.chapters.every((chapter) => Number.isFinite(chapter.chars)), '字数缓存要写回');
+  }
+  const second = await storage.listBooks(root);
+  assert.deepEqual(second.map((book) => book.folder), ['乙书', '甲书'], '再扫一次顺序不变');
+  assert.deepEqual(second.map((book) => book.lastModified), [
+    Date.parse('2026-02-01T00:00:00.000Z'),
+    Date.parse('2026-01-01T00:00:00.000Z')
+  ]);
+});
+
+test('书架扫描：缺字数按 8 路并发回填（注入 reader 计数，不测墙钟）', async () => {
+  const chapters = Array.from({ length: 20 }, (_, i) => ({ id: `ch_${i}`, file: `0${i}-x.txt` }));
+  let inFlight = 0;
+  let peak = 0;
+  let calls = 0;
+  const changed = await storage.backfillChapterChars('/tmp/不用真读', chapters, {
+    readText: async () => {
+      calls += 1;
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 4));
+      inFlight -= 1;
+      return '一二三四五';
+    }
+  });
+  assert.equal(changed, true);
+  assert.equal(calls, 20);
+  assert.equal(peak, 8, '并发上限 8（书架列书目是 12、缺章 stat 是 16，各管各的）');
+  assert.ok(chapters.every((chapter) => chapter.chars === 5));
+
+  // 章节记录还在但文件被删（ENOENT）：跳过、不抛、不留 chars
+  const withMissing = [{ id: 'ch_x', file: 'missing.txt' }, { id: 'ch_y', file: 'ok.txt' }];
+  const changed2 = await storage.backfillChapterChars('/tmp/不用真读', withMissing, {
+    readText: async (bookPath, chapter) => {
+      if (chapter.file === 'missing.txt') {
+        const err = new Error('没有这个文件');
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return '四个汉字';
+    }
+  });
+  assert.equal(changed2, true);
+  assert.equal(withMissing[0].chars, undefined);
+  assert.equal(withMissing[1].chars, 4);
+
+  // 全都有缓存：一次都不读（书架二次扫描只算加法）
+  let untouched = 0;
+  const cached = [{ id: 'ch_c', file: 'c.txt', chars: 9 }];
+  const changed3 = await storage.backfillChapterChars('/tmp/不用真读', cached, {
+    readText: async () => {
+      untouched += 1;
+      return '';
+    }
+  });
+  assert.equal(changed3, false);
+  assert.equal(untouched, 0);
+});
+
+test('显式保存仍更新 updatedAt：改章节状态 / 改名会写，扫描回填不写', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '保存测试');
+  const created = await storage.readBookMeta(bookPath);
+  const stamp = '2026-01-01T00:00:00.000Z';
+  await fs.writeFile(
+    path.join(bookPath, '书目.json'),
+    JSON.stringify({ ...created, updatedAt: stamp }),
+    'utf8'
+  );
+  // 扫描把这一章的字数补上，但 updatedAt 不许动
+  const scanned = await storage.listBooks(root);
+  assert.ok(scanned[0].totalChars >= 0);
+  assert.equal((await storage.readBookMeta(bookPath)).updatedAt, stamp, '扫描回填不改 updatedAt');
+  // 用户显式改章节状态 → 必须更新
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const updated = await storage.updateChapterMeta(bookPath, created.chapters[0].id, { status: 'done' });
+  assert.equal(updated.changed, true);
+  assert.notEqual(updated.meta.updatedAt, stamp, '显式保存必须更新 updatedAt');
+  assert.ok(Date.parse(updated.meta.updatedAt) > Date.parse(stamp));
+  // 用户显式改名 → 同样更新
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const renamed = await storage.renameChapter(bookPath, created.chapters[0].id, '新章名');
+  assert.ok(Date.parse(renamed.meta.updatedAt) > Date.parse(updated.meta.updatedAt));
+});

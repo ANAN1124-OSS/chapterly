@@ -256,7 +256,7 @@ async function readBookMeta(bookPath) {
   return bookInfoLib.cleanBookInfo(normalized);
 }
 
-async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true, structural = false } = {}) {
+async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true, structural = false, touchUpdatedAt = true } = {}) {
   if (ensureDirectory) await ensureDir(bookPath);
   const metaPath = path.join(bookPath, BOOK_FILE);
   const bakPath = path.join(bookPath, BOOK_BAK);
@@ -277,7 +277,10 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
     ...meta,
     // 新书 / 旧书第一次写盘时补上版本号；比本应用新的版本不降级
     schemaVersion: schemaLib.normalizeSchemaVersion(meta.schemaVersion),
-    updatedAt: nowIso()
+    // 1.6.0 A2（审计 E-06）：书架扫描回填字数缓存时传 touchUpdatedAt:false —— 扫描是只读行为，
+    // 不许把 updatedAt 顶到现在（否则打开书架就把书往前挪、同步工具也以为书目被改过）。
+    // 老书没有 updatedAt 时仍补一个（第一次写盘）。显式操作（建 / 改 / 删 / 保存）一律保持默认 true。
+    updatedAt: touchUpdatedAt ? nowIso() : meta.updatedAt || nowIso()
   };
   await writeJsonAtomic(metaPath, next, { ensureDir: ensureDirectory });
   return next;
@@ -324,6 +327,32 @@ function mergeCharsCache(freshMeta, cachedChapters) {
 // 缓存缺失时只读缺的那几章并把缓存写回（老书首次扫描慢一点，之后秒开）。
 // writeCache=false 时只算不写（保存后的后台全书校验用：那一趟必须是纯读，
 // 否则会悄悄改 书目.json —— 复制 / 导出等「只读」操作会看到书被改写）。
+// 章节字数缓存回填的并发上限：和书架列书目的 12 路、缺章 stat 的 16 路分开（读盘 vs 只 stat）。
+// 老书首次扫描要读 1000 章正文，串行在机械盘 / 杀软下要到秒级；8 路既快又不会把盘打满。
+const CHAPTER_BACKFILL_CONCURRENCY = 8;
+
+// 把「缺 chars 缓存」的章节正文并发读出来算字数，就地写回 chapter.chars。
+// readText 可注入（单测用它数并发峰值，不测墙钟）；ENOENT（章节记录还在、文件被删）跳过不抛。
+async function backfillChapterChars(bookPath, chapters, options = {}) {
+  const settings = options && typeof options === 'object' ? options : {};
+  const readText = settings.readText || ((targetPath, chapter) =>
+    fs.readFile(assertChapterFile(targetPath, chapter.file), 'utf8'));
+  const concurrency = settings.concurrency === undefined ? CHAPTER_BACKFILL_CONCURRENCY : settings.concurrency;
+  let changed = false;
+  await mapLimit(Array.isArray(chapters) ? chapters : [], concurrency, async (chapter) => {
+    if (!chapter || Number.isFinite(chapter.chars)) return;
+    try {
+      const text = await readText(bookPath, chapter);
+      chapter.chars = chaptersLib.countChars(stripBom(text));
+      changed = true;
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return;
+      throw err;
+    }
+  });
+  return changed;
+}
+
 async function bookStats(bookPath, meta, { writeCache = true } = {}) {
   let totalChars = 0;
   const needRead = [];
@@ -332,16 +361,9 @@ async function bookStats(bookPath, meta, { writeCache = true } = {}) {
     else needRead.push(chapter);
   }
   if (needRead.length) {
-    let changed = false;
+    const changed = await backfillChapterChars(bookPath, needRead);
     for (const chapter of needRead) {
-      try {
-        const text = await fs.readFile(assertChapterFile(bookPath, chapter.file), 'utf8');
-        chapter.chars = chaptersLib.countChars(stripBom(text));
-        totalChars += chapter.chars;
-        changed = true;
-      } catch (err) {
-        if (err.code !== 'ENOENT') throw err;
-      }
+      if (Number.isFinite(chapter.chars)) totalChars += chapter.chars;
     }
     if (changed && writeCache) {
       // 写缓存必须走书锁，而且要锁内重读 meta 再合并：
@@ -350,7 +372,8 @@ async function bookStats(bookPath, meta, { writeCache = true } = {}) {
         await withBookLock(bookPath, async () => {
           const fresh = await readBookMeta(bookPath);
           const merged = mergeCharsCache(fresh, needRead);
-          if (merged.changed) await writeBookMeta(bookPath, merged.meta);
+          // 只补字数缓存：这不是用户操作，updatedAt 保持原值（审计 E-06）
+          if (merged.changed) await writeBookMeta(bookPath, merged.meta, { touchUpdatedAt: false });
         });
       } catch { /* 缓存写不进去不影响书架显示 */ }
     }
@@ -1921,6 +1944,9 @@ module.exports = {
   assertInside,
   assertChapterFile,
   mergeCharsCache,
+  // 1.6.0 A2：书架扫描回填字数缓存（8 路并发；readText 可注入给单测数并发峰值）。
+  // 并发上限常量不进导出（sweep ⑤b 会判「白拿的导出面」），单测按峰值 8 钉住。
+  backfillChapterChars,
   listTxtFiles,
   readBookMeta,
   writeBookMeta,
