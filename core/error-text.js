@@ -19,8 +19,19 @@ const URL_SPLIT_RE = /(https?:\/\/[^\s'"<>「」（）()[\]]+)/i;
 const FILE_URL_RE = /file:\/{2,3}[^\s'"<>「」（）()[\]]*/gi;
 const DEVICE_PATH_RE = /\\\\\?\\[^\s'"<>|*?]+/g;
 const UNC_PATH_RE = /\\\\[^\s'"<>|*?\\]+\\[^\s'"<>|*?]*/g;
-const DRIVE_PATH_RE = /[A-Za-z]:[\\/][^\s'"<>|*?]*/g;
 const POSIX_PATH_RE = /(^|[\s'"（(「【:：,，;；=])(\/(?:[^\s'"<>|*?/]+\/)+[^\s'"<>|*?/]*)/g;
+// 盘符路径的**起点**与分段规则（1.6.0 H4 / S-01）：旧口径 `[^\s'"<>|*?]*` 遇到空格就断，
+// `C:\Users\Zhang San\Documents\我的小说\书\001-第 1 章.txt` 只会遮住 `C:\Users\Zhang`，
+// 后面的用户名 / 书名原样漏进 toast 与日志。现在由 readAbsolutePathEnd() 逐字符走：
+// 空格只在「下个词仍像路径的一段」时才并进路径（isPathContinuationToken），
+// 正文 / 标点 / 引号照旧在路径结束处停下。
+const DRIVE_START_RE = /[A-Za-z]:[\\/]/g;
+// 路径里遇到这些字符就结束（不含 ASCII 冒号：栈行 `…\core\storage.js:395:11` 的行号列号要留着）。
+const PATH_STOP_CHAR_RE = /[\u0000-\u001f<>|*?'"\[\]{}「」『』（）【】《》，。；：、！？,;=]/;
+// 空格之后仍算路径一段的「词」：纯 ASCII 片段（San / 1 / chapter-writer）或带 ASCII 扩展名的片段（第1章.txt）。
+const ASCII_PATH_TOKEN_RE = /^[A-Za-z0-9_.~%+-]+$/;
+const EXT_PATH_TOKEN_RE = /^[^\s'"<>|*?/\\]+\.[A-Za-z0-9]{1,8}$/;
+const TOKEN_STOP_RE = /[\s'"<>|*?\[\]{}「」『』（）【】《》，。；：、！？,;=]/;
 
 // 常见文件系统错误码 → 一句作者看得懂的中文（英文原文只留在本机日志里）。
 // 只认 Node / Electron 真实会抛的码；自定义 StorageError 的错误码不在表里，走原文（本来就是中文）。
@@ -70,6 +81,71 @@ function maskPath(raw, keep = 1) {
   return `${PLACEHOLDER}${sep}${kept.join(sep)}`;
 }
 
+// 路径里的一个「词」：从 text 开头跳过空白，取到下一个空白 / 句法符号为止。
+// rest 是这个词之后的原文（下一轮继续判断「空格后面还像不像路径」）。
+function nextPathToken(text) {
+  let i = 0;
+  while (i < text.length && /\s/.test(text[i])) i += 1;
+  if (i >= text.length) return null;
+  let end = i;
+  while (end < text.length && !TOKEN_STOP_RE.test(text[end])) end += 1;
+  const token = text.slice(i, end);
+  if (!token) return null;
+  return { token, rest: text.slice(end) };
+}
+
+// 空格后面这个词还算不算同一条盘符路径的一段（1.6.0 H4 / S-01）：
+//   · 以下一条绝对路径开头（/ 或 \）→ 不算，那是另一条；
+//   · 自带分隔符 / 带 ASCII 扩展名 → 算（`San\Documents`、`章.txt`）；
+//   · 纯 ASCII 词（`Zhang`、`1`）→ 只有它后面**还**跟着像路径的一段才算（最多回看 3 个词，避免长句里反复试探）；
+//   · 中文正文 / 标点开头的词 → 不算（`打不开`、`后面还有字` 都不应该被吞进路径）。
+function isPathContinuationToken(token, rest, depth = 0) {
+  if (!token) return false;
+  if (token[0] === '/' || token[0] === '\\') return false;
+  if (token.includes('\\') || token.includes('/')) return true;
+  if (EXT_PATH_TOKEN_RE.test(token)) return true;
+  if (!ASCII_PATH_TOKEN_RE.test(token)) return false;
+  if (depth >= 3) return false;
+  const next = nextPathToken(rest);
+  return next ? isPathContinuationToken(next.token, next.rest, depth + 1) : false;
+}
+
+// 从 `X:\` 之后开始，走到这条盘符路径真正的结尾：空格按 isPathContinuationToken 判断是否并进路径，
+// 引号 / 括号 / 中文标点 / Windows 禁用字符处结束（ASCII 括号留给 `Program Files (x86)` 这类真实目录名）。
+function readAbsolutePathEnd(text, from) {
+  let end = from;
+  while (end < text.length) {
+    const ch = text[end];
+    if (PATH_STOP_CHAR_RE.test(ch)) break;
+    if (ch === ' ' || ch === '\t') {
+      const next = nextPathToken(text.slice(end + 1));
+      if (!next || !isPathContinuationToken(next.token, next.rest, 0)) break;
+      end += 1;
+      continue;
+    }
+    end += 1;
+  }
+  return end;
+}
+
+// 把文本里所有盘符路径（含空格）统一遮罩。顺序扫描 + 跳过已遮罩区间，
+// 输出里的 `…\最后一节` 不会再次命中 DRIVE_START_RE。
+function maskAbsolutePaths(text, keep) {
+  DRIVE_START_RE.lastIndex = 0;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = DRIVE_START_RE.exec(text)) !== null) {
+    const start = match.index;
+    if (start < last) continue;
+    const end = readAbsolutePathEnd(text, start + match[0].length);
+    out += text.slice(last, start) + maskPath(text.slice(start, end), keep);
+    last = end;
+    DRIVE_START_RE.lastIndex = end;
+  }
+  return out + text.slice(last);
+}
+
 function redactInText(text, keep) {
   let out = text;
   // file:///C:/… / file://localhost/C:/…：本地文件的 URL 形式，当作路径处理
@@ -80,8 +156,8 @@ function redactInText(text, keep) {
   out = out.replace(DEVICE_PATH_RE, (match) => maskPath(match.replace(/^\\\\\?\\/, ''), keep));
   // \\server\share\…：UNC 路径
   out = out.replace(UNC_PATH_RE, (match) => maskPath(match, keep));
-  // C:\… / C:/…
-  out = out.replace(DRIVE_PATH_RE, (match) => maskPath(match, keep));
+  // C:\… / C:/…（含空格的本机路径整条遮罩，见 maskAbsolutePaths）
+  out = maskAbsolutePaths(out, keep);
   // /home/user/x：POSIX 绝对路径（至少两段，前面必须有分隔符，避免误伤 `UTF-8 / UTF-16`）
   out = out.replace(POSIX_PATH_RE, (match, lead, pathPart) => `${lead}${maskPath(pathPart, keep)}`);
   return out;

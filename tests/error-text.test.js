@@ -262,3 +262,54 @@ test('错误脱敏静态闸门：notifyInternalError 的控制台输出走 descr
   assert.match(body, /logError\(kind, err\)/, '日志侧仍走原始错误，由 core/logs.js 脱敏');
   assert.match(body, /message: INTERNAL_ERROR_TEXT\[kind\]/, '界面广播仍是固定文案，不回传错误细节');
 });
+
+test('错误脱敏：含空格的本机路径整条收掉（S-01 / 1.6.0 H4）', () => {
+  // 旧口径 `[A-Za-z]:[\\/][^\s'"<>|*?]*` 遇到空格就断：只遮住 `C:\Users\Zhang`，
+  // 后面的 `San\Documents\我的小说\书\001-第 1 章.txt` 原样漏出去（用户名 / 书名全暴露）。
+  const listed = "ENOENT: no such file or directory, open 'C:\\Users\\Zhang San\\Documents\\我的小说\\书\\001-第 1 章.txt'";
+  const masked = redactPaths(listed);
+  for (const leak of ['Zhang', 'San', 'Documents', '我的小说', 'Users']) {
+    assert.equal(masked.includes(leak), false, `含空格路径不该漏出「${leak}」：${masked}`);
+  }
+  assert.equal(masked, "ENOENT: no such file or directory, open '…\\001-第 1 章.txt'");
+
+  // 路径后面还有正文 / 一句话里两条含空格路径：路径收掉，正文与两条路径之间的字原样保留
+  assert.equal(redactPaths('打不开 C:\\Users\\Zhang San\\Documents\\小说 这本书'), '打不开 …\\小说 这本书');
+  assert.equal(redactPaths('C:\\Users\\Zhang San\\第 1 章.txt 打不开'), '…\\第 1 章.txt 打不开');
+  assert.equal(
+    redactPaths('C:\\Users\\Zhang San\\a.txt 与 D:\\我的 小说\\b.txt 都失败'),
+    '…\\a.txt 与 …\\b.txt 都失败'
+  );
+  // keep 语义不变（保留最后两节），只是现在能跨空格
+  assert.equal(redactPaths('C:\\Users\\Zhang San\\Documents\\书\\x.txt', { keep: 2 }), '…\\书\\x.txt');
+  // 栈行照样保留行号列号
+  assert.equal(
+    redactPaths('at foo (C:\\Users\\Zhang San\\core\\storage.js:395:11)'),
+    'at foo (…\\storage.js:395:11)'
+  );
+});
+
+test('错误脱敏：空格启发式不吞掉路径后面的普通正文', () => {
+  // 空格只在下个词仍像路径的一段时才并进路径；「后面还有字」/「打不开」这类正文必须留着。
+  assert.equal(redactPaths('D:\\书\\a.txt 后面还有字'), '…\\a.txt 后面还有字');
+  assert.equal(redactPaths('D:\\书\\a.txt 打不开，请稍后再试'), '…\\a.txt 打不开，请稍后再试');
+  // 括注 / 全角标点不会被并进路径
+  assert.equal(redactPaths('章节文件不可写：D:\\书\\001-第1章.txt（只读）'), '章节文件不可写：…\\001-第1章.txt（只读）');
+  // 相对路径 / URL / 「UTF-8 / UTF-16」这类不是本机绝对路径，仍然一个字节都不动
+  assert.equal(redactPaths('相对路径 0001-第1章.txt 与 sub\\x.txt 不动'), '相对路径 0001-第1章.txt 与 sub\\x.txt 不动');
+  const url = 'https://github.com/ANAN1124-OSS/chapterly/releases';
+  assert.equal(redactPaths(`打不开下载页 ${url}`), `打不开下载页 ${url}`);
+});
+
+test('错误脱敏：含空格路径走 describeForUi 也不漏用户名（S-01）', () => {
+  const spaced = 'C:\\Users\\Zhang San\\Documents\\我的小说\\书\\001-第 1 章.txt';
+  const eperm = describeForUi(fsError('EPERM', 'operation not permitted', spaced));
+  assert.equal(eperm.code, 'EPERM');
+  assert.equal(eperm.message.includes('Zhang San'), false, `界面文案漏了用户名：${eperm.message}`);
+  assert.equal(eperm.message.includes('Documents'), false);
+  assert.ok(eperm.message.endsWith('…\\001-第 1 章.txt'), `末段文件名要保留：${eperm.message}`);
+  // 不是 Node 那套「x, open 'path'」形状的 message：走 redactPaths 兜底，同样不能漏
+  const plain = describeForUi(Object.assign(new Error(`读取失败：${spaced}`), { code: 'READ_FAILED' }));
+  assert.equal(plain.message.includes('Zhang San'), false, `兜底脱敏漏了用户名：${plain.message}`);
+  assert.match(plain.message, /…\\001-第 1 章\.txt/);
+});
