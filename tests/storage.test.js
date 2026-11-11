@@ -1081,3 +1081,62 @@ test('章号编号方式：按卷独立写进书目.json，改回连续删字段
   assert.equal('chapterNumbering' in disk2, false, '连续模式不留字段');
   assert.equal(second.chapter.name, '夜雨');
 });
+
+// ---------- 1.6.0 H6（审计 E-05）：章节加载的 128 MB 大小闸门 ----------
+// 旧实现 loadChapterText() / statChapter() 直接 stat → readFile：一个被外部换成超大文件的
+// 章节（或坏掉的同步盘）在点开 / 切过去时会被整份读进内存（128 MB+ 直接顶爆主进程）。
+// 还原 / 快照侧已有 readSizeProblem 闸门（P2-3），章节加载这里统一复用同一条口径。
+test('章节加载：超过 128 MB 的章节明确报 CHAPTER_TOO_LARGE，且不读进内存（稀疏文件）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath, meta } = await storage.createBook(root, '巨大章节');
+  const file = meta.chapters[0].file;
+  const hugePath = path.join(bookPath, file);
+  const handle = await fs.open(hugePath, 'r+');
+  try {
+    await handle.truncate(storage.MAX_CHAPTER_READ_BYTES + 1024); // 稀疏文件：只改大小，不真写 128 MB
+  } finally {
+    await handle.close();
+  }
+  const realReadFile = fs.readFile;
+  let readCalls = 0;
+  fs.readFile = async (...args) => {
+    readCalls += 1;
+    return realReadFile(...args);
+  };
+  try {
+    await assert.rejects(
+      () => storage.loadChapterText(bookPath, file),
+      (err) => {
+        assert.equal(err.code, 'CHAPTER_TOO_LARGE');
+        assert.match(err.message, /超过单文件读取上限/);
+        assert.match(err.message, /128 MB/);
+        assert.match(err.message, /没有读进内存/);
+        assert.equal(err.message.includes(bookPath), false, '错误文案不能带本机完整路径');
+        return true;
+      }
+    );
+    assert.equal(readCalls, 0, '超限章节必须在 stat 之后就拒绝，不能走进 readFile');
+    await assert.rejects(
+      () => storage.statChapter(bookPath, file),
+      (err) => err.code === 'CHAPTER_TOO_LARGE'
+    );
+  } finally {
+    fs.readFile = realReadFile;
+  }
+});
+
+test('章节加载：正常章节的 text / mtimeMs / size 三字段不变', async () => {
+  const root = await mkTmp();
+  const { path: bookPath, meta } = await storage.createBook(root, '正常章节');
+  const file = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file, '第一行\n第二行\n');
+  const onDisk = await fs.stat(path.join(bookPath, file));
+  const loaded = await storage.loadChapterText(bookPath, file);
+  assert.equal(loaded.text, '第一行\n第二行\n');
+  assert.equal(loaded.mtimeMs, onDisk.mtimeMs);
+  assert.equal(loaded.size, onDisk.size);
+  const statOnly = await storage.statChapter(bookPath, file);
+  assert.equal(statOnly.mtimeMs, onDisk.mtimeMs);
+  assert.equal(statOnly.size, onDisk.size);
+  assert.deepEqual(Object.keys(statOnly).sort(), ['mtimeMs', 'size']);
+});

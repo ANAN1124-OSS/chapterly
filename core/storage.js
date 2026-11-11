@@ -530,6 +530,14 @@ async function loadChapterText(bookPath, file) {
     if (err.code === 'ENOENT') throw new StorageError('CHAPTER_MISSING', `章节文件不存在：${file}`);
     throw err;
   }
+  // 1.6.0 H6（审计 E-05）：与还原 / 快照同一条大小口径 —— 超过 128 MB 的章节文件在 stat 之后、
+  // 读盘之前就拒绝，绝不整份读进内存（外部换入超大文件 / 坏掉的同步盘不能再顶爆主进程）。
+  const tooLarge = readSizeProblem(stat.size, {
+    code: 'CHAPTER_TOO_LARGE',
+    label: `章节文件「${file}」`,
+    tail: '没有读进内存'
+  });
+  if (tooLarge) throw new StorageError(tooLarge.code, tooLarge.message);
   let raw;
   try {
     raw = await fs.readFile(p, 'utf8');
@@ -547,6 +555,14 @@ async function loadChapterText(bookPath, file) {
 async function statChapter(bookPath, file) {
   const p = assertChapterFile(bookPath, file);
   const stat = await fs.stat(p);
+  // 1.6.0 H6（审计 E-05）：只 stat 的调用方（外部改动检测 / 保存前校验）也拿到同一条上限，
+  // 免得「只看大小」的路径与「读正文」的路径对同一个文件给出两种结论。
+  const tooLarge = readSizeProblem(stat.size, {
+    code: 'CHAPTER_TOO_LARGE',
+    label: `章节文件「${file}」`,
+    tail: '没有读进内存'
+  });
+  if (tooLarge) throw new StorageError(tooLarge.code, tooLarge.message);
   return { mtimeMs: stat.mtimeMs, size: stat.size };
 }
 
