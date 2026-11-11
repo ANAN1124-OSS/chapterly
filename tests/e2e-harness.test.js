@@ -41,20 +41,71 @@ async function tempDir(prefix) {
   return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
-test('harness.check：通过时只记一条，失败时抛错并带上现场（名称 / detail）', () => {
+test('harness.check：失败累计、不中断后一条；两条失败都记进 failures，summary 返回非零退出码', () => {
   const { harness } = makeHarness();
-  harness.check('通过项', true);
-  assert.deepEqual(harness.checks, [{ name: '通过项', ok: true }]);
+  assert.equal(harness.check('通过项', true), true);
+  assert.equal(harness.check('失败项', 0, { where: 'shelf' }), false);
+  // 1.6.0 G2：第一处失败之后仍然继续（不再 throw），后一条通过 / 再失败都要留档
+  assert.equal(harness.check('失败后仍继续', true), true);
+  assert.equal(harness.check('无现场', false), false);
+  assert.deepEqual(harness.checks, [
+    { name: '通过项', ok: true },
+    { name: '失败项', ok: false, detail: { where: 'shelf' } },
+    { name: '失败后仍继续', ok: true },
+    { name: '无现场', ok: false }
+  ]);
+  assert.deepEqual(harness.failures.map((item) => item.name), ['失败项', '无现场']);
+  assert.deepEqual(harness.failures[0].detail, { where: 'shelf' });
+  assert.equal('detail' in harness.failures[1], false);
+  const failed = harness.summary();
+  assert.equal(failed.ok, false);
+  assert.equal(failed.failed, 2);
+  assert.notEqual(failed.exitCode, 0);
+  assert.deepEqual(failed.failures.map((item) => item.name), ['失败项', '无现场']);
 
-  assert.throws(
-    () => harness.check('失败项', 0, { where: 'shelf' }),
-    (err) => err instanceof Error && /检查失败：失败项 :: \{"where":"shelf"\}/.test(err.message)
-  );
-  // 失败也要留档（排查时能看到卡在哪一条），ok 为 false
-  assert.deepEqual(harness.checks[1], { name: '失败项', ok: false });
+  // 全绿时 summary 是零退出码，failures 为空
+  const clean = makeHarness().harness;
+  clean.check('唯一项', true);
+  assert.deepEqual(clean.summary(), { ok: true, exitCode: 0, failed: 0, failures: [] });
 
-  // detail 不传时不该出现多余的 ` :: ` 尾巴
-  assert.throws(() => harness.check('无现场', false), /^Error: 检查失败：无现场$/);
+  // 场景级异常（组里抛出来的 TypeError / 等待超时）也要进同一份失败清单，不能吞掉已跑结果
+  const withCrash = makeHarness().harness;
+  withCrash.check('异常前的通过项', true);
+  withCrash.recordFailure('第 42 组场景异常', new Error('模拟组内异常'));
+  assert.deepEqual(withCrash.checks[1], { name: '第 42 组场景异常', ok: false, detail: '模拟组内异常' });
+  assert.deepEqual(withCrash.failures[0].detail, '模拟组内异常');
+  assert.equal(withCrash.summary().exitCode, 1);
+});
+
+test('harness.waitForRender / waitForFocus / waitForDisk：有名字的定时等待，时长只从 WAIT 常量表取', async () => {
+  const { harness, sleeps } = makeHarness();
+  await harness.waitForRender();
+  await harness.waitForFocus();
+  await harness.waitForDisk();
+  assert.deepEqual(sleeps, [harness.WAIT.RENDER, harness.WAIT.FOCUS, harness.WAIT.WRITE]);
+  assert.deepEqual(harness.WAIT, { RENDER: 150, FOCUS: 150, WRITE: 150, POLL: 120 });
+  assert.equal(Object.isFrozen(harness.WAIT), true, '常量表要冻结，组里改不动');
+  // 个别场景确实需要更长的一拍时显式传，不用再另写一个魔数
+  await harness.waitForRender(400);
+  assert.equal(sleeps[sleeps.length - 1], 400);
+});
+
+test('静态闸门：三类等待走 harness 的 waitForRender / waitForFocus / waitForDisk', () => {
+  const groupSources = fs
+    .readdirSync(GROUPS_DIR)
+    .filter((name) => name.endsWith('.js') && name !== 'index.js')
+    .map((name) => fs.readFileSync(path.join(GROUPS_DIR, name), 'utf8'))
+    .join('\n');
+  for (const helper of ['waitForRender(', 'waitForFocus(', 'waitForDisk(']) {
+    assert.ok(groupSources.includes(helper), `组文件里没用上 ${helper}`);
+  }
+  for (const decl of [
+    'const waitForRender = async (ms = WAIT.RENDER)',
+    'const waitForFocus = async (ms = WAIT.FOCUS)',
+    'const waitForDisk = async (ms = WAIT.WRITE)'
+  ]) {
+    assert.ok(HARNESS_SOURCE.includes(decl), `harness 里缺 ${decl}`);
+  }
 });
 
 test('harness.waitFor：逐次重试直到真值；超时抛错并附 activeElement / hasFocus 现场', async () => {
@@ -406,6 +457,46 @@ test('静态闸门：组索引能单独 require（不依赖 Electron），组号
     registry.groups.splice(-2, 2);
   }
   assert.deepEqual(ran, [9999, 9998]);
+});
+
+test('组索引：某组抛错只记一条「场景异常」失败，后面的组照样跑（check 累计失败的下半截）', async () => {
+  const registry = require('../scripts/e2e/groups');
+  const ran = [];
+  const notes = [];
+  registry.groups.push({
+    id: 9998,
+    run: async () => {
+      throw new TypeError('模拟组内 TypeError');
+    }
+  });
+  registry.groups.push({ id: 9999, run: async () => ran.push(9999) });
+  try {
+    // 有 recordFailure 时：记一条失败，继续跑下一组；异常不再穿出 runGroups
+    await registry.runGroups(
+      { recordFailure: (name, err) => notes.push([name, err && err.message]) },
+      [9998, 9999]
+    );
+  } finally {
+    registry.groups.splice(-2, 2);
+  }
+  assert.deepEqual(ran, [9999], '前一组抛错不许把后面的组一起停掉');
+  assert.deepEqual(notes, [['第 9998 组场景异常', '模拟组内 TypeError']]);
+
+  // 没有 recordFailure 的调用方（旧用法）：仍按原语义把异常抛出去，不静默吞
+  const throwRan = [];
+  registry.groups.push({
+    id: 9998,
+    run: async () => {
+      throw new Error('没有记录器');
+    }
+  });
+  registry.groups.push({ id: 9999, run: async () => throwRan.push(9999) });
+  try {
+    await assert.rejects(() => registry.runGroups({}, [9998, 9999]), /没有记录器/);
+  } finally {
+    registry.groups.splice(-2, 2);
+  }
+  assert.deepEqual(throwRan, []);
 });
 
 test('静态闸门：harness 与组文件只 require node 内建，不牵出产品代码 / electron', () => {

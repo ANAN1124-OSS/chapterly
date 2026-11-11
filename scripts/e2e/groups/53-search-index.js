@@ -11,6 +11,7 @@ module.exports = async function group53SearchIndex(t) {
     check,
     waitFor,
     sleep,
+    waitForRender,
     fileExists,
     userData,
     booksRoot,
@@ -214,7 +215,7 @@ module.exports = async function group53SearchIndex(t) {
 
   // 53g. 外部改 txt（mtime / size 变了）：强制校验后索引跟着更新，旧正文不再命中
   await exec("window.__cwTest.setShelfQuery('')");
-  await sleep(150);
+  await waitForRender();
   const externalText = '外部的月光照在窗台上，像是没有人收的旧信。';
   const externalChapterFile = searchChapterFiles[2];
   await fs.writeFile(path.join(searchBookPath, externalChapterFile), externalText, 'utf8');
@@ -319,7 +320,7 @@ module.exports = async function group53SearchIndex(t) {
     summary: paged.summary
   };
   const afterMore = await exec('window.__cwTest.clickShelfContentMore()');
-  await sleep(150);
+  await waitForRender();
   const secondPage = await exec('window.__cwTest.shelfContentState()');
   check(
     '正文搜索：结果分页显示（先 8 条，「显示更多」展开剩下的）',
@@ -343,7 +344,7 @@ module.exports = async function group53SearchIndex(t) {
   // 53l（1.1.0）：一章内全部命中——正文结果按「书 + 章」聚合，组头写「本章 N 处」，
   // 默认仍只列前 3 条；「展开本章全部」就地列出该章全部命中，点第 4 条能定位到第 4 处，收起恢复。
   await exec("window.__cwTest.setShelfQuery('')");
-  await sleep(150);
+  await waitForRender();
   await exec("window.__cwTest.newBook('章内全部命中测试书')");
   await waitFor("window.__cwTest.view() === 'editor'");
   const chapterHitsBookPath = await exec('window.__cwTest.bookPathValue()');
@@ -478,7 +479,7 @@ module.exports = async function group53SearchIndex(t) {
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
   await exec("window.__cwTest.setShelfQuery('')");
-  await sleep(150);
+  await waitForRender();
   const chapterHitsRemoved = await exec(
     `window.api.deleteBook(${JSON.stringify(chapterHitsBookPath)})`
   );

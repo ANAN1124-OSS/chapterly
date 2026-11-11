@@ -10,6 +10,16 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
+// 等待时长常量表（1.6.0 G2）：E2E 里「等一拍」的时长只在这里写数字，组文件用有名字的
+// waitForRender / waitForFocus / waitForDisk；能在条件上等的继续用 waitFor，不要拿它们当断言。
+// 三个类的默认值都取该用途原先最常见的量级（≥ 改动前的等待，不靠缩短等待换速度）。
+const WAIT = Object.freeze({
+  RENDER: 150, // UI 动作（点击 / 切视图 / 搜索过滤）后等一次渲染与重排落定
+  FOCUS: 150, // focus() / 键盘事件后等 focusin·blur 链派发完
+  WRITE: 150, // 主进程小文件（配置 / 书目 / stats.json）落盘
+  POLL: 120 // waitFor / waitForLog 的轮询间隔（内部用，别拿它当断言等待）
+});
+
 // ctx 就是 e2e-scenario.js 拿到的那个 ctx（主进程侧注入的执行 / 存储 / 临时 userData）。
 // win / clipboard / storage / config / getCloseReady 是给「场景前导工具」用的：单测
 // （tests/e2e-harness.test.js）只传 exec / sleep / userData 也能创建 harness，所以下面每个
@@ -18,12 +28,46 @@ function createHarness(ctx) {
   const { exec, sleep, userData, win, clipboard, storage, config, getCloseReady } = ctx;
   // 全部断言的结果（e2e-scenario.js 最后原样交回主进程，按条打印 PASS / FAIL）
   const checks = [];
+  // 失败清单（1.6.0 G2）：check 不再第一处失败就 throw，而是逐条累计；场景级异常（组里抛出的
+  // TypeError / waitFor 超时）也走 recordFailure 记进同一份清单，最后统一由 summary() 决定退出码。
+  const failures = [];
 
   const check = (name, cond, detail) => {
-    checks.push({ name, ok: Boolean(cond) });
-    if (!cond) {
-      throw new Error(`检查失败：${name}${detail === undefined ? '' : ` :: ${JSON.stringify(detail)}`}`);
-    }
+    const ok = Boolean(cond);
+    const entry = { name, ok };
+    if (!ok && detail !== undefined) entry.detail = detail;
+    checks.push(entry);
+    if (!ok) failures.push(entry);
+    return ok;
+  };
+
+  // 场景级异常（不是某一条断言，而是这一组跑到一半抛了）：记成一条失败，让后面的组继续跑。
+  const recordFailure = (name, err) => {
+    const message = String((err && err.message) || err);
+    const entry = { name, ok: false, detail: message };
+    checks.push(entry);
+    failures.push(entry);
+    return message;
+  };
+
+  const hasFailures = () => failures.length > 0;
+  const summary = () => ({
+    ok: !hasFailures(),
+    exitCode: hasFailures() ? 1 : 0,
+    failed: failures.length,
+    failures: failures.slice()
+  });
+
+  // 有名字的定时等待（1.6.0 G2）：把组里散落的 sleep(120/150) 按用途收口，时长从 WAIT 取。
+  // 它们只是「让一拍」，不断言任何东西；能等到条件的场景仍要写 waitFor。
+  const waitForRender = async (ms = WAIT.RENDER) => {
+    await sleep(ms);
+  };
+  const waitForFocus = async (ms = WAIT.FOCUS) => {
+    await sleep(ms);
+  };
+  const waitForDisk = async (ms = WAIT.WRITE) => {
+    await sleep(ms);
   };
 
   const waitFor = async (expr, timeout = 10000) => {
@@ -45,7 +89,7 @@ function createHarness(ctx) {
         } catch { /* 页面刚好在切换，忽略 */ }
         throw new Error(`等待超时：${expr}${diag ? `（现场：${diag}）` : ''}`);
       }
-      await sleep(120);
+      await sleep(WAIT.POLL);
     }
   };
 
@@ -77,7 +121,7 @@ function createHarness(ctx) {
       if (Date.now() - startedAt > timeout) {
         throw new Error(`等待日志超时：${needle} :: ${text.slice(-800)}`);
       }
-      await sleep(120);
+      await sleep(WAIT.POLL);
     }
   };
 
@@ -122,7 +166,7 @@ function createHarness(ctx) {
         if (await exec('document.hasFocus() === true')) return true;
       } catch { /* 页面可能还没就绪 */ }
       try { win.focus(); } catch { /* 忽略 */ }
-      await sleep(150);
+      await sleep(WAIT.FOCUS);
     }
     console.warn('[e2e] 窗口拿不到系统焦点：键盘 / 焦点类断言可能不稳定（继续跑，不中断）');
     return false;
@@ -182,7 +226,7 @@ function createHarness(ctx) {
         /* 还没写出来 */
       }
       if (Date.now() - startedAt > timeout) throw new Error(`等待文件超时：${file}`);
-      await sleep(100);
+      await sleep(WAIT.POLL);
     }
   };
 
@@ -200,7 +244,7 @@ function createHarness(ctx) {
       if (Date.now() - startedAt > timeout) {
         throw new Error(`等待导出摘要超时：${needle} :: ${text}`);
       }
-      await sleep(120);
+      await sleep(WAIT.POLL);
     }
   };
 
@@ -211,7 +255,7 @@ function createHarness(ctx) {
       const value = getCloseReady();
       if (value !== undefined) return value;
       if (Date.now() - startedAt > timeout) throw new Error('等待 close-ready 超时');
-      await sleep(100);
+      await sleep(WAIT.POLL);
     }
   };
 
@@ -229,13 +273,20 @@ function createHarness(ctx) {
       if (Date.now() - startedAt > timeout) {
         throw new Error(`等待剪贴板超时：${JSON.stringify(value.slice(0, 80))}`);
       }
-      await sleep(100);
+      await sleep(WAIT.POLL);
     }
   };
 
   return {
     checks,
+    failures,
     check,
+    recordFailure,
+    summary,
+    WAIT,
+    waitForRender,
+    waitForFocus,
+    waitForDisk,
     waitFor,
     readLogs,
     waitForLog,

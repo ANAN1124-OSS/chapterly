@@ -4,7 +4,7 @@
 // 组内局部变量不进别的文件；要交给后面组的值由场景的 state 袋子传递（见 e2e-scenario.js 文件头）。
 
 module.exports = async function group33ShelfSearch(t) {
-  const { exec, check, waitFor, sleep, win, setWindowSize } = t;
+  const { exec, check, waitFor, sleep, waitForRender, win, setWindowSize } = t;
 
   // 33. 书架搜索：书名 + 章节名（不读正文）
   await exec('window.__cwTest.save()');
@@ -13,7 +13,7 @@ module.exports = async function group33ShelfSearch(t) {
   const allShelfTitles = await exec('window.__cwTest.shelfTitles()');
 
   await exec("window.__cwTest.setShelfQuery('拖拽排序书')");
-  await sleep(120);
+  await waitForRender();
   const titleFiltered = await exec('window.__cwTest.shelfFilteredTitles()');
   check('书架搜索：按书名过滤', JSON.stringify(titleFiltered) === JSON.stringify(['拖拽排序书']), titleFiltered);
   check(
@@ -22,7 +22,7 @@ module.exports = async function group33ShelfSearch(t) {
   );
 
   await exec("window.__cwTest.setShelfQuery('第三')");
-  await sleep(120);
+  await waitForRender();
   const chapterFiltered = await exec('window.__cwTest.shelfFilteredTitles()');
   const chapterMatchLines = await exec('window.__cwTest.shelfCardMatches()');
   check('书架搜索：按章节名过滤到对应的书', chapterFiltered.includes('拖拽排序书'), chapterFiltered);
@@ -38,7 +38,7 @@ module.exports = async function group33ShelfSearch(t) {
   );
 
   await exec("window.__cwTest.setShelfQuery('绝对不存在的书名xyz')");
-  await sleep(120);
+  await waitForRender();
   check('书架搜索：没有匹配时列表为空', (await exec('window.__cwTest.shelfFilteredTitles()')).length === 0);
   check(
     '书架搜索：没有匹配时给出提示',
@@ -51,7 +51,7 @@ module.exports = async function group33ShelfSearch(t) {
   );
 
   await exec("window.__cwTest.setShelfQuery('')");
-  await sleep(120);
+  await waitForRender();
   check(
     '书架搜索：清空后恢复全部书',
     (await exec('window.__cwTest.shelfFilteredTitles()')).length === allShelfTitles.length
@@ -118,7 +118,7 @@ module.exports = async function group33ShelfSearch(t) {
   await exec(
     "document.getElementById('shelf-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"
   );
-  await sleep(100);
+  await waitForRender();
   check('书架搜索：Esc 清空搜索', (await exec('window.__cwTest.shelfQuery()')) === '');
   await exec("window.__cwTest.setShelfQuery('拖拽排序书')");
   await exec(
@@ -138,7 +138,7 @@ module.exports = async function group33ShelfSearch(t) {
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
   await exec("window.__cwTest.setShelfQuery('第二')");
-  await sleep(120);
+  await waitForRender();
   const chapterHitCard = await exec(`(() => {
     const card = Array.from(document.querySelectorAll('#book-grid .book-card[data-path]')).find((el) => {
       const title = el.querySelector('.book-card-title');
@@ -194,7 +194,7 @@ module.exports = async function group33ShelfSearch(t) {
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
   await exec("window.__cwTest.setShelfQuery('')");
-  await sleep(120);
+  await waitForRender();
   check(
     '书架搜索：清空后恢复普通书卡（没有命中行 / 可点章名）',
     (await exec("document.querySelectorAll('.book-card-match').length")) === 0 &&
@@ -204,7 +204,7 @@ module.exports = async function group33ShelfSearch(t) {
 
   // 点命中章：直接打开这本书并定位到命中章（不是上次章节）
   await exec("window.__cwTest.setShelfQuery('第二')");
-  await sleep(120);
+  await waitForRender();
   const hitIndex = await exec(`(() => {
     const card = Array.from(document.querySelectorAll('#book-grid .book-card[data-path]')).find((el) => {
       const title = el.querySelector('.book-card-title');

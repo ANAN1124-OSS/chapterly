@@ -123,7 +123,7 @@ const jsFocusId = (id) => `(() => {
 const ESC = "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))";
 
 module.exports = async function group68DialogFocus(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep } = t;
+  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep, waitForFocus } = t;
 
   // 真实 Tab 按键：Chromium 的焦点遍历走的是键盘事件的默认行为，只有 sendInputEvent 能触发
   const sendTab = async (shift) => {
@@ -148,7 +148,7 @@ module.exports = async function group68DialogFocus(t) {
         if (await exec('document.hasFocus() === true')) return true;
       } catch { /* 页面可能还没就绪 */ }
       try { win.focus(); } catch { /* 忽略 */ }
-      await sleep(120);
+      await waitForFocus();
     }
     return false;
   };
@@ -242,7 +242,7 @@ module.exports = async function group68DialogFocus(t) {
     // ⑦ Esc 关闭：焦点不许丢到 <body>，要还给打开前那个元素
     await exec(ESC);
     await waitFor(`document.getElementById(${JSON.stringify(spec.backdrop)}).classList.contains('hidden')`);
-    await sleep(120);
+    await waitForFocus();
     const after = await activeNow();
     check(`${name}：关闭后焦点没有丢在 body 上`, after.inside === false && after.isBody === false, after);
     check(`${name}：关闭后焦点还给打开前的元素`, after.isOpener === true, after);
@@ -358,7 +358,7 @@ module.exports = async function group68DialogFocus(t) {
   );
   await exec("document.getElementById('btn-format-cancel').click()");
   await waitFor("document.getElementById('format-backdrop').classList.contains('hidden')");
-  await sleep(120);
+  await waitForFocus();
 
   // ---------- 通用询问框（未保存修改返回书架）----------
   // 它压在其它弹层之上（z-index 300），是唯一会跟别的弹层叠在一起的那个，单独测。
@@ -379,7 +379,7 @@ module.exports = async function group68DialogFocus(t) {
   await exec("window.__cwTest.answerModal('cancel')");
   await waitFor('window.__cwTest.modalOpen() === false');
   await pending.catch(() => {});
-  await sleep(120);
+  await waitForFocus();
   const afterModal = await activeNow();
   check('通用询问框：取消后焦点没有丢在 body 上', afterModal.isBody === false, afterModal);
   check('通用询问框：取消后焦点还给打开前的元素', afterModal.isOpener === true, afterModal);

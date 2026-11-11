@@ -48,7 +48,7 @@ const typeSearch = (text) =>
   })()`;
 
 module.exports = async function group73SettingsIa(t) {
-  const { exec, check, waitFor, sleep, storage, booksRoot, userData, deleteBookWithRetry } = t;
+  const { exec, check, waitFor, sleep, waitForDisk, storage, booksRoot, userData, deleteBookWithRetry } = t;
 
   // ---------- ① 书架（全局作用域）打开设置：默认停在「显示」 ----------
   await exec('window.__cwTest.backToShelf()');
@@ -240,7 +240,7 @@ module.exports = async function group73SettingsIa(t) {
   })()`);
   await exec("document.getElementById('btn-settings-save').click()");
   await waitFor('window.__cwTest.settingsOpen() === false');
-  await sleep(120);
+  await waitForDisk();
   const configAfter = JSON.parse(await fs.readFile(configPath, 'utf8'));
   check(
     '设置信息架构：在「内容」分区改章节模板，保存后 config.json 真的写进去',
@@ -259,7 +259,7 @@ module.exports = async function group73SettingsIa(t) {
   })()`);
   await exec("document.getElementById('btn-settings-save').click()");
   await waitFor('window.__cwTest.settingsOpen() === false');
-  await sleep(120);
+  await waitForDisk();
   const configRestored = JSON.parse(await fs.readFile(configPath, 'utf8'));
   check(
     '设置信息架构：章节模板已还原（不影响后面的组）',

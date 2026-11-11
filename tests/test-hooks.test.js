@@ -264,8 +264,15 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   for (const name of ['ttsFakeState', 'setTestVerifyBook', 'formatBookProgressText', 'fontDecodeMode', 'setInput']) {
     assert.ok(!rendererCode.includes(name), `renderer.js 里不该再有测试钩子 ${name}`);
   }
+  // 1.6.0 G2：原阈值 9600 是恒真断言（1.5.0 实测 5691 行、本版实测 5764 行，永远够不到）。
+  // 改成按上一版实测值的硬预算：只能减不能加；确有新模块要放进来时，同时改这个数字并在
+  // 提交信息里写清为什么，避免「阈值远大于实际」的门再次退化成摆设。
+  const RENDERER_LINE_BUDGET = 5764;
   const lines = rendererSrc.split(/\r?\n/).length;
-  assert.ok(lines < 9600, `renderer.js 又胖了（${lines} 行），测试钩子应留在 test-hooks.js`);
+  assert.ok(
+    lines <= RENDERER_LINE_BUDGET,
+    `renderer.js 行数涨了：${lines} > ${RENDERER_LINE_BUDGET}（新代码请搬进独立模块，别回流 renderer.js）`
+  );
 });
 
 test('静态闸门：test-hooks.js 只在 ?test=1 时动态加载（index.html 没有静态 script）', () => {

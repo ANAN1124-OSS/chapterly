@@ -119,7 +119,9 @@ child.on('close', (code) => {
   }
   const details = result.details || [];
   for (const item of details) {
-    console.log(`${item.ok ? 'PASS' : 'FAIL'}  ${item.name}`);
+    // 1.6.0 G2：失败条目带现场（detail），PASS 行保持一字不多（逐行基线口径不变）。
+    const suffix = item.ok || item.detail === undefined ? '' : ` :: ${JSON.stringify(item.detail)}`;
+    console.log(`${item.ok ? 'PASS' : 'FAIL'}  ${item.name}${suffix}`);
   }
   console.log('');
   if (result.clipboardSynthetic) {

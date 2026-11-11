@@ -45,7 +45,7 @@ const JS_VOLUME_ROWS = `(() => {
 })()`;
 
 module.exports = async function group71MenuKeyboard(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep } = t;
+  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep, waitForFocus } = t;
 
   // 真实按键：Shift+F10 / Tab / 方向键 / Esc 都要靠浏览器默认行为，只有 sendInputEvent 能触发。
   // 方向键必须用 Chromium 的加速键名 Down / Up（写 ArrowDown 发出去是 Unidentified，见 A-5b）。
@@ -69,7 +69,7 @@ module.exports = async function group71MenuKeyboard(t) {
         if (await exec('document.hasFocus() === true')) return true;
       } catch { /* 页面可能还没就绪 */ }
       try { win.focus(); } catch { /* 忽略 */ }
-      await sleep(120);
+      await waitForFocus();
     }
     return false;
   };

@@ -48,6 +48,8 @@ module.exports = async function runScenario(ctx) {
   const harness = createHarness(ctx);
   const { checks, check, waitFor, logDir, logNamePattern, readLogs, waitForLog, deleteBookWithRetry, fileExists } =
     harness;
+  // 1.6.0 G2：失败累计（check 不再抛错；组内异常由 runGroups 记成「场景异常」继续下一组）+ 有名字的等待。
+  const { recordFailure, waitForRender, waitForFocus, waitForDisk } = harness;
 
   // 场景开场先让自动化窗口拿一次系统焦点（2026-11-01 v0.9 R0）；工具已下沉 harness.js
   // （ensureWindowFocus / diskText / waitForFile / waitForSummary / waitCloseReady / 剪贴板工具）：
@@ -104,7 +106,11 @@ module.exports = async function runScenario(ctx) {
     // ---------- 场景上下文（主进程侧注入） ----------
     exec,
     check,
+    recordFailure,
     waitFor,
+    waitForRender,
+    waitForFocus,
+    waitForDisk,
     sleep,
     win,
     clipboard,
@@ -372,5 +378,15 @@ module.exports = async function runScenario(ctx) {
   //     书架刷新 / 旧书兼容 / 书库无多余文件都在组文件里复核，这里只在原位按组号跑。
   await e2eGroups.runGroups(groupContext(), [55]);
 
-  return { ok: true, checks: checks.length, details: checks };
+  // 1.6.0 G2：整轮跑完再统一判失败（check 累计失败 + 组级场景异常都进 details），不再第一处就全停。
+  const summary = harness.summary();
+  return {
+    ok: summary.ok,
+    checks: checks.length,
+    details: checks,
+    failures: summary.failures,
+    error: summary.ok
+      ? undefined
+      : `共 ${summary.failed} 项失败：${summary.failures.map((item) => item.name).join(' / ')}`
+  };
 };

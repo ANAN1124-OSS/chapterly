@@ -126,7 +126,7 @@ const JS_FOCUSED = `(() => {
 })()`;
 
 module.exports = async function group70A11yKeyboard(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep } = t;
+  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep, waitForFocus, waitForRender, waitForDisk } = t;
 
   // 真实按键：Tab / Enter / 空格 / 方向键都要靠浏览器默认行为，只有 sendInputEvent 能触发
   const sendKey = async (keyCode, modifiers = [], wait = 90) => {
@@ -150,7 +150,7 @@ module.exports = async function group70A11yKeyboard(t) {
         if (await exec('document.hasFocus() === true')) return true;
       } catch { /* 页面可能还没就绪 */ }
       try { win.focus(); } catch { /* 忽略 */ }
-      await sleep(120);
+      await waitForFocus();
     }
     return false;
   };
@@ -296,7 +296,7 @@ module.exports = async function group70A11yKeyboard(t) {
     nested
   );
   await exec("document.querySelector('#book-grid .book-card .book-card-more').click()");
-  await sleep(120);
+  await waitForRender();
   const menuOpen = await exec("!document.getElementById('book-menu').classList.contains('hidden')");
   const stillShelf = (await exec('window.__cwTest.view()')) === 'shelf';
   check('键盘可达：「⋯」照旧打开书卡菜单、不打开书（鼠标路径没变）', menuOpen === true && stillShelf === true, { menuOpen, stillShelf });
@@ -605,13 +605,13 @@ module.exports = async function group70A11yKeyboard(t) {
   const d1Modal = await exec('window.__cwTest.modalOpen()');
   const d1UndoShown = await exec("!document.getElementById('undo-bar').classList.contains('hidden')");
   const d1UndoLabel = await exec("document.getElementById('undo-label').textContent");
-  await sleep(150);
+  await waitForDisk();
   const d1MetaAfter = await storage.readBookMeta(bookPath);
   // 反着按 Alt+↑：乙卷 → 甲卷卷尾（可回退）
   await exec(JS_FOCUS_CHAPTER(0));
   await sendKey('Up', ['alt'], 350);
   const d1AskedBack = await waitFor(`window.__cwTest.chapterVolumeIds()[0] === ${JSON.stringify(d1VolIds[0])}`, 8000).catch(() => false);
-  await sleep(150);
+  await waitForDisk();
   const d1MetaBack = await storage.readBookMeta(bookPath);
   // 已经在首卷第一条：再按 Alt+↑ 必须什么都不发生（不弹框、不写盘）
   await exec(JS_FOCUS_CHAPTER(0));

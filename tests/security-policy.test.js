@@ -51,15 +51,35 @@ test('安全开关：没有 preload 路径时直接抛错（不建没有桥接�
 });
 
 test('安全开关：和真实窗口回读值对账（preload / spellcheck 不回读，缺键算不一致）', () => {
-  // Electron 45 的真实回读形状：没有 preload / spellcheck，其余与策略一致
-  const readBack = {};
-  for (const key of Object.keys(policy.WINDOW_WEB_PREFERENCES)) {
-    if (policy.PREFERENCES_NOT_READ_BACK.includes(key)) continue;
-    readBack[key] = policy.WINDOW_WEB_PREFERENCES[key];
-  }
+  // Electron 45 的真实回读形状：没有 preload / spellcheck，其余九项与策略一致。
+  // 1.6.0 G2：这里是**期望值字面量**，不再从 policy.WINDOW_WEB_PREFERENCES 反推 ——
+  // 反推等于自证（策略改宽 / 多一项，回读也跟着变，断言永远绿，锁不住任何东西）。
+  const EXPECTED_READ_BACK = {
+    contextIsolation: true,
+    nodeIntegration: false,
+    nodeIntegrationInWorker: false,
+    nodeIntegrationInSubFrames: false,
+    sandbox: true,
+    webSecurity: true,
+    allowRunningInsecureContent: false,
+    experimentalFeatures: false,
+    webviewTag: false
+  };
+  const readBack = { ...EXPECTED_READ_BACK };
   assert.deepEqual(policy.preferenceDiff(readBack), []);
   assert.equal('preload' in readBack, false);
   assert.equal('spellcheck' in readBack, false);
+  // 策略常量本身逐项等于上面这份字面量（新增一项、少一项、改宽一项都会红）
+  for (const [key, value] of Object.entries(EXPECTED_READ_BACK)) {
+    assert.equal(policy.WINDOW_WEB_PREFERENCES[key], value, key);
+  }
+  assert.deepEqual(
+    Object.keys(policy.WINDOW_WEB_PREFERENCES)
+      .filter((key) => !policy.PREFERENCES_NOT_READ_BACK.includes(key))
+      .sort(),
+    Object.keys(EXPECTED_READ_BACK).sort(),
+    'WINDOW_WEB_PREFERENCES 的键集合变了（新增键要显式写进这份期望值）'
+  );
   // 任何一项被放宽都能查出来
   assert.deepEqual(policy.preferenceDiff({ ...readBack, sandbox: false }), ['sandbox']);
   assert.deepEqual(policy.preferenceDiff({ ...readBack, nodeIntegration: true }), ['nodeIntegration']);
@@ -69,10 +89,18 @@ test('安全开关：和真实窗口回读值对账（preload / spellcheck 不�
   const missing = { ...readBack };
   delete missing.contextIsolation;
   assert.deepEqual(policy.preferenceDiff(missing), ['contextIsolation']);
-  // 坏输入：把需要核对的键全部报出来
-  const expected = Object.keys(policy.WINDOW_WEB_PREFERENCES).filter(
-    (key) => !policy.PREFERENCES_NOT_READ_BACK.includes(key)
-  );
+  // 坏输入：把需要核对的键全部报出来（顺序按策略常量的键序，锁成字面量）
+  const expected = [
+    'contextIsolation',
+    'nodeIntegration',
+    'nodeIntegrationInWorker',
+    'nodeIntegrationInSubFrames',
+    'sandbox',
+    'webSecurity',
+    'allowRunningInsecureContent',
+    'experimentalFeatures',
+    'webviewTag'
+  ];
   assert.equal(expected.length > 0, true);
   assert.deepEqual(policy.preferenceDiff(null), expected);
   assert.deepEqual(policy.preferenceDiff(undefined), expected);

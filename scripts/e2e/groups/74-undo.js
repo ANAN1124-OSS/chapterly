@@ -30,7 +30,7 @@ const pressCtrlZ = (exec) =>
   exec("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))");
 
 module.exports = async function group74Undo(t) {
-  const { exec, check, waitFor, sleep, storage, booksRoot, deleteBookWithRetry } = t;
+  const { exec, check, waitFor, sleep, waitForRender, storage, booksRoot, deleteBookWithRetry } = t;
 
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
@@ -239,7 +239,7 @@ module.exports = async function group74Undo(t) {
   await exec("document.getElementById('editor').focus()");
   await exec('window.__cwTest.deleteChapterAt(0)');
   await waitFor('window.__cwTest.chapterTitles().length === 1', 8000);
-  await sleep(120);
+  await waitForRender();
   const escBar = await readUndo(exec);
   check('撤销删除：Esc 关条子之前条子是可见的', escBar.visible === true, escBar.visible);
   await exec("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
@@ -262,7 +262,7 @@ module.exports = async function group74Undo(t) {
   check('撤销删除：回书架前撤销条是可见的', beforeShelf.visible === true, beforeShelf.visible);
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
-  await sleep(150);
+  await waitForRender();
   const atShelf = JSON.parse(
     await exec("JSON.stringify({ visible: !document.getElementById('undo-bar').classList.contains('hidden') })")
   );
