@@ -188,6 +188,106 @@
     return parts.join(' · ');
   }
 
+  // ---------- 书架筛选 / 分组管理（1.6.0 F5） ----------
+  // 分组是自由字符串：比较统一按「清洗成单行 + 小写」归一，落盘 / 显示仍用作者原来的写法。
+  // 这里全是纯函数（不读盘、不写盘、不改入参），写盘仍走 storage.updateBookInfo。
+
+  function groupKey(value) {
+    return sanitizeGroup(value).toLowerCase();
+  }
+
+  function countRows(counts) {
+    return Array.from(counts, ([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+  }
+
+  // 分组统计：分组名按作者写法原样聚合（与书架分组筛选的选项同一口径），按中文排序；
+  // 未分组的书单独计数，筛选项要显示「未分组 · N」。
+  function collectGroupStats(books) {
+    const counts = new Map();
+    let ungrouped = 0;
+    let total = 0;
+    for (const book of Array.isArray(books) ? books : []) {
+      if (!book || typeof book !== 'object') continue;
+      total += 1;
+      const group = sanitizeGroup(book.group);
+      if (!group) {
+        ungrouped += 1;
+        continue;
+      }
+      counts.set(group, (counts.get(group) || 0) + 1);
+    }
+    return { groups: countRows(counts), ungrouped, total };
+  }
+
+  // 标签统计：同一本书里的重复标签在读取时已经去重；跨书累加，按中文排序。
+  function collectTagStats(books) {
+    const counts = new Map();
+    for (const book of Array.isArray(books) ? books : []) {
+      if (!book || typeof book !== 'object') continue;
+      for (const tag of sanitizeTags(book.tags)) counts.set(tag, (counts.get(tag) || 0) + 1);
+    }
+    return countRows(counts);
+  }
+
+  // 筛选判定：分组 + 标签两条都满足才显示（与搜索词是 AND，搜索词在渲染层另算）。
+  // group 用 '__none__' 表示「未分组」（与书架分组筛选条同一个哨兵值）；空 = 不限。
+  // tag 空 = 不限；标签按全名精确匹配，不做子串（子串搜索归搜索框）。
+  function bookMatchesFilters(book, filters) {
+    const filter = filters && typeof filters === 'object' ? filters : {};
+    const info = readBookInfo(book);
+    const group = sanitizeGroup(filter.group);
+    if (group === '__none__') {
+      if (info.group) return false;
+    } else if (group && info.group !== group) {
+      return false;
+    }
+    const tag = sanitizeTag(filter.tag);
+    if (tag && !info.tags.includes(tag)) return false;
+    return true;
+  }
+
+  // 已有分组的「规范写法」：大小写 / 空白归一后同名，就用已有的那个写法，避免「玄幻」与
+  // 「玄幻 」分裂成两个分组；没有同名分组时用清洗后的输入。
+  function canonicalGroupName(existingNames, value) {
+    const name = sanitizeGroup(value);
+    if (!name) return '';
+    const key = name.toLowerCase();
+    const hit = (Array.isArray(existingNames) ? existingNames : [])
+      .filter((item) => typeof item === 'string')
+      .find((item) => groupKey(item) === key && sanitizeGroup(item));
+    return hit === undefined ? name : sanitizeGroup(hit);
+  }
+
+  // 分组改名 / 合并计划：把 from 组里的书改成 to 组（空串 = 未分组）。
+  // 返回 [{ path, title, from, to }]，顺序 = 传入书的顺序；不改入参、不写盘。
+  // from 与 to 归一后相同 → 空计划（没有变化，不写盘）。
+  // 缺 path 的条目（坏数据 / 只读详情）跳过——没有路径就没法写回 书目.json。
+  function planGroupChange(books, from, to) {
+    const list = Array.isArray(books) ? books : [];
+    const fromName = sanitizeGroup(from);
+    const existing = Array.from(
+      new Set(list.map((book) => sanitizeGroup(book && book.group)).filter(Boolean))
+    );
+    const toName = canonicalGroupName(existing, to);
+    if (groupKey(fromName) === groupKey(toName)) return [];
+    const changes = [];
+    for (const book of list) {
+      if (!book || typeof book !== 'object') continue;
+      const group = sanitizeGroup(book.group);
+      if (groupKey(group) !== groupKey(fromName)) continue;
+      const bookPath = typeof book.path === 'string' ? book.path : '';
+      if (!bookPath) continue;
+      changes.push({
+        path: bookPath,
+        title: sanitizeSingleLine(book.title, 120) || bookPath,
+        from: group,
+        to: toName
+      });
+    }
+    return changes;
+  }
+
   return {
     MAX_AUTHOR_LENGTH,
     MAX_BRIEF_LENGTH,
@@ -204,6 +304,11 @@
     bookInfoPatchFields,
     sameBookInfo,
     bookInfoMatches,
-    bookInfoSummary
+    bookInfoSummary,
+    collectGroupStats,
+    collectTagStats,
+    bookMatchesFilters,
+    canonicalGroupName,
+    planGroupChange
   };
 });

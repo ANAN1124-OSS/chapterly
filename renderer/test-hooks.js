@@ -33,6 +33,7 @@
       clearChapterSelection,
       commandPalette, openCommandPalette,
       clearFindSession, closeBookInfoDialog, closeConflictDialog, closeFindPanel, closeFragmentDialog,
+      closeGroupManageDialog,
       closeHistoryDialog, closeHistoryPreview, closeInsertFragmentDialog, closeJumpDialog,
       closeProofreadPanel, closeSensitivePanel, closeSettings, closeTtsBar, confirmHistoryRestore,
       confirmJumpFromDialog, copyChapterPlatformFlow, createBookWithTitle, createChapterAt,
@@ -47,6 +48,7 @@
       openConflictDialog, openContinueBook, openFindPanel, openFormatDialog, openFragmentDialog,
       openHistoryForCurrentBook, openHistoryForPath, openInsertFragmentDialog, openJumpDialog,
       openProofreadPanel, openReadingMode, openSensitivePanel, openSettings, openTtsBar,
+      openGroupManageDialog,
       openUpdateDownload, pauseWriteTimer, persistSidebarWidth, previewHistoryBackup, previewSettings,
       proofreadScope, proofreadWordListText, readBookInfoForm, readExportRange, readFormatOptions,
       readingBlockElements, readingBlockIndexAt, readingCurrentIndex, readingGo, readingJumpTo,
@@ -446,6 +448,45 @@
         state.shelfGroup = String(value == null ? '' : value);
         renderShelf();
         return state.shelfGroup;
+      },
+      // 标签筛选 / 分组管理（1.6.0 F5）：与分组下拉同一套口径（只改内存筛选状态，不写配置）
+      shelfTagBarVisible: () => !$('shelf-tag-filter').classList.contains('hidden'),
+      shelfTagOptions: () =>
+        Array.from($('shelf-tag-filter').querySelectorAll('option')).map((el) => ({
+          value: el.value,
+          label: el.textContent
+        })),
+      shelfTagValue: () => $('shelf-tag-filter').value,
+      setShelfTag(value) {
+        state.shelfTag = String(value == null ? '' : value);
+        renderShelf();
+        return state.shelfTag;
+      },
+      shelfGroupManageVisible: () => !$('btn-shelf-group-manage').classList.contains('hidden'),
+      openGroupManageDialog() {
+        return openGroupManageDialog();
+      },
+      closeGroupManageDialog() {
+        return closeGroupManageDialog();
+      },
+      groupManageOpen: () => !$('group-manage-backdrop').classList.contains('hidden'),
+      groupManageRows: () =>
+        Array.from($('group-manage-list').children).map((row) => ({
+          group: row.dataset.group || '',
+          text: row.textContent || ''
+        })),
+      // 走真实界面路径：点管理行里的「改名…」/「合并到…」按钮（不直接调内部函数）
+      clickGroupManageAction(group, action) {
+        const row = Array.from($('group-manage-list').children).find(
+          (item) => item.dataset.group === String(group)
+        );
+        if (!row) return false;
+        const button = Array.from(row.children).find(
+          (el) => (el.tagName || '').toUpperCase() === 'BUTTON' && el.dataset.action === String(action)
+        );
+        if (!button) return false;
+        button.click();
+        return true;
       },
       shelfBookInfo(folder) {
         const book = (state.books || []).find((item) => item.folder === folder || item.title === folder);

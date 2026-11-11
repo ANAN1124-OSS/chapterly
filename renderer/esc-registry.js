@@ -65,6 +65,14 @@
     // ② 弹层（锁键）：顺序 = 改前那 7 段 if 的书写顺序，别再靠「谁写在上面」记
     { id: 'conflict', lock: true, open: (p) => Boolean(p.conflict), keys: { Escape: { action: 'close-conflict' } } },
     { id: 'bookinfo', lock: true, open: (p) => Boolean(p.bookinfo), keys: { Escape: { action: 'close-bookinfo' } } },
+    // 1.6.0 F5：书架「分组管理」弹层（改名 / 合并）与书籍信息同一个口径（锁键 + Esc 收起）。
+    // 探针字段由 renderer 的 ESC_BACKDROPS 列表按 `${name}-backdrop` 现算（'group-manage'）。
+    {
+      id: 'group-manage',
+      lock: true,
+      open: (p) => Boolean(p['group-manage']),
+      keys: { Escape: { action: 'close-group-manage' } }
+    },
     // 历史面板的预览格是「弹层里的弹层」：Esc 先收预览，再按一次才关面板
     {
       id: 'history-preview',

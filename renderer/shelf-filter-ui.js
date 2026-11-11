@@ -3,6 +3,7 @@
  * 搬走的段（原 renderer.js 776–961，186 行，含分区注释）——书架搜索的内存过滤与结果区渲染：
  *   shelfQueryText（trim 后的查询词）·
  *   bookGroupOf / shelfGroupList / shelfGroupMatches（v0.8-3 分组筛选，只影响书架视图，不写配置）·
+ *   shelfTagMatches（1.6.0 F5：标签筛选，与分组 / 搜索词 AND 组合）·
  *   matchBookForSearch（书名 / 文件夹 / 作者 / 分组 / 标签 / 章节名，内存字面量匹配，章名最多 3 条）·
  *   shelfSearchResults（先按分组再按查询词，过滤出可见书卡）·
  *   shelfContentActive（书架视图且查询词达到最少字数才显示正文结果）·
@@ -67,10 +68,13 @@
   }
 
   function shelfGroupMatches(book) {
-    if (!state.shelfGroup) return true;
-    const group = bookGroupOf(book);
-    if (state.shelfGroup === '__none__') return !group;
-    return group === state.shelfGroup;
+    return bookInfoLib.bookMatchesFilters(book, { group: state.shelfGroup });
+  }
+
+  // 标签筛选（1.6.0 F5）：与分组同一个口径（AND），标签按全名精确匹配；空 = 不限。
+  // 标签清单 / 计数由书籍信息模块从 书目.json 现算，这里只读 state.shelfTag 做过滤。
+  function shelfTagMatches(book) {
+    return bookInfoLib.bookMatchesFilters(book, { tag: state.shelfTag });
   }
 
   function matchBookForSearch(book, queryLower) {
@@ -97,6 +101,7 @@
     const rows = [];
     for (const book of state.books) {
       if (!shelfGroupMatches(book)) continue;
+      if (!shelfTagMatches(book)) continue;
       const info = matchBookForSearch(book, queryLower);
       if (info.visible) rows.push({ book, info });
     }
@@ -345,10 +350,11 @@
         ? ` · 正文命中 ${contentMatchTotal(content.meta)} 处`
         : '';
     const groupNote = state.shelfGroup ? '（已按分组筛选）' : '';
+    const tagNote = state.shelfTag ? '（已按标签筛选）' : '';
     summary.textContent =
       matchedCount > 0
-        ? `搜索「${query}」：${matchedCount} / ${state.books.length} 本书名 / 作者 / 分组 / 标签 / 章节名命中${groupNote}${contentNote}（回车打开第一本，Esc 清除）`
-        : `搜索「${query}」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名${groupNote}${contentNote || '，正文也没有找到'}（Esc 清除）`;
+        ? `搜索「${query}」：${matchedCount} / ${state.books.length} 本书名 / 作者 / 分组 / 标签 / 章节名命中${groupNote}${tagNote}${contentNote}（回车打开第一本，Esc 清除）`
+        : `搜索「${query}」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名${groupNote}${tagNote}${contentNote || '，正文也没有找到'}（Esc 清除）`;
   }
 
     return {

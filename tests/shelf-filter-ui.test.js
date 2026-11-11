@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const shelfFilterUi = require('../renderer/shelf-filter-ui');
+const realBookInfo = require('../core/bookinfo');
 
 // v0.9 B-5 第九刀：「书架搜索」分区（186 行）从 renderer.js 搬到 renderer/shelf-filter-ui.js。
 // 搬出来以后用「假 host + 假 state + 假 DOM」逐条钉住内存过滤、分组筛选、正文结果区渲染与搜索摘要，
@@ -93,6 +94,7 @@ function makeHost(options = {}) {
     view: options.view === undefined ? 'shelf' : options.view,
     shelfQuery: options.shelfQuery === undefined ? '张三' : options.shelfQuery,
     shelfGroup: options.shelfGroup === undefined ? '' : options.shelfGroup,
+    shelfTag: options.shelfTag === undefined ? '' : options.shelfTag,
     books: options.books === undefined ? [] : options.books,
     shelfContent: {
       loading: Boolean(options.loading),
@@ -121,6 +123,10 @@ function makeHost(options = {}) {
         calls.sanitize.push(value);
         if (typeof value !== 'string') return '';
         return value.trim();
+      },
+      // 1.6.0 F5：分组 / 标签筛选判定用真实现（模块只负责把 state 传进来，逻辑本身在 core/bookinfo）
+      bookMatchesFilters(book, filters) {
+        return realBookInfo.bookMatchesFilters(book, filters);
       },
       bookInfoMatches(book, queryLower) {
         calls.matches.push({ book, queryLower });
@@ -662,4 +668,38 @@ test('UMD：浏览器分支挂成 CWShelfFilterUi，不顺手造别的全局', (
   assert.equal(typeof win.CWShelfFilterUi.create, 'function');
   assert.deepEqual([...win.CWShelfFilterUi.REQUIRED_HOST].sort(), ['$', 'CONTENT_SEARCH_MIN_CHARS', 'bookInfoLib', 'chapterTitle', 'openContentResult', 'state']);
   assert.equal(win.CWShelfSearchUi, undefined, '单独加载 shelf-filter 不该顺手造出别的全局');
+});
+
+// ---------- 标签筛选（1.6.0 F5） ----------
+test('标签筛选：按全名精确匹配，和分组 / 搜索词是 AND', () => {
+  const books = [
+    { title: '甲', group: '玄幻', tags: ['升级', '爽文'] },
+    { title: '乙', group: '玄幻', tags: ['悬疑'] },
+    { title: '丙', group: '短篇', tags: ['升级'] },
+    { title: '丁', group: '短篇', tags: [] }
+  ];
+  const titles = (ctx) => ctx.ui.shelfSearchResults().map((r) => r.book.title);
+  assert.deepEqual(titles(build({ books, shelfQuery: '' })), ['甲', '乙', '丙', '丁']);
+  assert.deepEqual(titles(build({ books, shelfQuery: '', shelfTag: '升级' })), ['甲', '丙']);
+  assert.deepEqual(titles(build({ books, shelfQuery: '', shelfTag: '升级', shelfGroup: '玄幻' })), ['甲']);
+  assert.deepEqual(titles(build({ books, shelfQuery: '乙', shelfTag: '升级' })), [], '搜索命中但标签不符 → 不显示');
+  assert.deepEqual(titles(build({ books, shelfQuery: '甲', shelfTag: '升级' })), ['甲'], '搜索与标签都满足才显示');
+  assert.deepEqual(titles(build({ books, shelfQuery: '', shelfTag: '升' })), [], '标签只认全名，不做子串');
+  assert.deepEqual(titles(build({ books, shelfQuery: '', shelfTag: '不存在' })), []);
+});
+
+test('搜索摘要（F5）：只有分组 / 只有标签 / 两者都有时分别注明筛选条件', () => {
+  const onlyTag = build({ shelfQuery: '张三', shelfTag: '升级', books: [{}, {}, {}], results: [] });
+  onlyTag.ui.updateShelfSearchUi(2);
+  assert.equal(
+    onlyTag.dom.$('shelf-search-summary').textContent,
+    '搜索「张三」：2 / 3 本书名 / 作者 / 分组 / 标签 / 章节名命中（已按标签筛选）（回车打开第一本，Esc 清除）'
+  );
+
+  const both = build({ shelfQuery: '张三', shelfGroup: '甲组', shelfTag: '升级', books: [{}, {}, {}], results: [] });
+  both.ui.updateShelfSearchUi(1);
+  assert.equal(
+    both.dom.$('shelf-search-summary').textContent,
+    '搜索「张三」：1 / 3 本书名 / 作者 / 分组 / 标签 / 章节名命中（已按分组筛选）（已按标签筛选）（回车打开第一本，Esc 清除）'
+  );
 });

@@ -262,3 +262,108 @@ test('书籍信息：书目里的脏值（类型不对 / 超长）读取时清�
   assert.equal(listed.group, '玄幻 下篇');
   assert.deepEqual(listed.tags, ['爽文']);
 });
+
+// ---------- 书架筛选 / 分组管理纯逻辑（1.6.0 F5） ----------
+// 分组是自由字符串：书架筛选条要按它过滤，分组管理要能改名 / 合并。
+// 这里只算「哪些书要改成什么」，真正写盘仍由 storage.updateBookInfo 一本一本做（只动 书目.json）。
+test('分组统计：按作者写法聚合、中文排序、未分组单独计数、坏数据不炸', () => {
+  const books = [
+    { path: '/库/甲', title: '甲', group: '玄幻' },
+    { path: '/库/乙', title: '乙', group: '短篇' },
+    { path: '/库/丙', title: '丙', group: ' 玄幻 ' },
+    { path: '/库/丁', title: '丁' },
+    { path: '/库/戊', title: '戊', group: '   ' },
+    { path: '/库/己', title: '己', group: 42 },
+    null,
+    { path: '/库/庚', title: '庚', group: ' 短篇\n合集 ' }
+  ];
+  assert.deepEqual(bookInfo.collectGroupStats(books), {
+    groups: [
+      { name: '短篇', count: 1 },
+      { name: '短篇 合集', count: 1 },
+      { name: '玄幻', count: 2 }
+    ],
+    ungrouped: 3,
+    total: 7
+  });
+  assert.deepEqual(bookInfo.collectGroupStats([]), { groups: [], ungrouped: 0, total: 0 });
+  assert.deepEqual(bookInfo.collectGroupStats(null), { groups: [], ungrouped: 0, total: 0 });
+});
+
+test('标签统计：跨书累加、同书内已去重、中文排序、坏数据不炸', () => {
+  const books = [
+    { path: '/库/甲', tags: ['升级', '爽文'] },
+    { path: '/库/乙', tags: [' 爽文 ', '悬疑', '爽文'] },
+    { path: '/库/丙' },
+    { path: '/库/丁', tags: '升级，系统' },
+    null
+  ];
+  assert.deepEqual(bookInfo.collectTagStats(books), [
+    { name: '升级', count: 2 },
+    { name: '爽文', count: 2 },
+    { name: '系统', count: 1 },
+    { name: '悬疑', count: 1 }
+  ]);
+  assert.deepEqual(bookInfo.collectTagStats([]), []);
+});
+
+test('筛选判定：分组 / 标签各自精确匹配，两条同时生效就是 AND', () => {
+  const book = { path: '/库/甲', group: '玄幻', tags: ['升级', '爽文'] };
+  assert.equal(bookInfo.bookMatchesFilters(book, {}), true);
+  assert.equal(bookInfo.bookMatchesFilters(book, { group: '', tag: '' }), true);
+  assert.equal(bookInfo.bookMatchesFilters(book, { group: '玄幻' }), true);
+  assert.equal(bookInfo.bookMatchesFilters(book, { group: '玄幻 ' }), true, '分组按清洗后比较');
+  assert.equal(bookInfo.bookMatchesFilters(book, { group: '短篇' }), false);
+  assert.equal(bookInfo.bookMatchesFilters(book, { group: '__none__' }), false);
+  assert.equal(bookInfo.bookMatchesFilters({ path: '/库/乙' }, { group: '__none__' }), true);
+  assert.equal(bookInfo.bookMatchesFilters({ path: '/库/乙' }, { group: '玄幻' }), false);
+  assert.equal(bookInfo.bookMatchesFilters(book, { tag: '升级' }), true);
+  assert.equal(bookInfo.bookMatchesFilters(book, { tag: '升' }), false, '标签是全名精确匹配，不做子串');
+  assert.equal(bookInfo.bookMatchesFilters(book, { group: '玄幻', tag: '悬疑' }), false);
+  assert.equal(bookInfo.bookMatchesFilters(book, { group: '玄幻', tag: '爽文' }), true);
+  assert.equal(bookInfo.bookMatchesFilters(null, {}), true, '没有书对象 = 不筛');
+  assert.equal(bookInfo.bookMatchesFilters(null, { group: '玄幻' }), false);
+});
+
+test('分组名归一：大小写 / 首尾与内部空白归一，能对上已有写法就用已有写法', () => {
+  const groups = ['玄幻', 'Group A', '短篇'];
+  assert.equal(bookInfo.canonicalGroupName(groups, '  玄幻 '), '玄幻');
+  assert.equal(bookInfo.canonicalGroupName(groups, 'group   A'), 'Group A', '大小写 + 连续空白归一');
+  assert.equal(bookInfo.canonicalGroupName(groups, '新组'), '新组');
+  assert.equal(bookInfo.canonicalGroupName(groups, '   '), '');
+  assert.equal(bookInfo.canonicalGroupName([], ' 都市 '), '都市');
+});
+
+test('分组改名 / 合并计划：只列要改的书、目标归一、不改入参、同组返回空', () => {
+  const books = [
+    { path: '/库/甲', title: '甲', group: '玄幻' },
+    { path: '/库/乙', title: '乙', group: '玄幻 ' },
+    { path: '/库/丙', title: '丙', group: 'group a' },
+    { path: '/库/丁', title: '丁' },
+    { title: '没有路径' }
+  ];
+  const snapshot = JSON.stringify(books);
+  assert.deepEqual(bookInfo.planGroupChange(books, '玄幻', '仙侠'), [
+    { path: '/库/甲', title: '甲', from: '玄幻', to: '仙侠' },
+    { path: '/库/乙', title: '乙', from: '玄幻', to: '仙侠' }
+  ]);
+  // 合并到已存在的组：大小写归一后归到已有写法，不多造一个「GROUP A」
+  assert.deepEqual(
+    bookInfo.planGroupChange(books, '玄幻', 'GROUP A').map((change) => [change.path, change.to]),
+    [['/库/甲', 'group a'], ['/库/乙', 'group a']]
+  );
+  // 未分组 → 某个组
+  assert.deepEqual(
+    bookInfo.planGroupChange(books, '', '玄幻').map((change) => [change.path, change.to]),
+    [['/库/丁', '玄幻']]
+  );
+  // 某个组 → 未分组（清空）
+  assert.deepEqual(
+    bookInfo.planGroupChange(books, '玄幻', '   ').map((change) => [change.path, change.to]),
+    [['/库/甲', ''], ['/库/乙', '']]
+  );
+  // 归一后同名 = 没有变化
+  assert.deepEqual(bookInfo.planGroupChange(books, '玄幻', ' 玄幻 '), []);
+  assert.deepEqual(bookInfo.planGroupChange([], '玄幻', '仙侠'), []);
+  assert.equal(JSON.stringify(books), snapshot, '不改入参');
+});

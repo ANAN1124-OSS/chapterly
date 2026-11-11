@@ -115,10 +115,10 @@ test('测试钩子模块：Node 里能 require、导出 create，create() 不碰
   assert.strictEqual(typeof hooks.handleCloseRequest, 'function');
 });
 
-test('测试钩子模块：拆分前后钩子名称与数量不变（493 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6）', () => {
+test('测试钩子模块：拆分前后钩子名称与数量不变（503 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10）', () => {
   const hooks = hooksModule.create(stubHost());
   const names = Object.keys(hooks).sort();
-  assert.strictEqual(names.length, 493, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
+  assert.strictEqual(names.length, 503, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
   // 每个功能域各抽一个，防止「数量对但换了一批」
   for (const name of [
     'ready', 'state', 'newBook', 'openBookPath', 'openBookInNewWindow', 'releaseBook', 'windowInfo',
@@ -133,6 +133,9 @@ test('测试钩子模块：拆分前后钩子名称与数量不变（493 个；2
     'chapterFilter', 'setChapterFilter', 'chapterDirectoryInfo',
     'chapterSelection', 'clearChapterSelection',
     'historyGroupIndexBySnapshotName', 'historyGroupExpanded', 'clickHistoryClearSnapshot',
+    // 1.6.0 F5：书架标签筛选 / 分组管理
+    'shelfTagOptions', 'setShelfTag', 'shelfGroupManageVisible', 'openGroupManageDialog',
+    'groupManageRows', 'clickGroupManageAction',
     'handleCloseRequest'
   ]) {
     assert.ok(Object.prototype.hasOwnProperty.call(hooks, name), `钩子丢了: ${name}`);

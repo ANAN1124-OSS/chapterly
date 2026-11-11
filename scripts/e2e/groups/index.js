@@ -100,7 +100,9 @@ const groups = [
   // 章节多选 + 批量动作（1.5.0 功能-1）：Ctrl / Shift / Esc / 批量删移改导复；idsFrom(60) 自动带上。
   { id: 78, run: require('./78-chapter-selection') },
   // `?` 快捷键一览页（1.5.0 功能-4）：按 ? 打开 / Esc 关闭 / 编辑区仍是字符 / 命令面板不抢；idsFrom(60) 自动带上。
-  { id: 79, run: require('./79-shortcuts-page') }
+  { id: 79, run: require('./79-shortcuts-page') },
+  // 书架分组 / 标签筛选与管理（1.6.0 F5）：筛选 AND / 改名 / 合并 / 单本移到分组 / 只改书目；idsFrom(60) 自动带上。
+  { id: 80, run: require('./80-shelf-groups') }
 ];
 
 // 按给定组号依次跑（组号 → 组文件；顺序就是参数顺序，调用点决定「在哪一段」）。

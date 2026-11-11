@@ -488,6 +488,38 @@ html, body {
  * （v1.0 把 outline 去掉了，键盘用户以前看不出焦点落在哪）。 */
 .shelf-group-select:hover { border-color: var(--folio-field-border); }
 .shelf-group-select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* 标签筛选 + 分组管理（1.6.0 F5）：与分组下拉同一套造型，只多一个左间距；
+ * 「管理分组…」推到筛选条最右，窄窗也不会把两个下拉挤成换行（下拉自身 max-width 收窄）。 */
+.shelf-tag-label { margin-left: 4px; }
+.shelf-tag-select { min-width: 112px; max-width: 190px; }
+.shelf-group-manage { margin-left: auto; flex: 0 0 auto; }
+/* 分组管理弹层（1.6.0 F5）：一行一个分组（名字 · 本数 · 改名 / 合并）。
+ * 只复用现有令牌（纸面 / 线条 / 主文字色），不新增颜色，对比度按既有规格走。 */
+.group-manage-list {
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 6px 0 10px;
+  border-top: 1px solid var(--line);
+}
+.group-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.group-manage-row:last-child { border-bottom: none; }
+.group-manage-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--ink);
+}
+.group-manage-count { flex: 0 0 auto; }
+.group-manage-empty { padding: 10px 2px; }
 
 /* 书架「正文命中」（提案 7.3）：搜索结果面板，点一条打开那本书的那一章 */
 .shelf-content {

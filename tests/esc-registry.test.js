@@ -58,6 +58,7 @@ test('顺序闸门：Esc 链的层顺序 = 优先级（通用询问框 → 弹�
       'modal',
       'conflict',
       'bookinfo',
+      'group-manage',
       'history-preview',
       'history',
       'format',
@@ -89,11 +90,13 @@ test('顺序闸门：Esc 链的层顺序 = 优先级（通用询问框 → 弹�
   assert.equal(new Set(actions).size, actions.length, '动作 id 不许重复');
 });
 
-test('锁键弹层：通用询问框 / 8 个弹层吞掉所有按键，Esc 才做动作', () => {
+test('锁键弹层：通用询问框 / 9 个弹层吞掉所有按键，Esc 才做动作', () => {
   const cases = [
     ['modal', 'modal-cancel'],
     ['conflict', 'close-conflict'],
     ['bookinfo', 'close-bookinfo'],
+    // 1.6.0 F5：书架「分组管理」也是锁键弹层
+    ['group-manage', 'close-group-manage'],
     ['history', 'close-history'],
     ['format', 'close-format'],
     ['export', 'close-export'],

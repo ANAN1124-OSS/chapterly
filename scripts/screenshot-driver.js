@@ -685,6 +685,10 @@ async function run(host) {
           true
         );
         await sleep(1800);
+      } else if (screenshotDialog === 'group-manage') {
+        // 开发截图用（1.6.0 F5）：书架「分组管理」弹层（改名 / 合并）；只读打开，不改任何书
+        await win.webContents.executeJavaScript('window.__cwTest.openGroupManageDialog();', true);
+        await sleep(500);
       } else if (screenshotDialog === 'conflict') {
         const folder = await win.webContents.executeJavaScript(
           'window.__cwTest.firstConflictBookFolder()',

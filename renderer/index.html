@@ -51,10 +51,14 @@
               <span class="continue-meta" id="continue-meta"></span>
             </button>
           </div>
-          <!-- 分组筛选（v0.8-3）：只影响书架显示，不改书文件夹；一本书都没有分组时收起 -->
+          <!-- 分组 / 标签筛选（v0.8-3 分组；1.6.0 F5 补标签与计数徽标）：只影响书架显示，不改书文件夹。
+               一个分组 / 标签都没有时整条收起（旧书没有这些字段，不多占一行）。 -->
           <div id="shelf-group-bar" class="shelf-group-bar hidden">
             <label for="shelf-group-filter" class="shelf-group-label">分组</label>
             <select id="shelf-group-filter" class="shelf-group-select" title="只筛选书架显示；分组只写在 书目.json 里，不改书文件夹名"></select>
+            <label for="shelf-tag-filter" id="shelf-tag-label" class="shelf-group-label shelf-tag-label hidden">标签</label>
+            <select id="shelf-tag-filter" class="shelf-group-select shelf-tag-select hidden" title="只筛选书架显示；标签只写在 书目.json 里，不改正文"></select>
+            <button id="btn-shelf-group-manage" class="btn ghost tiny shelf-group-manage hidden" type="button" title="分组改名 / 合并（只改 书目.json，不动书文件夹与章节文件）">管理分组…</button>
           </div>
         </div>
         <div class="shelf-scroll">
@@ -619,6 +623,21 @@
       <div class="modal-buttons">
         <button id="btn-bookinfo-cancel" class="btn ghost" type="button">取消</button>
         <button id="btn-bookinfo-save" class="btn primary" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 分组管理（1.6.0 F5：改名 / 合并） ============ -->
+  <div id="group-manage-backdrop" class="backdrop hidden">
+    <div class="modal group-manage-modal" role="dialog" aria-modal="true" aria-labelledby="group-manage-title">
+      <h2 class="modal-title" id="group-manage-title">分组管理</h2>
+      <p class="modal-message">
+        改名 / 合并只写每本书 <code>书目.json</code> 里的分组字段：不会改书文件夹名，也不会动任何章节 txt，书签与「继续上次写作」照旧。分组按名字排序，不另存顺序。
+      </p>
+      <div class="group-manage-list" id="group-manage-list"></div>
+      <div class="bookinfo-error" id="group-manage-error"></div>
+      <div class="modal-buttons">
+        <button id="btn-group-manage-close" class="btn ghost" type="button">关闭</button>
       </div>
     </div>
   </div>
@@ -1219,6 +1238,7 @@
     <button type="button" data-action="open">打开这本书</button>
     <button type="button" data-action="open-new-window" title="在另一个窗口打开这本书；同一本书不会开两个窗口">在新窗口打开</button>
     <button type="button" data-action="info">书籍信息…</button>
+    <button type="button" data-action="move-group" title="只改 书目.json 的分组字段，不动书文件夹与章节文件">移到分组…</button>
     <button type="button" data-action="folder">打开所在文件夹</button>
     <button type="button" data-action="history">本书历史…</button>
     <button type="button" data-action="delete" class="danger-text">删除这本书…</button>

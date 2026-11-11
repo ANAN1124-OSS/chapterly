@@ -354,6 +354,7 @@
     history: null, // 正在看的「本书历史」：{ path, title, groups, preview, loading, error, token }
     shelfQuery: '', // 书架搜索词（书名 / 作者 / 分组 / 标签 / 章节名 / 正文）
     shelfGroup: '', // 书架分组筛选：'' = 全部分组；'__none__' = 未分组；其它 = 分组名（只记内存）
+    shelfTag: '', // 书架标签筛选（1.6.0 F5）：'' = 全部标签；其它 = 标签全名（只记内存，与分组 / 搜索 AND）
     // 书架「正文命中」结果（提案 7.3）：搜索走主进程索引，这里只存展示用的结果
     shelfContent: {
       query: '', // 这批结果对应的查询词
@@ -1074,7 +1075,11 @@
       openRepair, openConflictDialog, showBookMenu, updateWindowTitle, promptText, refreshShelf
     }
   });
-  const { openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog, renderShelf, createBookWithTitle, onNewBookClick, setupBookinfoUi, maybeShowFirstRunTip } = bookinfoUi;
+  const {
+    openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,
+    openGroupManageDialog, closeGroupManageDialog, renameShelfGroup, mergeShelfGroup, moveBookToGroup,
+    renderShelf, createBookWithTitle, onNewBookClick, setupBookinfoUi, maybeShowFirstRunTip
+  } = bookinfoUi;
 
   // ---------- 打开书 / 修复 ----------
   // target 可选：{ chapterId, chapterIndex, matchIndex, matchLength } —— 从书架「正文命中」点进来时
@@ -3664,7 +3669,9 @@
   // 改顺序 / 加一层请改注册表，别再把 if 块抄回 keydown 里。
   const ESC_BACKDROPS = [
     'conflict', 'bookinfo', 'history', 'format', 'export', 'settings', 'jump', 'find',
-    'fragment', 'fragments', 'proofread', 'sensitive', 'capture', 'shortcuts'
+    'fragment', 'fragments', 'proofread', 'sensitive', 'capture', 'shortcuts',
+    // 1.6.0 F5：分组管理（书架）也是锁键弹层，Esc 收起
+    'group-manage'
   ];
 
   function escProbe() {
@@ -3704,6 +3711,7 @@
     },
     'close-conflict': () => closeConflictDialog(),
     'close-bookinfo': () => closeBookInfoDialog(),
+    'close-group-manage': () => closeGroupManageDialog(),
     'close-history-preview': () => closeHistoryPreview(),
     'close-history': () => closeHistoryDialog(),
     'close-format': () => closeFormatDialog(),
@@ -4158,6 +4166,9 @@
     // 书目损坏的书读不出元数据，先修复；不让「书籍信息…」点进去报错
     const infoBtn = menu.querySelector('button[data-action="info"]');
     if (infoBtn) infoBtn.classList.toggle('hidden', Boolean(book && book.status === 'corrupt'));
+    // 「移到分组…」同理（1.6.0 F5）：改的是 书目.json 的 group，书目坏了先修复
+    const groupBtn = menu.querySelector('button[data-action="move-group"]');
+    if (groupBtn) groupBtn.classList.toggle('hidden', Boolean(book && book.status === 'corrupt'));
     placeMenuAt(menu, x, y);
   }
 
@@ -4894,6 +4905,9 @@
         }
       } else if (btn.dataset.action === 'info') {
         openBookInfoDialog(book);
+      } else if (btn.dataset.action === 'move-group') {
+        // 1.6.0 F5：书架没有多选，先做单本「移到分组…」（批量改分组记 §9 待办）
+        await moveBookToGroup(book);
       } else if (btn.dataset.action === 'delete') {
         await deleteBookFlow(book);
       } else if (btn.dataset.action === 'history') {
@@ -5376,6 +5390,7 @@
       closeConflictDialog,
       closeFindPanel,
       closeFragmentDialog,
+      closeGroupManageDialog,
       closeHistoryDialog,
       closeHistoryPreview,
       closeInsertFragmentDialog,
@@ -5394,6 +5409,7 @@
       deleteChapterAt,
       commandPalette,
       openCommandPalette,
+      openGroupManageDialog,
       deleteFindBookmark,
       deleteVolumeFlow,
       displayMenuOpen,
