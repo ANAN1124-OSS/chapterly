@@ -1523,9 +1523,17 @@
     renderChapterList();
   }
 
+  // 当前章条目的缓存引用（1.6.0 A5/P-09）：输入热路径每敲一个字都要给它挂 / 摘 dirty，
+  // 原来每次都去 #chapter-list 里 querySelector。整表重建（renderChapterList）与切章快路径
+  // （syncActiveChapterItem）负责更新缓存；缓存条目掉出文档时（删除 / 换书 / 非预期重建）
+  // isConnected 为假，回退重查一次，绝不把 dirty 挂到一个已经不在页面里的旧节点上。
+  let cachedActiveChapterItem = null;
+
   function activeChapterItem() {
+    if (cachedActiveChapterItem && cachedActiveChapterItem.isConnected) return cachedActiveChapterItem;
     const list = $('chapter-list');
-    return list ? list.querySelector('.chapter-item.active') : null;
+    cachedActiveChapterItem = list ? list.querySelector('.chapter-item.active') : null;
+    return cachedActiveChapterItem;
   }
 
   // 当前章被折叠时，在它所在的卷头上留 2px 朱红细线：目录收起后也知道自己写的那一卷在哪。
@@ -2210,6 +2218,8 @@
       }
     }
     list.replaceChildren(frag);
+    // 1.6.0 A5/P-09：整表重建后重算「当前章条目」缓存（旧条目已掉出文档，不能再给它挂 dirty）
+    cachedActiveChapterItem = list.querySelector('.chapter-item.active');
     // 筛选时卷头只作分组标签（折叠箭头收起、不接点击）：见 toggleVolumeCollapse
     list.classList.toggle('filtering', filtering);
     syncCurrentVolumeMarker();
@@ -2219,7 +2229,7 @@
       // 筛选结果从第一条读起：不把当前章滚到底部，免得用户输一个词只看得到最后一条
       list.scrollTop = 0;
     } else {
-      const active = list.querySelector('.chapter-item.active');
+      const active = cachedActiveChapterItem;
       if (active) active.scrollIntoView({ block: 'nearest' });
     }
     syncChapterFilterUi();
@@ -2290,6 +2300,7 @@
     const staleStop = list.querySelector('.chapter-item[tabindex="0"]');
     if (staleStop && staleStop !== next) staleStop.tabIndex = -1;
     next.classList.add('active');
+    cachedActiveChapterItem = next; // 1.6.0 A5/P-09：切章快路径同步「当前章条目」缓存
     next.classList.toggle('dirty', Boolean(state.dirty));
     next.tabIndex = 0; // roving tabindex：Tab 停留点跟着当前章走（v0.9 A-5b）
     next.scrollIntoView({ block: 'nearest' });
@@ -2554,12 +2565,14 @@
   });
   const { writeDurationEnabled, renderWriteTimer, renderDurationSettings, startWriteTimer, pauseWriteTimer, flushWriteTimer, resetWriteTimer, applyWriteTimerConfig, writeTimerTodaySeconds, writeTimerSessionSeconds, writeTimerUnsentMs, setupWriteTimerUi } = writeTimerUi;
 
-  function updateStatus() {
+  function updateStatus(options) {
     // 保存态四态（正在保存… / 未保存 · HH:MM 最后编辑 / 已保存 HH:MM:SS / 保存失败：原因）
     // 与圆点、失败态重试按钮、成功 2s 淡化都在 renderer/save-status-ui.js 里；
     // 这里不再自己拼第二套文案（1.3.0 T7 = 规范 C-05 / I-01）。
     saveStatusUi.render();
-    renderCharCount();
+    // 1.6.0 A5/P-09：输入路径（options.typing）的本章字数走 200ms 防抖；切章 / 保存 / 套用等
+    // 非输入路径不传 typing，仍然同步算（切过来就要看见字数）。
+    renderCharCount({ defer: Boolean(options && options.typing) });
     $('btn-save').disabled = !state.dirty || state.saving;
     // 把未保存状态同步给主进程，供 Windows 关机拦截使用
     if (state.dirty !== state.reportedDirty) {
@@ -2598,9 +2611,10 @@
     const dirty = editorEl.value !== state.baseText;
     if (dirty !== state.dirty) state.dirty = dirty;
     if (state.dirty) state.saveError = null;
-    const activeItem = $('chapter-list').querySelector('.chapter-item.active');
+    const activeItem = activeChapterItem();
     if (activeItem) activeItem.classList.toggle('dirty', state.dirty);
-    updateStatus();
+    // 1.6.0 A5/P-09：输入路径走 200ms 防抖（每敲一个字全章重算字数太贵）
+    updateStatus({ typing: true });
     renderSelectionStats();
     // 输入法拼字中先不重画标记层（I 键过程中的中间态会闪），拼完 compositionend 再画
     if (!state.marks.composing) scheduleMarksRender();
@@ -5187,7 +5201,11 @@
       // 全局 Esc 链（v0.9 B-4）：顺序与命中判定全在 renderer/esc-registry.js 的有序表里，这里只执行动作。
       // 命中就到此为止——锁键弹层（通用询问框 + 冲突 / 书籍信息 / 历史 / 排版 / 导出 / 设置 / 跳章）
       // 连别的按键也一并接走，所以它们开着时 Ctrl+S / F11 也不会响（改前每段末尾那个裸 return 就是这个意思）。
-      const escHit = escLib.resolve(escProbe(), event.key);
+      // 1.6.0 A5/P-09：探针只在「Esc 键 / 有锁键层」时现算 —— escProbe() 要读约 30 个元素与状态，
+      // 而打字 / 输入法组字的每个 keydown 原本都先摊一份，纯属浪费。非 Esc 键只有在锁键层开着时
+      // 才会被注册表接走（锁键层吞所有键），没有锁键层时 resolve 一定不命中。
+      const escProbeNeeded = escLib.isEscapeKey(event.key) || anyBackdropOpen() || commandPalette.isOpen();
+      const escHit = escProbeNeeded ? escLib.resolve(escProbe(), event.key) : null;
       if (escHit) {
         if (escHit.action) {
           if (escHit.preventDefault) event.preventDefault();

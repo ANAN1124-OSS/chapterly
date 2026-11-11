@@ -2087,8 +2087,15 @@ function registerIpc() {
     const issues = [];
     let total = 0;
     let truncated = false;
+    // P-08（1.6.0 A5）：明细预算（1500 条）用完后，后面的章只需要条数 / 各规则计数——
+    // 传 snippets:false 就不再为每条命中拼上下文片段（那些明细反正会被丢掉）。
+    let snippetsWanted = true;
     const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
-      const result = proofreadLib.proofreadText(text, chapterOptions, customEntries);
+      const result = proofreadLib.proofreadText(
+        text,
+        snippetsWanted ? chapterOptions : { ...chapterOptions, snippets: false },
+        customEntries
+      );
       total += result.total;
       for (const rule of proofreadLib.RULE_ORDER) byRule[rule] += result.byRule[rule] || 0;
       if (result.total) {
@@ -2114,6 +2121,7 @@ function registerIpc() {
           chapterName: chapter.name
         });
       }
+      if (issues.length >= BOOK_ISSUE_LIMIT) snippetsWanted = false;
     });
     return {
       scope: 'book',

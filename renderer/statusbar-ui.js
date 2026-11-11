@@ -7,6 +7,9 @@
  *     没变就不管、有未保存修改只 toast 警告、否则问要不要重新加载磁盘内容。
  * 合计 111 行。**只搬不改行为**：文案 / class / 时间阈值（400ms / 500ms）/ 20 万字符阈值 /
  * 防抖与旧响应语义全部照旧；不写盘、不改正文、不改 dirty、不碰 IPC 白名单、不改 config / 数据格式。
+ * 1.6.0 A5/P-09 的唯一改动：字数统计改成「输入路径统一 200ms 防抖」—— 打字时每敲一个字都全章重算
+ * （去空白字符数）是热路径，200ms 内连打只算最后一次；切章 / 保存 / 套用等非输入路径仍同步算
+ * （renderCharCount 不传 defer）。20 万字符分档与 400ms 阈值随之取消（不再按章长走两条路）。
  *
  * 契约：createStatusbarUi(host) 由渲染层调用一次，host 提供：
  *   host = {
@@ -18,7 +21,7 @@
  *
  * 事件监听：外部修改检测的两个 window 监听由 setupExternalChangeWatch() 注册，渲染层在**原来的
  * 位置**（原 4394 行处）调用它——监听顺序与搬之前逐条一致；create() 本身不注册任何监听。
- * 状态栏的 400ms 防抖定时器（charCountTimer）与 lastBlurAt 都是本模块内部状态，不对外导出。
+ * 状态栏的 200ms 输入防抖定时器（charCountTimer）与 lastBlurAt 都是本模块内部状态，不对外导出。
  *
  * 浏览器里挂成全局 CWStatusbarUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
  */
@@ -42,10 +45,10 @@
     }
     const { $, state, editorEl, formatChars, formatCount, chaptersLib, editorLogic, call, api, toast, openModal, loadChapterAt } = host;
   // ---------- 状态栏 ----------
-  // 本章字数：正常章节即时算；MB 级的超大单章（「整本一章」导入）每个字都全文正则统计会卡，
-  // 超过 20 万字符改成 400ms 防抖，多打几个字只算最后一次。
+  // 本章字数（1.6.0 A5/P-09）：输入路径（每敲一个字都会走）统一 200ms 防抖，连打只算最后一次；
+  // 切章 / 保存 / 套用等非输入路径不传 defer，立刻算 —— 作者切过来就得看见字数，不能等 200ms。
   let charCountTimer = null;
-  const CHAR_COUNT_DEFER_ABOVE = 200000;
+  const CHAR_COUNT_DEBOUNCE_MS = 200;
 
   // 章节字数：书目里的 chars 缓存（打开书 / 保存后由主进程补齐）；没有就是 null
   function chapterCharsOf(chapter) {
@@ -89,14 +92,14 @@
     el.textContent = text;
   }
 
-  function renderCharCount() {
+  // options.defer：输入路径（每敲一个字都会走）才防抖；不传 = 立刻算（切章 / 保存 / 套用）。
+  function renderCharCount(options) {
     if (!state.bookPath || state.index < 0) {
       clearTimeout(charCountTimer);
       updateCharCountText();
       return;
     }
-    const text = editorEl.value;
-    if (text.length <= CHAR_COUNT_DEFER_ABOVE) {
+    if (!options || !options.defer) {
       clearTimeout(charCountTimer);
       updateCharCountText();
       return;
@@ -105,7 +108,7 @@
     charCountTimer = setTimeout(() => {
       if (!state.bookPath || state.index < 0) return;
       updateCharCountText();
-    }, 400);
+    }, CHAR_COUNT_DEBOUNCE_MS);
   }
 
   // 选中字数：只在真选了文字时显示；和「本章字数」同口径（不含空白），段数按触及的非空行算。

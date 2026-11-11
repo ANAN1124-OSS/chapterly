@@ -49,45 +49,53 @@ const stripTrailing = (line) => line.replace(/[ \t\u3000\u00a0]+$/, '');
 // 数字、英文缩写、URL、时间里的半角标点保持原样（3.14 / www.a.com / 12:30 / A. 开头）。
 // onConvert 可选：(index, 半角字符, 全角字符)，用于「校对」只报告不改动（见 core/proofread.js）；
 // 不传时行为与以前完全一致。
+// P-07（1.6.0 A5）：逐字 out += ch 造串在长段落里是 O(n²) 的中间字符串，改成数组 push + join；
+// prev 跟着「已经产出的最后一个字符」走（转换后是全角那个），判定口径与旧实现逐字一致。
 function convertPunct(text, onConvert) {
   let count = 0;
-  let out = '';
+  const parts = [];
   const report = typeof onConvert === 'function' ? onConvert : null;
+  let prev = '';
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     const full = PUNCT_MAP[ch];
     if (!full) {
-      out += ch;
+      parts.push(ch);
+      prev = ch;
       continue;
     }
-    const prev = out ? out[out.length - 1] : '';
     const next = text[i + 1] || '';
     // 「...」「。。。」这类省略号连排保持原样，不逐个转换
     if (ch === '.' && (text[i - 1] === '.' || text[i + 1] === '.')) {
-      out += ch;
+      parts.push(ch);
+      prev = ch;
       continue;
     }
     // 句点单独收紧：只认「中文 + .」，避免把 A. / 3.14 / www.a.com 里的点转成句号
     if (ch === '.') {
       if (!(HAN_RE.test(prev) || FULL_PUNCT.has(prev))) {
-        out += ch;
+        parts.push(ch);
+        prev = ch;
         continue;
       }
-      out += full;
+      parts.push(full);
+      prev = full;
       count += 1;
       if (report) report(i, ch, full);
       continue;
     }
     const nearHan = HAN_RE.test(prev) || HAN_RE.test(next) || FULL_PUNCT.has(prev) || FULL_PUNCT.has(next);
     if (!nearHan) {
-      out += ch;
+      parts.push(ch);
+      prev = ch;
       continue;
     }
-    out += full;
+    parts.push(full);
+    prev = full;
     count += 1;
     if (report) report(i, ch, full);
   }
-  return { text: out, count };
+  return { text: parts.join(''), count };
 }
 
 // 删除两个中文字符之间的半角空格（缩进用的全角空格不受影响）

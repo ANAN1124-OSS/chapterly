@@ -173,29 +173,36 @@ function splitLongUntitled(text, options = {}) {
   if (normalized.length <= threshold) return [{ title: '', body: normalized }];
 
   const parts = [];
-  let rest = normalized;
+  // P-06（1.6.0 A5）：按绝对下标推进，不再每切一片就复制剩余全文（旧实现 rest = rest.slice(cut)
+  // 让整篇的字符拷贝量变成 O(n²/chunk)）。切片只用于产出每一片的正文，总拷贝量 ≈ 原文长度。
+  const total = normalized.length;
+  let pos = 0;
   let index = 1;
-  while (rest.length) {
-    if (rest.length <= chunkChars) {
-      parts.push({ title: `第 ${index} 部分`, body: rest });
+  while (pos < total) {
+    const remaining = total - pos;
+    if (remaining <= chunkChars) {
+      parts.push({ title: `第 ${index} 部分`, body: normalized.slice(pos) });
       break;
     }
     // 最近的段落空行（「空行」= 两个连续换行）；找不到 / 太靠前就按目标长度硬切。
     // 断在空行之后（前一段带上这个空行），下一段从正文开头开始，读起来干净。
-    let cut = rest.lastIndexOf('\n\n', chunkChars);
-    if (cut >= 0 && cut + 2 <= rest.length && cut + 2 >= chunkChars * LONG_UNTITLED_MIN_RATIO) {
+    // lastIndexOf 的 fromIndex 是绝对下标；命中的空行落在本片窗口 [pos, pos+chunkChars] 之外
+    // （只有窗口里没有空行时才会往回找到上一片）就当没找到。
+    let cut = normalized.lastIndexOf('\n\n', pos + chunkChars);
+    cut = cut < pos ? -1 : cut - pos;
+    if (cut >= 0 && cut + 2 <= remaining && cut + 2 >= chunkChars * LONG_UNTITLED_MIN_RATIO) {
       cut += 2;
     } else {
       cut = chunkChars;
     }
     // 不把 UTF-16 代理对切开（emoji / 生僻字扩展区）
-    if (cut > 0 && cut < rest.length) {
-      const code = rest.charCodeAt(cut - 1);
+    if (cut > 0 && cut < remaining) {
+      const code = normalized.charCodeAt(pos + cut - 1);
       if (code >= 0xd800 && code <= 0xdbff) cut -= 1;
     }
-    if (cut <= 0) cut = Math.min(rest.length, chunkChars); // 极端兜底，保证一定前进
-    parts.push({ title: `第 ${index} 部分`, body: rest.slice(0, cut) });
-    rest = rest.slice(cut);
+    if (cut <= 0) cut = Math.min(remaining, chunkChars); // 极端兜底，保证一定前进
+    parts.push({ title: `第 ${index} 部分`, body: normalized.slice(pos, pos + cut) });
+    pos += cut;
     index += 1;
   }
   return parts;

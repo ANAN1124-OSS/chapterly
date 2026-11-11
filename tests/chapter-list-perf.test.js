@@ -188,3 +188,29 @@ test('事件委托：章节条目不再逐条绑监听，改由 #chapter-list �
   assert.ok(delegationSrc.includes('showContextMenu('), '⋯ / 右键菜单要保住');
   assert.ok(delegationSrc.includes('renameChapterAt('), '双击重命名要保住');
 });
+
+// 1.6.0 A5 / P-09：输入热路径不再扫 DOM —— onEditorInput 每敲一个字都去 #chapter-list 里
+// querySelector('.chapter-item.active') 拿当前条目标脏（千章书里每次击键一次查询）。改成
+// activeChapterItem() 缓存引用：整表重建 / 切章快路径负责更新缓存，缓存条目掉出文档时回退重查。
+test('输入热路径：当前章条目走缓存引用，不再每次击键 querySelector（A5/P-09）', () => {
+  const onInputSrc = functionSource(RENDERER_CODE, 'onEditorInput');
+  assert.equal(
+    onInputSrc.includes("querySelector('.chapter-item.active')"),
+    false,
+    'onEditorInput 里不许再每次击键扫 DOM（要用 activeChapterItem 的缓存引用）'
+  );
+  assert.match(onInputSrc, /activeChapterItem\(\)/, 'onEditorInput 应通过 activeChapterItem() 拿当前条目');
+  const helperSrc = functionSource(RENDERER_CODE, 'activeChapterItem');
+  assert.match(helperSrc, /cachedActiveChapterItem/, 'activeChapterItem 要有缓存引用');
+  assert.match(helperSrc, /isConnected/, '缓存条目掉出文档（整表重建）时要能回退重查');
+  assert.match(
+    functionSource(RENDERER_CODE, 'syncActiveChapterItem'),
+    /cachedActiveChapterItem = next/,
+    '切章快路径要更新缓存'
+  );
+  assert.match(
+    functionSource(RENDERER_CODE, 'renderChapterList'),
+    /cachedActiveChapterItem/,
+    '整表重建后要重算缓存（旧条目已经掉出文档）'
+  );
+});

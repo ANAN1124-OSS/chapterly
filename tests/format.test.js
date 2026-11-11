@@ -238,3 +238,110 @@ test('校对用：回调不会改变清理规则（数字 / 网址 / 英文里�
   assert.equal(res.count, 0);
   assert.equal(res.text, line);
 });
+
+// 1.6.0 A5 / P-07：convertPunct 原来是逐字 `out += ch` 造串（长段落里是 O(n²) 的中间字符串），
+// 改成数组 push + join。行为必须逐字等价：这里把 1.5.0 的旧算法原样抄一份当参照实现，
+// 用大语料（含省略号连排 / 小数 / 时间 / 网址 / 英文缩写 / 中文标点 / 代理对）做差分对账。
+const REF_PUNCT_MAP = { ',': '，', '.': '。', ';': '；', ':': '：', '!': '！', '?': '？' };
+const REF_HAN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+const REF_FULL_PUNCT = new Set(['，', '。', '；', '：', '！', '？']);
+const REF_PUNCT_ALPHABET = [
+  '中', '文', '字', '号', '，', '。', '！', '？', '；', '：', '、', '「', '」', '…', '—', '《', '》',
+  ',', '.', ';', ':', '!', '?', ' ', '\n', 'A', 'z', '0', '9', '-', '"', '“', '”', '\u{1F600}'
+];
+
+function referenceConvertPunct(text, onConvert) {
+  let count = 0;
+  let out = '';
+  const report = typeof onConvert === 'function' ? onConvert : null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const full = REF_PUNCT_MAP[ch];
+    if (!full) {
+      out += ch;
+      continue;
+    }
+    const prev = out ? out[out.length - 1] : '';
+    const next = text[i + 1] || '';
+    if (ch === '.' && (text[i - 1] === '.' || text[i + 1] === '.')) {
+      out += ch;
+      continue;
+    }
+    if (ch === '.') {
+      if (!(REF_HAN_RE.test(prev) || REF_FULL_PUNCT.has(prev))) {
+        out += ch;
+        continue;
+      }
+      out += full;
+      count += 1;
+      if (report) report(i, ch, full);
+      continue;
+    }
+    const nearHan =
+      REF_HAN_RE.test(prev) || REF_HAN_RE.test(next) || REF_FULL_PUNCT.has(prev) || REF_FULL_PUNCT.has(next);
+    if (!nearHan) {
+      out += ch;
+      continue;
+    }
+    out += full;
+    count += 1;
+    if (report) report(i, ch, full);
+  }
+  return { text: out, count };
+}
+
+// 固定种子的伪随机混合语料（不用 Math.random：失败可复现）
+function mixedCorpus(seed, length) {
+  let state = seed >>> 0;
+  const next = () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  const chunks = [];
+  let produced = 0;
+  while (produced < length) {
+    const item = REF_PUNCT_ALPHABET[Math.floor(next() * REF_PUNCT_ALPHABET.length)];
+    chunks.push(item);
+    produced += item.length;
+  }
+  return chunks.join('');
+}
+
+test('P-07：convertPunct 改数组拼接后与原判定逐字等价（大语料差分）', () => {
+  const samples = [
+    '',
+    '他说,好。',
+    '什么?!',
+    '价格3.14元,时间12:30,他说"好"。',
+    '版本 3.14，时间 12:30，网址 www.a.com，缩写 A.开头。',
+    '他说...\n\n...等等',
+    '「？！？」',
+    '？？？！！！',
+    '3.14.15 和 A.B.C 和 www.a.com?x=1',
+    '中文,English mixed. OK?',
+    mixedCorpus(20261111, 50000),
+    mixedCorpus(987654321, 200000)
+  ];
+  for (const sample of samples) {
+    const reported = [];
+    const actual = convertPunct(sample, (index, from, to) => reported.push([index, from, to]));
+    const expectedReported = [];
+    const expected = referenceConvertPunct(sample, (index, from, to) => expectedReported.push([index, from, to]));
+    assert.deepEqual(actual, expected, `文本长度 ${sample.length} 的转换结果要逐字相同`);
+    assert.deepEqual(reported, expectedReported, '回调的位置 / 原字符 / 全角字符逐项一致');
+  }
+});
+
+test('P-07 结构闸门：convertPunct 用数组 push + join，不再逐字 out += 造中间串', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'core', 'format.js'), 'utf8');
+  const start = source.indexOf('function convertPunct(');
+  assert.ok(start > 0, 'core/format.js 里找不到 convertPunct');
+  const end = source.indexOf('\n}', start);
+  assert.ok(end > start, 'convertPunct 的函数体没有按预期结束');
+  const body = source.slice(start, end);
+  assert.equal(/out\s*\+=\s*ch/.test(body), false, 'convertPunct 不许再逐字 out += 造串（长段落是 O(n²) 中间串）');
+  assert.equal(/out\s*=\s*out\s*\+/.test(body), false, 'convertPunct 不许用 out = out + … 拼串');
+  assert.ok(body.includes('.join('), 'convertPunct 应该最后把数组 join 成一个字符串');
+});

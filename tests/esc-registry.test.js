@@ -434,7 +434,13 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWEscRegistr
   const context = vm.createContext(win);
   vm.runInContext(REGISTRY_SOURCE, context, { filename: 'renderer/esc-registry.js' });
   assert.equal(typeof win.CWEscRegistry, 'object');
-  assert.deepEqual(Object.keys(win.CWEscRegistry).sort(), ['CLEANUP', 'LAYERS', 'cleanupActions', 'resolve']);
+  assert.deepEqual(Object.keys(win.CWEscRegistry).sort(), [
+    'CLEANUP',
+    'LAYERS',
+    'cleanupActions',
+    'isEscapeKey',
+    'resolve'
+  ]);
   assert.equal(win.CWEscRegistry.LAYERS.length, esc.LAYERS.length);
   assert.deepEqual(
     JSON.parse(JSON.stringify(win.CWEscRegistry.resolve({ settings: true }, 'Escape'))),
@@ -454,4 +460,24 @@ test('renderer/esc-registry.js 是纯逻辑：不 require 任何模块，也不�
   // 表本身不许是空转：层与清理项都真的在
   assert.match(REGISTRY_SOURCE, /const LAYERS = \[/, '注册表必须定义 LAYERS');
   assert.match(REGISTRY_SOURCE, /const CLEANUP = \[/, '注册表必须定义 CLEANUP');
+});
+
+// 1.6.0 A5 / P-09：全局 keydown 原来对**每个按键**都先摊一份 escProbe()（约 30 次 getElementById +
+// classList 读），打字 / 输入法组字时纯属浪费。改成「Esc 键 / 有锁键层」才现算：非 Esc 键只有锁键层
+// 开着才会被注册表接走（锁键层吞所有键），没有锁键层时 resolve 一定不命中。
+test('热路径闸门（A5/P-09）：非 Esc 键且没有锁键层时不再现算整份 escProbe', () => {
+  const start = RENDERER_SOURCE.indexOf("document.addEventListener('keydown'");
+  assert.ok(start > 0, 'renderer.js 里找不到全局 keydown 监听');
+  const keydown = RENDERER_SOURCE.slice(start);
+  assert.equal(
+    /const escHit = escLib\.resolve\(escProbe\(\), event\.key\)/.test(keydown),
+    false,
+    '每个按键都先摊探针的写法不许回来'
+  );
+  assert.match(
+    keydown,
+    /const escProbeNeeded = escLib\.isEscapeKey\(event\.key\) \|\| anyBackdropOpen\(\) \|\| commandPalette\.isOpen\(\);/,
+    '要先做一次便宜的「Esc / 锁键层」判断'
+  );
+  assert.match(keydown, /const escHit = escProbeNeeded \? escLib\.resolve\(escProbe\(\), event\.key\) : null;/);
 });

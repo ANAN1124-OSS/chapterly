@@ -554,3 +554,44 @@ test('校对：新规则的位置 / 片段都能在原文原样取到，且按�
   const indexes = result.issues.map((issue) => issue.index);
   assert.deepEqual(indexes, [...indexes].sort((a, b) => a - b));
 });
+
+// 1.6.0 A5 / P-08：整本校对（book:proofread）逐章只读正文，但明细预算用完后仍会把每一条命中
+// 的上下文片段（前后各 18 字 + 空白压缩）拼出来再丢掉。加「只要位置、不拼结果」开关：
+// snippets:false 时 snippet 一律 null，位置 / 行号 / 匹配文本 / 提示文案与默认逐项一致。
+test('P-08：snippets:false 只要位置、不拼上下文片段（条数 / 规则分布 / 位置 / 文案逐项一致）', () => {
+  const text = '他说,好。\n\n\n\n第二段？？？「……」Ａ１';
+  const full = proofread.proofreadText(text);
+  const lean = proofread.proofreadText(text, { snippets: false });
+  assert.ok(full.issues.length >= 4, JSON.stringify(full.issues.map((issue) => issue.rule)));
+  assert.equal(lean.total, full.total, '总数要照实统计（截断口径不变）');
+  assert.deepEqual(lean.byRule, full.byRule, '各规则条数逐项一致');
+  assert.equal(lean.issues.length, full.issues.length);
+  assert.ok(
+    full.issues.every((issue) => issue.snippet && typeof issue.snippet === 'object'),
+    '默认仍然拼片段（校对面板的上下文列要用）'
+  );
+  assert.ok(
+    lean.issues.every((issue) => issue.snippet === null),
+    '不拼片段时 snippet 一律 null（含 blank-lines 自己拼的那条）'
+  );
+  const strip = (issue) => {
+    const { snippet, ...rest } = issue;
+    return rest;
+  };
+  assert.deepEqual(lean.issues.map(strip), full.issues.map(strip), '位置 / 行号 / 匹配文本 / 提示文案不许因为不拼片段而变');
+  assert.deepEqual(lean.rules, full.rules, '规则开关照旧回传');
+});
+
+test('P-08 接线闸门：整本校对明细预算用完后，后续章节只算位置不拼片段', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const start = main.indexOf("handleBook('book:proofread'");
+  assert.ok(start > 0, 'main.js 里找不到 book:proofread');
+  const end = main.indexOf('\n  });', start);
+  assert.ok(end > start, 'book:proofread 的处理函数没有按预期结束');
+  const region = main.slice(start, end);
+  assert.match(region, /issues\.length >= BOOK_ISSUE_LIMIT/, '整本校对仍按 1500 条明细预算收口');
+  assert.match(region, /snippets: false/, '预算用完后要传 snippets:false（不再为丢掉的明细拼片段）');
+  assert.match(region, /snippetsWanted/, '要有一个跨章记住的「还要不要片段」状态');
+});

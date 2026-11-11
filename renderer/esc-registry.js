@@ -184,5 +184,11 @@
     return actions;
   }
 
-  return { LAYERS, CLEANUP, resolve, cleanupActions };
+  // 1.6.0 A5/P-09：渲染层 keydown 只在「Esc 键 / 有锁键层」时现算探针。判定放在这里，
+  // 免得把 event.key === 'Escape' 字面量再抄回 renderer.js（Esc 判断只许留在注册表这条闸门）。
+  function isEscapeKey(key) {
+    return key === 'Escape';
+  }
+
+  return { LAYERS, CLEANUP, resolve, cleanupActions, isEscapeKey };
 });

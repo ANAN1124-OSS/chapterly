@@ -226,11 +226,11 @@ test('updateCharCountText：上一章没字数 / 太短（<500）→ 不比较�
   assert.equal(tooShort.els.get('char-count').classList.contains('count-short'), false);
 });
 
-test('renderCharCount：超大单章（>20 万字符）走 400ms 防抖，连打几次只算最后一次', (t) => {
+test('renderCharCount：输入路径（defer）统一 200ms 防抖，连打几次只算最后一次（含超大单章）', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   try {
     let counted = 0;
-    const { host, els, editorEl } = makeHost({
+    const { host, editorEl } = makeHost({
       text: 'x'.repeat(200001),
       chaptersLib: {
         ...chaptersLib,
@@ -242,32 +242,55 @@ test('renderCharCount：超大单章（>20 万字符）走 400ms 防抖，连打
     });
     const ui = statusbarUi.create(host);
     const el = host.$('char-count');
-    ui.renderCharCount();
-    assert.equal(counted, 0, '200001 字符时不许同步算');
+    ui.renderCharCount({ defer: true });
+    assert.equal(counted, 0, '输入路径不许同步算');
     assert.equal(el.textContent, '');
     editorEl.value = 'y'.repeat(200002);
-    ui.renderCharCount();
-    t.mock.timers.tick(399);
-    assert.equal(counted, 0, '400ms 之前不算');
+    ui.renderCharCount({ defer: true });
+    t.mock.timers.tick(199);
+    assert.equal(counted, 0, '200ms 之前不算');
     t.mock.timers.tick(1);
     assert.equal(counted, 1, '两次调用只算最后一次');
     assert.equal(el.textContent, '本章 20.00 万字');
+
+    // 1.6.0 A5/P-09：小文本同样走 200ms 防抖（不再按 20 万字符分两条路径）
+    counted = 0;
+    editorEl.value = '小'.repeat(5);
+    ui.renderCharCount({ defer: true });
+    assert.equal(counted, 0, '小文本在输入路径同样防抖');
+    t.mock.timers.tick(200);
+    assert.equal(counted, 1);
+    assert.equal(el.textContent, '本章 5 字');
   } finally {
     t.mock.timers.reset();
   }
 });
 
-test('renderCharCount：20 万字符以内同步算，并清掉上一个待跑的定时器', (t) => {
+test('renderCharCount：切章 / 保存等非输入路径同步算，并清掉待跑的防抖定时器', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   try {
-    const { host, els, editorEl } = makeHost({ text: 'x'.repeat(200001) });
+    let counted = 0;
+    const { host, editorEl } = makeHost({
+      text: 'x'.repeat(200001),
+      chaptersLib: {
+        ...chaptersLib,
+        countChars(text) {
+          counted += 1;
+          return chaptersLib.countChars(text);
+        }
+      }
+    });
     const ui = statusbarUi.create(host);
-    ui.renderCharCount(); // 起一个 400ms 定时器
-    editorEl.value = 'x'.repeat(5); // 换成小文本
-    ui.renderCharCount(); // 应清掉定时器、同步算
-    assert.equal(els.get('char-count').textContent, '本章 5 字');
-    t.mock.timers.tick(400);
-    assert.equal(els.get('char-count').textContent, '本章 5 字', '旧定时器不许再写一遍');
+    const el = host.$('char-count');
+    ui.renderCharCount({ defer: true }); // 起一个 200ms 定时器
+    assert.equal(counted, 0);
+    editorEl.value = 'x'.repeat(5);
+    ui.renderCharCount(); // 非输入路径：清掉定时器、同步算
+    assert.equal(counted, 1, '切章 / 保存这类路径要立刻算');
+    assert.equal(el.textContent, '本章 5 字');
+    t.mock.timers.tick(200);
+    assert.equal(el.textContent, '本章 5 字', '旧定时器不许再写一遍');
+    assert.equal(counted, 1, '旧定时器不许再算一遍');
   } finally {
     t.mock.timers.reset();
   }
@@ -461,10 +484,10 @@ test('静态闸门：模块只读 state / 只碰 DOM 与 window，不摸文件�
   const listens = [...moduleCode.matchAll(/addEventListener\('([^']+)'/g)].map((m) => m[1]);
   assert.deepEqual(listens.sort(), ['blur', 'focus']);
   assert.equal(moduleCode.includes('removeEventListener'), false);
-  // 两个阈值写死在模块里（搬走前就在这一段）
-  assert.match(moduleCode, /const CHAR_COUNT_DEFER_ABOVE = 200000;/);
+  // 时间阈值写死在模块里（搬走前就在这一段；1.6.0 A5/P-09 把字数统计统一成输入路径 200ms 防抖）
+  assert.match(moduleCode, /const CHAR_COUNT_DEBOUNCE_MS = 200;/);
   assert.match(moduleCode, /since < 500/);
-  assert.match(moduleCode, /\}, 400\);/);
+  assert.match(moduleCode, /\}, CHAR_COUNT_DEBOUNCE_MS\);/);
 });
 
 test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWStatusbarUi，且不乱造别的全局', () => {

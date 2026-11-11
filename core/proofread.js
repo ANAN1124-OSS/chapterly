@@ -226,13 +226,18 @@ function proofreadText(text, rawOptions, rawGlossary) {
   const rules = sanitizeRules(rawOptions && rawOptions.rules);
   const source = normalizeText(text);
   const collector = createCollector(options.maxIssues);
+  // P-08（1.6.0 A5）：只要位置、不拼结果。整本校对明细预算用完后，后面的章只统计条数
+  // （issues 会被丢掉），传 snippets:false 就不再为每条命中拼上下文片段（前后各 18 字 + 空白压缩）。
+  // 位置 / 行号 / match / message 照旧算，snippet 给 null；默认 true，校对面板的上下文列不变。
+  const wantSnippets = !(rawOptions && typeof rawOptions === 'object' && rawOptions.snippets === false);
 
   // 统一兜底：位置、行号、上下文片段一次生成，各规则只关心「报什么」
   const addIssue = (rule, index, selectLength, match, message, extra) => {
     const cleanMatch = String(match == null ? '' : match);
     const matchLength = cleanMatch.length || Math.min(Math.max(selectLength, 1), PARAGRAPH_PREFIX);
-    const snippet =
-      extra && extra.snippet
+    const snippet = !wantSnippets
+      ? null
+      : extra && extra.snippet
         ? extra.snippet
         : findLib.makeSnippet(source, index, matchLength, SNIPPET_RADIUS);
     const issue = {
@@ -342,19 +347,20 @@ function proofreadText(text, rawOptions, rawGlossary) {
       if (count >= 2) {
         const index = lineStarts[lineIndex];
         const end = lineStarts[next - 1] + lines[next - 1].length;
-        const beforeLine = lineIndex > 0 ? lines[lineIndex - 1] : '';
-        const afterLine = next < lines.length ? lines[next] : '';
-        const snippet = {
-          before: beforeLine.slice(-SNIPPET_RADIUS),
-          match: `${count} 个空行`,
-          after: afterLine.slice(0, SNIPPET_RADIUS),
-          ellipsisStart: beforeLine.length > SNIPPET_RADIUS,
-          ellipsisEnd: afterLine.length > SNIPPET_RADIUS
-        };
-        addIssue('blank-lines', index, Math.max(1, end - index), '', `这里有 ${count} 个连续空行`, {
-          count,
-          snippet
-        });
+        // P-08：blank-lines 自己拼片段（三条 slice + 两个长度判定）；不要片段时连这些也算省掉
+        const extra = { count };
+        if (wantSnippets) {
+          const beforeLine = lineIndex > 0 ? lines[lineIndex - 1] : '';
+          const afterLine = next < lines.length ? lines[next] : '';
+          extra.snippet = {
+            before: beforeLine.slice(-SNIPPET_RADIUS),
+            match: `${count} 个空行`,
+            after: afterLine.slice(0, SNIPPET_RADIUS),
+            ellipsisStart: beforeLine.length > SNIPPET_RADIUS,
+            ellipsisEnd: afterLine.length > SNIPPET_RADIUS
+          };
+        }
+        addIssue('blank-lines', index, Math.max(1, end - index), '', `这里有 ${count} 个连续空行`, extra);
       }
       lineIndex = next;
     }

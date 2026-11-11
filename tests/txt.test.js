@@ -181,3 +181,45 @@ test('b10：阈值以下原样返回（普通无标题短文不切片）、参�
   assert.deepEqual(splitLongUntitled(''), [{ title: '', body: '' }]);
   assert.deepEqual(splitLongUntitled(null), [{ title: '', body: '' }]);
 });
+
+// 1.6.0 A5 / P-06（审计「平方拷贝」）：splitLongUntitled 旧实现每切一片就把剩余全文 rest.slice(cut)
+// 复制一遍，整篇的字符拷贝量是 O(n²/chunk)；1 万字单行切成 10 片要复制约 5.4 万字符。
+// 这里用一次性的 String.prototype.slice 计数把「这次调用一共复制了多少字符」量出来
+// （注入断言，不测墙钟），同时钉住改前后逐字等价：切分的产物、片数、拼回原文都不许变。
+function countSliceCopiedChars(fn) {
+  const originalSlice = String.prototype.slice;
+  let copied = 0;
+  let active = true;
+  String.prototype.slice = function (start, end) {
+    const value = originalSlice.call(this, start, end);
+    if (active) copied += value.length;
+    return value;
+  };
+  try {
+    const result = fn();
+    active = false;
+    return { result, copied };
+  } finally {
+    active = false;
+    String.prototype.slice = originalSlice;
+  }
+}
+
+test('b10 性能（P-06）：1 万字单行逐字等价，且不再平方复制剩余全文', () => {
+  const text = '字'.repeat(10000);
+  // 低于默认阈值：原样返回（等价性基线）
+  assert.deepEqual(splitLongUntitled(text), [{ title: '', body: text }]);
+
+  const injected = { threshold: 2000, chunkChars: 1000 };
+  const { result: parts, copied } = countSliceCopiedChars(() => splitLongUntitled(text, injected));
+  assert.deepEqual(
+    parts.map((part) => part.title),
+    Array.from({ length: 10 }, (_, i) => `第 ${i + 1} 部分`)
+  );
+  assert.deepEqual(parts.map((part) => part.body.length), Array(10).fill(1000));
+  assert.equal(parts.map((part) => part.body).join(''), text, '拼回去必须与原文逐字相同');
+  assert.ok(
+    copied <= text.length * 4,
+    `切片复制的字符数应与文本长度同一量级（不做平方拷贝）：copy=${copied} n=${text.length}`
+  );
+});

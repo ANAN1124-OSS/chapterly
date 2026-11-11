@@ -301,7 +301,8 @@ test('静态闸门：渲染层只剩接线——保存成功不弹 toast、四�
   for (const ref of ["$('status-text')", "$('status-dot')", "$('status-retry')", "dot.className = 'dot'"]) {
     assert.equal(rendererSrc.includes(ref), false, `renderer.js 不许再自己写 ${ref}`);
   }
-  assert.match(rendererCode, /function updateStatus\(\) \{[\s\S]{0,400}?saveStatusUi\.render\(\);/);
+  // 1.6.0 A5/P-09：updateStatus 多了一个 options 参数（输入路径的 typing 传下去让字数统计防抖）
+  assert.match(rendererCode, /function updateStatus\(options\) \{[\s\S]{0,400}?saveStatusUi\.render\(\);/);
   assert.match(rendererCode, /saveStatusUi\.bindRetry\(\);/);
   assert.equal((rendererCode.match(/saveStatusUi\.bindRetry\(\)/g) || []).length, 1);
   assert.match(

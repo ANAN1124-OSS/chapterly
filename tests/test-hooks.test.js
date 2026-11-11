@@ -267,7 +267,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // 1.6.0 G2：原阈值 9600 是恒真断言（1.5.0 实测 5691 行、本版实测 5764 行，永远够不到）。
   // 改成按上一版实测值的硬预算：只能减不能加；确有新模块要放进来时，同时改这个数字并在
   // 提交信息里写清为什么，避免「阈值远大于实际」的门再次退化成摆设。
-  const RENDERER_LINE_BUDGET = 5764;
+  // 1.6.0 A5：5764 → 5782（+18，全部是热路径接线，没有可搬的独立模块）——
+  //   当前章条目的缓存引用（activeChapterItem）、输入路径字数统计传 defer、escProbe 只在
+  //   Esc / 锁键层时现算；三者都要读 renderer.js 内部的 DOM 引用与按键上下文，搬出去只能靠
+  //   注入一堆回调，反而更绕。新增行里约一半是解释「为什么不能再退回旧写法」的注释。
+  const RENDERER_LINE_BUDGET = 5782;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,
