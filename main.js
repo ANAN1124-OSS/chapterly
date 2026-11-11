@@ -1242,7 +1242,7 @@ function registerIpc() {
     // 并立即跑一拍监听（生产不注册这个频道；真实读取路径仍是 clipboard.readText()）。
     handle('clipboard:test-set', async (text) => {
       clipboardWatchTestText = typeof text === 'string' ? text : '';
-      pollClipboardWatch();
+      void pollClipboardWatch();
       return true;
     });
   }

@@ -5211,17 +5211,8 @@
         }
         return;
       }
-      // 查找面板：Esc 已由注册表接走；面板里按回车 = 查找 / 下一处。
-      // 其他按键继续往下走（Ctrl+S 仍可保存）。
-      if (
-        !$('find-backdrop').classList.contains('hidden') &&
-        event.key === 'Enter' &&
-        document.activeElement === $('find-query')
-      ) {
-        event.preventDefault();
-        onFindQueryEnter(event);
-        return;
-      }
+      // 查找面板里的回车由 find-ui 自己的 `#find-query` 监听器处理（它 preventDefault + stopPropagation，
+      // 按键不会再冒泡到这里）；这里不再重复一份，避免同一键按两次触发两次查找。
       // 专注模式（提案 3.5）：F11 来回切换（只在写作页；不写配置、不写盘）
       if (event.key === 'F11') {
         if (state.view === 'editor' && state.bookPath) {
