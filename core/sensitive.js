@@ -222,32 +222,34 @@ function scanText(text, rawWords, rawOptions) {
   const words = sanitizeWords(rawWords);
   const source = normalizeText(text);
   const scan = wordscan.scanTerms(source, words, { rawMatchLimit: RAW_MATCH_LIMIT });
-  const kept = scan.hits.map((hit) => ({
-    word: words[hit.patternIndex],
-    index: hit.index,
-    length: hit.length
-  }));
-
+  // A4 / P-03：一边遍历命中一边聚合，不再先物化一份「全部命中」的中间数组；
+  // 明细只给前 maxIssues 条算行号 / 拼上下文，超出的只计数——
+  // 「的」这类高频词命中上万条时，不会再为被截掉的条目白拼片段。
   const byWordMap = new Map();
-  for (const hit of kept) byWordMap.set(hit.word, (byWordMap.get(hit.word) || 0) + 1);
+  const issues = [];
+  let total = 0;
+  let lineStarts = null;
+  for (const hit of scan.hits) {
+    const word = words[hit.patternIndex];
+    total += 1;
+    byWordMap.set(word, (byWordMap.get(word) || 0) + 1);
+    if (issues.length >= options.maxIssues) continue;
+    if (!lineStarts) lineStarts = lineStartsOf(source);
+    const pos = positionOf(lineStarts, hit.index);
+    issues.push({
+      word,
+      index: hit.index,
+      length: word.length,
+      line: pos.line,
+      column: pos.column,
+      snippet: findLib.makeSnippet(source, hit.index, word.length, SNIPPET_RADIUS)
+    });
+  }
+
   // 完整返回每个命中词的次数（最多 = 词表词数），由调用方决定摘要里显示前几个
   const byWord = Array.from(byWordMap, ([word, count]) => ({ word, count })).sort(
     (a, b) => b.count - a.count || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0)
   );
-
-  const total = kept.length;
-  const lineStarts = lineStartsOf(source);
-  const issues = kept.slice(0, options.maxIssues).map((hit) => {
-    const pos = positionOf(lineStarts, hit.index);
-    return {
-      word: hit.word,
-      index: hit.index,
-      length: hit.word.length,
-      line: pos.line,
-      column: pos.column,
-      snippet: findLib.makeSnippet(source, hit.index, hit.word.length, SNIPPET_RADIUS)
-    };
-  });
 
   return {
     total,

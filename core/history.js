@@ -4,13 +4,16 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { stripBom } = require('./atomic');
-const { pad2 } = require('./common');
+const { pad2, mapLimit } = require('./common');
 const { parseSnapshotDirName } = require('./snapshot');
 
 const TRASH_DIR = '_trash';
 const BOOK_BAK = '书目.json.bak';
 // 预览上限：足够看一整章，也不至于把一本巨大的书一次性塞进渲染层
 const PREVIEW_MAX_BYTES = 512 * 1024;
+// A4 / P-11（审计：_trash 双层串行 stat）：一次 listHistory 的 stat / readdir 并发上限。
+// 备份多的时候（几百个文件）串行要按文件数累加；8 路既快又不会把盘 / 杀软打满。
+const HISTORY_STAT_CONCURRENCY = 8;
 
 const SOURCE_META = {
   replace: {
@@ -243,101 +246,146 @@ async function listHistory(bookPath, options = {}) {
     if (err.code !== 'ENOENT') throw err;
   }
 
+  // A4 / P-11（审计：_trash 双层串行 stat —— 每个备份目录、每个文件各 await 一次）：
+  // 拆成两段并发读盘：① 备份目录 readdir 8 路；② 目录内文件 + _trash 散文件合成一张
+  // 平坦的任务表，统一 8 路 stat。stat 峰值 = concurrency（默认 8），不再随文件数线性变慢。
+  const statFile = typeof options.stat === 'function' ? options.stat : (target) => fs.stat(target);
+  const requestedConcurrency = Number(options.concurrency);
+  const concurrency =
+    Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
+      ? Math.floor(requestedConcurrency)
+      : HISTORY_STAT_CONCURRENCY;
+
+  const dirEntries = [];
+  const looseEntries = [];
   for (const entry of entries) {
     if (!entry || entry.name.startsWith('.')) continue;
     if (entry.isDirectory()) {
       const info = classifyDirName(entry.name);
-      if (!info) continue;
-      const dirPath = path.join(trashPath, entry.name);
-      let children;
-      try {
-        children = await fs.readdir(dirPath, { withFileTypes: true });
-      } catch {
-        continue; // 目录刚好被移走/占用，跳过
-      }
-      const files = [];
-      let mtimeMax = 0;
-      for (const child of children) {
-        if (!child.isFile() || child.name.startsWith('.')) continue;
-        let stat;
-        try {
-          stat = await fs.stat(path.join(dirPath, child.name));
-        } catch {
-          continue;
-        }
-        mtimeMax = Math.max(mtimeMax, stat.mtimeMs);
-        const inBook = chapterFiles.has(child.name);
-        const isChapterFile = /\.txt$/i.test(child.name);
-        const canRestore = isChapterFile && inBook && RESTORABLE_SOURCES.has(info.source);
-        files.push(
-          makeFileEntry({
-            name: child.name,
-            trashName: child.name,
-            size: stat.size,
-            mtimeMs: stat.mtimeMs,
-            inBook,
-            restorable: canRestore,
-            reason: !isChapterFile
-              ? '不是 .txt 章节文件，只供查看'
-              : !RESTORABLE_SOURCES.has(info.source)
-                ? '未识别的备份，只供查看'
-                : !inBook
-                  ? '这一章已经不在书里了，不会自动复活'
-                  : '',
-            source: info.source
-          })
-        );
-      }
-      if (!files.length) continue;
-      files.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
-      const stampTime = info.time || 0;
-      const time = stampTime || Math.round(mtimeMax);
-      const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-      // 每日快照组（P22-5）：只有「快照-YYYYMMDD 且日期真实存在」的目录才带 snapshotName / snapshotDay，
-      // 渲染层据此决定「默认折叠 + 清空这天的快照」，不用自己切 id 字符串。
-      // 名字对不上严格格式的目录（手写的 快照-2026-10-31-230000 之类）仍然显示为「每日快照」，
-      // 但不折叠、也不给清空按钮 —— 宁可少一个入口，也不碰不是本应用生成的目录。
-      const snapshot = info.source === 'snapshot' ? parseSnapshotDirName(entry.name) : null;
-      const group = {
-        id: `dir:${entry.name}`,
-        kind: 'dir',
-        source: info.source,
-        sourceLabel: sourceLabel(info.source),
-        note: sourceNote(info.source),
-        stamp: info.stamp,
-        time,
-        timeText: formatHistoryTime(time),
-        dirName: entry.name,
-        fileName: '',
-        fileCount: files.length,
-        totalBytes,
-        restorableCount: files.filter((file) => file.restorable).length,
-        files
-      };
-      // 字段只在严格合法的每日快照组上出现（其它来源的组保持原形状）
-      if (snapshot) {
-        group.snapshotName = snapshot.name;
-        group.snapshotDay =
-          `${snapshot.dayKey.slice(0, 4)}-${snapshot.dayKey.slice(4, 6)}-${snapshot.dayKey.slice(6, 8)}`;
-      }
-      groups.push(group);
+      if (info) dirEntries.push({ name: entry.name, info });
       continue;
     }
     if (!entry.isFile()) continue;
     const info = classifyLooseName(entry.name);
-    if (!info) continue;
-    let stat;
+    if (info) looseEntries.push({ name: entry.name, info });
+  }
+
+  // ① 备份目录 readdir（并发 8 路）：目录刚好被移走 / 占用就跳过（旧行为）
+  const dirListings = await mapLimit(dirEntries, concurrency, async (dir) => {
     try {
-      stat = await fs.stat(path.join(trashPath, entry.name));
+      const children = await fs.readdir(path.join(trashPath, dir.name), { withFileTypes: true });
+      return {
+        ...dir,
+        children: children.filter((child) => child && child.isFile() && !child.name.startsWith('.'))
+      };
     } catch {
-      continue;
+      return null;
     }
+  });
+
+  // ② 平坦任务表：目录内文件按目录归桶，_trash 散文件单独收；一次 8 路 stat 覆盖全部
+  const buckets = new Map();
+  const jobs = [];
+  for (const listing of dirListings) {
+    if (!listing) continue;
+    const bucket = [];
+    buckets.set(listing, bucket);
+    const dirPath = path.join(trashPath, listing.name);
+    for (const child of listing.children) jobs.push({ name: child.name, dirPath, bucket });
+  }
+  for (const loose of looseEntries) jobs.push({ name: loose.name, dirPath: trashPath, loose });
+  const stats = await mapLimit(jobs, concurrency, async (job) => {
+    try {
+      return await statFile(path.join(job.dirPath, job.name));
+    } catch {
+      return null; // 文件刚好被清掉 / 占用：跳过，不影响其它条目
+    }
+  });
+  const looseStats = new Map();
+  for (let index = 0; index < jobs.length; index += 1) {
+    const job = jobs[index];
+    const stat = stats[index];
+    if (!stat) continue;
+    if (job.bucket) job.bucket.push({ name: job.name, stat });
+    else looseStats.set(job.loose, stat);
+  }
+
+  // ③ 目录组：文件顺序 / mtimeMax / 快照字段与旧实现一致
+  for (const listing of dirListings) {
+    if (!listing) continue;
+    const info = listing.info;
+    const files = [];
+    let mtimeMax = 0;
+    for (const { name, stat } of buckets.get(listing) || []) {
+      mtimeMax = Math.max(mtimeMax, stat.mtimeMs);
+      const inBook = chapterFiles.has(name);
+      const isChapterFile = /\.txt$/i.test(name);
+      const canRestore = isChapterFile && inBook && RESTORABLE_SOURCES.has(info.source);
+      files.push(
+        makeFileEntry({
+          name,
+          trashName: name,
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          inBook,
+          restorable: canRestore,
+          reason: !isChapterFile
+            ? '不是 .txt 章节文件，只供查看'
+            : !RESTORABLE_SOURCES.has(info.source)
+              ? '未识别的备份，只供查看'
+              : !inBook
+                ? '这一章已经不在书里了，不会自动复活'
+                : '',
+          source: info.source
+        })
+      );
+    }
+    if (!files.length) continue;
+    files.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+    const stampTime = info.time || 0;
+    const time = stampTime || Math.round(mtimeMax);
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+    // 每日快照组（P22-5）：只有「快照-YYYYMMDD 且日期真实存在」的目录才带 snapshotName / snapshotDay，
+    // 渲染层据此决定「默认折叠 + 清空这天的快照」，不用自己切 id 字符串。
+    // 名字对不上严格格式的目录（手写的 快照-2026-10-31-230000 之类）仍然显示为「每日快照」，
+    // 但不折叠、也不给清空按钮 —— 宁可少一个入口，也不碰不是本应用生成的目录。
+    const snapshot = info.source === 'snapshot' ? parseSnapshotDirName(listing.name) : null;
+    const group = {
+      id: `dir:${listing.name}`,
+      kind: 'dir',
+      source: info.source,
+      sourceLabel: sourceLabel(info.source),
+      note: sourceNote(info.source),
+      stamp: info.stamp,
+      time,
+      timeText: formatHistoryTime(time),
+      dirName: listing.name,
+      fileName: '',
+      fileCount: files.length,
+      totalBytes,
+      restorableCount: files.filter((file) => file.restorable).length,
+      files
+    };
+    // 字段只在严格合法的每日快照组上出现（其它来源的组保持原形状）
+    if (snapshot) {
+      group.snapshotName = snapshot.name;
+      group.snapshotDay =
+        `${snapshot.dayKey.slice(0, 4)}-${snapshot.dayKey.slice(4, 6)}-${snapshot.dayKey.slice(6, 8)}`;
+    }
+    groups.push(group);
+  }
+
+  // ④ _trash 散文件（删章散文件 / 未识别用途的文件）
+  for (const loose of looseEntries) {
+    const stat = looseStats.get(loose);
+    if (!stat) continue;
+    const info = loose.info;
     const time = info.time || Math.round(stat.mtimeMs);
     let file;
     if (info.source === 'delete') {
       file = makeFileEntry({
         name: info.originalName,
-        trashName: entry.name,
+        trashName: loose.name,
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         inBook: chapterFiles.has(info.originalName),
@@ -347,8 +395,8 @@ async function listHistory(bookPath, options = {}) {
       });
     } else {
       file = makeFileEntry({
-        name: entry.name,
-        trashName: entry.name,
+        name: loose.name,
+        trashName: loose.name,
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         inBook: false,
@@ -358,7 +406,7 @@ async function listHistory(bookPath, options = {}) {
       });
     }
     groups.push({
-      id: `file:${entry.name}`,
+      id: `file:${loose.name}`,
       kind: 'file',
       source: info.source,
       sourceLabel: sourceLabel(info.source),
@@ -367,7 +415,7 @@ async function listHistory(bookPath, options = {}) {
       time,
       timeText: formatHistoryTime(time),
       dirName: '',
-      fileName: entry.name,
+      fileName: loose.name,
       originalName: info.originalName || '',
       fileCount: 1,
       totalBytes: stat.size,

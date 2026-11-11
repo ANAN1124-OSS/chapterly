@@ -857,3 +857,78 @@ async function exists(p) {
     return false;
   }
 }
+
+// A4 / P-01（审计：搜索每次都 ensure → 每本书一次 书目.json stat，280 本 ≈ 280 次/键）：
+// 索引已就绪、同一个书架根、版本一致时，搜索侧在窗口内直接复用内存索引；
+// 失效靠「根目录签名 + 2 s 节流」与「60 s 窗口」，两者命中时才重新校验。
+// 口径：预热后连续两次 search 合计只发生 1 次 stat（根目录签名），逐书 书目.json 的 stat 必须是 0。
+test('正文索引（P-01）：连续两次 search 只做一次根签名 stat、逐书 书目.json stat 为 0', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
+
+  let clockMs = Date.parse('2026-11-11T20:00:00.000Z');
+  const statCalls = [];
+  const store = makeStore(userData, {
+    validateIntervalMs: 2000, // 非 0：搜索侧窗口生效（默认 60 s）
+    now: () => new Date(clockMs),
+    stat: (target) => {
+      statCalls.push(path.resolve(String(target)));
+      return fs.stat(target);
+    }
+  });
+
+  // 预热：第一次搜索建索引（这一步允许逐书 stat）
+  const first = await store.search({ booksRoot, query: '青柠色' });
+  assert.equal(first.results.length, 1);
+
+  // 越过 2 s 签名节流、留在 60 s 窗口内 → 两次搜索合计只允许一次根签名 stat
+  clockMs += 5000;
+  statCalls.length = 0;
+  const second = await store.search({ booksRoot, query: '青柠色' });
+  const third = await store.search({ booksRoot, query: '灯芯' });
+  assert.equal(second.results.length, 1);
+  assert.equal(third.results.length, 0);
+
+  const metaStats = statCalls.filter((file) => file.endsWith(`${path.sep}书目.json`));
+  const rootStats = statCalls.filter((file) => file === path.resolve(booksRoot));
+  assert.equal(statCalls.length, 1, `两次搜索只该 stat 一次，实际：${statCalls.join(' | ')}`);
+  assert.equal(rootStats.length, 1);
+  assert.equal(metaStats.length, 0, `窗口内不许逐书 stat 书目.json，实际：${metaStats.join(' | ')}`);
+});
+
+test('正文索引（P-01）：窗口过期 / 根目录签名变化后仍会重新校验并重建', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
+
+  let clockMs = Date.parse('2026-11-11T20:00:00.000Z');
+  const store = makeStore(userData, {
+    validateIntervalMs: 2000,
+    now: () => new Date(clockMs),
+    stat: (target) => fs.stat(target)
+  });
+  const warm = await store.search({ booksRoot, query: '青柠色' });
+  assert.equal(warm.results.length, 1);
+
+  // ① 新书出现 → 根目录 mtime 变了：签名节流窗口外的下一次搜索就能发现（不必等 60 s）
+  await makeBook(booksRoot, '书乙', '书乙', [{ name: '第一章', text: '灯芯在风里晃了一下。' }]);
+  clockMs += 3000;
+  const bySig = await store.search({ booksRoot, query: '灯芯' });
+  assert.equal(bySig.results.length, 1, '根目录签名变化后必须重新校验，新书要能被搜到');
+
+  // ② 60 s 窗口过期 → 重新校验（书内改正文不改书架根目录签名：窗口内看不到，过期后必须看到）
+  await fs.writeFile(path.join(booksRoot, '书甲', '001-第一章.txt'), '青柠色的雨伞旁边多了一只铜锁扣。', 'utf8');
+  clockMs += 30000; // 累计仍在 60 s 窗口内
+  const inWindow = await store.search({ booksRoot, query: '铜锁扣' });
+  assert.equal(inWindow.results.length, 0, '窗口内的搜索不该为每本书再 stat 一遍');
+  clockMs += 40000; // 累计 70 s > 60 s
+  const afterWindow = await store.search({ booksRoot, query: '铜锁扣' });
+  assert.equal(afterWindow.results.length, 1, '窗口过期后必须重新校验，改过的正文要能被搜到');
+});

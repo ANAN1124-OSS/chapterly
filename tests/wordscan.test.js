@@ -177,3 +177,51 @@ test('产品入口的 truncated 仍与旧口径一致（单字高频 × 敏感�
   assert.equal(glossaryResult.hits.length, limit);
   assert.equal(glossaryResult.hits[0].suggestion, '改');
 });
+
+// A4 / P-03（审计：整本预检 / 校对是「每章建一次图」——1000 章 × 5000 词 = 1000 次建图）：
+// 按词表内容（+ 顺序）缓存自动机，同一词表连续扫多章只建图一次；缓存有上限，不能无限长大。
+test('词表扫描（P-03）：1000 章 × 同一词表只建图 1 次', () => {
+  wordscan.resetAutomatonCache();
+  const terms = Array.from({ length: 800 }, (_, i) => `词${i}`);
+  const chapter = `风从海面吹来。${'正文里有词3、词57、词799。'.repeat(3)}`;
+  for (let i = 0; i < 1000; i += 1) {
+    wordscan.scanTerms(chapter, terms);
+  }
+  const stats = wordscan.automatonCacheStats();
+  assert.equal(stats.builds, 1, `同一词表 1000 章只该建图 1 次，实际 ${stats.builds} 次`);
+  assert.equal(stats.hits, 999, `其余 999 次都该命中缓存，实际 ${stats.hits} 次`);
+  assert.equal(stats.size, 1);
+});
+
+test('词表扫描（P-03）：词表内容 / 顺序不同各自成图，缓存有上限且不串索引', () => {
+  wordscan.resetAutomatonCache();
+  const a = ['甲', '甲乙'];
+  const b = ['甲乙'];
+  // 顺序不同 → patternIndex 不能串（a 的 0 是「甲」、b 的 0 是「甲乙」）
+  const first = wordscan.scanTerms('甲乙', a);
+  assert.deepEqual(
+    first.hits.map((hit) => [a[hit.patternIndex], hit.index, hit.length]),
+    [['甲乙', 0, 2]]
+  );
+  const second = wordscan.scanTerms('甲乙', b);
+  assert.deepEqual(
+    second.hits.map((hit) => [b[hit.patternIndex], hit.index, hit.length]),
+    [['甲乙', 0, 2]]
+  );
+  assert.equal(wordscan.automatonCacheStats().builds, 2, '词表内容不同必须重新建图');
+
+  // 上限：超过缓存容量后最早的被淘汰，重新用时要再建一次（内存有界）
+  const extra = Array.from({ length: 8 }, (_, i) => [`词表${i}`, `甲${i}`, `乙${i}`]);
+  for (const terms of extra) wordscan.scanTerms('甲', terms);
+  const capped = wordscan.automatonCacheStats();
+  assert.ok(capped.size <= 4, `缓存容量必须有上限（≤4），实际 ${capped.size}`);
+  assert.equal(capped.builds, 10);
+  wordscan.scanTerms('甲乙', a);
+  assert.equal(wordscan.automatonCacheStats().builds, 11, '被淘汰的词表要能重建（不是永久失效）');
+
+  // 空词表 / 脏输入不能把缓存搞坏
+  wordscan.resetAutomatonCache();
+  assert.deepEqual(wordscan.scanTerms('正文', []), { hits: [], rawCount: 0, truncated: false });
+  assert.deepEqual(wordscan.scanTerms('正文', null), { hits: [], rawCount: 0, truncated: false });
+  assert.equal(wordscan.automatonCacheStats().builds, 1);
+});

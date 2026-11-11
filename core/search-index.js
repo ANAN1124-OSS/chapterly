@@ -54,6 +54,13 @@ const FULL_VALIDATE_INTERVAL_MS = 10000; // 后台深度校验的节流（外部
 // 搜索自身不做逐章 stat（太慢），但距上次深度校验超过 1 分钟时会顺带做一次兜底校验，
 // 保证「一直在书架搜、不回书架」也能发现外部改过的 txt。
 const SEARCH_DEEP_INTERVAL_MS = 60000;
+// A4 / P-01（审计：每敲一次键都 ensure → 每本书一次 书目.json stat，280 本 ≈ 280 次/次搜索）：
+// 搜索侧改成「索引就绪 + 同一个书架根 + 版本一致」时直接复用内存索引，60 s 内不再校验；
+// 更快的失效靠根目录签名（书架目录一次 stat，见下）发现新书 / 删书。
+const SEARCH_ENSURE_INTERVAL_MS = 60000;
+// 根目录签名探测的节流：书架目录 mtime 只认这一层（新书 / 删书会改它），
+// 2 s 内连打多个键只探一次——这就是「连续两次 search 只 stat 一次」的来源。
+const SEARCH_SIGNATURE_INTERVAL_MS = 2000;
 const PROGRESS_INTERVAL_MS = 150;
 // P2-1（作业卡 1.5.0）：整本建位图时按批读正文的批大小，对齐 core/storage.js 的 32 章批。
 // 以前是「全书 texts 一次进数组」，1000 章 × 1 MB ≈ 1 GB 常驻主进程；现在一批处理完就丢引用。
@@ -514,6 +521,15 @@ function createSearchStore(options = {}) {
   const validateIntervalMs = Number.isFinite(options.validateIntervalMs)
     ? Math.max(0, options.validateIntervalMs)
     : FULL_VALIDATE_INTERVAL_MS;
+  // stat 可注入：单测用它数「一次搜索到底 stat 了几次」（P-01 的锚点），产品里就是 fs.stat。
+  const statFile = typeof options.stat === 'function' ? options.stat : (target) => fs.stat(target);
+  // 搜索侧窗口：validateIntervalMs=0（单测里「每次都要看到外部改动」的口径）时退回旧行为。
+  const searchEnsureIntervalMs = validateIntervalMs === 0 ? 0 : SEARCH_ENSURE_INTERVAL_MS;
+  const nowMs = () => {
+    const date = clock();
+    const ms = date instanceof Date ? date.getTime() : NaN;
+    return Number.isFinite(ms) ? ms : Date.now();
+  };
 
   let index = emptyIndex('');
   let loaded = false;
@@ -525,6 +541,10 @@ function createSearchStore(options = {}) {
   let lastRun = null;
   let savePromise = Promise.resolve();
   let lastSaveError = null;
+  // P-01：最近一次成功校验的时刻 / 当时的根目录签名 / 最近一次签名探测时刻。
+  let lastEnsureAt = 0;
+  let rootSignature = '';
+  let lastSignatureCheckAt = 0;
   const dirtyBooks = new Set();
   const bloomCache = new Map(); // path -> { bloom(base64), bits, buffer }
 
@@ -536,6 +556,18 @@ function createSearchStore(options = {}) {
     if (!buffer) return null;
     bloomCache.set(book.path, { bloom: book.bloom, bits: book.bloomBits, buffer });
     return buffer;
+  }
+
+  // 根目录签名（P-01）：书架目录自身的 mtime。新建 / 删除一本书都会改它，
+  // 所以「窗口内也要尽快发现新书」不靠逐书 stat，而靠这一次 stat。
+  // 目录不可读 / 不存在时不抛错（签名记成错误码，交给下一次 ensure 按老路径报问题）。
+  async function rootSignatureOf(booksRoot) {
+    try {
+      const info = await statFile(booksRoot);
+      return `ok:${Number(info && info.mtimeMs) || 0}`;
+    } catch (err) {
+      return `err:${(err && err.code) || 'ERROR'}`;
+    }
   }
 
   async function load() {
@@ -625,8 +657,10 @@ function createSearchStore(options = {}) {
       return result;
     }
 
+    // 本轮校验对应的根目录签名：一次 stat，之后窗口内的搜索都靠它判「书架有没有增删书」。
+    const signature = await rootSignatureOf(booksRoot);
     const fullValidate =
-      force || rootChanged || (deep && Date.now() - lastFullValidateAt >= validateIntervalMs);
+      force || rootChanged || (deep && nowMs() - lastFullValidateAt >= validateIntervalMs);
     const previous = new Map(index.books.map((book) => [normalizePath(book.path), book]));
     const nextBooks = [];
     const run = {
@@ -667,7 +701,7 @@ function createSearchStore(options = {}) {
         // 章节指纹都没变时复用旧位图，不重读正文。
         let metaMtimeMs = 0;
         try {
-          metaMtimeMs = (await fs.stat(path.join(bookPath, storage.BOOK_FILE))).mtimeMs;
+          metaMtimeMs = (await statFile(path.join(bookPath, storage.BOOK_FILE))).mtimeMs;
         } catch {
           metaMtimeMs = 0;
         }
@@ -733,7 +767,11 @@ function createSearchStore(options = {}) {
       updatedAt: nowIso(clock),
       books: nextBooks
     };
-    lastFullValidateAt = fullValidate ? Date.now() : lastFullValidateAt;
+    lastFullValidateAt = fullValidate ? nowMs() : lastFullValidateAt;
+    // P-01：这次校验是「全部就绪」的，记下窗口起点与签名，后续搜索直接用内存索引。
+    lastEnsureAt = nowMs();
+    rootSignature = signature;
+    lastSignatureCheckAt = lastEnsureAt;
     if (run.changed || rootChanged) await saveNow();
     lastRun = run;
     const result = status();
@@ -809,17 +847,37 @@ function createSearchStore(options = {}) {
       };
     }
 
-    const ensured = await ensure({
-      booksRoot,
-      deep: Date.now() - lastFullValidateAt >= SEARCH_DEEP_INTERVAL_MS,
-      ...(opts.ensureOptions || {})
-    });
+    // P-01：索引已就绪 + 同一个书架根 + 版本一致时，窗口内不再 ensure（0 次逐书 stat）。
+    // 窗口外 / 根目录签名变了 / force 才走原来的校验路径。
+    const searchRoot = normalizePath(booksRoot);
+    const now = nowMs();
+    const reuseIndex =
+      loaded &&
+      index.root === searchRoot &&
+      index.version === INDEX_VERSION &&
+      lastEnsureAt > 0 &&
+      now - lastEnsureAt < searchEnsureIntervalMs &&
+      !(opts.ensureOptions && opts.ensureOptions.force);
+    let signatureChanged = false;
+    if (reuseIndex && now - lastSignatureCheckAt >= SEARCH_SIGNATURE_INTERVAL_MS) {
+      // 2 s 节流：连续两次 search 合计只发生这一次 stat。
+      const signature = await rootSignatureOf(booksRoot);
+      lastSignatureCheckAt = now;
+      signatureChanged = signature !== rootSignature;
+    }
+    const state = reuseIndex && !signatureChanged
+      ? status()
+      : await ensure({
+          booksRoot,
+          deep: nowMs() - lastFullValidateAt >= SEARCH_DEEP_INTERVAL_MS,
+          ...(opts.ensureOptions || {})
+        });
     const indexInfo = {
-      books: ensured.books,
-      chapters: ensured.chapters,
+      books: state.books,
+      chapters: state.chapters,
       building: false,
-      problem: ensured.problem || '',
-      bytes: ensured.bytes
+      problem: state.problem || '',
+      bytes: state.bytes
     };
     if (normalizePath(booksRoot) !== index.root) {
       return { ...makeBase(indexInfo), truncated: true, index: { ...indexInfo, books: 0, chapters: 0 } };
@@ -1021,7 +1079,7 @@ function createSearchStore(options = {}) {
         books: index.books.length,
         chapters: totalChapters(index),
         building: false,
-        bytes: ensured.bytes,
+        bytes: indexInfo.bytes,
         builtAt: index.builtAt
       }),
       results,
@@ -1043,7 +1101,11 @@ function createSearchStore(options = {}) {
 
   function markDirty(bookPath) {
     const key = normalizePath(bookPath);
-    if (key) dirtyBooks.add(key);
+    if (key) {
+      dirtyBooks.add(key);
+      // P-01：刚保存过书就把搜索窗口关掉，下一次 search 立刻校验这本（不必等 60 s）。
+      lastEnsureAt = 0;
+    }
     return key;
   }
 

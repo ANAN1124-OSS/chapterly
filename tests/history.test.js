@@ -648,3 +648,75 @@ test('历史：整组还原中途失败要说清还原了几章 + 备份目录�
   const retry = await storage.restoreHistoryGroup(bookPath, 'dir:整理备份-2026-10-31-210000');
   assert.equal(retry.restored, 3);
 });
+
+// A4 / P-11（审计：_trash 双层串行 stat —— 每个备份目录、每个文件各 await 一次）：
+// 改成两段式并发（目录 readdir 8 路、文件 stat 8 路），并发度可注入、结果逐字段不变。
+test('历史（P-11）：备份文件 stat 并发执行（峰值=并发度，结果不变）', async () => {
+  const base = await mkTmp();
+  const { path: bookPath } = await makeBook(base, '并发测试书');
+  const fileCount = 6;
+  const stamps = ['213001', '213002', '213003'];
+  const expected = [];
+  for (let d = 0; d < stamps.length; d += 1) {
+    const files = {};
+    for (let i = 0; i < fileCount; i += 1) {
+      files[`${String(i + 1).padStart(3, '0')}-替换-${d}.txt`] = `正文-${d}-${i}`;
+    }
+    expected.push(files);
+    await writeBackupDir(bookPath, `替换备份-2026-10-31-${stamps[d]}`, files);
+  }
+
+  let inFlight = 0;
+  let peak = 0;
+  let statCalls = 0;
+  const stat = async (target) => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    statCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    inFlight -= 1;
+    return fs.stat(target);
+  };
+
+  const result = await history.listHistory(bookPath, { chapterFiles: [], stat, concurrency: 8 });
+
+  assert.equal(peak, 8, `并发度应为 8，实际峰值 ${peak}`);
+  assert.equal(inFlight, 0);
+  // 书目.json.bak（可能不存在，也会走一次注入的 stat）+ 每个备份文件一次
+  let bakCount = 0;
+  try {
+    await fs.stat(path.join(bookPath, '书目.json.bak'));
+    bakCount = 1;
+  } catch {
+    bakCount = 0;
+  }
+  assert.equal(statCalls, bakCount + stamps.length * fileCount);
+  assert.equal(result.groupCount, stamps.length + bakCount);
+  assert.equal(result.fileCount, stamps.length * fileCount);
+  const expectedBytes = expected.reduce(
+    (sum, files) =>
+      sum + Object.values(files).reduce((inner, text) => inner + Buffer.byteLength(text, 'utf8'), 0),
+    0
+  );
+  assert.equal(result.totalBytes, expectedBytes);
+  for (const group of result.groups) {
+    for (const file of group.files) {
+      assert.ok(file.size > 0, `文件大小不能为 0：${file.name}`);
+      assert.equal(file.previewable, true);
+    }
+  }
+});
+
+test('历史（P-11）：并发度可降到 1（串行），结果与并发版逐字段一致', async () => {
+  const base = await mkTmp();
+  const { path: bookPath } = await makeBook(base, '串行对照书');
+  const files = {};
+  for (let i = 0; i < 5; i += 1) files[`${i + 1}-替换.txt`] = `对照-${i}`;
+  await writeBackupDir(bookPath, '替换备份-2026-10-31-220000', files);
+
+  const serialResult = await history.listHistory(bookPath, { chapterFiles: [], concurrency: 1 });
+  const parallelResult = await history.listHistory(bookPath, { chapterFiles: [], concurrency: 8 });
+  assert.deepEqual(parallelResult.groups, serialResult.groups);
+  assert.equal(parallelResult.groupCount, serialResult.groupCount);
+  assert.equal(parallelResult.totalBytes, serialResult.totalBytes);
+});

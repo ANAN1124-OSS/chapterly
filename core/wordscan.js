@@ -22,6 +22,56 @@ const DEFAULT_RAW_MATCH_LIMIT = 100000;
 // 建自动机：trie（children）+ 失败链（fail）+ 输出表（out，含沿失败链继承的输出）。
 // children 用 Map<charCode, node>：词表是中文为主、码点分散，用 Map 比定长数组省内存；
 // 5000 词 × 平均几个字 = 一两万个节点，建一次的开销远小于一次扫描。
+//
+// A4 / P-03（审计：整本预检 / 校对是「每章建一次图」，1000 章 × 5000 词 = 1000 次建图）：
+// 自动机建完只读，所以按「词表内容 + 顺序」缓存复用；同一词表连扫多章只建图一次。
+// 缓存上限 4 份（一份 5000 词约 1–2 MB；校对 / 敏感词两套词表 + 作者中途换词表够用），
+// 超了淘汰最早用的那份——宁可偶尔重建，也不让常驻内存跟着词表数量长。
+const MAX_CACHED_AUTOMATONS = 4;
+// 词表指纹：64 位（两个独立种子）滚动哈希。键里带「下标」，因为 out 存的是 patterns 的原下标，
+// 同一批词换个顺序就是另一张图（不换会串 patternIndex）。
+function automatonFingerprint(patterns) {
+  let low = 0x811c9dc5;
+  let high = 0xc2b2ae35;
+  for (let index = 0; index < patterns.length; index += 1) {
+    const pattern = patterns[index];
+    if (typeof pattern !== 'string' || !pattern) continue;
+    // 下标参与哈希：['a', null, 'b'] 与 ['a', 'b', null] 的 patternIndex 不同
+    low ^= index + 1;
+    low = Math.imul(low, 0x01000193);
+    high = Math.imul(high ^ (index + 1), 0x85ebca77);
+    for (let at = 0; at < pattern.length; at += 1) {
+      const code = pattern.charCodeAt(at);
+      low = Math.imul(low ^ code, 0x01000193);
+      high = Math.imul(high ^ code, 0x2c1b3c6d);
+    }
+    high ^= high >>> 15;
+  }
+  return `${patterns.length}:${(low >>> 0).toString(16)}:${(high >>> 0).toString(16)}`;
+}
+
+const automatonCache = new Map(); // fingerprint -> 自动机（LRU：命中时移到末尾）
+const automatonStats = { builds: 0, hits: 0 };
+
+function automatonFor(patterns) {
+  const key = automatonFingerprint(patterns);
+  const cached = automatonCache.get(key);
+  if (cached) {
+    automatonStats.hits += 1;
+    automatonCache.delete(key);
+    automatonCache.set(key, cached); // 触碰：淘汰时先丢最久没用的
+    return cached;
+  }
+  const auto = buildAutomaton(patterns);
+  automatonStats.builds += 1;
+  automatonCache.set(key, auto);
+  if (automatonCache.size > MAX_CACHED_AUTOMATONS) {
+    const oldest = automatonCache.keys().next();
+    if (!oldest.done) automatonCache.delete(oldest.value);
+  }
+  return auto;
+}
+
 function buildAutomaton(patterns) {
   const children = [new Map()];
   const fail = [0];
@@ -80,7 +130,7 @@ function scanTerms(text, terms, options = {}) {
   const rawMatchLimit = Number.isFinite(limitValue) && limitValue > 0
     ? Math.max(1, Math.floor(limitValue))
     : DEFAULT_RAW_MATCH_LIMIT;
-  const auto = buildAutomaton(patterns);
+  const auto = automatonFor(patterns);
   if (!auto.maxLen) return { hits: [], rawCount: 0, truncated: false };
   const source = typeof text === 'string' ? text : '';
 
@@ -170,7 +220,22 @@ function scanTerms(text, terms, options = {}) {
   return { hits, rawCount, truncated };
 }
 
+// 缓存观测（P-03 锚点用）：builds = 真建图次数，hits = 复用次数，size = 当前缓存份数。
+// 产品代码不读它，只有单测用它证明「同一词表 1000 章只建图 1 次」。
+function automatonCacheStats() {
+  return { builds: automatonStats.builds, hits: automatonStats.hits, size: automatonCache.size };
+}
+
+// 单测用：清空缓存并归零计数（避免不同用例之间互相污染计数）。
+function resetAutomatonCache() {
+  automatonCache.clear();
+  automatonStats.builds = 0;
+  automatonStats.hits = 0;
+}
+
 module.exports = {
   DEFAULT_RAW_MATCH_LIMIT,
-  scanTerms
+  scanTerms,
+  automatonCacheStats,
+  resetAutomatonCache
 };
