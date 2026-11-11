@@ -163,3 +163,55 @@ test('命令目录：静态闸门——数据只在目录模块，renderer.js �
   assert.ok(!/require\(['"](?:node:)?(?:fs|path|electron)/.test(catalogSrc), '目录模块不许碰文件 / Electron');
   assert.ok(!/\bsetTimeout\s*\(/.test(catalogSrc), '目录模块不许起定时器');
 });
+
+// ---------- 系统键表（1.6.0 F4a 第二段） ----------
+// `?` 页原来只列命令表里 8 条带键位的命令，Ctrl+K / Ctrl+Z / Esc / Shift+F10 这些
+// 「不在命令表里的快捷键」一概看不到。现在这张表在命令目录里声明，`?` 页与 README
+// 快捷键表都从它生成——锚点钉「数据齐全」+「两处出口同源」+「README 没漂移」。
+
+test('命令目录：系统键表覆盖 Ctrl+K / Ctrl+Z / Esc / Shift+F10，键位不重复、都带作用范围', () => {
+  const catalog = require(path.join(ROOT, 'renderer', 'command-catalog.js'));
+  const keys = catalog.SYSTEM_KEYS;
+  assert.ok(Array.isArray(keys), '命令目录要导出 SYSTEM_KEYS（系统键声明表）');
+  assert.ok(keys.length >= 8, `系统键至少 8 条，现在 ${keys.length}`);
+  const kbds = keys.map((key) => key.kbd);
+  assert.equal(new Set(kbds).size, kbds.length, '系统键不许重复声明同一个键位');
+  for (const want of ['Ctrl+K', 'Ctrl+Z', 'Esc', 'Shift+F10']) {
+    assert.ok(kbds.includes(want), `系统键表缺 ${want}（这正是 1.5.0「?」页看不到的那几条之一）`);
+  }
+  for (const key of keys) {
+    assert.ok(key.id && key.title && key.scope, `系统键 ${key.kbd} 缺 id / 标题 / 作用范围`);
+  }
+});
+
+test('命令目录：? 页行 = 8 条带键帽的命令 + 系统键（各带分组标签与会作用范围）', () => {
+  const catalog = require(path.join(ROOT, 'renderer', 'command-catalog.js'));
+  const rows = catalog.shortcutRows({ command: '命令' });
+  const commandRows = rows.filter((row) => row.group === 'command');
+  const systemRows = rows.filter((row) => row.group === 'system');
+  assert.equal(commandRows.length, 8, '命令表里带键帽的仍是 8 条');
+  assert.equal(systemRows.length, catalog.SYSTEM_KEYS.length, '系统键一条不少地进 `?` 页');
+  assert.equal(commandRows[0].groupLabel, '命令', '命令行沿用命令面板的分组标签');
+  assert.deepEqual(commandRows.map((row) => row.kbd), ['Ctrl+S', 'Ctrl+N', 'F2', 'Delete', 'Ctrl+F', 'Ctrl+G', 'F11', 'Ctrl+Alt+V'], '命令行的顺序 = 命令表声明顺序');
+  for (const row of systemRows) {
+    assert.equal(row.groupLabel, '系统键', `${row.kbd} 要单独归到「系统键」组`);
+    assert.ok(row.scope, `${row.kbd} 要写清在哪儿生效`);
+  }
+  // 静态闸门：`?` 页的行确实来自目录模块（不是渲染层又抄了一张）。
+  assert.match(RENDERER, /commandCatalog\.shortcutRows\(/, 'renderShortcutRows 要从命令目录取行');
+  assert.match(RENDERER, /row\.scope/, '系统键的作用范围要画出来');
+});
+
+test('命令目录：README 快捷键表由系统键表生成，与 README 里的表逐字一致（漂移即红）', () => {
+  const catalog = require(path.join(ROOT, 'renderer', 'command-catalog.js'));
+  const doc = require(path.join(ROOT, 'scripts', 'gen-shortcut-doc.js'));
+  assert.equal(typeof doc.renderSystemKeyTable, 'function', '文档生成器要导出 renderSystemKeyTable');
+  assert.equal(typeof doc.START_MARK, 'string');
+  const readme = read('README.md');
+  assert.ok(readme.includes(doc.START_MARK), `README.md 缺系统键表起始标记 ${doc.START_MARK}`);
+  assert.ok(readme.includes(doc.END_MARK), `README.md 缺系统键表结束标记 ${doc.END_MARK}`);
+  const actual = doc.readTableFromReadme(readme); // 顺带归一 CRLF（README 工作区是 CRLF）
+  const expected = doc.renderSystemKeyTable(catalog.SYSTEM_KEYS);
+  assert.equal(actual, expected, 'README 系统键表漂移了：改表请跑 node scripts/gen-shortcut-doc.js --write');
+  assert.ok(actual.includes('Ctrl+K') && actual.includes('Ctrl+Z'), 'README 表要含 Ctrl+K / Ctrl+Z');
+});

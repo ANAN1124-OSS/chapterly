@@ -26,7 +26,8 @@ const JS_SHORTCUTS = `(() => {
     title: document.getElementById('shortcuts-title') ? document.getElementById('shortcuts-title').textContent : '',
     rows: rows.map((row) => ({
       title: row.querySelector('.shortcut-title') ? row.querySelector('.shortcut-title').textContent : '',
-      kbd: row.querySelector('.shortcut-kbd') ? row.querySelector('.shortcut-kbd').textContent : ''
+      kbd: row.querySelector('.shortcut-kbd') ? row.querySelector('.shortcut-kbd').textContent : '',
+      scope: row.querySelector('.shortcut-scope') ? row.querySelector('.shortcut-scope').textContent : ''
     })),
     groups: list ? Array.from(list.querySelectorAll('.shortcut-group')).map((el) => el.textContent) : [],
     activeId: document.activeElement ? document.activeElement.id : '',
@@ -88,6 +89,8 @@ module.exports = async function group79ShortcutsPage(t) {
   await sendQuestion();
   await waitFor("document.getElementById('shortcuts-backdrop').classList.contains('hidden') === false", 4000);
   const opened = await readPanel();
+  const commandRows = opened.rows.filter((row) => !row.scope);
+  const systemRows = opened.rows.filter((row) => row.scope);
   check(
     '快捷键一览：焦点不在编辑区时按 ? 打开，弹层可见、焦点进弹层（右上 ×）',
     opened.hidden === false && opened.title === '快捷键一览' && opened.activeId === 'btn-shortcuts-close',
@@ -96,13 +99,30 @@ module.exports = async function group79ShortcutsPage(t) {
   check(
     '快捷键一览：列表由命令表里带键位的命令生成（与命令面板同一组条目、有分组标签）',
     paletteKbd.length > 0 &&
-      opened.rows.length === paletteKbd.length &&
+      commandRows.length === paletteKbd.length &&
       // 顺序不比：命令面板空查询按「组权重 → 标题」排，一览页按命令表声明顺序排（同一组数据两种排列）
-      opened.rows.map((row) => `${row.title}\u0000${row.kbd}`).sort().join('|') ===
+      commandRows.map((row) => `${row.title}\u0000${row.kbd}`).sort().join('|') ===
         paletteKbd.map((row) => `${row.title}\u0000${row.kbd}`).sort().join('|') &&
       opened.groups.includes('命令') &&
-      opened.rows.every((row) => row.title && row.kbd),
-    { rows: opened.rows, paletteKbd, groups: opened.groups }
+      opened.groups.includes('系统键') &&
+      paletteKbd.length === 8 &&
+      commandRows.every((row) => row.title && row.kbd),
+    { commandRows, paletteKbd, groups: opened.groups, systemRows: systemRows.length }
+  );
+  // 1.6.0 F4a：系统键（不在命令表里的快捷键）也要能在 `?` 页查到 —— 以前只列命令表的 8 条，
+  // Ctrl+K / Ctrl+Z 这些「入口键」反而看不到。
+  check(
+    '快捷键一览：系统键组含 Ctrl+K / Ctrl+Z（不在命令表里的入口键也能查到）',
+    systemRows.some((row) => row.kbd === 'Ctrl+K') &&
+      systemRows.some((row) => row.kbd === 'Ctrl+Z') &&
+      systemRows.length >= 8,
+    { systemRows }
+  );
+  check(
+    '快捷键一览：系统键每行都写清「生效范围」（命令组不画空气）',
+    systemRows.every((row) => row.title && row.kbd && row.scope) &&
+      commandRows.every((row) => row.scope === ''),
+    { systemRows: systemRows.map((row) => `${row.kbd} → ${row.scope}`) }
   );
 
   // ---------- ② 打开的那一下不往正文里插字符 ----------
@@ -170,8 +190,8 @@ module.exports = async function group79ShortcutsPage(t) {
   const onShelf = await readPanel();
   check(
     '快捷键一览：书架页按 ? 也能打开，列表仍是同一份命令键位（不是空表）',
-    onShelf.hidden === false && onShelf.rows.length === paletteKbd.length,
-    { hidden: onShelf.hidden, rows: onShelf.rows.length, expected: paletteKbd.length, activeId: onShelf.activeId }
+    onShelf.hidden === false && onShelf.rows.length === opened.rows.length && commandRows.length > 0,
+    { hidden: onShelf.hidden, rows: onShelf.rows.length, expected: opened.rows.length, activeId: onShelf.activeId }
   );
   await sendKey('Escape', [], 260);
   await waitFor("document.getElementById('shortcuts-backdrop').classList.contains('hidden') === true", 4000);

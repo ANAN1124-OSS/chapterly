@@ -11,7 +11,13 @@
  *     getView() 每次现算 { view, bookPath }，when 的判定与原来闭包读 state 完全同口径：
  *       editor = 写作页且开着书；book = 只要开着书（视图不限）；shelf = 书架页。
  *     handlers = { 动作名: 函数 }；缺一个抛 TypeError（装配错误要炸在启动阶段）。
- * 声明表（COMMAND_SPECS）是模块内数据，不对外导出——产品侧只需要 createCommandDefs，
+ *   shortcutRows(groupLabels)
+ *     → `?` 页的行：命令表里带键帽的 8 条（顺序 = 声明顺序）+ 系统键（单独一组）。
+ *   SYSTEM_KEYS
+ *     不在命令表里的快捷键声明表（Ctrl+K / Ctrl+Z / Esc / Shift+F10 …）。`?` 页与
+ *     README 快捷键表都从这一份生成（scripts/gen-shortcut-doc.js），不维护第二份表。
+ *
+ * 声明表（COMMAND_SPECS）是模块内数据，不对外导出——产品侧只需要上面这几个出口，
  * 多一个出口就多一份「谁也说不清谁在用」的导出面（sweep ⑤b 口径）。
  *
  * 浏览器里挂成全局 CWCommandCatalog（index.html 排在 renderer.js 之前），Node 里可直接 require。
@@ -62,6 +68,33 @@
     { id: 'cmd:check-update', title: '检查更新', group: 'command', keywords: ['update', '更新'], when: 'shelf', run: 'checkUpdate' }
   ];
 
+  // 系统键声明表（1.6.0 F4a）：不在命令表里、但作者按得到 / 按过会响的快捷键。
+  // 只补命令表没有的：Ctrl+S / Ctrl+N / F2 / Delete / Ctrl+F / Ctrl+G / F11 / Ctrl+Alt+V
+  // 已经由命令表的 kbd 带出，这里再写一遍就是第二份表。
+  // scope 写「在哪儿生效」，`?` 页行尾会显示（README 表也是这一列）。
+  const SYSTEM_KEYS = [
+    { id: 'key:command-palette', kbd: 'Ctrl+K', title: '命令面板', scope: '写作页 / 书架页' },
+    { id: 'key:shortcut-sheet', kbd: '?', title: '快捷键一览', scope: '焦点不在正文 / 输入框' },
+    { id: 'key:escape', kbd: 'Esc', title: '收起弹层 / 退出专注或阅读', scope: '任意（有层先收层）' },
+    { id: 'key:undo', kbd: 'Ctrl+Z', title: '撤销上一步（删除 / 整理）', scope: '焦点不在正文 / 输入框' },
+    { id: 'key:context-menu', kbd: 'Shift+F10', title: '打开右键菜单', scope: '章节 / 书卡 / 卷标题' },
+    { id: 'key:find-next', kbd: 'F3', title: '查找下一处', scope: '写作页（面板关着也能用）' },
+    { id: 'key:find-prev', kbd: 'Shift+F3', title: '查找上一处', scope: '写作页（查找面板关着也能用）' },
+    { id: 'key:chapter-prev', kbd: 'Ctrl+PageUp', title: '上一章', scope: '写作页' },
+    { id: 'key:chapter-next', kbd: 'Ctrl+PageDown', title: '下一章', scope: '写作页' },
+    { id: 'key:paragraph-prev', kbd: 'Alt+↑', title: '上一自然段段首', scope: '写作页' },
+    { id: 'key:paragraph-next', kbd: 'Alt+↓', title: '下一自然段段首', scope: '写作页' },
+    { id: 'key:copy-chapter', kbd: 'Ctrl+Shift+C', title: '复制本章（平台格式）', scope: '写作页' },
+    { id: 'key:list-select-all', kbd: 'Ctrl+A', title: '章节列表全选', scope: '焦点在章节列表' },
+    { id: 'key:list-toggle', kbd: 'Ctrl+Space', title: '选中 / 取消当前章', scope: '焦点在章节列表' },
+    { id: 'key:list-extend', kbd: 'Shift+↑ / Shift+↓', title: '扩选上一章 / 下一章', scope: '焦点在章节列表' },
+    { id: 'key:devtools', kbd: 'Ctrl+Shift+I', title: '开发者工具', scope: '开发版 / 自检' }
+  ];
+
+  // `?` 页的分组：命令行沿用命令面板的分组标签，系统键单独一组。
+  const SYSTEM_GROUP = 'system';
+  const SYSTEM_GROUP_LABEL = '系统键';
+
   // 装配：把声明表的动作名换成 renderer.js 传进来的函数，并给 when 包一层现算。
   function createCommandDefs(host) {
     const options = host || {};
@@ -88,7 +121,37 @@
     });
   }
 
+  // `?` 页的行：命令行 + 系统键。命令行不过 when（书架页也能看到编辑类命令的键位），
+  // 与 1.5.0 的口径一致；系统键没有动作、只有键位与作用范围。
+  function shortcutRows(groupLabels) {
+    const labels = groupLabels || {};
+    const rows = [];
+    for (const spec of COMMAND_SPECS) {
+      if (!spec.kbd) continue;
+      rows.push({
+        id: spec.id,
+        title: spec.title,
+        kbd: spec.kbd,
+        group: spec.group || 'command',
+        groupLabel: labels[spec.group] || '其它'
+      });
+    }
+    for (const key of SYSTEM_KEYS) {
+      rows.push({
+        id: key.id,
+        title: key.title,
+        kbd: key.kbd,
+        scope: key.scope,
+        group: SYSTEM_GROUP,
+        groupLabel: SYSTEM_GROUP_LABEL
+      });
+    }
+    return rows;
+  }
+
   return {
-    createCommandDefs
+    createCommandDefs,
+    shortcutRows,
+    SYSTEM_KEYS
   };
 });

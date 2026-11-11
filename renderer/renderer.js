@@ -3902,25 +3902,14 @@
     return commandPalette.open(document.activeElement);
   }
 
-  // ---------- 快捷键一览（1.5.0 功能-4：写作页按 ?） ----------
-  // 数据源 = 命令表的同一份条目（commandDefs 的 kbd），按命令面板的 GROUP_LABELS 分组；
-  // **不维护第二份快捷键表** —— 命令表加了带键位的命令，这一页自动多一行。
+  // ---------- 快捷键一览（1.5.0 功能-4：写作页按 ?；1.6.0 F4a 补系统键） ----------
+  // 数据源 = renderer/command-catalog.js 的同一份声明：命令表里带键帽的 8 条 +「系统键」表
+  // （Ctrl+K / Ctrl+Z / Esc / Shift+F10 … 非命令表的快捷键）。**不维护第二份快捷键表** ——
+  // 目录里加一条带键位的命令、或加一个系统键，这一页与 README 的系统键表都会自动多一行。
   // 这里不用 buildCommandItems()：那份按当前视图过滤（书架页会把保存 / 新建章节等编辑类命令滤掉，
-  // 一览页在书架页按 ? 就成了空表）；两处读的是同一份 commandDefs，文案与键位不会分叉。
+  // 一览页在书架页按 ? 就成了空表）；一览页只读声明表，与视图无关。
   function shortcutRows() {
-    const labels = commandPaletteModule.GROUP_LABELS || {};
-    const rows = [];
-    for (const def of commandDefs()) {
-      if (!def || !def.kbd) continue;
-      rows.push({
-        id: def.id,
-        title: def.title,
-        kbd: def.kbd,
-        group: def.group || 'command',
-        groupLabel: labels[def.group] || '其它'
-      });
-    }
-    return rows;
+    return commandCatalog.shortcutRows(commandPaletteModule.GROUP_LABELS || {});
   }
 
   function renderShortcutRows() {
@@ -3949,6 +3938,13 @@
       kbd.className = 'kbd shortcut-kbd';
       kbd.textContent = row.kbd;
       item.appendChild(title);
+      // 系统键多一列「在哪儿生效」（命令行没有 scope，不画空气）。
+      if (row.scope) {
+        const scope = document.createElement('span');
+        scope.className = 'shortcut-scope';
+        scope.textContent = row.scope;
+        item.appendChild(scope);
+      }
       item.appendChild(kbd);
       list.appendChild(item);
     }

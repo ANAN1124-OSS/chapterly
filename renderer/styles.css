@@ -3918,6 +3918,8 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   line-height: 1.5;
 }
 .shortcut-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 系统键的作用范围（1.6.0 F4a）：与标题同色阶、不抢键帽；窄窗口先收它，标题保 ellipsis。 */
+.shortcut-scope { flex: 0 1 auto; max-width: 42%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--ink-soft); }
 .shortcut-kbd { flex: 0 0 auto; height: 20px; padding: 0 6px; font-size: 11.5px; color: var(--ink-soft); }
 .shortcut-empty { margin: 4px 8px 0; }
 
