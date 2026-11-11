@@ -305,6 +305,163 @@ test('静态闸门：main.js 不再内嵌截图 / 自检代码，驱动只能懒
   );
 });
 
+// ---------- 1.6.0 A6：E2E 礼貌化（剪贴板保存恢复 / 焦点抢夺限组） ----------
+
+test('createE2EClipboard：探针前先存原文，收尾能写回系统剪贴板', async () => {
+  let text = '作者原剪贴板内容';
+  const writes = [];
+  const clipboard = {
+    writeText: async (value) => {
+      writes.push(String(value));
+      text = String(value);
+    },
+    readText: async () => text
+  };
+  const result = await driver.createE2EClipboard(clipboard);
+  assert.equal(result.synthetic, false);
+  assert.equal(result.systemOk, true);
+  assert.equal(result.originalText, '作者原剪贴板内容', '探针前必须把用户剪贴板原文存下来');
+  assert.notEqual(text, '作者原剪贴板内容', '探针会临时占用系统剪贴板');
+  assert.equal(await driver.restoreE2EClipboard(clipboard, result), true);
+  assert.equal(text, '作者原剪贴板内容', '跑完 E2E 必须把原文写回去');
+});
+
+test('restoreE2EClipboard：替身模式不碰系统剪贴板；原文没读到也不瞎写', async () => {
+  const writes = [];
+  const clipboard = {
+    writeText: async (value) => writes.push(value),
+    readText: async () => ''
+  };
+  assert.equal(await driver.restoreE2EClipboard(clipboard, { synthetic: true, systemOk: false }), false);
+  assert.equal(await driver.restoreE2EClipboard(clipboard, { synthetic: false, systemOk: true, originalText: null }), false);
+  assert.deepEqual(writes, []);
+  assert.deepEqual(driver.clipboardRestorePlan({ systemOk: true, originalText: '任意原文' }), {
+    restore: true,
+    text: '任意原文'
+  });
+  assert.deepEqual(driver.clipboardRestorePlan({ systemOk: false, originalText: 'x' }), { restore: false });
+  // 恢复写失败只告警，不让 E2E 收尾再抛一次
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(
+      await driver.restoreE2EClipboard({ writeText: async () => { throw new Error('ACCESS_DENIED'); } }, {
+        systemOk: true,
+        originalText: 'x'
+      }),
+      false
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test('focusStealWindow：只有键盘组（69/70/71）前后允许抢焦点', () => {
+  for (const id of [69, 70, 71]) {
+    assert.equal(driver.focusStealWindow(id), true, `第 ${id} 组需要抢焦点`);
+  }
+  for (const id of [0, 33, 50, 68, 72, 75, 80]) {
+    assert.equal(driver.focusStealWindow(id), false, `第 ${id} 组不该抢焦点`);
+  }
+});
+
+test('runGroupWithPoliteness：键盘组内开启、组外关闭，组里抛异常也会关掉', async () => {
+  assert.equal(driver.isFocusStealEnabled(), false, '默认不抢焦点');
+  let inside = null;
+  await driver.runGroupWithPoliteness(5, async () => {
+    inside = driver.isFocusStealEnabled();
+  });
+  assert.equal(inside, false);
+  await driver.runGroupWithPoliteness(69, async () => {
+    inside = driver.isFocusStealEnabled();
+  });
+  assert.equal(inside, true, '第 69 组运行期间必须开着');
+  assert.equal(driver.isFocusStealEnabled(), false, '组结束必须关掉');
+  await assert.rejects(
+    () => driver.runGroupWithPoliteness(70, async () => {
+      throw new Error('组里炸了');
+    }),
+    /组里炸了/
+  );
+  assert.equal(driver.isFocusStealEnabled(), false, '异常路径也要关掉');
+});
+
+test('shouldStealFocus：开关关 / 已聚焦 / 别的应用窗口在前台时都不抢', () => {
+  const base = { enabled: true, destroyed: false, focused: false, anotherAppWindowFocused: false };
+  assert.equal(driver.shouldStealFocus(base), true);
+  assert.equal(driver.shouldStealFocus({ ...base, enabled: false }), false);
+  assert.equal(driver.shouldStealFocus({ ...base, focused: true }), false);
+  assert.equal(driver.shouldStealFocus({ ...base, anotherAppWindowFocused: true }), false);
+  assert.equal(driver.shouldStealFocus({ ...base, destroyed: true }), false);
+});
+
+test('run：E2E 收尾把系统剪贴板原文写回（场景改过剪贴板也能还原）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-e2e-unit-'));
+  const scenarioPath = require.resolve('../scripts/e2e-scenario.js');
+  const previous = require.cache[scenarioPath];
+  let clipboardText = '用户原剪贴板';
+  const clipboard = {
+    writeText: async (value) => {
+      clipboardText = String(value);
+    },
+    readText: async () => clipboardText
+  };
+  const exits = [];
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...args) => logs.push(args.join(' '));
+  require.cache[scenarioPath] = {
+    id: scenarioPath,
+    filename: scenarioPath,
+    loaded: true,
+    exports: async (ctx) => {
+      // 模拟 E2E 场景里的「复制整本」：此时系统剪贴板已被探针占着，场景再写自己的结果。
+      assert.match(await ctx.clipboard.readText(), /^cw-clip-probe-/);
+      await ctx.clipboard.writeText('复制整本的结果');
+      return { ok: true, checks: [] };
+    }
+  };
+  try {
+    await driver.run(
+      baseHost({
+        isE2E: true,
+        app: { exit: (code) => exits.push(code), getPath: () => dir, hasSingleInstanceLock: () => true },
+        clipboard,
+        getWin: () => ({
+          isDestroyed: () => false,
+          isFocused: () => true,
+          show: () => {},
+          focus: () => {},
+          webContents: {
+            executeJavaScript: async () => true,
+            setBackgroundThrottling: () => {},
+            focus: () => {}
+          }
+        })
+      })
+    );
+    assert.deepEqual(exits, [0]);
+    assert.equal(clipboardText, '用户原剪贴板', '跑完必须把探针前的原文写回系统剪贴板');
+    const resultLine = logs.find((line) => line.startsWith('E2E_RESULT '));
+    assert.ok(resultLine, '必须回一条 E2E_RESULT');
+    assert.equal(JSON.parse(resultLine.slice('E2E_RESULT '.length)).clipboardSynthetic, false);
+  } finally {
+    console.log = originalLog;
+    if (previous) require.cache[scenarioPath] = previous;
+    else delete require.cache[scenarioPath];
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('静态闸门：焦点抢夺取只在组边界开关，组索引统一走 runGroupWithPoliteness', () => {
+  const GROUPS_SOURCE = fs.readFileSync(path.join(ROOT, 'scripts', 'e2e', 'groups', 'index.js'), 'utf8');
+  assert.match(GROUPS_SOURCE, /runGroupWithPoliteness\(/, '组索引必须统一经过礼貌化开关');
+  assert.equal(/enableFocusSteal\(\)/.test(GROUPS_SOURCE), false, '开关只许在 e2e-politeness 里定义');
+  assert.match(DRIVER_SOURCE, /isFocusStealEnabled/);
+  assert.match(DRIVER_SOURCE, /shouldStealFocus/);
+  assert.match(DRIVER_SOURCE, /restoreE2EClipboard/, 'E2E 收尾必须恢复剪贴板');
+});
+
 test('静态闸门：打包配置不含 scripts/，所以驱动不会进安装包（顶层 require 会直接崩）', () => {
   assert.deepEqual(PKG.build.files, ['main.js', 'preload.js', 'core/**/*', 'renderer/**/*', 'package.json']);
   assert.equal(PKG.main, 'main.js');

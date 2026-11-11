@@ -109,12 +109,16 @@ const groups = [
 // 1.6.0 G2：一组跑到一半抛了（check 累计失败后带着坏状态接着跑出的 TypeError / waitFor 超时）
 // 只记一条「场景异常」失败就继续下一组，不把整轮 E2E 停在这里；调用方没有 recordFailure
 // （旧用法 / 单测）时仍按原语义把异常抛出去。
+// 1.6.0 A6：每组的边界统一经过 runGroupWithPoliteness —— 只有键盘组（69/70/71）运行期间
+// 才允许主进程抢焦点（真实 sendInputEvent 需要窗口聚焦），其余组一律不抢。
+const politeness = require('../../e2e-politeness');
+
 async function runGroups(t, ids) {
   for (const id of ids) {
     const entry = groups.find((group) => group.id === id);
     if (!entry) throw new Error(`E2E 组索引里没有第 ${id} 组`);
     try {
-      await entry.run(t);
+      await politeness.runGroupWithPoliteness(id, () => entry.run(t));
     } catch (err) {
       if (typeof t.recordFailure !== 'function') throw err;
       t.recordFailure(`第 ${id} 组场景异常`, err);

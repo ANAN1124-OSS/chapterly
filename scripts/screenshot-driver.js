@@ -8,6 +8,8 @@
 
 // sleep 用 core/common.js 的同一份实现（纯逻辑、不 require electron），本文件仍能脱离主进程单独 require。
 const { sleep } = require('../core/common');
+// 1.6.0 A6：剪贴板恢复 + 焦点抢夺限组（和 scripts/e2e/groups/index.js 共享同一个开关）。
+const politeness = require('./e2e-politeness');
 
 async function waitForRenderer(win, expr, timeout = 12000) {
   const startedAt = Date.now();
@@ -25,7 +27,17 @@ async function waitForRenderer(win, expr, timeout = 12000) {
 // （OpenClipboard 返回 ACCESS_DENIED，clipboard.readText() 恒为空）。这跟应用代码无关，
 // 但会让「复制整本 / 复制本章」的校验半途中断。此时改用进程内剪贴板继续验证
 // 「拼出来的文本对不对」，并明确报告真实剪贴板集成未被验证；生产运行永远用系统剪贴板。
+//
+// 1.6.0 A6：探针会覆盖用户自己的剪贴板，所以先存原文（originalText），E2E 收尾由
+// restoreE2EClipboard() 写回去；进程内替身不碰系统剪贴板，也不尝试恢复。
 async function createE2EClipboard(clipboard) {
+  let originalText = null;
+  try {
+    const original = await clipboard.readText();
+    if (typeof original === 'string') originalText = original;
+  } catch {
+    originalText = null;
+  }
   let systemOk = false;
   try {
     const probe = `cw-clip-probe-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -35,13 +47,15 @@ async function createE2EClipboard(clipboard) {
   } catch {
     systemOk = false;
   }
-  if (systemOk) return { clipboard, synthetic: false };
+  if (systemOk) return { clipboard, synthetic: false, systemOk: true, originalText };
   let text = '';
   console.warn(
     '[e2e] 系统剪贴板不可用（工作站可能锁屏/无交互桌面），改用进程内剪贴板校验复制逻辑；真实剪贴板集成未被验证。'
   );
   return {
     synthetic: true,
+    systemOk: false,
+    originalText: null,
     clipboard: {
       writeText: async (value) => {
         text = String(value == null ? '' : value);
@@ -115,6 +129,7 @@ async function run(host) {
   const screenshotBook = shot.book || null;
   const screenshotChapter = shot.chapter == null ? null : shot.chapter;
   const screenshotDialog = shot.dialog || null;
+  let focusStealTimer = null;
   try {
     const win = host.getWin();
     // E2E 专用（2026-11-04）：Electron 文档写明 sendInputEvent 只在窗口**有焦点**时投递；
@@ -127,13 +142,25 @@ async function run(host) {
     // build.files 里，安装版没有这段。
     if (isE2E) {
       try { win.webContents.setBackgroundThrottling(false); } catch { /* 老版本没有这个 API */ }
-      setInterval(() => {
+      // 1.6.0 A6：焦点抢夺只在键盘组（69/70/71）前后开启（groups/index.js 的
+      // runGroupWithPoliteness 翻开关）；其余组一律不抢，用户切去别的窗口也不再被拽回来。
+      // 背景节流保持关闭——那是 resize / 渲染断言的前置条件，和焦点无关。
+      focusStealTimer = setInterval(() => {
         try {
-          if (win.isDestroyed() || win.isFocused()) return;
+          if (win.isDestroyed()) return;
           const anotherAppWindowFocused = host
             .listSessions()
             .some((session) => session.win && session.win !== win && !session.win.isDestroyed() && session.win.isFocused());
-          if (anotherAppWindowFocused) return;
+          if (
+            !politeness.shouldStealFocus({
+              enabled: politeness.isFocusStealEnabled(),
+              destroyed: false,
+              focused: win.isFocused(),
+              anotherAppWindowFocused
+            })
+          ) {
+            return;
+          }
           win.show();
           win.focus();
           win.webContents.focus();
@@ -721,7 +748,9 @@ async function run(host) {
       const scenario = require('./e2e-scenario.js');
       const e2eClipboard = await createE2EClipboard(host.clipboard);
       host.setClipboard(e2eClipboard.clipboard);
-      const result = await scenario({
+      let result;
+      try {
+        result = await scenario({
         win,
         app,
         clipboard: e2eClipboard.clipboard,
@@ -819,6 +848,14 @@ async function run(host) {
           };
         }
       });
+      } finally {
+        // 1.6.0 A6：不管场景成功还是抛错，都把探针前的系统剪贴板原文写回去，并停掉抢焦点轮询。
+        if (focusStealTimer) {
+          clearInterval(focusStealTimer);
+          focusStealTimer = null;
+        }
+        await politeness.restoreE2EClipboard(host.clipboard, e2eClipboard);
+      }
       console.log(
         `E2E_RESULT ${JSON.stringify({ ...result, clipboardSynthetic: e2eClipboard.synthetic })}`
       );
@@ -830,6 +867,12 @@ async function run(host) {
     console.error('[automation] 失败:', err && err.stack ? err.stack : err);
     console.log(`E2E_RESULT ${JSON.stringify({ ok: false, error: String((err && err.stack) || err) })}`);
     app.exit(1);
+  } finally {
+    // 场景之外的早退（截图失败 / createE2EClipboard 抛错）也要停轮询，免得进程带着定时器。
+    if (focusStealTimer) {
+      clearInterval(focusStealTimer);
+      focusStealTimer = null;
+    }
   }
 }
 
@@ -839,5 +882,15 @@ module.exports = {
   createE2EClipboard,
   screenshotCaretLongLineScript,
   SCREENSHOT_PICK_CHAR_JS,
-  SCREENSHOT_PICK_VOLUME_JS
+  SCREENSHOT_PICK_VOLUME_JS,
+  // 1.6.0 A6：礼貌化判定（焦点抢夺限组 / 剪贴板恢复）；单测经驱动取的就是 E2E 用的同一份实现。
+  FOCUS_STEAL_GROUPS: politeness.FOCUS_STEAL_GROUPS,
+  focusStealWindow: politeness.focusStealWindow,
+  enableFocusSteal: politeness.enableFocusSteal,
+  disableFocusSteal: politeness.disableFocusSteal,
+  isFocusStealEnabled: politeness.isFocusStealEnabled,
+  shouldStealFocus: politeness.shouldStealFocus,
+  runGroupWithPoliteness: politeness.runGroupWithPoliteness,
+  clipboardRestorePlan: politeness.clipboardRestorePlan,
+  restoreE2EClipboard: politeness.restoreE2EClipboard
 };
