@@ -97,6 +97,8 @@
   // 命令面板（1.4.0 P0-3 / 规范 I-03）：检索与排序纯逻辑在 command-registry.js，
   // 面板 DOM / 键盘在 command-palette-ui.js；这里只给条目表与执行入口。
   const commandRegistryModule = window.CWCommandRegistry;
+  // 命令目录（1.6.0 F4a）：命令表的数据只有 command-catalog.js 一份，渲染层只装配（见 commandDefs）。
+  const commandCatalog = window.CWCommandCatalog;
   const commandPaletteModule = window.CWCommandPaletteUi;
   // 书架正文搜索（v0.9 B-5 第八刀）：防抖调度 / 主进程查询 / 索引状态 / 打开命中在 shelf-search-ui.js 里；
   const shelfSearchUiModule = window.CWShelfSearchUi;
@@ -3754,43 +3756,46 @@
     return true;
   }
 
-  // ---------- 命令面板：条目表（1.4.0 P0-3） ----------
-  // 三处键位冗余的「单一事实源」：面板行尾键帽 / 按钮 tooltip / README 快捷键表都从这里对齐。
-  // 每条 = { id, title, group, kbd?, hint?, keywords?, when?, run }：
-  //   · when() 现算这条命令现在可不可用（按视图 / 有没有打开书），不给就不用判断；
-  //   · run() 只调现有入口（不在这里写业务）。
+  // ---------- 命令面板：条目表（1.4.0 P0-3；1.6.0 F4a 数据搬到 command-catalog.js） ----------
+  // 命令数据（id / 标题 / 键帽 / 关键词 / 视图条件）只有 renderer/command-catalog.js 一份；
+  // 这里只做装配：动作名 → 本文件的函数。三处键位冗余（面板行尾键帽 / 按钮 tooltip /
+  // README 快捷键表）都从那一份数据来，不再各抄一张表。
+  // 装配缺一个动作时 createCommandDefs 直接抛 TypeError（启动即炸，不静默少条目）。
+  const commandHandlers = {
+    backToShelf: () => { void backToShelf(); },
+    newBook: () => { void onNewBookClick(); },
+    importBook: () => { void onImportClick(); },
+    openSettings: () => { void openSettings(); },
+    openBookDisplaySettings: () => { void openSettings({ scope: 'book' }); },
+    saveCurrent: () => { void saveCurrent(); },
+    newChapter: () => { void createChapterAt(state.chapters.length); },
+    renameChapter: () => { void renameChapterAt(state.index); },
+    deleteChapter: () => { void deleteChapterAt(state.index); },
+    formatChapter: () => { void formatCurrentChapterFromConfig(); },
+    openFindPanel: () => { openFindPanel(); },
+    openJumpDialog: () => { openJumpDialog(); },
+    toggleFocusMode: () => { toggleFocusMode(); },
+    openReadingMode: () => { void openReadingMode(); },
+    openTtsBar: () => { openTtsBar(); },
+    openProofreadPanel: () => { void openProofreadPanel(); },
+    openSensitivePanel: () => { void openSensitivePanel(); },
+    openHistory: () => { void openHistoryForCurrentBook(); },
+    openFragments: () => { void openInsertFragmentDialog(); },
+    openCapture: () => { void captureUi.open(); },
+    openBookInfo: () => {
+      const book = (state.books || []).find((item) => sameBookPath(item.path, state.bookPath))
+        || { path: state.bookPath, title: (state.meta && state.meta.title) || '', status: 'ok' };
+      void openBookInfoDialog(book);
+    },
+    openBookFolder: () => { void openBookFolderFlow(); },
+    checkUpdate: () => { void checkUpdate(); }
+  };
+
   function commandDefs() {
-    const inEditor = () => state.view === 'editor' && Boolean(state.bookPath);
-    const hasBook = () => Boolean(state.bookPath);
-    return [
-      { id: 'cmd:shelf', title: '回到书架', group: 'command', keywords: ['shelf', '书架'], run: () => { void backToShelf(); } },
-      { id: 'cmd:new-book', title: '新建一本书', group: 'command', keywords: ['new book', '新建'], when: () => state.view === 'shelf', run: () => { void onNewBookClick(); } },
-      { id: 'cmd:import', title: '导入小说…', group: 'command', keywords: ['import', '导入'], when: () => state.view === 'shelf', run: () => { void onImportClick(); } },
-      { id: 'cmd:settings', title: '打开设置（全局）', group: 'command', keywords: ['settings', '设置'], run: () => { void openSettings(); } },
-      { id: 'cmd:book-display', title: '正文显示设置（这本书）', group: 'command', keywords: ['display', '显示', '按书'], when: inEditor, run: () => { void openSettings({ scope: 'book' }); } },
-      { id: 'cmd:save', title: '保存本章', group: 'command', kbd: 'Ctrl+S', keywords: ['save', '保存'], when: inEditor, run: () => { void saveCurrent(); } },
-      { id: 'cmd:new-chapter', title: '新建章节', group: 'command', kbd: 'Ctrl+N', keywords: ['new chapter', '新建章节'], when: inEditor, run: () => { void createChapterAt(state.chapters.length); } },
-      { id: 'cmd:rename-chapter', title: '重命名本章', group: 'command', kbd: 'F2', keywords: ['rename', '重命名'], when: inEditor, run: () => { void renameChapterAt(state.index); } },
-      { id: 'cmd:delete-chapter', title: '删除本章（可撤销）', group: 'command', kbd: 'Delete', keywords: ['delete', '删除'], when: inEditor, run: () => { void deleteChapterAt(state.index); } },
-      { id: 'cmd:format-chapter', title: '整理本章', group: 'command', keywords: ['format', '整理', '排版'], when: inEditor, run: () => { void formatCurrentChapterFromConfig(); } },
-      { id: 'cmd:find', title: '查找替换', group: 'command', kbd: 'Ctrl+F', keywords: ['find', '查找', '替换'], when: inEditor, run: () => { openFindPanel(); } },
-      { id: 'cmd:jump', title: '跳到章…', group: 'command', kbd: 'Ctrl+G', keywords: ['jump', '跳章'], when: inEditor, run: () => { openJumpDialog(); } },
-      { id: 'cmd:focus', title: '专注模式', group: 'command', kbd: 'F11', keywords: ['focus', '专注'], when: inEditor, run: () => { toggleFocusMode(); } },
-      { id: 'cmd:reading', title: '阅读模式', group: 'command', keywords: ['reading', '阅读'], when: inEditor, run: () => { void openReadingMode(); } },
-      { id: 'cmd:tts', title: '朗读本章', group: 'command', keywords: ['tts', '朗读'], when: inEditor, run: () => { openTtsBar(); } },
-      { id: 'cmd:proofread', title: '校对', group: 'command', keywords: ['proofread', '校对'], when: hasBook, run: () => { void openProofreadPanel(); } },
-      { id: 'cmd:sensitive', title: '敏感词预检', group: 'command', keywords: ['sensitive', '敏感词'], when: hasBook, run: () => { void openSensitivePanel(); } },
-      { id: 'cmd:history', title: '本书历史', group: 'command', keywords: ['history', '历史', '备份'], when: hasBook, run: () => { void openHistoryForCurrentBook(); } },
-      { id: 'cmd:fragments', title: '插入碎片…', group: 'command', keywords: ['fragment', '碎片', '灵感箱'], when: hasBook, run: () => { void openInsertFragmentDialog(); } },
-      { id: 'cmd:capture', title: '剪贴板捕获', group: 'command', kbd: 'Ctrl+Alt+V', keywords: ['capture', '剪贴板'], when: inEditor, run: () => { void captureUi.open(); } },
-      { id: 'cmd:bookinfo', title: '书籍信息', group: 'command', keywords: ['book info', '书籍信息', '作者', '标签'], when: hasBook, run: () => {
-        const book = (state.books || []).find((item) => sameBookPath(item.path, state.bookPath))
-          || { path: state.bookPath, title: (state.meta && state.meta.title) || '', status: 'ok' };
-        void openBookInfoDialog(book);
-      } },
-      { id: 'cmd:folder', title: '打开本书文件夹', group: 'command', keywords: ['folder', '文件夹'], when: hasBook, run: () => { void openBookFolderFlow(); } },
-      { id: 'cmd:check-update', title: '检查更新', group: 'command', keywords: ['update', '更新'], when: () => state.view === 'shelf', run: () => { void checkUpdate(); } }
-    ];
+    return commandCatalog.createCommandDefs({
+      getView: () => ({ view: state.view, bookPath: state.bookPath }),
+      handlers: commandHandlers
+    });
   }
 
   // 命令面板的条目快照（1.5.0 P0-6 / 审计 O-1）：构建一次，按「数据版本」复用。
