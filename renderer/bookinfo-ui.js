@@ -382,7 +382,11 @@
     if (state.shelfTag && !tagStats.some((item) => item.name === state.shelfTag)) state.shelfTag = '';
 
     const options = [filterOption('', `全部分组（${stats.total}）`)];
-    if (stats.ungrouped) options.push(filterOption('__none__', `未分组（${stats.ungrouped}）`));
+    // 「未分组」提醒仍走 host 的分组归一（与书籍信息弹层的建议清单同一口径：清洗后为空 = 未分组）；
+    // 计数本身走 collectGroupStats（同一份规则，避免两处口径漂移）。
+    if (state.books.some((book) => !bookGroupOf(book))) {
+      options.push(filterOption('__none__', `未分组（${stats.ungrouped}）`));
+    }
     for (const group of stats.groups) options.push(filterOption(group.name, `${group.name}（${group.count}）`));
     select.innerHTML = '';
     for (const option of options) {
