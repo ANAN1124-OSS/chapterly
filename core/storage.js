@@ -256,6 +256,20 @@ async function readBookMeta(bookPath) {
   return bookInfoLib.cleanBookInfo(normalized);
 }
 
+// 写盘前把书目归一（版本号 + updatedAt）——writeBookMeta 与「修复 / 从 .bak 恢复」的
+// 临时文件换写共用同一份，保证两条路径写出来的字节完全一致。
+// touchUpdatedAt:false 只给「书架扫描回填字数缓存」用（1.6.0 A2 / 审计 E-06）。
+function prepareBookMeta(meta, { touchUpdatedAt = true } = {}) {
+  return {
+    ...meta,
+    // 新书 / 旧书第一次写盘时补上版本号；比本应用新的版本不降级
+    schemaVersion: schemaLib.normalizeSchemaVersion(meta.schemaVersion),
+    // 扫描是只读行为，不许把 updatedAt 顶到现在（否则打开书架就把书往前挪、同步工具也以为书目被改过）。
+    // 老书没有 updatedAt 时仍补一个（第一次写盘）。显式操作（建 / 改 / 删 / 保存）一律保持默认 true。
+    updatedAt: touchUpdatedAt ? nowIso() : meta.updatedAt || nowIso()
+  };
+}
+
 async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true, structural = false, touchUpdatedAt = true } = {}) {
   if (ensureDirectory) await ensureDir(bookPath);
   const metaPath = path.join(bookPath, BOOK_FILE);
@@ -273,15 +287,7 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
       if (err.code !== 'ENOENT') throw err;
     }
   }
-  const next = {
-    ...meta,
-    // 新书 / 旧书第一次写盘时补上版本号；比本应用新的版本不降级
-    schemaVersion: schemaLib.normalizeSchemaVersion(meta.schemaVersion),
-    // 1.6.0 A2（审计 E-06）：书架扫描回填字数缓存时传 touchUpdatedAt:false —— 扫描是只读行为，
-    // 不许把 updatedAt 顶到现在（否则打开书架就把书往前挪、同步工具也以为书目被改过）。
-    // 老书没有 updatedAt 时仍补一个（第一次写盘）。显式操作（建 / 改 / 删 / 保存）一律保持默认 true。
-    updatedAt: touchUpdatedAt ? nowIso() : meta.updatedAt || nowIso()
-  };
+  const next = prepareBookMeta(meta, { touchUpdatedAt });
   await writeJsonAtomic(metaPath, next, { ensureDir: ensureDirectory });
   return next;
 }
@@ -486,7 +492,7 @@ async function listBooks(booksRoot) {
   return books;
 }
 
-async function createBook(booksRoot, title) {
+async function createBook(booksRoot, title, options = {}) {
   const displayTitle = String(title == null ? '' : title).trim() || '我的新书';
   await ensureDir(booksRoot);
   const base = chaptersLib.safeName(displayTitle);
@@ -508,20 +514,33 @@ async function createBook(booksRoot, title) {
   const bookPath = path.join(booksRoot, folder);
   const seq = 1;
   const file = chaptersLib.buildFileName(seq, '');
-  await atomicWriteFile(path.join(bookPath, file), '');
-  const meta = {
-    version: 1,
-    schemaVersion: schemaLib.CURRENT_SCHEMA_VERSION,
-    id: `b_${Date.now().toString(36)}`,
-    title: displayTitle,
-    titleTemplate: chaptersLib.TITLE_TEMPLATE,
-    fileSeq: seq,
-    chapters: [{ id: 'ch_001', file, name: '', createdAt: nowIso() }],
-    lastOpenChapterId: 'ch_001',
-    createdAt: nowIso()
-  };
-  const saved = await writeBookMeta(bookPath, meta, { structural: true });
-  return { path: bookPath, meta: saved };
+  // 单测注入写盘失败用（ENOSPC / EPERM），产品调用不传
+  const saveMeta = options && typeof options.writeBookMeta === 'function' ? options.writeBookMeta : writeBookMeta;
+  try {
+    await atomicWriteFile(path.join(bookPath, file), '');
+    const meta = {
+      version: 1,
+      schemaVersion: schemaLib.CURRENT_SCHEMA_VERSION,
+      id: `b_${Date.now().toString(36)}`,
+      title: displayTitle,
+      titleTemplate: chaptersLib.TITLE_TEMPLATE,
+      fileSeq: seq,
+      chapters: [{ id: 'ch_001', file, name: '', createdAt: nowIso() }],
+      lastOpenChapterId: 'ch_001',
+      createdAt: nowIso()
+    };
+    const saved = await saveMeta(bookPath, meta, { structural: true });
+    return { path: bookPath, meta: saved };
+  } catch (err) {
+    // 1.6.0 A3（审计 E-07）：三步（建目录 / 写空章 / 写书目）任一步失败，把这次刚建的东西收掉，
+    // 书架里不留「有文件夹、没书目」的空壳。只删我们自己建的空章 txt 与空目录：
+    // 目录里若已经有别的文件（外部同时放进去的），rmdir 会失败 → 原样保留，绝不递归删。
+    // 幂等：什么都没建 / 已经被外部删掉时，这些删除都是空操作。
+    try { await fs.rm(path.join(bookPath, file), { force: true }); } catch { /* 忽略 */ }
+    try { await fs.rm(path.join(bookPath, BOOK_FILE), { force: true }); } catch { /* 忽略 */ }
+    try { await fs.rmdir(bookPath); } catch { /* 目录非空 / 已不存在：留着 */ }
+    throw err;
+  }
 }
 
 async function openBook(bookPath) {
@@ -1784,21 +1803,42 @@ async function restoreHistoryGroup(bookPath, groupId) {
   const restoreDir = await uniqueTrashDir(trashDir, RESTORE_BACKUP_PREFIX);
   let restored = 0;
   let skipped = 0;
-  for (const entry of group.files) {
-    if (!entry.restorable) {
-      skipped += 1;
-      continue;
+  try {
+    for (const entry of group.files) {
+      if (!entry.restorable) {
+        skipped += 1;
+        continue;
+      }
+      await copyHistoryEntryToBook(bookPath, group, entry, restoreDir);
+      restored += 1;
     }
-    await copyHistoryEntryToBook(bookPath, group, entry, restoreDir);
-    restored += 1;
-  }
-  if (restored) {
-    await refreshChapterChars(
-      bookPath,
-      meta,
-      group.files.filter((file) => file.restorable).map((file) => file.name)
-    );
-    await writeBookMeta(bookPath, meta);
+    if (restored) {
+      await refreshChapterChars(
+        bookPath,
+        meta,
+        group.files.filter((file) => file.restorable).map((file) => file.name)
+      );
+      await writeBookMeta(bookPath, meta);
+    }
+  } catch (err) {
+    // 1.6.0 A3（审计 E-08）：整组还原到一半失败，说清「还原了几章」与「还原前的正文备份在哪」，
+    // 与「还原到替换前」同一口径。每章都是「先备份 → 再原子写回」，失败的那一章不会被写坏、
+    // 后续章一个字节不动；原备份不消耗，作者再点一次「还原」就能把剩下的补上。
+    let backedUp = false;
+    try {
+      backedUp = (await fs.readdir(restoreDir)).length > 0;
+    } catch {
+      backedUp = false;
+    }
+    throw batchFailure(err, {
+      code: 'RESTORE_FAILED',
+      action: '整组还原',
+      notes: [
+        restored ? `已经还原 ${restored} 章` : '',
+        backedUp ? `还原前的正文备份在 ${trashDirLabel(restoreDir)}` : '',
+        restored ? '备份本身没有被消耗，再点一次「还原」可以把剩下的补上' : '书里的正文一个字节都没改'
+      ]
+    });
   }
   return {
     restored,
@@ -1928,7 +1968,7 @@ function locked(fn) {
   return (...args) => withBookLock(args[0], () => fn(...args));
 }
 
-const safeCreateBook = (booksRoot, title) => withBookLock(booksRoot, () => createBook(booksRoot, title));
+const safeCreateBook = (booksRoot, title, options) => withBookLock(booksRoot, () => createBook(booksRoot, title, options));
 
 module.exports = {
   BOOK_FILE,
@@ -1949,6 +1989,8 @@ module.exports = {
   backfillChapterChars,
   listTxtFiles,
   readBookMeta,
+  // 1.6.0 A3：修复流程先写临时文件再换名，归一逻辑与 writeBookMeta 共用这一份
+  prepareBookMeta,
   writeBookMeta,
   listBooks,
   createBook: safeCreateBook,

@@ -101,3 +101,95 @@ test('没有 .bak 时给出可读错误', async () => {
   const { path: bookPath } = await storage.createBook(root, '无备份');
   await assert.rejects(() => repair.restoreFromBak(bookPath), (err) => err.code === 'NO_BAK');
 });
+
+// ---------- 修复失败语义（1.6.0 A3 / 审计 E-07） ----------
+// 修书目必须「先写新书目 → 再归档旧文件」。反过来做（旧代码）一旦写盘失败（ENOSPC / EPERM），
+// 坏书目已经被改名挪走，书在书架上看不见了，只能靠用户自己翻 _trash 找回来。
+test('修复重建：新书目写不进去时，坏书目一个字节不动（不先归档）', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '修不动的书');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '起风正文', 'utf8');
+  await fs.writeFile(path.join(bookPath, '书目.json'), '{ 坏掉的书目', 'utf8');
+  const before = await fs.readFile(path.join(bookPath, '书目.json'), 'utf8');
+
+  await assert.rejects(
+    repair.rebuildFromFiles(bookPath, {
+      writeJson: async () => {
+        const err = new Error('磁盘满了');
+        err.code = 'ENOSPC';
+        throw err;
+      }
+    }),
+    (err) => err.code === 'ENOSPC',
+    '写不进去时要把错误原样抛出来（调用方据此给中文提示）'
+  );
+  const names = await fs.readdir(bookPath);
+  assert.ok(!names.some((name) => name.startsWith(storage.CORRUPT_PREFIX)), '新书目没写成之前不许归档旧文件');
+  assert.ok(!names.some((name) => name.startsWith('.repair-meta')), '失败时不许留临时文件');
+  assert.equal(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'), before, '坏书目原样留着才能再修一次');
+
+  // 障碍消失后再修一次就能成（幂等）
+  const fixed = await repair.rebuildFromFiles(bookPath);
+  assert.equal(fixed.count, 1);
+  assert.ok(fixed.archived && fixed.archived.includes(storage.CORRUPT_PREFIX), '成功后才归档坏书目');
+});
+
+test('修复重建：归档后改名失败，要把坏书目改回原名（失败可回退）', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '改不回去的书');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '起风正文', 'utf8');
+  await fs.writeFile(path.join(bookPath, '书目.json'), '{ 坏', 'utf8');
+  const metaPath = path.join(bookPath, '书目.json');
+
+  await assert.rejects(
+    repair.rebuildFromFiles(bookPath, {
+      rename: async (from, to) => {
+        if (to === metaPath) {
+          const err = new Error('操作被系统拒绝');
+          err.code = 'EPERM';
+          throw err;
+        }
+        return fs.rename(from, to);
+      }
+    }),
+    (err) => err.code === 'EPERM'
+  );
+  const names = await fs.readdir(bookPath);
+  assert.ok(names.includes('书目.json'), '失败后坏书目要回到原名（书仍然看得见）');
+  assert.ok(!names.some((name) => name.startsWith('.repair-meta')), '临时文件要清掉');
+  assert.equal(await fs.readFile(metaPath, 'utf8'), '{ 坏');
+});
+
+test('从 .bak 恢复：同样先写新书目再归档，写失败时主文件与 .bak 都不动', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '备份恢复失败书');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '正文', 'utf8');
+  await fs.writeFile(path.join(bookPath, '书目.json'), '{ 坏', 'utf8');
+  const bak = {
+    version: 1,
+    schemaVersion: 1,
+    id: 'b_bak',
+    title: '备份恢复失败书',
+    chapters: [{ id: 'ch_001', file: '001-起风.txt', name: '起风' }]
+  };
+  await fs.writeFile(path.join(bookPath, '书目.json.bak'), JSON.stringify(bak), 'utf8');
+  const bakBefore = await fs.readFile(path.join(bookPath, '书目.json.bak'), 'utf8');
+
+  await assert.rejects(
+    repair.restoreFromBak(bookPath, {
+      writeJson: async () => {
+        const err = new Error('磁盘满了');
+        err.code = 'ENOSPC';
+        throw err;
+      }
+    }),
+    (err) => err.code === 'ENOSPC'
+  );
+  const names = await fs.readdir(bookPath);
+  assert.ok(!names.some((name) => name.startsWith(storage.CORRUPT_PREFIX)), '写失败时坏文件不许先被归档');
+  assert.equal(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'), '{ 坏');
+  assert.equal(await fs.readFile(path.join(bookPath, '书目.json.bak'), 'utf8'), bakBefore, '.bak 一个字节不动');
+});

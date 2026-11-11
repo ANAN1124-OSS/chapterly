@@ -600,3 +600,51 @@ test('历史：清空快照的路径校验只认本书 _trash 下的「快照-YY
   assert.equal(await fs.readFile(path.join(snapshotDir, '001-a.txt'), 'utf8'), '快照正文');
   assert.deepEqual((await fs.readdir(path.join(bookPath, '_trash'))).sort(), ['快照-20261107']);
 });
+
+// ---------- 整组还原的失败语义（1.6.0 A3 / 审计 E-08） ----------
+test('历史：整组还原中途失败要说清还原了几章 + 备份目录，后续章一个字节不动', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '整组还原失败书');
+  await storage.createChapter(bookPath, 1, '夜雨');
+  await storage.createChapter(bookPath, 2, '晚风');
+  const meta = await storage.readBookMeta(bookPath);
+  const files = meta.chapters.map((chapter) => chapter.file);
+  assert.equal(files.length, 3);
+  for (const file of files) await storage.saveChapterText(bookPath, file, `现稿：${file}\n`);
+  await writeBackupDir(bookPath, '整理备份-2026-10-31-210000', {
+    [files[0]]: '第一章旧稿\r\n',
+    [files[1]]: '第二章旧稿\r\n',
+    [files[2]]: '第三章旧稿\r\n'
+  });
+  // 让第二章的目标文件只读：原子写回时 rename 会 EPERM（Windows 实测）
+  const lockedPath = path.join(bookPath, files[1]);
+  await fs.chmod(lockedPath, 0o444);
+  let failed = null;
+  try {
+    await storage.restoreHistoryGroup(bookPath, 'dir:整理备份-2026-10-31-210000');
+  } catch (err) {
+    failed = err;
+  } finally {
+    await fs.chmod(lockedPath, 0o666).catch(() => {});
+  }
+  assert.ok(failed, '中途失败必须抛错，不能假装全还原了');
+  assert.equal(failed.code, 'RESTORE_FAILED');
+  assert.match(failed.message, /已经还原 1 章/);
+  assert.match(failed.message, /还原前的正文备份在/);
+  assert.match(failed.message, /再点一次/, '要告诉作者备份没被消耗、可以重试');
+  assert.equal((await storage.loadChapterText(bookPath, files[0])).text, '第一章旧稿\n', '失败前已还原的章保留');
+  assert.equal(
+    (await storage.loadChapterText(bookPath, files[1])).text,
+    `现稿：${files[1]}\n`,
+    '失败的那一章不许写坏（原子写回要么全成要么不动）'
+  );
+  assert.equal(
+    (await storage.loadChapterText(bookPath, files[2])).text,
+    `现稿：${files[2]}\n`,
+    '后续章一个字节都不许动'
+  );
+  // 原备份没被消耗，解除只读后可以整组重试
+  await fs.chmod(lockedPath, 0o666);
+  const retry = await storage.restoreHistoryGroup(bookPath, 'dir:整理备份-2026-10-31-210000');
+  assert.equal(retry.restored, 3);
+});

@@ -1255,3 +1255,33 @@ test('显式保存仍更新 updatedAt：改章节状态 / 改名会写，扫描�
   const renamed = await storage.renameChapter(bookPath, created.chapters[0].id, '新章名');
   assert.ok(Date.parse(renamed.meta.updatedAt) > Date.parse(updated.meta.updatedAt));
 });
+
+// ---------- 建书失败收尾（1.6.0 A3 / 审计 E-07） ----------
+// 建书三步：建目录 → 写空章 txt → 写书目。中间任何一步失败，不许在书架里留下
+// 「有文件夹、没书目」的空壳（书架会当成损坏书，用户删也删不干净）。
+test('建书失败：收掉这次刚建的目录与空章文件，再建一次不受影响', async () => {
+  const root = await mkTmp();
+  const failingMeta = async () => {
+    const err = new Error('写不进去');
+    err.code = 'EPERM';
+    throw err;
+  };
+  await assert.rejects(storage.createBook(root, '建书失败', { writeBookMeta: failingMeta }), (err) => err.code === 'EPERM');
+  assert.deepEqual(await fs.readdir(root), [], '失败后不许留下空壳书目录');
+
+  // 障碍消失后再建同名书：正常建出来（说明清理是幂等的，没有残留挡住重试）
+  const ok = await storage.createBook(root, '建书失败');
+  assert.equal(path.basename(ok.path), '建书失败');
+  assert.deepEqual((await fs.readdir(ok.path)).sort(), ['001-未命名.txt', '书目.json']);
+
+  // 目录里已经有别人的东西：只收掉这次新建的那个目录，已有文件一个不删
+  const busyRoot = await mkTmp();
+  await fs.mkdir(path.join(busyRoot, '有人用过的名字'));
+  await fs.writeFile(path.join(busyRoot, '有人用过的名字', '别人的.txt'), '不要删我', 'utf8');
+  await assert.rejects(
+    storage.createBook(busyRoot, '有人用过的名字', { writeBookMeta: failingMeta }),
+    (err) => err.code === 'EPERM'
+  );
+  assert.deepEqual(await fs.readdir(busyRoot), ['有人用过的名字'], '只收掉本次新建的「名字-2」');
+  assert.equal(await fs.readFile(path.join(busyRoot, '有人用过的名字', '别人的.txt'), 'utf8'), '不要删我');
+});
