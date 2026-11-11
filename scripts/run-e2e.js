@@ -1,9 +1,17 @@
 // 一键跑端到端自检：独立临时 userData/书库，真实启动 Electron 走一遍主流程。
 // 用法：pnpm run e2e
-const { spawn } = require('node:child_process');
+//
+// 看门狗 / 回收（1.6.0 H3 / 审计 D1）：
+//   · 超时预算 = 180 s + 组数 × 每组预算（组数从 scripts/e2e/groups/index.js 现读，不写死）；
+//   · 超时先 dump 已收集的 stdout/stderr，再 `taskkill /PID <pid> /T /F` 杀掉整棵进程树
+//     （只 kill 直接子进程会把 Electron 孙进程留在后台，下一轮抢焦点 / 拿旧窗口）；
+//   · 成功才删临时目录；失败 / 超时 / 拿不到结果都保留现场并打印路径，供人排查。
+// 判定口径都在 scripts/e2e-runner-logic.js 里（纯函数、tests/e2e-runner.test.js 覆盖）。
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const logic = require('./e2e-runner-logic');
 
 const root = path.join(__dirname, '..');
 const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -19,6 +27,11 @@ fs.writeFileSync(path.join(userData, 'stats.json'), JSON.stringify(buildSeed().s
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.ELECTRON_NO_ATTACH_CONSOLE;
+
+// 组数从索引里现读：加组 / 删组后预算自动跟着走，不写死 80。
+const { groups } = require('./e2e/groups/index.js');
+const groupCount = groups.length;
+const budgetMs = logic.timeoutBudgetMs(groupCount);
 
 const child = spawn(
   process.execPath,
@@ -36,11 +49,54 @@ let stderr = '';
 child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
 child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
 
+let settled = false;
+
+function killProcessTree() {
+  const plan = logic.killPlan({ platform: process.platform, pid: child.pid });
+  if (plan.useTreeKill) {
+    try {
+      spawnSync(plan.command, plan.args, { stdio: 'ignore' });
+    } catch {
+      /* taskkill 不在 PATH 之类：下面的 child.kill 兜底 */
+    }
+    return;
+  }
+  try {
+    child.kill();
+  } catch {
+    /* 已经退出 */
+  }
+}
+
+// 统一收尾：成功删临时目录；失败 / 超时 / 拿不到结果留在现场并打印路径（不要删掉失败证据）。
+function finish({ ok, code = 0, timedOut = false, missingResult = false }) {
+  if (settled) return;
+  settled = true;
+  const decision = logic.cleanupDecision({ ok, timedOut, missingResult });
+  if (decision.remove) {
+    try {
+      fs.rmSync(base, { recursive: true, force: true });
+      console.log('临时目录已回收（成功跑完）。');
+    } catch (err) {
+      console.error(`[e2e] 临时目录回收失败：${err.message}（路径 ${base}）`);
+    }
+  } else {
+    console.error(`[e2e] 临时目录保留（${decision.reason}，供排查）：${base}`);
+  }
+  process.exit(ok ? 0 : code || 1);
+}
+
 const timer = setTimeout(() => {
-  console.error('[e2e] 超时（180 秒），强制结束');
-  try { child.kill(); } catch { /* 忽略 */ }
-  process.exit(1);
-}, 180000);
+  const dump = logic.timeoutDumpDecision({ stdout, stderr });
+  console.error(
+    `[e2e] 超时（预算 ${Math.round(budgetMs / 1000)} 秒 = ${logic.BASE_TIMEOUT_MS / 1000} 秒 + ` +
+      `${groupCount} 组 × ${logic.PER_GROUP_MS / 1000} 秒），结束整棵进程树`
+  );
+  // 超时也要把已经跑出来的 PASS/FAIL 与报错打全，否则只看到一行「超时」。
+  console.error(dump.text);
+  killProcessTree();
+  finish({ ok: false, code: 1, timedOut: true });
+}, budgetMs);
 timer.unref();
 
 child.on('close', (code) => {
@@ -50,14 +106,16 @@ child.on('close', (code) => {
     console.error('[e2e] 没有拿到结果，应用可能启动失败。');
     console.error(stdout.trim());
     console.error(stderr.trim());
-    process.exit(code || 1);
+    finish({ ok: false, code: code || 1, missingResult: true });
+    return;
   }
   let result;
   try {
     result = JSON.parse(match[1]);
   } catch {
     console.error('[e2e] 结果 JSON 解析失败：', match[1]);
-    process.exit(1);
+    finish({ ok: false, code: 1 });
+    return;
   }
   const details = result.details || [];
   for (const item of details) {
@@ -72,9 +130,9 @@ child.on('close', (code) => {
   }
   if (result.ok) {
     console.log(`端到端自检通过：${result.checks} 项全部通过。`);
-    console.log(`临时书库：${books}`);
-    process.exit(0);
+    finish({ ok: true, code: 0 });
+    return;
   }
   console.error(`端到端自检失败：${result.error || '未知错误'}`);
-  process.exit(1);
+  finish({ ok: false, code: 1 });
 });
