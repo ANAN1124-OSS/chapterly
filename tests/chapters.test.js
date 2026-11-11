@@ -190,6 +190,72 @@ test('文件名生成：补零三位、空白名用未命名、重名加后缀',
     ch.uniqueFileName(5, '起风', ['005-起风.txt', '005-起风-2.txt']),
     '005-起风-3.txt'
   );
+  // 满长章名没人撞名的正常路径不变（不截断、不加后缀）
+  assert.equal(
+    ch.uniqueFileName(1, '满'.repeat(ch.MAX_NAME_LENGTH), []),
+    `001-${'满'.repeat(ch.MAX_NAME_LENGTH)}.txt`
+  );
+});
+
+// E-02（1.6.0 H2）：40 字满长章名撞名会死循环 —— 旧实现把 `safeName(name) + '-2'` 交给
+// buildFileName，safeName 又把它截回 40 字，候选永远不变，while 转不出去。
+// 死循环只能用「子进程 + 超时看门狗」钉：进程内断言一旦回归就是整轮 CI 挂死，而不是一条失败。
+const { spawnSync } = require('node:child_process');
+
+function runChaptersScript(body) {
+  const chaptersPath = path.join(__dirname, '..', 'core', 'chapters.js');
+  const script = `const ch = require(${JSON.stringify(chaptersPath)});\n${body}`;
+  return spawnSync(process.execPath, ['-e', script], { timeout: 8000, encoding: 'utf8' });
+}
+
+test('uniqueFileName：满长章名撞名不挂死，截短基础名再加后缀', () => {
+  const res = runChaptersScript(`
+    const base = '满'.repeat(ch.MAX_NAME_LENGTH);
+    const full = '001-' + base + '.txt';
+    const got = ch.uniqueFileName(1, base, [full]);
+    const got3 = ch.uniqueFileName(1, base, [full, got]);
+    process.stdout.write(JSON.stringify({ full, got, got3 }));
+  `);
+  assert.equal(res.error, undefined, `满长章名撞名没有退出（子进程 ${res.error && res.error.code}）—— 仍是死循环`);
+  assert.equal(res.status, 0, res.stderr || '子进程失败');
+  const out = JSON.parse(res.stdout);
+  assert.notEqual(out.got, out.full, '撞名时必须换一个文件名（不能原样返回已存在的那个）');
+  assert.ok(out.got.endsWith('-2.txt'), `第一次撞名加 -2：${out.got}`);
+  assert.ok(out.got3.endsWith('-3.txt'), `第二次撞名加 -3：${out.got3}`);
+  const name2 = out.got.slice('001-'.length, -'.txt'.length);
+  assert.ok(name2.length <= ch.MAX_NAME_LENGTH, `文件名主干仍 ≤ ${ch.MAX_NAME_LENGTH} 字，实际 ${name2.length}`);
+  assert.equal(
+    out.got3.slice('001-'.length, -'.txt'.length).slice(0, -2),
+    name2.slice(0, -2),
+    '后缀不同、截短后的基础名一致'
+  );
+});
+
+test('uniqueFileName：后缀硬上限 999，全撞名时抛 BAD_PATH 而不是无限重试', () => {
+  const res = runChaptersScript(`
+    const base = '满'.repeat(ch.MAX_NAME_LENGTH);
+    const existing = ['001-' + base + '.txt'];
+    let last = '';
+    for (let n = 0; n < 998; n += 1) {
+      last = ch.uniqueFileName(1, base, existing);
+      existing.push(last);
+    }
+    let code = '';
+    let message = '';
+    try {
+      ch.uniqueFileName(1, base, existing);
+    } catch (err) {
+      code = err.code || '';
+      message = err.message || '';
+    }
+    process.stdout.write(JSON.stringify({ last, code, message }));
+  `);
+  assert.equal(res.error, undefined, `撞名重试没有退出（子进程 ${res.error && res.error.code}）—— 硬上限没生效`);
+  assert.equal(res.status, 0, res.stderr || '子进程失败');
+  const out = JSON.parse(res.stdout);
+  assert.ok(out.last.endsWith('-999.txt'), `第 999 个后缀仍可用：${out.last}`);
+  assert.equal(out.code, 'BAD_PATH', '999 个后缀全撞名时抛 BAD_PATH');
+  assert.match(out.message, /同名章节文件太多/, '错误文案是给作者看的中文');
 });
 
 test('nextFileSeq：单调递增、删除不回退、缺失时兜底', () => {

@@ -16,6 +16,9 @@
 
   const TITLE_TEMPLATE = '第{num}章：{name}';
   const MAX_NAME_LENGTH = 40;
+  // 撞名后缀的硬上限（E-02 / 1.6.0 H2）：`-2` … `-999` 用完还撞名就抛错，
+  // 不再无限重试 —— 一本书里 1000 个同名章节文件已经不该由这里静默兜底了。
+  const MAX_NAME_SUFFIX = 999;
   const ILLEGAL_CHARS = /[\\/:*?"<>|\u0000-\u001f]/g;
   const EDGE_DOTS_SPACES = /^[.\s]+|[.\s]+$/g;
   // Windows 保留设备名（文件名主干）：CON / PRN / AUX / NUL / COM1-9 / LPT1-9。
@@ -220,15 +223,41 @@
     return `${pad3(seq)}-${safeName(name)}.txt`;
   }
 
+  // 撞名重试用尽时的错误（E-02 / 1.6.0 H2）：错误码沿用路径 / 文件名类的 BAD_PATH 口径，
+  // 中文文案原样交给 core/error-text.js 脱敏后给界面。
+  class ChapterFileNameError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = 'ChapterFileNameError';
+      this.code = 'BAD_PATH';
+    }
+  }
+
+  // 撞名后缀（E-02 / 1.6.0 H2）：**先把基础名截短，再拼 `-N`**。
+  // 旧实现是 `buildFileName(seq, safeName(name) + '-N')` —— 40 字满长章名 + 后缀会被
+  // safeName 再截回 40 字，候选永远不变，while 转不出去（死循环）。
+  // 预算按后缀实际长度算（`-2` 占 2 字、`-999` 占 4 字），保证拼完仍 ≤ MAX_NAME_LENGTH。
+  function suffixedName(base, i) {
+    const suffix = `-${i}`;
+    const room = Math.max(0, MAX_NAME_LENGTH - suffix.length);
+    const head = base.slice(0, room).replace(EDGE_DOTS_SPACES, '');
+    return `${head || '未命名'}${suffix}`;
+  }
+
+  // 撞名重试到 MAX_NAME_SUFFIX 仍占用 → 抛 BAD_PATH（与 storage / ipc-paths 的路径类错误同一套
+  // 错误码口径；中文文案由 core/error-text.js 统一脱敏后给界面）。绝不无限重试。
   function uniqueFileName(seq, name, existingFiles = []) {
     const used = new Set(existingFiles);
-    let candidate = buildFileName(seq, name);
-    let i = 2;
-    while (used.has(candidate)) {
-      candidate = buildFileName(seq, `${safeName(name)}-${i}`);
-      i += 1;
+    const first = buildFileName(seq, name);
+    if (!used.has(first)) return first;
+    const base = safeName(name);
+    for (let i = 2; i <= MAX_NAME_SUFFIX; i += 1) {
+      const candidate = buildFileName(seq, suffixedName(base, i));
+      if (!used.has(candidate)) return candidate;
     }
-    return candidate;
+    throw new ChapterFileNameError(
+      `同名章节文件太多（已试到第 ${MAX_NAME_SUFFIX} 个后缀），请先把这一章的章名改短，或整理书里的文件`
+    );
   }
 
   function nextFileSeq(meta) {
