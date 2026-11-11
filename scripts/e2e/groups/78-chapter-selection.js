@@ -429,8 +429,13 @@ module.exports = async function group78ChapterSelection(t) {
   await exec(
     "document.querySelectorAll('#chapter-list .chapter-item')[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }))"
   );
-  // 整本删空会自动补一个空章（与单章删除同一口径），所以目录剩 1 章
-  await waitFor('window.__cwTest.chapterTitles().length === 1', 10000);
+  // 整本删空会自动补一个空章（与单章删除同一口径），所以目录剩 1 章。
+  // 撤销条是在删除循环**之后**才登记的：必须等它真的亮起来再读文案 / 点撤销，
+  // 否则会偶发读到空串（2026-11-11 实跑命中过一次）。
+  await waitFor(
+    "window.__cwTest.chapterTitles().length === 1 && document.getElementById('undo-label').textContent === '已删除 5 章'",
+    10000
+  );
   const trashAfterKeyDelete = (await fs.readdir(path.join(bookPath, '_trash'))).filter((n) => n.endsWith('.txt')).length;
   const undoLabelKeyDelete = await exec("document.getElementById('undo-label').textContent");
   check(
