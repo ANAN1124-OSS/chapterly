@@ -16,7 +16,7 @@ const chaptersLib = require('../core/chapters');
 // 搬之前只有 E2E 黑盒覆盖（打开设置 → 改项 → 保存 / 取消）；各作用域显隐、保存 payload、网络状态文案、
 // 词表三态、失败兜底在 Node 里一步都测不到。搬出来以后用「假 host + 假 DOM」逐条钉住。
 //
-// 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ chaptersLib + display{11} +
+// 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ chaptersLib + display{12} +
 // peers{stats,writeTimer,editor,words,refreshShelf} + texts{commonLib,formatBytes}；分组内每个真实依赖都写进模块头注释。
 
 const realDocument = globalThis.document;
@@ -1019,4 +1019,31 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWSettingsUi
   assert.deepEqual(Object.keys(win.CWSettingsUi).sort(), ['REQUIRED_HOST', 'create']);
   assert.equal(win.CWSettingsUi.REQUIRED_HOST.length, 9);
   assert.equal(win.CWBookinfoUi, undefined);
+});
+
+// ---------- 结构闸门：头注释契约成员 ↔ 代码实际校验（V30） ----------
+// 头注释是设置模块唯一的人读契约；它列的 host 成员必须和 createSettingsUi 真正校验的成员逐个对上，
+// 否则渲染层照注释接线、少传一个成员，只会在运行时抛 TypeError。
+test('结构闸门：头注释列出的 host 成员与代码实际校验一致（V30）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'settings-ui.js'), 'utf8');
+  const head = src.slice(0, src.indexOf('*/'));
+  assert.ok(head.length > 0, '找不到模块头注释');
+
+  // 头注释第一段写了「host N 个成员」，N 必须等于 REQUIRED_HOST 的实际长度
+  const declaredCount = Number((head.match(/host (\d+) 个成员/) || [])[1]);
+  assert.equal(declaredCount, settingsUi.REQUIRED_HOST.length, '头注释的成员数要等于 REQUIRED_HOST 的实际长度');
+
+  // display 分组：注释里逐个列出的成员 ↔ 代码里 host.display 的校验表
+  const displayStart = head.indexOf('display: {');
+  const displayEnd = head.indexOf('},', displayStart);
+  assert.notEqual(displayStart, -1, '头注释里找不到 display 分组');
+  assert.notEqual(displayEnd, -1, '头注释 display 分组没有收尾');
+  const commentKeys = [...head.slice(displayStart, displayEnd).matchAll(/^\s*\*\s+([A-Za-z_$][\w$]*)\s*,?\s*(?:\/\/.*)?$/gm)].map((m) => m[1]);
+  assert.ok(commentKeys.length > 0, '头注释 display 分组没解析出成员');
+
+  const codeMatch = src.match(/for \(const key of \[([^\]]+)\]\) \{\s*if \(display\[key\]/);
+  assert.ok(codeMatch, '代码里找不到 host.display 的校验表');
+  const codeKeys = [...codeMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.equal(codeKeys.length, codeKeys.filter((k) => k).length);
+  assert.deepEqual([...commentKeys].sort(), [...codeKeys].sort(), '头注释 display 成员要和实际校验逐个对上（缺一即红）');
 });

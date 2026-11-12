@@ -29,6 +29,7 @@
  *       s2tLib,                             //   core/s2t.js：导出简繁档位清洗
  *       templateLib,                        //   core/template.js：章节模板清洗 / 预览展开
  *       editorLogic                         //   renderer/editor-logic.js：超长段落阈值的夹紧口径
+ *       applyChapterNumbering,              //   章节编号显示项（渲染层同一份）：host.display 也校验它
  *     },
  *     peers: {                              // 其它域模块 / 跨域动作
  *       stats: { refreshStats, renderStatsChart },                 // 统计域

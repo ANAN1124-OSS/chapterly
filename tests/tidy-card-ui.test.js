@@ -633,3 +633,45 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWTidyCardUi
   assert.equal(win.CWTidyCardUi.REQUIRED_HOST.length, 8);
   assert.equal(win.CWSettingsUi, undefined);
 });
+
+// ---------- 「应用」也要 stale 三行校验（V33） ----------
+// 「整理」在 await 之后会重看 书 / 章 / 正文 三样（renderer/tidy-card-ui.js 的 stale 分支）；
+// 「应用」原来直接写编辑区，await 期间换书换章或被改过就会把 A 章结果写进 B 章。这里三条各走一遍。
+test('applyFormatToEditor：应用期间正文被改 / 换书 / 章被删 → 与「整理」同一句三行校验，不写编辑区', async () => {
+  const staleToast = ['正文刚改过，这次整理没有套用，请再点一次「整理」', 'warn'];
+
+  // ① 正文被用户改过
+  const edited = build({ text: '待整理正文' });
+  edited.host.api.formatText = async () => {
+    edited.editorEl.value = '用户刚打了新字';
+    return { changed: true, text: '整理后', stats: { paragraphs: 1, indent: 1 } };
+  };
+  const r1 = await edited.ui.applyFormatToEditor();
+  assert.equal(r1 && r1.reason, 'stale');
+  assert.equal(edited.editorEl.value, '用户刚打了新字', '不许把旧结果写进新正文');
+  assert.deepEqual(edited.calls.toast, [staleToast]);
+  assert.equal(edited.state.formatUndo.length, 0, '作废时不进撤销栈');
+  assert.equal(edited.calls.setConfig.length, 0, '作废时不记这次规则');
+
+  // ② 期间换了书
+  const switched = build({ text: '待整理正文' });
+  switched.host.api.formatText = async () => {
+    switched.state.bookPath = '/书库/书乙';
+    return { changed: true, text: '整理后', stats: {} };
+  };
+  const r2 = await switched.ui.applyFormatToEditor();
+  assert.equal(r2 && r2.reason, 'stale');
+  assert.equal(switched.editorEl.value, '待整理正文');
+  assert.deepEqual(switched.calls.toast, [staleToast]);
+
+  // ③ 期间章被删
+  const removed = build({ text: '待整理正文' });
+  removed.host.api.formatText = async () => {
+    removed.state.chapters = [];
+    return { changed: true, text: '整理后', stats: {} };
+  };
+  const r3 = await removed.ui.applyFormatToEditor();
+  assert.equal(r3 && r3.reason, 'stale');
+  assert.equal(removed.editorEl.value, '待整理正文');
+  assert.deepEqual(removed.calls.toast, [staleToast]);
+});

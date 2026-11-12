@@ -348,10 +348,24 @@
       toast(formatUi.emptyToast(), 'warn');
       return;
     }
+    const bookPath = state.bookPath;
+    const chapterId = state.chapters[state.index] && state.chapters[state.index].id;
     const options = readFormatOptions();
     $('btn-format-apply').disabled = true;
     try {
       const res = await call(api.formatText, before, options);
+      // 和点「整理」同一套三行校验：await 期间换了书 / 换了章 / 章被删 / 正文被改过，这次结果作废
+      // （绝不把 A 章的内容写进 B 章的编辑区）
+      const chapter = state.chapters[state.index];
+      if (
+        state.bookPath !== bookPath ||
+        !chapter ||
+        chapter.id !== chapterId ||
+        editorEl.value !== before
+      ) {
+        toast('正文刚改过，这次整理没有套用，请再点一次「整理」', 'warn');
+        return { ok: false, reason: 'stale' };
+      }
       // 记住这次勾选的规则，下次打开对话框沿用（只记规则，不碰正文）
       try {
         state.config = await call(api.setConfig, { formatOptions: options });
