@@ -4661,7 +4661,7 @@
       return { ok: false, message: err.message };
     }
     if (!preview.chaptersChanged) {
-      toast('这本书已经是整理后的格式，没有可改的地方');
+      toast('这本书已经是整理后的格式，没有可改的地方' + (preview.skippedTooLarge ? `；有 ${preview.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''));
       return { ok: true, changed: 0, data: preview };
     }
 
@@ -4712,8 +4712,8 @@
       }
       toast(
         `已整理全书：${result.chaptersChanged} 章${planText ? `（${planText}）` : ''}${
-          result.backupDir ? ' · 原文已备份到 _trash' : ''
-        }`
+          result.backupDir ? ' · 原文已备份到 _trash' : ''}${
+          result.skippedTooLarge ? `；有 ${result.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''}`
       );
       return { ok: true, changed: result.chaptersChanged, data: result };
     } catch (err) {

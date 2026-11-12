@@ -2022,15 +2022,22 @@ function registerIpc() {
     storage.moveChapterTo(bookPath, chapterId, volumeId, beforeChapterId), { mutation: 'write' }
   );
 
+  // R4b（V9）：整本操作遇到超过 128 MB 的章会跳过（文件不动、不整批失败），core 在结果里报
+  // skippedTooLarge；主进程把同一个数字带进 IPC 结果，渲染层据此提示「有 N 章超过 128 MB，
+  // 本次已跳过（文件没动）」。0 章跳过时原样返回，旧结果形状一个字都不动。
+  function withSkippedTooLarge(result) {
+    if (!result || typeof result !== 'object' || !result.skippedTooLarge) return result;
+    return { ...result, skippedTooLarge: result.skippedTooLarge };
+  }
   // 全书查找 / 替换：替换写盘前 storage 会把原章节备份到书内 _trash。
   // v0.9 C-5：options 由 core/ipc-limits.js 清洗——查找词 / 替换词必须是文本且各限 1 万字，
   // 非对象 options 按 {}（旧行为：没传选项 = 默认口径），坏类型直接回 BAD_QUERY / BAD_REPLACEMENT，
   // 不让一个超长替换词把整本书的 txt 撑爆（替换最多 5000 处 / 章）。
   handleBook('book:search', async (bookPath, options) =>
-    storage.searchBook(bookPath, ipcLimits.sanitizeSearchOptions(options))
+    withSkippedTooLarge(await storage.searchBook(bookPath, ipcLimits.sanitizeSearchOptions(options)))
   );
   handleBook('book:replace', async (bookPath, options) =>
-    storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options)), {
+    withSkippedTooLarge(await storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options))), {
     mutation: 'replace'
   });
 
@@ -2263,12 +2270,12 @@ function registerIpc() {
 
   // 整本智能排版：预检查只算不写；正式整理逐章写盘（写前把原章节备份到 _trash/整理备份-*）
   handleBook('book:format-preview', async (bookPath, options) =>
-    storage.previewFormatBook(bookPath, options)
+    withSkippedTooLarge(await storage.previewFormatBook(bookPath, options))
   );
   handleBook('book:format', async (bookPath, options) =>
-    storage.formatBook(bookPath, options, (progress) => {
+    withSkippedTooLarge(await storage.formatBook(bookPath, options, (progress) => {
       sendToFlow('format:progress', progress);
-    }), { mutation: 'format' }
+    })), { mutation: 'format' }
   );
 
   // 拼导出/复制用的正文：默认读磁盘；override 是编辑区里当前章的最新内容（未保存也算，只参与拼接不写盘）

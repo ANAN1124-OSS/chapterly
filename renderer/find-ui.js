@@ -435,9 +435,13 @@
           query: options.query,
           caseSensitive: options.caseSensitive
         });
+        // R4b（V9）：整本查找会跳过超过 128 MB 的章（文件没动），有跳过才在摘要里如实提示
+        const skippedNote = payload.skippedTooLarge
+          ? `；有 ${payload.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）`
+          : '';
         $('find-summary').textContent = payload.totalMatches
-          ? `整本命中 ${payload.totalMatches} 处，分布在 ${payload.chapterCount} 章（点结果跳过去；跳过去后本章会高亮，F3 / Shift+F3 前后跳）`
-          : `整本没有找到「${options.query}」`;
+          ? `整本命中 ${payload.totalMatches} 处，分布在 ${payload.chapterCount} 章（点结果跳过去；跳过去后本章会高亮，F3 / Shift+F3 前后跳）${skippedNote}`
+          : `整本没有找到「${options.query}」${skippedNote}`;
         renderFindResults(payload);
         return;
       }
@@ -553,6 +557,8 @@
       toast(
         `整本替换完成：${result.chaptersChanged} 章 / ${result.occurrences} 处${
           result.backupDir ? ' · 原文已备份到 _trash（10 秒内可撤销）' : ''
+        }${
+          result.skippedTooLarge ? `；有 ${result.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''
         }`
       );
     } catch (err) {
