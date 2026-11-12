@@ -1,6 +1,7 @@
 // 配置读写：存在 Electron userData 目录，不污染小说文件夹。
 // 纯 Node，可在测试里传入临时目录。
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { writeJsonAtomic, stripBom } = require('./atomic');
@@ -89,6 +90,9 @@ const DEFAULTS = Object.freeze({
   // 校对面板用的词表（v0.8 P0 N6）：作者自己的错别字 / 禁用词 txt，每行一个词，
   // 也可以写「错词 → 建议」。和敏感词表分开两份，互不覆盖；没设置 = ''。
   proofreadWordsPath: '',
+  // 多份校对词表（1.7.0 F3）：绝对路径数组，顺序 = 面板顺序，最多 8 条（清洗时截断）。
+  // 旧配置没有这个键 = []，沿用上面那份单份路径，零迁移；主进程逐份读取留给 F3b。
+  proofreadWordlists: [],
   // 导出时的简繁转换（v0.8 P0 N7）：'' = 不转换（默认）/ 's2t' = 简→繁 / 't2s' = 繁→简。
   // 只作用于导出的副本（TXT / EPUB），原稿与书库一个字节都不改；旧配置没有这个键 = 不转换。
   exportConversion: '',
@@ -219,6 +223,37 @@ function sanitizeLastBook(raw) {
   };
 }
 
+// 多份校对词表的条数上限（1.7.0 F3a）：面板上再多也读不完，超过的截断。
+const WORDLIST_MAX = 8;
+
+// 多份校对词表的路径清洗（1.7.0 F3a）：必须数组、最多 8 条、只留字符串、trim、绝对路径、
+// 路径必须存在、去重（Windows 下大小写与正反斜杠归一后算同一份；保留作者写的原字符串与顺序）。
+// 坏条目逐条丢掉、不抛错——词表被移走不会让应用起不来，日志由调用方决定记不记。
+function sanitizeWordlistPaths(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (out.length >= WORDLIST_MAX) break;
+    if (typeof item !== 'string') continue;
+    const trimmed = item.trim();
+    if (!trimmed || trimmed.length > 1000) continue;
+    if (!path.isAbsolute(trimmed)) continue;
+    let exists = false;
+    try {
+      exists = fsSync.existsSync(trimmed);
+    } catch {
+      exists = false;
+    }
+    if (!exists) continue;
+    const key = process.platform === 'win32' ? trimmed.replace(/\//g, '\\').toLowerCase() : trimmed;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
+
 function sanitize(raw) {
   // S4（审计 S4）：只认 DEFAULTS 里登记过的键——未知键丢弃（以前是原样透传）。
   // 旧配置缺新键不受影响：下面各字段清洗时会从 DEFAULTS 补默认值。
@@ -295,6 +330,10 @@ function sanitize(raw) {
   const proofreadWordsPath =
     typeof cfg.proofreadWordsPath === 'string' ? cfg.proofreadWordsPath.trim() : '';
   cfg.proofreadWordsPath = proofreadWordsPath.length > 1000 ? '' : proofreadWordsPath;
+  // 多份校对词表（1.7.0 F3a）：见 sanitizeWordlistPaths 的口径——数组 / 最多 8 条 / 只留字符串 /
+  // trim / 绝对路径 / 必须存在 / 去重（Windows 大小写与正反斜杠归一）。坏条目逐条丢弃、不抛错。
+  // 旧配置没有这个键 = []，单份 proofreadWordsPath 仍按上面那套旧逻辑，行为不变。
+  cfg.proofreadWordlists = sanitizeWordlistPaths(cfg.proofreadWordlists);
   // 导出简繁转换：只认 '', 's2t', 't2s'；旧配置没有这个键 / 手改坏了都按「不转换」，
   // 不会因为一个脏值让导出变成另一种字形。
   cfg.exportConversion = s2tLib.normalizeMode(cfg.exportConversion);

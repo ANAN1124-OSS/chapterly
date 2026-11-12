@@ -136,6 +136,68 @@ test('配置来源校验：坏 patch / 缺省参数不抛错（只当没有改�
   assert.deepEqual(configGate.filterPathPatch({ editorFont: 'kai' }), { patch: { editorFont: 'kai' }, rejected: [] });
 });
 
+// 1.7.0 F3a：多份校对词表（数组字段）的来源校验——逐项判来源，伪造条目不放行。
+test('多份校对词表来源校验：与当前条目相同或刚选中的放行，伪造条目丢弃并回字段名', () => {
+  const listA = path.join(ROOT, '词表A.txt');
+  const listB = path.join(ROOT, '词表B.txt');
+  const listC = path.join(ROOT, '词表C.txt');
+  const forged = path.join(ROOT, '..', '伪造词表.txt');
+  const current = { proofreadWordlists: [listA, listB] };
+  // 设置界面每次保存都原样回传整张表单：与当前条目相同 → 放行
+  const unchanged = configGate.filterPathPatch({ proofreadWordlists: [listA, listB] }, { current });
+  assert.deepEqual(unchanged.patch, { proofreadWordlists: [listA, listB] });
+  assert.deepEqual(unchanged.rejected, []);
+  // 大小写 / 正反斜杠混用：同一条
+  const sameForm = configGate.filterPathPatch(
+    { proofreadWordlists: [listA.toUpperCase(), listB.replace(/\\/g, '/')] },
+    { current }
+  );
+  assert.deepEqual(sameForm.rejected, []);
+  // 刚在对话框里选中的新路径：追加放行
+  const pickedResult = configGate.filterPathPatch(
+    { proofreadWordlists: [listA, listB, listC] },
+    { current, picked: { proofreadWordlists: [listC] } }
+  );
+  assert.deepEqual(pickedResult.patch, { proofreadWordlists: [listA, listB, listC] });
+  assert.deepEqual(pickedResult.rejected, []);
+  // 逐项判断：伪造条目只丢它自己，其它照旧；字段名回 rejected（不放行整段）
+  const forgedResult = configGate.filterPathPatch(
+    { proofreadWordlists: [listA, forged] },
+    { current, picked: { proofreadWordlists: [listC] } }
+  );
+  assert.deepEqual(forgedResult.patch, { proofreadWordlists: [listA] });
+  assert.deepEqual(forgedResult.rejected, ['proofreadWordlists']);
+  // 全是伪造：整个字段不生效（保留旧值），字段名回 rejected
+  const allForged = configGate.filterPathPatch({ proofreadWordlists: [forged, forged + '2'] }, { current });
+  assert.equal('proofreadWordlists' in allForged.patch, false);
+  assert.deepEqual(allForged.rejected, ['proofreadWordlists']);
+  // 移除一份（剩下的都还在当前列表里）：放行——否则面板删不掉词表
+  const removed = configGate.filterPathPatch({ proofreadWordlists: [listA] }, { current });
+  assert.deepEqual(removed.patch, { proofreadWordlists: [listA] });
+  assert.deepEqual(removed.rejected, []);
+  // 空数组 = 清空：放行
+  assert.deepEqual(configGate.filterPathPatch({ proofreadWordlists: [] }, { current }).patch, {
+    proofreadWordlists: []
+  });
+  // 坏类型（字符串 / 对象 / 数字 / 布尔 / null）一律当来源不明拒绝
+  for (const bad of ['D:\\x.txt', { 0: 'D:\\x.txt' }, 42, true, null]) {
+    const result = configGate.filterPathPatch({ proofreadWordlists: bad }, { current });
+    assert.deepEqual(result.patch, {}, '应当拒绝：' + String(bad));
+    assert.deepEqual(result.rejected, ['proofreadWordlists']);
+  }
+  // 数组里混了非字符串条目：只丢那一条，字段名回 rejected
+  const mixed = configGate.filterPathPatch({ proofreadWordlists: [listA, 123] }, { current });
+  assert.deepEqual(mixed.patch, { proofreadWordlists: [listA] });
+  assert.deepEqual(mixed.rejected, ['proofreadWordlists']);
+  // 别的字段照常透传（数组字段不牵连整份 patch）
+  const withOthers = configGate.filterPathPatch(
+    { proofreadWordlists: [listA, forged], dailyGoal: 3000 },
+    { current }
+  );
+  assert.equal(withOthers.patch.dailyGoal, 3000);
+  assert.deepEqual(withOthers.rejected, ['proofreadWordlists']);
+});
+
 test('路径等价：末尾分隔符 / 正反斜杠 / 大小写都算同一个；空值与坏值不算', () => {
   assert.equal(configGate.samePath(bookRoot, bookRoot + path.sep), true);
   assert.equal(configGate.samePath(bookRoot, bookRoot.replace(/\\/g, '/')), true);
@@ -197,7 +259,7 @@ test('静态闸门：config:set 必须过 filterPathPatch，三个对话框入�
   // C1（审计 S1）：补上 editorCustomFontPath（字体文件也会被主进程整份读给渲染层）
   assert.deepEqual(
     configGate.GUARDED_PATH_FIELDS.slice().sort(),
-    ['booksRoot', 'editorCustomFontPath', 'proofreadWordsPath', 'sensitiveWordsPath'].sort()
+    ['booksRoot', 'editorCustomFontPath', 'proofreadWordsPath', 'proofreadWordlists', 'sensitiveWordsPath'].sort()
   );
   // config:set 里少了这道校验就红（防止以后为了「方便」把它摘掉）
   assert.equal(

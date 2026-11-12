@@ -1,4 +1,4 @@
-// 配置里「指向磁盘」的三项值的来源校验（v0.9 C-2b，C1 安全模型一致性的延伸）——
+// 配置里「指向磁盘」的四项值的来源校验（v0.9 C-2b，C1 安全模型一致性的延伸）——
 // 纯逻辑：不 require electron、不读盘、不写盘，可在 node:test 里直接测。
 //
 // 问题：渲染层没有 fs，所有文件操作都在主进程；但 config:set 能改 booksRoot / 两份词表路径，
@@ -23,6 +23,7 @@ const path = require('node:path');
 const GUARDED_PATH_FIELDS = Object.freeze([
   'booksRoot', // 书架目录：主进程会 mkdir / 列目录 / 建书 / 删书走回收站
   'proofreadWordsPath', // 校对词表：主进程会读这个 txt
+  'proofreadWordlists', // 校对词表（多份，1.7.0 F3a）：主进程会逐份读这些 txt
   'sensitiveWordsPath', // 敏感词表：同上
   'editorCustomFontPath' // 自定义字体：主进程会读它并整份 base64 回给渲染层
 ]);
@@ -52,6 +53,40 @@ function samePath(a, b) {
   return Boolean(left) && left === right;
 }
 
+// 「刚选中」的登记值可能是单个字符串（逐个选）或字符串数组（多选）：统一成数组。
+function pickedPaths(value) {
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim());
+}
+
+// 多份校对词表（1.7.0 F3a）：数组逐项判来源——与当前条目相同（同下标，或本来就在当前列表里，
+// 这样面板移除 / 换序不会被自己的校验挡住），或等于本窗口刚选中的某条路径。
+// 伪造条目丢掉；只要丢过条目就回字段名（不放行整段死字段）；一条都不剩时整个字段不生效（保留旧值）。
+function filterWordlistPatch(value, currentValue, pickedValue) {
+  if (!Array.isArray(value)) return { value: null, rejected: true };
+  const current = Array.isArray(currentValue) ? currentValue : [];
+  const picked = pickedPaths(pickedValue);
+  const out = [];
+  let dropped = false;
+  for (const item of value) {
+    const trimmed = typeof item === 'string' ? item.trim() : '';
+    if (!trimmed) {
+      dropped = true;
+      continue;
+    }
+    const known = current.some((entry) => samePath(trimmed, entry));
+    const justPicked = picked.some((entry) => samePath(trimmed, entry));
+    if (known || justPicked) {
+      out.push(trimmed);
+      continue;
+    }
+    dropped = true;
+  }
+  if (dropped && !out.length && value.length) return { value: null, rejected: true };
+  return { value: out, rejected: dropped };
+}
+
 // 过滤 config:set 的 patch：
 //   patch    —— 渲染层传来的一整份改动（可能带非路径字段）
 //   options.current —— 当前生效配置（main.js 传 getConfig() 的结果，含 booksRoot 覆盖）
@@ -70,6 +105,12 @@ function filterPathPatch(patch, options = {}) {
       continue;
     }
     const value = source[key];
+    if (key === 'proofreadWordlists') {
+      const verdict = filterWordlistPatch(value, current[key], picked[key]);
+      if (verdict.rejected) rejected.push(key); // 来源不明 / 有条目被丢：只回字段名
+      if (verdict.value) result[key] = verdict.value;
+      continue;
+    }
     if (typeof value !== 'string') {
       rejected.push(key);
       continue;

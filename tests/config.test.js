@@ -1155,3 +1155,73 @@ test('配置白名单（S4）：未知键丢弃、只留已知键、旧配置缺
   assert.equal(capped.bookDisplay.b1.editorCustomFontPath, '', '按书字体路径同样限长');
   assert.equal(capped.bookDisplay.b1.editorCustomFontName, '');
 });
+
+// 1.7.0 F3a：多份校对词表（proofreadWordlists）——配置层三条锚点。
+test('多份校对词表配置：旧配置没有该字段 = 空数组，单份路径沿用旧字段', async () => {
+  const dir = await mkTmp();
+  assert.deepEqual((await createConfigStore(dir).get()).proofreadWordlists, [], '默认空数组');
+  // 模拟旧配置：只有单份 proofreadWordsPath，完全没有 proofreadWordlists
+  await fs.writeFile(
+    path.join(dir, 'config.json'),
+    JSON.stringify({ proofreadWordsPath: 'D:\\词表\\旧单份.txt', dailyGoal: 1200 }, null, 2),
+    'utf8'
+  );
+  const cfg = await createConfigStore(dir).get();
+  assert.deepEqual(cfg.proofreadWordlists, [], '旧配置读出来是空数组');
+  assert.equal(cfg.proofreadWordsPath, 'D:\\词表\\旧单份.txt', '单份字段原样沿用，零迁移');
+  assert.equal(cfg.dailyGoal, 1200, '其它字段不受影响');
+  // 旧配置上只改别的字段：两份词表都保持原样
+  const store = createConfigStore(dir);
+  await store.set({ dailyGoal: 1300 });
+  const reopened = await createConfigStore(dir).get();
+  assert.deepEqual(reopened.proofreadWordlists, []);
+  assert.equal(reopened.proofreadWordsPath, 'D:\\词表\\旧单份.txt');
+});
+
+test('多份校对词表清洗：非数组 / 超 8 条 / 相对路径 / 不存在 / 重复都丢弃，写盘同样清洗', async () => {
+  const dir = await mkTmp();
+  const files = [];
+  for (let i = 1; i <= 10; i += 1) {
+    const p = path.join(dir, '词表' + i + '.txt');
+    await fs.writeFile(p, '错词\n', 'utf8');
+    files.push(p);
+  }
+  // 非数组一律当空（不是把单份路径塞进数组）
+  assert.deepEqual(sanitize({ proofreadWordlists: 'D:\\x.txt' }).proofreadWordlists, []);
+  assert.deepEqual(sanitize({ proofreadWordlists: null }).proofreadWordlists, []);
+  assert.deepEqual(sanitize({ proofreadWordlists: 42 }).proofreadWordlists, []);
+  assert.deepEqual(sanitize({ proofreadWordlists: { 0: 'D:\\x.txt' } }).proofreadWordlists, []);
+  // 超 8 条：留前 8 条，顺序不变
+  assert.deepEqual(sanitize({ proofreadWordlists: files }).proofreadWordlists, files.slice(0, 8));
+  // 相对路径 / 不存在 / 非字符串 / 空串：逐条丢掉，其它照留
+  const dirty = [files[0], '词表相对.txt', path.join(dir, '没有这个文件.txt'), 123, '', '   ', null, files[1]];
+  assert.deepEqual(sanitize({ proofreadWordlists: dirty }).proofreadWordlists, [files[0], files[1]]);
+  // 重复：Windows 下大小写与正反斜杠归一后算同一份
+  const dup = [files[0], files[0], files[0].toUpperCase(), files[0].replace(/\\/g, '/')];
+  assert.deepEqual(sanitize({ proofreadWordlists: dup }).proofreadWordlists, [files[0]]);
+  // 保存路径同样清洗（set 走同一个 sanitize）
+  const store = createConfigStore(dir);
+  await store.set({ proofreadWordlists: dirty });
+  assert.deepEqual((await createConfigStore(dir).get()).proofreadWordlists, [files[0], files[1]]);
+  const raw = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.deepEqual(raw.proofreadWordlists, [files[0], files[1]], '落盘的就是清洗后的两条');
+  // 空数组 = 清空，落盘为空数组
+  await store.set({ proofreadWordlists: [] });
+  assert.deepEqual((await createConfigStore(dir).get()).proofreadWordlists, []);
+});
+
+test('多份校对词表清洗：合法数组保留顺序与写法，8 条正好不算超限', async () => {
+  const dir = await mkTmp();
+  const files = [];
+  for (let i = 1; i <= 8; i += 1) {
+    const p = path.join(dir, '顺序' + i + '.txt');
+    await fs.writeFile(p, '占位\n', 'utf8');
+    files.push(p);
+  }
+  const shuffled = [files[2], files[0], files[7], files[1], files[6], files[3], files[5], files[4]];
+  assert.deepEqual(sanitize({ proofreadWordlists: shuffled }).proofreadWordlists, shuffled, '顺序原样保留');
+  const store = createConfigStore(dir);
+  await store.set({ proofreadWordlists: shuffled });
+  assert.deepEqual((await createConfigStore(dir).get()).proofreadWordlists, shuffled, '写盘读回顺序不变');
+});
+
