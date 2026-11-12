@@ -1462,3 +1462,38 @@ test('替换备份还原：还原 1 章只重算这 1 章（注入 reader 计数
   assert.equal(after.chapters.find((chapter) => chapter.file === firstFile).chars, 4);
 });
 
+
+test('整本操作：一章 129 MB 超限章 + 两章正常 → 查找 / 替换跳过超限章、skippedTooLarge=1、正常章结果逐字不变', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '整本超限');
+  await storage.createChapter(bookPath, 1, '第二章');
+  await storage.createChapter(bookPath, 2, '第三章');
+  const meta = await storage.readBookMeta(bookPath);
+  await storage.saveChapterText(bookPath, meta.chapters[0].file, '阿明走进灯下。\n阿明抬头。');
+  await storage.saveChapterText(bookPath, meta.chapters[1].file, '阿明转身离开。');
+  await storage.saveChapterText(bookPath, meta.chapters[2].file, '这里没有那个人。');
+
+  // 对照组：三章都正常读完
+  const control = await storage.searchBook(bookPath, { query: '阿明' });
+  assert.equal(control.skippedTooLarge, 0);
+  assert.equal(control.totalMatches, 3);
+
+  // 把第二章换成 129 MB 稀疏文件：只改大小，不真写 128 MB
+  const handle = await fs.open(path.join(bookPath, meta.chapters[1].file), 'r+');
+  await handle.truncate(storage.MAX_CHAPTER_READ_BYTES + 1024);
+  await handle.close();
+
+  const res = await storage.searchBook(bookPath, { query: '阿明' });
+  assert.equal(res.skippedTooLarge, 1, '超限章单独累计，不能被当成缺章');
+  assert.equal(res.totalMatches, control.totalMatches - 1);
+  assert.deepEqual(res.results, control.results.filter((row) => row.name !== '第二章'));
+
+  // 整本替换同口径：跳过超限章、其余章结果逐字不变
+  const replaced = await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' });
+  assert.equal(replaced.skippedTooLarge, 1);
+  assert.equal(replaced.chaptersChanged, 1);
+  assert.equal(replaced.occurrences, 2);
+  const ch1 = await storage.loadChapterText(bookPath, meta.chapters[0].file);
+  assert.equal(ch1.text, '小明走进灯下。\n小明抬头。');
+});
+

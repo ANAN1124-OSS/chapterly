@@ -198,7 +198,7 @@ test('convertTextsInPlace / releaseTexts：就地转换、空模式零拷贝、�
 test('静态闸门：整本查找 / 替换 / 预览 / 整理四处都按批读，不再一次读全书', () => {
   const source = readSource('core/storage.js');
   assert.match(source, /const CHAPTER_BATCH_SIZE = 32;/, '批大小 32 是 C1 的取值');
-  assert.match(source, /async function forEachChapterBatch\(bookPath, chapters, onBatch\)/);
+  assert.match(source, /async function forEachChapterBatch\(bookPath, chapters, onBatch, readStats\)/, 'R4：多带一个只读累计器，超限章跳过数才能单独报');
   const batchCalls = source.match(/forEachChapterBatch\(bookPath, meta\.chapters/g) || [];
   assert.equal(batchCalls.length, 4, '查找 / 替换 / 预览 / 整理四处都要走分批读');
   assert.doesNotMatch(

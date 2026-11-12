@@ -1190,7 +1190,7 @@ async function loadChapterThroughContext(bookPath, chapter, context) {
   return { text: entry.text, mtimeMs: stat.mtimeMs, size: stat.size };
 }
 
-async function loadTextOrSkip(bookPath, chapter) {
+async function loadTextOrSkip(bookPath, chapter, readStats) {
   try {
     const context = chapterReadContexts.get(previewCacheLib.bookKey(bookPath));
     if (context) {
@@ -1200,6 +1200,12 @@ async function loadTextOrSkip(bookPath, chapter) {
     return await loadChapterText(bookPath, chapter.file);
   } catch (err) {
     if (err.code === 'CHAPTER_MISSING') return null; // 缺文件的章节直接跳过，别让查找整个失败
+    // R4：超限章与缺章同口径跳过（不读盘、不打断整本操作），但单独累计，
+    // 免得结果里把它当成「缺失」误报给作者
+    if (err.code === 'CHAPTER_TOO_LARGE') {
+      if (readStats) readStats.skippedTooLarge += 1;
+      return null;
+    }
     throw err;
   }
 }
@@ -1210,11 +1216,11 @@ async function loadTextOrSkip(bookPath, chapter) {
 // 缺文件的章仍返回 null（loadTextOrSkip 语义不变）。读取抛错照旧整本失败；
 // 对整本替换 / 整理来说，此时**前面的批次可能已经写盘**——与「写入中途失败」同一套
 // batchFailure 口径（错误里如实报「已经改了几章 + 备份目录」）。
-async function forEachChapterBatch(bookPath, chapters, onBatch) {
+async function forEachChapterBatch(bookPath, chapters, onBatch, readStats) {
   for (let start = 0; start < chapters.length; start += CHAPTER_BATCH_SIZE) {
     const batch = chapters.slice(start, start + CHAPTER_BATCH_SIZE);
     const texts = await mapLimit(batch, CHAPTER_READ_CONCURRENCY, (chapter) =>
-      loadTextOrSkip(bookPath, chapter)
+      loadTextOrSkip(bookPath, chapter, readStats)
     );
     await onBatch(texts, start);
   }
@@ -1228,6 +1234,7 @@ async function searchBook(bookPath, options = {}) {
   const meta = await readBookMeta(bookPath);
   const results = [];
   let totalMatches = 0;
+  const readStats = { skippedTooLarge: 0 };
   // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行），本批处理完即释放，不再整本常驻
   // C2（审计 #2 / P2）：预览阶段顺手把读到的正文记进快照，紧接着的执行（整本替换）直接复用
   await withPreviewSnapshot(bookPath, () =>
@@ -1251,9 +1258,9 @@ async function searchBook(bookPath, options = {}) {
           }))
         });
       }
-    })
+    }, readStats)
   );
-  return { query, caseSensitive, totalMatches, chapterCount: results.length, results };
+  return { query, caseSensitive, totalMatches, chapterCount: results.length, results, skippedTooLarge: readStats.skippedTooLarge };
 }
 
 // 全书替换：逐章字面量替换并写盘；写之前把原文件备份到书内 _trash/替换备份-时间戳/。
@@ -1270,6 +1277,7 @@ async function replaceInBook(bookPath, options = {}) {
   let backupDir = null;
   let chaptersChanged = 0;
   let occurrences = 0;
+  const readStats = { skippedTooLarge: 0 };
   let backupCreated = false;
   try {
     // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行）；写盘仍然逐章串行、按书目顺序，
@@ -1295,7 +1303,7 @@ async function replaceInBook(bookPath, options = {}) {
           chaptersChanged += 1;
           occurrences += res.count;
         }
-      })
+      }, readStats)
     );
     if (chaptersChanged) await writeBookMeta(bookPath, meta);
   } catch (err) {
@@ -1314,7 +1322,8 @@ async function replaceInBook(bookPath, options = {}) {
   return {
     chaptersChanged,
     occurrences,
-    backupDir: backupCreated ? backupDir : null
+    backupDir: backupCreated ? backupDir : null,
+    skippedTooLarge: readStats.skippedTooLarge
   };
 }
 
@@ -1346,6 +1355,7 @@ async function previewFormatBook(bookPath, options = {}) {
   const meta = await readBookMeta(bookPath);
   const stats = emptyFormatStats();
   const changed = [];
+  const readStats = { skippedTooLarge: 0 };
   // C1（审计 #1 / P1）：预览也是按批读（只读不写），结果仍按书目顺序汇总
   // C2（审计 #2 / P2）：预检查读到的正文连同 mtime / size 记进快照，执行（整本整理）直接复用
   await withPreviewSnapshot(bookPath, () =>
@@ -1360,11 +1370,12 @@ async function previewFormatBook(bookPath, options = {}) {
         addFormatStats(stats, res.stats);
         changed.push({ index, file: chapter.file, name: chapter.name || '' });
       }
-    })
+    }, readStats)
   );
   return {
     bookTitle: meta.title,
     chapterCount: meta.chapters.length,
+    skippedTooLarge: readStats.skippedTooLarge,
     chaptersChanged: changed.length,
     changed: changed.slice(0, 12),
     changedTruncated: changed.length > 12,
@@ -1381,6 +1392,7 @@ async function formatBook(bookPath, options = {}, onProgress) {
   const changed = [];
   let backupDir = null;
   let backupCreated = false;
+  const readStats = { skippedTooLarge: 0 };
   try {
     // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行）；写盘仍然逐章串行、按书目顺序。
     // 进度回调仍在写盘阶段按章上报，done 从 1 连续走到 total（语义不变，只是跟着批次前进）。
@@ -1412,7 +1424,7 @@ async function formatBook(bookPath, options = {}, onProgress) {
           addFormatStats(stats, res.stats);
           changed.push({ index, file: chapter.file, name: chapter.name || '' });
         }
-      })
+      }, readStats)
     );
     if (changed.length) await writeBookMeta(bookPath, meta);
   } catch (err) {
@@ -1431,6 +1443,7 @@ async function formatBook(bookPath, options = {}, onProgress) {
   return {
     bookTitle: meta.title,
     chapterCount: total,
+    skippedTooLarge: readStats.skippedTooLarge,
     chaptersChanged: changed.length,
     backupDir,
     changed: changed.slice(0, 12),
