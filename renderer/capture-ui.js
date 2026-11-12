@@ -251,7 +251,10 @@
       const listEl = $('capture-queue-list');
       if (listEl) {
         listEl.innerHTML = '';
-        for (const record of records) listEl.appendChild(recordRow(record));
+        // 整队列先离线拼进 DocumentFragment，最后一次性挂上：长队列不再逐条碰 live DOM。
+        const frag = document.createDocumentFragment();
+        for (const record of records) frag.appendChild(recordRow(record));
+        listEl.appendChild(frag);
       }
 
       const emptyEl = $('capture-queue-empty');

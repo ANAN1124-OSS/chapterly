@@ -50,7 +50,15 @@ function makeEl(tag = 'div', id = '') {
     get className() { return [...classes].join(' '); },
     set className(v) { classes.clear(); String(v || '').split(/\s+/).filter(Boolean).forEach((x) => classes.add(x)); },
     append(...n) { n.forEach((x) => el.appendChild(x)); },
-    appendChild(child) { child.parentNode = el; el.children.push(child); return child; },
+    appendChild(child) {
+      // DocumentFragment 挂载：把碎片里的节点搬进来（与真实 DOM 的可视结果一致）
+      if (child && child.isFragment) {
+        for (const node of child.children) { node.parentNode = el; el.children.push(node); }
+        child.children.length = 0;
+        return child;
+      }
+      child.parentNode = el; el.children.push(child); return child;
+    },
     addEventListener(type, fn) { listeners.push({ type, fn }); },
     focus() { el._focus += 1; },
     setSelectionRange(start, end) { el.selectionStart = start; el.selectionEnd = end; },
@@ -73,6 +81,11 @@ function makeDocument() {
   let lookups = 0;
   const doc = {
     createElement: (tag) => makeEl(tag),
+    createDocumentFragment: () => {
+      const fragment = makeEl('fragment');
+      fragment.isFragment = true;
+      return fragment;
+    },
     execCommand: null,
     querySelectorAll(selector) {
       if (selector !== '#fragments-list .fragment-item') return [];
@@ -771,4 +784,12 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFragmentsU
   assert.deepEqual(Object.keys(win.CWFragmentsUi).sort(), ['REQUIRED_HOST', 'create']);
   assert.equal(win.CWFragmentsUi.REQUIRED_HOST.length, 8);
   assert.equal(win.CWFindBookmarkUi, undefined);
+});
+
+// V35：整页碎片先离线拼进 DocumentFragment，再一次性挂上；不许再逐条 appendChild 到 live 列表。
+test('长列表渲染：碎片列表先拼 DocumentFragment 再一次性挂载（V35）', () => {
+  assert.match(moduleSrc, /document\.createDocumentFragment\(\)/, '碎片渲染应先离线拼装');
+  assert.match(moduleSrc, /list\.appendChild\(frag\)/, '碎片列表应当一次性挂载');
+  assert.doesNotMatch(moduleSrc, /list\.appendChild\(item\)/, '不许逐条 appendChild 到 live 容器');
+  assert.doesNotMatch(moduleSrc, /list\.appendChild\(day\)/, '分组小标题也要拼进碎片');
 });

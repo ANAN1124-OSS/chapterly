@@ -215,6 +215,20 @@
     }
   }
 
+  // 真实语音没有反应（没装语音 / 音频设备不可用）时，别一直显示「朗读中」。
+  // 暂停期间到点的 watchdog 只会自己退出（status 不是 playing），所以「继续」时必须重新计时：
+  // 否则暂停超过 12 秒再点继续，语音真没响应就会永远停在「正在朗读」。
+  function armTtsWatchdog(token) {
+    clearTtsWatchdog();
+    if (engine !== realSpeechEngine) return;
+    ttsWatchdog = setTimeout(() => {
+      if (token !== ttsToken || state.tts.status !== 'playing') return;
+      const synth = window.speechSynthesis;
+      if (synth && (synth.speaking || synth.pending || synth.paused)) return;
+      failTts('系统语音没有响应（可能没有安装语音或音频设备不可用）');
+    }, 12000);
+  }
+
   function stopTtsEngine() {
     clearTtsWatchdog();
     ttsToken += 1;
@@ -335,15 +349,7 @@
       failTts(err.message || '系统语音不可用');
       return;
     }
-    if (engine === realSpeechEngine) {
-      // 真实语音没有反应（没装语音 / 音频设备不可用）时，别一直显示「朗读中」
-      ttsWatchdog = setTimeout(() => {
-        if (token !== ttsToken || state.tts.status !== 'playing') return;
-        const synth = window.speechSynthesis;
-        if (synth && (synth.speaking || synth.pending || synth.paused)) return;
-        failTts('系统语音没有响应（可能没有安装语音或音频设备不可用）');
-      }, 12000);
-    }
+    armTtsWatchdog(token);
   }
 
   function advanceTts(token) {
@@ -377,6 +383,8 @@
       } catch { /* 当已继续 */ }
       state.tts.status = 'playing';
       renderTtsBar();
+      // V31：恢复时重新挂 watchdog —— 暂停期间旧的那颗已经到点退出，不重挂就再也兜不住无响应。
+      armTtsWatchdog(ttsToken);
       return { ok: true, action: 'resume' };
     }
     if (!state.tts.chunks.length) return { ok: false };

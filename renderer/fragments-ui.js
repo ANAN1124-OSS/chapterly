@@ -199,6 +199,8 @@
     const list = $('fragments-list');
     const summary = $('fragments-summary');
     list.innerHTML = '';
+    // 整页碎片先离线拼进 DocumentFragment，最后一次性挂上：长列表不再逐条碰 live DOM。
+    const frag = document.createDocumentFragment();
     if (!data.fragments.length) {
       const empty = document.createElement('div');
       empty.className = 'fragment-empty';
@@ -219,7 +221,7 @@
         const day = document.createElement('div');
         day.className = 'fragment-day';
         day.textContent = fragmentDayLabel(dayKey);
-        list.appendChild(day);
+        frag.appendChild(day);
         lastDay = dayKey;
       }
       const item = document.createElement('button');
@@ -247,8 +249,9 @@
       });
       item.addEventListener('dragstart', (event) => handleFragmentDragStart(event, fragment.name));
       item.addEventListener('dragend', handleFragmentDragEnd);
-      list.appendChild(item);
+      frag.appendChild(item);
     }
+    list.appendChild(frag);
   }
 
   async function refreshFragments() {

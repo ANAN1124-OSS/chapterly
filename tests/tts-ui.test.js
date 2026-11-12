@@ -432,3 +432,53 @@ test('静态闸门：index.html 在 renderer.js 之前加载 tts-ui.js，且模�
   // 模块顶层（2 空格缩进的语句）不许直接查 DOM（Node 里 require 成功已经证明「加载时不碰 DOM」）
   assert.ok(!/^  \$\(/m.test(moduleSrc), '模块顶层不许直接查 DOM');
 });
+
+// V31：暂停期间到点的 watchdog 只会自己退出；「继续」时如果不重新计时，语音真没响应就会永远停在「正在朗读」。
+// 用真实引擎适配 + 假 speechSynthesis / 注入计时器：能数出 watchdog 挂了几颗、几秒。
+test('watchdog：暂停超时后再「继续」要重新挂计时器，恢复无响应时能报错（V31）', async () => {
+  const realWindow = globalThis.window;
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const timers = [];
+  const synth = {
+    speaking: false,
+    pending: false,
+    paused: false,
+    getVoices: () => [{ name: '测试语音', lang: 'zh-CN', voiceURI: 'v1' }],
+    speak() {}, // 永不回调 onstart / onend：模拟语音没有任何响应
+    pause() { synth.paused = true; },
+    resume() { synth.paused = false; },
+    cancel() { synth.paused = false; }
+  };
+  class FakeUtterance {
+    constructor(text) { this.text = text; }
+  }
+  globalThis.window = { speechSynthesis: synth, SpeechSynthesisUtterance: FakeUtterance };
+  globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+  globalThis.clearTimeout = (id) => { if (timers[id - 1]) timers[id - 1].canceled = true; };
+  try {
+    const { host, state } = makeHost();
+    const tts = ttsUi.create(host); // 不换假引擎：走真实引擎适配，watchdog 才会挂
+    await tts.openTtsBar();
+    assert.equal(timers.length, 1, '开始朗读要挂一颗 watchdog');
+    assert.equal(timers[0].ms, 12000, 'watchdog 是 12 秒');
+    assert.equal(state.tts.status, 'playing');
+
+    assert.deepEqual(tts.toggleTtsPlay(), { ok: true, action: 'pause' });
+    timers[0].fn(); // 暂停超过 12 秒：watchdog 到点，看到不是 playing 只退出
+    assert.equal(state.tts.status, 'paused', '暂停期间 watchdog 到点不许改坏状态');
+
+    assert.deepEqual(tts.toggleTtsPlay(), { ok: true, action: 'resume' });
+    assert.equal(timers.length, 2, '继续时要从头重新挂 watchdog（旧的那颗已经到点退出）');
+    assert.equal(timers[1].ms, 12000);
+
+    timers[1].fn(); // 恢复后语音仍没响应（speaking / pending 都是 false）
+    assert.equal(state.tts.status, 'error', '恢复后无响应要落回 error，不能永远停在「正在朗读」');
+    assert.match(state.tts.error, /没有响应/);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+    if (realWindow === undefined) delete globalThis.window;
+    else globalThis.window = realWindow;
+  }
+});

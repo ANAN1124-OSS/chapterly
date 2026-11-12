@@ -68,6 +68,12 @@ function makeEl(tag = 'div') {
       }
     },
     appendChild(child) {
+      // DocumentFragment 挂载：把碎片里的节点搬进来（与真实 DOM 的可视结果一致）
+      if (child && child.isFragment) {
+        for (const node of child.children) el.children.push(node);
+        child.children.length = 0;
+        return child;
+      }
       el.children.push(child);
       return child;
     },
@@ -391,7 +397,14 @@ test.after(() => {
 });
 
 function withFakeDocument(fn) {
-  global.document = { createElement: (tag) => makeEl(tag) };
+  global.document = {
+    createElement: (tag) => makeEl(tag),
+    createDocumentFragment: () => {
+      const fragment = makeEl('fragment');
+      fragment.isFragment = true;
+      return fragment;
+    }
+  };
   return Promise.resolve()
     .then(fn)
     .finally(() => {
@@ -1364,4 +1377,11 @@ test('静态闸门：模块不碰 Electron / 文件系统 / localStorage，只�
   ]) {
     assert.ok(moduleSrc.includes(apiName), `模块缺白名单 IPC ${apiName}`);
   }
+});
+
+// V35：整队列先离线拼进 DocumentFragment，再一次性挂上；不许再逐条 appendChild 到 live 列表。
+test('长列表渲染：队列先拼 DocumentFragment 再一次性挂载（V35）', () => {
+  assert.match(moduleSrc, /document\.createDocumentFragment\(\)/, '队列渲染应先离线拼装');
+  assert.match(moduleSrc, /listEl\.appendChild\(frag\)/, '队列应当一次性挂载');
+  assert.doesNotMatch(moduleSrc, /for \(const record of records\) listEl\.appendChild/, '不许逐条 appendChild 到 live 容器');
 });

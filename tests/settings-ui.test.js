@@ -183,9 +183,24 @@ function build(options = {}) {
     async setConfig(patch) { calls.setConfig.push(patch); if (options.saveError) throw new Error(options.saveError); return { ...state.globalConfig, ...patch }; },
     async setBookDisplay(bookId, patch) { calls.setBookDisplay.push([bookId, patch]); if (options.saveError) throw new Error(options.saveError); return patch; },
     async resetBookDisplay(bookId) { calls.resetBookDisplay.push(bookId); if (options.resetError) throw new Error(options.resetError); return {}; },
-    async sensitiveWordsInfo() { calls.sensitiveWordsInfo += 1; if (options.wordInfoError) throw new Error(options.wordInfoError); return options.sensitiveInfo === undefined ? { ok: true, name: '敏感词.txt', count: 3 } : options.sensitiveInfo; },
-    async proofreadWordsInfo() { calls.proofreadWordsInfo += 1; if (options.wordInfoError) throw new Error(options.wordInfoError); return options.proofreadInfo === undefined ? { ok: true, name: '校对.txt', count: 4 } : options.proofreadInfo; },
-    async logInfo() { calls.logInfo += 1; if (options.logError) throw new Error(options.logError); return options.logResult === undefined ? { files: [{ bytes: 2048 }, { bytes: 1024 }] } : options.logResult; },
+    async sensitiveWordsInfo() {
+      calls.sensitiveWordsInfo += 1;
+      if (options.infoGate) await options.infoGate;
+      if (options.wordInfoError) throw new Error(options.wordInfoError);
+      return options.sensitiveInfo === undefined ? { ok: true, name: '敏感词.txt', count: 3 } : options.sensitiveInfo;
+    },
+    async proofreadWordsInfo() {
+      calls.proofreadWordsInfo += 1;
+      if (options.infoGate) await options.infoGate;
+      if (options.wordInfoError) throw new Error(options.wordInfoError);
+      return options.proofreadInfo === undefined ? { ok: true, name: '校对.txt', count: 4 } : options.proofreadInfo;
+    },
+    async logInfo() {
+      calls.logInfo += 1;
+      if (options.infoGate) await options.infoGate;
+      if (options.logError) throw new Error(options.logError);
+      return options.logResult === undefined ? { files: [{ bytes: 2048 }, { bytes: 1024 }] } : options.logResult;
+    },
     async checkUpdate() { calls.checkUpdate += 1; if (options.updateError) throw new Error(options.updateError); return options.updateResult || { status: 'latest', currentVersion: '0.10.0' }; },
     async openUpdateDownload() { calls.openUpdateDownload += 1; return options.downloadResult === undefined ? { opened: true } : options.downloadResult; },
     async pickFolder() { calls.pickFolder += 1; return options.folder === undefined ? '/新书库' : options.folder; },
@@ -1046,4 +1061,26 @@ test('结构闸门：头注释列出的 host 成员与代码实际校验一致�
   const codeKeys = [...codeMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
   assert.equal(codeKeys.length, codeKeys.filter((k) => k).length);
   assert.deepEqual([...commentKeys].sort(), [...codeKeys].sort(), '头注释 display 成员要和实际校验逐个对上（缺一即红）');
+});
+
+// V34：设置面板打开时三份台账（词表 / 校对词表 / 日志目录）互不依赖——要并发发起，不许一个等一个。
+test('打开设置：三份台账读取并发发起（不串行等）', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  // 词表 / 校对词表只有在「已保存路径」存在时才会去读 IPC（没路径只在本地渲染「未设置」）
+  const ctx = build({
+    infoGate: gate,
+    config: { booksRoot: '/书库', editorFont: 'serif', sensitiveWordsPath: '/书库/敏感词.txt', proofreadWordsPath: '/书库/校对.txt' }
+  });
+  const opening = ctx.ui.openSettings({ scope: 'global' });
+  for (let i = 0; i < 3; i += 1) await flush();
+  assert.equal(ctx.calls.sensitiveWordsInfo, 1, '打开设置应先发起敏感词表读取');
+  assert.equal(ctx.calls.proofreadWordsInfo, 1, '校对词表读取要同时发起（不能等敏感词表回来）');
+  assert.equal(ctx.calls.logInfo, 1, '日志目录读取要同时发起（不能等前两份回来）');
+  release();
+  await opening;
+  // 渲染结果与返回值不变：三份状态都落到 state，日志仍按条数渲染
+  assert.equal(ctx.state.sensitiveWordsInfo.ok, true);
+  assert.equal(ctx.state.proofreadWordsInfo.ok, true);
+  assert.equal(ctx.state.logInfo.files.length, 2);
 });

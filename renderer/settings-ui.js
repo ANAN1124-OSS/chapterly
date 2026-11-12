@@ -763,11 +763,15 @@
     // 入口指定了分区（U-D4 的码字日历）时立刻滚到那里 —— 放在异步台账读取之前，
     // 弹层一出现就已经在日历上，不会先停在顶部再跳一下。普通打开没有 section，一个字都不动。
     if (options && options.section) revealSettingsSection(options.section);
-    // 全局设置里顺手读一次词表状态（只读；写作页的按书设置里不显示这一组）
-    if (state.settingsScope === 'global') await refreshSensitiveSettingsInfo();
-    if (state.settingsScope === 'global') await refreshProofreadSettingsInfo();
-    // 诊断日志也只在全局设置里显示：顺手读一次日志目录（只读，不写任何文件）
-    if (state.settingsScope === 'global') await refreshLogInfo();
+    // 全局设置里顺手读一次三份台账（词表 / 校对词表 / 日志目录，都只读；按书设置里不显示这几组）。
+    // 三者互不依赖，一次并发发起，省掉两趟串行 IPC；各自的返回值、状态字段与分区渲染都不变。
+    if (state.settingsScope === 'global') {
+      await Promise.all([
+        refreshSensitiveSettingsInfo(),
+        refreshProofreadSettingsInfo(),
+        refreshLogInfo()
+      ]);
+    }
     // 检查更新：只显示当前版本和上次检查结果（不自动联网；点按钮才检查）
     if (state.settingsScope === 'global') renderUpdateSettings();
   }
