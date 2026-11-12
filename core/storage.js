@@ -337,18 +337,33 @@ function mergeCharsCache(freshMeta, cachedChapters) {
 // 老书首次扫描要读 1000 章正文，串行在机械盘 / 杀软下要到秒级；8 路既快又不会把盘打满。
 const CHAPTER_BACKFILL_CONCURRENCY = 8;
 
+// 1.6.1 R3a：回填默认 reader 先过 128 MB 闸门（与 loadChapterText 同一条口径）。
+// 书目里缺 chars 缓存的章被外部换成超大文件时，绝不能整份读进主进程内存；超限章返回 null
+// 让调用方跳过 —— chars 保持未缓存、不写缓存、不抛错（bookStats 因此不把整本书标 corrupt）。
+async function readChapterTextForCount(bookPath, chapter) {
+  const p = assertChapterFile(bookPath, chapter.file);
+  const stat = await fs.stat(p);
+  const tooLarge = readSizeProblem(stat.size, {
+    code: 'CHAPTER_TOO_LARGE',
+    label: `章节文件「${chapter.file}」`,
+    tail: '扫描回填没有读进内存，跳过该章'
+  });
+  if (tooLarge) return null;
+  return fs.readFile(p, 'utf8');
+}
+
 // 把「缺 chars 缓存」的章节正文并发读出来算字数，就地写回 chapter.chars。
 // readText 可注入（单测用它数并发峰值，不测墙钟）；ENOENT（章节记录还在、文件被删）跳过不抛。
 async function backfillChapterChars(bookPath, chapters, options = {}) {
   const settings = options && typeof options === 'object' ? options : {};
-  const readText = settings.readText || ((targetPath, chapter) =>
-    fs.readFile(assertChapterFile(targetPath, chapter.file), 'utf8'));
+  const readText = settings.readText || readChapterTextForCount;
   const concurrency = settings.concurrency === undefined ? CHAPTER_BACKFILL_CONCURRENCY : settings.concurrency;
   let changed = false;
   await mapLimit(Array.isArray(chapters) ? chapters : [], concurrency, async (chapter) => {
     if (!chapter || Number.isFinite(chapter.chars)) return;
     try {
       const text = await readText(bookPath, chapter);
+      if (text === null) return; // 超限章：不读、不算、不写缓存（有其它章成功仍会写）
       chapter.chars = chaptersLib.countChars(stripBom(text));
       changed = true;
     } catch (err) {

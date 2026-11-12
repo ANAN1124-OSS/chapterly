@@ -1230,6 +1230,111 @@ test('书架扫描：缺字数按 8 路并发回填（注入 reader 计数，不
   assert.equal(untouched, 0);
 });
 
+// ---------- 1.6.1 R3a：字数回填 128 MB 闸门 ----------
+// 书架扫描回填以前是裸 fs.readFile：书目里缺 chars 缓存的章被外部程序换成 129 MB 文件
+// （误放的视频 / 日志 / 数据库导出）时会整份读进主进程内存，异常还会把整本书标成 corrupt。
+// 现在与 loadChapterText 同口径：先 stat + readSizeProblem(128 MB)，超限章跳过不读、不写缓存。
+
+// 造「老书」书目：把所有章的字数缓存抹掉（模拟旧版本写的 书目.json）
+async function stripCharsCache(bookPath) {
+  const meta = await storage.readBookMeta(bookPath);
+  const legacy = {
+    ...meta,
+    chapters: meta.chapters.map(({ id, file, name }) => ({ id, file, name }))
+  };
+  await fs.writeFile(path.join(bookPath, '书目.json'), JSON.stringify(legacy), 'utf8');
+  return legacy;
+}
+
+// 稀疏文件：只改大小，不真写 128 MB
+async function makeSparseHuge(filePath) {
+  const handle = await fs.open(filePath, 'r+');
+  try {
+    await handle.truncate(storage.MAX_CHAPTER_READ_BYTES + 1024);
+  } finally {
+    await handle.close();
+  }
+}
+
+// 读盘计数器：记录每一次真 readFile；超限章一旦被读就直接失败（不真分配 129 MB）
+function countReadFileFor(hugePath) {
+  const realReadFile = fs.readFile;
+  const paths = [];
+  fs.readFile = async (...args) => {
+    const target = String(args[0]);
+    paths.push(target);
+    if (target === hugePath) throw new Error('超限章节不许走进 readFile');
+    return realReadFile(...args);
+  };
+  return {
+    paths,
+    restore() {
+      fs.readFile = realReadFile;
+    },
+    hugeReads: () => paths.filter((target) => target === hugePath).length
+  };
+}
+
+test('书架扫描：129 MB 章缺字数缓存 → 回填跳过不读盘、书照常列出、总字数不含该章（稀疏文件）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '超限章回填');
+  const file = (await storage.readBookMeta(bookPath)).chapters[0].file;
+  const hugePath = path.join(bookPath, file);
+  await makeSparseHuge(hugePath);
+  await stripCharsCache(bookPath);
+
+  const counter = countReadFileFor(hugePath);
+  let books;
+  try {
+    books = await storage.listBooks(root);
+  } finally {
+    counter.restore();
+  }
+
+  assert.equal(counter.hugeReads(), 0, '超限章一次都不许 readFile（不许进内存）');
+  assert.equal(books.length, 1, '书照常列出，不能因为超限章整本消失');
+  assert.equal(books[0].status, 'ok', '超限章不能把整本书标 corrupt');
+  assert.equal(books[0].totalChars, 0, '没算出来的字数不进 totalChars');
+  const onDisk = JSON.parse(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'));
+  assert.equal(Number.isFinite(onDisk.chapters[0].chars), false, '超限章不写字数缓存');
+});
+
+test('书架扫描：1 正常章 + 1 超限章 → 只回填正常章、超限章字数保持缺失且不写缓存', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '混合章回填');
+  const normalText = '正常章的正文六个字';
+  await storage.createChapterWithText(bookPath, { insertIndex: 1, name: '正常章', text: normalText });
+  const meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapters.length, 2);
+  const hugeFile = meta.chapters[0].file;
+  const normalFile = meta.chapters[1].file;
+  const hugePath = path.join(bookPath, hugeFile);
+  await makeSparseHuge(hugePath);
+  await stripCharsCache(bookPath);
+
+  const counter = countReadFileFor(hugePath);
+  let books;
+  try {
+    books = await storage.listBooks(root);
+  } finally {
+    counter.restore();
+  }
+
+  assert.equal(counter.hugeReads(), 0, '超限章一次都不许 readFile');
+  assert.equal(books.length, 1);
+  assert.equal(books[0].status, 'ok', '超限章不能把整本书标 corrupt');
+  const readChapterFiles = counter.paths.filter((target) => target.endsWith('.txt'));
+  assert.deepEqual(readChapterFiles, [path.join(bookPath, normalFile)], '只读正常章，一章一次');
+
+  const onDisk = JSON.parse(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'));
+  const hugeOnDisk = onDisk.chapters.find((chapter) => chapter.file === hugeFile);
+  const normalOnDisk = onDisk.chapters.find((chapter) => chapter.file === normalFile);
+  assert.equal(Number.isFinite(hugeOnDisk.chars), false, '超限章字数保持缺失，不许写缓存');
+  assert.ok(Number.isFinite(normalOnDisk.chars), '正常章要回填字数缓存');
+  assert.ok(normalOnDisk.chars > 0);
+  assert.equal(books[0].totalChars, normalOnDisk.chars, '总字数只算正常章');
+});
+
 test('显式保存仍更新 updatedAt：改章节状态 / 改名会写，扫描回填不写', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '保存测试');
