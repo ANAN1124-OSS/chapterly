@@ -1,0 +1,56 @@
+name: verify
+
+# 章回 / Chapterly 的最小验证 CI（1.7.0 G1b）。
+# 应用是 Windows 桌面工具：单测里含 Windows 路径 / GBK / UNC 语义，ubuntu 跑会假红，所以只挂 windows-latest。
+# 只做三件事：全量语法检查、单测、无障碍静态门禁。E2E 要起 Electron 真窗口，不进 CI（只留本地脚本）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+          run_install: false
+
+      - name: 安装依赖（以锁文件为准）
+        run: pnpm install --frozen-lockfile
+        env:
+          # 单测与静态门禁都不需要 Electron 二进制，跳过下载省掉 100 MB+ 与镜像不确定性
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      - name: 全量语法检查（node --check）
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=0
+          while IFS= read -r f; do
+            node --check "$f"
+            count=$((count + 1))
+          done < <(git ls-files '*.js')
+          echo "node --check 通过：$count 个文件"
+
+      - name: 单测
+        run: npm test
+
+      - name: 无障碍静态门禁
+        run: node scripts/a11y-gate.js --static
