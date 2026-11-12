@@ -115,10 +115,10 @@ test('测试钩子模块：Node 里能 require、导出 create，create() 不碰
   assert.strictEqual(typeof hooks.handleCloseRequest, 'function');
 });
 
-test('测试钩子模块：拆分前后钩子名称与数量不变（506 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3）', () => {
+test('测试钩子模块：拆分前后钩子名称与数量不变（506 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1）', () => {
   const hooks = hooksModule.create(stubHost());
   const names = Object.keys(hooks).sort();
-  assert.strictEqual(names.length, 506, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
+  assert.strictEqual(names.length, 507, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
   // 每个功能域各抽一个，防止「数量对但换了一批」
   for (const name of [
     'ready', 'state', 'newBook', 'openBookPath', 'openBookInNewWindow', 'releaseBook', 'windowInfo',

@@ -1533,6 +1533,62 @@ module.exports = async function group46Proofread(t) {
     { spacing: prSpacing && prSpacing.byRule }
   );
 
+  // 46l. 多份校对词表（1.7.0 F3）：两份逐份列出、逐份开关、全部移除后回到旧文案
+  const pfMultiDir = path.join(userData, '校对词表-多份');
+  await fs.mkdir(pfMultiDir, { recursive: true });
+  const pfMultiA = path.join(pfMultiDir, '词表甲.txt');
+  const pfMultiB = path.join(pfMultiDir, '词表乙.txt');
+  await fs.writeFile(pfMultiA, '禁词甲\n', 'utf8');
+  await fs.writeFile(pfMultiB, '禁词乙 => 改成乙\n', 'utf8');
+  await exec("window.__cwTest.newBook('多份词表测试书')");
+  await waitFor("window.__cwTest.view() === 'editor'");
+  await exec(`window.__cwTest.setText(${JSON.stringify('他提到禁词甲和禁词乙。')})`);
+  await exec(`window.__cwTest.setProofreadWordlists(${JSON.stringify([pfMultiA, pfMultiB])})`);
+  await exec('window.__cwTest.openProofreadPanel()');
+  await waitFor("window.__cwTest.proofreadWordListText().includes('共 2 份')");
+  const pfMultiRows = await exec(
+    "Array.from(document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row')).map((row) => Array.from(row.querySelectorAll('span,button')).map((el) => el.textContent).join('|'))"
+  );
+  check(
+    '校对：配两份词表时面板逐份列出（第 N 份 · 数量 · 开关 · 移除），两份都参与校对',
+    (await exec("document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row').length")) === 2 &&
+      (await exec("document.getElementById('proofread-wordlists').classList.contains('hidden')")) === false &&
+      pfMultiRows.length === 2 &&
+      pfMultiRows[0].includes('第 1 份') && pfMultiRows[0].includes('1 个词') && pfMultiRows[0].includes('已启用') && pfMultiRows[0].includes('移除') &&
+      pfMultiRows[1].includes('第 2 份') && pfMultiRows[1].includes('已启用') &&
+      (await exec('window.__cwTest.proofreadWordListText()')).includes('合计 2 个词') &&
+      (await exec("window.__cwTest.proofreadPayload().byRule['custom-word']")) === 2,
+    { rows: pfMultiRows, listText: await exec('window.__cwTest.proofreadWordListText()') }
+  );
+  await exec(
+    "document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row')[0].querySelector('[data-action=toggle]').click()"
+  );
+  await waitFor("window.__cwTest.proofreadPayload().byRule['custom-word'] === 1");
+  check(
+    '校对：关掉第 1 份后它显示「已关闭」，只有第 2 份参与（校对调用带 enabledLists）',
+    (await exec("document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row')[0].querySelector('[data-action=toggle]').textContent")) === '已关闭' &&
+      (await exec("document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row')[0].querySelector('[data-action=toggle]').getAttribute('aria-pressed')")) === 'false' &&
+      (await exec("document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row')[1].querySelector('[data-action=toggle]').textContent")) === '已启用' &&
+      (await exec("window.__cwTest.proofreadPayload().byRule['custom-word']")) === 1,
+    { rows: await exec("Array.from(document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row')).map((row) => row.textContent)") }
+  );
+  await exec('window.__cwTest.closeProofreadPanel()');
+  await exec('window.__cwTest.setProofreadWordlists([])');
+  await exec("window.__cwTest.setProofreadWordsPath('')");
+  await exec('window.__cwTest.openProofreadPanel()');
+  await waitFor("window.__cwTest.proofreadWordListText().includes('还没有指定校对词表')");
+  check(
+    '校对：词表全部移除后回到旧文案，多份列表不再显示',
+    (await exec('window.__cwTest.proofreadWordListText()')) ===
+      '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的五条规则）' &&
+      (await exec("document.getElementById('proofread-wordlists').classList.contains('hidden')")) === true &&
+      (await exec("document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row').length")) === 0 &&
+      (await exec("window.__cwTest.proofreadPayload().byRule['custom-word']")) === 0,
+    await exec('window.__cwTest.proofreadWordListText()')
+  );
+  await exec('window.__cwTest.closeProofreadPanel()');
+  await exec("window.__cwTest.deleteBookByFolder('多份词表测试书', { skipConfirm: true })");
+
   // 收尾：把两条规则都恢复默认，别把会话状态带给后面的组
   await exec(`${prRuleToggle('cjk-latin-spacing')}.click()`);
   await waitFor("window.__cwTest.proofreadPayload().byRule['cjk-latin-spacing'] === 0");

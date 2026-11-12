@@ -942,6 +942,16 @@
         renderProofreadSettings();
         return cfg.proofreadWordsPath;
       },
+      // 测试用：直接写多份校对词表（1.7.0 F3；正常流程走面板「添加」/ 设置里的单份路径）
+      async setProofreadWordlists(paths) {
+        const list = Array.isArray(paths) ? paths.filter((one) => typeof one === 'string' && one) : [];
+        const cfg = await call(api.setConfig, { proofreadWordlists: list });
+        state.globalConfig = cfg;
+        state.config = effectiveConfig();
+        state.proofreadListsEnabled = {};
+        state.proofreadWordList = await refreshProofreadWordList();
+        return list;
+      },
       proofreadSettingsPath: () => $('settings-proofread-path').value,
       proofreadSettingsStatus: () => $('settings-proofread-status').textContent,
       proofreadSettingsVisible: () => !$('settings-proofread-field').classList.contains('hidden'),
