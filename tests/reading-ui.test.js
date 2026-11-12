@@ -522,6 +522,25 @@ test('readingGo：目标块已加载 → 直接滚过去；未加载 → 向后�
   stopReading(ctx3);
 });
 
+test('连续向前 prepend 100 次：块数始终 ≤ MAX_LOADED_BLOCKS，当前章仍在（V26）', async () => {
+  const chapters = makeChapters(160);
+  const dom = makeDoc();
+  const ctx = build({ dom, open: true, readingIndex: 100, chapters });
+  dom.newBlock(100, 0, 400);
+  for (let i = 0; i < 100; i += 1) {
+    const res = await ctx.ui.readingGo(-1);
+    assert.deepEqual(res, { ok: true, index: 99 - i }, '第 ' + (i + 1) + ' 次向前补章应成功');
+  }
+  const blocks = ctx.ui.readingBlockElements();
+  assert.equal(
+    blocks.length <= readingLogic.MAX_LOADED_BLOCKS,
+    true,
+    'DOM 里留了 ' + blocks.length + ' 块，应 ≤ ' + readingLogic.MAX_LOADED_BLOCKS
+  );
+  assert.equal(ctx.ui.readingLoadedIndexes().includes(0), true, '向前补到第 1 章后当前章仍在 DOM 里');
+  assert.equal(ctx.state.reading.index, 0, '当前位置停在第 1 章');
+  stopReading(ctx);
+});
 test('readingGo：接章失败 → { ok:false, message:\'读取章节失败\' }', async () => {
   const dom = makeDoc();
   const ctx = build({ dom, open: true, readingIndex: 0, chapters: makeChapters(2), loadChapter: () => ({ text: null }) });

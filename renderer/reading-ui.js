@@ -338,23 +338,36 @@
     scheduleReadingScrollCheck(140);
   }
 
-  // 一次阅读会话最多留 40 章在 DOM 里；超了只从最前面移除（不动当前正在看的章）
-  function pruneReadingBlocks() {
+  // 一次阅读会话最多留 40 章在 DOM 里。向后接章时从头删（当前章前面那些已经读过的），
+  // 向前补章时从尾删（当前章后面那些翻过去了的）；当前章和它前后相邻的一章永远不动。
+  // keepIndex：补章时当前章还没切过去，调用方把即将成为当前章的下标传进来。
+  function pruneReadingBlocks(keepIndex) {
     const content = $('reading-content');
     const scroll = readingScrollEl();
     if (!content || !scroll) return;
     const nodes = readingBlockElements();
     if (nodes.length <= readingLogic.MAX_LOADED_BLOCKS) return;
-    const current = readingCurrentIndex();
+    const passed = Math.floor(Number(keepIndex));
+    const current = Number.isFinite(passed) ? passed : readingCurrentIndex();
     let remove = nodes.length - readingLogic.MAX_LOADED_BLOCKS;
-    for (const node of nodes) {
-      if (remove <= 0) break;
-      const index = readingBlockIndexAt(node);
-      if (index >= current - 1) break;
-      const before = scroll.scrollHeight;
-      node.remove();
-      const after = scroll.scrollHeight;
-      scroll.scrollTop = Math.max(0, scroll.scrollTop - Math.max(0, before - after));
+    while (remove > 0) {
+      const live = readingBlockElements();
+      if (live.length <= readingLogic.MAX_LOADED_BLOCKS) break;
+      const head = live[0];
+      const tail = live[live.length - 1];
+      const headGap = current - readingBlockIndexAt(head);
+      const tailGap = readingBlockIndexAt(tail) - current;
+      // 哪头离当前章更远就删哪头；一样远时保持旧行为：先头后尾
+      if (headGap > 1 && headGap >= tailGap) {
+        const before = scroll.scrollHeight;
+        head.remove();
+        const after = scroll.scrollHeight;
+        scroll.scrollTop = Math.max(0, scroll.scrollTop - Math.max(0, before - after));
+      } else if (tailGap > 1) {
+        tail.remove();
+      } else {
+        break;
+      }
       remove -= 1;
     }
   }
@@ -466,6 +479,7 @@
       if (!node) return null;
       const content = $('reading-content');
       content.insertBefore(node, content.firstChild);
+      pruneReadingBlocks(first - 1);
       updateReadingUi();
       return node;
     } finally {
