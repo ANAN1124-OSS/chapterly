@@ -1603,6 +1603,31 @@ function registerIpc() {
     return single ? [single] : [];
   }
 
+  // 1.7.0 F3b2 收口：单份路径（没配多份列表）走原样的单表读取与公开信息——老配置的显示与校对结果一字不差；
+  // 只有 proofreadWordlists 非空才走多表合并。多表是新增能力，不改变旧字段的任何语义。
+  function hasProofreadWordlists(config) {
+    return Boolean(config && Array.isArray(config.proofreadWordlists) && config.proofreadWordlists.length);
+  }
+
+  async function readProofreadWordlistForRequest(config, options) {
+    if (!hasProofreadWordlists(config)) {
+      const single = config && typeof config.proofreadWordsPath === 'string' ? config.proofreadWordsPath : '';
+      const list = await glossaryLib.readGlossaryFile(single);
+      return { entries: list.ok ? list.entries : [], wordList: glossaryLib.publicGlossaryInfo(list) };
+    }
+    // 公开信息永远描述「配置里的全部词表」，enabledLists 只影响参与校对的词条；
+    // 否则面板会因为响应里只剩被勾选的那几份而塌成单份 / 空列表。
+    const allPaths = proofreadWordlistPaths(config);
+    const all = await glossaryLib.readGlossaryFiles(allPaths);
+    const wordList = proofreadWordListInfo(all, allPaths);
+    const enabledPaths = wordlistPathsForRequest(allPaths, options);
+    if (enabledPaths.length === allPaths.length) {
+      return { entries: all.ok ? all.entries : [], wordList };
+    }
+    const only = await glossaryLib.readGlossaryFiles(enabledPaths);
+    return { entries: only.ok ? only.entries : [], wordList };
+  }
+
   // options.enabledLists（1.7.0 F3b2）：索引数组，只让勾选的那几份词表参与这一次校对。
   // 缺省 / 坏值 / 一份都没勾 = 全开——宁可多跑几份，也不静默关掉作者以为在用的词表。
   function wordlistPathsForRequest(paths, options) {
@@ -1644,18 +1669,15 @@ function registerIpc() {
   handle('text:proofread', async (text, options) => {
     assertText(text);
     const cfg = await getConfig();
-    const paths = wordlistPathsForRequest(proofreadWordlistPaths(cfg), options);
-    const list = await glossaryLib.readGlossaryFiles(paths);
-    const wordList = proofreadWordListInfo(list, paths);
-    const result = proofreadLib.proofreadText(text, options, list.ok ? list.entries : []);
-    return { ...result, wordList };
+    const words = await readProofreadWordlistForRequest(cfg, options);
+    const result = proofreadLib.proofreadText(text, options, words.entries);
+    return { ...result, wordList: words.wordList };
   });
 
   // 校对词表状态（只读，1.7.0 F3b2）：多份 lists + total，单份补齐旧字段；绝不带路径与词表正文
   handle('proofread:words-info', async () => {
     const cfg = await getConfig();
-    const paths = proofreadWordlistPaths(cfg);
-    return proofreadWordListInfo(await glossaryLib.readGlossaryFiles(paths), paths);
+    return (await readProofreadWordlistForRequest(cfg)).wordList;
   });
 
   // 选词表（校对 / 敏感词共用）：只允许通过系统文件对话框选，渲染层不能自己指定路径去读任意文件。
@@ -2198,10 +2220,9 @@ function registerIpc() {
     // 校对词表只读一次，整本每章共用（没设置 / 读不了 = 只跑内置规则，面板会提示）
     // 1.7.0 F3b2：多份词表合并读取；options.enabledLists 只让勾选的那几份参与（缺省全开）。
     const cfg = await getConfig();
-    const wordlistPaths = wordlistPathsForRequest(proofreadWordlistPaths(cfg), options);
-    const list = await glossaryLib.readGlossaryFiles(wordlistPaths);
-    const wordList = proofreadWordListInfo(list, wordlistPaths);
-    const customEntries = list.ok ? list.entries : [];
+    const words = await readProofreadWordlistForRequest(cfg, options);
+    const wordList = words.wordList;
+    const customEntries = words.entries;
     const BOOK_ISSUE_LIMIT = 1500;
     const byRule = {};
     for (const rule of proofreadLib.RULE_ORDER) byRule[rule] = 0;

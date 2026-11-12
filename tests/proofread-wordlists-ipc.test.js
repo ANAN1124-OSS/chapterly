@@ -35,10 +35,13 @@ test('静态闸门：校对词表有效路径 = proofreadWordlists 非空取数�
   assert.match(helper, /filter\(/, '要过滤空串 / 非字符串，别把空路径当一份词表');
   for (const [channel, anchor] of RUN_SITES) {
     const body = sliceFrom(mainSource, anchor);
-    assert.match(body, /proofreadWordlistPaths\(/, channel + ' 要走统一的路径口径');
-    assert.match(body, /glossaryLib\.readGlossaryFiles\(/, channel + ' 要读多份词表（core 已合并去重）');
-    assert.doesNotMatch(body, /glossaryLib\.readGlossaryFile\(/, channel + ' 不能再单份直读');
+    assert.match(body, /readProofreadWordlistForRequest\(/, channel + ' 要走统一的词表读取口径');
   }
+  const reader = sliceFrom(mainSource, 'async function readProofreadWordlistForRequest(config, options) {');
+  assert.match(reader, /hasProofreadWordlists\(/, '单份 / 多份要先分流');
+  assert.match(reader, /glossaryLib\.readGlossaryFile\(/, '单份（旧配置）必须原样单表读取，行为一字不变');
+  assert.match(reader, /glossaryLib\.readGlossaryFiles\(/, '多份走 core 合并');
+  assert.match(reader, /publicGlossaryInfo\(/, '单份保持旧的公开信息形状');
 });
 test('静态闸门：proofread:words-info 回 lists + total 并补齐旧字段，绝不带路径与正文（F3b2）', () => {
   const builder = sliceFrom(mainSource, 'function proofreadWordListInfo(bundle, paths) {');
@@ -50,9 +53,8 @@ test('静态闸门：proofread:words-info 回 lists + total 并补齐旧字段�
   assert.doesNotMatch(builder, /entries\s*:/, '绝不把词条正文带出主进程');
   assert.doesNotMatch(builder, /\bpath\s*:/, '绝不把路径带出主进程');
   const handler = sliceFrom(mainSource, "  handle('proofread:words-info', async () => {");
-  assert.match(handler, /proofreadWordlistPaths\(/, 'words-info 要用同一份路径口径');
-  assert.match(handler, /readGlossaryFiles\(/, 'words-info 要读多份词表');
-  assert.match(handler, /proofreadWordListInfo\(/, 'words-info 要回统一的信息形状');
+  assert.match(handler, /readProofreadWordlistForRequest\(/, 'words-info 要走统一的词表读取口径（单份原样 / 多份合并）');
+  assert.match(handler, /wordList/, 'words-info 要回统一的信息形状');
 });
 test('静态闸门：新增的添加 / 移除频道在 main 与 preload 一一对应（F3b2）', () => {
   const mainChannels = new Set(matchesOf(mainSource, /handle\('(proofread:[a-z-]+)'/g));
@@ -87,8 +89,6 @@ test('静态闸门：text / book 校对支持 options.enabledLists 过滤参与�
   assert.match(helper, /options\.enabledLists/, '要认 enabledLists');
   assert.match(helper, /Array\.isArray/, '非数组当全开');
   assert.match(helper, /paths\.filter\(/, '按索引过滤参与的词表');
-  for (const [channel, anchor] of RUN_SITES) {
-    const body = sliceFrom(mainSource, anchor);
-    assert.match(body, /wordlistPathsForRequest\(/, channel + ' 要按 enabledLists 过滤');
-  }
+  const reader = sliceFrom(mainSource, 'async function readProofreadWordlistForRequest(config, options) {');
+  assert.match(reader, /wordlistPathsForRequest\(/, '多份分支要按 enabledLists 过滤');
 });

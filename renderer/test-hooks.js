@@ -945,7 +945,15 @@
       // 测试用：直接写多份校对词表（1.7.0 F3；正常流程走面板「添加」/ 设置里的单份路径）
       async setProofreadWordlists(paths) {
         const list = Array.isArray(paths) ? paths.filter((one) => typeof one === 'string' && one) : [];
-        const cfg = await call(api.setConfig, { proofreadWordlists: list });
+        // 配置来源校验只认「对话框刚选中的」或「已在当前列表里」：逐个 test-pick 后追加，路径才落得进配置。
+        let cfg = state.globalConfig;
+        const grown = [];
+        for (const one of list) {
+          await call(api.testPickConfigPath, one, 'proofreadWordlists');
+          grown.push(one);
+          cfg = await call(api.setConfig, { proofreadWordlists: grown });
+        }
+        if (!list.length) cfg = await call(api.setConfig, { proofreadWordlists: [] });
         state.globalConfig = cfg;
         state.config = effectiveConfig();
         state.proofreadListsEnabled = {};

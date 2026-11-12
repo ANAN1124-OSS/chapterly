@@ -303,7 +303,8 @@ module.exports = async function group46Proofread(t) {
     pfSetWordsPath === pfWordsPath &&
       pfWordsCfg.proofreadWordsPath === pfWordsPath &&
       pfWordsCfg.sensitiveWordsPath === '' &&
-      Object.keys(pfWordsCfg).filter((key) => /proofread/i.test(key)).join(',') === 'proofreadWordsPath',
+      Object.keys(pfWordsCfg).filter((key) => /proofread/i.test(key)).sort().join(',') ===
+        'proofreadWordlists,proofreadWordsPath',
     { set: pfSetWordsPath, disk: pfWordsCfg.proofreadWordsPath }
   );
 
@@ -558,8 +559,8 @@ module.exports = async function group46Proofread(t) {
     '校对词表：清除后配置落盘为空串，敏感词表字段不受影响',
     pfWordsCfgCleared.proofreadWordsPath === '' &&
       pfWordsCfgCleared.sensitiveWordsPath === '' &&
-      Object.keys(pfWordsCfgCleared).filter((key) => /proofread/i.test(key)).join(',') ===
-        'proofreadWordsPath'
+      Object.keys(pfWordsCfgCleared).filter((key) => /proofread/i.test(key)).sort().join(',') ===
+        'proofreadWordlists,proofreadWordsPath'
   );
 
   // 46j. 导出简繁转换（v0.8-7，提案 N7）：只改导出的副本（TXT / EPUB），
@@ -1611,5 +1612,9 @@ module.exports = async function group46Proofread(t) {
     await exec('window.__cwTest.proofreadWordListText()')
   );
   await exec('window.__cwTest.closeProofreadPanel()');
+  // 收尾顺序与 46k 一致：先落盘、回书架，再删书——带着编辑态直接删书会把状态留给下一组。
+  await exec('window.__cwTest.save()');
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
   await exec("window.__cwTest.deleteBookByFolder('多份词表测试书', { skipConfirm: true })");
 };
