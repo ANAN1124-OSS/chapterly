@@ -513,6 +513,32 @@ test('openFindPanel：没书警告；有书 → 收菜单、关校对框、带�
   assert.equal(longSel.dom.map.get('find-query').value, '旧词');
 });
 
+test('openFindPanel：编辑器 textarea 选中 3 个字 → 查找框带入这 3 个字且选区不被清掉（V32 / 1.6.1 R7）', () => {
+  // ① textarea 里选中「张三说」：窗口选区对 <textarea> 恒为空，必须改读编辑器自身的 selectionStart/End
+  const ctx = build({ selection: '' });
+  ctx.editorEl.setSelectionRange(0, 3);
+  ctx.ui.openFindPanel();
+  assert.equal(ctx.dom.map.get('find-query').value, '张三说', '编辑器选区应带入查找框');
+  assert.equal(ctx.editorEl.selectionStart, 0, '带入后编辑器选区起点不能被清掉');
+  assert.equal(ctx.editorEl.selectionEnd, 3, '带入后编辑器选区终点不能被清掉');
+
+  // ② 编辑器里没有选区（光标收起）时旧行为不变：仍读 window.getSelection()
+  const fallback = build({ selection: '选中的词' });
+  fallback.editorEl.setSelectionRange(5, 5);
+  fallback.ui.openFindPanel();
+  assert.equal(fallback.dom.map.get('find-query').value, '选中的词', '无编辑器选区时沿用窗口选区');
+
+  // ③ 编辑器选中过长 / 含换行仍不带入（沿用旧的 60 字与单行闸门）
+  const long = build({ selection: '', text: '甲'.repeat(61) + '\n乙' });
+  long.editorEl.setSelectionRange(0, 61);
+  long.ui.openFindPanel();
+  assert.equal(long.dom.map.get('find-query').value, '', '超长编辑器选区不带入');
+  const multiline = build({ selection: '', text: '第一节\n第二节' });
+  multiline.editorEl.setSelectionRange(0, 7);
+  multiline.ui.openFindPanel();
+  assert.equal(multiline.dom.map.get('find-query').value, '', '跨行编辑器选区不带入');
+});
+
 test('closeFindPanel / readFindOptions：关面板不结束会话；四个选项从 DOM 读', () => {
   const ctx = build({ query: '张三', replace: '李四', scope: 'book', caseSensitive: true });
   ctx.ui.openFindPanel();

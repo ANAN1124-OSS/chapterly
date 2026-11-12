@@ -299,7 +299,17 @@
     hideHeaderMenus();
     if (!$('proofread-backdrop').classList.contains('hidden')) closeProofreadPanel();
     // 编辑器里选中了一段短文本时，直接带进查找框
-    const selection = String(window.getSelection ? window.getSelection().toString() : '');
+    // V32（1.6.1 R7）：<textarea> 的选区不体现在 window.getSelection() 里（对 textarea 恒为空字符串），
+    // 所以先读编辑器自身的 selectionStart / selectionEnd 取选区文本；编辑器没有选区（光标收起）时
+    // 再回落到窗口选区，旧行为（选中正文段落里的字）不变。只读不改，选区留在编辑器里不动。
+    let selection = '';
+    const selStart = Number(editorEl && editorEl.selectionStart);
+    const selEnd = Number(editorEl && editorEl.selectionEnd);
+    if (editorEl && Number.isFinite(selStart) && Number.isFinite(selEnd) && selEnd > selStart) {
+      selection = String(editorEl.value || '').slice(selStart, selEnd);
+    } else {
+      selection = String(window.getSelection ? window.getSelection().toString() : '');
+    }
     if (selection && selection.length <= 60 && !selection.includes('\n')) {
       $('find-query').value = selection;
     }
