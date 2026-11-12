@@ -183,12 +183,19 @@ function decodeBloom(text, bits) {
   }
 }
 
-// 按位置数完一整章的全部命中：单次 indexOf 循环，不逐字正则、不二次读盘。
-// cap 是计数硬上限（到了就停，capped 表示「后面还有更多」）；onTick 返回 true 表示时间预算用完，
-// 此时 count 只是部分命中，同样标 capped（界面显示「N+」，不冒充精确值）。
-function countChapterMatches(haystack, needle, cap, onTick) {
+// P3（V5 搜索单遍）：一遍扫描同时产出「本章命中总数」与「前 maxSnippets 条命中位置」。
+// 改前是 countChapterMatches 数一遍 + 片段循环再 indexOf 一遍（同一章正文扫两遍）；
+// 这里合成单次 indexOf 循环，对外语义逐字不变：
+// - 计数按 needle 步进、不重叠，命中位置就是同一串 indexOf 的前缀（与旧片段循环同序同位置）；
+// - cap 是计数硬上限（到了就停，capped 表示「后面还有更多」）；onTick 返回 true 表示时间预算用完，
+//   此时 count 只是部分命中，同样标 capped（界面显示「N+」，不冒充精确值）；
+// - 时间预算检查点仍是「每数到 1024 的整数倍」查一次，与旧实现同一位置；
+// - 旧片段循环在前 3 条命中处就已取完，远早于第一个 1024 检查点，所以合并不会丢掉任何片段。
+function scanChapterMatches(haystack, needle, cap, maxSnippets, onTick) {
   const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  const snippetLimit = Math.max(0, Math.floor(Number(maxSnippets) || 0));
   const step = Math.max(1, String(needle == null ? '' : needle).length);
+  const positions = [];
   let count = 0;
   let from = 0;
   let stopped = false;
@@ -197,6 +204,7 @@ function countChapterMatches(haystack, needle, cap, onTick) {
     const at = haystack.indexOf(needle, from);
     if (at < 0) break;
     count += 1;
+    if (positions.length < snippetLimit) positions.push(at);
     from = at + step;
     if (onTick && (count & 1023) === 0 && onTick()) {
       stopped = true;
@@ -205,7 +213,7 @@ function countChapterMatches(haystack, needle, cap, onTick) {
   }
   if (stopped) capped = true;
   else if (count >= limit) capped = haystack.indexOf(needle, from) >= 0;
-  return { count, capped, stopped };
+  return { count, capped, stopped, positions };
 }
 
 // 命中位置前后的上下文片段：换行 / 制表压成空格，两端裁掉多余空白。
@@ -938,19 +946,18 @@ function createSearchStore(options = {}) {
         return focusError('聚焦的章节读取失败');
       }
       const haystack = lowerText(text);
-      const countInfo = countChapterMatches(haystack, normalized, MAX_CHAPTER_MATCH_COUNT, () =>
+      // P3：计数与片段位置同一次扫描产出（改前是计数 1 遍 + 片段 1 遍）。
+      const scanInfo = scanChapterMatches(haystack, normalized, MAX_CHAPTER_MATCH_COUNT, focusLimit, () =>
         Date.now() - startedAt > timeBudgetMs
       );
       const rows = [];
-      let from = 0;
-      let stopped = countInfo.stopped;
-      while (rows.length < focusLimit) {
+      let stopped = scanInfo.stopped;
+      // 时间预算的逐条检查点位置不变：仍在「准备产出每一条片段之前」查一次。
+      for (const at of scanInfo.positions) {
         if (Date.now() - startedAt > timeBudgetMs) {
           stopped = true;
           break;
         }
-        const at = haystack.indexOf(normalized, from);
-        if (at < 0) break;
         rows.push({
           bookPath: book.path,
           bookTitle: book.title,
@@ -962,10 +969,9 @@ function createSearchStore(options = {}) {
           matchIndex: at,
           matchLength: normalized.length,
           snippet: snippetAround(text, at, normalized.length),
-          chapterMatchCount: countInfo.count,
-          chapterCountCapped: countInfo.capped
+          chapterMatchCount: scanInfo.count,
+          chapterCountCapped: scanInfo.capped
         });
-        from = at + Math.max(1, normalized.length);
       }
       return {
         ...makeBase(indexInfo),
@@ -976,9 +982,9 @@ function createSearchStore(options = {}) {
         scannedBooks: 1,
         scannedChapters: 1,
         skippedChapters: 0,
-        matchedChapters: countInfo.count > 0 ? 1 : 0,
-        totalMatches: countInfo.count,
-        truncated: stopped || countInfo.capped || countInfo.count > rows.length,
+        matchedChapters: scanInfo.count > 0 ? 1 : 0,
+        totalMatches: scanInfo.count,
+        truncated: stopped || scanInfo.capped || scanInfo.count > rows.length,
         elapsedMs: Date.now() - startedAt
       };
     }
@@ -1036,15 +1042,12 @@ function createSearchStore(options = {}) {
         // P22-4：先数清这一章到底几处命中（单次 indexOf 循环），再按旧口径只列前 3 条。
         // 计数上限 / 时间预算只影响 chapterMatchCount 的精度（capped 时界面显示「N+」），
         // 默认路径的结果条数 / 顺序 / limit / truncated 语义保持旧行为不变。
-        const countInfo = countChapterMatches(haystack, normalized, MAX_CHAPTER_MATCH_COUNT, () =>
+        // P3：计数与片段位置同一次扫描产出（改前是计数 1 遍 + 片段 1 遍）。
+        const scanInfo = scanChapterMatches(haystack, normalized, MAX_CHAPTER_MATCH_COUNT, MAX_SNIPPETS_PER_CHAPTER, () =>
           Date.now() - startedAt > timeBudgetMs
         );
-        let from = 0;
-        let hits = 0;
-        while (hits < MAX_SNIPPETS_PER_CHAPTER && results.length < limit) {
-          const at = haystack.indexOf(normalized, from);
-          if (at < 0) break;
-          hits += 1;
+        for (const at of scanInfo.positions) {
+          if (results.length >= limit) break;
           results.push({
             bookPath: book.path,
             bookTitle: book.title,
@@ -1056,16 +1059,15 @@ function createSearchStore(options = {}) {
             matchIndex: at,
             matchLength: normalized.length,
             snippet: snippetAround(text, at, normalized.length),
-            chapterMatchCount: countInfo.count,
-            chapterCountCapped: countInfo.capped
+            chapterMatchCount: scanInfo.count,
+            chapterCountCapped: scanInfo.capped
           });
-          from = at + Math.max(1, normalized.length);
         }
-        if (countInfo.count > 0) {
+        if (scanInfo.count > 0) {
           matchedChapters += 1;
-          totalMatches += countInfo.count;
+          totalMatches += scanInfo.count;
         }
-        if (countInfo.stopped) {
+        if (scanInfo.stopped) {
           stoppedByTime = true;
           break;
         }

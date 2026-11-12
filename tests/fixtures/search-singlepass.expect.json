@@ -1,0 +1,314 @@
+{
+  "bigScan": {
+    "resultsCount": 3,
+    "results": [
+      {
+        "chapterIndex": 0,
+        "chapterName": "大章",
+        "matchIndex": 2000,
+        "matchLength": 2,
+        "chapterMatchCount": 6000,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "序序序序序序序序序序序序序序序序",
+          "match": "雪落",
+          "after": "风风风风风风风风风风风风风风风风",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      },
+      {
+        "chapterIndex": 0,
+        "chapterName": "大章",
+        "matchIndex": 2032,
+        "matchLength": 2,
+        "chapterMatchCount": 6000,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "风风风风风风风风风风风风风风风风",
+          "match": "雪落",
+          "after": "风风风风风风风风风风风风风风风风",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      },
+      {
+        "chapterIndex": 0,
+        "chapterName": "大章",
+        "matchIndex": 2064,
+        "matchLength": 2,
+        "chapterMatchCount": 6000,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "风风风风风风风风风风风风风风风风",
+          "match": "雪落",
+          "after": "风风风风风风风风风风风风风风风风",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      }
+    ],
+    "candidateBooks": 1,
+    "scannedBooks": 1,
+    "scannedChapters": 3,
+    "skippedChapters": 0,
+    "matchedChapters": 1,
+    "totalMatches": 6000,
+    "truncated": false
+  },
+  "cappedScan": {
+    "resultsCount": 3,
+    "results": [
+      {
+        "chapterIndex": 1,
+        "chapterName": "上限章",
+        "matchIndex": 0,
+        "matchLength": 2,
+        "chapterMatchCount": 10000,
+        "chapterCountCapped": true,
+        "snippet": {
+          "before": "",
+          "match": "灯芯",
+          "after": "xxxxxxxx灯芯xxxxxx",
+          "cutBefore": false,
+          "cutAfter": true
+        }
+      },
+      {
+        "chapterIndex": 1,
+        "chapterName": "上限章",
+        "matchIndex": 10,
+        "matchLength": 2,
+        "chapterMatchCount": 10000,
+        "chapterCountCapped": true,
+        "snippet": {
+          "before": "灯芯xxxxxxxx",
+          "match": "灯芯",
+          "after": "xxxxxxxx灯芯xxxxxx",
+          "cutBefore": false,
+          "cutAfter": true
+        }
+      },
+      {
+        "chapterIndex": 1,
+        "chapterName": "上限章",
+        "matchIndex": 20,
+        "matchLength": 2,
+        "chapterMatchCount": 10000,
+        "chapterCountCapped": true,
+        "snippet": {
+          "before": "xxxxxx灯芯xxxxxxxx",
+          "match": "灯芯",
+          "after": "xxxxxxxx灯芯xxxxxx",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      }
+    ],
+    "candidateBooks": 1,
+    "scannedBooks": 1,
+    "scannedChapters": 3,
+    "skippedChapters": 0,
+    "matchedChapters": 1,
+    "totalMatches": 10000,
+    "truncated": false
+  },
+  "mixedScan": {
+    "resultsCount": 3,
+    "results": [
+      {
+        "chapterIndex": 2,
+        "chapterName": "混排章",
+        "matchIndex": 4,
+        "matchLength": 4,
+        "chapterMatchCount": 4,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "第一段",
+          "match": "LINE",
+          "after": "one 结束了。 第二段 l",
+          "cutBefore": false,
+          "cutAfter": true
+        }
+      },
+      {
+        "chapterIndex": 2,
+        "chapterName": "混排章",
+        "matchIndex": 23,
+        "matchLength": 4,
+        "chapterMatchCount": 4,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "E one 结束了。 第二段",
+          "match": "line",
+          "after": "two 在前，后面跟着 LIN",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      },
+      {
+        "chapterIndex": 2,
+        "chapterName": "混排章",
+        "matchIndex": 40,
+        "matchLength": 4,
+        "chapterMatchCount": 4,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "ine two 在前，后面跟着",
+          "match": "LINE",
+          "after": "three。 第三段光 明这个",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      }
+    ],
+    "candidateBooks": 1,
+    "scannedBooks": 1,
+    "scannedChapters": 3,
+    "skippedChapters": 0,
+    "matchedChapters": 1,
+    "totalMatches": 4,
+    "truncated": false
+  },
+  "acrossNewline": {
+    "resultsCount": 0,
+    "results": [],
+    "candidateBooks": 0,
+    "scannedBooks": 0,
+    "scannedChapters": 0,
+    "skippedChapters": 0,
+    "matchedChapters": 0,
+    "totalMatches": 0,
+    "truncated": false
+  },
+  "emptyQuery": {
+    "resultsCount": 0,
+    "results": [],
+    "candidateBooks": 0,
+    "scannedBooks": 0,
+    "scannedChapters": 0,
+    "skippedChapters": 0,
+    "matchedChapters": 0,
+    "totalMatches": 0,
+    "truncated": false
+  },
+  "limitTwo": {
+    "resultsCount": 2,
+    "results": [
+      {
+        "chapterIndex": 0,
+        "chapterName": "大章",
+        "matchIndex": 2000,
+        "matchLength": 2,
+        "chapterMatchCount": 6000,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "序序序序序序序序序序序序序序序序",
+          "match": "雪落",
+          "after": "风风风风风风风风风风风风风风风风",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      },
+      {
+        "chapterIndex": 0,
+        "chapterName": "大章",
+        "matchIndex": 2032,
+        "matchLength": 2,
+        "chapterMatchCount": 6000,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "风风风风风风风风风风风风风风风风",
+          "match": "雪落",
+          "after": "风风风风风风风风风风风风风风风风",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      }
+    ],
+    "candidateBooks": 1,
+    "scannedBooks": 1,
+    "scannedChapters": 1,
+    "skippedChapters": 0,
+    "matchedChapters": 1,
+    "totalMatches": 6000,
+    "truncated": true
+  },
+  "focusBig": {
+    "resultsCount": 200,
+    "head": [
+      {
+        "chapterIndex": 0,
+        "chapterName": "大章",
+        "matchIndex": 2000,
+        "matchLength": 2,
+        "chapterMatchCount": 6000,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "序序序序序序序序序序序序序序序序",
+          "match": "雪落",
+          "after": "风风风风风风风风风风风风风风风风",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      },
+      {
+        "chapterIndex": 0,
+        "chapterName": "大章",
+        "matchIndex": 2032,
+        "matchLength": 2,
+        "chapterMatchCount": 6000,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "风风风风风风风风风风风风风风风风",
+          "match": "雪落",
+          "after": "风风风风风风风风风风风风风风风风",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      },
+      {
+        "chapterIndex": 0,
+        "chapterName": "大章",
+        "matchIndex": 2064,
+        "matchLength": 2,
+        "chapterMatchCount": 6000,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "风风风风风风风风风风风风风风风风",
+          "match": "雪落",
+          "after": "风风风风风风风风风风风风风风风风",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      }
+    ],
+    "tail": [
+      {
+        "chapterIndex": 0,
+        "chapterName": "大章",
+        "matchIndex": 8368,
+        "matchLength": 2,
+        "chapterMatchCount": 6000,
+        "chapterCountCapped": false,
+        "snippet": {
+          "before": "风风风风风风风风风风风风风风风风",
+          "match": "雪落",
+          "after": "风风风风风风风风风风风风风风风风",
+          "cutBefore": true,
+          "cutAfter": true
+        }
+      }
+    ],
+    "lastMatchIndex": 8368,
+    "limit": 200,
+    "focus": true,
+    "candidateBooks": 1,
+    "scannedBooks": 1,
+    "scannedChapters": 1,
+    "skippedChapters": 0,
+    "matchedChapters": 1,
+    "totalMatches": 6000,
+    "truncated": true
+  }
+}
