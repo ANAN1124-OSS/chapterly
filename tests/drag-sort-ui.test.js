@@ -510,6 +510,62 @@ test('setupChapterDrag：在 window 上挂 pointermove / pointerup / pointercanc
   assert.deepEqual(w.calls, []);
 });
 
+// ---------- 系统打断拖拽（pointercancel）----------
+// V24（1.6.1 R1）：pointercancel 之后 chapterDrag 必须归零。只清视觉标记不够——
+// 残留的拖拽态会让下一次普通 pointerup 继续走 endChapterDrag，静默 moveChapterTo 改写 书目.json。
+
+test('pointercancel 后 chapterDrag 状态清空', () => {
+  const w = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  const hood = volumeEl('v1', 180);
+  w.list.children = [c1, c2, hood];
+  w.ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+  w.fire('pointermove', event(200)); // 落到卷标题上
+  assert.equal(c1.classList.contains('dragging'), true);
+  assert.equal(hood.classList.contains('drop-into'), true);
+  w.fire('pointercancel');
+  assert.equal(c1.classList.contains('dragging'), false);
+  assert.equal(hood.classList.contains('drop-into'), false);
+  assert.equal(w.body.classList.contains('chapter-dragging'), false);
+  // 状态真的清空了：同一套指针移动不再被当成拖拽跟手，落点标记也不会重新打上
+  w.fire('pointermove', event(200));
+  assert.equal(hood.classList.contains('drop-into'), false);
+  assert.equal(c1.classList.contains('dragging'), false);
+  assert.equal(w.body.classList.contains('chapter-dragging'), false);
+});
+
+test('cancel 之后普通 pointerup 不调用 moveChapterTo', async () => {
+  const w = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  w.list.children = [c1, c2];
+  w.state.chapters = [
+    { id: 'c1', name: '一', volumeId: null },
+    { id: 'c2', name: '二', volumeId: null }
+  ];
+  w.ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+  // 指针到 c2 下半：落点 = 「c2 之后」，对 c1 是真的换位（不是原地短路的落点）
+  w.fire('pointermove', event(175));
+  w.fire('pointercancel');
+  await w.fire('pointerup');
+  assert.deepEqual(w.calls, []);
+  assert.deepEqual(w.toasts, []);
+  assert.deepEqual([w.renders.list, w.renders.header, w.renders.status], [0, 0, 0]);
+});
+
+test('cancel 后的点击不被吞', async () => {
+  const w = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  w.list.children = [c1, c2];
+  w.ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+  w.fire('pointermove', event(175));
+  w.fire('pointercancel');
+  await w.fire('pointerup');
+  assert.equal(w.state.suppressChapterClick, 0, 'cancel 不是「收手」，不该屏蔽紧随其后的点击');
+});
+
 // ---------- 静态闸门 ----------
 
 test('静态闸门：renderer.js 只剩接线，拖拽实现一份都不许留', () => {

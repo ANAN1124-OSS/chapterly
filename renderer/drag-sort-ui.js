@@ -283,7 +283,13 @@
     window.addEventListener('pointerup', () => {
       if (chapterDrag) endChapterDrag();
     });
-    window.addEventListener('pointercancel', () => clearDragMarks());
+    window.addEventListener('pointercancel', () => {
+      // V24（1.6.1 R1）：系统打断拖拽（来电 / 手势 / 指针被夺走）时必须把拖拽活状态一起清掉。
+      // 只清视觉标记不够：残留的 chapterDrag 会被下一次普通 pointerup 继续消费，静默 moveChapterTo 改写 书目.json。
+      // 这里不走 endChapterDrag()：cancel 不是「收手」，不设 suppressChapterClick（否则紧随其后的点击被吞 300 ms）。
+      chapterDrag = null;
+      clearDragMarks();
+    });
   }
     return {
       setupChapterDrag,
