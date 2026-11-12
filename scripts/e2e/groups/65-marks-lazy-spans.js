@@ -150,6 +150,8 @@ module.exports = async function group65MarksLazySpans(t) {
     `window.__cwTest.setText(${JSON.stringify(chapterText.replace('第21行：', '第21行：改一下'))})`
   );
   await waitFor('window.__cwTest.marksOverlayVisible() === true');
+  // V27（1.7.0 P2）：影子层重画有 80 ms 防抖，等它真的带上改过的那个词再读。
+  await waitFor("window.__cwTest.marksText().includes('第21行：改一下')");
   const afterType = await exec(`(() => {
     const overlay = document.getElementById('editor-marks');
     return {

@@ -731,6 +731,10 @@ module.exports = async function group50EditorWidgets(t) {
     `window.__cwTest.setText(${JSON.stringify(`${caretHlText}\n\n　　临时加的一段，还没有保存。`)})`
   );
   await waitFor('window.__cwTest.marksCaretParaCount() === 1');
+  // V27（1.7.0 P2）：光标同步有 80 ms 防抖，等当前段高亮真的换成新段落再读，别抢在防抖窗口里。
+  await waitFor(
+    "Boolean(window.__cwTest.marksCaretParaInfo()) && window.__cwTest.marksCaretParaInfo().text.trim() === '临时加的一段，还没有保存。'"
+  );
   const caretUnsaved = await exec('window.__cwTest.marksCaretParaInfo()');
   check(
     '当前段落高亮：编辑区里没保存的新段落也会高亮（只改显示层，不写盘）',
