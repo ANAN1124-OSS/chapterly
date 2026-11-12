@@ -314,6 +314,84 @@ test('导入边界：超过上限的 txt 直接拒绝，不建书、不留临时
   assert.deepEqual(entries, [], '被拒绝的导入不该在书架里留下任何东西');
 });
 
+// V25（1.6.1 R2）：文件夹形态导入是「原样复制、不读正文」，以前不受单本 128 MB 闸门约束——
+// 复制前逐 txt 过闸门：超限的单个文件跳过并记进 skipped，其余文件照常导入，整批不中断。
+test('文件夹导入：129 MB 稀疏文件跳过、其余 txt 照常导入，结果 skipped=1', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '书目录');
+  await fs.mkdir(src);
+  await fs.writeFile(path.join(src, '001-开端.txt'), '第1章 开端\n\n正文一。', 'utf8');
+  await fs.writeFile(path.join(src, '002-承接.txt'), '第2章 承接\n\n正文二。', 'utf8');
+  const huge = path.join(src, '003-巨大.txt');
+  await fs.writeFile(huge, '');
+  // 稀疏文件：只把长度改到上限 +1，不真的写 128 MB 字节
+  await fs.truncate(huge, importer.MAX_IMPORT_BYTES + 1);
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].kind, 'chapter-folder');
+  assert.equal(res.failed.length, 0);
+  // 超限文件跳过、其余两个 txt 照常导入
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].code, 'FILE_TOO_LARGE');
+  assert.ok(res.skipped[0].reason.includes('128 MB'), res.skipped[0].reason);
+  assert.ok(res.skipped[0].reason.includes('003-巨大'), res.skipped[0].reason);
+  assert.ok(!res.skipped[0].reason.includes(base), '提示里不该带本机目录');
+  assert.equal(res.skippedTooLarge, 1);
+  assert.equal(res.imported[0].skippedTooLarge, 1);
+
+  const importedPath = res.imported[0].path;
+  const files = (await storage.listTxtFiles(importedPath)).sort();
+  assert.deepEqual(files, ['001-开端.txt', '002-承接.txt'], '只导入闸门内的 txt');
+  assert.equal(res.imported[0].chapters, 2);
+  const meta = await storage.readBookMeta(importedPath);
+  assert.equal(meta.chapters.length, 2);
+  // 源文件夹一个文件都不少（只复制不移动）
+  assert.equal((await fs.readdir(src)).length, 3);
+});
+
+test('现成书文件夹导入：章节文件超限时跳过该章、其余章节照常导入', async () => {
+  const base = await mkTmp();
+  const externalRoot = path.join(base, '外部');
+  await fs.mkdir(externalRoot);
+  const created = await storage.createBook(externalRoot, '大体量书');
+  await storage.createChapter(created.path, 2, '承接');
+  await storage.createChapter(created.path, 3, '巨大');
+  const sourceMeta = await storage.readBookMeta(created.path);
+  assert.equal(sourceMeta.chapters.length, 3);
+  await storage.saveChapterText(created.path, sourceMeta.chapters[0].file, '第一章内容');
+  await storage.saveChapterText(created.path, sourceMeta.chapters[1].file, '第二章内容');
+  const huge = path.join(created.path, sourceMeta.chapters[2].file);
+  await fs.writeFile(huge, '');
+  await fs.truncate(huge, importer.MAX_IMPORT_BYTES + 1);
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [created.path]);
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].kind, 'book');
+  assert.equal(res.failed.length, 0);
+  assert.equal(res.skipped.length, 1);
+  assert.equal(res.skipped[0].code, 'FILE_TOO_LARGE');
+  assert.equal(res.skippedTooLarge, 1);
+  assert.equal(res.imported[0].skippedTooLarge, 1);
+
+  const importedPath = res.imported[0].path;
+  const files = await storage.listTxtFiles(importedPath);
+  assert.ok(!files.includes(sourceMeta.chapters[2].file), '超限章节文件不该被复制进来');
+  assert.equal(files.length, 2);
+  // 书目只列真实存在的章节：每一章都能读，不会留下打不开的悬挂章节
+  assert.equal(res.imported[0].chapters, 2);
+  const importedMeta = await storage.readBookMeta(importedPath);
+  assert.equal(importedMeta.chapters.length, 2);
+  for (const chapter of importedMeta.chapters) {
+    assert.ok(files.includes(chapter.file), chapter.file);
+    const loaded = await storage.loadChapterText(importedPath, chapter.file);
+    assert.ok(loaded.text.length > 0);
+  }
+  assert.ok(importedMeta.chapters.some((c) => c.id === importedMeta.lastOpenChapterId));
+});
+
 test('导入边界：二进制 txt 不导入乱码书（NOT_TEXT，不建书）', async () => {
   const base = await mkTmp();
   const src = path.join(base, '收藏夹');

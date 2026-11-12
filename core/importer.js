@@ -88,19 +88,44 @@ async function analyzeSource(sourceDir) {
   }
 }
 
-async function copyAsBook(sourceDir, target) {
+// V25（1.6.1 R2）：文件夹形态导入以前只做「原样复制」，绕过了单本 txt 的 128 MB 闸门，
+// 129 MB 的畸形 txt 会被整个抄进书库。复制前逐 txt 取大小过闸门：超限的单个文件跳过、
+// 记进结果，其余文件照常导入（不中断整次导入）。
+async function collectOversizedTxt(sourceDir, txtFiles) {
+  const oversized = [];
+  for (const file of txtFiles || []) {
+    // 拿不到大小（符号链接断开等）不在这里拦，交给后面的复制 / 重建如实报错
+    const stat = await fs.stat(path.join(sourceDir, file)).catch(() => null);
+    if (!stat) continue;
+    const problem = importSizeProblem(stat.size, path.basename(file, path.extname(file)));
+    if (problem) oversized.push({ file, code: problem.code, message: problem.message });
+  }
+  return oversized;
+}
+
+// 结果对象只加可选字段（没有超限文件时字段不出现）：imported / kind / folder / path / title / chapters 语义不变
+function withSkippedFiles(result, oversized) {
+  if (!oversized.length) return result;
+  return { ...result, skippedTooLarge: oversized.length, skippedFiles: oversized };
+}
+
+async function copyAsBook(sourceDir, target, oversized) {
+  const skip = new Set((oversized || []).map((entry) => path.resolve(sourceDir, entry.file)));
   await fs.cp(sourceDir, target, {
     recursive: true,
     filter: (src) => {
       const base = path.basename(src);
-      return base !== storage.TRASH_DIR && !base.startsWith('.');
+      if (base === storage.TRASH_DIR || base.startsWith('.')) return false;
+      return !skip.has(path.resolve(src));
     }
   });
 }
 
-async function copyAsTexts(sourceDir, target, txtFiles) {
+async function copyAsTexts(sourceDir, target, txtFiles, oversized) {
   await fs.mkdir(target, { recursive: true });
+  const skip = new Set((oversized || []).map((entry) => entry.file));
   for (const file of txtFiles) {
+    if (skip.has(file)) continue;
     await fs.copyFile(path.join(sourceDir, file), path.join(target, file));
   }
 }
@@ -115,28 +140,63 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
   const target = path.join(booksRoot, folder);
 
   try {
+    const oversized = await collectOversizedTxt(sourceDir, analysis.txtFiles);
+    const oversizedNames = new Set(oversized.map((entry) => path.basename(entry.file)));
+    const willLose =
+      analysis.kind === 'book'
+        ? analysis.meta.chapters.filter((chapter) => oversizedNames.has(path.basename(chapter.file))).length
+        : oversized.length;
+    const totalTxt = analysis.kind === 'book' ? analysis.meta.chapters.length : analysis.txtFiles.length;
+    if (totalTxt > 0 && willLose >= totalTxt) {
+      // 一个能导入的文件都不剩：当成这次来源失败（整批照常继续），不留一本空书
+      throw new storage.StorageError(
+        'FILE_TOO_LARGE',
+        `《${path.basename(sourceDir)}》里的文件全部超过单本导入上限 ${formatImportSize(MAX_IMPORT_BYTES)}，已跳过`
+      );
+    }
     if (analysis.kind === 'book') {
-      await copyAsBook(sourceDir, target);
-      const meta = await storage.readBookMeta(target);
-      return {
+      await copyAsBook(sourceDir, target, oversized);
+      let meta = await storage.readBookMeta(target);
+      if (oversized.length) {
+        // 超限章节根本没复制进来：书目只保留真实存在的章节，不留下打不开的悬挂章节
+        const dropped = new Set(oversized.map((entry) => entry.file));
+        const kept = meta.chapters.filter((chapter) => !dropped.has(path.basename(chapter.file)));
+        if (kept.length !== meta.chapters.length) {
+          const lastOpenChapterId = kept.some((c) => c.id === meta.lastOpenChapterId)
+            ? meta.lastOpenChapterId
+            : kept[0].id;
+          meta = await storage.writeBookMeta(
+            target,
+            { ...meta, chapters: kept, lastOpenChapterId },
+            { structural: true }
+          );
+        }
+      }
+      return withSkippedFiles(
+        {
+          imported: true,
+          kind: 'book',
+          folder,
+          path: target,
+          title: meta.title,
+          chapters: meta.chapters.length
+        },
+        oversized
+      );
+    }
+    await copyAsTexts(sourceDir, target, analysis.txtFiles, oversized);
+    const rebuilt = await repair.rebuildFromFiles(target);
+    return withSkippedFiles(
+      {
         imported: true,
-        kind: 'book',
+        kind: 'chapter-folder',
         folder,
         path: target,
-        title: meta.title,
-        chapters: meta.chapters.length
-      };
-    }
-    await copyAsTexts(sourceDir, target, analysis.txtFiles);
-    const rebuilt = await repair.rebuildFromFiles(target);
-    return {
-      imported: true,
-      kind: 'chapter-folder',
-      folder,
-      path: target,
-      title: rebuilt.meta.title,
-      chapters: rebuilt.meta.chapters.length
-    };
+        title: rebuilt.meta.title,
+        chapters: rebuilt.meta.chapters.length
+      },
+      oversized
+    );
   } catch (err) {
     await fs.rm(target, { recursive: true, force: true }).catch(() => {});
     throw new storage.StorageError('IMPORT_FAILED', `复制失败：${errorText.describeForUi(err).message}`);
@@ -367,6 +427,7 @@ async function importFolders(booksRoot, sources, options = {}) {
   const imported = [];
   const skipped = [];
   const failed = [];
+  let skippedTooLarge = 0;
   const root = path.resolve(booksRoot);
   await fs.mkdir(root, { recursive: true });
   await cleanupStaleStaging(root);
@@ -419,6 +480,15 @@ async function importFolders(booksRoot, sources, options = {}) {
     } else {
       try {
         const result = await importBookFolder(root, plan.sourceDir, plan.analysis);
+        // 文件夹里被闸门跳过的单个文件也计入 skipped（source / reason / code 与整源跳过同形）
+        for (const entry of result.skippedFiles || []) {
+          skipped.push({
+            source: path.join(plan.sourceDir, entry.file),
+            reason: entry.message,
+            code: entry.code
+          });
+        }
+        if (result.skippedTooLarge) skippedTooLarge += result.skippedTooLarge;
         imported.push(result);
       } catch (err) {
         failed.push({ source: plan.source, message: errorText.describeForUi(err).message });
@@ -427,7 +497,9 @@ async function importFolders(booksRoot, sources, options = {}) {
     }
   }
 
-  return { imported, skipped, failed };
+  return skippedTooLarge
+    ? { imported, skipped, failed, skippedTooLarge }
+    : { imported, skipped, failed };
 }
 
 module.exports = {
