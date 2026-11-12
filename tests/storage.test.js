@@ -1390,3 +1390,75 @@ test('建书失败：收掉这次刚建的目录与空章文件，再建一次�
   assert.deepEqual(await fs.readdir(busyRoot), ['有人用过的名字'], '只收掉本次新建的「名字-2」');
   assert.equal(await fs.readFile(path.join(busyRoot, '有人用过的名字', '别人的.txt'), 'utf8'), '不要删我');
 });
+
+// ---------- 1.6.1 R3b：书架扫描的全局读盘上限（P-10） ----------
+// 以前书架分层扫描：外层 12 本书 × 每本回填 8 章 = 峰值 96 路同时读正文。机械盘 / 杀软下
+// 老书首次扫描会把盘打满，同时打开的书也跟着卡。现在整条链路共用一个常量：全局 ≤ 8
+// = 外层 4 本 × 每本 2 章；单本直调（打开书 / 保存校验）不嵌套，仍按 8 路走。
+test('书架扫描：1000 章并发峰值不超过全局上限 8（注入 reader 计数，不测墙钟）', async () => {
+  const root = await mkTmp();
+  const bookCount = 10;
+  const perBook = 100;
+  for (let b = 0; b < bookCount; b += 1) {
+    const { path: bookPath } = await storage.createBook(root, `并发书${b}`);
+    const meta = await storage.readBookMeta(bookPath);
+    // 造「老书」书目：100 章都没有 chars 缓存。注入的 reader 不读盘，所以不用真建 100 个 txt
+    const chapters = Array.from({ length: perBook }, (_, i) => ({
+      id: `ch_${b}_${i}`,
+      file: `${String(i + 1).padStart(3, '0')}-第${i + 1}章.txt`,
+      name: `第 ${i + 1} 章`
+    }));
+    await fs.writeFile(path.join(bookPath, '书目.json'), JSON.stringify({ ...meta, chapters }), 'utf8');
+  }
+
+  let inFlight = 0;
+  let peak = 0;
+  let calls = 0;
+  const books = await storage.listBooks(root, {
+    readText: async () => {
+      calls += 1;
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      inFlight -= 1;
+      return '一二三四五';
+    }
+  });
+  assert.equal(books.length, bookCount);
+  assert.equal(calls, bookCount * perBook, '每个缺字数的章只读一次');
+  assert.ok(peak <= 8, `并发峰值 ${peak} 超过全局上限 8（外层扫书 × 每本回填不许相乘放大）`);
+  assert.ok(books.every((book) => book.totalChars === perBook * 5), '所有章字数都要回填');
+});
+
+// 还原「整本替换」只该重算真正被还原的那几章：以前把整本 meta.chapters 都传给
+// refreshChapterChars，还原 1 章会把 1000 章正文全读一遍（白读盘、还原变慢）。
+test('替换备份还原：还原 1 章只重算这 1 章（注入 reader 计数）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '还原只读书');
+  let meta = await storage.readBookMeta(bookPath);
+  const firstFile = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, firstFile, '阿明来了。');
+  await storage.createChapter(bookPath, 1, '第二章');
+  await storage.createChapter(bookPath, 2, '第三章');
+  meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapters.length, 3, '书里有 3 章，还原只碰 1 章');
+
+  // 手工造一个只含 1 章的替换备份（真实备份目录只放被替换的那些章）
+  const backupName = '替换备份-20991231235959';
+  const backupDir = path.join(bookPath, '_trash', backupName);
+  await fs.mkdir(backupDir, { recursive: true });
+  await fs.writeFile(path.join(backupDir, firstFile), '阿明走了。', 'utf8');
+
+  const counted = [];
+  const res = await storage.restoreReplaceBackup(bookPath, backupName, {
+    readText: async (targetBookPath, chapter) => {
+      counted.push(chapter.file);
+      return '四个汉字';
+    }
+  });
+  assert.equal(res.restored, 1);
+  assert.deepEqual(counted, [firstFile], '只重算被还原的那一章，另外两章不许读');
+  const after = await storage.readBookMeta(bookPath);
+  assert.equal(after.chapters.find((chapter) => chapter.file === firstFile).chars, 4);
+});
+

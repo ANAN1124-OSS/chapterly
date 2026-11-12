@@ -333,8 +333,17 @@ function mergeCharsCache(freshMeta, cachedChapters) {
 // 缓存缺失时只读缺的那几章并把缓存写回（老书首次扫描慢一点，之后秒开）。
 // writeCache=false 时只算不写（保存后的后台全书校验用：那一趟必须是纯读，
 // 否则会悄悄改 书目.json —— 复制 / 导出等「只读」操作会看到书被改写）。
-// 章节字数缓存回填的并发上限：和书架列书目的 12 路、缺章 stat 的 16 路分开（读盘 vs 只 stat）。
-// 老书首次扫描要读 1000 章正文，串行在机械盘 / 杀软下要到秒级；8 路既快又不会把盘打满。
+// 1.6.1 R3b（P-10）：书架扫描「同时读章节正文」的全局上限。分层扫描的相乘积必须 ≤ 这个数：
+// 外层扫书 × 每本书内的字数回填 —— 以前是 12 × 8 = 峰值 96 路同时读盘，机械盘 / 杀软下
+// 老书（1000 章）首扫会把盘打满、同时打开的书也跟着卡。现在 8 = 外层 4 本 × 每本 2 章，
+// 三个数都从这一个常量派生：改上限只改这里，外层 / 内层自动跟着变。
+const SCAN_READ_CONCURRENCY = 8;
+// 每本书内回填的并发（只用于书架扫描这条嵌套链路）
+const SCAN_BACKFILL_CONCURRENCY = 2;
+const SCAN_BOOK_CONCURRENCY = Math.floor(SCAN_READ_CONCURRENCY / SCAN_BACKFILL_CONCURRENCY); // 4
+// 字数回填的默认并发：单本直调（打开书 / 保存后校验）不在扫描里嵌套，按 8 路读；
+// 书架扫描经 bookStats 显式传 SCAN_BACKFILL_CONCURRENCY 收窄到 2，避免和外层相乘放大。
+// 缺章 stat 的 16 路只 stat 不读盘，和这里分开（读盘 vs 只 stat）。
 const CHAPTER_BACKFILL_CONCURRENCY = 8;
 
 // 1.6.1 R3a：回填默认 reader 先过 128 MB 闸门（与 loadChapterText 同一条口径）。
@@ -374,7 +383,7 @@ async function backfillChapterChars(bookPath, chapters, options = {}) {
   return changed;
 }
 
-async function bookStats(bookPath, meta, { writeCache = true } = {}) {
+async function bookStats(bookPath, meta, { writeCache = true, readText, backfillConcurrency } = {}) {
   let totalChars = 0;
   const needRead = [];
   for (const chapter of meta.chapters) {
@@ -382,7 +391,7 @@ async function bookStats(bookPath, meta, { writeCache = true } = {}) {
     else needRead.push(chapter);
   }
   if (needRead.length) {
-    const changed = await backfillChapterChars(bookPath, needRead);
+    const changed = await backfillChapterChars(bookPath, needRead, { readText, concurrency: backfillConcurrency });
     for (const chapter of needRead) {
       if (Number.isFinite(chapter.chars)) totalChars += chapter.chars;
     }
@@ -430,7 +439,9 @@ async function scanConflictCopies(bookPath) {
   }
 }
 
-async function listBooks(booksRoot) {
+async function listBooks(booksRoot, options = {}) {
+  // readText 可注入（单测用它数并发峰值，不测墙钟）；这条嵌套链路把回填并发收窄到 SCAN_BACKFILL_CONCURRENCY
+  const settings = options && typeof options === 'object' ? options : {};
   // 建目录 + 列目录放在同一个 try 里：书架目录指向一个普通文件 / 盘符不可用时，
   // 以前会抛 Node 的英文 EEXIST 原文（还带完整路径），现在统一成 ROOT_UNREADABLE + 中文原因。
   let entries;
@@ -445,11 +456,11 @@ async function listBooks(booksRoot) {
     .filter((ent) => ent.isDirectory() && !ent.name.startsWith('_') && !ent.name.startsWith('.'))
     .map((ent) => ({ folder: ent.name, bookPath: path.join(booksRoot, ent.name) }));
 
-  const scanned = await mapLimit(candidates, 12, async ({ folder, bookPath }) => {
+  const scanned = await mapLimit(candidates, SCAN_BOOK_CONCURRENCY, async ({ folder, bookPath }) => {
     try {
       const meta = await readBookMeta(bookPath);
       const [stats, conflicts] = await Promise.all([
-        bookStats(bookPath, meta),
+        bookStats(bookPath, meta, { readText: settings.readText, backfillConcurrency: SCAN_BACKFILL_CONCURRENCY }),
         scanConflictCopies(bookPath)
       ]);
       const info = bookInfoLib.readBookInfo(meta);
@@ -1488,7 +1499,8 @@ async function listReplaceBackups(bookPath) {
 // 还原一次「整本替换」：把备份目录里的章节文件覆盖回书内。
 // 安全措施：只还原书目里当前存在的章节文件（已删章节不偷偷复活）；
 // 还原前先把书里「现在的内容」备份到 _trash/还原前备份-时间戳/，还原本身点错了也还有退路。
-async function restoreReplaceBackup(bookPath, backupName) {
+async function restoreReplaceBackup(bookPath, backupName, options = {}) {
+  const settings = options && typeof options === 'object' ? options : {};
   const meta = await readBookMeta(bookPath);
   const rawName = String(backupName == null ? '' : backupName).trim();
   const name = path.basename(rawName);
@@ -1550,7 +1562,9 @@ async function restoreReplaceBackup(bookPath, backupName) {
     // 正文被覆盖了，字数缓存要重算（复用历史还原的 refreshChapterChars）；
     // 书目改动走 writeBookMeta（B2 之后：普通保存不轮换 .bak，这里只刷新字数缓存）
     if (restored) {
-      await refreshChapterChars(bookPath, meta, meta.chapters.map((chapter) => chapter.file));
+      // 只重算真正覆盖回书里的那几章：整本 meta.chapters 会让「还原 1 章」把全书写一遍字。
+      // restorable 里的名字就是这次被还原的文件名；reader 与扫描回填同口径（过 128 MB 闸门）。
+      await refreshChapterChars(bookPath, meta, restorable.map((entry) => entry.name), { readText: settings.readText });
       await writeBookMeta(bookPath, meta);
     }
   } catch (err) {
@@ -1680,14 +1694,18 @@ async function findHistoryGroup(bookPath, groupId, chapterFiles) {
   return group;
 }
 
-async function refreshChapterChars(bookPath, meta, files) {
+async function refreshChapterChars(bookPath, meta, files, options = {}) {
+  const settings = options && typeof options === 'object' ? options : {};
+  // 读盘和扫描回填同一口径：先过 128 MB 闸门；超限章（reader 返回 null）字数缓存保持原值，不按 0 写
+  const readText = settings.readText || readChapterTextForCount;
   const touched = new Set(files);
   const targets = meta.chapters.filter((chapter) => touched.has(chapter.file));
   if (!targets.length) return;
   // B4（审计 P4）：还原后刷字数也是整本批量读，并行读、按原顺序写回缓存
   const charCounts = await mapLimit(targets, CHAPTER_READ_CONCURRENCY, async (chapter) => {
     try {
-      const text = await fs.readFile(assertChapterFile(bookPath, chapter.file), 'utf8');
+      const text = await readText(bookPath, chapter);
+      if (text === null) return null;
       return chaptersLib.countChars(stripBom(text));
     } catch (err) {
       if (err.code === 'ENOENT') return null;
