@@ -1602,6 +1602,23 @@
         btn.click();
         return true;
       },
+      // 1.6.0b：书卡右键「移到分组…」展开的内联分组列表（选择类操作不再弹询问框）
+      bookMenuGroupOptions: () =>
+        Array.from(document.querySelectorAll('#book-menu-groups button')).map((el) => ({
+          label: el.textContent,
+          group: el.dataset.group || '',
+          action: el.dataset.action || '',
+          current: el.getAttribute('aria-current') === 'true'
+        })),
+      bookGroupChooserOpen: () => !$('book-menu-groups').classList.contains('hidden'),
+      clickBookMenuGroup(group) {
+        const btn = Array.from(document.querySelectorAll('#book-menu-groups button')).find(
+          (el) => el.dataset.action === 'move-group-pick' && (el.dataset.group || '') === String(group)
+        );
+        if (!btn) return false;
+        btn.click();
+        return true;
+      },
       exportMenuTexts: () =>
         textsOf('#export-menu button'),
       findSummary: () => $('find-summary').textContent,

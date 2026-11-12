@@ -134,6 +134,8 @@ const BASE_IDS = [
   'shelf-tag-filter', 'shelf-tag-label', 'btn-shelf-group-manage',
   'group-manage-backdrop', 'group-manage-list', 'group-manage-error', 'btn-group-manage-close',
   'shelf-footer-default', 'shelf-first-run-tip',
+  // 1.6.0b：书卡右键「移到分组…」在菜单里内联展开的分组列表
+  'book-menu-groups',
   'btn-bookinfo-cancel', 'btn-bookinfo-save'
 ];
 
@@ -283,13 +285,14 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
   }
 });
 
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 14 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 17 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0, 'create() 一次 $ 都不该调');
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'closeBookInfoDialog', 'closeGroupManageDialog', 'createBookWithTitle', 'maybeShowFirstRunTip',
-    'mergeShelfGroup', 'moveBookToGroup', 'onNewBookClick', 'openBookInfoDialog', 'openGroupManageDialog',
+    'closeBookGroupChooser', 'closeBookInfoDialog', 'closeGroupManageDialog', 'createBookWithTitle',
+    'maybeShowFirstRunTip', 'mergeShelfGroup', 'moveBookToGroup', 'newGroupForBook',
+    'onNewBookClick', 'openBookGroupChooser', 'openBookInfoDialog', 'openGroupManageDialog',
     'readBookInfoForm', 'renameShelfGroup', 'renderShelf', 'saveBookInfoDialog', 'setupBookinfoUi'
   ]);
   for (const name of Object.keys(ctx.ui)) assert.equal(typeof ctx.ui[name], 'function', name);
@@ -844,8 +847,8 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
   assert.ok(rendererSrc.includes('chapterIndex < state.chapters.length'), 'chapterIndex 要按本书章节数校验');
   assert.match(
     rendererSrc,
-    /const \{\r?\n    openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,\r?\n    openGroupManageDialog, closeGroupManageDialog, renameShelfGroup, mergeShelfGroup, moveBookToGroup,\r?\n    renderShelf, createBookWithTitle, onNewBookClick, setupBookinfoUi, maybeShowFirstRunTip\r?\n  \} = bookinfoUi;/,
-    '14 个入口按原名解构（含 F5 的分组管理 / 移到分组）'
+    /const \{\r?\n    openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,\r?\n    openGroupManageDialog, closeGroupManageDialog, renameShelfGroup, mergeShelfGroup, moveBookToGroup,\r?\n    openBookGroupChooser, closeBookGroupChooser, newGroupForBook,\r?\n    renderShelf, createBookWithTitle, onNewBookClick, setupBookinfoUi, maybeShowFirstRunTip\r?\n  \} = bookinfoUi;/,
+    '17 个入口按原名解构（含 F5 的分组管理 / 移到分组与 1.6.0b 的菜单内联列表）'
   );
   assert.ok(rendererSrc.includes('await maybeShowFirstRunTip();'), '首屏书架刷新后调一次首次运行提示');
   for (const id of [
@@ -1079,27 +1082,78 @@ test('分组合并：目标大小写归一到已有写法；部分失败保留�
   );
 });
 
-test('移到分组（单本）：询问框初值 = 当前分组、只写这一本；损坏书拒绝；没变化不写盘', async () => {
+test('移到分组（单本）：菜单里列出已有分组（带本数、当前打勾）+ 未分组 + 新建；只写这一本', async () => {
   const books = [
     makeBook({ path: '/库/甲', title: '甲', group: '玄幻' }),
-    makeBook({ path: '/库/乙', title: '乙', group: '玄幻' })
+    makeBook({ path: '/库/乙', title: '乙', group: '玄幻' }),
+    makeBook({ path: '/库/丙', title: '丙', group: '仙侠' }),
+    makeBook({ path: '/库/丁', title: '丁' })
   ];
-  const ctx = build({ books, promptAnswers: ['仙侠'] });
-  const result = await ctx.ui.moveBookToGroup(books[0]);
-  assert.equal(ctx.calls.promptText[0].title, '移到分组');
-  assert.equal(ctx.calls.promptText[0].value, '玄幻');
+  const ctx = build({ books });
+  assert.equal(ctx.ui.openBookGroupChooser(books[0]), true);
+  assert.deepEqual(ctx.calls.promptText, [], '打开列表不许再弹询问框');
+  const holder = ctx.dom.map.get('book-menu-groups');
+  assert.equal(holder.classList.contains('hidden'), false);
+  const title = holder.children.find((el) => el.className === 'context-menu-label');
+  assert.equal(title.textContent, '把《甲》移到');
+  const buttons = holder.children.filter((el) => el.tagName === 'button');
+  const byGroup = (name) => buttons.find((el) => (el.dataset.group || '') === name) || null;
+  assert.equal(byGroup('玄幻').textContent, '✓ 玄幻 · 2 本');
+  assert.equal(byGroup('玄幻').getAttribute('aria-current'), 'true');
+  assert.equal(byGroup('仙侠').textContent, '仙侠 · 1 本');
+  assert.equal(byGroup('仙侠').getAttribute('aria-current'), null, '别的分组不打勾');
+  assert.equal(byGroup('').textContent, '未分组 · 1 本');
+  assert.equal(buttons.find((el) => el.dataset.action === 'move-group-new').textContent, '新建分组…');
+
+  const result = await ctx.ui.moveBookToGroup(books[0], '仙侠');
   assert.deepEqual(ctx.calls.updateBookInfo, [['/库/甲', { group: '仙侠' }]], '只动这一本，不顺手改同组的另一本');
   assert.equal(result.changed, 1);
+  assert.match(ctx.calls.toast[0][0], /已移入 1 本到「仙侠」/);
 
+  // 损坏书：列表打开与执行都拒绝
   const corrupt = build({ books: [makeBook({ status: 'corrupt' })] });
-  assert.deepEqual(await corrupt.ui.moveBookToGroup(corrupt.state.books[0]), { ok: false });
+  assert.equal(corrupt.ui.openBookGroupChooser(corrupt.state.books[0]), false);
+  assert.deepEqual(await corrupt.ui.moveBookToGroup(corrupt.state.books[0], '仙侠'), { ok: false });
   assert.deepEqual(corrupt.calls.promptText, []);
   assert.equal(corrupt.calls.toast[0][1], 'warn');
 
-  const same = build({ books, promptAnswers: [' 玄幻 '] });
-  const sameResult = await same.ui.moveBookToGroup(books[0]);
+  // 没变化：同名（含首尾空格）不写盘；没选目标（undefined）也不写
+  const same = build({ books });
+  assert.equal((await same.ui.moveBookToGroup(books[0], ' 玄幻 ')).changed, 0);
   assert.deepEqual(same.calls.updateBookInfo, []);
-  assert.equal(sameResult.changed, 0);
+  assert.deepEqual(await same.ui.moveBookToGroup(books[0]), { ok: false });
+  assert.deepEqual(same.calls.updateBookInfo, []);
+
+  // 收起列表：清空并隐藏
+  assert.equal(ctx.ui.closeBookGroupChooser(), true);
+  assert.equal(holder.children.length, 0);
+  assert.equal(holder.classList.contains('hidden'), true);
+});
+
+test('移到分组：未分组的书在列表里「未分组」打勾；「新建分组…」问名字后只写这一本', async () => {
+  const books = [
+    makeBook({ path: '/库/甲', title: '甲', group: '玄幻' }),
+    makeBook({ path: '/库/丙', title: '丙', group: '仙侠' }),
+    makeBook({ path: '/库/丁', title: '丁' })
+  ];
+  const ctx = build({ books });
+  const loose = books[2];
+  assert.equal(ctx.ui.openBookGroupChooser(loose), true);
+  const buttons = ctx.dom.map.get('book-menu-groups').children.filter((el) => el.tagName === 'button');
+  const ungrouped = buttons.find((el) => (el.dataset.group || '') === '');
+  assert.equal(ungrouped.textContent, '✓ 未分组 · 1 本');
+  assert.equal(ungrouped.getAttribute('aria-current'), 'true');
+
+  const creating = build({ books, promptAnswers: ['新组'] });
+  const result = await creating.ui.newGroupForBook(books[0]);
+  assert.equal(creating.calls.promptText[0].title, '新建分组');
+  assert.deepEqual(creating.calls.updateBookInfo, [['/库/甲', { group: '新组' }]]);
+  assert.equal(result.changed, 1);
+
+  const canceled = build({ books, promptAnswers: [null] });
+  const cancelResult = await canceled.ui.newGroupForBook(books[0]);
+  assert.equal(cancelResult.canceled, true);
+  assert.deepEqual(canceled.calls.updateBookInfo, []);
 });
 
 test('setupBookinfoUi（F5）：标签下拉改 state.shelfTag 并重渲染；「管理分组…」打开弹层、关闭按钮收起', () => {

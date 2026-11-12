@@ -1218,7 +1218,7 @@
     <button type="button" data-action="rename" title="重命名本章（F2）">重命名<span class="kbd">F2</span></button>
     <button type="button" data-action="move-volume">移到卷…</button>
     <!-- 1.4.0 P0-2：点「移到卷…」在这里内联展开卷列表（不再弹模态选择框） -->
-    <div id="context-menu-volumes" class="context-menu-volumes hidden"></div>
+    <div id="context-menu-volumes" class="context-menu-submenu hidden"></div>
     <button type="button" data-action="insert-before">在此章之前插入</button>
     <button type="button" data-action="insert-after">在此章之后插入</button>
     <button type="button" data-action="delete" class="danger-text">删除（移到 _trash）</button>
@@ -1238,7 +1238,9 @@
     <button type="button" data-action="open">打开这本书</button>
     <button type="button" data-action="open-new-window" title="在另一个窗口打开这本书；同一本书不会开两个窗口">在新窗口打开</button>
     <button type="button" data-action="info">书籍信息…</button>
-    <button type="button" data-action="move-group" title="只改 书目.json 的分组字段，不动书文件夹与章节文件">移到分组…</button>
+    <button type="button" data-action="move-group" title="改这本书的分组：点开后在菜单里选已有分组，或新建一个；只改 书目.json，不动书文件夹与章节文件">移到分组…</button>
+    <!-- 1.6.0b：点「移到分组…」在这里内联展开分组列表（不再弹询问框） -->
+    <div id="book-menu-groups" class="context-menu-submenu hidden"></div>
     <button type="button" data-action="folder">打开所在文件夹</button>
     <button type="button" data-action="history">本书历史…</button>
     <button type="button" data-action="delete" class="danger-text">删除这本书…</button>

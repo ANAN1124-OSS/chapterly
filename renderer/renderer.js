@@ -1078,6 +1078,7 @@
   const {
     openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,
     openGroupManageDialog, closeGroupManageDialog, renameShelfGroup, mergeShelfGroup, moveBookToGroup,
+    openBookGroupChooser, closeBookGroupChooser, newGroupForBook,
     renderShelf, createBookWithTitle, onNewBookClick, setupBookinfoUi, maybeShowFirstRunTip
   } = bookinfoUi;
 
@@ -4183,6 +4184,8 @@
     // 「移到分组…」同理（1.6.0 F5）：改的是 书目.json 的 group，书目坏了先修复
     const groupBtn = menu.querySelector('button[data-action="move-group"]');
     if (groupBtn) groupBtn.classList.toggle('hidden', Boolean(book && book.status === 'corrupt'));
+    // 1.6.0b：每次打开菜单都收起上一次展开的分组列表（分组可能已改名 / 合并）
+    closeBookGroupChooser();
     placeMenuAt(menu, x, y);
   }
 
@@ -4905,26 +4908,35 @@
       const btn = event.target.closest('button[data-action]');
       if (!btn) return;
       const book = state.contextBook;
-      hideBookMenu();
       if (!book) return;
-      if (btn.dataset.action === 'open') {
+      const action = btn.dataset.action;
+      // 1.6.0b：点「移到分组…」只在菜单里展开分组列表，不收起菜单、不弹询问框；
+      // 展开后菜单可能贴着窗口下沿，按同一套夹紧逻辑再收一次。
+      if (action === 'move-group') {
+        openBookGroupChooser(book);
+        placeMenuAt($('book-menu'), parseFloat($('book-menu').style.left) || 0, parseFloat($('book-menu').style.top) || 0);
+        return;
+      }
+      hideBookMenu();
+      if (action === 'move-group-pick') {
+        await moveBookToGroup(book, btn.dataset.group || '');
+      } else if (action === 'move-group-new') {
+        await newGroupForBook(book);
+      } else if (action === 'open') {
         await openBookByPath(book.path);
-      } else if (btn.dataset.action === 'open-new-window') {
+      } else if (action === 'open-new-window') {
         await openBookInNewWindow(book);
-      } else if (btn.dataset.action === 'folder') {
+      } else if (action === 'folder') {
         try {
           await call(api.openBookFolder, book.path);
         } catch (err) {
           toast(`打开文件夹失败：${err.message}`, 'error');
         }
-      } else if (btn.dataset.action === 'info') {
+      } else if (action === 'info') {
         openBookInfoDialog(book);
-      } else if (btn.dataset.action === 'move-group') {
-        // 1.6.0 F5：书架没有多选，先做单本「移到分组…」（批量改分组记 §9 待办）
-        await moveBookToGroup(book);
-      } else if (btn.dataset.action === 'delete') {
+      } else if (action === 'delete') {
         await deleteBookFlow(book);
-      } else if (btn.dataset.action === 'history') {
+      } else if (action === 'history') {
         await openHistoryForPath(book.path, book.title);
       }
     });

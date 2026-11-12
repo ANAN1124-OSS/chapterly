@@ -4020,9 +4020,10 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
 
   height: 32px;}
 .context-menu button .kbd { flex: 0 0 auto; }
-/* 1.4.0 P0-2：右键菜单里内联展开的「移到卷」卷列表（不再弹模态选择框）。
- * 卷多时自己滚动（最多 8 行 ≈ 256px），不把菜单顶出窗口；小标题沿用 .context-menu-label。 */
-.context-menu-volumes {
+/* 1.4.0 P0-2 / 1.6.0b：右键菜单里内联展开的「移到卷」卷列表与书卡「移到分组」分组列表
+ * （选择类操作不再弹模态选择框）。条目多时自己滚动（最多 8 行 ≈ 256px），不把菜单顶出窗口；
+ * 小标题沿用 .context-menu-label。 */
+.context-menu-submenu {
   max-height: 256px;
   overflow: auto;
   border-top: 1px solid var(--line);

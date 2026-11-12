@@ -6,7 +6,8 @@
 //   ③ 分组管理弹层：列出分组与本数；「改名」询问框初值 = 旧名，弹层先收起（不叠两个弹层）；
 //      改名后书目只剩 group 变化（正文 / 章节文件 / 文件名 / .bak 之外一律不动）；
 //   ④ 合并：把 F5乙组并进已有分组，两本书落在同一分组，选项计数变 2、旧分组消失；
-//   ⑤ 书卡右键「移到分组…」：单本改分组（书架没有多选，批量改分组见 §9 待办）；
+//   ⑤ 书卡右键「移到分组…」：单本改分组，点开在菜单里展开已有分组（带本数 / 当前打勾）、
+//      「未分组」与「新建分组…」；点选即改，不弹询问框（书架没有多选，批量改分组见 §9 待办）；
 //   ⑥ 只改 书目.json：章节 txt 字节 / mtime / 文件清单不变，config.json 里书签与「最近书」不变，
 //      筛选状态只记内存（config 不新增 shelfGroup / shelfTag 字段）。
 //
@@ -278,23 +279,29 @@ module.exports = async function group80ShelfGroups(t) {
     optionsAfterMerge
   );
 
-  // ---------- ⑥ 书卡右键「移到分组…」（单本） ----------
+  // ---------- ⑥ 书卡右键「移到分组…」（单本；1.6.0b 改成菜单内联列表，不再弹询问框） ----------
   const menuTexts = await exec('window.__cwTest.bookMenuTexts()');
   check('移到分组：书卡右键菜单里有「移到分组…」', menuTexts.includes('移到分组…'), menuTexts);
   await exec(`window.__cwTest.openBookMenuForPath(${JSON.stringify(pathC)})`);
   check(
-    '移到分组：右键菜单真的打开了',
+    '移到分组：点一下在菜单里展开分组列表，不弹询问框',
     (await exec('window.__cwTest.bookMenuOpen()')) === true &&
-      (await exec(`window.__cwTest.clickBookMenuAction('move-group')`)) === true
+      (await exec(`window.__cwTest.clickBookMenuAction('move-group')`)) === true &&
+      (await exec('window.__cwTest.bookGroupChooserOpen()')) === true &&
+      (await exec('window.__cwTest.modalOpen()')) === false
   );
-  await waitFor('window.__cwTest.modalOpen() === true', 4000);
+  const chooserOptions = await exec('window.__cwTest.bookMenuGroupOptions()');
+  const groupOptionC = chooserOptions.find((item) => item.group === GROUP_C) || null;
+  const noneOption = chooserOptions.find((item) => item.action === 'move-group-pick' && item.group === '') || null;
   check(
-    '移到分组：询问框初值是空（这本书还没有分组）',
-    (await exec('window.__cwTest.dialog()')) === '移到分组' &&
-      (await exec("document.getElementById('modal-input').value")) === ''
+    '移到分组：列表带本数 / 当前分组打勾，另有「未分组」与「新建分组…」',
+    groupOptionC?.label === `${GROUP_C} · 2 本` &&
+      noneOption?.current === true &&
+      /^✓ 未分组 · \d+ 本$/.test(noneOption?.label || '') &&
+      chooserOptions.some((item) => item.action === 'move-group-new' && item.label === '新建分组…'),
+    chooserOptions
   );
-  await exec(`document.getElementById('modal-input').value = ${JSON.stringify(GROUP_C)}`);
-  await exec("window.__cwTest.answerModal('ok')");
+  await exec(`window.__cwTest.clickBookMenuGroup(${JSON.stringify(GROUP_C)})`);
   await waitFor(
     `window.__cwTest.shelfGroupOptions().some((item) => item.value === ${JSON.stringify(GROUP_C)} && item.label === ${JSON.stringify(
       label(GROUP_C, 3)
@@ -304,7 +311,7 @@ module.exports = async function group80ShelfGroups(t) {
   const metaCAfter = await storage.readBookMeta(pathC);
   const cardC = await exec('window.__cwTest.bookCardInfo(' + JSON.stringify(path.basename(pathC)) + ')');
   check(
-    '移到分组：只写这一本的 group，书卡上的分组签立刻更新',
+    '移到分组：点选目标分组只写这一本，书卡上的分组签立刻更新',
     metaCAfter.group === GROUP_C && String((cardC && cardC.tags) || '').includes(GROUP_C),
     { group: metaCAfter.group, card: cardC }
   );

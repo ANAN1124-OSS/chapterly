@@ -156,10 +156,6 @@
   // 只改每本书 书目.json 的 group 字段（清空 = 删字段）：书文件夹 / 章节文件 / 书签 /
   // 「继续上次写作」都不动，所以改名后旧书签与最近打开照旧有效。
   // 每本一次 updateBookInfo（沿用现有 IPC，不加新频道）：单本失败不影响其他书，失败清单报给作者。
-  function groupNamesOf() {
-    return bookInfoLib.collectGroupStats(state.books).groups.map((item) => item.name);
-  }
-
   function findGroupStat(group) {
     return bookInfoLib.collectGroupStats(state.books).groups.find((item) => item.name === group) || null;
   }
@@ -314,26 +310,80 @@
   }
 
   // 书卡右键「移到分组…」（1.6.0 F5）：书架没有多选，只做单本；仅改 书目.json。
-  async function moveBookToGroup(book) {
+  // 1.6.0b：不再让作者手打分组名——点开就在菜单里展开已有分组（带本数、当前分组打勾）、
+  // 「未分组」与「新建分组…」，选一个即执行；与「移到卷…」（1.4.0 P0-2）同一套做法，
+  // 选择类操作走菜单内联列表，不弹模态。菜单收起时由渲染层调 closeBookGroupChooser() 清场。
+  function closeBookGroupChooser() {
+    const holder = $('book-menu-groups');
+    if (!holder) return false;
+    holder.textContent = '';
+    holder.classList.add('hidden');
+    return true;
+  }
+
+  function openBookGroupChooser(book) {
+    const holder = $('book-menu-groups');
+    if (!holder || !book || !book.path) return false;
+    if (book.status === 'corrupt') {
+      toast('这本书的书目损坏，先点「修复」再改分组', 'warn');
+      return false;
+    }
+    const info = bookInfoLib.readBookInfo(book);
+    const stats = bookInfoLib.collectGroupStats(state.books);
+    holder.textContent = '';
+    const title = document.createElement('div');
+    title.className = 'context-menu-label';
+    title.textContent = `把《${book.title || book.folder || ''}》移到`;
+    holder.appendChild(title);
+    const addOption = (group, count, current) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.dataset.action = 'move-group-pick';
+      btn.dataset.group = group;
+      btn.textContent = `${current ? '✓ ' : ''}${group || '未分组'} · ${count} 本`;
+      if (current) btn.setAttribute('aria-current', 'true');
+      holder.appendChild(btn);
+    };
+    // 分组按中文排序（collectGroupStats 同一口径）；「未分组」放最后，当前分组打勾。
+    for (const group of stats.groups) addOption(group.name, group.count, group.name === info.group);
+    addOption('', stats.ungrouped, !info.group);
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.dataset.action = 'move-group-new';
+    create.textContent = '新建分组…';
+    holder.appendChild(create);
+    holder.classList.remove('hidden');
+    return true;
+  }
+
+  // 「新建分组…」：沿用通用询问框问一个名字，再走与列表选择同一条写入路径。
+  async function newGroupForBook(book) {
     if (!book || !book.path) return { ok: false };
     if (book.status === 'corrupt') {
       toast('这本书的书目损坏，先点「修复」再改分组', 'warn');
       return { ok: false };
     }
-    const info = bookInfoLib.readBookInfo(book);
-    const names = groupNamesOf();
     const answer = await promptText({
-      title: '移到分组',
-      message:
-        `把《${book.title}》移到哪个分组？` +
-        `（已有：${names.length ? names.join(' / ') : '暂无'}；留空 = 未分组）`,
-      value: info.group,
+      title: '新建分组',
+      message: `给《${book.title}》新建一个分组名（只改这一本的书目；留空 = 未分组）。`,
       placeholder: '分组名'
     });
     if (answer === null) return { ok: false, canceled: true };
-    // 用整架书算目标分组的规范写法（能对上别的书已有的「Group A」），再只保留这一本。
+    return moveBookToGroup(book, answer);
+  }
+
+  // 执行「移到分组」：target 由列表 / 新建分组传入。用整架书算目标分组的规范写法
+  // （能对上别的书已有的「Group A」），再只保留这一本。
+  async function moveBookToGroup(book, target) {
+    if (!book || !book.path) return { ok: false };
+    if (book.status === 'corrupt') {
+      toast('这本书的书目损坏，先点「修复」再改分组', 'warn');
+      return { ok: false };
+    }
+    if (typeof target !== 'string') return { ok: false };
+    const info = bookInfoLib.readBookInfo(book);
     const changes = bookInfoLib
-      .planGroupChange(state.books, info.group, answer)
+      .planGroupChange(state.books, info.group, target)
       .filter((change) => change.path === book.path);
     if (!changes.length) {
       toast('分组没有变化');
@@ -802,6 +852,10 @@
       closeGroupManageDialog,
       renameShelfGroup,
       mergeShelfGroup,
+      // 1.6.0b：书卡右键「移到分组…」的菜单内联分组列表（不再弹询问框）
+      openBookGroupChooser,
+      closeBookGroupChooser,
+      newGroupForBook,
       moveBookToGroup,
       renderShelf,
       createBookWithTitle,

@@ -115,10 +115,10 @@ test('测试钩子模块：Node 里能 require、导出 create，create() 不碰
   assert.strictEqual(typeof hooks.handleCloseRequest, 'function');
 });
 
-test('测试钩子模块：拆分前后钩子名称与数量不变（503 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10）', () => {
+test('测试钩子模块：拆分前后钩子名称与数量不变（506 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3）', () => {
   const hooks = hooksModule.create(stubHost());
   const names = Object.keys(hooks).sort();
-  assert.strictEqual(names.length, 503, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
+  assert.strictEqual(names.length, 506, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
   // 每个功能域各抽一个，防止「数量对但换了一批」
   for (const name of [
     'ready', 'state', 'newBook', 'openBookPath', 'openBookInNewWindow', 'releaseBook', 'windowInfo',
@@ -136,6 +136,8 @@ test('测试钩子模块：拆分前后钩子名称与数量不变（503 个；2
     // 1.6.0 F5：书架标签筛选 / 分组管理
     'shelfTagOptions', 'setShelfTag', 'shelfGroupManageVisible', 'openGroupManageDialog',
     'groupManageRows', 'clickGroupManageAction',
+    // 1.6.0b：书卡右键「移到分组…」的菜单内联分组列表
+    'bookMenuGroupOptions', 'bookGroupChooserOpen', 'clickBookMenuGroup',
     'handleCloseRequest'
   ]) {
     assert.ok(Object.prototype.hasOwnProperty.call(hooks, name), `钩子丢了: ${name}`);
@@ -274,7 +276,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // 1.6.0 F4b：5782 → 5784（+2）：顶栏右键「命令面板」的订阅。必须调 renderer.js 内部的
   //   openCommandPalette()（它带 anyBackdropOpen 锁键层判定，和 Ctrl+K 同一个入口）；
   //   搬出去就得把面板状态与锁键层一起注入，反而绕。只有一行注释 + 一行订阅。
-  const RENDERER_LINE_BUDGET = 5784;
+  // 1.6.0b：5784 → 5796（+12）：书卡「移到分组…」从弹询问框改成菜单内联分组列表——
+  //   每次打开菜单时收起上次列表（2 行）、解构 3 个入口（1 行）、菜单点击分支与重新夹紧（9 行）。
+  //   列表 DOM 与写入逻辑都在 renderer/bookinfo-ui.js，这里只留事件接线；再搬走就只能把
+  //   hideBookMenu / placeMenuAt 反向注入，反而更绕。
+  const RENDERER_LINE_BUDGET = 5796;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,
