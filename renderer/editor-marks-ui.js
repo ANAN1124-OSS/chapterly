@@ -110,25 +110,79 @@
   // 不单独提示（提示统一由入口门控弹一次）。
   function currentCaretParagraph() {
     if (!state.marks.caretParagraph) return null;
-    if (editorEl.value.length > editorLogic.MAX_MARK_CHARS) {
+    const text = editorEl.value;
+    if (text.length > editorLogic.MAX_MARK_CHARS) {
       state.marks.caretTooLarge = true;
       return null;
     }
     state.marks.caretTooLarge = false;
-    return editorLogic.caretParagraph(editorEl.value, editorEl.selectionStart || 0);
+    const pos = editorEl.selectionStart || 0;
+    // V27：同一份正文 + 同一个光标位置只算一次 caretParagraph（= 一次全文 lineRanges）。
+    // selectionchange 连发、光标没动时后面几次直接复用，不重扫。
+    const cached = state.marks.lastCaret;
+    if (cached && cached.text === text && cached.pos === pos) return cached.value;
+    const value = editorLogic.caretParagraph(text, pos);
+    state.marks.lastCaret = { text, pos, value };
+    state.marks.lastLinesKey = { text, pos, line: value.line };
+    return value;
+  }
+
+  // V27：光标行号提示（便宜）。正文没变时只数「上次光标 → 这次光标」这段里的换行，
+  // 不整段扫正文；算不出来（正文变了 / 没有缓存）返回 -1，交回全文实现。
+  function caretLineHint(pos) {
+    const cache = state.marks.lastLinesKey;
+    if (!cache || cache.text !== editorEl.value) return -1;
+    const from = Math.min(cache.pos, pos);
+    const to = Math.max(cache.pos, pos);
+    let delta = 0;
+    for (let i = from; i < to; i += 1) if (editorEl.value.charCodeAt(i) === 10) delta += 1;
+    return pos >= cache.pos ? cache.line + delta : cache.line - delta;
+  }
+
+  // 定时器统一入口（V27）：模块里只有这一处 setTimeout，每个 key 各保一个句柄，
+  // 同一 key 重复排期只跑最后一次；收尾走 clearMarksTimers，不把定时器漏到下一屏。
+  function clearMarksTimers(key) {
+    const timers = state.marks && state.marks.timers;
+    if (!timers) return;
+    for (const name of key === undefined ? Object.keys(timers) : [key]) {
+      if (timers[name]) clearTimeout(timers[name]);
+      timers[name] = null;
+    }
+    if (key === undefined || key === 'render') state.marks.timer = null;
+  }
+
+  function scheduleMarksTask(key, delay, run) {
+    if (!state.marks.timers) state.marks.timers = Object.create(null);
+    clearMarksTimers(key);
+    const timer = setTimeout(() => {
+      state.marks.timers[key] = null;
+      if (key === 'render') state.marks.timer = null;
+      run();
+    }, Math.max(0, Number(delay) || 0));
+    state.marks.timers[key] = timer;
+    if (key === 'render') state.marks.timer = timer;
   }
 
   function scheduleMarksRender(delay = 80) {
-    if (state.marks.timer) clearTimeout(state.marks.timer);
-    state.marks.timer = setTimeout(() => {
-      state.marks.timer = null;
+    scheduleMarksTask('render', delay, () => {
       renderEditorMarks();
       // 查找高亮层和标记层共用同一套对齐 / 重画时机（字体、页宽、窗口大小变了也跟着对齐）
       if (state.find.total) renderFindHighlights();
-    }, Math.max(0, Number(delay) || 0));
+    });
+  }
+
+  // 选中字数 + 光标段落高亮（V27 防抖）：拖选时 selectionchange 每帧都来，
+  // 同一轮连发只跑最后一次，别每帧重算。
+  function scheduleSelectionSync() {
+    scheduleMarksTask('selection', 80, () => {
+      renderSelectionStats();
+      updateCaretParagraph();
+    });
   }
 
   function hideEditorMarks() {
+    // 收起整层时把排期中的重画 / 选中同步一起清掉（V27：view 切走以后不许再跑）
+    clearMarksTimers();
     const overlay = $('editor-marks');
     const gutter = $('editor-marks-gutter');
     if (gutter) {
@@ -356,6 +410,9 @@
     if (state.view !== 'editor' || !state.bookPath || state.index < 0) return;
     // 输入法拼字中不重画也不动高亮（中间态会闪）：compositionend 会再整层重画一次。
     if (state.marks.composing) return;
+    // V27 早退前移：先用「便宜的行号」比一次。行没变就直接返回，
+    // 全文 lineRanges（caretParagraph）一次都不跑——大章拖选时这是最常走的分支。
+    if (caretLineHint(editorEl.selectionStart || 0) === state.marks.caretLine) return;
     const caret = currentCaretParagraph();
     const line = caret && !caret.blank ? caret.line : 0;
     if (line === state.marks.caretLine) return;
@@ -543,10 +600,11 @@
       state.marks.composing = false;
       scheduleMarksRender(0);
     });
+    // V27：三处光标事件（keyup / mouseup / select）+ document selectionchange 一起进
+    // 80ms 防抖；滚动同步与打字机对齐仍然同步跑（它们只是读位置，不扫正文）。
     for (const type of ['keyup', 'mouseup', 'select']) {
       editorEl.addEventListener(type, () => {
-        renderSelectionStats();
-        updateCaretParagraph();
+        scheduleSelectionSync();
         syncMarksScroll();
         syncFindOverlayScroll();
         // 键盘 / 鼠标移动光标后，打字机模式跟着把光标行放回 1/3 处
@@ -554,8 +612,7 @@
       });
     }
     document.addEventListener('selectionchange', () => {
-      renderSelectionStats();
-      updateCaretParagraph();
+      scheduleSelectionSync();
     });
     if (typeof ResizeObserver === 'function') {
       state.marks.resizeObserver = new ResizeObserver(() => scheduleMarksRender(40));

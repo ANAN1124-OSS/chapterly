@@ -24,9 +24,18 @@ const realGetComputedStyle = globalThis.getComputedStyle;
 const realResizeObserver = globalThis.ResizeObserver;
 const ALL_CTX = [];
 function stopMarks(ctx) {
-  if (ctx && ctx.state && ctx.state.marks.timer) {
-    clearTimeout(ctx.state.marks.timer);
-    ctx.state.marks.timer = null;
+  if (!ctx || !ctx.state || !ctx.state.marks) return;
+  const marks = ctx.state.marks;
+  // V27：定时器按 key 存（render / selection），收尾时一起清，别跨用例泄漏
+  if (marks.timers) {
+    for (const key of Object.keys(marks.timers)) {
+      if (marks.timers[key]) clearTimeout(marks.timers[key]);
+      marks.timers[key] = null;
+    }
+  }
+  if (marks.timer) {
+    clearTimeout(marks.timer);
+    marks.timer = null;
   }
 }
 test.after(() => {
@@ -176,6 +185,7 @@ function makeEl(tag = 'div', id = '') {
 
 function makeDocument() {
   const map = new Map();
+  const docListeners = [];
   let lookups = 0;
   const doc = {
     activeElement: null,
@@ -183,13 +193,19 @@ function makeDocument() {
     createTextNode(text) { const n = makeEl('#text'); n._textNode = true; n.textContent = text; return n; },
     createDocumentFragment() { const frag = makeEl('fragment'); frag._isFragment = true; return frag; },
     getElementById: (id) => { lookups += 1; return map.get(id) || null; },
-    addEventListener() {}
+    // V27：document 级 selectionchange 要能被用例派发（旧假 document 吞掉监听，防抖无从验证）
+    addEventListener(type, fn) { docListeners.push({ type, fn }); }
   };
   return {
     doc,
     map,
     get lookups() { return lookups; },
     $: (id) => doc.getElementById(id),
+    fire(type, event) {
+      let result;
+      for (const l of docListeners) if (l.type === type) result = l.fn(event);
+      return result;
+    },
     ensure(id) { if (!map.has(id)) map.set(id, makeEl('div', id)); return map.get(id); }
   };
 }
@@ -747,12 +763,14 @@ test('setupEditorMarks：6 处编辑区监听 + document selectionchange + Resiz
   assert.notEqual(ctx.state.marks.timer, null);
   stopMarks(ctx);
 
-  // keyup：刷新选中字数 + 光标段落 + 两层滚动；专注打字机模式下把光标行拉回 1/3
+  // keyup：两层滚动与打字机对齐仍然同步；选中字数 / 光标段落走 80ms 防抖（V27 拖选连发）
   ctx.calls.renderSelectionStats = 0;
   ctx.editorEl._fire('keyup');
-  assert.equal(ctx.calls.renderSelectionStats, 1);
+  assert.equal(ctx.calls.renderSelectionStats, 0, '防抖窗口内先不跑');
   assert.deepEqual(ctx.calls.scheduleTypewriterAlign, [20]);
   assert.ok(ctx.calls.syncFindOverlayScroll >= 2);
+  t.mock.timers.tick(80);
+  assert.equal(ctx.calls.renderSelectionStats, 1, '80ms 后跑且只跑一次');
 
   // 非专注模式下不排打字机对齐
   ctx.state.focus.on = false;
@@ -769,6 +787,54 @@ test('setupEditorMarks：运行环境没有 ResizeObserver 时静默跳过（不
   const ctx = build();
   ctx.ui.setupEditorMarks();
   assert.equal(ctx.state.marks.resizeObserver, null);
+});
+
+// ---------- V27 标记层防抖 + 行没变早退（1.7.0 P2）----------
+// 大章拖选时 selectionchange 每帧都来。旧实现每来一次就 updateCaretParagraph() →
+// caretParagraph() → 全文 lineRanges；现在同一轮连发只跑最后一次，且光标没换行时连那一次都不扫。
+test('V27 锚点：selectionchange 连发只算一次全文 lineRanges（注入计数）', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let scans = 0;
+  const counting = {
+    ...editorLogic,
+    caretParagraph(text, position) {
+      scans += 1;
+      return editorLogic.caretParagraph(text, position);
+    }
+  };
+  const base = build({ text: '第一行\n第二行\n第三行', selectionStart: 0, caretParagraph: true });
+  const host = { ...base.host, editor: { ...base.host.editor, editorLogic: counting } };
+  const ui = editorMarksUi.create(host);
+  const ctx = { ui, host, state: base.state, dom: base.dom, calls: base.calls, editorEl: base.editorEl };
+  ALL_CTX.push(ctx);
+  ctx.ui.setupEditorMarks();
+  ctx.dom.map.get('editor-marks').classList.remove('hidden');
+  ctx.ui.renderEditorMarks(); // 首次建层：光标行号 1 已经记进缓存
+  const scansAtStart = scans;
+  const statsAtStart = ctx.calls.renderSelectionStats;
+  const fire = () => ctx.dom.fire('selectionchange');
+
+  // 一轮拖选：selectionchange 连发 3 次
+  fire(); fire(); fire();
+  assert.equal(ctx.calls.renderSelectionStats, statsAtStart, '防抖窗口内不跑选中字数');
+  assert.equal(scans, scansAtStart, '防抖窗口内不扫全文');
+  t.mock.timers.tick(79);
+  assert.equal(scans, scansAtStart, '不到 80ms 不跑');
+  t.mock.timers.tick(1);
+  assert.equal(ctx.calls.renderSelectionStats, statsAtStart + 1, '连发 3 次只跑最后一次');
+  assert.equal(scans, scansAtStart, '行没变：全文 lineRanges 一次都不算');
+
+  // 光标跨行（第 1 行 → 第 3 行）才需要重算
+  ctx.editorEl.selectionStart = 8;
+  fire();
+  t.mock.timers.tick(80);
+  assert.ok(scans > scansAtStart, '换行后要重算当前段落');
+
+  // 同一位置再触发：正文与光标都没动，缓存直接命中，不再扫
+  const afterMove = scans;
+  fire(); fire();
+  t.mock.timers.tick(80);
+  assert.equal(scans, afterMove, '同一内容 / 同一光标位置不重扫全文');
 });
 
 // ---------- 静态闸门 ----------
