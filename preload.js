@@ -171,6 +171,9 @@ contextBridge.exposeInMainWorld('api', {
   setUpdateMock: (mock) => invoke('update:test-mock', mock),
 
   onCloseRequested: (cb) => on('app:close-requested', cb),
+  // 1.6.1 P-01（审查报告）：点「强制退出」后主进程先发 app:force-close、再等 500 ms 才 destroy。
+  // 渲染层唯一一次收尾机会就靠这条通知（renderer 收下后 saveCurrent()，失败静默）。
+  onForceClose: (cb) => on('app:force-close', cb),
   // 书架数据变了（别的窗口新建 / 删除 / 保存 / 整理）：停在书架的窗口跟着刷新
   onShelfChanged: (cb) => on('shelf:changed', cb),
   onImportProgress: (cb) => on('import:progress', cb),

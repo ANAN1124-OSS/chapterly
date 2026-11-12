@@ -5157,6 +5157,12 @@
 
     // 主进程拦截到关窗/退出时，由这里决定「保存并退出 / 不保存退出 / 取消」
     api.onCloseRequested(handleCloseRequest);
+    // 1.6.1 P-01：强制退出前主进程给的最后一次落盘机会（500 ms 后 destroy）：失败静默、不再弹框。
+    api.onForceClose(() => {
+      void saveCurrent({ silent: true })
+        .catch(() => ({ ok: false }))
+        .then((saved) => api.closeReady(Boolean(saved && saved.ok)));
+    });
     // 1.6.0 F4b：顶栏右键「命令面板」——和 Ctrl+K 同一个入口（弹层 / 锁键层开着时不抢）
     api.onCommandPalette(() => openCommandPalette());
   // 别的窗口改了书架数据（新建 / 删除 / 保存 / 导入 / 整理）：停在书架就刷新；

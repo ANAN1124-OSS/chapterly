@@ -90,6 +90,12 @@ function mainChannels() {
   ]) {
     for (const match of MAIN.matchAll(re)) sent.add(match[1]);
   }
+  // 1.6.1 P-01：强制退出的通知是动态频道 `webContents.send(plan.channel)`——上面四条正则抓不到。
+  // 字面量登记在 core/close-guard.js 的 FORCE_CLOSE_CHANNEL，这里按那个常量补进来，奇偶校验才覆盖得到
+  // （改频道名 / preload 忘了跟，这条就会红）。
+  if (/webContents\.send\(plan\.channel\)/.test(MAIN)) {
+    sent.add(require(path.join(ROOT, 'core', 'close-guard.js')).FORCE_CLOSE_CHANNEL);
+  }
   const received = [...MAIN.matchAll(/ipcMain\.on\('([^']+)'/g)].map((item) => item[1]);
   return { handlers, sent: [...sent], received };
 }
@@ -189,7 +195,7 @@ test('preload：invoke 频道与 main.js 注册的 handle 频道一一对应（�
   assert.equal(new Set(handlers).size, handlers.length, 'main.js 里有重复注册的频道');
 });
 
-test('preload：单向通知 / 上报频道与 main.js 一一对应（10 条通知 + 2 条上报）', () => {
+test('preload：单向通知 / 上报频道与 main.js 一一对应（11 条通知 + 2 条上报）', () => {
   const { exposed, calls } = loadPreload();
   for (const fn of Object.values(exposed.api)) fn(() => {});
   const { sent, received } = mainChannels();
@@ -199,7 +205,8 @@ test('preload：单向通知 / 上报频道与 main.js 一一对应（10 条通�
   // b8 新增 clipboard:changed（剪贴板后台监听 → 轻提示，只带字数）；
   // 2026-11-07 新增 clipboard:recorded（每次入队 → 面板开着时即时刷新列表，只带条数）
   // 1.6.0 F4b 新增 app:command-palette（顶栏右键菜单 → 打开命令面板，空通知）
-  assert.equal(calls.subscribed.length, 10);
+  // 1.6.1 P-01 新增 app:force-close（强制退出前的收尾通知；没有接收端那 500 ms 就是空转）
+  assert.equal(calls.subscribed.length, 11);
   assert.equal(calls.sent.length, 2);
 });
 

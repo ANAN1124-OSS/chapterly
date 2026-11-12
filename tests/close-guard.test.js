@@ -11,11 +11,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const MAIN = read('main.js');
 const RENDERER = read('renderer/renderer.js');
+const PRELOAD = read('preload.js');
 
 function between(source, from, to) {
   const start = source.indexOf(from);
@@ -147,3 +149,94 @@ test('A1 静态闸门：主进程改走 8 秒 + plan / 执行器；提示文案�
   assert.match(forceSeg, /destroy:[\s\S]*destroy\(\)/, '最后才 destroy');
   assert.equal(forceSeg.indexOf('webContents.send') < forceSeg.indexOf('destroy:'), true, '源码顺序也必须是先通知');
 });
+
+// ---------- P-01（1.6.1 R5）：app:force-close 是「谁发 / 谁收」两头都要钉的频道 ----------
+// 审查报告 P-01：main.js 点「强制退出」后 `webContents.send(plan.channel)`，但 preload 没有任何
+// 订阅面收这条通知、renderer 更没有处理——500 ms 宽限是空转，行为等价于「延迟 500 ms 硬关」。
+// 而且原来的奇偶校验（tests/security-regression.test.js）正则只抓 `webContents.send('字面量'`，
+// 恰好漏掉 `send(plan.channel)` 这个动态频道。下面三条把「发 → 收 → 处理」三头都钉住。
+
+// 主进程实发的通知频道。`webContents.send(plan.channel)` 是动态的：字面量登记在
+// core/close-guard.js 的 FORCE_CLOSE_CHANNEL，这里按那个常量核（改频道名 / 忘了同步 preload 都会红）。
+function mainSentChannels() {
+  const sent = new Set();
+  for (const re of [
+    /sendToSession\([^,\n]+,\s*'([^']+)'/g,
+    /sendToFlow\('([^']+)'/g,
+    /webContents\.send\('([^']+)'/g,
+    /broadcast\('([^']+)'/g
+  ]) {
+    for (const match of MAIN.matchAll(re)) sent.add(match[1]);
+  }
+  if (/webContents\.send\(plan\.channel\)/.test(MAIN)) sent.add(closeGuardLib.FORCE_CLOSE_CHANNEL);
+  return [...sent];
+}
+
+// preload 实际的订阅面：vm 里跑一遍 preload（把 electron 换成假的），再把每个 api 成员当订阅函数
+// 调一次——和 tests/security-regression.test.js 的 loadPreload() 同一套手法，不靠读源码猜。
+function preloadSubscribedChannels() {
+  const subscribed = [];
+  let exposed = null;
+  const fakeElectron = {
+    contextBridge: {
+      exposeInMainWorld(key, api) {
+        exposed = api;
+      }
+    },
+    ipcRenderer: {
+      async invoke() {
+        return { ok: true };
+      },
+      on(channel) {
+        subscribed.push(channel);
+      },
+      send() {}
+    }
+  };
+  new vm.Script(PRELOAD, { filename: 'preload.js' }).runInNewContext({
+    require: (id) => {
+      assert.equal(id, 'electron', `preload 只该 require('electron')，实际 require('${id}')`);
+      return fakeElectron;
+    },
+    console
+  });
+  assert.ok(exposed, 'preload.js 没有调用 contextBridge.exposeInMainWorld');
+  for (const fn of Object.values(exposed)) fn(() => {});
+  return [...new Set(subscribed)];
+}
+
+test('P-01：preload 暴露 onForceClose 并订阅 app:force-close（否则 500 ms 宽限是空转）', () => {
+  const subscribed = preloadSubscribedChannels();
+  assert.ok(
+    subscribed.includes(closeGuardLib.FORCE_CLOSE_CHANNEL),
+    `preload 必须订阅 ${closeGuardLib.FORCE_CLOSE_CHANNEL}：main.js 发了这条通知，没人收就等于没发`
+  );
+  assert.match(
+    PRELOAD,
+    /onForceClose:\s*\(cb\)\s*=>\s*on\(\s*'app:force-close'\s*,\s*cb\s*\)/,
+    'preload 要用 onForceClose 暴露这个通知（命名与 onCloseRequested 一致）'
+  );
+});
+
+test('P-01：main 实发频道 ⊆ preload 订阅频道（含 plan.channel 这个动态频道）', () => {
+  const subscribed = new Set(preloadSubscribedChannels());
+  const sent = mainSentChannels();
+  assert.ok(
+    sent.includes(closeGuardLib.FORCE_CLOSE_CHANNEL),
+    '动态频道 webContents.send(plan.channel) 必须被这条闸门核到（不能只抓字面量）'
+  );
+  const orphan = sent.filter((channel) => !subscribed.has(channel));
+  assert.deepEqual(orphan, [], `这些频道主进程发了但没人收：${orphan.join(' / ')}`);
+});
+
+test('P-01：renderer 收到 app:force-close 后先 saveCurrent 再 closeReady 交回主进程', () => {
+  assert.ok(RENDERER.includes('api.onForceClose('), 'renderer 必须订阅 app:force-close');
+  const seg = between(RENDERER, 'api.onForceClose(', '\n    });');
+  const saveAt = seg.indexOf('saveCurrent(');
+  const readyAt = seg.indexOf('api.closeReady(');
+  assert.ok(saveAt > 0, '收到强制退出通知要先调现成的 saveCurrent()');
+  assert.ok(readyAt > saveAt, '保存之后再 api.closeReady(...) 把结果交回主进程');
+  assert.match(seg, /silent:\s*true/, '失败要静默：500 ms 内来不及让作者读第二个框');
+  assert.equal(/openModal|askUnsaved/.test(seg), false, '不许在强制退出路径上再弹二次确认框');
+});
+

@@ -280,7 +280,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   每次打开菜单时收起上次列表（2 行）、解构 3 个入口（1 行）、菜单点击分支与重新夹紧（9 行）。
   //   列表 DOM 与写入逻辑都在 renderer/bookinfo-ui.js，这里只留事件接线；再搬走就只能把
   //   hideBookMenu / placeMenuAt 反向注入，反而更绕。
-  const RENDERER_LINE_BUDGET = 5796;
+  // 1.6.1 P-01：5796 → 5802（+6）：强制退出前给渲染层一次落盘机会的订阅。处理函数必须调 renderer.js
+  //   内部的 saveCurrent()（带 state / editorEl / updateStatus 与保存中的并发闸门），搬出去要把整条
+  //   保存链路反向注入回来，反而更绕；它也只在 app:close-requested 的关窗接线旁才有意义。
+  const RENDERER_LINE_BUDGET = 5802;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,
