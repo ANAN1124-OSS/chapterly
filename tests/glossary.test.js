@@ -193,3 +193,112 @@ test('校对词表：publicGlossaryInfo 只给数量与状态，不把词表正�
   assert.equal(fallback.ok, false);
   assert.equal(fallback.count, 0);
 });
+
+test('校对词表：多份词表合并按词去重，总数与每份数量分开统计', async () => {
+  const dir = await mkTmp();
+  const first = path.join(dir, '词表甲.txt');
+  const second = path.join(dir, '词表乙.txt');
+  await fs.writeFile(first, '做为 => 作为\n禁词\n共用\n', 'utf8');
+  await fs.writeFile(second, '共用 => 别处的建议\n乙词 => 乙改\n做为 => 又一次\n', 'utf8');
+
+  const merged = await glossary.readGlossaryFiles([first, second]);
+  assert.equal(merged.ok, true);
+  assert.equal(merged.total, 4);
+  assert.equal(merged.entries.length, 4);
+  assert.deepEqual(merged.entries.map((entry) => entry.term), ['做为', '禁词', '共用', '乙词']);
+  // 同一个词只算一次，先读到的那份说了算（建议不被后面的覆盖）
+  assert.equal(merged.entries[2].suggestion, '');
+  assert.equal(merged.entries[0].suggestion, '作为');
+  // 每份 count 是这一份自己的条数：3 + 3 = 6，去重后总数只有 4
+  assert.equal(merged.lists.length, 2);
+  assert.deepEqual(merged.lists.map((list) => list.ok), [true, true]);
+  assert.deepEqual(merged.lists.map((list) => list.count), [3, 3]);
+  assert.deepEqual(merged.lists.map((list) => list.truncated), [false, false]);
+
+  // 只传一个字符串也当一份（配置为空数组时可直接传旧字段）
+  const single = await glossary.readGlossaryFiles(first);
+  assert.equal(single.ok, true);
+  assert.equal(single.total, 3);
+});
+
+test('校对词表：多份里有一份坏 / 不存在时，其它份照常可用且不抛错', async () => {
+  const dir = await mkTmp();
+  const good = path.join(dir, '好词表.txt');
+  await fs.writeFile(good, '做为 => 作为\n禁词\n', 'utf8');
+  const missing = path.join(dir, '没有这个.txt');
+  const broken = path.join(dir, '坏编码.txt');
+  await fs.writeFile(broken, Buffer.from([0xff, 0xff, 0x0a, 0x41]));
+
+  const merged = await glossary.readGlossaryFiles([missing, good, broken]);
+  assert.equal(merged.ok, true);
+  assert.equal(merged.total, 2);
+  assert.deepEqual(merged.entries.map((entry) => entry.term), ['做为', '禁词']);
+  assert.deepEqual(merged.lists.map((list) => list.ok), [false, true, false]);
+  assert.deepEqual(merged.lists.map((list) => list.count), [0, 2, 0]);
+  assert.ok(merged.lists[0].error.length > 0, '坏掉的那份要给出能看懂的原因');
+  assert.ok(merged.lists[2].error.length > 0);
+  assert.equal(merged.lists[1].error, '');
+
+  const none = await glossary.readGlossaryFiles([missing, broken]);
+  assert.equal(none.ok, false);
+  assert.equal(none.total, 0);
+  assert.deepEqual(none.entries, []);
+  assert.deepEqual(none.lists.map((list) => list.ok), [false, false]);
+
+  const empty = await glossary.readGlossaryFiles([]);
+  assert.equal(empty.ok, false);
+  assert.equal(empty.total, 0);
+  assert.deepEqual(empty.lists, []);
+  const junk = await glossary.readGlossaryFiles(null);
+  assert.equal(junk.ok, false);
+  assert.deepEqual(junk.lists, []);
+});
+
+test('校对词表：多份合并后条目不超过 MAX_ENTRIES，截断语义与单文件一致', async () => {
+  const dir = await mkTmp();
+  const first = path.join(dir, '词表甲.txt');
+  const second = path.join(dir, '词表乙.txt');
+  const many = Array.from({ length: glossary.MAX_ENTRIES - 1 }, (_, index) => '甲' + index);
+  await fs.writeFile(first, many.join('\n') + '\n', 'utf8');
+  await fs.writeFile(second, '乙新一\n乙新二\n', 'utf8');
+
+  const merged = await glossary.readGlossaryFiles([first, second]);
+  assert.equal(merged.entries.length, glossary.MAX_ENTRIES);
+  assert.equal(merged.total, glossary.MAX_ENTRIES);
+  assert.equal(merged.lists[0].count, glossary.MAX_ENTRIES - 1);
+  assert.equal(merged.lists[0].truncated, false);
+  assert.equal(merged.lists[1].count, 2);
+  assert.equal(merged.lists[1].truncated, true, '第二份只进来 1 条，剩下 1 条被总数上限截断');
+  assert.equal(merged.entries[glossary.MAX_ENTRIES - 1].term, '乙新一');
+});
+
+test('校对词表：多份词表公开信息只给数量与状态，不含路径与词条正文', async () => {
+  const dir = await mkTmp();
+  const first = path.join(dir, '秘密词表甲.txt');
+  const second = path.join(dir, '秘密词表乙.txt');
+  const missing = path.join(dir, '消失了-ZZZ.txt');
+  await fs.writeFile(first, '做为 => 作为\n禁词\n', 'utf8');
+  await fs.writeFile(second, '另一个\n', 'utf8');
+
+  const bundle = await glossary.readGlossaryFiles([first, second, missing]);
+  const info = glossary.publicGlossaryFilesInfo(bundle);
+  assert.equal(info.ok, true);
+  assert.equal(info.total, 3);
+  assert.equal(info.entries, undefined, '公开信息绝不带合并后的词条正文');
+  assert.equal(info.lists.length, 3);
+  assert.deepEqual(info.lists.map((list) => list.count), [2, 1, 0]);
+  assert.equal(info.lists[2].ok, false);
+  assert.ok(info.lists[2].error.length > 0);
+  assert.equal(info.lists[0].entries, undefined);
+  assert.deepEqual(Object.keys(info.lists[2]).sort(), ['count', 'error', 'ok', 'truncated']);
+
+  const text = JSON.stringify(info);
+  for (const word of ['做为', '禁词', '另一个', '秘密词表', '消失了-ZZZ', path.basename(dir)]) {
+    assert.equal(text.includes(word), false, `公开信息里不该出现「${word}」`);
+  }
+
+  const fallback = glossary.publicGlossaryFilesInfo(null);
+  assert.equal(fallback.ok, false);
+  assert.equal(fallback.total, 0);
+  assert.deepEqual(fallback.lists, []);
+});

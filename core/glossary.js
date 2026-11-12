@@ -237,6 +237,65 @@ async function readGlossaryFile(filePath) {
   return { ...base, ok: true, size: stat.size, entries: decoded.entries, stats: decoded.stats };
 }
 
+// 多份词表（1.7.0 F3b）：每份自己的失败原因 → 不含路径的短提示。
+// 渲染层只需要「这一份能不能用 / 为什么不能用」；路径留在主进程，不出主进程。
+function glossaryErrorText(code) {
+  switch (code) {
+    case 'GLOSSARY_NOT_CONFIGURED':
+      return '这一份还没有指定词表';
+    case 'GLOSSARY_MISSING':
+      return '词表文件不存在（可能被移动或删除了，请重新选择）';
+    case 'GLOSSARY_NOT_FILE':
+      return '选中的不是一个文件，请选校对词表 txt';
+    case 'GLOSSARY_TOO_BIG':
+      return '词表文件太大（上限 4MB），请换一个小一点的 txt';
+    case 'GLOSSARY_BAD_ENCODING':
+      return '词表编码认不出来，请存成 UTF-8 或 GBK 的 txt';
+    case 'GLOSSARY_EMPTY':
+      return '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）';
+    default:
+      return '读不了这份词表';
+  }
+}
+
+// 顺序读多份词表并合并（1.7.0 F3b）：配置里排在前面的先到先得。
+//   · entries 按 term 去重：同一个词只算第一次出现的那份（建议也先到先得）
+//   · 合并总数封顶 MAX_ENTRIES，截断语义与单文件一致（多出来的部分标 truncated）
+//   · 每份单独判错：一份坏 / 不存在不影响其它份；全部不可用时 ok=false，绝不抛错
+//   · lists 只给 { ok, count, error, truncated }，不带路径；公开信息另有一层（见下）
+async function readGlossaryFiles(paths) {
+  let requested = [];
+  if (Array.isArray(paths)) requested = paths;
+  else if (typeof paths === 'string' && paths.trim()) requested = [paths];
+  const entries = [];
+  const seen = new Set();
+  const lists = [];
+  let anyOk = false;
+  for (const request of requested) {
+    const one = await readGlossaryFile(request);
+    const own = one.ok && Array.isArray(one.entries) ? one.entries : [];
+    let truncated = Boolean(one.ok && one.stats && one.stats.truncated);
+    for (const entry of own) {
+      // 和单文件 parseGlossary 同一顺序：先去重，再看总数上限
+      if (seen.has(entry.term)) continue;
+      if (entries.length >= MAX_ENTRIES) {
+        truncated = true;
+        break;
+      }
+      seen.add(entry.term);
+      entries.push({ term: entry.term, suggestion: entry.suggestion });
+    }
+    lists.push({
+      ok: one.ok === true,
+      count: own.length,
+      error: one.ok === true ? '' : glossaryErrorText(one.code),
+      truncated
+    });
+    if (one.ok === true) anyOk = true;
+  }
+  return { ok: anyOk, entries, lists, total: entries.length };
+}
+
 // 只给渲染层的词表信息：绝不把词表正文（entries）带过去，界面只需要数量与状态。
 // 命中结果里仍会带命中词与建议（那是作者要看的），和整个词表不是一回事。
 function publicGlossaryInfo(list) {
@@ -253,6 +312,26 @@ function publicGlossaryInfo(list) {
   }
   const { entries, ...rest } = list;
   return { ...rest, count: Array.isArray(entries) ? entries.length : 0 };
+}
+
+// 多份词表的公开信息（1.7.0 F3b）：只给数量 / 状态，绝不带路径与词条正文。
+// lists 与 readGlossaryFiles 一一对应、顺序不变；界面按 index 对齐配置里的路径。
+function publicGlossaryFilesInfo(bundle) {
+  if (!bundle || typeof bundle !== 'object' || !Array.isArray(bundle.lists)) {
+    return { ok: false, configured: false, code: 'GLOSSARY_NOT_CONFIGURED', total: 0, lists: [] };
+  }
+  const lists = bundle.lists.map((item) => ({
+    ok: Boolean(item && item.ok === true),
+    count: item && Number.isFinite(item.count) ? item.count : 0,
+    error: item && typeof item.error === 'string' ? item.error : '',
+    truncated: Boolean(item && item.truncated)
+  }));
+  let total = 0;
+  if (Array.isArray(bundle.entries)) total = bundle.entries.length;
+  else if (Number.isFinite(bundle.total)) total = bundle.total;
+  const info = { ok: bundle.ok === true, configured: lists.length > 0, total, lists };
+  if (!info.ok) info.code = lists.length > 0 ? 'GLOSSARY_NO_USABLE_LIST' : 'GLOSSARY_NOT_CONFIGURED';
+  return info;
 }
 
 // 扫描一段正文：字面量找每个词的全部出现位置，同一处重叠时只留最长的那个
@@ -291,6 +370,8 @@ module.exports = {
   sanitizeEntries,
   decodeGlossaryBuffer,
   readGlossaryFile,
+  readGlossaryFiles,
   publicGlossaryInfo,
+  publicGlossaryFilesInfo,
   findHits
 };
