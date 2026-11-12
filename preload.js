@@ -58,7 +58,9 @@ contextBridge.exposeInMainWorld('api', {
     invoke('book:proofread', bookPath, options, override),
   // 校对词表（v0.8-6）：作者自己的错别字 / 禁用词；主进程只读，渲染层只拿数量与状态
   proofreadWordsInfo: () => invoke('proofread:words-info'),
-  pickProofreadWords: () => invoke('proofread:pick-words'),
+  pickProofreadWords: () => invoke('proofread:pick-words'),  // 多份校对词表（1.7.0 F3b2）：添加只能走系统对话框（渲染层给不了路径），移除只给索引
+  addProofreadWordlist: () => invoke('proofread:wordlists-add'),
+  removeProofreadWordlist: (index) => invoke('proofread:wordlists-remove', index),
   // 敏感词预检（只报告、不改动）：词表由作者指定，主进程只读词表；渲染层拿不到词表内容
   sensitiveWordsInfo: () => invoke('sensitive:words-info'),
   pickSensitiveWords: () => invoke('sensitive:pick-words'),

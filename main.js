@@ -1591,20 +1591,71 @@ function registerIpc() {
 
   // 校对（提案 5.1 / N6）：只报告、不改动。当前章正文由渲染层传上来（和查找一样，不读盘）；
   // 整本版走 book:proofread，逐章只读磁盘。index 是归一 CRLF 后的字符位置，可直接选中。
-  // 校对词表（可选，作者自己的错别字 / 禁用词）存在 config 里，主进程只读；渲染层不传路径。
+  // 校对词表（1.7.0 F3b2，可选）：配置里可以有多份（proofreadWordlists），空数组回落旧的单份路径。
+  // 读取统一走 core 的多表合并（按词去重 / 总数封顶 / 每份单独判错），主进程只读；渲染层不传路径。
+  function proofreadWordlistPaths(config) {
+    const many = config && Array.isArray(config.proofreadWordlists) && config.proofreadWordlists.length
+      ? config.proofreadWordlists
+      : [];
+    const usable = many.filter((item) => typeof item === 'string' && item.trim());
+    if (usable.length) return usable;
+    const single = config && typeof config.proofreadWordsPath === 'string' ? config.proofreadWordsPath.trim() : '';
+    return single ? [single] : [];
+  }
+
+  // options.enabledLists（1.7.0 F3b2）：索引数组，只让勾选的那几份词表参与这一次校对。
+  // 缺省 / 坏值 / 一份都没勾 = 全开——宁可多跑几份，也不静默关掉作者以为在用的词表。
+  function wordlistPathsForRequest(paths, options) {
+    const enabled = options && Array.isArray(options.enabledLists) ? options.enabledLists : null;
+    if (!enabled) return paths;
+    const picked = new Set();
+    for (const item of enabled) {
+      const index = Number(item);
+      if (Number.isInteger(index) && index >= 0 && index < paths.length) picked.add(index);
+    }
+    if (!picked.size) return paths;
+    return paths.filter((item, index) => picked.has(index));
+  }
+
+  // 校对词表信息的唯一出口（words-info / 两处校对共用，1.7.0 F3b2）：
+  // 多份走 lists + total（lists 按 index 对齐配置里的路径），单份补齐旧字段
+  // （ok / count / error / truncated / name），两条路都绝不带路径与词条正文。
+  function proofreadWordListInfo(bundle, paths) {
+    const info = glossaryLib.publicGlossaryFilesInfo(bundle);
+    const payload = { ...info, lists: info.lists, total: info.total, count: info.total };
+    payload.name = paths.length === 1 ? path.basename(paths[0]) : paths.length + ' 份词表';
+    if (paths.length === 1) {
+      const one = (bundle && Array.isArray(bundle.lists) ? bundle.lists[0] : null) || {};
+      payload.ok = one.ok === true;
+      payload.count = Number.isFinite(one.count) ? one.count : 0;
+      payload.error = typeof one.error === 'string' ? one.error : '';
+      payload.truncated = Boolean(one.truncated);
+      if (!payload.ok) payload.message = payload.error || '校对词表读取失败';
+    }
+    return payload;
+  }
+
+  async function proofreadWordlistInfoNow() {
+    const cfg = await getConfig();
+    const paths = proofreadWordlistPaths(cfg);
+    return proofreadWordListInfo(await glossaryLib.readGlossaryFiles(paths), paths);
+  }
+
   handle('text:proofread', async (text, options) => {
     assertText(text);
     const cfg = await getConfig();
-    const list = await glossaryLib.readGlossaryFile(cfg.proofreadWordsPath);
-    const wordList = glossaryLib.publicGlossaryInfo(list);
+    const paths = wordlistPathsForRequest(proofreadWordlistPaths(cfg), options);
+    const list = await glossaryLib.readGlossaryFiles(paths);
+    const wordList = proofreadWordListInfo(list, paths);
     const result = proofreadLib.proofreadText(text, options, list.ok ? list.entries : []);
     return { ...result, wordList };
   });
 
-  // 校对词表状态（只读）：只给渲染层数量与错误提示，绝不带词表正文
+  // 校对词表状态（只读，1.7.0 F3b2）：多份 lists + total，单份补齐旧字段；绝不带路径与词表正文
   handle('proofread:words-info', async () => {
     const cfg = await getConfig();
-    return glossaryLib.publicGlossaryInfo(await glossaryLib.readGlossaryFile(cfg.proofreadWordsPath));
+    const paths = proofreadWordlistPaths(cfg);
+    return proofreadWordListInfo(await glossaryLib.readGlossaryFiles(paths), paths);
   });
 
   // 选词表（校对 / 敏感词共用）：只允许通过系统文件对话框选，渲染层不能自己指定路径去读任意文件。
@@ -1633,6 +1684,62 @@ function registerIpc() {
       field: 'proofreadWordsPath',
       read: async (filePath) => glossaryLib.publicGlossaryInfo(await glossaryLib.readGlossaryFile(filePath))
     });
+  });
+  // 多份校对词表（1.7.0 F3b2）：添加只允许通过系统对话框挑文件（渲染层给不了路径），
+  // 移除只收索引。渲染层既不能指定路径，也拿不到路径；落盘走配置仓库，
+  // 配置清洗会再兜一遍绝对路径 / 存在 / 去重 / 8 条上限（托底，不靠这一层）。
+  const WORDLIST_MAX = 8;
+  const wordlistKey = (value) => {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (!text) return '';
+    const resolved = path.resolve(text);
+    return process.platform === 'win32' ? resolved.replace(/\//g, '\\').toLowerCase() : resolved;
+  };
+
+  handle('proofread:wordlists-add', async () => {
+    const { canceled, filePaths } = await showOpenDialog({
+      title: '添加校对词表（每行一个词，可写「错词 → 建议」）',
+      buttonLabel: '添加这份词表',
+      properties: ['openFile'],
+      filters: [
+        { name: '文本文件', extensions: ['txt'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    });
+    if (canceled || !filePaths || !filePaths.length) return { canceled: true };
+    const picked = path.resolve(filePaths[0]);
+    const cfg = await getConfig();
+    const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
+    const info = await proofreadWordlistInfoNow();
+    if (!path.isAbsolute(picked)) {
+      return { canceled: false, added: false, code: 'WORDLIST_NOT_ABSOLUTE', message: '只能添加绝对路径的词表', ...info };
+    }
+    const stat = await fs.stat(picked).catch(() => null);
+    if (!stat || !stat.isFile()) {
+      return { canceled: false, added: false, code: 'WORDLIST_MISSING', message: '这个词表文件不存在（可能被移动或删除了）', ...info };
+    }
+    if (current.some((item) => wordlistKey(item) === wordlistKey(picked))) {
+      return { canceled: false, added: false, code: 'WORDLIST_DUPLICATE', message: '这份词表已经在列表里了', ...info };
+    }
+    if (current.length >= WORDLIST_MAX) {
+      return { canceled: false, added: false, code: 'WORDLIST_LIMIT', message: '最多 8 份校对词表', ...info };
+    }
+    const next = await configStore.set({ proofreadWordlists: [...current, picked] });
+    applyConfig(next);
+    return { canceled: false, added: true, ...(await proofreadWordlistInfoNow()) };
+  });
+
+  handle('proofread:wordlists-remove', async (index) => {
+    const cfg = await getConfig();
+    const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
+    const at = Number(index);
+    if (!Number.isInteger(at) || at < 0 || at >= current.length) {
+      return { canceled: false, removed: false, code: 'WORDLIST_NOT_FOUND', message: '这一份词表不在列表里，可能已经被移除了', ...(await proofreadWordlistInfoNow()) };
+    }
+    current.splice(at, 1);
+    const next = await configStore.set({ proofreadWordlists: current });
+    applyConfig(next);
+    return { canceled: false, removed: true, ...(await proofreadWordlistInfoNow()) };
   });
 
   // 敏感词预检（提案 5.2）：词表完全由作者管理，应用不内置任何词表。
@@ -2089,9 +2196,11 @@ function registerIpc() {
     const bookRules = proofreadLib.sanitizeRules(options && options.rules);
     const chapterOptions = { ...limits, rules: bookRules };
     // 校对词表只读一次，整本每章共用（没设置 / 读不了 = 只跑内置规则，面板会提示）
+    // 1.7.0 F3b2：多份词表合并读取；options.enabledLists 只让勾选的那几份参与（缺省全开）。
     const cfg = await getConfig();
-    const list = await glossaryLib.readGlossaryFile(cfg.proofreadWordsPath);
-    const wordList = glossaryLib.publicGlossaryInfo(list);
+    const wordlistPaths = wordlistPathsForRequest(proofreadWordlistPaths(cfg), options);
+    const list = await glossaryLib.readGlossaryFiles(wordlistPaths);
+    const wordList = proofreadWordListInfo(list, wordlistPaths);
     const customEntries = list.ok ? list.entries : [];
     const BOOK_ISSUE_LIMIT = 1500;
     const byRule = {};
