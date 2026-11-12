@@ -41,9 +41,13 @@ function createWatcher(options = {}) {
   let baseline = ''; // 上一次看到的剪贴板指纹（每次轮询都会更新）
   let notified = ''; // 上一次「已经提示过」的指纹
   let lastNotifiedAt = Number.NEGATIVE_INFINITY;
+  // V39（审计）：启动 token。每次 enable / disable 都 +1；主进程每拍读数前记下当时的 token，
+  // 回写时 token 已经不是当前值（中间跨过 stop→start）就整拍作废——不记队列、不提示、也不推进基准。
+  let generation = 0;
 
   // 打开监听：以「当前剪贴板」为基线——打开设置开关那一刻剪贴板里已经有的内容不提示。
   function enable(initialText) {
+    generation += 1;
     enabled = true;
     baseline = fingerprint(initialText);
     notified = '';
@@ -51,6 +55,7 @@ function createWatcher(options = {}) {
   }
 
   function disable() {
+    generation += 1;
     enabled = false;
     baseline = '';
     notified = '';
@@ -62,7 +67,11 @@ function createWatcher(options = {}) {
   //   record   值得记进「本次运行捕获队列」（变了 + 非空白；不受长度 / 冷却影响）
   //   notify   值得给一条轻提示（≥minChars + 冷却 + 同文只提示一次）
   //   chars    当前文本长度；reason 给单测与排查用（不含正文）
-  function evaluate(text) {
+  function evaluate(text, token) {
+    // 在飞读数作废（V39）：跨过 stop→start 边界的旧读数直接丢弃，连基准都不碰。
+    if (token !== undefined && token !== generation) {
+      return { changed: false, record: false, notify: false, chars: 0, reason: 'stale', stale: true };
+    }
     if (!enabled) return { changed: false, record: false, notify: false, chars: 0, reason: 'disabled' };
     if (typeof text !== 'string' || !text.length) {
       return { changed: false, record: false, notify: false, chars: 0, reason: 'empty' };
@@ -87,6 +96,7 @@ function createWatcher(options = {}) {
     enable,
     disable,
     evaluate,
+    token: () => generation,
     isEnabled: () => enabled,
     minChars,
     cooldownMs

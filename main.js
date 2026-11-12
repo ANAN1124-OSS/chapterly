@@ -238,9 +238,11 @@ let clipboardWatchPriming = false;
 async function pollClipboardWatch() {
   if (clipboardWatchPriming || clipboardWatchBusy) return;
   clipboardWatchBusy = true;
+  // V39（审计）：记下这一拍的启动 token；读数在飞时被 stop→start 跨过，返回后整拍作废。
+  const watchToken = clipboardWatcher.token();
   try {
     const text = await readClipboardForWatch();
-    const decision = clipboardWatcher.evaluate(text);
+    const decision = clipboardWatcher.evaluate(text, watchToken);
     // 记录与提示拆开：连续复制的几段都要各留一条（record），冷却只压轻提示（notify）。
     if (decision.record) {
       captureQueue.add(text);
@@ -270,7 +272,8 @@ async function pollClipboardWatch() {
       }
     }
   } finally {
-    clipboardWatchBusy = false;
+    // 旧拍子不许把新一拍的「在飞」标记放掉（token 变了说明这拍已作废）。
+    if (watchToken === clipboardWatcher.token()) clipboardWatchBusy = false;
   }
 }
 
@@ -280,15 +283,16 @@ async function flushClipboardWatchOnce() {
   if (!clipboardWatchEnabledNow()) return { enabled: false, recorded: false };
   if (clipboardWatchPriming || clipboardWatchBusy) return { enabled: true, recorded: false, busy: true };
   clipboardWatchBusy = true;
+  const watchToken = clipboardWatcher.token();
   try {
     const text = await readClipboardForWatch();
-    const decision = clipboardWatcher.evaluate(text);
+    const decision = clipboardWatcher.evaluate(text, watchToken);
     if (decision.record) captureQueue.add(text);
     return { enabled: true, recorded: Boolean(decision.record), chars: decision.chars };
   } catch {
     return { enabled: true, recorded: false };
   } finally {
-    clipboardWatchBusy = false;
+    if (watchToken === clipboardWatcher.token()) clipboardWatchBusy = false;
   }
 }
 
@@ -314,11 +318,13 @@ function syncClipboardWatch() {
   if (clipboardWatchTimer) return;
   clipboardWatchPriming = true;
   clipboardWatcher.enable('');
+  const primingToken = clipboardWatcher.token();
   clipboardWatchTimer = setInterval(pollClipboardWatch, CLIPBOARD_WATCH_INTERVAL_MS);
   if (clipboardWatchTimer.unref) clipboardWatchTimer.unref();
   void readClipboardForWatch().then(
     (text) => {
-      if (!clipboardWatchTimer) return; // 读完之前被关掉了：别再动基线
+      // 读完之前被关掉：别再动基线；V39：期间又 stop→start 过（token 变了）也作废，别拿旧内容当新基线。
+      if (!clipboardWatchTimer || primingToken !== clipboardWatcher.token()) return;
       clipboardWatcher.enable(text);
       clipboardWatchPriming = false;
     },

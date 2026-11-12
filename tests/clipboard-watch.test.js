@@ -147,6 +147,46 @@ test('回归（2026-11-07）：「复制 4 次只记 2 次」——短标题 / �
 });
 
 // 接线闸门：b8 的关键是「默认关 + 只发派生信息 + 随应用启停 + 点提示才开面板」。
+// V39（审计 2026-11-13）：stop→start 之间有一拍读数还在飞时，旧读数返回后可能把「打开监听前
+// 就在剪贴板里」的内容记进新队列、还会把去重基准推走。每次 start / stop 都推进启动 token，
+// 每拍读数前记下 token，回写时 token 已经不是当前值就整拍作废（不记队列 / 不提示 / 不动基准）。
+function makeDeferred() {
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+test('在飞读数跨过 stop→start 边界就作废：不记新队列、不提示、不推进去重基准（V39）', async () => {
+  const clock = makeClock();
+  const watcher = watchLib.createWatcher({ now: clock.now });
+  const STALE = '打开监听前就在剪贴板里、读数还在飞的那段正文（二十个字以上，本来会提示）。';
+  const CURRENT = '重新打开监听那一刻剪贴板里的内容（新的去重基准）。';
+  watcher.enable('');
+  const inFlight = watcher.token(); // 这一拍开始读剪贴板时拿到的启动 token
+  const deferred = makeDeferred(); // 可控时序：读数挂起，等 stop→start 之后才返回
+  // 读数在飞期间：关掉监听，300ms 内又打开（新基线 = 打开那一刻剪贴板里的内容）
+  watcher.disable();
+  watcher.enable(CURRENT);
+  deferred.resolve(STALE);
+  const stale = watcher.evaluate(await deferred.promise, inFlight);
+  assert.deepEqual([stale.changed, stale.record, stale.notify], [false, false, false], '旧读数不许记进新队列、不许提示');
+  assert.equal(stale.reason, 'stale');
+  // 基准没被旧读数推走：重新打开后这段文字真被复制一次，仍按「新的复制」处理
+  const again = watcher.evaluate(STALE);
+  assert.deepEqual([again.changed, again.record], [true, true], '旧读数不许把去重基准推走');
+  // 当前 token 的读数照常生效：新复制仍然记录 + 提示（先过 8 秒冷却）
+  clock.advance(8000);
+  const fresh = watcher.evaluate(CURRENT + LONG, watcher.token());
+  assert.deepEqual([fresh.record, fresh.notify], [true, true], '正常单次读数行为不变');
+  // 只关不开同样推进 token：关监听前拿到的读数一样作废
+  const beforeStop = watcher.token();
+  watcher.disable();
+  watcher.enable('');
+  assert.equal(watcher.evaluate(STALE, beforeStop).reason, 'stale', '关掉监听也推进 token');
+});
+
 // 隐私红线（不落盘 / 不写日志 / 不存正文）在 main.js 里靠「只发 { chars, queued }」守住，这里静态钉住。
 test('静态闸门：主进程轮询只在开关打开时跑，只发字数，随配置启停、随退出停止（b8）', () => {
   const fs = require('node:fs');
@@ -184,6 +224,13 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.match(main, /const captureQueueLib = require\('\.\/core\/capture-queue'\);/);
   assert.match(main, /const captureQueue = captureQueueLib\.createCaptureQueue\(\);/);
   assert.match(main, /if \(decision\.record\) captureQueue\.add\(text\);/, '轮询里按 record 入队');
+  // V39：每拍读数前拿启动 token，回写时带上；token 变了整拍作废（不记队列 / 不提示 / 不动基准）
+  assert.match(main, /const watchToken = clipboardWatcher\.token\(\);/, '每拍开始先拿启动 token');
+  assert.match(main, /const decision = clipboardWatcher\.evaluate\(text, watchToken\);/, '回写前带上 token 校验');
+  assert.ok(
+    main.indexOf('const watchToken = clipboardWatcher.token();') < main.indexOf('const decision = clipboardWatcher.evaluate(text, watchToken);'),
+    'token 必须在 await 读数之前拿到'
+  );
   assert.match(main, /captureQueue\.clear\(\);/, '关闭监听 / 退出时清空队列');
   assert.match(main, /handle\('capture:queue-list'/, '队列列表 IPC');
   assert.match(main, /handle\('capture:queue-get'/, '按条目取正文 IPC（用户显式点开才取）');
