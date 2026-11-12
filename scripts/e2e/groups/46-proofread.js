@@ -1533,6 +1533,30 @@ module.exports = async function group46Proofread(t) {
     { spacing: prSpacing && prSpacing.byRule }
   );
 
+  // 收尾：把两条规则都恢复默认，别把会话状态带给后面的组
+  await exec(`${prRuleToggle('cjk-latin-spacing')}.click()`);
+  await waitFor("window.__cwTest.proofreadPayload().byRule['cjk-latin-spacing'] === 0");
+  await exec(`${prRuleToggle('ellipsis')}.click()`);
+  await waitFor("window.__cwTest.proofreadPayload().byRule['ellipsis'] === 1");
+  await exec('window.__cwTest.closeProofreadPanel()');
+  const prStatAfter = await fs.stat(path.join(prBookPath, prFile));
+  const prDiskAfter = await fs.readFile(path.join(prBookPath, prFile), 'utf8');
+  const prMetaAfter = await storage.readBookMeta(prBookPath);
+  const prCfg = JSON.parse(await fs.readFile(path.join(userData, 'config.json'), 'utf8'));
+  check(
+    '校对规则（1.5.0）：开关与重跑全程只读——txt 字节 / mtime / 书目 / config 都没有被写',
+    prStatAfter.size === prStatBefore.size &&
+      prStatAfter.mtimeMs === prStatBefore.mtimeMs &&
+      prDiskAfter === prDiskBefore &&
+      JSON.stringify(prMetaAfter.chapters) === JSON.stringify(prMetaBefore.chapters) &&
+      prCfg.proofreadRules === undefined &&
+      Object.keys(prCfg).filter((key) => /rule/i.test(key)).length === 0,
+    { keys: Object.keys(prCfg).filter((key) => /rule/i.test(key)) }
+  );
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await exec("window.__cwTest.deleteBookByFolder('校对规则开关测试书', { skipConfirm: true })");
+
   // 46l. 多份校对词表（1.7.0 F3）：两份逐份列出、逐份开关、全部移除后回到旧文案
   const pfMultiDir = path.join(userData, '校对词表-多份');
   await fs.mkdir(pfMultiDir, { recursive: true });
@@ -1588,28 +1612,4 @@ module.exports = async function group46Proofread(t) {
   );
   await exec('window.__cwTest.closeProofreadPanel()');
   await exec("window.__cwTest.deleteBookByFolder('多份词表测试书', { skipConfirm: true })");
-
-  // 收尾：把两条规则都恢复默认，别把会话状态带给后面的组
-  await exec(`${prRuleToggle('cjk-latin-spacing')}.click()`);
-  await waitFor("window.__cwTest.proofreadPayload().byRule['cjk-latin-spacing'] === 0");
-  await exec(`${prRuleToggle('ellipsis')}.click()`);
-  await waitFor("window.__cwTest.proofreadPayload().byRule['ellipsis'] === 1");
-  await exec('window.__cwTest.closeProofreadPanel()');
-  const prStatAfter = await fs.stat(path.join(prBookPath, prFile));
-  const prDiskAfter = await fs.readFile(path.join(prBookPath, prFile), 'utf8');
-  const prMetaAfter = await storage.readBookMeta(prBookPath);
-  const prCfg = JSON.parse(await fs.readFile(path.join(userData, 'config.json'), 'utf8'));
-  check(
-    '校对规则（1.5.0）：开关与重跑全程只读——txt 字节 / mtime / 书目 / config 都没有被写',
-    prStatAfter.size === prStatBefore.size &&
-      prStatAfter.mtimeMs === prStatBefore.mtimeMs &&
-      prDiskAfter === prDiskBefore &&
-      JSON.stringify(prMetaAfter.chapters) === JSON.stringify(prMetaBefore.chapters) &&
-      prCfg.proofreadRules === undefined &&
-      Object.keys(prCfg).filter((key) => /rule/i.test(key)).length === 0,
-    { keys: Object.keys(prCfg).filter((key) => /rule/i.test(key)) }
-  );
-  await exec('window.__cwTest.backToShelf()');
-  await waitFor("window.__cwTest.view() === 'shelf'");
-  await exec("window.__cwTest.deleteBookByFolder('校对规则开关测试书', { skipConfirm: true })");
 };
