@@ -289,6 +289,26 @@ test('错误脱敏：含空格的本机路径整条收掉（S-01 / 1.6.0 H4）',
   );
 });
 
+test('错误脱敏：UNC / 设备前缀 / POSIX 含空格也整条收掉（P-02 / 1.6.1 R6）', () => {
+  // 三条旧正则遇到空格就断：只遮住前半段，用户名 / 书名 / 目录名原样漏进 toast 与日志。
+  const unc = redactPaths('\\\\server\\My Share\\书\\001-第 1 章.txt');
+  assert.equal(unc, '…\\001-第 1 章.txt');
+  const device = redactPaths('\\\\?\\C:\\Users\\Zhang San\\Documents\\我的小说\\书\\001.txt');
+  assert.equal(device, '…\\001.txt');
+  const posix = redactPaths('/home/Zhang San/doc.txt');
+  assert.equal(posix, '…/doc.txt');
+  for (const leak of ['My Share', 'Zhang San', '我的小说', 'Documents', 'Users']) {
+    for (const masked of [unc, device, posix]) {
+      assert.equal(masked.includes(leak), false, '不该漏出「' + leak + '」：' + masked);
+    }
+  }
+  // keep=2 只保留最后两节，同样要跨空格（日志的 stack 行用 keep:2）
+  assert.equal(redactPaths('\\\\server\\My Share\\书\\001-第 1 章.txt', { keep: 2 }), '…\\书\\001-第 1 章.txt');
+  // 路径后面的正文 / 另一条路径照旧保留，URL 与相对路径不动
+  assert.equal(redactPaths('/home/Zhang San/doc.txt 打不开'), '…/doc.txt 打不开');
+  assert.equal(redactPaths('\\\\?\\C:\\Users\\Zhang San\\a.txt 与 /home/u/b.txt 都失败'), '…\\a.txt 与 …/b.txt 都失败');
+});
+
 test('错误脱敏：空格启发式不吞掉路径后面的普通正文', () => {
   // 空格只在下个词仍像路径的一段时才并进路径；「后面还有字」/「打不开」这类正文必须留着。
   assert.equal(redactPaths('D:\\书\\a.txt 后面还有字'), '…\\a.txt 后面还有字');

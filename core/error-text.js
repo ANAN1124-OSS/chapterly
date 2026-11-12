@@ -17,9 +17,11 @@ const CODE_RE = /^[A-Za-z0-9_.-]{1,40}$/;
 // `https://…` / `http://…`：外部地址不是本机路径，先切出来保护住再处理其余部分。
 const URL_SPLIT_RE = /(https?:\/\/[^\s'"<>「」（）()[\]]+)/i;
 const FILE_URL_RE = /file:\/{2,3}[^\s'"<>「」（）()[\]]*/gi;
-const DEVICE_PATH_RE = /\\\\\?\\[^\s'"<>|*?]+/g;
-const UNC_PATH_RE = /\\\\[^\s'"<>|*?\\]+\\[^\s'"<>|*?]*/g;
-const POSIX_PATH_RE = /(^|[\s'"（(「【:：,，;；=])(\/(?:[^\s'"<>|*?/]+\/)+[^\s'"<>|*?/]*)/g;
+// 只有「起点」用正则：设备前缀 / UNC 的服务名与共享名首段 / POSIX 的前两段。
+// 起点之后的真实结尾统一交给 readPathEnd（含空格判断）：旧的三条「遇空白就断」正则已删除。
+const DEVICE_PREFIX_RE = /\\\\\?\\/g;
+const UNC_START_RE = /\\\\[^\s'"<>|*?\\]+\\/g;
+const POSIX_START_RE = /(^|[\s'"（(「【:：,，;；=])(\/[^\s'"<>|*?/]+\/)/g;
 // 盘符路径的**起点**与分段规则（1.6.0 H4 / S-01）：旧口径 `[^\s'"<>|*?]*` 遇到空格就断，
 // `C:\Users\Zhang San\Documents\我的小说\书\001-第 1 章.txt` 只会遮住 `C:\Users\Zhang`，
 // 后面的用户名 / 书名原样漏进 toast 与日志。现在由 readAbsolutePathEnd() 逐字符走：
@@ -110,9 +112,10 @@ function isPathContinuationToken(token, rest, depth = 0) {
   return next ? isPathContinuationToken(next.token, next.rest, depth + 1) : false;
 }
 
-// 从 `X:\` 之后开始，走到这条盘符路径真正的结尾：空格按 isPathContinuationToken 判断是否并进路径，
-// 引号 / 括号 / 中文标点 / Windows 禁用字符处结束（ASCII 括号留给 `Program Files (x86)` 这类真实目录名）。
-function readAbsolutePathEnd(text, from) {
+// 从某处（`X:\` 之后、`\\?\` 剥掉前缀之后、UNC 的 `\\server\share` 首段之后、POSIX 前两段之后）
+// 走到这条路径真正的结尾：空格按 isPathContinuationToken 判断是否并进路径，引号 / 括号 / 中文标点 /
+// Windows 禁用字符处结束（ASCII 括号留给 `Program Files (x86)` 这类真实目录名）。四种前缀共用这一份。
+function readPathEnd(text, from) {
   let end = from;
   while (end < text.length) {
     const ch = text[end];
@@ -138,7 +141,7 @@ function maskAbsolutePaths(text, keep) {
   while ((match = DRIVE_START_RE.exec(text)) !== null) {
     const start = match.index;
     if (start < last) continue;
-    const end = readAbsolutePathEnd(text, start + match[0].length);
+    const end = readPathEnd(text, start + match[0].length);
     out += text.slice(last, start) + maskPath(text.slice(start, end), keep);
     last = end;
     DRIVE_START_RE.lastIndex = end;
@@ -146,20 +149,75 @@ function maskAbsolutePaths(text, keep) {
   return out + text.slice(last);
 }
 
+// 设备前缀 `\\?\`：剥掉前缀后，剩下的从盘符起交给 readPathEnd（前缀不进 maskPath 的段）。
+function maskDevicePaths(text, keep) {
+  DEVICE_PREFIX_RE.lastIndex = 0;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = DEVICE_PREFIX_RE.exec(text)) !== null) {
+    const start = match.index;
+    if (start < last) continue;
+    const from = start + match[0].length;
+    const end = readPathEnd(text, from);
+    // 只有前缀、后面没有可遮罩的路径时原样留着（与旧 DEVICE_PATH_RE 的「至少一段」口径一致）
+    if (end <= from) continue;
+    out += text.slice(last, start) + maskPath(text.slice(from, end), keep);
+    last = end;
+    DEVICE_PREFIX_RE.lastIndex = end;
+  }
+  return out + text.slice(last);
+}
+
+// UNC `\\server\share\…`：起点正则只吃到 `\\server\`，共享名与后面各段（可能含空格）交给 readPathEnd。
+function maskUncPaths(text, keep) {
+  UNC_START_RE.lastIndex = 0;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = UNC_START_RE.exec(text)) !== null) {
+    const start = match.index;
+    if (start < last) continue;
+    const end = readPathEnd(text, start + match[0].length);
+    out += text.slice(last, start) + maskPath(text.slice(start, end), keep);
+    last = end;
+    UNC_START_RE.lastIndex = end;
+  }
+  return out + text.slice(last);
+}
+
+// POSIX `/home/user/x`：起点正则要求前面有分隔符且至少两段（避免误伤 `UTF-8 / UTF-16`），
+// 之后（可能含空格）交给 readPathEnd；前面的分隔符原样保留。
+function maskPosixPaths(text, keep) {
+  POSIX_START_RE.lastIndex = 0;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = POSIX_START_RE.exec(text)) !== null) {
+    const lead = match[1];
+    const start = match.index + lead.length;
+    if (start < last) continue;
+    const end = readPathEnd(text, start + match[2].length);
+    out += text.slice(last, start) + maskPath(text.slice(start, end), keep);
+    last = end;
+    POSIX_START_RE.lastIndex = end;
+  }
+  return out + text.slice(last);
+}
 function redactInText(text, keep) {
   let out = text;
   // file:///C:/… / file://localhost/C:/…：本地文件的 URL 形式，当作路径处理
   out = out.replace(FILE_URL_RE, (match) =>
     maskPath(match.replace(/^file:\/{2,3}/i, '').replace(/^localhost[\\/]/i, ''), keep)
   );
-  // \\?\C:\…：Windows 设备前缀，先摘掉前缀再按盘符路径处理
-  out = out.replace(DEVICE_PATH_RE, (match) => maskPath(match.replace(/^\\\\\?\\/, ''), keep));
-  // \\server\share\…：UNC 路径
-  out = out.replace(UNC_PATH_RE, (match) => maskPath(match, keep));
+  // \\?\C:\…：Windows 设备前缀，先剥掉前缀，剩下的整条按 readPathEnd 走（含空格）
+  out = maskDevicePaths(out, keep);
+  // \\server\share\…：UNC 路径，从 `\\server\` 之后交给 readPathEnd
+  out = maskUncPaths(out, keep);
   // C:\… / C:/…（含空格的本机路径整条遮罩，见 maskAbsolutePaths）
   out = maskAbsolutePaths(out, keep);
   // /home/user/x：POSIX 绝对路径（至少两段，前面必须有分隔符，避免误伤 `UTF-8 / UTF-16`）
-  out = out.replace(POSIX_PATH_RE, (match, lead, pathPart) => `${lead}${maskPath(pathPart, keep)}`);
+  out = maskPosixPaths(out, keep);
   return out;
 }
 
