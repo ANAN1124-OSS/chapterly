@@ -1,8 +1,8 @@
 // E2E 第 70 组：弹层无障碍名称 + 书卡 / 章节条目的键盘可达（v0.9 A-5b）。
 //
 // 钉住两件事：
-//   1. **13 个弹层都有无障碍名称**：`role="dialog"` 挂 `aria-labelledby`、指向真标题——
-//      以前 13 个弹层的标题只有 3 个有 id、没有一个挂 aria-labelledby，读屏进弹层只报
+//   1. **17 个弹层都有无障碍名称**：`role="dialog"` 挂 `aria-labelledby`、指向真标题——
+//      以前 17 个弹层的标题只有 3 个有 id、没有一个挂 aria-labelledby，读屏进弹层只报
 //      「对话框」，分不清是设置还是排版。
 //   2. **只用键盘也能开会话、切章**：书卡与章节条目以前都是普通 <div>（tabIndex -1），
 //      能 Tab 到书卡右上角的「⋯」却打不开书、能 Tab 到顶栏却切不了章。现在书卡 / 章节条目
@@ -35,7 +35,13 @@ const BACKDROPS = [
   'fragments-backdrop',
   'modal-backdrop',
   'format-backdrop',
-  'settings-backdrop'
+  'settings-backdrop',
+  // 1.6.1 R8：页面上另有 4 个弹层以前没登记（分组管理 / 剪贴板 / 命令面板 / 快捷键一览）。
+  // 名单与页面脱节由 tests/e2e-modal-backdrops.test.js 静态闸门兜住，这里补齐现场。
+  'group-manage-backdrop',
+  'capture-backdrop',
+  'command-backdrop',
+  'shortcuts-backdrop'
 ];
 
 // 每个弹层的标题应该是哪一句（export / history / modal 的标题是动态的，只比前缀 / 非空）
@@ -51,8 +57,17 @@ const EXPECTED_NAMES = {
   'fragment-backdrop': '记一条碎片',
   'fragments-backdrop': '插入碎片',
   'format-backdrop': '智能排版',
-  'settings-backdrop': '设置'
+  'settings-backdrop': '设置',
+  'group-manage-backdrop': '分组管理',
+  'capture-backdrop': '剪贴板',
+  'command-backdrop': '命令面板',
+  'shortcuts-backdrop': '快捷键一览'
 };
+
+// DOM 反向核对用：不读名单，数页面上真实存在的 *backdrop。
+const JS_ALL_BACKDROPS = `(() => {
+  return JSON.stringify(Array.from(document.querySelectorAll('[id$="-backdrop"]')).map((el) => el.id));
+})()`;
 
 const JS_NAMES = `(() => {
   const ids = ${JSON.stringify(BACKDROPS)};
@@ -167,9 +182,18 @@ module.exports = async function group70A11yKeyboard(t) {
   const hasFocus = await ensureWindowFocus();
   check('键盘可达：自动化窗口拿到了系统焦点（真实按键才有默认焦点遍历）', hasFocus === true);
 
-  // ---------- A. 13 个弹层的无障碍名称 ----------
+  // ---------- A. 17 个弹层的无障碍名称 ----------
   const names = JSON.parse(await exec(JS_NAMES));
-  check('无障碍名称：13 个弹层都在页面上', names.length === 13, names.length);
+  check('无障碍名称：17 个弹层都在页面上', names.length === 17, names.length);
+  // 反向核对：不认名单，直接问 DOM「页面上有几个 *backdrop」，再逐个对名单。
+  // 只正着数一遍的话，页面上新加一个弹层、名单忘了登记，这一组照样全绿。
+  const onPage = JSON.parse(await exec(JS_ALL_BACKDROPS));
+  const unlisted = onPage.filter((id) => !BACKDROPS.includes(id));
+  check(
+    '无障碍名称：页面上的每个 *backdrop 都登记在名单里（DOM 反向核对）',
+    unlisted.length === 0 && onPage.length === BACKDROPS.length,
+    { onPage, unlisted, listed: BACKDROPS }
+  );
   let named = 0;
   for (const item of names) {
     const want = EXPECTED_NAMES[item.id];
@@ -188,7 +212,7 @@ module.exports = async function group70A11yKeyboard(t) {
       item
     );
   }
-  check('无障碍名称：12 个固定标题的弹层都有名字（通用询问框的标题是动态的，进写作页后单独测）', named === 12, named);
+  check('无障碍名称：16 个固定标题的弹层都有名字（通用询问框的标题是动态的，进写作页后单独测）', named === 16, named);
 
   // ---------- A2. 短暂提示的播报区（Phase D / D7）----------
   // toast 是「说完就没」的反馈（已保存 / 读取失败 / 章节文件被挪走……），看不见屏幕的人只能靠
