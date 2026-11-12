@@ -49,8 +49,13 @@ jobs:
           done < <(git ls-files '*.js')
           echo "node --check 通过：$count 个文件"
 
+      - name: 固定时区（ZIP 的 DOS 时间戳按本地时区编码；两处逐字节黄金值要与开发机 +08 同口径）
+        run: tzutil /s "China Standard Time"
+
       - name: 单测
         run: npm test
+        env:
+          TZ: Asia/Shanghai
 
       - name: 无障碍静态门禁
         run: node scripts/a11y-gate.js --static
