@@ -22,6 +22,37 @@ function volumeList(meta) {
   return meta && Array.isArray(meta.volumes) ? meta.volumes : [];
 }
 
+// 1.7.0 P4-1（审计 V29）：按卷把章节切成「连续段」——导出三处（txt / docx / epub）以前各写一份，
+// 现在只留这一份。书目顺序在 storage 读取时已经归一成「未分卷 → 第1卷 → 第2卷 …」，这里只切连续段；
+// 卷名为空 / 卷不在 meta 里的，按「没有名字的卷」处理（name = ''）。
+// indexes 可选：只对选中的章节下标分组（按卷 / 按范围导出用），不传 = 全书；非法下标直接丢掉。
+// 返回 [{ volumeId, name, indexes }]，volumeId 对未分卷的章是 null。
+function groupByVolume(meta, indexes) {
+  const chapters = chapterList(meta);
+  const volumes = new Map();
+  for (const volume of volumeList(meta)) {
+    if (volume && typeof volume.id === 'string') {
+      volumes.set(volume.id, String(volume.name == null ? '' : volume.name).trim());
+    }
+  }
+  const order = Array.isArray(indexes)
+    ? indexes.filter((index) => Number.isInteger(index) && index >= 0 && index < chapters.length)
+    : chapters.map((_, index) => index);
+  const groups = [];
+  for (const index of order) {
+    const chapter = chapters[index];
+    const volumeId = chapter && chapter.volumeId ? String(chapter.volumeId) : null;
+    const name = volumeId && volumes.has(volumeId) ? volumes.get(volumeId) : '';
+    const last = groups[groups.length - 1];
+    if (!last || last.volumeId !== volumeId) {
+      groups.push({ volumeId, name, indexes: [index] });
+    } else {
+      last.indexes.push(index);
+    }
+  }
+  return groups;
+}
+
 function toInt(value) {
   const n = Math.floor(Number(value));
   return Number.isFinite(n) ? n : null;
@@ -129,25 +160,17 @@ function exportFileName(meta, range, extension) {
 // range 可选（见 resolveExportRange）：只输出范围内的章节；范围按全书顺序算，章标题按书的编号方式（formatTitle）。
 function composeBook(meta, texts, range) {
   const chapters = chapterList(meta);
-  const volumes = new Map(
-    volumeList(meta).map((volume) => [volume.id, volume])
-  );
   const plan = resolveExportRange(meta, range);
   const blocks = [];
-  let currentVolumeId = null;
-  plan.indexes.forEach((index) => {
-    const chapter = chapters[index];
-    const volumeId = (chapter && chapter.volumeId) || null;
-    if (volumeId !== currentVolumeId) {
-      currentVolumeId = volumeId;
-      const volume = volumeId ? volumes.get(volumeId) : null;
-      const volumeName = volume ? String(volume.name || '').trim() : '';
-      if (volumeName) blocks.push(volumeName);
+  for (const group of groupByVolume(meta, plan.indexes)) {
+    if (group.name) blocks.push(group.name);
+    for (const index of group.indexes) {
+      const chapter = chapters[index];
+      const title = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
+      const text = Array.isArray(texts) ? texts[index] : '';
+      blocks.push(blockFor(title, text));
     }
-    const title = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
-    const text = Array.isArray(texts) ? texts[index] : '';
-    blocks.push(blockFor(title, text));
-  });
+  }
   return `${blocks.join('\r\n\r\n')}\r\n`;
 }
 
@@ -278,6 +301,7 @@ module.exports = {
   BOM,
   composeBook,
   composeSelected,
+  groupByVolume,
   resolveExportRange,
   exportFileName,
   exportBuffer,

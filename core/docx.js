@@ -191,10 +191,6 @@ function chapterList(meta) {
   return meta && Array.isArray(meta.chapters) ? meta.chapters : [];
 }
 
-function volumeList(meta) {
-  return meta && Array.isArray(meta.volumes) ? meta.volumes : [];
-}
-
 function normalizeInput(input) {
   const meta = (input && input.meta) || {};
   const chapters = chapterList(meta);
@@ -215,31 +211,20 @@ function normalizeInput(input) {
 
 function buildBundle(input) {
   const { meta, chapters, texts, title, author, lang, stamp, plan } = normalizeInput(input);
-  const volumes = new Map();
-  for (const volume of volumeList(meta)) {
-    if (volume && typeof volume.id === 'string') {
-      volumes.set(volume.id, String(volume.name == null ? '' : volume.name).trim());
-    }
-  }
-
   const content = [];
   let volumeCount = 0;
-  let currentVolumeId = null;
-  for (const index of plan.indexes) {
-    const chapter = chapters[index];
-    const volumeId = chapter && chapter.volumeId ? String(chapter.volumeId) : null;
-    if (volumeId !== currentVolumeId) {
-      currentVolumeId = volumeId;
-      const volumeName = volumeId && volumes.has(volumeId) ? volumes.get(volumeId) : '';
-      if (volumeName) {
-        content.push(paragraph('Heading1', volumeName));
-        volumeCount += 1;
-      }
+  for (const group of exporter.groupByVolume(meta, plan.indexes)) {
+    if (group.name) {
+      content.push(paragraph('Heading1', group.name));
+      volumeCount += 1;
     }
-    const chapterTitle = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
-    content.push(paragraph('Heading2', chapterTitle));
-    for (const text of paragraphsFromText(texts[index])) {
-      content.push(paragraph('BodyText', text));
+    for (const index of group.indexes) {
+      const chapter = chapters[index];
+      const chapterTitle = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
+      content.push(paragraph('Heading2', chapterTitle));
+      for (const text of paragraphsFromText(texts[index])) {
+        content.push(paragraph('BodyText', text));
+      }
     }
   }
 

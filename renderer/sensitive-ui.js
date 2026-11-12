@@ -67,9 +67,19 @@
     for (const key of ['effectiveConfig', 'hideHeaderMenus', 'scrollCaretIntoView']) {
       if (view[key] === undefined || view[key] === null) throw new TypeError('createSensitiveUi 的 host.view 缺少 ' + key);
     }
+    if (!host.resultJump || typeof host.resultJump.create !== 'function') {
+      throw new TypeError('createSensitiveUi 的 host.resultJump 必须提供 create');
+    }
     const { closeFindPanel, closeProofreadPanel, currentChapterRef, matchRangeAt, renderSensitiveSettings } = peers;
     const { chapterTitle, editorEl, switchChapter } = nav;
     const { effectiveConfig, hideHeaderMenus, scrollCaretIntoView } = view;
+    // 1.7.0 P4-1：和校对共用的「点结果 → 跳过去选中」（原来两个模块各写一份逐行复制）
+    const { jumpToResult } = host.resultJump.create({
+      state, toast,
+      peers: { matchRangeAt },
+      nav: { editorEl, switchChapter },
+      view: { scrollCaretIntoView }
+    });
 
   // ---------- 敏感词预检（只报告，不改动；提案 5.2） ----------
   // 词表完全由作者管理：应用不内置任何词表，只按作者在设置里选的 txt（每行一个词）报告命中。
@@ -273,29 +283,9 @@
     }
   }
 
+  // 实现在 renderer/result-jump-ui.js（和校对同一份）：先关面板 → 切章 → 定位选中 → 滚进视野。
   async function jumpToSensitiveMatch(match) {
-    if (!state.bookPath) return { ok: false };
-    let index = Number(match.chapterIndex);
-    const byIndex =
-      Number.isInteger(index) && index >= 0 && state.chapters[index] && state.chapters[index].id === match.chapterId;
-    if (!byIndex) index = state.chapters.findIndex((chapter) => chapter.id === match.chapterId);
-    if (index < 0 && match.chapterId == null) index = state.index;
-    if (index < 0) {
-      toast('这一章已经不存在了', 'warn');
-      return { ok: false };
-    }
-    closeSensitivePanel();
-    if (index !== state.index) {
-      const switched = await switchChapter(index);
-      if (!switched || switched.ok === false) {
-        return { ok: false, canceled: Boolean(switched && switched.canceled) };
-      }
-    }
-    const range = matchRangeAt(editorEl.value, match);
-    editorEl.focus();
-    editorEl.setSelectionRange(range.start, range.end);
-    scrollCaretIntoView(range.start);
-    return { ok: true, start: range.start, end: range.end };
+    return jumpToResult(match, closeSensitivePanel);
   }
 
   async function runSensitiveCheck() {

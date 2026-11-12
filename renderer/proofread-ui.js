@@ -64,9 +64,19 @@
     for (const key of ['effectiveConfig', 'hideHeaderMenus', 'scrollCaretIntoView']) {
       if (view[key] === undefined || view[key] === null) throw new TypeError('createProofreadUi 的 host.view 缺少 ' + key);
     }
+    if (!host.resultJump || typeof host.resultJump.create !== 'function') {
+      throw new TypeError('createProofreadUi 的 host.resultJump 必须提供 create');
+    }
     const { closeFindPanel, renderProofreadSettings } = peers;
     const { chapterTitle, editorEl, switchChapter } = nav;
     const { effectiveConfig, hideHeaderMenus, scrollCaretIntoView } = view;
+    // 1.7.0 P4-1：和敏感词预检共用的「点结果 → 跳过去选中」（原来两个模块各写一份逐行复制）
+    const { jumpToResult } = host.resultJump.create({
+      state, toast,
+      peers: { matchRangeAt },
+      nav: { editorEl, switchChapter },
+      view: { scrollCaretIntoView }
+    });
 
   // ---------- 校对（只报告，不改动；提案 5.1） ----------
   // 规则 / 阈值都在主进程 core/proofread.js（单测覆盖）；这里只负责面板、结果列表和「点一条跳过去」。
@@ -555,30 +565,9 @@
     };
   }
 
+  // 实现在 renderer/result-jump-ui.js（和敏感词预检同一份）：先关面板 → 切章 → 定位选中 → 滚进视野。
   async function jumpToProofreadIssue(issue) {
-    if (!state.bookPath) return { ok: false };
-    let index = Number(issue.chapterIndex);
-    const byIndex =
-      Number.isInteger(index) && index >= 0 && state.chapters[index] && state.chapters[index].id === issue.chapterId;
-    if (!byIndex) index = state.chapters.findIndex((chapter) => chapter.id === issue.chapterId);
-    // 兜底：当前章的结果万一没带章信息，就落在正在看的这一章
-    if (index < 0 && issue.chapterId == null) index = state.index;
-    if (index < 0) {
-      toast('这一章已经不存在了', 'warn');
-      return { ok: false };
-    }
-    closeProofreadPanel();
-    if (index !== state.index) {
-      const switched = await switchChapter(index);
-      if (!switched || switched.ok === false) {
-        return { ok: false, canceled: Boolean(switched && switched.canceled) };
-      }
-    }
-    const range = matchRangeAt(editorEl.value, issue);
-    editorEl.focus();
-    editorEl.setSelectionRange(range.start, range.end);
-    scrollCaretIntoView(range.start);
-    return { ok: true, start: range.start, end: range.end };
+    return jumpToResult(issue, closeProofreadPanel);
   }
 
   async function runProofread() {

@@ -190,6 +190,7 @@ function build(options = {}) {
       },
       renderSensitiveSettings() { calls.renderSensitiveSettings += 1; }
     },
+    resultJump: require('../renderer/result-jump-ui'),
     nav: {
       chapterTitle: (index, name) => chaptersLib.formatTitle(state.meta || null, index, name),
       editorEl,

@@ -283,7 +283,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // 1.6.1 P-01：5796 → 5802（+6）：强制退出前给渲染层一次落盘机会的订阅。处理函数必须调 renderer.js
   //   内部的 saveCurrent()（带 state / editorEl / updateStatus 与保存中的并发闸门），搬出去要把整条
   //   保存链路反向注入回来，反而更绕；它也只在 app:close-requested 的关窗接线旁才有意义。
-  const RENDERER_LINE_BUDGET = 5802;
+  // 1.7.0 P4-1：5802 → 5804（+2 行装配）：校对 / 敏感词预检的「点结果 → 跳过去选中」收编成共用模块
+  //   renderer/result-jump-ui.js，renderer.js 每个面板只多一行 resultJump 装配；行为与收编前逐字一致。
+  //   （split 计数含末尾空行，故预算比 wc -l 多 1。）
+  const RENDERER_LINE_BUDGET = 5804;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

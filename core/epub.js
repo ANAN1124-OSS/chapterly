@@ -252,41 +252,8 @@ function chapterList(meta) {
   return meta && Array.isArray(meta.chapters) ? meta.chapters : [];
 }
 
-function volumeList(meta) {
-  return meta && Array.isArray(meta.volumes) ? meta.volumes : [];
-}
-
 function pad4(n) {
   return String(n).padStart(4, '0');
-}
-
-// 按书目顺序把章节分组成「卷」。顺序在 storage 读取时已经归一成
-// 「未分卷 → 第1卷 → 第2卷 …」，这里只按连续段切分；没有名字的卷当作未分卷平铺。
-// indexes 可选：只对选中的章节下标分组（按卷 / 按范围导出用），不传 = 全书。
-function groupChapters(meta, indexes) {
-  const chapters = chapterList(meta);
-  const volumes = new Map();
-  for (const volume of volumeList(meta)) {
-    if (volume && typeof volume.id === 'string') {
-      volumes.set(volume.id, String(volume.name == null ? '' : volume.name).trim());
-    }
-  }
-  const order = Array.isArray(indexes)
-    ? indexes.filter((index) => Number.isInteger(index) && index >= 0 && index < chapters.length)
-    : chapters.map((_, index) => index);
-  const groups = [];
-  for (const index of order) {
-    const chapter = chapters[index];
-    const volumeId = chapter && chapter.volumeId ? String(chapter.volumeId) : null;
-    const name = volumeId && volumes.has(volumeId) ? volumes.get(volumeId) : '';
-    const last = groups[groups.length - 1];
-    if (!last || last.volumeId !== volumeId) {
-      groups.push({ volumeId, name, indexes: [index] });
-    } else {
-      last.indexes.push(index);
-    }
-  }
-  return groups;
 }
 
 // 书目 id 稳定 ⇒ 同一本书每次导出 identifier 不变（阅读器不会当成新书重复导入）。
@@ -331,7 +298,8 @@ function normalizeInput(input) {
 function buildBundle(input) {
   const { meta, chapters, texts, title, lang, identifier, stamp, plan } = normalizeInput(input);
   if (!plan.count) throw new Error('EMPTY_EXPORT_RANGE：所选范围里没有章节');
-  const groups = groupChapters(meta, plan.indexes);
+  // 1.7.0 P4-1：分组收编到 core/exporter.groupByVolume（txt / docx / epub 共用一份）
+  const groups = exporter.groupByVolume(meta, plan.indexes);
   const files = [];
   const manifest = [];
   const spine = [];

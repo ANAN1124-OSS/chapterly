@@ -230,6 +230,7 @@ function build(options = {}) {
       closeFindPanel() { calls.closeFindPanel += 1; },
       renderProofreadSettings() { calls.renderProofreadSettings += 1; }
     },
+    resultJump: require('../renderer/result-jump-ui'),
     nav: {
       chapterTitle: (index, name) => chaptersLib.formatTitle(state.meta || null, index, name),
       editorEl,

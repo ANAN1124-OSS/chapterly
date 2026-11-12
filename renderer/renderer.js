@@ -4418,6 +4418,7 @@
   const proofreadUi = proofreadUiModule.create({
     $, state, api, call, toast,
     peers: { closeFindPanel, renderProofreadSettings: () => renderProofreadSettings() },
+    resultJump: window.CWResultJumpUi,
     nav: { chapterTitle, editorEl, switchChapter },
     view: { effectiveConfig, hideHeaderMenus, scrollCaretIntoView }
   });
@@ -4428,6 +4429,7 @@
   const sensitiveUi = sensitiveUiModule.create({
     $, state, api, call, toast,
     peers: { closeFindPanel, closeProofreadPanel, currentChapterRef, matchRangeAt, renderSensitiveSettings: () => renderSensitiveSettings() },
+    resultJump: window.CWResultJumpUi,
     nav: { chapterTitle, editorEl, switchChapter },
     view: { effectiveConfig, hideHeaderMenus, scrollCaretIntoView }
   });

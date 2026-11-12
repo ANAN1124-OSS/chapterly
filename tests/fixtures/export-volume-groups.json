@@ -1,0 +1,311 @@
+{
+ "capturedWith": "git archive HEAD (8d75e8e)",
+ "modified": 1700000000000,
+ "zipDate": "2026-01-02T03:04:05.000Z",
+ "cases": [
+  {
+   "key": "no-volumes",
+   "meta": {
+    "title": "无卷书",
+    "author": "作者",
+    "volumes": [],
+    "chapters": [
+     {
+      "id": "a",
+      "name": "第1章 a",
+      "volumeId": null
+     },
+     {
+      "id": "b",
+      "name": "第2章 b",
+      "volumeId": null
+     },
+     {
+      "id": "c",
+      "name": "第3章 c",
+      "volumeId": null
+     }
+    ]
+   },
+   "texts": [
+    "正文 a",
+    "正文 b",
+    "正文 c"
+   ],
+   "txt": "第1章 a\r\n\r\n正文 a\r\n\r\n第2章 b\r\n\r\n正文 b\r\n\r\n第3章 c\r\n\r\n正文 c\r\n",
+   "docxSha256": "82753890ffe8f692315468e76316d54dd9b31db3dbafe861d2ea7763152f37d5",
+   "docxBytes": 3187,
+   "docxVolumeCount": 0,
+   "docxChapterCount": 3,
+   "epubSha256": "cb24ee5e044f83108377327cdf25322b8fc19ee2e134b38a92696a3730f3706d",
+   "epubBytes": 4143,
+   "epubVolumeCount": 0,
+   "epubChapterCount": 3
+  },
+  {
+   "key": "single-volume",
+   "meta": {
+    "title": "单卷书",
+    "author": "作者",
+    "volumes": [
+     {
+      "id": "v1",
+      "name": "第一卷 起"
+     }
+    ],
+    "chapters": [
+     {
+      "id": "a",
+      "name": "第1章 a",
+      "volumeId": "v1"
+     },
+     {
+      "id": "b",
+      "name": "第2章 b",
+      "volumeId": "v1"
+     },
+     {
+      "id": "c",
+      "name": "第3章 c",
+      "volumeId": "v1"
+     }
+    ]
+   },
+   "texts": [
+    "正文 a",
+    "正文 b",
+    "正文 c"
+   ],
+   "txt": "第一卷 起\r\n\r\n第1章 a\r\n\r\n正文 a\r\n\r\n第2章 b\r\n\r\n正文 b\r\n\r\n第3章 c\r\n\r\n正文 c\r\n",
+   "docxSha256": "ae6f6061b80abeb24d5b8a0088f4858ded2d97cfed4e2be77138fc8f0015eba4",
+   "docxBytes": 3212,
+   "docxVolumeCount": 1,
+   "docxChapterCount": 3,
+   "epubSha256": "932e05a21cc2502909243e0d9358aafb193f922e0bd5bd926d5641929ca9cbec",
+   "epubBytes": 4646,
+   "epubVolumeCount": 1,
+   "epubChapterCount": 3
+  },
+  {
+   "key": "cross-volume",
+   "meta": {
+    "title": "跨卷书",
+    "author": "作者",
+    "volumes": [
+     {
+      "id": "v1",
+      "name": "上卷"
+     },
+     {
+      "id": "v2",
+      "name": "下卷"
+     }
+    ],
+    "chapters": [
+     {
+      "id": "a",
+      "name": "第1章 a",
+      "volumeId": "v1"
+     },
+     {
+      "id": "b",
+      "name": "第2章 b",
+      "volumeId": "v1"
+     },
+     {
+      "id": "c",
+      "name": "第3章 c",
+      "volumeId": "v2"
+     },
+     {
+      "id": "d",
+      "name": "第4章 d",
+      "volumeId": "v2"
+     }
+    ]
+   },
+   "texts": [
+    "正文 a",
+    "正文 b",
+    "正文 c",
+    "正文 d"
+   ],
+   "txt": "上卷\r\n\r\n第1章 a\r\n\r\n正文 a\r\n\r\n第2章 b\r\n\r\n正文 b\r\n\r\n下卷\r\n\r\n第3章 c\r\n\r\n正文 c\r\n\r\n第4章 d\r\n\r\n正文 d\r\n",
+   "docxSha256": "2ee7f1534cde46daa918feb551d755b5182a1f53705736bbea7f91f003a270e2",
+   "docxBytes": 3222,
+   "docxVolumeCount": 2,
+   "docxChapterCount": 4,
+   "epubSha256": "df962ce374a0c4addd157ee4291e0050c4ec2e865c11498f84e352cdd4b70da0",
+   "epubBytes": 5520,
+   "epubVolumeCount": 2,
+   "epubChapterCount": 4
+  },
+  {
+   "key": "gap-unassigned",
+   "meta": {
+    "title": "夹无卷章",
+    "author": "作者",
+    "volumes": [
+     {
+      "id": "v1",
+      "name": "上卷"
+     },
+     {
+      "id": "v2",
+      "name": "下卷"
+     }
+    ],
+    "chapters": [
+     {
+      "id": "a",
+      "name": "第1章 a",
+      "volumeId": "v1"
+     },
+     {
+      "id": "b",
+      "name": "第2章 b",
+      "volumeId": null
+     },
+     {
+      "id": "c",
+      "name": "第3章 c",
+      "volumeId": "v2"
+     },
+     {
+      "id": "d",
+      "name": "第4章 d",
+      "volumeId": "v2"
+     }
+    ]
+   },
+   "texts": [
+    "正文 a",
+    "正文 b",
+    "正文 c",
+    "正文 d"
+   ],
+   "txt": "上卷\r\n\r\n第1章 a\r\n\r\n正文 a\r\n\r\n第2章 b\r\n\r\n正文 b\r\n\r\n下卷\r\n\r\n第3章 c\r\n\r\n正文 c\r\n\r\n第4章 d\r\n\r\n正文 d\r\n",
+   "docxSha256": "12f8deeffb9739a8b194b6552e81cd1407a7a77f837cd0870b8c2e6426f6e212",
+   "docxBytes": 3229,
+   "docxVolumeCount": 2,
+   "docxChapterCount": 4,
+   "epubSha256": "61742e6f1cfe0825e1392a29dfb447a6b0a7eb8769f12ab893adb3981be38c30",
+   "epubBytes": 5543,
+   "epubVolumeCount": 2,
+   "epubChapterCount": 4
+  },
+  {
+   "key": "empty-volume-name",
+   "meta": {
+    "title": "空卷名",
+    "author": "作者",
+    "volumes": [
+     {
+      "id": "v1",
+      "name": ""
+     },
+     {
+      "id": "v2",
+      "name": "后卷"
+     }
+    ],
+    "chapters": [
+     {
+      "id": "a",
+      "name": "第1章 a",
+      "volumeId": "v1"
+     },
+     {
+      "id": "b",
+      "name": "第2章 b",
+      "volumeId": "v1"
+     },
+     {
+      "id": "c",
+      "name": "第3章 c",
+      "volumeId": "v2"
+     }
+    ]
+   },
+   "texts": [
+    "正文 a",
+    "正文 b",
+    "正文 c"
+   ],
+   "txt": "第1章 a\r\n\r\n正文 a\r\n\r\n第2章 b\r\n\r\n正文 b\r\n\r\n后卷\r\n\r\n第3章 c\r\n\r\n正文 c\r\n",
+   "docxSha256": "020e776440249b911dd9da1c2a242ec07eefbe3f225c5d1cc7b81d6971ac67ad",
+   "docxBytes": 3208,
+   "docxVolumeCount": 1,
+   "docxChapterCount": 3,
+   "epubSha256": "ea2afb362602f9ab711ce551440115d2b216c83f23ca56aa28163beb52bacda3",
+   "epubBytes": 4625,
+   "epubVolumeCount": 1,
+   "epubChapterCount": 3
+  },
+  {
+   "key": "volume-not-in-meta",
+   "meta": {
+    "title": "卷缺失",
+    "author": "作者",
+    "volumes": [],
+    "chapters": [
+     {
+      "id": "a",
+      "name": "第1章 a",
+      "volumeId": "vX"
+     },
+     {
+      "id": "b",
+      "name": "第2章 b",
+      "volumeId": "vX"
+     }
+    ]
+   },
+   "texts": [
+    "正文 a",
+    "正文 b"
+   ],
+   "txt": "第1章 a\r\n\r\n正文 a\r\n\r\n第2章 b\r\n\r\n正文 b\r\n",
+   "docxSha256": "43687de955de4002de7a08e02bd14bfcbbe3a6f9cf32e792dd154713ac507ea0",
+   "docxBytes": 3176,
+   "docxVolumeCount": 0,
+   "docxChapterCount": 2,
+   "epubSha256": "7ecd61f57087ce46403a814aab8862dc735c86fe269e11ee14762c47186e6844",
+   "epubBytes": 3689,
+   "epubVolumeCount": 0,
+   "epubChapterCount": 2
+  },
+  {
+   "key": "single-chapter",
+   "meta": {
+    "title": "单章书",
+    "author": "作者",
+    "volumes": [
+     {
+      "id": "v1",
+      "name": "孤卷"
+     }
+    ],
+    "chapters": [
+     {
+      "id": "a",
+      "name": "第1章 a",
+      "volumeId": "v1"
+     }
+    ]
+   },
+   "texts": [
+    "正文 a"
+   ],
+   "txt": "孤卷\r\n\r\n第1章 a\r\n\r\n正文 a\r\n",
+   "docxSha256": "b396fd01115be411324728e60f96b0ba80d9d919a48cb891c528746133f37271",
+   "docxBytes": 3183,
+   "docxVolumeCount": 1,
+   "docxChapterCount": 1,
+   "epubSha256": "540aa4a791761d35caaf25e5aa9fa1f174981b7917b8b2bf30639c211d4c5d5c",
+   "epubBytes": 3714,
+   "epubVolumeCount": 1,
+   "epubChapterCount": 1
+  }
+ ]
+}
