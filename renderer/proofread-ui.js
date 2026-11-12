@@ -114,11 +114,29 @@
   }
 
   function renderProofreadWordList() {
-    const el = $('proofread-wordlist-text');
-    if (!el) return;
     const info = state.proofreadWordList;
-    el.textContent = proofreadWordListText(info);
-    el.classList.toggle('warn', Boolean(info && info.ok === false));
+    const lists = proofreadListsOf(info);
+    // 两份以上才逐份列；单份 / 未配置沿用旧文案（老断言一个字都不用改）
+    const multi = lists.length > 1;
+    const el = $('proofread-wordlist-text');
+    if (el) {
+      el.textContent = multi ? proofreadListsSummaryText(info) : proofreadWordListText(info);
+      el.classList.toggle('warn', Boolean(info && info.ok === false));
+    }
+    const box = $('proofread-wordlists');
+    if (box) {
+      box.innerHTML = '';
+      box.classList.toggle('hidden', !multi);
+      if (multi) {
+        for (let index = 0; index < lists.length; index += 1) box.appendChild(proofreadListRow(lists[index], index));
+      }
+    }
+    const note = $('proofread-wordlists-note');
+    if (note) note.classList.toggle('hidden', !multi);
+    // 多份时「选择词表…」那份单份路径已经不参与校对（主进程优先读多份列表），别留个按了没反应的按钮
+    const pick = $('btn-proofread-pick');
+    if (pick) pick.classList.toggle('hidden', multi);
+    return multi;
   }
 
   // 只读：取当前配置里的校对词表状态（不把词表正文带到渲染层）
@@ -238,9 +256,177 @@
     return rules[rule];
   }
 
-  // 传给主进程的选项：只带规则开关，阈值仍走默认（renderer 不暴露阈值）
+  // 传给主进程的选项：规则开关 + （只有多份词表时才有）这一轮启用哪几份，阈值仍走默认
   function proofreadOptions() {
-    return { rules: { ...proofreadRuleState() } };
+    const options = { rules: { ...proofreadRuleState() } };
+    // 单份 / 未配置没有「这一份关掉」这回事：沿用旧选项，不带新字段
+    const lists = proofreadListsOf(state.proofreadWordList);
+    if (lists.length > 1) {
+      const enabled = proofreadEnabledListIndices(state.proofreadWordList);
+      // 全开就交给主进程默认（缺省 = 全开）；有明确关掉的才带索引数组
+      if (enabled.length < lists.length) options.enabledLists = enabled;
+    }
+    return options;
+  }
+
+  // ---------- 多份校对词表（1.7.0 F3c） ----------
+  // 主进程 words-info 回的是 { lists:[{ok,count,error,truncated}], total, ok, configured, count }，
+  // lists 按 index 对齐配置里的顺序（渲染层拿不到路径，也不会回写路径）。
+  // 启用开关只存本次会话：state.proofreadListsEnabled 是按 index 的布尔表，不写配置、不新增字段；
+  // 列表本身（哪几份）由主进程持久化——添加 / 移除立刻写 config，这里只管显示与刷新。
+  function proofreadListsOf(info) {
+    return info && Array.isArray(info.lists) ? info.lists : [];
+  }
+
+  function proofreadListsEnabledMap() {
+    if (!state.proofreadListsEnabled || typeof state.proofreadListsEnabled !== 'object') {
+      state.proofreadListsEnabled = {};
+    }
+    return state.proofreadListsEnabled;
+  }
+
+  function proofreadListEnabled(index) {
+    return proofreadListsEnabledMap()[index] !== false;
+  }
+
+  function proofreadEnabledListIndices(info) {
+    const lists = proofreadListsOf(info);
+    const picked = [];
+    for (let index = 0; index < lists.length; index += 1) if (proofreadListEnabled(index)) picked.push(index);
+    return picked;
+  }
+
+  // 移掉一份以后索引整体前移：开关表跟着挪，别让后面的词表莫名变成关闭
+  function shiftProofreadListEnabled(removedIndex) {
+    const map = proofreadListsEnabledMap();
+    const next = {};
+    for (const key of Object.keys(map)) {
+      const index = Number(key);
+      if (!Number.isInteger(index) || index < 0 || index === removedIndex) continue;
+      next[index > removedIndex ? index - 1 : index] = map[key];
+    }
+    state.proofreadListsEnabled = next;
+  }
+
+  function proofreadListText(one) {
+    if (!one || one.ok !== true) {
+      const error = one && typeof one.error === 'string' ? one.error : '';
+      return error ? `读取失败：${error}` : '读取失败';
+    }
+    let text = `${Number(one.count) || 0} 个词`;
+    if (one.truncated) text += '（超过 5000 个只取前 5000 个）';
+    return text;
+  }
+
+  function proofreadListsSummaryText(info) {
+    const lists = proofreadListsOf(info);
+    const usable = lists.filter((one) => one && one.ok === true).length;
+    let text = `校对词表：共 ${lists.length} 份`;
+    if (Number.isFinite(info.total)) text += `，合计 ${info.total} 个词`;
+    if (usable < lists.length) text += `（${usable} 份可用）`;
+    return text;
+  }
+
+  // 每份一行：序号 / 数量或错误 / 启用开关 / 移除（按钮复用现有 .btn tiny，不新增图片与字体）
+  function proofreadListRow(one, index) {
+    const row = document.createElement('div');
+    row.className = 'proofread-wordlist-row small';
+    row.dataset.index = String(index);
+    if (!one || one.ok !== true) row.classList.add('warn');
+
+    const name = document.createElement('span');
+    name.className = 'proofread-wordlist-name';
+    name.textContent = `第 ${index + 1} 份`;
+    const detail = document.createElement('span');
+    detail.className = 'proofread-wordlist-state';
+    detail.textContent = proofreadListText(one);
+
+    const on = proofreadListEnabled(index);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'btn ghost tiny';
+    toggle.dataset.action = 'toggle';
+    toggle.textContent = on ? '已启用' : '已关闭';
+    toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+    toggle.setAttribute('aria-label', `第 ${index + 1} 份词表：${on ? '已启用' : '已关闭'}，点击${on ? '关掉' : '打开'}（只对本次会话有效）`);
+    toggle.addEventListener('click', () => toggleProofreadList(index));
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn ghost tiny';
+    remove.dataset.action = 'remove';
+    remove.textContent = '移除';
+    remove.setAttribute('aria-label', `移除第 ${index + 1} 份词表（会立刻写配置）`);
+    remove.addEventListener('click', () => removeProofreadWordlist(index));
+
+    row.append(name, detail, toggle, remove);
+    return row;
+  }
+
+  // 点一下逐份开关：只翻内存里的布尔表 → 重画 → 面板开着就重跑一次。
+  // 全关等于全开（主进程对空数组的兜底），所以最后一份不允许关，避免「界面关了却还在跑」。
+  function toggleProofreadList(index) {
+    const lists = proofreadListsOf(state.proofreadWordList);
+    if (!Number.isInteger(index) || index < 0 || index >= lists.length) return null;
+    const next = !proofreadListEnabled(index);
+    if (!next && proofreadEnabledListIndices(state.proofreadWordList).length <= 1) {
+      toast('至少要留一份词表启用（全关掉等于全部启用）', 'warn');
+      return null;
+    }
+    proofreadListsEnabledMap()[index] = next;
+    renderProofreadWordList();
+    if (!state.bookPath || $('proofread-backdrop').classList.contains('hidden')) return next;
+    if (state.proofreadBusy) proofreadRerunPending = true;
+    else void runProofread();
+    return next;
+  }
+
+  // 添加 / 移除：主进程负责落盘，并把最新 info 一起回给渲染层；这里只做「换成新 info → 重画 → 重跑」
+  function applyProofreadWordListInfo(info) {
+    if (info && typeof info === 'object') state.proofreadWordList = info;
+    renderProofreadWordList();
+    return state.proofreadWordList;
+  }
+
+  async function addProofreadWordlist() {
+    try {
+      const res = await call(api.addProofreadWordlist);
+      if (!res || res.canceled) return { canceled: true };
+      if (res.added === false) {
+        toast(res.message || '这份词表不能添加', 'warn');
+        applyProofreadWordListInfo(res);
+        return res;
+      }
+      applyProofreadWordListInfo(res);
+      toast(`已添加一份校对词表（现在共 ${proofreadListsOf(res).length} 份）`);
+      if (!$('proofread-backdrop').classList.contains('hidden')) await runProofread();
+      return res;
+    } catch (err) {
+      toast(`添加校对词表失败：${err.message}`, 'error');
+      return { ok: false, message: err.message };
+    }
+  }
+
+  async function removeProofreadWordlist(index) {
+    const lists = proofreadListsOf(state.proofreadWordList);
+    if (!Number.isInteger(index) || index < 0 || index >= lists.length) return { ok: false };
+    try {
+      const res = await call(api.removeProofreadWordlist, index);
+      if (!res || res.canceled) return { canceled: true };
+      if (res.removed === false) {
+        toast(res.message || '这份词表不在列表里，可能已经被移除了', 'warn');
+        applyProofreadWordListInfo(res);
+        return res;
+      }
+      shiftProofreadListEnabled(index);
+      applyProofreadWordListInfo(res);
+      toast(`已移除一份校对词表（还剩 ${proofreadListsOf(res).length} 份）`);
+      if (!$('proofread-backdrop').classList.contains('hidden')) await runProofread();
+      return res;
+    } catch (err) {
+      toast(`移除校对词表失败：${err.message}`, 'error');
+      return { ok: false, message: err.message };
+    }
   }
 
   function proofreadChapterTitle(issue) {
@@ -502,6 +688,9 @@
   // 事件绑定（与搬前 bindEvents() 里的校对块 + 范围 change 逐行一致；由渲染层在原位置调用一次）
   function setupProofreadUi() {
     $('btn-proofread').addEventListener('click', openProofreadPanel);
+    // 1.7.0 F3c：多份词表的添加入口（列表内的启用 / 移除按钮在每次重画时各自绑定）
+    const addButton = $('btn-proofread-add');
+    if (addButton) addButton.addEventListener('click', addProofreadWordlist);
     $('btn-proofread-run').addEventListener('click', runProofread);
     $('btn-proofread-close').addEventListener('click', closeProofreadPanel);
     $('proofread-scope').addEventListener('change', () => {
@@ -527,6 +716,10 @@
       matchRangeAt,
       runProofread,
       pickProofreadWords,
+      renderProofreadWordList,
+      toggleProofreadList,
+      addProofreadWordlist,
+      removeProofreadWordlist,
       setupProofreadUi
     };
   }

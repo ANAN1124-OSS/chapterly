@@ -435,7 +435,16 @@
         <div class="sensitive-wordlist proofread-wordlist">
           <span id="proofread-wordlist-text" class="muted small">正在读取校对词表…</span>
           <button id="btn-proofread-pick" class="btn ghost tiny" type="button">选择词表…</button>
+          <button id="btn-proofread-add" class="btn ghost tiny" type="button">添加词表…</button>
         </div>
+        <!-- 1.7.0 F3c：多份校对词表逐份列出（序号 / 数量或错误 / 启用开关 / 移除）。
+             开关只对本次会话有效、不写配置；添加 / 移除会立刻写配置（词表由主进程持久化，
+             「添加词表…」只能走系统对话框，渲染层给不了路径）。 -->
+        <div class="proofread-wordlists hidden" id="proofread-wordlists" role="group" aria-label="校对词表列表"></div>
+        <p class="muted small hidden" id="proofread-wordlists-note">
+          每份词表一行：可以逐份关掉，开关只对本次会话有效、<strong>不写配置</strong>；
+          「移除」会立刻写配置，关掉面板不影响结果。
+        </p>
         <div class="proofread-row">
           <label class="field inline">
             <span>范围</span>
@@ -1109,7 +1118,8 @@
           <button id="btn-clear-proofread" class="btn ghost" type="button">清除</button>
         </div>
         <span id="settings-proofread-status" class="muted small"></span>
-        <span class="muted small">可选；每行一个词，可写「错词 → 建议」。应用不内置任何词表，只报告、不改正文</span>
+        <span class="muted small">可选；每行一个词，可写「错词 → 建议」。应用不内置任何词表，只报告、不改正文。
+          多份词表在写作页「校对」面板管理（这一行是单份的旧插槽，多份列表优先）</span>
       </label>
       </section>
       <section class="settings-section" id="settings-section-data" data-settings-section="data" role="tabpanel"

@@ -117,10 +117,26 @@ const DEFAULT_RULES = {
   'custom-word': true
 };
 
+// ---------- 多份校对词表（1.7.0 F3c） ----------
+// 主进程 words-info 的形状：{ lists:[{ok,count,error,truncated}], total, ok, configured, count }。
+// lists 按 index 对齐配置里的顺序；渲染层拿不到路径，开关也只存会话。
+const MULTI_INFO = {
+  ok: true, configured: true, total: 27, count: 27,
+  name: '3 份词表',
+  lists: [
+    { ok: true, count: 12, error: '', truncated: false },
+    { ok: false, count: 0, error: '文件不存在', truncated: false },
+    { ok: true, count: 15, error: '', truncated: true }
+  ]
+};
+const MULTI_INFO_TWO = { ...MULTI_INFO, lists: [MULTI_INFO.lists[0], MULTI_INFO.lists[2]] };
+
 const BASE_IDS = [
   'proofread-backdrop', 'proofread-scope', 'proofread-wordlist-text', 'proofread-busy',
   'btn-proofread-run', 'proofread-summary', 'proofread-results', 'find-backdrop',
-  'btn-proofread', 'btn-proofread-close', 'proofread-rules'
+  'btn-proofread', 'btn-proofread-close', 'proofread-rules',
+  // 1.7.0 F3c：多份校对词表（列表容器 / 会话内提示 / 添加 / 单份选择）
+  'proofread-wordlists', 'proofread-wordlists-note', 'btn-proofread-add', 'btn-proofread-pick'
 ];
 
 function makeChapters() {
@@ -153,6 +169,7 @@ function build(options = {}) {
   };
   const calls = {
     proofreadWordsInfo: 0, proofreadBook: [], proofreadText: [], pickProofreadWords: 0, setConfig: [],
+    addProofreadWordlist: 0, removeProofreadWordlist: [],
     toast: [], closeFindPanel: 0, renderProofreadSettings: 0, hideHeaderMenus: 0, effectiveConfig: 0,
     switchChapter: [], scrollCaretIntoView: []
   };
@@ -186,6 +203,19 @@ function build(options = {}) {
     async setConfig(patch) {
       calls.setConfig.push(patch);
       return { proofreadWordsPath: patch.proofreadWordsPath };
+    },
+    // 1.7.0 F3c：多份词表（主进程回包 = 最新 info + added / removed / code）
+    async addProofreadWordlist() {
+      calls.addProofreadWordlist += 1;
+      if (options.addError) throw new Error(options.addError);
+      if (options.addResult !== undefined) return options.addResult;
+      return { canceled: false, added: true, ...MULTI_INFO };
+    },
+    async removeProofreadWordlist(index) {
+      calls.removeProofreadWordlist.push(index);
+      if (options.removeError) throw new Error(options.removeError);
+      if (options.removeResult !== undefined) return options.removeResult;
+      return { canceled: false, removed: true, ...MULTI_INFO_TWO };
     }
   };
   const editorEl = makeEl('textarea');
@@ -256,9 +286,9 @@ test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交�
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0, 'create() 一次 $ 都不该调');
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'closeProofreadPanel', 'currentChapterRef', 'matchRangeAt', 'openProofreadPanel',
+    'addProofreadWordlist', 'closeProofreadPanel', 'currentChapterRef', 'matchRangeAt', 'openProofreadPanel',
     'pickProofreadWords', 'proofreadScope', 'proofreadWordListText', 'refreshProofreadWordList',
-    'runProofread', 'setupProofreadUi'
+    'removeProofreadWordlist', 'renderProofreadWordList', 'runProofread', 'setupProofreadUi', 'toggleProofreadList'
   ]);
   assert.equal(moduleCode.includes('setInterval'), false);
 });
@@ -797,4 +827,175 @@ test('规则开关：不写配置、不新增字段——模块里没有把 proo
   // 面板里有规则容器 + 「开关不保存」小字
   assert.match(indexSrc, /id="proofread-rules"/);
   assert.match(indexSrc, /开关只对本次会话有效/);
+});
+
+// ---------- 多份校对词表（1.7.0 F3c · 渲染层面板） ----------
+test('多份词表：info 渲染成逐份列表（序号 / 数量或错误 / 启用开关 / 移除按钮）', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, wordInfo: MULTI_INFO });
+  await ctx.ui.refreshProofreadWordList();
+  const box = dom.map.get('proofread-wordlists');
+  assert.equal(box.classList.contains('hidden'), false, '多份时列表要露出来');
+  assert.equal(box.children.length, 3);
+  const row = (index) => box.children[index];
+  assert.equal(row(0).dataset.index, '0');
+  assert.equal(row(0).children[0].textContent, '第 1 份');
+  assert.equal(row(0).children[1].textContent, '12 个词');
+  assert.equal(row(1).children[1].textContent, '读取失败：文件不存在');
+  assert.equal(row(1).classList.contains('warn'), true, '读失败的那份自己标黄');
+  assert.equal(row(2).children[1].textContent, '15 个词（超过 5000 个只取前 5000 个）');
+  // 启用开关：文案 + aria-pressed + 给屏幕阅读器的完整说明
+  assert.equal(row(0).children[2].textContent, '已启用');
+  assert.equal(row(0).children[2].getAttribute('aria-pressed'), 'true');
+  assert.match(row(0).children[2].getAttribute('aria-label'), /第 1 份词表：已启用/);
+  // 移除按钮
+  assert.equal(row(0).children[3].textContent, '移除');
+  assert.match(row(0).children[3].getAttribute('aria-label'), /移除第 1 份词表/);
+  // 摘要文案 + 多份时「选择词表…」收起（单份槽位已被列表取代）
+  assert.equal(dom.map.get('proofread-wordlist-text').textContent, '校对词表：共 3 份，合计 27 个词（2 份可用）');
+  assert.equal(dom.map.get('btn-proofread-pick').classList.contains('hidden'), true);
+  assert.equal(dom.map.get('proofread-wordlists-note').classList.contains('hidden'), false);
+});
+
+test('多份词表：单份 / 未配置退回旧文案（不渲染列表、不藏选择按钮）', async () => {
+  const singleDom = makeDocument();
+  const single = build({
+    dom: singleDom,
+    wordInfo: {
+      ok: true, configured: true, total: 8, count: 8, name: '词表.txt',
+      lists: [{ ok: true, count: 8, error: '', truncated: false }]
+    }
+  });
+  await single.ui.refreshProofreadWordList();
+  assert.equal(singleDom.map.get('proofread-wordlist-text').textContent, '校对词表：词表.txt（8 个词）');
+  assert.equal(singleDom.map.get('proofread-wordlists').classList.contains('hidden'), true);
+  assert.equal(singleDom.map.get('proofread-wordlists').children.length, 0);
+  assert.equal(singleDom.map.get('btn-proofread-pick').classList.contains('hidden'), false);
+
+  const noneDom = makeDocument();
+  const none = build({
+    dom: noneDom,
+    wordInfo: { ok: false, configured: false, code: 'GLOSSARY_NOT_CONFIGURED', total: 0, lists: [] }
+  });
+  await none.ui.refreshProofreadWordList();
+  assert.match(noneDom.map.get('proofread-wordlist-text').textContent, /还没有指定校对词表/);
+  assert.equal(noneDom.map.get('proofread-wordlists').classList.contains('hidden'), true);
+});
+
+test('多份词表开关：关掉一份后跑校对，options.enabledLists 不含该索引；开关只存会话不写配置', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, wordInfo: MULTI_INFO });
+  await ctx.ui.openProofreadPanel();
+  assert.equal(ctx.calls.proofreadText.length, 1);
+  assert.deepEqual(ctx.calls.proofreadText[0][1], { rules: { ...DEFAULT_RULES } }, '全开时不多带字段');
+  const box = dom.map.get('proofread-wordlists');
+  box.children[1].children[2]._fire('click'); // 关掉第 2 份
+  assert.equal(ctx.state.proofreadListsEnabled[1], false);
+  assert.equal(box.children[1].children[2].getAttribute('aria-pressed'), 'false');
+  await flush();
+  await flush();
+  assert.equal(ctx.calls.proofreadText.length, 2, '面板开着要立刻按新开关重跑');
+  assert.deepEqual(ctx.calls.proofreadText[1][1].enabledLists, [0, 2]);
+  assert.deepEqual(ctx.calls.proofreadText[1][1].rules, { ...DEFAULT_RULES });
+  assert.deepEqual(ctx.calls.setConfig, [], '开关只在内存，不写配置');
+
+  // 再点回来：全开就回到不带新字段的旧形状
+  box.children[1].children[2]._fire('click');
+  await flush();
+  await flush();
+  assert.equal(ctx.calls.proofreadText.length, 3);
+  assert.deepEqual(ctx.calls.proofreadText[2][1], { rules: { ...DEFAULT_RULES } });
+});
+
+test('多份词表开关：最后一份不允许关（全关等于全开），给警告并保持启用', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, wordInfo: MULTI_INFO_TWO });
+  await ctx.ui.refreshProofreadWordList();
+  const box = dom.map.get('proofread-wordlists');
+  box.children[0].children[2]._fire('click');
+  assert.equal(ctx.state.proofreadListsEnabled[0], false);
+  box.children[1].children[2]._fire('click');
+  assert.equal(ctx.state.proofreadListsEnabled[1], undefined, '第二份不能被关掉');
+  assert.deepEqual(ctx.calls.toast.at(-1), ['至少要留一份词表启用（全关掉等于全部启用）', 'warn']);
+  assert.equal(box.children[1].children[2].getAttribute('aria-pressed'), 'true');
+});
+
+test('多份词表：添加按钮走 api.addProofreadWordlist 并刷新列表；取消 / 失败只说原因', async () => {
+  const dom = makeDocument();
+  const ctx = build({
+    dom,
+    wordInfo: { ok: true, configured: true, total: 8, count: 8, name: '词表.txt', lists: [{ ok: true, count: 8, error: '', truncated: false }] },
+    addResult: { canceled: false, added: true, ...MULTI_INFO }
+  });
+  ctx.ui.setupProofreadUi();
+  await ctx.ui.refreshProofreadWordList();
+  assert.equal(dom.map.get('proofread-wordlists').children.length, 0, '加之前只有一份，不列');
+  dom.map.get('btn-proofread-add')._fire('click');
+  await flush();
+  await flush();
+  assert.equal(ctx.calls.addProofreadWordlist, 1);
+  assert.equal(ctx.state.proofreadWordList.lists.length, 3);
+  assert.equal(dom.map.get('proofread-wordlists').children.length, 3);
+  assert.match(ctx.calls.toast.at(-1)[0], /已添加一份校对词表（现在共 3 份）/);
+
+  // 用户点系统对话框的「取消」：什么都不变，也不弹错
+  const cancelDom = makeDocument();
+  const cancel = build({ dom: cancelDom, wordInfo: MULTI_INFO, addResult: { canceled: true } });
+  const before = cancel.state.proofreadWordList;
+  assert.deepEqual(await cancel.ui.addProofreadWordlist(), { canceled: true });
+  assert.equal(cancel.state.proofreadWordList, before);
+  assert.deepEqual(cancel.calls.toast, []);
+
+  // 重复 / 限额 / 不是绝对路径：主进程给原因，列表照回包刷新
+  const dupDom = makeDocument();
+  const dup = build({
+    dom: dupDom,
+    wordInfo: MULTI_INFO,
+    addResult: { canceled: false, added: false, code: 'WORDLIST_DUPLICATE', message: '这份词表已经在列表里了', ...MULTI_INFO }
+  });
+  const dupRes = await dup.ui.addProofreadWordlist();
+  assert.equal(dupRes.added, false);
+  assert.deepEqual(dup.calls.toast.at(-1), ['这份词表已经在列表里了', 'warn']);
+});
+
+test('多份词表：移除按钮走 api.removeProofreadWordlist(index)，开关表跟着前移', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, wordInfo: MULTI_INFO, removeResult: { canceled: false, removed: true, ...MULTI_INFO_TWO } });
+  ctx.ui.setupProofreadUi();
+  await ctx.ui.refreshProofreadWordList();
+  const box = dom.map.get('proofread-wordlists');
+  // 先关掉第 1 份，再把它移除：剩下的开关表要整体前移，后面的词表不会莫名变关闭
+  box.children[0].children[2]._fire('click');
+  assert.equal(ctx.state.proofreadListsEnabled[0], false);
+  box.children[0].children[3]._fire('click');
+  await flush();
+  await flush();
+  assert.deepEqual(ctx.calls.removeProofreadWordlist, [0]);
+  assert.equal(ctx.state.proofreadListsEnabled[0], undefined, '被移除那一份的开关跟着丢掉');
+  assert.equal(dom.map.get('proofread-wordlists').children.length, 2);
+  assert.match(ctx.calls.toast.at(-1)[0], /已移除一份校对词表（还剩 2 份）/);
+
+  // 越界索引：不打 IPC
+  const gone = build({
+    dom: makeDocument(),
+    wordList: MULTI_INFO,
+    removeResult: { canceled: false, removed: false, code: 'WORDLIST_NOT_FOUND', message: '这一份词表不在列表里，可能已经被移除了', ...MULTI_INFO }
+  });
+  assert.deepEqual(await gone.ui.removeProofreadWordlist(5), { ok: false });
+  assert.deepEqual(gone.calls.removeProofreadWordlist, []);
+  // 主进程说已经被移除了：只说一句，不崩
+  const goneRes = await gone.ui.removeProofreadWordlist(0);
+  assert.equal(goneRes.removed, false);
+  assert.deepEqual(gone.calls.toast.at(-1), ['这一份词表不在列表里，可能已经被移除了', 'warn']);
+});
+
+test('多份词表：容器 / 添加按钮在 index.html，设置页保留单份选择器并指向面板', () => {
+  assert.match(indexSrc, /id="proofread-wordlists"/);
+  assert.match(indexSrc, /id="btn-proofread-add"/);
+  assert.match(indexSrc, /多份词表在写作页「校对」面板管理/);
+  // 开关只存会话：模块里没有把开关塞进任何配置 patch
+  assert.equal(/setConfig\([^)]*proofreadListsEnabled/.test(moduleCode), false, '开关不写配置');
+  assert.equal(moduleCode.includes('proofreadListsEnabled:'), false, '开关不写进任何配置 patch');
+  // 不新增图片 / 字体
+  assert.equal(/<img|@font-face/.test(moduleCode), false);
 });

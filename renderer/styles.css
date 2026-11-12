@@ -3575,6 +3575,16 @@ body.theme-night .long-para-bar { background: var(--warn);
 .proofread-wordlist #proofread-wordlist-text { flex: 1; min-width: 0; }
 .sensitive-wordlist .warn,
 .proofread-wordlist .warn { color: var(--warn); }
+/* 1.7.0 F3c：多份校对词表（每份一行：序号 / 数量或错误 / 启用开关 / 移除） */
+.proofread-wordlists { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.proofread-wordlists.hidden { display: none; }
+.proofread-wordlist-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px; border-radius: 8px; background: var(--hover-tint);
+}
+.proofread-wordlist-row.warn .proofread-wordlist-state { color: var(--warn); }
+.proofread-wordlist-name { flex: 0 0 auto; color: var(--ink-soft); }
+.proofread-wordlist-state { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sensitive-word { color: var(--danger); font-weight: 600; }
 
 /* ---------- 灵感箱（碎片速记） ---------- */
