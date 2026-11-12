@@ -245,7 +245,7 @@ test('startWriteTimer：关闭记录 / 书架 / 没书都不起表；开启后�
   const intervals = [];
   globalThis.setInterval = (fn, ms) => { intervals.push({ fn, ms, cleared: false }); return intervals.length; };
   globalThis.clearInterval = (id) => { if (intervals[id - 1]) intervals[id - 1].cleared = true; };
-
+  try {
   const off = build({ config: {} });
   assert.equal(off.ui.startWriteTimer(), false);
   assert.equal(intervals.length, 0);
@@ -263,15 +263,18 @@ test('startWriteTimer：关闭记录 / 书架 / 没书都不起表；开启后�
   // 再点一次不会重复起
   assert.equal(ctx.ui.startWriteTimer(), true);
   assert.equal(intervals.length, 2);
-  Date.now = realDateNow;
-  globalThis.setInterval = realSetInterval;
-  globalThis.clearInterval = realClearInterval;
+  } finally {
+    Date.now = realDateNow;
+    globalThis.setInterval = realSetInterval;
+    globalThis.clearInterval = realClearInterval;
+  }
 });
 
 test('ticker 回调：30 秒定时 flush、1 秒定时只刷新文字；暂停 / 重置会清掉两个定时器', async () => {
   const intervals = [];
   globalThis.setInterval = (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; };
   globalThis.clearInterval = (id) => { if (intervals[id - 1]) intervals[id - 1].cleared = true; };
+  try {
   const ctx = build();
   ctx.ui.startWriteTimer();
   const flushTimer = intervals.find((i) => i.ms === 30000);
@@ -288,8 +291,10 @@ test('ticker 回调：30 秒定时 flush、1 秒定时只刷新文字；暂停 /
   await ctx.ui.pauseWriteTimer();
   assert.equal(intervals.every((i) => i.cleared), true, '暂停后两个定时器都清掉');
   assert.equal(ctx.state.writeTimer.running, false);
-  globalThis.setInterval = realSetInterval;
-  globalThis.clearInterval = realClearInterval;
+  } finally {
+    globalThis.setInterval = realSetInterval;
+    globalThis.clearInterval = realClearInterval;
+  }
 });
 
 // ---------- 上报 ----------

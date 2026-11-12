@@ -82,9 +82,9 @@ test('预览快照：只在 mtime + size 都一致时才复用正文', () => {
   const other = later.begin('D:\\书库\\甲书');
   other.remember('001.txt', { mtimeMs: 1000, size: 6, text: '正文甲' });
   assert.equal(other.lookup('001.txt').mtimeMs, 1000);
-  // 同尺寸但 mtime 不同 = 变过；不同尺寸当然也是变过 —— 调用方据此回退读盘
-  assert.notEqual(other.lookup('001.txt').mtimeMs, 1001);
-  assert.notEqual(other.lookup('001.txt').size, 7);
+  // 同尺寸但 mtime 不同 = 变过；不同尺寸当然也是变过 —— 调用方据此回退读盘。
+  // 恒真陷阱：记下的本来就是 1000 / 6，『≠ 1001 / 7』对任取回值都成立；改成钉死取回的整份值。
+  assert.deepEqual(other.lookup('001.txt'), { mtimeMs: 1000, size: 6, text: '正文甲' });
 });
 
 test('预览快照：take 一次性取走，drop / 过期都释放正文', () => {

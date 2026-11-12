@@ -17,23 +17,11 @@ const path = require('node:path');
 
 const capture = require('../core/capture');
 
-// T2 正在并行给 core/capture.js 加 recordPreview（契约 §3）：在它落地前的窗口期，这里按同一规则
-// 垫一个仅测试用的实现，让本文件的其它断言可以先跑；T2 落地后自动走真实现（不覆盖已有函数）。
-function fallbackRecordPreview(text, options = {}) {
-  const source = typeof text === 'string' ? text.replace(/\r\n/g, '\n') : '';
-  if (!source.trim()) return '';
-  const maxChars = Number(options.maxChars) > 0 ? Math.round(options.maxChars) : 300;
-  const maxLines = Number(options.maxLines) > 0 ? Math.round(options.maxLines) : 6;
-  const allLines = source.split('\n');
-  let out = allLines.slice(0, maxLines).join('\n');
-  let truncated = allLines.length > maxLines;
-  if (out.length > maxChars) {
-    out = out.slice(0, maxChars);
-    truncated = true;
-  }
-  return truncated ? `${out}…` : out;
+// 被测模块的真实现就在 core/capture.js（契约 §3）。缺了必须当场失败：
+// 之前这里垫了一个永久 fallback，真实现缺失时本文件仍能靠测试内的假实现「自证通过」，等于没测被测代码。
+if (typeof capture.recordPreview !== 'function') {
+  throw new Error('core/capture.js 缺少 recordPreview（契约 §3）：真实现缺失，测试不能拿测试内的假实现自证');
 }
-if (typeof capture.recordPreview !== 'function') capture.recordPreview = fallbackRecordPreview;
 
 const captureUiModule = require('../renderer/capture-ui');
 

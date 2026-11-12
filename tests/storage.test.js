@@ -1345,9 +1345,17 @@ test('显式保存仍更新 updatedAt：改章节状态 / 改名会写，扫描�
     JSON.stringify({ ...created, updatedAt: stamp }),
     'utf8'
   );
-  // 扫描把这一章的字数补上，但 updatedAt 不许动
+  // 扫描把这一章的字数补上，但 updatedAt 不许动。
+  // 恒真陷阱：totalChars 是数字，『>= 0』恒成立；改成写死 5 字正文 + 抹掉字数缓存后按正文重算。
+  await storage.saveChapterText(bookPath, created.chapters[0].file, '一二三四五');
+  await fs.writeFile(
+    path.join(bookPath, '书目.json'),
+    JSON.stringify({ ...(await storage.readBookMeta(bookPath)), updatedAt: stamp }),
+    'utf8'
+  );
+  await stripCharsCache(bookPath);
   const scanned = await storage.listBooks(root);
-  assert.ok(scanned[0].totalChars >= 0);
+  assert.equal(scanned[0].totalChars, 5, '扫描按章正文回填字数');
   assert.equal((await storage.readBookMeta(bookPath)).updatedAt, stamp, '扫描回填不改 updatedAt');
   // 用户显式改章节状态 → 必须更新
   await new Promise((resolve) => setTimeout(resolve, 10));

@@ -286,8 +286,7 @@ test('renderJumpMatches：结果行是 button.jump-result，两段文字 + 状�
   assert.equal(row.children[0].textContent, '第2章：第二章');
   assert.equal(row.children[1].className, 'jump-status');
   assert.equal(row.children[1].textContent, '完稿');
-  // 未知状态不写 undefined，留空
-  assert.equal(row.children[1].textContent.length > 0, true);
+  // 上一行已逐字钉死文案；原来的 `length > 0` 只是它的推论（恒真），删掉，不重复同一条断言。
   assert.equal(host.$('jump-results').children.length, 1);
 
   // 点这一行 → jumpToIndex(index) → 先关对话框再走 switchChapter

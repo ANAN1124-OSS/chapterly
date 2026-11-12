@@ -10,9 +10,11 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
+const tmpCleanup = require('./tmp-cleanup');
 
+// 临时目录一律登记到 tmp-cleanup：进程退出时统一回收（D:\Temp 曾被单测残留堆到 125 GB）。
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-meta-bak-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-meta-bak-')));
 }
 
 async function exists(target) {
@@ -27,6 +29,7 @@ async function exists(target) {
 test('书目备份：只有结构性变更才轮换 .bak，普通保存不碰上一版', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '备份演练');
+  try {
   const bakPath = path.join(bookPath, '书目.json.bak');
   assert.equal(await exists(bakPath), false, '新书第一次写盘没有上一版，不该造出空备份');
 
@@ -78,12 +81,15 @@ test('书目备份：只有结构性变更才轮换 .bak，普通保存不碰上
     '删章要轮换 .bak（备份里还是删除前那一版）'
   );
 
-  await fs.rm(root, { recursive: true, force: true });
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test('书目备份：结构性写盘时 .bak 写失败 → 抛错且主文件一个字不动（备份语义保守）', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '备份失败演练');
+  try {
   const metaPath = path.join(bookPath, '书目.json');
   const bakPath = path.join(bookPath, '书目.json.bak');
   const beforeMain = await fs.readFile(metaPath, 'utf8');
@@ -103,5 +109,7 @@ test('书目备份：结构性写盘时 .bak 写失败 → 抛错且主文件一
   // 恢复后照常能写（失败不留下坏状态）
   const after = await storage.readBookMeta(bookPath);
   await storage.writeBookMeta(bookPath, after, { structural: true });
-  await fs.rm(root, { recursive: true, force: true });
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
