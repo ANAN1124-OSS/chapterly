@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const proofread = require('../core/proofread');
 const format = require('../core/format');
+const glossary = require('../core/glossary');
 
 const only = (result, rule) => result.issues.filter((issue) => issue.rule === rule);
 
@@ -389,6 +390,59 @@ test('校对：带词表时结果仍可回归，且不修改调用方数组', ()
   const b = proofread.proofreadText(text, {}, entries);
   assert.deepEqual(a, b);
   assert.deepEqual(entries, copy);
+});
+
+test('校对：已清洗入参不再二次 sanitize（注入计数，V44）', () => {
+  const raw = [
+    { term: ' 做为 ', suggestion: '作为' },
+    { term: '做为', suggestion: '当作' },
+    { term: '', suggestion: 'x' },
+    '禁词'
+  ];
+  const cleanEntries = glossary.sanitizeEntries(raw);
+  assert.deepEqual(cleanEntries, [
+    { term: '做为', suggestion: '作为' },
+    { term: '禁词', suggestion: '' }
+  ], '前置：读到出口时词条已被清洗（parseGlossary / readGlossaryFiles 同一口径）');
+
+  const origSanitize = glossary.sanitizeEntries;
+  const origFindHits = glossary.findHits;
+  const calls = { sanitize: 0, findOptions: null };
+  // 注入计数：proofread.js 与测试共享同一个 core/glossary 模块对象，替换导出即可看到调用次数。
+  glossary.sanitizeEntries = (...args) => {
+    calls.sanitize += 1;
+    return origSanitize(...args);
+  };
+  glossary.findHits = (text, entries, options) => {
+    calls.findOptions = options || null;
+    return origFindHits(text, entries, options);
+  };
+  try {
+    const text = '他做为见证人，这里有个禁词。';
+
+    // 旧调用（不带标记）照旧可用：proofreadText 只在入口清洗一次，之后把「已清洗」交给 findHits。
+    const legacy = proofread.proofreadText(text, {}, raw);
+    assert.equal(legacy.byRule['custom-word'], 2);
+    assert.equal(legacy.customWordCount, 2);
+    assert.equal(calls.sanitize, 1, '旧调用只清洗一次');
+    assert.equal(calls.findOptions && calls.findOptions.sanitized, true, 'findHits 收到「已清洗」标记，不再二次清洗');
+
+    // 已清洗入参（主进程读取出口）不再洗第二遍：计数必须归零。
+    calls.sanitize = 0;
+    calls.findOptions = null;
+    const trusted = proofread.proofreadText(text, { entriesSanitized: true }, cleanEntries);
+    assert.equal(calls.sanitize, 0, '已清洗入参：proofreadText 不再调用 sanitizeEntries');
+    assert.ok(calls.findOptions && calls.findOptions.sanitized === true, 'findHits 同样跳过再清洗');
+    assert.deepEqual(trusted, legacy, '两条路的校对结果逐字一致（行为等价）');
+
+    // findHits 的公开 API 默认语义不变：直接传脏词条仍会自己清洗。
+    const direct = origFindHits(text, raw);
+    assert.equal(direct.entryCount, 2);
+    assert.deepEqual(direct.hits.map((hit) => hit.term), ['做为', '禁词']);
+  } finally {
+    glossary.sanitizeEntries = origSanitize;
+    glossary.findHits = origFindHits;
+  }
 });
 
 // ---------- 1.5.0 功能-2：六条规则 + 单条开关 ----------

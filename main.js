@@ -1615,9 +1615,14 @@ function registerIpc() {
   handle('text:proofread', async (text, options) => {
     assertText(text);
     const cfg = await getConfig();
-    // 1.7.2 D2（V60）：词表读取 / 合并 / enabledLists 过滤都在 core/glossary.js，这里只接线。
+    // 1.7.2 D2（V44/V46）：词表一次读完（勾选子集在 core 里内存过滤），读取出口的词条已清洗，
+    // 给 proofreadText 带上「已清洗」标记，同一份词表不再 sanitize 第二遍；旧调用方不受影响。
     const words = await glossaryLib.readProofreadWordlistForRequest(cfg, options);
-    const result = proofreadLib.proofreadText(text, options, words.entries);
+    const proofOptions =
+      options && typeof options === 'object' && !Array.isArray(options)
+        ? { ...options, entriesSanitized: true }
+        : { entriesSanitized: true };
+    const result = proofreadLib.proofreadText(text, proofOptions, words.entries);
     return { ...result, wordList: words.wordList };
   });
 
@@ -2154,9 +2159,11 @@ function registerIpc() {
     // 1.5.0：规则开关（只在这份请求里生效，不落配置）。sanitizeOptions 只管阈值，
     // 把清洗后的 rules 拼回去，整本每章用同一份开关。
     const bookRules = proofreadLib.sanitizeRules(options && options.rules);
-    const chapterOptions = { ...limits, rules: bookRules };
+    // 1.7.2 D2（V44）：整本每章共用同一份已清洗词条，proofreadText 不再逐章 sanitize。
+    const chapterOptions = { ...limits, rules: bookRules, entriesSanitized: true };
     // 校对词表只读一次，整本每章共用（没设置 / 读不了 = 只跑内置规则，面板会提示）
     // 1.7.0 F3b2：多份词表合并读取；options.enabledLists 只让勾选的那几份参与（缺省全开）。
+    // 1.7.2 D2（V46）：一次读完配置里的全部词表，勾选子集在 core 里内存过滤。
     const cfg = await getConfig();
     const words = await glossaryLib.readProofreadWordlistForRequest(cfg, options);
     const wordList = words.wordList;

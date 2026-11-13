@@ -1,4 +1,4 @@
-// F3b2（1.7.0）/ 1.7.2 D2（V60/V63）：多份校对词表的读取 / 公开信息 / 添加移除频道。
+// F3b2（1.7.0）/ 1.7.2 D2（V44/V46/V47/V60/V63）：多份校对词表的读取 / 公开信息 / 添加移除频道。
 // main.js 依赖 electron，Node 里 require 不起来；词表纯逻辑已在 D2 下沉到 core/glossary.js，
 // 所以这里不再切 main.js 的函数体做静态闸门——直接 require 真模块跑行为断言；
 // main.js 只保留「接线是否把 core 的出口用对」的少量行为 / 接线断言。
@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const pathUtils = require('../core/path-utils');
 const glossary = require('../core/glossary');
+const proofread = require('../core/proofread');
 
 const readSource = (rel) =>
   require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
@@ -50,6 +51,99 @@ test('行为：单份旧配置（proofreadWordsPath）保持原样单表读取�
     const again = await glossary.readProofreadWordlistForRequest(config, { enabledLists: [] });
     assert.deepEqual(again.entries, words.entries);
     assert.deepEqual(again.wordList, words.wordList);
+  } finally {
+    await fsPromises.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('行为：多份词表一次读完，公开信息描述全部，enabledLists 只过滤参与校对的词条（V46）', async () => {
+  const dir = await mkTmp();
+  try {
+    const first = path.join(dir, '甲词表.txt');
+    const second = path.join(dir, '乙词表.txt');
+    await fsPromises.writeFile(first, '甲词 => 甲改\n共用 => 先到的建议\n', 'utf8');
+    await fsPromises.writeFile(second, '乙词 => 乙改\n共用 => 后到的建议\n', 'utf8');
+    const config = { proofreadWordlists: [first, second] };
+
+    const all = await glossary.readProofreadWordlistForRequest(config);
+    assert.deepEqual(all.entries.map((entry) => entry.term), ['甲词', '共用', '乙词'], '按配置顺序合并、同词先到先得');
+    assert.equal(all.entries[1].suggestion, '先到的建议');
+    assert.equal(all.wordList.lists.length, 2);
+    assert.equal(all.wordList.total, 3);
+    assert.equal(all.wordList.count, 3);
+    assert.equal(all.wordList.name, '2 份词表');
+    assert.equal(all.wordList.path, undefined, '多份公开信息绝不带路径');
+    assert.equal(all.wordList.lists[0].entries, undefined, '多份公开信息绝不带词条正文');
+
+    // 只勾第二份：条目必须与「只读第二份」逐字一致（改前会再 readGlossaryFiles([second]) 读一遍子集）。
+    const onlySecond = await glossary.readProofreadWordlistForRequest(config, { enabledLists: [1] });
+    const secondAlone = await glossary.readGlossaryFiles([second]);
+    assert.deepEqual(onlySecond.entries, secondAlone.entries, '内存过滤与改前的二次读取结果一致');
+    assert.deepEqual(onlySecond.entries.map((entry) => entry.term), ['乙词', '共用']);
+    assert.equal(onlySecond.entries[1].suggestion, '后到的建议', '子集里「共用」先到的是乙词表');
+    assert.equal(onlySecond.wordList.lists.length, 2, '公开信息永远描述配置里的全部词表');
+    assert.equal(onlySecond.wordList.total, 3);
+
+    // 全选 / 重复索引 / 坏值 / 空选 → 全开（与改前一致）
+    for (const enabledLists of [[0, 1], [0, 0, 1, 1], [], 'x', [9, -1], [1.5]]) {
+      const res = await glossary.readProofreadWordlistForRequest(config, { enabledLists });
+      assert.deepEqual(res.entries, all.entries, 'enabledLists=' + JSON.stringify(enabledLists));
+    }
+    // 越界的 enabledLists 不能把任何一份悄悄关掉
+    const outOfRange = await glossary.readProofreadWordlistForRequest(config, { enabledLists: [99] });
+    assert.deepEqual(outOfRange.entries, all.entries);
+  } finally {
+    await fsPromises.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('行为：双表（坏份 / 超上限 / 重复词）合并与校对结果与改前逐字一致（夹具，V46/V47）', async () => {
+  const dir = await mkTmp();
+  try {
+    const bad = path.join(dir, '甲-坏编码.txt');
+    await fsPromises.writeFile(bad, Buffer.from([0xff, 0xff, 0x0a, 0x41]));
+    const big = path.join(dir, '乙-大词表.txt');
+    const lines = ['重复 => 建议一', '重复 => 建议二', '长'.repeat(101)];
+    for (let index = 0; index < 5005; index += 1) lines.push(`乙词${index}`);
+    await fsPromises.writeFile(big, lines.join('\n') + '\n', 'utf8');
+
+    const words = await glossary.readProofreadWordlistForRequest({ proofreadWordlists: [bad, big] });
+    assert.equal(words.entries.length, 5000, '合并总数封顶 MAX_ENTRIES');
+    assert.deepEqual(words.entries[0], { term: '重复', suggestion: '建议一' }, '重复词只留第一次，建议先到先得');
+    assert.deepEqual(
+      words.entries[words.entries.length - 1],
+      { term: '乙词4998', suggestion: '' },
+      '超长行跳过、第二份按总数上限截断（与改前逐条一致）'
+    );
+    assert.deepEqual(words.wordList, {
+      ok: true,
+      configured: true,
+      total: 5000,
+      lists: [
+        { ok: false, count: 0, error: '词表编码认不出来，请存成 UTF-8 或 GBK 的 txt', truncated: false },
+        { ok: true, count: 5000, error: '', truncated: true }
+      ],
+      count: 5000,
+      name: '2 份词表'
+    }, '公开信息与改前逐字一致（坏份只影响自己那一条）');
+
+    const text = '重复在乙词3与乙词4997。';
+    const result = proofread.proofreadText(text, { maxIssues: 20 }, words.entries);
+    assert.equal(result.total, 3);
+    assert.equal(result.customWordCount, 5000);
+    assert.deepEqual(
+      result.issues.map((issue) => [issue.rule, issue.index, issue.length, issue.match, issue.suggestion]),
+      [
+        ['custom-word', 0, 2, '重复', '建议一'],
+        ['custom-word', 3, 3, '乙词3', ''],
+        ['custom-word', 7, 6, '乙词4997', '']
+      ],
+      '校对结果与改前逐字一致（夹具）'
+    );
+    // 老调用（不带已清洗标记）与主进程新调用（带标记）结果逐字一致：只清洗一次不改语义。
+    const legacy = proofread.proofreadText(text, { maxIssues: 20 }, words.entries);
+    const trusted = proofread.proofreadText(text, { maxIssues: 20, entriesSanitized: true }, words.entries);
+    assert.deepEqual(trusted, legacy);
   } finally {
     await fsPromises.rm(dir, { recursive: true, force: true });
   }
@@ -112,9 +206,46 @@ test('行为：proofread:words-info 处理器只读一次词表并透传 multi�
   assert.deepEqual(res.lists, fakeWordList.lists);
 });
 
-test('接线：book:proofread 走同一词表出口，整本每章共用同一份词条（V60）', () => {
+test('行为：text:proofread 处理器把读取出口的 entries 交给 proofreadText 并标记已清洗（V44/V46）', async () => {
+  const arrow = extractAsyncArrow(mainSource, "  handle('text:proofread', async (text, options) => {");
+  const seen = {};
+  const fakeWordList = { ok: true, name: 'x', multi: false };
+  const handler = new Function(
+    'assertText',
+    'getConfig',
+    'glossaryLib',
+    'proofreadLib',
+    `return (${arrow});`
+  )(
+    () => {},
+    async () => ({ proofreadWordlists: ['C:\\词表.txt'] }),
+    {
+      readProofreadWordlistForRequest: async (cfg, options) => {
+        seen.readOptions = options;
+        return { entries: [{ term: '做为', suggestion: '作为' }], wordList: fakeWordList };
+      }
+    },
+    {
+      proofreadText: (text, options, entries) => {
+        seen.text = text;
+        seen.proofOptions = options;
+        seen.entries = entries;
+        return { total: 0, issues: [] };
+      }
+    }
+  );
+  const res = await handler('他做为见证人。', { rules: { 'custom-word': true } });
+  assert.equal(seen.text, '他做为见证人。');
+  assert.deepEqual(seen.entries, [{ term: '做为', suggestion: '作为' }], '词条来自一次读取的出口');
+  assert.equal(seen.proofOptions.entriesSanitized, true, '主进程传入已清洗标记，proofreadText 不再二次 sanitize');
+  assert.deepEqual(seen.proofOptions.rules, { 'custom-word': true }, '用户选项原样保留');
+  assert.deepEqual(res.wordList, fakeWordList, '回包仍带 wordList（渲染层据此重画词表状态）');
+});
+
+test('接线：book:proofread 走同一词表出口，整本每章共用已清洗词条（V44/V46）', () => {
   const body = sliceFrom(mainSource, "  handleBook('book:proofread', async (bookPath, options, override) => {");
   assert.match(body, /glossaryLib\.readProofreadWordlistForRequest\(/, 'book:proofread 走同一词表读取出口');
+  assert.match(body, /entriesSanitized: true/, '整本每章共用已清洗词条，不再逐章 sanitize');
   // 两个校对频道都必须用 core 的出口，不在 main 里再留一份 helper
   for (const marker of [
     'function proofreadWordlistPaths(',

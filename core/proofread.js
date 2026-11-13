@@ -446,9 +446,19 @@ function proofreadText(text, rawOptions, rawGlossary) {
   }
 
   // ⑩ 自定义校对词表（可选的作者词表；没有词表时这一条不产出任何结果）
-  const customEntries = glossaryLib.sanitizeEntries(rawGlossary);
+  // 1.7.2 D2（V44）：主进程的读取出口已按同一份 sanitizeEntries 清洗过词条（options.entriesSanitized），
+  // 这里不再洗第二遍，并把「已清洗」交给 findHits——同一份词表在一条链路上只 sanitize 一次。
+  // 旧调用（不传标记）行为不变：仍在这里清洗一次，结果与改前逐字一致。
+  const entriesSanitized = Boolean(
+    rawOptions && typeof rawOptions === 'object' && rawOptions.entriesSanitized === true
+  );
+  const customEntries = entriesSanitized
+    ? Array.isArray(rawGlossary)
+      ? rawGlossary
+      : []
+    : glossaryLib.sanitizeEntries(rawGlossary);
   const custom = rules['custom-word']
-    ? glossaryLib.findHits(source, customEntries)
+    ? glossaryLib.findHits(source, customEntries, { sanitized: true })
     : { hits: [], entryCount: customEntries.length, truncated: false };
   for (const hit of custom.hits) {
     addIssue(

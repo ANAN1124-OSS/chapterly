@@ -1,6 +1,7 @@
 // 校对词表（自定义错别字 / 禁用词）——纯逻辑 + 词表读取，不依赖 Electron，可单测。
 //
-// 1.7.2 D2：多份词表的配置口径 / 公开信息 / enabledLists 子集过滤也收在这里（V60/V63）。
+// 1.7.2 D2：多份词表的配置口径 / 公开信息 / enabledLists 子集过滤也收在这里（V60/V63），
+// 读取最多 3 份并发（V47）；读取出口的词条已清洗，调用方（proofreadText）不再洗第二遍（V44）。
 //
 // 设计（提案 N6，参考墨者 / 番茄的「自定义词表」；复用敏感词预检的读取与提示思路）：
 //   · 词表完全归作者：应用**不内置任何词表**，只按作者在设置里选的 txt 做字面匹配
@@ -18,7 +19,7 @@ const path = require('node:path');
 const txtLib = require('./txt');
 const errorText = require('./error-text');
 const wordscan = require('./wordscan');
-const { normalizeText } = require('./common');
+const { normalizeText, mapLimit } = require('./common');
 // 多份校对词表的条数上限与配置清洗同一份定义（1.7.2 D4/V42 已收口到 core/config.js）；
 // 读取侧再兜一遍，手改配置 / 旧数据绕过清洗时也不会读出第 9 份。
 const { WORDLIST_MAX } = require('./config');
@@ -268,16 +269,43 @@ function glossaryErrorText(code) {
 //   · 合并总数封顶 MAX_ENTRIES，截断语义与单文件一致（多出来的部分标 truncated）
 //   · 每份单独判错：一份坏 / 不存在不影响其它份；全部不可用时 ok=false，绝不抛错
 //   · lists 只给 { ok, count, error, truncated }，不带路径；公开信息另有一层（见下）
+//   · 每份还带内部 entries（1.7.2 D2/V46）：只给 core 自己做「勾选子集在内存里重合并」，
+//     publicGlossaryFilesInfo 会把它剥掉，绝不带出主进程
+//   · 1.7.2 D2/V47：最多 3 份同时读（core/common.js 的 mapLimit 保序），合并仍按原顺序
+const READ_CONCURRENCY = 3;
+
+// 把每份自己的 entries 按原顺序合并（term 去重 / 总数封顶）。
+// readGlossaryFiles 与「enabledLists 子集过滤」共用这一份算法（V46）：子集在内存里重合并，
+// 不再为勾选子集重复 readGlossaryFiles(enabledPaths) 读第二遍。
+// indexes 为 null 表示全取；传入 Set 时只合并选中的那几份。
+function mergeListEntries(lists, indexes) {
+  const entries = [];
+  const seen = new Set();
+  const picked = Array.isArray(lists) ? lists : [];
+  for (let index = 0; index < picked.length; index += 1) {
+    if (indexes && !indexes.has(index)) continue;
+    const own = picked[index] && Array.isArray(picked[index].entries) ? picked[index].entries : [];
+    for (const entry of own) {
+      // 和单文件 parseGlossary 同一顺序：先去重，再看总数上限
+      if (seen.has(entry.term)) continue;
+      if (entries.length >= MAX_ENTRIES) return entries;
+      seen.add(entry.term);
+      entries.push({ term: entry.term, suggestion: entry.suggestion });
+    }
+  }
+  return entries;
+}
+
 async function readGlossaryFiles(paths) {
   let requested = [];
   if (Array.isArray(paths)) requested = paths;
   else if (typeof paths === 'string' && paths.trim()) requested = [paths];
+  const read = await mapLimit(requested, READ_CONCURRENCY, (request) => readGlossaryFile(request));
   const entries = [];
   const seen = new Set();
   const lists = [];
   let anyOk = false;
-  for (const request of requested) {
-    const one = await readGlossaryFile(request);
+  for (const one of read) {
     const own = one.ok && Array.isArray(one.entries) ? one.entries : [];
     let truncated = Boolean(one.ok && one.stats && one.stats.truncated);
     for (const entry of own) {
@@ -294,7 +322,8 @@ async function readGlossaryFiles(paths) {
       ok: one.ok === true,
       count: own.length,
       error: one.ok === true ? '' : glossaryErrorText(one.code),
-      truncated
+      truncated,
+      entries: own
     });
     if (one.ok === true) anyOk = true;
   }
@@ -403,7 +432,8 @@ function proofreadWordListInfo(bundle, paths) {
 }
 
 // 一次请求要用到的词表：单份旧配置原样单表读取（公开信息保持旧形状，忽略 enabledLists）；
-// 多份则读出配置里的全部词表，公开信息永远描述全部；enabledLists 只决定哪些份参与校对。
+// 多份则一次读完配置里的**全部**词表——公开信息永远描述全部，enabledLists 只在内存里
+// 过滤参与校对的词条（V46：不再 readGlossaryFiles(enabledPaths) 读第二遍）。
 async function readProofreadWordlistForRequest(config, options) {
   if (!hasProofreadWordlists(config)) {
     const single = config && typeof config.proofreadWordsPath === 'string' ? config.proofreadWordsPath : '';
@@ -413,12 +443,9 @@ async function readProofreadWordlistForRequest(config, options) {
   const allPaths = proofreadWordlistPaths(config);
   const all = await readGlossaryFiles(allPaths);
   const wordList = proofreadWordListInfo(all, allPaths);
-  const enabledPaths = wordlistPathsForRequest(allPaths, options);
-  if (enabledPaths.length === allPaths.length) {
-    return { entries: all.ok ? all.entries : [], wordList };
-  }
-  const only = await readGlossaryFiles(enabledPaths);
-  return { entries: only.ok ? only.entries : [], wordList };
+  const picked = wordlistIndexesForRequest(allPaths, options);
+  const entries = picked ? mergeListEntries(all.lists, picked) : all.ok ? all.entries : [];
+  return { entries, wordList };
 }
 
 // 扫描一段正文：字面量找每个词的全部出现位置，同一处重叠时只留最长的那个
@@ -427,8 +454,11 @@ async function readProofreadWordlistForRequest(config, options) {
 // B1（审计 P0-2）：扫描改成 core/wordscan.js 的 Aho-Corasick 单次遍历
 // （原来每个词 indexOf 扫一遍正文 = O(词数 × 正文)，5000 词 × 500 万字要 19–20 秒）。
 // 去重规则 / RAW_MATCH_LIMIT / 建议箭头 / 位置排序全部由 wordscan 保持，这里只做字段映射。
-function findHits(text, rawEntries) {
-  const entries = sanitizeEntries(rawEntries);
+// options.sanitized === true（1.7.2 D2/V44）：调用方已按同一份 sanitizeEntries 清洗过
+// （主进程读取出口），这里跳过再洗一次；公开调用的默认语义不变（不传就是自己清洗）。
+function findHits(text, rawEntries, options) {
+  const sanitized = Boolean(options && options.sanitized === true);
+  const entries = sanitized ? (Array.isArray(rawEntries) ? rawEntries : []) : sanitizeEntries(rawEntries);
   const source = normalizeText(text);
   const scan = wordscan.scanTerms(
     source,
