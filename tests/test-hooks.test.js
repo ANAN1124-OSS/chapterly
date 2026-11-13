@@ -286,7 +286,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // 1.7.0 P4-1：5802 → 5804（+2 行装配）：校对 / 敏感词预检的「点结果 → 跳过去选中」收编成共用模块
   //   renderer/result-jump-ui.js，renderer.js 每个面板只多一行 resultJump 装配；行为与收编前逐字一致。
   //   （split 计数含末尾空行，故预算比 wc -l 多 1。）
-  const RENDERER_LINE_BUDGET = 5804;
+  // 1.7.1 P1：5804 → 5812（+8）：输入法组字中的 Enter 不许当提交（审计 V73）——三条链路的
+  //   `if (event.isComposing) return;` 必须长在各自的监听器里：全局 keydown 那条要赶在 Esc 注册表
+  //   之前（兜住 modalInput → modal-confirm），跳章 / 书架搜索两条要赶在 preventDefault 之前；
+  //   搬进独立模块就得把三个监听器的上下文反向注入，反而更绕。8 行里 5 行是解释这个语义的注释。
+  const RENDERER_LINE_BUDGET = 5812;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

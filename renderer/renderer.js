@@ -4882,6 +4882,8 @@
         return;
       }
       if (event.key === 'Enter') {
+        // 1.7.1 P1（审计 V73）：输入法组字中的 Enter 只上屏候选词，不当「打开第一本匹配的书」
+        if (event.isComposing) return;
         event.preventDefault();
         const rows = shelfSearchResults();
         if (rows.length) {
@@ -5034,6 +5036,8 @@
     $('jump-input').addEventListener('input', () => scheduleJumpMatches());
     $('jump-input').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
+        // 1.7.1 P1（审计 V73）：输入法组字中的 Enter 只上屏候选词，不当「跳过去」
+        if (event.isComposing) return;
         event.preventDefault();
         confirmJumpFromDialog();
       }
@@ -5220,6 +5224,10 @@
     });
 
     document.addEventListener('keydown', (event) => {
+      // 1.7.1 P1（审计 V73）：输入法组字期间一切全局键都不响应。组字中按 Enter 是「上屏候选词」，
+      // 不是提交 —— 这一判放在 Esc 链与快捷键之前，兜住注册表上所有 Enter 语义
+      // （通用询问框的 modalInput → modal-confirm、新建书名等），否则中文作者会把半截表单提交掉。
+      if (event.isComposing) return;
       // 全局 Esc 链（v0.9 B-4）：顺序与命中判定全在 renderer/esc-registry.js 的有序表里，这里只执行动作。
       // 命中就到此为止——锁键弹层（通用询问框 + 冲突 / 书籍信息 / 历史 / 排版 / 导出 / 设置 / 跳章）
       // 连别的按键也一并接走，所以它们开着时 Ctrl+S / F11 也不会响（改前每段末尾那个裸 return 就是这个意思）。

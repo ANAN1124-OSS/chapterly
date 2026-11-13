@@ -819,7 +819,9 @@
   // 事件绑定（与搬前 bindEvents() 里的书籍信息块逐行一致；由渲染层在原位置调用一次）
   function setupBookinfoUi() {
     $('bookinfo-backdrop').addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && event.target && event.target.id !== 'bookinfo-brief') {
+      // 1.7.1 P1（审计 V73）：组字中的 Enter 是输入法上屏，不是「保存」——
+      // 不加这一判，中文作者打书名 / 作者时按 Enter 会把半截表单存下去并关掉弹层。
+      if (event.key === 'Enter' && !event.isComposing && event.target && event.target.id !== 'bookinfo-brief') {
         event.preventDefault();
         void saveBookInfoDialog();
       }

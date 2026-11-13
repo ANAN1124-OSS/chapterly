@@ -774,6 +774,46 @@ test('setupBookinfoUi：弹层 Enter 提交 / 取消 / 保存 / 分组筛选四�
   });
 });
 
+// ---------- 输入法组字（1.7.1 P1 / 外部审计 V73） ----------
+test('输入法组字中按 Enter 不触发 updateBookInfo（V73）', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom });
+  ctx.ui.setupBookinfoUi();
+  const backdrop = dom.map.get('bookinfo-backdrop');
+  // 走真实的打开路径：弹层可见 + state.bookInfoBook 有书（Enter 才有东西可存）
+  assert.equal(ctx.ui.openBookInfoDialog(makeBook()), true);
+  assert.equal(backdrop.classList.contains('hidden'), false, '前置：弹层是开着的');
+  let saved = 0;
+  const origSave = ctx.host.api.updateBookInfo;
+  ctx.host.api.updateBookInfo = async (...args) => {
+    saved += 1;
+    return origSave(...args);
+  };
+
+  // 组字中（isComposing = true）：Enter 是「上屏候选词」，不是提交
+  let prevented = 0;
+  backdrop._fire('keydown', {
+    key: 'Enter',
+    isComposing: true,
+    target: { id: 'bookinfo-author' },
+    preventDefault() { prevented += 1; }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(saved, 0, '组字中的 Enter 不该发 updateBookInfo');
+  assert.equal(prevented, 0, '组字中的 Enter 也不该拦默认行为');
+  assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), false, '弹层不关，表单还能接着填');
+
+  // 组字结束后的普通 Enter 仍是提交（旧行为不变）
+  backdrop._fire('keydown', {
+    key: 'Enter',
+    target: { id: 'bookinfo-author' },
+    preventDefault() {}
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(saved, 1, '普通 Enter 照旧提交');
+  assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), true, '保存成功后才关窗');
+});
+
 // ---------- 首次运行提示（1.3.0 T5 / 规范 I-10） ----------
 test('首次运行提示：书架真空且没提示过才显示 4s，显示后写回 config.firstRunTipShown', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

@@ -102,7 +102,9 @@ const groups = [
   // `?` 快捷键一览页（1.5.0 功能-4）：按 ? 打开 / Esc 关闭 / 编辑区仍是字符 / 命令面板不抢；idsFrom(60) 自动带上。
   { id: 79, run: require('./79-shortcuts-page') },
   // 书架分组 / 标签筛选与管理（1.6.0 F5）：筛选 AND / 改名 / 合并 / 单本移到分组 / 只改书目；idsFrom(60) 自动带上。
-  { id: 80, run: require('./80-shelf-groups') }
+  { id: 80, run: require('./80-shelf-groups') },
+  // 输入法组字中的 Enter（1.7.1 P1 / V73）：四条「Enter = 确认」链路判 isComposing；idsFrom(60) 自动带上。
+  { id: 81, run: require('./81-ime-enter') }
 ];
 
 // 按给定组号依次跑（组号 → 组文件；顺序就是参数顺序，调用点决定「在哪一段」）。
