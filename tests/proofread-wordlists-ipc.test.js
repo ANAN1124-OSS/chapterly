@@ -1,13 +1,14 @@
-// F3b2（1.7.0）：主进程接线——多份校对词表的读取 / 公开信息 / 添加移除频道。
-// main.js 依赖 electron，Node 里 require 不起来；这里用和 tests/skipped-too-large-ipc.test.js
-// 同一手法：按锚点切出函数体做静态闸门，保证 ① 读取走 core 的多表合并 ② 回渲染层的信息只有
-// 数量与状态（绝不带路径 / 词条正文）③ 新增频道在 main 与 preload 一一对应。
+// F3b2（1.7.0）/ 1.7.2 D2（V60/V63）：多份校对词表的读取 / 公开信息 / 添加移除频道。
+// main.js 依赖 electron，Node 里 require 不起来；词表纯逻辑已在 D2 下沉到 core/glossary.js，
+// 所以这里不再切 main.js 的函数体做静态闸门——直接 require 真模块跑行为断言；
+// main.js 只保留「接线是否把 core 的出口用对」的少量行为 / 接线断言。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fsPromises = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const pathUtils = require('../core/path-utils');
+const glossary = require('../core/glossary');
 
 const readSource = (rel) =>
   require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
@@ -15,7 +16,8 @@ const readSource = (rel) =>
 const mainSource = readSource('main.js');
 const preloadSource = readSource('preload.js');
 
-// 从锚点切到下一个顶格两空格的函数 / handler 之前（与 tests/book-batch.test.js 同一手法）
+// 从锚点切到下一个顶格两空格的函数 / handler 之前（与 tests/book-batch.test.js 同一手法）。
+// D2 之后只用于极少量的接线断言（词表逻辑本身已可直接 require 真跑）。
 function sliceFrom(source, startMarker) {
   const start = source.indexOf(startMarker);
   assert.notEqual(start, -1, '找不到锚点：' + startMarker);
@@ -26,39 +28,105 @@ function sliceFrom(source, startMarker) {
 
 const matchesOf = (source, pattern) => [...source.matchAll(pattern)].map((m) => m[1]);
 
-const RUN_SITES = [
-  ['text:proofread', "  handle('text:proofread', async (text, options) => {"],
-  ['book:proofread', "  handleBook('book:proofread', async (bookPath, options, override) => {"]
-];
-test('静态闸门：校对词表有效路径 = proofreadWordlists 非空取数组，否则回落单份（F3b2）', () => {
-  const helper = sliceFrom(mainSource, 'function proofreadWordlistPaths(config) {');
-  assert.match(helper, /Array\.isArray\(config\.proofreadWordlists\)/, '多份字段必须是数组才用');
-  assert.match(helper, /config\.proofreadWordlists\.length/, '数组非空才用数组（空数组回落单份）');
-  assert.match(helper, /config\.proofreadWordsPath/, '单份旧字段要回落');
-  assert.match(helper, /filter\(/, '要过滤空串 / 非字符串，别把空路径当一份词表');
-  for (const [channel, anchor] of RUN_SITES) {
-    const body = sliceFrom(mainSource, anchor);
-    assert.match(body, /readProofreadWordlistForRequest\(/, channel + ' 要走统一的词表读取口径');
+async function mkTmp() {
+  return fsPromises.mkdtemp(path.join(os.tmpdir(), 'cw-wordlists-d2-'));
+}
+
+test('行为：单份旧配置（proofreadWordsPath）保持原样单表读取，公开信息是旧形状（V60）', async () => {
+  const dir = await mkTmp();
+  try {
+    const single = path.join(dir, '旧单份.txt');
+    await fsPromises.writeFile(single, '做为 => 作为\n禁词\n', 'utf8');
+    const config = { proofreadWordsPath: single };
+    const words = await glossary.readProofreadWordlistForRequest(config, { enabledLists: [0] });
+    assert.deepEqual(words.entries.map((entry) => entry.term), ['做为', '禁词']);
+    assert.equal(words.entries[0].suggestion, '作为');
+    assert.equal(words.wordList.ok, true);
+    assert.equal(words.wordList.count, 2);
+    assert.equal(words.wordList.name, '旧单份.txt');
+    assert.equal(words.wordList.lists, undefined, '单份旧配置回旧形状（不带 lists），渲染层的老分支才认得');
+    assert.equal(words.wordList.multi, undefined, 'multi 只在 words-info 频道补，读取出口不带');
+    // 单份分支不认 enabledLists（改前就如此：旧配置没有「勾选哪几份」的概念）
+    const again = await glossary.readProofreadWordlistForRequest(config, { enabledLists: [] });
+    assert.deepEqual(again.entries, words.entries);
+    assert.deepEqual(again.wordList, words.wordList);
+  } finally {
+    await fsPromises.rm(dir, { recursive: true, force: true });
   }
-  const reader = sliceFrom(mainSource, 'async function readProofreadWordlistForRequest(config, options) {');
-  assert.match(reader, /hasProofreadWordlists\(/, '单份 / 多份要先分流');
-  assert.match(reader, /glossaryLib\.readGlossaryFile\(/, '单份（旧配置）必须原样单表读取，行为一字不变');
-  assert.match(reader, /glossaryLib\.readGlossaryFiles\(/, '多份走 core 合并');
-  assert.match(reader, /publicGlossaryInfo\(/, '单份保持旧的公开信息形状');
 });
-test('静态闸门：proofread:words-info 回 lists + total 并补齐旧字段，绝不带路径与正文（F3b2）', () => {
-  const builder = sliceFrom(mainSource, 'function proofreadWordListInfo(bundle, paths) {');
-  assert.match(builder, /glossaryLib\.publicGlossaryFilesInfo\(/, '公开信息要过 core 的剥壳函数');
-  assert.match(builder, /\blists\b/, '多份要回 lists（按 index 对齐配置）');
-  assert.match(builder, /\btotal\b/, '多份要回合并总数');
-  assert.match(builder, /count/, '单份要保持旧字段 count');
-  assert.match(builder, /truncated/, '单份要保持旧字段 truncated');
-  assert.doesNotMatch(builder, /entries\s*:/, '绝不把词条正文带出主进程');
-  assert.doesNotMatch(builder, /\bpath\s*:/, '绝不把路径带出主进程');
-  const handler = sliceFrom(mainSource, "  handle('proofread:words-info', async () => {");
-  assert.match(handler, /readProofreadWordlistForRequest\(/, 'words-info 要走统一的词表读取口径（单份原样 / 多份合并）');
-  assert.match(handler, /wordList/, 'words-info 要回统一的信息形状');
+
+// 从 main.js 的 handler 注册语句里切出箭头函数（保留原参数列表），在假作用域里真跑一遍（不 require electron）。
+function extractAsyncArrow(source, marker) {
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, '找不到锚点：' + marker);
+  const signature = /async \(([^)]*)\) => \{$/.exec(marker);
+  assert.ok(signature, '锚点必须形如 async (...) => { ：' + marker);
+  const braceStart = start + marker.length - 1;
+  assert.equal(source[braceStart], '{', '锚点必须以箭头函数体的 { 结尾：' + marker);
+  let depth = 0;
+  let end = -1;
+  for (let i = braceStart; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  assert.notEqual(end, -1, '箭头函数体没闭合：' + marker);
+  return 'async (' + signature[1] + ') => ' + source.slice(braceStart, end);
+}
+
+test('行为：proofread:words-info 处理器只读一次词表并透传 multi（P6 兼容，V46/V63）', async () => {
+  const arrow = extractAsyncArrow(mainSource, "  handle('proofread:words-info', async () => {");
+  const reads = [];
+  const fakeWordList = {
+    ok: true,
+    configured: true,
+    total: 1,
+    count: 1,
+    name: '1 份词表',
+    lists: [{ ok: true, count: 1, error: '', truncated: false }]
+  };
+  const handler = new Function(
+    'getConfig',
+    'glossaryLib',
+    `return (${arrow});`
+  )(
+    async () => ({ proofreadWordlists: ['C:\\词表.txt'] }),
+    {
+      readProofreadWordlistForRequest: async (cfg) => {
+        reads.push(cfg);
+        return { entries: [], wordList: fakeWordList };
+      },
+      hasProofreadWordlists: () => true
+    }
+  );
+  const res = await handler();
+  assert.equal(reads.length, 1, 'words-info 只读一次词表（不再 words-info + 校对各读一遍）');
+  assert.equal(res.multi, true, 'multi 字段不能丢（1.7.1 P6 / E2E 46m / 73⑩ 依赖）');
+  assert.equal(res.total, 1);
+  assert.deepEqual(res.lists, fakeWordList.lists);
 });
+
+test('接线：book:proofread 走同一词表出口，整本每章共用同一份词条（V60）', () => {
+  const body = sliceFrom(mainSource, "  handleBook('book:proofread', async (bookPath, options, override) => {");
+  assert.match(body, /glossaryLib\.readProofreadWordlistForRequest\(/, 'book:proofread 走同一词表读取出口');
+  // 两个校对频道都必须用 core 的出口，不在 main 里再留一份 helper
+  for (const marker of [
+    'function proofreadWordlistPaths(',
+    'function hasProofreadWordlists(',
+    'function wordlistPathsForRequest(',
+    'function proofreadWordListInfo(',
+    'async function readProofreadWordlistForRequest('
+  ]) {
+    assert.equal(mainSource.includes(marker), false, 'main.js 只接线，helper 已下沉 core：' + marker);
+  }
+});
+
 test('静态闸门：新增的添加 / 移除频道在 main 与 preload 一一对应（F3b2）', () => {
   const mainChannels = new Set(matchesOf(mainSource, /handle\('(proofread:[a-z-]+)'/g));
   const preloadChannels = new Set(matchesOf(preloadSource, /invoke\('(proofread:[a-z-]+)'/g));
@@ -86,38 +154,6 @@ test('静态闸门：新增的添加 / 移除频道在 main 与 preload 一一�
   assert.match(pickBody, /proofreadWordsPath/, 'pick-words 仍写单份旧字段');
   assert.match(pickBody, /publicGlossaryInfo\(/, 'pick-words 仍回单份公开信息');
 });
-test('静态闸门：text / book 校对支持 options.enabledLists 过滤参与的词表，缺省全开（F3b2）', () => {
-  const helper = sliceFrom(mainSource, 'function wordlistPathsForRequest(paths, options) {');
-  assert.match(helper, /options\.enabledLists/, '要认 enabledLists');
-  assert.match(helper, /Array\.isArray/, '非数组当全开');
-  assert.match(helper, /paths\.filter\(/, '按索引过滤参与的词表');
-  const reader = sliceFrom(mainSource, 'async function readProofreadWordlistForRequest(config, options) {');
-  assert.match(reader, /wordlistPathsForRequest\(/, '多份分支要按 enabledLists 过滤');
-});
-
-// 从 main.js 的 handler 注册语句里切出箭头函数，在假作用域里真跑一遍（不 require electron）。
-// 只用于「校验顺序」这种行为断言：静态正则锁不住「先读词表还是先 stat / 判重 / 判上限」（V53）。
-function extractAsyncArrow(source, marker) {
-  const start = source.indexOf(marker);
-  assert.notEqual(start, -1, '找不到锚点：' + marker);
-  const braceStart = start + marker.length - 1;
-  assert.equal(source[braceStart], '{', '锚点必须以箭头函数体的 { 结尾：' + marker);
-  let depth = 0;
-  let end = -1;
-  for (let i = braceStart; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === '{') depth += 1;
-    else if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        end = i + 1;
-        break;
-      }
-    }
-  }
-  assert.notEqual(end, -1, '箭头函数体没闭合：' + marker);
-  return 'async () => ' + source.slice(braceStart, end);
-}
 
 const ADD_ANCHOR = "  handle('proofread:wordlists-add', async () => {";
 
@@ -158,7 +194,7 @@ function loadAddWordlistHandler({ picked, config }) {
 }
 
 test('行为：添加词表先 stat / 判重 / 判上限，再读词表；被拒绝的路径不先读一遍（V53）', async () => {
-  const dir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'cw-wordlist-add-'));
+  const dir = await mkTmp();
   try {
     const missing = path.join(dir, '没有这份词表.txt');
     const existing = path.join(dir, '已有词表.txt');

@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const glossary = require('../core/glossary');
+const { WORDLIST_MAX } = require('../core/config');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -301,4 +302,159 @@ test('校对词表：多份词表公开信息只给数量与状态，不含路�
   assert.equal(fallback.ok, false);
   assert.equal(fallback.total, 0);
   assert.deepEqual(fallback.lists, []);
+});
+
+// ---------- 1.7.2 D2（V60/V63）：词表纯逻辑下沉 core 后的纯函数锚点 ----------
+
+test('校对词表：proofreadWordlistPaths 对坏配置兜底——非数组 / 非字符串 / 空串都不当成词表（V60）', () => {
+  assert.deepEqual(glossary.proofreadWordlistPaths(null), []);
+  assert.deepEqual(glossary.proofreadWordlistPaths(undefined), []);
+  assert.deepEqual(glossary.proofreadWordlistPaths({}), []);
+  assert.deepEqual(glossary.proofreadWordlistPaths({ proofreadWordlists: '不是数组' }), []);
+  assert.deepEqual(glossary.proofreadWordlistPaths({ proofreadWordlists: [] }), []);
+  assert.deepEqual(
+    glossary.proofreadWordlistPaths({ proofreadWordlists: ['', '   ', 42, null, {}, '甲.txt', '  '] }),
+    ['甲.txt'],
+    '多份只留非空字符串，且保持配置里的原样（不 trim 返回值，改前就如此）'
+  );
+  assert.deepEqual(glossary.proofreadWordlistPaths({ proofreadWordsPath: 42 }), []);
+  assert.deepEqual(glossary.proofreadWordlistPaths({ proofreadWordsPath: '   ' }), []);
+  assert.deepEqual(glossary.proofreadWordlistPaths({ proofreadWordsPath: ' 旧单份.txt ' }), ['旧单份.txt'], '单份旧字段 trim 后使用');
+  assert.deepEqual(
+    glossary.proofreadWordlistPaths({ proofreadWordlists: ['', 42, '甲.txt'], proofreadWordsPath: '旧单份.txt' }),
+    ['甲.txt'],
+    '多份里只要有一份可用就不回落单份'
+  );
+  assert.deepEqual(
+    glossary.proofreadWordlistPaths({ proofreadWordlists: ['', '  '], proofreadWordsPath: '旧单份.txt' }),
+    ['旧单份.txt'],
+    '多份全不可用时回落单份（改前行为）'
+  );
+});
+
+test('校对词表：proofreadWordlistPaths 多份至多 WORDLIST_MAX 份，hasProofreadWordlists 只认非空数组（V60）', () => {
+  assert.equal(WORDLIST_MAX, 8, '上限 8 份（core/config.js 唯一定义）');
+  const many = Array.from({ length: WORDLIST_MAX + 3 }, (_, index) => `词表${index}.txt`);
+  const got = glossary.proofreadWordlistPaths({ proofreadWordlists: many });
+  assert.equal(got.length, WORDLIST_MAX, '读取侧再兜一遍上限，手改配置也读不出第 9 份');
+  assert.deepEqual(got, many.slice(0, WORDLIST_MAX), '取配置里排在前面的几份，顺序不变');
+
+  assert.equal(glossary.hasProofreadWordlists({ proofreadWordlists: ['甲.txt'] }), true);
+  assert.equal(glossary.hasProofreadWordlists({ proofreadWordlists: [] }), false);
+  assert.equal(glossary.hasProofreadWordlists({ proofreadWordlists: '甲.txt' }), false, '非数组不算多份');
+  assert.equal(glossary.hasProofreadWordlists({ proofreadWordsPath: '甲.txt' }), false, '旧单份字段不算多份');
+  assert.equal(glossary.hasProofreadWordlists(null), false);
+});
+
+test('校对词表：wordlistPathsForRequest 子集过滤只认合法索引，越界 / 重复 / 非整数都丢掉（V60）', () => {
+  const paths = ['甲.txt', '乙.txt', '丙.txt'];
+  assert.deepEqual(
+    glossary.wordlistPathsForRequest(paths, { enabledLists: [2, 2, 9, -1, 1.5] }),
+    ['丙.txt'],
+    '2 重复只算一次；9 / -1 越界、1.5 非整数都丢掉'
+  );
+  assert.deepEqual(glossary.wordlistPathsForRequest(paths, { enabledLists: [0, 1] }), ['甲.txt', '乙.txt']);
+  assert.deepEqual(
+    glossary.wordlistPathsForRequest(paths, { enabledLists: [2, 0, 2] }),
+    ['甲.txt', '丙.txt'],
+    '结果按原路径顺序，不按 enabledLists 顺序'
+  );
+  assert.deepEqual(glossary.wordlistPathsForRequest(paths, { enabledLists: [] }), paths, '空选 = 全开（改前行为）');
+});
+
+test('校对词表：wordlistPathsForRequest 缺省与坏值全开，一份都没选中也全开（V60）', () => {
+  const paths = ['甲.txt', '乙.txt', '丙.txt'];
+  for (const options of [
+    undefined,
+    null,
+    {},
+    { enabledLists: null },
+    { enabledLists: '1' },
+    { enabledLists: [9, -1, 1.5] },
+    { enabledLists: [] }
+  ]) {
+    assert.deepEqual(glossary.wordlistPathsForRequest(paths, options), paths, '坏值 / 缺省都当全开：' + JSON.stringify(options));
+  }
+});
+
+test('校对词表：proofreadWordListInfo 多份整形——lists 与路径同序、total/count/name 对齐且不带路径正文（V60/V63）', () => {
+  const bundle = {
+    ok: true,
+    total: 3,
+    entries: [
+      { term: '隐藏词一', suggestion: '' },
+      { term: '隐藏词二', suggestion: '改法' },
+      { term: '隐藏词三', suggestion: '' }
+    ],
+    lists: [
+      {
+        ok: true,
+        count: 2,
+        error: '',
+        truncated: false,
+        entries: [
+          { term: '隐藏词一', suggestion: '' },
+          { term: '隐藏词二', suggestion: '改法' }
+        ]
+      },
+      { ok: false, count: 0, error: '词表文件不存在（可能被移动或删除了，请重新选择）', truncated: false }
+    ]
+  };
+  const paths = ['C:\\秘密目录\\词表甲.txt', 'C:\\秘密目录\\词表乙.txt'];
+  const info = glossary.proofreadWordListInfo(bundle, paths);
+  assert.equal(info.ok, true);
+  assert.equal(info.total, 3, 'total 是合并后的词条数');
+  assert.equal(info.count, 3, '多份时 count 与 total 同口径（旧字段兼容）');
+  assert.equal(info.name, '2 份词表');
+  assert.equal(info.lists.length, 2);
+  assert.deepEqual(info.lists.map((list) => list.ok), [true, false], 'lists 与配置里的路径同序、同数量');
+  assert.deepEqual(info.lists.map((list) => list.count), [2, 0]);
+  assert.deepEqual(info.lists.map((list) => list.truncated), [false, false]);
+  assert.ok(info.lists[1].error.includes('不存在'));
+  assert.equal(info.lists[0].entries, undefined, '公开信息绝不带词条正文');
+  assert.equal(info.path, undefined, '公开信息绝不带路径');
+  assert.equal(info.entries, undefined);
+  const text = JSON.stringify(info);
+  for (const word of ['隐藏词', '词表甲', '词表乙', '秘密目录']) {
+    assert.equal(text.includes(word), false, `公开信息里不该出现「${word}」`);
+  }
+});
+
+test('校对词表：proofreadWordListInfo 单份补齐旧字段 ok/count/error/truncated/name，坏份带 message（V60/V63）', () => {
+  const good = glossary.proofreadWordListInfo(
+    {
+      ok: true,
+      total: 3,
+      entries: [{ term: '甲' }, { term: '乙' }, { term: '丙' }],
+      lists: [{ ok: true, count: 3, error: '', truncated: true }]
+    },
+    ['C:\\秘密\\好的词表.txt']
+  );
+  assert.equal(good.ok, true);
+  assert.equal(good.count, 3);
+  assert.equal(good.total, 3);
+  assert.equal(good.name, '好的词表.txt', '单份用文件名，不带目录');
+  assert.equal(good.error, '');
+  assert.equal(good.truncated, true);
+  assert.equal(good.path, undefined);
+  assert.equal(good.message, undefined, '可用词表不补 message');
+  assert.equal(JSON.stringify(good).includes('秘密'), false);
+
+  const badError = '词表文件不存在（可能被移动或删除了，请重新选择）';
+  const bad = glossary.proofreadWordListInfo(
+    { ok: false, total: 0, entries: [], lists: [{ ok: false, count: 0, error: badError, truncated: false }] },
+    ['C:\\坏词表.txt']
+  );
+  assert.equal(bad.ok, false, '单份以这一份的 ok 为准');
+  assert.equal(bad.count, 0);
+  assert.equal(bad.error, badError);
+  assert.equal(bad.truncated, false);
+  assert.equal(bad.name, '坏词表.txt');
+  assert.equal(bad.message, badError, '坏份补 message 给旧界面显示');
+
+  const empty = glossary.proofreadWordListInfo(null, ['C:\\空.txt']);
+  assert.equal(empty.ok, false);
+  assert.equal(empty.count, 0);
+  assert.equal(empty.error, '');
+  assert.equal(empty.message, '校对词表读取失败', '完全没有 bundle 时也补齐旧字段，不抛错');
 });

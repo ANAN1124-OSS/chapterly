@@ -1,5 +1,7 @@
 // 校对词表（自定义错别字 / 禁用词）——纯逻辑 + 词表读取，不依赖 Electron，可单测。
 //
+// 1.7.2 D2：多份词表的配置口径 / 公开信息 / enabledLists 子集过滤也收在这里（V60/V63）。
+//
 // 设计（提案 N6，参考墨者 / 番茄的「自定义词表」；复用敏感词预检的读取与提示思路）：
 //   · 词表完全归作者：应用**不内置任何词表**，只按作者在设置里选的 txt 做字面匹配
 //   · 每行一个词；也可以写「错词 → 建议」，箭头认 => / -> / → 三种（建议只用于显示，
@@ -17,6 +19,9 @@ const txtLib = require('./txt');
 const errorText = require('./error-text');
 const wordscan = require('./wordscan');
 const { normalizeText } = require('./common');
+// 多份校对词表的条数上限与配置清洗同一份定义（1.7.2 D4/V42 已收口到 core/config.js）；
+// 读取侧再兜一遍，手改配置 / 旧数据绕过清洗时也不会读出第 9 份。
+const { WORDLIST_MAX } = require('./config');
 
 // 词表文件上限：再大就不像「每行一个词」的词表了，读进来只会拖慢整本检查
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
@@ -334,6 +339,88 @@ function publicGlossaryFilesInfo(bundle) {
   return info;
 }
 
+// ---------- 1.7.2 D2（V60/V63）：校对词表的纯逻辑（原来困在 main.js 的 registerIpc() 里）----------
+// 这些原本是 main.js 的五个 helper，搬到这里是为了能直接单测；main.js 只保留 handle(...) 里的一行调用。
+// 行为与搬前逐字一致：多份为空回落单份、公开信息永远描述全部词表、enabledLists 只影响参与校对。
+
+// 配置 → 实际参与读取的词表路径：proofreadWordlists 非空取数组，否则回落旧的单份字段。
+// 多份里只留非空字符串（空串 / 非字符串不算一份）；一份可用的都没有时回落单份旧字段。
+// 读取侧再兜一遍 WORDLIST_MAX（配置清洗已限，这里防手改配置 / 旧数据绕过）。
+function proofreadWordlistPaths(config) {
+  const many =
+    config && Array.isArray(config.proofreadWordlists) && config.proofreadWordlists.length
+      ? config.proofreadWordlists
+      : [];
+  const usable = many.filter((item) => typeof item === 'string' && item.trim());
+  if (usable.length) return usable.slice(0, WORDLIST_MAX);
+  const single = config && typeof config.proofreadWordsPath === 'string' ? config.proofreadWordsPath.trim() : '';
+  return single ? [single] : [];
+}
+
+// 1.7.0 F3b2 收口：单份路径（没配多份列表）走原样的单表读取与公开信息——老配置的显示与校对结果一字不差；
+// 只有 proofreadWordlists 非空才走多表合并。多表是新增能力，不改变旧字段的任何语义。
+function hasProofreadWordlists(config) {
+  return Boolean(config && Array.isArray(config.proofreadWordlists) && config.proofreadWordlists.length);
+}
+
+// options.enabledLists（1.7.0 F3b2）：索引数组，只让勾选的那几份词表参与这一次校对。
+// 缺省 / 坏值 / 一份都没勾 = 全开——宁可多跑几份，也不静默关掉作者以为在用的词表。
+// 返回 Set（选中的索引）或 null（= 全开）；越界 / 重复 / 非整数索引都丢掉（1.7.2 D2/V46 内存过滤要用索引）。
+function wordlistIndexesForRequest(paths, options) {
+  const enabled = options && Array.isArray(options.enabledLists) ? options.enabledLists : null;
+  if (!enabled) return null;
+  const picked = new Set();
+  for (const item of enabled) {
+    const index = Number(item);
+    if (Number.isInteger(index) && index >= 0 && index < paths.length) picked.add(index);
+  }
+  return picked.size ? picked : null;
+}
+
+// 对外形状：选中的路径子集（保持原顺序）。读侧内部用 wordlistIndexesForRequest 做内存过滤。
+function wordlistPathsForRequest(paths, options) {
+  const picked = wordlistIndexesForRequest(paths, options);
+  if (!picked) return paths;
+  return paths.filter((item, index) => picked.has(index));
+}
+
+// 校对词表信息的唯一出口（words-info / 两处校对共用，1.7.0 F3b2）：
+// 多份走 lists + total（lists 按 index 对齐配置里的路径），单份补齐旧字段
+// （ok / count / error / truncated / name），两条路都绝不带路径与词条正文。
+function proofreadWordListInfo(bundle, paths) {
+  const info = publicGlossaryFilesInfo(bundle);
+  const payload = { ...info, lists: info.lists, total: info.total, count: info.total };
+  payload.name = paths.length === 1 ? path.basename(paths[0]) : paths.length + ' 份词表';
+  if (paths.length === 1) {
+    const one = (bundle && Array.isArray(bundle.lists) ? bundle.lists[0] : null) || {};
+    payload.ok = one.ok === true;
+    payload.count = Number.isFinite(one.count) ? one.count : 0;
+    payload.error = typeof one.error === 'string' ? one.error : '';
+    payload.truncated = Boolean(one.truncated);
+    if (!payload.ok) payload.message = payload.error || '校对词表读取失败';
+  }
+  return payload;
+}
+
+// 一次请求要用到的词表：单份旧配置原样单表读取（公开信息保持旧形状，忽略 enabledLists）；
+// 多份则读出配置里的全部词表，公开信息永远描述全部；enabledLists 只决定哪些份参与校对。
+async function readProofreadWordlistForRequest(config, options) {
+  if (!hasProofreadWordlists(config)) {
+    const single = config && typeof config.proofreadWordsPath === 'string' ? config.proofreadWordsPath : '';
+    const list = await readGlossaryFile(single);
+    return { entries: list.ok ? list.entries : [], wordList: publicGlossaryInfo(list) };
+  }
+  const allPaths = proofreadWordlistPaths(config);
+  const all = await readGlossaryFiles(allPaths);
+  const wordList = proofreadWordListInfo(all, allPaths);
+  const enabledPaths = wordlistPathsForRequest(allPaths, options);
+  if (enabledPaths.length === allPaths.length) {
+    return { entries: all.ok ? all.entries : [], wordList };
+  }
+  const only = await readGlossaryFiles(enabledPaths);
+  return { entries: only.ok ? only.entries : [], wordList };
+}
+
 // 扫描一段正文：字面量找每个词的全部出现位置，同一处重叠时只留最长的那个
 // （和敏感词预检同一套去重规则）。返回 { hits, truncated, entryCount }。
 // hits 是 { term, suggestion, index, length }，按位置排序，可直接 setSelectionRange。
@@ -373,5 +460,10 @@ module.exports = {
   readGlossaryFiles,
   publicGlossaryInfo,
   publicGlossaryFilesInfo,
+  proofreadWordlistPaths,
+  hasProofreadWordlists,
+  wordlistPathsForRequest,
+  proofreadWordListInfo,
+  readProofreadWordlistForRequest,
   findHits
 };
