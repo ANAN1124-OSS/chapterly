@@ -4,7 +4,10 @@
 // 数量与状态（绝不带路径 / 词条正文）③ 新增频道在 main 与 preload 一一对应。
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsPromises = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
+const pathUtils = require('../core/path-utils');
 
 const readSource = (rel) =>
   require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
@@ -71,7 +74,6 @@ test('静态闸门：新增的添加 / 移除频道在 main 与 preload 一一�
   assert.match(preloadSource, /removeProofreadWordlist:/, 'preload 要有 removeProofreadWordlist');
   const addBody = sliceFrom(mainSource, "  handle('proofread:wordlists-add', async () => {");
   assert.match(addBody, /showOpenDialog\(/, '添加走系统对话框（渲染层不能自己给路径）');
-  assert.match(addBody, /path\.isAbsolute\(/, '要校验绝对路径');
   assert.match(addBody, /canceled: true/, '取消要回 { canceled: true }');
   assert.match(addBody, /proofreadWordlists/, '要操作多份字段');
   assert.match(addBody, /configStore\.set\(/, '要落盘');
@@ -91,4 +93,109 @@ test('静态闸门：text / book 校对支持 options.enabledLists 过滤参与�
   assert.match(helper, /paths\.filter\(/, '按索引过滤参与的词表');
   const reader = sliceFrom(mainSource, 'async function readProofreadWordlistForRequest(config, options) {');
   assert.match(reader, /wordlistPathsForRequest\(/, '多份分支要按 enabledLists 过滤');
+});
+
+// 从 main.js 的 handler 注册语句里切出箭头函数，在假作用域里真跑一遍（不 require electron）。
+// 只用于「校验顺序」这种行为断言：静态正则锁不住「先读词表还是先 stat / 判重 / 判上限」（V53）。
+function extractAsyncArrow(source, marker) {
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, '找不到锚点：' + marker);
+  const braceStart = start + marker.length - 1;
+  assert.equal(source[braceStart], '{', '锚点必须以箭头函数体的 { 结尾：' + marker);
+  let depth = 0;
+  let end = -1;
+  for (let i = braceStart; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  assert.notEqual(end, -1, '箭头函数体没闭合：' + marker);
+  return 'async () => ' + source.slice(braceStart, end);
+}
+
+const ADD_ANCHOR = "  handle('proofread:wordlists-add', async () => {";
+
+// 把 add 处理器装进假作用域：dialog / 配置 / 词表信息都是替身，fs 与 path 用真的。
+// 返回 { handler, calls }；calls 记录 stat / info 的调用顺序——就是 V53 要钉的「先校验、后读词表」。
+function loadAddWordlistHandler({ picked, config }) {
+  const calls = [];
+  const arrow = extractAsyncArrow(mainSource, ADD_ANCHOR);
+  const handler = new Function(
+    'showOpenDialog',
+    'getConfig',
+    'configStore',
+    'applyConfig',
+    'proofreadWordlistInfoNow',
+    'fs',
+    'pathUtils',
+    'path',
+    'WORDLIST_MAX',
+    'wordlistKey',
+    `return (${arrow});`
+  )(
+    async () => ({ canceled: false, filePaths: [picked] }),
+    async () => config,
+    { set: async (patch) => ({ ...config, ...patch }) },
+    () => {},
+    async () => {
+      calls.push('info');
+      return { lists: [], total: 0, multi: true };
+    },
+    { stat: (target) => { calls.push('stat'); return fsPromises.stat(target).catch(() => null); } },
+    pathUtils,
+    path,
+    8,
+    // 只为让「改前」的旧实现也能跑起来；断言的是调用顺序，不是函数名
+    pathUtils.pathKey
+  );
+  return { handler, calls };
+}
+
+test('行为：添加词表先 stat / 判重 / 判上限，再读词表；被拒绝的路径不先读一遍（V53）', async () => {
+  const dir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'cw-wordlist-add-'));
+  try {
+    const missing = path.join(dir, '没有这份词表.txt');
+    const existing = path.join(dir, '已有词表.txt');
+    await fsPromises.writeFile(existing, '错词\n', 'utf8');
+
+    // ① 不存在：先 stat 判掉，再读词表回面板（而不是先把全部词表读一遍才发现文件不在）
+    {
+      const { handler, calls } = loadAddWordlistHandler({ picked: missing, config: { proofreadWordlists: [] } });
+      const res = await handler();
+      assert.equal(res.code, 'WORDLIST_MISSING');
+      assert.equal(res.added, false);
+      assert.deepEqual(calls, ['stat', 'info'], '缺失文件：stat 必须先于读词表');
+    }
+    // ② 已在列表里：stat 通过 → 判重 → 再读词表
+    {
+      const { handler, calls } = loadAddWordlistHandler({ picked: existing, config: { proofreadWordlists: [existing] } });
+      const res = await handler();
+      assert.equal(res.code, 'WORDLIST_DUPLICATE');
+      assert.deepEqual(calls, ['stat', 'info'], '重复文件：先 stat → 判重 → 再读词表');
+    }
+    // ③ 8 份上限：stat 通过 → 判重通过 → 判上限 → 再读词表
+    {
+      const full = Array.from({ length: 8 }, (_, index) => path.join(dir, `满${index}.txt`));
+      const { handler, calls } = loadAddWordlistHandler({ picked: existing, config: { proofreadWordlists: full } });
+      const res = await handler();
+      assert.equal(res.code, 'WORDLIST_LIMIT');
+      assert.equal(res.message, '最多 8 份校对词表');
+      assert.deepEqual(calls, ['stat', 'info'], '到上限：先校验再读词表');
+    }
+    // ④ 通过校验：落盘后只读一次词表
+    {
+      const { handler, calls } = loadAddWordlistHandler({ picked: existing, config: { proofreadWordlists: [] } });
+      const res = await handler();
+      assert.equal(res.added, true);
+      assert.deepEqual(calls, ['stat', 'info'], '成功路径也只读一次词表（校验通过之后）');
+    }
+  } finally {
+    await fsPromises.rm(dir, { recursive: true, force: true });
+  }
 });

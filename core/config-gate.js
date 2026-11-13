@@ -15,7 +15,9 @@
 // 已知边界（写进 README 已知限制，不在本模块处理）：
 //   · 判定是「字符串等价」：接在刚才选中目录里的子目录也算不同路径，需要重新选一次；
 //   · 最后一项在窗口关闭时清理（main.js 的 closed 事件），不跨窗口、不写盘。
-const path = require('node:path');
+// 路径等价口径与 core/path-utils.js 完全一致（1.7.2 D4/V43）：resolve + 小写 + Windows 下正斜杠
+// 归反斜杠。这里不再自留 pathLib / pathKey —— 判「是不是同一个路径」的实现在全仓只有一份。
+const { pathKey } = require('./path-utils');
 
 // 需要来源校验的字段（审计结论本身：以后往 config 里加「路径」字段必须加到这里）
 // C1（审计 S1）：补上自定义字体路径。原来它不在白名单里，config:set / book:set-display 原样透传，
@@ -28,25 +30,7 @@ const GUARDED_PATH_FIELDS = Object.freeze([
   'editorCustomFontPath' // 自定义字体：主进程会读它并整份 base64 回给渲染层
 ]);
 
-const WIN32 = process.platform === 'win32';
-const pathLib = WIN32 ? path.win32 : path.posix;
-
-// 路径的规范形式（只用于「是不是同一个路径」的判断，不改变要存进配置的原字符串）：
-// trim → resolve（去掉末尾分隔符 / 折叠 `.` `..`）→ Windows 下统一小写、反斜杠。
-function pathKey(value) {
-  if (typeof value !== 'string') return '';
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-  let resolved;
-  try {
-    resolved = pathLib.resolve(trimmed);
-  } catch {
-    return WIN32 ? trimmed.toLowerCase() : trimmed;
-  }
-  return WIN32 ? resolved.replace(/\//g, '\\').toLowerCase() : resolved;
-}
-
-// 两个路径是不是同一个（Windows 大小写不敏感；末尾分隔符、`/` 与 `\` 混用都算同一个）
+// 两个路径是不是同一个（Windows 大小写不敏感；末尾分隔符、`/` 与 `\` 混用、相对写法都算同一个）
 function samePath(a, b) {
   const left = pathKey(a);
   const right = pathKey(b);

@@ -42,19 +42,44 @@ test('normalizePath：相对路径按当前目录解析（同一目录的不同�
   assert.equal(pathUtils.normalizePath(123), path.resolve('123').toLowerCase());
 });
 
+// V43 / V83：「是不是同一个路径」的口径收成一份 —— resolve + 小写 + Windows 正斜杠归反斜杠。
+// 大小写 / 正反斜杠 / 末尾斜杠 / 相对写法都必须落到同一个 key，否则同一份词表或同一本书会被算成两份。
+test('路径等价：大小写 / 正反斜杠 / 末尾斜杠 / 相对写法同一 key（V43/V83）', () => {
+  const base = path.resolve('D:\\Books\\甲书');
+  const key = pathUtils.pathKey(base);
+  assert.equal(key, base.toLowerCase(), 'Windows 下小写（这台机器的 path.resolve 已经给反斜杠）');
+  assert.equal(pathUtils.pathKey(base.toUpperCase()), key, '大小写不同 = 同一个路径');
+  assert.equal(pathUtils.pathKey(base.replace(/\\/g, '/')), key, '正反斜杠混用 = 同一个路径');
+  assert.equal(pathUtils.pathKey(base + path.sep), key, '末尾多一个分隔符 = 同一个路径');
+  assert.equal(pathUtils.pathKey(base + path.sep + '.'), key, '末尾 . = 同一个路径');
+  assert.equal(pathUtils.pathKey(`  ${base}  `), key, '首尾空白先 trim');
+  assert.equal(pathUtils.pathKey(path.relative(process.cwd(), base)), key, '相对写法按当前目录解析成同一个 key');
+  // 与 normalizePath 同一套解析结果（pathKey 只多一步 Windows 斜杠归一）；非 Windows 上两者逐字相同
+  assert.equal(pathUtils.pathKey(base), pathUtils.normalizePath(base));
+  // 空值 / 非字符串的边界与 normalizePath 一致
+  assert.equal(pathUtils.pathKey(null), '');
+  assert.equal(pathUtils.pathKey(undefined), '');
+  assert.equal(pathUtils.pathKey('   '), '');
+  assert.equal(pathUtils.pathKey(123), path.resolve('123').toLowerCase());
+});
+
 test('对外形状固定 + open-books 的旧名字就是同一份实现', () => {
-  assert.deepEqual(Object.keys(pathUtils), ['normalizePath']);
+  assert.deepEqual(Object.keys(pathUtils), ['normalizePath', 'pathKey']);
   assert.equal(openBooks.normalizeBookPath, pathUtils.normalizePath, 'normalizeBookPath 只是同一函数的旧名字');
 });
 
-test('静态闸门：open-books / search-index 从 core/path-utils.js 取，仓库里不许再长出第二份实现', () => {
-  for (const rel of ['core/open-books.js', 'core/search-index.js']) {
+test('静态闸门：open-books / search-index / config / config-gate / main 从 core/path-utils.js 取，仓库里不许再长出第二份实现', () => {
+  for (const rel of ['core/open-books.js', 'core/search-index.js', 'core/config.js', 'core/config-gate.js']) {
     assert.ok(/require\('\.\/path-utils'\)/.test(read(rel)), `${rel} 必须从 core/path-utils.js 取路径归一`);
   }
+  assert.match(read('main.js'), /pathUtils\.pathKey\(/, 'main.js 的 bookKeyOf / 词表去重必须走 core/path-utils.js 的 pathKey');
+  assert.equal(/function bookKeyOf\s*\(/.test(read('main.js')), false, 'main.js 不该再手写 bookKeyOf');
+  assert.equal(/function wordlistKey\s*\(/.test(read('main.js')), false, 'main.js 不该再手写 wordlistKey');
   for (const rel of CORE_FILES) {
     const source = read(rel);
     assert.equal(/function normalizePath\s*\(/.test(source), false, `${rel} 里不该再有第二份 normalizePath 实现`);
     assert.equal(/function normalizeRoot\s*\(/.test(source), false, `${rel} 里不该再有 normalizeRoot（用 core/path-utils.js）`);
+    assert.equal(/function pathKey\s*\(/.test(source), false, `${rel} 里不该再有第二份 pathKey 实现`);
     assert.equal(
       /path\.resolve\(raw\)\.toLowerCase\(\)/.test(source),
       false,

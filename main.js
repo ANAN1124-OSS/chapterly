@@ -51,7 +51,7 @@ const screenshotChapter = argValue('chapter');
 const screenshotDialog = argValue('dialog');
 const automation = isE2E || isBench || isContrast || Boolean(screenshotPath);
 
-const { createConfigStore, sanitize: sanitizeConfig, withBooksRootOverride } = require('./core/config');
+const { createConfigStore, sanitize: sanitizeConfig, withBooksRootOverride, WORDLIST_MAX } = require('./core/config');
 const { atomicWriteFile } = require('./core/atomic');
 const storage = require('./core/storage');
 const repair = require('./core/repair');
@@ -84,6 +84,8 @@ const fontPolicy = require('./core/font-policy');
 const securityPolicy = require('./core/security-policy');
 const ipcPaths = require('./core/ipc-paths');
 const configGate = require('./core/config-gate');
+// 路径等价口径（1.7.2 D4/V43/V83）：bookKeyOf / 词表去重与 core/config-gate、core/config 共用同一份实现
+const pathUtils = require('./core/path-utils');
 const errorText = require('./core/error-text');
 const ipcLimits = require('./core/ipc-limits');
 // 撤销删除的进程内凭证（1.5.0 P0-5 / 审计 V-1）：删除成功发一张一次性 token，撤销必须带回来。
@@ -984,9 +986,10 @@ const lastOpenWrites = createKeyedDebouncer({
   }
 });
 
-function bookKeyOf(bookPath) {
-  return path.resolve(String(bookPath)).toLowerCase();
-}
+// 1.7.2 D4（V43/V83）：判「同一本书」不再手写 path.resolve().toLowerCase()，与词表去重 / 配置
+// 校验统一走 core/path-utils.js 的 pathKey（resolve + 小写 + Windows 正反斜杠归一）。
+// 名字保留 bookKeyOf：它在这里只当「切片写队列的 key」，调用点读数最清楚。
+const bookKeyOf = pathUtils.pathKey;
 
 // 读 书目.json 之前把这本书待写的「上次打开章节」落盘（书架 / 打开书 / 继续上次写作三个入口）。
 async function flushLastOpenBeforeRead(bookPath) {
@@ -1720,15 +1723,11 @@ function registerIpc() {
   });
   // 多份校对词表（1.7.0 F3b2）：添加只允许通过系统对话框挑文件（渲染层给不了路径），
   // 移除只收索引。渲染层既不能指定路径，也拿不到路径；落盘走配置仓库，
-  // 配置清洗会再兜一遍绝对路径 / 存在 / 去重 / 8 条上限（托底，不靠这一层）。
-  const WORDLIST_MAX = 8;
-  const wordlistKey = (value) => {
-    const text = typeof value === 'string' ? value.trim() : '';
-    if (!text) return '';
-    const resolved = path.resolve(text);
-    return process.platform === 'win32' ? resolved.replace(/\//g, '\\').toLowerCase() : resolved;
-  };
-
+  // 配置清洗会再兜一遍绝对路径 / 去重 / WORDLIST_MAX 条上限（托底，不靠这一层）。
+  // 1.7.2 D4（V42）：条数上限与提示文案都取 core/config.js 的 WORDLIST_MAX，这里不再声明同名常量。
+  // 1.7.2 D4（V53）：先校验（stat / 重复 / 上限）再读词表；picked 是 path.resolve 的结果、恒为绝对
+  // 路径，原来那条 path.isAbsolute 死分支已删。拒绝分支仍回最新 info（渲染层据此重画列表），
+  // 但读取都发生在校验之后，不再先把全部词表读一遍才发现路径不能用。
   handle('proofread:wordlists-add', async () => {
     const { canceled, filePaths } = await showOpenDialog({
       title: '添加校对词表（每行一个词，可写「错词 → 建议」）',
@@ -1743,19 +1742,15 @@ function registerIpc() {
     const picked = path.resolve(filePaths[0]);
     const cfg = await getConfig();
     const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
-    const info = await proofreadWordlistInfoNow();
-    if (!path.isAbsolute(picked)) {
-      return { canceled: false, added: false, code: 'WORDLIST_NOT_ABSOLUTE', message: '只能添加绝对路径的词表', ...info };
-    }
     const stat = await fs.stat(picked).catch(() => null);
     if (!stat || !stat.isFile()) {
-      return { canceled: false, added: false, code: 'WORDLIST_MISSING', message: '这个词表文件不存在（可能被移动或删除了）', ...info };
+      return { canceled: false, added: false, code: 'WORDLIST_MISSING', message: '这个词表文件不存在（可能被移动或删除了）', ...(await proofreadWordlistInfoNow()) };
     }
-    if (current.some((item) => wordlistKey(item) === wordlistKey(picked))) {
-      return { canceled: false, added: false, code: 'WORDLIST_DUPLICATE', message: '这份词表已经在列表里了', ...info };
+    if (current.some((item) => pathUtils.pathKey(item) === pathUtils.pathKey(picked))) {
+      return { canceled: false, added: false, code: 'WORDLIST_DUPLICATE', message: '这份词表已经在列表里了', ...(await proofreadWordlistInfoNow()) };
     }
     if (current.length >= WORDLIST_MAX) {
-      return { canceled: false, added: false, code: 'WORDLIST_LIMIT', message: '最多 8 份校对词表', ...info };
+      return { canceled: false, added: false, code: 'WORDLIST_LIMIT', message: `最多 ${WORDLIST_MAX} 份校对词表`, ...(await proofreadWordlistInfoNow()) };
     }
     const next = await configStore.set({ proofreadWordlists: [...current, picked] });
     applyConfig(next);
@@ -2162,22 +2157,17 @@ function registerIpc() {
     storage.moveChapterTo(bookPath, chapterId, volumeId, beforeChapterId), { mutation: 'write' }
   );
 
-  // R4b（V9）：整本操作遇到超过 128 MB 的章会跳过（文件不动、不整批失败），core 在结果里报
-  // skippedTooLarge；主进程把同一个数字带进 IPC 结果，渲染层据此提示「有 N 章超过 128 MB，
-  // 本次已跳过（文件没动）」。0 章跳过时原样返回，旧结果形状一个字都不动。
-  function withSkippedTooLarge(result) {
-    if (!result || typeof result !== 'object' || !result.skippedTooLarge) return result;
-    return { ...result, skippedTooLarge: result.skippedTooLarge };
-  }
   // 全书查找 / 替换：替换写盘前 storage 会把原章节备份到书内 _trash。
   // v0.9 C-5：options 由 core/ipc-limits.js 清洗——查找词 / 替换词必须是文本且各限 1 万字，
   // 非对象 options 按 {}（旧行为：没传选项 = 默认口径），坏类型直接回 BAD_QUERY / BAD_REPLACEMENT，
   // 不让一个超长替换词把整本书的 txt 撑爆（替换最多 5000 处 / 章）。
+  // R4b（V9）/ 1.7.2 D4（V40）：整本操作遇到超过 128 MB 的章会跳过，core 在结果里直接带
+  // skippedTooLarge；这里原样返回 core 的结果，不再包一层恒等复制（渲染层照旧读这个字段）。
   handleBook('book:search', async (bookPath, options) =>
-    withSkippedTooLarge(await storage.searchBook(bookPath, ipcLimits.sanitizeSearchOptions(options)))
+    storage.searchBook(bookPath, ipcLimits.sanitizeSearchOptions(options))
   );
   handleBook('book:replace', async (bookPath, options) =>
-    withSkippedTooLarge(await storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options))), {
+    storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options)), {
     mutation: 'replace'
   });
 
@@ -2410,13 +2400,14 @@ function registerIpc() {
   }, { mutation: 'write' });
 
   // 整本智能排版：预检查只算不写；正式整理逐章写盘（写前把原章节备份到 _trash/整理备份-*）
+  // 1.7.2 D4（V40）：同 book:search / book:replace，core 结果里的 skippedTooLarge 原样透传。
   handleBook('book:format-preview', async (bookPath, options) =>
-    withSkippedTooLarge(await storage.previewFormatBook(bookPath, options))
+    storage.previewFormatBook(bookPath, options)
   );
   handleBook('book:format', async (bookPath, options) =>
-    withSkippedTooLarge(await storage.formatBook(bookPath, options, (progress) => {
+    storage.formatBook(bookPath, options, (progress) => {
       sendToFlow('format:progress', progress);
-    })), { mutation: 'format' }
+    }), { mutation: 'format' }
   );
 
   // 拼导出/复制用的正文：默认读磁盘；override 是编辑区里当前章的最新内容（未保存也算，只参与拼接不写盘）

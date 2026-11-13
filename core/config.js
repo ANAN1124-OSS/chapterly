@@ -12,6 +12,7 @@ const templateLib = require('./template');
 const s2tLib = require('./s2t');
 const caretColorLib = require('./caret-color');
 const bookmarksLib = require('./bookmarks');
+const pathUtils = require('./path-utils');
 
 // 默认书架：当前用户的「文档\我的小说」（安装后可在应用里改）
 const DEFAULT_BOOKS_ROOT = path.join(os.homedir(), 'Documents', '我的小说');
@@ -223,10 +224,12 @@ function sanitizeLastBook(raw) {
 }
 
 // 多份校对词表的条数上限（1.7.0 F3a）：面板上再多也读不完，超过的截断。
+// 1.7.2 D4（V42）：这是唯一一处定义，main.js 从这里 require（文案也用这个常量拼），别再声明同名常量。
 const WORDLIST_MAX = 8;
 
-// 多份校对词表的路径清洗（1.7.0 F3a；1.7.1 V51/V48）：必须数组、最多 8 条、只留字符串、trim、
-// 只收绝对路径、去重（Windows 下大小写与正反斜杠归一后算同一份；保留作者写的原字符串与顺序）。
+// 多份校对词表的路径清洗（1.7.0 F3a；1.7.1 V51/V48）：必须数组、最多 WORDLIST_MAX 条、只留字符串、
+// trim、只收绝对路径、去重（判「同一份」走 core/path-utils.js 的 pathKey：resolve + 小写 + Windows
+// 正斜杠归反斜杠，和 config-gate / main.js 同一口径；保留作者写的原字符串与顺序）。
 // 存在性不在写入时判——读不到时由读取侧的 GLOSSARY_MISSING 报给用户；这里只管形状，也不做同步
 // stat（断开的 UNC / 网络盘不再卡主进程的配置写路径）。坏条目逐条丢掉、不抛错。
 function sanitizeWordlistPaths(raw) {
@@ -239,7 +242,7 @@ function sanitizeWordlistPaths(raw) {
     const trimmed = item.trim();
     if (!trimmed || trimmed.length > 1000) continue;
     if (!path.isAbsolute(trimmed)) continue;
-    const key = process.platform === 'win32' ? trimmed.replace(/\//g, '\\').toLowerCase() : trimmed;
+    const key = pathUtils.pathKey(trimmed);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(trimmed);
@@ -540,6 +543,7 @@ function withBooksRootOverride(config, override) {
 module.exports = {
   createConfigStore,
   DEFAULTS,
+  WORDLIST_MAX,
   sanitize,
   sanitizeLastBook,
   withBooksRootOverride
