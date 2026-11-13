@@ -48,6 +48,16 @@ test('stripInvalidXmlChars：剔除 XML 1.0 非法控制字符，保留 \\t \\n 
   assert.equal(xml.stripInvalidXmlChars(123), '123');
 });
 
+// V72：XML 1.0 的 Char 上限是 U+FFFD，U+FFFE / U+FFFF 是非字符。
+// 留着它们时 Word / epubcheck 这类严格解析器会把整份文档拒掉，所以必须和 C0 控制字符一起剔。
+test('stripInvalidXmlChars 去掉 U+FFFE / U+FFFF、保留 U+FFFD（V72）', () => {
+  assert.equal(xml.stripInvalidXmlChars('甲\uFFFE乙\uFFFF丙'), '甲乙丙', 'U+FFFE / U+FFFF 必须剔除');
+  // U+FFFD 是替换符（合法的 Char），正文里本来就可能存在，不许被顺手删掉
+  assert.equal(xml.stripInvalidXmlChars('甲\uFFFD乙'), '甲\uFFFD乙', 'U+FFFD 是合法字符，必须原样保留');
+  // 段落切分走同一份实现，非字符也不该漏进段落
+  assert.deepEqual(xml.paragraphsFromText('第一段\uFFFE\n第二段\uFFFF'), ['第一段', '第二段']);
+});
+
 test('escapeXml：五个特殊字符按 XML 规则转义，且先剔非法控制字符', () => {
   assert.equal(
     xml.escapeXml('A&B <夜> "雨" \'风\'\u0001'),
@@ -56,6 +66,17 @@ test('escapeXml：五个特殊字符按 XML 规则转义，且先剔非法控制
   // 已经转义过的文本再转义一次会得到 &amp;…（导出只转义原文，不做幂等判断——保持旧行为）
   assert.equal(xml.escapeXml('&amp;'), '&amp;amp;');
   assert.equal(xml.escapeXml(null), '');
+});
+
+// V72：产物里不能出现 U+FFFF（UTF-8 EF BF BF）/ U+FFFE（UTF-8 EF BF BE）的字节
+test('escapeXml 输出不含 EF BF BF / EF BF BE（V72）', () => {
+  const escaped = xml.escapeXml('A\uFFFE&B\uFFFF<C>');
+  const bytes = Buffer.from(escaped, 'utf8');
+  assert.equal(bytes.includes(Buffer.from([0xef, 0xbf, 0xbf])), false, 'U+FFFF 的 UTF-8 字节 EF BF BF 还在');
+  assert.equal(bytes.includes(Buffer.from([0xef, 0xbf, 0xbe])), false, 'U+FFFE 的 UTF-8 字节 EF BF BE 还在');
+  // 转义本身不受影响，合法的 U+FFFD 保留
+  assert.equal(escaped, 'A&amp;B&lt;C&gt;');
+  assert.equal(xml.escapeXml('替换\uFFFD符'), '替换\uFFFD符');
 });
 
 test('paragraphsFromText：CRLF / CR 归一、丢空行、去首尾空白、剔非法字符', () => {

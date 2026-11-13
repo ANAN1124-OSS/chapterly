@@ -409,6 +409,21 @@ test('导进来的原文标题（第1章 关于本作品）原样当章名，不
   assert.ok(textOf(byName, 'OEBPS/text/chapter-0001.xhtml').includes('<h1 class="chapter-title">第1章 关于本作品</h1>'));
 });
 
+// V72：U+FFFE / U+FFFF 是 XML 1.0 非字符（Char 上限 U+FFFD），epubcheck 与严格解析器
+// 会因此整份拒收，导出产物里必须一个都不剩。
+test('EPUB 正文含 U+FFFE 导出后产物里没有该字符（V72）', async () => {
+  const { zip, byName } = await build({ texts: ['甲\uFFFE乙\uFFFF丙', '乙'] });
+  const html = textOf(byName, 'OEBPS/text/chapter-0001.xhtml');
+  assert.equal(/[\uFFFE\uFFFF]/.test(html), false, 'chapter-0001.xhtml 里还有 U+FFFE / U+FFFF');
+  assert.ok(html.includes('<p>甲乙丙</p>'), html.slice(0, 400));
+  for (const entry of zip.entries) {
+    if (!/\.(xhtml|opf|ncx|xml)$/.test(entry.name)) continue;
+    const text = entry.data.toString('utf8');
+    assert.equal(/[\uFFFE\uFFFF]/.test(text), false, `${entry.name} 里还有 U+FFFE / U+FFFF`);
+    assertWellFormedXml(text, entry.name);
+  }
+});
+
 test('所有 XML 文件都通过合法性检查（含特殊字符的正文）', async () => {
   const { zip } = await build({ texts: ['第一段 & 第二段。\n\n「引号」<尖括号> "双引号"', '乙'] });
   let checked = 0;

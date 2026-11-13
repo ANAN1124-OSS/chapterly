@@ -8,8 +8,9 @@
 // 纯函数：不 require 任何模块，不碰 fs / process / electron（单测有静态闸门）。
 // 导出：stripInvalidXmlChars / escapeXml / paragraphsFromText / isoTimestamp。
 
-// XML 1.0 不允许的控制字符（保留 \t \n \r）：正文里混进去会让整份文档解析失败。
-const XML_INVALID_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g;
+// XML 1.0 不允许的控制字符与非字符（保留 \t \n \r）：正文里混进去会让整份文档解析失败。
+// XML 1.0 的 Char 上限是 U+FFFD，U+FFFE / U+FFFF 是非字符，保留会让严格解析器整份拒绝。
+const XML_INVALID_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g;
 
 function stripInvalidXmlChars(text) {
   return String(text == null ? '' : text).replace(XML_INVALID_CHARS, '');

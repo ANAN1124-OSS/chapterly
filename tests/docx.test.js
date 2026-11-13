@@ -261,6 +261,24 @@ test('DOCX 未分卷 / 空正文 / 原文标题章名：只写该章标题，缺
   assert.equal((document.match(/<w:pStyle w:val="BodyText"\/>/g) || []).length, 1);
 });
 
+// V72：U+FFFE / U+FFFF 是 XML 1.0 非字符（Char 上限 U+FFFD），正文里混进去会让
+// Word / 严格解析器把整份文档拒掉，导出产物里必须一个都不剩。
+test('DOCX 正文含 U+FFFE 导出后产物里没有该字符（V72）', async () => {
+  const { zip, byName } = await build({
+    meta: metaOf({ chapters: [{ id: 'c1', file: '001.txt', name: '非字符章' }] }),
+    texts: ['甲\uFFFE乙\uFFFF丙']
+  });
+  const document = textOf(byName, 'word/document.xml');
+  assert.equal(/[\uFFFE\uFFFF]/.test(document), false, 'document.xml 里还有 U+FFFE / U+FFFF');
+  assert.ok(document.includes('甲乙丙'), document.slice(0, 400));
+  for (const entry of zip.entries) {
+    if (!/\.(xml|rels)$/.test(entry.name)) continue;
+    const text = entry.data.toString('utf8');
+    assert.equal(/[\uFFFE\uFFFF]/.test(text), false, `${entry.name} 里还有 U+FFFE / U+FFFF`);
+    assertWellFormedXml(text, entry.name);
+  }
+});
+
 // v0.9 C-3（安全审计 C6）：书名 / 章名可以是 `../`、反斜杠、盘符（书可能来自别处），
 // 它们只该进 document.xml 的正文，zip 条目名必须是固定的七个部位。
 test('敌意书名 / 章名只进 document.xml，进不了条目名（zip-slip 回归）', async () => {
