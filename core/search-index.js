@@ -66,13 +66,23 @@ const PROGRESS_INTERVAL_MS = 150;
 // 以前是「全书 texts 一次进数组」，1000 章 × 1 MB ≈ 1 GB 常驻主进程；现在一批处理完就丢引用。
 // 分批只改「什么时候读」，不改章的顺序、字数统计口径与位图字节（tests/search-index.test.js 钉住）。
 const BLOOM_BUILD_BATCH = 32;
+// V93（1.7.2 D6）：解码后的位图缓存条数上界（LRU）。以前 bloomCache 只增不减、只在换书架根时清空：
+// 长书架上「搜过一遍」就等于把整架书的位图全留在主进程里（位图按字数增长，几十 KB / 本）。
+// 32 条足够覆盖一次搜索最多读的 60 本候选里的热区，冷书下次搜索重新解码，结果一条都不会少。
+const BLOOM_CACHE_MAX = 32;
 
 // nowIso / mapLimit 从 core/common.js 来（B6）：和 storage 导入时同一份实现
 // （限并发、ISO 时间戳）；这里不再各抄一份。
 // 路径归一（书架目录 / 书目录转小写）从 core/path-utils.js 来（C4）：和 open-books 同一份。
 
+// V76（1.7.2 D6）：个别字符小写后会「变长」（'İ' U+0130 → 'i' + U+0307，两个码元）。拿小写化的
+// 结果当扫描用的干草堆时，长度一变 matchIndex 与片段位置就整体后移——列表里高亮的不是命中的那几个字。
+// core/find.js:18-20 对同一件事有长度防御，这里用同一口径：小写化长度变了就回退原文扫描
+// （宁可少一次大小写不敏感匹配，也不许把片段指到别的字上）。
 function lowerText(value) {
-  return String(value == null ? '' : value).toLowerCase();
+  const source = String(value == null ? '' : value);
+  const lower = source.toLowerCase();
+  return lower.length === source.length ? lower : source;
 }
 
 function normalizeQuery(value) {
@@ -554,15 +564,26 @@ function createSearchStore(options = {}) {
   let rootSignature = '';
   let lastSignatureCheckAt = 0;
   const dirtyBooks = new Set();
-  const bloomCache = new Map(); // path -> { bloom(base64), bits, buffer }
+  // V93：path -> { bloom(base64), bits, buffer }，按 LRU 只留最近用过的 BLOOM_CACHE_MAX 本。
+  const bloomCache = new Map();
 
   function bloomFor(book) {
     if (!book.bloom) return null;
     const cached = bloomCache.get(book.path);
-    if (cached && cached.bloom === book.bloom && cached.bits === book.bloomBits) return cached.buffer;
+    if (cached && cached.bloom === book.bloom && cached.bits === book.bloomBits) {
+      // 命中：挪到队尾（Map 的插入顺序就是 LRU 顺序）。位图变了（重建过）算未命中。
+      bloomCache.delete(book.path);
+      bloomCache.set(book.path, cached);
+      return cached.buffer;
+    }
     const buffer = decodeBloom(book.bloom, book.bloomBits);
     if (!buffer) return null;
+    bloomCache.delete(book.path); // 旧位置 / 旧位图先摘掉，重新插到队尾
     bloomCache.set(book.path, { bloom: book.bloom, bits: book.bloomBits, buffer });
+    while (bloomCache.size > BLOOM_CACHE_MAX) {
+      const oldest = bloomCache.keys().next().value;
+      bloomCache.delete(oldest);
+    }
     return buffer;
   }
 
@@ -880,10 +901,12 @@ function createSearchStore(options = {}) {
           deep: nowMs() - lastFullValidateAt >= SEARCH_DEEP_INTERVAL_MS,
           ...(opts.ensureOptions || {})
         });
+    // V92（1.7.2 D6）：building 透传 state.building（以前写死 false）。state 可能是 status() 的
+    // 快照（搜索窗口内直接复用内存索引，后台重建正在飞），界面靠这个字段决定显示「正在建索引」。
     const indexInfo = {
       books: state.books,
       chapters: state.chapters,
-      building: false,
+      building: Boolean(state.building),
       problem: state.problem || '',
       bytes: state.bytes
     };
@@ -1080,7 +1103,7 @@ function createSearchStore(options = {}) {
       ...makeBase({
         books: index.books.length,
         chapters: totalChapters(index),
-        building: false,
+        building: Boolean(state.building),
         bytes: indexInfo.bytes,
         builtAt: index.builtAt
       }),
@@ -1127,7 +1150,9 @@ function createSearchStore(options = {}) {
     // 供单测 / 自检直接用的内部信息（不参与界面逻辑）
     getIndex: () => index,
     getBytes: () => indexBytes,
-    getProblem: () => loadProblem
+    getProblem: () => loadProblem,
+    // V93：当前位图缓存条数（锚点用；也方便以后排查「内存里留了几本位图」）
+    getBloomCacheSize: () => bloomCache.size
   };
 }
 
@@ -1135,6 +1160,7 @@ module.exports = {
   INDEX_FILE_NAME,
   INDEX_VERSION,
   MIN_BLOOM_BITS,
+  BLOOM_CACHE_MAX,
   MAX_SNIPPETS_PER_CHAPTER,
   MAX_CHAPTER_MATCH_COUNT,
   MAX_FOCUS_SNIPPETS,
