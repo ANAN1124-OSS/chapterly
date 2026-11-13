@@ -278,6 +278,30 @@ function createFragmentStore(booksRoot) {
   return { dir, list, create, read };
 }
 
+// 跨 IPC 的 store 单例缓存（V74）：写队列（core/common.js 的 createWriteQueue）是实例私有的，
+// 每次 createFragmentStore 新建实例 = 各一条队列。两个窗口毫秒级同时保存碎片时，双方都会通过
+// 「目标不存在」检查，atomicWriteFile 的 rename 后写覆盖先写——先保存的正文静默丢失，两边却都收到
+// 成功回执。main.js 的三个 fragments 频道改走 getFragmentStore(cfg.booksRoot)，让同一个书架根目录
+// 在所有窗口 / 频道间共用同一个 store（同一条写队列）。
+// key = path.resolve(String(booksRoot)).toLowerCase()：相对写法 / 尾分隔符归一，Windows 大小写不敏感。
+// 最多缓存 2 条（够「书库 A / B 来回切」都命中）；满了按插入顺序淘汰最旧的一条（Map 迭代序 = 插入序，
+// 命中不重排）。store 没有需要关闭的资源——写队列 settle 后条目自回收，被淘汰只是不再复用。
+// createFragmentStore 保留原样：每次调用仍新建实例（既有单测与「每实例独立」语义不动）。
+const STORE_CACHE_MAX = 2;
+const storeCache = new Map();
+
+function getFragmentStore(booksRoot) {
+  const key = path.resolve(String(booksRoot)).toLowerCase();
+  const cached = storeCache.get(key);
+  if (cached) return cached;
+  const store = createFragmentStore(booksRoot);
+  storeCache.set(key, store);
+  while (storeCache.size > STORE_CACHE_MAX) {
+    storeCache.delete(storeCache.keys().next().value);
+  }
+  return store;
+}
+
 module.exports = {
   MAX_TEXT_CHARS,
   MAX_READ_BYTES,
@@ -291,5 +315,6 @@ module.exports = {
   previewText,
   sortFragments,
   assertFragmentName,
-  createFragmentStore
+  createFragmentStore,
+  getFragmentStore
 };

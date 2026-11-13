@@ -1317,17 +1317,19 @@ function registerIpc() {
 
   // 灵感箱（碎片速记）：书架根目录 _碎片 里的普通 txt。
   // 不传路径进来，文件名由主进程按日期 + 当天序号生成；写盘走 core/atomic，不碰 书目.json / 章节文件。
+  // 三个频道共用 getFragmentStore（按 booksRoot 单例）：写队列是实例私有的，各建各的会让两个窗口
+  // 并发保存双双通过「目标不存在」检查、rename 后写覆盖先写（V74）。
   handle('fragments:list', async () => {
     const cfg = await getConfig();
-    return fragmentsLib.createFragmentStore(cfg.booksRoot).list();
+    return fragmentsLib.getFragmentStore(cfg.booksRoot).list();
   });
   handle('fragments:create', async (text) => {
     const cfg = await getConfig();
-    return fragmentsLib.createFragmentStore(cfg.booksRoot).create(text);
+    return fragmentsLib.getFragmentStore(cfg.booksRoot).create(text);
   });
   handle('fragments:read', async (name) => {
     const cfg = await getConfig();
-    return fragmentsLib.createFragmentStore(cfg.booksRoot).read(name);
+    return fragmentsLib.getFragmentStore(cfg.booksRoot).read(name);
   });
 
   // 剪贴板捕获（P0）：显式触发才读系统剪贴板；clipboard.readText() 天然是纯文本，

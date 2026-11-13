@@ -273,3 +273,63 @@ test('灵感箱：_碎片 位置被同名文件占住时给出明确错误，不
   await assert.rejects(store.create('内容'), /不是一个文件夹/);
   assert.equal(await fs.readFile(path.join(root, '_碎片'), 'utf8'), '不是文件夹');
 });
+
+// ---------- V74：碎片 store 按 booksRoot 单例化（跨 IPC 共用同一写队列） ----------
+// 背景：main.js 三个 fragments 频道原来每次 createFragmentStore(cfg.booksRoot) 新建实例，
+// 而写队列（core/common.js 的 createWriteQueue）是实例私有的。两个窗口毫秒级同时保存时，
+// 双方都通过「目标不存在」检查，atomicWriteFile 的 rename 后写覆盖先写——先保存的正文丢失，
+// 两边却都收到成功回执。下面三条锁住：同 root 同实例 / 不同 root 不同实例 / 同 root 并发不丢。
+
+test('碎片单例：同 root 两次 getFragmentStore 返回同一对象（同一写队列）（V74）', async () => {
+  const root = await mkTmp();
+  const first = frag.getFragmentStore(root);
+  const second = frag.getFragmentStore(root);
+  assert.equal(second, first, '同一个 booksRoot 必须命中同一个 store，否则写队列各一条');
+  // Windows 路径大小写 / 尾分隔符不敏感：写法不同也是同一个书架根目录
+  const alias = frag.getFragmentStore(root.toUpperCase() + path.sep);
+  assert.equal(alias, first, '大小写 / 尾分隔符不同的同一 root 也要命中同一实例');
+  assert.equal(first.dir, path.join(root, '_碎片'));
+});
+
+test('碎片单例：不同 root 返回不同对象、互不串队（V74）', async () => {
+  const rootA = await mkTmp();
+  const rootB = await mkTmp();
+  const storeA = frag.getFragmentStore(rootA);
+  const storeB = frag.getFragmentStore(rootB);
+  assert.notEqual(storeA, storeB, '不同书架根目录不能共用一个 store');
+  assert.equal(storeA.dir, path.join(rootA, '_碎片'));
+  assert.equal(storeB.dir, path.join(rootB, '_碎片'));
+  assert.equal(frag.getFragmentStore(rootA), storeA, '再取一次仍是原来那条');
+  assert.equal(frag.getFragmentStore(rootB), storeB, '同一 key 命中缓存，不会新建');
+  // 两个 root 各自并发新建：序号各从 1 开始，内容只落在自己的 _碎片 里（不串队、不串目录）
+  const now = new Date(2026, 9, 31, 12);
+  const [a, b] = await Promise.all([storeA.create('书架甲', { now }), storeB.create('书架乙', { now })]);
+  assert.equal(a.name, '2026-10-31-1.txt');
+  assert.equal(b.name, '2026-10-31-1.txt');
+  assert.equal(await fs.readFile(a.path, 'utf8'), '书架甲');
+  assert.equal(await fs.readFile(b.path, 'utf8'), '书架乙');
+  assert.deepEqual(await readRoot(rootA), ['_碎片']);
+  assert.deepEqual(await readRoot(rootB), ['_碎片']);
+});
+
+test('碎片单例：同 root 并发两次 create 串行、序号不撞、两份内容都保留（V74）', async () => {
+  const root = await mkTmp();
+  const now = new Date(2026, 9, 31, 12);
+  // 模拟两个 IPC 同时到达：各自 getFragmentStore（修复前 = 各自写队列）后同时 create
+  const [first, second] = await Promise.all([
+    frag.getFragmentStore(root).create('并发甲', { now }),
+    frag.getFragmentStore(root).create('并发乙', { now })
+  ]);
+  assert.notEqual(first.name, second.name, '同一天的两条碎片不能抢同一个文件名');
+  const listed = await frag.getFragmentStore(root).list();
+  assert.equal(listed.total, 2, '两条都要留在 _碎片 里');
+  assert.deepEqual(
+    listed.fragments.map((item) => item.name).sort(),
+    [first.name, second.name].sort()
+  );
+  const texts = await Promise.all([
+    frag.getFragmentStore(root).read(first.name),
+    frag.getFragmentStore(root).read(second.name)
+  ]);
+  assert.deepEqual(texts.map((item) => item.text).sort(), ['并发甲', '并发乙'].sort(), '两份正文都要保留');
+});
