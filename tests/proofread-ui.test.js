@@ -1000,3 +1000,48 @@ test('多份词表：容器 / 添加按钮在 index.html，设置页保留单份
   // 不新增图片 / 字体
   assert.equal(/<img|@font-face/.test(moduleCode), false);
 });
+
+// ---------- P6/V52：设置页与校对面板同源 ----------
+// 1.7.0 F3 之后面板用 lists.length > 1 猜多份，而配置里的 proofreadWordlists 才是唯一事实：
+// 只挂 1 份也是多份列表（旧单份路径已不参与校对），面板要按多份渲染、旧按钮收起；
+// 但 multi === false 的旧单份用户（words-info 没标 multi 为真）一个字都不变。
+test('multi=true + lists=1 → 逐份行可见、旧「选择词表…」隐藏（V52）', async () => {
+  const dom = makeDocument();
+  const ctx = build({
+    dom,
+    wordInfo: {
+      ok: true, multi: true, configured: true, total: 8, count: 8, name: '词表.txt',
+      lists: [{ ok: true, count: 8, error: '', truncated: false }]
+    }
+  });
+  await ctx.ui.refreshProofreadWordList();
+  assert.equal(
+    dom.map.get('proofread-wordlists').classList.contains('hidden'),
+    false,
+    '配置里有 proofreadWordlists 就算多份事实，1 份也要逐份列'
+  );
+  assert.equal(dom.map.get('proofread-wordlists').children.length, 1);
+  assert.equal(dom.map.get('proofread-wordlist-text').textContent, '校对词表：共 1 份，合计 8 个词');
+  assert.equal(dom.map.get('proofread-wordlists-note').classList.contains('hidden'), false);
+  assert.equal(
+    dom.map.get('btn-proofread-pick').classList.contains('hidden'),
+    true,
+    '多份事实下旧单份路径不参与校对，按钮必须收起'
+  );
+});
+
+test('multi=false + lists=1 → 旧按钮仍在（旧单份用户不变，V52）', async () => {
+  const dom = makeDocument();
+  const ctx = build({
+    dom,
+    wordInfo: {
+      ok: true, multi: false, configured: true, total: 8, count: 8, name: '词表.txt',
+      lists: [{ ok: true, count: 8, error: '', truncated: false }]
+    }
+  });
+  await ctx.ui.refreshProofreadWordList();
+  assert.equal(dom.map.get('proofread-wordlist-text').textContent, '校对词表：词表.txt（8 个词）');
+  assert.equal(dom.map.get('proofread-wordlists').classList.contains('hidden'), true);
+  assert.equal(dom.map.get('proofread-wordlists').children.length, 0);
+  assert.equal(dom.map.get('btn-proofread-pick').classList.contains('hidden'), false, '旧单份用户保留「选择词表…」');
+});

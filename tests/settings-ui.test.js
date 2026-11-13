@@ -1084,3 +1084,51 @@ test('打开设置：三份台账读取并发发起（不串行等）', async ()
   assert.equal(ctx.state.proofreadWordsInfo.ok, true);
   assert.equal(ctx.state.logInfo.files.length, 2);
 });
+
+// ---------- P6/V52：设置页与校对面板同源（proofreadWordlists 是唯一事实） ----------
+// 1.7.0 F3 之后配置里可能只有 proofreadWordlists（旧单份路径空着），设置页却只看旧字段：
+// 结果「设置显示未设置、面板显示 N 份」。多份时状态行报份数 / 合计词数，单份插槽整排收起。
+test('multi=true → 状态行报 N 份 / 合计 M 词、选择按钮隐藏（V52）', async () => {
+  const ctx = build({
+    view: 'shelf', bookId: null,
+    config: { booksRoot: '/书库', proofreadWordlists: ['/词表/甲.txt', '/词表/乙.txt'] },
+    proofreadInfo: {
+      ok: true, multi: true, total: 27, count: 27,
+      lists: [{ ok: true, count: 12 }, { ok: true, count: 15 }]
+    }
+  });
+  await ctx.ui.openSettings();
+  assert.equal(ctx.calls.proofreadWordsInfo, 1, '配了多份词表时，旧单份路径为空也要读 words-info');
+  assert.equal(
+    ctx.dom.map.get('settings-proofread-status').textContent,
+    '已在校对面板配置 2 份词表（合计 27 词）'
+  );
+  assert.equal(ctx.dom.map.get('settings-proofread-path').classList.contains('hidden'), true, '只读路径框收起（不删 DOM）');
+  assert.equal(ctx.dom.map.get('btn-pick-proofread').classList.contains('hidden'), true, '「选择…」收起（不删 DOM）');
+  assert.equal(ctx.dom.map.get('btn-clear-proofread').classList.contains('hidden'), true, '「清除」收起（不删 DOM）');
+});
+
+test('multi=true 保存设置不回写 proofreadWordsPath（V52）', async () => {
+  const ctx = build({
+    view: 'shelf', bookId: null,
+    config: { booksRoot: '/书库', proofreadWordsPath: '/旧/单份.txt', proofreadWordlists: ['/词表/甲.txt', '/词表/乙.txt'] },
+    proofreadInfo: {
+      ok: true, multi: true, total: 27, count: 27,
+      lists: [{ ok: true, count: 12 }, { ok: true, count: 15 }]
+    }
+  });
+  await ctx.ui.openSettings();
+  // 草稿里有值（旧路径框被藏起来之前填的）也不能写回：多份时 proofreadWordsPath 是历史插槽
+  ctx.state.proofreadWordsDraft = '/词表/不该写回的旧单份.txt';
+  await ctx.ui.saveSettings();
+  assert.equal(ctx.calls.setConfig.length, 1);
+  const patch = ctx.calls.setConfig[0];
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(patch, 'proofreadWordsPath'),
+    false,
+    '多份时保存设置不能把旧单份字段清掉 / 覆盖掉'
+  );
+  assert.equal(patch.booksRoot, '/书库');
+  assert.equal(patch.sensitiveWordsPath, '');
+  assert.deepEqual(ctx.calls.toast, [['设置已保存（全局默认）', undefined]]);
+});

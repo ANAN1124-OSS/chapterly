@@ -474,12 +474,48 @@
     return state.sensitiveWordsInfo;
   }
 
+  // 1.7.1 P6（V52）：设置页与校对面板同源——配置里只要有 proofreadWordlists（哪怕只 1 份），
+  // 旧单份路径框就不再是事实来源。优先看 words-info 回包的 multi（主进程按配置判定），
+  // 还没读到时回落全局配置的数组长度。
+  function proofreadSettingsMulti() {
+    const info = state.proofreadWordsInfo;
+    if (info && typeof info.multi === 'boolean') return info.multi;
+    return (
+      Array.isArray(state.globalConfig && state.globalConfig.proofreadWordlists) &&
+      state.globalConfig.proofreadWordlists.length > 0
+    );
+  }
+
   // 设置弹层里的校对词表状态（未设置 / N 个词 / 文件不存在 / 编码异常都直说）
   function renderProofreadSettings() {
     const pathEl = $('settings-proofread-path');
     if (pathEl) pathEl.value = state.proofreadWordsDraft || '';
     const status = $('settings-proofread-status');
     if (!status) return;
+    const multi = proofreadSettingsMulti();
+    // 多份时单份插槽（只读路径 / 选择 / 清除）整排收起：只切 .hidden 类、不删 DOM，a11y 目标数不变。
+    if (pathEl) pathEl.classList.toggle('hidden', multi);
+    const pickBtn = $('btn-pick-proofread');
+    if (pickBtn) pickBtn.classList.toggle('hidden', multi);
+    const clearBtn = $('btn-clear-proofread');
+    if (clearBtn) clearBtn.classList.toggle('hidden', multi);
+    if (multi) {
+      const info = state.proofreadWordsInfo;
+      if (!info) {
+        status.textContent = '正在读取词表…';
+        status.className = 'muted small';
+        return;
+      }
+      const lists = Array.isArray(info.lists) ? info.lists : [];
+      const configured = Array.isArray(state.globalConfig && state.globalConfig.proofreadWordlists)
+        ? state.globalConfig.proofreadWordlists.length
+        : 0;
+      const count = configured || lists.length;
+      const total = Number.isFinite(info.total) ? info.total : 0;
+      status.textContent = `已在校对面板配置 ${count} 份词表（合计 ${total} 词）`;
+      status.className = info.ok === false ? 'muted small warn' : 'muted small';
+      return;
+    }
     if (!state.proofreadWordsDraft) {
       status.textContent = '未设置：校对时只跑内置的五条规则（词表是可选的）';
       status.className = 'muted small';
@@ -497,7 +533,8 @@
 
   // 打开设置时按已保存的路径读一次校对词表状态（只读，不复制词表）
   async function refreshProofreadSettingsInfo() {
-    if (!state.proofreadWordsDraft) {
+    // 多份列表也走 words-info：旧单份路径为空（V52 的典型现场）时仍要读回份数与合计词数。
+    if (!state.proofreadWordsDraft && !proofreadSettingsMulti()) {
       state.proofreadWordsInfo = null;
       renderProofreadSettings();
       return null;
@@ -860,7 +897,9 @@
         chapterTemplate: $('settings-chapter-template').value,
         exportConversion: $('settings-export-conversion').value,
         sensitiveWordsPath: (state.sensitiveWordsDraft || '').trim(),
-        proofreadWordsPath: (state.proofreadWordsDraft || '').trim()
+        // 1.7.1 P6（V52）：多份词表是唯一事实——保存时不回写旧单份路径，避免把历史字段清掉。
+        // 判定优先 words-info 的 multi（主进程按配置算），没读到时回落全局配置的数组长度。
+        ...(proofreadSettingsMulti() ? {} : { proofreadWordsPath: (state.proofreadWordsDraft || '').trim() })
       });
       state.globalConfig = cfg;
       state.config = effectiveConfig();

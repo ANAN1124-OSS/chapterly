@@ -1612,6 +1612,21 @@ module.exports = async function group46Proofread(t) {
     await exec('window.__cwTest.proofreadWordListText()')
   );
   await exec('window.__cwTest.closeProofreadPanel()');
+  // 46m. 多份事实只看配置（1.7.1 P6 / V52）：只挂 1 份词表也是「多份列表」——
+  // 逐份行照常列 1 条、旧「选择词表…」收起；设置页同一口径见第 73 组尾部。
+  await exec(`window.__cwTest.setProofreadWordlists(${JSON.stringify([pfMultiA])})`);
+  await exec('window.__cwTest.openProofreadPanel()');
+  await waitFor("window.__cwTest.proofreadWordListText().includes('共 1 份')");
+  check(
+    '校对：配置 1 份多份词表时面板逐份列出、旧「选择词表…」隐藏（V52 同源）',
+    (await exec('window.__cwTest.proofreadWordListText()')) === '校对词表：共 1 份，合计 1 个词' &&
+      (await exec("document.getElementById('proofread-wordlists').classList.contains('hidden')")) === false &&
+      (await exec("document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row').length")) === 1 &&
+      (await exec("document.getElementById('btn-proofread-pick').classList.contains('hidden')")) === true,
+    { listText: await exec('window.__cwTest.proofreadWordListText()') }
+  );
+  await exec('window.__cwTest.closeProofreadPanel()');
+  await exec('window.__cwTest.setProofreadWordlists([])');
   // 收尾顺序与 46k 一致：先落盘、回书架，再删书——带着编辑态直接删书会把状态留给下一组。
   await exec('window.__cwTest.save()');
   await exec('window.__cwTest.backToShelf()');

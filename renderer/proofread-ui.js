@@ -126,8 +126,9 @@
   function renderProofreadWordList() {
     const info = state.proofreadWordList;
     const lists = proofreadListsOf(info);
-    // 两份以上才逐份列；单份 / 未配置沿用旧文案（老断言一个字都不用改）
-    const multi = lists.length > 1;
+    // 1.7.1 P6（V52）：多份事实由主进程按配置里的 proofreadWordlists 判定（multi），不再只看 lists 数量——
+    // 只挂 1 份也是多份列表（旧单份路径已不参与校对）。multi === false 的旧单份用户仍走旧文案 / 旧按钮。
+    const multi = Boolean(info && info.multi === true) || lists.length > 1;
     const el = $('proofread-wordlist-text');
     if (el) {
       el.textContent = multi ? proofreadListsSummaryText(info) : proofreadWordListText(info);
@@ -391,9 +392,14 @@
     return next;
   }
 
-  // 添加 / 移除：主进程负责落盘，并把最新 info 一起回给渲染层；这里只做「换成新 info → 重画 → 重跑」
+  // 添加 / 移除：主进程负责落盘，并把最新 info 一起回给渲染层；这里只做「换成新 info → 重画 → 重跑」。
+  // 1.7.1 P6（V52）：回包是按配置重读的 lists——列表非空即配置里挂了 proofreadWordlists（哪怕只 1 份），
+  // 把多份事实一起写回；移除到 0 份就回到旧单份 / 未配置样式。
   function applyProofreadWordListInfo(info) {
-    if (info && typeof info === 'object') state.proofreadWordList = info;
+    if (info && typeof info === 'object') {
+      const lists = proofreadListsOf(info);
+      state.proofreadWordList = lists.length ? { ...info, multi: true } : info;
+    }
     renderProofreadWordList();
     return state.proofreadWordList;
   }
@@ -620,7 +626,12 @@
         };
       }
       state.proofread = payload;
-      if (payload.wordList) state.proofreadWordList = payload.wordList;
+      if (payload.wordList) {
+        // 1.7.1 P6（V52）：text / book 校对回包只描述这一轮词条（不带 multi）；
+        // 保留 words-info 刚确认的多份事实，别让一次校对把面板打回旧单份样式。
+        const multi = Boolean(state.proofreadWordList && state.proofreadWordList.multi === true);
+        state.proofreadWordList = multi ? { ...payload.wordList, multi: true } : payload.wordList;
+      }
       renderProofreadWordList();
       renderProofreadRules();
       renderProofreadSummary();

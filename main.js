@@ -1683,9 +1683,12 @@ function registerIpc() {
   });
 
   // 校对词表状态（只读，1.7.0 F3b2）：多份 lists + total，单份补齐旧字段；绝不带路径与词表正文
+  // 1.7.1 P6（V52）：多份事实只看配置里的 proofreadWordlists（哪怕只 1 份），渲染层不再靠 lists.length 猜；
+  // multi 是新增的可选布尔，其余字段一个不动，旧单份用户恒为 false（行为不变）。
   handle('proofread:words-info', async () => {
     const cfg = await getConfig();
-    return (await readProofreadWordlistForRequest(cfg)).wordList;
+    const wordList = (await readProofreadWordlistForRequest(cfg)).wordList;
+    return { ...wordList, multi: hasProofreadWordlists(cfg) };
   });
 
   // 选词表（校对 / 敏感词共用）：只允许通过系统文件对话框选，渲染层不能自己指定路径去读任意文件。

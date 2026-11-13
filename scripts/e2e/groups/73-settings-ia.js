@@ -276,4 +276,30 @@ module.exports = async function group73SettingsIa(t) {
     '设置信息架构：测完没有留下别的弹层',
     (await exec("document.querySelectorAll('.backdrop:not(.hidden)').length")) === 0
   );
+
+  // ---------- ⑩ 多份校对词表：设置页与校对面板同源（1.7.1 P6 / V52） ----------
+  // 面板侧的多份列表由主进程按配置里的 proofreadWordlists 判定（第 46 组尾部另有一条）；
+  // 设置侧同一口径：状态行报份数 / 合计词数，旧单份路径框与选择 / 清除整排收起（只切 .hidden，不删 DOM）。
+  const pfSettingsDir = path.join(userData, '校对词表-设置同源');
+  await fs.mkdir(pfSettingsDir, { recursive: true });
+  const pfSettingsA = path.join(pfSettingsDir, '词表一.txt');
+  const pfSettingsB = path.join(pfSettingsDir, '词表二.txt');
+  await fs.writeFile(pfSettingsA, '甲词\n', 'utf8');
+  await fs.writeFile(pfSettingsB, '乙词\n乙词二\n', 'utf8');
+  await exec(`window.__cwTest.setProofreadWordlists(${JSON.stringify([pfSettingsA, pfSettingsB])})`);
+  await exec('window.__cwTest.openSettings()');
+  await waitFor('window.__cwTest.settingsOpen() === true');
+  await waitFor("document.getElementById('settings-proofread-status').textContent.includes('已在校对面板配置')");
+  check(
+    '设置信息架构：配了多份校对词表时「校对词表」行报份数与合计词数，单份路径 / 选择 / 清除收起（V52）',
+    (await exec("document.getElementById('settings-proofread-status').textContent")) ===
+      '已在校对面板配置 2 份词表（合计 3 词）' &&
+      (await exec("document.getElementById('settings-proofread-path').classList.contains('hidden')")) === true &&
+      (await exec("document.getElementById('btn-pick-proofread').classList.contains('hidden')")) === true &&
+      (await exec("document.getElementById('btn-clear-proofread').classList.contains('hidden')")) === true,
+    { status: await exec("document.getElementById('settings-proofread-status').textContent") }
+  );
+  await exec('window.__cwTest.closeSettings()');
+  await waitFor('window.__cwTest.settingsOpen() === false');
+  await exec('window.__cwTest.setProofreadWordlists([])');
 };
