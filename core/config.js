@@ -1,7 +1,6 @@
 // 配置读写：存在 Electron userData 目录，不污染小说文件夹。
 // 纯 Node，可在测试里传入临时目录。
 const fs = require('node:fs/promises');
-const fsSync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { writeJsonAtomic, stripBom } = require('./atomic');
@@ -226,9 +225,10 @@ function sanitizeLastBook(raw) {
 // 多份校对词表的条数上限（1.7.0 F3a）：面板上再多也读不完，超过的截断。
 const WORDLIST_MAX = 8;
 
-// 多份校对词表的路径清洗（1.7.0 F3a）：必须数组、最多 8 条、只留字符串、trim、绝对路径、
-// 路径必须存在、去重（Windows 下大小写与正反斜杠归一后算同一份；保留作者写的原字符串与顺序）。
-// 坏条目逐条丢掉、不抛错——词表被移走不会让应用起不来，日志由调用方决定记不记。
+// 多份校对词表的路径清洗（1.7.0 F3a；1.7.1 V51/V48）：必须数组、最多 8 条、只留字符串、trim、
+// 只收绝对路径、去重（Windows 下大小写与正反斜杠归一后算同一份；保留作者写的原字符串与顺序）。
+// 存在性不在写入时判——读不到时由读取侧的 GLOSSARY_MISSING 报给用户；这里只管形状，也不做同步
+// stat（断开的 UNC / 网络盘不再卡主进程的配置写路径）。坏条目逐条丢掉、不抛错。
 function sanitizeWordlistPaths(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -239,13 +239,6 @@ function sanitizeWordlistPaths(raw) {
     const trimmed = item.trim();
     if (!trimmed || trimmed.length > 1000) continue;
     if (!path.isAbsolute(trimmed)) continue;
-    let exists = false;
-    try {
-      exists = fsSync.existsSync(trimmed);
-    } catch {
-      exists = false;
-    }
-    if (!exists) continue;
     const key = process.platform === 'win32' ? trimmed.replace(/\//g, '\\').toLowerCase() : trimmed;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -330,8 +323,9 @@ function sanitize(raw) {
   const proofreadWordsPath =
     typeof cfg.proofreadWordsPath === 'string' ? cfg.proofreadWordsPath.trim() : '';
   cfg.proofreadWordsPath = proofreadWordsPath.length > 1000 ? '' : proofreadWordsPath;
-  // 多份校对词表（1.7.0 F3a）：见 sanitizeWordlistPaths 的口径——数组 / 最多 8 条 / 只留字符串 /
-  // trim / 绝对路径 / 必须存在 / 去重（Windows 大小写与正反斜杠归一）。坏条目逐条丢弃、不抛错。
+  // 多份校对词表（1.7.0 F3a；1.7.1 V51）：见 sanitizeWordlistPaths 的口径——数组 / 最多 8 条 /
+  // 只留字符串 / trim / 绝对路径 / 去重（Windows 大小写与正反斜杠归一）；不判存在性（读不到由
+  // 读取侧报 GLOSSARY_MISSING）。坏条目逐条丢弃、不抛错。
   // 旧配置没有这个键 = []，单份 proofreadWordsPath 仍按上面那套旧逻辑，行为不变。
   cfg.proofreadWordlists = sanitizeWordlistPaths(cfg.proofreadWordlists);
   // 导出简繁转换：只认 '', 's2t', 't2s'；旧配置没有这个键 / 手改坏了都按「不转换」，

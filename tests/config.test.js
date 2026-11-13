@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createConfigStore, sanitize, sanitizeLastBook, DEFAULTS } = require('../core/config');
 const { writeJsonAtomic } = require('../core/atomic');
+const { readGlossaryFile, readGlossaryFiles } = require('../core/glossary');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -1178,7 +1179,7 @@ test('多份校对词表配置：旧配置没有该字段 = 空数组，单份�
   assert.equal(reopened.proofreadWordsPath, 'D:\\词表\\旧单份.txt');
 });
 
-test('多份校对词表清洗：非数组 / 超 8 条 / 相对路径 / 不存在 / 重复都丢弃，写盘同样清洗', async () => {
+test('多份校对词表清洗：非数组 / 超 8 条 / 相对路径 / 重复都丢弃，不存在路径保留（V51），写盘同样清洗', async () => {
   const dir = await mkTmp();
   const files = [];
   for (let i = 1; i <= 10; i += 1) {
@@ -1193,18 +1194,20 @@ test('多份校对词表清洗：非数组 / 超 8 条 / 相对路径 / 不存�
   assert.deepEqual(sanitize({ proofreadWordlists: { 0: 'D:\\x.txt' } }).proofreadWordlists, []);
   // 超 8 条：留前 8 条，顺序不变
   assert.deepEqual(sanitize({ proofreadWordlists: files }).proofreadWordlists, files.slice(0, 8));
-  // 相对路径 / 不存在 / 非字符串 / 空串：逐条丢掉，其它照留
-  const dirty = [files[0], '词表相对.txt', path.join(dir, '没有这个文件.txt'), 123, '', '   ', null, files[1]];
-  assert.deepEqual(sanitize({ proofreadWordlists: dirty }).proofreadWordlists, [files[0], files[1]]);
+  // 相对路径 / 非字符串 / 空串：逐条丢掉，其它照留；不存在的绝对路径保留（V51：清洗不判存在性，
+  // 读不到由读取侧的 GLOSSARY_MISSING 报给用户）
+  const missing = path.join(dir, '没有这个文件.txt');
+  const dirty = [files[0], '词表相对.txt', missing, 123, '', '   ', null, files[1]];
+  assert.deepEqual(sanitize({ proofreadWordlists: dirty }).proofreadWordlists, [files[0], missing, files[1]]);
   // 重复：Windows 下大小写与正反斜杠归一后算同一份
   const dup = [files[0], files[0], files[0].toUpperCase(), files[0].replace(/\\/g, '/')];
   assert.deepEqual(sanitize({ proofreadWordlists: dup }).proofreadWordlists, [files[0]]);
   // 保存路径同样清洗（set 走同一个 sanitize）
   const store = createConfigStore(dir);
   await store.set({ proofreadWordlists: dirty });
-  assert.deepEqual((await createConfigStore(dir).get()).proofreadWordlists, [files[0], files[1]]);
+  assert.deepEqual((await createConfigStore(dir).get()).proofreadWordlists, [files[0], missing, files[1]]);
   const raw = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
-  assert.deepEqual(raw.proofreadWordlists, [files[0], files[1]], '落盘的就是清洗后的两条');
+  assert.deepEqual(raw.proofreadWordlists, [files[0], missing, files[1]], '落盘的就是清洗后的三条');
   // 空数组 = 清空，落盘为空数组
   await store.set({ proofreadWordlists: [] });
   assert.deepEqual((await createConfigStore(dir).get()).proofreadWordlists, []);
@@ -1223,5 +1226,89 @@ test('多份校对词表清洗：合法数组保留顺序与写法，8 条正好
   const store = createConfigStore(dir);
   await store.set({ proofreadWordlists: shuffled });
   assert.deepEqual((await createConfigStore(dir).get()).proofreadWordlists, shuffled, '写盘读回顺序不变');
+});
+
+// 1.7.1 P2 / V51：配置清洗只看形状，不再按「文件现在能不能 stat 到」静默删词表。
+// U 盘 / 网络盘 / 权限抖动 / 文件临时被占用时，删掉的是作者的设置而不是坏数据；读不到应由读取侧
+// 的 GLOSSARY_MISSING 报给用户（最后一条锚点）。V48：写入路径不再带同步 stat，断开的 UNC 不卡主进程。
+test('写入 [存在, 不存在] 两条词表 → 两条都保留（V51）', async () => {
+  const dir = await mkTmp();
+  const existing = path.join(dir, '存在.txt');
+  const missing = path.join(dir, '不存在.txt');
+  await fs.writeFile(existing, '错词\n', 'utf8');
+  assert.equal(
+    await fs.stat(missing).then(() => true, () => false),
+    false,
+    '前置：这条路径确实不存在'
+  );
+  const store = createConfigStore(dir);
+  const saved = await store.set({ proofreadWordlists: [existing, missing] });
+  assert.deepEqual(saved.proofreadWordlists, [existing, missing], '写入返回里两条都在');
+  assert.deepEqual((await store.get()).proofreadWordlists, [existing, missing], '内存 cache 里两条都在');
+  const raw = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.deepEqual(raw.proofreadWordlists, [existing, missing], '落盘的就是两条');
+});
+
+test('改无关字段后不存在的词表仍在（V51）', async () => {
+  const dir = await mkTmp();
+  const existing = path.join(dir, '存在.txt');
+  const missing = path.join(dir, '不存在.txt');
+  await fs.writeFile(existing, '错词\n', 'utf8');
+  const store = createConfigStore(dir);
+  await store.set({ proofreadWordlists: [existing, missing] });
+  // 设置页每次保存都会整份回传配置（改主题 / 拖分隔条 / 存别的字段），以前每次都会重跑清洗、
+  // 把不存在的那条当成坏数据扔掉；现在无关字段的写入不能顺手删掉词表。
+  const after = await store.set({ dailyGoal: 1500, editorPaper: 'night' });
+  assert.deepEqual(after.proofreadWordlists, [existing, missing], '改无关字段不能顺手删词表');
+  await store.set({ dailyGoal: 1600 });
+  assert.deepEqual((await store.get()).proofreadWordlists, [existing, missing], '多次无关写入后仍在');
+  const raw = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.deepEqual(raw.proofreadWordlists, [existing, missing], '落盘的两条都还在');
+});
+
+test('新 store load() 后仍在（V51）', async () => {
+  const dir = await mkTmp();
+  const existing = path.join(dir, '存在.txt');
+  const missing = path.join(dir, '不存在.txt');
+  await fs.writeFile(existing, '错词\n', 'utf8');
+  const store = createConfigStore(dir);
+  await store.set({ proofreadWordlists: [existing, missing] });
+  // 重启 = 新实例 + load()；这里重跑的是同一个 sanitize，不能把上次存下的路径删掉。
+  const reopened = createConfigStore(dir);
+  await reopened.load();
+  assert.deepEqual((await reopened.get()).proofreadWordlists, [existing, missing], '重启后不存在的词表仍在');
+  const raw = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.deepEqual(raw.proofreadWordlists, [existing, missing], '磁盘上的两条也没被改写');
+});
+
+test('不存在路径读取时报 GLOSSARY_MISSING 文案（V51/V48）', async () => {
+  const dir = await mkTmp();
+  const missing = path.join(dir, '不存在.txt');
+  assert.equal(
+    await fs.stat(missing).then(() => true, () => false),
+    false,
+    '前置：这条路径确实不存在'
+  );
+  // 读取侧对「配置里有、文件读不到」的路径必须给出可辨认的码：GLOSSARY_MISSING
+  // （core/glossary.js:201；不是静默当「没配置」GLOSSARY_NOT_CONFIGURED）。
+  const one = await readGlossaryFile(missing);
+  assert.equal(one.ok, false);
+  assert.equal(one.configured, true);
+  assert.equal(one.code, 'GLOSSARY_MISSING');
+  assert.match(one.message, /词表文件不存在/, '单份读取的文案要说明文件不存在');
+  // 多份词表把码翻成界面文案（core/glossary.js 的 glossaryErrorText，GLOSSARY_MISSING 分支，
+  // 约 :246）：带路径的长文案留在主进程，界面只拿这一句。
+  const bundle = await readGlossaryFiles([missing]);
+  assert.equal(bundle.ok, false);
+  assert.equal(bundle.lists.length, 1);
+  assert.equal(bundle.lists[0].ok, false);
+  assert.equal(bundle.lists[0].error, '词表文件不存在（可能被移动或删除了，请重新选择）');
+  // 全链路：配置层保留的不存在路径，读取时仍能报 MISSING，而不是在写入时被删到「未配置」。
+  const store = createConfigStore(dir);
+  await store.set({ proofreadWordlists: [missing] });
+  const cfg = await store.get();
+  assert.deepEqual(cfg.proofreadWordlists, [missing], '配置层不删不存在的路径（V51）');
+  const chain = await readGlossaryFile(cfg.proofreadWordlists[0]);
+  assert.equal(chain.code, 'GLOSSARY_MISSING', '配置保留 → 读取报 MISSING 的链路可达');
 });
 
