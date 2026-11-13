@@ -50,6 +50,13 @@
   }
 
   function summarizeImport(imported, skipped, failed) {
+    // V45（1.7.2 D3）：主进程的导入结果只留一套「跳过」表示 —— skipped[]，每条
+    // { source(相对名), reason, code, tooLarge }（整源跳过只有 source / reason）。
+    // 汇总口径一字未改：跳过按 reason 去重，失败按 message 依序（不去重），用户可见文案不变。
+    const uniqueReasons = (items, key) =>
+      [...new Set(items.map((item) => item[key]))].slice(0, 2).join('；');
+    const firstMessages = (items, key) =>
+      items.map((item) => item[key]).slice(0, 2).join('；');
     const messages = [];
     if (imported.length) {
       const titles = imported.map((b) => b.title);
@@ -61,12 +68,10 @@
       );
     }
     if (skipped.length) {
-      const reasons = [...new Set(skipped.map((s) => s.reason))].slice(0, 2).join('；');
-      messages.push(`跳过 ${skipped.length} 个（${reasons}）`);
+      messages.push(`跳过 ${skipped.length} 个（${uniqueReasons(skipped, 'reason')}）`);
     }
     if (failed.length) {
-      const reasons = failed.map((f) => f.message).slice(0, 2).join('；');
-      messages.push(`${failed.length} 个失败（${reasons}）`);
+      messages.push(`${failed.length} 个失败（${firstMessages(failed, 'message')}）`);
     }
     return messages.join('。') || '没有可导入的内容';
   }

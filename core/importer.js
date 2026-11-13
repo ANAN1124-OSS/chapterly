@@ -41,6 +41,20 @@ function isInside(parent, child) {
   return c === p || c.startsWith(`${p}${path.sep}`);
 }
 
+// V57（1.7.2 D3）：章节文件与超限文件都按「相对书目录的路径」比较 —— 用 basename 会把
+// 同名不同目录的另一个文件一起判成丢失（子目录里的章被删掉 / 整源被误判成「全部超限」）。
+// Windows 上大小写与正反斜杠都归一，其余平台保持逐字比较。
+function relativeKey(relativePath) {
+  const normalized = path.normalize(String(relativePath || ''));
+  return path.sep === '\\' ? normalized.toLowerCase() : normalized;
+}
+
+// V69（1.7.2 D3）：回给渲染层的来源只用最后一段（相对名），作者本机的绝对路径
+// （盘符 / 用户目录）不出主进程。拿不到最后一段（盘符根等）时回省略号，绝不回退成绝对路径。
+function relativeSourceLabel(sourceDir) {
+  return path.basename(String(sourceDir || '')) || '…';
+}
+
 async function isDirectory(p) {
   try {
     return (await fs.stat(p)).isDirectory();
@@ -91,6 +105,8 @@ async function analyzeSource(sourceDir) {
 // V25（1.6.1 R2）：文件夹形态导入以前只做「原样复制」，绕过了单本 txt 的 128 MB 闸门，
 // 129 MB 的畸形 txt 会被整个抄进书库。复制前逐 txt 取大小过闸门：超限的单个文件跳过、
 // 记进结果，其余文件照常导入（不中断整次导入）。
+// V57（1.7.2 D3）：清单由调用方给 —— 现成书形态传 listTxtFilesDeep() 的递归清单（fs.cp 递归复制），
+// 章节目录形态仍只传顶层清单（copyAsTexts 也只复制顶层）。
 async function collectOversizedTxt(sourceDir, txtFiles) {
   const oversized = [];
   for (const file of txtFiles || []) {
@@ -103,10 +119,45 @@ async function collectOversizedTxt(sourceDir, txtFiles) {
   return oversized;
 }
 
-// 结果对象只加可选字段（没有超限文件时字段不出现）：imported / kind / folder / path / title / chapters 语义不变
-function withSkippedFiles(result, oversized) {
+// V57（1.7.2 D3）：现成书形态是 fs.cp 递归整目录复制，子目录里的 .txt 也在复制范围内，
+// 所以大小闸门必须递归看一遍（否则子目录里的 129 MB txt 绕过闸门被整个抄进书库）。
+// 排除口径与 copyAsBook 的 filter 一致（`_trash` / `.` 前缀不进），只认 .txt（与
+// storage.listTxtFiles 同一条规则），不跟符号链接目录（避免环形链接把扫描拖死）。
+async function listTxtFilesDeep(dir, prefix = '') {
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const found = [];
+  for (const entry of entries) {
+    if (entry.name === storage.TRASH_DIR || entry.name.startsWith('.')) continue;
+    const rel = prefix ? path.join(prefix, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      found.push(...(await listTxtFilesDeep(path.join(dir, entry.name), rel)));
+    } else if (entry.isFile() && /\.txt$/i.test(entry.name)) {
+      found.push(rel);
+    }
+  }
+  return found.sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+}
+
+// V45（1.7.2 D3）：导入结果的「跳过」只留一套表示 —— skipped 数组，每条
+// { source(相对名), reason, code, tooLarge }。以前同一件事写三份（顶层 skipped[] /
+// 结果上的 skippedFiles / 结果上的 skippedTooLarge 计数），三处各取一份才对得上。
+// 没有超限文件时字段不出现：imported / kind / folder / path / title / chapters 语义不变。
+function withSkippedEntries(result, oversized) {
   if (!oversized.length) return result;
-  return { ...result, skippedTooLarge: oversized.length, skippedFiles: oversized };
+  return {
+    ...result,
+    skipped: oversized.map((entry) => ({
+      source: entry.file,
+      reason: entry.message,
+      code: entry.code,
+      tooLarge: true
+    }))
+  };
 }
 
 async function copyAsBook(sourceDir, target, oversized) {
@@ -140,11 +191,15 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
   const target = path.join(booksRoot, folder);
 
   try {
-    const oversized = await collectOversizedTxt(sourceDir, analysis.txtFiles);
-    const oversizedNames = new Set(oversized.map((entry) => path.basename(entry.file)));
+    // V57：现成书整目录 fs.cp 递归复制 → 闸门看递归清单；章节目录形态只复制顶层 txt → 只看顶层
+    const gateFiles =
+      analysis.kind === 'book' ? await listTxtFilesDeep(sourceDir) : analysis.txtFiles;
+    const oversized = await collectOversizedTxt(sourceDir, gateFiles);
+    // V57：按相对路径（不是 basename）判「哪一章会丢」，同名的其它目录章不被连坐
+    const oversizedKeys = new Set(oversized.map((entry) => relativeKey(entry.file)));
     const willLose =
       analysis.kind === 'book'
-        ? analysis.meta.chapters.filter((chapter) => oversizedNames.has(path.basename(chapter.file))).length
+        ? analysis.meta.chapters.filter((chapter) => oversizedKeys.has(relativeKey(chapter.file))).length
         : oversized.length;
     const totalTxt = analysis.kind === 'book' ? analysis.meta.chapters.length : analysis.txtFiles.length;
     if (totalTxt > 0 && willLose >= totalTxt) {
@@ -159,8 +214,8 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
       let meta = await storage.readBookMeta(target);
       if (oversized.length) {
         // 超限章节根本没复制进来：书目只保留真实存在的章节，不留下打不开的悬挂章节
-        const dropped = new Set(oversized.map((entry) => entry.file));
-        const kept = meta.chapters.filter((chapter) => !dropped.has(path.basename(chapter.file)));
+        const dropped = new Set(oversized.map((entry) => relativeKey(entry.file)));
+        const kept = meta.chapters.filter((chapter) => !dropped.has(relativeKey(chapter.file)));
         if (kept.length !== meta.chapters.length) {
           const lastOpenChapterId = kept.some((c) => c.id === meta.lastOpenChapterId)
             ? meta.lastOpenChapterId
@@ -172,7 +227,7 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
           );
         }
       }
-      return withSkippedFiles(
+      return withSkippedEntries(
         {
           imported: true,
           kind: 'book',
@@ -186,7 +241,7 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
     }
     await copyAsTexts(sourceDir, target, analysis.txtFiles, oversized);
     const rebuilt = await repair.rebuildFromFiles(target);
-    return withSkippedFiles(
+    return withSkippedEntries(
       {
         imported: true,
         kind: 'chapter-folder',
@@ -199,6 +254,9 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
     );
   } catch (err) {
     await fs.rm(target, { recursive: true, force: true }).catch(() => {});
+    // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 包成 IMPORT_FAILED 会把界面文案
+    // 从「…已跳过」改成「复制失败：…」并把错误码一起丢掉。这里原样放行，由 importFolders 记进 skipped。
+    if (err && err.code === 'FILE_TOO_LARGE') throw err;
     throw new storage.StorageError('IMPORT_FAILED', `复制失败：${errorText.describeForUi(err).message}`);
   }
 }
@@ -427,7 +485,6 @@ async function importFolders(booksRoot, sources, options = {}) {
   const imported = [];
   const skipped = [];
   const failed = [];
-  let skippedTooLarge = 0;
   const root = path.resolve(booksRoot);
   await fs.mkdir(root, { recursive: true });
   await cleanupStaleStaging(root);
@@ -437,21 +494,25 @@ async function importFolders(booksRoot, sources, options = {}) {
   let total = 0;
   for (const source of normalizeSources(sources)) {
     const sourceDir = path.resolve(source);
+    // V69：整源跳过的 source 也只回最后一段（相对名），不回本机绝对路径
     if (!(await isDirectory(sourceDir))) {
-      skipped.push({ source, reason: '不是文件夹' });
+      skipped.push({ source: relativeSourceLabel(sourceDir), reason: '不是文件夹' });
       continue;
     }
     if (isInside(root, sourceDir)) {
-      skipped.push({ source, reason: '已经在书架目录里了' });
+      skipped.push({ source: relativeSourceLabel(sourceDir), reason: '已经在书架目录里了' });
       continue;
     }
     if (isInside(sourceDir, root)) {
-      skipped.push({ source, reason: '不能导入包含书架目录的上级文件夹' });
+      skipped.push({ source: relativeSourceLabel(sourceDir), reason: '不能导入包含书架目录的上级文件夹' });
       continue;
     }
     const analysis = await analyzeSource(sourceDir);
     if (analysis.kind === 'nothing') {
-      skipped.push({ source, reason: '既没有可用的 书目.json，也没有 txt 文件' });
+      skipped.push({
+        source: relativeSourceLabel(sourceDir),
+        reason: '既没有可用的 书目.json，也没有 txt 文件'
+      });
       continue;
     }
     const items = analysis.kind === 'novels' ? analysis.files.length : 1;
@@ -473,30 +534,36 @@ async function importFolders(booksRoot, sources, options = {}) {
           const result = await importNovelFile(root, path.join(plan.sourceDir, file), { mode });
           imported.push(result);
         } catch (err) {
-          failed.push({ source: path.join(plan.sourceDir, file), message: errorText.describeForUi(err).message });
+          // V69：失败项同样只回相对名（以前是 path.join(plan.sourceDir, file) 的本机绝对路径）
+          failed.push({ source: file, message: errorText.describeForUi(err).message });
         }
         bump(file);
       }
     } else {
       try {
         const result = await importBookFolder(root, plan.sourceDir, plan.analysis);
-        // 文件夹里被闸门跳过的单个文件也计入 skipped（source / reason / code 与整源跳过同形）
-        for (const entry of result.skippedFiles || []) {
-          skipped.push({
-            source: path.join(plan.sourceDir, entry.file),
-            reason: entry.message,
-            code: entry.code
-          });
-        }
-        if (result.skippedTooLarge) skippedTooLarge += result.skippedTooLarge;
+        // V45：单个文件的跳过记录与整源跳过同形（source 相对 / reason / code / tooLarge），
+        // 一次摊进 skipped —— 不再从 skippedFiles / skippedTooLarge 两处各转一份。
+        for (const entry of result.skipped || []) skipped.push(entry);
         imported.push(result);
       } catch (err) {
-        failed.push({ source: plan.source, message: errorText.describeForUi(err).message });
+        const source = relativeSourceLabel(plan.sourceDir);
+        const described = errorText.describeForUi(err);
+        if (err && err.code === 'FILE_TOO_LARGE') {
+          // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 错误码保留、文案留在「已跳过」，
+          // 界面汇总显示「跳过 N 个（…）」而不是红色「N 个失败（复制失败：…）」。
+          skipped.push({ source, reason: described.message, code: err.code, tooLarge: true });
+        } else {
+          failed.push({ source, message: described.message });
+        }
       }
       bump(path.basename(plan.sourceDir));
     }
   }
 
+  // V45：顶层 skippedTooLarge 计数从唯一的那套表示（skipped[].tooLarge）派生，语义与改前相同：
+  // 有超限跳过时才出现这个字段（渲染层读的是 skipped，这里是主进程既有回包契约）。
+  const skippedTooLarge = skipped.filter((entry) => entry.tooLarge).length;
   return skippedTooLarge
     ? { imported, skipped, failed, skippedTooLarge }
     : { imported, skipped, failed };

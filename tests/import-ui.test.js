@@ -179,6 +179,38 @@ test('summarizeImport：跳过原因去重且最多 2 条，失败同样最多 2
   );
 });
 
+// V45/V50（1.7.2 D3）：主进程的导入结果收成一套 skipped[]（每条 { source(相对名), reason, code, tooLarge }），
+// 渲染层照旧只按 reason 汇总 —— 用户可见文案一个字不变；「全部超限」也显示为跳过，不再是红色失败。
+test('summarizeImport：统一后的 skipped[]（带 tooLarge）文案不变，全部超限显示为跳过（V45/V50）', () => {
+  const ui = importUi.create(makeHost().host);
+  const tooLarge = {
+    source: '003-巨大.txt',
+    reason: '《003-巨大》有 129 MB，超过单本导入上限 128 MB，已跳过',
+    code: 'FILE_TOO_LARGE',
+    tooLarge: true
+  };
+  assert.equal(
+    ui.summarizeImport([{ title: '甲' }], [tooLarge], []),
+    '已导入 1 本：甲。跳过 1 个（《003-巨大》有 129 MB，超过单本导入上限 128 MB，已跳过）'
+  );
+  // 同一套表示里同因跳过仍只列一次（旧去重口径）
+  assert.equal(
+    ui.summarizeImport([], [tooLarge, { ...tooLarge }], []),
+    '跳过 2 个（《003-巨大》有 129 MB，超过单本导入上限 128 MB，已跳过）'
+  );
+  // 「全部超限」的整源跳过：没有 failed 段，不会出现「复制失败」
+  const wholeSource = {
+    source: '全都超限',
+    reason: '《全都超限》里的文件全部超过单本导入上限 128 MB，已跳过',
+    code: 'FILE_TOO_LARGE',
+    tooLarge: true
+  };
+  assert.equal(
+    ui.summarizeImport([], [wholeSource], []),
+    '跳过 1 个（《全都超限》里的文件全部超过单本导入上限 128 MB，已跳过）'
+  );
+});
+
 test('importBooksFlow：state.importing 时立刻返回 { busy: true }，不打 IPC、不建 toast、不碰按钮', async () => {
   const { host, state, calls, toasts, els } = makeHost();
   const created = installDocument();

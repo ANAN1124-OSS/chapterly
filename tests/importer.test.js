@@ -339,7 +339,9 @@ test('文件夹导入：129 MB 稀疏文件跳过、其余 txt 照常导入，�
   assert.ok(res.skipped[0].reason.includes('003-巨大'), res.skipped[0].reason);
   assert.ok(!res.skipped[0].reason.includes(base), '提示里不该带本机目录');
   assert.equal(res.skippedTooLarge, 1);
-  assert.equal(res.imported[0].skippedTooLarge, 1);
+  // V45（1.7.2 D3）：结果里只留 skipped[] 一套表示（每条带 tooLarge），不再有 skippedFiles / 结果级计数
+  assert.deepEqual(res.imported[0].skipped.map((entry) => entry.source), ['003-巨大.txt']);
+  assert.equal(res.imported[0].skipped[0].tooLarge, true);
 
   const importedPath = res.imported[0].path;
   const files = (await storage.listTxtFiles(importedPath)).sort();
@@ -374,7 +376,8 @@ test('现成书文件夹导入：章节文件超限时跳过该章、其余章�
   assert.equal(res.skipped.length, 1);
   assert.equal(res.skipped[0].code, 'FILE_TOO_LARGE');
   assert.equal(res.skippedTooLarge, 1);
-  assert.equal(res.imported[0].skippedTooLarge, 1);
+  // V45（1.7.2 D3）：同一套表示 —— 被跳过的章以相对名记在结果的 skipped[] 里
+  assert.deepEqual(res.imported[0].skipped.map((entry) => entry.source), [sourceMeta.chapters[2].file]);
 
   const importedPath = res.imported[0].path;
   const files = await storage.listTxtFiles(importedPath);
@@ -474,4 +477,150 @@ test('b10：导入无标题长文（>6 万字）自动切片；有标题的正�
   const titledMeta = await storage.readBookMeta(titledRes.path);
   assert.equal(titledMeta.chapters.length, 2);
   assert.deepEqual(titledMeta.chapters.map((chapter) => chapter.name), ['第1章 开端', '第2章 继续']);
+});
+
+// V50（1.7.2 D3）：「一个能导入的文件都不剩」是**跳过**（FILE_TOO_LARGE +「已跳过」），不是复制失败。
+// 这条 StorageError 抛在 importBookFolder 的 try 里，被同函数 catch 无条件包成 IMPORT_FAILED
+// （文案前缀变成「复制失败：」、错误码丢成 IMPORT_FAILED），整源落进 failed 显示成红色失败。
+test('全部超限 → failed=0 / skipped=1 / code=FILE_TOO_LARGE / 文案含「已跳过」（V50）', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '全都超限');
+  await fs.mkdir(src);
+  const huge = path.join(src, '001-巨大.txt');
+  await fs.writeFile(huge, '');
+  // 稀疏文件：只把长度改到上限 +1，不真的写 128 MB 字节
+  await fs.truncate(huge, importer.MAX_IMPORT_BYTES + 1);
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+
+  assert.equal(res.imported.length, 0);
+  assert.equal(res.failed.length, 0, JSON.stringify(res.failed));
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].code, 'FILE_TOO_LARGE');
+  assert.ok(res.skipped[0].reason.includes('已跳过'), res.skipped[0].reason);
+  assert.ok(!res.skipped[0].reason.includes('复制失败'), res.skipped[0].reason);
+  assert.ok(!res.skipped[0].reason.includes(base), '提示里不该带本机目录');
+  // 一个能导入的文件都不剩时不留一本空书
+  assert.deepEqual(await fs.readdir(booksRoot), []);
+});
+
+// V57（1.7.2 D3）：文件夹形态导入是 fs.cp 递归复制，子目录里的 txt 也在复制范围内 ——
+// 只按顶层 listTxtFiles 过闸门时，子目录里的 129 MB txt 会被整个抄进书库（绕过 128 MB 闸门）。
+test('子目录里的超限 txt 也被 128 MB 闸门拦下（V57）', async () => {
+  const base = await mkTmp();
+  const externalRoot = path.join(base, '外部');
+  await fs.mkdir(externalRoot);
+  const created = await storage.createBook(externalRoot, '带附卷的书');
+  await storage.saveChapterText(created.path, created.meta.chapters[0].file, '第一章正文');
+  const subDir = path.join(created.path, '附卷');
+  await fs.mkdir(subDir);
+  const huge = path.join(subDir, '009-巨大.txt');
+  await fs.writeFile(huge, '');
+  await fs.truncate(huge, importer.MAX_IMPORT_BYTES + 1);
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [created.path]);
+
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].kind, 'book');
+  assert.equal(res.failed.length, 0, JSON.stringify(res.failed));
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].code, 'FILE_TOO_LARGE');
+  assert.equal(res.skipped[0].source, path.join('附卷', '009-巨大.txt'));
+  assert.ok(res.skipped[0].reason.includes('009-巨大'), res.skipped[0].reason);
+  assert.ok(!res.skipped[0].reason.includes(base), '提示里不该带本机目录');
+
+  const importedPath = res.imported[0].path;
+  await assert.rejects(
+    fs.access(path.join(importedPath, '附卷', '009-巨大.txt')),
+    '子目录里的超限文件不该被复制进来'
+  );
+  // 闸门内的章节照常导入、照常可读
+  const meta = await storage.readBookMeta(importedPath);
+  assert.equal(meta.chapters.length, 1);
+  assert.equal((await storage.loadChapterText(importedPath, meta.chapters[0].file)).text, '第一章正文');
+});
+
+// V69（1.7.2 D3）：回给渲染层的跳过 / 失败项只带相对名，不再把作者本机的绝对路径带出主进程
+// （渲染层只显示 reason，但绝对路径经 IPC 回到渲染层既无用又多泄露一份目录结构）。
+test('skipped[].source 只回相对名，不带本机路径（V69）', async () => {
+  const base = await mkTmp();
+  const booksRoot = path.join(base, '书架');
+
+  // ① 文件级跳过：相对源文件夹的路径
+  const src = path.join(base, '书目录');
+  await fs.mkdir(src);
+  await fs.writeFile(path.join(src, '001-开端.txt'), '第1章 开端\n\n正文。', 'utf8');
+  const huge = path.join(src, '002-巨大.txt');
+  await fs.writeFile(huge, '');
+  await fs.truncate(huge, importer.MAX_IMPORT_BYTES + 1);
+  const res = await importer.importFolders(booksRoot, [src]);
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].source, '002-巨大.txt');
+  assert.equal(path.isAbsolute(res.skipped[0].source), false, res.skipped[0].source);
+  assert.ok(!/[A-Za-z]:[\\/]/.test(res.skipped[0].source), res.skipped[0].source);
+  assert.ok(!res.skipped[0].source.includes(base), res.skipped[0].source);
+
+  // ② 整源跳过：只回文件夹名（这个来源根本不存在）
+  const res2 = await importer.importFolders(booksRoot, [path.join(base, '不存在的文件夹')]);
+  assert.equal(res2.skipped.length, 1);
+  assert.equal(res2.skipped[0].source, '不存在的文件夹');
+  assert.equal(path.isAbsolute(res2.skipped[0].source), false, res2.skipped[0].source);
+
+  // ③ 失败项同样不带本机路径（收藏夹里混着坏文件）
+  const mixed = path.join(base, '收藏夹');
+  await fs.mkdir(mixed);
+  await fs.writeFile(path.join(mixed, '好书.txt'), '第1章 开端\n\n正文。', 'utf8');
+  await fs.writeFile(path.join(mixed, '坏书.txt'), Buffer.from([0x00, 0x01, 0x02, 0xff]));
+  const res3 = await importer.importFolders(booksRoot, [mixed]);
+  assert.equal(res3.failed.length, 1, JSON.stringify(res3.failed));
+  assert.equal(res3.failed[0].source, '坏书.txt');
+  assert.equal(path.isAbsolute(res3.failed[0].source), false, res3.failed[0].source);
+});
+
+// V57（1.7.2 D3）：dropped / willLose 按「相对书目录的路径」比，不按 basename ——
+// 否则子目录里的 卷/002.txt 会把它同名的根目录章 002.txt 一起判成丢失：轻则书目把还在的章删掉，
+// 重则 willLose 满额把整源误判成「全部超限」。这份书目用手写 JSON 造（本应用的 assertChapterFile
+// 不许章节进子目录，但导入进来的外部文件夹可以是任意形状）。
+test('dropped / willLose 用相对名，同名不同目录的章不会被一起判成丢失（V57）', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '外部书');
+  await fs.mkdir(src);
+  await fs.writeFile(path.join(src, '002.txt'), '第1章 甲\n\n正文甲', 'utf8');
+  await fs.mkdir(path.join(src, '卷'));
+  const huge = path.join(src, '卷', '002.txt');
+  await fs.writeFile(huge, '');
+  await fs.truncate(huge, importer.MAX_IMPORT_BYTES + 1);
+  await fs.writeFile(
+    path.join(src, '书目.json'),
+    JSON.stringify({
+      version: 1,
+      id: 'b_external',
+      title: '外部书',
+      fileSeq: 2,
+      chapters: [
+        { id: 'ch_001', file: '002.txt', name: '甲', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'ch_002', file: '卷/002.txt', name: '乙', createdAt: '2026-01-01T00:00:01.000Z' }
+      ],
+      lastOpenChapterId: 'ch_001',
+      createdAt: '2026-01-01T00:00:00.000Z'
+    }),
+    'utf8'
+  );
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+  assert.equal(res.imported.length, 1, JSON.stringify({ skipped: res.skipped, failed: res.failed }));
+  assert.equal(res.imported[0].kind, 'book');
+  assert.equal(res.imported[0].chapters, 1, '只剩没超限的那章');
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].source, path.join('卷', '002.txt'));
+
+  const importedPath = res.imported[0].path;
+  await assert.rejects(fs.access(path.join(importedPath, '卷', '002.txt')), '超限章节不该被复制进来');
+  const meta = await storage.readBookMeta(importedPath);
+  assert.deepEqual(meta.chapters.map((c) => c.file), ['002.txt'], '同名的根目录章不能被一起删掉');
+  assert.ok(meta.chapters.some((c) => c.id === meta.lastOpenChapterId), '上次打开章节要落在仍在的章上');
+  assert.equal((await storage.loadChapterText(importedPath, '002.txt')).text, '第1章 甲\n\n正文甲');
 });
