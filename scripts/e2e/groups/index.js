@@ -1,4 +1,4 @@
-// E2E 场景的组索引（v0.9 B-7 起；2026-11-04 窗口把第 0–51 组也搬进来，现在 0–79 全部在本目录）。
+// E2E 场景的组索引（v0.9 B-7 起；2026-11-04 窗口把第 0–51 组也搬进来，现在 0–81 全部在本目录）。
 //
 // 以前所有组都挤在 scripts/e2e-scenario.js 那一个函数里（1.2 万行），改一组要在大函数里
 // 上下翻。现在按组拆到本目录：**只拆文件、不改断言**，顺序等于原文件里的执行顺序。
@@ -128,7 +128,7 @@ async function runGroups(t, ids) {
   }
 }
 
-// 从某一组号起的所有组（给「场景尾部那一批」用：idsFrom(60) = 60 → 72）。
+// 从某一组号起的所有组（给「场景尾部那一批」用：idsFrom(60) = 60 → 81）。
 const idsFrom = (from) => groups.filter((group) => group.id >= from).map((group) => group.id);
 
 module.exports = { groups, runGroups, idsFrom };

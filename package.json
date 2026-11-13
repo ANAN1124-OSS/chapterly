@@ -3,6 +3,7 @@
   "version": "1.7.0",
   "private": true,
   "description": "章回 / Chapterly - 整本保存、自动编号的 Windows 桌面纯文本写作工具",
+  "engines": { "node": ">=22" },
   "main": "main.js",
   "scripts": {
     "start": "node scripts/start.js",

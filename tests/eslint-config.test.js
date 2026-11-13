@@ -11,7 +11,9 @@
 //      （lint-gate 的 floating promise 检查 eslint 这套替代不了，删了就少一道闸）；
 //   ④ globals 按目录**内联**在 config 里，不引 `globals` 包，也不引任何 eslint 插件 / 共享配置包。
 //
-// CI（`.github/workflows/verify.yml`）属于下一轮 G1b，本锚点暂不要求。
+// CI（`.github/workflows/verify.yml`，1.7.0 G1b 已落地）**不跑** `npx eslint .`：它只跑
+// `node --check` / `npm test` / `a11y --static`（V62 口径，见 eslint.config.js 头注释）。
+// 但 lint-gate 仍被 CI 强制：`tests/lint-gate.test.js` 在 `npm test` 里 spawn 全仓 lint-gate。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
