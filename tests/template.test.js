@@ -90,6 +90,26 @@ test('章节模板：context 缺省 / 坏值安全兜底，日期用本地时区
   assert.equal(templateLib.applyTemplate('   ', { chapterNumber: 1 }), '   ');
 });
 
+// V81：长度上限按 UTF-16 长度截断，但不能把一个 emoji 的代理对切成半个（孤立高位代理会让
+// 编辑区 / 导出出现乱码）。core/bookinfo.js 早就有这个保护；模板截断也要走同一份实现。
+test('模板末尾是 emoji 时截断不切开代理对（V81）', () => {
+  const MAX = templateLib.MAX_TEMPLATE_LENGTH;
+  const head = '字'.repeat(MAX - 1);
+  const emoji = '😀';
+  assert.equal(emoji.length, 2, 'emoji 是代理对，占两个 UTF-16 单元');
+  // 总长 MAX + 1：截断点正好落在 emoji 的高位代理上 → 整对丢掉，留 MAX - 1 个字
+  const cut = templateLib.sanitizeTemplate(head + emoji);
+  assert.equal(cut, head, '截断点落在高位代理上时要把整个 emoji 丢掉，不能留半个');
+  assert.equal(/[\uD800-\uDBFF]$/.test(cut), false, '结果末尾不能是孤立的高位代理');
+  // 截断点落在低位代理上（emoji 完整保留）：总长 MAX + 1，emoji 从 MAX - 2 开始
+  const tail = 'x';
+  const kept = templateLib.sanitizeTemplate('字'.repeat(MAX - 2) + emoji + tail);
+  assert.equal(kept.length, MAX);
+  assert.equal(kept.endsWith(emoji), true, 'emoji 完整落在上限内时照常保留');
+  // 没超限的模板一个字不动（含末尾 emoji）
+  assert.equal(templateLib.sanitizeTemplate('开场😀'), '开场😀');
+});
+
 test('章节模板：shouldApply 只在「有模板 + 目标章为空」时套用', () => {
   const now = new Date(2026, 10, 1);
   const ctx = { chapterNumber: 1, chapterName: '开篇', now };

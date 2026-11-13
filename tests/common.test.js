@@ -74,10 +74,24 @@ test('clampInt：先向下取整，非有限数退回 fallback，其余夹到 ra
   // 真正「不是数」的一律退回 fallback
   assert.equal(common.clampInt(NaN, 42, [0, 100]), 42);
   assert.equal(common.clampInt(undefined, 42, [0, 100]), 42);
-  assert.equal(common.clampInt(null, 42, [0, 100]), 0, 'Number(null) === 0，旧实现同样给 0');
+  assert.equal(common.clampInt(null, 42, [0, 100]), 42, 'null 不是 0：回落 fallback（V82）');
   assert.equal(common.clampInt(Infinity, 42, [0, 100]), 42);
   assert.equal(common.clampInt(-Infinity, 42, [0, 100]), 42);
   assert.equal(common.clampInt('abc', 42, [0, 100]), 42);
+});
+
+// V82：null / undefined 是「没传值」，不是数字 0。旧实现 Math.floor(Number(null)) === 0 会把它
+// 夹成下限（例如 [50, 20000] → 50），和 undefined 回落 fallback 的口径不一致；这里钉住两个都回落。
+test('clampInt(null / undefined) 回落 fallback（V82）', () => {
+  assert.equal(common.clampInt(null, 42, [0, 100]), 42);
+  assert.equal(common.clampInt(undefined, 42, [0, 100]), 42);
+  assert.equal(common.clampInt(null, 500, [50, 20000]), 500, '不再被夹成下限 50');
+  assert.equal(common.clampInt(undefined, 500, [50, 20000]), 500);
+  // fallback 可以落在 range 之外——落不落回 range 由调用方决定，这里只保证「原样回落」
+  assert.equal(common.clampInt(null, 7, [10, 20]), 7);
+  // 空串 / false 仍按 Number() 走（旧语义不动，避免误改别的调用方）
+  assert.equal(common.clampInt('', 42, [0, 100]), 0);
+  assert.equal(common.clampInt(false, 42, [0, 100]), 0);
 });
 
 test('sleep：返回 Promise，真的等够时间才 resolve，且永远是 undefined', async () => {
@@ -354,7 +368,8 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
     'parseDayKey',
     'positionOf',
     'sleep',
-    'stripBom'
+    'stripBom',
+    'truncateSafe'
   ]);
 });
 
@@ -430,7 +445,7 @@ test('静态闸门：index.html 先加载 core/common.js，再加载依赖它的
   const commonAt = INDEX_SOURCE.indexOf('src="../core/common.js"');
   assert.ok(commonAt > 0, 'index.html 必须加载 core/common.js');
   assert.equal(INDEX_SOURCE.split('src="../core/common.js"').length - 1, 1, 'core/common.js 只该加载一次，别重复引');
-  const dependents = ['src="../core/template.js"', 'src="editor-logic.js"', 'src="find-logic.js"', 'src="renderer.js"', 'src="../core/capture.js"'];
+  const dependents = ['src="../core/template.js"', 'src="../core/bookinfo.js"', 'src="editor-logic.js"', 'src="find-logic.js"', 'src="renderer.js"', 'src="../core/capture.js"'];
   for (const needle of dependents) {
     const at = INDEX_SOURCE.indexOf(needle);
     assert.ok(at > 0, `index.html 里找不到 ${needle}`);
@@ -493,6 +508,7 @@ test('浏览器加载链：按 index.html 的顺序真跑一遍，模板 / 编�
 test('缺少 core/common.js 时三个模块直接报错（不悄悄退回旧副本）', () => {
   for (const [rel, name] of [
     ['core/template.js', 'CWTemplate'],
+    ['core/bookinfo.js', 'CWBookInfo'],
     ['renderer/editor-logic.js', 'CWEditorLogic'],
     ['renderer/find-logic.js', 'CWFindLogic']
   ]) {
@@ -520,8 +536,10 @@ test('缺少 core/paragraphs.js 时 editor-logic 也直接报错（段落切分�
   );
 });
 
-test('静态闸门：三个 UMD 模块在 Node 分支也把 core 依赖传给工厂', () => {
+test('静态闸门：UMD 模块在 Node 分支也把 core 依赖传给工厂', () => {
   assert.ok(/module\.exports = factory\(require\('\.\/common'\)\);/.test(read('core/template.js')));
+  assert.ok(/module\.exports = factory\(require\('\.\/common'\)\);/.test(read('core/bookinfo.js')));
+  assert.ok(/root\.CWBookInfo = factory\(root\.CWCommon\);/.test(read('core/bookinfo.js')), 'bookinfo 的浏览器分支要取 window.CWCommon');
   for (const rel of ['renderer/editor-logic.js', 'renderer/find-logic.js']) {
     assert.ok(
       /module\.exports = factory\(require\('\.\.\/core\/common'\)/.test(read(rel)),

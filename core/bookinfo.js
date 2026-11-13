@@ -10,15 +10,24 @@
  *
  * 本模块同时被 Node（core/storage.js、单测）和渲染层（index.html 里 <script>）
  * 使用，所以写成 UMD：Node 里 require 得到对象，浏览器里挂到 window.CWBookInfo。
+ * 1.7.2 D4（V81）：字段限长的「不切开代理对」保护收进 core/common.js 的 truncateSafe，
+ * 本模块只接工厂参数 —— 浏览器里 core/common.js 必须排在 core/bookinfo.js 之前。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./common'));
   } else if (root) {
-    root.CWBookInfo = factory();
+    root.CWBookInfo = factory(root.CWCommon);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (common) {
   'use strict';
+
+  // core/common.js 必须先加载（index.html 里 common.js 排在 bookinfo.js 之前）；缺了直接报错，
+  // 不悄悄退回旧副本 —— 代理对保护的截断只该有 core/common.js 这一份（V81）。
+  if (!common || typeof common.truncateSafe !== 'function') {
+    throw new Error('CWBookInfo：core/common.js 没有先加载');
+  }
+  const { truncateSafe } = common;
 
   const MAX_AUTHOR_LENGTH = 80;
   const MAX_BRIEF_LENGTH = 1000;
@@ -34,22 +43,14 @@
     return typeof value === 'string' ? String(value) : '';
   }
 
-  // 按 UTF-16 长度截断，但不切开代理对（emoji 等会保持完整）。
-  function truncate(text, maxLength) {
-    if (text.length <= maxLength) return text;
-    let end = Math.max(0, maxLength);
-    const code = text.charCodeAt(end - 1);
-    if (end > 0 && code >= 0xd800 && code <= 0xdbff) end -= 1;
-    return text.slice(0, end);
-  }
-
-  // 单行文本：换行 / 制表折成空格、连续空白压成一个、首尾去掉，再限长。
+  // 单行文本：换行 / 制表折成空格、连续空白压成一个、首尾去掉，再限长（限长走 core/common.js
+  // 的 truncateSafe：按 UTF-16 长度截断但不切开代理对）。
   function sanitizeSingleLine(value, maxLength) {
     const text = asText(value)
       .replace(/[\r\n\t]+/g, ' ')
       .replace(/[\s\u3000]+/g, ' ')
       .trim();
-    return truncate(text, maxLength);
+    return truncateSafe(text, maxLength);
   }
 
   function sanitizeAuthor(value) {
@@ -76,7 +77,7 @@
       blank = 0;
       kept.push(line);
     }
-    return truncate(kept.join('\n').trim(), MAX_BRIEF_LENGTH);
+    return truncateSafe(kept.join('\n').trim(), MAX_BRIEF_LENGTH);
   }
 
   function sanitizeTag(value) {

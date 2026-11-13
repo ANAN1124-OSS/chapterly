@@ -39,12 +39,28 @@
     return String(n).padStart(2, '0');
   }
 
-  // 整数夹紧：先 Math.floor(Number(value))；非有限数（含 undefined / '' / NaN / Infinity）退回 fallback，
-  // 其余夹到 range（含两端）。range 的语义就是调用方传的 [下限, 上限]，这里不做校验。
+  // 整数夹紧：null / undefined 是「没传值」，直接回落 fallback（V82：旧实现 Math.floor(Number(null))
+  // === 0，会被当成数字 0 夹到下限）；其余先 Math.floor(Number(value))，非有限数（含 '' / NaN /
+  // Infinity）退回 fallback，最后夹到 range（含两端）。range 的语义就是调用方传的 [下限, 上限]，
+  // 这里不做校验；fallback 也不保证落在 range 内——那是调用方的事。
   function clampInt(value, fallback, range) {
+    if (value == null) return fallback;
     const n = Math.floor(Number(value));
     if (!Number.isFinite(n)) return fallback;
     return Math.min(Math.max(n, range[0]), range[1]);
+  }
+
+  // 按 UTF-16 长度截断，但不切开代理对（emoji 等保持完整）：截断点落在高位代理上时回退一个
+  // 单元，避免留下孤立代理（编辑区 / 导出会显示成乱码）。core/bookinfo.js 的字段限长与
+  // core/template.js 的整段模板截断共用这一份（1.7.2 D4/V81），别再各写一份。
+  function truncateSafe(text, maxLength) {
+    if (text.length <= maxLength) return text;
+    let end = Math.max(0, maxLength);
+    if (end > 0) {
+      const code = text.charCodeAt(end - 1);
+      if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+    }
+    return text.slice(0, end);
   }
 
   // 等一会儿（毫秒）：原子写失败重试的间隔、截图驱动等界面稳定用。永远 resolve，不 reject。
@@ -232,6 +248,7 @@
   return {
     pad2,
     clampInt,
+    truncateSafe,
     sleep,
     formatCount,
     stripBom,

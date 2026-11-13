@@ -25,20 +25,22 @@
   'use strict';
 
   // core/common.js 必须先加载（index.html 里排在最前面）；缺了直接报错，不要悄悄退回旧副本。
-  if (!common || typeof common.pad2 !== 'function') {
+  if (!common || typeof common.pad2 !== 'function' || typeof common.truncateSafe !== 'function') {
     throw new Error('CWTemplate：core/common.js 没有先加载');
   }
-  const { pad2 } = common;
+  const { pad2, truncateSafe } = common;
 
   // 模板长度上限：够写「第N章 + 空行 + 分隔线 + 常用开场」，又不至于把整章正文塞进去。
   const MAX_TEMPLATE_LENGTH = 2000;
 
   // 模板文本清洗：换行统一成 \n（编辑区只认 \n）、去掉会截断文件的 NUL、夹到长度上限。
+  // 截断走 core/common.js 的 truncateSafe：按 UTF-16 长度截但不切开代理对（模板末尾是 emoji
+  // 时不能留半个），与 core/bookinfo.js 的字段限长共用同一份实现（1.7.2 D4/V81）。
   // 非字符串（旧配置没有这个键 / 脏值）一律当空模板，不抛错。
   function sanitizeTemplate(value) {
     if (typeof value !== 'string') return '';
     const text = value.replace(/\r\n?/g, '\n').replace(/\u0000/g, '');
-    return text.length > MAX_TEMPLATE_LENGTH ? text.slice(0, MAX_TEMPLATE_LENGTH) : text;
+    return truncateSafe(text, MAX_TEMPLATE_LENGTH);
   }
 
   // 有没有真正要套用的内容：只有空白（空格 / 换行）的模板等于没设置。
