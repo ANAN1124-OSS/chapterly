@@ -62,6 +62,10 @@
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'render', 'shelf', 'actions'];
 
+  // V75：保存进行中标记。模块级只有一份（生产环境每个窗口只 create 一次）：
+  // 同一时刻只允许一次 updateBookInfo 在飞，连按 Enter / 保存按钮不会重复发 IPC。
+  let saving = false;
+
   function createBookinfoUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createBookinfoUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
@@ -132,16 +136,22 @@
   async function saveBookInfoDialog() {
     const book = state.bookInfoBook;
     if (!book) return { ok: false };
-    const form = readBookInfoForm();
-    // 标签先按应用规则清洗（去空 / 去重 / 最多 10 个），免得作者以为自己存了 15 个
-    const tags = bookInfoLib.sanitizeTags(form.tags);
+    // V75：连按（Enter + 保存按钮 / 双击）只发一次 IPC；在飞时后来的直接返回，不排队。
+    if (saving) return { ok: false };
+    saving = true;
     try {
+      const form = readBookInfoForm();
+      // 标签先按应用规则清洗（去空 / 去重 / 最多 10 个），免得作者以为自己存了 15 个
+      const tags = bookInfoLib.sanitizeTags(form.tags);
       const result = await call(api.updateBookInfo, book.path, {
         author: form.author,
         brief: form.brief,
         group: form.group,
         tags
       });
+      // V75：await 期间作者可能已经关掉 A 的弹层、打开了 B（甚至换了同一本书的另一次编辑）。
+      // 身份不一致说明这次保存的「收尾」已经过期：不关窗、不提示、不刷新书架，交给当前弹层。
+      if (state.bookInfoBook !== book) return { ok: false, stale: true };
       closeBookInfoDialog();
       toast(result.changed ? '书籍信息已保存（只改书目，不改正文和文件名）' : '书籍信息没有变化');
       await refreshShelf();
@@ -149,6 +159,8 @@
     } catch (err) {
       $('bookinfo-error').textContent = `保存失败：${err.message}`;
       return { ok: false, message: err.message };
+    } finally {
+      saving = false;
     }
   }
 

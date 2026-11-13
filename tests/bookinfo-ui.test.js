@@ -217,7 +217,7 @@ function build(options = {}) {
     $: dom.$,
     state,
     api,
-    call: async (fn, ...args) => fn(...args),
+    call: options.call === undefined ? async (fn, ...args) => fn(...args) : options.call,
     toast(message, kind) { calls.toast.push([message, kind]); },
     render: {
       bookInfoLib,
@@ -745,7 +745,7 @@ test('setupBookinfoUi：弹层 Enter 提交 / 取消 / 保存 / 分组筛选四�
   const origSave = ctx.host.api.updateBookInfo;
   ctx.host.api.updateBookInfo = async (...args) => { saved += 1; return origSave(...args); };
   backdrop._fire('keydown', { key: 'Enter', target: { id: 'bookinfo-author' }, preventDefault() {} });
-  return Promise.resolve().then(() => {
+  return Promise.resolve().then(async () => {
     assert.equal(saved, 1, 'Enter 提交保存');
     // brief 里按 Enter 不提交（留给换行）
     const before = saved;
@@ -758,19 +758,20 @@ test('setupBookinfoUi：弹层 Enter 提交 / 取消 / 保存 / 分组筛选四�
     // 取消 / 保存按钮
     dom.map.get('btn-bookinfo-cancel')._fire('click');
     assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), true);
-    // Enter 保存成功后弹层已关、state 已清；再摆一本书测保存按钮
+    // Enter 保存成功后弹层已关、state 已清；先等这一次保存真正收尾（V75 守卫：同一时刻只放一发在飞），
+    // 再摆一本书测保存按钮——否则第二次会被守卫正确地挡掉。
+    await new Promise((resolve) => setImmediate(resolve));
     ctx.state.bookInfoBook = makeBook();
     dom.map.get('btn-bookinfo-save')._fire('click');
-    return Promise.resolve().then(() => {
-      assert.equal(saved, before + 1, '保存按钮也触发保存');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(saved, before + 1, '保存按钮也触发保存');
 
-      // 分组筛选 change → 写 state 并重渲染书架
-      ctx.state.books = [makeBook({ group: '书友' })];
-      dom.map.get('shelf-group-filter').value = '书友';
-      dom.map.get('shelf-group-filter')._fire('change', { target: { value: '书友' } });
-      assert.equal(ctx.state.shelfGroup, '书友');
-      assert.equal(ctx.calls.renderContinueWriting >= 1, true, '重渲染书架');
-    });
+    // 分组筛选 change → 写 state 并重渲染书架
+    ctx.state.books = [makeBook({ group: '书友' })];
+    dom.map.get('shelf-group-filter').value = '书友';
+    dom.map.get('shelf-group-filter')._fire('change', { target: { value: '书友' } });
+    assert.equal(ctx.state.shelfGroup, '书友');
+    assert.equal(ctx.calls.renderContinueWriting >= 1, true, '重渲染书架');
   });
 });
 
@@ -812,6 +813,63 @@ test('输入法组字中按 Enter 不触发 updateBookInfo（V73）', async () =
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(saved, 1, '普通 Enter 照旧提交');
   assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), true, '保存成功后才关窗');
+});
+
+// ---------- 保存竞态（1.7.1 P5 / 外部审计 V75） ----------
+test('连按两次只调用一次 updateBookInfo（V75）', async () => {
+  const dom = makeDocument();
+  const pending = [];
+  let ipcCount = 0;
+  // 注入可控 promise 的 call：第一次故意悬着（IPC 在飞），之后的调用立刻回答（红阶段才会走到这里）
+  const call = () => {
+    ipcCount += 1;
+    if (ipcCount === 1) return new Promise((resolve) => pending.push(resolve));
+    return Promise.resolve({ changed: true });
+  };
+  const ctx = build({ dom, call });
+  ctx.state.bookInfoBook = makeBook();
+  const first = ctx.ui.saveBookInfoDialog();
+  const second = await ctx.ui.saveBookInfoDialog();
+  assert.equal(ipcCount, 1, '第一次还没回来时，连按的第二次不该再发 IPC');
+  assert.deepEqual(second, { ok: false }, '进行中的第二次直接返回失败，不排队');
+  assert.equal(ctx.state.bookInfoBook !== null, true, '第二次按下不关弹层');
+
+  pending[0]({ changed: true });
+  assert.deepEqual(await first, { ok: true, changed: true });
+  assert.equal(ctx.state.bookInfoBook, null, '第一次成功后照常关弹层');
+  assert.deepEqual(ctx.calls.toast, [['书籍信息已保存（只改书目，不改正文和文件名）', undefined]]);
+  assert.equal(ctx.calls.refreshShelf, 1);
+});
+
+test('A 在飞期间弹层切到 B → A resolve 不关 B、不覆盖 B 的表单（V75）', async () => {
+  const dom = makeDocument();
+  const pending = [];
+  let ipcCount = 0;
+  const call = () => {
+    ipcCount += 1;
+    return new Promise((resolve) => pending.push(resolve));
+  };
+  const ctx = build({ dom, call });
+  const bookA = makeBook({ path: '/书库/书甲', folder: '书甲', title: '书甲', author: '甲作者', brief: '甲简介' });
+  const bookB = makeBook({ path: '/书库/书乙', folder: '书乙', title: '书乙', author: '乙作者', brief: '乙简介' });
+  assert.equal(ctx.ui.openBookInfoDialog(bookA), true);
+  dom.map.get('bookinfo-author').value = '甲作者（改过）';
+  const inFlight = ctx.ui.saveBookInfoDialog(); // A 的 updateBookInfo 还在飞
+  assert.equal(ctx.ui.openBookInfoDialog(bookB), true); // 作者没等回来就切到 B
+  assert.equal(ctx.state.bookInfoBook, bookB);
+  assert.equal(dom.map.get('bookinfo-author').value, '乙作者');
+  assert.equal(dom.map.get('bookinfo-brief').value, '乙简介');
+
+  pending[0]({ changed: true }); // A 返回
+  const res = await inFlight;
+  assert.deepEqual(res, { ok: false, stale: true }, 'A 的收尾认出自己已经过期');
+  assert.equal(ctx.state.bookInfoBook, bookB, 'A 的收尾不能把 state 指向的书清掉');
+  assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), false, 'B 的弹层必须还开着');
+  assert.equal(dom.map.get('bookinfo-author').value, '乙作者', 'B 的输入框值不能被 A 的表单覆盖');
+  assert.equal(dom.map.get('bookinfo-brief').value, '乙简介');
+  assert.deepEqual(ctx.calls.toast, [], 'A 的过期收尾不提示「已保存」');
+  assert.equal(ctx.calls.refreshShelf, 0, 'A 的过期收尾不刷新书架');
+  assert.equal(ipcCount, 1);
 });
 
 // ---------- 首次运行提示（1.3.0 T5 / 规范 I-10） ----------
