@@ -1,7 +1,7 @@
 // 损坏恢复：从 .bak 恢复；或按目录里的 txt 文件重建书目。
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { stripBom, writeJsonAtomic } = require('./atomic');
+const { stripBom, writeJsonAtomic, renameWithRetry } = require('./atomic');
 const { pad2 } = require('./common');
 const chaptersLib = require('./chapters');
 const schemaLib = require('./schema');
@@ -10,9 +10,17 @@ const storage = require('./storage');
 
 // 换书目的临时文件名（锁内串行、失败即删，固定名便于失败排查；不是章节、也不会被当成书目）
 const REPAIR_TEMP_NAME = '.repair-meta.json';
+// 从目录重建时序号的上限（V80）：文件名里的序号是作者手改的，六位数以上会让下一章的文件名
+// 长到 Windows 路径上限（260）附近，重建后一建章就 ENAMETOOLONG。9999 也够日常用了。
+const MAX_REBUILD_SEQ = 9999;
+// 回退（归档改回原名）失败时的日志类型（V78）：main.js 现有的 logError 按 kind 分类，
+// 在「设置 → 诊断日志」里一眼能看出是修复回退没成功，而不是普通保存失败。
+const ROLLBACK_LOG_KIND = 'repair-rollback';
 
+// 归档名带毫秒（V79）：秒精度下同一秒内修两次会重名，第二次 rename 会把第一份坏书目覆盖掉。
 function stampForBackup(date = new Date()) {
-  return `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}-${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}`;
+  const ms = String(date.getMilliseconds()).padStart(3, '0');
+  return `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}-${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}${ms}`;
 }
 
 async function archiveCorruptMeta(bookPath) {
@@ -32,20 +40,36 @@ async function archiveCorruptMeta(bookPath) {
 // 删临时文件，② 之后失败还把归档的旧文件改回原名——结果始终回到「坏书目还在原地」。
 // 注意：写盘顺序反了（旧代码先归档再写）时，写盘一旦失败（ENOSPC / 磁盘只读 / 权限），
 // 坏书目已经被改名挪走，书架上看不见这本书，只能靠用户自己在文件夹里翻。
-// io 只在单测里注入（模拟 ENOSPC / EPERM 的写盘失败），产品调用不传。
+// io 只在单测里注入（模拟 ENOSPC / EPERM 的写盘失败）；产品调用由 main.js 传 { logError }，
+// 让「回退也失败」这一档至少能在诊断日志里看到（D5/V78）。
 async function swapMetaFile(bookPath, nextMeta, io = {}) {
   const metaPath = path.join(bookPath, storage.BOOK_FILE);
   const tempPath = path.join(bookPath, REPAIR_TEMP_NAME);
   const writeJson = typeof io.writeJson === 'function' ? io.writeJson : writeJsonAtomic;
-  const rename = typeof io.rename === 'function' ? io.rename : fs.rename;
+  // temp → 书目.json 走 atomic.renameWithRetry（EPERM / EBUSY / EACCES / ENOTEMPTY 重试 3 次），
+  // 不再用裸 fs.rename：杀毒 / 同步盘短暂占着文件时，一次失败就把修复判死（V78）。
+  const rename = typeof io.rename === 'function' ? io.rename : null;
+  const logError = typeof io.logError === 'function' ? io.logError : null;
   await writeJson(tempPath, nextMeta);
   let archived = null;
   try {
     archived = await archiveCorruptMeta(bookPath);
-    await rename(tempPath, metaPath);
+    await renameWithRetry(tempPath, metaPath, rename ? { rename } : undefined);
   } catch (err) {
     try { await fs.rm(tempPath, { force: true }); } catch { /* 清不掉也不影响旧文件 */ }
-    if (archived) await fs.rename(archived, metaPath).catch(() => {});
+    if (archived) {
+      try {
+        await fs.rename(archived, metaPath);
+      } catch (rollbackErr) {
+        // 回退也失败 = 归档的坏书目没回到原名，书架上看不见这本书。绝不静默吞掉（V78）：
+        // 走 main.js 现有的 logError 留一条，原始错误照旧抛给调用方（界面提示口径不变）。
+        if (logError) {
+          try {
+            logError(ROLLBACK_LOG_KIND, rollbackErr, { code: 'META_ROLLBACK_FAILED', path: path.basename(archived) });
+          } catch { /* 日志本身失败不能盖住原始错误 */ }
+        }
+      }
+    }
     throw err;
   }
   return { meta: nextMeta, archived };
@@ -67,7 +91,9 @@ async function rebuildFromFiles(bookPath, io = {}) {
   }
   const parsed = files.map((file, index) => {
     const match = /^(\d+)-(.+)\.txt$/i.exec(file);
-    const seq = match ? Number(match[1]) : index + 1;
+    // 序号夹在 9999（V80）：没有上限时，作者手改的 999999999999-xxx.txt 会让 fileSeq 跟着放大，
+    // 下一章按 fileSeq+1 起名就成了超长路径（创建失败、修完还是不能写）。
+    const seq = Math.min(MAX_REBUILD_SEQ, match ? Number(match[1]) : index + 1);
     let name = match ? match[2] : file.replace(/\.txt$/i, '');
     if (name === '未命名') name = '';
     return { file, seq, name };

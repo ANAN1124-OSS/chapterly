@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const repair = require('../core/repair');
+const { sleep } = require('../core/common');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -192,4 +193,125 @@ test('从 .bak 恢复：同样先写新书目再归档，写失败时主文件�
   assert.ok(!names.some((name) => name.startsWith(storage.CORRUPT_PREFIX)), '写失败时坏文件不许先被归档');
   assert.equal(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'), '{ 坏');
   assert.equal(await fs.readFile(path.join(bookPath, '书目.json.bak'), 'utf8'), bakBefore, '.bak 一个字节不动');
+});
+
+// ---------- D5（1.7.2）：repair 三补的锚点（V78 / V79 / V80） ----------
+// 三条都是「失败时才看得见」的路径：改名重试、回退失败的日志、同秒归档重名。
+// 先写锚点再改 core/repair.js，四条都必须先红。
+
+test('修复重建：temp → meta 改名遇到 EPERM 按 renameWithRetry 重试，第 3 次成功（V78）', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '改名要重试的书');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '起风正文', 'utf8');
+  await fs.writeFile(path.join(bookPath, '书目.json'), '{ 坏', 'utf8');
+  const metaPath = path.join(bookPath, '书目.json');
+
+  const attempts = [];
+  let res = null;
+  let thrown = null;
+  try {
+    res = await repair.rebuildFromFiles(bookPath, {
+      rename: async (from, to) => {
+        attempts.push(to);
+        // 前两次模拟「杀毒 / 同步盘短暂占着文件」（EPERM），第三次真的改名
+        if (attempts.length < 3) {
+          const err = new Error('操作被系统拒绝');
+          err.code = 'EPERM';
+          throw err;
+        }
+        return fs.rename(from, to);
+      }
+    });
+  } catch (err) {
+    thrown = err;
+  }
+
+  assert.equal(thrown, null, `EPERM 只该重试、不许把修复直接判失败：${thrown && thrown.message}`);
+  assert.equal(attempts.length, 3, 'temp → 书目.json 要走 atomic.renameWithRetry（3 次尝试）');
+  assert.ok(attempts.every((to) => to === metaPath), '重试的必须是 temp → 书目.json 这一步');
+  assert.equal(res.count, 1);
+  assert.ok(res.archived && res.archived.includes(storage.CORRUPT_PREFIX), '前两步归档的坏书目仍在');
+  const meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapters.length, 1, '重试成功后书目真的换成了新的');
+});
+
+test('修复重建：回退（归档改回原名）也失败时，必须留一条 logError（V78）', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '改不回原名的书');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '起风正文', 'utf8');
+  const metaPath = path.join(bookPath, '书目.json');
+  await fs.writeFile(metaPath, '{ 坏', 'utf8');
+
+  const logged = [];
+  const logError = (kind, err, extra) => logged.push({ kind, err, extra });
+  let thrown = null;
+  try {
+    await repair.rebuildFromFiles(bookPath, {
+      logError,
+      rename: async (from, to) => {
+        if (to === metaPath) {
+          // 第三步失败后，归档改回原名也会撞上这个同名目录（Windows 下 rename 文件到目录 → EPERM）
+          if (!(await fs.stat(metaPath).then(() => true, () => false))) await fs.mkdir(metaPath);
+          const err = new Error('操作被系统拒绝');
+          err.code = 'EPERM';
+          throw err;
+        }
+        return fs.rename(from, to);
+      }
+    });
+  } catch (err) {
+    thrown = err;
+  }
+
+  assert.equal(thrown && thrown.code, 'EPERM', '原始错误照旧抛给调用方（界面提示不变）');
+  assert.equal(logged.length, 1, '回退失败不许被 .catch(() => {}) 静默吞掉，至少留一条日志');
+  assert.equal(logged[0].kind, 'repair-rollback', '日志类型要能一眼看出是修复回退失败');
+  assert.equal(logged[0].extra && logged[0].extra.code, 'META_ROLLBACK_FAILED');
+  // 日志工具是 main.js 现有的 logError（removed: 不新造第二套 logger）：产品调用必须把它接进来
+  const mainSource = require('node:fs').readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  for (const fn of ['restoreFromBak', 'rebuildFromFiles']) {
+    assert.match(
+      mainSource,
+      new RegExp(`repair\\.${fn}\\(bookPath, \\{ logError \\}\\)`),
+      `main.js 的 ${fn} 必须传 { logError }，否则回退失败在生产里仍然静默`
+    );
+  }
+});
+
+test('修复重建：同一秒内两次归档不重名，两份坏书目都留着（V79）', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '同秒两次修复');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '起风正文', 'utf8');
+  const metaPath = path.join(bookPath, '书目.json');
+
+  // 等到刚跨秒再开跑：两次重建都在同一秒里完成，旧实现（秒精度）会撞名
+  await sleep(1000 - (Date.now() % 1000) + 10);
+  await fs.writeFile(metaPath, '{ 第一次坏', 'utf8');
+  const first = await repair.rebuildFromFiles(bookPath);
+  await fs.writeFile(metaPath, '{ 第二次坏', 'utf8');
+  const second = await repair.rebuildFromFiles(bookPath);
+
+  assert.notEqual(first.archived, second.archived, '同一秒两次归档必须换一个名字（归档名要带毫秒）');
+  const archives = (await fs.readdir(bookPath)).filter((name) => name.startsWith(storage.CORRUPT_PREFIX));
+  assert.equal(archives.length, 2, '两份坏书目都要留在文件夹里，第二次不许覆盖第一次');
+  const meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapters.length, 1, '两次重建后书目仍是合法 JSON');
+});
+
+test('从目录重建：超大序号夹到 9999，fileSeq 不许放大成超长路径（V80）', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '超大序号的书');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '起风正文', 'utf8');
+  await fs.writeFile(path.join(bookPath, '999999999999-巨大序号.txt'), '巨大序号正文', 'utf8');
+
+  const res = await repair.rebuildFromFiles(bookPath);
+  assert.equal(res.count, 2);
+  assert.equal(res.meta.fileSeq, 9999, '重建出的 fileSeq 要夹在 9999，下一章文件名才不会超长');
+  assert.ok(res.meta.chapters.some((c) => c.file === '999999999999-巨大序号.txt'), '超限号的原文件照旧列进书目（不删不改名）');
+  const meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.fileSeq, 9999, '写盘后的书目里也是 9999');
 });

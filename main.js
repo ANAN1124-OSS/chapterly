@@ -2630,8 +2630,10 @@ function registerIpc() {
   });
 
   handleBook('book:repair', async (bookPath, mode) => {
-    if (mode === 'bak') return repair.restoreFromBak(bookPath);
-    if (mode === 'rebuild') return repair.rebuildFromFiles(bookPath);
+    // io.logError：换书目「回退也失败」时走现有 logError 留一条诊断日志（core/repair.js，V78）；
+    // 不新造第二套 logger —— 日志仍然只落在设置 → 诊断日志指向的那一份。
+    if (mode === 'bak') return repair.restoreFromBak(bookPath, { logError });
+    if (mode === 'rebuild') return repair.rebuildFromFiles(bookPath, { logError });
     throw new storage.StorageError('BAD_MODE', `未知的修复方式：${mode}`);
   }, { mutation: 'write' });
 

@@ -6,11 +6,13 @@ const { sleep, stripBom } = require('./common');
 
 const RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY']);
 
-async function renameWithRetry(from, to, { tries = 3, delay = 80 } = {}) {
+// rename 默认 fs.rename，只为单测留一个「可注入的实现」：重试判定 / 次数 / 间隔都在这一处，
+// 注入时不另走一套逻辑（D5/V78：repair 换书目也走这里，迁移盘上 EPERM 同样会重试）。
+async function renameWithRetry(from, to, { tries = 3, delay = 80, rename = fs.rename } = {}) {
   let lastErr = null;
   for (let attempt = 0; attempt < tries; attempt += 1) {
     try {
-      await fs.rename(from, to);
+      await rename(from, to);
       return;
     } catch (err) {
       lastErr = err;
