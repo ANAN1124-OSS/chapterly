@@ -19,6 +19,12 @@
  * 为什么单独一个文件：renderer.js 有 9600 行闸门测试，焦点策略集中在这一处也方便
  * 单测（纯决策函数）与 E2E（真实 Electron + 真实 Tab 按键）。
  * 边界：只处理 .backdrop 弹层；顶栏下拉菜单（整理 ▾ / 显示 ▾）不是模态，不在这里管。
+ *
+ * 契约（1.7.2 D6 / V88）：**弹层必须静态 DOM（加载时就存在）**。
+ * 运行期新增的弹层要在 index.html 里先声明 —— install 时一次性抓页面里的 .backdrop、只给这一批
+ * 挂 class observer；之后 document.createElement 现造再插进来的弹层不会被接管（不报错，只是
+ * 焦点不困住、关闭不归还，键盘用户还得 Tab 一圈背景才进得来）。所以新弹层一律先在 index.html 里
+ * 写好那个 .backdrop（默认 .hidden + aria-hidden="true"），运行期只切 class，不改 DOM 结构。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {

@@ -27,7 +27,9 @@ const LONG_PARAGRAPH_DEFAULT = 500;
 const LONG_PARAGRAPH_LIMITS = [50, 20000];
 const DEFAULTS = Object.freeze({
   booksRoot: DEFAULT_BOOKS_ROOT,
-  windowBounds: { x: 60, y: 40, width: 1200, height: 760 },
+  // windowBounds.maximized（1.7.2 D6 / V89）：既有的窗口位置记忆多记一个「上次退出时是最大化」。
+  // 只加这一个子键，不新增顶层字段、不写迁移代码；旧配置没有它就按 false（普通窗口）。
+  windowBounds: { x: 60, y: 40, width: 1200, height: 760, maximized: false },
   editorFont: 'serif',
   editorFontSize: 18,
   editorSidebarWidth: 250,
@@ -338,13 +340,17 @@ function sanitize(raw) {
   // 旧配置没有 findBookmarks = 没有书签，其它字段照常。
   cfg.findBookmarks = bookmarksLib.sanitizeBookmarks(cfg.findBookmarks);
 
+  // 窗口位置记忆（1.7.2 D6 / V89）：四个标量照旧，另放行一个布尔子键 maximized —— 上次退出时
+  // 是不是最大化。不清洗就会在每次 configStore.set 时被丢掉，重启出来是「铺满但没最大化」的
+  // 假最大化，而且不报错（功能静默失效）。只认真正的 true，缺字段 / 旧配置 / 写坏的类型都是 false。
   const b = cfg.windowBounds;
   if (b && typeof b === 'object' && Number.isFinite(Number(b.width)) && Number.isFinite(Number(b.height))) {
     cfg.windowBounds = {
       x: Number.isFinite(Number(b.x)) ? Math.round(Number(b.x)) : DEFAULTS.windowBounds.x,
       y: Number.isFinite(Number(b.y)) ? Math.round(Number(b.y)) : DEFAULTS.windowBounds.y,
       width: clampRoundedInt(b.width, 960, 4000, DEFAULTS.windowBounds.width),
-      height: clampRoundedInt(b.height, 620, 3000, DEFAULTS.windowBounds.height)
+      height: clampRoundedInt(b.height, 620, 3000, DEFAULTS.windowBounds.height),
+      maximized: b.maximized === true
     };
   } else {
     cfg.windowBounds = { ...DEFAULTS.windowBounds };

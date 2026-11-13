@@ -220,7 +220,7 @@ function build(options = {}) {
     call: options.call === undefined ? async (fn, ...args) => fn(...args) : options.call,
     toast(message, kind) { calls.toast.push([message, kind]); },
     render: {
-      bookInfoLib,
+      bookInfoLib: options.bookInfoLib || bookInfoLib,
       bookGroupOf: (book) => bookInfoLib.readBookInfo(book).group,
       chapterTitle: (index, name) => chaptersLib.formatTitle(state.meta || null, index, name),
       formatChars,
@@ -516,6 +516,44 @@ test('renderShelfGroupBar：没有分组 / 标签 → 收起并清空；有分�
   assert.equal(ctx.dom.map.get('shelf-tag-filter').classList.contains('hidden'), true);
   assert.equal(ctx.dom.map.get('shelf-tag-label').classList.contains('hidden'), true);
   assert.equal(ctx.dom.map.get('btn-shelf-group-manage').classList.contains('hidden'), false);
+});
+
+// V86（1.7.2 D6）：renderShelf 以前对同一本书调两次 readBookInfo —— 一次算渲染签名、
+// 一次建卡（2N 次清洗，N 是书架上书的数量）。两处用的必须是同一份清洗结果：一次渲染每本只洗一遍。
+test('renderShelf 共用一份 readBookInfo：签名与建卡每本书每次渲染只清洗一次（V86）', () => {
+  const books = [
+    makeBook({ path: '/库/甲', folder: '甲', title: '甲', author: '作者甲', tags: ['玄幻'] }),
+    makeBook({ path: '/库/乙', folder: '乙', title: '乙', author: '作者乙', brief: '乙的简介' }),
+    makeBook({ path: '/库/丙', folder: '丙', title: '丙', group: '书友' })
+  ];
+  let reads = 0;
+  const counting = {
+    ...bookInfoLib,
+    readBookInfo(meta) {
+      reads += 1;
+      return bookInfoLib.readBookInfo(meta);
+    }
+  };
+  const ctx = build({ books, bookInfoLib: counting });
+  ctx.ui.renderShelf();
+  assert.equal(reads, books.length, '3 本书、签名 + 建卡共用一份 → 只该清洗 3 次（以前各算一份 = 6 次）');
+  const card = ctx.dom.map.get('book-grid').children.find((el) => el.dataset.path === '/库/甲');
+  assert.ok(card, '书卡照常建出来');
+  const author = card.children.find((c) => c.className === 'book-card-author');
+  assert.equal(author.textContent, '作者：作者甲 · #玄幻', '建卡用的是同一份清洗结果，不是「省掉不显示」');
+
+  // 内容没变 → 签名一致、不重建：仍只多 N 次
+  ctx.ui.renderShelf();
+  assert.equal(reads, books.length * 2);
+  // 内容真的变了 → 重建、卡片跟着更新：还是只多 N 次
+  books[0].author = '作者甲改';
+  ctx.ui.renderShelf();
+  assert.equal(reads, books.length * 3);
+  const rebuilt = ctx.dom.map.get('book-grid').children.find((el) => el.dataset.path === '/库/甲');
+  assert.equal(
+    rebuilt.children.find((c) => c.className === 'book-card-author').textContent,
+    '作者：作者甲改 · #玄幻'
+  );
 });
 
 test('renderShelf 书卡：书名 / 分组签 / 作者标签 / 简介（换行压平）/ 章数字数 / 完稿 / 最后修改全钉住', () => {

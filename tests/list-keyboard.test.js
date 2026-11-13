@@ -201,6 +201,47 @@ test('键盘可达：roving tabindex——只有当前项是 0，其余 -1；坏
   assert.equal(listKeyboard.applyTabStops([], 0), 0, '空列表不炸');
 });
 
+// V87（1.7.2 D6）：roving tabindex 以前每次方向键都无条件写满整列 tabIndex（千章列表 = 每键上千次
+// DOM 属性写，属性 setter 会连带样式 / 无障碍树重算）。目标值已经对上的条目不写：DOM 语义完全不变。
+test('键盘可达：applyTabStops 同值不写 DOM 属性（V87，属性写计数）', () => {
+  const makeItem = (start) => {
+    let value = start;
+    let writes = 0;
+    const el = {};
+    Object.defineProperty(el, 'tabIndex', {
+      get: () => value,
+      set(next) {
+        writes += 1;
+        value = next;
+      }
+    });
+    el.writes = () => writes;
+    return el;
+  };
+
+  // 三条都是 -1：把停留点放到第一条 → 只有第一条要写
+  const items = [makeItem(-1), makeItem(-1), makeItem(-1)];
+  assert.equal(listKeyboard.applyTabStops(items, 0), 3);
+  assert.deepEqual(items.map((el) => el.tabIndex), [0, -1, -1]);
+  assert.deepEqual(items.map((el) => el.writes()), [1, 0, 0], '已经是 -1 的条目一个属性都不该写');
+
+  // 焦点从第一条挪到第三条：只写「让出来的」和「接过去的」两个
+  listKeyboard.applyTabStops(items, 2);
+  assert.deepEqual(items.map((el) => el.tabIndex), [-1, -1, 0]);
+  assert.deepEqual(items.map((el) => el.writes()), [2, 0, 1], '中间那条本来就该是 -1，不该被写');
+
+  // 重复调用同一个停留点（方向键到头 / 重复渲染）：一个属性都不写
+  const before = items.map((el) => el.writes());
+  listKeyboard.applyTabStops(items, 2);
+  assert.deepEqual(items.map((el) => el.writes()), before, '状态没变就完全不动 DOM');
+
+  // 越界下标落到第一条（旧行为不变），仍按同值不写的口径
+  const fallback = [makeItem(-1), makeItem(0)];
+  listKeyboard.applyTabStops(fallback, 99);
+  assert.deepEqual(fallback.map((el) => el.tabIndex), [0, -1]);
+  assert.deepEqual(fallback.map((el) => el.writes()), [1, 1]);
+});
+
 test('键盘可达：当前章在折叠的卷里时，补第一个条目当 Tab 停留点（且不重复补）', () => {
   const fake = (tabs) => {
     const items = tabs.map((tabIndex) => ({ tabIndex }));

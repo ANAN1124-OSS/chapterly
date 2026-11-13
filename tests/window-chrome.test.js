@@ -188,6 +188,32 @@ test('main.js：窗口用 titleBarStyle hidden + titleBarOverlay，底色 / 失�
   assert.match(MAIN, /session\.bookId = '';/, '回书架要清掉，标题栏回到全局主题');
 });
 
+// V89（1.7.2 D6）：窗口位置记忆多记一个「上次是最大化」。主进程只能在真实 Electron 里跑，
+// 所以这里钉两端的接线（保存时读 isMaximized()、恢复时补 maximize()），真往返在 tests/config.test.js
+// 的「windowBounds 带 maximized：清洗放行布尔、缺省 false、真文件往返不丢」里。
+test('窗口位置记忆带最大化：保存记 isMaximized()、启动恢复补 maximize()，windowBounds 往返带 maximized（V89）', () => {
+  // 保存端：windowBounds 里除四个标量外再写 maximized（写进 windowBounds，不新增顶层字段）
+  const saveAt = MAIN.indexOf('async function saveRecentWindowBounds');
+  assert.ok(saveAt > 0, 'main.js 里要有 saveRecentWindowBounds');
+  assert.match(
+    MAIN.slice(saveAt, saveAt + 800),
+    /windowBounds: \{ \.\.\.session\.win\.getBounds\(\), maximized: session\.win\.isMaximized\(\) \}/,
+    '保存窗口位置时必须带上 maximized: session.win.isMaximized()'
+  );
+
+  // 恢复端：只认 cfg.windowBounds.maximized === true，且在 ready-to-show 里 show() 之前补 maximize()
+  assert.match(MAIN, /let restoreMaximized = false;/, '恢复前要有个「上次是最大化」的标记');
+  assert.match(MAIN, /restoreMaximized = [^;]*maximized === true[^;]*;/, '只认真正的布尔 true');
+  const readyAt = MAIN.indexOf("browserWin.once('ready-to-show'");
+  assert.ok(readyAt > 0, '窗口显示仍走 ready-to-show');
+  const ready = MAIN.slice(readyAt, readyAt + 400);
+  assert.ok(ready.includes('if (restoreMaximized) browserWin.maximize();'), 'ready-to-show 里按标记补 maximize()');
+  assert.ok(ready.indexOf('maximize()') < ready.indexOf('show()'), '先 maximize 再 show（否则先闪一帧普通窗口）');
+
+  // 只有第一个窗口按 windowBounds 恢复：级联 / 第二窗口不该被上一次的最大化带跑
+  assert.match(MAIN, /if \(windowSessions\.size === 0\) \{\s*bounds = clampBounds\(cfg\.windowBounds\);/);
+});
+
 test('core/window-chrome.js 是纯数据 / 纯函数：不 require electron、不读文件、不碰书库', () => {
   const source = read('core/window-chrome.js');
   assert.equal(/require\(['"]electron['"]\)/.test(source), false);

@@ -58,6 +58,42 @@ test('配置脏数据被兜底，不会让应用起不来', async () => {
   assert.equal(cleaned.windowBounds.width, 1200);
 });
 
+// V89（1.7.2 D6）：窗口位置记忆多了「上次是最大化」这一个布尔子键（windowBounds.maximized）。
+// 清洗函数必须放行它——否则每次 set 都被当脏字段删掉，重启出来就是「铺满但没最大化」的假最大化，
+// 而且不会报错（功能静默失效）。变更面只有这一个子键：不新增顶层字段、不写迁移代码。
+test('windowBounds 带 maximized：清洗放行布尔、缺省 false、真文件往返不丢（V89）', async () => {
+  // 旧配置（没有这个子键）：缺省 false，不补字段到磁盘、也不算「写坏了」
+  assert.equal(DEFAULTS.windowBounds.maximized, false);
+  assert.equal(sanitize({}).windowBounds.maximized, false);
+  assert.equal(sanitize({ windowBounds: { x: 10, y: 20, width: 1000, height: 700 } }).windowBounds.maximized, false);
+
+  // 清洗不许把它当脏字段删掉
+  const cleaned = sanitize({ windowBounds: { x: 10, y: 20, width: 1000, height: 700, maximized: true } });
+  assert.deepEqual(cleaned.windowBounds, { x: 10, y: 20, width: 1000, height: 700, maximized: true });
+  assert.equal(cleaned.windowBounds.maximized, true);
+
+  // 只认真正的布尔 true：字符串 / 数字 / 对象都不算最大化（和 firstRunTipShown 同一口径）
+  for (const bad of ['true', '1', 1, 0, {}, [], null]) {
+    const got = sanitize({ windowBounds: { width: 1000, height: 700, maximized: bad } }).windowBounds.maximized;
+    assert.equal(got, false, `maximized=${JSON.stringify(bad)} 应回落 false`);
+  }
+
+  // 真文件往返：写盘 → 重新 createStore 读回来仍是最大化，四个标量一个不少
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+  await store.set({ windowBounds: { x: 60, y: 40, width: 1200, height: 760, maximized: true } });
+  const raw = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(raw.windowBounds.maximized, true, 'config.json 里要真记下 maximized');
+  const store2 = createConfigStore(dir);
+  const cfg = await store2.get();
+  assert.equal(cfg.windowBounds.maximized, true);
+  assert.deepEqual(
+    { x: cfg.windowBounds.x, y: cfg.windowBounds.y, width: cfg.windowBounds.width, height: cfg.windowBounds.height },
+    { x: 60, y: 40, width: 1200, height: 760 },
+    '四个标量照旧（窗口位置记忆的旧字段不许被新子键挤掉）'
+  );
+});
+
 test('显示排版配置：默认值 + 持久化', async () => {
   const dir = await mkTmp();
   const store = createConfigStore(dir);

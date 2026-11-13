@@ -97,6 +97,8 @@
   }
 
   // roving tabindex：只有 activeIndex 那一个是 0，其余 -1。越界的 activeIndex 落到第一个。
+  // V87（1.7.2 D6）：值已经对上的条目不写 tabIndex —— 千章列表上每按一次方向键不再写上千次 DOM 属性
+  // （属性 setter 会连带样式 / 无障碍树重算）。DOM 语义与逐条写完全一致，只是少的那些写本来就没变值。
   function applyTabStops(items, activeIndex) {
     const list = Array.isArray(items) ? items : Array.from(items || []);
     if (!list.length) return 0;
@@ -104,7 +106,8 @@
       ? Math.floor(activeIndex)
       : 0;
     for (let i = 0; i < list.length; i += 1) {
-      list[i].tabIndex = i === want ? 0 : -1;
+      const next = i === want ? 0 : -1;
+      if (list[i].tabIndex !== next) list[i].tabIndex = next;
     }
     return list.length;
   }

@@ -71,19 +71,25 @@ test('静态闸门：书架 grid 按渲染签名复用，签名覆盖会改卡�
     '  function renderShelf() {',
     '  // B6（审计 P6）：书架 grid 的重建部分'
   );
-  assert.ok(shelf.includes('shelfRenderSignature(query, rows)'), 'renderShelf 要计算渲染签名');
+  assert.ok(shelf.includes('shelfRenderSignature(query, rows, infoOf)'), 'renderShelf 要计算渲染签名');
   assert.match(shelf, /if \(grid\.dataset\.renderSignature !== signature\)/, '签名没变就不重建 grid');
-  assert.ok(shelf.includes('buildShelfGrid(grid, query, rows)'), '重建走 buildShelfGrid');
+  assert.ok(shelf.includes('buildShelfGrid(grid, query, rows, infoOf)'), '重建走 buildShelfGrid');
+  // V86（1.7.2 D6）：书籍信息一次渲染每本只清洗一遍，签名与建卡共用同一份（以前各算一份 = 2N 次）。
+  // 真行为（清洗次数）在 tests/bookinfo-ui.test.js › renderShelf 共用一份 readBookInfo 里。
+  assert.ok(shelf.includes('bookInfoLib.readBookInfo(book)'), 'renderShelf 里要算出这一份书籍信息');
+  assert.ok(shelf.includes('const infoOf = '), '算好的一份要作为 infoOf 传给签名与建卡');
   assert.equal(
     (shelf.match(/grid\.innerHTML = '';/g) || []).length,
     0,
     '清空 grid 只许在 buildShelfGrid 里（renderShelf 不能无条件清空）'
   );
-  const builder = sliceBetween(BOOKINFO, '  function buildShelfGrid(grid, query, rows) {', '  function shelfRenderSignature');
+  const builder = sliceBetween(BOOKINFO, '  function buildShelfGrid(', '  function shelfRenderSignature');
   assert.ok(builder.includes("grid.innerHTML = '';"), 'buildShelfGrid 负责清空');
   assert.ok(builder.includes('card.dataset.path = book.path'), '书卡仍按 data-path 标识');
+  assert.equal(builder.includes('bookInfoLib.readBookInfo('), false, '建卡不许自己再清洗一遍（V86）');
 
-  const signature = sliceBetween(BOOKINFO, '  function shelfRenderSignature(query, rows) {', '\n  }\n');
+  const signature = sliceBetween(BOOKINFO, '  function shelfRenderSignature(', '\n  }\n');
+  assert.equal(signature.includes('bookInfoLib.readBookInfo('), false, '签名也不许自己再清洗一遍（V86）');
   for (const field of ['book.path', 'book.title', 'book.status', 'book.chapterCount', 'book.totalChars', 'book.lastModified', 'query', 'state.shelfGroup']) {
     assert.ok(signature.includes(field), `渲染签名必须包含 ${field}（否则该字段变了卡片不刷新）`);
   }

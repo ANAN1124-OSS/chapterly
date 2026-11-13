@@ -478,12 +478,15 @@ function notifyShelfChanged(session, reason = '') {
 }
 
 // 只保存「最近使用的窗口」的位置 / 大小（下次启动按它恢复）
+// V89（1.7.2 D6）：除四个标量外再记「退出时是不是最大化」。只存 getBounds() 的话，最大化状态
+// 在重启后变成「铺满工作区但没最大化」——双击标题栏 / 顶栏右键菜单看到的是「最大化」而不是「还原」。
+// 变更面只有 windowBounds 里这一个子键（不新增顶层配置字段；清洗见 core/config.js）。
 async function saveRecentWindowBounds(session) {
   if (!session || session.win.isDestroyed()) return false;
   const recentId = storage.openBookRegistry.mostRecentWindow();
   if (recentId && String(recentId) !== String(session.id) && windowSessions.size > 1) return false;
   try {
-    await configStore.set({ windowBounds: session.win.getBounds() });
+    await configStore.set({ windowBounds: { ...session.win.getBounds(), maximized: session.win.isMaximized() } });
     return true;
   } catch {
     return false;
@@ -2918,8 +2921,12 @@ function hardenSession(ses) {
 async function createWindow({ bookPath = null, cascade = false, runAutomationFlow = false } = {}) {
   const cfg = await getConfig();
   let bounds = null;
+  // V89（1.7.2 D6）：上次退出时是最大化 → 位置 / 大小照旧恢复，显示前再补一次 maximize()
+  // （见下面的 ready-to-show）。多窗口 / 级联窗口不读这个标记：它只属于「最近使用的窗口」。
+  let restoreMaximized = false;
   if (windowSessions.size === 0) {
     bounds = clampBounds(cfg.windowBounds);
+    restoreMaximized = Boolean(cfg.windowBounds) && cfg.windowBounds.maximized === true;
   } else if (cascade) {
     const focused = BrowserWindow.getFocusedWindow();
     const sourceBounds =
@@ -2976,7 +2983,11 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
 
   Menu.setApplicationMenu(null);
   browserWin.once('ready-to-show', () => {
-    if (!browserWin.isDestroyed()) browserWin.show();
+    if (browserWin.isDestroyed()) return;
+    // V89：上次是最大化就先 maximize 再 show（这时的 maximize 自己会把窗口显示出来，
+    // 顺序反过来会先闪一帧普通窗口）。位置 / 大小已在 BrowserWindow 构造时按 windowBounds 恢复。
+    if (restoreMaximized) browserWin.maximize();
+    browserWin.show();
   });
   // 开新窗口 / 导航 / webview / 权限的约束来自上面的安全加固：app 的 web-contents-created 已经
   // 给每个新建的 webContents 挂过一次，这里再显式加固一次（hardenWebContents 幂等，不会重复挂）。

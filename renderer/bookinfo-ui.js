@@ -496,10 +496,17 @@
     // B6（审计 P6）：书卡内容没变就不重建 —— 索引进度 / 统计刷新都会调 renderShelf，
     // 整块重建会丢键盘焦点 / 滚动位置，也白建一堆 DOM。签名里只有会改卡片 DOM 的内容
     // （见 shelfRenderSignature），一致时保留现有卡片。
-    const signature = shelfRenderSignature(query, rows);
+    // V86（1.7.2 D6）：每本书的 readBookInfo 一次渲染只清洗一遍，渲染签名与建卡共用同一份
+    // （以前各算一份 = 2N 次；书多、字段长时书架刷新白花一倍清洗）。
+    const infos = new Map();
+    for (const { book } of rows) {
+      if (!infos.has(book)) infos.set(book, bookInfoLib.readBookInfo(book));
+    }
+    const infoOf = (book) => infos.get(book) || bookInfoLib.readBookInfo(book);
+    const signature = shelfRenderSignature(query, rows, infoOf);
     if (grid.dataset.renderSignature !== signature) {
       grid.dataset.renderSignature = signature;
-      buildShelfGrid(grid, query, rows);
+      buildShelfGrid(grid, query, rows, infoOf);
     }
 
     updateWindowTitle();
@@ -561,7 +568,7 @@
   // 1.3.0 T4（规范 I-06 空状态三件套）：每个空态都按「说明状态 / 学习线索 / 直接路径」写，并用
   // data-empty-kind 区分三类——vacuum（真空：一本都没有）/ loading（加载中：正文还在找）/
   // filtered（筛选空：分组或搜索把书筛掉了）。不加插画、不加新按钮，路径都指向现有入口。
-  function buildShelfGrid(grid, query, rows) {
+  function buildShelfGrid(grid, query, rows, infoOf) {
     grid.innerHTML = '';
     if (!state.books.length) {
       const empty = document.createElement('div');
@@ -632,7 +639,8 @@
       card.appendChild(head);
 
       // 书籍信息（v0.8-3）：作者 / 分组 / 标签 / 简介。旧书没有这些字段就什么都不多显示。
-      const bookInfo = bookInfoLib.readBookInfo(book);
+      // V86：用 renderShelf 传下来的同一份清洗结果，不再自己重算一次。
+      const bookInfo = infoOf(book);
       if (book.status !== 'corrupt') {
         if (bookInfo.group) {
           const group = document.createElement('span');
@@ -782,9 +790,10 @@
   // B6：书架 grid 的渲染签名 —— 只包含会改变卡片 DOM 的内容：书名 / 状态 / 冲突数 / 章数字数 /
   // 完成度 / 书籍信息 / 章节命中 / 分组筛选 / 查询词，以及书目的最后修改时间（卡片底部「最后修改」
   // 是相对时间文案，保存刷新 updatedAt 时必须重建，E2E 第 03 组钉着这一点）。
-  function shelfRenderSignature(query, rows) {
+  // V86：书籍信息由调用方一次算好传进来（infoOf），与建卡共用，签名里不再自己清洗一遍。
+  function shelfRenderSignature(query, rows, infoOf) {
     const cards = rows.map(({ book, info }) => {
-      const bookInfo = bookInfoLib.readBookInfo(book);
+      const bookInfo = infoOf(book);
       const hits = info && Array.isArray(info.chapterHits)
         ? info.chapterHits.map((hit) => [hit.index, hit.name])
         : null;

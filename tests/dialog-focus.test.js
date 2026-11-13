@@ -413,6 +413,20 @@ test('静态闸门：减少动效的 CSS 块还在，四件事都写了', () => 
   assert.ok(/@keyframes toast-in/.test(STYLES_SOURCE), 'toast 的入场动画还在，减少动效只压时长');
 });
 
+// V88（1.7.2 D6）：模块在 install 时一次性抓 .backdrop（doc.querySelectorAll('.backdrop')），
+// 只给这一批挂 observer —— 运行期新建的弹层永远漏管，而且不报错（焦点不困住、关闭不归还）。
+// 代码本身不监听「节点新增」，所以契约必须写在头注释里：弹层是静态 DOM，新弹层要在 index.html 先声明。
+test('静态闸门：头注释写明「弹层必须静态 DOM」契约（V88）', () => {
+  assert.match(MODULE_SOURCE, /弹层必须静态 DOM/, '契约正文不许删：运行期新增的弹层会漏管');
+  assert.match(MODULE_SOURCE, /运行期新增的弹层要在 index\.html 里先声明/, '要说清补救路径（先声明再显示）');
+  const headerEnd = MODULE_SOURCE.indexOf('*/');
+  assert.ok(headerEnd > 0, '模块保留头注释');
+  assert.ok(
+    MODULE_SOURCE.slice(0, headerEnd).includes('弹层必须静态 DOM'),
+    '契约要写在头注释里（读代码的人第一步就看见），不能只散落在实现中间'
+  );
+});
+
 test('静态闸门：焦点模块不碰定时器 / 文件 / Electron，也不许给背景加 inert', () => {
   const code = MODULE_SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   assert.equal(/setTimeout|setInterval/.test(code), false, '焦点不该靠定时器兜（窗口被遮挡时定时器会被节流）');
