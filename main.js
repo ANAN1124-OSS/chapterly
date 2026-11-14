@@ -139,6 +139,10 @@ const e2eCloseReadyByWindow = new Map();
 let e2eLastCloseReady = undefined;
 let e2eRealClose = false;
 let e2eWindowAllClosed = false;
+// WP-09（C6）：E2E 把「关窗前保存窗口位置」的那次写盘按毫秒拖慢，用来复现「回执已发、
+// forceClose 还没置」的竞态窗口（组 10 在延迟里继续输入 → 关窗必须被复查拦下）。
+// 只有 --e2e 且显式调 setCloseBoundsDelay 才生效，生产 / 截图流程恒为 0、不额外等。
+let e2eCloseBoundsDelayMs = 0;
 
 let configStore = null;
 let config = null;
@@ -486,6 +490,12 @@ async function saveRecentWindowBounds(session) {
   const recentId = storage.openBookRegistry.mostRecentWindow();
   if (recentId && String(recentId) !== String(session.id) && windowSessions.size > 1) return false;
   try {
+    // WP-09（C6）：自检把这次写盘拖慢，复现「关窗回执已发、forceClose 还没置」的 await 窗口；
+    // 生产路径 isE2E=false，这段永远不进，关窗耗时与改动前一致。
+    if (isE2E && e2eCloseBoundsDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, e2eCloseBoundsDelayMs));
+      if (session.win.isDestroyed()) return false;
+    }
     await configStore.set({ windowBounds: { ...session.win.getBounds(), maximized: session.win.isMaximized() } });
     return true;
   } catch {
@@ -1111,6 +1121,31 @@ function setupCloseIpc() {
     // 只记「最近使用的窗口」的位置 / 大小；关一个非最近窗口不覆盖它
     await saveRecentWindowBounds(session);
     if (session.win.isDestroyed()) return;
+    // WP-09（C6）：上面这次写盘是一次真实 await（配置整份写，慢盘上可达几十毫秒）。这段时间
+    // 渲染层还能继续输入并上报 app:dirty；若只按回执那一刻的判定 forceClose，setupCloseFlow 的
+    // close 事件会直接放行，把这段新编辑一起关掉。用同一判据（core/close-guard.js）再算一次，
+    // 不通过就作废本次关窗：forceClose 不置、窗口不关，作者改完再点一次关闭即可。
+    const recheck = closeGuard.closeReleaseDecision({
+      allowed,
+      dirty: session.dirty,
+      lastSaveAt: session.lastSaveAt,
+      dirtyAt: session.dirtyAt
+    });
+    if (!recheck.okToClose) {
+      // E2E 记录的是「主进程最终放行了吗」，复查翻盘也要如实回写（组 10 用它断言被拦下）。
+      session.e2eCloseReady = false;
+      e2eLastCloseReady = false;
+      if (isE2E) e2eCloseReadyByWindow.set(String(session.id), false);
+      logError(
+        'close-blocked',
+        {
+          code: 'CLOSE_DIRTY',
+          message: '关窗被主进程拦下：保存窗口位置期间界面又变脏了，本次关窗作废'
+        },
+        { level: 'warn' }
+      );
+      return;
+    }
     session.forceClose = true;
     session.win.close();
   });
@@ -3144,6 +3179,12 @@ function automationHost() {
     setRealClose: (on) => {
       e2eRealClose = Boolean(on);
       return e2eRealClose;
+    },
+    // WP-09（C6）：把「关窗前保存窗口位置」拖慢若干毫秒，制造「回执已发、forceClose 还没置」
+    // 的窗口给组 10 复现；0 = 恢复真实写盘耗时（生产 / 截图流程根本不调这个开关）。
+    setCloseBoundsDelay: (ms) => {
+      e2eCloseBoundsDelayMs = Math.max(0, Number(ms) || 0);
+      return e2eCloseBoundsDelayMs;
     },
     isWindowAllClosed: () => e2eWindowAllClosed,
     getCloseReady: (windowId) =>

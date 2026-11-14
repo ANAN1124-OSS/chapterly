@@ -13,7 +13,12 @@
 //   · 窗口已经销毁时 send / destroy 一律跳过（不往死掉的 webContents 上发）。
 //
 // 主进程只装配：`closeGuard.timeoutPrompt()` 进 showMessageBox、`forceClosePlan()` +
-// `runForceCloseSteps()` 干强制退出。真实关窗行为仍由 E2E 第 10 / 11 / 12 组覆盖。
+// `runForceCloseSteps()` 干强制退出。真实关窗行为仍由 E2E 第 10 / 11 / 12 / 55 组覆盖。
+//
+// C6（WP-09）：关窗放行的交叉判定（E5/S5 + N3）抽成 closeReleaseDecision()，规则只写一份。
+// 回执到达时算一次；`await saveRecentWindowBounds()` 之后必须用同一判据再算一次——写窗口位置是
+// 一次真实 await，期间渲染层还能继续输入并上报 app:dirty；只按回执那一刻的结果 forceClose，
+// close 事件会直接放行，把这几毫秒 ~ 几十毫秒内的新编辑一起关掉。
 
 const CLOSE_TIMEOUT_MS = 8000;
 const FORCE_CLOSE_CHANNEL = 'app:force-close';
@@ -60,6 +65,27 @@ async function runForceCloseSteps(plan, handlers) {
   return done;
 }
 
+// C6（WP-09）：关窗放行的唯一判据。allowed 之外还要看主进程自己掌握的脏状态：
+//   · 界面说「不脏」→ 放行；
+//   · 仍脏，但主进程看到过「变脏之后（严格晚于）的一次保存成功回执」→ 放行（E5/S5 + N3）；
+//   · 其余（含 allowed=false）→ 拦下。
+// 只做纯计算、不碰 Electron：回执那一刻与 await 写窗口位置之后各调一次，两次用的是同一份规则。
+// 返回的 code：CLOSE_OK / CLOSE_DIRTY（allowed 为真但数据没落盘）/ CLOSE_DENIED（渲染层自己说不关）。
+function closeReleaseDecision(state) {
+  const source = state || {};
+  const allowed = Boolean(source.allowed);
+  const dirty = Boolean(source.dirty);
+  const lastSaveAt = Number(source.lastSaveAt) || 0;
+  const dirtyAt = Number(source.dirtyAt) || 0;
+  // N3：回执必须严格晚于这次变脏的上升沿；同毫秒时宁可多拦一次。
+  const savedAfterDirty = lastSaveAt > 0 && lastSaveAt > dirtyAt;
+  const okToClose = allowed && (!dirty || savedAfterDirty);
+  let code = 'CLOSE_DENIED';
+  if (okToClose) code = 'CLOSE_OK';
+  else if (allowed) code = 'CLOSE_DIRTY';
+  return { allowed, dirty, savedAfterDirty, okToClose, code };
+}
+
 // 8 秒没回执时给作者看的弹窗内容。文案与按钮顺序放这里，单测钉住（避免再退回「3 秒」）。
 // 默认 / 取消都停在「继续等待」：多等一下通常比丢字安全。
 function timeoutPrompt() {
@@ -80,5 +106,6 @@ module.exports = {
   FORCE_CLOSE_GRACE_MS,
   forceClosePlan,
   runForceCloseSteps,
+  closeReleaseDecision,
   timeoutPrompt
 };
