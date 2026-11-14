@@ -42,13 +42,23 @@
       }
     }
     const { api, $, call, state, chapterTitle, chaptersLib, CHAPTER_STATUS_LABELS, chapterStatus, switchChapter } = host;
+  // V206（v1.8.0 WP-29）：跳章 payload 按「书目 / 章节数组的引用」缓存。输入框每 80ms 防抖后都会
+  // refreshJumpMatches，千章书以前每次都重建 1000 个对象、逐章算章号再整体过 IPC；章号 / 卷名的
+  // 输入只由 state.meta + state.chapters 决定，而每次书目变更都走 applyMetaAndRelocate（换新引用），
+  // 所以引用相等即可安全复用（章对象的 chars 会被原地更新，但 payload 不含 chars）。
+  let payloadCache = null;
   // ---------- Ctrl+G 跳章 ----------
   // 匹配规则在主进程的 core/jump.js（单测覆盖）：输入纯章号按章号找，否则按章名关键词找。
   // 这里只负责对话框、结果列表和「跳过去」；切章仍走 switchChapter，未保存拦截照常生效。
   const JUMP_RESULT_LIMIT = 8;
 
   function jumpChapterPayload() {
-    const meta = state.meta || {};
+    const rawMeta = state.meta;
+    const chapters = state.chapters || [];
+    if (payloadCache && payloadCache.rawMeta === rawMeta && payloadCache.chapters === chapters) {
+      return payloadCache.payload;
+    }
+    const meta = rawMeta || {};
     const volumes = Array.isArray(meta.volumes) ? meta.volumes : [];
     // 1.5.0 P0-1（审计 E1 / A2）：章→卷统一用 core/chapters.js 的 chapterVolumeKey，
     // 指向已删除卷的章与真正未分卷的章落在同一组（不再各自 find / some 一份）。
@@ -58,13 +68,15 @@
       const volume = volumes.find((item) => item && item.id === key);
       return volume ? String(volume.name || '').trim() || '未命名卷' : '未分卷';
     };
-    return (state.chapters || []).map((chapter, index) => ({
+    const payload = chapters.map((chapter, index) => ({
       id: chapter.id,
       name: chapter.name == null ? '' : String(chapter.name),
       // 跳章的纯数字匹配要按「显示用的章号」算：按卷编号时同一章号每卷都可能出现
       number: chaptersLib.chapterNumber(meta, index),
       volumeName: volumeNameOf(chapter)
     }));
+    payloadCache = { rawMeta, chapters, payload };
+    return payload;
   }
 
   function renderJumpMatches(result) {

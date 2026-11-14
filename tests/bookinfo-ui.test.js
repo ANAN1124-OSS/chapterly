@@ -1369,3 +1369,41 @@ test('saveBookInfoDialog（WP-15 / C15）：A 的失败回执不写进 B 的弹�
   assert.equal(ctx.state.bookInfoBook, bookB);
   assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), false, 'B 的弹层还开着');
 });
+
+// ---------- B14（v1.8.0 WP-29）：分组 / 标签下拉签名复用 ----------
+test('B14：renderShelf 重复渲染时下拉内容没变就不重建（签名 + 选项数核对）', () => {
+  const books = [
+    makeBook({ path: '/书库/书甲', folder: '书甲', group: '甲组', tags: ['悬疑'] }),
+    makeBook({ path: '/书库/书乙', folder: '书乙', group: '乙组', tags: ['悬疑'] }),
+    makeBook({ path: '/书库/书丙', folder: '书丙' })
+  ];
+  const ctx = build({ books });
+  ctx.ui.renderShelf();
+  const select = ctx.dom.map.get('shelf-group-filter');
+  const tagSelect = ctx.dom.map.get('shelf-tag-filter');
+  const firstOptions = select.children.slice();
+  const firstTagOptions = tagSelect.children.slice();
+  assert.equal(firstOptions[0].textContent, '全部分组（3）');
+  assert.ok(firstOptions.some((option) => option.textContent === '甲组（1）'));
+  assert.equal(select.children.length, 1 + 1 + 2, '全部 + 未分组 + 两个分组');
+
+  // 同一个 state.books：第二次 renderShelf 不重建（复用同一批 option 节点）
+  ctx.ui.renderShelf();
+  assert.equal(select.children.length, firstOptions.length);
+  assert.equal(select.children[0], firstOptions[0], '内容没变 → 节点复用（不重建 innerHTML）');
+  assert.equal(tagSelect.children[0], firstTagOptions[0]);
+
+  // 只改选中值：仍不重建，但 select.value 要跟上
+  ctx.state.shelfGroup = '乙组';
+  ctx.state.shelfTag = '悬疑';
+  ctx.ui.renderShelf();
+  assert.equal(select.children[0], firstOptions[0]);
+  assert.equal(select.value, '乙组');
+  assert.equal(tagSelect.value, '悬疑');
+
+  // 书目分组计数变了 → 必须重建（不能拿旧下拉糊弄）
+  ctx.state.books[2].group = '甲组';
+  ctx.ui.renderShelf();
+  assert.notEqual(select.children[0], firstOptions[0], '计数变化要重建');
+  assert.ok(select.children.some((option) => option.textContent === '甲组（2）'));
+});

@@ -56,6 +56,12 @@ const MAX_FOCUS_FIELD_CHARS = 260;
 const SNIPPET_RADIUS = 16;
 const MAX_CANDIDATE_BOOKS = 60; // 两字常用词可能命中一大半书：最多读这么多本
 const SEARCH_TIME_BUDGET_MS = 1800; // 超过就带着已有结果返回（结果标 truncated）
+// B11（v1.8.0 WP-29）：核对候选书时逐章读盘的预读并发度。以前整本串行 await loadChapterText，
+// 机械盘 / 杀软环境下 1800ms 预算只够读几十章、truncated 常态化；按 4 章一批预读（顺序仍按
+// 书目顺序逐章扫描，停止条件 / 计数 / 结果顺序都不变），把 IO 等待叠起来。
+// 只给单测用 opts.readConcurrency 覆盖，生产不传（IPC 入口也只会透传既有字段）。
+const CHAPTER_READ_CONCURRENCY = 4;
+const MAX_CHAPTER_READ_CONCURRENCY = 8;
 const FULL_VALIDATE_INTERVAL_MS = 10000; // 后台深度校验的节流（外部改 txt 最迟这么久后发现）
 // 搜索自身不做逐章 stat（太慢），但距上次深度校验超过 1 分钟时会顺带做一次兜底校验，
 // 保证「一直在书架搜、不回书架」也能发现外部改过的 txt。
@@ -884,6 +890,10 @@ function createSearchStore(options = {}) {
       Math.min(MAX_CANDIDATE_BOOKS, Math.round(Number(opts.maxBooks) || MAX_CANDIDATE_BOOKS))
     );
     const timeBudgetMs = Math.max(1, Number(opts.timeBudgetMs) || SEARCH_TIME_BUDGET_MS);
+    const readConcurrency = Math.min(
+      MAX_CHAPTER_READ_CONCURRENCY,
+      Math.max(1, Math.floor(Number(opts.readConcurrency) || CHAPTER_READ_CONCURRENCY))
+    );
     const qBigrams = queryBigrams(normalized);
 
     const makeBase = (indexInfo) => ({
@@ -1081,54 +1091,88 @@ function createSearchStore(options = {}) {
         break;
       }
       scannedBooks += 1;
-      for (const chapter of book.chapters) {
-        if (results.length >= limit) break;
+      // B11（v1.8.0 WP-29）：按 readConcurrency 一批先并发读盘，再按书目顺序逐章扫描。
+      // 停止条件（结果条数 / 时间预算 / 扫描自停）仍逐章判断；计数（scanned / skipped / 命中）
+      // 只统计真正处理过的章 —— 批里多读的章若在预算内没用上，不计数、不影响结果（只浪费有界的
+      // 预读）。结果顺序、片段内容、limit / truncated 语义与串行版逐字段一致。
+      const chapters = book.chapters;
+      let stopBook = false;
+      for (let start = 0; start < chapters.length; start += readConcurrency) {
+        if (results.length >= limit) {
+          stopBook = true;
+          break;
+        }
         if (Date.now() - startedAt > timeBudgetMs) {
           stoppedByTime = true;
+          stopBook = true;
           break;
         }
-        let text;
-        try {
-          text = (await storage.loadChapterText(book.path, chapter.file)).text;
-        } catch {
-          skippedChapters += 1; // 索引之后文件被删 / 被占用：跳过，不让整次搜索失败
-          continue;
+        const batch = chapters.slice(start, start + readConcurrency);
+        const loaded = await mapLimit(batch, readConcurrency, async (chapter) => {
+          try {
+            return { ok: true, text: (await storage.loadChapterText(book.path, chapter.file)).text };
+          } catch {
+            return { ok: false, text: '' };
+          }
+        });
+        for (let k = 0; k < batch.length; k += 1) {
+          if (results.length >= limit) {
+            stopBook = true;
+            break;
+          }
+          // B11：批内第 1 章在「开始这批之前」已经查过时间预算（与串行版逐章开头的判定同一时点）；
+          // 后续章逐章再查。不能在这里对 k=0 也重查 —— 预读 4 章本身耗时会挤掉极紧预算下的第一段结果。
+          if (k > 0 && Date.now() - startedAt > timeBudgetMs) {
+            stoppedByTime = true;
+            stopBook = true;
+            break;
+          }
+          const chapter = batch[k];
+          const entry = loaded[k];
+          if (!entry || !entry.ok) {
+            skippedChapters += 1; // 索引之后文件被删 / 被占用：跳过，不让整次搜索失败
+            continue;
+          }
+          const text = entry.text;
+          scannedChapters += 1;
+          const haystack = normalizeForMatch(text);
+          // P22-4：先数清这一章到底几处命中（单次 indexOf 循环），再按旧口径只列前 3 条。
+          // 计数上限 / 时间预算只影响 chapterMatchCount 的精度（capped 时界面显示「N+」），
+          // 默认路径的结果条数 / 顺序 / limit / truncated 语义保持旧行为不变。
+          // P3：计数与片段位置同一次扫描产出（改前是计数 1 遍 + 片段 1 遍）。
+          const scanInfo = scanChapterMatches(haystack, normalized, MAX_CHAPTER_MATCH_COUNT, MAX_SNIPPETS_PER_CHAPTER, () =>
+            Date.now() - startedAt > timeBudgetMs
+          );
+          for (const at of scanInfo.positions) {
+            if (results.length >= limit) break;
+            results.push({
+              bookPath: book.path,
+              bookTitle: book.title,
+              folder: book.folder,
+              chapterId: chapter.id,
+              chapterIndex: chapter.index,
+              chapterName: chapter.name,
+              chapterFile: chapter.file,
+              matchIndex: at,
+              matchLength: normalized.length,
+              snippet: snippetAround(text, at, normalized.length),
+              chapterMatchCount: scanInfo.count,
+              chapterCountCapped: scanInfo.capped
+            });
+          }
+          if (scanInfo.count > 0) {
+            matchedChapters += 1;
+            totalMatches += scanInfo.count;
+          }
+          if (scanInfo.stopped) {
+            stoppedByTime = true;
+            stopBook = true;
+            break;
+          }
         }
-        scannedChapters += 1;
-        const haystack = normalizeForMatch(text);
-        // P22-4：先数清这一章到底几处命中（单次 indexOf 循环），再按旧口径只列前 3 条。
-        // 计数上限 / 时间预算只影响 chapterMatchCount 的精度（capped 时界面显示「N+」），
-        // 默认路径的结果条数 / 顺序 / limit / truncated 语义保持旧行为不变。
-        // P3：计数与片段位置同一次扫描产出（改前是计数 1 遍 + 片段 1 遍）。
-        const scanInfo = scanChapterMatches(haystack, normalized, MAX_CHAPTER_MATCH_COUNT, MAX_SNIPPETS_PER_CHAPTER, () =>
-          Date.now() - startedAt > timeBudgetMs
-        );
-        for (const at of scanInfo.positions) {
-          if (results.length >= limit) break;
-          results.push({
-            bookPath: book.path,
-            bookTitle: book.title,
-            folder: book.folder,
-            chapterId: chapter.id,
-            chapterIndex: chapter.index,
-            chapterName: chapter.name,
-            chapterFile: chapter.file,
-            matchIndex: at,
-            matchLength: normalized.length,
-            snippet: snippetAround(text, at, normalized.length),
-            chapterMatchCount: scanInfo.count,
-            chapterCountCapped: scanInfo.capped
-          });
-        }
-        if (scanInfo.count > 0) {
-          matchedChapters += 1;
-          totalMatches += scanInfo.count;
-        }
-        if (scanInfo.stopped) {
-          stoppedByTime = true;
-          break;
-        }
+        if (stopBook) break;
       }
+      if (stopBook) break;
     }
 
     const truncated =

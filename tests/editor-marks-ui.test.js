@@ -929,3 +929,29 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWEditorMark
   assert.equal(win.CWReadingUi, undefined);
   assert.equal(win.CWChapters, undefined);
 });
+
+// ---------- B21（v1.8.0 WP-29）：整章文本缓存随正文变化立刻释放 ----------
+test('B21：正文一变就释放 lastCaret / lastLinesKey 里的旧整章串（不等下一次覆盖）', () => {
+  const ctx = build({ text: '第一段\n第二段', caretParagraph: true, selectionStart: 4, invisibles: true });
+  ctx.ui.renderEditorMarks();
+  const firstCaret = ctx.state.marks.lastCaret;
+  const firstLines = ctx.state.marks.lastLinesKey;
+  assert.ok(firstCaret && firstCaret.text === '第一段\n第二段', '先有一份整章缓存');
+  assert.ok(firstLines && firstLines.text === '第一段\n第二段');
+
+  // 正文变了 + 关掉当前段落高亮：下一次渲染只做释放、不重算，最直接地观察旧串是否还被缓存钉住
+  ctx.state.marks.caretParagraph = false;
+  ctx.editorEl.value = '全新正文，另一段';
+  ctx.editorEl.selectionStart = 2;
+  ctx.ui.renderEditorMarks();
+  assert.equal(ctx.state.marks.lastCaret, null, '旧 lastCaret 必须立刻释放');
+  assert.equal(ctx.state.marks.lastLinesKey, null, '旧 lastLinesKey 必须立刻释放');
+
+  // 重新打开后缓存的是新串，不再是旧串
+  ctx.state.marks.caretParagraph = true;
+  ctx.ui.renderEditorMarks();
+  assert.equal(ctx.state.marks.lastCaret.text, '全新正文，另一段');
+  assert.equal(ctx.state.marks.lastLinesKey.text, '全新正文，另一段');
+  assert.notEqual(ctx.state.marks.lastCaret, firstCaret);
+  assert.equal(ctx.state.marks.lastCaret.text.includes('第一段'), false);
+});

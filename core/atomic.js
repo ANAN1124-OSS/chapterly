@@ -90,7 +90,35 @@ async function atomicWriteFileStream(filePath, produce, { ensureDir = true } = {
   }
 }
 
-// stripBom 从 core/common.js 来（B6）：原子读写 JSON 与导入 / 捕获共用同一份「只吃开头 BOM」的实现。
+// B19（v1.8.0 WP-29）：原子流式复制。把一个已经存在的文件原样复制到目标，语义与
+// atomicWriteFile(target, await fs.readFile(source)) 逐字节一致，但不在内存里整份物化：
+// 打开源文件 → 逐块读 → 逐块写给临时文件 → fsync → rename。任一步失败：关句柄、删临时文件、
+// 目标文件一个字节不动。返回实际写出的字节数（源不存在 / 读失败由调用方接住）。
+async function atomicCopyFile(source, filePath, { ensureDir = true, chunkSize } = {}) {
+  const rawChunk = Math.floor(Number(chunkSize));
+  const size = Number.isFinite(rawChunk) && rawChunk > 0 ? rawChunk : 1 << 20;
+  let written = 0;
+  await atomicWriteFileStream(
+    filePath,
+    async (write) => {
+      const handle = await fs.open(source, 'r');
+      try {
+        const buffer = Buffer.allocUnsafe(size);
+        for (;;) {
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+          if (!bytesRead) break;
+          await write(buffer.subarray(0, bytesRead));
+          written += bytesRead;
+        }
+      } finally {
+        try { await handle.close(); } catch { /* 忽略 */ }
+      }
+    },
+    { ensureDir }
+  );
+  return written;
+}
+
 async function readJson(filePath) {
   const raw = await fs.readFile(filePath, 'utf8');
   return JSON.parse(stripBom(raw));
@@ -103,6 +131,7 @@ async function writeJsonAtomic(filePath, obj, options = {}) {
 module.exports = {
   atomicWriteFile,
   atomicWriteFileStream,
+  atomicCopyFile,
   renameWithRetry,
   readJson,
   writeJsonAtomic,

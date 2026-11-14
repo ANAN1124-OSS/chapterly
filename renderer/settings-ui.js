@@ -791,6 +791,10 @@
     // 回填按作用域取配置：全局 = 全局默认；按书 = 生效值（全局 + 本书覆盖）。
     const cfg = settingsBackfillConfig(state.settingsScope);
     state.settingsBackup = state.config ? { ...state.config } : null;
+    // V204（v1.8.0 WP-29）：先把弹层显示出来，再去等统计 IPC —— 改前 refreshStats() 在
+    // remove('hidden') 之前 await，点击「设置」到弹层出现要白等一趟 stats:get 往返（几十 ms，
+    // 冷盘 / 杀软下可感知）。回填 / 分区 / 台账的顺序与内容都不变，只是弹层先可见。
+    $('settings-backdrop').classList.remove('hidden');
     // 打开时刷新一次今天 / 近 30 天，避免跨过午夜后还显示昨天的数字
     await refreshStats();
     fillSettingsFields(cfg);
@@ -799,7 +803,6 @@
     const searchInput = settingsSearchInput();
     if (searchInput) searchInput.value = '';
     updateSettingsScopeUi();
-    $('settings-backdrop').classList.remove('hidden');
     // 入口指定了分区（U-D4 的码字日历）时立刻滚到那里 —— 放在异步台账读取之前，
     // 弹层一出现就已经在日历上，不会先停在顶部再跳一下。普通打开没有 section，一个字都不动。
     if (options && options.section) revealSettingsSection(options.section);

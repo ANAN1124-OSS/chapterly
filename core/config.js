@@ -772,11 +772,26 @@ function withBooksRootOverride(config, override) {
   return { ...config, booksRoot: override };
 }
 
+// B10（v1.8.0 WP-29）：窗口位置「这次要写进 config 的 5 个标量」与上一次落盘的是否完全相同。
+// 拖动 / 最大化切换会连发 resize + move，防抖写回时几何常常没变；一样就没必要再序列化 + 写整份
+// config.json。只比较 5 个标量（x / y / width / height / maximized），任何一边缺字段都按「不同」处理
+// （宁可多写一次，也不能把首次恢复漏掉）。比较用 Number() 归一，字符串 / 数字写法不同不算变化。
+function sameWindowBounds(previous, next) {
+  const one = previous && typeof previous === 'object' ? previous : null;
+  const two = next && typeof next === 'object' ? next : null;
+  if (!one || !two) return false;
+  for (const key of ['x', 'y', 'width', 'height']) {
+    if (Number(one[key]) !== Number(two[key])) return false;
+  }
+  return Boolean(one.maximized) === Boolean(two.maximized);
+}
+
 module.exports = {
   createConfigStore,
   DEFAULTS,
   WORDLIST_MAX,
   sanitize,
   sanitizeLastBook,
+  sameWindowBounds,
   withBooksRootOverride
 };

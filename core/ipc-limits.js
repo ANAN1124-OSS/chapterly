@@ -170,13 +170,19 @@ function sanitizeChapterIndexes(indexes, { total = 0 } = {}) {
   if (!Array.isArray(indexes)) return null;
   const limit = Number.isFinite(total) && total > 0 ? Math.floor(total) : 0;
   const picked = [];
+  // B8（v1.8.0 WP-29）：去重换 Set —— 20000 条上限下 indexOf 最坏 O(n²)（约 2×10⁸ 次比较），
+  // 这里只关心「出现过没有」，Set.has 是 O(1)，输出（去重 + 升序）与旧实现逐项一致。
+  const seen = new Set();
   for (const raw of indexes) {
     if (picked.length >= MAX_CHAPTER_ITEMS) break;
     const value = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
     if (!Number.isFinite(value)) continue;
     const index = Math.floor(value);
     if (index < 0 || index >= limit) continue;
-    if (picked.indexOf(index) < 0) picked.push(index);
+    if (!seen.has(index)) {
+      seen.add(index);
+      picked.push(index);
+    }
   }
   picked.sort((a, b) => a - b);
   return picked;

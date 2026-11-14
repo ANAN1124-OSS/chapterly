@@ -1,5 +1,6 @@
 // 正字数口径统一（v0.9 B-2 / 外部审计 F1）：**唯一实现**是 core/chapters.js 的 countChars
-// （`String(text == null ? '' : text).replace(/\s/g, '').length`，即「去掉所有空白后的 UTF-16 长度」）。
+// （「去掉所有空白后的 UTF-16 长度」；B13 / WP-29 起改成逐字符码点判定，不再分配去空白副本，
+// 判定表与 JS 正则的 \s 逐项一致）。
 //
 // 这一轮把 5 处复制实现改成引用同一份（core/fragments.js、core/search-index.js、
 // renderer/editor-logic.js、renderer/renderer.js 两处内联），**口径一个字都没改**。
@@ -10,7 +11,7 @@
 //   2. 跨实现一致：每个消费方走**自己的真实入口**（editor-logic 的 countChars 与 selectionStats、
 //      fragments 的 cleanFragmentText、search-index 的 buildBookEntry、renderer.js 的四个调用点），
 //      结果必须逐字等于基线数字；
-//   3. 静态闸门：core/ 与 renderer/ 里「剔除空白」的 replace 只许剩 core/chapters.js 一处，
+//   3. 静态闸门：core/ 与 renderer/ 里不许再有「剔除空白」的 replace（任何 \s → 空串都不行），
 //      消费方必须显式引用共享实现、不许再长出本地 countChars 副本（防回潮）。
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -198,12 +199,9 @@ test('静态闸门：core/ 与 renderer/ 只剩 core/chapters.js 一处「剔除
       if (name.endsWith('.js')) files.push(`${dir}/${name}`);
     }
   }
-  // 精确口径：验收命令里的 `replace(/\s/g, '')` 只许出现一次，且在 core/chapters.js
-  const exact = /replace\(\/\\s\/g, ''\)/;
-  const exactHits = files.filter((rel) => exact.test(read(rel)));
-  assert.deepEqual(exactHits, ['core/chapters.js'], '剔除空白的正字数只许有 core/chapters.js 一处实现');
-
-  // 放宽口径：任何「用 \s 匹配、替换成空串」的 replace 也只许一处（挡住 replace(/\s+/g, '') 之类回潮）
+  // 精确口径（B13 / WP-29 起）：countChars 改成逐字符码点判定，仓库里已没有 `replace(/\s/g, '')`；
+  // 闸门改成「任何 `\s` → 空串 的实现都不许回来」——旧口径只有 chapters.js 一处，现在应为 0 处。
+  // 判据只能收紧不能放宽：以后要加「数字数」入口只能走 chapters.countChars。
   const stripAny = /\.replace\(\/((?:[^/\\\n]|\\.)+)\/g,\s*''\)/g;
   const broadHits = [];
   for (const rel of files) {
@@ -214,8 +212,14 @@ test('静态闸门：core/ 与 renderer/ 只剩 core/chapters.js 一处「剔除
   }
   assert.deepEqual(
     [...new Set(broadHits)],
-    ['core/chapters.js'],
-    '除 core/chapters.js 外不许再有「把 \\s 换成空串」的实现（口径要改只能改这一处）'
+    [],
+    '不许再有「把 \\s 换成空串」的实现（字数口径唯一实现是 core/chapters.js 的 countChars）'
+  );
+  // chapters.js 必须仍是逐字符判定（不许退回 replace 旧写法，也不许被别人抄一份）
+  assert.match(
+    read('core/chapters.js'),
+    /function countChars\(text\)[\s\S]{0,400}?isCountWhitespace\(source\.charCodeAt/,
+    'countChars 必须走逐字符码点判定（B13：不再分配一份去掉空白的副本）'
   );
 });
 

@@ -377,8 +377,33 @@
     return counts;
   }
 
+  // 正文字数（去空白）的唯一实现（WP-24 口径）。B13（v1.8.0 WP-29）：改成逐字符码点判定，
+  // 不再 `replace(/\s/g, '')` —— 后者每次都先分配一份与正文等长的「去空白副本」，百万字正文
+  // 在朗读 / 导出 / 统计链路上会多一次全尺寸分配。判定表与 JS 正则的 \s 逐项一致
+  // （\t \n \v \f \r + 空格 + U+00A0 U+1680 U+2000–200A U+2028 U+2029 U+202F U+205F U+3000 U+FEFF）。
+  function isCountWhitespace(code) {
+    if (code <= 0x20) return code === 0x20 || (code >= 0x09 && code <= 0x0d);
+    if (code < 0xa0) return false;
+    return (
+      code === 0xa0 ||
+      code === 0x1680 ||
+      (code >= 0x2000 && code <= 0x200a) ||
+      code === 0x2028 ||
+      code === 0x2029 ||
+      code === 0x202f ||
+      code === 0x205f ||
+      code === 0x3000 ||
+      code === 0xfeff
+    );
+  }
+
   function countChars(text) {
-    return String(text == null ? '' : text).replace(/\s/g, '').length;
+    const source = String(text == null ? '' : text);
+    let count = 0;
+    for (let i = 0; i < source.length; i += 1) {
+      if (!isCountWhitespace(source.charCodeAt(i))) count += 1;
+    }
+    return count;
   }
 
   // ---------- 分卷 ----------
@@ -402,17 +427,26 @@
     return out;
   }
 
+  // V116（v1.8.0 WP-29）：卷 → 权重表只建一次（与 normalizeChapterOrder 共用同一份实现）。
+  // 以前 volumeRank 每次 sanitizeVolumes + findIndex，insertIndexForVolume 在 O(N) 循环里反复调用
+  // → O(N·V) 次分配 / 比较；现在一次 Map(id→rank) 查表。
+  function volumeRankMap(meta) {
+    const volumes = sanitizeVolumes(meta && meta.volumes);
+    const rank = new Map();
+    for (let i = 0; i < volumes.length; i += 1) rank.set(volumes[i].id, i + 1);
+    return rank;
+  }
+
   // 卷在排序里的权重：0 = 未分卷，1..n = 第1..n卷；找不到的卷也算未分卷
   function volumeRank(meta, volumeId) {
     if (!volumeId) return 0;
-    const index = sanitizeVolumes(meta && meta.volumes).findIndex((v) => v.id === volumeId);
-    return index < 0 ? 0 : index + 1;
+    return volumeRankMap(meta).get(volumeId) || 0;
   }
 
   function normalizeChapterOrder(meta) {
     invalidateChapterNumberCache(meta);
     const volumes = sanitizeVolumes(meta && meta.volumes);
-    const rank = new Map(volumes.map((v, i) => [v.id, i + 1]));
+    const rank = volumeRankMap(meta);
     const list = Array.isArray(meta && meta.chapters) ? meta.chapters.slice() : [];
     // 卷没了 / 卷 id 不认识的章节一律回「未分卷」，避免界面里出现指向不存在卷的章
     const decorated = list.map((chapter, index) => {
@@ -435,21 +469,26 @@
   }
 
   // 某卷里最后一章的数组下标之后（没有章节就返回该组插入点）
+  // V116：一次建 rank Map，单趟同时找「本卷最后一章」与「第一个排在后面的卷」——
+  // 旧实现第二段在循环里对每个 id 重新 sanitizeVolumes + findIndex。
   function insertIndexForVolume(meta, volumeId) {
     const list = Array.isArray(meta && meta.chapters) ? meta.chapters : [];
     const target = volumeId || null;
+    const ranks = volumeRankMap(meta);
+    const targetRank = target ? ranks.get(target) || 0 : 0;
     let last = -1;
+    let after = -1;
     for (let i = 0; i < list.length; i += 1) {
       const id = (list[i] && list[i].volumeId) || null;
       if (id === target) last = i;
+      if (after < 0) {
+        const rank = id ? ranks.get(id) || 0 : 0;
+        if (rank > targetRank) after = i;
+      }
     }
     if (last >= 0) return last + 1;
     // 卷里还没有章节：插到该卷分组应该开始的位置（下一个卷的第一章之前，或全书末尾）
-    const rank = volumeRank(meta, target);
-    for (let i = 0; i < list.length; i += 1) {
-      const id = (list[i] && list[i].volumeId) || null;
-      if (volumeRank(meta, id) > rank) return i;
-    }
+    if (after >= 0) return after;
     return list.length;
   }
 

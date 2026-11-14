@@ -471,8 +471,11 @@
     return MODE_LABELS[normalizeMode(value)];
   }
 
+  // V109（v1.8.0 WP-29）：逐字符输出改「分块 push + join」，不再在循环里 `out += …`。
+  // 简繁转换作用于整本导出副本（可达数百万字），`+=` 的 ConsString 链在展平时有峰值；
+  // 与 core/format.js 的 convertPunct 同一套写法。输出与旧实现逐字节相同。
   function convertWith(text, chars, phrases) {
-    let out = '';
+    const parts = [];
     for (let i = 0; i < text.length; i += 1) {
       const list = phrases.get(text[i]);
       let matched = null;
@@ -485,14 +488,14 @@
         }
       }
       if (matched) {
-        out += matched.to;
+        parts.push(matched.to);
         i += matched.from.length - 1;
         continue;
       }
       const mapped = chars.get(text[i]);
-      out += mapped === undefined ? text[i] : mapped;
+      parts.push(mapped === undefined ? text[i] : mapped);
     }
-    return out;
+    return parts.join('');
   }
 
   // 只转换传入的字符串；mode 不合法 / 空串 → 原样返回（连新字符串都不建）。

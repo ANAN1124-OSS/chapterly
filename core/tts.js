@@ -15,7 +15,7 @@
 // v0.9 B-3（审计 F3）：段落 / 行 / 去首尾空白这一层规则下沉到 core/paragraphs.js，
 // 和渲染层 editor-logic.js 共用同一份实现（以前两边各抄一份）；本模块不再自己定义。
 const chaptersLib = require('./chapters');
-const { clampInt, normalizeText } = require('./common');
+const { clampInt } = require('./common');
 const paragraphsLib = require('./paragraphs');
 const { trimmedRange, paragraphRanges } = paragraphsLib;
 
@@ -164,15 +164,59 @@ function chunkIndexAt(chunks, position) {
 }
 
 // 主入口：返回 { chunks, startIndex, paragraphs, chars, totalChars, truncated, options }
+// B13（v1.8.0 WP-29）：先按 MAX_SOURCE_CHARS 截断原始正文，再只对截断后的前缀归一 —— 旧实现先把
+// 全文做一遍正文归一（去 BOM / CRLF→LF）再 slice，还要对归一后的全文数字数，病态长文在「只处理
+// 前 100 万字」时仍会做两次全尺寸分配。下面两个助手与 core/common.js 的归一逐字符等价
+// （只去开头 BOM、CRLF / 独立 CR 归一成 LF），只是把工作限制在前缀范围内。
+function normalizedLength(source) {
+  const s = String(source == null ? '' : source);
+  const bom = s.charCodeAt(0) === 0xfeff ? 1 : 0;
+  let crlf = 0;
+  let at = s.indexOf('\r', bom);
+  while (at >= 0) {
+    if (s.charCodeAt(at + 1) === 0x0a) crlf += 1;
+    at = s.indexOf('\r', at + 1);
+  }
+  return s.length - bom - crlf;
+}
+
+// 归一后的前 limit 个字符（limit 是归一后坐标，不是原始下标）
+function normalizePrefix(source, limit) {
+  const s = String(source == null ? '' : source);
+  const start = s.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const max = Math.max(0, Math.floor(Number(limit) || 0));
+  if (start >= s.length || max === 0) return '';
+  // 常见路径：没有 CR（不用做替换）→ 直接 slice；有 CR 但整段都没超限 → 一次原生 replace。
+  const firstCr = s.indexOf('\r', start);
+  if (firstCr < 0) return s.length - start <= max ? s.slice(start) : s.slice(start, start + max);
+  if (s.length - start <= max) return s.slice(start).replace(/\r\n?/g, '\n');
+  // 超限 + 有 CR：先数到「产出 max 个归一字」需要多少原始字符，再只对这段前缀做替换。
+  let produced = 0;
+  let cursor = start;
+  let hasCr = false;
+  while (cursor < s.length && produced < max) {
+    if (s.charCodeAt(cursor) === 0x0d) {
+      hasCr = true;
+      cursor += s.charCodeAt(cursor + 1) === 0x0a ? 2 : 1;
+    } else {
+      cursor += 1;
+    }
+    produced += 1;
+  }
+  const raw = s.slice(start, cursor);
+  return hasCr ? raw.replace(/\r\n?/g, '\n') : raw;
+}
+
 function buildChunks(text, rawOptions) {
   const options = sanitizeOptions(rawOptions);
   const source = String(text == null ? '' : text);
-  const normalized = normalizeText(source);
-  const limit = Math.min(normalized.length, MAX_SOURCE_CHARS);
-  const body = limit < normalized.length ? normalized.slice(0, limit) : normalized;
+  const fullLength = normalizedLength(source);
+  const limit = Math.min(fullLength, MAX_SOURCE_CHARS);
+  const body = normalizePrefix(source, limit);
+  const truncatedBySize = limit < fullLength;
 
   const chunks = [];
-  let truncated = limit < normalized.length;
+  let truncated = truncatedBySize;
   const paragraphs = paragraphRanges(body);
   for (const para of paragraphs) {
     if (chunks.length >= options.maxChunks) {
@@ -199,8 +243,8 @@ function buildChunks(text, rawOptions) {
     chunks,
     startIndex: chunkIndexAt(chunks, options.caret),
     paragraphs: paragraphs.length,
-    chars: normalized.length,
-    totalChars: chaptersLib.countChars(normalized),
+    chars: fullLength,
+    totalChars: chaptersLib.countChars(source),
     truncated,
     options
   };

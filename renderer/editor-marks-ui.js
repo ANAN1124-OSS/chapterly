@@ -105,12 +105,23 @@
     return editorLogic.sanitizeThreshold(getLongParagraphThreshold());
   }
 
+  // B21（v1.8.0 WP-29）：lastCaret / lastLinesKey 的缓存里带着整章正文引用。正文一变（敲字 / 换章），
+// 旧串就不再有用，但若只等「下一次算完覆盖」才置空，旧串会被缓存多钉住一段时间，大章内存短暂翻倍。
+// 这里在发现缓存与当前正文不是同一份字符串时立刻释放（缓存位置不变，仍只用一份）。
+  function pruneStaleTextCaches(text) {
+    const caret = state.marks.lastCaret;
+    if (caret && caret.text !== text) state.marks.lastCaret = null;
+    const lines = state.marks.lastLinesKey;
+    if (lines && lines.text !== text) state.marks.lastLinesKey = null;
+  }
+
   // 当前段落高亮（v0.8-10，提案 N10）：只算「光标落在哪一段」给显示层用。
   // 正文超过 30 万字时 renderEditorMarks 入口已经把整层收起（F9），这里只是第二道防线，
   // 不单独提示（提示统一由入口门控弹一次）。
   function currentCaretParagraph() {
     if (!state.marks.caretParagraph) return null;
     const text = editorEl.value;
+    pruneStaleTextCaches(text);
     if (text.length > editorLogic.MAX_MARK_CHARS) {
       state.marks.caretTooLarge = true;
       return null;
@@ -131,7 +142,12 @@
   // 不整段扫正文；算不出来（正文变了 / 没有缓存）返回 -1，交回全文实现。
   function caretLineHint(pos) {
     const cache = state.marks.lastLinesKey;
-    if (!cache || cache.text !== editorEl.value) return -1;
+    if (!cache) return -1;
+    if (cache.text !== editorEl.value) {
+      // B21：正文变了就立刻放掉旧串，别让它在缓存里多留一屏
+      state.marks.lastLinesKey = null;
+      return -1;
+    }
     const from = Math.min(cache.pos, pos);
     const to = Math.max(cache.pos, pos);
     let delta = 0;
@@ -317,6 +333,7 @@
       return;
     }
     const text = editorEl.value;
+    pruneStaleTextCaches(text);
     // 代码审计 F9：整层是「整章正文的 DOM 镜像」——超长时只清标记项挡不住镜像本身的构建，
     // 所以入口直接整层收起、只提示一次；正文与保存完全不受影响。
     if (editorLogic.marksTooLarge(text)) {

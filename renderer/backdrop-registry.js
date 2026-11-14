@@ -76,5 +76,46 @@
     return false;
   }
 
-  return { LIST, STATE_LAYERS, CLASS_LAYERS, backdropId, isOpen, openNames, isBlocked };
+  // B16（v1.8.0 WP-29）：弹层开合缓存。渲染层的全局 keydown 每次都要问「有没有弹层开着」，
+  // 改前每次都 getElementById + classList 扫 17 层（打字热路径上的纯重复 DOM 读）。
+  // createOpenWatcher 在创建时算一次，并给每层挂一个 MutationObserver（只观察 class 属性）：
+  // 任何一层开 / 关都在同一拍刷新缓存，之后 isOpen() 是纯读变量。
+  // 没有 MutationObserver（或一层元素都找不到）时退回逐层现算，语义与改前完全一致。
+  // MutationObserver 构造函数可注入（单测用假实现，不依赖真实 DOM）。
+  function createOpenWatcher($, options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const Observer = opts.MutationObserver || (typeof MutationObserver === 'function' ? MutationObserver : null);
+    let cached = isBlocked($);
+    let observer = null;
+    if (Observer) {
+      observer = new Observer(() => {
+        cached = isBlocked($);
+      });
+      let watched = 0;
+      for (const name of LIST) {
+        const el = $(backdropId(name));
+        if (!el || typeof el !== 'object') continue;
+        observer.observe(el, { attributes: true, attributeFilter: ['class'] });
+        watched += 1;
+      }
+      if (!watched) observer = null;
+    }
+    return {
+      supported: Boolean(observer),
+      isOpen() {
+        if (observer) return cached;
+        return isBlocked($);
+      },
+      refresh() {
+        cached = isBlocked($);
+        return cached;
+      },
+      disconnect() {
+        if (observer && typeof observer.disconnect === 'function') observer.disconnect();
+        observer = null;
+      }
+    };
+  }
+
+  return { LIST, STATE_LAYERS, CLASS_LAYERS, backdropId, isOpen, openNames, isBlocked, createOpenWatcher };
 });

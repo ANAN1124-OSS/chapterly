@@ -137,21 +137,41 @@ async function collectOversizedTxt(sourceDir, txtFiles) {
 // 所以大小闸门必须递归看一遍（否则子目录里的 129 MB txt 绕过闸门被整个抄进书库）。
 // 排除口径与 copyAsBook 的 filter 一致（`_trash` / `.` 前缀不进），只认 .txt（与
 // storage.listTxtFiles 同一条规则），不跟符号链接目录（避免环形链接把扫描拖死）。
+// V116（v1.8.0 WP-29）：递归改「迭代队列 + 每批 6 个目录并发 readdir」——深目录树不再一层层
+// 串行等盘；排除规则、连通性（读不出的子树直接跳过）与最终排序（zh-Hans-CN 升序）逐项不变。
+const LIST_DIR_CONCURRENCY = 6;
+
 async function listTxtFilesDeep(dir, prefix = '') {
-  let entries;
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
   const found = [];
-  for (const entry of entries) {
-    if (entry.name === storage.TRASH_DIR || entry.name.startsWith('.')) continue;
-    const rel = prefix ? path.join(prefix, entry.name) : entry.name;
-    if (entry.isDirectory()) {
-      found.push(...(await listTxtFilesDeep(path.join(dir, entry.name), rel)));
-    } else if (entry.isFile() && /\.txt$/i.test(entry.name)) {
-      found.push(rel);
+  const queue = [{ dir, prefix: prefix || '' }];
+  while (queue.length) {
+    const batch = queue.splice(0, LIST_DIR_CONCURRENCY);
+    const listings = await Promise.all(
+      batch.map(async (item) => {
+        let entries;
+        try {
+          entries = await fs.readdir(item.dir, { withFileTypes: true });
+        } catch {
+          return null;
+        }
+        const nextDirs = [];
+        const files = [];
+        for (const entry of entries) {
+          if (entry.name === storage.TRASH_DIR || entry.name.startsWith('.')) continue;
+          const rel = item.prefix ? path.join(item.prefix, entry.name) : entry.name;
+          if (entry.isDirectory()) {
+            nextDirs.push({ dir: path.join(item.dir, entry.name), prefix: rel });
+          } else if (entry.isFile() && /\.txt$/i.test(entry.name)) {
+            files.push(rel);
+          }
+        }
+        return { nextDirs, files };
+      })
+    );
+    for (const listing of listings) {
+      if (!listing) continue;
+      for (const file of listing.files) found.push(file);
+      for (const next of listing.nextDirs) queue.push(next);
     }
   }
   return found.sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
@@ -596,6 +616,9 @@ module.exports = {
   // C30（v1.8.0 WP-26）：目录包含判定（大小写归一）导出给单测钉口径
   isInside,
   formatImportSize,
+  // V116（v1.8.0 WP-29）：递归清单导出给单测，钉住「并发 readdir + 排序 / 排除口径不变」。
+  // 生产调用点仍只有 importNovelFile 一处（见上）。
+  listTxtFilesDeep,
   importSizeProblem,
   isProbablyBinary,
   hasUtf16Bom

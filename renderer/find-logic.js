@@ -42,8 +42,30 @@
 
   // 主进程 findMatches 的返回是 [{ index, length }]；这里只信任「非负整数下标 + 至少 1 个字」的项，
   // 排序后交给下面几个函数用。坏数据一律丢掉，不让它把高亮层画歪。
+  // B12（v1.8.0 WP-29）：输入已经是「规范化好的升序数组」时直接原样返回 —— 键盘导航每次 F3 / 回车
+  // 都对同一份 ≤5000 条命中重新校验 + sort + 重建对象，这一步是纯重复劳动。判定条件（逐项原始对象、
+  // 非负整数下标 / 长度、至少 1 个字、主序不降）全部满足才复用；任一不满足仍走原来的「丢弃 + 重建 + 排序」，
+  // 坏数据永远进不了高亮层。返回的数组只读（本模块不做任何原地修改）。
+  function isNormalizedMatchList(raw) {
+    if (!Array.isArray(raw)) return false;
+    let previousIndex = -1;
+    let previousLength = -1;
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') return false;
+      const index = item.index;
+      const length = item.length;
+      if (!Number.isInteger(index) || !Number.isInteger(length)) return false;
+      if (index < 0 || length < 1) return false;
+      if (index < previousIndex || (index === previousIndex && length < previousLength)) return false;
+      previousIndex = index;
+      previousLength = length;
+    }
+    return true;
+  }
+
   function normalizeMatches(raw) {
     if (!Array.isArray(raw)) return [];
+    if (isNormalizedMatchList(raw)) return raw;
     const out = [];
     for (const item of raw) {
       if (!item || typeof item !== 'object') continue;
@@ -172,13 +194,17 @@
   }
 
   // 命中位置在第几行（1 基，和界面上的「第 N 行」一致）；越界夹到文首 / 文末。
+  // B12（v1.8.0 WP-29）：不再逐字符扫全文 —— 用 indexOf('\n') 只在换行处推进，
+  // 命中在章尾时也只做「实际换行数」次调用（旧实现要扫 pos 个 UTF-16 单元）。
   function lineOfIndex(rawText, rawIndex) {
     const text = toText(rawText);
     const n = Math.floor(Number(rawIndex));
     const pos = Number.isFinite(n) ? Math.min(Math.max(n, 0), text.length) : 0;
     let line = 1;
-    for (let i = 0; i < pos; i += 1) {
-      if (text[i] === '\n') line += 1;
+    let at = text.indexOf('\n');
+    while (at >= 0 && at < pos) {
+      line += 1;
+      at = text.indexOf('\n', at + 1);
     }
     return line;
   }
