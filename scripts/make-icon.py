@@ -10,6 +10,11 @@ import struct
 import sys
 import zlib
 
+# 审计 D7（v1.8.0 WP-38）：engines 只声明 Node；唯一 Python 脚本在入口先自报版本门槛
+# （sys.stdout.reconfigure 需要 3.7+），别让用户撞到 AttributeError。
+if sys.version_info < (3, 7):
+    sys.exit("make-icon.py 需要 Python 3.7 或更高版本（当前 %d.%d）；只用标准库，不需要 Pillow。" % sys.version_info[:2])
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
