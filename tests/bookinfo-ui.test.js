@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const bookinfoUi = require('../renderer/bookinfo-ui');
+const imeGuard = require('../renderer/ime-guard');
 const bookInfoLib = require('../core/bookinfo');
 const chaptersLib = require('../core/chapters');
 
@@ -13,10 +14,8 @@ const chaptersLib = require('../core/chapters');
 // 冲突徽标 / 修复按钮 / ⋯ 菜单坐标 / 保存成功 / 失败提示在 Node 里一步都测不到。
 // 搬出来以后用「假 host + 假 DOM」逐条钉住，再用静态闸门保证渲染层不长回第二份。
 //
-// 契约：host 8 个成员 = 基础 5（$, state, api, call, toast）+ render{bookInfoLib,bookGroupOf,
-// chapterTitle,formatChars,formatRelativeTime} + shelf{shelfGroupList,shelfQueryText,shelfSearchResults,
-// updateShelfSearchUi,renderContinueWriting,renderShelfContent} + actions{openBookByPath,openBookAtChapter,
-// openRepair,openConflictDialog,showBookMenu,updateWindowTitle,promptText,refreshShelf}。
+// 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ imeGuard（输入法组字守卫，WP-04）+
+// render{bookInfoLib,bookGroupOf,chapterTitle,formatChars,formatRelativeTime} + shelf{...} + actions{...}。
 
 const realDocument = globalThis.document;
 test.after(() => {
@@ -219,6 +218,7 @@ function build(options = {}) {
     api,
     call: options.call === undefined ? async (fn, ...args) => fn(...args) : options.call,
     toast(message, kind) { calls.toast.push([message, kind]); },
+    imeGuard,
     render: {
       bookInfoLib: options.bookInfoLib || bookInfoLib,
       bookGroupOf: (book) => bookInfoLib.readBookInfo(book).group,
@@ -257,9 +257,9 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...bookinfoUi.REQUIRED_HOST].sort(), ['$', 'actions', 'api', 'call', 'render', 'shelf', 'state', 'toast']);
-  assert.equal(bookinfoUi.REQUIRED_HOST.length, 8);
+test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...bookinfoUi.REQUIRED_HOST].sort(), ['$', 'actions', 'api', 'call', 'imeGuard', 'render', 'shelf', 'state', 'toast']);
+  assert.equal(bookinfoUi.REQUIRED_HOST.length, 9);
   const ctx = build();
   assert.doesNotThrow(() => bookinfoUi.create(ctx.host));
   assert.throws(() => bookinfoUi.create(null), /createBookinfoUi 需要 host 对象/);
@@ -842,6 +842,18 @@ test('输入法组字中按 Enter 不触发 updateBookInfo（V73）', async () =
   assert.equal(prevented, 0, '组字中的 Enter 也不该拦默认行为');
   assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), false, '弹层不关，表单还能接着填');
 
+  // WP-04 / V112 的防御性加固：旧版 / 第三方输入法只报 keyCode 229（isComposing 为假）
+  backdrop._fire('keydown', {
+    key: 'Enter',
+    keyCode: 229,
+    target: { id: 'bookinfo-author' },
+    preventDefault() { prevented += 1; }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(saved, 0, 'keyCode 229 的 Enter 同样不该发 updateBookInfo');
+  assert.equal(prevented, 0, 'keyCode 229 的 Enter 也不该拦默认行为');
+  assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), false, '弹层仍开着');
+
   // 组字结束后的普通 Enter 仍是提交（旧行为不变）
   backdrop._fire('keydown', {
     key: 'Enter',
@@ -1047,7 +1059,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWBookinfoUi
   vm.runInContext(moduleSrc, context, { filename: 'renderer/bookinfo-ui.js' });
   assert.equal(typeof win.CWBookinfoUi, 'object');
   assert.deepEqual(Object.keys(win.CWBookinfoUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWBookinfoUi.REQUIRED_HOST.length, 8);
+  assert.equal(win.CWBookinfoUi.REQUIRED_HOST.length, 9);
   assert.equal(win.CWSensitiveUi, undefined);
 });
 

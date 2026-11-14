@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const findUi = require('../renderer/find-ui');
+const imeGuard = require('../renderer/ime-guard');
 const findLogic = require('../renderer/find-logic');
 const chaptersLib = require('../core/chapters');
 
@@ -13,9 +14,8 @@ const chaptersLib = require('../core/chapters');
 // 令牌与旧结果 / F3 环绕提示 / 整本清单结构 / 当前章替换撤销链 / 整本替换确认与备份提示在 Node 里都测不到。
 // 搬出来以后用「假 host + 假 DOM」逐条钉住，再用静态闸门保证渲染层不长回第二份。
 //
-// 契约：host 8 个成员 = 基础 5（$, state, api, call, toast）+ find{findLogic,editorEl,syncEditorOverlay,
-// scrollCaretIntoView,onEditorInput} + nav{chapterTitle,switchChapter,loadChapterAt,currentChapterLabel,
-// hideHeaderMenus} + collab{...11 个跨域回调，其中 4 个惰性转发}。
+// 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ imeGuard（输入法组字守卫，WP-04）+
+// find{...} + nav{...} + collab{...11 个跨域回调，其中 4 个惰性转发}。
 
 const realDocument = globalThis.document;
 const realWindow = globalThis.window;
@@ -212,6 +212,7 @@ function build(options = {}) {
     api,
     call: async (fn, ...args) => fn(...args),
     toast(message, kind) { calls.toast.push([message, kind]); },
+    imeGuard,
     find: {
       findLogic,
       editorEl,
@@ -252,9 +253,9 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...findUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'find', 'nav', 'state', 'toast']);
-  assert.equal(findUi.REQUIRED_HOST.length, 8);
+test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...findUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'find', 'imeGuard', 'nav', 'state', 'toast']);
+  assert.equal(findUi.REQUIRED_HOST.length, 9);
   const ctx = build();
   assert.doesNotThrow(() => findUi.create(ctx.host));
   assert.throws(() => findUi.create(null), /createFindUi 需要 host 对象/);
@@ -712,6 +713,53 @@ test('runReplaceAll（整本）：未保存三选一 / 不再二次确认（登�
 });
 
 // ---------- 事件绑定 ----------
+test('输入法组字中的 Enter 不触发查找 / 替换（WP-04 / 审计 C3、V112）', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, query: '张三', text: '张三说张三笑了' });
+  ctx.ui.setupFindUi();
+  let prevented = 0;
+  const findAllCalls = () => ctx.calls.api.filter((c) => c[0] === 'findAll').length;
+  const replaceCalls = () => ctx.calls.api.filter((c) => c[0] === 'replaceInText').length;
+
+  // 查找框：isComposing = true 的 Enter 是「上屏候选词」
+  dom.map.get('find-query').value = '张三';
+  dom.map.get('find-query')._fire('keydown', {
+    key: 'Enter', isComposing: true, preventDefault() { prevented += 1; }, stopPropagation() {}
+  });
+  await flush();
+  assert.equal(findAllCalls(), 0, '组字中按 Enter 不许发查找 IPC');
+  assert.equal(ctx.state.find.total, 0);
+  assert.equal(prevented, 0, '组字中的 Enter 也不该拦默认行为（否则输入法收不到上屏事件）');
+
+  // V112 的防御性加固：旧版 / 第三方输入法只报 keyCode 229（isComposing 为假）
+  dom.map.get('find-query')._fire('keydown', {
+    key: 'Enter', keyCode: 229, preventDefault() { prevented += 1; }, stopPropagation() {}
+  });
+  await flush();
+  assert.equal(findAllCalls(), 0, 'keyCode 229 同样按组字处理');
+  assert.equal(prevented, 0);
+
+  // 替换框：组字中的 Enter 不许触发整本替换（1.4.0 起无二次确认，误触直接写盘）
+  dom.map.get('find-replace').value = '李四';
+  dom.map.get('find-scope').value = 'book';
+  dom.map.get('find-replace')._fire('keydown', { key: 'Enter', isComposing: true, preventDefault() { prevented += 1; } });
+  await flush();
+  assert.equal(replaceCalls(), 0, '组字中按 Enter 不许触发整本替换');
+  assert.equal(dom.map.get('find-backdrop').classList.contains('hidden'), true, '面板不许在组字中被收起');
+  assert.equal(prevented, 0);
+  dom.map.get('find-replace')._fire('keydown', { key: 'Enter', keyCode: 229, preventDefault() { prevented += 1; } });
+  await flush();
+  assert.equal(replaceCalls(), 0, 'keyCode 229 同样不许触发整本替换');
+  assert.equal(prevented, 0);
+
+  // 组字结束后的普通 Enter：旧行为不变（真的查一遍；范围回到当前章，走 findAll）
+  dom.map.get('find-scope').value = 'current';
+  dom.map.get('find-query')._fire('keydown', { key: 'Enter', shiftKey: false, preventDefault() {}, stopPropagation() {} });
+  await flush();
+  assert.equal(findAllCalls(), 1, '普通 Enter 照旧查找');
+  assert.equal(ctx.state.find.total, 2);
+});
+
 test('setupFindUi：打开 / 上一处下一处 / 状态栏 / 词变化 / 替换 / 关闭 / 回车 全部注册并接到真实函数', async () => {
   const dom = makeDocument();
   const ctx = build({ dom, query: '张三', text: '张三说张三笑了' });
@@ -825,6 +873,6 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFindUi，�
   vm.runInContext(moduleSrc, context, { filename: 'renderer/find-ui.js' });
   assert.equal(typeof win.CWFindUi, 'object');
   assert.deepEqual(Object.keys(win.CWFindUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWFindUi.REQUIRED_HOST.length, 8);
+  assert.equal(win.CWFindUi.REQUIRED_HOST.length, 9);
   assert.equal(win.CWTidyCardUi, undefined);
 });

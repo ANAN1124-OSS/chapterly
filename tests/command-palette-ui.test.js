@@ -13,6 +13,7 @@ const assert = require('node:assert/strict');
 
 const paletteModule = require('../renderer/command-palette-ui');
 const registryModule = require('../renderer/command-registry');
+const imeGuard = require('../renderer/ime-guard');
 
 // ---------- 极简假 DOM ----------
 function makeEl(tag, doc) {
@@ -140,6 +141,7 @@ function build(overrides = {}) {
   const registry = registryModule.createRegistry({});
   const host = {
     $,
+    imeGuard,
     doc,
     registry,
     items: () => ITEMS.map((item) => ({ ...item, run: () => ran.push(item.id) })),
@@ -151,8 +153,8 @@ function build(overrides = {}) {
   return { ui, doc, host, ran, closed, registry, $ };
 }
 
-test('契约：host 五个成员缺一个就抛 TypeError', () => {
-  assert.deepEqual([...paletteModule.REQUIRED_HOST].sort(), ['$', 'items', 'onClose', 'onRun', 'registry']);
+test('契约：host 六个成员缺一个就抛 TypeError', () => {
+  assert.deepEqual([...paletteModule.REQUIRED_HOST].sort(), ['$', 'imeGuard', 'items', 'onClose', 'onRun', 'registry']);
   for (const key of paletteModule.REQUIRED_HOST) {
     const { ui, host } = build();
     void ui;
@@ -219,6 +221,31 @@ test('输入过滤：跨组命中、空结果给文案、清空后回到全量',
   input.value = '';
   input._listeners.filter((l) => l.type === 'input').forEach((l) => l.fn({ target: input }));
   assert.equal($('command-list').querySelectorAll('.command-row').length, ITEMS.length);
+});
+
+test('输入法组字中的 Enter 不执行命令（WP-04 / 审计 C8、V112）', () => {
+  const { ui, $, ran } = build();
+  ui.open(null);
+  ui.setup();
+  ui.setActive(1);
+  const input = $('command-input');
+  let prevented = 0;
+  const fire = (event) => {
+    input._listeners.filter((l) => l.type === 'keydown').forEach((l) => l.fn(event));
+  };
+  fire({ key: 'Enter', isComposing: true, preventDefault() { prevented += 1; } });
+  assert.deepEqual(ran, [], '组字中按 Enter 不许执行命令');
+  assert.equal(ui.isOpen(), true, '面板保持打开');
+  assert.equal(prevented, 0, '组字中的 Enter 也不该拦默认行为');
+  // V112 的防御性加固：只报 keyCode 229 的旧版 / 第三方输入法同样不执行
+  fire({ key: 'Enter', keyCode: 229, preventDefault() { prevented += 1; } });
+  assert.deepEqual(ran, []);
+  assert.equal(ui.isOpen(), true);
+  assert.equal(prevented, 0);
+  // 组字结束后普通 Enter：旧行为不变（执行并收起）
+  fire({ key: 'Enter', preventDefault() {} });
+  assert.deepEqual(ran, [ITEMS[1].id]);
+  assert.equal(ui.isOpen(), false);
 });
 
 test('Enter 执行：先记最近使用、再收起、再跑（顺序反了会拿不到条目）', () => {

@@ -12,9 +12,10 @@
  *   修复 / 新书卡）全部一字未改。事件绑定随域搬进 setupBookinfoUi()（弹层 Enter 提交 / 取消 / 保存 / 分组筛选）。
  *   1.3.0 T4 空状态三件套与 T5 首次运行提示是本轮新增，均为显示层。
  *
- * 契约：createBookinfoUi(host) 由渲染层调用一次。host 8 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createBookinfoUi(host) 由渲染层调用一次。host 9 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（books、shelfGroup、shelfContent、bookInfoBook）/ IPC 白名单 / IPC 包装 / 提示
+ *     imeGuard,                            // 输入法组字守卫（ime-guard.js）：弹层 Enter 提交键的判据（WP-04 / V112）
  *     render: {                             // 书卡与筛选条渲染用的纯逻辑 / 格式化口径
  *       bookInfoLib,                        //   core/bookinfo.js：读 / 清洗作者、简介、分组、标签
  *       bookGroupOf,                        //   core/bookinfo.js 的分组归一（书架筛选条用）
@@ -60,7 +61,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'render', 'shelf', 'actions'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'render', 'shelf', 'actions'];
 
   // V75：保存进行中标记。模块级只有一份（生产环境每个窗口只 create 一次）：
   // 同一时刻只允许一次 updateBookInfo 在飞，连按 Enter / 保存按钮不会重复发 IPC。
@@ -71,7 +72,7 @@
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createBookinfoUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, render, shelf, actions } = host;
+    const { $, state, api, call, toast, imeGuard, render, shelf, actions } = host;
     if (typeof render !== 'object') throw new TypeError('createBookinfoUi 的 host.render 必须是对象');
     for (const key of ['bookInfoLib', 'bookGroupOf', 'chapterTitle', 'formatChars', 'formatRelativeTime']) {
       if (render[key] === undefined || render[key] === null) throw new TypeError('createBookinfoUi 的 host.render 缺少 ' + key);
@@ -840,9 +841,10 @@
   // 事件绑定（与搬前 bindEvents() 里的书籍信息块逐行一致；由渲染层在原位置调用一次）
   function setupBookinfoUi() {
     $('bookinfo-backdrop').addEventListener('keydown', (event) => {
-      // 1.7.1 P1（审计 V73）：组字中的 Enter 是输入法上屏，不是「保存」——
+      // 1.7.1 P1（审计 V73）/ WP-04（V112）：组字中的 Enter 是输入法上屏，不是「保存」——
       // 不加这一判，中文作者打书名 / 作者时按 Enter 会把半截表单存下去并关掉弹层。
-      if (event.key === 'Enter' && !event.isComposing && event.target && event.target.id !== 'bookinfo-brief') {
+      // 判据统一走 ime-guard.js（isComposing || keyCode 229）。
+      if (event.key === 'Enter' && !imeGuard.isImeComposing(event) && event.target && event.target.id !== 'bookinfo-brief') {
         event.preventDefault();
         void saveBookInfoDialog();
       }
