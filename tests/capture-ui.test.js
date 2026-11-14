@@ -25,6 +25,7 @@ if (typeof capture.recordPreview !== 'function') {
 
 const captureUiModule = require('../renderer/capture-ui');
 const staleGuard = require('../renderer/stale-guard');
+const backdropRegistry = require('../renderer/backdrop-registry');
 
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -192,7 +193,15 @@ function makeDom() {
     'jump-backdrop',
     'history-backdrop',
     'bookinfo-backdrop',
-    'conflict-backdrop'
+    'conflict-backdrop',
+    // WP-17（C35）：注册表里的另外 7 层（以前手写清单漏掉的）
+    'proofread-backdrop',
+    'sensitive-backdrop',
+    'fragment-backdrop',
+    'fragments-backdrop',
+    'group-manage-backdrop',
+    'command-backdrop',
+    'shortcuts-backdrop'
   ]) {
     map.set(id, makeEl(id.endsWith('-backdrop') ? 'div' : id === 'capture-position' ? 'select' : 'span'));
   }
@@ -207,6 +216,13 @@ function makeDom() {
     'history-backdrop',
     'bookinfo-backdrop',
     'conflict-backdrop',
+    'proofread-backdrop',
+    'sensitive-backdrop',
+    'fragment-backdrop',
+    'fragments-backdrop',
+    'group-manage-backdrop',
+    'command-backdrop',
+    'shortcuts-backdrop',
     'btn-capture-import'
   ]) {
     map.get(id).classList.add('hidden');
@@ -651,6 +667,33 @@ test('打开：没打开书 / 别的弹层挡着 → 预检拦下；已开着再
     });
     assert.equal(opens, 1, '正常打开前要收起顶栏菜单');
     assert.equal((await uiNormal.open('正文')).code, 'ALREADY_OPEN');
+  }));
+
+test('WP-17（C35）：弹层清单走统一注册表——17 个 backdrop 里除自己外任一开着都拦下捕获面板', () =>
+  withFakeDocument(async () => {
+    const blockedLayers = backdropRegistry.LIST.filter((name) => name !== 'capture');
+    assert.equal(blockedLayers.length, 16, '注册表 17 层，除 capture 自己外都要拦');
+    for (const name of blockedLayers) {
+      const ctx = build();
+      ctx.dom.map.get(`${name}-backdrop`).classList.remove('hidden');
+      const ui = captureUiModule.create(ctx.host);
+      assert.equal((await ui.open('正文')).code, 'PANEL_BUSY', `${name} 开着时捕获面板不该叠上来`);
+      assert.equal(ui.isOpen(), false, `${name} 挡下时不许打开面板`);
+      assert.ok(
+        ctx.log.includes('toast:warn:先关闭当前弹窗，再从剪贴板捕获'),
+        `${name} 挡下时要给同一句提示`
+      );
+      assert.equal(ctx.log.includes('api.captureQueueList'), false, '被挡时不读队列');
+    }
+
+    // 自己那层（capture-backdrop）不算阻塞：面板已开着时由 preflight 的 ALREADY_OPEN 先挡，
+    // panelBlocked 的 except 保证不会把自己算成「别的弹窗挡着」。
+    const selfCtx = build();
+    selfCtx.dom.map.get('capture-backdrop').classList.remove('hidden');
+    const uiSelf = captureUiModule.create(selfCtx.host);
+    const opened = await uiSelf.open('正文');
+    assert.equal(opened.ok, true, 'capture-backdrop 不该被当成别的弹层');
+    assert.equal(uiSelf.isOpen(), true);
   }));
 
 test('openTriggered：未入队 + 队列非空 → pending 一条 + 队列条目；已入队 → 不重复 pending', () =>
@@ -1293,8 +1336,10 @@ test('静态闸门：renderer.js 只接线（9 成员 host / 列表委托 / 插�
 test('静态闸门：面板实现只在 renderer/capture-ui.js，renderer.js 不许长回第二份', () => {
   assert.ok(moduleSrc.includes('function createCaptureUi(host)'), '模块必须交出 createCaptureUi(host)');
   assert.ok(
-    moduleSrc.includes('root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon)'),
-    '浏览器挂载口径'
+    moduleSrc.includes(
+      'root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon, root.CWBackdropRegistry)'
+    ),
+    '浏览器挂载口径（1.8.0 WP-17：第 4 个依赖是弹层注册表）'
   );
   assert.ok(moduleSrc.includes('REQUIRED_HOST'), '必须有 host 契约清单');
   for (const forbidden of [

@@ -16,6 +16,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const esc = require('../renderer/esc-registry');
+const backdropRegistry = require('../renderer/backdrop-registry');
 
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -407,14 +408,11 @@ test('接线闸门：注册表读到的每个探针字段，渲染层的 escProb
   assert.ok(start > 0, 'renderer.js 里找不到 escProbe()');
   const end = RENDERER_SOURCE.indexOf('\n  }', start);
   const body = RENDERER_SOURCE.slice(start, end);
-  // 动态补齐的那批 backdrop：ESC_BACKDROPS 列表 + `${name}-backdrop` 拼法
-  const listStart = RENDERER_SOURCE.indexOf('const ESC_BACKDROPS = [');
-  const listEnd = RENDERER_SOURCE.indexOf('];', listStart);
-  const dynamic = new Set(
-    RENDERER_SOURCE.slice(listStart, listEnd).match(/'([a-z-]+)'/g).map((hit) => hit.slice(1, -1))
-  );
-  assert.ok(dynamic.size >= 12, 'ESC_BACKDROPS 至少覆盖那 12 个弹层');
-  assert.match(body, /`\$\{name\}-backdrop`/, 'escProbe 要用 ESC_BACKDROPS 拼 backdrop id');
+  // 动态补齐的那批 backdrop：esc 探针遍历 renderer/backdrop-registry.js 的 CLASS_LAYERS（1.8.0 WP-17 / C35）
+  const dynamic = new Set(backdropRegistry.CLASS_LAYERS);
+  assert.ok(dynamic.size >= 12, '弹层注册表至少覆盖那 12 个弹层');
+  assert.match(body, /backdropRegistry\.CLASS_LAYERS/, 'escProbe 要遍历弹层注册表的 CLASS_LAYERS');
+  assert.match(body, /backdropRegistry\.isOpen\(\$,\s*name\)/, 'escProbe 要用注册表的 isOpen 现算 backdrop 字段');
   const fields = new Set(Array.from(REGISTRY_SOURCE.matchAll(/\bp\.([A-Za-z][A-Za-z0-9]*)/g)).map((hit) => hit[1]));
   assert.ok(fields.size >= 10, `从注册表里只抽到 ${fields.size} 个探针字段，解析是不是失效了`);
   const unwired = Array.from(fields).filter((name) => !dynamic.has(name) && !new RegExp(`\\b${name}\\s*:`).test(body));

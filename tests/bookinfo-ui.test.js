@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const bookinfoUi = require('../renderer/bookinfo-ui');
 const imeGuard = require('../renderer/ime-guard');
+const backdropRegistry = require('../renderer/backdrop-registry');
 const bookInfoLib = require('../core/bookinfo');
 const chaptersLib = require('../core/chapters');
 
@@ -1009,7 +1010,7 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
   assert.equal(rendererSrc.split('bookinfoUi.setupBookinfoUi();').length - 1, 1, 'setup 只调一次');
   assert.match(rendererSrc, /'close-bookinfo': \(\) => closeBookInfoDialog\(\),/);
   assert.match(rendererSrc, /'close-group-manage': \(\) => closeGroupManageDialog\(\),/);
-  assert.ok(rendererSrc.includes("'group-manage'"), 'ESC_BACKDROPS 要登记分组管理弹层');
+  assert.ok(backdropRegistry.LIST.includes('group-manage'), '弹层注册表要登记分组管理弹层');
   assert.ok(rendererSrc.includes('renderShelf();'), '书架 / 正文搜索 / 事件绑定仍按名字调 renderShelf');
   for (const key of ['openBookInfoDialog', 'closeBookInfoDialog', 'readBookInfoForm', 'saveBookInfoDialog', 'renderShelf', 'createBookWithTitle']) {
     assert.match(rendererSrc, new RegExp('^      ' + key + ',$', 'm'), 'testHooksScope 少了 ' + key);
