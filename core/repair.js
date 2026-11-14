@@ -134,8 +134,21 @@ async function restoreFromBak(bookPath, io = {}) {
   const bakPath = path.join(bookPath, storage.BOOK_BAK);
   let raw;
   try {
+    // V104（v1.8.0 WP-19）：.bak 也是「整份读进内存 → JSON.parse」的小文件，与 readBookMeta 同一条
+    // 独立上限。坏同步盘把 .bak 换成超大文件时先 stat 拒绝，绝不整份读进主进程；超限报
+    // BAK_TOO_LARGE（与「没有 .bak」的 NO_BAK / 「解析不了」的 BAK_INVALID 区分开）。
+    const stat = await fs.stat(bakPath);
+    const tooLarge = storage.readSizeProblem(stat.size, {
+      code: 'BAK_TOO_LARGE',
+      label: storage.BOOK_BAK,
+      limit: storage.MAX_META_READ_BYTES,
+      tail: '没有读进内存'
+    });
+    if (tooLarge) throw new storage.StorageError(tooLarge.code, tooLarge.message);
     raw = await fs.readFile(bakPath, 'utf8');
-  } catch {
+  } catch (err) {
+    // 闸门报错原样上抛（界面按 code 分支）；其余 IO 失败仍按老口径报「没有找到 .bak」
+    if (err instanceof storage.StorageError) throw err;
     throw new storage.StorageError('NO_BAK', '没有找到 书目.json.bak，无法从备份恢复');
   }
   let meta;

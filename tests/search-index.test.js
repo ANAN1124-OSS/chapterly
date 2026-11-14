@@ -200,6 +200,50 @@ test('正文索引：建索引落在 userData（不进书库），只存指纹�
   assert.ok(first.chapters[0].mtimeMs > 0 && first.chapters[0].size > 0);
 });
 
+// C17（v1.8.0 WP-19）：索引文件也要先 stat 再读 —— 以前直接 readFile 再 JSON.parse，
+// 被外部程序换成 2 GB 文件时（误放的视频 / 坏同步盘）会把主进程内存打爆。
+test('正文索引：索引文件超限 → 记 INDEX_TOO_LARGE 且一次都不读，随后按空索引重建覆盖', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '测试书', '测试书', [{ name: '旧车站', text: '雨还在下，他在旧车站等谁。' }]);
+  const indexPath = path.join(userData, search.INDEX_FILE_NAME);
+  await fs.writeFile(indexPath, '{"version":1,"books":[]}', 'utf8');
+  await fs.truncate(indexPath, search.MAX_INDEX_READ_BYTES + 1); // 稀疏文件：只改大小，不真写 64 MB
+
+  const realReadFile = fs.readFile;
+  let indexReads = 0;
+  fs.readFile = async (...args) => {
+    if (String(args[0]) === indexPath) {
+      indexReads += 1;
+      throw new Error('超限索引不许走进 readFile');
+    }
+    return realReadFile(...args);
+  };
+  const store = makeStore(userData);
+  try {
+    await store.load();
+  } finally {
+    fs.readFile = realReadFile;
+  }
+
+  assert.equal(indexReads, 0, '超限索引一次都不许 readFile（不许进内存）');
+  assert.equal(store.getProblem(), 'INDEX_TOO_LARGE', '错误码要和「索引内容坏了」的 CORRUPT 可区分');
+  assert.equal(store.getIndex().books.length, 0);
+  assert.equal(store.getBytes(), 0);
+
+  // 下一次校验自动重建（与索引损坏同一条自愈路径）：超限文件被正常索引覆盖，搜索照常
+  const status = await store.ensure({ booksRoot, force: true });
+  assert.equal(status.books, 1);
+  assert.equal(status.problem, null);
+  assert.ok((await fs.stat(indexPath)).size < 1024 * 1024, '重建后索引恢复正常大小');
+  const hit = await store.search({ booksRoot, query: '旧车站' });
+  assert.equal(hit.tooShort, false);
+  assert.equal(hit.results.length, 1);
+});
+
 test('正文索引：搜正文返回章名 / 上下文 / 命中位置，大小写不敏感，搜不到的返回空', async () => {
   const base = await mkTmp();
   const userData = path.join(base, 'userdata');

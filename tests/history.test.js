@@ -446,6 +446,50 @@ test('历史：还原删章备份只把 txt 放回书文件夹，不改章节列
   );
 });
 
+// C18（v1.8.0 WP-19）：删章散文件还原是 128 MB 闸门的漏网入口 —— 以前直读 _trash 里的备份，
+// 备份被外部换成超大文件时整份进主进程。与其它还原路径同一口径：stat + readSizeProblem 先拒绝。
+test('历史：删章散文件备份超限 → HISTORY_TOO_LARGE，不读内容、不写回书里', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '超限删章备份');
+  const meta = await storage.readBookMeta(bookPath);
+  await storage.saveChapterText(bookPath, meta.chapters[0].file, '现稿。\n');
+  const metaBefore = await fs.readFile(path.join(bookPath, '书目.json'), 'utf8');
+  await fs.mkdir(path.join(bookPath, '_trash'), { recursive: true });
+  const trashName = '2026-10-31-215500-002-丢失的章节.txt';
+  const trashPath = path.join(bookPath, '_trash', trashName);
+  await fs.writeFile(trashPath, '先写一点点，再把长度改成超限', 'utf8');
+  await fs.truncate(trashPath, storage.MAX_CHAPTER_READ_BYTES + 1); // 稀疏文件：只改大小
+
+  const realReadFile = fs.readFile;
+  let trashReads = 0;
+  fs.readFile = async (...args) => {
+    if (String(args[0]) === trashPath) {
+      trashReads += 1;
+      throw new Error('超限备份不许走进 readFile');
+    }
+    return realReadFile(...args);
+  };
+  let failed = null;
+  try {
+    failed = await storage
+      .restoreHistoryFile(bookPath, `file:${trashName}`, '002-丢失的章节.txt')
+      .then(() => null, (err) => err);
+  } finally {
+    fs.readFile = realReadFile;
+  }
+
+  assert.ok(failed, '超限备份必须明确报错');
+  assert.equal(failed.code, 'HISTORY_TOO_LARGE');
+  assert.match(failed.message, /128 MB/);
+  assert.match(failed.message, /没有还原到书里/);
+  assert.equal(failed.message.includes(root), false, '错误文案不能带本机完整路径');
+  assert.equal(trashReads, 0, '超限备份一次都不许 readFile（不许进内存）');
+  // 书里没有多出文件，书目一个字节没动
+  await assert.rejects(fs.access(path.join(bookPath, '002-丢失的章节.txt')), (err) => err.code === 'ENOENT');
+  assert.equal(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'), metaBefore);
+  await fs.truncate(trashPath, 0).catch(() => {});
+});
+
 test('历史：书目备份 / 未识别备份不能还原，缺组时报错清楚', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await makeBook(root, '不能还原书');
