@@ -460,6 +460,46 @@ test('正文索引：整本建位图按批累积，跨批边界结果与整本�
   assert.equal(body.includes('missingText'), true);
 });
 
+// V107（v1.8.0 WP-21）：lastModified 以前写 `Math.max(metaMtimeMs, ...chapters.map(...), 0)` ——
+// 把整个章节数组展开成函数实参，10 万+ 章时抛 RangeError，又被 buildBookEntry 外层吞成
+// 「这本书不建索引」（书还在书架上却搜不到）。现在改循环累加：这里用 20 万条假章节钉住
+// 「不展开实参、不爆栈、取到真正的最大值」，并用静态闸门钉住 buildBookEntry 的调用点。
+test('V107/WP-21：lastModified 改循环取最大（20 万章不展开实参），buildBookEntry 必须走它', async () => {
+  const HUGE = 200000;
+  const huge = Array.from({ length: HUGE }, (_, i) => ({ mtimeMs: i + 1 }));
+  assert.equal(search.latestModifiedMs(0, huge), HUGE);
+  // 书目 mtime 更大时取书目；空 / 坏形状按旧口径的 0 / 忽略处理
+  assert.equal(search.latestModifiedMs(HUGE + 1, huge), HUGE + 1);
+  assert.equal(search.latestModifiedMs(0, []), 0);
+  assert.equal(search.latestModifiedMs(0, null), 0);
+  assert.equal(search.latestModifiedMs(NaN, [{ mtimeMs: 5 }]), 5);
+  assert.equal(search.latestModifiedMs(0, [{ mtimeMs: NaN }, { mtimeMs: 'x' }, { mtimeMs: 7 }]), 7);
+
+  // 真实小书：lastModified = max(书目 mtime, 各章 mtime)，与旧口径逐字一致（换实现不改语义）
+  const base = await mkTmp();
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(booksRoot);
+  const { bookPath } = await makeBook(booksRoot, '时间书', '时间书', [
+    { name: '一', text: '甲' },
+    { name: '二', text: '乙' }
+  ]);
+  const built = await search.buildBookEntry(bookPath, '时间书', null, {});
+  const metaStat = await fs.stat(path.join(bookPath, '书目.json'));
+  const chapterStats = await Promise.all(
+    built.entry.chapters.map((chapter) => fs.stat(path.join(bookPath, chapter.file)))
+  );
+  assert.equal(built.entry.lastModified, Math.max(metaStat.mtimeMs, ...chapterStats.map((item) => item.mtimeMs)));
+
+  // 静态闸门：不许再出现「把 chapters 展开成 Math.max 实参」（只看代码行，注释里的历史写法不算）
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'search-index.js'), 'utf8');
+  const code = source.replace(/^\s*\/\/.*$/gm, '');
+  const anchor = source.indexOf('async function buildBookEntry');
+  const body = source.slice(anchor, source.indexOf('function createSearchStore', anchor));
+  assert.equal(/\.\.\.\s*chapters/.test(code), false, '不许再把整个 chapters 数组展开成实参');
+  assert.equal(/Math\.max\(\s*metaMtimeMs/.test(code), false, 'Math.max 展开写法不许回潮');
+  assert.equal(body.includes('latestModifiedMs(metaMtimeMs, chapters)'), true, 'buildBookEntry 必须走循环版最大值');
+});
+
 test('正文索引：外部改 txt（mtime / size 变了）会被发现并更新索引', async () => {
   const base = await mkTmp();
   const userData = path.join(base, 'userdata');

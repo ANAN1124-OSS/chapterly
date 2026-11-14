@@ -392,6 +392,21 @@ async function listBookFolders(booksRoot) {
     .sort((a, b) => a.folder.localeCompare(b.folder, 'zh-Hans-CN'));
 }
 
+// V107（v1.8.0 WP-21）：一本书的「最后修改时间」取书目 mtime 与全部章节行情的最大值。
+// 以前写的是 `Math.max(metaMtimeMs, ...chapters.map(...), 0)` —— 把整个章节数组展开成函数实参，
+// V8 的参数上限约 12.5 万个，10 万+ 章时会抛 RangeError；buildBookEntry 外层把异常吞成
+// 「这本书不建索引」，书还在书架上却搜不到。读侧章节数上限（storage.MAX_META_CHAPTERS）落地后
+// 正常书目到不了那个量级，但这里仍改成循环累加：不依赖实参个数，也不为了取最大值多分配一个数组。
+function latestModifiedMs(metaMtimeMs, chapters) {
+  let latest = Number.isFinite(metaMtimeMs) ? metaMtimeMs : 0;
+  if (!Array.isArray(chapters)) return latest;
+  for (const chapter of chapters) {
+    const value = chapter && chapter.mtimeMs;
+    if (Number.isFinite(value) && value > latest) latest = value;
+  }
+  return latest;
+}
+
 // 一本书的索引：读书目 + 逐章文件指纹；正文变过（或强制 / 脏标记）才重算位图。
 // 返回 null 表示「没有可用书目」（损坏 / 没有 书目.json），这本书不参与搜索。
 async function buildBookEntry(bookPath, folder, old, options, onProgress) {
@@ -463,7 +478,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     }
   }
 
-  const lastModified = Math.max(metaMtimeMs || 0, ...chapters.map((chapter) => chapter.mtimeMs), 0);
+  const lastModified = latestModifiedMs(metaMtimeMs, chapters);
   const base = {
     path: bookPath,
     folder,
@@ -1198,6 +1213,8 @@ module.exports = {
   parseIndex,
   serializeIndex,
   totalChapters,
+  // V107（WP-21）：取「书目 / 章节 mtime 最大值」的纯函数（单测用超大数组钉住不许再展开实参）
+  latestModifiedMs,
   buildBookEntry,
   createSearchStore
 };

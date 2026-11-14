@@ -68,6 +68,11 @@ const MAX_CHAPTER_READ_BYTES = 128 * 1024 * 1024;
 // 索引构建都会在 JSON.parse 之前把主进程内存打爆。书目给独立小上限：20000 章 × 最坏一条
 // 约 1 KB（章名 40 字 + 备注 200 字）≈ 20 MB，32 MB 留足余量；同时比章节的 128 MB 严格。
 const MAX_META_READ_BYTES = 32 * 1024 * 1024;
+// V107（v1.8.0 WP-21）：书目里 chapters 的条数也要有硬上限。IPC 写入侧（core/ipc-limits.js 的
+// MAX_CHAPTER_ITEMS）早已按 20000 条截断，读侧以前只校验「是数组、每条有 file」——手改 / 损坏的
+// 书目塞进十万条记录时，书架扫描、排序、逐章 stat、索引构建都会按条数放大开销。超限按「书目坏了」
+// 处理（与 INVALID_META / PARSE_ERROR 同族；文件太大仍走 META_TOO_LARGE），一个字节的正文都不动。
+const MAX_META_CHAPTERS = 20000;
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB'];
 
 // 体量文案（与 core/importer.js 的 formatImportSize 同口径：1 位小数直到 10 以上）
@@ -257,6 +262,15 @@ async function readBookMeta(bookPath) {
     throw new StorageError('PARSE_ERROR', `${BOOK_FILE} 解析失败（内容不是合法 JSON）`);
   }
   validateMeta(meta);
+  // V107（v1.8.0 WP-21）：章节条数硬上限。放在形状校验之后、迁移 / 清洗 / 排序之前 —— 坏书目
+  // 一条都不向下跑（不逐条 cleanChapterMeta / normalizeChapterOrder，也不让章节数组流进
+  // listBooks 的 bookStats 逐章 stat）；上限取与 IPC 写入侧 MAX_CHAPTER_ITEMS 同数的 20000。
+  if (meta.chapters.length > MAX_META_CHAPTERS) {
+    throw new StorageError(
+      'META_TOO_MANY_CHAPTERS',
+      `${BOOK_FILE} 的章节记录有 ${meta.chapters.length} 条，超过单本上限 ${MAX_META_CHAPTERS}，按损坏处理`
+    );
+  }
   // 版本迁移：v0.4.x 的书没有 schemaVersion，按版本 0 走一遍迁移（目前是空迁移），
   // 只在内存里补成 1；下次正常写盘才会落进 书目.json。未来版本号原样保留。
   meta = schemaLib.migrateMeta(meta);
@@ -2130,6 +2144,8 @@ module.exports = {
   MAX_CHAPTER_READ_BYTES,
   // C17/V104（WP-19）：书目 / .bak 用独立小上限（32 MB）；修复、索引等模块共用这一条口径
   MAX_META_READ_BYTES,
+  // V107（WP-21）：书目 chapters 条数硬上限（与 core/ipc-limits.js 的 MAX_CHAPTER_ITEMS 同数）
+  MAX_META_CHAPTERS,
   readSizeProblem,
   nowIso,
   exists,

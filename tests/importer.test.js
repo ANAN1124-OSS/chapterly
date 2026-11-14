@@ -76,6 +76,41 @@ test('重复导入同名文件夹自动加 -2', async () => {
   assert.equal(books.length, 2);
 });
 
+// V106（v1.8.0 WP-21）：导入文件夹撞名探测以前是 `for (;;)`，没有上限（理论上不可终止 /
+// 同名书极多时 O(n²) 次 stat）。现在与 core/chapters.js 的章节名后缀同一口径：`-2` … `-999`
+// 用完仍撞名就抛 BAD_PATH。maxSuffix 可注入，单测不必真造 999 个文件夹。
+test('V106/WP-21：导入文件夹撞名后缀 999 硬上限，撞满明确报 BAD_PATH 而不是无限探测', async () => {
+  assert.equal(importer.MAX_FOLDER_SUFFIX, 999);
+  // 与章节名撞名后缀同一口径（chapters.js 的 MAX_NAME_SUFFIX 故意不导出，按源码钉住数值）
+  const chaptersSource = require('node:fs').readFileSync(
+    path.join(__dirname, '..', 'core', 'chapters.js'),
+    'utf8'
+  );
+  assert.match(chaptersSource, /const MAX_NAME_SUFFIX = 999;/);
+
+  const base = await mkTmp();
+  const booksRoot = path.join(base, '书架');
+  await fs.mkdir(booksRoot);
+  await fs.mkdir(path.join(booksRoot, '导入的书'));
+  await fs.mkdir(path.join(booksRoot, '导入的书-2'));
+
+  // 只撞到 base / base-2：照常拿 base-3（上限只拦「全撞满」，不改变正常 -N 编号）
+  assert.equal(await importer.uniqueFolderName(booksRoot, '导入的书', { maxSuffix: 3 }), '导入的书-3');
+  // 再占掉 base-3：maxSuffix=3 已试完 → 明确报错，不无限循环
+  await fs.mkdir(path.join(booksRoot, '导入的书-3'));
+  await assert.rejects(
+    () => importer.uniqueFolderName(booksRoot, '导入的书', { maxSuffix: 3 }),
+    (err) => {
+      assert.equal(err.code, 'BAD_PATH');
+      assert.match(err.message, /已试到第 3 个后缀/);
+      assert.equal(err.message.includes(booksRoot), false, '错误文案不能带本机路径');
+      return true;
+    }
+  );
+  // 默认上限下的正常路径逐字不变（本书架里 base / base-2 / base-3 都有 → base-4）
+  assert.equal(await importer.uniqueFolderName(booksRoot, '导入的书'), '导入的书-4');
+});
+
 test('没有书也没有 txt 的文件夹被跳过', async () => {
   const base = await mkTmp();
   const src = path.join(base, '空文件夹');

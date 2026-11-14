@@ -1588,6 +1588,56 @@ test('C17/WP-19：超大 书目.json 明确报 META_TOO_LARGE、一个字节都�
   assert.equal(booksAfter[0].status, 'ok');
 });
 
+// ---------- V107（v1.8.0 WP-21）：书目章节条数硬上限（读侧） ----------
+// IPC 写入侧 core/ipc-limits.js 早就按 20000 条截断，读侧以前只校验「chapters 是数组、每条有 file」：
+// 手改 / 损坏的书目里塞进十万条章节记录时，书架扫描、排序、逐章 stat、索引构建都会按条数放大开销。
+// 现在 readBookMeta 在形状校验之后补同一条硬上限，超限按「书目坏了」处理（与 INVALID_META 同族）。
+
+test('V107/WP-21：正好 20000 章的书目放行，多一条明确报 META_TOO_MANY_CHAPTERS 且书卡 corrupt', async () => {
+  const root = await mkTmp();
+  const { path: bookPath, meta } = await storage.createBook(root, '章数上限');
+  const metaPath = path.join(bookPath, storage.BOOK_FILE);
+  const makeChapters = (count) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `ch_${String(i + 1).padStart(3, '0')}`,
+      file: `${String(i + 1).padStart(3, '0')}-章${i + 1}.txt`,
+      name: `章${i + 1}`,
+      createdAt: '2026-01-01T00:00:00.000Z'
+    }));
+  const writeChapters = (count) =>
+    fs.writeFile(metaPath, JSON.stringify({ ...meta, chapters: makeChapters(count) }), 'utf8');
+
+  // 正好到上限：放行，条数原样（不静默截断）
+  await writeChapters(storage.MAX_META_CHAPTERS);
+  const atLimit = await storage.readBookMeta(bookPath);
+  assert.equal(atLimit.chapters.length, storage.MAX_META_CHAPTERS);
+  assert.equal(
+    atLimit.chapters[storage.MAX_META_CHAPTERS - 1].file,
+    `${String(storage.MAX_META_CHAPTERS).padStart(3, '0')}-章${storage.MAX_META_CHAPTERS}.txt`
+  );
+
+  // 多一条就报错：不向下跑（不迁移 / 不清洗 / 不进 bookStats），文案可读且不带本机路径
+  await writeChapters(storage.MAX_META_CHAPTERS + 1);
+  await assert.rejects(
+    () => storage.readBookMeta(bookPath),
+    (err) => {
+      assert.equal(err.code, 'META_TOO_MANY_CHAPTERS');
+      assert.match(err.message, new RegExp(`有 ${storage.MAX_META_CHAPTERS + 1} 条`));
+      assert.match(err.message, new RegExp(`上限 ${storage.MAX_META_CHAPTERS}`));
+      assert.equal(err.message.includes(bookPath), false, '错误文案不能带本机完整路径');
+      return true;
+    }
+  );
+  // 书架：书卡照常列出、标 corrupt、reason 就是那句可读文案；没有按 20001 章去逐章 stat
+  const books = await storage.listBooks(root);
+  assert.equal(books.length, 1);
+  assert.equal(books[0].status, 'corrupt');
+  assert.match(books[0].reason, /超过单本上限/);
+  assert.equal(books[0].reason.includes(bookPath), false);
+  assert.equal(books[0].chapterCount, 0);
+  assert.equal(books[0].totalChars, 0);
+});
+
 test('显式保存仍更新 updatedAt：改章节状态 / 改名会写，扫描回填不写', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '保存测试');
