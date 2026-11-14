@@ -403,6 +403,27 @@ test('静态闸门：删章入口先过 assertChapterFile，回滚只用校验�
   assert.ok(moveAssertAt < moveBody.indexOf('ensureDir('), '校验先于建 _trash 目录：被拒时零副作用');
 });
 
+// WP-20（审计 C19）：还原到替换前的可还原集合必须由 assertChapterFile 决定 ——
+// 坏书目的 file=「书目.json」/「nul.txt」不许进集合，目标也不许再只过 assertInside
+// （assertInside 只拦「逃逸出书目录」，不拦非 txt / 保留名 / 退化名）。
+test('静态闸门：还原替换备份只认 assertChapterFile 通过的 .txt（C19）', () => {
+  const body = functionBody(STORAGE_SOURCE, 'async function restoreReplaceBackup(', '');
+  assert.match(body, /const currentFiles = new Set\(\);/, '可还原集合要逐条校验，不许直接照搬 meta.chapters[].file');
+  assert.match(body, /assertChapterFile\(bookPath, chapter\.file\)/, '书目字段必须先过 assertChapterFile');
+  assert.match(body, /currentFiles\.add\(chapter\.file\)/, '只有校验通过的章节文件才进集合');
+  assert.ok(body.includes('/\\.txt$/i.test(entry.name)'), '备份目录里只认 .txt 章节文件');
+  assert.match(
+    body,
+    /const target = assertChapterFile\(bookPath, entry\.name\)/,
+    '目标路径必须过 assertChapterFile（收窄退化名 / 系统保留名）'
+  );
+  assert.equal(body.includes('assertInside(bookPath, entry.name)'), false, '不许再用 assertInside 直接写目标');
+  assert.ok(
+    body.indexOf('assertChapterFile(bookPath, entry.name)') < body.indexOf('backupCurrentToRestoreDir('),
+    '校验必须先于「还原前备份」的复制副作用'
+  );
+});
+
 test('静态闸门：三个批次操作的中途失败都要带「改了几章 + 备份目录名」', () => {
   const cases = [
     ['async function formatBook(', 'FORMAT_FAILED', '整理备份'],

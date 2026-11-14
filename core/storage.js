@@ -1615,10 +1615,22 @@ async function restoreReplaceBackup(bookPath, backupName, options = {}) {
   } catch (err) {
     throw new StorageError('BACKUP_UNREADABLE', `替换备份读不出来：${errorText.describeForUi(err).message}`);
   }
-  const currentFiles = new Set(meta.chapters.map((chapter) => chapter.file));
+  // C19（v1.8.0 WP-20）：可还原集合只认「过 assertChapterFile 的章节文件」。
+  // validateMeta 只要求 chapters[].file 是非空字符串，坏书目的 file=「书目.json」/「nul.txt」
+  // 也能通过；照它还原会原子覆盖书目本身、或把系统保留名写进书。坏字段一律不进集合
+  // （与 core/history.js 的 canRestore 同一条口径：只供查看，不参与还原）。
+  const currentFiles = new Set();
+  for (const chapter of meta.chapters) {
+    try {
+      assertChapterFile(bookPath, chapter.file);
+      currentFiles.add(chapter.file);
+    } catch { /* 坏字段：那一章本来也打不开，先走「修复」流程，绝不让备份写回去 */ }
+  }
   const fileEntries = entries.filter((entry) => entry.isFile());
   if (!fileEntries.length) throw new StorageError('BACKUP_EMPTY', '这个替换备份里没有文件');
-  const restorable = fileEntries.filter((entry) => currentFiles.has(entry.name));
+  // C19：备份目录里只认 .txt —— 手放的 书目.json / 杂项文件既不预检、也绝不进还原集合
+  const isRestorableEntry = (entry) => /\.txt$/i.test(entry.name) && currentFiles.has(entry.name);
+  const restorable = fileEntries.filter(isRestorableEntry);
   if (!restorable.length) {
     throw new StorageError('BACKUP_NO_TARGET', '备份里的章节都不在书里了，没有可还原的内容');
   }
@@ -1639,11 +1651,13 @@ async function restoreReplaceBackup(bookPath, backupName, options = {}) {
   let safetyCopied = false;
   try {
     for (const entry of fileEntries) {
-      if (!currentFiles.has(entry.name)) {
-        skipped += 1; // 章节可能已经删掉了，别偷偷复活
+      if (!isRestorableEntry(entry)) {
+        skipped += 1; // 章节可能已经删掉了 / 不是 .txt 章节文件，别偷偷复活、也别写进书
         continue;
       }
-      const target = assertInside(bookPath, entry.name);
+      // C19：目标再过一遍 assertChapterFile（assertInside 不拦退化名 / 系统保留名），
+      // 这条校验排在 backupCurrentToRestoreDir 的复制副作用之前。
+      const target = assertChapterFile(bookPath, entry.name);
       if (await backupCurrentToRestoreDir(bookPath, entry.name, restoreDir)) safetyCopied = true;
       // P2-3：预检之后还能再变（TOCTOU），所以读盘这一步也走带大小闸门的入口
       const buffer = await loadChapterSource(path.join(backupDir, entry.name), {
