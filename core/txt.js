@@ -3,11 +3,17 @@
 // 注意：标题识别只决定「在哪里切」，章节名一律保留原文标题行，不改写作者的字。
 // stripBom / normalizeText 从 core/common.js 来（B6）：导入、捕获、查找、校对、朗读共用同一份
 // 「去开头 BOM + CRLF/CR 归一成 \n」的实现，这里只保留导出（旧调用方按名字取）。
+//
+// A1 / V113（v1.8.0 WP-30）：标题词表统一在 core/heading.js 的 import 场景（最严格——
+// 不认繁体「話」、不认全角数字、不认「开篇」关键词；「Chapter N」算关键词标题）。
+// 本文件只保留自己的切分逻辑与分隔符 / 长度严格度，别再往这里抄词表。
 const { stripBom, normalizeText } = require('./common');
-const CHAPTER_NUM_RE =
-  /^\s*第\s*([0-9零〇一二三四五六七八九十百千万两]{1,12})\s*([章节回卷集篇部话幕])([\s\S]*)$/;
-const CHAPTER_KEY_RE =
-  /^\s*(楔子|序章|序言|引子|前言|前传|外传|尾声|后记|番外篇?|终章|大结局|附录|Chapter\s+\d+)([\s\S]*)$/i;
+const heading = require('./heading');
+const CHAPTER_NUM_RE = new RegExp(
+  `^\\s*第\\s*([${heading.numeralClass('import')}]${heading.numeralRun('import')})\\s*` +
+    `([${heading.markerClass('import')}])([\\s\\S]*)$`
+);
+const CHAPTER_KEY_RE = new RegExp(`^\\s*(${heading.keywordSource('import')})([\\s\\S]*)$`, 'i');
 
 // 标题行允许的长度上限（极长的一行更可能是正文，直接排除）
 const MAX_HEADING_LENGTH = 300;
