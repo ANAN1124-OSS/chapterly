@@ -14,6 +14,16 @@ const exporter = require('../core/exporter');
 // 真实 Electron 侧的回归在 E2E 第 61 组（伪参数被拒 / 降级，主进程仍在响应）。
 
 const MAIN_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+// v1.8.0 WP-34（V114）：导出 / 校对 / 书 CRUD 三个域搬进 ipc/*.js。频道清单与接线闸门扫
+// 「main.js + 三个域模块」的合并文本（语义不变：入口仍然只有一份）；ipcMain 包装器数量仍只认 main.js。
+const IPC_SOURCE = [
+  'main.js',
+  'ipc/book.js',
+  'ipc/proofread.js',
+  'ipc/export.js'
+]
+  .map((rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'))
+  .join('\n');
 
 function registrations(source) {
   const re = /^[ \t]+(handleBook|handle)\('([^']+)'/gm;
@@ -26,10 +36,10 @@ function registrations(source) {
   }));
 }
 
-const REGISTRATIONS = registrations(MAIN_SOURCE);
+const REGISTRATIONS = registrations(IPC_SOURCE);
 const bodyOf = (channel) => {
   const hit = REGISTRATIONS.find((item) => item.channel === channel);
-  assert.ok(hit, `main.js 里找不到频道 ${channel}`);
+  assert.ok(hit, `主进程 IPC 源码里找不到频道 ${channel}`);
   return hit.body;
 };
 
@@ -394,7 +404,7 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
   assert.ok(bodyOf('text:replace').includes('assertReplaceOutput('), 'text:replace 必须估替换结果大小');
   // 跳章：不再是裸的 chapters.slice(0, 20000)，统一走 sanitizeChapterList
   assert.ok(bodyOf('jump:match').includes('sanitizeChapterList('), 'jump:match 必须清洗章节列表');
-  assert.equal(/chapters\.slice\(0,\s*20000\)/.test(MAIN_SOURCE), false, 'main.js 里不该再有裸截断');
+  assert.equal(/chapters\.slice\(0,\s*20000\)/.test(IPC_SOURCE), false, '主进程 IPC 源码里不该再有裸截断');
   // 写盘通道（审计 E6）：chapter:save 是全仓唯一漏掉正文校验的写盘入口，2026-11-05 补上。
   // C26（v1.8.0 WP-26）：null / undefined 不再当空章写盘 —— 渲染层传参故障时必须报 BAD_TEXT，
   // 不能静默清空整章。真实正文仍走 500 万字上限，落盘必须用校验后的正文。
@@ -480,9 +490,11 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
     /const safeRange = ipcLimits\.sanitizeRange\(range\);/.test(bodyOf('book:export-plan')),
     'book:export-plan 的 range 必须过 sanitizeRange'
   );
-  const prepare = MAIN_SOURCE.slice(
-    MAIN_SOURCE.indexOf('async function prepareExport('),
-    MAIN_SOURCE.indexOf('function archiveExportResult(')
+  // v1.8.0 WP-34（V114）：prepareExport 已随导出域搬进 ipc/export.js。
+  const exportSource = fs.readFileSync(path.join(__dirname, '..', 'ipc', 'export.js'), 'utf8');
+  const prepare = exportSource.slice(
+    exportSource.indexOf('async function prepareExport('),
+    exportSource.indexOf('function archiveExportResult(')
   );
   assert.ok(prepare.includes('sanitizeOverride(') && prepare.includes('sanitizeRange('), '三个导出共用 prepareExport 的清洗');
   assert.ok(/range:\s*safeRange/.test(prepare), 'prepareExport 要把清洗后的 range 交给调用方');

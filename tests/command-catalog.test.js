@@ -198,8 +198,10 @@ test('命令目录：? 页行 = 8 条带键帽的命令 + 系统键（各带分�
     assert.ok(row.scope, `${row.kbd} 要写清在哪儿生效`);
   }
   // 静态闸门：`?` 页的行确实来自目录模块（不是渲染层又抄了一张）。
-  assert.match(RENDERER, /commandCatalog\.shortcutRows\(/, 'renderShortcutRows 要从命令目录取行');
-  assert.match(RENDERER, /row\.scope/, '系统键的作用范围要画出来');
+  // v1.8.0 WP-34（D1）：快捷键一览整段搬进 renderer/shortcuts-ui.js —— 闸门跟着扫新位置。
+  const SHORTCUTS_UI = read('renderer/shortcuts-ui.js');
+  assert.match(SHORTCUTS_UI, /commandCatalog\.shortcutRows\(/, 'renderShortcutRows 要从命令目录取行');
+  assert.match(SHORTCUTS_UI, /row\.scope/, '系统键的作用范围要画出来');
 });
 
 test('命令目录：README 快捷键表由系统键表生成，与 README 里的表逐字一致（漂移即红）', () => {

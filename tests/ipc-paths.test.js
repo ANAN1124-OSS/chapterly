@@ -101,6 +101,16 @@ test('导入目录：自检 / 截图模式才认显式路径，且统一 resolve
 // 只要第一个参数是路径类名字（…Path / …Paths / …Dir / …File / name / ref），就必须
 // 走 handleBook，或者出现在下面的 PATH_CHANNEL_ALLOWLIST 里（每条都得写清靠什么校验）。
 const MAIN_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+// v1.8.0 WP-34（V114）：导出 / 校对 / 书 CRUD 三个域搬进 ipc/*.js —— 入口清单扫合并文本；
+// 「只有两处 ipcMain.handle」仍只认 main.js（两个包装函数的定义处）。
+const IPC_SOURCE = [
+  'main.js',
+  'ipc/book.js',
+  'ipc/proofread.js',
+  'ipc/export.js'
+]
+  .map((rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'))
+  .join('\\n');
 
 function registrations(source) {
   const re = /^[ \t]+(handleBook|handle)\('([^']+)'/gm;
@@ -121,7 +131,7 @@ function firstParam(body) {
   return (match && match[1]) || '';
 }
 
-const REGISTRATIONS = registrations(MAIN_SOURCE);
+const REGISTRATIONS = registrations(IPC_SOURCE);
 const PATHISH = /(path|paths|dir|dirs|file|files|folder|name|ref)$/i;
 
 // 直接过 handleBook 的频道（第一参数必然是 bookPath → 统一过 assertBookPath）。

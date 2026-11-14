@@ -268,16 +268,18 @@ test('静态闸门：config:set 必须过 filterPathPatch，三个对话框入�
     'config:set 必须调用 configGate.filterPathPatch 做来源校验'
   );
   // 三个正当来源：书架目录对话框 / 校对词表对话框 / 敏感词表对话框，各自记账
+  // v1.8.0 WP-34（V114）：校对 / 敏感词词表频道已搬进 ipc/proofread.js —— 与 main.js 一起扫。
+  const IPC_SOURCE = MAIN_SOURCE + fs.readFileSync(path.join(__dirname, '..', 'ipc', 'proofread.js'), 'utf8');
   assert.ok(
     MAIN_SOURCE.includes("rememberPickedConfigPath('booksRoot', filePaths[0])"),
     'shell:pick-folder 选中目录后必须记下 booksRoot 的来源'
   );
   assert.ok(
-    MAIN_SOURCE.includes('rememberPickedConfigPath(field, filePaths[0])'),
+    IPC_SOURCE.includes('rememberPickedConfigPath(field, filePaths[0])'),
     '选词表对话框必须按字段记下来源'
   );
-  assert.ok(MAIN_SOURCE.includes("field: 'proofreadWordsPath'"), '校对词表必须记到 proofreadWordsPath');
-  assert.ok(MAIN_SOURCE.includes("field: 'sensitiveWordsPath'"), '敏感词表必须记到 sensitiveWordsPath');
+  assert.ok(IPC_SOURCE.includes("field: 'proofreadWordsPath'"), '校对词表必须记到 proofreadWordsPath');
+  assert.ok(IPC_SOURCE.includes("field: 'sensitiveWordsPath'"), '敏感词表必须记到 sensitiveWordsPath');
   // 只在 automation 下注册的「模拟选中」频道必须仍然只在 automation 块里
   const testPickAt = MAIN_SOURCE.indexOf("handle('config:test-pick'");
   assert.ok(testPickAt > 0, 'config:test-pick 应该存在（供 E2E 模拟对话框选中）');

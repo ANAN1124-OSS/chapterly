@@ -107,6 +107,13 @@ const CHAPTER_READ_CONCURRENCY = 8;
 // 顺序 / 内容 / 统计口径与「一次读完整个数组」逐字一致，只是不再让整本书的正文同时常驻。
 const CHAPTER_BATCH_SIZE = 32;
 
+// V114（v1.8.0 WP-34 / D1）：registerIpc() 按域拆分 —— 导出 / 校对 / 书 CRUD 三块整段搬到
+// ipc/*.js，main.js 只做装配（依赖在 buildIpcHost() 里一次性注入）。模块自己不 require electron、
+// 不碰模块级状态；缺依赖在装配时直接 TypeError（与渲染层 createX(host) 同一口径，A8）。
+const ipcBook = require('./ipc/book');
+const ipcProofread = require('./ipc/proofread');
+const ipcExport = require('./ipc/export');
+
 // ---------- 启动参数：隔离用的 --user-data ----------
 // A2（审计 #8 / E3）：这段从文件顶部（原来的 :31-40）挪到 core 模块 require 之后、app ready 之前。
 // 挪下来只为让目录建不出来时能用到 core/error-text 的脱敏文案（下面才 require 进来）；
@@ -1175,7 +1182,77 @@ function setupCloseIpc() {
 }
 
 // ---------- IPC ----------
+// V114（WP-34）：三个域模块的 host —— 依赖注入的唯一装配点（只在 registerIpc() 里调一次）。
+// getConfig / getConfigStore / getClipboard 用函数现取：配置仓库在 getConfig 里懒建、剪贴板句柄会被
+// 自检宿主替换，直接传值会拿到过期快照；其余成员都是「调用时才执行」的函数或常量引用。
+function buildIpcHost() {
+  return {
+    // 注册器（唯一装配面；两个包装函数仍在 main.js 里，负责 BAD_SENDER / 路径校验 / 错误脱敏）
+    handle,
+    handleBook,
+    // 运行时状态 / 出口
+    getConfig,
+    getConfigStore: () => configStore,
+    getClipboard: () => activeClipboard,
+    applyConfig,
+    flowSession,
+    sessionById,
+    focusSession,
+    flushLastOpenBeforeRead,
+    lastOpenWrites,
+    bookKeyOf,
+    rememberRecentBook,
+    rememberExportDir,
+    notifyShelfChanged,
+    sendToFlow,
+    logError,
+    rememberPickedConfigPath,
+    showSaveDialog,
+    showOpenDialog,
+    // core 模块
+    storage,
+    repair,
+    importer,
+    openBooksLib,
+    exporter,
+    chaptersLib,
+    epubLib,
+    docxLib,
+    s2tLib,
+    proofreadLib,
+    glossaryLib,
+    sensitiveLib,
+    ipcLimits,
+    ipcPaths,
+    ipcRestoreToken,
+    restoreTokens,
+    errorText,
+    pathUtils,
+    mapLimit,
+    WORDLIST_MAX,
+    CHAPTER_READ_CONCURRENCY,
+    CHAPTER_BATCH_SIZE,
+    automation,
+    isE2E,
+    atomicWriteFile,
+    atomicWriteFileStream,
+    assertText,
+    fs,
+    fsSync,
+    path,
+    app,
+    shell
+  };
+}
+
+
 function registerIpc() {
+  // V114（v1.8.0 WP-34 / D-6）：导出 / 校对 / 书 CRUD 三个域在 ipc/*.js 里注册，这里只装配。
+  // 其余频道（窗口 / 配置 / 统计 / 捕获 / 编辑器 / 查找 / 字体 / 历史 / 排版 / 系统…）本版不动。
+  const domainHost = buildIpcHost();
+  ipcBook.register(domainHost);
+  ipcProofread.register(domainHost);
+  ipcExport.register(domainHost);
   // ---------- 窗口会话（多窗口） ----------
   // 属于哪个窗口、这个窗口开着哪本书（打开登记只有主进程 + storage 知道）
   handle('window:info', async () => {
@@ -1589,238 +1666,10 @@ function registerIpc() {
     return data;
   });
 
-  handle('books:list', async () => {
-    // B3：书架列表要显示每本书的章节 / 字数，先把防抖中的「上次打开章节」落盘再读
-    await flushLastOpenBeforeRead(null);
-    const cfg = await getConfig();
-    return storage.listBooks(cfg.booksRoot);
-  });
-
-  handle('book:create', async (title) => {
-    const cfg = await getConfig();
-    await fs.mkdir(cfg.booksRoot, { recursive: true });
-    const created = await storage.createBook(cfg.booksRoot, title);
-    notifyShelfChanged(flowSession(), 'book:create');
-    return created;
-  });
-
-  handleBook('book:open', async (bookPath) => {
-    const session = flowSession();
-    // B3：读书目之前先把防抖中的「上次打开章节」落盘，保证重开书回到的是最后一次切到的章
-    await flushLastOpenBeforeRead(bookPath);
-    // 同一本书只允许一个窗口：已开在别处就聚焦那个窗口并拒绝
-    const owner = storage.findOpenBookWindow(bookPath);
-    if (owner && session && String(owner) !== String(session.id)) {
-      focusSession(sessionById(owner));
-      throw new storage.StorageError(
-        openBooksLib.CODE.BOOK_OPEN_IN_OTHER_WINDOW,
-        openBooksLib.openInOtherWindowMessage(bookPath)
-      );
-    }
-    const data = await storage.openBook(bookPath);
-    if (session) {
-      const registered = storage.registerOpenBook(session.id, bookPath);
-      if (!registered.ok) {
-        focusSession(sessionById(registered.ownerWindowId));
-        throw new storage.StorageError(registered.code, registered.message);
-      }
-    }
-    const meta = data && data.meta;
-    if (meta && Array.isArray(meta.chapters) && meta.chapters.length) {
-      let index = meta.chapters.findIndex((chapter) => chapter && chapter.id === meta.lastOpenChapterId);
-      if (index < 0) index = 0;
-      const chapter = meta.chapters[index];
-      await rememberRecentBook(bookPath, {
-        title: meta.title,
-        chapterId: chapter.id,
-        chapterIndex: index,
-        chapterName: chapter.name
-      });
-    }
-    return data;
-  });
-  handleBook('book:verify', async (bookPath) => storage.verifyBook(bookPath));
-  handleBook('book:rename', async (bookPath, title) => storage.renameBook(bookPath, title), {
-    mutation: 'rename'
-  });
-  // 书籍信息（v0.8-3）：作者 / 简介 / 分组 / 标签只写 书目.json 的可选字段，不动书文件夹 / 章节文件。
-  handleBook('book:update-info', async (bookPath, patch) => storage.updateBookInfo(bookPath, patch), {
-    mutation: 'write'
-  });
-  // 章号编号方式（2026-11-10）：全书连续 / 按卷独立，只写 书目.json 的可选字段。
-  handleBook('book:set-chapter-numbering', async (bookPath, numbering) => storage.setChapterNumbering(bookPath, numbering), {
-    mutation: 'write'
-  });
-  handleBook('book:set-last', async (bookPath, chapterId, info) => {
-    // B3（审计 P3）：只记「最新一次」，1.5 秒内的连续切章合并成一次写盘（lastOpenWrites）。
-    // 章节是否还存在 / 书是否被挪走留给落盘时校验（返回 { ok:false } 与旧行为一致，渲染层本来就不看）。
-    const chapterIdText = String(chapterId == null ? '' : chapterId);
-    lastOpenWrites.schedule(bookKeyOf(bookPath), {
-      bookPath,
-      chapterId: chapterIdText,
-      at: Date.now()
-    });
-    // 「继续上次写作」的书架级记忆（config.json，很小）仍在切章当下就写：渲染层把章的显示信息
-    // 一起传上来（不必为此再读一遍书目），迟到的记录有 rememberRecentBook 的顺序保护。
-    const display = info && typeof info === 'object' ? info : null;
-    if (display && typeof display.chapterName === 'string' && chapterIdText) {
-      await rememberRecentBook(bookPath, {
-        title: display.title,
-        chapterId: chapterIdText,
-        chapterIndex: display.chapterIndex,
-        chapterName: display.chapterName,
-        at: Date.now()
-      });
-    }
-    return { ok: true, queued: true, chapterId: chapterIdText };
-  }, { mutation: 'save' });
-
-  handleBook('chapter:load', async (bookPath, file) => storage.loadChapterText(bookPath, file));
-  handleBook('chapter:stat', async (bookPath, file) => storage.statChapter(bookPath, file));
-
   // 正文排版整理：纯文本变换，只计算不写盘（写盘仍由作者 Ctrl+S 决定）
   handle('text:format', async (text, options) => {
     assertText(text);
     return formatLib.formatText(text, options);
-  });
-
-  // 校对（提案 5.1 / N6）：只报告、不改动。当前章正文由渲染层传上来（和查找一样，不读盘）；
-  // 整本版走 book:proofread，逐章只读磁盘。index 是归一 CRLF 后的字符位置，可直接选中。
-  // 校对词表（1.7.0 F3b2，可选）：配置里可以有多份（proofreadWordlists），空数组回落旧的单份路径。
-  // 1.7.2 D2（V60）：配置口径 / 读取 / 合并 / 公开信息 / enabledLists 过滤全部在 core/glossary.js
-  // （纯逻辑，可单测），主进程只保留接线；行为与搬前逐字一致——多份为空回落单份、公开信息永远
-  // 描述全部词表、enabledLists 只影响参与校对。
-  async function proofreadWordlistInfoNow() {
-    const cfg = await getConfig();
-    const paths = glossaryLib.proofreadWordlistPaths(cfg);
-    return glossaryLib.proofreadWordListInfo(await glossaryLib.readGlossaryFiles(paths), paths);
-  }
-
-  handle('text:proofread', async (text, options) => {
-    assertText(text);
-    const cfg = await getConfig();
-    // 1.7.2 D2（V44/V46）：词表一次读完（勾选子集在 core 里内存过滤），读取出口的词条已清洗，
-    // 给 proofreadText 带上「已清洗」标记，同一份词表不再 sanitize 第二遍；旧调用方不受影响。
-    const words = await glossaryLib.readProofreadWordlistForRequest(cfg, options);
-    const proofOptions =
-      options && typeof options === 'object' && !Array.isArray(options)
-        ? { ...options, entriesSanitized: true }
-        : { entriesSanitized: true };
-    const result = proofreadLib.proofreadText(text, proofOptions, words.entries);
-    return { ...result, wordList: words.wordList };
-  });
-
-  // 校对词表状态（只读，1.7.0 F3b2）：多份 lists + total，单份补齐旧字段；绝不带路径与词表正文
-  // 1.7.1 P6（V52）：多份事实只看配置里的 proofreadWordlists（哪怕只 1 份），渲染层不再靠 lists.length 猜；
-  // multi 是新增的可选布尔，其余字段一个不动，旧单份用户恒为 false（行为不变）。
-  // 1.7.2 D2（V46）：复用 readProofreadWordlistForRequest 这一个出口，不再单独多读一遍。
-  handle('proofread:words-info', async () => {
-    const cfg = await getConfig();
-    const words = await glossaryLib.readProofreadWordlistForRequest(cfg);
-    return { ...words.wordList, multi: glossaryLib.hasProofreadWordlists(cfg) };
-  });
-
-  // 选词表（校对 / 敏感词共用）：只允许通过系统文件对话框选，渲染层不能自己指定路径去读任意文件。
-  // read 负责把选中的文件解析成「公开信息」（只含数量 / 提示，绝不含词表正文）。
-  // field：这个对话框选出来的路径属于配置里的哪一项（v0.9 C-2b 的来源校验靠它记账——
-  // 设置里点「选择…」→ 主进程记下这次选中的文件 → config:set 才允许写进配置）。
-  async function pickWordListFile({ title, read, field }) {
-    const { canceled, filePaths } = await showOpenDialog({
-      title,
-      buttonLabel: '使用这个词表',
-      properties: ['openFile'],
-      filters: [
-        { name: '文本文件', extensions: ['txt'] },
-        { name: '所有文件', extensions: ['*'] }
-      ]
-    });
-    if (canceled || !filePaths || !filePaths.length) return { canceled: true };
-    rememberPickedConfigPath(field, filePaths[0]);
-    return { canceled: false, ...(await read(filePaths[0])) };
-  }
-
-  // 选校对词表：只允许通过系统对话框选（渲染层不能自己指定路径去读任意文件）
-  handle('proofread:pick-words', async () => {
-    return pickWordListFile({
-      title: '选择校对词表（每行一个词，可写「错词 → 建议」）',
-      field: 'proofreadWordsPath',
-      read: async (filePath) => glossaryLib.publicGlossaryInfo(await glossaryLib.readGlossaryFile(filePath))
-    });
-  });
-  // 多份校对词表（1.7.0 F3b2）：添加只允许通过系统对话框挑文件（渲染层给不了路径），
-  // 移除只收索引。渲染层既不能指定路径，也拿不到路径；落盘走配置仓库，
-  // 配置清洗会再兜一遍绝对路径 / 去重 / WORDLIST_MAX 条上限（托底，不靠这一层）。
-  // 1.7.2 D4（V42）：条数上限与提示文案都取 core/config.js 的 WORDLIST_MAX，这里不再声明同名常量。
-  // 1.7.2 D4（V53）：先校验（stat / 重复 / 上限）再读词表；picked 是 path.resolve 的结果、恒为绝对
-  // 路径，原来那条 path.isAbsolute 死分支已删。拒绝分支仍回最新 info（渲染层据此重画列表），
-  // 但读取都发生在校验之后，不再先把全部词表读一遍才发现路径不能用。
-  handle('proofread:wordlists-add', async () => {
-    const { canceled, filePaths } = await showOpenDialog({
-      title: '添加校对词表（每行一个词，可写「错词 → 建议」）',
-      buttonLabel: '添加这份词表',
-      properties: ['openFile'],
-      filters: [
-        { name: '文本文件', extensions: ['txt'] },
-        { name: '所有文件', extensions: ['*'] }
-      ]
-    });
-    if (canceled || !filePaths || !filePaths.length) return { canceled: true };
-    const picked = path.resolve(filePaths[0]);
-    const cfg = await getConfig();
-    const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
-    const stat = await fs.stat(picked).catch(() => null);
-    if (!stat || !stat.isFile()) {
-      return { canceled: false, added: false, code: 'WORDLIST_MISSING', message: '这个词表文件不存在（可能被移动或删除了）', ...(await proofreadWordlistInfoNow()) };
-    }
-    if (current.some((item) => pathUtils.pathKey(item) === pathUtils.pathKey(picked))) {
-      return { canceled: false, added: false, code: 'WORDLIST_DUPLICATE', message: '这份词表已经在列表里了', ...(await proofreadWordlistInfoNow()) };
-    }
-    if (current.length >= WORDLIST_MAX) {
-      return { canceled: false, added: false, code: 'WORDLIST_LIMIT', message: `最多 ${WORDLIST_MAX} 份校对词表`, ...(await proofreadWordlistInfoNow()) };
-    }
-    const next = await configStore.set({ proofreadWordlists: [...current, picked] });
-    applyConfig(next);
-    return { canceled: false, added: true, ...(await proofreadWordlistInfoNow()) };
-  });
-
-  handle('proofread:wordlists-remove', async (index) => {
-    const cfg = await getConfig();
-    const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
-    const at = Number(index);
-    if (!Number.isInteger(at) || at < 0 || at >= current.length) {
-      return { canceled: false, removed: false, code: 'WORDLIST_NOT_FOUND', message: '这一份词表不在列表里，可能已经被移除了', ...(await proofreadWordlistInfoNow()) };
-    }
-    current.splice(at, 1);
-    const next = await configStore.set({ proofreadWordlists: current });
-    applyConfig(next);
-    return { canceled: false, removed: true, ...(await proofreadWordlistInfoNow()) };
-  });
-
-  // 敏感词预检（提案 5.2）：词表完全由作者管理，应用不内置任何词表。
-  // 词表路径存在 config 里（渲染层不传路径）；这里只读词表、只报告命中，绝不改正文、不写盘。
-  // 渲染层也拿不到词表内容——只回数量与状态（publicWordListInfo 会剥掉 words）。
-  handle('sensitive:words-info', async () => {
-    const cfg = await getConfig();
-    return sensitiveLib.publicWordListInfo(await sensitiveLib.readWordListFile(cfg.sensitiveWordsPath));
-  });
-
-  // 选敏感词表：只允许通过系统对话框选（渲染层不能自己指定路径去读任意文件）
-  handle('sensitive:pick-words', async () => {
-    return pickWordListFile({
-      title: '选择敏感词表（每行一个词）',
-      field: 'sensitiveWordsPath',
-      read: async (filePath) => sensitiveLib.publicWordListInfo(await sensitiveLib.readWordListFile(filePath))
-    });
-  });
-
-  handle('text:sensitive-check', async (text, options) => {
-    assertText(text);
-    const cfg = await getConfig();
-    const list = await sensitiveLib.readWordListFile(cfg.sensitiveWordsPath);
-    const wordList = sensitiveLib.publicWordListInfo(list);
-    if (!list.ok) return { ok: false, code: list.code, message: list.message, wordList };
-    const result = sensitiveLib.scanText(text, list.words, options);
-    return { ok: true, ...result, wordList };
   });
 
   // 朗读（提案 5.3）：只把正文切成「一段一段」，发声由渲染层交给系统语音（speechSynthesis）。
@@ -2132,77 +1981,6 @@ function registerIpc() {
     });
   }
 
-  handleBook('chapter:create', async (bookPath, insertIndex, name, volumeId) =>
-    storage.createChapter(bookPath, insertIndex, name, volumeId), { mutation: 'write' }
-  );
-  handleBook('chapter:rename', async (bookPath, chapterId, name) =>
-    storage.renameChapter(bookPath, chapterId, name), { mutation: 'rename' }
-  );
-  // 章节状态 / 备注：只改书目可选字段（txt 不动）
-  handleBook('chapter:update-meta', async (bookPath, chapterId, patch) =>
-    storage.updateChapterMeta(bookPath, chapterId, patch), { mutation: 'write' }
-  );
-  // 1.5.0 P0-5（审计 V-1）：删除成功后发一张进程内一次性凭证（crypto.randomUUID），
-  // 只在内存 Map 里记 { bookPath, trashName, chapterId, expiresAt }（10 分钟，带上限与过期清理）。
-  // 撤销时必须原样带回来 —— 只靠 trashName 的四道自证证明不了「这个备份是本次删除产生的」。
-  // 返回形状只**扩展**一个 undoToken 字段：频道名 / preload 方法名 / 原有的 meta·trashPath·
-  // newChapter·index 一个都不变。
-  handleBook('chapter:delete', async (bookPath, chapterId) => {
-    const result = await storage.deleteChapter(bookPath, chapterId);
-    const trashName = result && result.trashPath ? path.basename(result.trashPath) : '';
-    const undoToken = trashName
-      ? restoreTokens.issue({ bookPath, trashName, chapterId })
-      : '';
-    return { ...result, undoToken };
-  }, {
-    mutation: 'delete'
-  });
-  // 撤销删除（1.4.0 P0-2）：只把本书 _trash 下的那一个 txt 放回书文件夹，并按原位置插回书目。
-  // 入参形状由 core/storage.js 的 restoreDeletedChapterFromTrash 自己校验（不信任渲染层给的路径）。
-  // 1.5.0 P0-3（审计 E3 / O-8）：先过 core/ipc-limits.js 的白名单 —— 只留
-  // trashName / index / chapter{id,file,name,createdAt,volumeId,status,note} / autoChapterFile，
-  // 必填字段不合法直接抛 BAD_RESTORE（fail() 统一文案），一个字节都不会写盘；
-  // 交给 storage 的必须是清洗后的 payload，不是原始参数。
-  // 1.5.0 P0-5（审计 V-1）：白名单之后还要验撤销凭证（存在 / 未过期 / 同一本书 / 同一个 trashName），
-  // 验过立刻作废（一次性）；storage 还原失败时把凭证放回去，作者还能原地再试一次。
-  handleBook('chapter:restore-deleted', async (bookPath, payload) => {
-    const clean = ipcLimits.sanitizeRestorePayload(payload);
-    const rawToken =
-      payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.undoToken : '';
-    const claim = restoreTokens.take(rawToken, { bookPath, trashName: clean.trashName });
-    if (!claim.ok) throw ipcRestoreToken.errorFor(claim.reason);
-    try {
-      return await storage.restoreDeletedChapterFromTrash(bookPath, clean);
-    } catch (err) {
-      restoreTokens.release(claim.record);
-      throw err;
-    }
-  }, {
-    mutation: 'write'
-  });
-  handleBook('chapter:move', async (bookPath, chapterId, toIndex) =>
-    storage.moveChapter(bookPath, chapterId, toIndex), { mutation: 'write' }
-  );
-  // 分卷：新建 / 改名 / 删除（章节回未分卷，不删章）/ 把章移到别的卷
-  handleBook('volume:create', async (bookPath, name) => storage.createVolume(bookPath, name), {
-    mutation: 'write'
-  });
-  handleBook('volume:rename', async (bookPath, volumeId, name) =>
-    storage.renameVolume(bookPath, volumeId, name), { mutation: 'write' }
-  );
-  handleBook('volume:delete', async (bookPath, volumeId) => storage.deleteVolume(bookPath, volumeId), {
-    mutation: 'write'
-  });
-  handleBook('chapter:move-to-volume', async (bookPath, chapterId, volumeId) =>
-    storage.moveChapterToVolume(bookPath, chapterId, volumeId), { mutation: 'write' }
-  );
-  handleBook('volume:move', async (bookPath, volumeId, toIndex) =>
-    storage.moveVolume(bookPath, volumeId, toIndex), { mutation: 'write' }
-  );
-  handleBook('chapter:move-to', async (bookPath, chapterId, volumeId, beforeChapterId) =>
-    storage.moveChapterTo(bookPath, chapterId, volumeId, beforeChapterId), { mutation: 'write' }
-  );
-
   // 全书查找 / 替换：替换写盘前 storage 会把原章节备份到书内 _trash。
   // v0.9 C-5：options 由 core/ipc-limits.js 清洗——查找词 / 替换词必须是文本且各限 1 万字，
   // 非对象 options 按 {}（旧行为：没传选项 = 默认口径），坏类型直接回 BAD_QUERY / BAD_REPLACEMENT，
@@ -2215,195 +1993,6 @@ function registerIpc() {
   handleBook('book:replace', async (bookPath, options) =>
     storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options)), {
     mutation: 'replace'
-  });
-
-  // 整本检查（校对 / 敏感词）共用：逐章读正文；当前章用 override 的最新内容；
-  // 缺文件的章节跳过并计数（不让整本检查失败）。只读，不写盘。
-  // B4（审计 P4）：各章正文并行读（上限 CHAPTER_READ_CONCURRENCY），回调仍按书目顺序逐章触发，
-  // 统计 / 顺序与串行版完全一致。
-  // P2-2（1.5.0）：再按 CHAPTER_BATCH_SIZE 章一批读（批内仍限并发、批间串行）——一批的回调跑完，
-  // 这批正文就可以回收，整本书的正文不再同时常驻。回调顺序 / 跳过计数与「一次读完再逐章」完全一致；
-  // 读盘抛错仍然整本失败（整本检查只读，失败时上层不产出任何结果，不会留下半份统计）。
-  async function walkChapterTexts(bookPath, meta, override, onChapter) {
-    const overrideIndex = exporter.chapterIndexOf(meta, override);
-    const chapters = meta.chapters;
-    let skippedChapters = 0;
-    for (let start = 0; start < chapters.length; start += CHAPTER_BATCH_SIZE) {
-      const batch = chapters.slice(start, start + CHAPTER_BATCH_SIZE);
-      const loaded = await mapLimit(batch, CHAPTER_READ_CONCURRENCY, async (chapter, offset) => {
-        const index = start + offset;
-        if (index === overrideIndex) return { text: override.text };
-        try {
-          return { text: (await storage.loadChapterText(bookPath, chapter.file)).text };
-        } catch (err) {
-          if (err.code === 'CHAPTER_MISSING') return { missing: true };
-          throw err;
-        }
-      });
-      for (let offset = 0; offset < loaded.length; offset += 1) {
-        const item = loaded[offset];
-        if (item.missing) {
-          skippedChapters += 1;
-          continue;
-        }
-        onChapter(item.text, chapters[start + offset], start + offset);
-      }
-    }
-    return skippedChapters;
-  }
-
-  // 校对整本（提案 5.1）：逐章只读正文，按 core/proofread.js 的规则列出可疑位置；
-  // 全程不写盘。当前章未保存的内容用 override 传进来（和导出同一个惯例：只参与这一次检查）。
-  // 每章最多保留 maxIssues 条明细，整本明细上限 1500 条，但总数 / 各规则条数照实统计。
-  handleBook('book:proofread', async (bookPath, options, override) => {
-    const meta = await storage.readBookMeta(bookPath);
-    // v0.9 C-5：当前章未保存内容（override）先过边界（坏形状当没有；正文超 500 万字拒绝）
-    const safeOverride = ipcLimits.sanitizeOverride(override);
-    const limits = proofreadLib.sanitizeOptions(options);
-    // 1.5.0：规则开关（只在这份请求里生效，不落配置）。sanitizeOptions 只管阈值，
-    // 把清洗后的 rules 拼回去，整本每章用同一份开关。
-    const bookRules = proofreadLib.sanitizeRules(options && options.rules);
-    // 1.7.2 D2（V44）：整本每章共用同一份已清洗词条，proofreadText 不再逐章 sanitize。
-    const chapterOptions = { ...limits, rules: bookRules, entriesSanitized: true };
-    // 校对词表只读一次，整本每章共用（没设置 / 读不了 = 只跑内置规则，面板会提示）
-    // 1.7.0 F3b2：多份词表合并读取；options.enabledLists 只让勾选的那几份参与（缺省全开）。
-    // 1.7.2 D2（V46）：一次读完配置里的全部词表，勾选子集在 core 里内存过滤。
-    const cfg = await getConfig();
-    const words = await glossaryLib.readProofreadWordlistForRequest(cfg, options);
-    const wordList = words.wordList;
-    const customEntries = words.entries;
-    const BOOK_ISSUE_LIMIT = 1500;
-    const byRule = {};
-    for (const rule of proofreadLib.RULE_ORDER) byRule[rule] = 0;
-    const chapters = [];
-    const issues = [];
-    let total = 0;
-    let truncated = false;
-    // B4（v1.8.0 WP-27）：某一章正文超过校对规模闸（core/proofread.js 的 MAX_SOURCE_CHARS）时，
-    // 该章只扫了前缀；整本回包要把「有章节没查全」如实带给面板，不能只说「总数照实统计」。
-    let tooLarge = false;
-    // P-08（1.6.0 A5）：明细预算（1500 条）用完后，后面的章只需要条数 / 各规则计数——
-    // 传 snippets:false 就不再为每条命中拼上下文片段（那些明细反正会被丢掉）。
-    let snippetsWanted = true;
-    const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
-      const result = proofreadLib.proofreadText(
-        text,
-        snippetsWanted ? chapterOptions : { ...chapterOptions, snippets: false },
-        customEntries
-      );
-      total += result.total;
-      for (const rule of proofreadLib.RULE_ORDER) byRule[rule] += result.byRule[rule] || 0;
-      if (result.total) {
-        chapters.push({
-          chapterId: chapter.id,
-          chapterIndex: index,
-          name: chapter.name,
-          total: result.total,
-          byRule: result.byRule,
-          truncated: result.truncated
-        });
-      }
-      if (result.truncated) truncated = true;
-      if (result.tooLarge) tooLarge = true;
-      for (const issue of result.issues) {
-        if (issues.length >= BOOK_ISSUE_LIMIT) {
-          truncated = true;
-          break;
-        }
-        issues.push({
-          ...issue,
-          chapterId: chapter.id,
-          chapterIndex: index,
-          chapterName: chapter.name
-        });
-      }
-      if (issues.length >= BOOK_ISSUE_LIMIT) snippetsWanted = false;
-    });
-    return {
-      scope: 'book',
-      total,
-      byRule,
-      issues,
-      chapters,
-      chapterCount: meta.chapters.length,
-      // 有问题的章数（chapters 只收有问题的章）
-      chapterHitCount: chapters.length,
-      skippedChapters,
-      truncated: truncated || total > issues.length,
-      // B4（WP-27）：有章节超出校对规模闸（只扫了前缀）→ 面板说明「只校对了前 100 万字」
-      tooLarge,
-      wordList,
-      customWordCount: customEntries.length,
-      options: limits
-    };
-  });
-
-  // 敏感词预检整本（提案 5.2）：逐章只读磁盘，按作者词表列出命中；全程不写盘。
-  // 当前章未保存的内容用 override 传进来（只参与这一次检查，和导出 / 校对同一个惯例）。
-  // 每章明细上限由 core/sensitive.js 的 maxIssues 控制，整本明细上限 1500 条，但总数照实统计。
-  handleBook('book:sensitive-check', async (bookPath, options, override) => {
-    const cfg = await getConfig();
-    const list = await sensitiveLib.readWordListFile(cfg.sensitiveWordsPath);
-    const wordList = sensitiveLib.publicWordListInfo(list);
-    if (!list.ok) return { ok: false, code: list.code, message: list.message, wordList };
-    const meta = await storage.readBookMeta(bookPath);
-    // v0.9 C-5：override 与上面校对同一条边界（坏形状当没有；正文超 500 万字拒绝）
-    const safeOverride = ipcLimits.sanitizeOverride(override);
-    const limits = sensitiveLib.sanitizeOptions(options);
-    const matches = [];
-    const chapters = [];
-    const byWordMap = new Map();
-    let total = 0;
-    let truncated = false;
-    const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
-      const result = sensitiveLib.scanText(text, list.words, limits);
-      total += result.total;
-      for (const item of result.byWord) {
-        byWordMap.set(item.word, (byWordMap.get(item.word) || 0) + item.count);
-      }
-      if (result.total) {
-        chapters.push({
-          chapterId: chapter.id,
-          chapterIndex: index,
-          name: chapter.name,
-          total: result.total,
-          truncated: result.truncated
-        });
-      }
-      if (result.truncated) truncated = true;
-      for (const match of result.issues) {
-        if (matches.length >= sensitiveLib.BOOK_ISSUE_LIMIT) {
-          truncated = true;
-          break;
-        }
-        matches.push({
-          ...match,
-          chapterId: chapter.id,
-          chapterIndex: index,
-          chapterName: chapter.name
-        });
-      }
-    });
-    const byWord = Array.from(byWordMap, ([word, count]) => ({ word, count }))
-      .sort((a, b) => b.count - a.count || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0))
-      .slice(0, sensitiveLib.BY_WORD_LIMIT);
-    return {
-      ok: true,
-      scope: 'book',
-      total,
-      matches,
-      byWord,
-      wordHitCount: byWordMap.size,
-      wordCount: list.words.length,
-      chapters,
-      chapterCount: meta.chapters.length,
-      // 有命中的章数（chapters 只收有命中的章）
-      chapterHitCount: chapters.length,
-      skippedChapters,
-      truncated: truncated || total > matches.length,
-      wordList,
-      options: limits
-    };
   });
 
   // 整本替换的还原：列出 / 还原书内 _trash/替换备份-*/（还原前把当前内容再备份一份）
@@ -2469,395 +2058,6 @@ function registerIpc() {
       sendToFlow('format:progress', progress);
     }), { mutation: 'format' }
   );
-
-  // 拼导出/复制用的正文：默认读磁盘；override 是编辑区里当前章的最新内容（未保存也算，只参与拼接不写盘）
-  // chars 回报的是「正文字数」（去掉空白/换行，和编辑页字数统计同一口径），不是文件字节数
-  // indexes 可选：只读选中的章（按范围导出用），没选中的位置留空字符串但保持下标对齐
-  // P2-2（1.5.0）：按 CHAPTER_BATCH_SIZE 章一批读（批内仍限并发 CHAPTER_READ_CONCURRENCY、批间串行）。
-  // texts 仍按书目下标填、没选中的位置留空串，顺序 / 内容 / chars 与「一次读完再求和」逐字一致。
-  async function collectExportTexts(bookPath, meta, override, indexes) {
-    const selected = Array.isArray(indexes) ? new Set(indexes) : null;
-    const overrideIndex = exporter.chapterIndexOf(meta, override);
-    const chapters = meta.chapters;
-    // B4（审计 P4）：选中章的正文并行读；texts 仍按书目下标填，顺序 / 空串占位完全不变
-    const texts = new Array(chapters.length).fill('');
-    let chars = 0;
-    for (let start = 0; start < chapters.length; start += CHAPTER_BATCH_SIZE) {
-      const batch = chapters.slice(start, start + CHAPTER_BATCH_SIZE);
-      const loaded = await mapLimit(batch, CHAPTER_READ_CONCURRENCY, async (chapter, offset) => {
-        const index = start + offset;
-        if (selected && !selected.has(index)) return '';
-        if (index === overrideIndex) return override.text;
-        return (await storage.loadChapterText(bookPath, chapter.file)).text;
-      });
-      for (let offset = 0; offset < loaded.length; offset += 1) {
-        texts[start + offset] = loaded[offset];
-        chars += chaptersLib.countChars(loaded[offset]);
-      }
-    }
-    return {
-      texts,
-      chars,
-      includedUnsaved: overrideIndex >= 0 && (!selected || selected.has(overrideIndex))
-    };
-  }
-
-  // 导出范围预览（只读）：对话框里实时显示「选中几章 / 多少字 / 默认文件名」。
-  // 字数优先用书目里的 chars 缓存求和（审计 F3）；缓存缺失 / 坏值才读盘现算，
-  // 编辑区里当前章的未保存内容（override）永远现算。正式导出仍读全文，不受这里影响。
-  // v0.9 C-5：override / range 先过 core/ipc-limits.js——正文超过 500 万字报 TEXT_TOO_LARGE，
-  // 坏形状按旧行为降级（override 当没有、range 当全书 / 越界收紧）。
-  handleBook('book:export-plan', async (bookPath, override, range) => {
-    const meta = await storage.readBookMeta(bookPath);
-    const safeOverride = ipcLimits.sanitizeOverride(override);
-    const safeRange = ipcLimits.sanitizeRange(range);
-    const plan = exporter.resolveExportRange(meta, safeRange);
-    const overrideIndex = exporter.chapterIndexOf(meta, safeOverride);
-    let chars = 0;
-    const needDisk = [];
-    for (const index of plan.indexes) {
-      if (index === overrideIndex) {
-        chars += chaptersLib.countChars(safeOverride.text);
-        continue;
-      }
-      const chapter = meta.chapters[index];
-      const cached = exporter.cachedCharsOf(chapter);
-      if (cached != null) {
-        chars += cached;
-        continue;
-      }
-      needDisk.push(index);
-    }
-    // B4（审计 P4）：缓存缺失的章并行读盘现算（顺序不影响求和；仍只读不写）
-    if (needDisk.length) {
-      const counted = await mapLimit(needDisk, CHAPTER_READ_CONCURRENCY, async (index) => {
-        const text = (await storage.loadChapterText(bookPath, meta.chapters[index].file)).text;
-        return chaptersLib.countChars(text);
-      });
-      for (const value of counted) chars += value;
-    }
-    return {
-      mode: plan.mode,
-      label: plan.label,
-      chapterCount: plan.count,
-      chars,
-      from: plan.from,
-      to: plan.to,
-      volumeId: plan.volumeId,
-      empty: plan.empty,
-      fileName: exporter.exportFileName(meta, safeRange),
-      epubFileName: epubLib.epubFileName(meta, safeRange),
-      docxFileName: docxLib.docxFileName(meta, safeRange),
-      includedUnsaved: overrideIndex >= 0 && plan.indexes.includes(overrideIndex)
-    };
-  });
-
-  // 目录是否存在（导出默认目录兜底用）：读不到就当不存在
-  function isDirectory(dir) {
-    try {
-      return fsSync.statSync(dir).isDirectory();
-    } catch {
-      return false;
-    }
-  }
-
-  // 导出 TXT / EPUB / DOCX 共用的前置：读书目 → 解析范围（空范围明确报错）
-  // → 准备「上次导出目录 / 文档」作为默认落点。三个入口只负责各自的保存对话框、格式细节与返回字段。
-  // 审计 #7（O2 / P4）：这里**只做只读前置**，正文（texts / chars / includedUnsaved）不读——
-  // 交给下面 readExportTexts，等保存对话框确认之后再读。用户取消导出时一次正文都不会读，
-  // 对话框停留期间也不会把整本书常驻内存。
-  // v0.9 C-5：override / range 在这里统一过 core/ipc-limits.js（超长正文拒绝、坏形状降级），
-  // 三个导出与下面的复制 / 校对 / 敏感词预检共用同一套口径，避免某个入口漏掉。
-  async function prepareExport(bookPath, override, range) {
-    const meta = await storage.readBookMeta(bookPath);
-    const safeOverride = ipcLimits.sanitizeOverride(override);
-    const safeRange = ipcLimits.sanitizeRange(range);
-    const plan = exporter.resolveExportRange(meta, safeRange);
-    if (!plan.count) {
-      throw new storage.StorageError(
-        'EMPTY_EXPORT_RANGE',
-        plan.mode === 'all' ? '这本书里还没有章节' : '所选范围里没有章节'
-      );
-    }
-    const cfg = await getConfig();
-    // 默认落到「上一次导出保存到的目录」；没记过、或那个目录已经不存在了，才退回「文档」
-    const defaultDir = exporter.resolveExportDir(cfg.lastExportDir, app.getPath('documents'), isDirectory);
-    return { meta, plan, override: safeOverride, cfg, defaultDir, range: safeRange };
-  }
-
-  // 保存对话框确认之后才走的正文读取（审计 #7）：prepareExport 的后半段，三个导出入口共用。
-  // 调用点必须放在 `if (canceled || !filePath) return { canceled: true };` 之后——顺序反了就等于
-  // 用户取消也白读整本；tests/export-read-order.test.js 的静态闸门钉住这个时序。
-  async function readExportTexts(bookPath, prepared) {
-    const { meta, plan, override } = prepared;
-    return collectExportTexts(bookPath, meta, override, plan.indexes);
-  }
-
-  // B5（v1.8.0 WP-28）：TXT 导出流式写盘 —— 每章读出来 → 拼块 → 简繁转换 → 立刻写进临时文件，
-  // 整本 texts 数组 / 整本串 / 整本 Buffer 都不常驻（峰值从「约 2 份全书」降到「一章 + 它的导出块」）。
-  // 字节口径与旧链（collectExportTexts → buildTxtExport）逐字节一致：BOM 先写、块间 `\r\n\r\n`、末尾一个 `\r\n`。
-  // 顺序仍是「保存对话框确认 → 才开始读正文」（审计 #7）；中途失败由 atomicWriteFileStream 删掉临时文件，
-  // 目标文件一个字节不动。EPUB / DOCX 本轮评估后不动：两个 builder 需要整本 texts 才能算目录 / 打包，
-  // 改成按章喂入要重写打包层（见台账 WP-28 口径），现有 C1「就地转换 + 用完即清」保持原样。
-  async function writeTxtExport(filePath, bookPath, prepared) {
-    const { meta, plan, override } = prepared;
-    const conversion = s2tLib.normalizeMode(prepared.cfg.exportConversion);
-    const overrideIndex = exporter.chapterIndexOf(meta, override);
-    let chars = 0;
-    await atomicWriteFileStream(filePath, async (write) => {
-      await write(exporter.BOM);
-      const summary = await exporter.streamTxtExport(meta, prepared.range, {
-        conversion,
-        convertText: s2tLib.convertText,
-        readText: async (index, chapter) => {
-          if (index === overrideIndex) return override.text;
-          return (await storage.loadChapterText(bookPath, chapter.file)).text;
-        },
-        onChunk: (chunk) => write(chunk)
-      });
-      chars = summary.chars;
-    });
-    return {
-      chars,
-      includedUnsaved: overrideIndex >= 0 && plan.indexes.includes(overrideIndex),
-      conversion
-    };
-  }
-
-  // EPUB / DOCX 导出成功后的返回字段（两个入口完全一致，只是 built 来自不同的纯函数）
-  function archiveExportResult(filePath, built, chars, includedUnsaved, conversion, plan) {
-    return {
-      canceled: false,
-      filePath,
-      chapterCount: built.chapterCount,
-      volumeCount: built.volumeCount,
-      chars,
-      includedUnsaved,
-      bytes: built.bytes,
-      conversion,
-      rangeLabel: plan.label
-    };
-  }
-
-  handleBook('book:export', async (bookPath, override, range) => {
-    const prepared = await prepareExport(bookPath, override, range);
-    const { meta, plan, defaultDir, range: safeRange } = prepared;
-    // 文件名默认带上范围：书名.txt / 书名-卷名.txt / 书名-第X-Y章.txt（可在保存对话框里改）
-    const defaultName = exporter.exportFileName(meta, safeRange);
-    const { canceled, filePath } = await showSaveDialog({
-      title: '导出 TXT',
-      defaultPath: path.join(defaultDir, defaultName),
-      filters: [{ name: '文本文件', extensions: ['txt'] }]
-    });
-    if (canceled || !filePath) return { canceled: true };
-    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）。
-    // B5（v1.8.0 WP-28）：TXT 改流式写盘，边读边拼边写，不物化整本 texts / 整本串 / 整本 Buffer。
-    const { chars, includedUnsaved, conversion } = await writeTxtExport(filePath, bookPath, prepared);
-    // 记住这次导出的目录，下次导出默认还开在这里（记不住也不影响导出结果）
-    await rememberExportDir(path.dirname(filePath));
-    return {
-      canceled: false,
-      filePath,
-      chapterCount: plan.count,
-      chars,
-      includedUnsaved,
-      rangeLabel: plan.label,
-      conversion
-    };
-  });
-
-  // 导出 EPUB（提案 6.3 / v0.8 P0 N8）：整本或按卷 / 按章节范围 → 一本 EPUB 3
-  // （分卷做目录级、一章一个 XHTML、没有封面图就生成纯文字封面页）。排版沿用「段首缩进 + 空一行」，
-  // 由 EPUB 里的 CSS 控制，不动任何 txt 字节。和 TXT 导出一样：当前章未保存的内容参与拼接、只读、原子写盘。
-  // range 不传 = 全书；只把选中的章节读出来打进包里。范围输入按全书顺序算；章标题走
-  // chapters.formatTitle，按这本书的编号方式（按卷编号的书是各卷自己的卷内号）。
-  handleBook('book:export-epub', async (bookPath, override, range) => {
-    const prepared = await prepareExport(bookPath, override, range);
-    const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;
-    const defaultName = epubLib.epubFileName(meta, safeRange);
-    const { canceled, filePath } = await showSaveDialog({
-      title: '导出 EPUB',
-      defaultPath: path.join(defaultDir, defaultName),
-      filters: [{ name: 'EPUB 电子书', extensions: ['epub'] }]
-    });
-    if (canceled || !filePath) return { canceled: true };
-    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）
-    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
-    // 简繁转换：书名 / 卷名 / 章名 / 正文都换成导出用的副本，目录和正文才一致；
-    // 书目与章节 txt 一概不动（chars 仍按原稿字数算）。
-    const conversion = s2tLib.normalizeMode(cfg.exportConversion);
-    const exportMeta = s2tLib.convertMeta(meta, conversion);
-    // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
-    exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
-    const built = await epubLib.buildEpub({ meta: exportMeta, texts, range: safeRange });
-    exporter.releaseTexts(texts);
-    await atomicWriteFile(filePath, built.buffer);
-    await rememberExportDir(path.dirname(filePath));
-    return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, plan);
-  });
-
-  // 导出 DOCX（v0.8 P0 N9）：整本或按卷 / 按章节范围 → 一份 Word 能直接打开的书稿。
-  // 和 EPUB 导出同一套规则：范围解析复用 exporter.resolveExportRange，只读选中的章，
-  // 章标题走 chapters.formatTitle（范围按全书顺序，标题按书的编号方式）；当前章未保存内容参与、只读、原子写盘、简繁转换只作用于副本。
-  handleBook('book:export-docx', async (bookPath, override, range) => {
-    const prepared = await prepareExport(bookPath, override, range);
-    const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;
-    const defaultName = docxLib.docxFileName(meta, safeRange);
-    const { canceled, filePath } = await showSaveDialog({
-      title: '导出 DOCX',
-      defaultPath: path.join(defaultDir, defaultName),
-      filters: [{ name: 'Word 文档', extensions: ['docx'] }]
-    });
-    if (canceled || !filePath) return { canceled: true };
-    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）
-    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
-    // 简繁转换：书名 / 卷名 / 章名 / 正文都换成导出用的副本（书目与章节 txt 一概不动）
-    const conversion = s2tLib.normalizeMode(cfg.exportConversion);
-    const exportMeta = s2tLib.convertMeta(meta, conversion);
-    // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
-    exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
-    const built = await docxLib.buildDocx({ meta: exportMeta, texts, range: safeRange });
-    exporter.releaseTexts(texts);
-    await atomicWriteFile(filePath, built.buffer);
-    await rememberExportDir(path.dirname(filePath));
-    return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, plan);
-  });
-
-  handleBook('book:copy', async (bookPath, override, indexes) => {
-    const meta = await storage.readBookMeta(bookPath);
-    const safeOverride = ipcLimits.sanitizeOverride(override);
-    // 1.5.0 功能-1：可选第三参数 = 只复制这些章（章节多选「复制选中章」）。
-    // 没传 = 整本复制，行为与 1.4.0 逐字节一致；传了空数组 = 什么都不写（不拿空数组当整本）。
-    const selected = ipcLimits.sanitizeChapterIndexes(indexes, { total: meta.chapters.length });
-    if (selected && !selected.length) {
-      return { chapterCount: 0, chars: 0, includedUnsaved: false, empty: true };
-    }
-    const { texts, chars, includedUnsaved } = await collectExportTexts(bookPath, meta, safeOverride, selected);
-    const text = selected ? exporter.composeSelected(meta, texts, selected) : exporter.composeBook(meta, texts);
-    await activeClipboard.writeText(text);
-    return {
-      chapterCount: selected ? selected.length : meta.chapters.length,
-      chars,
-      includedUnsaved
-    };
-  });
-
-  // 复制本章（平台格式）：只取这一章的正文，段首缩进两个全角空格、段间空一行（空行也带缩进），
-  // 直接进剪贴板；不写盘。ref = { chapterId?, chapterFile?, text? }：
-  // 带了 text 就用它（编辑区里当前章未保存的最新内容，沿用户导出惯例），没带就读磁盘。
-  handleBook('chapter:copy-platform', async (bookPath, ref) => {
-    const safeRef = ipcLimits.sanitizeOverride(ref);
-    const meta = await storage.readBookMeta(bookPath);
-    const index = exporter.chapterRefIndex(meta, safeRef);
-    if (index < 0) throw new storage.StorageError('CHAPTER_NOT_FOUND', '找不到这一章（可能刚被删除）');
-    const chapter = meta.chapters[index];
-    const fromEditor = Boolean(safeRef && typeof safeRef.text === 'string');
-    const text = fromEditor
-      ? safeRef.text
-      : (await storage.loadChapterText(bookPath, chapter.file)).text;
-    const result = exporter.platformChapterText(text);
-    const title = chaptersLib.formatTitle(meta, index, chapter.name);
-    if (result.empty) {
-      // 空章不覆盖剪贴板：免得把作者刚复制的东西冲掉
-      return { empty: true, title, paragraphs: 0, chars: 0, includedUnsaved: fromEditor };
-    }
-    await activeClipboard.writeText(result.text);
-    return {
-      empty: false,
-      title,
-      paragraphs: result.paragraphs,
-      chars: result.chars,
-      includedUnsaved: fromEditor
-    };
-  });
-
-  handleBook('book:repair', async (bookPath, mode) => {
-    // io.logError：换书目「回退也失败」时走现有 logError 留一条诊断日志（core/repair.js，V78）；
-    // 不新造第二套 logger —— 日志仍然只落在设置 → 诊断日志指向的那一份。
-    if (mode === 'bak') return repair.restoreFromBak(bookPath, { logError });
-    if (mode === 'rebuild') return repair.rebuildFromFiles(bookPath, { logError });
-    throw new storage.StorageError('BAD_MODE', `未知的修复方式：${mode}`);
-  }, { mutation: 'write' });
-
-  handle('book:import', async (explicitPaths, options) => {
-    // 路径入口（v0.9 C-2）：导入目录的唯一正当来源是下面这个系统对话框。
-    // 渲染层如果自己传了目录，只有 automation（自检 / 截图）才认；生产环境一律拒（BAD_IMPORT_PATH），
-    // 免得被注入的脚本让主进程把任意文件夹（桌面 / 别的盘 / D:\我的小说）复制进书架。
-    let dirs = ipcPaths.importSourceDirs(explicitPaths, { allowExplicit: automation });
-    const cfg = await getConfig();
-    await fs.mkdir(cfg.booksRoot, { recursive: true });
-    if (!dirs.length) {
-      const { canceled, filePaths } = await showOpenDialog({
-        title: '导入小说（选择一个或多个书文件夹）',
-        buttonLabel: '导入',
-        properties: ['openDirectory', 'multiSelections', 'dontAddToRecent']
-      });
-      if (canceled || !filePaths || !filePaths.length) {
-        return { canceled: true, imported: [], skipped: [], failed: [] };
-      }
-      dirs = filePaths;
-    }
-    // 导入会往书库里写文件夹：目标正好是别的窗口正开着的书 → 拒绝（「导入覆盖」也要拦）
-    const session = flowSession();
-    for (const sourceDir of dirs) {
-      const base = path.basename(path.resolve(String(sourceDir)));
-      const target = path.join(cfg.booksRoot, base);
-      const owner = storage.findOpenBookWindow(target);
-      if (owner && (!session || String(owner) !== String(session.id))) {
-        throw new storage.StorageError(
-          'CROSS_WINDOW_BUSY',
-          `导入目标「${base}」正在另一个窗口打开。请先关掉另一个窗口，或先切换到那个窗口后再导入。`
-        );
-      }
-    }
-    const imported = await importer.importFolders(cfg.booksRoot, dirs, {
-      mode: options && options.mode,
-      onProgress: (progress) => {
-        sendToFlow('import:progress', progress);
-      }
-    });
-    notifyShelfChanged(session, 'book:import');
-    return imported;
-  });
-
-  handleBook('book:delete', async (bookPath) => {
-    const session = flowSession();
-    const cfg = await getConfig();
-    const root = path.resolve(cfg.booksRoot);
-    const target = path.resolve(String(bookPath || ''));
-    // A9（v1.8.0 WP-31）：「同一目录」判定统一走 core/path-utils.js 的 pathKey（不再手写小写比较）
-    if (pathUtils.pathKey(path.dirname(target)) !== pathUtils.pathKey(root)) {
-      throw new storage.StorageError('BAD_PATH', '只能删除书架目录下的书');
-    }
-    // 别的窗口正开着这本书：拒绝，绝不让它在另一个窗口里继续盯着被删的文件夹
-    if (!(await storage.exists(target))) {
-      throw new storage.StorageError('NOT_FOUND', '这本书的文件夹已经不存在了');
-    }
-    let result;
-    // 测试环境用固定兜底路径，避免把测试数据丢进你的回收站
-    if (isE2E) {
-      const trashPath = await storage.trashBook(cfg.booksRoot, target);
-      result = { method: 'move', folder: path.basename(target), trashPath };
-    } else {
-      try {
-        await shell.trashItem(target);
-        result = { method: 'recycle', folder: path.basename(target) };
-      } catch (err) {
-        const trashPath = await storage.trashBook(cfg.booksRoot, target);
-        result = {
-          method: 'move',
-          folder: path.basename(target),
-          trashPath,
-          note: `回收站不可用（${errorText.describeForUi(err).message}），已移到书架的 _trash`
-        };
-      }
-    }
-    // 删除成功：清掉可能存在的登记（自己的 / 残留的）；书架变动的广播由 handleBook 统一发
-    storage.releaseOpenBookPath(target);
-    // A4（审计 #11 / O3、P6）：这本书的锁条目（若有）也一并回收；在飞的链留到 settle 后自己回收。
-    storage.clearBookLock(target);
-    return result;
-  }, { mutation: 'delete' });
 
   handle('shell:pick-folder', async () => {
     const { canceled, filePaths } = await showOpenDialog({
@@ -3404,6 +2604,3 @@ if (!gotLock) {
     app.quit();
   });
 }
-
-
-

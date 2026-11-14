@@ -1,6 +1,6 @@
 // 审计 #7（O2 / P4）：导出读正文必须挪到保存对话框确认之后。
 //
-// main.js 是 Electron 主进程入口，node:test 里起不来，沿用仓库「读源码做静态闸门」的先例
+// 导出区在 v1.8.0 WP-34（V114）整段搬进 ipc/export.js；主进程入口 node:test 里起不来，沿用仓库「读源码做静态闸门」的先例
 // （tests/ipc-limits.test.js / tests/config-gate.test.js / tests/renderer-startup.test.js）。
 // 这里只钉住时序，不测内容：
 //   1. prepareExport 只做只读前置（书目 / 范围 / 配置 / 默认目录），不许读正文——
@@ -13,7 +13,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+// 导出 / 复制域的唯一来源（WP-34 后 main.js 只做装配，代码在 ipc/export.js）。
+const MAIN = fs.readFileSync(path.join(__dirname, '..', 'ipc', 'export.js'), 'utf8').replace(/\r\n/g, '\n');
 
 // 取「顶层声明」这一段：从锚点开始，切到下一个顶格两空格的函数 / handler 之前。
 // 锚点用带缩进的完整声明串，避免撞上注释里的同名文字。

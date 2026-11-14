@@ -98,7 +98,8 @@ test('静态闸门：书锁只保留一份 keyed 实现，删书 / 换根入口�
   const commonSource = read('core/common.js');
   assert.match(commonSource, /function createKeyedWriteQueue\s*\(/, 'keyed 写队列必须只有 common 这一份实现');
   assert.match(commonSource, /function createWriteQueue\s*\(/, '全局写队列仍要在（收成 keyed 单链特例）');
-  const mainSource = read('main.js');
+  // v1.8.0 WP-34（V114）：book:delete 已搬进 ipc/book.js —— 两个回收入口一起扫。
+  const mainSource = read('main.js') + read('ipc/book.js');
   assert.match(mainSource, /storage\.clearBookLock\(target\)/, '删书成功后要回收这本书的锁');
   assert.match(mainSource, /storage\.clearBookLocks\(\)/, '换书架根目录后要主动回收旧锁');
 });

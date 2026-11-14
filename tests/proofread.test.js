@@ -679,9 +679,9 @@ test('P-08：snippets:false 只要位置、不拼上下文片段（条数 / 规�
 test('P-08 接线闸门：整本校对明细预算用完后，后续章节只算位置不拼片段', () => {
   const fs = require('node:fs');
   const path = require('node:path');
-  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'ipc', 'proofread.js'), 'utf8').replace(/\r\n/g, '\n');
   const start = main.indexOf("handleBook('book:proofread'");
-  assert.ok(start > 0, 'main.js 里找不到 book:proofread');
+  assert.ok(start > 0, 'ipc/proofread.js 里找不到 book:proofread');
   const end = main.indexOf('\n  });', start);
   assert.ok(end > start, 'book:proofread 的处理函数没有按预期结束');
   const region = main.slice(start, end);
@@ -772,10 +772,10 @@ test('B4/WP-27：MAX_SOURCE_CHARS 规模闸——超限只扫前 100 万字，�
   const lastCode = surrogate.charCodeAt(split.scannedChars - 1);
   assert.ok(lastCode < 0xd800 || lastCode > 0xdbff, '扫描前缀不能以孤立高位代理结尾');
 
-  // 静态闸门：main.js 的整本校对要把 tooLarge 汇总进回包；面板要如实提示。
+  // 静态闸门：ipc/proofread.js（WP-34 后 book:proofread 的落点）的整本校对要把 tooLarge 汇总进回包；面板要如实提示。
   const fs = require('node:fs');
   const path = require('node:path');
-  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'ipc', 'proofread.js'), 'utf8').replace(/\r\n/g, '\n');
   const start = main.indexOf("handleBook('book:proofread'");
   const end = main.indexOf('\n  });', start);
   const region = main.slice(start, end);
