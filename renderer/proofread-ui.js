@@ -44,14 +44,17 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'peers', 'nav', 'view'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'peers', 'nav', 'view', 'staleGuard'];
 
   function createProofreadUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createProofreadUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createProofreadUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, peers, nav, view } = host;
+    const { $, state, api, call, toast, peers, nav, view, staleGuard } = host;
+    if (!staleGuard || typeof staleGuard.chapterIdentity !== 'function') {
+      throw new TypeError('createProofreadUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
     if (typeof peers !== 'object') throw new TypeError('createProofreadUi 的 host.peers 必须是对象');
     for (const key of ['closeFindPanel', 'renderProofreadSettings']) {
       if (peers[key] === undefined || peers[key] === null) throw new TypeError('createProofreadUi 的 host.peers 缺少 ' + key);
@@ -576,6 +579,15 @@
     return jumpToResult(issue, closeProofreadPanel);
   }
 
+  // WP-15（V202）：await 期间换书 / 换章时，这次结果不能标到现在的章名下（点条目会跳错章）。
+  // 作废后清掉面板里的结果并说明要重跑；finally 仍照常复位 busy / 补跑。
+  function discardStaleProofreadRun() {
+    state.proofread = null;
+    $('proofread-summary').textContent = '校对期间已经换了书或章节，这次结果没有显示；请重新校对';
+    $('proofread-results').innerHTML = '';
+    return { ok: false, stale: true, message: '校对期间已经换了书或章节' };
+  }
+
   async function runProofread() {
     if (!state.bookPath || !state.chapters.length) {
       $('proofread-summary').textContent = '这本书里还没有章节';
@@ -591,31 +603,42 @@
     $('proofread-results').innerHTML = '';
     try {
       let payload;
+      // WP-15（V202）：发起时的书 / 章身份先记下；回执回来只对这份身份结算。
+      const expectedBookPath = staleGuard.chapterIdentity(state).bookPath;
       if (scope === 'book') {
         const override = currentChapterRef();
-        payload = await call(api.proofreadBook, state.bookPath, runOptions, override);
+        payload = await call(api.proofreadBook, expectedBookPath, runOptions, override);
+        if (staleGuard.chapterIdentity(state).bookPath !== expectedBookPath) {
+          return discardStaleProofreadRun();
+        }
         payload.scope = 'book';
       } else {
-        const res = await call(api.proofreadText, editorEl.value, runOptions);
         const chapter = state.chapters[state.index];
-        // 当前章的结果也带上章信息，点结果时才能定位（和整本结果结构保持一致）
+        const chapterIndex = state.index;
+        const expectedChapter = staleGuard.chapterIdentity(state);
+        const res = await call(api.proofreadText, editorEl.value, runOptions);
+        if (!staleGuard.sameChapterIdentity(expectedChapter, staleGuard.chapterIdentity(state))) {
+          return discardStaleProofreadRun();
+        }
+        // 当前章的结果也带上章信息，点结果时才能定位（和整本结果结构保持一致）。
+        // 章 id / 序号全用 await 前捕获的那一份，不用活值。
         payload = {
           ...res,
           issues: res.issues.map((issue) => ({
             ...issue,
             chapterId: chapter ? chapter.id : null,
-            chapterIndex: state.index,
+            chapterIndex,
             chapterName: chapter ? chapter.name : ''
           })),
           scope: 'current',
           chapterId: chapter ? chapter.id : null,
-          chapterIndex: state.index,
+          chapterIndex,
           chapterName: chapter ? chapter.name : '',
           chapters: res.total
             ? [
                 {
                   chapterId: chapter ? chapter.id : null,
-                  chapterIndex: state.index,
+                  chapterIndex,
                   name: chapter ? chapter.name : '',
                   total: res.total,
                   byRule: res.byRule,

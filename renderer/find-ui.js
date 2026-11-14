@@ -54,14 +54,19 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'longOpLogic', 'find', 'nav', 'collab'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'longOpLogic', 'staleGuard', 'find', 'nav', 'collab'];
 
   function createFindUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createFindUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createFindUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, imeGuard, longOpLogic, find, nav, collab } = host;
+    const { $, state, api, call, toast, imeGuard, longOpLogic, staleGuard, find, nav, collab } = host;
+    if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
+      throw new TypeError('createFindUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
+    // WP-15（C36）：查找回执的世代令牌——连按回车只有最后一次算数，旧响应不许覆盖新结果。
+    const findSeq = staleGuard.createSeq();
     if (typeof find !== 'object') throw new TypeError('createFindUi 的 host.find 必须是对象');
     for (const key of ['findLogic', 'editorEl', 'syncEditorOverlay', 'scrollCaretIntoView', 'onEditorInput']) {
       if (find[key] === undefined || find[key] === null) throw new TypeError('createFindUi 的 host.find 缺少 ' + key);
@@ -439,15 +444,27 @@
       clearFindSession();
       return;
     }
+    // WP-15（C36）：发起时取号 + 记下书 / 章身份。查找在飞期间连按回车、切章、换书时，
+    // 旧回执既不能盖掉新结果，也不能拿旧正文的命中位置去标现在的编辑区。
+    const token = findSeq.next();
+    const expectedBookPath = state.bookPath;
+    const expectedChapter = staleGuard.chapterIdentity(state);
     $('find-summary').textContent = '查找中…';
     try {
       if (options.scope === 'book') {
         // 整本查找走结果清单（点一条跳过去）；当前章的高亮先收起来，免得和清单说的不是一回事
         clearFindSession();
-        const payload = await call(api.searchBook, state.bookPath, {
+        const payload = await call(api.searchBook, expectedBookPath, {
           query: options.query,
           caseSensitive: options.caseSensitive
         });
+        if (!findSeq.isCurrent(token)) return { ok: false, stale: true };
+        // 换书后这份清单属于原来那本：不渲染、不把旧书的章名留在新书的面板里。
+        if (staleGuard.chapterIdentity(state).bookPath !== expectedChapter.bookPath) {
+          $('find-summary').textContent = '查找期间已经换了书，这次结果没有显示；请重新查找';
+          $('find-results').innerHTML = '';
+          return { ok: false, stale: true };
+        }
         // R4b（V9）：整本查找会跳过超过 128 MB 的章（文件没动），有跳过才在摘要里如实提示
         const skippedNote = payload.skippedTooLarge
           ? `；有 ${payload.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）`
@@ -469,6 +486,12 @@
       const res = await call(api.findAll, editorEl.value, options.query, {
         caseSensitive: options.caseSensitive
       });
+      if (!findSeq.isCurrent(token)) return { ok: false, stale: true };
+      if (!staleGuard.sameChapterIdentity(expectedChapter, staleGuard.chapterIdentity(state))) {
+        $('find-summary').textContent = '查找期间已经换了章节，这次结果没有显示；请重新查找';
+        $('find-results').innerHTML = '';
+        return { ok: false, stale: true };
+      }
       $('find-results').innerHTML = '';
       if (!res.count) {
         clearFindSession();
@@ -488,6 +511,7 @@
           ? `；命中太多，正文里只高亮当前附近 ${state.find.highlighted} 处`
           : '');
     } catch (err) {
+      if (!findSeq.isCurrent(token)) return { ok: false, stale: true };
       $('find-summary').textContent = `查找失败：${err.message}`;
     }
   }

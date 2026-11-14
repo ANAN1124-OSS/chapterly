@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const fragmentsUi = require('../renderer/fragments-ui');
+const staleGuard = require('../renderer/stale-guard');
 const chaptersLib = require('../core/chapters');
 const commonLib = require('../core/common');
 
@@ -217,16 +218,18 @@ function build(options = {}) {
       onEditorInput() { calls.onEditorInput += 1; },
       scrollCaretIntoView(pos) { calls.scrollCaretIntoView.push(pos); }
     },
-    hideHeaderMenus() { calls.hideHeaderMenus += 1; }
+    hideHeaderMenus() { calls.hideHeaderMenus += 1; },
+    // WP-15（C16）：世代令牌 / 章身份快照（生产由 renderer.js 注入 window.CWStaleGuard）
+    staleGuard
   };
   const ui = fragmentsUi.create(host);
   return { ui, host, state, dom, calls, editorEl };
 }
 
 // ---------- host 契约 ----------
-test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...fragmentsUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'common', 'editor', 'hideHeaderMenus', 'state', 'toast']);
-  assert.equal(fragmentsUi.REQUIRED_HOST.length, 8);
+test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...fragmentsUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'common', 'editor', 'hideHeaderMenus', 'staleGuard', 'state', 'toast']);
+  assert.equal(fragmentsUi.REQUIRED_HOST.length, 9);
   const ctx = build();
   assert.doesNotThrow(() => fragmentsUi.create(ctx.host));
   assert.throws(() => fragmentsUi.create(null), /createFragmentsUi 需要 host 对象/);
@@ -782,7 +785,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFragmentsU
   vm.runInContext(moduleSrc, context, { filename: 'renderer/fragments-ui.js' });
   assert.equal(typeof win.CWFragmentsUi, 'object');
   assert.deepEqual(Object.keys(win.CWFragmentsUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWFragmentsUi.REQUIRED_HOST.length, 8);
+  assert.equal(win.CWFragmentsUi.REQUIRED_HOST.length, 9);
   assert.equal(win.CWFindBookmarkUi, undefined);
 });
 
@@ -792,4 +795,65 @@ test('长列表渲染：碎片列表先拼 DocumentFragment 再一次性挂载�
   assert.match(moduleSrc, /list\.appendChild\(frag\)/, '碎片列表应当一次性挂载');
   assert.doesNotMatch(moduleSrc, /list\.appendChild\(item\)/, '不许逐条 appendChild 到 live 容器');
   assert.doesNotMatch(moduleSrc, /list\.appendChild\(day\)/, '分组小标题也要拼进碎片');
+});
+
+// ---------- WP-15 / C16：异步结果世代令牌 ----------
+test('selectFragmentByName（WP-15 / C16）：连点两条碎片时只有最后点的那条落地，旧回执不覆盖预览', async () => {
+  const fragA = makeFragment({ name: '碎片A.txt' });
+  const fragB = makeFragment({ name: '碎片B.txt', seq: 2 });
+  const ctx = build();
+  ctx.state.fragments = [fragA, fragB];
+  const gates = new Map();
+  ctx.host.api.readFragment = (name) => new Promise((resolve) => gates.set(name, resolve));
+
+  const first = ctx.ui.selectFragmentByName('碎片A.txt');
+  const second = ctx.ui.selectFragmentByName('碎片B.txt');
+  gates.get('碎片B.txt')({ name: '碎片B.txt', text: 'B 的正文', chars: 4, size: 20 });
+  assert.deepEqual(await second, { ok: true, name: '碎片B.txt', chars: 4, size: 20 });
+  gates.get('碎片A.txt')({ name: '碎片A.txt', text: 'A 的正文', chars: 4, size: 20 });
+  assert.deepEqual(await first, { ok: false, stale: true, name: '碎片A.txt' }, 'A 的旧回执被作废');
+
+  assert.equal(ctx.state.fragmentSelected.name, '碎片B.txt', '选中的必须是最后点的那条');
+  assert.equal(ctx.dom.map.get('fragment-preview').textContent, 'B 的正文', '预览不能被 A 盖掉');
+  assert.equal(ctx.dom.map.get('btn-fragment-insert').disabled, false);
+  assert.equal(ctx.dom.map.get('fragment-preview-name').textContent.includes('碎片B.txt'), true);
+  assert.deepEqual(ctx.calls.toast, []);
+});
+
+test('refreshFragments（WP-15 / C16）：列表在途时作者点了碎片 → 自动选第一条不抢用户点选', async () => {
+  const fragA = makeFragment({ name: '碎片A.txt' });
+  const fragB = makeFragment({ name: '碎片B.txt', seq: 2 });
+  const ctx = build();
+  ctx.state.fragments = [fragA, fragB];
+  ctx.host.api.readFragment = async (name) => ({ name, text: `${name} 的正文`, chars: 6, size: 20 });
+
+  let releaseRefresh;
+  ctx.host.api.listFragments = () => new Promise((resolve) => { releaseRefresh = resolve; });
+  const refreshing = ctx.ui.refreshFragments();
+  const clicked = await ctx.ui.selectFragmentByName('碎片A.txt');
+  assert.deepEqual(clicked, { ok: true, name: '碎片A.txt', chars: 6, size: 20 });
+
+  releaseRefresh({ total: 2, truncated: false, fragments: [fragA, fragB] });
+  await refreshing;
+  assert.equal(ctx.state.fragmentSelected.name, '碎片A.txt', '用户点选优先于自动选中第一条');
+  assert.equal(ctx.dom.map.get('fragment-preview-name').textContent.includes('碎片A.txt'), true);
+});
+
+test('refreshFragments（WP-15 / C16）：先发后到的旧列表不覆盖后发的新刷新', async () => {
+  const fragA = makeFragment({ name: '碎片A.txt' });
+  const fragB = makeFragment({ name: '碎片B.txt', seq: 2 });
+  const ctx = build();
+  const gates = [];
+  ctx.host.api.listFragments = () => new Promise((resolve) => gates.push(resolve));
+  ctx.host.api.readFragment = async (name) => ({ name, text: '正文', chars: 2, size: 9 });
+
+  const first = ctx.ui.refreshFragments();
+  const second = ctx.ui.refreshFragments();
+  gates[1]({ total: 1, truncated: false, fragments: [fragB] });
+  await second;
+  assert.deepEqual(ctx.state.fragments.map((item) => item.name), ['碎片B.txt']);
+  gates[0]({ total: 1, truncated: false, fragments: [fragA] });
+  assert.deepEqual(await first, { ok: false, stale: true }, '旧刷新的回执作废');
+  assert.deepEqual(ctx.state.fragments.map((item) => item.name), ['碎片B.txt'], '旧列表不许盖回来');
+  assert.equal(ctx.dom.map.get('fragments-summary').textContent, '共 1 条碎片（最新在前）');
 });

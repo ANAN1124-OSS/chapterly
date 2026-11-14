@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const findUi = require('../renderer/find-ui');
 const imeGuard = require('../renderer/ime-guard');
 const longOpLogic = require('../renderer/long-op-logic');
+const staleGuard = require('../renderer/stale-guard');
 const findLogic = require('../renderer/find-logic');
 const chaptersLib = require('../core/chapters');
 
@@ -221,6 +222,7 @@ function build(options = {}) {
     toast(message, kind) { calls.toast.push([message, kind]); },
     imeGuard,
     longOpLogic,
+    staleGuard,
     find: {
       findLogic,
       editorEl,
@@ -266,9 +268,9 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：10 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...findUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'find', 'imeGuard', 'longOpLogic', 'nav', 'state', 'toast']);
-  assert.equal(findUi.REQUIRED_HOST.length, 10);
+test('host 契约：11 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...findUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'find', 'imeGuard', 'longOpLogic', 'nav', 'staleGuard', 'state', 'toast']);
+  assert.equal(findUi.REQUIRED_HOST.length, 11);
   const ctx = build();
   assert.doesNotThrow(() => findUi.create(ctx.host));
   assert.throws(() => findUi.create(null), /createFindUi 需要 host 对象/);
@@ -1154,6 +1156,59 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFindUi，�
   vm.runInContext(moduleSrc, context, { filename: 'renderer/find-ui.js' });
   assert.equal(typeof win.CWFindUi, 'object');
   assert.deepEqual(Object.keys(win.CWFindUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWFindUi.REQUIRED_HOST.length, 10);
+  assert.equal(win.CWFindUi.REQUIRED_HOST.length, 11);
   assert.equal(win.CWTidyCardUi, undefined);
+});
+
+// ---------- WP-15 / C36：查找回执的世代令牌与身份复核 ----------
+test('runFind（WP-15 / C36）：连按回车时先发后到的旧结果不覆盖新结果', async () => {
+  const gates = [];
+  const ctx = build({
+    query: '张三',
+    findAll: () => new Promise((resolve) => gates.push(resolve))
+  });
+  const first = ctx.ui.runFind();
+  const second = ctx.ui.runFind();
+  assert.equal(gates.length, 2);
+
+  gates[1]({ count: 2, matches: [{ index: 3, length: 2 }, { index: 6, length: 2 }] });
+  await second;
+  const latestSummary = ctx.dom.map.get('find-summary').textContent;
+  assert.match(latestSummary, /^本章命中 2 处/);
+  assert.equal(ctx.state.find.total, 2);
+
+  gates[0]({ count: 1, matches: [{ index: 0, length: 2 }] });
+  assert.deepEqual(await first, { ok: false, stale: true }, '旧回执被令牌作废');
+  assert.equal(ctx.dom.map.get('find-summary').textContent, latestSummary, '旧结果不许覆盖新摘要');
+  assert.equal(ctx.state.find.total, 2, '旧命中不许改查找会话');
+});
+
+test('runFind（WP-15 / C36）：当前章查找在途切章 → 结果作废，不标到新章上', async () => {
+  let release;
+  const ctx = build({ query: '张三', findAll: () => new Promise((resolve) => { release = resolve; }) });
+  const pending = ctx.ui.runFind();
+  ctx.state.index = 1; // 载章流程会先改 index；这里模拟「查找在飞期间切到第二章」
+  release({ count: 1, matches: [{ index: 0, length: 2 }] });
+  assert.deepEqual(await pending, { ok: false, stale: true });
+  assert.equal(
+    ctx.dom.map.get('find-summary').textContent,
+    '查找期间已经换了章节，这次结果没有显示；请重新查找'
+  );
+  assert.equal(ctx.state.find.total, 0, '旧正文的命中不许进新章的查找会话');
+  assert.equal(ctx.dom.map.get('find-results').children.length, 0);
+});
+
+test('runFind（WP-15 / C36）：整本查找在途换书 → 旧书的清单不显示在新书面板里', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ query: '张三', scope: 'book', searchBookGate: gate });
+  const pending = ctx.ui.runFind();
+  ctx.state.bookPath = '/书库/书乙';
+  release();
+  assert.deepEqual(await pending, { ok: false, stale: true });
+  assert.equal(
+    ctx.dom.map.get('find-summary').textContent,
+    '查找期间已经换了书，这次结果没有显示；请重新查找'
+  );
+  assert.equal(ctx.dom.map.get('find-results').children.length, 0, '旧书的章名不许留在新书面板');
 });

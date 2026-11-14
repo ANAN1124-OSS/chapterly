@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const historyUi = require('../renderer/history-ui');
+const staleGuard = require('../renderer/stale-guard');
 const backupGuardLib = require('../renderer/backup-guard');
 
 // 第 4 步 renderer 九刀·第一刀：本书历史面板（原 renderer.js 4355–4668 / 当前 HEAD 4369–4668，300 行）
@@ -184,7 +185,9 @@ function build(options = {}) {
       hideBookMenu() { calls.hideBookMenu = (calls.hideBookMenu || 0) + 1; },
       hideExportMenu() { calls.hideExportMenu = (calls.hideExportMenu || 0) + 1; }
     },
-    fmt: { formatBytes }
+    fmt: { formatBytes },
+    // WP-15（V111）：备份预览的世代令牌（生产由 renderer.js 注入 window.CWStaleGuard）
+    staleGuard
   };
   const ui = historyUi.create(host);
   return { ui, host, state, dom, calls };
@@ -210,9 +213,9 @@ function groupFixture(overrides = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：9 个成员 + 3 个分组内的真实依赖，缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...historyUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'fmt', 'guard', 'menus', 'state', 'toast']);
-  assert.equal(historyUi.REQUIRED_HOST.length, 9);
+test('host 契约：10 个成员 + 3 个分组内的真实依赖，缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...historyUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'fmt', 'guard', 'menus', 'staleGuard', 'state', 'toast']);
+  assert.equal(historyUi.REQUIRED_HOST.length, 10);
   const ctx = build();
   assert.doesNotThrow(() => historyUi.create(ctx.host));
   assert.throws(() => historyUi.create(null), /createHistoryUi 需要 host 对象/);
@@ -1051,8 +1054,47 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWHistoryUi�
   vm.runInContext(moduleSrc, context, { filename: 'renderer/history-ui.js' });
   assert.equal(typeof win.CWHistoryUi, 'object');
   assert.deepEqual(Object.keys(win.CWHistoryUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWHistoryUi.REQUIRED_HOST.length, 9);
+  assert.equal(win.CWHistoryUi.REQUIRED_HOST.length, 10);
   assert.equal(typeof win.CWHistoryUi.create, 'function');
   assert.equal(win.CWShelfNavUi, undefined, '单独加载 history-ui 不该顺手造出别的全局');
   assert.equal(win.CWChapters, undefined);
+});
+
+// ---------- WP-15 / V111：备份预览的世代令牌 ----------
+test('previewHistoryBackup（WP-15 / V111）：连点两条备份时先点的旧回执后到，不覆盖后点那条的预览', async () => {
+  const ctx = build();
+  ctx.state.history = { path: '/书库/书甲', title: '书甲', groups: [], fileCount: 0, totalBytes: 0, loading: false, error: '', preview: null, token: 0 };
+  const gates = new Map();
+  ctx.host.api.previewHistoryFile = (path, groupId, fileName) =>
+    new Promise((resolve) => gates.set(fileName, resolve));
+
+  const first = ctx.ui.previewHistoryBackup('g1', '第一章.txt');
+  const second = ctx.ui.previewHistoryBackup('g2', '第二章.txt');
+  gates.get('第二章.txt')({ sourceLabel: '整理备份', fileName: '第二章.txt', text: '后点的正文', truncated: false });
+  await second;
+  assert.equal(ctx.state.history.preview.text, '后点的正文');
+  assert.equal(ctx.dom.map.get('history-preview-text').textContent, '后点的正文');
+
+  gates.get('第一章.txt')({ sourceLabel: '整理备份', fileName: '第一章.txt', text: '先点的旧正文', truncated: false });
+  assert.equal(await first, null, '旧回执作废');
+  assert.equal(ctx.state.history.preview.text, '后点的正文', '旧回执不许覆盖后点那条的预览');
+  assert.equal(ctx.dom.map.get('history-preview-text').textContent, '后点的正文');
+  assert.deepEqual(ctx.calls.toast, []);
+});
+
+test('previewHistoryBackup（WP-15 / V111）：旧点击的失败回执也不许弹 toast', async () => {
+  const ctx = build();
+  ctx.state.history = { path: '/书库/书甲', title: '书甲', groups: [], fileCount: 0, totalBytes: 0, loading: false, error: '', preview: null, token: 0 };
+  const gates = new Map();
+  ctx.host.api.previewHistoryFile = (path, groupId, fileName) =>
+    new Promise((resolve, reject) => gates.set(fileName, { resolve, reject }));
+
+  const stale = ctx.ui.previewHistoryBackup('g1', '第一章.txt');
+  const latest = ctx.ui.previewHistoryBackup('g2', '第二章.txt');
+  gates.get('第二章.txt').resolve({ sourceLabel: '整理备份', fileName: '第二章.txt', text: '新预览', truncated: false });
+  await latest;
+  gates.get('第一章.txt').reject(new Error('文件已被删除'));
+  assert.equal(await stale, null);
+  assert.deepEqual(ctx.calls.toast, [], '旧点击失败不许弹「预览失败」干扰新预览');
+  assert.equal(ctx.dom.map.get('history-preview-text').textContent, '新预览');
 });

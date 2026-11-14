@@ -67,7 +67,8 @@
     'saveCurrent',
     'loadChapterAt',
     'renderStatsUi',
-    'insertIntoBody'
+    'insertIntoBody',
+    'staleGuard'
   ];
 
   // 1.3.0 T4（I-06）：空状态三件套。列表为空时 summary 说明状态（真空，只驻内存），下面这行给
@@ -100,9 +101,14 @@
         throw new TypeError('createCaptureUi 的 host 缺少 ' + key);
       }
     }
-    const { $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody } = host;
+    const { $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody, staleGuard } = host;
+    if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
+      throw new TypeError('createCaptureUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
 
     // ---------- 面板状态（只在内存；不进渲染层 state） ----------
+    // WP-15（C36）：队列刷新的世代令牌——连按捕获 / 清空之后旧列表快照不许盖回来。
+    const refreshSeq = staleGuard.createSeq();
     const panel = {
       open: false,
       busy: false, // 正文插入 / 新建章节 / 清空进行中：所有动作按钮 + 清空 + 取消全禁用
@@ -452,11 +458,19 @@
     async function refreshQueue() {
       if (!panel.open) return panel.queue;
       if (panel.busy) return panel.queue;
+      // WP-15（C36）：只有最后一次刷新算数；期间关面板 / 开始清空 / 又刷了一次，
+      // 旧回执整段丢掉（不能把清空前的列表快照盖回来）。
+      const token = refreshSeq.next();
+      let nextQueue;
       try {
-        panel.queue = await fetchQueue();
+        nextQueue = await fetchQueue();
       } catch (err) {
-        toast(`读取捕获队列失败：${err.message}`, 'error');
+        if (refreshSeq.isCurrent(token) && panel.open) toast(`读取捕获队列失败：${err.message}`, 'error');
+        return panel.queue;
       }
+      if (!refreshSeq.isCurrent(token)) return panel.queue;
+      if (!panel.open || panel.busy) return panel.queue;
+      panel.queue = nextQueue;
       render();
       return panel.queue;
     }
@@ -469,6 +483,8 @@
         return { ok: false, code: 'UNSUPPORTED' };
       }
       panel.busy = true;
+      // WP-15（C36）：清空开始即作废在途的 refreshQueue——否则清空后旧快照回来又把记录画上去。
+      refreshSeq.next();
       render();
       try {
         await call(api.captureQueueClear);

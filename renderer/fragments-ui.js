@@ -43,14 +43,20 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'common', 'editor', 'hideHeaderMenus'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'common', 'editor', 'hideHeaderMenus', 'staleGuard'];
 
   function createFragmentsUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createFragmentsUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createFragmentsUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, common, editor, hideHeaderMenus } = host;
+    const { $, state, api, call, toast, common, editor, hideHeaderMenus, staleGuard } = host;
+    if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
+      throw new TypeError('createFragmentsUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
+    // WP-15（C16）：连点两条碎片的「最后一次点击才算数」+ 刷新期间自动选中不得抢走用户点选。
+    const selectSeq = staleGuard.createSeq();
+    const refreshSeq = staleGuard.createSeq();
     if (typeof common !== 'object') throw new TypeError('createFragmentsUi 的 host.common 必须是对象');
     for (const key of ['chaptersLib', 'formatRelativeTime', 'formatCount']) {
       if (common[key] === undefined || common[key] === null) throw new TypeError('createFragmentsUi 的 host.common 缺少 ' + key);
@@ -256,11 +262,16 @@
 
   async function refreshFragments() {
     const summary = $('fragments-summary');
+    // WP-15（C16）：① 旧刷新不覆盖新刷新；② 「自动选第一条」只在这次刷新期间作者没点过碎片时才做，
+    // 否则用户刚点的预览会被自动选中抢走。
+    const token = refreshSeq.next();
+    const selectAtStart = selectSeq.current();
     summary.textContent = '正在读取 _碎片…';
     let data;
     try {
       data = await call(api.listFragments);
     } catch (err) {
+      if (!refreshSeq.isCurrent(token)) return { ok: false, stale: true };
       summary.textContent = `读取碎片失败：${err.message}`;
       $('fragments-list').innerHTML = '';
       state.fragments = [];
@@ -268,20 +279,27 @@
       $('btn-fragment-insert').disabled = true;
       return { ok: false, message: err.message };
     }
+    if (!refreshSeq.isCurrent(token)) return { ok: false, stale: true };
     state.fragments = data.fragments;
     renderFragments(data);
     // 打开 / 刷新后默认选中第一条（只读预览，不会自动插进正文）
-    if (data.fragments.length) await selectFragmentByName(data.fragments[0].name);
+    if (data.fragments.length && selectSeq.current() === selectAtStart) {
+      await selectFragmentByName(data.fragments[0].name);
+    }
     return { ok: true, total: data.total, truncated: data.truncated, fragments: data.fragments };
   }
 
   async function selectFragmentByName(name) {
     const fragment = (state.fragments || []).find((item) => item.name === name);
     if (!fragment) return { ok: false, message: '这条碎片已经不在列表里了' };
+    // WP-15（C16）：每次点选取一个号，回执只认最后一个号——连点 / 刷新期间点选都不会串成
+    // 「预览是 B、插入的却是 A」；作废的旧回执不写 DOM、不 toast。
+    const token = selectSeq.next();
     state.fragmentSelected = null;
     $('btn-fragment-insert').disabled = true;
     try {
       const data = await call(api.readFragment, name);
+      if (!selectSeq.isCurrent(token)) return { ok: false, stale: true, name: data && data.name };
       state.fragmentSelected = data;
       $('fragment-preview-name').textContent = `${data.name} · ${formatCount(data.chars)} 字 · ${fragmentSizeText(data.size)}`;
       // 预览只塞前 2 万字进 DOM（几十万字的碎片也不卡界面）；插入时仍然是完整内容。
@@ -294,6 +312,7 @@
       highlightSelectedFragment(name);
       return { ok: true, name: data.name, chars: data.chars, size: data.size };
     } catch (err) {
+      if (!selectSeq.isCurrent(token)) return { ok: false, stale: true, message: err.message };
       $('fragment-preview-name').textContent = '读取碎片失败';
       $('fragment-preview').textContent = err.message;
       toast(`读取碎片失败：${err.message}`, 'error');

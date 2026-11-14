@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const proofreadUi = require('../renderer/proofread-ui');
+const staleGuard = require('../renderer/stale-guard');
 const chaptersLib = require('../core/chapters');
 
 // 第 4 步 renderer 九刀·第四刀：校对（原 renderer.js 3991–4343，353 行）搬到 renderer/proofread-ui.js。
@@ -246,16 +247,18 @@ function build(options = {}) {
       effectiveConfig() { calls.effectiveConfig += 1; return state.config; },
       hideHeaderMenus() { calls.hideHeaderMenus += 1; },
       scrollCaretIntoView(pos) { calls.scrollCaretIntoView.push(pos); }
-    }
+    },
+    // WP-15（V202）：回执按发起时的书 / 章身份结算
+    staleGuard
   };
   const ui = proofreadUi.create(host);
   return { ui, host, state, dom, calls, editorEl };
 }
 
 // ---------- host 契约 ----------
-test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...proofreadUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'nav', 'peers', 'state', 'toast', 'view']);
-  assert.equal(proofreadUi.REQUIRED_HOST.length, 8);
+test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...proofreadUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'nav', 'peers', 'staleGuard', 'state', 'toast', 'view']);
+  assert.equal(proofreadUi.REQUIRED_HOST.length, 9);
   const ctx = build();
   assert.doesNotThrow(() => proofreadUi.create(ctx.host));
   assert.throws(() => proofreadUi.create(null), /createProofreadUi 需要 host 对象/);
@@ -688,7 +691,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWProofreadU
   vm.runInContext(moduleSrc, context, { filename: 'renderer/proofread-ui.js' });
   assert.equal(typeof win.CWProofreadUi, 'object');
   assert.deepEqual(Object.keys(win.CWProofreadUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWProofreadUi.REQUIRED_HOST.length, 8);
+  assert.equal(win.CWProofreadUi.REQUIRED_HOST.length, 9);
   assert.equal(win.CWEditorMarksUi, undefined);
 });
 
@@ -1044,4 +1047,41 @@ test('multi=false + lists=1 → 旧按钮仍在（旧单份用户不变，V52）
   assert.equal(dom.map.get('proofread-wordlists').classList.contains('hidden'), true);
   assert.equal(dom.map.get('proofread-wordlists').children.length, 0);
   assert.equal(dom.map.get('btn-proofread-pick').classList.contains('hidden'), false, '旧单份用户保留「选择词表…」');
+});
+
+// ---------- WP-15 / V202：校对结果按发起时的书 / 章身份结算 ----------
+test('runProofread（WP-15 / V202）：当前章在飞期间切章 → 结果作废，不标到新章名下', async () => {
+  const ctx = build();
+  let release;
+  ctx.host.api.proofreadText = () => new Promise((resolve) => { release = resolve; });
+  const pending = ctx.ui.runProofread();
+  ctx.state.index = 1; // 校对在飞期间作者切到第二章
+  release({
+    total: 1,
+    byRule: { 'repeat-word': 1 },
+    truncated: false,
+    issues: [{ rule: 'repeat-word', index: 0, length: 2, match: '的的', message: '重复用词', line: 1, column: 1 }]
+  });
+  assert.deepEqual(await pending, { ok: false, stale: true, message: '校对期间已经换了书或章节' });
+  assert.equal(ctx.state.proofread, null, '旧结果不许进 state 被当成新章的结果');
+  assert.equal(
+    ctx.dom.map.get('proofread-summary').textContent,
+    '校对期间已经换了书或章节，这次结果没有显示；请重新校对'
+  );
+  assert.equal(ctx.dom.map.get('proofread-results').children.length, 0);
+});
+
+test('runProofread（WP-15 / V202）：整本校对在飞期间换书 → 结果作废，摘要要求重跑', async () => {
+  const ctx = build({ scope: 'book' });
+  let release;
+  ctx.host.api.proofreadBook = () => new Promise((resolve) => { release = resolve; });
+  const pending = ctx.ui.runProofread();
+  ctx.state.bookPath = '/书库/书乙';
+  release({ total: 1, chapterCount: 1, chapterHitCount: 1, skippedChapters: 0, byRule: {}, issues: [] });
+  assert.deepEqual(await pending, { ok: false, stale: true, message: '校对期间已经换了书或章节' });
+  assert.equal(ctx.state.proofread, null);
+  assert.equal(
+    ctx.dom.map.get('proofread-summary').textContent,
+    '校对期间已经换了书或章节，这次结果没有显示；请重新校对'
+  );
 });

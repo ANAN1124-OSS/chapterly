@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const exportUi = require('../renderer/export-ui');
+const staleGuard = require('../renderer/stale-guard');
 const s2t = require('../core/s2t');
 const commonLib = require('../core/common');
 const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
@@ -86,6 +87,8 @@ function makeHost(options = {}) {
     chapterVolumeId: (chapter) => (chapter && chapter.volumeId) || null,
     hideExportMenu: () => { menus.push('hide'); },
     formatCount: commonLib.formatCount,
+    // WP-15（C37）：计划范围键比较用（生产由 renderer.js 注入 window.CWStaleGuard）
+    staleGuard,
     get exportFormat() { return box.format; },
     set exportFormat(value) { box.format = value; },
     async call(channel, ...rest) {
@@ -686,4 +689,79 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWExportUi�
   assert.equal(typeof win.CWExportUi.create, 'function');
   assert.equal(win.CWTtsUi, undefined, '单独加载 export-ui 不该顺手造出别的全局');
   assert.equal(win.CWChapters, undefined);
+});
+
+// ---------- WP-15 / C37：导出计划与当前范围的绑定 ----------
+test('refreshExportSummary（WP-15 / C37）：新计划在飞时确认按钮禁用，直接点确认不发起导出', async () => {
+  const pending = [];
+  const { host, els, toasts, calls } = makeHost({
+    onCall: () => {
+      let release;
+      const promise = new Promise((resolve) => { release = resolve; });
+      pending.push({ promise, release });
+      return promise;
+    }
+  });
+  const ui = exportUi.create(host);
+  const refreshing = ui.refreshExportSummary();
+  assert.equal(els.get('btn-export-confirm').disabled, true, '计划没回来之前不许确认');
+
+  await ui.confirmExportDialog();
+  assert.deepEqual(calls.map((call) => call.channel), ['book:export-plan'], '在途窗口里不许发起导出');
+  assert.deepEqual(toasts, [{ message: '所选范围里没有章节，换个范围试试', kind: 'warn' }]);
+
+  pending[0].release({ chapterCount: 2, chars: 1234, fileName: '测试书.txt' });
+  await refreshing;
+  assert.equal(els.get('btn-export-confirm').disabled, false, '计划落地后按钮才恢复');
+});
+
+test('confirmExportDialog（WP-15 / C37）：计划与当前范围对不上时不放行，并立刻按当前范围补算', async () => {
+  const { host, els, toasts, calls } = makeHost();
+  const ui = exportUi.create(host);
+  await ui.openExportDialog('txt');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 1, '打开时按「全书」算过一次计划');
+
+  // 没走 input 事件就把范围改成 2–2（模拟脚本改值 / 事件漏发）：计划还是「全书」那一份
+  checkedScope = 'range';
+  host.$('export-from').value = '2';
+  host.$('export-to').value = '2';
+  assert.equal(els.get('btn-export-confirm').disabled, false, '按钮此刻仍是旧计划放行的状态');
+
+  await ui.confirmExportDialog();
+  assert.equal(
+    calls.some((call) => call.channel !== 'book:export-plan'),
+    false,
+    '范围对不上时一条导出都不许发起'
+  );
+  assert.deepEqual(toasts.at(-1), { message: '导出信息还在更新，请稍候再点一次', kind: 'warn' });
+  assert.equal(
+    calls.filter((call) => call.channel === 'book:export-plan').length,
+    2,
+    '确认被拦下时顺手按当前范围补算一次计划'
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test('scheduleExportSummary（WP-15 / C37）：范围一改旧计划立刻作废、按钮先禁用（防抖窗口也不放行）', async () => {
+  const { host, els, toasts, calls } = makeHost();
+  const ui = exportUi.create(host);
+  await ui.openExportDialog('txt');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(els.get('btn-export-confirm').disabled, false);
+
+  checkedScope = 'range';
+  host.$('export-from').value = '2';
+  host.$('export-to').value = '2';
+  ui.scheduleExportSummary(50);
+  assert.equal(els.get('btn-export-confirm').disabled, true, '防抖窗口里按钮必须先禁用');
+
+  await ui.confirmExportDialog();
+  assert.equal(
+    calls.some((call) => call.channel !== 'book:export-plan'),
+    false,
+    '防抖窗口里点确认不许拿旧范围的计划导出'
+  );
+  assert.deepEqual(toasts.at(-1), { message: '所选范围里没有章节，换个范围试试', kind: 'warn' });
+  ui.closeExportDialog();
 });

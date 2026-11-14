@@ -5,7 +5,7 @@
  *   队列条目走 api.captureQueueRemove）→ 「章节」走
  *   api.captureCommitRecord（payload 正确、成功后换书目 / 刷统计 / 跳新章 / 重拉队列 / 记录消失）→
  *   busy 防重 / 失败保留 / 空队列与空剪贴板 toast。不碰真剪贴板、不写盘。
- * 契约：host 必须正好 9 个成员（契约 §5，新增 insertIntoBody），缺一个 create 当场 TypeError。
+ * 契约：host 必须正好 10 个成员（契约 §5，新增 insertIntoBody / WP-15 的 staleGuard），缺一个 create 当场 TypeError。
  * 静态闸门：面板实现只在 renderer/capture-ui.js（renderer.js 里不许再长回第二份）；
  *   index.html 只留列表视图 DOM + 脚本顺序；styles.css 换成 .capture-record*；Esc 走 captureUi.cancel()；
  *   列表点击委托接上「正文 / 章节」两个动作；test-hooks 钩子改成列表版。
@@ -24,6 +24,7 @@ if (typeof capture.recordPreview !== 'function') {
 }
 
 const captureUiModule = require('../renderer/capture-ui');
+const staleGuard = require('../renderer/stale-guard');
 
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -379,6 +380,7 @@ function build(options = {}) {
       state.index = index;
     },
     renderStatsUi: () => log.push('renderStatsUi'),
+    staleGuard,
     insertIntoBody: async (text) => {
       log.push('insertIntoBody');
       insertPayloads.push(text);
@@ -415,7 +417,7 @@ function withFakeDocument(fn) {
 
 // ---------- 契约 ----------
 
-test('契约：createCaptureUi 的 host 正好 9 个成员（含 insertIntoBody），缺一个当场 TypeError', () => {
+test('契约：createCaptureUi 的 host 正好 10 个成员（含 insertIntoBody / staleGuard），缺一个当场 TypeError', () => {
   assert.deepEqual([...captureUiModule.REQUIRED_HOST].sort(), [
     '$',
     'api',
@@ -424,10 +426,11 @@ test('契约：createCaptureUi 的 host 正好 9 个成员（含 insertIntoBody�
     'loadChapterAt',
     'renderStatsUi',
     'saveCurrent',
+    'staleGuard',
     'state',
     'toast'
   ]);
-  assert.equal(captureUiModule.REQUIRED_HOST.length, 9, 'host 成员数按契约 §5 是 9 个');
+  assert.equal(captureUiModule.REQUIRED_HOST.length, 10, 'host 成员数按契约 §5 是 10 个');
   assert.throws(() => captureUiModule.create(null), /需要 host 对象/);
   for (const key of captureUiModule.REQUIRED_HOST) {
     const { host } = build();
@@ -1385,3 +1388,54 @@ test('长列表渲染：队列先拼 DocumentFragment 再一次性挂载（V35�
   assert.match(moduleSrc, /listEl\.appendChild\(frag\)/, '队列应当一次性挂载');
   assert.doesNotMatch(moduleSrc, /for \(const record of records\) listEl\.appendChild/, '不许逐条 appendChild 到 live 容器');
 });
+
+// ---------- WP-15 / C36：队列刷新的世代令牌 ----------
+test('refreshQueue（WP-15 / C36）：先发后到的旧队列快照不覆盖后发的新刷新', () =>
+  withFakeDocument(async () => {
+    const ctx = build({ queue: [{ text: QUEUE_A }] });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    const gates = [];
+    ctx.api.captureQueueList = () => new Promise((resolve) => gates.push(resolve));
+
+    const first = ui.refreshQueue();
+    const second = ui.refreshQueue();
+    assert.equal(gates.length, 2, '两次刷新都要真的发 IPC');
+    gates[1]({
+      ok: true,
+      data: {
+        entries: [
+          { id: 1, chars: 3, at: 1, previewText: '甲' },
+          { id: 9, chars: 3, at: 2, previewText: '乙' }
+        ],
+        total: 2
+      }
+    });
+    await second;
+    assert.deepEqual(ui.records().filter((item) => item.kind === 'queue').map((item) => item.id), [1, 9]);
+
+    gates[0]({ ok: true, data: { entries: [{ id: 1, chars: 3, at: 1, previewText: '甲' }], total: 1 } });
+    await first;
+    assert.deepEqual(
+      ui.records().filter((item) => item.kind === 'queue').map((item) => item.id),
+      [1, 9],
+      '旧刷新回执作废，队列不许被旧快照盖回去'
+    );
+  }));
+
+test('refreshQueue（WP-15 / C36）：清空期间在途的刷新回执不许把记录画回来', () =>
+  withFakeDocument(async () => {
+    const ctx = build({ queue: [{ text: QUEUE_A }] });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    let release;
+    ctx.api.captureQueueList = () => new Promise((resolve) => { release = resolve; });
+
+    const refreshing = ui.refreshQueue();
+    const cleared = await ui.clearQueue();
+    assert.equal(cleared.ok, true);
+    assert.deepEqual(ui.records(), [], '清空后面板立即空');
+    release({ ok: true, data: { entries: [{ id: 1, chars: 3, at: 1, previewText: '甲' }], total: 1 } });
+    await refreshing;
+    assert.deepEqual(ui.records(), [], '清空开始即作废在途刷新，旧快照不许复活记录');
+  }));
