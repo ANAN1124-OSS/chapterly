@@ -63,15 +63,24 @@ async function isDirectory(p) {
   }
 }
 
-async function uniqueFolderName(booksRoot, desired) {
+// V106（v1.8.0 WP-21）：导入文件夹撞名后缀的硬上限，与 core/chapters.js 的 MAX_NAME_SUFFIX 同口径。
+// 以前是 `for (;;)` 线性探测：同名书极多时要做 O(n²) 次 stat，理论上不可终止（exists 永远为真）。
+// 现在 `-2` … `-999` 用完仍撞名就抛 BAD_PATH（错误码与章节撞名一致，文案由 error-text 脱敏后给界面）。
+const MAX_FOLDER_SUFFIX = 999;
+
+// maxSuffix 可注入：单测不必真造 999 个文件夹，也能钉住「撞满上限就明确报错、绝不无限循环」。
+async function uniqueFolderName(booksRoot, desired, { maxSuffix = MAX_FOLDER_SUFFIX } = {}) {
   const base = chaptersLib.safeName(desired) || '导入的书';
   let candidate = base;
-  let i = 2;
-  for (;;) {
-    if (!(await storage.exists(path.join(booksRoot, candidate)))) return candidate;
+  if (!(await storage.exists(path.join(booksRoot, candidate)))) return candidate;
+  for (let i = 2; i <= maxSuffix; i += 1) {
     candidate = `${base}-${i}`;
-    i += 1;
+    if (!(await storage.exists(path.join(booksRoot, candidate)))) return candidate;
   }
+  throw new storage.StorageError(
+    'BAD_PATH',
+    `同名书文件夹太多（已试到第 ${maxSuffix} 个后缀），请先把已有书名改短，或整理书架里的文件夹`
+  );
 }
 
 // 文件名看起来像「一本书的章节文件」（001-xxx.txt / 第一章 xxx.txt），而不是一本完整小说
@@ -573,6 +582,9 @@ module.exports = {
   importFolders,
   importNovelFile,
   MAX_IMPORT_BYTES,
+  // V106（WP-21）：导入文件夹撞名后缀上限 + 探测入口（单测注入小上限验证「撞满就报错」）
+  MAX_FOLDER_SUFFIX,
+  uniqueFolderName,
   formatImportSize,
   importSizeProblem,
   isProbablyBinary,
