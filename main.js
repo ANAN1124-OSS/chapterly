@@ -1771,7 +1771,7 @@ function registerIpc() {
   handle('text:find-all', async (text, query, options) => {
     assertText(text);
     const result = findLib.findMatchesAll(text, ipcLimits.assertQuery(query), options);
-    return { count: result.matches.length, truncated: result.truncated, matches: result.matches };
+    return { count: result.matches.length, truncated: result.truncated, limit: result.limit, matches: result.matches };
   });
 
   handle('text:replace', async (text, query, replacement, options) => {
@@ -1785,6 +1785,8 @@ function registerIpc() {
       const found = findLib.findMatches(text, wanted, findOptions);
       ipcLimits.assertReplaceOutput(text.length, found.length, wanted.length, insert.length);
     }
+    // C4（v1.8.0 WP-05）：replaceAllLiteral 会带回 truncated / limit —— 超过单章上限时只替换前
+    // limit 处，界面据此提示「只替换了前 N 处」，不把这当成全部替换。
     return findLib.replaceAllLiteral(text, wanted, insert, findOptions);
   });
 

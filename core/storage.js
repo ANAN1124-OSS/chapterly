@@ -1234,6 +1234,9 @@ async function searchBook(bookPath, options = {}) {
   const meta = await readBookMeta(bookPath);
   const results = [];
   let totalMatches = 0;
+  // C4（v1.8.0 WP-05）：单章命中超过 core/find.js 的 MAX_MATCHES 时，totalMatches 只是「至少」，
+  // 不是精确总数——必须把 truncated 一起回给界面，不能把 5000 当成「整本只有 5000 处」。
+  let truncated = false;
   const readStats = { skippedTooLarge: 0 };
   // C1（审计 #1 / P1）：按批读正文（批内并行、批间串行），本批处理完即释放，不再整本常驻
   // C2（审计 #2 / P2）：预览阶段顺手把读到的正文记进快照，紧接着的执行（整本替换）直接复用
@@ -1243,15 +1246,18 @@ async function searchBook(bookPath, options = {}) {
         const chapter = meta.chapters[start + offset];
         const loaded = loadedTexts[offset];
         if (!loaded) continue;
-        const matches = findLib.findMatches(loaded.text, query, { caseSensitive });
-        if (!matches.length) continue;
-        totalMatches += matches.length;
+        const found = findLib.findMatchesAll(loaded.text, query, { caseSensitive });
+        if (!found.matches.length) continue;
+        totalMatches += found.matches.length;
+        if (found.truncated) truncated = true;
         results.push({
           chapterId: chapter.id,
           file: chapter.file,
           name: chapter.name,
-          count: matches.length,
-          matches: matches.slice(0, 12).map((match) => ({
+          count: found.matches.length,
+          // 本章命中是否被单章上限截断：界面写「N+ 处」，不把截断值当精确数
+          truncated: found.truncated,
+          matches: found.matches.slice(0, 12).map((match) => ({
             index: match.index,
             length: match.length,
             ...findLib.makeSnippet(loaded.text, match.index, match.length)
@@ -1260,7 +1266,16 @@ async function searchBook(bookPath, options = {}) {
       }
     }, readStats)
   );
-  return { query, caseSensitive, totalMatches, chapterCount: results.length, results, skippedTooLarge: readStats.skippedTooLarge };
+  return {
+    query,
+    caseSensitive,
+    totalMatches,
+    truncated,
+    matchLimit: findLib.MAX_MATCHES,
+    chapterCount: results.length,
+    results,
+    skippedTooLarge: readStats.skippedTooLarge
+  };
 }
 
 // 全书替换：逐章字面量替换并写盘；写之前把原文件备份到书内 _trash/替换备份-时间戳/。
@@ -1277,6 +1292,10 @@ async function replaceInBook(bookPath, options = {}) {
   let backupDir = null;
   let chaptersChanged = 0;
   let occurrences = 0;
+  // C4（v1.8.0 WP-05）：单章命中超过 core/find.js 的 MAX_MATCHES 时只替换前 MAX_MATCHES 处；
+  // 这里如实累计「有几章被截断」并回传，界面必须说「只替换了前 N 处」，不许报成整本完成。
+  let truncated = false;
+  let chaptersTruncated = 0;
   const readStats = { skippedTooLarge: 0 };
   let backupCreated = false;
   try {
@@ -1292,6 +1311,11 @@ async function replaceInBook(bookPath, options = {}) {
           if (!loaded) continue;
           const res = findLib.replaceAllLiteral(loaded.text, query, replacement, { caseSensitive });
           if (!res.count) continue;
+          // C4 / WP-05：这一章只替换了前 res.count 处（其余命中超上限未动），累计给界面提示
+          if (res.truncated) {
+            truncated = true;
+            chaptersTruncated += 1;
+          }
           if (!backupCreated) {
             backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), REPLACE_BACKUP_PREFIX);
             await ensureDir(backupDir);
@@ -1322,6 +1346,9 @@ async function replaceInBook(bookPath, options = {}) {
   return {
     chaptersChanged,
     occurrences,
+    truncated,
+    chaptersTruncated,
+    matchLimit: findLib.MAX_MATCHES,
     backupDir: backupCreated ? backupDir : null,
     skippedTooLarge: readStats.skippedTooLarge
   };

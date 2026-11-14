@@ -3,14 +3,17 @@
 // 替换前由 storage 负责把原章节备份到书内 _trash，替换写盘仍是显式的「全部替换」动作。
 
 // 单章命中数上限：极端情况（搜一个「的」）兜底，别把内存 / IPC 打爆。
-// 到了上限还能多找出第 MAX_MATCHES + 1 处时，findMatchesAll 会明确回 truncated: true。
+// C4（v1.8.0 WP-05）：这是**显示与单次替换共用的处理上限**，不是精确命中数——
+// 到了上限还能多找出第 MAX_MATCHES + 1 处时，findMatchesAll 会明确回 truncated: true；
+// replaceAllLiteral 同样把 truncated 原样带走，调用方（整本查找 / 单章替换 / 整本替换）
+// 必须如实提示「只统计 / 只替换了前 N 处」，绝不能把截断值当成「全部处理完成」。
 const MAX_MATCHES = 5000;
 
 function scanMatches(text, query, options = {}, limit = MAX_MATCHES) {
   const source = String(text == null ? '' : text);
   const needleRaw = String(query == null ? '' : query);
-  if (!needleRaw) return { matches: [], truncated: false };
   const cap = Math.max(1, Math.floor(Number(limit) || MAX_MATCHES));
+  if (!needleRaw) return { matches: [], truncated: false, limit: cap };
   const caseSensitive = Boolean(options.caseSensitive);
   let haystack = source;
   let needle = needleRaw;
@@ -27,11 +30,11 @@ function scanMatches(text, query, options = {}, limit = MAX_MATCHES) {
   for (;;) {
     const index = haystack.indexOf(needle, from);
     if (index < 0) break;
-    if (matches.length >= cap) return { matches, truncated: true };
+    if (matches.length >= cap) return { matches, truncated: true, limit: cap };
     matches.push({ index, length: needleRaw.length });
     from = index + Math.max(1, needle.length);
   }
-  return { matches, truncated: false };
+  return { matches, truncated: false, limit: cap };
 }
 
 function findMatches(text, query, options = {}) {
@@ -47,11 +50,15 @@ function countMatches(text, query, options) {
   return findMatches(text, query, options).length;
 }
 
-// 纯字面量替换；返回替换后的文本和次数（位置由 findMatches 提供，保证大小写策略一致）
+// 纯字面量替换；返回替换后的文本、**实际替换次数**与是否被单章上限截断（C4 / WP-05）。
+// 超过 MAX_MATCHES 时只替换前 MAX_MATCHES 处（和查找列表看到的是同一批），但 truncated 必须
+// 如实回报：界面据此提示「只替换了前 N 处」，不把截断当成「全部替换完成」。位置由 findMatchesAll
+// 提供，保证大小写策略与查找完全一致。
 function replaceAllLiteral(text, query, replacement, options = {}) {
   const source = String(text == null ? '' : text);
-  const matches = findMatches(source, query, options);
-  if (!matches.length) return { text: source, count: 0 };
+  const found = findMatchesAll(source, query, options);
+  const { matches, truncated, limit } = found;
+  if (!matches.length) return { text: source, count: 0, truncated: false, limit };
   const insert = String(replacement == null ? '' : replacement);
   let out = '';
   let cursor = 0;
@@ -60,7 +67,7 @@ function replaceAllLiteral(text, query, replacement, options = {}) {
     cursor = match.index + match.length;
   }
   out += source.slice(cursor);
-  return { text: out, count: matches.length };
+  return { text: out, count: matches.length, truncated, limit };
 }
 
 // 结果列表里显示的一小段上下文（去掉换行，避免列表被撑开）
