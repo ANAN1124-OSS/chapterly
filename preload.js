@@ -15,7 +15,27 @@ function on(channel, cb) {
   ipcRenderer.on(channel, (_event, ...args) => cb(...args));
 }
 
-contextBridge.exposeInMainWorld('api', {
+// E5（v1.8.0 WP-11 / 审计 E5）：4 个自检 API（testPickConfigPath / testPickFont / setUpdateMock /
+// setClipboardWatchTestText）只在自动化启动时暴露。主进程 createWindow 按 automation 决定是否把
+// core/security-policy.js 的 TEST_HOOKS_SWITCH 加进 webPreferences.additionalArguments，Electron 会把
+// 它追加到渲染进程的 process.argv（sandbox 下 process.argv 仍在），这里据此决定挂不挂这 4 个键。
+// 生产窗口拿不到开关 → window.api 上根本没有它们（主进程也只在 automation 分支注册对应频道）。
+// 取不到 process（非 Electron 环境 / 单测沙箱）时按生产处理：绝不因为探测失败而放宽暴露面。
+const TEST_HOOKS_SWITCH = '--chapterly-test-hooks';
+const testHooksEnabled = (() => {
+  try {
+    return (
+      typeof process === 'object' &&
+      process !== null &&
+      Array.isArray(process.argv) &&
+      process.argv.includes(TEST_HOOKS_SWITCH)
+    );
+  } catch {
+    return false;
+  }
+})();
+
+const api = {
   appVersion: () => invoke('app:version'),
   appWarning: () => invoke('app:warning'),
   getRecentBook: () => invoke('app:recent-book'),
@@ -117,9 +137,6 @@ contextBridge.exposeInMainWorld('api', {
 
   getConfig: () => invoke('config:get'),
   setConfig: (patch) => invoke('config:set', patch),
-  // 仅自检：模拟「在系统对话框里选中了书架目录 / 词表路径」，生产环境主进程不会注册这个频道。
-  // 参数顺序与主进程一致：路径在前、字段名在后（静态闸门盯第一参数）。
-  testPickConfigPath: (pickedPath, field) => invoke('config:test-pick', pickedPath, field),
   // 1.6.0 F2：可选筛选参数 { bookId, year } —— 只影响返回里的 aggregate（汇总行 / CSV），
   // 今天字数 / 近 30 天 / 日历仍是全书架口径；不传 = 全部书全部年。
   getStats: (filter) => invoke('stats:get', filter),
@@ -153,8 +170,6 @@ contextBridge.exposeInMainWorld('api', {
   pickFont: () => invoke('font:pick'),
   // 自定义字体（代码审计 F1）：渲染层不再传路径——主进程只读「刚在对话框里选的 / 当前书 / 全局配置」的字体
   readFont: () => invoke('font:read'),
-  // 仅自检：模拟「在系统字体对话框里选中某个文件」，生产环境主进程不会注册这个频道
-  testPickFont: (fontPath) => invoke('font:test-pick', fontPath),
   pickFolder: () => invoke('shell:pick-folder'),
   openBookFolder: (bookPath) => invoke('shell:open-book-folder', bookPath),
   // 诊断日志（提案 7.4）：只读目录清单 + 让主进程打开日志文件夹；渲染层仍然没有 fs 权限
@@ -169,8 +184,6 @@ contextBridge.exposeInMainWorld('api', {
   // 自动更新轻量版（提案 7.1）：只检查版本 + 打开 GitHub Release 下载页；不下载、不安装、不写配置
   checkUpdate: () => invoke('update:check'),
   openUpdateDownload: () => invoke('update:open-download'),
-  // 仅自检 / 截图用：注入假网络，生产环境主进程不会注册这个频道
-  setUpdateMock: (mock) => invoke('update:test-mock', mock),
 
   onCloseRequested: (cb) => on('app:close-requested', cb),
   // 1.6.1 P-01（审查报告）：点「强制退出」后主进程先发 app:force-close、再等 500 ms 才 destroy。
@@ -186,8 +199,6 @@ contextBridge.exposeInMainWorld('api', {
   onClipboardChanged: (cb) => on('clipboard:changed', cb),
   // 每次「记进队列」都发一个只带条数的轻量事件：面板开着时用它即时刷新列表（短复制没有轻提示）
   onClipboardRecorded: (cb) => on('clipboard:recorded', cb),
-  // 仅自检：工作站锁屏时真实剪贴板读不到，E2E 用注入文本代替（生产主进程不注册这个频道）
-  setClipboardWatchTestText: (text) => invoke('clipboard:test-set', text),
   // 主进程内部错误（崩溃 / 未处理的 Promise）：界面只弹一句固定提示，错误细节只在日志里
   onInternalError: (cb) => on('app:internal-error', cb),
   // 正文索引的建 / 校验进度（只用于书架搜索提示）
@@ -197,4 +208,20 @@ contextBridge.exposeInMainWorld('api', {
   onCommandPalette: (cb) => on('app:command-palette', cb),
   reportDirty: (dirty) => ipcRenderer.send('app:dirty', Boolean(dirty)),
   closeReady: (allowed) => ipcRenderer.send('app:close-ready', Boolean(allowed))
-});
+};
+
+// E5：4 个自检 API 只在自动化启动（process.argv 带 TEST_HOOKS_SWITCH）时挂上去。
+// 频道本身仍由主进程在 `if (automation)` 分支注册；这里少挂一层，生产窗口的暴露面就小一层。
+if (testHooksEnabled) {
+  // 仅自检：模拟「在系统对话框里选中了书架目录 / 词表路径」。
+  // 参数顺序与主进程一致：路径在前、字段名在后（静态闸门盯第一参数）。
+  api.testPickConfigPath = (pickedPath, field) => invoke('config:test-pick', pickedPath, field);
+  // 仅自检：模拟「在系统字体对话框里选中某个文件」。
+  api.testPickFont = (fontPath) => invoke('font:test-pick', fontPath);
+  // 仅自检 / 截图用：注入假网络。
+  api.setUpdateMock = (mock) => invoke('update:test-mock', mock);
+  // 仅自检：工作站锁屏时真实剪贴板读不到，E2E 用注入文本代替。
+  api.setClipboardWatchTestText = (text) => invoke('clipboard:test-set', text);
+}
+
+contextBridge.exposeInMainWorld('api', api);

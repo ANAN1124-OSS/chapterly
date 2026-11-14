@@ -99,19 +99,31 @@ function deniesPermission() {
   return false;
 }
 
+// 自检 API 的暴露开关（v1.8.0 WP-11 / 审计 E5）：主进程建窗口时只有 automation 为真才把这一项
+// 加进 webPreferences.additionalArguments，Electron 会把它追加到渲染进程的 process.argv；
+// preload.js 看到它才在 window.api 上挂 4 个自检 API（testPickConfigPath / testPickFont /
+// setUpdateMock / setClipboardWatchTestText）。生产窗口没有它 → 暴露面里没有这 4 项。
+// preload 在 sandbox 下不能 require 产品模块，只能抄一份同样的字面量；tests/security-regression.test.js
+// 有一条静态闸门核对两边一致（改这里忘改 preload 会立刻红）。
+const TEST_HOOKS_SWITCH = '--chapterly-test-hooks';
+
 // 窗口的 webPreferences（唯一入口）。preload 必须是应用自己的绝对路径——传空 / 非字符串直接抛错，
 // 让「忘了传 preload」在开发时就炸掉，而不是悄悄建一个没有桥接能力的窗口。
-function windowPreferences(preloadPath) {
+// options.testHooks 只认显式 true（undefined / false / 其它值都按生产处理，最小暴露面）。
+function windowPreferences(preloadPath, options = {}) {
   if (typeof preloadPath !== 'string' || !preloadPath.trim()) {
     throw new TypeError('windowPreferences 需要 preload 的绝对路径');
   }
-  return { ...WINDOW_WEB_PREFERENCES, preload: preloadPath };
+  const prefs = { ...WINDOW_WEB_PREFERENCES, preload: preloadPath };
+  if (options && options.testHooks === true) prefs.additionalArguments = [TEST_HOOKS_SWITCH];
+  return prefs;
 }
 
 module.exports = {
   WINDOW_WEB_PREFERENCES,
   PREFERENCES_NOT_READ_BACK,
   MAX_PERMISSION_CHARS,
+  TEST_HOOKS_SWITCH,
   windowPreferences,
   preferenceDiff,
   sanitizePermissionName,

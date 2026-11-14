@@ -342,6 +342,13 @@ test('静态闸门：test-hooks.js 只在 ?test=1 时动态加载（index.html �
   assert.match(tail, /window\.__cwTest\.ready = true/, 'E2E 靠 ready 标志判断启动完成');
 });
 
+test('静态闸门：testMode 只认 ?test=1（E6 / WP-11）', () => {
+  // E6（审计 WP-11）：以前用 URLSearchParams.has('test')，?test=0 / ?test=false 也会进测试模式
+  // （加载 test-hooks、开 toastLog）。口径是只有 ?test=1 才算测试模式（main.js 也只注入 test=1）。
+  assert.match(rendererSrc, /testMode:\s*new URLSearchParams\(location\.search\)\.get\('test'\) === '1'/);
+  assert.equal(rendererSrc.includes(".has('test')"), false, "不许再用 has('test')：?test=0/false 会误开测试模式");
+});
+
 test('静态闸门：pnpm test 只扫 tests/（产品目录里的 test-*.js 不该被当成测试执行）', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
   // renderer/test-hooks.js 这个名字正好命中 node 默认的 test-*.js 测试文件模式（`node --test`

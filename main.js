@@ -3026,7 +3026,12 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
     titleBarOverlay: windowChrome.overlayFor(themeName),
     // 安全开关（sandbox / contextIsolation / webSecurity / nodeIntegration…）的唯一来源：
     // core/security-policy.js。这里不另写一份，避免以后两边改歪。
-    webPreferences: securityPolicy.windowPreferences(path.join(__dirname, 'preload.js'))
+    // E5（审计 WP-11）：4 个自检 API 的暴露开关跟着 automation 走（--e2e / --bench / --contrast /
+    // --screenshot）；普通启动与打包版 automation 恒 false → preload 不挂这 4 个键，
+    // 主进程也只在 automation 分支注册对应频道。
+    webPreferences: securityPolicy.windowPreferences(path.join(__dirname, 'preload.js'), {
+      testHooks: automation
+    })
   });
   const session = createSession(browserWin);
   const webContentsId = browserWin.webContents.id;

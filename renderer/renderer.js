@@ -509,7 +509,7 @@
     settingsCaretColorDraft: '', // 设置里刚选的高亮颜色（'' = 跟随主题；点保存才落配置）
     suppressChapterClick: 0, // 拖拽结束后短暂屏蔽 click，避免误切章
     toastLog: [], // 只在 ?test=1 里记最近几条提示（E2E 验证「保存提示先出、缺章警告后到」）
-    testMode: new URLSearchParams(location.search).has('test')
+    testMode: new URLSearchParams(location.search).get('test') === '1' // E6（审计 WP-11）：?test=0/false 不算测试模式，只认 ?test=1
   };
 
   // ---------- 命令面板条目缓存（1.5.0 P0-6 / 审计 O-1） ----------

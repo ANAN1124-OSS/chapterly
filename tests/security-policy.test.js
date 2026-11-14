@@ -50,6 +50,23 @@ test('安全开关：没有 preload 路径时直接抛错（不建没有桥接�
   }
 });
 
+test('安全开关：自检 API 开关只在 testHooks === true 时附加（E5 / WP-11）', () => {
+  const preload = path.join('D:', 'code', 'chapter-writer', 'preload.js');
+  assert.equal(policy.TEST_HOOKS_SWITCH, '--chapterly-test-hooks');
+  // 生产口径：不传 / false / 字符串 'true' / 数字 1 都不算 —— 只有显式 true 才放宽暴露面
+  const offCases = [undefined, null, {}, { testHooks: false }, { testHooks: 'true' }, { testHooks: 1 }];
+  for (const options of offCases) {
+    const prefs = options === undefined ? policy.windowPreferences(preload) : policy.windowPreferences(preload, options);
+    assert.equal(prefs.additionalArguments, undefined, `不该为 ${JSON.stringify(options)} 附加自检开关`);
+  }
+  // 自动化口径：开关交给渲染进程（Electron 追加到 process.argv，preload 据此挂 4 个自检 API）
+  assert.deepEqual(policy.windowPreferences(preload, { testHooks: true }).additionalArguments, [
+    policy.TEST_HOOKS_SWITCH
+  ]);
+  // 每次都是新对象：一个窗口打开开关不会污染另一个窗口的 webPreferences
+  assert.notEqual(policy.windowPreferences(preload, { testHooks: true }), policy.windowPreferences(preload));
+});
+
 test('安全开关：和真实窗口回读值对账（preload / spellcheck 不回读，缺键算不一致）', () => {
   // Electron 45 的真实回读形状：没有 preload / spellcheck，其余九项与策略一致。
   // 1.6.0 G2：这里是**期望值字面量**，不再从 policy.WINDOW_WEB_PREFERENCES 反推 ——
@@ -165,6 +182,10 @@ test('发版配置：electronFuses / asar / 零运行时依赖都还锁着（改
   assert.equal(fuses.enableNodeOptionsEnvironmentVariable, false);
   assert.equal(fuses.enableNodeCliInspectArguments, false);
   assert.equal(fuses.onlyLoadAppFromAsar, true);
+  // E3（审计 WP-11）：asar 完整性校验也要开。electron-builder 26.x 会把 app.asar 的完整性哈希
+  // 写进 Windows 可执行文件的 INTEGRITY 资源，这个 fuse 打开后启动时校验；只开 onlyLoadAppFromAsar
+  // 不校验内容，等于给「改完 asar 照样能跑」留后门（构建配置只做静态断言，绝不跑 dist）。
+  assert.equal(fuses.enableEmbeddedAsarIntegrityValidation, true);
   assert.equal(pkg.build.asar, true);
   // 项目只有 devDependencies：不允许出现运行时依赖（红线）
   assert.equal('dependencies' in pkg, false);

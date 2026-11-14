@@ -1591,3 +1591,48 @@ test('整本操作：一章 129 MB 超限章 + 两章正常 → 查找 / 替换�
   assert.equal(ch1.text, '小明走进灯下。\n小明抬头。');
 });
 
+// E7（v1.8.0 WP-11 / 审计 E7）：读盘失败的原始 message 带完整本机路径（EACCES 形如
+// `EACCES: permission denied, open 'D:\…\书目.json'`），以前 readBookMeta 原样 throw、
+// listBooks 直接把 err.message 塞进损坏书卡的 reason，路径就跟着 IPC 回包进了书架。
+// 真实 EACCES 不好在 Windows 上稳定造（ACL 会污染环境），这里把 readFile 换成「只对书目.json 抛」，
+// 拦截点与生产完全一致（storage 调的是 fs.readFile 活引用）。
+test('读盘失败脱敏：readBookMeta / listBooks 不回完整本机路径（E7 / WP-11）', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '读失败的书');
+  await fs.mkdir(bookPath);
+  const realReadFile = fs.readFile;
+  Object.defineProperty(fs, 'readFile', {
+    configurable: true,
+    writable: true,
+    value: async (file, ...rest) => {
+      if (String(file).endsWith('书目.json')) {
+        throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' });
+      }
+      return realReadFile(file, ...rest);
+    }
+  });
+  try {
+    await assert.rejects(
+      () => storage.readBookMeta(bookPath),
+      (err) => {
+        assert.equal(err.code, 'EACCES', '错误码原样保留（界面与 E2E 按 code 分支）');
+        assert.match(err.message, /^读取 书目\.json 失败：没有访问权限：/);
+        assert.equal(err.message.includes(root), false, '不许带完整书架路径');
+        assert.equal(/[A-Za-z]:[\\/]/.test(err.message), false, '不许带盘符路径');
+        assert.match(err.message, /…\\书目\.json$/);
+        return true;
+      }
+    );
+    const books = await storage.listBooks(root);
+    assert.equal(books.length, 1);
+    const corrupt = books[0];
+    assert.equal(corrupt.status, 'corrupt');
+    // 损坏书卡的 reason 与主进程错误回包同一口径：只留「一句中文 + 最后一节文件名」
+    assert.equal(corrupt.reason.includes(root), false, '损坏书卡 reason 不许带完整书架路径');
+    assert.equal(/[A-Za-z]:[\\/]/.test(corrupt.reason), false, '损坏书卡 reason 不许带盘符路径');
+    assert.match(corrupt.reason, /没有访问权限/);
+  } finally {
+    Object.defineProperty(fs, 'readFile', { configurable: true, writable: true, value: realReadFile });
+  }
+});
+
