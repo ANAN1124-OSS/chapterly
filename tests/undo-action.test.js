@@ -409,3 +409,81 @@ test('静态闸门：storage 撤销只认 _trash 下的 basename，不接收绝�
   assert.match(storageSrc, /path\.dirname\(source\)\.toLowerCase\(\) !== path\.resolve\(trashDir\)\.toLowerCase\(\)/);
   assert.match(storageSrc, /restoreDeletedChapterFromTrash: locked\(restoreDeletedChapterFromTrash\)/);
 });
+
+// ---------- B6（v1.8.0 WP-28）：撤销引用的备份组（10 秒内清理备份要跳过） ----------
+test('撤销槽（B6/WP-28）：groupId 只记字符串、按 TTL 过期；pendingGroupIds 去重且旧→新', () => {
+  let now = 1000;
+  const slot = undoAction.createUndoSlot({ ttlMs: 10000, now: () => now });
+  assert.deepEqual(slot.pendingGroupIds(), [], '空栈没有受保护组');
+  slot.push({ label: '替换', run() {}, groupId: 'dir:替换备份-1', bookPath: 'D:\\书\\甲' });
+  slot.push({ label: '整理', run() {}, groupId: 'dir:整理备份-2', bookPath: 'D:\\书\\甲' });
+  slot.push({ label: '无备份', run() {} });
+  slot.push({ label: '重复', run() {}, groupId: 'dir:替换备份-1', bookPath: 'D:\\书\\甲' });
+  assert.deepEqual(slot.pendingGroupIds(), ['dir:整理备份-2', 'dir:替换备份-1'], '去重、按登记顺序');
+  // 传 bookPath：只算这一本（大小写不敏感）；别的书的同名备份目录不互相误伤
+  assert.deepEqual(slot.pendingGroupIds('d:\\书\\甲'), ['dir:整理备份-2', 'dir:替换备份-1']);
+  assert.deepEqual(slot.pendingGroupIds('D:\\书\\乙'), [], '别的书不受保护');
+  slot.push({ label: '另一本', run() {}, groupId: 'dir:替换备份-1', bookPath: 'D:\\书\\乙' });
+  assert.deepEqual(slot.pendingGroupIds('D:\\书\\乙'), ['dir:替换备份-1']);
+  // 10 秒到点：全部过期 → 不再保护
+  now += 10000;
+  assert.deepEqual(slot.pendingGroupIds(), []);
+  // 非字符串 / 空串的 groupId 一律忽略
+  slot.push({ label: '坏值', run() {}, groupId: 42 });
+  slot.push({ label: '空串', run() {}, groupId: '' });
+  assert.deepEqual(slot.pendingGroupIds(), []);
+});
+
+test('撤销条（B6/WP-28）：activate 把 meta.groupId 交给槽，protectedGroupIds 透传当前窗口', async () => {
+  // 用很短的 TTL + 真实时钟：条子的定时器到点自己收起，不会留下不断续期的定时器。
+  const slot = undoAction.createUndoSlot({ ttlMs: 40 });
+  const ctx = makeHost({ slot });
+  const ui = undoUiModule.create(ctx.host);
+  assert.deepEqual(ui.protectedGroupIds(), []);
+  ui.activate('已整本替换 2 章', () => {}, { groupId: 'dir:替换备份-20261031' });
+  assert.deepEqual(ui.protectedGroupIds(), ['dir:替换备份-20261031']);
+  // 两参数调用（旧调用点）不受影响，也不会莫名保护某组
+  ui.activate('已删除「起风」', () => {});
+  assert.deepEqual(ui.protectedGroupIds(), ['dir:替换备份-20261031']);
+  // 40ms 后这条撤销过期：清理备份时不再跳过它
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(ui.protectedGroupIds(), [], 'TTL 到期后自动解除保护');
+  // 槽里没有 pendingGroupIds（旧实现 / 假槽）时返回空数组，不抛
+  const legacyHost = makeHost({
+    slot: {
+      ttlMs: 10000,
+      push: () => ({}),
+      peek: () => null,
+      take: () => null,
+      clear() {},
+      expire: () => false,
+      hasPending: () => false,
+      remainingMs: () => 10000
+    }
+  });
+  const legacyUi = undoUiModule.create(legacyHost.host);
+  assert.deepEqual(legacyUi.protectedGroupIds(), []);
+});
+
+test('静态闸门（B6/WP-28）：四处备份撤销都带 groupId + bookPath，历史面板注入 protectedUndoGroups', () => {
+  // 整本替换（find-ui）
+  assert.match(
+    fs.readFileSync(path.join(ROOT, 'renderer', 'find-ui.js'), 'utf8'),
+    /\{ groupId: 'dir:' \+ backupName, bookPath \}/,
+    '整本替换的撤销要记下替换备份组 + 书路径'
+  );
+  // 还原到替换前 / 整理全书（renderer.js）
+  assert.match(rendererCode, /\{ groupId: 'dir:' \+ undoName, bookPath \}/, '还原到替换前的撤销要记下还原前备份组');
+  assert.match(rendererCode, /\{ groupId: 'dir:' \+ backupName, bookPath \}/, '整理全书的撤销要记下整理备份组');
+  assert.match(
+    rendererCode,
+    /protectedUndoGroups: \(bookPath\) => undoUi\.protectedGroupIds\(bookPath\)/,
+    '历史面板要能从撤销条拿到受保护组（按书过滤）'
+  );
+  // 历史还原的撤销（history-ui）也带 groupId
+  assert.match(
+    fs.readFileSync(path.join(ROOT, 'renderer', 'history-ui.js'), 'utf8'),
+    /\{ groupId: 'dir:' \+ undoName, bookPath \}/,
+    '历史还原的撤销要记下还原前备份组'
+  );
+});

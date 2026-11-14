@@ -174,6 +174,84 @@ test('静态闸门：临时文件 → fsync → rename 的顺序不许调换，�
   }
 });
 
+test('atomicWriteFileStream：逐块写出、整段成功后 rename，临时文件不残留', async () => {
+  const dir = await mkTmp();
+  const target = path.join(dir, '导出.txt');
+  const seen = [];
+  const real = fs.rename;
+  const restore = patchRename(async (src, dest) => {
+    seen.push({ src: path.basename(src), existsBeforeRename: await fs.access(src).then(() => true, () => false) });
+    return real.call(fs, src, dest);
+  });
+  const chunks = ['\uFEFF', '第一章\r\n\r\n', '正文一\r\n\r\n', '第二章\r\n\r\n', '正文二\r\n'];
+  try {
+    await atomic.atomicWriteFileStream(target, async (write) => {
+      for (const chunk of chunks) await write(chunk);
+    });
+  } finally {
+    restore();
+  }
+  assert.equal(await fs.readFile(target, 'utf8'), chunks.join(''));
+  assert.equal(seen.length, 1);
+  assert.match(seen[0].src, /^\.导出\.txt\.tmp-\d+-\d+-[a-z0-9]+$/);
+  assert.equal(seen[0].existsBeforeRename, true, 'rename 前所有块必须已经写完');
+  assert.deepEqual(await tmpEntries(dir), [], '成功后临时文件应已被 rename 走');
+  // 空块 / null 不写（分卷名可能为空）：不影响最终字节
+  const target2 = path.join(dir, '空块.txt');
+  await atomic.atomicWriteFileStream(target2, async (write) => {
+    await write(null);
+    await write('');
+    await write('甲');
+  });
+  assert.equal(await fs.readFile(target2, 'utf8'), '甲');
+});
+
+test('atomicWriteFileStream：中途失败 → 目标文件一个字节不动、临时文件不残留（不出半截导出）', async () => {
+  const dir = await mkTmp();
+  const target = path.join(dir, '导出.txt');
+  await fs.writeFile(target, '旧完整版', 'utf8');
+  await assert.rejects(
+    () =>
+      atomic.atomicWriteFileStream(target, async (write) => {
+        await write('新的第一块');
+        throw new Error('读章节失败');
+      }),
+    /读章节失败/
+  );
+  assert.equal(await fs.readFile(target, 'utf8'), '旧完整版', '失败时目标文件必须还是旧完整版');
+  assert.deepEqual(await tmpEntries(dir), [], '失败后不许留下临时文件');
+  // 目标原本不存在：失败后也不许留下半截文件
+  const target2 = path.join(dir, '新建.txt');
+  await assert.rejects(
+    () =>
+      atomic.atomicWriteFileStream(target2, async (write) => {
+        await write('半截');
+        throw new Error('中断');
+      }),
+    /中断/
+  );
+  await assert.rejects(() => fs.access(target2), (err) => err.code === 'ENOENT', '不许落出半截文件');
+  assert.deepEqual(await tmpEntries(dir), []);
+});
+
+test('静态闸门：流式原子写同样是「临时文件 → fsync → rename」，失败清临时文件', async () => {
+  const src = await fs.readFile(path.join(__dirname, '..', 'core', 'atomic.js'), 'utf8');
+  const fnAt = src.indexOf('async function atomicWriteFileStream(');
+  assert.ok(fnAt > 0, 'atomicWriteFileStream 必须存在');
+  const body = src.slice(fnAt, src.indexOf('\n}', fnAt));
+  const openAt = body.indexOf("fs.open(tmp, 'wx')");
+  const produceAt = body.indexOf('await produce(write)');
+  const syncAt = body.indexOf('await handle.sync()');
+  const closeAt = body.indexOf('await handle.close()', syncAt);
+  const renameAt = body.indexOf('await renameWithRetry(tmp, filePath)');
+  assert.ok(openAt > 0 && produceAt > openAt, '先开临时文件再交给写入回调');
+  assert.ok(syncAt > produceAt, '所有块写完必须 fsync');
+  assert.ok(closeAt > syncAt, 'fsync 之后才 close');
+  assert.ok(renameAt > closeAt, 'fsync + close 之后才 rename');
+  assert.match(body, /catch \(err\) \{[\s\S]*?fs\.unlink\(tmp\)/, '失败路径必须删掉临时文件');
+  assert.equal(typeof atomic.atomicWriteFileStream, 'function');
+});
+
 test('atomicWriteFile：并发写不同的文件——临时文件名互不重复、全部成功、不留临时文件', async () => {
   const dir = await mkTmp();
   const bases = [];

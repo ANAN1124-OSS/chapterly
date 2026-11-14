@@ -33,6 +33,9 @@ const CHAPTER_READ_CONCURRENCY = 8;
 // 一批处理完就把这批正文的引用丢掉。分批只改「什么时候读」，不改顺序 / 结果 / 统计口径
 // （tests/book-batch.test.js 钉住跨批等价与批边界）。
 const CHAPTER_BATCH_SIZE = 32;
+// B6（v1.8.0 WP-28）：_trash 备份目录扫描 / 清理时 stat 的并发上限（与 core/history.js
+// 的 HISTORY_STAT_CONCURRENCY 同值）。备份多的时候串行 stat 会按文件数累加。
+const TRASH_STAT_CONCURRENCY = 8;
 // C2（审计 #2 / P2）：「预览 → 执行」正文快照（只存在主进程内存里，见 core/preview-cache.js）。
 // 预览（整本查找 / 整理预检查）把读到的正文连同当时的 mtime / size 记进快照；执行（整本替换 /
 // 整本整理）命中且文件没变就直接复用，不再读第二遍。有 TTL 与容量上界，超了照旧读盘。
@@ -1594,7 +1597,17 @@ async function uniqueTrashDir(trashDir, prefix) {
 }
 
 // 列出书内 _trash 下的「整本替换」备份（最近的在最前），供「还原到替换前」使用。
-async function listReplaceBackups(bookPath) {
+// B6（v1.8.0 WP-28）：以前每个备份目录、每个文件各串行 stat 一次（历史面板同类已改并发，这里没改）；
+// 现在拆成 ① 备份目录 readdir ② 平坦文件表统一 stat，都受 TRASH_STAT_CONCURRENCY 限制。
+// 返回形状 / 排序 / 跳过坏条目的口径与串行版逐字段一致（stat / concurrency 只给单测注入）。
+async function listReplaceBackups(bookPath, options = {}) {
+  const settings = options && typeof options === 'object' ? options : {};
+  const statFile = typeof settings.stat === 'function' ? settings.stat : (target) => fs.stat(target);
+  const requestedConcurrency = Number(settings.concurrency);
+  const concurrency =
+    Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
+      ? Math.floor(requestedConcurrency)
+      : TRASH_STAT_CONCURRENCY;
   const trashDir = path.join(bookPath, TRASH_DIR);
   let entries;
   try {
@@ -1603,35 +1616,55 @@ async function listReplaceBackups(bookPath) {
     if (err.code === 'ENOENT') return [];
     throw err;
   }
-  const backups = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith(REPLACE_BACKUP_PREFIX)) continue;
-    const dir = path.join(trashDir, entry.name);
-    let files;
+  const dirs = entries.filter((entry) => entry.isDirectory() && entry.name.startsWith(REPLACE_BACKUP_PREFIX));
+  // ① 各备份目录 readdir（并发）：目录刚好被删 / 被占用就整目录跳过（旧行为）
+  const listings = await mapLimit(dirs, concurrency, async (entry) => {
     try {
-      files = await fs.readdir(dir, { withFileTypes: true });
+      const files = await fs.readdir(path.join(trashDir, entry.name), { withFileTypes: true });
+      return { name: entry.name, dir: path.join(trashDir, entry.name), files };
     } catch {
-      continue; // 目录刚好被删/被占用，跳过
+      return null;
     }
-    const names = [];
-    let totalBytes = 0;
-    let mtimeMs = 0;
-    for (const file of files) {
+  });
+  // ② 目录内的 .txt 摊平成一张任务表，统一并发 stat；单文件读不到只跳过它自己
+  const jobs = [];
+  for (const listing of listings) {
+    if (!listing) continue;
+    for (const file of listing.files) {
       if (!file.isFile() || !/\.txt$/i.test(file.name)) continue;
-      try {
-        const stat = await fs.stat(path.join(dir, file.name));
-        totalBytes += stat.size;
-        mtimeMs = Math.max(mtimeMs, stat.mtimeMs);
-        names.push(file.name);
-      } catch { /* 单个文件读不到就跳过 */ }
+      jobs.push({ name: listing.name, file: file.name, dir: listing.dir });
     }
-    if (!names.length) continue;
+  }
+  const stats = await mapLimit(jobs, concurrency, async (job) => {
+    try {
+      return await statFile(path.join(job.dir, job.file));
+    } catch {
+      return null;
+    }
+  });
+  const buckets = new Map();
+  for (let index = 0; index < jobs.length; index += 1) {
+    const stat = stats[index];
+    if (!stat) continue;
+    const job = jobs[index];
+    let bucket = buckets.get(job.name);
+    if (!bucket) {
+      bucket = { names: [], totalBytes: 0, mtimeMs: 0 };
+      buckets.set(job.name, bucket);
+    }
+    bucket.names.push(job.file);
+    bucket.totalBytes += stat.size;
+    bucket.mtimeMs = Math.max(bucket.mtimeMs, stat.mtimeMs);
+  }
+  const backups = [];
+  for (const [name, bucket] of buckets) {
+    if (!bucket.names.length) continue;
     backups.push({
-      name: entry.name,
-      fileCount: names.length,
-      totalBytes,
-      mtimeMs: Math.round(mtimeMs),
-      files: names
+      name,
+      fileCount: bucket.names.length,
+      totalBytes: bucket.totalBytes,
+      mtimeMs: Math.round(bucket.mtimeMs),
+      files: bucket.names
     });
   }
   // 目录名里带时间戳，倒序 = 最近一次替换在最前
@@ -2057,7 +2090,120 @@ async function listBookHistory(bookPath) {
     title = meta.title;
   } catch { /* 书目坏了就按「没有当前章节」扫描，预览照常 */ }
   const data = await historyLib.listHistory(bookPath, { chapterFiles });
-  return { ...data, title };
+  // B6（v1.8.0 WP-28 / D-5）：三类备份的占用摘要（组数 / 字节 / 是否到软提醒阈值）。
+  // 只算「替换 / 整理 / 还原前」；快照 / 删章散文件 / 书目备份不在这里清理。
+  // 摘要只是提示数据，listBookHistory 绝不删除任何东西。
+  return { ...data, title, cleanup: historyLib.backupCleanupSummary(data.groups) };
+}
+
+// B6（v1.8.0 WP-28）：统计一个备份目录的章节副本（fileCount / 字节），读不到返回 null。
+async function backupDirUsage(dirPath, statFile) {
+  let entries;
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const files = entries.filter((entry) => entry.isFile() && /\.txt$/i.test(entry.name));
+  const stats = await mapLimit(files, TRASH_STAT_CONCURRENCY, async (entry) => {
+    try {
+      return await statFile(path.join(dirPath, entry.name));
+    } catch {
+      return null;
+    }
+  });
+  let fileCount = 0;
+  let bytes = 0;
+  for (const stat of stats) {
+    if (!stat) continue;
+    fileCount += 1;
+    bytes += stat.size;
+  }
+  return { fileCount, bytes };
+}
+
+// B6（v1.8.0 WP-28 / D-5）：手动清理三类备份（替换 / 整理 / 还原前）。**永久删除**（备份是副本，
+// 书里的正文仍在），但只接受 `dir:<备份目录名>`，且目录必须正好是本书 _trash 的直接子目录、
+// 名字是可识别的三类备份前缀；快照 / 删章散文件 / 书目备份 / 未识别目录一律跳过（not-cleanable）。
+// 绝不自动调用：只有历史面板用户点「删除这组备份 / 清理本书全部备份」并两步确认后才走到这里。
+// options.protectedGroupIds = 仍被 10 秒撤销条引用的组（TTL 在渲染层，过期即自动不在列表里）；
+// 命中的组一律跳过（active-undo）并在回包说明，绝不为了「清干净」把撤销退路删掉。
+async function deleteHistoryBackups(bookPath, groupIds, options = {}) {
+  const settings = options && typeof options === 'object' ? options : {};
+  const protectedIds = new Set(
+    (Array.isArray(settings.protectedGroupIds) ? settings.protectedGroupIds : [])
+      .filter((id) => typeof id === 'string')
+      .slice(0, 5000)
+  );
+  const statFile = typeof settings.stat === 'function' ? settings.stat : (target) => fs.stat(target);
+  const rawIds = (Array.isArray(groupIds) ? groupIds : []).slice(0, 5000);
+  const trashDir = path.resolve(bookPath, TRASH_DIR);
+  const seen = new Set();
+  const deleted = [];
+  const skipped = [];
+  let deletedBytes = 0;
+  for (const raw of rawIds) {
+    const id = typeof raw === 'string' ? raw.trim() : '';
+    if (!id.startsWith('dir:')) {
+      skipped.push({ id: String(raw == null ? '' : raw), name: '', reason: 'bad-id' });
+      continue;
+    }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    let info;
+    try {
+      info = historyLib.resolveGroup(bookPath, id);
+    } catch {
+      skipped.push({ id, name: '', reason: 'bad-id' });
+      continue;
+    }
+    const name = info.dirName || '';
+    if (info.kind !== 'dir' || !historyLib.CLEANABLE_SOURCES.includes(info.source)) {
+      skipped.push({ id, name, reason: 'not-cleanable' });
+      continue;
+    }
+    // 双保险：解析出来的目录必须是本书 _trash 的直接子目录（resolveGroup 已校验 basename）
+    if (path.dirname(info.dirPath) !== trashDir) {
+      skipped.push({ id, name, reason: 'bad-id' });
+      continue;
+    }
+    if (protectedIds.has(id)) {
+      skipped.push({ id, name, reason: 'active-undo' });
+      continue;
+    }
+    // 联接 / 符号链接不是备份目录：宁可不清，也不要把书库外面的东西卷进来
+    let dirStat;
+    try {
+      dirStat = await fs.lstat(info.dirPath);
+    } catch (err) {
+      skipped.push({ id, name, reason: err.code === 'ENOENT' ? 'missing' : 'failed' });
+      continue;
+    }
+    if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) {
+      skipped.push({ id, name, reason: 'not-cleanable' });
+      continue;
+    }
+    const usage = await backupDirUsage(info.dirPath, statFile);
+    if (!usage) {
+      skipped.push({ id, name, reason: 'missing' });
+      continue;
+    }
+    try {
+      // 只删这一层备份目录本身（内部只有本应用复制进去的章节副本；不递归跟随联接）
+      await fs.rm(info.dirPath, { recursive: true, force: false });
+    } catch (err) {
+      skipped.push({
+        id,
+        name,
+        reason: err.code === 'ENOENT' ? 'missing' : 'failed',
+        message: err.code === 'ENOENT' ? '' : errorText.describeForUi(err).message
+      });
+      continue;
+    }
+    deleted.push({ id, name, fileCount: usage.fileCount, bytes: usage.bytes });
+    deletedBytes += usage.bytes;
+  }
+  return { deletedGroups: deleted.length, deletedBytes, deleted, skipped };
 }
 
 async function previewHistoryFile(bookPath, groupId, fileName) {
@@ -2232,6 +2378,7 @@ module.exports = {
   takeDailySnapshot,
   listBookHistory,
   previewHistoryFile,
+  deleteHistoryBackups: locked(deleteHistoryBackups),
   snapshotDirForClear,
   restoreHistoryFile: locked(restoreHistoryFile),
   restoreHistoryGroup: locked(restoreHistoryGroup),

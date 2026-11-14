@@ -121,7 +121,7 @@ function build(options = {}) {
   };
   const calls = {
     listHistory: [], previewHistoryFile: [], restoreHistoryDir: [], restoreHistoryFile: [],
-    clearSnapshotDay: [], registerUndo: [],
+    clearSnapshotDay: [], deleteHistoryBackups: [], registerUndo: [], protectedUndoGroups: [],
     openBookFolder: [], refreshShelf: 0, reloadOpenBookFromDisk: 0, reloadAfterPartialFailure: [],
     confirmRestoreWithUnsaved: [], openModal: [], toast: []
   };
@@ -152,6 +152,11 @@ function build(options = {}) {
       if (options.clearError) throw new Error(options.clearError);
       return options.clearResult || { ok: true, dir: args[1] };
     },
+    deleteHistoryBackups(...args) {
+      calls.deleteHistoryBackups.push(args);
+      if (options.deleteError) throw new Error(options.deleteError);
+      return options.deleteResult || { ok: true, deletedGroups: 1, deletedBytes: 1024, deleted: [], skipped: [] };
+    },
     openBookFolder(...args) {
       calls.openBookFolder.push(args);
       if (options.openFolderError) throw new Error(options.openFolderError);
@@ -179,7 +184,13 @@ function build(options = {}) {
       async reloadOpenBookFromDisk() { calls.reloadOpenBookFromDisk += 1; },
       async reloadAfterPartialFailure(path) { calls.reloadAfterPartialFailure.push(path); },
       // 1.4.0 P0-2：历史还原把「用还原前备份再还原一次」登记成 10 秒撤销
-      registerUndo(label, run) { calls.registerUndo.push({ label, run }); }
+      registerUndo(label, run, meta) { calls.registerUndo.push({ label, run, meta }); },
+      // B6（v1.8.0 WP-28）：10 秒撤销窗口内引用的备份组（默认空；用例可注入；按书路径过滤）
+      protectedUndoGroups(bookPath) {
+        calls.protectedUndoGroups.push(bookPath);
+        if (options.protectedUndoGroupsError) throw new Error(options.protectedUndoGroupsError);
+        return options.protectedUndoGroupIds || [];
+      }
     },
     menus: {
       hideBookMenu() { calls.hideBookMenu = (calls.hideBookMenu || 0) + 1; },
@@ -229,11 +240,16 @@ test('host 契约：10 个成员 + 3 个分组内的真实依赖，缺任何一�
     assert.throws(() => historyUi.create(nulled), /host 缺少/, key + ' = null 也必须抛');
   }
   // 分组内每个真实依赖单独点名（头注释里的契约不能只写分组名）
-  for (const key of ['confirmRestoreWithUnsaved', 'openModal', 'registerUndo', 'refreshShelf', 'reloadAfterPartialFailure', 'reloadOpenBookFromDisk']) {
+  for (const key of ['confirmRestoreWithUnsaved', 'openModal', 'registerUndo', 'protectedUndoGroups', 'refreshShelf', 'reloadAfterPartialFailure', 'reloadOpenBookFromDisk']) {
     const broken = { ...ctx.host, collab: { ...ctx.host.collab } };
     delete broken.collab[key];
     assert.throws(() => historyUi.create(broken), new RegExp('host\\.collab 缺少 ' + key), 'collab 缺 ' + key + ' 必须抛');
   }
+  assert.throws(
+    () => historyUi.create({ ...ctx.host, collab: { ...ctx.host.collab, protectedUndoGroups: 'x' } }),
+    /protectedUndoGroups 必须是函数/,
+    'protectedUndoGroups 不是函数时必须启动就炸'
+  );
   for (const key of ['hideBookMenu', 'hideExportMenu']) {
     const broken = { ...ctx.host, menus: { ...ctx.host.menus } };
     delete broken.menus[key];
@@ -253,13 +269,14 @@ test('host 契约：10 个成员 + 3 个分组内的真实依赖，缺任何一�
 });
 
 // ---------- create() 只建表 ----------
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 9 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 11 个入口', () => {
   const dom = makeDom(BASE_IDS);
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0, 'create() 一次 $ 都不该调');
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'closeHistoryDialog', 'closeHistoryPreview', 'confirmHistoryRestore', 'openHistoryForCurrentBook',
-    'openHistoryForPath', 'previewHistoryBackup', 'refreshHistory', 'sameBookPath', 'setupHistoryUi'
+    'closeHistoryDialog', 'closeHistoryPreview', 'confirmHistoryRestore', 'deleteAllBackups', 'deleteBackupGroup',
+    'openHistoryForCurrentBook', 'openHistoryForPath', 'previewHistoryBackup', 'refreshHistory', 'sameBookPath',
+    'setupHistoryUi'
   ]);
   for (const name of Object.keys(ctx.ui)) assert.equal(typeof ctx.ui[name], 'function', name);
   assert.equal(moduleCode.includes('setTimeout'), false, '模块不建定时器');
@@ -334,9 +351,10 @@ test('openHistoryForPath：先收顶栏菜单、建 state.history、拉清单并
   assert.equal(dom.map.get('history-title').textContent, '本书历史 · 《书甲》');
   assert.equal(dom.map.get('history-summary').textContent, '共 1 组备份 · 3 个文件 · 3.0 KB（新 → 旧）');
   assert.equal(dom.map.get('history-list').children.length, 1);
-  // state.history 字段齐全（P22-5 增加 collapsed：每日快照组的折叠状态，只活在面板里）
+  // state.history 字段齐全（P22-5 增加 collapsed：每日快照组的折叠状态，只活在面板里；
+  // B6/WP-28 增加 cleanup：三类备份的占用摘要，主进程算好给界面做软提醒）
   assert.deepEqual(Object.keys(ctx.state.history).sort(), [
-    'collapsed', 'error', 'fileCount', 'groups', 'loading', 'path', 'preview', 'title', 'token', 'totalBytes'
+    'cleanup', 'collapsed', 'error', 'fileCount', 'groups', 'loading', 'path', 'preview', 'title', 'token', 'totalBytes'
   ]);
 });
 
@@ -1097,4 +1115,220 @@ test('previewHistoryBackup（WP-15 / V111）：旧点击的失败回执也不许
   assert.equal(await stale, null);
   assert.deepEqual(ctx.calls.toast, [], '旧点击失败不许弹「预览失败」干扰新预览');
   assert.equal(ctx.dom.map.get('history-preview-text').textContent, '新预览');
+});
+
+// ---------- B6（v1.8.0 WP-28 / D-5）：三类备份的手动清理 ----------
+function cleanableGroup(overrides = {}) {
+  return groupFixture({ cleanable: true, ...overrides });
+}
+
+function cleanupFixture(groups, overrides = {}) {
+  const cleanableBytes = groups
+    .filter((group) => group && group.cleanable)
+    .reduce((sum, group) => sum + group.totalBytes, 0);
+  return {
+    groupCount: groups.filter((group) => group && group.cleanable).length,
+    totalBytes: cleanableBytes,
+    overGroups: false,
+    overBytes: false,
+    overLimit: false,
+    ...overrides
+  };
+}
+
+test('备份清理条（B6）：有可清理组才出现；软提醒只在 ≥20 组或 ≥500MB 时追加，绝不自动删', async () => {
+  const dom = makeDom(BASE_IDS);
+  const replace = cleanableGroup({
+    id: 'dir:替换备份-2026-10-31-210000',
+    source: 'replace',
+    sourceLabel: '整本替换',
+    restorableCount: 1
+  });
+  const format = cleanableGroup({ id: 'dir:整理备份-2026-10-31-200000', totalBytes: 1024 });
+  const snapshot = groupFixture({
+    id: 'dir:快照-20261031',
+    kind: 'dir',
+    source: 'snapshot',
+    cleanable: false,
+    snapshotName: '快照-20261031',
+    sourceLabel: '每日快照',
+    restorableCount: 1
+  });
+  const cleanup = cleanupFixture([replace, format, snapshot], {
+    overLimit: true,
+    overGroups: true,
+    groupCount: 2,
+    totalBytes: 3072
+  });
+  const ctx = build({
+    dom,
+    listHistory: () => ({ title: '书甲', groups: [replace, format, snapshot], fileCount: 4, totalBytes: 4096, cleanup })
+  });
+  await ctx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  const list = dom.map.get('history-list');
+  const bar = list.children[0];
+  assert.equal(bar.className, 'history-cleanup', '清理条排在清单最前');
+  assert.equal(bar.children[0].className, 'history-cleanup-text');
+  assert.match(bar.children[0].textContent, /2 组 · 3\.0 KB/, '列出可清理组数 / 占用');
+  const cleanAll = bar.children[1];
+  assert.equal(cleanAll.className, 'btn ghost tiny history-cleanup-all');
+  assert.equal(cleanAll.textContent, '清理本书全部备份');
+  assert.equal(list.children.length, 4, '清理条 + 3 个组');
+  // 软提醒写进汇总行（只提示，不清任何东西）
+  const summary = dom.map.get('history-summary').textContent;
+  assert.ok(summary.includes('备份占 3.0 KB / 2 组，可清理'), summary);
+  // 每组删除按钮只在 cleanable 组上
+  assert.ok(findButtonByClass(list.children[1], 'history-delete-group'), '替换组有按组删除');
+  assert.ok(findButtonByClass(list.children[2], 'history-delete-group'), '整理组有按组删除');
+  assert.equal(findButtonByClass(list.children[3], 'history-delete-group'), null, '快照组走自己的清空入口');
+  assert.deepEqual(ctx.calls.deleteHistoryBackups, [], '只渲染，不许自动删');
+
+  // 没到阈值：没有提醒文案，但清理入口仍在
+  const quiet = build({
+    dom: makeDom(BASE_IDS),
+    listHistory: () => ({
+      title: '书甲', groups: [replace, format], fileCount: 3, totalBytes: 3072,
+      cleanup: cleanupFixture([replace, format])
+    })
+  });
+  await quiet.ui.openHistoryForPath('/书库/书甲', '书甲');
+  const quietSummary = quiet.dom.map.get('history-summary').textContent;
+  assert.equal(quietSummary.includes('可清理'), false, '没到阈值不提示');
+  assert.ok(findButtonByClass(quiet.dom.map.get('history-list').children[0], 'history-cleanup-all'));
+});
+
+test('清理本书全部备份（B6）：两步确认列出组数 / 占用 → 只传可清理组 → 刷新 + 如实 toast', async () => {
+  const dom = makeDom(BASE_IDS);
+  const replace = cleanableGroup({ id: 'dir:替换备份-2026-10-31-210000', source: 'replace', totalBytes: 2048 });
+  const format = cleanableGroup({ id: 'dir:整理备份-2026-10-31-200000', totalBytes: 1024 });
+  const groups = [replace, format];
+  const ctx = build({
+    dom,
+    listHistory: () => ({ title: '书甲', groups, fileCount: 3, totalBytes: 3072, cleanup: cleanupFixture(groups) }),
+    modalAction: { action: 'delete' },
+    deleteResult: { deletedGroups: 2, deletedBytes: 3072, deleted: [], skipped: [] }
+  });
+  await ctx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  const barButton = findButtonByClass(dom.map.get('history-list').children[0], 'history-cleanup-all');
+  await barButton._fire('click');
+  assert.equal(ctx.calls.openModal.length, 1, '必须先弹确认框（两步确认的第二步）');
+  const modal = ctx.calls.openModal[0];
+  assert.equal(modal.title, '永久删除备份');
+  assert.ok(modal.message.includes('2 组备份'), modal.message);
+  assert.ok(modal.message.includes('3.0 KB'), modal.message);
+  assert.ok(modal.message.includes('永久删除'), modal.message);
+  assert.deepEqual(
+    ctx.calls.deleteHistoryBackups,
+    [[
+      '/书库/书甲',
+      ['dir:替换备份-2026-10-31-210000', 'dir:整理备份-2026-10-31-200000'],
+      { protectedGroupIds: [] }
+    ]],
+    '只传三类备份组 id + 受保护组快照'
+  );
+  assert.equal(ctx.calls.listHistory.length, 2, '删除成功后刷新清单');
+  assert.ok(ctx.calls.refreshShelf >= 1);
+  const toasts = ctx.calls.toast.map((item) => item[0]);
+  assert.ok(toasts.some((text) => text.includes('已永久删除 2 组备份') && text.includes('3.0 KB')), toasts.join(' / '));
+});
+
+test('清理备份（B6）：跳过 10 秒撤销窗口内的组并在确认框 / toast 里说明', async () => {
+  const dom = makeDom(BASE_IDS);
+  const replace = cleanableGroup({ id: 'dir:替换备份-2026-10-31-210000', source: 'replace' });
+  const restore = cleanableGroup({ id: 'dir:还原前备份-2026-10-31-190000', source: 'restore' });
+  const groups = [replace, restore];
+  const ctx = build({
+    dom,
+    listHistory: () => ({ title: '书甲', groups, fileCount: 4, totalBytes: 4096, cleanup: cleanupFixture(groups) }),
+    modalAction: { action: 'delete' },
+    protectedUndoGroupIds: ['dir:还原前备份-2026-10-31-190000'],
+    deleteResult: {
+      deletedGroups: 1,
+      deletedBytes: 2048,
+      deleted: [],
+      skipped: [{ id: 'dir:还原前备份-2026-10-31-190000', name: '还原前备份-2026-10-31-190000', reason: 'active-undo' }]
+    }
+  });
+  await ctx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  await findButtonByClass(dom.map.get('history-list').children[0], 'history-cleanup-all')._fire('click');
+  assert.equal(ctx.calls.openModal.length, 1);
+  assert.ok(ctx.calls.openModal[0].message.includes('另有 1 组还在 10 秒撤销窗口里'), ctx.calls.openModal[0].message);
+  assert.deepEqual(
+    ctx.calls.deleteHistoryBackups[0][1],
+    ['dir:替换备份-2026-10-31-210000'],
+    '受保护组不进删除列表'
+  );
+  assert.deepEqual(ctx.calls.deleteHistoryBackups[0][2], { protectedGroupIds: ['dir:还原前备份-2026-10-31-190000'] });
+  assert.deepEqual(ctx.calls.protectedUndoGroups, ['/书库/书甲'], '按当前这本书过滤受保护组');
+  const toasts = ctx.calls.toast.map((item) => item[0]);
+  assert.ok(toasts.some((text) => text.includes('仍在 10 秒撤销窗口里，已跳过')), toasts.join(' / '));
+});
+
+test('清理备份（B6）：全部组都被撤销引用 → 不弹确认框、不调删除，只提示', async () => {
+  const dom = makeDom(BASE_IDS);
+  const restore = cleanableGroup({ id: 'dir:还原前备份-2026-10-31-190000', source: 'restore' });
+  const ctx = build({
+    dom,
+    listHistory: () => ({ title: '书甲', groups: [restore], fileCount: 2, totalBytes: 2048, cleanup: cleanupFixture([restore]) }),
+    protectedUndoGroupIds: ['dir:还原前备份-2026-10-31-190000']
+  });
+  await ctx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  const result = await findButtonByClass(dom.map.get('history-list').children[0], 'history-cleanup-all')._fire('click');
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'protected');
+  assert.deepEqual(ctx.calls.openModal, []);
+  assert.deepEqual(ctx.calls.deleteHistoryBackups, []);
+  assert.ok(ctx.calls.toast.some((item) => item[1] === 'warn' && item[0].includes('撤销窗口')));
+});
+
+test('清理备份（B6）：取消 / 单组删除 / API 失败 / 读不到撤销状态 四条路径', async () => {
+  // ① 取消：一个 api 都不调
+  const cancelCtx = build({
+    dom: makeDom(BASE_IDS),
+    listHistory: () => ({ title: '书甲', groups: [cleanableGroup({ id: 'g1' })], fileCount: 1, totalBytes: 2048, cleanup: null }),
+    modalAction: { action: 'cancel' }
+  });
+  await cancelCtx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  const cancelResult = await findButtonByClass(cancelCtx.dom.map.get('history-list').children[0], 'history-cleanup-all')._fire('click');
+  assert.equal(cancelResult.ok, false);
+  assert.equal(cancelResult.canceled, true);
+  assert.deepEqual(cancelCtx.calls.deleteHistoryBackups, []);
+
+  // ② 单组删除：只传这一组的 id
+  const oneCtx = build({
+    dom: makeDom(BASE_IDS),
+    listHistory: () => ({ title: '书甲', groups: [cleanableGroup({ id: 'dir:整理备份-1' })], fileCount: 1, totalBytes: 2048, cleanup: null }),
+    modalAction: { action: 'delete' },
+    deleteResult: { deletedGroups: 1, deletedBytes: 2048, deleted: [], skipped: [] }
+  });
+  await oneCtx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  const row = oneCtx.dom.map.get('history-list').children[1]; // 清理条之后是组卡
+  await findButtonByClass(row, 'history-delete-group')._fire('click');
+  assert.deepEqual(oneCtx.calls.deleteHistoryBackups[0][1], ['dir:整理备份-1']);
+
+  // ③ API 失败：toast error，不刷新清单
+  const failCtx = build({
+    dom: makeDom(BASE_IDS),
+    listHistory: () => ({ title: '书甲', groups: [cleanableGroup({ id: 'g1' })], fileCount: 1, totalBytes: 2048, cleanup: null }),
+    modalAction: { action: 'delete' },
+    deleteError: 'EACCES：没有权限'
+  });
+  await failCtx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  const failResult = await findButtonByClass(failCtx.dom.map.get('history-list').children[0], 'history-cleanup-all')._fire('click');
+  assert.equal(failResult.ok, false);
+  assert.ok(failCtx.calls.toast.some((item) => item[1] === 'error' && item[0].includes('删除备份失败')));
+  assert.equal(failCtx.calls.listHistory.length, 1, '失败不刷新（清单保持原样）');
+
+  // ④ 读不到撤销状态：宁可不删，也不拿「读不到」当「没有保护」
+  const guardCtx = build({
+    dom: makeDom(BASE_IDS),
+    listHistory: () => ({ title: '书甲', groups: [cleanableGroup({ id: 'g1' })], fileCount: 1, totalBytes: 2048, cleanup: null }),
+    protectedUndoGroupsError: '撤销栈坏了'
+  });
+  await guardCtx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  const guardResult = await findButtonByClass(guardCtx.dom.map.get('history-list').children[0], 'history-cleanup-all')._fire('click');
+  assert.equal(guardResult.ok, false);
+  assert.deepEqual(guardCtx.calls.openModal, []);
+  assert.deepEqual(guardCtx.calls.deleteHistoryBackups, []);
+  assert.ok(guardCtx.calls.toast.some((item) => item[1] === 'error' && item[0].includes('暂时读不到撤销状态')));
 });

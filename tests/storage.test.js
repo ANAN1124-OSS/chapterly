@@ -667,6 +667,41 @@ test('替换备份：列出最近一次整本替换的备份（最近在前）',
   );
 });
 
+test('替换备份（B6/WP-28）：列出时并发 stat，结果与串行版逐字段一致', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '并发备份书');
+  const trash = path.join(bookPath, '_trash');
+  // 手工造两个替换备份目录（每个 4 个章节副本），不启动真实替换链路
+  const names = ['替换备份-2026-10-31-210000', '替换备份-2026-10-31-220000'];
+  for (const name of names) {
+    const dir = path.join(trash, name);
+    await fs.mkdir(dir, { recursive: true });
+    for (let i = 1; i <= 4; i += 1) {
+      await fs.writeFile(path.join(dir, `00${i}-起风.txt`), `正文-${name}-${i}`, 'utf8');
+    }
+    await fs.writeFile(path.join(dir, '读我.md'), '不是章节', 'utf8'); // 非 .txt 不计
+  }
+  const serial = await storage.listReplaceBackups(bookPath, { concurrency: 1 });
+  let active = 0;
+  let peak = 0;
+  const stat = async (target) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      return await fs.stat(target);
+    } finally {
+      active -= 1;
+    }
+  };
+  const parallel = await storage.listReplaceBackups(bookPath, { stat, concurrency: 8 });
+  assert.deepEqual(parallel, serial, '并发版结果与串行版逐字段一致');
+  assert.equal(parallel.length, 2);
+  assert.ok(parallel.every((item) => item.fileCount === 4), '非 .txt 不计入 fileCount');
+  assert.ok(peak >= 2, `stat 应该并发（峰值 ${peak}）`);
+  assert.ok(peak <= 8, `并发度不许超过上限（峰值 ${peak}）`);
+});
+
 test('替换备份：还原回替换前正文，并把当前内容再备份一份（可回头）', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '还原书');

@@ -208,10 +208,17 @@ test('静态闸门：整本查找 / 替换 / 预览 / 整理四处都按批读�
   );
 });
 
-test('静态闸门：三个导出入口释放中间引用（TXT 走 buildTxtExport，归档就地转换 + 用完即清）', () => {
+test('静态闸门：导出入口释放中间引用（TXT 流式写出，归档就地转换 + 用完即清）', () => {
+  // B5（v1.8.0 WP-28）：TXT 从「buildTxtExport 一次出整本 Buffer」升级为流式写盘，
+  // 但「不手动 compose、不整本常驻」的意图不变——现在由 writeTxtExport 里的 streamTxtExport 保证。
   const txt = sliceFrom(mainSource, "  handleBook('book:export', async (bookPath, override, range) => {");
-  assert.match(txt, /exporter\.buildTxtExport\(meta, texts, safeRange, conversion, s2tLib\.convertText\)/);
-  assert.doesNotMatch(txt, /exporter\.composeBook/, 'TXT 导出不再手动 compose（buildTxtExport 里已经串好）');
+  assert.match(txt, /await writeTxtExport\(filePath, bookPath, prepared\)/);
+  assert.doesNotMatch(txt, /exporter\.composeBook/, 'TXT 导出不再手动 compose（流式拼接里逐块做）');
+  assert.doesNotMatch(txt, /exporter\.buildTxtExport/, 'TXT 导出不再建整本 Buffer（流式写盘）');
+  const writer = sliceFrom(mainSource, '  async function writeTxtExport(filePath, bookPath, prepared) {');
+  assert.match(writer, /exporter\.streamTxtExport\(/);
+  assert.match(writer, /atomicWriteFileStream\(/);
+  assert.doesNotMatch(writer, /collectExportTexts|buildTxtExport|Buffer\.from/);
   for (const channel of ['book:export-epub', 'book:export-docx']) {
     const body = sliceFrom(mainSource, `  handleBook('${channel}', async (bookPath, override, range) => {`);
     assert.match(

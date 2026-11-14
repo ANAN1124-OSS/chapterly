@@ -9,7 +9,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { atomicWriteFile, stripBom } = require('./atomic');
-const { pad2, formatCount, createWriteQueue } = require('./common');
+const { pad2, formatCount, createWriteQueue, mapLimit } = require('./common');
 // 字数口径唯一实现（core/chapters.js 的 countChars）；这里不再自己抄一份（v0.9 B-2 / 审计 F1）。
 const chaptersLib = require('./chapters');
 
@@ -21,6 +21,9 @@ const MAX_READ_CHARS = 200000;
 const LIST_LIMIT = 300;
 const PREVIEW_CHARS = 120;
 const PREVIEW_READ_BYTES = 8192;
+// B7（v1.8.0 WP-28）：列表 stat / 读预览的并发上限（与 core/history.js 的 HISTORY_STAT_CONCURRENCY 同值）。
+// 碎片多的时候串行 stat + 串行读 8KB 预览会按条数累加；8 路既快又不会把盘 / 杀软打满。
+const LIST_IO_CONCURRENCY = 8;
 
 class FragmentError extends Error {
   constructor(code, message) {
@@ -180,42 +183,60 @@ async function readPreview(filePath, size) {
   }
 }
 
-function createFragmentStore(booksRoot) {
+function createFragmentStore(booksRoot, options = {}) {
   const dir = fragmentDir(booksRoot);
+  // stat / 读预览 / 并发度只给单测注入（生产一律走真实 fs）；缺省与旧行为完全一致。
+  const settings = options && typeof options === 'object' ? options : {};
+  const statFile = typeof settings.stat === 'function' ? settings.stat : (target) => fs.stat(target);
+  const readPreviewFor = typeof settings.readPreview === 'function' ? settings.readPreview : readPreview;
+  const requestedConcurrency = Number(settings.concurrency);
+  const concurrency =
+    Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
+      ? Math.floor(requestedConcurrency)
+      : LIST_IO_CONCURRENCY;
   // 碎片写入串行化（同一个 txt 绝不并发写）——实现见 core/common.js 的 createWriteQueue（B6）。
   const enqueue = createWriteQueue().enqueue;
 
   // 列表：_碎片 顶层所有 .txt（含用户自己放进去的 txt），最新在前，最多 LIST_LIMIT 条。
   // 目录不存在 = 空列表，绝不因为列表动作创建文件夹。
+  // B7（v1.8.0 WP-28）：先并发 stat 全部候选 → 按 mtime 粗排 → 只给前 LIST_LIMIT 条读 8KB 预览。
+  // 以前逐条「stat → 读预览」做完才排序截断，为被截掉的条目白读；返回字段 / 顺序 / total/truncated 口径不变。
   async function list() {
     const names = await listTxtNames(dir);
-    const fragments = [];
-    for (const name of names) {
-      const filePath = path.join(dir, name);
-      let stat;
+    const stats = await mapLimit(names, concurrency, async (name) => {
       try {
-        stat = await fs.stat(filePath);
+        const stat = await statFile(path.join(dir, name));
+        return stat && stat.isFile() ? { name, stat } : null;
       } catch {
-        continue; // 刚好被移走/占用：跳过，不影响其它碎片
+        return null; // 刚好被移走/占用：跳过，不影响其它碎片
       }
-      if (!stat.isFile()) continue;
-      const preview = await readPreview(filePath, stat.size);
-      const parsed = parseFragmentName(name);
-      fragments.push({
-        name,
+    });
+    const entries = [];
+    for (const hit of stats) {
+      if (!hit) continue;
+      const parsed = parseFragmentName(hit.name);
+      entries.push({
+        name: hit.name,
         date: parsed ? parsed.date : null,
         seq: parsed ? parsed.seq : null,
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-        preview: preview.preview
+        size: hit.stat.size,
+        mtimeMs: hit.stat.mtimeMs
       });
     }
-    const sorted = sortFragments(fragments);
+    const sorted = sortFragments(entries);
+    const shown = sorted.slice(0, LIST_LIMIT);
+    // 只给真正会返回的前 300 条读预览（并发）；被截掉的条目一个字节都不读
+    const previews = await mapLimit(shown, concurrency, (entry) =>
+      readPreviewFor(path.join(dir, entry.name), entry.size)
+    );
+    for (let i = 0; i < shown.length; i += 1) {
+      shown[i].preview = previews[i] && typeof previews[i].preview === 'string' ? previews[i].preview : '';
+    }
     return {
       dir,
       total: sorted.length,
       truncated: sorted.length > LIST_LIMIT,
-      fragments: sorted.slice(0, LIST_LIMIT)
+      fragments: shown
     };
   }
 

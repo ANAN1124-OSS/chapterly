@@ -2607,7 +2607,7 @@
     find: { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput },
     nav: { chapterTitle, switchChapter: (index) => switchChapter(index), loadChapterAt, currentChapterLabel: () => currentChapterLabel(), hideHeaderMenus },
     collab: { askUnsaved, saveCurrent, openModal, refreshShelf, renderChapterList, reloadAfterPartialFailure, runReplaceOne,
-      registerUndo: (label, run) => undoUi.activate(label, run),
+      registerUndo: (label, run, meta) => undoUi.activate(label, run, meta),
       closeProofreadPanel: () => closeProofreadPanel(), renderFindBookmarks: () => renderFindBookmarks(),
       refreshFindBookmarks: () => refreshFindBookmarks(), refreshReplaceBackups: () => refreshReplaceBackups() }
   });
@@ -4604,7 +4604,7 @@
           await reloadOpenBookFromDisk(bookPath);
           await refreshShelf();
           await refreshReplaceBackups();
-        });
+        }, { groupId: 'dir:' + undoName, bookPath });
       }
       toast(
         `已还原 ${data.restored} 个章节${
@@ -4693,7 +4693,8 @@
     // 1.5.0 P0-5（审计 V-2）：历史还原的撤销也要核对备份没变
     guard: backupGuard,
     collab: { confirmRestoreWithUnsaved, openModal, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk,
-      registerUndo: (label, run) => undoUi.activate(label, run) },
+      registerUndo: (label, run, meta) => undoUi.activate(label, run, meta),
+      protectedUndoGroups: (bookPath) => undoUi.protectedGroupIds(bookPath) },
     menus: { hideBookMenu, hideExportMenu },
     fmt: { formatBytes }
   });
@@ -5061,7 +5062,7 @@
           if (!data || !Number(data.restored)) throw new Error('整理备份里没有可还原的章节');
           await reloadOpenBookFromDisk(bookPath);
           await refreshShelf();
-        });
+        }, { groupId: 'dir:' + backupName, bookPath });
       }
       return { ok: true, changed: result.chaptersChanged, data: result };
     } catch (err) {

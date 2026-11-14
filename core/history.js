@@ -61,6 +61,37 @@ const KNOWN_DIR_SOURCES = ['replace', 'format', 'restore', 'snapshot'];
 const RESTORABLE_SOURCES = new Set(['replace', 'format', 'restore', 'snapshot']);
 const TEXT_EXTS = new Set(['.txt', '.json', '.bak', '.md']);
 
+// B6（v1.8.0 WP-28 / D-5）：可以手动清理的三类「整本操作」备份 —— 只清理这三类目录，
+// 每日快照有自己的「清空这天的快照」入口、删章散文件是章节原文、书目备份只供查看，
+// 一律不从「清理备份」入口删。**永远不自动删**：这里只提供摘要与删除目标的白名单，删除由界面显式调用。
+const CLEANABLE_SOURCES = Object.freeze(['replace', 'format', 'restore']);
+const CLEANABLE_SOURCE_SET = new Set(CLEANABLE_SOURCES);
+// 软提醒阈值（D-5 已定，先到为准）：单书 ≥20 组 或 合计 ≥500MB 时，历史面板只提示「可清理」。
+const CLEANUP_REMINDER_GROUPS = 20;
+const CLEANUP_REMINDER_BYTES = 500 * 1024 * 1024;
+
+// 三类备份的占用摘要（纯函数，历史面板 / 单测共用；不含快照 / 删章散文件 / 书目备份）。
+// 阈值只用于提示，绝不触发任何删除；结果里同时给出两组判据，方便界面写清「先到为准」。
+function backupCleanupSummary(groups) {
+  const list = (Array.isArray(groups) ? groups : []).filter(
+    (group) => group && group.kind === 'dir' && CLEANABLE_SOURCE_SET.has(group.source)
+  );
+  let totalBytes = 0;
+  for (const group of list) {
+    const bytes = Number(group.totalBytes);
+    if (Number.isFinite(bytes) && bytes > 0) totalBytes += bytes;
+  }
+  const overGroups = list.length >= CLEANUP_REMINDER_GROUPS;
+  const overBytes = totalBytes >= CLEANUP_REMINDER_BYTES;
+  return {
+    groupCount: list.length,
+    totalBytes,
+    overGroups,
+    overBytes,
+    overLimit: overGroups || overBytes
+  };
+}
+
 class HistoryError extends Error {
   constructor(code, message) {
     super(message);
@@ -222,6 +253,7 @@ async function listHistory(bookPath, options = {}) {
         fileCount: 1,
         totalBytes: stat.size,
         restorableCount: 0,
+        cleanable: false,
         files: [
           makeFileEntry({
             name: BOOK_BAK,
@@ -367,6 +399,8 @@ async function listHistory(bookPath, options = {}) {
       fileCount: files.length,
       totalBytes,
       restorableCount: files.filter((file) => file.restorable).length,
+      // B6：三类整本操作备份（替换 / 整理 / 还原前）才给「删除这组备份」，其它来源 false
+      cleanable: CLEANABLE_SOURCE_SET.has(info.source),
       files
     };
     // 字段只在严格合法的每日快照组上出现（其它来源的组保持原形状）
@@ -423,6 +457,7 @@ async function listHistory(bookPath, options = {}) {
       fileCount: 1,
       totalBytes: stat.size,
       restorableCount: file.restorable ? 1 : 0,
+      cleanable: false,
       files: [file]
     });
   }
@@ -546,6 +581,10 @@ module.exports = {
   TRASH_DIR,
   BOOK_BAK,
   PREVIEW_MAX_BYTES,
+  CLEANABLE_SOURCES,
+  CLEANUP_REMINDER_GROUPS,
+  CLEANUP_REMINDER_BYTES,
+  backupCleanupSummary,
   parseStampTime,
   formatHistoryTime,
   parseDeletedName,

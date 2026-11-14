@@ -652,7 +652,9 @@
             await loadChapterAt(state.index);
             renderChapterList();
             refreshShelf();
-          }
+          },
+          // B6（v1.8.0 WP-28）：这份撤销引用替换备份；10 秒内清理备份要跳过它（只算这本书）
+          { groupId: 'dir:' + backupName, bookPath }
         );
       }
       const doneText = result.truncated

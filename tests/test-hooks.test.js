@@ -336,7 +336,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   测量与滚动判定都进了 focus-logic.js（planCaretReveal 有单测），renderer.js 只剩
   //   「量不到才退回换行数估算」的装配（6 行语句）+ 5 行说明为什么要这样接。C22 / C38 / C39
   //   分别在 menu-keyboard / drag-sort-ui / fragments-ui 里，renderer.js 一行都没加。
-  const RENDERER_LINE_BUDGET = 6176;
+  // 1.8.0 WP-28（B5/B6/B7）：6176 → 6177（+1）：历史面板 host 多一行
+  //   `protectedUndoGroups: () => undoUi.protectedGroupIds()`（B6 清理备份时跳过 10 秒撤销引用的组）；
+  //   流式导出 / 备份清理 / 碎片列表的实现全在 core/* 与 renderer/history-ui.js，renderer.js 其余零新增。
+  const RENDERER_LINE_BUDGET = 6177;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

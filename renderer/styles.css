@@ -3091,6 +3091,24 @@ body.theme-night .long-para-bar { background: var(--warn);
   line-height: 1.65;
   color: var(--ink-faint);
 }
+/* B6（v1.8.0 WP-28）：三类备份的手动清理条（按组删除 / 一键清理本书），只在有可清理备份时出现。
+ * 只沿用现有按钮与纸色令牌，不加显眼底色：它是工具条，不是这一屏的主角。 */
+.history-cleanup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 8px 12px;
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: var(--folio-radius);
+}
+.history-cleanup-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
 .history-file {
   display: flex;
   align-items: center;

@@ -433,3 +433,106 @@ test('导出预览字数缓存：合法非负数直接用，缺失 / 坏值返�
   assert.equal(cachedCharsOf(null), null);
   assert.equal(cachedCharsOf('章'), null);
 });
+
+// ---------- B5（v1.8.0 WP-28）：TXT 流式拼接 ----------
+const chaptersLib = require('../core/chapters');
+const s2tLib = require('../core/s2t');
+const { streamTxtExport, buildTxtExport } = require('../core/exporter');
+
+async function collectStream(meta, texts, range, options = {}) {
+  const chunks = [];
+  const reads = [];
+  const result = await streamTxtExport(meta, range, {
+    conversion: options.conversion || '',
+    convertText: Object.prototype.hasOwnProperty.call(options, 'convertText')
+      ? options.convertText
+      : s2tLib.convertText,
+    readText: async (index, chapter) => {
+      reads.push([index, chapter && chapter.file]);
+      return texts[index];
+    },
+    onChunk: (chunk) => {
+      chunks.push(chunk);
+    }
+  });
+  return { chunks, text: chunks.join(''), reads, result };
+}
+
+function streamVolumeMeta() {
+  return {
+    title: '流式分卷书',
+    titleTemplate: '第{num}章：{name}',
+    volumes: [
+      { id: 'v1', name: '卷一' },
+      { id: 'v2', name: '卷二' }
+    ],
+    chapters: [
+      { id: 'c1', file: '1.txt', name: '起风', volumeId: 'v1' },
+      { id: 'c2', file: '2.txt', name: '夜雨', volumeId: 'v1' },
+      { id: 'c3', file: '3.txt', name: '归途', volumeId: 'v2' }
+    ]
+  };
+}
+
+test('B5/WP-28 流式 TXT：全书 / 范围 / 分卷逐字节等于旧链（buildTxtExport）', async () => {
+  const meta = metaOf('起风', '夜雨');
+  const texts = ['风从海面吹来。\n', '\n雨下了一夜。\n'];
+  const all = await collectStream(meta, texts, null);
+  assert.equal(all.text, composeBook(meta, texts.slice()));
+  assert.deepEqual(Buffer.from(BOM + all.text, 'utf8'), buildTxtExport(meta, texts.slice(), null, '', s2tLib.convertText));
+  assert.equal(all.result.chars, chaptersLib.countChars(texts[0]) + chaptersLib.countChars(texts[1]), 'chars 与整本导出同口径');
+  assert.equal(all.result.chapterCount, 2);
+
+  const range = { mode: 'range', from: 2, to: 2 };
+  const one = await collectStream(meta, texts, range);
+  assert.equal(one.text, composeBook(meta, texts.slice(), range));
+  assert.deepEqual(one.reads, [[1, '1.txt']], '只读范围内的章，顺序按书目');
+
+  const vm = streamVolumeMeta();
+  const volumeTexts = ['甲。', '乙。', '丙。'];
+  const volume = await collectStream(vm, volumeTexts, null);
+  assert.equal(volume.text, composeBook(vm, volumeTexts.slice()));
+  assert.match(volume.text, /^卷一\r\n\r\n/);
+  assert.match(volume.text, /\r\n\r\n卷二\r\n\r\n/);
+
+  // 简繁转换：逐块转换与整本转换字节一致（块边界是 CRLF，词条里没有换行）
+  const converted = await collectStream(meta, ['头发乱了。\n', '皇后来了。\n'], null, { conversion: 's2t' });
+  assert.deepEqual(
+    Buffer.from(BOM + converted.text, 'utf8'),
+    buildTxtExport(meta, ['头发乱了。\n', '皇后来了。\n'], null, 's2t', s2tLib.convertText)
+  );
+  assert.match(converted.text, /頭髮亂了/);
+  assert.match(converted.text, /皇后來了/);
+});
+
+test('B5/WP-28 流式 TXT：空书 / 空正文 / 不给转换函数都照旧', async () => {
+  const empty = metaOf();
+  const data = await collectStream(empty, [], null);
+  assert.deepEqual(data.chunks, ['\r\n'], '空书也是整本末尾一个换行（与 composeBook 一致）');
+  assert.equal(data.text, composeBook(empty, []));
+
+  const meta = metaOf('起风', '空章');
+  const noConvert = await collectStream(meta, ['正文。', ''], null, { convertText: null });
+  assert.equal(noConvert.text, composeBook(meta, ['正文。', '']));
+  assert.ok(noConvert.text.includes('第2章：空章\r\n'), '空正文只留标题块');
+
+  await assert.rejects(() => streamTxtExport(meta, null, { onChunk() {} }), /需要 readText 回调/);
+  await assert.rejects(() => streamTxtExport(meta, null, { readText() {} }), /需要 onChunk 回调/);
+});
+
+test('B5/WP-28 流式 TXT：逐块回调、不物化整本（块数与最大块远小于整本）', async () => {
+  const count = 500;
+  const meta = {
+    title: '大书',
+    titleTemplate: '第{num}章：{name}',
+    chapters: Array.from({ length: count }, (_, i) => ({ id: `c${i}`, file: `${i}.txt`, name: `章${i}` }))
+  };
+  const texts = Array.from({ length: count }, (_, i) => `第${i}章正文。`.repeat(60));
+  const data = await collectStream(meta, texts, null);
+  assert.equal(data.chunks.length, count + 1, '500 个章块 + 末尾换行，没有把整本拼成一块');
+  assert.equal(data.text, composeBook(meta, texts.slice()));
+  const maxChunk = Math.max(...data.chunks.map((chunk) => chunk.length));
+  assert.ok(maxChunk < data.text.length / 100, `最大块 ${maxChunk} 不该接近整本 ${data.text.length}`);
+  const totalChars = texts.reduce((sum, text) => sum + chaptersLib.countChars(text), 0);
+  assert.equal(data.result.chars, totalChars);
+});

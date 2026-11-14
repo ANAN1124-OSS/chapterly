@@ -1,7 +1,9 @@
 /* 全局撤销条（1.4.0 P0-2：删除 / 移动等确认型弹层改为「直接执行 + 撤销」；1.5.0 P0-4：小栈 + 手动关闭）。
  *
  * 只做 DOM 与定时器：条子在哪、写什么字、点了以后跑什么，全由调用方决定。
- *   - activate(label, run)：登记一条撤销动作并显示「已删除「…」 [撤销] [×]」；
+ *   - activate(label, run, meta?)：登记一条撤销动作并显示「已删除「…」 [撤销] [×]」；
+ *     meta.groupId 可选 = 这份撤销引用的 _trash 备份组（整本替换 / 整理 / 还原前），
+ *     备份清理入口用 protectedGroupIds() 跳过它（10 秒 TTL 过期后自动不再保护）；
  *     栈满被顶掉最旧一条时用 toast 提一句（不静默吞掉一步退路）；
  *   - runUndo()：执行当前这条（异步）；成功后栈里还有更早的就把条子换成下一条继续显示，
  *     没有才收起；失败弹一句「撤销失败：…」并保留到**这条自己的** TTL 到期，
@@ -150,9 +152,10 @@
       return Boolean(barEl());
     }
 
-    function activate(label, run) {
+    function activate(label, run, meta) {
       rememberFocus();
-      const entry = slot.push({ label, run });
+      const action = meta && typeof meta === 'object' ? { label, run, ...meta } : { label, run };
+      const entry = slot.push(action);
       // H-1：栈满时最旧那一步的退路会被顶掉 —— 明说一句，别让作者以为它还在。
       if (entry && entry.evicted && typeof toast === 'function') {
         toast(`上一步（${entry.evicted.label}）的撤销已被新动作替换`, 'info');
@@ -238,6 +241,10 @@
       dismiss,
       hide,
       hasPending: () => slot.hasPending(),
+      // B6（v1.8.0 WP-28）：10 秒窗口内还能撤销的备份组 —— 清理备份时必须跳过，过期自动解除。
+      // 传 bookPath 时只算这一本书引用的组（跨书的同名备份目录不互相误伤）。
+      protectedGroupIds: (bookPath) =>
+        typeof slot.pendingGroupIds === 'function' ? slot.pendingGroupIds(bookPath) : [],
       label: () => {
         const entry = slot.peek();
         return entry ? entry.label : '';
