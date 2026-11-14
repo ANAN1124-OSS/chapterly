@@ -245,6 +245,7 @@
         };
       },
       // 章节多选（1.5.0 功能-1）：只照实读 state / DOM（不另存一份），E2E 用它核「点了哪几章 / 条子出没出来」。
+      // X2（v1.8.0 WP-41）：多选态在 DOM 上是 aria-pressed（条目 role=button，不挂 aria-selected）。
       chapterSelection: () => {
         const bar = $('chapter-batch-bar');
         const countEl = $('chapter-batch-count');
@@ -259,7 +260,7 @@
           barVisible: Boolean(bar && !bar.classList.contains('hidden')),
           countText: countEl ? countEl.textContent : '',
           markedIndexes: marked,
-          ariaSelected: items.map((el) => el.getAttribute('aria-selected'))
+          ariaPressed: items.map((el) => el.getAttribute('aria-pressed'))
         };
       },
       clearChapterSelection: () => clearChapterSelection(),

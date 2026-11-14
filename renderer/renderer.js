@@ -2156,8 +2156,10 @@
     if (countEl) countEl.textContent = `已选 ${count} 章`;
   }
 
-  // 选择变化时只改条目上的两个标记（class + aria-selected），不重建整张列表：
+  // 选择变化时只改条目上的两个标记（class + aria-pressed），不重建整张列表：
   // 千章书里 Ctrl+点一下不会让滚动位置跳走，也不会把当前章那一条重新滚进视口。
+  // X2（v1.8.0 WP-41）：条目是 role=button，button 角色不支持 aria-selected；多选态改用
+  // aria-pressed（切换按钮的「按下 / 未按下」），读屏能播报「已选中」。
   function syncChapterSelectionUi() {
     const list = $('chapter-list');
     if (list) {
@@ -2165,7 +2167,7 @@
         const id = item.dataset ? String(item.dataset.chapterId || '') : '';
         const on = id !== '' && state.selectedIds.has(id);
         item.classList.toggle('selected', on);
-        item.setAttribute('aria-selected', on ? 'true' : 'false');
+        item.setAttribute('aria-pressed', on ? 'true' : 'false');
       }
     }
     syncChapterBatchBar();
@@ -2224,9 +2226,11 @@
     item.tabIndex = index === state.index ? 0 : -1;
     item.setAttribute('role', 'button');
     item.setAttribute('aria-label', `打开${chapterTitle(index, chapter.name)}`);
-    // 多选是另一套标记（不和 .active 当前章互覆盖）：1.5.0 功能-1
+    // 多选是另一套标记（不和 .active 当前章互覆盖）：1.5.0 功能-1。
+    // X2（v1.8.0 WP-41）：多选态用 aria-pressed —— button 角色不支持 aria-selected，
+    // 切换按钮的「按下」正好表达「已选中」，读屏才播报得出来。
     item.setAttribute(
-      'aria-selected',
+      'aria-pressed',
       chapterSelectionLib.isSelected(chapterSelectionSnapshot(), chapter.id) ? 'true' : 'false'
     );
 
@@ -2531,7 +2535,7 @@
     // 多选状态也可能刚被清掉（批量改状态后 selectedIds 置空）：一并同步，不留给下次重建
     const selected = chapterSelectionLib.isSelected(chapterSelectionSnapshot(), chapter.id);
     item.classList.toggle('selected', selected);
-    item.setAttribute('aria-selected', selected ? 'true' : 'false');
+    item.setAttribute('aria-pressed', selected ? 'true' : 'false');
     renderBookMeta();
     markCommandsDirty();
     syncChapterBatchBar();
