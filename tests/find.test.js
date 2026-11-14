@@ -53,6 +53,24 @@ test('替换：特殊字符不会破坏文本', () => {
   assert.equal(res.text, '3.15 元，价格 3.15');
 });
 
+test('替换：超过命中上限时如实回 truncated（C4 / WP-05，不能把截断当全部替换完成）', () => {
+  const text = 'a'.repeat(MAX_MATCHES + 2);
+  const over = replaceAllLiteral(text, 'a', 'b');
+  assert.equal(over.count, MAX_MATCHES, '只替换前 MAX_MATCHES 处');
+  assert.equal(over.truncated, true, '必须明确回报截断');
+  assert.equal(over.limit, MAX_MATCHES);
+  assert.equal(over.text, 'b'.repeat(MAX_MATCHES) + 'aa', '第 MAX_MATCHES + 1 处起原样保留');
+  // 正好到上限不算截断（与 findMatchesAll 同一口径）
+  const exact = replaceAllLiteral('a'.repeat(MAX_MATCHES), 'a', 'b');
+  assert.equal(exact.count, MAX_MATCHES);
+  assert.equal(exact.truncated, false);
+  assert.equal(exact.text, 'b'.repeat(MAX_MATCHES));
+  // 没有命中 / 空查询：次数 0、不截断、原文原样返回
+  const none = replaceAllLiteral('没有命中', '阿明', '小明');
+  assert.deepEqual(none, { text: '没有命中', count: 0, truncated: false, limit: MAX_MATCHES });
+  assert.deepEqual(replaceAllLiteral('abc', '', 'x'), { text: 'abc', count: 0, truncated: false, limit: MAX_MATCHES });
+});
+
 test('上下文片段：去掉换行、头尾省略标记', () => {
   const text = '第一段\n阿明走进屋里，看见桌上有一封信。';
   const index = text.indexOf('阿明');

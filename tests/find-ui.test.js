@@ -633,6 +633,51 @@ test('runFind：空查询 / 当前章成功 / 当前章无命中 / 失败 / 整�
   assert.equal(bookNone.dom.map.get('find-summary').textContent, '整本没有找到「没有」');
 });
 
+test('runFind：命中被单章上限截断时摘要说「至少」，结果行计数带 +（C4 / WP-05）', async () => {
+  const current = build({
+    query: '张三',
+    findAll: () => ({
+      count: 3,
+      truncated: true,
+      limit: 3,
+      matches: [
+        { index: 0, length: 2 },
+        { index: 3, length: 2 },
+        { index: 6, length: 2 }
+      ]
+    })
+  });
+  await current.ui.runFind();
+  const currentSummary = current.dom.map.get('find-summary').textContent;
+  assert.match(currentSummary, /^本章至少命中 3 处（第 1\/3 处）/);
+  assert.match(currentSummary, /超过单章上限，只列出 \/ 替换前 3 处/);
+
+  const book = build({
+    query: '张三',
+    scope: 'book',
+    searchBook: {
+      totalMatches: 5000,
+      truncated: true,
+      matchLimit: 5000,
+      chapterCount: 1,
+      results: [
+        {
+          chapterId: 'c1',
+          name: '第一章',
+          count: 5000,
+          truncated: true,
+          matches: [{ index: 0, length: 2, before: '', match: '张三', after: '说' }]
+        }
+      ]
+    }
+  });
+  await book.ui.runFind();
+  const bookSummary = book.dom.map.get('find-summary').textContent;
+  assert.match(bookSummary, /^整本至少命中 5000 处，分布在 1 章/);
+  assert.match(bookSummary, /单章命中超过 5000 处时只统计 \/ 替换前 5000 处/);
+  assert.ok(collectText(book.dom.map.get('find-results')).includes('5000+ 处'), '结果行计数必须带 +');
+});
+
 test('replaceEditorText：写回编辑区并触发输入处理（dirty / 字数）；execCommand 不可用时走直接赋值', () => {
   const ctx = build({ text: '旧正文' });
   ctx.ui.replaceEditorText('新正文');
@@ -661,6 +706,47 @@ test('runReplaceAll（当前章）：空查询提示 / 无命中不替换 / 成�
   const fail = build({ query: '张三', replace: '李四', replaceInText: null, replaceError: '写盘失败' });
   await fail.ui.runReplaceAll();
   assert.deepEqual(fail.calls.toast, [['替换失败：写盘失败', 'error']]);
+});
+
+test('runReplaceAll：单章 / 整本命中被上限截断时只说「只替换了前 N 处」，不报完成（C4 / WP-05）', async () => {
+  const current = build({
+    query: '张三',
+    replace: '李四',
+    replaceInText: { count: 5000, truncated: true, limit: 5000, text: '李四'.repeat(5000) }
+  });
+  await current.ui.runReplaceAll();
+  assert.match(current.dom.map.get('find-summary').textContent, /^本章只替换了前 5000 处/);
+  assert.deepEqual(current.calls.toast, [['本章只替换了前 5000 处（未保存）', 'warn']]);
+  assert.equal(current.editorEl.value.length, 10000, '替换结果仍写回编辑区（只是如实报告截断）');
+
+  const book = build({
+    query: '张三',
+    replace: '李四',
+    scope: 'book',
+    searchBook: {
+      totalMatches: 5000,
+      truncated: true,
+      matchLimit: 5000,
+      chapterCount: 1,
+      results: [{ chapterId: 'c1', name: '第一章', count: 5000, truncated: true, matches: [] }]
+    },
+    replaceBook: {
+      chaptersChanged: 1,
+      occurrences: 5000,
+      truncated: true,
+      chaptersTruncated: 1,
+      matchLimit: 5000,
+      backupDir: '/书库/书甲/_trash/替换备份-1'
+    }
+  });
+  await book.ui.runReplaceAll();
+  const lastToast = book.calls.toast[book.calls.toast.length - 1][0];
+  assert.ok(!lastToast.includes('替换完成'), '截断时不许报「完成」');
+  assert.match(
+    lastToast,
+    /^整本替换：1 章 \/ 5000 处；有 1 章命中超过单章 5000 处上限，只替换了前 5000 处，其余未改动/
+  );
+  assert.match(book.calls.registerUndo[0].label, /部分章截断/, '撤销条也要标明部分章截断');
 });
 
 test('runReplaceAll（整本）：未保存三选一 / 不再二次确认（登记撤销）/ 成功后备份提示 / 失败重载', async () => {

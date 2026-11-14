@@ -371,7 +371,8 @@
       chapterName.textContent = index >= 0 ? chapterTitle(index, result.name) : String(result.name || '');
       const count = document.createElement('span');
       count.className = 'find-count';
-      count.textContent = `${result.count} 处`;
+      // C4（v1.8.0 WP-05）：本章命中被单章上限截断时写「N+ 处」，不把截断值当精确数
+      count.textContent = `${result.count}${result.truncated ? '+' : ''} 处`;
       head.append(chapterName, count);
 
       const snippet = document.createElement('div');
@@ -413,7 +414,7 @@
           startFindSession(query, caseSensitive, res.matches, 0);
           selectFindMatch(0);
           toast(
-            `「${query}」在本章 ${res.count} 处，已高亮；F3 下一处 / Shift+F3 上一处，Esc 清除`
+            `「${query}」在本章 ${res.truncated ? '至少 ' : ''}${res.count} 处，已高亮；F3 下一处 / Shift+F3 上一处，Esc 清除`
           );
           return;
         }
@@ -450,8 +451,16 @@
         const skippedNote = payload.skippedTooLarge
           ? `；有 ${payload.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）`
           : '';
+        // C4（v1.8.0 WP-05）：单章命中超过上限时 totalMatches 只是「至少」——不报精确总数，
+        // 也不把「只替换前 N 处」的替换上限藏起来。
+        const capLimit = Math.max(0, Math.floor(Number(payload.matchLimit) || 0));
+        const capNote = !payload.truncated
+          ? ''
+          : capLimit
+            ? `；单章命中超过 ${capLimit} 处时只统计 / 替换前 ${capLimit} 处`
+            : '；有章节命中超过单章上限，只统计 / 替换了前一部分';
         $('find-summary').textContent = payload.totalMatches
-          ? `整本命中 ${payload.totalMatches} 处，分布在 ${payload.chapterCount} 章（点结果跳过去；跳过去后本章会高亮，F3 / Shift+F3 前后跳）${skippedNote}`
+          ? `整本${payload.truncated ? '至少' : ''}命中 ${payload.totalMatches} 处，分布在 ${payload.chapterCount} 章${capNote}（点结果跳过去；跳过去后本章会高亮，F3 / Shift+F3 前后跳）${skippedNote}`
           : `整本没有找到「${options.query}」${skippedNote}`;
         renderFindResults(payload);
         return;
@@ -468,8 +477,12 @@
       state.find.fromBookmark = false;
       startFindSession(options.query, options.caseSensitive, res.matches, 0);
       selectFindMatch(0);
+      // C4（v1.8.0 WP-05）：本章命中超过单章上限时 findAll 回 truncated——只列出前 N 处，
+      // 替换也只替换前 N 处；摘要写「至少」，不把截断值当精确命中数。
+      const cappedNote = res.truncated ? `；超过单章上限，只列出 / 替换前 ${res.count} 处` : '';
       $('find-summary').textContent =
-        `本章命中 ${res.count} 处（第 1/${res.count} 处）` +
+        `本章${res.truncated ? '至少' : ''}命中 ${res.count} 处（第 1/${res.count} 处）` +
+        cappedNote +
         (state.find.truncated
           ? `；命中太多，正文里只高亮当前附近 ${state.find.highlighted} 处`
           : '');
@@ -509,6 +522,14 @@
           return;
         }
         replaceEditorText(res.text);
+        // C4（v1.8.0 WP-05）：超过单章上限时只替换了前 N 处，必须如实说清楚，
+        // 不能把「只替换了前 5000 处」报成「本章已替换完成」。
+        if (res.truncated) {
+          $('find-summary').textContent =
+            `本章只替换了前 ${res.count} 处（单章有替换上限，其余命中未改动；还没保存：Ctrl+S 写盘，Ctrl+Z 可撤销）`;
+          toast(`本章只替换了前 ${res.count} 处（未保存）`, 'warn');
+          return;
+        }
         $('find-summary').textContent = `本章已替换 ${res.count} 处（还没保存：Ctrl+S 写盘，Ctrl+Z 可撤销）`;
         toast(`本章替换 ${res.count} 处（未保存）`);
       } catch (err) {
@@ -555,22 +576,34 @@
       renderChapterList();
       refreshShelf(); // 字数变了，书架统计后台刷新即可
       const backupName = result.backupDir ? String(result.backupDir).split(/[\\/]/).pop() : '';
+      // C4（v1.8.0 WP-05）：有章被单章上限截断时，回执 / 撤销条都要写清「只替换了前 N 处」，
+      // 不能报成整本替换完成。
+      const capLimit = Math.max(0, Math.floor(Number(result.matchLimit) || 0));
+      const truncatedNote = !result.truncated
+        ? ''
+        : `；有 ${result.chaptersTruncated} 章命中超过单章${capLimit ? ` ${capLimit} 处` : ''}上限，只替换了前${capLimit ? ` ${capLimit} 处` : '一部分'}，其余未改动`;
       if (result.chaptersChanged && backupName && typeof registerUndo === 'function') {
-        registerUndo(`已整本替换 ${result.chaptersChanged} 章 / ${result.occurrences} 处`, async () => {
-          if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
-          const back = await call(api.restoreReplaceBackup, bookPath, backupName);
-          if (!back || !Number(back.restored)) throw new Error('替换备份里没有可还原的章节');
-          await loadChapterAt(state.index);
-          renderChapterList();
-          refreshShelf();
-        });
+        registerUndo(
+          `已整本替换 ${result.chaptersChanged} 章 / ${result.occurrences} 处${result.truncated ? '（部分章截断）' : ''}`,
+          async () => {
+            if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+            const back = await call(api.restoreReplaceBackup, bookPath, backupName);
+            if (!back || !Number(back.restored)) throw new Error('替换备份里没有可还原的章节');
+            await loadChapterAt(state.index);
+            renderChapterList();
+            refreshShelf();
+          }
+        );
       }
       toast(
-        `整本替换完成：${result.chaptersChanged} 章 / ${result.occurrences} 处${
-          result.backupDir ? ' · 原文已备份到 _trash（10 秒内可撤销）' : ''
-        }${
-          result.skippedTooLarge ? `；有 ${result.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''
-        }`
+        (result.truncated
+          ? `整本替换：${result.chaptersChanged} 章 / ${result.occurrences} 处${truncatedNote}`
+          : `整本替换完成：${result.chaptersChanged} 章 / ${result.occurrences} 处`) +
+          `${
+            result.backupDir ? ' · 原文已备份到 _trash（10 秒内可撤销）' : ''
+          }${
+            result.skippedTooLarge ? `；有 ${result.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''
+          }`
       );
     } catch (err) {
       toast(`整本替换失败：${err.message}`, 'error');

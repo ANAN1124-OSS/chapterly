@@ -57,6 +57,39 @@ module.exports = async function group28FindReplace(t) {
   await exec('window.__cwTest.save()');
   await exec('window.__cwTest.closeFindPanel()');
 
+  // v1.8.0 WP-05（C4）：单章命中超过上限（core/find.js MAX_MATCHES = 5000）时，
+  // 显示上限与替换上限共用同一批命中——必须如实说「只替换了前 5000 处」，不能报成全部完成。
+  await exec("window.__cwTest.setText('的'.repeat(5002))");
+  await exec('window.__cwTest.save()');
+  await exec('window.__cwTest.openFindPanel()');
+  await exec("window.__cwTest.setFindFields({ query: '的', replacement: '了', scope: 'book' })");
+  await exec('window.__cwTest.findRun()');
+  await waitFor("window.__cwTest.findSummary().includes('整本至少命中')");
+  const cappedBookSummary = await exec('window.__cwTest.findSummary()');
+  const cappedResultCount = await exec("document.querySelector('#find-results .find-count').textContent");
+  check(
+    '命中上限：整本查找超过单章上限时摘要说「至少」、结果行计数带 +（C4 / WP-05）',
+    cappedBookSummary.includes('整本至少命中 5000 处') &&
+      cappedBookSummary.includes('单章命中超过 5000 处时只统计 / 替换前 5000 处') &&
+      cappedResultCount === '5000+ 处',
+    { cappedBookSummary, cappedResultCount }
+  );
+  await exec("window.__cwTest.setFindFields({ query: '的', replacement: '了', scope: 'current' })");
+  await exec('window.__cwTest.findReplaceAll()');
+  await sleep(300);
+  const partialText = await exec('window.__cwTest.text()');
+  const cappedReplaceSummary = await exec('window.__cwTest.findSummary()');
+  check(
+    '命中上限：单章 5002 处「的」只替换前 5000 处，摘要明说「只替换了前 5000 处」（C4 / WP-05）',
+    partialText === '了'.repeat(5000) + '的的' && cappedReplaceSummary.includes('本章只替换了前 5000 处'),
+    { length: partialText.length, cappedReplaceSummary }
+  );
+  check('命中上限：截断的当前章替换仍是未保存状态', (await exec('window.__cwTest.dirty()')) === true);
+  // 收回原状（下面还要用同一本书测整本替换）
+  await exec("window.__cwTest.setText('小明走进屋里。\\n小明坐下。')");
+  await exec('window.__cwTest.save()');
+  await exec('window.__cwTest.closeFindPanel()');
+
   // 恢复成含「阿明」的原文，再测整本替换
   await exec('window.__cwTest.switchTo(0, "discard")');
   await exec("window.__cwTest.setText('阿明走进屋里。\\n阿明坐下。')");

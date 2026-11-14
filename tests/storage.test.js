@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
+const { MAX_MATCHES } = require('../core/find');
 const { atomicWriteFile } = require('../core/atomic');
 
 const tmpCleanup = require('./tmp-cleanup');
@@ -527,6 +528,49 @@ test('全书替换：先备份原文件到 _trash，再原子写盘并更新字�
   const res2 = await storage.replaceInBook(bookPath, { query: '不存在', replacement: 'x' });
   assert.equal(res2.chaptersChanged, 0);
   assert.equal(res2.backupDir, null);
+});
+
+test('C4 / WP-05：单章命中超过上限时，整本查找 / 整本替换都如实回 truncated（不虚报全部完成）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '超限替换书');
+  const meta = await storage.readBookMeta(bookPath);
+  const file = meta.chapters[0].file;
+  const many = '的'.repeat(MAX_MATCHES + 2);
+  await storage.saveChapterText(bookPath, file, many);
+
+  // 整本查找：总数只能报「至少 MAX_MATCHES」，并明确 truncated 与单章上限
+  const found = await storage.searchBook(bookPath, { query: '的' });
+  assert.equal(found.totalMatches, MAX_MATCHES);
+  assert.equal(found.truncated, true);
+  assert.equal(found.matchLimit, MAX_MATCHES);
+  assert.equal(found.results[0].count, MAX_MATCHES);
+  assert.equal(found.results[0].truncated, true);
+
+  // 整本替换：只替换前 MAX_MATCHES 处（与查找看到的是同一批），但必须如实报告截断
+  const res = await storage.replaceInBook(bookPath, { query: '的', replacement: '了' });
+  assert.equal(res.chaptersChanged, 1);
+  assert.equal(res.occurrences, MAX_MATCHES);
+  assert.equal(res.truncated, true);
+  assert.equal(res.chaptersTruncated, 1);
+  assert.equal(res.matchLimit, MAX_MATCHES);
+  const disk = (await storage.loadChapterText(bookPath, file)).text;
+  assert.equal(disk.length, MAX_MATCHES + 2);
+  assert.equal(disk.slice(0, MAX_MATCHES), '了'.repeat(MAX_MATCHES), '前 MAX_MATCHES 处已替换');
+  assert.equal(disk.slice(MAX_MATCHES), '的的', '超上限的两处原样保留');
+  // 被替换章的备份里仍是完整原文（10 秒撤销 / _trash 找回的语义不变）
+  const backup = await fs.readFile(path.join(res.backupDir, file), 'utf8');
+  assert.equal(backup, many);
+  // 上限以内的书仍走精确口径（不因修复变得「永远说至少」）
+  const smallBook = await storage.createBook(root, '未超限替换书');
+  const smallMeta = await storage.readBookMeta(smallBook.path);
+  await storage.saveChapterText(smallBook.path, smallMeta.chapters[0].file, '阿明来了。阿明走了。');
+  const small = await storage.searchBook(smallBook.path, { query: '阿明' });
+  assert.equal(small.totalMatches, 2);
+  assert.equal(small.truncated, false);
+  const smallReplace = await storage.replaceInBook(smallBook.path, { query: '阿明', replacement: '小明' });
+  assert.equal(smallReplace.occurrences, 2);
+  assert.equal(smallReplace.truncated, false);
+  assert.equal(smallReplace.chaptersTruncated, 0);
 });
 
 test('替换备份：列出最近一次整本替换的备份（最近在前）', async () => {
