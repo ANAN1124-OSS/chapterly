@@ -321,7 +321,13 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   ③ 三处 create 装配各多一行 `imeGuard,`（书籍信息 / 命令面板 / 查找）。
   //   判据本身（isComposing || keyCode 229）在 renderer/ime-guard.js，单测见 tests/ime-guard.test.js；
   //   留在这里的只是各监听器的上下文接线（要赶在 preventDefault 之前），搬走反而更绕。
-  const RENDERER_LINE_BUDGET = 6151;
+  // 1.8.0 WP-13（C11 / C12）：6151 → 6163（+12）：① 通用询问框改成单实例排队，状态机在
+  //   renderer/modal-queue.js（Node 单测覆盖），renderer.js 只留两块搬不走的接线：
+  //   模块级 `const modalQueueModule = window.CWModalQueue;`（2 行说明 + 1 行声明）+
+  //   openModal 的 DOM 装配从「自己 new Promise 并覆盖 state.modal」改成
+  //   modalQueueModule.create({ show, hide })（净 +8 行，其中 5 行说明；openModal / closeModal 收成转发）；
+  //   ② 查找模块的 host 多一行 `longOpLogic,`（整本替换回执按 C2 判定，见 renderer/find-ui.js）。
+  const RENDERER_LINE_BUDGET = 6163;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

@@ -91,6 +91,8 @@ function makeHost(options = {}) {
     toast: (message, kind) => { calls.toast.push([message, kind]); },
     openModal: async (payload) => {
       calls.modal.push(payload);
+      // WP-13（C11）：询问框会排队，回执可能在「已经换了书 / 章」之后才回来——用钩子模拟这时刻
+      if (options.onModal) options.onModal(state);
       return { action: options.modalAction || 'keep' };
     },
     loadChapterAt: async (index) => {
@@ -418,6 +420,33 @@ test('外部修改检测：变了 + 没未保存修改 → 询问框逐字；保
   statusbarUi.create(reloaded.host).setupExternalChangeWatch();
   await reload.focus[0]();
   assert.deepEqual(reloaded.calls.load, [0]);
+});
+
+test('外部修改检测（WP-13 / C11）：询问框排队期间换了书 / 章 → 回执不重载另一章', async () => {
+  // 换了书：回执只属于发起时那本
+  const switchedBook = installWindow();
+  const book = makeHost({
+    loadedMtimeMs: 111,
+    mtimeMs: 222,
+    modalAction: 'reload',
+    onModal: (state) => { state.bookPath = 'C:/tmp/books/另一本'; }
+  });
+  statusbarUi.create(book.host).setupExternalChangeWatch();
+  await switchedBook.focus[0]();
+  assert.equal(book.calls.modal.length, 1);
+  assert.deepEqual(book.calls.load, [], '换了书：不许把另一本当成本书重载');
+
+  // 换了章：旧回执不许重载新章
+  const switchedChapter = installWindow();
+  const chapter = makeHost({
+    loadedMtimeMs: 111,
+    mtimeMs: 222,
+    modalAction: 'reload',
+    onModal: (state) => { state.index = 1; }
+  });
+  statusbarUi.create(chapter.host).setupExternalChangeWatch();
+  await switchedChapter.focus[0]();
+  assert.deepEqual(chapter.calls.load, [], '换了章：只重载发起时那一章');
 });
 
 test('外部修改检测：stat 抛错（文件可能被删）→ 静默吞掉；章节不在 → 不查', async () => {

@@ -12,10 +12,11 @@
  * 事件绑定随域搬进 setupFindUi()（打开面板 / 上一处下一处 / 状态栏小标签 / 词与选项变化 / 替换两个按钮 / 关闭 /
  * 输入框回车三处）。查找书签的按钮绑定不在本域（等补刀 9b）。
  *
- * 契约：createFindUi(host) 由渲染层调用一次。host 9 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createFindUi(host) 由渲染层调用一次。host 10 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（state.find）/ IPC 白名单 / IPC 包装 / 提示
  *     imeGuard,                            // 输入法组字守卫（ime-guard.js）：查找 / 替换两条 Enter 提交键的判据
+ *     longOpLogic,                         // 长操作收尾判定（long-op-logic.js，WP-02/C2）：整本替换回执到达时书换没换
  *     find: {                               // 查找纯逻辑与编辑区
  *       findLogic,                          //   renderer/find-logic.js：计数 / 步进 / 高亮窗口 / 行号
  *       editorEl,                           //   编辑区（查找只读它；当前章替换只改它，未保存）
@@ -53,14 +54,14 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'find', 'nav', 'collab'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'longOpLogic', 'find', 'nav', 'collab'];
 
   function createFindUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createFindUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createFindUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, imeGuard, find, nav, collab } = host;
+    const { $, state, api, call, toast, imeGuard, longOpLogic, find, nav, collab } = host;
     if (typeof find !== 'object') throw new TypeError('createFindUi 的 host.find 必须是对象');
     for (const key of ['findLogic', 'editorEl', 'syncEditorOverlay', 'scrollCaretIntoView', 'onEditorInput']) {
       if (find[key] === undefined || find[key] === null) throw new TypeError('createFindUi 的 host.find 缺少 ' + key);
@@ -506,7 +507,24 @@
     onEditorInput();
   }
 
+  // WP-13（审计 C12）：整本替换防重入。连按替换 Enter / 连点按钮以前会并发跑两遍（替换串含查询串
+  // 时二次替换），第二份备份已是替换后状态，10 秒撤销只能回退一遍。busy 期间直接忽略。
+  let replaceAllBusy = false;
+
   async function runReplaceAll() {
+    if (replaceAllBusy) return;
+    replaceAllBusy = true;
+    try {
+      await runReplaceAllSteps();
+    } finally {
+      replaceAllBusy = false;
+    }
+  }
+
+  async function runReplaceAllSteps() {
+    // WP-13（C2 口径）：整本替换会写盘并从磁盘重载正文，发起时先捕获书；每个 await 回来核对
+    // 「还是不是这本书」，期间换了书就不刷新另一本的界面；期间又敲了字则保留编辑区（正文优先）。
+    const bookPath = state.bookPath;
     const options = readFindOptions();
     if (!options.query.trim()) {
       $('find-summary').textContent = '先在查找框里输入内容';
@@ -551,10 +569,15 @@
       } else if (action === 'discard') {
         await loadChapterAt(state.index); // 用磁盘上的旧内容继续
       }
+      // 询问 / 保存在途期间可能已经换了书：这份回执属于原来那本，不能拿它继续替换现在这本。
+      if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) {
+        toast('已经换了书，取消整本替换', 'warn');
+        return;
+      }
     }
 
     try {
-      const preview = await call(api.searchBook, state.bookPath, {
+      const preview = await call(api.searchBook, bookPath, {
         query: options.query,
         caseSensitive: options.caseSensitive
       });
@@ -562,22 +585,23 @@
         $('find-summary').textContent = `整本没有找到「${options.query}」，未做替换`;
         return;
       }
+      // 预览在途期间换了书：搜到的是原来那本，不能拿它去替换现在这本。
+      if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) {
+        toast('已经换了书，取消整本替换', 'warn');
+        return;
+      }
       // 1.4.0 P0-2（撤销优先于确认）：整本替换不再弹二次确认 —— 直接替换（写前由主进程把原章节
       // 备份到 _trash/替换备份-*），10 秒内可撤销（撤销 = 用这份替换备份还原）。
       // 未保存拦截仍在前一步：整本替换会直接写盘。
-      const bookPath = state.bookPath;
       closeFindPanel();
-      const result = await call(api.replaceBook, state.bookPath, {
+      const result = await call(api.replaceBook, bookPath, {
         query: options.query,
         replacement: options.replacement,
         caseSensitive: options.caseSensitive
       });
-      await loadChapterAt(state.index);
-      renderChapterList();
-      refreshShelf(); // 字数变了，书架统计后台刷新即可
-      const backupName = result.backupDir ? String(result.backupDir).split(/[\\/]/).pop() : '';
       // C4（v1.8.0 WP-05）：有章被单章上限截断时，回执 / 撤销条都要写清「只替换了前 N 处」，
       // 不能报成整本替换完成。
+      const backupName = result.backupDir ? String(result.backupDir).split(/[\\/]/).pop() : '';
       const capLimit = Math.max(0, Math.floor(Number(result.matchLimit) || 0));
       const truncatedNote = !result.truncated
         ? ''
@@ -595,19 +619,37 @@
           }
         );
       }
-      toast(
-        (result.truncated
-          ? `整本替换：${result.chaptersChanged} 章 / ${result.occurrences} 处${truncatedNote}`
-          : `整本替换完成：${result.chaptersChanged} 章 / ${result.occurrences} 处`) +
-          `${
-            result.backupDir ? ' · 原文已备份到 _trash（10 秒内可撤销）' : ''
-          }${
-            result.skippedTooLarge ? `；有 ${result.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''
-          }`
-      );
+      const doneText = result.truncated
+        ? `整本替换：${result.chaptersChanged} 章 / ${result.occurrences} 处${truncatedNote}`
+        : `整本替换完成：${result.chaptersChanged} 章 / ${result.occurrences} 处`;
+      const backupText = result.backupDir ? ' · 原文已备份到 _trash（10 秒内可撤销）' : '';
+      const skippedText = result.skippedTooLarge
+        ? `；有 ${result.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）`
+        : '';
+      // WP-13（C2）：回执到达时再判一次——期间换了书 → 不刷新另一本的界面；期间又敲了字 →
+      // 正文优先，不从磁盘重载（否则作者刚写的字被覆盖），只刷目录与书架统计。
+      const decision = longOpLogic.decideAfterLongOp({
+        expectedBookPath: bookPath,
+        currentBookPath: state.bookPath,
+        dirty: state.dirty
+      });
+      if (decision === 'book-changed') {
+        toast(`原书${doneText}${backupText}${skippedText}；当前已打开另一本书，界面没有刷新`);
+        return;
+      }
+      if (decision === 'keep-edits') {
+        renderChapterList();
+        refreshShelf(); // 字数变了，书架统计后台刷新即可
+        toast(`${doneText}${backupText}${skippedText}；当前章有未保存修改，没有从磁盘重新载入`);
+        return;
+      }
+      await loadChapterAt(state.index);
+      renderChapterList();
+      refreshShelf(); // 字数变了，书架统计后台刷新即可
+      toast(`${doneText}${backupText}${skippedText}`);
     } catch (err) {
       toast(`整本替换失败：${err.message}`, 'error');
-      await reloadAfterPartialFailure(); // 可能已经替换了好几章，别让编辑区停在旧正文上
+      await reloadAfterPartialFailure(bookPath); // 可能已经替换了好几章，别让编辑区停在旧正文上
     }
   }
 

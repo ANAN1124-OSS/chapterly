@@ -59,6 +59,9 @@
   // 输入法组字守卫（v1.8.0 WP-04 / 审计 C3、C8、V112）：isComposing 之外再认 keyCode 229（防御性
   // 加固），纯函数在 ime-guard.js 里、Node 单测覆盖；这里只把判定铺到本文件的各个提交键。
   const imeGuard = window.CWImeGuard;
+  // 通用询问框的排队与防重入（v1.8.0 WP-13 / 审计 C11）：同一时刻只画一个框、后来者排队，
+  // 并发调用者的 Promise 绝不悬空；状态机在 modal-queue.js 里、Node 单测覆盖，这里只负责画与收。
+  const modalQueueModule = window.CWModalQueue;
   // 自定义字体的 base64 解码（代码审计 F11）：font-logic.js 里、Node 单测覆盖；
   // 优先浏览器原生 data: URL 解码，失败才回退 atob 循环。
   const fontLogic = window.CWFontLogic;
@@ -589,18 +592,21 @@
   }
 
   // ---------- 通用模态 ----------
-  function openModal({ title, message, input, buttons, cancelValue = null }) {
-    return new Promise((resolve) => {
-      state.modal = { resolve, opts: { title, message, input, buttons, cancelValue } };
-      $('modal-title').textContent = title || '';
+  // WP-13（审计 C11）：询问框单实例 + 排队（modal-queue.js）。以前这里直接覆盖 state.modal，
+  // 外部修改检测在 await statChapter 期间撞上未保存询问时，旧 Promise 永不 resolve、流程挂死。
+  // state.modal 仍是「当前这一框」的视图（Esc 链 / 关窗拦截 / 测试钩子只读它），排队由 modalQueue 管。
+  const modalQueue = modalQueueModule.create({
+    show(opts, close) {
+      state.modal = { resolve: close, opts };
+      $('modal-title').textContent = opts.title || '';
       const messageEl = $('modal-message');
-      messageEl.textContent = message || '';
-      messageEl.classList.toggle('hidden', !message);
+      messageEl.textContent = opts.message || '';
+      messageEl.classList.toggle('hidden', !opts.message);
       const inputEl = $('modal-input');
-      if (input) {
+      if (opts.input) {
         inputEl.classList.remove('hidden');
-        inputEl.value = input.value == null ? '' : input.value;
-        inputEl.placeholder = input.placeholder || '';
+        inputEl.value = opts.input.value == null ? '' : opts.input.value;
+        inputEl.placeholder = opts.input.placeholder || '';
         setTimeout(() => {
           inputEl.focus();
           inputEl.select();
@@ -611,32 +617,37 @@
       }
       const box = $('modal-buttons');
       box.innerHTML = '';
-      (buttons || []).forEach((button) => {
+      (opts.buttons || []).forEach((button) => {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = `btn ${button.kind || 'ghost'}`;
         btn.textContent = button.label;
         btn.dataset.value = String(button.value);
         btn.addEventListener('click', () => {
-          const value = input ? inputEl.value : undefined;
-          closeModal({ action: button.value, value });
+          const value = opts.input ? inputEl.value : undefined;
+          close({ action: button.value, value });
         });
         box.appendChild(btn);
       });
       $('modal-backdrop').classList.remove('hidden');
-      if (!input) {
+      if (!opts.input) {
         const primary = box.querySelector('.btn.primary') || box.firstElementChild;
         if (primary) primary.focus();
       }
-    });
+    },
+    hide() {
+      state.modal = null;
+      $('modal-backdrop').classList.add('hidden');
+      $('modal-input').classList.add('hidden');
+    }
+  });
+
+  function openModal({ title, message, input, buttons, cancelValue = null }) {
+    return modalQueue.open({ title, message, input, buttons, cancelValue });
   }
 
   function closeModal(result) {
-    const current = state.modal;
-    state.modal = null;
-    $('modal-backdrop').classList.add('hidden');
-    $('modal-input').classList.add('hidden');
-    if (current) current.resolve(result || { action: null });
+    modalQueue.close(result);
   }
 
   // 供自动化测试用：按 value 点掉当前弹窗
@@ -2584,6 +2595,7 @@
   // 第 4 步九刀·补刀 9a：实现在 renderer/find-ui.js（模块头有契约），这里只装配与接线；
   const findUi = findUiModule.create({
     $, state, api, call, toast,
+    longOpLogic,
     imeGuard,
     find: { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput },
     nav: { chapterTitle, switchChapter: (index) => switchChapter(index), loadChapterAt, currentChapterLabel: () => currentChapterLabel(), hideHeaderMenus },
