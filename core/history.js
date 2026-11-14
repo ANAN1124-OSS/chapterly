@@ -125,8 +125,11 @@ function parseDeletedName(raw) {
   const match = /^(\d{4}-\d{2}-\d{2}-\d{6})-(.+)$/.exec(name);
   if (!match) return null;
   let rest = match[2];
-  const ordinal = /^([1-9]\d*)-(.+)$/.exec(rest);
-  if (ordinal && /^\d{3}-.*\.txt$/i.test(ordinal[2])) rest = ordinal[2];
+  // C34（v1.8.0 WP-26）：撞名序号只可能是 1–3 位（moveToTrash 从 2 开始试，同秒撞上千次不现实）；
+  // 4 位及以上的数字串是章号序号本身（pad3 之后 1000+ 的章号）。旧正则 `[1-9]\d*` 会把
+  // `1000-2024-回顾.txt` 的章号当序号剥掉，历史列表里显示成 `2024-回顾.txt`。
+  const ordinal = /^([1-9]\d{0,2})-(.+)$/.exec(rest);
+  if (ordinal && /^\d{3,}-.*\.txt$/i.test(ordinal[2])) rest = ordinal[2];
   if (!/\.txt$/i.test(rest)) return null;
   return { stamp: match[1], originalName: rest };
 }

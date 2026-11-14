@@ -82,7 +82,29 @@ const OPTION_LIMITS = Object.freeze({
   maxIssues: [20, 5000]
 });
 
-const HAN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+// C42（v1.8.0 WP-26）：汉字范围必须覆盖 CJK 扩展 B–G 与兼容补充（U+20000 起，如「𠮷」）。
+// 这些字是代理对，正则带 u 标志按码点匹配；逐字扫描的规则也要按码点取整字（见 repeatWordIssues /
+// 中英间距 / 破折号）。范围串与 core/format.js 同一串（跨模块收编在 WP-31）。
+const HAN_RANGES =
+  '\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff' +
+  '\\u{20000}-\\u{2a6df}\\u{2a700}-\\u{2b73f}\\u{2b740}-\\u{2b81f}' +
+  '\\u{2b820}-\\u{2ceaf}\\u{2ceb0}-\\u{2ebef}\\u{2f800}-\\u{2fa1f}\\u{30000}-\\u{3134f}';
+const HAN_RE = new RegExp(`[${HAN_RANGES}]`, 'u');
+
+// 按 UTF-16 下标取一个完整字符（代理对算一个）；越界返回空串。
+function charAt(text, index) {
+  if (index < 0 || index >= text.length) return '';
+  const code = text.codePointAt(index);
+  return code > 0xffff ? text.slice(index, index + 2) : text[index];
+}
+
+// 取下标 index 之前的最后一个完整字符（代理对算一个）。
+function charBefore(text, index) {
+  if (index <= 0) return '';
+  const low = text.charCodeAt(index - 1);
+  if (low >= 0xdc00 && low <= 0xdfff && index >= 2) return text.slice(index - 2, index);
+  return text.slice(index - 1, index);
+}
 // 连续标点判定里认的全角标点（半角标点由第 ① 条单独报，避免一条内容报两次）
 const RUN_PUNCT = new Set(['，', '。', '；', '：', '！', '？', '、', '…', '—']);
 const SNIPPET_RADIUS = 18;
@@ -177,12 +199,21 @@ function toHalfWidthDigits(text) {
 // 不会因为重叠命中被误判成 3 次），再找最早一个能装下 repeatCount 次的窗口。
 function repeatWordIssues(line, options) {
   const positions = new Map();
-  for (let i = 0; i + 1 < line.length; i += 1) {
-    if (!HAN_RE.test(line[i]) || !HAN_RE.test(line[i + 1])) continue;
-    const word = line.slice(i, i + 2);
+  // C42：按码点切字（扩展 B 汉字是代理对，逐 UTF-16 单元看会把它拆成两个「非汉字」）。
+  // 位置仍记 UTF-16 下标（source / 片段 / 高亮都用这一套坐标）。
+  const chars = [];
+  for (let i = 0; i < line.length; ) {
+    const ch = charAt(line, i);
+    chars.push({ ch, start: i });
+    i += ch.length;
+  }
+  for (let k = 0; k + 1 < chars.length; k += 1) {
+    if (!isHanChar(chars[k].ch) || !isHanChar(chars[k + 1].ch)) continue;
+    const word = chars[k].ch + chars[k + 1].ch;
+    const start = chars[k].start;
     const list = positions.get(word);
-    if (list) list.push(i);
-    else positions.set(word, [i]);
+    if (list) list.push(start);
+    else positions.set(word, [start]);
   }
   const found = [];
   for (const [word, raw] of positions) {
@@ -191,13 +222,13 @@ function repeatWordIssues(line, options) {
     for (const pos of raw) {
       if (pos < lastEnd) continue;
       occ.push(pos);
-      lastEnd = pos + 2;
+      lastEnd = pos + word.length;
     }
     if (occ.length < options.repeatCount) continue;
     let windowStart = -1;
     for (let j = options.repeatCount - 1; j < occ.length; j += 1) {
       const start = occ[j - options.repeatCount + 1];
-      if (occ[j] + 2 - start <= options.repeatWindow) {
+      if (occ[j] + word.length - start <= options.repeatWindow) {
         windowStart = start;
         break;
       }
@@ -371,15 +402,20 @@ function proofreadText(text, rawOptions, rawGlossary) {
   // 中文以标点结尾（「OK。」「他说，iPhone」）不算缺空格——中文标点旁边本来就不加空格，
   // 只把「汉字 ↔ 拉丁字母/数字」这一种边界算进来，免得把正常排版判成问题。
   if (rules['cjk-latin-spacing']) {
-    for (let i = 0; i + 1 < source.length; i += 1) {
-      const left = source[i];
-      const right = source[i + 1];
+    for (let i = 0; i < source.length; i += 1) {
+      // C42：左右都按码点取整字（扩展 B 汉字 + 拉丁字母的边界也算）。
+      const left = charAt(source, i);
+      const nextIndex = i + left.length;
+      if (nextIndex >= source.length) break;
+      const right = charAt(source, nextIndex);
       const other = isHanChar(left) ? right : isHanChar(right) ? left : '';
-      if (!other || !LATIN_CHAR_RE.test(other)) continue;
-      const match = left + right;
-      addIssue('cjk-latin-spacing', i, 2, match, `「${match}」之间建议加一个空格`, {
-        suggestion: `${left} ${right}`
-      });
+      if (other && LATIN_CHAR_RE.test(other)) {
+        const match = left + right;
+        addIssue('cjk-latin-spacing', i, match.length, match, `「${match}」之间建议加一个空格`, {
+          suggestion: `${left} ${right}`
+        });
+      }
+      if (left.length > 1) i += 1; // 跳过低代理，别把后半字再当左字
     }
   }
 
@@ -416,8 +452,9 @@ function proofreadText(text, rawOptions, rawGlossary) {
       let j = i + 1;
       while (j < source.length && source[j] === ch) j += 1;
       const count = j - i;
-      const prev = i > 0 ? source[i - 1] : '';
-      const next = j < source.length ? source[j] : '';
+      // C42：前后邻居也按码点取（紧挨扩展 B 汉字的破折号同样算中文语境）。
+      const prev = charBefore(source, i);
+      const next = charAt(source, j);
       const bad = ch === '-' ? count >= 2 : count !== 2;
       if (bad && (isCjkNeighbor(prev) || isCjkNeighbor(next))) {
         const run = source.slice(i, j);

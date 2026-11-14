@@ -194,10 +194,18 @@ test('静态闸门：main.js 的切章走防抖，读书目前与退出前都 fl
   // 盖掉另一本书更晚的保存（多窗口 E2E 55c 抓到过）。
   assert.ok(setLastBody.includes('at: Date.now()'), 'book:set-last 要把切章时间一起排进队列');
   assert.match(source, /const at = Number\.isFinite\(Number\(info\.at\)\)/, 'rememberRecentBook 要用调用方给的切章时间');
+  // C28（v1.8.0 WP-26）：读旧值 / 比较 / 写盘都在 configStore 的写队列里（main 不再自己 get 之后 set）。
+  const configSrc = fs.readFileSync(path.join(__dirname, '..', 'core', 'config.js'), 'utf8').replace(/\r\n/g, '\n');
   assert.match(
     source,
-    /Number\(prev\.at\) > payload\.at\) return false;/,
-    '迟到的切章记录不许盖掉更晚的「上次写作」位置'
+    /configStore\.rememberLastBook\(payload, \{ auto: true, now \}\)/,
+    '最近书交给 configStore 的写队列（比较与写盘不可分离）'
+  );
+  assert.match(configSrc, /Number\(prev\.at\) > next\.at\)/, '迟到的切章记录守卫在 configStore 里');
+  assert.match(
+    configSrc,
+    /function rememberLastBook\([\s\S]{0,600}?return enqueue\(/,
+    '最近书的比较与写盘必须在同一个写队列任务里'
   );
   // 「继续上次写作」写 config.json（小文件）在切章当下就做；防抖队列只负责书目.json 的大写入。
   // 否则一次迟到的 config 写盘会干扰别处「配置一个字节没写」之类的只读比对（E2E 第 50 组抓到过）。

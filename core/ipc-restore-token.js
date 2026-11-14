@@ -26,6 +26,7 @@
  */
 
 const crypto = require('node:crypto');
+const pathUtils = require('./path-utils');
 
 // 与作业卡 P0-5 一致：10 分钟过期，长于撤销条的 10 秒 TTL。
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
@@ -152,7 +153,12 @@ function createStore(options = {}) {
       return { ok: false, reason: 'expired' };
     }
     const bookPath = typeof expected.bookPath === 'string' ? expected.bookPath : '';
-    if (record.bookPath !== bookPath) return { ok: false, reason: 'book-mismatch' };
+    // C27（v1.8.0 WP-26）：判「同一本书」走 core/path-utils 的 pathKey（resolve + 小写 +
+    // Windows 正反斜杠归一），与 config-gate / open-books 同一口径；字面严格比较在大小写 /
+    // 斜杠写法不同的同一路径上会误拒。两端现在都经 assertBookPath 归一，这里是防口径漂移的兜底。
+    if (!bookPath || pathUtils.pathKey(record.bookPath) !== pathUtils.pathKey(bookPath)) {
+      return { ok: false, reason: 'book-mismatch' };
+    }
     const trashName = typeof expected.trashName === 'string' ? expected.trashName : '';
     if (record.trashName !== trashName) return { ok: false, reason: 'trash-mismatch' };
     entries.delete(raw);

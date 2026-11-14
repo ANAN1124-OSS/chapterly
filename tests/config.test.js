@@ -94,6 +94,50 @@ test('windowBounds 带 maximized：清洗放行布尔、缺省 false、真文件
   );
 });
 
+// V103（v1.8.0 WP-26）：窗口几何记忆两处修正：
+//   1) 配置不再把宽 / 高夹到 4000 / 3000（5K 超宽屏的正常窗口会被截小，重启后永远小一圈）；
+//      离谱坏值仍有界兜底，真正的显示范围由 main.js 恢复时按 screen.workArea 夹；
+//   2) main.js 保存时用 getNormalBounds()（最大化时 getBounds() 返回最大化矩形），
+//      否则取消最大化后窗口停在普通态大小而不是最大化前尺寸。
+// Windows 真机三步（最大化退出 → 重启 → 取消最大化）由作者在发版前手动确认，
+// 这里只钉住静态口径与配置上限。
+test('V103/WP-26：窗口尺寸上限放宽、main.js 存普通态几何并按工作区夹取', async () => {
+  const wide = sanitize({ windowBounds: { x: 0, y: 0, width: 5120, height: 1440 } });
+  assert.equal(wide.windowBounds.width, 5120, '5K 宽屏的正常窗口不许被夹到 4000');
+  assert.equal(wide.windowBounds.height, 1440);
+  const ultrawide = sanitize({ windowBounds: { width: 7680, height: 2160 } });
+  assert.equal(ultrawide.windowBounds.width, 7680);
+  // 离谱坏值仍有界（不改成无上限）
+  const absurd = sanitize({ windowBounds: { width: 1e9, height: 1e9 } });
+  assert.ok(absurd.windowBounds.width <= 20000 && absurd.windowBounds.width >= 960, '离谱宽度要有界');
+  assert.ok(absurd.windowBounds.height <= 20000 && absurd.windowBounds.height >= 620, '离谱高度要有界');
+  // 最小值语义不变
+  assert.equal(sanitize({ windowBounds: { width: 100, height: 100 } }).windowBounds.width, 960);
+  assert.equal(sanitize({ windowBounds: { width: 100, height: 100 } }).windowBounds.height, 620);
+
+  const main = (await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8')).replace(/\r\n/g, '\n');
+  assert.match(
+    main,
+    /const normal = session\.win\.getNormalBounds\(\);/,
+    '保存窗口位置要用 getNormalBounds（最大化时 getBounds 是最大化矩形）'
+  );
+  assert.match(
+    main,
+    /windowBounds: \{ \.\.\.normal, maximized: session\.win\.isMaximized\(\) \}/,
+    '存的是普通态几何 + maximized 标志'
+  );
+  assert.equal(
+    /windowBounds: \{ \.\.\.session\.win\.getBounds\(\)/.test(main),
+    false,
+    '不许再用 getBounds() 存窗口几何（V103 回潮）'
+  );
+  assert.match(
+    main,
+    /bounds = clampBounds\(cfg\.windowBounds\);/,
+    '恢复窗口位置时仍要按 screen.workArea 夹取（clampBounds）'
+  );
+});
+
 test('显示排版配置：默认值 + 持久化', async () => {
   const dir = await mkTmp();
   const store = createConfigStore(dir);
@@ -597,6 +641,77 @@ test('继续上次写作：lastBook 写盘 / 读回 / 清空，且不动其它�
   await store.set({ lastBook: recent });
   await store.set({ lastBook: null });
   assert.equal((await createConfigStore(dir).get()).lastBook, null);
+});
+
+// C28（v1.8.0 WP-26）：最近书的「读旧值 → 去重 / at 守卫 → 写盘」必须全在 configStore 的写队列里。
+// 旧实现由 main.js 在 set 前单独 get：两个窗口并发时都基于同一份旧值通过守卫，迟到的旧记录会盖掉新记录。
+test('C28/WP-26：最近书比较进写队列——并发两条记录里，迟到的旧记录不会盖掉更晚的记录', async () => {
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+  const base = {
+    path: 'D:\\书架\\书A',
+    title: '书A',
+    chapterIndex: 1,
+    chapterName: '第二章',
+    at: 2_000_000
+  };
+  const newer = { ...base, chapterId: 'ch_2' };
+  const older = { ...base, chapterId: 'ch_1', chapterIndex: 0, chapterName: '第一章', at: 1_000_000 };
+
+  // 同时发起：先发更晚的记录，再发更早的（旧记录若在队列外比较，会基于旧值通过 at 守卫并覆盖）
+  const [first, second] = await Promise.all([
+    store.rememberLastBook(newer, { now: 2_000_000 }),
+    store.rememberLastBook(older, { now: 2_000_000 })
+  ]);
+  assert.equal(first.written, true);
+  assert.equal(second.written, false);
+  assert.equal(second.reason, 'stale');
+  assert.equal((await store.get()).lastBook.chapterId, 'ch_2', '最终留下的是更晚的记录');
+  // 落盘也是更晚那条
+  const raw = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(raw.lastBook.chapterId, 'ch_2');
+
+  // 5 秒去重：同一本书同一章不重复写盘；过了窗口照常更新；换章立即更新
+  const dup = await store.rememberLastBook(newer, { now: 2_001_000 });
+  assert.equal(dup.written, false);
+  assert.equal(dup.reason, 'duplicate');
+  const later = await store.rememberLastBook(newer, { now: 2_006_000 });
+  assert.equal(later.written, true);
+  const changed = await store.rememberLastBook({ ...newer, chapterId: 'ch_3', chapterIndex: 2 }, { now: 2_006_100 });
+  assert.equal(changed.written, true);
+  assert.equal((await store.get()).lastBook.chapterId, 'ch_3');
+
+  // 坏形状（没有 path / chapterId）按「不是一次记录」处理，不写盘也不抛
+  assert.equal((await store.rememberLastBook({ path: '', chapterId: 'ch_1' }, { now: 2_007_000 })).written, false);
+  assert.equal((await store.rememberLastBook({ path: 'D:\\书架\\书A' }, { now: 2_007_000 })).reason, 'invalid');
+  assert.equal((await store.get()).lastBook.chapterId, 'ch_3');
+});
+
+// C29（v1.8.0 WP-26）：bookDisplay 的键是书 id，`__proto__` 必须按自有可枚举属性存（不能改原型）。
+test('C29/WP-26：bookDisplay 的 __proto__ 键写成自有属性（不丢覆盖、不污染原型）', async () => {
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+
+  // 读侧：JSON.parse 出来的 `__proto__` 键是真自有属性，清洗后必须保留
+  const parsed = JSON.parse('{"bookDisplay":{"__proto__":{"editorFontSize":22}}}');
+  const cleaned = sanitize(parsed);
+  assert.deepEqual(Object.keys(cleaned.bookDisplay), ['__proto__']);
+  assert.equal(cleaned.bookDisplay['__proto__'].editorFontSize, 22);
+  assert.equal(Object.getPrototypeOf(cleaned.bookDisplay), Object.prototype, '不许改成原型');
+  assert.deepEqual(
+    Object.keys({ ...cleaned.bookDisplay }),
+    ['__proto__'],
+    'spread 之后条目还在（以前会静默丢）'
+  );
+
+  // 写侧：setBookDisplay('__proto__') / getBookDisplay / 落盘 / 清空
+  await store.setBookDisplay('__proto__', { editorFontSize: 22 });
+  assert.deepEqual(await store.getBookDisplay('__proto__'), { editorFontSize: 22 });
+  assert.equal(({}).editorFontSize, undefined, '全局原型没被污染');
+  const disk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(disk.bookDisplay['__proto__'].editorFontSize, 22, '落盘的是真条目');
+  assert.equal(await store.resetBookDisplay('__proto__'), true);
+  assert.deepEqual(await store.getBookDisplay('__proto__'), {});
 });
 
 test('配置损坏：归档坏文件、回默认值，并给出一次提示', async () => {
@@ -1524,7 +1639,11 @@ test('C7 / V110 接线静态闸门：自动写带 auto 标记、config:set 先�
     /configStore\.set\(\{ windowBounds:[\s\S]{0,200}?\}, \{ auto: true \}\)/,
     '窗口位置 / 大小是自动写，必须带 { auto: true }'
   );
-  assert.match(main, /configStore\.set\(\{ lastBook: payload \}, \{ auto: true \}\)/, '最近书是自动写');
+  assert.match(
+    main,
+    /configStore\.rememberLastBook\(payload, \{ auto: true, now \}\)/,
+    '最近书是自动写，且读旧值 / 比较 / 写盘都要在 configStore 的写队列里完成（C28）'
+  );
   assert.match(main, /configStore\.set\(\{ lastExportDir: dir \}, \{ auto: true \}\)/, '最近导出目录是自动写');
 
   const from = main.indexOf("handle('config:set'");

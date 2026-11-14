@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { formatText, sanitizeOptions, DEFAULT_OPTIONS, convertPunct } = require('../core/format');
+const { formatText, sanitizeOptions, DEFAULT_OPTIONS, convertPunct, removeCjkSpaces } = require('../core/format');
 
 const F = (text, options) => formatText(text, options).text;
 
@@ -237,6 +237,22 @@ test('校对用：回调不会改变清理规则（数字 / 网址 / 英文里�
   assert.equal(count, 0);
   assert.equal(res.count, 0);
   assert.equal(res.text, line);
+});
+
+// C42（v1.8.0 WP-26）：汉字范围必须含 CJK 扩展 B（U+20000+，如「𠮷」）。这些字在 JS 里是
+// 代理对：旧正则只认 BMP，生僻字人名旁边的半角标点不转、中文之间空格也不删。
+test('C42/WP-26：扩展 B 汉字（代理对）参与标点 / 空格判定，BMP 行为不变', () => {
+  const JI = '\u{20BB7}';
+  assert.equal(convertPunct(`${JI},`).text, `${JI}，`);
+  assert.equal(convertPunct(`A,${JI}`).text, `A，${JI}`);
+  assert.equal(convertPunct(`${JI}.`).text, `${JI}。`);
+  assert.equal(convertPunct(`${JI} `).count, 0, '扩展 B 汉字后面没有标点，不转换');
+  // BMP 原有口径逐字不变：英文 / 数字旁边的半角标点不转
+  assert.equal(convertPunct('A, B').text, 'A, B');
+  assert.equal(convertPunct('中文,English').text, '中文，English');
+  // 删中文之间空格：扩展 B 也算中文；右边不是汉字不删
+  assert.equal(removeCjkSpaces(`${JI} ${JI}`).text, `${JI}${JI}`);
+  assert.equal(removeCjkSpaces(`${JI}  A`).text, `${JI}  A`);
 });
 
 // 1.6.0 A5 / P-07：convertPunct 原来是逐字 `out += ch` 造串（长段落里是 O(n²) 的中间字符串），

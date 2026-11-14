@@ -4,15 +4,24 @@
  * 同时被 Node（main.js / core/*、单测）和渲染层（index.html 里 <script>）使用，
  * 所以写成 UMD：Node 里 require 得到对象，浏览器里挂到 window.CWChapters。
  * 渲染层只通过 formatTitle() 取章节显示名，不再自己拼「第N章：」（v0.8.6 R3，代码审计 F6）。
+ *
+ * C33（v1.8.0 WP-26）：文件名 / 章名截断走 core/common.js 的 truncateSafe（不切开代理对）。
+ * 浏览器分支从 window.CWCommon 取（index.html 里 common.js 排在 chapters.js 之前），
+ * 缺了直接报错，不许退回一份本地 slice 副本。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./common'));
   } else if (root) {
-    root.CWChapters = factory();
+    root.CWChapters = factory(root.CWCommon);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (common) {
   'use strict';
+
+  if (!common || typeof common.truncateSafe !== 'function') {
+    throw new Error('CWChapters：core/common.js 没有先加载');
+  }
+  const { truncateSafe } = common;
 
   const TITLE_TEMPLATE = '第{num}章：{name}';
   const MAX_NAME_LENGTH = 40;
@@ -215,7 +224,9 @@
     let s = String(raw == null ? '' : raw).trim();
     s = s.replace(ILLEGAL_CHARS, '').replace(EDGE_DOTS_SPACES, '');
     if (!s) s = '未命名';
-    if (s.length > MAX_NAME_LENGTH) s = s.slice(0, MAX_NAME_LENGTH).replace(EDGE_DOTS_SPACES, '');
+    // C33（v1.8.0 WP-26）：按 40 字截断时不许切开代理对（孤立代理进 EPUB/DOCX 是 XML 1.0
+    // 非法字符，严格解析器会整份拒绝）；truncateSafe 是唯一实现（WP-25 之后的共享口径）。
+    if (s.length > MAX_NAME_LENGTH) s = truncateSafe(s, MAX_NAME_LENGTH).replace(EDGE_DOTS_SPACES, '');
     return escapeReservedStem(s) || '未命名';
   }
 
@@ -240,20 +251,29 @@
   function suffixedName(base, i) {
     const suffix = `-${i}`;
     const room = Math.max(0, MAX_NAME_LENGTH - suffix.length);
-    const head = base.slice(0, room).replace(EDGE_DOTS_SPACES, '');
+    // C33（v1.8.0 WP-26）：截断同样不许切开代理对（见 safeName）。
+    const head = truncateSafe(base, room).replace(EDGE_DOTS_SPACES, '');
     return `${head || '未命名'}${suffix}`;
   }
 
   // 撞名重试到 MAX_NAME_SUFFIX 仍占用 → 抛 BAD_PATH（与 storage / ipc-paths 的路径类错误同一套
   // 错误码口径；中文文案由 core/error-text.js 统一脱敏后给界面）。绝不无限重试。
   function uniqueFileName(seq, name, existingFiles = []) {
-    const used = new Set(existingFiles);
+    // C31（v1.8.0 WP-26）：Windows 文件名不分大小写 —— `001-ABC.txt` 与 `001-abc.txt` 是同一个
+    // 文件。旧实现用大小写敏感的 Set 判重：fileSeq 复用（坏值回退 chapters.length）叠上新章名
+    // 只差大小写时，rename 会直接覆盖既有章节。统一按小写键判重（Windows 是主平台；其余平台
+    // 多判一次撞名只会多加一个后缀，不会丢文件）。
+    const used = new Set(
+      (Array.isArray(existingFiles) ? existingFiles : []).map((file) =>
+        String(file == null ? '' : file).toLowerCase()
+      )
+    );
     const first = buildFileName(seq, name);
-    if (!used.has(first)) return first;
+    if (!used.has(first.toLowerCase())) return first;
     const base = safeName(name);
     for (let i = 2; i <= MAX_NAME_SUFFIX; i += 1) {
       const candidate = buildFileName(seq, suffixedName(base, i));
-      if (!used.has(candidate)) return candidate;
+      if (!used.has(candidate.toLowerCase())) return candidate;
     }
     throw new ChapterFileNameError(
       `同名章节文件太多（已试到第 ${MAX_NAME_SUFFIX} 个后缀），请先把这一章的章名改短，或整理书里的文件`

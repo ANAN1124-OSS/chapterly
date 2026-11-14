@@ -126,9 +126,17 @@ test('formatTitle：自定义模板下原文已带号标题原样 / 特殊标题
 
 test('UMD：Node require 行为不变，浏览器加载挂到 window.CWChapters', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'core', 'chapters.js'), 'utf8');
+  const commonSource = fs.readFileSync(path.join(__dirname, '..', 'core', 'common.js'), 'utf8');
   const sandbox = {};
   vm.createContext(sandbox);
+  // C33（v1.8.0 WP-26）：chapters.js 在浏览器里从 window.CWCommon 取 truncateSafe，
+  // 与 index.html 的真实加载顺序一致（common.js 在前）。
+  vm.runInContext(commonSource, sandbox, { filename: 'core/common.js' });
   vm.runInContext(source, sandbox, { filename: 'core/chapters.js' });
+  // 缺 common.js 时必须加载期明确报错，不许退回一份本地 slice 副本
+  const bare = {};
+  vm.createContext(bare);
+  assert.throws(() => vm.runInContext(source, bare, { filename: 'core/chapters.js' }), /core\/common\.js 没有先加载/);
   const browserCh = sandbox.CWChapters;
   assert.equal(typeof browserCh, 'object');
   assert.equal(typeof browserCh.formatTitle, 'function');
@@ -195,6 +203,45 @@ test('文件名生成：补零三位、空白名用未命名、重名加后缀',
     ch.uniqueFileName(1, '满'.repeat(ch.MAX_NAME_LENGTH), []),
     `001-${'满'.repeat(ch.MAX_NAME_LENGTH)}.txt`
   );
+});
+
+// C31（v1.8.0 WP-26）：Windows 文件名不分大小写 —— 只差大小写的同名章必须拿到后缀，
+// 否则 fileSeq 复用 + rename 会直接覆盖既有章节文件。
+test('C31/WP-26：uniqueFileName 大小写不敏感判重（只差大小写也要加后缀）', () => {
+  assert.equal(ch.uniqueFileName(1, 'Chapter', ['001-chapter.txt']), '001-Chapter-2.txt');
+  assert.equal(ch.uniqueFileName(1, 'chapter', ['001-CHAPTER.txt']), '001-chapter-2.txt');
+  // 链路里混着大写 / 小写：继续顺延
+  assert.equal(
+    ch.uniqueFileName(1, 'Chapter', ['001-chapter.txt', '001-CHAPTER-2.txt']),
+    '001-Chapter-3.txt'
+  );
+  // 没撞名时原样返回、不改大小写
+  assert.equal(ch.uniqueFileName(1, 'Chapter', ['001-别的.txt']), '001-Chapter.txt');
+});
+
+// C33（v1.8.0 WP-26）：safeName / 撞名后缀的截断不许切开代理对（孤立代理进 EPUB/DOCX 是
+// XML 1.0 非法字符，严格解析器整份拒绝）。safeName 的截断来自 common.truncateSafe。
+test('C33/WP-26：safeName / 撞名后缀截断不切开代理对', () => {
+  const isWellFormed = (s) =>
+    !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s);
+  const emoji = '\u{1F600}';
+  const astralHan = '\u{20BB7}';
+  // 39 个 BMP + 1 个 emoji（2 个 UTF-16 单元）：40 落在代理对中间，必须退到 emoji 之前
+  const cut = ch.safeName('夜'.repeat(39) + emoji + '尾');
+  assert.equal(cut.length, 39);
+  assert.equal(isWellFormed(cut), true);
+  assert.equal(cut, '夜'.repeat(39));
+  // 全 emoji 名截到 40 个单元也不许留半截
+  const emojiCut = ch.safeName(emoji.repeat(30));
+  assert.equal(emojiCut.length, 40);
+  assert.equal(isWellFormed(emojiCut), true);
+  // 撞名后缀路径：base 再截到 38 个单元时同样不切开代理对
+  const long = '夜'.repeat(37) + emoji + '尾';
+  const suffixed = ch.uniqueFileName(1, long, [`001-${ch.safeName(long)}.txt`]);
+  assert.equal(isWellFormed(suffixed), true);
+  assert.ok(suffixed.endsWith('-2.txt'));
+  // 扩展 B 汉字本身是合法代理对，原样保留
+  assert.equal(ch.safeName(astralHan), astralHan);
 });
 
 // E-02（1.6.0 H2）：40 字满长章名撞名会死循环 —— 旧实现把 `safeName(name) + '-2'` 交给

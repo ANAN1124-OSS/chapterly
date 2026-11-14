@@ -253,6 +253,35 @@ test('旧版书目（v0.4.1，无 status/note）：照常打开、不自动补�
   assert.equal(raw.chapters[0].note, undefined);
 });
 
+// C32（v1.8.0 WP-26）：缺 id 的章按位置补 `ch_NNN` 必须查唯一性。旧实现直接按位置拼，
+// 与既有 id 撞车时 findChapterIndex 只认第一个，改名 / 删除 / 保存会作用到错误的章。
+test('C32/WP-26：缺 id 的章补号避撞（位置号被占时顺延，不产生重复 id）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '缺 id 避撞');
+  const metaPath = path.join(bookPath, '书目.json');
+  const disk = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+  const firstFile = disk.chapters[0].file;
+  disk.chapters = [
+    { file: firstFile, name: '无 id 的章' },
+    { id: 'ch_001', file: '002-已有 id.txt', name: '已有 id 的章' }
+  ];
+  disk.fileSeq = 2;
+  await fs.writeFile(metaPath, JSON.stringify(disk, null, 2), 'utf8');
+
+  const meta = await storage.readBookMeta(bookPath);
+  const ids = meta.chapters.map((c) => c.id);
+  assert.equal(ids.length, 2);
+  assert.equal(new Set(ids).size, 2, '补出来的 id 不许与既有 id 撞车');
+  assert.equal(ids[1], 'ch_001', '已存在的 id 一个都不改写');
+  assert.notEqual(ids[0], 'ch_001', '位置号被占时要顺延');
+
+  // 按补出来的 id 改名只作用到缺 id 那一章（旧行为会改到 ch_001 那一章）
+  await storage.renameChapter(bookPath, ids[0], '只改这一章');
+  const after = await storage.readBookMeta(bookPath);
+  assert.equal(after.chapters.find((c) => c.file === firstFile).name, '只改这一章');
+  assert.equal(after.chapters.find((c) => c.id === 'ch_001').name, '已有 id 的章');
+});
+
 test('书架扫描：完稿章数按 status=done 统计', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '完稿统计');

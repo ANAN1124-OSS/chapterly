@@ -21,6 +21,7 @@ const {
   LONG_UNTITLED_THRESHOLD
 } = require('./txt');
 const { normalizeText } = require('./common');
+const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
 
 const CHAPTER_FILE_RE =
@@ -35,9 +36,13 @@ function isUtf8(buffer) {
   }
 }
 
+// C30（v1.8.0 WP-26）：判「在不在书架目录里」走 core/path-utils 的 normalizePath（resolve +
+// 小写），与 core/storage.js 的 assertInside / assertBookPath 同一口径。旧实现逐字 startsWith：
+// Windows 上大小写不同的同一目录会绕过「已经在书架里 / 不能导入上级」两道守卫。
 function isInside(parent, child) {
-  const p = path.resolve(parent);
-  const c = path.resolve(child);
+  const p = pathUtils.normalizePath(parent);
+  const c = pathUtils.normalizePath(child);
+  if (!p || !c) return false;
   return c === p || c.startsWith(`${p}${path.sep}`);
 }
 
@@ -588,6 +593,8 @@ module.exports = {
   // V106（WP-21）：导入文件夹撞名后缀上限 + 探测入口（单测注入小上限验证「撞满就报错」）
   MAX_FOLDER_SUFFIX,
   uniqueFolderName,
+  // C30（v1.8.0 WP-26）：目录包含判定（大小写归一）导出给单测钉口径
+  isInside,
   formatImportSize,
   importSizeProblem,
   isProbablyBinary,

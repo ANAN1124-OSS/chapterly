@@ -68,6 +68,20 @@ test('escapeXml：五个特殊字符按 XML 规则转义，且先剔非法控制
   assert.equal(xml.escapeXml(null), '');
 });
 
+// C33（v1.8.0 WP-26）：孤立代理（半个 UTF-16 代理对）也是 XML 1.0 非法字符 —— 章名被裸 slice
+// 截断、剪贴板带进半截 emoji 时都会出现，严格解析器会整份拒绝。合法代理对必须原样保留。
+test('C33/WP-26：孤立代理被剔除，合法代理对（emoji / 扩展 B 汉字）原样保留', () => {
+  assert.equal(xml.stripInvalidXmlChars('甲\ud800乙'), '甲乙', '孤立高位代理要剔除');
+  assert.equal(xml.stripInvalidXmlChars('甲\udc00乙'), '甲乙', '孤立低位代理要剔除');
+  assert.equal(xml.stripInvalidXmlChars('\ud800\udc00'), '\ud800\udc00', '合法代理对不能删');
+  assert.equal(xml.stripInvalidXmlChars('𠮷🙂'), '𠮷🙂', '扩展 B 汉字 / emoji 是合法字符');
+  assert.deepEqual(xml.paragraphsFromText('第一段\ud800\n第二段\udc00'), ['第一段', '第二段']);
+  // 半截代理进 escapeXml 之后也不留非法字符
+  const escaped = xml.escapeXml('名\ud83d');
+  assert.equal(escaped, '名');
+  assert.equal(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(escaped), false);
+});
+
 // V72：产物里不能出现 U+FFFF（UTF-8 EF BF BF）/ U+FFFE（UTF-8 EF BF BE）的字节
 test('escapeXml 输出不含 EF BF BF / EF BF BE（V72）', () => {
   const escaped = xml.escapeXml('A\uFFFE&B\uFFFF<C>');

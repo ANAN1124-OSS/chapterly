@@ -271,7 +271,8 @@ test('崩溃日志：chooseLogFile 按大小滚到下一个序号，跨天用当
     }),
     'chapter-writer-2026-11-01.log'
   );
-  // 序号到上限就继续写最后一份（宁可变大，不能丢日志）
+  // V105（v1.8.0 WP-26）：序号到上限且当天全满 → 回 null（由 append 丢弃并计数），
+  // 不再返回 999 号满文件继续往里追加（否则单文件上限形同虚设）。
   const full = Array.from({ length: 3 }, (_v, i) => ({
     name: logsLib.fileNameForDay('2026-11-01', i + 1),
     day: '2026-11-01',
@@ -280,10 +281,37 @@ test('崩溃日志：chooseLogFile 按大小滚到下一个序号，跨天用当
   }));
   full[2].name = logsLib.fileNameForDay('2026-11-01', logsLib.MAX_INDEX);
   full[2].index = logsLib.MAX_INDEX;
-  assert.equal(
-    logsLib.chooseLogFile(full, { now, maxFileBytes: 1000 }),
-    logsLib.fileNameForDay('2026-11-01', logsLib.MAX_INDEX)
-  );
+  assert.equal(logsLib.chooseLogFile(full, { now, maxFileBytes: 1000 }), null);
+});
+
+// V105（v1.8.0 WP-26）：单日 999 份全满时 append 丢弃这一条并计数（不再往满文件追加）。
+test('V105/WP-26：单日日志 999 份全满时丢弃并计数，不再往满文件追加', async () => {
+  const base = await mkTmp();
+  const dir = path.join(base, 'logs');
+  await fs.mkdir(dir, { recursive: true });
+  const day = '2026-11-01';
+  for (let index = 1; index <= logsLib.MAX_INDEX; index += 1) {
+    await fs.writeFile(path.join(dir, logsLib.fileNameForDay(day, index)), 'x'.repeat(256), 'utf8');
+  }
+  const last = logsLib.fileNameForDay(day, logsLib.MAX_INDEX);
+  const before = await fs.stat(path.join(dir, last));
+  const store = logsLib.createLogStore(base, {
+    dir,
+    maxFileBytes: 256,
+    maxFiles: 12,
+    now: () => new Date(2026, 10, 1, 12, 0, 0)
+  });
+  const result = await store.write({ level: 'error', kind: 'uncaughtException', message: '满到上限了' });
+  const after = await fs.stat(path.join(dir, last));
+  assert.equal(result.ok, true);
+  assert.equal(result.suppressed, true);
+  assert.equal(result.dropped, true);
+  assert.equal(result.file, null);
+  assert.equal(store.counters().dropped, 1, '丢弃要计数');
+  assert.equal(store.counters().written, 0);
+  assert.equal(after.size, before.size, '999 号文件不许再长');
+  assert.equal((await fs.readFile(path.join(dir, last), 'utf8')).includes('满到上限了'), false);
+  await fs.rm(base, { recursive: true, force: true });
 });
 
 test('崩溃日志：planPrune 只删最旧的，超出份数才删、不认识的文件不动', () => {

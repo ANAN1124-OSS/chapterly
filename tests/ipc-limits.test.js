@@ -396,10 +396,16 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
   assert.ok(bodyOf('jump:match').includes('sanitizeChapterList('), 'jump:match 必须清洗章节列表');
   assert.equal(/chapters\.slice\(0,\s*20000\)/.test(MAIN_SOURCE), false, 'main.js 里不该再有裸截断');
   // 写盘通道（审计 E6）：chapter:save 是全仓唯一漏掉正文校验的写盘入口，2026-11-05 补上。
-  // null / undefined 沿用旧行为 = 空章；真实正文走 500 万字上限，落盘必须用校验后的正文。
+  // C26（v1.8.0 WP-26）：null / undefined 不再当空章写盘 —— 渲染层传参故障时必须报 BAD_TEXT，
+  // 不能静默清空整章。真实正文仍走 500 万字上限，落盘必须用校验后的正文。
   const saveBody = bodyOf('chapter:save');
   assert.ok(saveBody.includes('assertText('), 'chapter:save 必须校验正文（E6）');
-  assert.match(saveBody, /assertText\(text == null \? '' : text\)/, 'chapter:save 把 null / undefined 当空章，其余照常校验');
+  assert.match(saveBody, /const body = assertText\(text\);/, 'chapter:save 直接校验 text（C26：null 也是 BAD_TEXT）');
+  assert.equal(
+    /assertText\(text == null \? '' : text\)/.test(saveBody),
+    false,
+    'chapter:save 不许再把 null / undefined 归一成空章（C26：静默清空整章）'
+  );
   assert.ok(
     saveBody.includes('storage.saveChapterText(bookPath, chapter.file, body'),
     'chapter:save 落盘必须用校验后的正文（不能再用未校验的 text）'

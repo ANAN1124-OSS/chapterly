@@ -125,8 +125,12 @@
       return view.totalSeconds > 0 ? `${base}（计时 ${formatDuration(view.totalSeconds)}）` : base;
     }
     const goalText = view.goal > 0 ? ` · 达标 ${view.goalDays} 天` : '';
-    const bestText = view.bestDay
-      ? ` · 最高 ${view.bestDay.day.slice(5)}（${formatChars(view.bestDay.chars)}）`
+    // C41（v1.8.0 WP-26）：bestDay.day 来自月度汇总（旧数据 / 外部改过的 stats.json 都可能是坏值）。
+    // 本模块其余函数一律夹紧兜底，这里也不能直接 .slice —— 数字 / 对象会抛 TypeError 把整块
+    // 日历汇总打断。只有合法的 'YYYY-MM-DD' 才拼「最高 …」，否则整段省略。
+    const bestDayKey = view.bestDay && typeof view.bestDay.day === 'string' ? view.bestDay.day : '';
+    const bestText = /^\d{4}-\d{2}-\d{2}$/.test(bestDayKey)
+      ? ` · 最高 ${bestDayKey.slice(5)}（${formatChars(view.bestDay.chars)}）`
       : '';
     const prefix = view.isCurrentMonth ? '本月' : `${view.month}月`;
     return `${prefix} ${formatChars(view.total)} · 写了 ${view.writtenDays} 天 · 日均 ${formatChars(view.average)}${goalText}${bestText}${durationText}`;

@@ -169,6 +169,31 @@ test('月度汇总：没有记录 / 只有计时 / 有记录（目标、最高�
   assert.equal(statsLogic.calendarSummaryText(seed, fmt), '9月 1.20 万字 · 写了 5 天 · 日均 2400 字');
 });
 
+// C41（v1.8.0 WP-26）：bestDay.day 来自月度汇总（旧数据 / 外部改过的 stats.json 都可能是坏值）。
+// 旧实现直接 .slice(5)：数字 / 对象会抛 TypeError，把整块日历汇总打断。本模块其余函数都夹紧兜底，
+// 这里坏值也只省略「最高 …」这一段，不许抛。
+test('C41/WP-26：bestDay.day 坏值不抛错，只省略「最高」一段', () => {
+  const view = {
+    isCurrentMonth: true,
+    total: 100,
+    writtenDays: 1,
+    average: 100,
+    goal: 0,
+    goalDays: 0,
+    totalSeconds: 0
+  };
+  for (const bad of [123, {}, [], null, '', '2026-11', '2026-11-15x', 'abcd-ef-gh']) {
+    const text = statsLogic.calendarSummaryText({ ...view, bestDay: { day: bad, chars: 100 } }, fmt);
+    assert.equal(text.includes('最高'), false, `bestDay.day=${JSON.stringify(bad)} 应整段省略`);
+    assert.equal(text, '本月 100 字 · 写了 1 天 · 日均 100 字');
+  }
+  // 合法日期文案逐字不变
+  assert.equal(
+    statsLogic.calendarSummaryText({ ...view, bestDay: { day: '2026-11-15', chars: 300 } }, fmt),
+    '本月 100 字 · 写了 1 天 · 日均 100 字 · 最高 11-15（300 字）'
+  );
+});
+
 test('今天字数：0 说一句、正数带 +、坏值按 0（不显示 +0 / NaN）', () => {
   assert.equal(statsLogic.statsTodayText({ todayChars: 0 }, fmt), '今天还没写字');
   assert.equal(statsLogic.statsTodayText({}, fmt), '今天还没写字');

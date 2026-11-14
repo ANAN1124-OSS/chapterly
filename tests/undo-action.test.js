@@ -400,7 +400,12 @@ test('静态闸门：CSS 用现有纸色令牌，撤销按钮至少 24×24（WCA
 test('静态闸门：storage 撤销只认 _trash 下的 basename，不接收绝对路径', () => {
   assert.match(storageSrc, /async function restoreDeletedChapterFromTrash\(bookPath, payload\)/);
   assert.match(storageSrc, /path\.basename\(trashName\) !== trashName/);
-  assert.match(storageSrc, /trashName\.endsWith\(`-\$\{file\}`\)/);
+  // C34（v1.8.0 WP-26）：trashName 改结构化匹配（`<时间戳>-<文件名>` / `<时间戳>-<序号>-<文件名>`），
+  // 旧 endsWith 能被 `x-<文件名>` 冒充；结构判定必须逐字对上原文件名。
+  assert.match(storageSrc, /function isMoveToTrashName\(trashName, file\)/);
+  assert.match(storageSrc, /if \(rest === file\) return true;/);
+  assert.match(storageSrc, /ordinal\[2\] === file/);
+  assert.equal(/trashName\.endsWith\(`-\$\{file\}`\)/.test(storageSrc), false, '不许退回 endsWith 冒充判定');
   assert.match(storageSrc, /path\.dirname\(source\)\.toLowerCase\(\) !== path\.resolve\(trashDir\)\.toLowerCase\(\)/);
   assert.match(storageSrc, /restoreDeletedChapterFromTrash: locked\(restoreDeletedChapterFromTrash\)/);
 });

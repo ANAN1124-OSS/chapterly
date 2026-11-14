@@ -173,6 +173,28 @@ test('校对：重复用词——重叠二字词只报一次（「突然想起�
   assert.equal(hits[0].count, 3);
 });
 
+// C42（v1.8.0 WP-26）：扩展 B 汉字（U+20000+，代理对）在重复用词 / 中英间距 / 破折号邻居判定里
+// 也要算汉字。旧 HAN_RE 只认 BMP：逐 UTF-16 单元扫描会把「𠮷」拆成两个非汉字，三类规则全漏。
+test('C42/WP-26：扩展 B 汉字参与重复用词 / 中英间距 / 破折号判定', () => {
+  const JI = '\u{20BB7}';
+
+  const repeated = proofread.proofreadText(`${JI}${JI}，${JI}${JI}，${JI}${JI}。`);
+  const hits = repeated.issues.filter((issue) => issue.rule === 'repeat-word' && issue.match === `${JI}${JI}`);
+  assert.equal(hits.length, 1, '「𠮷𠮷」出现 3 次要报重复用词');
+  assert.equal(hits[0].count, 3);
+  assert.equal(hits[0].index, 0);
+
+  const latin = proofread.proofreadText(`${JI}A`, { rules: { 'cjk-latin-spacing': true } });
+  const spacing = only(latin, 'cjk-latin-spacing');
+  assert.equal(spacing.length, 1);
+  assert.equal(spacing[0].match, `${JI}A`);
+  assert.equal(spacing[0].length, 3, '长度按 UTF-16 单元算（2 + 1）');
+
+  const dash = proofread.proofreadText(`${JI}--`, { rules: { dash: true } });
+  assert.equal(only(dash, 'dash').length, 1, '紧挨扩展 B 汉字的 -- 也算中文破折号');
+  assert.equal(only(proofread.proofreadText('A--', { rules: { dash: true } }), 'dash').length, 0);
+});
+
 test('校对：连续标点——3 个及以上才报，「！？」「……」「——」不误报', () => {
   const three = proofread.proofreadText('他喊：「？！？」');
   const issues = only(three, 'punct-run');

@@ -12,8 +12,13 @@
 // XML 1.0 的 Char 上限是 U+FFFD，U+FFFE / U+FFFF 是非字符，保留会让严格解析器整份拒绝。
 const XML_INVALID_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g;
 
+// C33（v1.8.0 WP-26）：孤立代理（半个 UTF-16 代理对）同样是 XML 1.0 非法字符 —— 章名被
+// 裸 slice 截断、剪贴板带进半截 emoji 时都可能出现，严格解析器会整份拒绝。
+// 合法的代理对（emoji / 扩展 B 汉字）原样保留：只剔「没有配对的代理」。
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+
 function stripInvalidXmlChars(text) {
-  return String(text == null ? '' : text).replace(XML_INVALID_CHARS, '');
+  return String(text == null ? '' : text).replace(XML_INVALID_CHARS, '').replace(LONE_SURROGATE, '');
 }
 
 function escapeXml(text) {
