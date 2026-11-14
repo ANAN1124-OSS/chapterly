@@ -2,6 +2,8 @@
 // 不读盘、不写盘、不依赖 Electron；只测 core/s2t.js。
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const s2t = require('../core/s2t');
 
 test('简繁字表：没有写错的词条、没有同一字两种写法、没有反推冲突', () => {
@@ -20,6 +22,49 @@ test('简繁字表：没有写错的词条、没有同一字两种写法、没�
   for (const pair of ['说說', '门門', '国國', '时時', '发發', '后後', '里裡', '台臺']) {
     assert.ok(s2t.S2T_PAIRS.includes(pair), `字表缺少 ${pair}`);
   }
+});
+
+// A5（整合版审计，v1.8.0 WP-33）：简→繁字表原分两段写——前段 540 条，后段 905 条里
+// 有 516 条与前段逐字重复，靠 parsePairs 静默去重；覆盖审计得同时核对两段。
+// 现在两段已合并为一份去重表（保持首次出现顺序，转换结果逐字节不变），parsePairs 的
+// 「同一边重复只留第一条 + 冲突记账」保留为兜底。本用例钉住三件事：源表零重复、
+// parsePairs 零丢弃、原两段各自独有的条目一条不少（覆盖审计只核对这一份表）。
+test('简繁字表：两大段重叠字表已合并为一份去重表（A5）', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'core', 's2t.js'), 'utf8');
+  const at = source.indexOf('const S2T_RAW = parsePairs(');
+  assert.ok(at > 0, '找不到 S2T_RAW 字表');
+  const bodyStart = source.indexOf('`', at) + 1;
+  const tokens = source.slice(bodyStart, source.indexOf('`', bodyStart)).split(/\s+/).filter(Boolean);
+
+  // 合并后的源表自身零重复：同一个「简体字 + 繁体写法」只出现一次
+  assert.equal(new Set(tokens).size, tokens.length, '合并后的源表仍有重复条目');
+  // 同一个简体字在源表里只能有一种繁体写法（有冲突就该进 PAIR_CONFLICTS）
+  assert.equal(new Set(tokens.map((t) => t[0])).size, tokens.length, '同一个简体字在源表里有两种写法');
+  // parsePairs 在这份表上零丢弃：导出条目数 / 顺序与源表逐项相同（旧两段靠它静默去重）
+  assert.equal(s2t.S2T_PAIRS.length, tokens.length, 'parsePairs 丢弃了条目：源表不是一份去重表');
+  assert.deepEqual(s2t.S2T_PAIRS, tokens, '导出顺序应与源表首次出现顺序一致');
+  assert.equal(s2t.S2T_SIZE, tokens.length, '字符映射数量应与去重后的源表一致');
+
+  // 覆盖审计（原两段都要核）：前段独有 24 条 + 后段独有的补充条目抽查，一条都不能少
+  for (const pair of [
+    // 原第一段独有（第二段没有再列）
+    '党黨', '独獨', '儿兒', '丰豐', '广廣', '汉漢', '后後', '几幾', '据據', '么麼',
+    '台臺', '万萬', '与與', '着著', '卤鹵', '聂聶', '枪槍', '伞傘', '汤湯', '汹洶',
+    '锈鏽', '盐鹽', '犹猶', '云雲',
+    // 原第二段独有的补充条目（第一段没有）
+    '专專', '丧喪', '乌烏', '乔喬', '争爭', '于於', '亿億', '仓倉', '伟偉', '伪偽',
+    '厂廠', '冈岡', '划劃', '咸鹹', '咏詠', '嘱囑', '嚣囂', '壳殼', '壶壺', '夸誇'
+  ]) {
+    assert.ok(s2t.S2T_PAIRS.includes(pair), `合并后缺少 ${pair}`);
+  }
+
+  // parsePairs 的去重 / 冲突记账仍是兜底：以后新增或粘贴条目再撞车时，单测仍能从
+  // PAIR_CONFLICTS 抓到，而不是静默改变某个字的转换方向
+  assert.match(
+    source,
+    /if \(seen\.has\(key\)\) \{\s*if \(seen\.get\(key\) !== token\[1\]\) conflicts\.push/,
+    'parsePairs 的「同一边重复只留第一条 + 冲突记账」兜底被删了'
+  );
 });
 
 test('简繁档位：只认空串 / s2t / t2s，其它值都当「不转换」', () => {
