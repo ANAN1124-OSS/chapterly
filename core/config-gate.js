@@ -37,6 +37,15 @@ function samePath(a, b) {
   return Boolean(left) && left === right;
 }
 
+// C23（整合版审计）：书架根目录「真的变了」吗——config:set 只在变了的时候才碰书架目录。
+// 旧实现每次保存设置都无条件 fs.mkdir(目标根)：改字号 / 主题 / 按书字体这些无关 patch 也会去动书架根，
+// 书架在断开的网络盘 / USB 上时，连保存一个无关设置都会失败。
+// 比的是装饰（--books-root 覆盖）后的生效根，口径与 samePath 共用全仓唯一的 pathKey：
+// 大小写 / 末尾分隔符 / 正反斜杠混用 / `.` 都算同一个目录；两边都为空（没有根）也算没变。
+function booksRootChanged(currentRoot, nextRoot) {
+  return pathKey(currentRoot) !== pathKey(nextRoot);
+}
+
 // 「刚选中」的登记值可能是单个字符串（逐个选）或字符串数组（多选）：统一成数组。
 function pickedPaths(value) {
   if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
@@ -242,6 +251,7 @@ function createPickedPathStore() {
 module.exports = {
   GUARDED_PATH_FIELDS,
   samePath,
+  booksRootChanged,
   filterPathPatch,
   filterBookDisplayPatch,
   filterBookDisplayMapPatch,

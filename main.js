@@ -1263,7 +1263,9 @@ function registerIpc() {
     let current = await getConfig();
     // 读盘恢复了：主进程缓存还是启动时的默认值，先换成真配置再继续（applyConfig 会同步标题栏配色）。
     if (recovery.recovered) current = applyConfig(await configStore.get());
-    const previousRoot = current.booksRoot;
+    // C23（整合版审计）：「换根前的生效根」也走「sanitize + 装饰层」——设置了 --books-root 时它就是
+    // 覆盖目录（这时 patch 里的 booksRoot 改不动生效根，不该被误判成换根）。与后面的目标根同口径比较。
+    const previousRoot = decorateConfig(sanitizeConfig(current)).booksRoot;
     const session = flowSession();
     const picked = session ? pickedConfigPaths.snapshot(session.id) : null;
     const gated = configGate.filterPathPatch(patch, { current, picked });
@@ -1284,18 +1286,24 @@ function registerIpc() {
       if (displayGate.rejected.length) gated.rejected.push(...displayGate.rejected);
     }
     // 只把放行的字段交给配置仓库：被拒的字段保留原值，正常字段照旧生效。
-    // A3（审计 E3）：先把目标书架目录建出来（建不出来就报错、配置一个字都不写），再写盘。
+    // A3（审计 E3）：换书架根时先把目标书架目录建出来（建不出来就报错、配置一个字都不写），再写盘。
     // 旧顺序是「configStore.set 写盘成功 → fs.mkdir」，目录建不出来时界面看到「保存失败」，
     // 但配置已经落盘——重启后书架指向一个不存在的目录，作者会以为「书没了」。
+    // C23（整合版审计）：只在书架根**真的变化**时才 mkdir。以前这里无条件 mkdir——改字号 / 主题 /
+    // 按书字体这类无关 patch 也会去动书架根，书架在断开的网络盘 / USB 上时，保存无关设置会跟着失败。
     // 目标目录按「当前配置 + 放行后的 patch」走同一份 sanitize 算，和写盘后的 config.booksRoot 一致。
     // 目标目录同样的口径：过装饰层——设置了 --books-root 时它就是覆盖目录，没设置时就是 sanitize 的结果。
     const targetRoot = decorateConfig(sanitizeConfig({ ...current, ...gated.patch })).booksRoot;
-    await fs.mkdir(targetRoot, { recursive: true });
+    if (configGate.booksRootChanged(previousRoot, targetRoot)) {
+      await fs.mkdir(targetRoot, { recursive: true });
+    }
     const next = await configStore.set(gated.patch);
     const nextConfig = applyConfig(next);
     // A4（审计 #11 / O3、P6）：换了书架根目录后，旧根下的书锁条目没有复用价值——主动回收空闲条目
     // （正在跑 / 正在排队的链绝不拆，它们 settle 后自己回收，这里只是尽早腾掉 Map 位置）。
-    if (path.resolve(nextConfig.booksRoot).toLowerCase() !== path.resolve(previousRoot).toLowerCase()) {
+    // C23：与上面建目录共用同一个「根是否变化」判据（全仓唯一 pathKey 口径），不会出现
+    // 「目录没建但锁清了」或反过来的分叉。
+    if (configGate.booksRootChanged(previousRoot, nextConfig.booksRoot)) {
       storage.clearBookLocks();
     }
     // b8：设置里打开 / 关闭「后台监听剪贴板」立即生效（幂等）

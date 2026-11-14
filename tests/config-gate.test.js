@@ -495,3 +495,57 @@ test('静态闸门：config:set 先 mkdir 目标书架目录、成功后才写�
     'config:set 的 mkdir 目标要过 booksRootOverride 装饰层'
   );
 });
+
+// C23（整合版审计）：config:set 以前每次保存设置都无条件 fs.mkdir(目标书架根)——改字号 / 主题 /
+// 按书字体这类无关 patch 也会去碰书架目录；书架在断开的网络盘 / USB 上时，保存一个无关设置会失败。
+// 判「根变没变」抽成纯函数，两个根都按「装饰后的生效根」比（--books-root 覆盖时就是覆盖目录）。
+test('C23：书架根变化判定走全仓唯一 pathKey 口径（无关 patch 判成没变）', () => {
+  assert.equal(configGate.booksRootChanged(bookRoot, bookRoot), false, '同一个根不算变');
+  assert.equal(configGate.booksRootChanged(bookRoot, bookRoot.toUpperCase()), false, '大小写不同不算变');
+  assert.equal(configGate.booksRootChanged(bookRoot, bookRoot + path.sep), false, '末尾多一个分隔符不算变');
+  assert.equal(configGate.booksRootChanged(bookRoot, bookRoot.replace(/\\/g, '/')), false, '正反斜杠混用不算变');
+  assert.equal(configGate.booksRootChanged(bookRoot, path.join(bookRoot, '.')), false, '带 . 的写法不算变');
+  assert.equal(configGate.booksRootChanged(bookRoot, path.join(ROOT, '换过的书架')), true, '真的换了根要能认出来');
+  assert.equal(configGate.booksRootChanged(bookRoot, ''), true, '有根 → 空（清洗会回默认根）算变');
+  assert.equal(configGate.booksRootChanged('', null), false, '两边都没有根不算变');
+  assert.equal(configGate.booksRootChanged(null, bookRoot), true);
+});
+
+test('静态闸门：config:set 只在书架根变化时 mkdir（C23）', () => {
+  const start = MAIN_SOURCE.indexOf("handle('config:set'");
+  assert.ok(start > 0, 'main.js 里找不到 config:set');
+  const body = MAIN_SOURCE.slice(start, MAIN_SOURCE.indexOf('\n  handle(', start + 1));
+  // 函数体里只该有一处 mkdir，并且挂在「根真的变化」的分支里
+  assert.equal((body.match(/fs\.mkdir\(/g) || []).length, 1, 'config:set 里只该有这一处 mkdir');
+  assert.match(
+    body,
+    /if \(configGate\.booksRootChanged\(previousRoot, targetRoot\)\) \{\s*await fs\.mkdir\(targetRoot, \{ recursive: true \}\);\s*\}/,
+    'mkdir 必须在「书架根真的变化」的分支里（改字号 / 主题这类无关 patch 不碰书架目录）'
+  );
+  // 判变化的两边都要过「sanitize + 装饰层」：--books-root 覆盖时生效根是覆盖目录
+  assert.match(
+    body,
+    /const previousRoot = decorateConfig\(sanitizeConfig\(current\)\)\.booksRoot;/,
+    '换根前的生效根也要过 sanitize + 装饰层'
+  );
+  assert.match(
+    body,
+    /const targetRoot = decorateConfig\(sanitizeConfig\(\{ \.\.\.current, \.\.\.gated\.patch \}\)\)\.booksRoot;/,
+    '目标根走同一份 sanitize + 装饰层'
+  );
+  // A3 顺序不变：判根变化 → mkdir → 写盘（建不出来配置一个字都不写）
+  const changeAt = body.indexOf('booksRootChanged(previousRoot, targetRoot)');
+  const mkdirAt = body.indexOf('fs.mkdir(');
+  const writeAt = body.indexOf('configStore.set(gated.patch)');
+  assert.ok(
+    changeAt > -1 && changeAt < mkdirAt && mkdirAt < writeAt,
+    '顺序必须是：判根变化 → mkdir → configStore.set'
+  );
+  // A4 换根清锁共用同一判据，不许再各写一份 path.resolve(...).toLowerCase() 比较
+  assert.match(
+    body,
+    /if \(configGate\.booksRootChanged\(previousRoot, nextConfig\.booksRoot\)\)/,
+    '换根后清锁要用同一个「根是否变化」判据'
+  );
+  assert.ok(!body.includes('path.resolve(nextConfig.booksRoot).toLowerCase()'), '不再各写一份大小写比较');
+});
