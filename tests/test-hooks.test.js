@@ -327,7 +327,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   openModal 的 DOM 装配从「自己 new Promise 并覆盖 state.modal」改成
   //   modalQueueModule.create({ show, hide })（净 +8 行，其中 5 行说明；openModal / closeModal 收成转发）；
   //   ② 查找模块的 host 多一行 `longOpLogic,`（整本替换回执按 C2 判定，见 renderer/find-ui.js）。
-  const RENDERER_LINE_BUDGET = 6163;
+  // 1.8.0 WP-15（C15/C16/C36/C37/C40/V111/V202）：6163 → 6168（+5）：异步回执的世代令牌 / 章身份
+  //   快照收进 renderer/stale-guard.js（Node 单测覆盖），renderer.js 只多 ① 模块级
+  //   `const staleGuard = window.CWStaleGuard;`（2 行说明 + 1 行声明）与 ② 查找 / 导出两处装配的
+  //   `staleGuard,`（其余 6 个面板的 host 在同一行追加，不增行）。
+  const RENDERER_LINE_BUDGET = 6168;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

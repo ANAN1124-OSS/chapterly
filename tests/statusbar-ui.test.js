@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const statusbarUi = require('../renderer/statusbar-ui');
+const staleGuard = require('../renderer/stale-guard');
 const editorLogic = require('../renderer/editor-logic');
 const chaptersLib = require('../core/chapters');
 const commonLib = require('../core/common');
@@ -98,7 +99,9 @@ function makeHost(options = {}) {
     loadChapterAt: async (index) => {
       calls.load.push(index);
       return { ok: true };
-    }
+    },
+    // WP-15（C40）：外部修改检测按发起时的「书 + 章 + mtime」结算
+    staleGuard
   };
   return { host, state, els, editorEl, calls };
 }
@@ -115,11 +118,11 @@ function installWindow() {
   return listeners;
 }
 
-test('host 契约：12 个成员缺任何一个都抛 TypeError，空 host / null 也抛', () => {
+test('host 契约：13 个成员缺任何一个都抛 TypeError，空 host / null 也抛', () => {
   const { host } = makeHost();
   assert.deepEqual(
     [...statusbarUi.REQUIRED_HOST].sort(),
-    ['$', 'state', 'editorEl', 'formatChars', 'formatCount', 'chaptersLib', 'editorLogic', 'call', 'api', 'toast', 'openModal', 'loadChapterAt'].sort()
+    ['$', 'state', 'editorEl', 'formatChars', 'formatCount', 'chaptersLib', 'editorLogic', 'call', 'api', 'toast', 'openModal', 'loadChapterAt', 'staleGuard'].sort()
   );
   assert.throws(() => statusbarUi.create(null), /createStatusbarUi 需要 host 对象/);
   assert.throws(() => statusbarUi.create('x'), /createStatusbarUi 需要 host 对象/);
@@ -529,4 +532,50 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWStatusbarU
   assert.equal(typeof win.CWStatusbarUi.create, 'function');
   assert.equal(win.CWExportUi, undefined, '单独加载 statusbar-ui 不该顺手造出别的全局');
   assert.equal(win.CWChapters, undefined);
+});
+
+// ---------- WP-15 / C40：外部修改检测按发起时的书 / 章 / mtime 结算 ----------
+test('外部修改检测（WP-15 / C40）：stat 在飞期间切章 → 旧回执作废，不弹假询问', async () => {
+  const listeners = installWindow();
+  const { host, state, calls } = makeHost({ loadedMtimeMs: 111, mtimeMs: 222 });
+  let release;
+  host.api.statChapter = () => new Promise((resolve) => { release = resolve; });
+  statusbarUi.create(host).setupExternalChangeWatch();
+
+  const pending = listeners.focus[0]();
+  state.index = 1; // 期间切到第二章（载章流程会改 index / 载入 mtime）
+  state.loadedMtimeMs = 999;
+  release({ mtimeMs: 222 });
+  await pending;
+
+  assert.deepEqual(calls.modal, [], '切章后的旧回执不许弹「外部修改」');
+  assert.deepEqual(calls.toast, []);
+  assert.deepEqual(calls.load, []);
+});
+
+test('外部修改检测（WP-15 / C40）：切章后新章 mtime 恰好相同 / 同章重载过 都不许按旧快照弹窗', async () => {
+  // ① 期间切章，新章载入的 mtime 恰好还是旧值：只比 mtime 会漏，必须靠章身份
+  const switchedChapter = installWindow();
+  const switched = makeHost({ loadedMtimeMs: 111, mtimeMs: 222 });
+  let releaseSwitch;
+  switched.host.api.statChapter = () => new Promise((resolve) => { releaseSwitch = resolve; });
+  statusbarUi.create(switched.host).setupExternalChangeWatch();
+  const pendingSwitch = switchedChapter.focus[0]();
+  switched.state.index = 1;
+  releaseSwitch({ mtimeMs: 222 });
+  await pendingSwitch;
+  assert.deepEqual(switched.calls.modal, [], '章身份变了就不许拿旧章的 stat 弹窗');
+
+  // ② 同章在应用内重载过（loadedMtimeMs 变了）：旧回执比的是旧 mtime，也不许弹
+  const reloaded = installWindow();
+  const sameChapter = makeHost({ loadedMtimeMs: 111, mtimeMs: 222 });
+  let releaseReload;
+  sameChapter.host.api.statChapter = () => new Promise((resolve) => { releaseReload = resolve; });
+  statusbarUi.create(sameChapter.host).setupExternalChangeWatch();
+  const pendingReload = reloaded.focus[0]();
+  sameChapter.state.loadedMtimeMs = 999;
+  releaseReload({ mtimeMs: 222 });
+  await pendingReload;
+  assert.deepEqual(sameChapter.calls.modal, [], '载入 mtime 变了，旧回执作废');
+  assert.deepEqual(sameChapter.calls.toast, []);
 });

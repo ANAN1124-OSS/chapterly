@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const sensitiveUi = require('../renderer/sensitive-ui');
+const staleGuard = require('../renderer/stale-guard');
 const chaptersLib = require('../core/chapters');
 
 // 第 4 步 renderer 九刀·第五刀：敏感词预检（原 renderer.js 4005–4327，323 行）搬到 renderer/sensitive-ui.js。
@@ -205,16 +206,18 @@ function build(options = {}) {
       effectiveConfig() { calls.effectiveConfig += 1; return state.config; },
       hideHeaderMenus() { calls.hideHeaderMenus += 1; },
       scrollCaretIntoView(pos) { calls.scrollCaretIntoView.push(pos); }
-    }
+    },
+    // WP-15（V202 / R5）：回执按发起时的书 / 章身份结算
+    staleGuard
   };
   const ui = sensitiveUi.create(host);
   return { ui, host, state, dom, calls, editorEl };
 }
 
 // ---------- host 契约 ----------
-test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...sensitiveUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'nav', 'peers', 'state', 'toast', 'view']);
-  assert.equal(sensitiveUi.REQUIRED_HOST.length, 8);
+test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...sensitiveUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'nav', 'peers', 'staleGuard', 'state', 'toast', 'view']);
+  assert.equal(sensitiveUi.REQUIRED_HOST.length, 9);
   const ctx = build();
   assert.doesNotThrow(() => sensitiveUi.create(ctx.host));
   assert.throws(() => sensitiveUi.create(null), /createSensitiveUi 需要 host 对象/);
@@ -603,6 +606,44 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWSensitiveU
   vm.runInContext(moduleSrc, context, { filename: 'renderer/sensitive-ui.js' });
   assert.equal(typeof win.CWSensitiveUi, 'object');
   assert.deepEqual(Object.keys(win.CWSensitiveUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWSensitiveUi.REQUIRED_HOST.length, 8);
+  assert.equal(win.CWSensitiveUi.REQUIRED_HOST.length, 9);
   assert.equal(win.CWProofreadUi, undefined);
+});
+
+// ---------- WP-15 / V202（复核 R5）：预检结果按发起时的书 / 章身份结算 ----------
+test('runSensitiveCheck（WP-15 / V202）：当前章在飞期间切章 → 结果作废，不标到新章名下', async () => {
+  const ctx = build();
+  let release;
+  ctx.host.api.sensitiveCheckText = () => new Promise((resolve) => { release = resolve; });
+  const pending = ctx.ui.runSensitiveCheck();
+  ctx.state.index = 1; // 预检在飞期间切到第二章
+  release({
+    total: 1,
+    wordHitCount: 1,
+    byWord: [{ word: '血', count: 1 }],
+    truncated: false,
+    issues: [{ word: '血', index: 0, length: 1, line: 1, column: 1 }]
+  });
+  assert.deepEqual(await pending, { ok: false, stale: true, message: '预检期间已经换了书或章节' });
+  assert.equal(ctx.state.sensitive, null, '旧结果不许进 state 被当成新章的结果');
+  assert.equal(
+    ctx.dom.map.get('sensitive-summary').textContent,
+    '预检期间已经换了书或章节，这次结果没有显示；请重新预检'
+  );
+  assert.equal(ctx.dom.map.get('sensitive-results').children.length, 0);
+});
+
+test('runSensitiveCheck（WP-15 / V202）：整本预检在飞期间换书 → 结果作废', async () => {
+  const ctx = build({ scope: 'book' });
+  let release;
+  ctx.host.api.sensitiveCheckBook = () => new Promise((resolve) => { release = resolve; });
+  const pending = ctx.ui.runSensitiveCheck();
+  ctx.state.bookPath = '/书库/书乙';
+  release({ total: 1, chapterCount: 1, chapterHitCount: 1, wordHitCount: 1, skippedChapters: 0, byWord: [], matches: [] });
+  assert.deepEqual(await pending, { ok: false, stale: true, message: '预检期间已经换了书或章节' });
+  assert.equal(ctx.state.sensitive, null);
+  assert.equal(
+    ctx.dom.map.get('sensitive-summary').textContent,
+    '预检期间已经换了书或章节，这次结果没有显示；请重新预检'
+  );
 });

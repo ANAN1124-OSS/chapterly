@@ -58,14 +58,19 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'guard', 'collab', 'menus', 'fmt'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'guard', 'collab', 'menus', 'fmt', 'staleGuard'];
 
   function createHistoryUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createHistoryUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createHistoryUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, guard, collab, menus, fmt } = host;
+    const { $, state, api, call, toast, guard, collab, menus, fmt, staleGuard } = host;
+    if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
+      throw new TypeError('createHistoryUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
+    // WP-15（V111）：备份预览的世代令牌——连点两条备份，先点的旧回执后到不许覆盖后点的预览。
+    const previewSeq = staleGuard.createSeq();
     if (typeof guard !== 'object') throw new TypeError('createHistoryUi 的 host.guard 必须是对象');
     for (const key of ['fingerprint', 'assertUnchanged']) {
       if (typeof guard[key] !== 'function') throw new TypeError('createHistoryUi 的 host.guard 缺少 ' + key);
@@ -370,13 +375,17 @@
   async function previewHistoryBackup(groupId, fileName) {
     const current = state.history;
     if (!current) return null;
+    // WP-15（V111）：每次点备份取一个号；书级校验之外再加「还是不是最后一次点」——
+    // 连点两条时先点的响应后到，不许覆盖后点那条的预览（也不许弹它的失败 toast）。
+    const token = previewSeq.next();
     try {
       const data = await call(api.previewHistoryFile, current.path, groupId, fileName);
-      if (state.history !== current) return null;
+      if (!previewSeq.isCurrent(token) || state.history !== current) return null;
       current.preview = data;
       renderHistoryPreview();
       return data;
     } catch (err) {
+      if (!previewSeq.isCurrent(token) || state.history !== current) return null;
       toast(`预览失败：${err.message}`, 'error');
       return null;
     }

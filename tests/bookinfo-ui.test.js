@@ -1317,3 +1317,54 @@ test('setupBookinfoUi（F5）：标签下拉改 state.shelfTag 并重渲染；�
   ctx.dom.map.get('btn-group-manage-close')._fire('click', {});
   assert.equal(ctx.dom.map.get('group-manage-backdrop').classList.contains('hidden'), true);
 });
+
+// ---------- WP-15 / C15：失败回执与跨书 busy 也按发起时的书结算 ----------
+test('saveBookInfoDialog（WP-15 / C15）：A 在飞时切到 B 再保存 → B 的弹层给出可见提示，且不重复发 IPC', async () => {
+  const dom = makeDocument();
+  const pending = [];
+  let ipcCount = 0;
+  const call = () => {
+    ipcCount += 1;
+    return new Promise((resolve) => pending.push(resolve));
+  };
+  const ctx = build({ dom, call });
+  const bookA = makeBook({ author: '甲作者', brief: '甲简介' });
+  const bookB = makeBook({ path: '/书库/书乙', folder: '书乙', title: '书乙', author: '乙作者', brief: '乙简介' });
+  assert.equal(ctx.ui.openBookInfoDialog(bookA), true);
+  const inFlight = ctx.ui.saveBookInfoDialog();
+  assert.equal(ctx.ui.openBookInfoDialog(bookB), true);
+  assert.equal(dom.map.get('bookinfo-error').textContent, '', 'B 的弹层初始没有错误');
+
+  const busyResult = await ctx.ui.saveBookInfoDialog();
+  assert.equal(ipcCount, 1, '在飞时不许再发第二次 IPC');
+  assert.deepEqual(busyResult, { ok: false, stale: true, message: '正在保存上一本书的信息，请稍候再保存' });
+  assert.equal(
+    dom.map.get('bookinfo-error').textContent,
+    '正在保存上一本书的信息，请稍候再保存',
+    'B 的保存不能静默——必须让作者看见为什么没存'
+  );
+
+  pending[0]({ changed: true });
+  assert.deepEqual(await inFlight, { ok: false, stale: true }, 'A 的收尾认出弹层已切到 B');
+  assert.equal(ctx.state.bookInfoBook, bookB, 'A 的收尾不能把 B 的弹层关掉');
+  assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), false);
+});
+
+test('saveBookInfoDialog（WP-15 / C15）：A 的失败回执不写进 B 的弹层，改用 toast 点名 A', async () => {
+  const dom = makeDocument();
+  const pending = [];
+  const call = () => new Promise((resolve, reject) => pending.push({ resolve, reject }));
+  const ctx = build({ dom, call });
+  const bookA = makeBook({ author: '甲作者', brief: '甲简介' });
+  const bookB = makeBook({ path: '/书库/书乙', folder: '书乙', title: '书乙', author: '乙作者', brief: '乙简介' });
+  ctx.ui.openBookInfoDialog(bookA);
+  const inFlight = ctx.ui.saveBookInfoDialog();
+  ctx.ui.openBookInfoDialog(bookB);
+
+  pending[0].reject(new Error('书目只读'));
+  assert.deepEqual(await inFlight, { ok: false, stale: true, message: '书目只读' });
+  assert.equal(dom.map.get('bookinfo-error').textContent, '', 'B 的弹层不许出现 A 的报错');
+  assert.deepEqual(ctx.calls.toast, [['《书甲》保存失败：书目只读', 'error']], '失败必须点名是 A，不能吞掉');
+  assert.equal(ctx.state.bookInfoBook, bookB);
+  assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), false, 'B 的弹层还开着');
+});

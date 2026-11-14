@@ -35,7 +35,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['api', '$', 'editorEl', 's2tLib', 'call', 'state', 'toast', 'volumeList', 'chapterVolumeId', 'hideExportMenu', 'formatCount'];
+  const REQUIRED_HOST = ['api', '$', 'editorEl', 's2tLib', 'call', 'state', 'toast', 'volumeList', 'chapterVolumeId', 'hideExportMenu', 'formatCount', 'staleGuard'];
 
   function createExportUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createExportUi 需要 host 对象');
@@ -47,7 +47,10 @@
     if (typeof host.exportFormat !== 'string') {
       throw new TypeError('createExportUi 的 host 缺少 exportFormat（当前导出格式的活绑定）');
     }
-    const { api, $, editorEl, s2tLib, call, state, toast, volumeList, chapterVolumeId, hideExportMenu, formatCount } = host;
+    const { api, $, editorEl, s2tLib, call, state, toast, volumeList, chapterVolumeId, hideExportMenu, formatCount, staleGuard } = host;
+    if (!staleGuard || typeof staleGuard.sameIdentity !== 'function') {
+      throw new TypeError('createExportUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
 
   // ---------- 导出 / 复制 ----------
   // 导出 / 复制以磁盘内容为准，但当前章如果还没保存，就把编辑区里的最新内容一起带上
@@ -96,6 +99,9 @@
   let exportPlanTimer = null;
   let exportPlanToken = 0;
   let lastExportPlan = null;
+  // WP-15（C37）：这份计划是按哪个范围算出来的。改范围后防抖 / IPC 在飞时，确认按钮不能拿
+  // 上一个范围的计划去导出（空范围拦截会失效）；范围一变，计划与这个键一起作废。
+  let lastExportPlanRange = null;
 
   function readExportRange() {
     const checked = document.querySelector('input[name="export-scope"]:checked');
@@ -163,11 +169,16 @@
     const error = validateExportRange(range);
     if (error) {
       lastExportPlan = null;
+      lastExportPlanRange = null;
       summaryEl.textContent = error;
       summaryEl.classList.add('warn');
       confirmBtn.disabled = true;
       return;
     }
+    // 新计划回来之前旧计划不再代表当前范围：先作废并禁用确认，别让作者在窗口里拿旧范围导出。
+    lastExportPlan = null;
+    lastExportPlanRange = null;
+    confirmBtn.disabled = true;
     const token = ++exportPlanToken;
     let res;
     try {
@@ -189,6 +200,7 @@
       return;
     }
     lastExportPlan = res;
+    lastExportPlanRange = range;
     const bits = [`将导出 ${res.chapterCount} 章`, `${formatCount(res.chars)} 字`];
     if (res.includedUnsaved) bits.push('含当前章未保存内容');
     // EPUB / DOCX 与 TXT 的范围规则一样，只是默认文件名后缀不同（主进程统一算好）
@@ -205,6 +217,11 @@
 
   function scheduleExportSummary(delay = 0) {
     if (exportPlanTimer) clearTimeout(exportPlanTimer);
+    // WP-15（C37）：范围一改，上一份计划立刻作废、确认按钮先禁用——防抖窗口里也不许拿旧范围导出。
+    exportPlanToken += 1;
+    lastExportPlan = null;
+    lastExportPlanRange = null;
+    $('btn-export-confirm').disabled = true;
     exportPlanTimer = setTimeout(() => {
       exportPlanTimer = null;
       refreshExportSummary();
@@ -257,6 +274,7 @@
     // 重新打开时先清掉上一次的摘要 / 计划：否则「上次的 2 章」会先显示出来，
     // 作者手快按「导出…」时计划还没回来，会误报「所选范围里没有章节」。
     lastExportPlan = null;
+    lastExportPlanRange = null;
     exportPlanToken += 1;
     $('export-summary').textContent = '正在读取导出信息…';
     $('export-summary').classList.remove('warn');
@@ -290,6 +308,7 @@
       exportPlanTimer = null;
     }
     lastExportPlan = null;
+    lastExportPlanRange = null;
   }
 
   async function confirmExportDialog() {
@@ -301,6 +320,13 @@
     }
     if (!lastExportPlan || lastExportPlan.empty) {
       toast('所选范围里没有章节，换个范围试试', 'warn');
+      return;
+    }
+    // WP-15（C37）：计划必须就是「现在这个范围」算出来的。范围改过但新计划还没回来时，
+    // 宁可让作者再点一次，也不能拿旧范围的计划放行（空范围拦截会失效）。
+    if (!lastExportPlanRange || !staleGuard.sameIdentity(lastExportPlanRange, range)) {
+      toast('导出信息还在更新，请稍候再点一次', 'warn');
+      void refreshExportSummary();
       return;
     }
     const format = host.exportFormat;

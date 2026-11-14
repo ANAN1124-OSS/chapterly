@@ -62,6 +62,9 @@
   // 通用询问框的排队与防重入（v1.8.0 WP-13 / 审计 C11）：同一时刻只画一个框、后来者排队，
   // 并发调用者的 Promise 绝不悬空；状态机在 modal-queue.js 里、Node 单测覆盖，这里只负责画与收。
   const modalQueueModule = window.CWModalQueue;
+  // 长 IPC 回执的世代令牌 + 章身份快照（v1.8.0 WP-15 / 审计 C15/C16/C36/C37/C40/V111/V202）：
+  // 纯判定在 stale-guard.js 里、Node 单测覆盖；各面板的 host 各拿一份，回来先验身份再落地。
+  const staleGuard = window.CWStaleGuard;
   // 自定义字体的 base64 解码（代码审计 F11）：font-logic.js 里、Node 单测覆盖；
   // 优先浏览器原生 data: URL 解码，失败才回退 atob 循环。
   const fontLogic = window.CWFontLogic;
@@ -2531,7 +2534,7 @@
   // 本章字数（含超大单章 400ms 防抖）/ 选中字数两段整段搬走，行为一字未改。
   // 这里只剩接线：三个入口按原名被章节列表 / 写作时长 / 编辑器小件 / 测试钩子取用。
   const statusbarUi = statusbarUiModule.create({
-    $, state, editorEl, formatChars, formatCount, chaptersLib, editorLogic, call, api, toast, openModal, loadChapterAt
+    $, state, editorEl, formatChars, formatCount, chaptersLib, editorLogic, call, api, toast, openModal, loadChapterAt, staleGuard
   });
   const { chapterCharsOf, renderCharCount, renderSelectionStats } = statusbarUi;
 
@@ -2596,6 +2599,7 @@
   const findUi = findUiModule.create({
     $, state, api, call, toast,
     longOpLogic,
+    staleGuard,
     imeGuard,
     find: { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput },
     nav: { chapterTitle, switchChapter: (index) => switchChapter(index), loadChapterAt, currentChapterLabel: () => currentChapterLabel(), hideHeaderMenus },
@@ -2703,7 +2707,7 @@
   // 装配点必须放在 statsUi 之后：renderStatsUi 是上面那一行解构出来的 const。
   // 「打开面板前收起顶栏菜单」不进 host：事件绑定 / 测试钩子走 open(text, { beforeOpen: hideHeaderMenus })。
   const captureUi = captureUiModule.create({
-    $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody
+    $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody, staleGuard
   });
 
   // ---------- 写作时长（状态栏秒表） ----------
@@ -3859,6 +3863,7 @@
     call,
     state,
     toast,
+    staleGuard,
     volumeList,
     chapterVolumeId,
     hideExportMenu,
@@ -4687,7 +4692,7 @@
   // ---------- 本书历史 ----------
   // 第 4 步九刀·第一刀：实现在 renderer/history-ui.js（模块头有契约），这里只装配与接线；
   const historyUi = historyUiModule.create({
-    $, state, api, call, toast,
+    $, state, api, call, toast, staleGuard,
     // 1.5.0 P0-5（审计 V-2）：历史还原的撤销也要核对备份没变
     guard: backupGuard,
     collab: { confirmRestoreWithUnsaved, openModal, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk,
@@ -4702,7 +4707,7 @@
   // ---------- 灵感箱（碎片速记） ----------
   // 第 4 步九刀·补刀 10：实现在 renderer/fragments-ui.js（模块头有契约），这里只装配与接线；
   const fragmentsUi = fragmentsUiModule.create({
-    $, state, api, call, toast,
+    $, state, api, call, toast, staleGuard,
     common: { chaptersLib, formatRelativeTime, formatCount },
     editor: { editorEl, onEditorInput, scrollCaretIntoView },
     hideHeaderMenus
@@ -4712,7 +4717,7 @@
   // ---------- 校对 ----------
   // 第 4 步九刀·第四刀：实现在 renderer/proofread-ui.js（模块头有契约），这里只装配与接线；
   const proofreadUi = proofreadUiModule.create({
-    $, state, api, call, toast,
+    $, state, api, call, toast, staleGuard,
     peers: { closeFindPanel, renderProofreadSettings: () => renderProofreadSettings() },
     resultJump: window.CWResultJumpUi,
     nav: { chapterTitle, editorEl, switchChapter },
@@ -4723,7 +4728,7 @@
   // ---------- 敏感词预检 ----------
   // 第 4 步九刀·第五刀：实现在 renderer/sensitive-ui.js（模块头有契约），这里只装配与接线；
   const sensitiveUi = sensitiveUiModule.create({
-    $, state, api, call, toast,
+    $, state, api, call, toast, staleGuard,
     peers: { closeFindPanel, closeProofreadPanel, currentChapterRef, matchRangeAt, renderSensitiveSettings: () => renderSensitiveSettings() },
     resultJump: window.CWResultJumpUi,
     nav: { chapterTitle, editorEl, switchChapter },

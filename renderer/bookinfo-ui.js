@@ -66,6 +66,9 @@
   // V75：保存进行中标记。模块级只有一份（生产环境每个窗口只 create 一次）：
   // 同一时刻只允许一次 updateBookInfo 在飞，连按 Enter / 保存按钮不会重复发 IPC。
   let saving = false;
+  // WP-15（C15）：在飞的是哪一本书。作者没等 A 回来就切到 B 再点保存时，不能用同一句
+  // 「返回 {ok:false}」把 B 静默吞掉——至少要在 B 的弹层里说清「上一本还在保存」。
+  let savingBook = null;
 
   function createBookinfoUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createBookinfoUi 需要 host 对象');
@@ -138,8 +141,18 @@
     const book = state.bookInfoBook;
     if (!book) return { ok: false };
     // V75：连按（Enter + 保存按钮 / 双击）只发一次 IPC；在飞时后来的直接返回，不排队。
-    if (saving) return { ok: false };
+    // WP-15（C15）：同一本书的连按静默忽略；在飞的是另一本书时，B 的保存不能装作成功，
+    // 也不该静默——在 B 的弹层里给出可见提示，作者才知道要等上一本存完再按一次。
+    if (saving) {
+      if (savingBook && savingBook !== book) {
+        const message = '正在保存上一本书的信息，请稍候再保存';
+        $('bookinfo-error').textContent = message;
+        return { ok: false, stale: true, message };
+      }
+      return { ok: false };
+    }
     saving = true;
+    savingBook = book;
     try {
       const form = readBookInfoForm();
       // 标签先按应用规则清洗（去空 / 去重 / 最多 10 个），免得作者以为自己存了 15 个
@@ -158,10 +171,19 @@
       await refreshShelf();
       return { ok: true, changed: Boolean(result.changed) };
     } catch (err) {
-      $('bookinfo-error').textContent = `保存失败：${err.message}`;
+      // WP-15（C15）：失败回执也只属于发起时那本书。期间关掉 A 的弹层 / 切到 B 时，
+      // 不能把 A 的报错写进 B 的错误行（作者会以为是 B 存不上）；改用 toast 点名 A，
+      // 至少让作者知道那次保存没成功、需要重来。
+      const message = `保存失败：${err.message}`;
+      if (state.bookInfoBook !== book) {
+        toast(`《${book.title || book.folder || '刚才那本书'}》${message}`, 'error');
+        return { ok: false, stale: true, message: err.message };
+      }
+      $('bookinfo-error').textContent = message;
       return { ok: false, message: err.message };
     } finally {
       saving = false;
+      savingBook = null;
     }
   }
 

@@ -47,14 +47,17 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'peers', 'nav', 'view'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'peers', 'nav', 'view', 'staleGuard'];
 
   function createSensitiveUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createSensitiveUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createSensitiveUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, peers, nav, view } = host;
+    const { $, state, api, call, toast, peers, nav, view, staleGuard } = host;
+    if (!staleGuard || typeof staleGuard.chapterIdentity !== 'function') {
+      throw new TypeError('createSensitiveUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
     if (typeof peers !== 'object') throw new TypeError('createSensitiveUi 的 host.peers 必须是对象');
     for (const key of ['closeFindPanel', 'closeProofreadPanel', 'currentChapterRef', 'matchRangeAt', 'renderSensitiveSettings']) {
       if (peers[key] === undefined || peers[key] === null) throw new TypeError('createSensitiveUi 的 host.peers 缺少 ' + key);
@@ -288,6 +291,15 @@
     return jumpToResult(match, closeSensitivePanel);
   }
 
+  // WP-15（V202 / 复核 R5）：await 期间换书 / 换章时，结果不能标到现在的章名下
+  // （点条目会跳错章、摘要「本章 N 处」与内容不符）。作废后清掉结果并提示重跑。
+  function discardStaleSensitiveRun() {
+    state.sensitive = null;
+    $('sensitive-summary').textContent = '预检期间已经换了书或章节，这次结果没有显示；请重新预检';
+    $('sensitive-results').innerHTML = '';
+    return { ok: false, stale: true, message: '预检期间已经换了书或章节' };
+  }
+
   async function runSensitiveCheck() {
     if (!state.bookPath || !state.chapters.length) {
       $('sensitive-summary').textContent = '这本书里还没有章节';
@@ -302,13 +314,23 @@
     $('sensitive-results').innerHTML = '';
     try {
       let payload;
+      // WP-15（V202）：发起时的书 / 章身份先记下；回执回来只对这份身份结算。
+      const expectedBookPath = staleGuard.chapterIdentity(state).bookPath;
       if (scope === 'book') {
         const override = currentChapterRef();
-        payload = await call(api.sensitiveCheckBook, state.bookPath, {}, override);
+        payload = await call(api.sensitiveCheckBook, expectedBookPath, {}, override);
+        if (staleGuard.chapterIdentity(state).bookPath !== expectedBookPath) {
+          return discardStaleSensitiveRun();
+        }
         payload.scope = 'book';
       } else {
         const chapter = state.chapters[state.index];
+        const chapterIndex = state.index;
+        const expectedChapter = staleGuard.chapterIdentity(state);
         const res = await call(api.sensitiveCheckText, editorEl.value, {});
+        if (!staleGuard.sameChapterIdentity(expectedChapter, staleGuard.chapterIdentity(state))) {
+          return discardStaleSensitiveRun();
+        }
         payload = res.ok === false
           ? {
               ...res,
@@ -318,7 +340,7 @@
               byWord: [],
               wordHitCount: 0,
               chapterId: chapter ? chapter.id : null,
-              chapterIndex: state.index,
+              chapterIndex,
               chapterName: chapter ? chapter.name : ''
             }
           : {
@@ -327,12 +349,12 @@
               matches: res.issues.map((issue) => ({
                 ...issue,
                 chapterId: chapter ? chapter.id : null,
-                chapterIndex: state.index,
+                chapterIndex,
                 chapterName: chapter ? chapter.name : ''
               })),
               scope: 'current',
               chapterId: chapter ? chapter.id : null,
-              chapterIndex: state.index,
+              chapterIndex,
               chapterName: chapter ? chapter.name : ''
             };
       }
