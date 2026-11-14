@@ -690,6 +690,106 @@ test('替换备份：非法目录名 / 不存在的备份 / 已删章节都被�
   assert.equal((await storage.loadChapterText(bookPath, meta.chapters[0].file)).text, '阿明一。');
 });
 
+// WP-20（审计 C19）：可还原集合以前直接照搬 meta.chapters[].file，而 validateMeta 只查
+// 「非空字符串」。坏书目的 file=「书目.json」能通过，备份目录里手工放一份同名文件，
+// 还原就会把书目本身原子覆盖（实测 v1.7.2 会写成伪造内容，并留下「还原前备份」）。
+test('替换备份还原（C19）：坏书目 file=书目.json 不会被还原覆盖，书目字节一个都不变', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '坏书目光目');
+  const baseMeta = await storage.readBookMeta(bookPath);
+  const file0 = baseMeta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file0, '阿明来了。');
+  const replaced = await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' });
+  const backupName = path.basename(replaced.backupDir);
+
+  // 坏书目：第 1 章 file 改成书目.json（validateMeta 只查非空字符串，会放行）
+  const badMeta = {
+    ...baseMeta,
+    chapters: baseMeta.chapters.map((chapter) => ({ ...chapter, file: '书目.json' }))
+  };
+  const metaPath = path.join(bookPath, '书目.json');
+  await fs.writeFile(metaPath, JSON.stringify(badMeta, null, 2), 'utf8');
+  const metaBefore = await fs.readFile(metaPath, 'utf8');
+  // 备份目录里手放一份同名文件（真实替换不会产生这种条目）
+  const planted = '{"title":"这份内容不该写进书里"}';
+  await fs.writeFile(path.join(bookPath, '_trash', backupName, '书目.json'), planted, 'utf8');
+
+  await assert.rejects(
+    () => storage.restoreReplaceBackup(bookPath, backupName),
+    (err) => ['BACKUP_NO_TARGET', 'BAD_PATH'].includes(err.code)
+  );
+  assert.equal(await fs.readFile(metaPath, 'utf8'), metaBefore, '书目一个字节都不许变');
+  assert.equal((await storage.loadChapterText(bookPath, file0)).text, '小明来了。', '章节正文也不许被写');
+  // 一个字节都没写：不建「还原前备份」，替换备份里的文件也原样
+  const trashNames = await fs.readdir(path.join(bookPath, '_trash'));
+  assert.deepEqual(trashNames.filter((name) => name.startsWith('还原前备份-')), []);
+  assert.equal(
+    await fs.readFile(path.join(bookPath, '_trash', backupName, '书目.json'), 'utf8'),
+    planted,
+    '备份文件只供查看，不许被消耗'
+  );
+});
+
+test('替换备份还原（C19）：系统保留名不会被写进书，书目字节不变', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '保留名还原');
+  const baseMeta = await storage.readBookMeta(bookPath);
+  const badMeta = {
+    ...baseMeta,
+    chapters: baseMeta.chapters.map((chapter) => ({ ...chapter, file: 'nul.txt' }))
+  };
+  const metaPath = path.join(bookPath, '书目.json');
+  await fs.writeFile(metaPath, JSON.stringify(badMeta, null, 2), 'utf8');
+  const metaBefore = await fs.readFile(metaPath, 'utf8');
+  // 审计勘误 E1 实测：Node 用扩展路径前缀能把 nul.txt 落成普通文件，所以这条能真的造出来
+  const backupName = '替换备份-20991231235958';
+  const backupDir = path.join(bookPath, '_trash', backupName);
+  await fs.mkdir(backupDir, { recursive: true });
+  await fs.writeFile(path.join(backupDir, 'nul.txt'), '保留名内容', 'utf8');
+
+  await assert.rejects(
+    () => storage.restoreReplaceBackup(bookPath, backupName),
+    (err) => ['BACKUP_NO_TARGET', 'BAD_PATH'].includes(err.code)
+  );
+  assert.equal(await fs.readFile(metaPath, 'utf8'), metaBefore);
+  assert.equal((await fs.readdir(bookPath)).includes('nul.txt'), false, '保留名不许被写进书');
+  const trashNames = await fs.readdir(path.join(bookPath, '_trash'));
+  assert.deepEqual(trashNames.filter((name) => name.startsWith('还原前备份-')), []);
+});
+
+test('替换备份还原（C19）：坏章记录被跳过，正常章照常还原，书目不被伪造内容覆盖', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '混合坏书目');
+  await storage.createChapter(bookPath, 1, '第二章');
+  const baseMeta = await storage.readBookMeta(bookPath);
+  const [file0, file1] = baseMeta.chapters.map((chapter) => chapter.file);
+  await storage.saveChapterText(bookPath, file0, '阿明一。');
+  await storage.saveChapterText(bookPath, file1, '这里没有那个人。');
+  const replaced = await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' });
+  const backupName = path.basename(replaced.backupDir);
+
+  // 只有第 2 章的 file 是坏的：第 1 章必须照常能还原，坏记录原样留着等修复流程
+  const badMeta = {
+    ...baseMeta,
+    chapters: baseMeta.chapters.map((chapter, i) => (i === 1 ? { ...chapter, file: '书目.json' } : chapter))
+  };
+  const metaPath = path.join(bookPath, '书目.json');
+  await fs.writeFile(metaPath, JSON.stringify(badMeta, null, 2), 'utf8');
+  const planted = '{"title":"伪造书目"}';
+  await fs.writeFile(path.join(bookPath, '_trash', backupName, '书目.json'), planted, 'utf8');
+
+  const res = await storage.restoreReplaceBackup(bookPath, backupName);
+  assert.equal(res.restored, 1, '只有第一章可还原');
+  assert.equal(res.skipped, 1, '书目.json 不是章节文件，必须跳过');
+  assert.equal((await storage.loadChapterText(bookPath, file0)).text, '阿明一。', '正常章照常还原');
+  assert.equal((await storage.loadChapterText(bookPath, file1)).text, '这里没有那个人。', '没参与替换的第二章一个字节没动');
+  const onDisk = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+  assert.equal(onDisk.title, '混合坏书目', '书目没被备份目录里的伪造内容覆盖');
+  assert.equal(onDisk.chapters.length, 2);
+  assert.equal(onDisk.chapters[1].file, '书目.json', '坏章记录原样留着，等修复流程处理');
+  assert.equal(await fs.readFile(path.join(bookPath, '_trash', backupName, '书目.json'), 'utf8'), planted);
+});
+
 test('整本排版：预检查只算不写，正式整理逐章写盘并备份原文', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '整本排版书');
