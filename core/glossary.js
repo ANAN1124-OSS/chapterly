@@ -14,10 +14,11 @@
 //
 // 定位约定：index / length 都是「把 CRLF 归一成 \n、去掉 BOM」之后的字符位置，
 // 与编辑区 textarea 的 value 一致，因此可以直接 setSelectionRange。
-const fs = require('node:fs/promises');
+//
+// A1（v1.8.0 WP-30）：词表读取 / 解码 / 公开信息这一段与敏感词预检共用 core/wordlist.js，
+// 本文件只留「错词 → 建议」的行解析与本模块的错误码文案。
 const path = require('node:path');
-const txtLib = require('./txt');
-const errorText = require('./error-text');
+const wordlist = require('./wordlist');
 const wordscan = require('./wordscan');
 const { normalizeText, mapLimit } = require('./common');
 // 多份校对词表的条数上限与配置清洗同一份定义（1.7.2 D4/V42 已收口到 core/config.js）；
@@ -25,7 +26,8 @@ const { normalizeText, mapLimit } = require('./common');
 const { WORDLIST_MAX } = require('./config');
 
 // 词表文件上限：再大就不像「每行一个词」的词表了，读进来只会拖慢整本检查
-const MAX_FILE_BYTES = 4 * 1024 * 1024;
+// （唯一实现在 core/wordlist.js，敏感词表同一份）
+const MAX_FILE_BYTES = wordlist.MAX_FILE_BYTES;
 // 最多取前 5000 个词；超出部分不读，但会明确告诉作者（truncated）
 const MAX_ENTRIES = 5000;
 // 单行超过 100 字基本是误粘进来的正文，跳过并统计，不参与匹配
@@ -133,114 +135,44 @@ function sanitizeEntries(raw) {
   return out;
 }
 
-// 词表字节 → { ok, entries, stats } 或 { ok:false, code, message }。
+// 词表读取 / 解码 / 公开信息的流程在 core/wordlist.js（A1 / WP-30）：本模块只声明
+// 「词条」这个字段、自己的错误码与提示文案，行解析仍是上面的 parseGlossary。
 // 编码复用 txt.decodeBuffer（UTF-8 / UTF-16 BOM / GB18030），并额外识别两种「不是纯文本」：
-// 带 NUL 的二进制、解码出替换字符 U+FFFD 的坏编码。
+// 带 NUL 的二进制、解码出替换字符 U+FFFD 的坏编码 —— 这些判定也只在共享核心里写一遍。
+const READER = wordlist.createReader({
+  field: 'entries',
+  parse: parseGlossary,
+  // 校对词表的「未配置」回包一直带 count: 0（敏感词表不带），保持旧形状
+  notConfiguredExtra: { count: 0 },
+  codes: {
+    empty: 'GLOSSARY_EMPTY',
+    tooBig: 'GLOSSARY_TOO_BIG',
+    badEncoding: 'GLOSSARY_BAD_ENCODING',
+    notConfigured: 'GLOSSARY_NOT_CONFIGURED',
+    missing: 'GLOSSARY_MISSING',
+    unreadable: 'GLOSSARY_UNREADABLE',
+    notFile: 'GLOSSARY_NOT_FILE'
+  },
+  messages: {
+    emptyFile: '词表是空文件（每行一个词，可写「错词 → 建议」）',
+    emptyList: '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）',
+    tooBig: '词表文件太大（上限 4MB），请换一个小一点的 txt',
+    binary: '词表不像是纯文本（检测到二进制内容），请用 UTF-8 / UTF-16 / GBK 编码的 txt',
+    badEncoding: '词表编码无法识别（不是 UTF-8 / UTF-16 / GBK 文本），请另存为 UTF-8 的 txt',
+    notConfigured: '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的五条规则）',
+    publicEmpty: '还没有指定校对词表',
+    notFile: '选中的不是一个文件，请选校对词表 txt'
+  }
+});
+
+// 词表字节 → { ok, entries, stats } 或 { ok:false, code, message }
 function decodeGlossaryBuffer(buffer) {
-  if (!buffer || !buffer.length) {
-    return {
-      ok: false,
-      code: 'GLOSSARY_EMPTY',
-      message: '词表是空文件（每行一个词，可写「错词 → 建议」）'
-    };
-  }
-  if (buffer.length > MAX_FILE_BYTES) {
-    return {
-      ok: false,
-      code: 'GLOSSARY_TOO_BIG',
-      message: '词表文件太大（上限 4MB），请换一个小一点的 txt'
-    };
-  }
-  const hasUtf16Bom =
-    buffer.length >= 2 &&
-    ((buffer[0] === 0xff && buffer[1] === 0xfe) || (buffer[0] === 0xfe && buffer[1] === 0xff));
-  if (!hasUtf16Bom && buffer.includes(0)) {
-    return {
-      ok: false,
-      code: 'GLOSSARY_BAD_ENCODING',
-      message: '词表不像是纯文本（检测到二进制内容），请用 UTF-8 / UTF-16 / GBK 编码的 txt'
-    };
-  }
-  const text = txtLib.decodeBuffer(buffer);
-  if (text.includes('\uFFFD')) {
-    return {
-      ok: false,
-      code: 'GLOSSARY_BAD_ENCODING',
-      message: '词表编码无法识别（不是 UTF-8 / UTF-16 / GBK 文本），请另存为 UTF-8 的 txt'
-    };
-  }
-  const parsed = parseGlossary(text);
-  if (!parsed.entries.length) {
-    return {
-      ok: false,
-      code: 'GLOSSARY_EMPTY',
-      message: '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）'
-    };
-  }
-  return { ok: true, entries: parsed.entries, stats: parsed.stats };
+  return READER.decodeBuffer(buffer);
 }
 
 // 读词表文件（只读）。任何失败都返回结构化结果，由界面给出明确提示，不抛异常。
 async function readGlossaryFile(filePath) {
-  const rawPath = typeof filePath === 'string' ? filePath.trim() : '';
-  if (!rawPath) {
-    return {
-      ok: false,
-      configured: false,
-      code: 'GLOSSARY_NOT_CONFIGURED',
-      message: '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的五条规则）',
-      path: '',
-      name: '',
-      count: 0
-    };
-  }
-  const resolved = path.resolve(rawPath);
-  const base = { configured: true, path: resolved, name: path.basename(resolved) };
-  let stat;
-  try {
-    stat = await fs.stat(resolved);
-  } catch (err) {
-    const missing = err && err.code === 'ENOENT';
-    return {
-      ...base,
-      ok: false,
-      code: missing ? 'GLOSSARY_MISSING' : 'GLOSSARY_UNREADABLE',
-      message: missing
-        ? `词表文件不存在：${errorText.maskPath(resolved)}（可能被移动或删除了，请重新选择）`
-        : `读不了词表文件：${errorText.describeForUi(err).message}`
-    };
-  }
-  if (!stat.isFile()) {
-    return {
-      ...base,
-      ok: false,
-      code: 'GLOSSARY_NOT_FILE',
-      message: '选中的不是一个文件，请选校对词表 txt'
-    };
-  }
-  if (stat.size > MAX_FILE_BYTES) {
-    return {
-      ...base,
-      ok: false,
-      size: stat.size,
-      code: 'GLOSSARY_TOO_BIG',
-      message: '词表文件太大（上限 4MB），请换一个小一点的 txt'
-    };
-  }
-  let buffer;
-  try {
-    buffer = await fs.readFile(resolved);
-  } catch (err) {
-    return {
-      ...base,
-      ok: false,
-      code: 'GLOSSARY_UNREADABLE',
-      message: `读不了词表文件：${errorText.describeForUi(err).message}`
-    };
-  }
-  const decoded = decodeGlossaryBuffer(buffer);
-  if (!decoded.ok) return { ...base, size: stat.size, ...decoded };
-  return { ...base, ok: true, size: stat.size, entries: decoded.entries, stats: decoded.stats };
+  return READER.readFile(filePath);
 }
 
 // 多份词表（1.7.0 F3b）：每份自己的失败原因 → 不含路径的短提示。
@@ -333,19 +265,7 @@ async function readGlossaryFiles(paths) {
 // 只给渲染层的词表信息：绝不把词表正文（entries）带过去，界面只需要数量与状态。
 // 命中结果里仍会带命中词与建议（那是作者要看的），和整个词表不是一回事。
 function publicGlossaryInfo(list) {
-  if (!list || typeof list !== 'object') {
-    return {
-      ok: false,
-      configured: false,
-      code: 'GLOSSARY_NOT_CONFIGURED',
-      message: '还没有指定校对词表',
-      path: '',
-      name: '',
-      count: 0
-    };
-  }
-  const { entries, ...rest } = list;
-  return { ...rest, count: Array.isArray(entries) ? entries.length : 0 };
+  return READER.publicInfo(list);
 }
 
 // 多份词表的公开信息（1.7.0 F3b）：只给数量 / 状态，绝不带路径与词条正文。

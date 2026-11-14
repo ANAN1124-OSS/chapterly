@@ -127,16 +127,27 @@ test('formatTitle：自定义模板下原文已带号标题原样 / 特殊标题
 test('UMD：Node require 行为不变，浏览器加载挂到 window.CWChapters', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'core', 'chapters.js'), 'utf8');
   const commonSource = fs.readFileSync(path.join(__dirname, '..', 'core', 'common.js'), 'utf8');
+  const headingSource = fs.readFileSync(path.join(__dirname, '..', 'core', 'heading.js'), 'utf8');
   const sandbox = {};
   vm.createContext(sandbox);
   // C33（v1.8.0 WP-26）：chapters.js 在浏览器里从 window.CWCommon 取 truncateSafe，
   // 与 index.html 的真实加载顺序一致（common.js 在前）。
   vm.runInContext(commonSource, sandbox, { filename: 'core/common.js' });
+  // A1 / V113（v1.8.0 WP-30）：词表从 window.CWHeading 取（index.html 里 heading.js 排在 chapters.js 之前）
+  vm.runInContext(headingSource, sandbox, { filename: 'core/heading.js' });
   vm.runInContext(source, sandbox, { filename: 'core/chapters.js' });
   // 缺 common.js 时必须加载期明确报错，不许退回一份本地 slice 副本
   const bare = {};
   vm.createContext(bare);
   assert.throws(() => vm.runInContext(source, bare, { filename: 'core/chapters.js' }), /core\/common\.js 没有先加载/);
+  // 缺 heading.js 时也要明确报错（不许退回一份本地标题词表）
+  const noHeading = {};
+  vm.createContext(noHeading);
+  vm.runInContext(commonSource, noHeading, { filename: 'core/common.js' });
+  assert.throws(
+    () => vm.runInContext(source, noHeading, { filename: 'core/chapters.js' }),
+    /core\/heading\.js 没有先加载/
+  );
   const browserCh = sandbox.CWChapters;
   assert.equal(typeof browserCh, 'object');
   assert.equal(typeof browserCh.formatTitle, 'function');

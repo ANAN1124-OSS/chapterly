@@ -8,18 +8,25 @@
  * C33（v1.8.0 WP-26）：文件名 / 章名截断走 core/common.js 的 truncateSafe（不切开代理对）。
  * 浏览器分支从 window.CWCommon 取（index.html 里 common.js 排在 chapters.js 之前），
  * 缺了直接报错，不许退回一份本地 slice 副本。
+ *
+ * A1 / V113（v1.8.0 WP-30）：原文标题词表统一在 core/heading.js 的 display 场景
+ * （不认「話」/ 全角数字，但多认「开篇」；「Chapter N」算已带号标题）。
+ * 浏览器分支从 window.CWHeading 取，index.html 里 heading.js 必须排在 chapters.js 之前。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./common'));
+    module.exports = factory(require('./common'), require('./heading'));
   } else if (root) {
-    root.CWChapters = factory(root.CWCommon);
+    root.CWChapters = factory(root.CWCommon, root.CWHeading);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (common) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (common, heading) {
   'use strict';
 
   if (!common || typeof common.truncateSafe !== 'function') {
     throw new Error('CWChapters：core/common.js 没有先加载');
+  }
+  if (!heading || typeof heading.numberedRe !== 'function' || typeof heading.keywordRe !== 'function') {
+    throw new Error('CWChapters：core/heading.js 没有先加载');
   }
   const { truncateSafe } = common;
 
@@ -50,16 +57,12 @@
   // 原文自带章节标题（导进来的书）分两类：
   //   1. 已经带号的（「第1章 …」「第一章 …」「Chapter N」）：原样保留，避免「第1章：第1章 …」叠号；
   //   2. 不带号的特殊标题（楔子 / 番外 / 大结局 / 前传 …）：2026-11-10 起补「第N章：」，不再整段原样返回。
-  // 两条正则由同一份 source 派生，避免词表漂移；RAW_TITLE_RE 继续作为两者合集导出。
-  // 1.5.0 已拍板：RAW_TITLE_RE **保留为兼容导出、勿删**——旧调用与测试仍在用，删掉属于破坏性接口变更，
-  // 收益只是少一个导出（见作业卡 1.5.0 §7 第 8 条）。
-  const NUMBERED_TITLE_SOURCE =
-    '第\\s*[0-9零〇一二三四五六七八九十百千万两]+\\s*[章节回卷集篇部话幕]|Chapter\\s+\\d+';
-  const SPECIAL_TITLE_SOURCE =
-    '楔子|序章|序言|引子|前言|前传|外传|尾声|后记|番外|终章|大结局|附录|开篇';
-  const NUMBERED_TITLE_RE = new RegExp(`^(?:${NUMBERED_TITLE_SOURCE})`, 'i');
-  const SPECIAL_TITLE_RE = new RegExp(`^(?:${SPECIAL_TITLE_SOURCE})`, 'i');
-  const RAW_TITLE_RE = new RegExp(`^(?:${NUMBERED_TITLE_SOURCE}|${SPECIAL_TITLE_SOURCE})`, 'i');
+  // 词表与严格度在 core/heading.js 的 display 场景（A1 / V113，WP-30），这里只取三个判定。
+  // RAW_TITLE_RE 继续作为两者合集导出：1.5.0 已拍板 **保留为兼容导出、勿删**——旧调用与测试仍在用，
+  // 删掉属于破坏性接口变更，收益只是少一个导出（见作业卡 1.5.0 §7 第 8 条）。
+  const NUMBERED_TITLE_RE = heading.numberedRe('display');
+  const SPECIAL_TITLE_RE = heading.keywordRe('display');
+  const RAW_TITLE_RE = heading.anchorRe('display');
 
   function pad3(n) {
     return String(n).padStart(3, '0');

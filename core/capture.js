@@ -15,17 +15,22 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./txt'), require('./chapters'), require('./common'));
+    module.exports = factory(require('./txt'), require('./chapters'), require('./common'), require('./heading'));
   } else if (root) {
-    root.CWCapture = factory(null, root.CWChapters, root.CWCommon);
+    root.CWCapture = factory(null, root.CWChapters, root.CWCommon, root.CWHeading);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (txtLib, chaptersLib, commonLib) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (txtLib, chaptersLib, commonLib, headingLib) {
   'use strict';
 
   // stripBom 从 core/common.js 来（B6）：和原子读写 / 导入 / 查找共用同一份。
   // 浏览器里 core/common.js 必须排在 core/capture.js 之前（index.html 里它是第一个脚本）。
   if (!commonLib || typeof commonLib.stripBom !== 'function') {
     throw new TypeError('CWCapture：core/common.js 没有先加载');
+  }
+  // A1 / V113（v1.8.0 WP-30）：标题词表统一在 core/heading.js。浏览器里没有 core/txt.js，
+  // 这条锚点正则就是「像不像标题」的唯一兜底；缺 heading 直接报错，不退回本地词表副本。
+  if (!headingLib || typeof headingLib.anchorRe !== 'function') {
+    throw new TypeError('CWCapture：core/heading.js 没有先加载');
   }
   const { stripBom } = commonLib;
 
@@ -46,9 +51,9 @@
   const ELLIPSIS = '…';
 
   // 「第X章 / 第X话 / 楔子 / Chapter N」这类锚点：用于「标题和正文写在同一行」的拆分。
-  // 比 core/txt.js 的规则多认繁体「話」与全角数字（pixiv 日文 / 全角版式）。
-  const HEADING_ANCHOR_RE =
-    /^(第\s*[0-9０-９零〇一二三四五六七八九十百千万两]{1,12}\s*[章节回卷集篇部话幕話]|楔子|序章|序言|引子|前言|前传|外传|尾声|后记|番外篇?|终章|大结局|附录|Chapter\s+\d+)/i;
+  // A1 / V113（v1.8.0 WP-30）：词表与严格度统一在 core/heading.js 的 capture 场景——
+  // 比导入多认繁体「話」与全角数字（pixiv 日文 / 全角版式），其余同源。
+  const HEADING_ANCHOR_RE = headingLib.anchorRe('capture');
   // 同一行里标题与正文的断开点：句末标点 / 全角空格 / 连续两个以上空白
   const INLINE_BOUNDARY_RE = /[。！？!?…]|　|\s{2,}/;
 

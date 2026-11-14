@@ -475,6 +475,7 @@ test('静态闸门：index.html 先加载 core/common.js，再加载依赖它的
 test('浏览器加载链：按 index.html 的顺序真跑一遍，模板 / 编辑器 / 查找都拿到共享实现', () => {
   const { win, context } = loadInBrowserSandbox([
     'core/common.js',
+    'core/heading.js',
     'core/chapters.js',
     'core/paragraphs.js',
     'core/template.js',
@@ -535,7 +536,7 @@ test('缺少 core/chapters.js 时 editor-logic 也直接报错（字数口径不
 
 test('缺少 core/paragraphs.js 时 editor-logic 也直接报错（段落切分不许悄悄退回本地副本）', () => {
   assert.throws(
-    () => loadInBrowserSandbox(['core/common.js', 'core/chapters.js', 'renderer/editor-logic.js']),
+    () => loadInBrowserSandbox(['core/common.js', 'core/heading.js', 'core/chapters.js', 'renderer/editor-logic.js']),
     /CWEditorLogic：core\/paragraphs\.js 没有先加载/,
     'v0.9 B-3：common / chapters 都在、只缺 paragraphs 时必须明确报错'
   );
