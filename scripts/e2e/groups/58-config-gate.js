@@ -8,7 +8,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 module.exports = async function group58ConfigGate(t) {
-  const { exec, execIn, check, sleep, userData, fileExists, windowsInfo, openWindow, destroyWindow } = t;
+  const { exec, execIn, check, waitFor, sleep, userData, fileExists, windowsInfo, openWindow, destroyWindow, bookDir } = t;
 
   // 58. 配置来源校验（v0.9 C-2b，安全审计 C1 的延伸）：
   //     config:set 能改的三项「指向磁盘」的配置（书架目录 / 校对词表 / 敏感词表）只认
@@ -225,5 +225,54 @@ module.exports = async function group58ConfigGate(t) {
     (await readGateConfigDisk()).dailyGoal === gateDiskBefore.dailyGoal &&
       (await readGateConfigDisk()).sensitiveWordsPath === gateDiskBefore.sensitiveWordsPath
   );
+
+  // 58d. E1（审计 E1）：config:set 不能成为「按书自定义字体」的后门。
+  //      bookDisplay 是顶层字段（filterPathPatch 只守顶层路径字段），里面每本书的 editorCustomFontPath
+  //      会被 font:read 整份 base64 读回渲染层——等于绕过 font:pick 的来源闸门。这里打开一本书，
+  //      用一个真实存在、扩展名像字体的伪造文件走一遍：必须被拒（这本书的显示设置保留原值）、
+  //      不落盘、font:read 也读不到它；同一份来源校验在单测 tests/config-gate.test.js 里逐条锁住。
+  await exec(`window.__cwTest.openBookPath(${JSON.stringify(bookDir)})`);
+  await waitFor("window.__cwTest.view() === 'editor'");
+  const e1BookId = await exec('window.__cwTest.bookId()');
+  const e1ForgedFont = path.join(gateDir, '来源演练伪造字体.ttf');
+  await fs.writeFile(e1ForgedFont, '不是真的字体，只是扩展名像字体', 'utf8');
+  const e1ReadSummary = (result) =>
+    result && result.ok === true
+      ? { ok: true, name: result.data && result.data.name, source: result.data && result.data.source }
+      : { ok: false, code: (result && result.code) || '' };
+  const e1EntryBefore = await exec(
+    `window.api.getBookDisplay(${JSON.stringify(e1BookId)}).then((r) => (r.ok ? r.data : null))`
+  );
+  // font:read 会「读一次就清掉」刚选中的字体：先空读一趟，让前后两次都按同一份配置口径解析
+  await exec('window.api.readFont()');
+  const e1ReadBefore = e1ReadSummary(await exec('window.api.readFont()'));
+  const e1Injected = await exec(
+    `window.api.setConfig({ bookDisplay: { ${JSON.stringify(e1BookId)}: { editorFont: 'custom', editorCustomFontPath: ${JSON.stringify(e1ForgedFont)} } } })
+      .then((r) => (r && r.ok ? r.data : null))`
+  );
+  const e1EntryAfter = await exec(
+    `window.api.getBookDisplay(${JSON.stringify(e1BookId)}).then((r) => (r.ok ? r.data : null))`
+  );
+  const e1ReadAfter = e1ReadSummary(await exec('window.api.readFont()'));
+  const e1Disk = JSON.parse(await fs.readFile(path.join(userData, 'config.json'), 'utf8'));
+  check(
+    '配置来源：config:set 夹带的按书字体路径被拒，这本书的显示设置保留原值（E1）',
+    e1BookId.length > 0 && e1Injected !== null && JSON.stringify(e1EntryAfter) === JSON.stringify(e1EntryBefore),
+    { bookId: e1BookId, before: e1EntryBefore, after: e1EntryAfter }
+  );
+  check(
+    '配置来源：伪造的按书字体路径没有被写进 config.json（磁盘上找不到这段字符串）',
+    !JSON.stringify(e1Disk).includes('来源演练伪造字体')
+  );
+  check(
+    '配置来源：伪造字体经 config:set 之后 font:read 仍读不到（与注入前一致，不是伪造的那份）',
+    JSON.stringify(e1ReadAfter) === JSON.stringify(e1ReadBefore) &&
+      !(e1ReadAfter.ok === true && e1ReadAfter.name === '来源演练伪造字体.ttf'),
+    { before: e1ReadBefore, after: e1ReadAfter }
+  );
+  // 收尾：回到书架（后面的组从书架状态开始），伪造字体文件一并清掉
+  await exec('window.__cwTest.backToShelf()');
+  await waitFor("window.__cwTest.view() === 'shelf'");
+  await fs.rm(e1ForgedFont, { force: true });
 };
 

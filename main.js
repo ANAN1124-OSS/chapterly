@@ -1209,18 +1209,32 @@ function registerIpc() {
     return { accepted: true };
   });
 
-  // 改配置（v0.9 C-2b）：显示设置 / 统计 / 模板这些随便改，但「指向磁盘」的三项
-  // （书架目录 + 两份词表）只认「这个窗口刚在系统对话框里选中的值」或「与原值相同 / 清空」。
-  // 设置界面本来就只有「选择…」按钮（三个输入框都是只读的），所以正常用起来毫无区别；
+  // 改配置（v0.9 C-2b）：显示设置 / 统计 / 模板这些随便改，但「指向磁盘」的四项
+  // （书架目录 + 两份词表 + 自定义字体）只认「这个窗口刚在系统对话框里选中的值」或「与原值相同 / 清空」。
+  // 设置界面本来就只有「选择…」按钮（输入框都是只读的），所以正常用起来毫无区别；
   // 被注入的脚本想借 config:set 让主进程去读写别的目录 / 文件，会被 core/config-gate.js 挡掉。
   handle('config:set', async (patch) => {
     const current = await getConfig();
     const previousRoot = current.booksRoot;
     const session = flowSession();
-    const gated = configGate.filterPathPatch(patch, {
-      current,
-      picked: session ? pickedConfigPaths.snapshot(session.id) : null
-    });
+    const picked = session ? pickedConfigPaths.snapshot(session.id) : null;
+    const gated = configGate.filterPathPatch(patch, { current, picked });
+    // E1（审计 E1）：bookDisplay 是顶层字段，filterPathPatch 会原样透传——每本书的 editorCustomFontPath
+    // 会被 font:read 整份 base64 读回渲染层，等于绕过字体来源闸门。这里逐书过 book:set-display 同一份
+    // 校验（filterBookDisplayMapPatch），并按书合并回当前 map：被拒的字体路径保留原值，只带一本书的
+    // patch 不会把别的书的显示覆盖抹掉；形状不对的 bookDisplay 整个键丢掉（保留原配置）。
+    if (Object.prototype.hasOwnProperty.call(gated.patch, 'bookDisplay')) {
+      const displayGate = configGate.filterBookDisplayMapPatch(gated.patch.bookDisplay, { current, picked });
+      if (displayGate.patch) {
+        gated.patch.bookDisplay = Object.fromEntries([
+          ...Object.entries(current.bookDisplay || {}),
+          ...Object.entries(displayGate.patch)
+        ]);
+      } else {
+        delete gated.patch.bookDisplay;
+      }
+      if (displayGate.rejected.length) gated.rejected.push(...displayGate.rejected);
+    }
     // 只把放行的字段交给配置仓库：被拒的字段保留原值，正常字段照旧生效。
     // A3（审计 E3）：先把目标书架目录建出来（建不出来就报错、配置一个字都不写），再写盘。
     // 旧顺序是「configStore.set 写盘成功 → fs.mkdir」，目录建不出来时界面看到「保存失败」，
