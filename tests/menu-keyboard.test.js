@@ -155,7 +155,11 @@ function makeDoc(menus, openers = {}) {
     activeElement: null,
     getElementById: (id) => byId.get(id) || null,
     addEventListener: (type, fn, capture) => listeners.push({ type, fn, capture: Boolean(capture) }),
-    removeEventListener: () => {},
+    removeEventListener: (type, fn, capture) => {
+      const at = listeners.findIndex((entry) => entry.type === type && entry.fn === fn);
+      if (at >= 0) listeners.splice(at, 1);
+    },
+    listenerCount: (type) => listeners.filter((entry) => entry.type === type).length,
     fire(type, target) {
       const event = { type, target };
       for (const entry of listeners) if (entry.type === type) entry.fn(event);
@@ -386,6 +390,55 @@ test('菜单键盘：「整理」卡 Esc 收起后不被按钮的 focusin 又弹
   env.btnFormat.focus();
   assert.equal(reopened, 1, '再聚焦一次照旧弹开卡片（键盘入口没弄坏）');
   inst.destroy();
+});
+
+test('菜单键盘（C22）：destroy 完整卸载 document 级 click / contextmenu 与「整理」卡 focusin 闸门', () => {
+  const env = setup();
+  const dropdownListeners = [];
+  const dropdown = {
+    addEventListener(type, fn, capture) { dropdownListeners.push({ type, fn, capture: Boolean(capture) }); },
+    removeEventListener(type, fn) {
+      const at = dropdownListeners.findIndex((entry) => entry.type === type && entry.fn === fn);
+      if (at >= 0) dropdownListeners.splice(at, 1);
+    },
+    contains: () => true
+  };
+  const doc = env.doc;
+  const realGet = doc.getElementById.bind(doc);
+  doc.getElementById = (id) => (id === 'format-dropdown' ? dropdown : realGet(id));
+  env.inst.destroy();
+  assert.equal(doc.listenerCount('click'), 0, 'destroy 后 document 上不留旧 click 捕获监听');
+  assert.equal(doc.listenerCount('contextmenu'), 0, 'destroy 后 document 上不留旧 contextmenu 捕获监听');
+
+  MO_INSTANCES = [];
+  const inst = menuKeyboard.install({ document: doc, window: doc.defaultView, MutationObserver: FakeMutationObserver });
+  assert.equal(doc.listenerCount('click'), 1);
+  assert.equal(doc.listenerCount('contextmenu'), 1);
+  assert.equal(dropdownListeners.length, 1, '「整理」卡 focusin 闸门挂上');
+  // 未 destroy 时重复 install 仍是同一个实例、不重复挂监听
+  assert.equal(menuKeyboard.install({ document: doc, window: doc.defaultView, MutationObserver: FakeMutationObserver }), inst);
+  assert.equal(doc.listenerCount('click'), 1, '重复 install 不叠加监听');
+
+  inst.destroy();
+  assert.equal(doc.listenerCount('click'), 0, 'destroy 摘掉 click 捕获监听');
+  assert.equal(doc.listenerCount('contextmenu'), 0, 'destroy 摘掉 contextmenu 捕获监听');
+  assert.equal(dropdownListeners.length, 0, 'destroy 摘掉「整理」卡 focusin 闸门');
+
+  // 重装后只有新一份在岗，旧闭包不再响应
+  MO_INSTANCES = [];
+  const again = menuKeyboard.install({ document: doc, window: doc.defaultView, MutationObserver: FakeMutationObserver });
+  const observer = MO_INSTANCES[0];
+  assert.equal(doc.listenerCount('click'), 1);
+  assert.equal(doc.listenerCount('contextmenu'), 1);
+  env.fireContextMenu(env.chapterItem);
+  const menu = env.menus.find((m) => m.id === 'context-menu');
+  menu.classList.remove('hidden');
+  observer.trigger();
+  assert.equal(doc.activeElement, env.contextItems[0], '重装后右键仍把焦点带进第一条');
+  again.destroy();
+  assert.equal(doc.listenerCount('click'), 0);
+  assert.equal(doc.listenerCount('contextmenu'), 0);
+  assert.equal(dropdownListeners.length, 0);
 });
 
 // ---------- 静态闸门 ----------

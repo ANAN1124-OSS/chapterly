@@ -4887,14 +4887,25 @@
     hideBookMenu();
   }
 
+  // 把光标行滚进视野（查找 / 校对 / 敏感词跳转、插入碎片后回光标都用它）。
+  // C24：编辑区是 pre-wrap，长段落软换行时「\n 数 × 行高」会把视觉行数算少一大截
+  //（一整段几十个视觉行可能一个换行符都没有）→ 跳转会滚到错误位置、甚至滚回章首。
+  // 复用专注模式打字机的镜像测量（同字体 / 行高 / 宽度量光标真实行顶）；只有量不出来
+  //（超长章节 / 宽度为 0 / 还没挂载）才退回按换行数估算。
   function scrollCaretIntoView(pos) {
-    const lineIndex = (editorEl.value.slice(0, pos).match(/\n/g) || []).length;
     const lineHeight = parseFloat(getComputedStyle(editorEl).lineHeight) || 32;
-    const top = lineIndex * lineHeight;
-    const viewBottom = editorEl.scrollTop + editorEl.clientHeight - lineHeight * 2;
-    if (top < editorEl.scrollTop || top > viewBottom) {
-      editorEl.scrollTop = Math.max(0, top - editorEl.clientHeight / 3);
-    }
+    const measured = focusModeUi.measureCaretTop(pos);
+    const caretTop = measured == null
+      ? (editorEl.value.slice(0, pos).match(/\n/g) || []).length * lineHeight
+      : measured;
+    const plan = focusLogic.planCaretReveal({
+      caretTop,
+      currentScrollTop: editorEl.scrollTop,
+      viewportHeight: editorEl.clientHeight,
+      lineHeight,
+      maxScrollTop: editorEl.scrollHeight - editorEl.clientHeight
+    });
+    if (plan.adjust) editorEl.scrollTop = plan.scrollTop;
   }
 
   // ---------- 「整理」按钮的悬浮选择卡 + 「显示」菜单 ----------

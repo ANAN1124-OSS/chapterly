@@ -66,10 +66,47 @@
   // 只改 书目.json 的顺序，章节文件永不重命名；拖拽用 pointer 事件（比 HTML5 DnD 好测、也不挑渲染层）。
   let chapterDrag = null;
 
+  // C38：拖到列表顶部 / 底部边缘时，以前只在 pointermove 那一拍滚 12px——指针停在边缘不动就
+  // 不滚，长列表拖不到底。现在进入边缘区先滚一拍（保持原来「一进边缘立刻有反应」的手感），
+  // 再起一个 16ms 的持续滚动；指针离开边缘 / 松手 / 系统打断都立刻停。
+  const EDGE_ZONE = 28;
+  const EDGE_STEP = 12;
+  const EDGE_INTERVAL_MS = 16;
+  let edgeScroll = null; // { dir: -1|1, lastY, timer }
+
+  function stopEdgeScroll() {
+    if (!edgeScroll) return false;
+    clearInterval(edgeScroll.timer);
+    edgeScroll = null;
+    return true;
+  }
+
+  function startEdgeScroll(dir, clientY) {
+    const want = dir < 0 ? -1 : 1;
+    if (edgeScroll && edgeScroll.dir === want) {
+      edgeScroll.lastY = clientY;
+      return edgeScroll;
+    }
+    stopEdgeScroll();
+    edgeScroll = { dir: want, lastY: clientY, timer: setInterval(edgeScrollTick, EDGE_INTERVAL_MS) };
+    return edgeScroll;
+  }
+
+  function edgeScrollTick() {
+    if (!chapterDrag || !edgeScroll) return stopEdgeScroll();
+    const list = $('chapter-list');
+    if (!list) return stopEdgeScroll();
+    list.scrollTop += edgeScroll.dir * EDGE_STEP;
+    // 列表滚了、指针没动：指针下面换了一条章节，落点标记要跟着重算（不然松开时落错位置）
+    if (Number.isFinite(edgeScroll.lastY)) updateDragTarget(edgeScroll.lastY);
+    return true;
+  }
+
   function startChapterDrag(event, index, itemEl) {
     if (event.button !== 0) return;
     if (state.saving || state.loading || !state.bookPath) return;
     if (state.chapters.length < 2) return;
+    stopEdgeScroll(); // C38：上一次拖拽若没走完收手流程，别把旧定时器带进这次
     chapterDrag = {
       index,
       volumeId: chapterVolumeId(state.chapters[index]),
@@ -163,6 +200,38 @@
     return null;
   }
 
+  function updateDragTarget(clientY) {
+    if (!chapterDrag) return;
+    const list = $('chapter-list');
+    if (!list) return;
+    list.querySelectorAll('.chapter-item.drop-before, .chapter-item.drop-after, .volume-item.drop-into')
+      .forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-into'));
+
+    const target = computeDropTarget({ clientY });
+    chapterDrag.drop = target;
+    if (target && target.el) {
+      if (target.mode === 'header') target.el.classList.add('drop-into');
+      else if (target.mode === 'before') target.el.classList.add('drop-before');
+      else target.el.classList.add('drop-after');
+    }
+  }
+
+  // C38：边缘自动滚动——进入上 / 下 28px 区先滚一拍（老手感），再交给持续滚动定时器。
+  function updateEdgeScroll(clientY) {
+    const list = $('chapter-list');
+    if (!list) return stopEdgeScroll();
+    const listRect = list.getBoundingClientRect();
+    if (clientY < listRect.top + EDGE_ZONE) {
+      list.scrollTop -= EDGE_STEP;
+      startEdgeScroll(-1, clientY);
+    } else if (clientY > listRect.bottom - EDGE_ZONE) {
+      list.scrollTop += EDGE_STEP;
+      startEdgeScroll(1, clientY);
+    } else {
+      stopEdgeScroll();
+    }
+  }
+
   function updateChapterDrag(event) {
     if (!chapterDrag) return;
     if (!chapterDrag.active) {
@@ -171,25 +240,13 @@
       chapterDrag.item.classList.add('dragging');
       document.body.classList.add('chapter-dragging');
     }
-    const list = $('chapter-list');
-    list.querySelectorAll('.chapter-item.drop-before, .chapter-item.drop-after, .volume-item.drop-into')
-      .forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-into'));
-
-    const target = computeDropTarget(event);
-    chapterDrag.drop = target;
-    if (target && target.el) {
-      if (target.mode === 'header') target.el.classList.add('drop-into');
-      else if (target.mode === 'before') target.el.classList.add('drop-before');
-      else target.el.classList.add('drop-after');
-    }
-
-    // 拖动到列表顶部/底部附近时自动滚动
-    const listRect = list.getBoundingClientRect();
-    if (event.clientY < listRect.top + 28) list.scrollTop -= 12;
-    else if (event.clientY > listRect.bottom - 28) list.scrollTop += 12;
+    updateDragTarget(event.clientY);
+    // 拖动到列表顶部/底部附近时自动滚动（C38：进入边缘区后持续滚，不再依赖指针继续移动）
+    updateEdgeScroll(event.clientY);
   }
 
   async function endChapterDrag() {
+    stopEdgeScroll(); // C38：松手就停持续滚动（不管这次算不算有效拖拽）
     if (!chapterDrag) return;
     const drag = chapterDrag;
     chapterDrag = null;
@@ -287,6 +344,7 @@
       // V24（1.6.1 R1）：系统打断拖拽（来电 / 手势 / 指针被夺走）时必须把拖拽活状态一起清掉。
       // 只清视觉标记不够：残留的 chapterDrag 会被下一次普通 pointerup 继续消费，静默 moveChapterTo 改写 书目.json。
       // 这里不走 endChapterDrag()：cancel 不是「收手」，不设 suppressChapterClick（否则紧随其后的点击被吞 300 ms）。
+      stopEdgeScroll(); // C38：系统打断也要停持续滚动，别留着定时器滚列表
       chapterDrag = null;
       clearDragMarks();
     });

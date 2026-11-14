@@ -247,6 +247,35 @@ test('measureCaretTop：超长正文 / 量不到宽度 → null；正常时返�
   assert.equal(mirror.textContent, '', '量完要清空测量层');
 });
 
+test('measureCaretTop（C24）：长段落软换行按视觉行数测行顶，不是按换行符个数', () => {
+  // 400 个「a」、0 个换行：宽 780px、每行约 40 字 → 视觉第 10 行。
+  // 旧口径（\n 数 × 行高）会算成第 0 行；镜像测量必须量到第 10 行。
+  const ctx = build({ text: 'a'.repeat(400) });
+  const mirror = makeEl('div', 'focus-mirror');
+  let mirrorText = '';
+  Object.defineProperty(mirror, 'textContent', {
+    get() { return mirrorText; },
+    set(value) { mirrorText = String(value); mirror.children.length = 0; }
+  });
+  Object.defineProperty(mirror, 'offsetTop', { get: () => 0 });
+  ctx.dom.map.set('focus-mirror', mirror);
+  ctx.dom.doc.createElement = (tag) => {
+    const el = makeEl(tag);
+    if (tag === 'span') {
+      // 光标标记的纵坐标 = 光标前正文的视觉行数 × 行高（每行 40 字、行高 32px）
+      Object.defineProperty(el, 'offsetTop', {
+        get() {
+          const text = el.parentNode === mirror ? mirrorText : '';
+          return Math.ceil(text.length / 40) * 32;
+        }
+      });
+    }
+    return el;
+  };
+  assert.equal(ctx.ui.measureCaretTop(400), 20 + 10 * 32, '400 字 / 每行 40 字 = 视觉第 10 行（换行数还是 0）');
+  assert.equal(ctx.ui.measureCaretTop(80), 20 + 2 * 32, '第 2 个视觉行');
+});
+
 test('alignTypewriter：未专注 / 没开打字机 → false；死区内不动；需要时滚到计划位置并同步标记层', () => {
   assert.equal(build({ focusOn: false, typewriter: true }).ui.alignTypewriter(), false);
   assert.equal(build({ focusOn: true, typewriter: false }).ui.alignTypewriter(), false);
@@ -413,6 +442,21 @@ test('静态闸门：renderer.js 不再内嵌专注模式实现，只剩装配�
   for (const key of ['focusActive', 'measureCaretTop', 'setFocusMode', 'setFocusTypewriter']) {
     assert.match(rendererSrc, new RegExp('^      ' + key + ',$', 'm'), 'testHooksScope 少了 ' + key);
   }
+});
+
+test('静态闸门：scrollCaretIntoView 复用专注模式镜像实测行顶（C24，不许退回按换行数估算）', () => {
+  const at = rendererSrc.indexOf('function scrollCaretIntoView(');
+  assert.notEqual(at, -1, 'renderer.js 里应有 scrollCaretIntoView');
+  const end = rendererSrc.indexOf('\n  }', at);
+  assert.ok(end > at, '找得到函数结尾');
+  const body = rendererSrc.slice(at, end);
+  assert.ok(body.includes('focusModeUi.measureCaretTop(pos)'), '光标行必须用镜像实测（与打字机同一套测量）');
+  assert.ok(body.includes('measured == null'), '「\\n 数 × 行高」只能是量不出来时的兜底');
+  assert.ok(
+    body.indexOf('measureCaretTop') < body.indexOf('match(/\\n/g)'),
+    '先实测、兜底在后（不能先按换行数算再覆盖）'
+  );
+  assert.ok(body.includes('focusLogic.planCaretReveal('), '滚动计划走 focus-logic 的共享纯逻辑');
 });
 
 test('静态闸门：index.html 在 renderer.js 之前加载 focus-mode-ui.js，且只加载一次', () => {

@@ -95,6 +95,9 @@
     updateFragmentCounter();
     $('fragment-backdrop').classList.remove('hidden');
     setTimeout(() => {
+      // C39：30ms 内弹层可能已经被关掉（Esc / 取消 / 保存成功），这时别再把焦点抢进隐藏输入框
+      // （对照 capture-ui 的 focusList：先确认面板还开着再 focus）。
+      if ($('fragment-backdrop').classList.contains('hidden')) return;
       const el = $('fragment-text');
       el.focus();
       el.setSelectionRange(el.value.length, el.value.length);

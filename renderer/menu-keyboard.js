@@ -183,18 +183,16 @@
 
     // 「整理」卡的特殊情况：Esc 把焦点还给按钮时，按钮的 focusin 又会把卡片打开（等于关不掉）。
     // 在 #format-dropdown 上挂一个捕获阶段的 focusin 一次性闸门，拦掉这一次的重开。
+    // C22：处理器要提成具名函数，destroy() 才能把这一个也摘掉（匿名函数摘不掉，会攒在旧卡片上）。
     let suppressFormatFocusIn = false;
+    const onFormatFocusIn = (event) => {
+      if (!suppressFormatFocusIn) return;
+      suppressFormatFocusIn = false;
+      if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    };
     const formatDropdown = doc.getElementById('format-dropdown');
     if (formatDropdown && typeof formatDropdown.addEventListener === 'function') {
-      formatDropdown.addEventListener(
-        'focusin',
-        (event) => {
-          if (!suppressFormatFocusIn) return;
-          suppressFormatFocusIn = false;
-          if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-        },
-        true
-      );
+      formatDropdown.addEventListener('focusin', onFormatFocusIn, true);
     }
 
     const returnFocus = (entry) => {
@@ -260,13 +258,15 @@
     }
 
     for (const entry of entries) entry.el.addEventListener('keydown', onKeyDown);
-    // 捕获阶段记「最后落在哪一条上」：右键与点击都走这里（不能只看焦点——右键不移动焦点，
-    // 点「⋯」是程序化点击时也不一定有焦点）。
-    doc.addEventListener('click', (event) => {
+    // C22：捕获阶段记「最后落在哪一条上」：右键与点击都走这里（不能只看焦点——右键不移动焦点，
+    // 点「⋯」是程序化点击时也不一定有焦点）。两个 document 级监听必须是具名函数：
+    // destroy() 才能 removeEventListener 掉，否则反复 install/destroy 会让旧闭包一直挂在
+    // document 上（旧菜单早脱离 DOM，却还在喂 lastPointerTarget / 操作旧菜单）。
+    const onDocClick = (event) => {
       const target = pointerTargetOf(event);
       if (target) lastPointerTarget = target;
-    }, true);
-    doc.addEventListener('contextmenu', (event) => {
+    };
+    const onDocContextMenu = (event) => {
       const target = pointerTargetOf(event);
       if (target) lastPointerTarget = target;
       // 右键菜单已经在开着时又右键了另一条：菜单不会重新「变成可见」（class 没变），
@@ -276,7 +276,9 @@
         open.state.opener = target;
         if (open.spec.kind === 'context') focusItem(open.el, 0);
       }
-    }, true);
+    };
+    doc.addEventListener('click', onDocClick, true);
+    doc.addEventListener('contextmenu', onDocContextMenu, true);
 
     let observer = null;
     if (typeof MO === 'function') {
@@ -296,6 +298,15 @@
       close: (id) => closeMenu(entryById(id)),
       destroy() {
         for (const entry of entries) entry.el.removeEventListener('keydown', onKeyDown);
+        // C22：document 级捕获监听与「整理」卡 focusin 闸门一起摘掉（与 dialog-focus / list-keyboard
+        // 的完整卸载口径一致）；假 DOM 的节点可能没有 removeEventListener，按能力探测。
+        if (typeof doc.removeEventListener === 'function') {
+          doc.removeEventListener('click', onDocClick, true);
+          doc.removeEventListener('contextmenu', onDocContextMenu, true);
+        }
+        if (formatDropdown && typeof formatDropdown.removeEventListener === 'function') {
+          formatDropdown.removeEventListener('focusin', onFormatFocusIn, true);
+        }
         if (observer) observer.disconnect();
         installed = null;
       }
