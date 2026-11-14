@@ -24,10 +24,10 @@
 
   // core/common.js 必须先加载（index.html 里 common.js 排在 bookinfo.js 之前）；缺了直接报错，
   // 不悄悄退回旧副本 —— 代理对保护的截断只该有 core/common.js 这一份（V81）。
-  if (!common || typeof common.truncateSafe !== 'function') {
+  if (!common || typeof common.truncateSafe !== 'function' || typeof common.normalizeForMatch !== 'function') {
     throw new Error('CWBookInfo：core/common.js 没有先加载');
   }
-  const { truncateSafe } = common;
+  const { truncateSafe, normalizeForMatch } = common;
 
   const MAX_AUTHOR_LENGTH = 80;
   const MAX_BRIEF_LENGTH = 1000;
@@ -170,13 +170,16 @@
 
   // 书架搜索补一条：作者 / 分组 / 标签里包含关键词（不区分大小写、字面量）。
   // 书名 / 章名 / 正文的匹配仍在渲染层与正文索引里各自负责。
+  // X7 / V205（v1.8.0 WP-25）：大小写归一走 core/common.js 的 normalizeForMatch（与查找 /
+  // 正文索引 / 书架搜索 / 命令面板同一份）；含 'İ' 这类「小写化会变长」的字符时这一次退化为
+  // 区分大小写（X7 的已知语义限制），不再各写一份裸 toLowerCase。
   function bookInfoMatches(info, query) {
-    const needle = String(query == null ? '' : query).trim().toLowerCase();
+    const needle = normalizeForMatch(String(query == null ? '' : query).trim());
     if (!needle) return false;
     const haystack = [info && info.author, info && info.group]
       .concat(Array.isArray(info && info.tags) ? info.tags : [])
       .filter(Boolean)
-      .map((part) => String(part).toLowerCase());
+      .map((part) => normalizeForMatch(part));
     return haystack.some((part) => part.includes(needle));
   }
 

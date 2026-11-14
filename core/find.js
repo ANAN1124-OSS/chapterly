@@ -2,6 +2,10 @@
 // 只做「字面量」查找，不搞正则：作者写小说，正则一不小心就会误伤全稿。
 // 替换前由 storage 负责把原章节备份到书内 _trash，替换写盘仍是显式的「全部替换」动作。
 
+// X7 / V205（v1.8.0 WP-25）：「小写化变长就退回原文」的长度防御收进 core/common.js 的
+// caseFoldForMatch（全仓唯一的口径），这里只负责「两边同源」这条查找语义。
+const { caseFoldForMatch } = require('./common');
+
 // 单章命中数上限：极端情况（搜一个「的」）兜底，别把内存 / IPC 打爆。
 // C4（v1.8.0 WP-05）：这是**显示与单次替换共用的处理上限**，不是精确命中数——
 // 到了上限还能多找出第 MAX_MATCHES + 1 处时，findMatchesAll 会明确回 truncated: true；
@@ -18,11 +22,13 @@ function scanMatches(text, query, options = {}, limit = MAX_MATCHES) {
   let haystack = source;
   let needle = needleRaw;
   if (!caseSensitive) {
-    const lower = source.toLowerCase();
-    const lowerNeedle = needleRaw.toLowerCase();
-    if (lower.length === source.length && lowerNeedle.length === needleRaw.length) {
-      haystack = lower;
-      needle = lowerNeedle;
+    // 查找 / 替换必须**两边同源**：任一边含「小写化会变长」的字符（如 'İ' U+0130）时两边都退回
+    // 原文扫描，不许出现「干草堆折叠、针不折叠」的混合匹配（X7 的退化语义，common 里带 folded 标记）。
+    const foldedHay = caseFoldForMatch(source);
+    const foldedNeedle = caseFoldForMatch(needleRaw);
+    if (foldedHay.folded && foldedNeedle.folded) {
+      haystack = foldedHay.text;
+      needle = foldedNeedle.text;
     }
   }
   const matches = [];

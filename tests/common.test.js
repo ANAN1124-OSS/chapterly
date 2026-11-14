@@ -352,8 +352,10 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
   assert.equal(/\bdocument\s*\./.test(COMMON_CODE), false, '不许碰 document');
   assert.equal(/electron/.test(COMMON_CODE), false, '不许出现 electron');
   // 对外形状固定：多一个少一个都要在评审里看到（formatCount 是 2026-11-04 拍板 #1 新增的共享格式化；
-  // stripBom / normalizeText / lineStartsOf / positionOf / mapLimit / nowIso 是 B6 收编进来的）
+  // stripBom / normalizeText / lineStartsOf / positionOf / mapLimit / nowIso 是 B6 收编进来的；
+  // caseFoldForMatch / normalizeForMatch 是 v1.8.0 WP-25 收编的大小写归一，X7 / V205）
   assert.deepEqual(Object.keys(common).sort(), [
+    'caseFoldForMatch',
     'clampInt',
     'createKeyedWriteQueue',
     'createWriteQueue',
@@ -362,6 +364,7 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
     'isValidDayKey',
     'lineStartsOf',
     'mapLimit',
+    'normalizeForMatch',
     'normalizeText',
     'nowIso',
     'pad2',
@@ -384,6 +387,8 @@ test('静态闸门：仓库里不许再长出第二份 pad2 / clampInt / sleep /
     { re: /function formatCount\s*\(/, what: '第二份 formatCount 实现' },
     { re: /function stripBom\s*\(/, what: '第二份 stripBom 实现' },
     { re: /function normalizeText\s*\(/, what: '第二份 normalizeText（去 BOM + CRLF→LF）实现' },
+    { re: /function caseFoldForMatch\s*\(/, what: '第二份 caseFoldForMatch（大小写归一的长度防御）实现' },
+    { re: /function normalizeForMatch\s*\(/, what: '第二份 normalizeForMatch（匹配用大小写归一）实现' },
     { re: /function lineStartsOf\s*\(/, what: '第二份 lineStartsOf 实现' },
     { re: /function positionOf\s*\(/, what: '第二份 positionOf 实现' },
     { re: /function mapLimit\s*\(/, what: '第二份 mapLimit 实现' },
@@ -419,7 +424,7 @@ test('静态闸门：用到 pad2 / clampInt / sleep / formatCount / stripBom / n
     ).test(source);
   for (const rel of CORE_FILES) {
     const source = read(rel);
-    for (const name of ['pad2', 'clampInt', 'sleep', 'formatCount', 'stripBom', 'normalizeText', 'lineStartsOf', 'positionOf', 'mapLimit', 'nowIso', 'parseDayKey', 'isValidDayKey', 'dayKeyOf', 'createKeyedWriteQueue', 'createWriteQueue']) {
+    for (const name of ['pad2', 'clampInt', 'sleep', 'formatCount', 'stripBom', 'normalizeText', 'caseFoldForMatch', 'normalizeForMatch', 'lineStartsOf', 'positionOf', 'mapLimit', 'nowIso', 'parseDayKey', 'isValidDayKey', 'dayKeyOf', 'createKeyedWriteQueue', 'createWriteQueue']) {
       if (!new RegExp(`\\b${name}\\s*\\(`).test(source)) continue;
       assert.ok(wiredFromCommon(source, name), `${rel} 用了 ${name}，但没从 core/common.js 拿`);
     }

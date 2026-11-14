@@ -654,8 +654,13 @@ test('静态闸门：index.html 顺序（statusbar-ui → shelf-filter-ui → sh
 });
 
 test('静态闸门：模块不许 require / ipcRenderer / fs / 网络 / window 全局，不写 state', () => {
+  // X7 / V205（WP-25）：唯一允许的 require 是 UMD 的 Node 分支取 core/common.js 的 normalizeForMatch；
+  // 运行时代码仍不许 require 任何东西（浏览器里走 window.CWCommon）。
+  const nodeBranch = "module.exports = factory(require('../core/common'));";
+  assert.ok(moduleCode.includes(nodeBranch), 'UMD 的 Node 分支必须从 ../core/common 取归一实现');
+  const runtimeCode = moduleCode.split(nodeBranch).join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.']) {
-    assert.equal(moduleCode.includes(forbidden), false, 'shelf-filter-ui.js 不许出现 ' + forbidden);
+    assert.equal(runtimeCode.includes(forbidden), false, 'shelf-filter-ui.js 不许出现 ' + forbidden);
   }
   assert.equal(/(^|[^.\w])state(?:\.[A-Za-z_$][\w$]*)?\s*=[^=]/m.test(moduleCode), false, '模块只读 state，不许写');
 });
@@ -663,11 +668,18 @@ test('静态闸门：模块不许 require / ipcRenderer / fs / 网络 / window �
 test('UMD：浏览器分支挂成 CWShelfFilterUi，不顺手造别的全局', () => {
   const win = {};
   const context = vm.createContext(win);
+  // X7 / V205（WP-25）：common.js 必须先加载（index.html 里也排在 shelf-filter-ui.js 之前）
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'core', 'common.js'), 'utf8'), context, { filename: 'core/common.js' });
   vm.runInContext(moduleSrc, context, { filename: 'renderer/shelf-filter-ui.js' });
   assert.equal(typeof win.CWShelfFilterUi, 'object');
   assert.equal(typeof win.CWShelfFilterUi.create, 'function');
   assert.deepEqual([...win.CWShelfFilterUi.REQUIRED_HOST].sort(), ['$', 'CONTENT_SEARCH_MIN_CHARS', 'bookInfoLib', 'chapterTitle', 'openContentResult', 'state']);
   assert.equal(win.CWShelfSearchUi, undefined, '单独加载 shelf-filter 不该顺手造出别的全局');
+  // 缺 common 时明确报错，而不是带着 undefined 继续跑（X7 / V205 的口径只许有一份）
+  assert.throws(
+    () => vm.runInContext(moduleSrc, vm.createContext({}), { filename: 'renderer/shelf-filter-ui.js' }),
+    /CWShelfFilterUi：core\/common\.js 没有先加载/
+  );
 });
 
 // ---------- 标签筛选（1.6.0 F5） ----------
