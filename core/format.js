@@ -1,15 +1,13 @@
 // 正文排版整理（纯逻辑，不依赖 Electron，可单测）。
 // 设计原则：只在作者点「排版 → 整理本章」时调用，绝不自动执行；
 // 只动空白、标点这类「排版层」内容，不改字词；同一份文本反复整理的结果必须一致（幂等）。
+const { HAN_RANGES } = require('./common');
 const INDENT = '\u3000\u3000'; // 段首缩进：两个全角空格（中文小说惯例）
 // C42（v1.8.0 WP-26）：汉字范围必须覆盖 CJK 扩展 B–G 与兼容补充（U+20000 起，如「𠮷」）。
 // 这些字在 JS 里是代理对，正则要带 u 标志按码点匹配；逐字扫描的地方也按码点取整字，
 // 否则只看到半个代理，邻接标点 / 重复用词都会漏判。
-// （汉字正则的跨模块收编在 WP-31；本轮先把范围补全，proofread.js 用同一串范围。）
-const HAN_RANGES =
-  '\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff' +
-  '\\u{20000}-\\u{2a6df}\\u{2a700}-\\u{2b73f}\\u{2b740}-\\u{2b81f}' +
-  '\\u{2b820}-\\u{2ceaf}\\u{2ceb0}-\\u{2ebef}\\u{2f800}-\\u{2fa1f}\\u{30000}-\\u{3134f}';
+// A2（v1.8.0 WP-31）：范围串已收编到 core/common.js（与 core/proofread.js 同一份），
+// 这里只拼正则 / 字符类，不再各写一份范围串。
 const HAN_RE = new RegExp(`[${HAN_RANGES}]`, 'u');
 const FULL_PUNCT = new Set(['，', '。', '；', '：', '！', '？']);
 const PUNCT_MAP = { ',': '，', '.': '。', ';': '；', ':': '：', '!': '！', '?': '？' };
@@ -26,14 +24,6 @@ function charAt(text, index) {
   if (index < 0 || index >= text.length) return '';
   const code = text.codePointAt(index);
   return code > 0xffff ? text.slice(index, index + 2) : text[index];
-}
-
-// 取字符串最后一个完整字符（代理对算一个）。
-function lastChar(text) {
-  if (!text) return '';
-  const low = text.charCodeAt(text.length - 1);
-  if (low >= 0xdc00 && low <= 0xdfff && text.length > 1) return text.slice(-2);
-  return text.slice(-1);
 }
 
 const DEFAULT_OPTIONS = Object.freeze({
@@ -158,19 +148,34 @@ function convertEllipsis(text) {
 // 引号两侧必须至少一侧是中文/中文标点，且不能挨着英文/数字（避免把 don't、英文引语改坏）。
 // 方向判断：① 后面是中文、前面是行首/标点/空白 → 开引号；② 前面是中文/标点、后面不是中文 → 收引号；
 // ③ 两边都是中文（如 他说"你好"）→ 按本段内还没配对的引号交替判断。
+// A10（v1.8.0 WP-31）：原来逐字 `out += ch` 造串（长段落是 O(n²) 的中间字符串），改成 parts.push + join，
+// 与同文件 convertPunct（P-07）口径一致。每次产出的都是一个 UTF-16 码元（原字符或转换后的引号），
+// 所以 lastUnit / beforeLastUnit 正好还原旧实现 lastChar(out) 的语义：最后一个码元是低代理且产出串
+// 长度 > 1 时，取最近两个码元（孤立代理这类坏数据的方向判定也与旧实现逐字一致）。
 function convertCurlyQuotes(text) {
   const source = String(text == null ? '' : text);
   let count = 0;
-  let out = '';
+  const parts = [];
+  let lastUnit = '';
+  let beforeLastUnit = '';
   let doubleOpen = false;
   let singleOpen = false;
+  const pushUnit = (unit) => {
+    beforeLastUnit = lastUnit;
+    lastUnit = unit;
+    parts.push(unit);
+  };
   for (let i = 0; i < source.length; i += 1) {
     const ch = source[i];
     if (ch !== '"' && ch !== "'") {
-      out += ch;
+      pushUnit(ch);
       continue;
     }
-    const prev = lastChar(out);
+    const lastCode = lastUnit.charCodeAt(0);
+    const prev =
+      lastUnit && lastCode >= 0xdc00 && lastCode <= 0xdfff && parts.length > 1
+        ? beforeLastUnit + lastUnit
+        : lastUnit;
     const next = charAt(source, i + 1);
     const prevCjk = CJK_NEIGHBOR_RE.test(prev);
     const nextCjk = CJK_NEIGHBOR_RE.test(next);
@@ -178,7 +183,7 @@ function convertCurlyQuotes(text) {
     const nextAlnum = ASCII_ALNUM_RE.test(next);
     // 中文语境：至少一侧是中文，且两侧都不挨着英文/数字
     if (!((prevCjk || nextCjk) && !prevAlnum && !nextAlnum)) {
-      out += ch;
+      pushUnit(ch);
       continue;
     }
     const isDouble = ch === '"';
@@ -193,12 +198,12 @@ function convertCurlyQuotes(text) {
     } else {
       isOpen = !opened; // 两边都是中文 → 按本段内配对状态交替
     }
-    out += isOpen ? (isDouble ? '“' : '‘') : (isDouble ? '”' : '’');
+    pushUnit(isOpen ? (isDouble ? '“' : '‘') : (isDouble ? '”' : '’'));
     count += 1;
     if (isDouble) doubleOpen = isOpen;
     else singleOpen = isOpen;
   }
-  return { text: out, count };
+  return { text: parts.join(''), count };
 }
 
 function formatText(text, rawOptions) {
@@ -317,7 +322,8 @@ module.exports = {
   DEFAULT_OPTIONS,
   sanitizeOptions,
   formatText,
-  // 供测试/预览使用
+  // 供测试/预览使用（A10 / v1.8.0 WP-31：convertCurlyQuotes 供差分用例直接对照旧算法）
   convertPunct,
+  convertCurlyQuotes,
   removeCjkSpaces
 };

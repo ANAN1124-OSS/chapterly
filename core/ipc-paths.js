@@ -18,6 +18,7 @@
 //   · config:set 里 booksRoot / 两份词表路径已由 core/config-gate.js 做「来源校验」（v0.9 C-2b，
 //     只认主进程自己弹出的对话框刚选中的路径），不再是残余风险。
 const path = require('node:path');
+const pathUtils = require('./path-utils');
 
 class IpcPathError extends Error {
   constructor(code, message) {
@@ -29,7 +30,8 @@ class IpcPathError extends Error {
 
 // 书架里的书：必须是书架目录（booksRoot）的直接子目录。
 // 说明：先 resolve 再比 dirname，所以 'D:\书架\某本\..\..\Windows'、'D:\书架\某本\子目录'、
-// 'D:\书架' 自己、空串 / null / 数字都会被拒；Windows 大小写不敏感，比较时统一小写。
+// 'D:\书架' 自己、空串 / null / 数字都会被拒；「same directory」判定走 core/path-utils.js 的 pathKey
+// （resolve + 小写 + Windows 正反斜杠归一，A9 / v1.8.0 WP-31），不再手写小写比较。
 // 书架目录空着时必须直接报错 —— 空 root 会 resolve 成进程 cwd，绝不能让「没设置书架」悄悄变成
 // 「当前目录就是书架」（失败也要往关的方向失败）。
 // 返回值是 resolve 后的绝对路径（调用方直接用它，不要再用原始字符串）。
@@ -40,7 +42,7 @@ function assertBookPath(bookPath, booksRoot) {
   // 两端空白一律清掉：配置文件里的路径本来就按 trim 存（和 core/config.js 的口径一致），
   // 带上空白的串如果直接 path.resolve，会被当成以空格开头的相对路径，校验结果变得莫名其妙。
   const target = path.resolve(String(bookPath == null ? '' : bookPath).trim());
-  if (path.dirname(target).toLowerCase() !== root.toLowerCase()) {
+  if (pathUtils.pathKey(path.dirname(target)) !== pathUtils.pathKey(root)) {
     throw new IpcPathError('BAD_PATH', '只能操作书架目录下的书');
   }
   return target;

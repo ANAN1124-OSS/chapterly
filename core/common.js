@@ -7,7 +7,11 @@
  *   - sleep：原子写重试（atomic.js）与截图驱动（scripts/screenshot-driver.js）各一份。
  *   - formatCount（2026-11-04 拍板 #1）：全应用字数显示统一千分位，界面层与主进程共用这一份；
  *   - stripBom / normalizeText（B6）：atomic / txt / capture 各有一份 stripBom，
- *     glossary / proofread / sensitive / txt / tts 各有一份「去 BOM + CRLF → LF」。
+ *     glossary / proofread / sensitive / txt / tts 各有一份「去 BOM + CRLF → LF」；
+ *   - toHalfWidth / HAN_RANGES（A2，v1.8.0 WP-31）：全角→半角换算原在 jump / proofread /
+ *     command-registry / settings-ia 各写一份（0xfee0），汉字范围串在 format / proofread 各写一份；
+ *   - formatByteSize / MAX_TEXT_BYTES（A3，v1.8.0 WP-31）：storage 的 formatByteSize 与 importer
+ *     的 formatImportSize 逐字同构，128 MB 单文件整读上限也各写一份。
  * 收编的原则是**行为零变化**：每份的字面实现本来就一模一样（见 tests/common.test.js 的回归断言），
  * 这里只是把它挪到一个地方，调用点换成 require / 全局对象。
  *
@@ -32,6 +36,26 @@
 
   // 日期键的正则：只认两位月 / 两位日（'2026-2-1' 这类手改的写法不算合法键）
   const DAY_KEY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+  // A2（v1.8.0 WP-31）：全角→半角换算的两个码位区间。
+  //   · 全角 ASCII：U+FF01–U+FF5E 与 ASCII 的 !–~ 一一对应（码位差 0xFEE0）；U+3000 是全角空格；
+  //   · 全角数字：U+FF10–U+FF19 → 0–9（跳章输入 / 校对「全角数字」建议只需要这一类）。
+  const FULL_WIDTH_ASCII_RE = /[\uFF01-\uFF5E\u3000]/g;
+  const FULL_WIDTH_DIGIT_RE = /[\uFF10-\uFF19]/g;
+
+  // A2（v1.8.0 WP-31）：汉字范围串，格式整理（core/format.js）与校对（core/proofread.js）共用这一份。
+  // 覆盖 CJK 扩展 B–G 与兼容补充（U+20000 起，如「𠮷」）：这些字在 JS 里是代理对，
+  // 拼进正则时必须带 u 标志按码点匹配；逐字扫描的地方也要按码点取整字。
+  const HAN_RANGES =
+    '\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff' +
+    '\\u{20000}-\\u{2a6df}\\u{2a700}-\\u{2b73f}\\u{2b740}-\\u{2b81f}' +
+    '\\u{2b820}-\\u{2ceaf}\\u{2ceb0}-\\u{2ebef}\\u{2f800}-\\u{2fa1f}\\u{30000}-\\u{3134f}';
+
+  // A3（v1.8.0 WP-31）：单文本文件「整份读进内存」的上限，章节正文读取（core/storage.js 的
+  // MAX_CHAPTER_READ_BYTES）与单本 txt 导入（core/importer.js 的 MAX_IMPORT_BYTES）是同一条口径。
+  // 1000 万字中文小说约 30 MB，128 MB 有三倍以上余量。常量只在这里写一次。
+  const MAX_TEXT_BYTES = 128 * 1024 * 1024;
+  const BYTE_UNITS = ['B', 'KB', 'MB', 'GB'];
 
   // 两位补零：7 → '07'、12 → '12'。只做字符串补位，不取整、不取模（调用方给什么就写什么）。
   // 注意和 String.prototype.padStart 一致：超过两位的数字原样返回（100 → '100'）。
@@ -78,6 +102,23 @@
     return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
+  // 体量文案（A3，v1.8.0 WP-31）：core/storage.js 的 formatByteSize 与 core/importer.js 的
+  // formatImportSize 原来逐字同构，现在只剩这一份。1 位小数直到 10 以上；负数 / NaN / Infinity
+  // 当 0（调用方传进来的都是文件尺寸，没有负数语义）。
+  function formatByteSize(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n < 0) return '0 B';
+    let value = n;
+    let unit = 0;
+    while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    if (unit === 0) return `${Math.round(value)} B`;
+    const shown = value < 10 ? value.toFixed(1) : String(Math.round(value));
+    return `${shown} ${BYTE_UNITS[unit]}`;
+  }
+
   // 去掉开头那个 BOM（U+FEFF）：导入 / 读取外来 txt、解析书目时几乎每个调用方都要先洗一遍，
   // 原来 atomic / txt / capture 各抄一份（B6 收编）。只吃第 0 位那一个字符——正文中间的 U+FEFF
   // 是作者自己的字，不动；null / undefined 按 '' 兜底，其余交给 String()（数字也给字符串）。
@@ -90,6 +131,18 @@
   // 原来 glossary / proofread / sensitive / txt / tts 五个模块各写一份（B6 收编）。
   function normalizeText(text) {
     return stripBom(text).replace(/\r\n?/g, '\n');
+  }
+
+  // 全角 → 半角（A2，v1.8.0 WP-31）：默认把全角 ASCII（！…～，U+FF01–U+FF5E）与全角空格
+  // （U+3000）换算成半角；{ digitsOnly: true } 只换全角数字 ０-９（跳章输入 / 校对「全角数字」建议
+  // 只需要数字）。这两类以外的字符（中文标点 、。、「」、CJK 汉字、代理对）原样保留。
+  // 原来 jump / proofread / command-registry / settings-ia 四处各写一份 0xfee0 减法，口径相同。
+  function toHalfWidth(value, options) {
+    const source = String(value == null ? '' : value);
+    const pattern = options && options.digitsOnly ? FULL_WIDTH_DIGIT_RE : FULL_WIDTH_ASCII_RE;
+    return source.replace(pattern, (ch) =>
+      ch === '\u3000' ? ' ' : String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+    );
   }
 
   // X7 / V205（v1.8.0 WP-25）：全仓「大小写归一」的唯一实现（匹配 / 检索用，不用于展示）。
@@ -276,8 +329,12 @@
     truncateSafe,
     sleep,
     formatCount,
+    formatByteSize,
     stripBom,
     normalizeText,
+    toHalfWidth,
+    HAN_RANGES,
+    MAX_TEXT_BYTES,
     caseFoldForMatch,
     normalizeForMatch,
     lineStartsOf,

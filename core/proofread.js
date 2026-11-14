@@ -22,7 +22,8 @@ const formatLib = require('./format');
 const findLib = require('./find');
 const chaptersLib = require('./chapters');
 const glossaryLib = require('./glossary');
-const { clampInt, formatCount, normalizeText, lineStartsOf, positionOf, truncateSafe } = require('./common');
+const { clampInt, formatCount, normalizeText, lineStartsOf, positionOf, truncateSafe, HAN_RANGES, toHalfWidth } =
+  require('./common');
 
 // 报告顺序（同位置时按这个顺序排；结果列表也按规则分组显示）
 // custom-word 永远排最后：词表是作者自己加的，放内置规则后面
@@ -90,11 +91,7 @@ const OPTION_LIMITS = Object.freeze({
 
 // C42（v1.8.0 WP-26）：汉字范围必须覆盖 CJK 扩展 B–G 与兼容补充（U+20000 起，如「𠮷」）。
 // 这些字是代理对，正则带 u 标志按码点匹配；逐字扫描的规则也要按码点取整字（见 repeatWordIssues /
-// 中英间距 / 破折号）。范围串与 core/format.js 同一串（跨模块收编在 WP-31）。
-const HAN_RANGES =
-  '\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff' +
-  '\\u{20000}-\\u{2a6df}\\u{2a700}-\\u{2b73f}\\u{2b740}-\\u{2b81f}' +
-  '\\u{2b820}-\\u{2ceaf}\\u{2ceb0}-\\u{2ebef}\\u{2f800}-\\u{2fa1f}\\u{30000}-\\u{3134f}';
+// 中英间距 / 破折号）。A2（v1.8.0 WP-31）：范围串已收编到 core/common.js（与 core/format.js 同一份）。
 const HAN_RE = new RegExp(`[${HAN_RANGES}]`, 'u');
 
 // 按 UTF-16 下标取一个完整字符（代理对算一个）；越界返回空串。
@@ -183,7 +180,6 @@ const CJK_NEIGHBOR_PUNCT = new Set([...CJK_TEXT_PUNCT, '…', '—']);
 
 const LATIN_CHAR_RE = /[A-Za-z0-9]/;
 const FULLWIDTH_DIGIT_RE = /[\uff10-\uff19]/;
-const FULLWIDTH_DIGIT_ALL_RE = /[\uff10-\uff19]/g;
 
 function isHanChar(ch) {
   return Boolean(ch) && HAN_RE.test(ch);
@@ -194,12 +190,7 @@ function isCjkNeighbor(ch) {
   return Boolean(ch) && (HAN_RE.test(ch) || CJK_NEIGHBOR_PUNCT.has(ch));
 }
 
-// 全角数字 → 半角（和 core/jump.js 的换算同一套：码位差 0xfee0）
-function toHalfWidthDigits(text) {
-  return String(text == null ? '' : text).replace(FULLWIDTH_DIGIT_ALL_RE, (ch) =>
-    String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
-  );
-}
+// 全角数字 → 半角：换算走 core/common.js 的 toHalfWidth（A2，v1.8.0 WP-31；与跳章输入同一份实现）
 
 // 重复用词：先按「不重叠」贪心取每个双字词的出现位置（「哈哈哈哈」的「哈哈」只算 2 次，
 // 不会因为重叠命中被误判成 3 次），再找最早一个能装下 repeatCount 次的窗口。
@@ -488,7 +479,7 @@ function proofreadText(text, rawOptions, rawGlossary) {
       });
     }
     for (const hit of hits['fullwidth-digit']) {
-      const ascii = toHalfWidthDigits(hit.run);
+      const ascii = toHalfWidth(hit.run, { digitsOnly: true });
       addIssue(
         'fullwidth-digit',
         hit.index,

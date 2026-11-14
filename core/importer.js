@@ -20,7 +20,7 @@ const {
   splitLongUntitled,
   LONG_UNTITLED_THRESHOLD
 } = require('./txt');
-const { normalizeText } = require('./common');
+const { normalizeText, formatByteSize, MAX_TEXT_BYTES } = require('./common');
 const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
 
@@ -298,23 +298,12 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
 // 导入边界（v0.9 C-3，安全审计 C6）：单本 txt 是「整个读进内存 → 解码 → 切章」，
 // 所以先按文件大小设一道闸门：1000 万字中文小说约 30 MB，128 MB 有三倍以上余量；
 // 再大的文件大概率不是小说，读进来会把主进程内存打爆（渲染层只发个 IPC，崩的是主进程）。
-const MAX_IMPORT_BYTES = 128 * 1024 * 1024;
-const SIZE_UNITS = ['B', 'KB', 'MB', 'GB'];
+// A3（v1.8.0 WP-31）：上限与体量文案收编到 core/common.js（MAX_TEXT_BYTES / formatByteSize），
+// 与 core/storage.js 的章节读取上限同一条口径；对外名字保留（既有单测与调用方都按它取）。
+const MAX_IMPORT_BYTES = MAX_TEXT_BYTES;
 
-// 给人看的体量（只用于提示，保留 1 位小数直到 10 以上）
-function formatImportSize(bytes) {
-  const n = Number(bytes);
-  if (!Number.isFinite(n) || n < 0) return '0 B';
-  let value = n;
-  let unit = 0;
-  while (value >= 1024 && unit < SIZE_UNITS.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  if (unit === 0) return `${Math.round(value)} B`;
-  const shown = value < 10 ? value.toFixed(1) : String(Math.round(value));
-  return `${shown} ${SIZE_UNITS[unit]}`;
-}
+// 给人看的体量（只用于提示，保留 1 位小数直到 10 以上）：实现只有 core/common.js 的 formatByteSize 一份
+const formatImportSize = formatByteSize;
 
 // 大小闸门（纯逻辑）：超限回 { code, message }，没超回 null。
 // 提示里只有文件名（不含目录），也不把整条本机路径带给界面 / 日志。

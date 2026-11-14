@@ -2825,7 +2825,8 @@ function registerIpc() {
     const cfg = await getConfig();
     const root = path.resolve(cfg.booksRoot);
     const target = path.resolve(String(bookPath || ''));
-    if (path.dirname(target).toLowerCase() !== root.toLowerCase()) {
+    // A9（v1.8.0 WP-31）：「同一目录」判定统一走 core/path-utils.js 的 pathKey（不再手写小写比较）
+    if (pathUtils.pathKey(path.dirname(target)) !== pathUtils.pathKey(root)) {
       throw new storage.StorageError('BAD_PATH', '只能删除书架目录下的书');
     }
     // 别的窗口正开着这本书：拒绝，绝不让它在另一个窗口里继续盯着被删的文件夹
