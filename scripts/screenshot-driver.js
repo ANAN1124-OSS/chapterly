@@ -802,6 +802,9 @@ async function run(host) {
           return session ? session.win.getBounds() : null;
         },
         setRealClose: (on) => host.setRealClose(on),
+        // WP-09（C6）：单独把「关窗前保存窗口位置」拖慢，复现回执与真正关窗之间的竞态窗口
+        //（不拖慢其它配置写；0 = 恢复）。
+        setCloseBoundsDelay: (ms) => host.setCloseBoundsDelay(ms),
         windowAllClosed: () => host.isWindowAllClosed(),
         getCloseReady: (windowId) => host.getCloseReady(windowId),
         resetCloseReady: (windowId) => host.resetCloseReady(windowId),

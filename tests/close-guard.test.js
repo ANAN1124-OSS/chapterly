@@ -240,3 +240,95 @@ test('P-01：renderer 收到 app:force-close 后先 saveCurrent 再 closeReady �
   assert.equal(/openModal|askUnsaved/.test(seg), false, '不许在强制退出路径上再弹二次确认框');
 });
 
+// ---------- C6（v1.8.0 WP-09）：关窗放行后的复查 ----------
+// 回执那一刻的判定之后、forceClose 之前还有一次 `await saveRecentWindowBounds`（整份配置写盘，
+// 慢盘上可达几十毫秒）。写盘期间渲染层还能继续输入并上报 app:dirty；只按回执时的旧判定
+// forceClose，setupCloseFlow 的 close 事件看到 forceClose 直接放行，这几毫秒 ~ 几十毫秒内的
+// 新编辑就一起被关掉了（C5/N3 拦不住）。修法：await 之后用同一判据再算一次，不通过就不置
+// forceClose、不关窗。规则抽到 core/close-guard.js 的 closeReleaseDecision()，只写一份。
+
+test('C6 / WP-09：closeReleaseDecision 用同一判据算关窗放行（allowed × dirty × 保存回执）', () => {
+  const decide = closeGuardLib.closeReleaseDecision;
+  assert.deepEqual(decide({ allowed: false, dirty: false }), {
+    allowed: false,
+    dirty: false,
+    savedAfterDirty: false,
+    okToClose: false,
+    code: 'CLOSE_DENIED'
+  });
+  assert.equal(decide({ allowed: true, dirty: false }).okToClose, true, '界面说不脏就放行');
+  assert.equal(
+    decide({ allowed: true, dirty: true, lastSaveAt: 0, dirtyAt: 0 }).okToClose,
+    false,
+    '仍脏且没有保存回执 → 拦'
+  );
+  assert.equal(
+    decide({ allowed: true, dirty: true, lastSaveAt: 0, dirtyAt: 0 }).code,
+    'CLOSE_DIRTY',
+    '被拦的合法回执要带 CLOSE_DIRTY 码（日志按它排查）'
+  );
+  assert.equal(
+    decide({ allowed: true, dirty: true, lastSaveAt: 1500, dirtyAt: 1500 }).okToClose,
+    false,
+    '同一毫秒的保存回执与变脏不可分辨 → 宁可多拦一次（N3）'
+  );
+  assert.equal(
+    decide({ allowed: true, dirty: true, lastSaveAt: 1501, dirtyAt: 1500 }).okToClose,
+    true,
+    '保存回执确实晚于变脏 → 放行'
+  );
+  assert.equal(decide().allowed, false, '缺参数按不放行处理，不抛错');
+  // 每次返回新对象：调用方改了不能污染下一次
+  const first = decide({ allowed: true });
+  first.okToClose = false;
+  assert.equal(decide({ allowed: true }).okToClose, true);
+});
+
+test('C6 / WP-09：主进程在 await 写窗口位置之后、forceClose 之前用同一判据复查（静态闸门）', () => {
+  const closeSrc = between(MAIN, "ipcMain.on('app:close-ready'", '\n  });');
+  const awaitAt = closeSrc.indexOf('await saveRecentWindowBounds(session);');
+  assert.ok(awaitAt > 0, '关窗前仍要先记窗口位置');
+  const recheckAt = closeSrc.indexOf('closeGuard.closeReleaseDecision(', awaitAt);
+  assert.ok(recheckAt > awaitAt, '复查必须在 await 之后（await 前算等于没修）');
+  const forceAt = closeSrc.indexOf('session.forceClose = true;');
+  assert.ok(forceAt > recheckAt, '复查必须在 forceClose = true 之前');
+  const seg = closeSrc.slice(recheckAt, forceAt);
+  assert.match(seg, /if \(!recheck\.okToClose\)/, '复查不通过要拦下');
+  assert.match(seg, /code: 'CLOSE_DIRTY'/, '拦下要留一条日志，方便排查「关不掉窗」');
+  assert.match(seg, /return;/, '拦下就不许继续 forceClose / close');
+  assert.match(seg, /dirty: session\.dirty/, '复查读的是主进程自己的脏状态');
+  assert.match(seg, /lastSaveAt: session\.lastSaveAt/);
+  assert.match(seg, /dirtyAt: session\.dirtyAt/);
+  // E2E 记录的是「主进程最终放行了吗」：复查翻盘也要如实回写
+  assert.match(seg, /session\.e2eCloseReady = false;/);
+  assert.match(seg, /e2eLastCloseReady = false;/);
+  // 判据本体只许有一份（core/close-guard.js），main.js 不许再手搓一套比较
+  assert.match(read('core/close-guard.js'), /function closeReleaseDecision\(/, '判据本体在 close-guard.js');
+});
+
+test('C6 / WP-09：自检注入的写盘延迟只认 --e2e，场景把开关交给组 10', () => {
+  const saveSrc = between(MAIN, 'async function saveRecentWindowBounds(session) {', '\n}');
+  assert.match(
+    saveSrc,
+    /if \(isE2E && e2eCloseBoundsDelayMs > 0\) \{/,
+    '延迟只能在 --e2e 且显式打开时生效（生产 / 截图流程不额外等）'
+  );
+  assert.match(
+    saveSrc,
+    /await new Promise\(\(resolve\) => setTimeout\(resolve, e2eCloseBoundsDelayMs\)\)/,
+    '延迟必须真的拖慢这次写盘（否则复现不了回执后的窗口）'
+  );
+  const hostSrc = between(MAIN, 'function automationHost() {', '\n}\n');
+  assert.match(hostSrc, /setCloseBoundsDelay: \(ms\) =>/, '自检宿主要暴露开关');
+  assert.match(
+    read('scripts/screenshot-driver.js'),
+    /setCloseBoundsDelay: \(ms\) => host\.setCloseBoundsDelay\(ms\)/,
+    '驱动把开关从宿主转给场景'
+  );
+  assert.match(read('scripts/e2e-scenario.js'), /setCloseBoundsDelay/, '场景要把它交进 groupContext');
+  const group10 = read('scripts/e2e/groups/10-close-guard-cancel.js');
+  assert.match(group10, /setCloseBoundsDelay\(900\)/, '组 10 用它把写窗口位置拖慢');
+  assert.match(group10, /setRealClose\(true\)/, '组 10 要开「真实关窗」才能走到复查 / forceClose 那一段');
+  assert.match(group10, /setRealClose\(false\)/, '组 10 跑完必须关掉真实关窗（后面的组依赖窗口继续存在）');
+});
+

@@ -32,6 +32,8 @@ module.exports = async function runScenario(ctx) {
     mostRecentWindowId,
     windowBounds,
     setRealClose,
+    // WP-09（C6）：组 10 用它把「关窗前保存窗口位置」拖慢，复现回执之后的竞态窗口。
+    setCloseBoundsDelay,
     windowAllClosed,
     // 第 56 组（Electron 安全开关）读安全策略探针（ctx.securityInfo / ctx.securityProbe）。
     securityInfo,
@@ -181,6 +183,7 @@ module.exports = async function runScenario(ctx) {
     // 55i 的旧书兼容还要按路径读那一版 v0.4.1 书目（第 47 组留下的）。
     closeWindow,
     setRealClose,
+    setCloseBoundsDelay,
     windowAllClosed,
     windowBounds,
     mostRecentWindowId,
