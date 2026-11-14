@@ -2,7 +2,7 @@
 // 不 require('electron')，可直接在 node:test 里用临时目录测试。
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { atomicWriteFile, writeJsonAtomic, stripBom } = require('./atomic');
+const { atomicWriteFile, atomicCopyFile, writeJsonAtomic, stripBom } = require('./atomic');
 const { pad2, nowIso, mapLimit, createKeyedWriteQueue } = require('./common');
 const chaptersLib = require('./chapters');
 const findLib = require('./find');
@@ -1831,15 +1831,14 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
     throw new StorageError('BAD_SNAPSHOT_FILE', '只能给章节 txt 做快照');
   }
   const source = assertInside(bookPath, raw);
-  let buffer;
+  let sourceStat;
   try {
     // P2-3：先看大小再读 —— 这一章被外部换成超大文件时，不能把主进程内存打爆
-    await assertSourceSize(source, {
+    sourceStat = await assertSourceSize(source, {
       code: 'SNAPSHOT_TOO_LARGE',
       label: `这一章正文（${raw}）`,
       tail: '这次没有留快照（保存继续）'
     });
-    buffer = await fs.readFile(source);
   } catch (err) {
     if (err.code === 'ENOENT') {
       return { taken: false, reason: 'MISSING', dir: null, file: raw, bytes: 0, cleanup: { removed: [], failed: [], kept: 0 } };
@@ -1852,9 +1851,19 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
   const snapshotDir = path.join(trashDir, dir);
   const target = path.join(snapshotDir, raw);
   let taken = false;
+  let bytes = sourceStat.size;
   if (!(await exists(target))) {
     await ensureDir(snapshotDir);
-    await atomicWriteFile(target, buffer); // 原样复制字节（CRLF / BOM 都不动）
+    // B19（v1.8.0 WP-29）：改成流式复制 —— 不再把 ≤128 MB 的整章读进内存再原子写。
+    // 目标不存在才复制（当天已经有一份就跳过，与旧行为一致）；读源失败的 ENOENT 仍按 MISSING 处理。
+    try {
+      bytes = await atomicCopyFile(source, target); // 原样复制字节（CRLF / BOM 都不动）
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        return { taken: false, reason: 'MISSING', dir: null, file: raw, bytes: 0, cleanup: { removed: [], failed: [], kept: 0 } };
+      }
+      throw err;
+    }
     taken = true;
   }
   const cleanup = await cleanupSnapshots(bookPath, { keepDays, now });
@@ -1863,7 +1872,7 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
     reason: taken ? 'TAKEN' : 'ALREADY_TODAY',
     dir,
     file: raw,
-    bytes: buffer.length,
+    bytes,
     cleanup
   };
 }

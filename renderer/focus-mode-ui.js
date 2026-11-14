@@ -95,6 +95,51 @@
   }
 
   // 光标所在行的顶端（相对正文内容顶部、含 padding，px）；量不出来返回 null（就这次不对齐）
+  // B15（v1.8.0 WP-29）：打字机模式 30ms 防抖一次，旧实现每次都把「光标前全文」塞进 mirror
+  // 强制重排，成本随章长线性。现在按「硬段落」做增量：
+  //   · 段落起点（上一个 \n 之后）不同 / 正文变了 / 宽度或字体样式变了 → 仍做一次全文测量；
+  //   · 同一段落内移动 → 只把「本段从段首到光标」放进 mirror，量出段内相对行位，
+  //     再用上次的段首绝对位置求差（段落从行首开始，段内换行与全文布局一致，结果与全文测量等价）。
+  // 段落通常只有一两行，大章里连续输入不再每次重排整章。
+  let caretMeasureCache = null;
+
+  function prepareFocusMirror(mirror, styles, width) {
+    const px = (value) => {
+      const n = parseFloat(value);
+      return Number.isFinite(n) ? n : 0;
+    };
+    mirror.style.width = `${width}px`;
+    mirror.style.fontFamily = styles.fontFamily;
+    mirror.style.fontSize = styles.fontSize;
+    mirror.style.fontWeight = styles.fontWeight;
+    mirror.style.fontStyle = styles.fontStyle;
+    mirror.style.lineHeight = styles.lineHeight;
+    mirror.style.letterSpacing = styles.letterSpacing;
+    return px;
+  }
+
+  // 把 content 塞进 mirror、量 zero-width 标记相对 mirror 顶部的偏移（量完清空）
+  function measureMirrorOffset(mirror, content) {
+    mirror.textContent = content;
+    const marker = document.createElement('span');
+    marker.className = 'focus-mirror-caret';
+    marker.textContent = '\u200b'; // 零宽空格：不占宽度、不影响换行，只用来定位
+    mirror.appendChild(marker);
+    const offsetTop = marker.offsetTop - mirror.offsetTop;
+    mirror.textContent = '';
+    return offsetTop;
+  }
+
+  function roundCaretTop(value) {
+    return Math.round(value * 100) / 100;
+  }
+
+  // 字体 / 字号 / 行距 / 主题变了之后，上一次的段内基准（含字体度量）可能已经不成立：
+  // 由渲染层的 applyEditorStyle 在每次应用显示设置后调用一次，下一次测量重新走全文测量。
+  function resetCaretMeasureCache() {
+    caretMeasureCache = null;
+  }
+
   function measureCaretTop(position) {
     const text = editorEl.value;
     if (text.length > focusLogic.MAX_TYPEWRITER_CHARS) return null;
@@ -105,24 +150,57 @@
     };
     const width = Math.max(0, editorEl.clientWidth - px(styles.paddingLeft) - px(styles.paddingRight));
     if (width <= 0) return null;
-    const mirror = ensureFocusMirror();
-    mirror.style.width = `${width}px`;
-    mirror.style.fontFamily = styles.fontFamily;
-    mirror.style.fontSize = styles.fontSize;
-    mirror.style.fontWeight = styles.fontWeight;
-    mirror.style.fontStyle = styles.fontStyle;
-    mirror.style.lineHeight = styles.lineHeight;
-    mirror.style.letterSpacing = styles.letterSpacing;
     const pos = Math.max(0, Math.min(Math.floor(Number(position) || 0), text.length));
-    mirror.textContent = text.slice(0, pos);
-    const marker = document.createElement('span');
-    marker.className = 'focus-mirror-caret';
-    marker.textContent = '\u200b'; // 零宽空格：不占宽度、不影响换行，只用来定位
-    mirror.appendChild(marker);
-    const offsetTop = marker.offsetTop - mirror.offsetTop;
-    mirror.textContent = '';
+    const paragraphStart = pos > 0 ? text.lastIndexOf('\n', pos - 1) + 1 : 0;
+    const styleKey = [
+      styles.fontFamily,
+      styles.fontSize,
+      styles.fontWeight,
+      styles.fontStyle,
+      styles.lineHeight,
+      styles.letterSpacing
+    ].join('\u0000');
+    const mirror = ensureFocusMirror();
+    const cached = caretMeasureCache;
+    // 快速路径：同一份正文 / 宽度 / 字体，且在同一段（段首下标相同）——只量段内相对位置。
+    if (
+      cached &&
+      cached.text === text &&
+      cached.width === width &&
+      cached.styleKey === styleKey &&
+      cached.paragraphStart === paragraphStart
+    ) {
+      if (cached.pos === pos) return cached.caretTop;
+      prepareFocusMirror(mirror, styles, width);
+      const relOffset = measureMirrorOffset(mirror, text.slice(paragraphStart, pos));
+      if (!Number.isFinite(relOffset)) return null;
+      const caretTop = roundCaretTop(cached.baseTop + relOffset);
+      caretMeasureCache = {
+        text,
+        width,
+        styleKey,
+        paragraphStart,
+        pos,
+        baseTop: cached.baseTop,
+        relTop: relOffset,
+        caretTop
+      };
+      return caretTop;
+    }
+    prepareFocusMirror(mirror, styles, width);
+    const offsetTop = measureMirrorOffset(mirror, text.slice(0, pos));
     if (!Number.isFinite(offsetTop)) return null;
-    return Math.round((px(styles.paddingTop) + offsetTop) * 100) / 100;
+    // 顺便量一次「段内相对位置」，作为后续同段落增量测量的基准（段落从行首开始，
+    // 段内布局与全文布局一致：全文偏移 = 段首偏移 + 段内偏移）。
+    const relTop = measureMirrorOffset(mirror, text.slice(paragraphStart, pos));
+    if (!Number.isFinite(relTop)) {
+      caretMeasureCache = null;
+      return roundCaretTop(px(styles.paddingTop) + offsetTop);
+    }
+    const baseTop = px(styles.paddingTop) + offsetTop - relTop;
+    const caretTop = roundCaretTop(baseTop + relTop);
+    caretMeasureCache = { text, width, styleKey, paragraphStart, pos, baseTop, relTop, caretTop };
+    return caretTop;
   }
 
   // 打字机模式：把光标行放到正文区上方约 1/3 处（死区内不动，免得每打一个字都抖）
@@ -245,6 +323,7 @@
       alignTypewriter,
       scheduleTypewriterAlign,
       restoreFocusScroll,
+      resetCaretMeasureCache,
       setFocusMode,
       toggleFocusMode,
       setFocusTypewriter,

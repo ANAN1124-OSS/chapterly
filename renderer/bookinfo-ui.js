@@ -69,6 +69,10 @@
   // WP-15（C15）：在飞的是哪一本书。作者没等 A 回来就切到 B 再点保存时，不能用同一句
   // 「返回 {ok:false}」把 B 静默吞掉——至少要在 B 的弹层里说清「上一本还在保存」。
   let savingBook = null;
+  // B14（v1.8.0 WP-29）：分组 / 标签下拉的内容签名。renderShelf 每次刷新（保存 / 索引进度 /
+  // 统计）都会调 renderShelfGroupBar；下拉选项只由「分组名 + 计数 + 标签名 + 计数」决定，
+  // 签名没变就不重建 innerHTML —— 否则下拉正展开时会被整段重绘打断。
+  let shelfFilterSignature = '';
 
   function createBookinfoUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createBookinfoUi 需要 host 对象');
@@ -447,6 +451,7 @@
     const groupNames = stats.groups.map((item) => item.name);
     const tagStats = bookInfoLib.collectTagStats(state.books);
     if (!groupNames.length && !tagStats.length) {
+      shelfFilterSignature = '';
       state.shelfGroup = '';
       state.shelfTag = '';
       bar.classList.add('hidden');
@@ -466,10 +471,39 @@
     if (state.shelfGroup === '__none__' && !stats.ungrouped) state.shelfGroup = '';
     if (state.shelfTag && !tagStats.some((item) => item.name === state.shelfTag)) state.shelfTag = '';
 
+    const showUngrouped = state.books.some((book) => !bookGroupOf(book));
+    // B14：下拉内容签名（只含会影响选项文本的字段；当前选中值不算 —— 它只改 select.value）。
+    const signature = JSON.stringify([
+      stats.total,
+      stats.ungrouped,
+      showUngrouped,
+      stats.groups.map((group) => [group.name, group.count]),
+      tagStats.map((tag) => [tag.name, tag.count])
+    ]);
+    const expectedGroupOptions = 1 + (showUngrouped ? 1 : 0) + stats.groups.length;
+    const expectedTagOptions = tagStats.length ? 1 + tagStats.length : 0;
+    const canReuse =
+      shelfFilterSignature === signature &&
+      select.children.length === expectedGroupOptions &&
+      (!tagSelect || tagSelect.children.length === expectedTagOptions);
+    if (canReuse) {
+      // 选项没变：只同步选中值 / 显隐（不重建 innerHTML，展开中的下拉不闪）。
+      select.value = state.shelfGroup;
+      if (tagSelect && tagLabel) {
+        const hasTags = tagStats.length > 0;
+        tagLabel.classList.toggle('hidden', !hasTags);
+        tagSelect.classList.toggle('hidden', !hasTags);
+        if (hasTags) tagSelect.value = state.shelfTag;
+      }
+      if (manage) manage.classList.toggle('hidden', !groupNames.length);
+      bar.classList.remove('hidden');
+      return;
+    }
+
     const options = [filterOption('', `全部分组（${stats.total}）`)];
     // 「未分组」提醒仍走 host 的分组归一（与书籍信息弹层的建议清单同一口径：清洗后为空 = 未分组）；
     // 计数本身走 collectGroupStats（同一份规则，避免两处口径漂移）。
-    if (state.books.some((book) => !bookGroupOf(book))) {
+    if (showUngrouped) {
       options.push(filterOption('__none__', `未分组（${stats.ungrouped}）`));
     }
     for (const group of stats.groups) options.push(filterOption(group.name, `${group.name}（${group.count}）`));
@@ -500,6 +534,7 @@
         tagSelect.value = state.shelfTag;
       }
     }
+    shelfFilterSignature = signature;
     // 分组管理入口：有分组才需要（未分组是「没有 group 字段」，不在这里改名 / 合并）
     if (manage) manage.classList.toggle('hidden', !groupNames.length);
     bar.classList.remove('hidden');

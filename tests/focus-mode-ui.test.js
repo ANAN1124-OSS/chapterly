@@ -176,12 +176,13 @@ test('host 契约：5 个成员 + 分组内每个真实依赖；缺任何一个�
   }
 });
 
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 11 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 12 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0);
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'alignTypewriter', 'ensureFocusMirror', 'focusActive', 'measureCaretTop', 'restoreFocusScroll',
+    'alignTypewriter', 'ensureFocusMirror', 'focusActive', 'measureCaretTop',
+    'resetCaretMeasureCache', 'restoreFocusScroll',
     'scheduleTypewriterAlign', 'setFocusMode', 'setFocusTypewriter', 'setupFocusModeUi',
     'toggleFocusMode', 'updateFocusBar'
   ]);
@@ -424,8 +425,8 @@ test('静态闸门：renderer.js 不再内嵌专注模式实现，只剩装配�
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);
   }
   assert.ok(rendererSrc.includes(
-    'const { focusActive, updateFocusBar, ensureFocusMirror, measureCaretTop, alignTypewriter, scheduleTypewriterAlign, restoreFocusScroll, setFocusMode, toggleFocusMode, setFocusTypewriter, setupFocusModeUi } = focusModeUi;'
-  ), '11 个入口按原名解构');
+    'const { focusActive, updateFocusBar, ensureFocusMirror, measureCaretTop, alignTypewriter, scheduleTypewriterAlign, restoreFocusScroll, resetCaretMeasureCache, setFocusMode, toggleFocusMode, setFocusTypewriter, setupFocusModeUi } = focusModeUi;'
+  ), '12 个入口按原名解构');
   for (const id of ['btn-focus', 'btn-focus-exit', 'btn-focus-typewriter']) {
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
@@ -483,4 +484,79 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFocusModeU
   assert.deepEqual(Object.keys(win.CWFocusModeUi).sort(), ['REQUIRED_HOST', 'create']);
   assert.equal(win.CWFocusModeUi.REQUIRED_HOST.length, 5);
   assert.equal(win.CWWriteTimerUi, undefined);
+});
+
+// ---------- B15（v1.8.0 WP-29）：打字机光标测量按段落增量 ----------
+test('B15：同一段落内移动只量段内相对位置（不再把整章前缀塞进 mirror），结果与全文测量一致', () => {
+  const text = '甲'.repeat(70) + '\n' + '乙'.repeat(400);
+  const paragraphStart = 71;
+  const visualOffset = (value) => {
+    let lines = 0;
+    for (const line of String(value).split('\n')) lines += Math.max(1, Math.ceil(line.length / 40));
+    return (lines - 1) * 32;
+  };
+  const buildWrapped = () => {
+    const ctx = build({ text });
+    const mirror = makeEl('div', 'focus-mirror');
+    let mirrorText = '';
+    const writes = [];
+    Object.defineProperty(mirror, 'textContent', {
+      get() { return mirrorText; },
+      set(value) { mirrorText = String(value); writes.push(mirrorText); mirror.children.length = 0; }
+    });
+    Object.defineProperty(mirror, 'offsetTop', { get: () => 0 });
+    ctx.dom.map.set('focus-mirror', mirror);
+    ctx.dom.doc.createElement = (tag) => {
+      const el = makeEl(tag);
+      if (tag === 'span') {
+        Object.defineProperty(el, 'offsetTop', {
+          get() {
+            // 每个硬段落从行首重新排版：视觉行数 = 各段 ceil(段长/40) 之和
+            return el.parentNode === mirror ? visualOffset(mirrorText) : 0;
+          }
+        });
+      }
+      return el;
+    };
+    return { ctx, writes };
+  };
+
+  const first = buildWrapped();
+  const p1 = paragraphStart + 200;
+  const p2 = paragraphStart + 320;
+  const topAtP1 = first.ctx.ui.measureCaretTop(p1);
+  assert.equal(first.writes.length, 4, '第一次（全文测量 + 段内基准）各写一次内容、量完各清空一次');
+  assert.equal(first.writes[0].length, p1, '第一次是全章前缀');
+  assert.equal(first.writes[2].length, p1 - paragraphStart, '同时量一次段内基准供后续增量用');
+  const writesBefore = first.writes.length;
+  const topAtP2 = first.ctx.ui.measureCaretTop(p2);
+  assert.equal(first.writes.length, writesBefore + 2, '同段落内移动只写一次内容（+ 一次量完清空）');
+  assert.equal(first.writes[first.writes.length - 2].length, p2 - paragraphStart, '只量本段从段首到光标（长度远小于全章前缀）');
+
+  // 与「直接全文测量」的结果逐像素一致
+  const reference = buildWrapped();
+  assert.equal(topAtP2, reference.ctx.ui.measureCaretTop(p2));
+  assert.equal(topAtP2, 20 + visualOffset(text.slice(0, p2)));
+  // 同一位置重复问 → 直接命中缓存，不再写 mirror
+  const againBefore = first.writes.length;
+  assert.equal(first.ctx.ui.measureCaretTop(p2), topAtP2);
+  assert.equal(first.writes.length, againBefore, '同一位置不再重排');
+  assert.equal(topAtP1, 20 + visualOffset(text.slice(0, p1)));
+
+  // 正文变了 → 退回全文测量（缓存自动失效）。注意 build() 会把全局 document 换成新 ctx 的假 DOM，
+  // 这里先切回 first 的 document 再量（同一测试里有两个 ctx）。
+  globalThis.document = first.ctx.dom.doc;
+  first.ctx.editorEl.value = text + '\n' + '丙'.repeat(80);
+  const changed = first.ctx.ui.measureCaretTop(p2);
+  assert.equal(changed, 20 + visualOffset(first.ctx.editorEl.value.slice(0, p2)), '正文变了就重新量全文，不用旧偏移');
+});
+
+test('B15：显示设置（字体 / 字号 / 行距）应用后作废段内基准，下一次重新全文测量', () => {
+  assert.match(moduleSrc, /function resetCaretMeasureCache\(\) \{/);
+  const styleStart = rendererSrc.indexOf('function applyEditorStyle(override) {');
+  assert.ok(styleStart > 0);
+  const styleBody = rendererSrc.slice(styleStart, rendererSrc.indexOf('\n  }', styleStart));
+  assert.ok(styleBody.indexOf('resetCaretMeasureCache()') < styleBody.indexOf('scheduleMarksRender(30)'), '先作废基准再排标记层重绘');
+  // 模块导出 + 渲染层解构都接上（不是只定义不调用的死函数）
+  assert.match(rendererSrc, /const \{ focusActive,[^}]*resetCaretMeasureCache[^}]*\} = focusModeUi;/);
 });

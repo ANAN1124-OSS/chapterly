@@ -339,7 +339,12 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // 1.8.0 WP-28（B5/B6/B7）：6176 → 6177（+1）：历史面板 host 多一行
   //   `protectedUndoGroups: () => undoUi.protectedGroupIds()`（B6 清理备份时跳过 10 秒撤销引用的组）；
   //   流式导出 / 备份清理 / 碎片列表的实现全在 core/* 与 renderer/history-ui.js，renderer.js 其余零新增。
-  const RENDERER_LINE_BUDGET = 6177;
+  // 1.8.0 WP-29（B16/B17/B14 等）：6177 → 6253（+76）：B17 改名 / 改状态 / 批量改状态 / 卷改名走
+  //   「只更新这一条」快路径（syncChapterItemInfo / syncVolumeHeaderName，约 60 行，必须读 renderer.js
+  //   的章节项 DOM 与内部工具）；B16 的弹层开合缓存实现在 backdrop-registry.createOpenWatcher（单测覆盖），
+  //   renderer.js 只多 watcher 创建 + anyBackdropOpen 读缓存（约 10 行）；B15 的字体度量失效只多
+  //   applyEditorStyle 里一行 resetCaretMeasureCache()。其余小项都在各自模块里。
+  const RENDERER_LINE_BUDGET = 6253;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

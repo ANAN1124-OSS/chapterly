@@ -181,6 +181,8 @@ function composeBook(meta, texts, range) {
 function composeSelected(meta, texts, indexes) {
   const chapters = chapterList(meta);
   const picked = [];
+  // B8（v1.8.0 WP-29）：去重换 Set（与 core/ipc-limits.js 同一口径）。输出顺序仍是「去重 + 升序」。
+  const seen = new Set();
   for (const raw of Array.isArray(indexes) ? indexes : []) {
     // 只认数字 / 非空纯数字字符串：null / undefined / '' 交给 Number 会变成 0（那会悄悄多复制第 1 章）
     const value =
@@ -188,7 +190,10 @@ function composeSelected(meta, texts, indexes) {
     if (!Number.isFinite(value)) continue;
     const index = Math.floor(value);
     if (index < 0 || index >= chapters.length) continue;
-    if (picked.indexOf(index) < 0) picked.push(index);
+    if (!seen.has(index)) {
+      seen.add(index);
+      picked.push(index);
+    }
   }
   picked.sort((a, b) => a - b);
   if (!picked.length) return '';

@@ -51,7 +51,7 @@ const screenshotChapter = argValue('chapter');
 const screenshotDialog = argValue('dialog');
 const automation = isE2E || isBench || isContrast || Boolean(screenshotPath);
 
-const { createConfigStore, sanitize: sanitizeConfig, withBooksRootOverride, WORDLIST_MAX } = require('./core/config');
+const { createConfigStore, sanitize: sanitizeConfig, withBooksRootOverride, WORDLIST_MAX, sameWindowBounds } = require('./core/config');
 const { atomicWriteFile, atomicWriteFileStream } = require('./core/atomic');
 const storage = require('./core/storage');
 const repair = require('./core/repair');
@@ -81,6 +81,8 @@ const updateResponseLib = require('./core/update-response');
 const closeGuard = require('./core/close-guard');
 const openBooksLib = require('./core/open-books');
 const fontPolicy = require('./core/font-policy');
+// B9（v1.8.0 WP-29）：字体读取缓存（按 realpath + mtime + size 命中；见 core/font-cache.js）
+const { createFontReadCache } = require('./core/font-cache');
 const securityPolicy = require('./core/security-policy');
 const ipcPaths = require('./core/ipc-paths');
 const configGate = require('./core/config-gate');
@@ -152,6 +154,9 @@ let configWarning = null; // 配置损坏被归档时的提示，界面启动后
 // 按窗口记「刚在系统对话框里选中的路径」，config:set 拿它做来源校验（v0.9 C-2b）。
 // 只在内存里，窗口关闭时清掉；不写盘、不跨窗口。
 const pickedConfigPaths = configGate.createPickedPathStore();
+// B18（v1.8.0 WP-29）：font:pick 选中的字体路径也只记在内存里（按窗口分开），font:read 只认
+// 「刚选的这一条」；窗口关闭时与 pickedConfigPaths 一起清。放模块级是因为关窗清理在 createWindow 里。
+const pickedFontPaths = new Map(); // windowId -> 本次在对话框里选中的字体路径
 // 正常使用时就是 Electron 的系统剪贴板；只有 E2E 在锁屏/无交互桌面环境（系统剪贴板
 // 拒绝所有读写）时会临时换成进程内剪贴板，见 scripts/screenshot-driver.js 的 createE2EClipboard()。
 let activeClipboard = clipboard;
@@ -501,6 +506,13 @@ async function saveRecentWindowBounds(session) {
     // 最大化矩形，存下来再重启、取消最大化后窗口就永远停在工作区大小（每次都要手动调）。
     // 普通 / 最小化状态下两者一致；最大化只额外记 maximized 标志，恢复由 createWindow 补 maximize()。
     const normal = session.win.getNormalBounds();
+    const nextBounds = { ...normal, maximized: session.win.isMaximized() };
+    // B10（v1.8.0 WP-29）：只写「变了的 5 个标量」。拖动 / 最大化切换会连发 resize + move，
+    // 防抖结束时的几何常常与磁盘上已经记的一样（例如最大化后再还原）；这种时候再写一遍整份
+    // config.json 没有意义。判据取「配置当前值」（内存缓存，一次 clone）而不是窗口自己的记忆 ——
+    // 多窗口下另一个窗口可能刚写过同一份字段，按磁盘现状比才不会被上一手的旧值误导。
+    const current = await configStore.get();
+    if (sameWindowBounds(current.windowBounds, nextBounds)) return true;
     await configStore.set({ windowBounds: { ...normal, maximized: session.win.isMaximized() } }, { auto: true });
     return true;
   } catch {
@@ -1999,7 +2011,10 @@ function registerIpc() {
   // 自定义正文字体：只允许字体文件，读成 base64 交给渲染层的 FontFace 加载（渲染层仍无 fs）
   // 代码审计 F1：font:pick 选中的路径只记在内存里（按窗口分开），font:read 只认「这次选的 /
   // 当前书的 bookDisplay / 全局配置」这三种主进程自己知道的路径，渲染层传进来的路径一律不看。
-  const pickedFontPaths = new Map(); // windowId -> 本次在对话框里选中的字体路径
+  // B18（WP-29）：pickedFontPaths 本身在模块级（关窗清理要在 createWindow 里做）。
+  // B9（v1.8.0 WP-29）：字体文件读盘 + base64 编码缓存（最近 2 份，按 realpath + mtime + size 失效）。
+  // 仍然每次都做 realpath / 扩展名 / 大小闸门 / 来源校验，只跳过「同一个没变的文件」的二次读取。
+  const fontReadCache = createFontReadCache({ maxEntries: 2 });
 
   function rememberPickedFont(windowId, fontPath) {
     const id = String(windowId == null ? '' : windowId);
@@ -2076,11 +2091,25 @@ function registerIpc() {
     if (!fontPolicy.isFontSizeAllowed(stat.size)) {
       throw new storage.StorageError('FONT_TOO_BIG', '字体文件太大（超过 24MB），请换一个小一点的');
     }
-    const buffer = await fs.readFile(realPath);
+    // B9（v1.8.0 WP-29）：命中缓存就跳过 24MB 读盘 + ~32MB base64 编码（key 含 realpath / mtime / size，
+    // 字体文件被外部替换也会重新读）。缓存只存 name/size/base64，source 与 path 仍按本次解析结果现算。
+    const cacheKey = fontReadCache.keyOf(realPath, stat);
+    const cached = fontReadCache.get(cacheKey);
+    let fontName;
+    let base64;
+    if (cached) {
+      fontName = cached.name;
+      base64 = cached.base64;
+    } else {
+      const buffer = await fs.readFile(realPath);
+      fontName = path.basename(realPath);
+      base64 = buffer.toString('base64');
+      fontReadCache.put(cacheKey, { name: fontName, size: stat.size, base64 });
+    }
     const payload = {
-      name: path.basename(realPath),
+      name: fontName,
       size: stat.size,
-      base64: buffer.toString('base64'),
+      base64,
       source: source.source
     };
     // 只有「刚在对话框里选的」这一趟回 path（渲染层本来就从 font:pick 拿到过这个路径）；
@@ -3136,6 +3165,9 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
     webContentsSessions.delete(webContentsId);
     // 这个窗口「刚在对话框里选中的配置路径」登记也一起清掉（只在内存里）
     pickedConfigPaths.forget(session.id);
+    // B18（v1.8.0 WP-29）：字体路径登记同属「只在内存里、按窗口」的临时值；以前只在 font:read
+    // 时清，选了字体但没读就关窗会残留一条（窗口 id 可能被系统复用）。与 pickedConfigPaths 同步清理。
+    pickedFontPaths.delete(session.id);
     try {
       storage.openBookRegistry.unregisterWindow(session.id);
     } catch {

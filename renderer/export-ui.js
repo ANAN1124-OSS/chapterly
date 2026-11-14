@@ -132,6 +132,22 @@
     return '';
   }
 
+  // B20（v1.8.0 WP-29）：一次遍历统计每卷章数 —— 旧实现每个卷各跑一次 chapters.filter，
+// O(卷数 × 章数)。结果（每卷计数 / 未分卷计数 / 选项顺序）与逐卷 filter 逐项一致。
+  function countChaptersByVolume() {
+    const counts = new Map();
+    let unvolumed = 0;
+    for (const chapter of state.chapters) {
+      const volumeId = chapterVolumeId(chapter);
+      if (!volumeId) {
+        unvolumed += 1;
+        continue;
+      }
+      counts.set(volumeId, (counts.get(volumeId) || 0) + 1);
+    }
+    return { counts, unvolumed };
+  }
+
   function fillExportVolumeOptions() {
     const row = $('export-volume-row');
     const select = $('export-volume');
@@ -144,10 +160,10 @@
       option.textContent = label;
       select.appendChild(option);
     };
-    const unvolumed = state.chapters.filter((chapter) => !chapterVolumeId(chapter)).length;
+    const { counts, unvolumed } = countChaptersByVolume();
     if (unvolumed > 0) addOption(EXPORT_UNVOLUMED, `未分卷（${unvolumed} 章）`);
     volumes.forEach((volume) => {
-      const count = state.chapters.filter((chapter) => chapterVolumeId(chapter) === volume.id).length;
+      const count = counts.get(volume.id) || 0;
       addOption(volume.id, `${String(volume.name || '未命名卷')}（${count} 章）`);
     });
     if (!select.options.length) addOption(EXPORT_UNVOLUMED, '未分卷（0 章）');

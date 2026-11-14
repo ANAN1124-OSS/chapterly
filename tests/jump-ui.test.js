@@ -545,3 +545,33 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWJumpUi，�
   assert.equal(win.CWExportUi, undefined, '单独加载 jump-ui 不该顺手造出别的全局');
   assert.equal(win.CWChapters, undefined);
 });
+
+// ---------- V206（v1.8.0 WP-29）：跳章 payload 按引用缓存 ----------
+test('V206：jumpChapterPayload 只在书目 / 章节数组换新引用时重算（章号不再每次全量算）', () => {
+  const chapters = Array.from({ length: 5 }, (_, i) => ({ id: `c${i}`, name: `第${i}章` }));
+  const { host, state } = makeHost({ chapters });
+  let numberCalls = 0;
+  const original = host.chaptersLib.chapterNumber;
+  host.chaptersLib.chapterNumber = (...args) => {
+    numberCalls += 1;
+    return original(...args);
+  };
+  const ui = jumpUi.create(host);
+  const first = ui.jumpChapterPayload();
+  assert.equal(first.length, 5);
+  assert.equal(numberCalls, 5, '第一次逐章算章号');
+  const again = ui.jumpChapterPayload();
+  assert.equal(numberCalls, 5, '同一份 chapters 引用不再逐章重算');
+  assert.equal(again, first, '同一份 payload 直接复用（IPC 结构化克隆只读）');
+
+  state.chapters = state.chapters.slice();
+  const next = ui.jumpChapterPayload();
+  assert.equal(numberCalls, 10, '章节数组换新引用要重算');
+  assert.notEqual(next, first);
+  assert.deepEqual(next, first, '内容不变时重算结果逐项相同');
+
+  state.meta = { chapters: state.chapters, chapterNumbering: 'continuous' };
+  const withMeta = ui.jumpChapterPayload();
+  assert.equal(numberCalls, 15, '书目换新引用也要重算（章号 / 卷名输入可能变）');
+  assert.notEqual(withMeta, next);
+});

@@ -302,3 +302,35 @@ test('每日快照：正文超过读取上限时明确拒绝，不读进内存�
   assert.equal(taken.bytes, Buffer.byteLength('正常正文。'));
   assert.equal(await storage.exists(path.join(bookPath, '_trash', '快照-20261111', file)), true);
 });
+
+// ---------- B19（v1.8.0 WP-29）：每日快照流式复制 ----------
+test('B19：大章快照按块流式复制，字节逐一致 + 不残留临时文件（不再整章读进内存）', async () => {
+  const root = await mkTmp('cw-snapshot-stream-');
+  const { path: bookPath } = await storage.createBook(root, '流式快照书');
+  const meta = await storage.readBookMeta(bookPath);
+  const file = meta.chapters[0].file;
+  // 约 1.7 MB（> 1 MB 块大小），带 BOM / CRLF / 中文，专门覆盖跨块边界
+  const body = '\uFEFF' + '第一行\r\n第二行有字。\r\n'.repeat(70000);
+  const bytes = Buffer.from(body, 'utf8');
+  await fs.writeFile(path.join(bookPath, file), bytes);
+  const now = DAY(2026, 10, 31, 23, 30);
+  const first = await storage.takeDailySnapshot(bookPath, file, { keepDays: 7, now });
+  assert.equal(first.taken, true);
+  assert.equal(first.bytes, bytes.length, 'bytes 按实际流式写出的字节数回报');
+  const snapshotDir = path.join(bookPath, '_trash', '快照-20261031');
+  const copied = await fs.readFile(path.join(snapshotDir, file));
+  assert.deepEqual(copied, bytes, '快照字节与源文件逐字节一致（BOM / CRLF 原样）');
+  const leftovers = (await fs.readdir(snapshotDir)).filter((name) => name.includes('.tmp-'));
+  assert.deepEqual(leftovers, [], '原子写的临时文件必须已 rename，不留残渣');
+  // 当天已有：不再复制，bytes 仍是源大小
+  const second = await storage.takeDailySnapshot(bookPath, file, { keepDays: 7, now });
+  assert.equal(second.taken, false);
+  assert.equal(second.bytes, bytes.length);
+
+  // 静态闸门：takeDailySnapshot 走 atomicCopyFile，不许退回「整章 readFile 再原子写」
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  const start = source.indexOf('async function takeDailySnapshot');
+  const fnBody = source.slice(start, source.indexOf('\n}', start));
+  assert.match(fnBody, /bytes = await atomicCopyFile\(source, target\);/);
+  assert.equal(/fs\.readFile\(source\)/.test(fnBody), false, '不再整章读进内存');
+});

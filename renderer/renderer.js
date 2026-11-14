@@ -822,7 +822,8 @@
     // 当前段落高亮颜色（v0.8-10b）：'跟随主题' 时清掉内联变量、让 body.theme-* 的配色接管；
     // 自定义时把颜色换成 rgba 写到 body 内联变量上（内联优先于主题类，切主题也保持自定义色）。
     applyCaretColor(cfg);
-    // 字体 / 字号 / 行距变了，标记层要重新对齐
+    // 字体 / 字号 / 行距变了，标记层要重新对齐；打字机测量的段内基准也一并作废（B15）
+    resetCaretMeasureCache();
     scheduleMarksRender(30);
   }
 
@@ -2497,6 +2498,62 @@
     return ok;
   }
 
+  // B17（v1.8.0 WP-29）：改名 / 改状态 / 改备注后只更新「这一条」章节卡片，不整表重建。
+  // 改前这些操作都调 renderChapterList()（千章书重建 1000 条，与保存 / 切章已有的快路径口径不一致）。
+  // 正确性优先：筛选生效（命中集合可能随章名变化）、条目对不上（新建 / 删章 / 折叠 / 换书）、
+  // 备注标记需要增删（DOM 顺序要挪）时一律返回 false，调用方退回整表重建。
+  function syncChapterItemInfo(index) {
+    const list = $('chapter-list');
+    const chapter = state.chapters[index];
+    if (!list || !chapter) return false;
+    if (chapterFilterActive()) return false;
+    const item = list.querySelector(`.chapter-item[data-index="${index}"]`);
+    if (!item || item.dataset.chapterId !== String(chapter.id == null ? '' : chapter.id)) return false;
+    const status = chapterStatus(chapter);
+    const note = chapterNote(chapter);
+    const noteMark = item.querySelector('.chapter-note-mark');
+    if (Boolean(note) !== Boolean(noteMark)) return false;
+    for (const className of Array.from(item.classList)) {
+      if (className.startsWith('status-')) item.classList.remove(className);
+    }
+    item.classList.add(`status-${status}`);
+    const label = chapterListLabel(index, chapter.name);
+    const title = chapterTitle(index, chapter.name);
+    item.dataset.status = status;
+    item.dataset.title = title;
+    item.title = chapterItemTitleText(chapter, index);
+    item.setAttribute('aria-label', `打开${title}`);
+    const dot = item.querySelector('.chapter-status-dot');
+    if (dot) dot.title = `状态：${CHAPTER_STATUS_LABELS[status]}（右键可改）`;
+    const nameEl = item.querySelector('.chapter-name');
+    if (nameEl) nameEl.textContent = label.name;
+    if (noteMark) noteMark.title = `备注：${note}`;
+    // 多选状态也可能刚被清掉（批量改状态后 selectedIds 置空）：一并同步，不留给下次重建
+    const selected = chapterSelectionLib.isSelected(chapterSelectionSnapshot(), chapter.id);
+    item.classList.toggle('selected', selected);
+    item.setAttribute('aria-selected', selected ? 'true' : 'false');
+    renderBookMeta();
+    markCommandsDirty();
+    syncChapterBatchBar();
+    updateCurrentChapterPill();
+    return true;
+  }
+
+  // B17：卷改名只改卷头文字（卷内章数 / 字数 / 章节顺序都不变），不整表重建。
+  // 筛选生效时不走（卷头在筛选视图里有「命中 / 共 N 章」两套数字，重建口径更简单可靠）。
+  function syncVolumeHeaderName(volumeId) {
+    const list = $('chapter-list');
+    if (!list || chapterFilterActive()) return false;
+    const key = volumeId || '';
+    const row = list.querySelector(`.volume-item[data-volume-id="${key}"]`);
+    if (!row) return false;
+    const nameEl = row.querySelector('.volume-name');
+    if (!nameEl) return false;
+    nameEl.textContent = volumeDisplayName(volumeId);
+    renderVolumeToggle();
+    return true;
+  }
+
   // 卷册页首（v1.0 方向 C）：只在写作页显示，内容和顶栏章名同源；
   // 排字 / 卷名都走渲染层，不改正文、不改书目、不写盘。
   function renderPageHead() {
@@ -2629,7 +2686,7 @@
     marks: { scheduleMarksRender, syncMarksScroll },
     menus: { hideContextMenu, hideHeaderMenus, hideVolumeMenu }
   });
-  const { focusActive, updateFocusBar, ensureFocusMirror, measureCaretTop, alignTypewriter, scheduleTypewriterAlign, restoreFocusScroll, setFocusMode, toggleFocusMode, setFocusTypewriter, setupFocusModeUi } = focusModeUi;
+  const { focusActive, updateFocusBar, ensureFocusMirror, measureCaretTop, alignTypewriter, scheduleTypewriterAlign, restoreFocusScroll, resetCaretMeasureCache, setFocusMode, toggleFocusMode, setFocusTypewriter, setupFocusModeUi } = focusModeUi;
 
   // ---------- 阅读模式 ----------
   // 第 4 步九刀·第二刀：实现在 renderer/reading-ui.js（模块头有契约），这里只装配与接线；
@@ -3193,7 +3250,8 @@
     try {
       const data = await call(api.renameVolume, state.bookPath, volumeId, name);
       applyMetaAndRelocate(data);
-      renderChapterList();
+      // B17：卷改名只改卷头文字；找不到卷头 / 筛选生效时退回整表重建
+      if (!syncVolumeHeaderName(volumeId)) renderChapterList();
       toast('已重命名卷');
       return { ok: true };
     } catch (err) {
@@ -3388,7 +3446,8 @@
     try {
       const data = await call(api.renameChapter, state.bookPath, chapter.id, name);
       applyMetaAndRelocate(data);
-      renderChapterList();
+      // B17：只改这一条的章名 / tooltip；筛选 / 条目对不上时退回整表重建
+      if (!syncChapterItemInfo(index)) renderChapterList();
       if (index === state.index) renderEditorHeader();
       updateStatus();
       toast('已重命名（文件名未改）');
@@ -3535,7 +3594,8 @@
     try {
       const data = await call(api.updateChapterMeta, state.bookPath, chapter.id, patch);
       applyMetaAndRelocate(data);
-      renderChapterList();
+      // B17：状态 / 备注只改这一条（备注标记要增删时 syncChapterItemInfo 返回 false → 整表重建）
+      if (!syncChapterItemInfo(index)) renderChapterList();
       renderEditorHeader();
       return { ok: true, changed: Boolean(data.changed), chapter: data.chapter };
     } catch (err) {
@@ -3787,7 +3847,16 @@
     }
     state.selectedIds = new Set();
     state.selectAnchorId = null;
-    renderChapterList();
+    // B17：批量改状态只同步这几条（多选清空后的 selected 类由 syncChapterItemInfo 一起摘掉）；
+    // 任一条对不上（被折叠 / 换了书）就退回整表重建。
+    let fastDone = true;
+    for (const index of indexes) {
+      if (!syncChapterItemInfo(index)) {
+        fastDone = false;
+        break;
+      }
+    }
+    if (!fastDone) renderChapterList();
     renderEditorHeader();
     syncChapterBatchBar();
     if (changed) toast(`已把 ${changed} 章标记为${label}（只改书目，正文没动）`);
@@ -4142,8 +4211,13 @@
   // 当前有没有弹层（含不锁键的面板）开着。Ctrl+K 与 `?` 共用：两个弹层不叠在一起，
   // 与 Esc 链「锁键层先接走」的口径一致。弹层清单 = backdrop-registry.js 的 17 层
   //（state.modal 判在两处：这里先看状态，注册表里 modal-backdrop 的类名再兜一层）。
+  // B16（v1.8.0 WP-29）：弹层开合缓存（实现在 backdrop-registry.createOpenWatcher，单测直接覆盖）。
+  // bindEvents 时创建一次；之后的 keydown 只读缓存变量，不再逐层 getElementById + classList。
+  let backdropWatcher = null;
+
   function anyBackdropOpen() {
     if (state.modal) return true;
+    if (backdropWatcher) return backdropWatcher.isOpen();
     return backdropRegistry.isBlocked($);
   }
 
@@ -5128,6 +5202,8 @@
 
   // ---------- 事件绑定 ----------
   function bindEvents() {
+    // B16：弹层开合观察器（17 层 class 变化 → 缓存；没有 MutationObserver 时模块内部退回现算）
+    backdropWatcher = backdropRegistry.createOpenWatcher($);
     settingsUi.setupSettingsUi();
     writeTimerUi.setupWriteTimerUi();
     // 统计筛选（1.6.0 F2）：两个下拉 + 「生成 CSV」（只绑定、不写盘）
