@@ -352,15 +352,16 @@ test('静态闸门：index.html 顺序（shelf-filter-ui → shelf-search-ui →
   assert.ok(rendererSrc.includes('window.CWShelfNavUi'), '渲染层按 CWShelfNavUi 取模块');
 });
 
-test('静态闸门：模块不 require / 不摸 Electron·fs·网络·window，state 只写回书架那 11 个既有字段', () => {
+test('静态闸门：模块不 require / 不摸 Electron·fs·网络·window，state 只写回书架那 12 个既有字段', () => {
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'document.']) {
     assert.equal(moduleCode.includes(forbidden), false, 'shelf-nav-ui.js 不许出现 ' + forbidden);
   }
   const writes = [...moduleCode.matchAll(/\bstate\.([A-Za-z_$][\w$]*)\s*=(?!=)/g)].map((m) => m[1]);
+  // WP-03（V101）新增 loadedChapterId：回书架后清空「编辑区属于哪一章」，下次开书由 loadChapterAt 重新登记。
   assert.deepEqual(
     [...new Set(writes)].sort(),
-    ['baseText', 'bookDisplay', 'bookId', 'bookPath', 'chapters', 'config', 'dirty', 'index', 'meta', 'saveError', 'view'],
-    '只写回书架原有的 11 个字段，不许新增 state 字段'
+    ['baseText', 'bookDisplay', 'bookId', 'bookPath', 'chapters', 'config', 'dirty', 'index', 'loadedChapterId', 'meta', 'saveError', 'view'],
+    '只写回书架原有的 11 个字段 + WP-03 的 loadedChapterId，不许再新增别的 state 字段'
   );
 });
 

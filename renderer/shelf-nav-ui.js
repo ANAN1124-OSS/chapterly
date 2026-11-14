@@ -78,6 +78,8 @@
     state.bookDisplay = {};
     state.chapters = [];
     state.index = -1;
+    // WP-03（V101）：回书架后没有「编辑区属于哪一章」这回事；下次开书由 loadChapterAt 重新登记。
+    state.loadedChapterId = null;
     state.dirty = false;
     state.saveError = null;
     state.baseText = '';

@@ -1,4 +1,4 @@
-// E2E 场景的组索引（v0.9 B-7 起；2026-11-04 窗口把第 0–51 组也搬进来，现在 0–81 全部在本目录）。
+// E2E 场景的组索引（v0.9 B-7 起；2026-11-04 窗口把第 0–51 组也搬进来，现在 0–82 全部在本目录）。
 //
 // 以前所有组都挤在 scripts/e2e-scenario.js 那一个函数里（1.2 万行），改一组要在大函数里
 // 上下翻。现在按组拆到本目录：**只拆文件、不改断言**，顺序等于原文件里的执行顺序。
@@ -104,7 +104,10 @@ const groups = [
   // 书架分组 / 标签筛选与管理（1.6.0 F5）：筛选 AND / 改名 / 合并 / 单本移到分组 / 只改书目；idsFrom(60) 自动带上。
   { id: 80, run: require('./80-shelf-groups') },
   // 输入法组字中的 Enter（1.7.1 P1 / V73）：四条「Enter = 确认」链路判 isComposing；idsFrom(60) 自动带上。
-  { id: 81, run: require('./81-ime-enter') }
+  { id: 81, run: require('./81-ime-enter') },
+  // 开书 / 载章状态机（v1.8.0 WP-03 / V101 V102 C9 C10）：开书世代令牌、载章令牌、保存按快照章结算；
+  // 自足造两本临时书、跑完删掉，idsFrom(60) 自动带上（排在多窗口组 55 之前）。
+  { id: 82, run: require('./82-open-book-state') }
 ];
 
 // 按给定组号依次跑（组号 → 组文件；顺序就是参数顺序，调用点决定「在哪一段」）。
@@ -128,7 +131,7 @@ async function runGroups(t, ids) {
   }
 }
 
-// 从某一组号起的所有组（给「场景尾部那一批」用：idsFrom(60) = 60 → 81）。
+// 从某一组号起的所有组（给「场景尾部那一批」用：idsFrom(60) = 60 → 82）。
 const idsFrom = (from) => groups.filter((group) => group.id >= from).map((group) => group.id);
 
 module.exports = { groups, runGroups, idsFrom };

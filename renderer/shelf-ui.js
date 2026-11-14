@@ -13,7 +13,8 @@
  * 契约：createShelfUi(host) 由渲染层调用一次，host 提供：
  *   host = {
  *     $, state, chapterTitle, formatRelativeTime,
- *     openBookByPath, askUnsaved, saveCurrent, loadChapterAt
+ *     openBookByPath, askUnsaved, saveCurrent, loadChapterAt,
+ *     waitForSavingIdle, waitForLoadingIdle   // 可选：切章前等「保存在途 / 载章在途」落定（WP-03）
  *   }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到点书架 / 切章时 ReferenceError）。
  * host 成员全是一次性解构的稳定引用；它们在渲染层都是函数声明（会提升）或先于装配点的
@@ -30,6 +31,7 @@
  *     backdrop 的 hidden 切换；
  *   - 切章：同章直接 { ok: true, same: true }、越界「章节不存在」、dirty 时 askUnsaved 询问
  *     （取消 → { ok: false, canceled: true }；保存失败原样透传）、最后 loadChapterAt。
+ *     轮询在途时先等载章 / 保存在途落定（C9 / C10），等完重新核对目标章与 dirty。
  *
  * 红线不变：只读 state（冲突对话框写 state.conflictBook，与搬之前同一行）、只改 DOM；
  * 本模块不注册任何事件监听、不进 Esc 动作表、不改测试钩子的宿主契约——
@@ -55,7 +57,7 @@
         throw new TypeError('createShelfUi 的 host 缺少 ' + key);
       }
     }
-    const { $, state, chapterTitle, formatRelativeTime, openBookByPath, askUnsaved, saveCurrent, loadChapterAt } = host;
+    const { $, state, chapterTitle, formatRelativeTime, openBookByPath, askUnsaved, saveCurrent, loadChapterAt, waitForSavingIdle, waitForLoadingIdle } = host;
   // ---------- 继续上次写作 ----------
   // 主进程在打开书 / 切章 / 保存时记 config.lastBook；这里只负责把它显示出来。
   // 书架里已经找不到那本书（被删/改名）或是损坏书时，入口直接隐藏，不做任何猜测。
@@ -132,6 +134,14 @@
   }
 
   async function switchChapter(index, options = {}) {
+    if (index === state.index) return { ok: true, same: true };
+    if (index < 0 || index >= state.chapters.length) return { ok: false, message: '章节不存在' };
+    // WP-03（C10）：保存在途时先等它按快照章身份完成，再按「剩下真正没保存的字」询问——
+    // 否则作者刚选的「不保存」会被在途写入违背（账已按快照章结算，不写新章的 mtime / 字数）。
+    if (state.saving && typeof waitForSavingIdle === 'function') await waitForSavingIdle();
+    // WP-03（C9）：载章在途时等它落定；同一时刻只让最后一次点击生效，不在交错里互相覆盖。
+    if (state.loading && typeof waitForLoadingIdle === 'function') await waitForLoadingIdle();
+    // 等待期间现场可能已经变了（书换了 / 目标章没了 / 已经停在目标章）：重新核对一遍再动手。
     if (index === state.index) return { ok: true, same: true };
     if (index < 0 || index >= state.chapters.length) return { ok: false, message: '章节不存在' };
     if (state.dirty) {

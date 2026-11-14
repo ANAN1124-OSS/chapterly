@@ -115,17 +115,17 @@ test('测试钩子模块：Node 里能 require、导出 create，create() 不碰
   assert.strictEqual(typeof hooks.handleCloseRequest, 'function');
 });
 
-test('测试钩子模块：拆分前后钩子名称与数量不变（510 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1 / 2026-11-14 WP-01 保存延迟注入 +1 / WP-02 长操作延迟注入 +1、编辑区锁查询 +1）', () => {
+test('测试钩子模块：拆分前后钩子名称与数量不变（512 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1 / 2026-11-14 WP-01 保存延迟注入 +1 / WP-02 长操作延迟注入 +1、编辑区锁查询 +1 / WP-03 开书、载章延迟注入 +2）', () => {
   const hooks = hooksModule.create(stubHost());
   const names = Object.keys(hooks).sort();
-  assert.strictEqual(names.length, 510, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
+  assert.strictEqual(names.length, 512, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
   // 每个功能域各抽一个，防止「数量对但换了一批」
   for (const name of [
     'ready', 'state', 'newBook', 'openBookPath', 'openBookInNewWindow', 'releaseBook', 'windowInfo',
     'newChapter', 'insertAfter', 'renameChapterAt', 'deleteChapterAt', 'switchTo', 'setText', 'text',
     'inputTick',
     'save', 'saveVisible', 'toasts', 'clearToasts', 'setTestVerifyBook', 'setTestSaveDelay', 'chapterTitles',
-    'setTestBookOpDelay', 'editorLocked',
+    'setTestBookOpDelay', 'editorLocked', 'setTestOpenBookDelay', 'setTestLoadChapterDelay',
     'openFindPanel', 'closeFindPanel', 'openProofreadPanel', 'proofreadRun', 'openSensitivePanel',
     'sensitiveRun', 'ttsFakeState', 'ttsFakeFinish',
     'formatCurrentChapter', 'runFormatBook', 'exportFormat', 'fontDecodeMode', 'setInput', 'setSelect',
@@ -305,7 +305,16 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   ④ runFormatBook 把预检查拖进锁内、完成后按判定分流重载 / 保留编辑区（约 50 行）。
   //   搬进独立模块就得把 editorEl、state、call、toast、loadChapterAt 全部反向注入，比现在更绕；
   //   新增行里约 55 行是解释「为什么不能再退回旧写法」的注释，实际语句约 65 行。
-  const RENDERER_LINE_BUDGET = 5947;
+  // 1.8.0 WP-03（V101 / V102 / C9 / C10）：5947 → 6142（+195）：开书 / 载章状态机必须读 renderer.js 的
+  //   内部闭包（state / editorEl / openBookByPath / loadChapterAt / saveCurrent 的时序），
+  //   纯判定部分（save-logic / open-book-guard / long-op-logic）已在各自模块且有单测；这里留下的是
+  //   无法搬走的时序接线——① openSeq / loadChapterSeq 与两类等待者（约 60 行，含 30 行说明：
+  //   为什么令牌按书 + 章、为什么载章 / 保存在途要先等落定）；② 编辑区「打开中 / 载章中 / 无有效章节」
+  //   的统一只读出口（约 25 行）；③ openBookByPath 每处 await 后的世代复核 + 提交前清空 / 遮罩
+  //   （约 60 行）；④ loadChapterAt 成功才提交 + 失败保持遮罩（约 30 行）；⑤ saveCurrent 按快照章
+  //   身份结算（约 45 行）。搬进独立模块就得把 editorEl、state、toast、两个 IPC 全反向注入，
+  //   比现在更绕；结构拆分留给 WP-34。
+  const RENDERER_LINE_BUDGET = 6142;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,
