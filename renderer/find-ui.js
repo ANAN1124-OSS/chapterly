@@ -531,10 +531,22 @@
       return;
     }
     if (options.scope === 'current') {
+      // WP-14（审计 C13）：replaceInText 用的是 await 前拍的正文快照，回执只能写回给同一份正文。
+      // IPC 期间作者又敲了字 → 这份结果作废：不写回、不置脏、不动撤销链（否则在途输入被旧结果整段覆盖）。
+      // 换章 / 换书也按发起时捕获的身份作废（正文恰好相同时靠这一层兜住；与 V202 是同族入口）。
+      const snapshot = editorEl.value;
+      const chapterId = state.loadedChapterId;
+      const stillSameText = () =>
+        state.bookPath === bookPath && state.loadedChapterId === chapterId && editorEl.value === snapshot;
       try {
-        const res = await call(api.replaceInText, editorEl.value, options.query, options.replacement, {
+        const res = await call(api.replaceInText, snapshot, options.query, options.replacement, {
           caseSensitive: options.caseSensitive
         });
+        if (!stillSameText()) {
+          $('find-summary').textContent = '替换已取消：替换过程中正文发生了变化，这次结果没有写入（正文未改动）';
+          toast('正文已经变了，替换已取消（未改动）', 'warn');
+          return;
+        }
         if (!res.count) {
           $('find-summary').textContent = `本章没有找到「${options.query}」，未做替换`;
           return;

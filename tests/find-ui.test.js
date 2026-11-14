@@ -195,6 +195,8 @@ function build(options = {}) {
     },
     async replaceInText(...args) {
       calls.api.push(['replaceInText', ...args]);
+      // WP-14（C13）：制造「当前章替换在途」窗口，验证回执只写回给发起时那份正文
+      if (options.replaceInTextGate) await options.replaceInTextGate;
       if (options.replaceError) throw new Error(options.replaceError);
       return options.replaceInText || { count: 1, text: '李四说张三笑了' };
     },
@@ -896,6 +898,91 @@ test('runReplaceAll（C2）：未保存询问在途换了书 → 取消整本替
   assert.equal(ctx.calls.api.some((c) => c[0] === 'replaceBook'), false);
   assert.equal(ctx.calls.api.some((c) => c[0] === 'searchBook'), false, '换书后连预览都不该发');
   assert.deepEqual(ctx.calls.toast, [['已经换了书，取消整本替换', 'warn']]);
+});
+
+// ---------- WP-14：当前章替换回执按快照校验（C13） ----------
+
+test('runReplaceAll（当前章 / C13）：替换在途又敲了字 → 回执作废，正文保留、不置脏、不动撤销链', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({
+    query: '张三',
+    replace: '李四',
+    replaceInTextGate: gate,
+    replaceInText: { count: 1, text: '李四说李四笑了' }
+  });
+  const running = ctx.ui.runReplaceAll();
+  await flush();
+  // 发起时交给主进程的就是快照（不是回执到达时的活值）
+  assert.deepEqual(ctx.calls.api, [['replaceInText', '张三说张三笑了', '张三', '李四', { caseSensitive: false }]]);
+  ctx.editorEl.value = '张三说张三笑了，在途补的字'; // 替换 IPC 在途，作者继续敲字
+  release();
+  await running;
+  assert.equal(ctx.editorEl.value, '张三说张三笑了，在途补的字', '旧回执一个字都不许写回（C13 核心）');
+  assert.equal(ctx.calls.onEditorInput, 0, '没写回编辑区就不触发输入处理，dirty / 字数都不动');
+  assert.equal(ctx.state.dirty, false, '作废路径不许把状态置脏');
+  assert.deepEqual(ctx.calls.toast, [['正文已经变了，替换已取消（未改动）', 'warn']]);
+  assert.equal(
+    ctx.dom.map.get('find-summary').textContent,
+    '替换已取消：替换过程中正文发生了变化，这次结果没有写入（正文未改动）'
+  );
+});
+
+test('runReplaceAll（当前章 / C13）：在途换章 / 换书（正文恰好相同）→ 按发起时身份作废，不写进新章', async () => {
+  // 切章：两章正文可能恰好相同（空章 / 模板章），只比正文会漏
+  let releaseChapter;
+  const chapterGate = new Promise((resolve) => { releaseChapter = resolve; });
+  const chapterCtx = build({ query: '张三', replace: '李四', replaceInTextGate: chapterGate });
+  const chapterRun = chapterCtx.ui.runReplaceAll();
+  await flush();
+  chapterCtx.state.loadedChapterId = 'c2';
+  releaseChapter();
+  await chapterRun;
+  assert.equal(chapterCtx.editorEl.value, '张三说张三笑了');
+  assert.equal(chapterCtx.calls.onEditorInput, 0, '不许把旧章的回执写进新载入的章');
+  assert.deepEqual(chapterCtx.calls.toast, [['正文已经变了，替换已取消（未改动）', 'warn']]);
+
+  // 换书：正文恰好相同也按身份作废
+  let releaseBook;
+  const bookGate = new Promise((resolve) => { releaseBook = resolve; });
+  const bookCtx = build({ query: '张三', replace: '李四', replaceInTextGate: bookGate });
+  const bookRun = bookCtx.ui.runReplaceAll();
+  await flush();
+  bookCtx.state.bookPath = '/书库/书乙';
+  releaseBook();
+  await bookRun;
+  assert.equal(bookCtx.editorEl.value, '张三说张三笑了');
+  assert.equal(bookCtx.calls.onEditorInput, 0);
+  assert.deepEqual(bookCtx.calls.toast, [['正文已经变了，替换已取消（未改动）', 'warn']]);
+});
+
+test('runReplaceAll（当前章 / C13）：回执作废时即使 count=0 也不拿旧结果说「本章没有找到」', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ query: '张三', replace: '李四', replaceInTextGate: gate, replaceInText: { count: 0 } });
+  const running = ctx.ui.runReplaceAll();
+  await flush();
+  ctx.editorEl.value = '换成另一段正文';
+  release();
+  await running;
+  assert.equal(
+    ctx.dom.map.get('find-summary').textContent,
+    '替换已取消：替换过程中正文发生了变化，这次结果没有写入（正文未改动）',
+    '「没找到」说的是旧正文，不能拿来描述现在这段'
+  );
+  assert.deepEqual(ctx.calls.toast, [['正文已经变了，替换已取消（未改动）', 'warn']]);
+});
+
+test('静态闸门：当前章替换不再把活值 editorEl.value 交给 replaceInText，且先校验快照再写回（C13 回潮）', () => {
+  assert.equal(/call\(api\.replaceInText,\s*editorEl\.value/.test(moduleCode), false, '回执必须对应发起时的正文快照');
+  assert.match(moduleCode, /const snapshot = editorEl\.value;/);
+  assert.match(moduleCode, /editorEl\.value === snapshot/);
+  const callAt = moduleCode.indexOf('call(api.replaceInText, snapshot');
+  const staleAt = moduleCode.indexOf('!stillSameText()');
+  const writeAt = moduleCode.indexOf('replaceEditorText(res.text)');
+  assert.ok(callAt >= 0, '当前章替换要把快照交给 replaceInText');
+  assert.ok(staleAt > callAt, '回执到达后先过快照校验');
+  assert.ok(writeAt > staleAt, '校验通过才允许写回编辑区');
 });
 
 // ---------- 事件绑定 ----------
