@@ -41,6 +41,15 @@ module.exports = async function group81ImeEnter(t) {
     `document.getElementById(${JSON.stringify(id)}).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ${
       composing ? 'isComposing: true, ' : ''
     }bubbles: true }))`;
+  // v1.8.0 WP-04 / V112 的防御性加固：旧版 / 第三方输入法组字时 isComposing 为假、只报 keyCode 229。
+  // KeyboardEvent 构造器不认 init 里的 keyCode（标准里没有这个成员），所以先建事件再把它定义成 229。
+  const keyOnLegacyIme = (id) => `(() => {
+    const el = document.getElementById(${JSON.stringify(id)});
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true });
+    Object.defineProperty(event, 'keyCode', { get: () => 229 });
+    el.dispatchEvent(event);
+    return true;
+  })()`;
   // 询问框是「输入框 + Enter」这条链路：真实按键会冒泡到 document 的全局监听，这里照同样的路径派发。
   const keyOnDocument = (composing) =>
     `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ${
@@ -164,6 +173,112 @@ module.exports = async function group81ImeEnter(t) {
     '组字结束后按 Enter 四条链路旧行为不变',
     jumpDidJump === true && modalConfirmed === true && searchOpened === true && infoSaved === true,
     { 跳章: jumpDidJump, 询问框: modalConfirmed, 书架搜索: searchOpened, 书籍信息: infoSaved }
+  );
+
+  // ---------- v1.8.0 WP-04（审计 C3 / C8 / V112）：把守卫扩到其余提交键 ----------
+  // 从这里起回到写作页，再用同一本演练书依次打「目录筛选 / 查找 / 替换 / 命令面板」四条链路。
+  await exec(`window.__cwTest.openBookPath(${JSON.stringify(bookPath)})`);
+  await waitFor("window.__cwTest.view() === 'editor'");
+  await exec('window.__cwTest.switchTo(0)');
+  await waitFor('window.__cwTest.currentIndex() === 0');
+
+  // ---------- ⑥ 章节筛选框（renderer.js 的 #chapter-filter Enter）：组字中的 Enter 不许切章 ----------
+  // 注意：第二章在 ② 的询问框测试里已经被改名成 RENAMED，这里按现名筛（筛的是章名子串）。
+  await exec('window.__cwTest.save()');
+  await exec(`window.__cwTest.setChapterFilter(${JSON.stringify(RENAMED)})`);
+  await waitFor(`window.__cwTest.chapterDirectoryInfo().filter === ${JSON.stringify(RENAMED)}`);
+  // 目录重排走 250ms 防抖：等到真的只剩一条命中再发 Enter（回车读的是 state，不依赖 DOM，
+  // 但这样红阶段 / 绿阶段看到的「筛选已生效」是同一现场）。
+  await waitFor('window.__cwTest.chapterDirectoryInfo().rendered === 1');
+  await exec(keyOn('chapter-filter', true));
+  const filterSwitchedWhileComposing = await exec(pollFor('window.__cwTest.currentIndex() !== 0'));
+  check(
+    '输入法组字中按 Enter 不切换章节（目录筛选框）',
+    filterSwitchedWhileComposing === false && (await exec('window.__cwTest.currentIndex()')) === 0,
+    { switched: filterSwitchedWhileComposing }
+  );
+  // 组字结束（普通 Enter）：旧行为不变 —— 跳到第一条命中（本组书共两章，第二章是唯一命中）
+  await exec(keyOn('chapter-filter', false));
+  const filterSwitched = await exec(pollFor('window.__cwTest.currentIndex() === 1'));
+  await exec("window.__cwTest.setChapterFilter('')");
+  await waitForRender();
+
+  // ---------- ⑦ 查找框（find-ui.js 的 #find-query Enter）：组字中的 Enter 不许查找 ----------
+  // 前面组可能留下查找会话 / 打开的面板：先清干净，红绿两阶段看的是同一现场。
+  await exec('window.__cwTest.findClear()');
+  await exec('window.__cwTest.closeFindPanel()');
+  await exec("window.__cwTest.setText('组字替换 甲')");
+  await exec('window.__cwTest.openFindPanel()');
+  await waitFor('window.__cwTest.findPanelOpen() === true');
+  await exec(`window.__cwTest.setFindFields({ query: '组字替换', scope: 'current' })`);
+  await exec(keyOn('find-query', true));
+  const findRanWhileComposing = await exec(pollFor('window.__cwTest.findSession() !== null'));
+  check(
+    '输入法组字中按 Enter 不触发查找',
+    findRanWhileComposing === false && (await exec('window.__cwTest.findSession()')) === null,
+    { ran: findRanWhileComposing }
+  );
+  await exec(keyOn('find-query', false));
+  const findRan = await exec(
+    pollFor('window.__cwTest.findSession() !== null && window.__cwTest.findSession().query === "组字替换"')
+  );
+
+  // ---------- ⑧ 替换框（find-ui.js 的 #find-replace Enter）：组字中的 Enter 不许整本替换 ----------
+  await exec('window.__cwTest.save()');
+  await waitFor('window.__cwTest.state.dirty === false');
+  await exec(`window.__cwTest.setFindFields({ query: '组字替换', replacement: 'IME替换', scope: 'book' })`);
+  await exec(keyOn('find-replace', true));
+  const replacedWhileComposing = await exec(
+    pollFor(`window.__cwTest.findPanelOpen() === false || window.__cwTest.text() !== '组字替换 甲'`)
+  );
+  check(
+    '输入法组字中按 Enter 不触发整本替换',
+    replacedWhileComposing === false && (await exec('window.__cwTest.findPanelOpen()')) === true,
+    { replaced: replacedWhileComposing, text: await exec('window.__cwTest.text()') }
+  );
+  // V112 的防御性加固：只报 keyCode 229 的旧版 / 第三方输入法同样不许触发整本替换
+  await exec(keyOnLegacyIme('find-replace'));
+  const legacyReplacedWhileComposing = await exec(
+    pollFor(`window.__cwTest.findPanelOpen() === false || window.__cwTest.text() !== '组字替换 甲'`)
+  );
+  check(
+    '旧版输入法（keyCode 229）组字中的 Enter 不触发整本替换',
+    legacyReplacedWhileComposing === false && (await exec('window.__cwTest.findPanelOpen()')) === true,
+    { replaced: legacyReplacedWhileComposing, text: await exec('window.__cwTest.text()') }
+  );
+  // 组字结束（普通 Enter）：旧行为不变 —— 整本替换（写盘 + _trash 替换备份）后编辑区是新正文
+  await exec(keyOn('find-replace', false));
+  const bookReplaced = await exec(
+    pollFor(`window.__cwTest.findPanelOpen() === false && window.__cwTest.text() === 'IME替换 甲'`, 3000)
+  );
+
+  // ---------- ⑨ 命令面板（command-palette-ui.js 的 #command-input Enter）：组字中的 Enter 不许执行命令 ----------
+  await sleep(300); // 上一次整本替换的回执（刷新书架 / 撤销登记）先收尾
+  await exec('window.__cwTest.closeCommandPalette()');
+  await exec('window.__cwTest.openCommandPalette()');
+  await waitFor('window.__cwTest.commandPaletteOpen() === true');
+  await exec(`(() => {
+    const input = document.getElementById('command-input');
+    input.value = '保存';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await waitFor('window.__cwTest.commandPaletteItems().length > 0');
+  await exec(keyOn('command-input', true));
+  const commandRanWhileComposing = await exec(pollFor('window.__cwTest.commandPaletteOpen() === false'));
+  check(
+    '输入法组字中按 Enter 不执行命令面板命令',
+    commandRanWhileComposing === false && (await exec('window.__cwTest.commandPaletteOpen()')) === true,
+    { ran: commandRanWhileComposing }
+  );
+  // 组字结束（普通 Enter）：旧行为不变 —— 执行「保存本章」并收起面板
+  await exec(keyOn('command-input', false));
+  const commandRan = await exec(pollFor('window.__cwTest.commandPaletteOpen() === false'));
+
+  // 组字结束后四条新增链路旧行为不变（四合一，避免每条单独占一行）
+  check(
+    '组字结束后按 Enter 四条新增链路旧行为不变',
+    filterSwitched === true && findRan === true && bookReplaced === true && commandRan === true,
+    { 目录筛选: filterSwitched, 查找: findRan, 整本替换: bookReplaced, 命令面板: commandRan }
   );
 
   // ---------- 收尾：删掉本组造的书（走真实删除 → 书架 _trash / 回收站），不污染后面的组 ----------

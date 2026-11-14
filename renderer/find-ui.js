@@ -12,9 +12,10 @@
  * 事件绑定随域搬进 setupFindUi()（打开面板 / 上一处下一处 / 状态栏小标签 / 词与选项变化 / 替换两个按钮 / 关闭 /
  * 输入框回车三处）。查找书签的按钮绑定不在本域（等补刀 9b）。
  *
- * 契约：createFindUi(host) 由渲染层调用一次。host 8 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createFindUi(host) 由渲染层调用一次。host 9 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（state.find）/ IPC 白名单 / IPC 包装 / 提示
+ *     imeGuard,                            // 输入法组字守卫（ime-guard.js）：查找 / 替换两条 Enter 提交键的判据
  *     find: {                               // 查找纯逻辑与编辑区
  *       findLogic,                          //   renderer/find-logic.js：计数 / 步进 / 高亮窗口 / 行号
  *       editorEl,                           //   编辑区（查找只读它；当前章替换只改它，未保存）
@@ -52,14 +53,14 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'find', 'nav', 'collab'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'find', 'nav', 'collab'];
 
   function createFindUi(host) {
     if (!host || typeof host !== 'object') throw new TypeError('createFindUi 需要 host 对象');
     for (const key of REQUIRED_HOST) {
       if (host[key] === undefined || host[key] === null) throw new TypeError('createFindUi 的 host 缺少 ' + key);
     }
-    const { $, state, api, call, toast, find, nav, collab } = host;
+    const { $, state, api, call, toast, imeGuard, find, nav, collab } = host;
     if (typeof find !== 'object') throw new TypeError('createFindUi 的 host.find 必须是对象');
     for (const key of ['findLogic', 'editorEl', 'syncEditorOverlay', 'scrollCaretIntoView', 'onEditorInput']) {
       if (find[key] === undefined || find[key] === null) throw new TypeError('createFindUi 的 host.find 缺少 ' + key);
@@ -616,12 +617,16 @@
     };
     $('find-query').addEventListener('keydown', (event) => {
       if (event.key !== 'Enter') return;
+      // WP-04（审计 C3 / V112）：输入法组字中的 Enter 是上屏候选词——不查、不跳，也不拦默认行为。
+      if (imeGuard.isImeComposing(event)) return;
       event.preventDefault();
       event.stopPropagation();
       onFindQueryEnter(event);
     });
     $('find-replace').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
+        // WP-04（审计 C3 / V112）：组字中按 Enter 不能触发整本替换（1.4.0 起不再二次确认，误触直接写盘）。
+        if (imeGuard.isImeComposing(event)) return;
         event.preventDefault();
         runReplaceAll();
       }

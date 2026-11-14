@@ -6,7 +6,8 @@
  *   2. 维护 active 项（aria-activedescendant + 滚动到可视区）；
  *   3. 打开 / 关闭时把焦点交给输入框、关闭后还给打开它的元素。
  *
- * 契约：createCommandPaletteUi(host) 只调用一次；host = { $, registry, closeOnRun? }
+ * 契约：createCommandPaletteUi(host) 只调用一次；host = { $, imeGuard, registry, closeOnRun? }
+ *   · host.imeGuard：ime-guard.js 的 isImeComposing（组字中的 Enter 不执行命令，WP-04 / C8 / V112）
  *   · host.registry：command-registry.js 的实例（search / recordUse）
  *   · host.items()：返回条目数组。**只在打开面板 / 调 invalidateItems() 后的下一次重画时取一次**
  *     （1.5.0 P0-6 / 审计 O-1：以前每敲一个字都重建上千条对象）；章节 / 书变了由渲染层
@@ -29,7 +30,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'registry', 'items', 'onRun', 'onClose'];
+  const REQUIRED_HOST = ['$', 'imeGuard', 'registry', 'items', 'onRun', 'onClose'];
   const GROUP_LABELS = { command: '命令', chapter: '章节', book: '书' };
   const MAX_ROWS = 60;
 
@@ -40,7 +41,7 @@
         throw new TypeError('createCommandPaletteUi 的 host 缺少 ' + key);
       }
     }
-    const { $, registry, items, onRun, onClose } = host;
+    const { $, imeGuard, registry, items, onRun, onClose } = host;
     // 测试里没有全局 document：允许 host.doc 注入（浏览器里就是真 document）
     const doc = host.doc || (typeof document !== 'undefined' ? document : null);
     let open = false;
@@ -256,6 +257,8 @@
         return true;
       }
       if (key === 'Enter') {
+        // WP-04（审计 C8 / V112）：输入法组字中的 Enter 只上屏候选词，不执行命令、也不拦默认行为。
+        if (imeGuard.isImeComposing(event)) return false;
         if (typeof event.preventDefault === 'function') event.preventDefault();
         runActive();
         return true;

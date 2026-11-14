@@ -314,7 +314,14 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   （约 60 行）；④ loadChapterAt 成功才提交 + 失败保持遮罩（约 30 行）；⑤ saveCurrent 按快照章
   //   身份结算（约 45 行）。搬进独立模块就得把 editorEl、state、toast、两个 IPC 全反向注入，
   //   比现在更绕；结构拆分留给 WP-34。
-  const RENDERER_LINE_BUDGET = 6142;
+  // 1.8.0 WP-04（C3 / C8 / V112）：6142 → 6151（+9）：输入法组字守卫统一后，renderer.js 只剩
+  //   ① 模块级 `const imeGuard = window.CWImeGuard;`（2 行说明 + 1 行声明）；
+  //   ② 提交键换用共享判据：章节筛选框的 Enter 是新增守卫（2 行，原来完全没判），
+  //      另有 5 处逐行替换（书架搜索 / 跳章 / 全局 keydown / ? / Ctrl+K，行数不变）；
+  //   ③ 三处 create 装配各多一行 `imeGuard,`（书籍信息 / 命令面板 / 查找）。
+  //   判据本身（isComposing || keyCode 229）在 renderer/ime-guard.js，单测见 tests/ime-guard.test.js；
+  //   留在这里的只是各监听器的上下文接线（要赶在 preventDefault 之前），搬走反而更绕。
+  const RENDERER_LINE_BUDGET = 6151;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

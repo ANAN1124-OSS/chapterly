@@ -56,6 +56,9 @@
   // 回执到达时「书换没换 / 期间有没有新输入」在 long-op-logic.js 里、Node 单测覆盖；
   // 这里只按结论决定「重载 / 保留编辑区 / 什么都不动」。
   const longOpLogic = window.CWLongOpLogic;
+  // 输入法组字守卫（v1.8.0 WP-04 / 审计 C3、C8、V112）：isComposing 之外再认 keyCode 229（防御性
+  // 加固），纯函数在 ime-guard.js 里、Node 单测覆盖；这里只把判定铺到本文件的各个提交键。
+  const imeGuard = window.CWImeGuard;
   // 自定义字体的 base64 解码（代码审计 F11）：font-logic.js 里、Node 单测覆盖；
   // 优先浏览器原生 data: URL 解码，失败才回退 atob 循环。
   const fontLogic = window.CWFontLogic;
@@ -1079,6 +1082,7 @@
   // 第 4 步九刀·第六刀：实现在 renderer/bookinfo-ui.js（模块头有契约），这里只装配与接线；
   const bookinfoUi = bookinfoUiModule.create({
     $, state, api, call, toast,
+    imeGuard,
     render: { bookInfoLib, bookGroupOf, chapterTitle, formatChars, formatRelativeTime },
     shelf: { shelfGroupList, shelfQueryText, shelfSearchResults, updateShelfSearchUi, renderContinueWriting, renderShelfContent },
     actions: {
@@ -1780,6 +1784,8 @@
           return;
         }
         if (event.key === 'Enter') {
+          // WP-04（审计 C8 / V112）：输入法组字中的 Enter 是上屏候选词，不切章、也不拦默认行为。
+          if (imeGuard.isImeComposing(event)) return;
           const first = matchingChapterIndexes()[0];
           if (first == null) return;
           event.preventDefault();
@@ -2537,6 +2543,7 @@
   const commandRegistry = commandRegistryModule.createRegistry({});
   const commandPalette = commandPaletteModule.create({
     $,
+    imeGuard,
     doc: document,
     registry: commandRegistry,
     items: () => commandItemsForPalette(),
@@ -2577,6 +2584,7 @@
   // 第 4 步九刀·补刀 9a：实现在 renderer/find-ui.js（模块头有契约），这里只装配与接线；
   const findUi = findUiModule.create({
     $, state, api, call, toast,
+    imeGuard,
     find: { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput },
     nav: { chapterTitle, switchChapter: (index) => switchChapter(index), loadChapterAt, currentChapterLabel: () => currentChapterLabel(), hideHeaderMenus },
     collab: { askUnsaved, saveCurrent, openModal, refreshShelf, renderChapterList, reloadAfterPartialFailure, runReplaceOne,
@@ -5196,8 +5204,8 @@
         return;
       }
       if (event.key === 'Enter') {
-        // 1.7.1 P1（审计 V73）：输入法组字中的 Enter 只上屏候选词，不当「打开第一本匹配的书」
-        if (event.isComposing) return;
+        // 1.7.1 P1（审计 V73）/ WP-04（V112）：输入法组字中的 Enter 只上屏候选词，不当「打开第一本匹配的书」
+        if (imeGuard.isImeComposing(event)) return;
         event.preventDefault();
         const rows = shelfSearchResults();
         if (rows.length) {
@@ -5350,8 +5358,8 @@
     $('jump-input').addEventListener('input', () => scheduleJumpMatches());
     $('jump-input').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
-        // 1.7.1 P1（审计 V73）：输入法组字中的 Enter 只上屏候选词，不当「跳过去」
-        if (event.isComposing) return;
+        // 1.7.1 P1（审计 V73）/ WP-04（V112）：输入法组字中的 Enter 只上屏候选词，不当「跳过去」
+        if (imeGuard.isImeComposing(event)) return;
         event.preventDefault();
         confirmJumpFromDialog();
       }
@@ -5538,10 +5546,11 @@
     });
 
     document.addEventListener('keydown', (event) => {
-      // 1.7.1 P1（审计 V73）：输入法组字期间一切全局键都不响应。组字中按 Enter 是「上屏候选词」，
+      // 1.7.1 P1（审计 V73）/ WP-04（V112）：输入法组字期间一切全局键都不响应。组字中按 Enter 是「上屏候选词」，
       // 不是提交 —— 这一判放在 Esc 链与快捷键之前，兜住注册表上所有 Enter 语义
       // （通用询问框的 modalInput → modal-confirm、新建书名等），否则中文作者会把半截表单提交掉。
-      if (event.isComposing) return;
+      // 判据统一走 ime-guard.js（isComposing || keyCode 229），别在这里另写一份。
+      if (imeGuard.isImeComposing(event)) return;
       // 全局 Esc 链（v0.9 B-4）：顺序与命中判定全在 renderer/esc-registry.js 的有序表里，这里只执行动作。
       // 命中就到此为止——锁键弹层（通用询问框 + 冲突 / 书籍信息 / 历史 / 排版 / 导出 / 设置 / 跳章）
       // 连别的按键也一并接走，所以它们开着时 Ctrl+S / F11 也不会响（改前每段末尾那个裸 return 就是这个意思）。
@@ -5565,7 +5574,7 @@
         (event.key === '?' || event.key === '？') &&
         !event.ctrlKey && !event.altKey && !event.metaKey
       ) {
-        if (event.isComposing) return;
+        if (imeGuard.isImeComposing(event)) return;
         if (undoActionModule.isTypingTarget(document.activeElement)) return;
         if (anyBackdropOpen()) return;
         event.preventDefault();
@@ -5581,7 +5590,7 @@
         // 面板开着时这一支走不到（esc-registry 的 command 层是锁键层，会先吞掉按键）；
         // 「再按一次 Ctrl+K 收起」由面板自己的输入框处理（command-palette-ui.js）。
         // 长按不重复开关（1.5.0 P0-4 / H-9）：event.repeat 派发的按键只吞掉、不再开合面板。
-        if (!event.isComposing && !event.repeat && !anyBackdropOpen()) {
+        if (!imeGuard.isImeComposing(event) && !event.repeat && !anyBackdropOpen()) {
           event.preventDefault();
           openCommandPalette();
         }
