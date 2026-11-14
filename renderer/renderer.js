@@ -6105,15 +6105,17 @@
       ? bookmarksLib.sanitizeBookmarks(state.globalConfig && state.globalConfig.findBookmarks)
       : [];
     renderFindBookmarks();
-    // 版本号以 package.json 为准（发版只改一处，界面跟着变）
+    // 版本号以 package.json 为唯一事实来源（v1.8.0 WP-37 / 审计 D10）：界面文字由主进程
+    // app.getVersion() 经 app:version 运行时注入，index.html 里不再写死版本串。
+    const versionEl = $('app-version');
     try {
       const appInfo = await call(api.appVersion);
-      const versionEl = $('app-version');
-      if (versionEl && appInfo && appInfo.version) versionEl.textContent = `v${appInfo.version}`;
+      if (appInfo && appInfo.version) versionEl.textContent = `v${appInfo.version}`;
       state.appVersion = (appInfo && appInfo.version) || '';
     } catch {
-      /* 拿不到就保留 index.html 里的静态版本号 */
+      /* 拿不到版本号就留占位，不回退到写死的版本串 */
     }
+    if (versionEl && !versionEl.textContent) versionEl.textContent = 'v—';
     // 启动时取一次主进程攒下的提示（例如配置文件损坏已归档）
     try {
       const warning = await call(api.appWarning);
