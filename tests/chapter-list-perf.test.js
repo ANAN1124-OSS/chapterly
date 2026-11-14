@@ -150,9 +150,10 @@ const syncCharsSrc = functionSource(RENDERER_CODE, 'syncChapterItemChars');
 const syncCharsAfterSaveSrc = functionSource(RENDERER_CODE, 'syncChapterCharsAfterSave');
 
 test('保存快路径：保存成功后走 syncChapterCharsAfterSave，失配才退回整表重建', () => {
+  // WP-03（C10）：字数缓存按「快照章」的下标更新（在途保存期间切章也不写到新章），快路径语义不变。
   assert.match(
     saveCurrentSrc,
-    /if \(!syncChapterCharsAfterSave\(state\.index\)\) renderChapterList\(\);/,
+    /if \(!syncChapterCharsAfterSave\((?:state\.index|snapshotAt)\)\) renderChapterList\(\);/,
     '保存后要先走单条快路径（失配才 rebuild）'
   );
   // 成功路径里不许再有裸的 renderChapterList()（A7 的部分成功分支也走同一套快路径）
