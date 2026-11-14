@@ -152,6 +152,10 @@
           toast('本章在应用外被修改过；你还有未保存的修改，保存会覆盖外部内容', 'warn');
           return;
         }
+        // WP-13（C11）：询问框会排队（外部修改检测可能与未保存询问并发），回来时可能已经换了书 / 章。
+        // 先记下发起时的那一章，回执只对这一章生效——否则会把另一本书的正文按这里的判断重载掉。
+        const expectedBookPath = state.bookPath;
+        const expectedChapterId = chapter.id;
         const res = await openModal({
           title: '检测到外部修改',
           message: '当前章节文件在应用外被修改过（可能是用记事本改的）。要重新加载磁盘上的内容吗？',
@@ -160,7 +164,11 @@
             { label: '保留当前', value: 'keep' }
           ]
         });
-        if (res.action === 'reload') await loadChapterAt(state.index);
+        if (res.action !== 'reload') return;
+        if (state.bookPath !== expectedBookPath) return;
+        const nowChapter = state.chapters[state.index];
+        if (!nowChapter || nowChapter.id !== expectedChapterId) return;
+        await loadChapterAt(state.index);
       } catch {
         /* 文件可能被删了，忽略 */
       }

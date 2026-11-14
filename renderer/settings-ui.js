@@ -117,6 +117,9 @@
   const DEFAULT_SETTINGS_TAB = ia ? ia.DEFAULT_TAB : 'display';
   // 当前分区只存在内存里（不写 config、不进保存 payload）；每次打开设置回到默认分区。
   let settingsActiveTab = DEFAULT_SETTINGS_TAB;
+  // WP-13（审计 V203）：保存设置防重入。连点「保存设置」只跑一条保存链——以前两次并发会各走一遍
+  // setConfig / refreshShelf / 词表刷新并弹两条 toast（主进程写队列串行，配置最终一致，属一致性缺口）。
+  let savingSettings = false;
 
   function settingsTabNodes() {
     const nav = $('settings-nav');
@@ -862,6 +865,8 @@
   }
 
   async function saveSettings() {
+    if (savingSettings) return; // WP-13 / V203：连点只跑一条保存链（finally 复位）
+    savingSettings = true;
     try {
       const form = readDisplayForm();
       if (state.settingsScope === 'book' && state.bookId) {
@@ -914,6 +919,8 @@
       await refreshProofreadWordList();
     } catch (err) {
       toast(`保存设置失败：${err.message}`, 'error');
+    } finally {
+      savingSettings = false;
     }
   }
 

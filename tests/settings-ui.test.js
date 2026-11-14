@@ -180,7 +180,7 @@ function build(options = {}) {
     setTimeoutCalls: []
   };
   const api = {
-    async setConfig(patch) { calls.setConfig.push(patch); if (options.saveError) throw new Error(options.saveError); return { ...state.globalConfig, ...patch }; },
+    async setConfig(patch) { calls.setConfig.push(patch); if (options.setConfigGate) await options.setConfigGate; if (options.saveError) throw new Error(options.saveError); return { ...state.globalConfig, ...patch }; },
     async setBookDisplay(bookId, patch) { calls.setBookDisplay.push([bookId, patch]); if (options.saveError) throw new Error(options.saveError); return patch; },
     async resetBookDisplay(bookId) { calls.resetBookDisplay.push(bookId); if (options.resetError) throw new Error(options.resetError); return {}; },
     async sensitiveWordsInfo() {
@@ -699,6 +699,38 @@ test('saveSettings（U-D4 全局入口）：写作页里保存的是全局默认
   assert.equal(ctx.calls.setConfig[0].editorFontSize, 18, '写全局默认值，不是本书的 22');
   assert.equal(ctx.calls.setConfig[0].dailyGoal, 1200);
   assert.deepEqual(ctx.calls.toast, [['设置已保存（全局默认）', undefined]]);
+});
+
+test('saveSettings：防重入——连点保存只跑一条保存链、只弹一条 toast（V203 / WP-13）', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ setConfigGate: gate });
+  await ctx.ui.openSettings({ scope: 'global' });
+  const first = ctx.ui.saveSettings();
+  const second = ctx.ui.saveSettings(); // 同一拍再点一次：savingSettings 已置位，直接忽略
+  await flush();
+  assert.equal(ctx.calls.setConfig.length, 1, '在途时只许一次 setConfig');
+  release();
+  await Promise.all([first, second]);
+  assert.equal(ctx.calls.setConfig.length, 1);
+  assert.equal(ctx.calls.toast.filter(([m]) => String(m).startsWith('设置已保存')).length, 1, '不许双 toast');
+  assert.equal(ctx.calls.refreshShelf, 1, 'refreshShelf 只走一条');
+  assert.equal(ctx.calls.refreshSensitiveWordList, 1);
+  assert.equal(ctx.calls.refreshProofreadWordList, 1);
+});
+
+test('saveSettings：失败 / 成功后 savingSettings 都复位，还能再次保存（V203）', async () => {
+  const fail = build({ saveError: '磁盘只读' });
+  await fail.ui.openSettings({ scope: 'global' });
+  await fail.ui.saveSettings();
+  await fail.ui.saveSettings();
+  assert.equal(fail.calls.setConfig.length, 2, '失败后必须复位，否则保存按钮永久无效');
+
+  const ok = build();
+  await ok.ui.openSettings({ scope: 'global' });
+  await ok.ui.saveSettings();
+  await ok.ui.saveSettings(); // 成功后弹层已关，仍能再存一次（说明 busy 已复位）
+  assert.equal(ok.calls.setConfig.length, 2, '成功后必须复位');
 });
 
 test('openSettings（U-D4 旧配置）：全局配置缺统计 / 时长 / 模板键也能打开，按默认回填且取消不写盘', async () => {

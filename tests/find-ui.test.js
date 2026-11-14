@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const findUi = require('../renderer/find-ui');
 const imeGuard = require('../renderer/ime-guard');
+const longOpLogic = require('../renderer/long-op-logic');
 const findLogic = require('../renderer/find-logic');
 const chaptersLib = require('../core/chapters');
 
@@ -14,8 +15,8 @@ const chaptersLib = require('../core/chapters');
 // 令牌与旧结果 / F3 环绕提示 / 整本清单结构 / 当前章替换撤销链 / 整本替换确认与备份提示在 Node 里都测不到。
 // 搬出来以后用「假 host + 假 DOM」逐条钉住，再用静态闸门保证渲染层不长回第二份。
 //
-// 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ imeGuard（输入法组字守卫，WP-04）+
-// find{...} + nav{...} + collab{...11 个跨域回调，其中 4 个惰性转发}。
+// 契约：host 10 个成员 = 基础 5（$, state, api, call, toast）+ imeGuard（输入法组字守卫，WP-04）+
+// longOpLogic（整本替换回执的书身份判定，WP-13/C2）+ find{...} + nav{...} + collab{...11 个跨域回调，其中 4 个惰性转发}。
 
 const realDocument = globalThis.document;
 const realWindow = globalThis.window;
@@ -187,6 +188,8 @@ function build(options = {}) {
     },
     async searchBook(...args) {
       calls.api.push(['searchBook', ...args]);
+      // WP-13（C2）：E2E / 单测要制造「预览在途」的窗口，注入一个可控的等待点
+      if (options.searchBookGate) await options.searchBookGate;
       if (options.searchBookError) throw new Error(options.searchBookError);
       return options.searchBook || { totalMatches: 1, chapterCount: 1, results: [{ chapterId: 'c1', name: '第一章', count: 1, matches: [{ index: 0, length: 2, before: '', match: '张三', after: '说' }] }] };
     },
@@ -197,6 +200,8 @@ function build(options = {}) {
     },
     async replaceBook(...args) {
       calls.api.push(['replaceBook', ...args]);
+      // WP-13（C12）：制造「整本替换在途」窗口，验证防重入与回来时的 C2 判定
+      if (options.replaceBookGate) await options.replaceBookGate;
       if (options.replaceBookError) throw new Error(options.replaceBookError);
       return options.replaceBook || { chaptersChanged: 1, occurrences: 2, backupDir: '/书库/书甲/_trash/替换备份-1' };
     },
@@ -213,6 +218,7 @@ function build(options = {}) {
     call: async (fn, ...args) => fn(...args),
     toast(message, kind) { calls.toast.push([message, kind]); },
     imeGuard,
+    longOpLogic,
     find: {
       findLogic,
       editorEl,
@@ -233,7 +239,12 @@ function build(options = {}) {
       hideHeaderMenus() { calls.hideHeaderMenus += 1; }
     },
     collab: {
-      async askUnsaved(opts) { calls.askUnsaved.push(opts); return options.askAction === undefined ? 'discard' : options.askAction; },
+      async askUnsaved(opts) {
+        calls.askUnsaved.push(opts);
+        // WP-13（C2）：询问框在途时可能切了书，测试用这个钩子模拟
+        if (options.askUnsavedHook) options.askUnsavedHook(state);
+        return options.askAction === undefined ? 'discard' : options.askAction;
+      },
       async saveCurrent() { calls.saveCurrent += 1; return { ok: options.saveOk !== false }; },
       async openModal(opts) { calls.openModal.push(opts); return options.modalAction === undefined ? { action: 'cancel' } : options.modalAction; },
       async refreshShelf() { calls.refreshShelf += 1; },
@@ -253,9 +264,9 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...findUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'find', 'imeGuard', 'nav', 'state', 'toast']);
-  assert.equal(findUi.REQUIRED_HOST.length, 9);
+test('host 契约：10 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...findUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'find', 'imeGuard', 'longOpLogic', 'nav', 'state', 'toast']);
+  assert.equal(findUi.REQUIRED_HOST.length, 10);
   const ctx = build();
   assert.doesNotThrow(() => findUi.create(ctx.host));
   assert.throws(() => findUi.create(null), /createFindUi 需要 host 对象/);
@@ -798,6 +809,95 @@ test('runReplaceAll（整本）：未保存三选一 / 不再二次确认（登�
   assert.equal(fail.calls.reloadAfterPartialFailure, 1);
 });
 
+// ---------- WP-13：整本替换防重入（C12）+ 回执按捕获的书判定（C2 口径） ----------
+
+test('runReplaceAll 防重入：替换在途再按一次，只跑一条整本替换链（C12）', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ query: '张三', replace: '李四', scope: 'book', replaceBookGate: gate });
+  const first = ctx.ui.runReplaceAll();
+  const second = ctx.ui.runReplaceAll(); // 同一拍再按一次：busy 已置位，直接忽略
+  await flush();
+  assert.equal(ctx.calls.api.filter((c) => c[0] === 'replaceBook').length, 1, '在途时只许一次 replaceBook');
+  release();
+  await Promise.all([first, second]);
+  assert.equal(ctx.calls.api.filter((c) => c[0] === 'replaceBook').length, 1);
+  assert.equal(ctx.calls.registerUndo.length, 1, '撤销只登记一条（旧实现第二份备份已是替换后状态）');
+  assert.equal(ctx.calls.toast.filter(([m]) => String(m).startsWith('整本替换完成')).length, 1, '只弹一条完成提示');
+  assert.deepEqual(ctx.calls.loadChapterAt, [0]);
+});
+
+test('runReplaceAll 防重入：失败 / 成功后 busy 都复位，下一轮还能跑（不会永久卡住）', async () => {
+  const fail = build({ query: '张三', replace: '李四', scope: 'book', replaceBookError: '磁盘满' });
+  await fail.ui.runReplaceAll();
+  await fail.ui.runReplaceAll();
+  assert.equal(fail.calls.api.filter((c) => c[0] === 'replaceBook').length, 2, '失败后 busy 必须复位');
+
+  const ok = build({ query: '张三', replace: '李四', scope: 'book' });
+  await ok.ui.runReplaceAll();
+  await ok.ui.runReplaceAll();
+  assert.equal(ok.calls.api.filter((c) => c[0] === 'replaceBook').length, 2, '成功后 busy 必须复位');
+});
+
+test('runReplaceAll（C2）：替换在途换了书 → 原书回执照常提示，但不刷新另一本的界面', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ query: '张三', replace: '李四', scope: 'book', replaceBookGate: gate });
+  const running = ctx.ui.runReplaceAll();
+  await flush();
+  ctx.state.bookPath = '/书库/书乙'; // 在途切到了另一本
+  release();
+  await running;
+  assert.deepEqual(ctx.calls.loadChapterAt, [], '不许把另一本当成本书重载');
+  assert.equal(ctx.calls.renderChapterList, 0, '不许重画另一本的章节栏');
+  assert.equal(ctx.calls.refreshShelf, 0);
+  const last = ctx.calls.toast[ctx.calls.toast.length - 1][0];
+  assert.match(last, /^原书整本替换完成：1 章 \/ 2 处/);
+  assert.match(last, /当前已打开另一本书，界面没有刷新/);
+  assert.equal(ctx.calls.registerUndo.length, 1, '撤销仍登记（闭包自己核对书身份，切回来还能撤）');
+});
+
+test('runReplaceAll（C2）：替换在途又敲了字 → 正文优先，不从磁盘重载覆盖', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ query: '张三', replace: '李四', scope: 'book', replaceBookGate: gate });
+  const running = ctx.ui.runReplaceAll();
+  await flush();
+  ctx.editorEl.value = '在途敲的字';
+  ctx.state.dirty = true;
+  release();
+  await running;
+  assert.deepEqual(ctx.calls.loadChapterAt, [], '有未保存修改时不许从磁盘重载');
+  assert.equal(ctx.editorEl.value, '在途敲的字', '作者刚写的字一个字都不能丢');
+  assert.equal(ctx.calls.renderChapterList, 1, '目录 / 统计照常刷新');
+  assert.equal(ctx.calls.refreshShelf, 1);
+  assert.match(ctx.calls.toast[ctx.calls.toast.length - 1][0], /当前章有未保存修改，没有从磁盘重新载入/);
+});
+
+test('runReplaceAll（C2）：预览在途换了书 → 取消，不拿旧书的命中替换新书', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ query: '张三', replace: '李四', scope: 'book', searchBookGate: gate });
+  const running = ctx.ui.runReplaceAll();
+  await flush();
+  ctx.state.bookPath = '/书库/书乙';
+  release();
+  await running;
+  assert.equal(ctx.calls.api.some((c) => c[0] === 'replaceBook'), false, '不许把旧书的预览回执用到新书上');
+  assert.deepEqual(ctx.calls.toast, [['已经换了书，取消整本替换', 'warn']]);
+});
+
+test('runReplaceAll（C2）：未保存询问在途换了书 → 取消整本替换', async () => {
+  const ctx = build({
+    query: '张三', replace: '李四', scope: 'book', dirty: true, askAction: 'discard',
+    askUnsavedHook: (state) => { state.bookPath = '/书库/书乙'; }
+  });
+  await ctx.ui.runReplaceAll();
+  assert.equal(ctx.calls.api.some((c) => c[0] === 'replaceBook'), false);
+  assert.equal(ctx.calls.api.some((c) => c[0] === 'searchBook'), false, '换书后连预览都不该发');
+  assert.deepEqual(ctx.calls.toast, [['已经换了书，取消整本替换', 'warn']]);
+});
+
 // ---------- 事件绑定 ----------
 test('输入法组字中的 Enter 不触发查找 / 替换（WP-04 / 审计 C3、V112）', async () => {
   const dom = makeDocument();
@@ -920,11 +1020,19 @@ test('静态闸门：renderer.js 不再内嵌查找 / 替换实现，只剩装�
   assert.ok(rendererSrc.includes('const findUiModule = window.CWFindUi;'));
   for (const line of [
     '    $, state, api, call, toast,',
+    '    longOpLogic,',
     '    find: { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput },',
     '    nav: { chapterTitle, switchChapter: (index) => switchChapter(index), loadChapterAt, currentChapterLabel: () => currentChapterLabel(), hideHeaderMenus },',
   ]) {
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);
   }
+  // WP-13：防重入（C12）与「回执按发起时捕获的书判定」（C2 口径）都长在模块里
+  assert.match(moduleSrc, /let replaceAllBusy = false;/);
+  assert.match(moduleSrc, /if \(replaceAllBusy\) return;/);
+  assert.match(moduleSrc, /const bookPath = state\.bookPath;[\s\S]{0,160}readFindOptions\(\)/, 'C2：发起时先捕获书');
+  assert.equal(moduleSrc.split('longOpLogic.sameBookPath(state.bookPath, bookPath)').length - 1, 2, '询问 / 预览两次 await 后都要核对');
+  assert.match(moduleSrc, /longOpLogic\.decideAfterLongOp\(\{/);
+  assert.match(moduleSrc, /await reloadAfterPartialFailure\(bookPath\)/, '失败兜底也只重载发起时那本');
   assert.equal(rendererSrc.split('findUi.setupFindUi();').length - 1, 1, 'setup 只调一次');
   for (const key of ['clearFindSession', 'closeFindPanel', 'findPanelOpen', 'findSessionActive', 'openFindPanel', 'runFind', 'selectFindMatch', 'stepFind', 'syncFindOverlayScroll']) {
     assert.match(rendererSrc, new RegExp('^      ' + key + ',$', 'm'), 'testHooksScope 少了 ' + key);
@@ -959,6 +1067,6 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFindUi，�
   vm.runInContext(moduleSrc, context, { filename: 'renderer/find-ui.js' });
   assert.equal(typeof win.CWFindUi, 'object');
   assert.deepEqual(Object.keys(win.CWFindUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWFindUi.REQUIRED_HOST.length, 9);
+  assert.equal(win.CWFindUi.REQUIRED_HOST.length, 10);
   assert.equal(win.CWTidyCardUi, undefined);
 });
