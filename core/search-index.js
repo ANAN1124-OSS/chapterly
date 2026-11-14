@@ -577,6 +577,10 @@ function createSearchStore(options = {}) {
 
   let index = emptyIndex('');
   let loaded = false;
+  // X9（v1.8.0 WP-40，审计 X9）：首载必须共享同一个读盘 Promise。以前先置 loaded=true 再 await 读盘，
+  // 并发的第二个调用方会立刻拿到空索引（启动瞬间搜索空结果，靠 ensure 自愈）。现在 loaded 只在读盘
+  // 这一趟结束（成功或失败都算「尝试过」）后置位，并发调用方等同一次读盘结果。
+  let loadPromise = null;
   let loadProblem = null;
   let indexBytes = 0;
   let ensurePromise = null;
@@ -625,38 +629,46 @@ function createSearchStore(options = {}) {
     }
   }
 
-  async function load() {
-    if (loaded) return index;
-    loaded = true;
-    try {
-      // C17（v1.8.0 WP-19）：先 stat + 独立上限再读。超限与「内容坏了」分开记（INDEX_TOO_LARGE /
-      // CORRUPT），都按空索引重建；区别是界面 / 排查时能看出「是被换成了大文件」而不是索引写坏。
-      const info = await fs.stat(filePath);
-      const tooLarge = storage.readSizeProblem(info.size, {
-        code: 'INDEX_TOO_LARGE',
-        label: '搜索索引文件',
-        limit: MAX_INDEX_READ_BYTES,
-        tail: '没有读进内存'
-      });
-      if (tooLarge) {
-        loadProblem = tooLarge.code;
+  function load() {
+    if (loaded) return Promise.resolve(index);
+    if (loadPromise) return loadPromise; // 首载在途：后来的调用等同一趟读盘
+    loadPromise = (async () => {
+      try {
+        // C17（v1.8.0 WP-19）：先 stat + 独立上限再读。超限与「内容坏了」分开记（INDEX_TOO_LARGE /
+        // CORRUPT），都按空索引重建；区别是界面 / 排查时能看出「是被换成了大文件」而不是索引写坏。
+        const info = await fs.stat(filePath);
+        const tooLarge = storage.readSizeProblem(info.size, {
+          code: 'INDEX_TOO_LARGE',
+          label: '搜索索引文件',
+          limit: MAX_INDEX_READ_BYTES,
+          tail: '没有读进内存'
+        });
+        if (tooLarge) {
+          loadProblem = tooLarge.code;
+          index = emptyIndex('');
+          return index;
+        }
+        const text = await fs.readFile(filePath, 'utf8');
+        indexBytes = Buffer.byteLength(text);
+        const parsed = parseIndex(text);
+        if (parsed) {
+          index = parsed;
+        } else {
+          loadProblem = 'CORRUPT';
+          index = emptyIndex('');
+        }
+      } catch (err) {
+        if (err && err.code !== 'ENOENT') loadProblem = err.code || 'ERROR';
         index = emptyIndex('');
-        return index;
+      } finally {
+        // X9：读盘这一趟彻底结束后才允许「已加载」短路；失败也记账（与原行为一致：进程内只尝试一次，
+        // 由下一次 ensure 走重建 / 自愈，而不是每次搜索都重新读坏文件）。
+        loaded = true;
+        loadPromise = null;
       }
-      const text = await fs.readFile(filePath, 'utf8');
-      indexBytes = Buffer.byteLength(text);
-      const parsed = parseIndex(text);
-      if (parsed) {
-        index = parsed;
-      } else {
-        loadProblem = 'CORRUPT';
-        index = emptyIndex('');
-      }
-    } catch (err) {
-      if (err && err.code !== 'ENOENT') loadProblem = err.code || 'ERROR';
-      index = emptyIndex('');
-    }
-    return index;
+      return index;
+    })();
+    return loadPromise;
   }
 
   function status() {

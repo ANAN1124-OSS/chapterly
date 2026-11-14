@@ -1258,6 +1258,10 @@
     <button type="button" data-action="delete" class="danger-text">删除这本书…</button>
   </div>
 
+  <!-- X11（v1.8.0 WP-40）评估结论：这些 UMD 脚本保持同步加载、严格按依赖顺序执行，不加 defer / async。
+       脚本本来就全部排在 body 结束标签之前（解析到这里时 DOM 已经完整），defer 只能省下几毫秒的解析阻塞，
+       却会改变渲染层入口的启动时机，且全仓几十条「脚本顺序」静态闸门与 UMD 浏览器链必须整体重写一遍。
+       真要引入 defer：先改 tests/ 的顺序闸门与 host 校验 / UMD 浏览器链，再加，不许只给一半脚本加。 -->
   <script src="../core/common.js"></script>
   <script src="../core/heading.js"></script>
   <script src="../core/chapters.js"></script>
