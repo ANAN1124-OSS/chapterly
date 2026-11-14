@@ -112,7 +112,6 @@ test('模板末尾是 emoji 时截断不切开代理对（V81）', () => {
 
 test('章节模板：shouldApply 只在「有模板 + 目标章为空」时套用', () => {
   const now = new Date(2026, 10, 1);
-  const ctx = { chapterNumber: 1, chapterName: '开篇', now };
   assert.equal(templateLib.shouldApply('第{n}章：\n\n', ''), true);
   assert.equal(templateLib.shouldApply('第{n}章：\n\n', '  \n '), true);
   assert.equal(templateLib.shouldApply('第{n}章：\n\n', '已经有正文'), false, '已有正文绝不覆盖');

@@ -30,7 +30,6 @@ module.exports = async function group45ExportEpub(t) {
   await exec("window.__cwTest.newBook('EPUB导出测试书')");
   await waitFor("window.__cwTest.view() === 'editor'");
   const epubBookPath = await exec('window.__cwTest.bookPathValue()');
-  const epubMetaPath = path.join(epubBookPath, '书目.json');
   await exec("window.__cwTest.newVolume('上卷')");
   await exec("window.__cwTest.newChapterInVolume(0, '上卷一')");
   await exec("window.__cwTest.newChapterInVolume(0, '上卷二')");

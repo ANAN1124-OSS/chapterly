@@ -27,7 +27,7 @@
     // 活绑定（模块级 let）不在这里，走 host.x 每次读最新值，见上面头注释
     const {
       $, alignTypewriter, answerModalValue, api, applyCaretColor, applyEditorStyle, applyFormatToEditor,
-      applySidebarWidth, applyStatsFilter, backToShelf, buildStatsCsv, calendarSummaryText, call, canUndoFormat, caretColorLib,
+      applySidebarWidth, applyStatsFilter, backToShelf, buildStatsCsv, call, canUndoFormat, caretColorLib,
       captureUi,
       caretColorValue, chapterNote, chapterStatus, chapterTitle, chapterVolumeId, checkUpdate,
       clearChapterSelection,
@@ -39,7 +39,7 @@
       confirmJumpFromDialog, copyChapterPlatformFlow, createBookWithTitle, createChapterAt,
       createVolumeFlow, deleteBookFlow, deleteChapterAt, deleteFindBookmark, deleteVolumeFlow,
       displayMenuOpen, editChapterNoteAt, editorEl, effectiveConfig, ensureSearchIndex, exitReadingMode,
-      fakeErrorSpeech, fakeFinishSpeech, findPanelOpen, findSessionActive, flushWriteTimer, focusActive,
+      fakeErrorSpeech, fakeFinishSpeech, findSessionActive, flushWriteTimer, focusActive,
       formatCardOpen, formatCurrentChapterFromConfig, formatUndoSteps, goToCurrentCalendarMonth,
       handleCloseRequest, hideDisplayMenu, hideFormatMenu, hideHeaderMenus, importBooksFlow, insertSelectedFragment,
       installFakeSpeech, jumpParagraph, jumpToFindBookmark, jumpToNextLongParagraph, loadCustomFont,
@@ -50,7 +50,7 @@
       openProofreadPanel, openReadingMode, openSensitivePanel, openSettings, openTtsBar,
       openGroupManageDialog,
       openUpdateDownload, pauseWriteTimer, persistSidebarWidth, previewHistoryBackup, previewSettings,
-      proofreadScope, proofreadWordListText, readBookInfoForm, readExportRange, readFormatOptions,
+      proofreadScope, readBookInfoForm, readExportRange, readFormatOptions,
       readingBlockElements, readingBlockIndexAt, readingCurrentIndex, readingGo, readingJumpTo,
       readingLoadedIndexes, readingMeasureBlocks, readingNearBottom, readingScrollEl,
       readingScrollToBlock, readingVisibleIndex, refreshFragments, refreshHistory, refreshJumpMatches,
@@ -62,13 +62,13 @@
       runFind, runFormatBook, runProofread, runReplaceAll, runReplaceOne, runSensitiveCheck, s2tLib,
       saveBookInfoDialog, saveCurrent, saveFindBookmark, saveFragment, saveSettings,
       scheduleContentSearch, scheduleReadingScrollCheck, selectFindMatch, selectFragmentByName,
-      sensitiveScope, sensitiveWordListText, setCaretColorPersisted, setCaretParagraphPersisted,
+      sensitiveScope, setCaretColorPersisted, setCaretParagraphPersisted,
       setChapterStatusAt, setDisplayPreset, setFocusMode, setFocusTypewriter, setMarksToggle,
       setReadingPref, setSelectValue, setTtsFollow, setTtsRate, setTtsVoice, shiftStatsCalendar,
       showBookMenu, showDisplayMenu, showFormatCard, speechEngine, startWriteTimer, state, stepFind,
       stopTts, switchChapter, syncFindOverlayScroll, syncMarksScroll, toggleMarks, toggleTtsPlay,
       toggleVolumeCollapse, ttsStep, undoFormat, updateCaretParagraph, updateFragmentCounter,
-      updateReadingUi, updateStatus, volumeList, writeDurationEnabled, writeFormatOptions,
+      updateReadingUi, volumeList, writeDurationEnabled, writeFormatOptions,
       writeTimerSessionSeconds, writeTimerTodaySeconds, writeTimerUnsentMs,
     } = host;
 

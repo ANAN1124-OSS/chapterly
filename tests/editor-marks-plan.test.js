@@ -24,7 +24,6 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const editorLogic = require('../renderer/editor-logic.js');
 // v0.9 B-5 模式第 4 步九刀·第三刀：标记层整段搬到 renderer/editor-marks-ui.js，
 // 下面两个静态闸门改成从新模块取函数体（只改读取路径，断言一条不改）。
-const RENDERER_SOURCE = read('renderer/renderer.js');
 const MARKS_UI_SOURCE = read('renderer/editor-marks-ui.js');
 
 /** 去掉注释（保留字符串）：静态闸门要看代码本身，不能被说明文字误导 */

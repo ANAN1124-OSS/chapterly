@@ -978,7 +978,6 @@ async function setViewport(cdp, width, height) {
 
 function a11yScan(cfg) {
   const INTERACTIVE = cfg.selector;
-  const MIN = cfg.min;
   const visible = (el) => {
     try {
       if (typeof el.checkVisibility === 'function') {

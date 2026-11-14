@@ -155,7 +155,7 @@ function makeDoc(menus, openers = {}) {
     activeElement: null,
     getElementById: (id) => byId.get(id) || null,
     addEventListener: (type, fn, capture) => listeners.push({ type, fn, capture: Boolean(capture) }),
-    removeEventListener: (type, fn, capture) => {
+    removeEventListener: (type, fn) => {
       const at = listeners.findIndex((entry) => entry.type === type && entry.fn === fn);
       if (at >= 0) listeners.splice(at, 1);
     },
@@ -258,7 +258,7 @@ function setup() {
 test('菜单键盘：右键菜单变成可见时把焦点带进第一条可用条目（跳过 .hidden 与禁用）', () => {
   const env = setup();
   env.fireContextMenu(env.chapterItem);
-  const menu = env.openMenu('context-menu');
+  env.openMenu('context-menu');
   assert.equal(env.doc.activeElement, env.contextItems[0], '焦点落在第一条可用条目');
   assert.notEqual(env.doc.activeElement, env.contextItems[2], '不落在 .hidden 的条目上');
   assert.notEqual(env.doc.activeElement, env.contextItems[3], '不落在禁用条目上');
@@ -354,7 +354,6 @@ test('菜单键盘：「整理」卡 Esc 收起后不被按钮的 focusin 又弹
     contains: () => true
   };
   const doc = env.doc;
-  const byId = new Map([[ 'format-menu', env.menus.find((m) => m.id === 'format-menu') ]]);
   const realGet = doc.getElementById.bind(doc);
   doc.getElementById = (id) => (id === 'format-dropdown' ? dropdown : realGet(id));
   const { menus } = env;

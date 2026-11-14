@@ -278,7 +278,6 @@ test('ticker 回调：30 秒定时 flush、1 秒定时只刷新文字；暂停 /
   const ctx = build();
   ctx.ui.startWriteTimer();
   const flushTimer = intervals.find((i) => i.ms === 30000);
-  const tickTimer = intervals.find((i) => i.ms === 1000);
   flushTimer.fn();
   await flush();
   assert.equal(ctx.calls.api.length, 0, '没到 1 秒不上报');
@@ -433,7 +432,7 @@ test('静态闸门：renderer.js 不再内嵌写作时长实现，只剩装配�
     'const { writeDurationEnabled, renderWriteTimer, renderDurationSettings, startWriteTimer, pauseWriteTimer, flushWriteTimer, resetWriteTimer, applyWriteTimerConfig, writeTimerTodaySeconds, writeTimerSessionSeconds, writeTimerUnsentMs, setupWriteTimerUi } = writeTimerUi;'
   ), '12 个入口按原名解构');
   assert.equal(rendererSrc.includes("$('btn-write-timer').addEventListener"), false, '绑定应该只在模块里');
-  assert.equal(rendererSrc.split('writeTimerUi.setupWriteTimerUi();').length - 1, 1, 'setup 只调一次');
+  assert.equal(rendererSrc.split('setupWriteTimerUi();').length - 1, 1, 'setup 只调一次');
   // 码字日历的三个按钮绑定不属于本域，仍留在 renderer
   assert.ok(rendererSrc.includes("$('calendar-prev').addEventListener"));
   assert.ok(rendererSrc.includes("$('calendar-next').addEventListener"));

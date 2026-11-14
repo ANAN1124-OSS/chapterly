@@ -766,7 +766,7 @@ test('静态闸门：renderer.js 不再内嵌灵感箱实现，只剩装配与�
   for (const id of ['btn-add-fragment', 'btn-fragment-cancel', 'btn-fragment-save', 'fragment-text', 'btn-insert-fragment', 'btn-fragments-close', 'btn-fragment-insert', 'btn-fragments-refresh']) {
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
-  assert.equal(rendererSrc.split('fragmentsUi.setupFragmentsUi();').length - 1, 1, 'setup 只调一次');
+  assert.equal(rendererSrc.split('setupFragmentsUi();').length - 1, 1, 'setup 只调一次');
   // Esc 动作表仍按名字取
   assert.match(rendererSrc, /'close-fragment': \(\) => closeFragmentDialog\(\),/);
   assert.match(rendererSrc, /'close-insert-fragment': \(\) => closeInsertFragmentDialog\(\),/);

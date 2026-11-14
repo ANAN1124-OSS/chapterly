@@ -9,7 +9,6 @@ module.exports = async function group23DisplayFormat(t) {
 
   // 23. 显示排版：预设 / 设置实时预览与取消恢复（按书记忆：只影响这本书，全局默认不动）
   const displayBookId = await exec('window.__cwTest.bookId()');
-  const styleBefore = await exec('window.__cwTest.displayStyle()');
   await exec("window.__cwTest.applyDisplayPreset('loose')");
   await sleep(250);
   const styleLoose = await exec('window.__cwTest.displayStyle()');

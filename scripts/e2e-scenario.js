@@ -25,7 +25,6 @@ module.exports = async function runScenario(ctx) {
     closeWindow,
     destroyWindow,
     execIn,
-    focusWindow,
     windowsInfo,
     openBookRegistry,
     registryCounts,

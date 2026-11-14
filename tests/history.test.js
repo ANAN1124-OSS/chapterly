@@ -25,14 +25,6 @@ async function writeBackupDir(bookPath, name, files) {
   return dir;
 }
 
-async function listDirNames(dir) {
-  try {
-    return await fs.readdir(dir);
-  } catch (err) {
-    if (err.code === 'ENOENT') return [];
-    throw err;
-  }
-}
 
 test('历史：解析备份目录名里的时间戳', () => {
   const at = new Date(2026, 9, 31, 21, 30, 0).getTime();

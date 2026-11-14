@@ -573,7 +573,7 @@ test('静态闸门：renderer.js 不再内嵌敏感词预检实现，只剩装�
   for (const id of ['btn-sensitive-run', 'btn-sensitive-close', 'btn-sensitive-pick', 'sensitive-scope']) {
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
-  assert.equal(rendererSrc.split('sensitiveUi.setupSensitiveUi();').length - 1, 1, 'setup 只调一次');
+  assert.equal(rendererSrc.split('setupSensitiveUi();').length - 1, 1, 'setup 只调一次');
   assert.match(rendererSrc, /'close-sensitive': \(\) => closeSensitivePanel\(\),/);
   assert.match(rendererSrc, /else if \(btn\.dataset\.action === 'sensitive'\) await openSensitivePanel\(\);/);
   assert.ok(rendererSrc.includes('sensitiveWordListText'), '设置域仍按名字用 sensitiveWordListText');

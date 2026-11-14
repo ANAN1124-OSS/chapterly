@@ -223,7 +223,6 @@ test('renderJumpMatches：五种汇总文案逐字写死 + warn / 确认按钮�
   const { host, els, state } = makeHost();
   const ui = jumpUi.create(host);
   const summary = els.get('jump-summary') || host.$('jump-summary');
-  const list = host.$('jump-results');
   const confirm = host.$('btn-jump-confirm');
 
   // ① 还没输入：说清楚能输什么
@@ -270,7 +269,7 @@ test('renderJumpMatches：五种汇总文案逐字写死 + warn / 确认按钮�
 
 test('renderJumpMatches：结果行是 button.jump-result，两段文字 + 状态标签，点一条就跳过去', async () => {
   const created = installDocument();
-  const { host, els, switches } = makeHost();
+  const { host, switches } = makeHost();
   const ui = jumpUi.create(host);
   host.$('jump-results');
 

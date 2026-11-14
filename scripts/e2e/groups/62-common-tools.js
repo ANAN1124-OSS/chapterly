@@ -1,7 +1,5 @@
 // E2E 第 62 组：从 scripts/e2e-scenario.js 原样搬出来（v0.9 B-7，断言一条都没改），
 // 由 scripts/e2e/groups/index.js 按顺序执行；t = 场景上下文 + scripts/e2e/harness.js 的公共工具。
-const fs = require('node:fs/promises');
-const path = require('node:path');
 
 module.exports = async function group62CommonTools(t) {
   const { exec, check } = t;

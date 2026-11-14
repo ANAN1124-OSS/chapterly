@@ -1013,7 +1013,7 @@ test('静态闸门：renderer.js 不再内嵌设置实现，只剩装配与转�
     'btn-pick-font', 'btn-reset-font', 'settings-font', 'settings-caret-paragraph', 'settings-caret-color']) {
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
-  assert.equal(rendererSrc.split('settingsUi.setupSettingsUi();').length - 1, 1, 'setup 只调一次');
+  assert.equal(rendererSrc.split('setupSettingsUi();').length - 1, 1, 'setup 只调一次');
   assert.match(rendererSrc, /'close-settings': \(\) => closeSettings\(\),/);
   // 校对 / 敏感词装配里的 render*Settings 现在是惰性转发（TDZ）
   assert.ok(rendererSrc.includes('renderProofreadSettings: () => renderProofreadSettings()'));

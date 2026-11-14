@@ -996,8 +996,8 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
   assert.ok(rendererSrc.includes('chapterIndex < state.chapters.length'), 'chapterIndex 要按本书章节数校验');
   assert.match(
     rendererSrc,
-    /const \{\r?\n    openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,\r?\n    openGroupManageDialog, closeGroupManageDialog, renameShelfGroup, mergeShelfGroup, moveBookToGroup,\r?\n    openBookGroupChooser, closeBookGroupChooser, newGroupForBook,\r?\n    renderShelf, createBookWithTitle, onNewBookClick, setupBookinfoUi, maybeShowFirstRunTip\r?\n  \} = bookinfoUi;/,
-    '17 个入口按原名解构（含 F5 的分组管理 / 移到分组与 1.6.0b 的菜单内联列表）'
+    /const \{\r?\n    openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,\r?\n    openGroupManageDialog, closeGroupManageDialog, moveBookToGroup,\r?\n    openBookGroupChooser, closeBookGroupChooser, newGroupForBook,\r?\n    renderShelf, createBookWithTitle, onNewBookClick, maybeShowFirstRunTip\r?\n  \} = bookinfoUi;/,
+    '14 个入口按原名解构（renameShelfGroup / mergeShelfGroup 只在模块内部菜单用；setupBookinfoUi 由模块限定调用一次）'
   );
   assert.ok(rendererSrc.includes('await maybeShowFirstRunTip();'), '首屏书架刷新后调一次首次运行提示');
   for (const id of [

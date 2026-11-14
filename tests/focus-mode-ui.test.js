@@ -25,9 +25,6 @@ test.after(() => {
   globalThis.setTimeout = realSetTimeout;
   globalThis.clearTimeout = realClearTimeout;
 });
-function flush() {
-  return new Promise((resolve) => setImmediate(resolve));
-}
 
 const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
@@ -425,12 +422,12 @@ test('静态闸门：renderer.js 不再内嵌专注模式实现，只剩装配�
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);
   }
   assert.ok(rendererSrc.includes(
-    'const { focusActive, updateFocusBar, ensureFocusMirror, measureCaretTop, alignTypewriter, scheduleTypewriterAlign, restoreFocusScroll, resetCaretMeasureCache, setFocusMode, toggleFocusMode, setFocusTypewriter, setupFocusModeUi } = focusModeUi;'
-  ), '12 个入口按原名解构');
+    'const { focusActive, updateFocusBar, measureCaretTop, alignTypewriter, scheduleTypewriterAlign, resetCaretMeasureCache, setFocusMode, toggleFocusMode, setFocusTypewriter, setupFocusModeUi } = focusModeUi;'
+  ), '10 个入口按原名解构（ensureFocusMirror / restoreFocusScroll 只在模块内部用）');
   for (const id of ['btn-focus', 'btn-focus-exit', 'btn-focus-typewriter']) {
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
-  assert.equal(rendererSrc.split('focusModeUi.setupFocusModeUi();').length - 1, 1, 'setup 只调一次');
+  assert.equal(rendererSrc.split('setupFocusModeUi();').length - 1, 1, 'setup 只调一次');
   // F11 / Esc / 视图切换 / 编辑区事件仍按名字取
   assert.match(rendererSrc, /event\.key === 'F11'/);
   assert.match(rendererSrc, /'exit-focus': \(\) => setFocusMode\(false\),/);

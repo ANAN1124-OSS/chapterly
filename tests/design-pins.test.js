@@ -33,7 +33,6 @@ function ruleOf(source, selector) {
 
 // 取一个 @media 块（本文件的 @media 都是一层、内部规则不嵌套 @media）
 function mediaOf(source, query) {
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const start = source.indexOf(`@media ${query}`);
   if (start < 0) return '';
   const open = source.indexOf('{', start);
