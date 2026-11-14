@@ -131,27 +131,29 @@
   const captureUiModule = window.CWCaptureUi;
   // 本书历史（第 4 步九刀·第一刀）：历史面板整段在 history-ui.js 里；这里只接线
   const historyUiModule = window.CWHistoryUi;
-  // 日历 / 统计文案用的格式化口径：就是本文件的 formatChars / formatDuration（函数声明会提升，
   // 阅读模式（第 4 步九刀·第二刀）：整本只读通读整段在 reading-ui.js 里；这里只接线
   const readingUiModule = window.CWReadingUi;
-  // 放在调用之前没问题）。stats-logic.js 自己不复制第二套格式，调用时把这对函数传进去。
   // 编辑器小件（第 4 步九刀·第三刀）：标记层 / 超长段落 / 段落导航 / 高亮色板整段在 editor-marks-ui.js 里；
   const editorMarksUiModule = window.CWEditorMarksUi;
+  // 日历 / 统计文案用的格式化口径：就是本文件的 formatChars / formatDuration（函数声明会提升，
+  // 放在调用之前没问题）。stats-logic.js 自己不复制第二套格式，调用时把这对函数传进去。
   const statsFormat = { formatChars, formatDuration };
   // 校对（第 4 步九刀·第四刀）：规则摘要 / 结果列表 / 跳转 / 跑校对 / 选词表整段在 proofread-ui.js 里；
   const proofreadUiModule = window.CWProofreadUi;
-  // 书架正文搜索：输入停顿多久后才查（避免每敲一个字都查一次）；正文最少 2 个字
   // 敏感词预检（第 4 步九刀·第五刀）：面板 / 摘要 / 结果 / 跳转 / 选词表整段在 sensitive-ui.js 里；
   const sensitiveUiModule = window.CWSensitiveUi;
-  const CONTENT_SEARCH_DEBOUNCE = 320;
   // 书籍信息（第 4 步九刀·第六刀）：书籍信息弹层 + 书架渲染 + 新建书整段在 bookinfo-ui.js 里；
   const bookinfoUiModule = window.CWBookinfoUi;
-  const CONTENT_SEARCH_MIN_CHARS = 2;
   // 设置（第 4 步九刀·第七刀）：设置弹层 + 数据台账整段在 settings-ui.js 里；这里只接线
   const settingsUiModule = window.CWSettingsUi;
   // 设置面板信息架构（1.4.0 P0-1）：5 个分区 / 顶部搜索 / 深链的纯逻辑在 settings-ia.js 里
   const settingsIaModule = window.CWSettingsIa;
+  // 书架正文搜索的调度 / 分页口径：输入停顿多久后才查（避免每敲一个字都查一次）、
+  // 正文最少 2 个字、一页 8 条、最多 40 条结果（与 shelf-search-ui 的入参含义一一对应）。
+  const CONTENT_SEARCH_DEBOUNCE = 320;
+  const CONTENT_SEARCH_MIN_CHARS = 2;
   const CONTENT_PAGE_SIZE = 8;
+  const CONTENT_RESULT_LIMIT = 40;
   // 整理悬浮卡 + 显示菜单（第 4 步九刀·第八刀）：整段在 tidy-card-ui.js 里；这里只接线
   const tidyCardUiModule = window.CWTidyCardUi;
   // 查找 / 替换核心（第 4 步九刀·补刀 9a）：查找会话 + 查找替换面板整段在 find-ui.js 里；这里只接线
@@ -164,7 +166,6 @@
   const writeTimerUiModule = window.CWWriteTimerUi;
   // 专注模式（第 4 步九刀·补刀 12）：专注 / 极简退出条 / 打字机整段在 focus-mode-ui.js 里；这里只接线
   const focusModeUiModule = window.CWFocusModeUi;
-  const CONTENT_RESULT_LIMIT = 40;
   // 写作计时（v0.8-2）：每 30 秒把整秒上报一次；不足 1 秒的零头留在内存里下次一起算。
   const WRITE_TIMER_FLUSH_MS = 30000;
 

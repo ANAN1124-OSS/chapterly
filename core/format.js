@@ -28,7 +28,8 @@ function charAt(text, index) {
 
 const DEFAULT_OPTIONS = Object.freeze({
   indent: '2',             // 段首缩进：none 不处理 / '0' 去掉缩进 / '2' 两个全角空格
-  blankLines: 'single',    // 段间空行：keep 保持原样 / single 空一行 / singleIndent 空一行（含缩进）/ none 不空行
+  blankLines: 'single',    // 段间空行：keep 保持段间原有空行数 / single 空一行 / singleIndent 空一行（含缩进）/ none 不空行；
+                           // 注意：所有模式都会丢掉正文开头的空行、结尾连续空行只留一个（keep 也不保持首尾，见 applyFormat）
   trimTrailing: true,      // 删除每行行尾空白
   normalizePunct: true,    // 中文旁边的半角标点转全角（，。；：！？）
   removeCjkSpaces: false,  // 删除中文之间的多余空格（默认关：可能影响语感）
@@ -235,7 +236,7 @@ function formatText(text, rawOptions) {
   for (const rawLine of source.split('\n')) {
     if (isBlank(rawLine)) {
       if (paragraphs.length) gap += 1;
-      continue; // 开头的空行直接丢掉
+      continue; // 开头的空行直接丢掉（所有 blankLines 模式都不保留首部空行）
     }
 
     let line = rawLine;
@@ -313,6 +314,7 @@ function formatText(text, rawOptions) {
     result = paragraphs.map((p) => p.text).join(separator);
   }
 
+  // 结尾只留一个换行：源文末尾有换行就补一个 '\n'，多个尾随空行在这里被收成一个（keep 也一样）。
   if (endsWithNewline && result) result += '\n';
 
   return { text: result, stats, changed: result !== source };

@@ -80,7 +80,7 @@
     const area = $('stats-csv-text');
     if (area) {
       area.value = '';
-      area.hidden = true;
+      area.classList.add('hidden');
     }
     return refreshStats();
   }
@@ -105,7 +105,7 @@
       if (stats) {
         $('shelf-stats-today').textContent = statsLogic.statsTodayText(stats, statsFormat);
         $('shelf-stats-goal').textContent = goal > 0 ? `目标 ${formatChars(goal)} · ${percent}%${met ? ' · 已达标' : ''}` : '';
-        $('shelf-stats-goal').hidden = goal <= 0;
+        $('shelf-stats-goal').classList.toggle('hidden', goal <= 0);
         $('shelf-goal-track').classList.toggle('hidden', goal <= 0);
         $('shelf-goal-fill').style.width = goal > 0 ? `${percent}%` : '0%';
         const streakEl = $('shelf-stats-streak');
@@ -113,7 +113,7 @@
         const bestStreak = Math.max(0, Math.round(Number(state.streak && state.streak.best) || 0));
         if (streakEl) {
           streakEl.textContent = currentStreak > 0 ? `连续 ${currentStreak} 天` : '';
-          streakEl.hidden = currentStreak <= 0;
+          streakEl.classList.toggle('hidden', currentStreak <= 0);
           streakEl.title =
             currentStreak > 0 ? `已连续写作 ${currentStreak} 天 · 最长连续 ${bestStreak} 天` : '';
         }
@@ -218,7 +218,7 @@
     if (!rows.length) {
       if (area) {
         area.value = '';
-        area.hidden = true;
+        area.classList.add('hidden');
       }
       if (hintEl) hintEl.textContent = '这段时间还没有记录，没有可导出的行。';
       return '';
@@ -228,7 +228,7 @@
       // textarea 的 value 会把 CRLF 归一成 LF（HTML 规范），粘贴 / 另存都不受影响；
       // 纯函数本身仍按 CRLF 出文本（将来落盘时口径一致）。
       area.value = text;
-      area.hidden = false;
+      area.classList.remove('hidden');
     }
     if (hintEl) hintEl.textContent = '按天一行，UTF-8 BOM；已生成，全选复制后存成 .csv 即可。';
     return text;

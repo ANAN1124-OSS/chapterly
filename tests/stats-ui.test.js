@@ -249,11 +249,11 @@ test('renderStatsUi：今日字数 / 目标百分比 / 达标 / 连续天数 / �
   assert.equal(host.$('shelf-stats').classList.contains('is-quiet'), false);
   assert.equal(host.$('shelf-stats-today').textContent, '今天 +2500 字');
   assert.equal(host.$('shelf-stats-goal').textContent, '目标 2000 字 · 100% · 已达标');
-  assert.equal(host.$('shelf-stats-goal').hidden, false);
+  assert.equal(host.$('shelf-stats-goal').classList.contains('hidden'), false);
   assert.equal(host.$('shelf-goal-track').classList.contains('hidden'), false);
   assert.equal(host.$('shelf-goal-fill').style.width, '100%');
   assert.equal(host.$('shelf-stats-streak').textContent, '连续 3 天');
-  assert.equal(host.$('shelf-stats-streak').hidden, false);
+  assert.equal(host.$('shelf-stats-streak').classList.contains('hidden'), false);
   assert.equal(host.$('shelf-stats-streak').title, '已连续写作 3 天 · 最长连续 5 天');
   assert.equal(host.$('shelf-stats').title, '只统计保存动作写下的字数（不含未保存内容；删字不倒扣）。今日目标 2,000 字。');
   assert.equal(host.$('status-stats-text').textContent, '今日 2500 字 / 2000 字');
@@ -270,11 +270,11 @@ test('renderStatsUi：今天没写字时书架头切安静排法，没设目标�
   assert.equal(host.$('shelf-stats').classList.contains('is-quiet'), true);
   assert.equal(host.$('shelf-stats-today').textContent, '今天还没写字');
   assert.equal(host.$('shelf-stats-goal').textContent, '');
-  assert.equal(host.$('shelf-stats-goal').hidden, true);
+  assert.equal(host.$('shelf-stats-goal').classList.contains('hidden'), true);
   assert.equal(host.$('shelf-goal-track').classList.contains('hidden'), true);
   assert.equal(host.$('shelf-goal-fill').style.width, '0%');
   assert.equal(host.$('shelf-stats-streak').textContent, '');
-  assert.equal(host.$('shelf-stats-streak').hidden, true);
+  assert.equal(host.$('shelf-stats-streak').classList.contains('hidden'), true);
   assert.equal(host.$('shelf-stats').title, '只统计保存动作写下的字数（不含未保存内容；删字不倒扣）。可在「设置 → 写作统计」里设每日目标。');
   assert.equal(host.$('status-stats-text').textContent, '今日 0 字');
 });
@@ -585,7 +585,7 @@ test('统计筛选：切换下拉带 filter 重新取数、汇总行跟着变、
   const ui = statsUi.create(host);
   await ui.refreshStats();
   host.$('stats-csv-text').value = '上一份 CSV';
-  host.$('stats-csv-text').hidden = false;
+  host.$('stats-csv-text').classList.remove('hidden');
 
   await ui.applyStatsFilter('b1', 2026);
   assert.deepEqual(calls[1], { channel: 'stats:get', payload: { bookId: 'b1', year: 2026 } });
@@ -593,7 +593,7 @@ test('统计筛选：切换下拉带 filter 重新取数、汇总行跟着变、
   assert.equal(host.$('stats-filter-book').value, 'b1');
   assert.equal(host.$('stats-filter-year').value, '2026');
   assert.equal(host.$('stats-csv-text').value, '', '换筛选后旧 CSV 不能留着冒充新数据');
-  assert.equal(host.$('stats-csv-text').hidden, true);
+  assert.equal(host.$('stats-csv-text').classList.contains('hidden'), true);
 
   // 回到「全部书 / 全部年」：filter 归零，旧选项不会被重复追加
   await ui.applyStatsFilter('', 0);
@@ -622,7 +622,7 @@ test('统计 CSV：按当前汇总生成文本（BOM / 表头 / 合计），空�
     ''
   ]);
   assert.equal(host.$('stats-csv-text').value, text);
-  assert.equal(host.$('stats-csv-text').hidden, false);
+  assert.equal(host.$('stats-csv-text').classList.contains('hidden'), false);
   assert.ok(host.$('stats-csv-hint').textContent.includes('全选复制'));
 
   // 没有记录：不留空 textarea，只把提示换成「还没有记录」
@@ -632,7 +632,7 @@ test('统计 CSV：按当前汇总生成文本（BOM / 表头 / 合计），空�
   const ui2 = statsUi.create(second.host);
   await ui2.refreshStats();
   assert.equal(ui2.buildStatsCsv(), '');
-  assert.equal(second.host.$('stats-csv-text').hidden, true);
+  assert.equal(second.host.$('stats-csv-text').classList.contains('hidden'), true);
   assert.ok(second.host.$('stats-csv-hint').textContent.includes('还没有'));
 });
 
