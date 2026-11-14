@@ -2,14 +2,39 @@
 // 设计原则：只在作者点「排版 → 整理本章」时调用，绝不自动执行；
 // 只动空白、标点这类「排版层」内容，不改字词；同一份文本反复整理的结果必须一致（幂等）。
 const INDENT = '\u3000\u3000'; // 段首缩进：两个全角空格（中文小说惯例）
-const HAN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+// C42（v1.8.0 WP-26）：汉字范围必须覆盖 CJK 扩展 B–G 与兼容补充（U+20000 起，如「𠮷」）。
+// 这些字在 JS 里是代理对，正则要带 u 标志按码点匹配；逐字扫描的地方也按码点取整字，
+// 否则只看到半个代理，邻接标点 / 重复用词都会漏判。
+// （汉字正则的跨模块收编在 WP-31；本轮先把范围补全，proofread.js 用同一串范围。）
+const HAN_RANGES =
+  '\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff' +
+  '\\u{20000}-\\u{2a6df}\\u{2a700}-\\u{2b73f}\\u{2b740}-\\u{2b81f}' +
+  '\\u{2b820}-\\u{2ceaf}\\u{2ceb0}-\\u{2ebef}\\u{2f800}-\\u{2fa1f}\\u{30000}-\\u{3134f}';
+const HAN_RE = new RegExp(`[${HAN_RANGES}]`, 'u');
 const FULL_PUNCT = new Set(['，', '。', '；', '：', '！', '？']);
 const PUNCT_MAP = { ',': '，', '.': '。', ';': '；', ':': '：', '!': '！', '?': '？' };
 const BLANK_MODES = ['keep', 'single', 'singleIndent', 'none'];
 const INDENT_MODES = ['none', '0', '2'];
-// 中文语境邻接字符：汉字、中文标点、中文引号、破折号/省略号、全角空格
-const CJK_NEIGHBOR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff，。；：！？、…—（）《》“”‘’\u3000]/;
+// 中文语境邻接字符：汉字（含扩展 B–G）、中文标点、中文引号、破折号/省略号、全角空格
+const CJK_NEIGHBOR_RE = new RegExp(`[${HAN_RANGES}，。；：！？、…—（）《》“”‘’\\u3000]`, 'u');
 const ASCII_ALNUM_RE = /[A-Za-z0-9]/;
+// 两个汉字之间的半角空格（removeCjkSpaces 用；同样按码点匹配扩展 B–G 的代理对）
+const CJK_SPACE_RE = new RegExp(`([${HAN_RANGES}])[ \\u00a0]+(?=[${HAN_RANGES}])`, 'gu');
+
+// 按 UTF-16 下标取一个完整字符（代理对算一个）；越界返回空串。
+function charAt(text, index) {
+  if (index < 0 || index >= text.length) return '';
+  const code = text.codePointAt(index);
+  return code > 0xffff ? text.slice(index, index + 2) : text[index];
+}
+
+// 取字符串最后一个完整字符（代理对算一个）。
+function lastChar(text) {
+  if (!text) return '';
+  const low = text.charCodeAt(text.length - 1);
+  if (low >= 0xdc00 && low <= 0xdfff && text.length > 1) return text.slice(-2);
+  return text.slice(-1);
+}
 
 const DEFAULT_OPTIONS = Object.freeze({
   indent: '2',             // 段首缩进：none 不处理 / '0' 去掉缩进 / '2' 两个全角空格
@@ -57,6 +82,16 @@ function convertPunct(text, onConvert) {
   const report = typeof onConvert === 'function' ? onConvert : null;
   let prev = '';
   for (let i = 0; i < text.length; i += 1) {
+    const code = text.codePointAt(i);
+    // C42：代理对（扩展 B 汉字 / emoji）按整字照抄，prev 记整字才能让后面的标点判定
+    // 认出「旁边是汉字」；标点本身永远是 BMP，不受影响。
+    if (code > 0xffff) {
+      const wide = text.slice(i, i + 2);
+      parts.push(wide);
+      prev = wide;
+      i += 1;
+      continue;
+    }
     const ch = text[i];
     const full = PUNCT_MAP[ch];
     if (!full) {
@@ -64,7 +99,7 @@ function convertPunct(text, onConvert) {
       prev = ch;
       continue;
     }
-    const next = text[i + 1] || '';
+    const next = charAt(text, i + 1);
     // 「...」「。。。」这类省略号连排保持原样，不逐个转换
     if (ch === '.' && (text[i - 1] === '.' || text[i + 1] === '.')) {
       parts.push(ch);
@@ -101,13 +136,11 @@ function convertPunct(text, onConvert) {
 // 删除两个中文字符之间的半角空格（缩进用的全角空格不受影响）
 function removeCjkSpaces(text) {
   let count = 0;
-  const out = text.replace(
-    /([\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])[ \u00a0]+(?=[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])/g,
-    (match, lead) => {
-      count += 1;
-      return lead;
-    }
-  );
+  // C42：扩展 B–G 汉字（代理对）也要能和 BMP 汉字一样夹空格（见 CJK_SPACE_RE 的 u 标志）。
+  const out = text.replace(CJK_SPACE_RE, (match, lead) => {
+    count += 1;
+    return lead;
+  });
   return { text: out, count };
 }
 
@@ -137,8 +170,8 @@ function convertCurlyQuotes(text) {
       out += ch;
       continue;
     }
-    const prev = out ? out[out.length - 1] : '';
-    const next = source[i + 1] || '';
+    const prev = lastChar(out);
+    const next = charAt(source, i + 1);
     const prevCjk = CJK_NEIGHBOR_RE.test(prev);
     const nextCjk = CJK_NEIGHBOR_RE.test(next);
     const prevAlnum = ASCII_ALNUM_RE.test(prev);

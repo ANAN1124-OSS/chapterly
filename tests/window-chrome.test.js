@@ -192,12 +192,19 @@ test('main.js：窗口用 titleBarStyle hidden + titleBarOverlay，底色 / 失�
 // 所以这里钉两端的接线（保存时读 isMaximized()、恢复时补 maximize()），真往返在 tests/config.test.js
 // 的「windowBounds 带 maximized：清洗放行布尔、缺省 false、真文件往返不丢」里。
 test('窗口位置记忆带最大化：保存记 isMaximized()、启动恢复补 maximize()，windowBounds 往返带 maximized（V89）', () => {
-  // 保存端：windowBounds 里除四个标量外再写 maximized（写进 windowBounds，不新增顶层字段）
+  // 保存端：windowBounds 里除四个标量外再写 maximized（写进 windowBounds，不新增顶层字段）。
+  // V103（v1.8.0 WP-26）：几何取 getNormalBounds()（最大化时 getBounds 是最大化矩形），
+  // 否则重启 + 取消最大化后窗口停在工作区大小而不是最大化前尺寸。
   const saveAt = MAIN.indexOf('async function saveRecentWindowBounds');
   assert.ok(saveAt > 0, 'main.js 里要有 saveRecentWindowBounds');
   assert.match(
-    MAIN.slice(saveAt, saveAt + 800),
-    /windowBounds: \{ \.\.\.session\.win\.getBounds\(\), maximized: session\.win\.isMaximized\(\) \}/,
+    MAIN.slice(saveAt, saveAt + 2000),
+    /const normal = session\.win\.getNormalBounds\(\);/,
+    '保存窗口位置要用 getNormalBounds() 取普通态几何（V103）'
+  );
+  assert.match(
+    MAIN.slice(saveAt, saveAt + 2000),
+    /windowBounds: \{ \.\.\.normal, maximized: session\.win\.isMaximized\(\) \}/,
     '保存窗口位置时必须带上 maximized: session.win.isMaximized()'
   );
 

@@ -235,7 +235,9 @@ function normalizeLimits({ maxFileBytes = DEFAULT_MAX_FILE_BYTES, maxFiles = DEF
   };
 }
 
-// 今天是哪个文件：先用没超大小的最后一份；当天都满了就开下一个序号（上限 999）。
+// 今天是哪个文件：先用没超大小的最后一份；当天都满了就开下一个序号。
+// V105（v1.8.0 WP-26）：序号到上限（999）且当天所有文件都写满时回 null —— 由 append
+// 丢弃这一条并计数，绝不再往 999 号满文件里追加（旧实现直接返回 999 号，单文件上限形同虚设）。
 function chooseLogFile(files, { now = new Date(), maxFileBytes = DEFAULT_MAX_FILE_BYTES } = {}) {
   const day = localDayKey(now);
   const limit = normalizeLimits({ maxFileBytes }).maxFileBytes;
@@ -244,7 +246,8 @@ function chooseLogFile(files, { now = new Date(), maxFileBytes = DEFAULT_MAX_FIL
     .sort(compareLogFiles);
   const usable = todays.filter((file) => Number(file.size) < limit);
   if (usable.length) return usable[usable.length - 1].name || fileNameForDay(day, usable[usable.length - 1].index);
-  const nextIndex = todays.length ? Math.min(MAX_INDEX, todays[todays.length - 1].index + 1) : 1;
+  const nextIndex = todays.length ? todays[todays.length - 1].index + 1 : 1;
+  if (nextIndex > MAX_INDEX) return null;
   return fileNameForDay(day, nextIndex);
 }
 
@@ -297,12 +300,17 @@ function createLogStore(baseDir, options = {}) {
   const enqueue = writeQueue.enqueue;
   let lastSignature = '';
   let lastSignatureAt = 0;
-  const counters = { written: 0, failed: 0, suppressed: 0, pruned: 0 };
+  const counters = { written: 0, failed: 0, suppressed: 0, pruned: 0, dropped: 0 };
 
   async function append(text, time) {
     await fs.mkdir(dir, { recursive: true });
     const files = await listLogFiles(dir);
     const name = chooseLogFile(files, { now: time, maxFileBytes: limits.maxFileBytes });
+    // V105：当天 999 份全满 → 丢弃这一条（不让 999 号文件继续长），计数后交给 write 如实回报。
+    if (!name) {
+      counters.dropped += 1;
+      return { dropped: true, file: null, pruned: [] };
+    }
     const filePath = path.join(dir, name);
     // 追加：一次 write + fsync，已有条目不会被截断 / 重写。
     const handle = await fs.open(filePath, 'a');
@@ -339,6 +347,10 @@ function createLogStore(baseDir, options = {}) {
         lastSignature = signature;
         lastSignatureAt = stamp;
         const written = await append(renderEntry(entry), entry.time);
+        if (written.dropped) {
+          // V105：单日日志已到 999 份且全部写满 —— 如实回报「这条没写」，不假装成功。
+          return { ok: true, suppressed: true, dropped: true, file: null, pruned: [] };
+        }
         counters.written += 1;
         return { ok: true, suppressed: false, file: written.file, pruned: written.pruned };
       } catch (err) {

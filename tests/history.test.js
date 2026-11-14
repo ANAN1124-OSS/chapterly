@@ -70,6 +70,30 @@ test('历史：删除章节的散文件（含撞名序号）不会把 3 位原�
   }
 });
 
+// C34（v1.8.0 WP-26）：章号序号 4 位起（pad3 之后 1000+）不能被当成撞名序号剥掉。
+// 旧正则 `[1-9]\d*` 把 `1000-2024-回顾.txt` 的章号当序号：历史列表显示成 `2024-回顾.txt`。
+test('C34/WP-26：删除散文件解析——4 位章号不是撞名序号，1–3 位序号照旧剥', () => {
+  // 4 位章号 + 章名本身以 3 位数字开头：整段都是原文件名
+  assert.deepEqual(history.parseDeletedName('2026-10-31-213000-1000-2024-回顾.txt'), {
+    stamp: '2026-10-31-213000',
+    originalName: '1000-2024-回顾.txt'
+  });
+  // 4 位章号单独出现
+  assert.deepEqual(history.parseDeletedName('2026-10-31-213000-1000-起风.txt'), {
+    stamp: '2026-10-31-213000',
+    originalName: '1000-起风.txt'
+  });
+  // 真正的撞名序号（1–3 位）仍要剥掉，后面接 3 位或 4 位章号都行
+  assert.deepEqual(history.parseDeletedName('2026-10-31-213000-2-1000-起风.txt'), {
+    stamp: '2026-10-31-213000',
+    originalName: '1000-起风.txt'
+  });
+  assert.deepEqual(history.parseDeletedName('2026-10-31-213000-123-003-夜雨.txt'), {
+    stamp: '2026-10-31-213000',
+    originalName: '003-夜雨.txt'
+  });
+});
+
 test('历史：备份目录 / 散文件归类', () => {
   assert.equal(history.classifyDirName('替换备份-2026-10-31-213000').source, 'replace');
   assert.equal(history.classifyDirName('整理备份-2026-10-31-213000').source, 'format');

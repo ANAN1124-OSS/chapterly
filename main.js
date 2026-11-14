@@ -497,7 +497,11 @@ async function saveRecentWindowBounds(session) {
       if (session.win.isDestroyed()) return false;
     }
     // C7（审计 C7）：窗口位置是自动写——读失败期间不许落盘（否则 resize 防抖写会把真配置换成默认值）。
-    await configStore.set({ windowBounds: { ...session.win.getBounds(), maximized: session.win.isMaximized() } }, { auto: true });
+    // V103（v1.8.0 WP-26）：用 getNormalBounds() 而不是 getBounds()。最大化时 getBounds() 返回的是
+    // 最大化矩形，存下来再重启、取消最大化后窗口就永远停在工作区大小（每次都要手动调）。
+    // 普通 / 最小化状态下两者一致；最大化只额外记 maximized 标志，恢复由 createWindow 补 maximize()。
+    const normal = session.win.getNormalBounds();
+    await configStore.set({ windowBounds: { ...normal, maximized: session.win.isMaximized() } }, { auto: true });
     return true;
   } catch {
     return false;
@@ -968,17 +972,12 @@ async function rememberRecentBook(bookPath, info) {
   };
   try {
     await getConfig();
-    const current = await configStore.get();
-    const prev = current.lastBook;
-    // 打开书时 open + set-last 会连着报同一个位置：5 秒内不重复写盘（换章照常更新）
-    if (prev && prev.path === payload.path && prev.chapterId === payload.chapterId && now - prev.at < 5000) {
-      return false;
-    }
-    // 迟到的切章记录不许盖掉更晚的「上次写作」位置（多窗口：A 保存得更晚，B 的旧切章不能翻上去）
-    if (prev && Number.isFinite(Number(prev.at)) && Number(prev.at) > payload.at) return false;
-    const updated = await configStore.set({ lastBook: payload }, { auto: true });
-    applyConfig(updated);
-    return true;
+    // C28（v1.8.0 WP-26）：读旧值 / 5 秒去重 / at 守卫 / 写盘全部在 configStore 的写队列里完成
+    // （configStore.rememberLastBook）。旧实现在 set 之前单独 get：两个窗口并发时都基于同一份
+    // 旧值通过守卫，迟到的旧切章记录能盖掉更晚的「上次写作」。
+    const result = await configStore.rememberLastBook(payload, { auto: true, now });
+    if (result.written) applyConfig(result.config);
+    return result.written;
   } catch {
     return false; // 记不住位置不影响写作
   }
@@ -1876,8 +1875,9 @@ function registerIpc() {
   handleBook('chapter:save', async (bookPath, chapterId, text) => {
     // A2（审计 E6）：全仓唯一漏掉正文校验的写盘通道。与 text:format / text:find / replace
     // 同一口径：正文必须是字符串且不超过 500 万字（core/ipc-limits.js），超限回 TEXT_TOO_LARGE。
-    // null / undefined 沿用旧行为 = 空章（渲染层本来就只会传字符串，这里只做防御）。
-    const body = assertText(text == null ? '' : text);
+    // C26（v1.8.0 WP-26）：null / undefined 不再当空章写盘（旧实现刻意兼容成 ''）。渲染层拿到
+    // undefined 的正文变量时，旧行为是静默把整章清空 —— 写卡口宁可报 BAD_TEXT，也不能丢数据。
+    const body = assertText(text);
     const session = flowSession();
     return storage.withBookLock(bookPath, async () => {
       const cfg = await getConfig();

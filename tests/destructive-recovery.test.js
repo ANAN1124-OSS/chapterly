@@ -184,6 +184,60 @@ test('删章：删最后一章且书目写盘失败，自动补的空章不会�
   assert.equal((await storage.readBookMeta(bookPath)).chapters.length, 1);
 });
 
+// C34（v1.8.0 WP-26）：回滚挪「自动补的空章」也走 moveToTrash（同一套撞名循环）。
+// 旧实现直接 rename 成 `<时间戳>-<文件名>`：同秒两次回滚会撞同一个名字，把上一次的备份覆盖掉。
+test('C34/WP-26：删最后一章回滚时自动补章走 moveToTrash，撞名不覆盖旧备份', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '回滚撞名');
+  const meta = await storage.readBookMeta(bookPath);
+  const file0 = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file0, '唯一的一章。');
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const stampOf = (date) =>
+    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}-` +
+    `${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}`;
+  // 自动补章的可预测文件名：fileSeq=1 → 下一个序号 2 → 002-未命名.txt
+  const autoFile = '002-未命名.txt';
+  const now = Date.now();
+  const planted = new Map();
+  await fs.mkdir(path.join(bookPath, '_trash'), { recursive: true });
+  for (let delta = -1; delta <= 2; delta += 1) {
+    const stamp = stampOf(new Date(now + delta * 1000));
+    const name = `${stamp}-${autoFile}`;
+    planted.set(name, `预置旧备份 ${stamp}`);
+    await fs.writeFile(path.join(bookPath, '_trash', name), planted.get(name), 'utf8');
+  }
+
+  const restore = patchRename((from, to) => (to.endsWith(`${path.sep}书目.json`) ? 'EACCES' : ''));
+  let failed = null;
+  try {
+    failed = await storage.deleteChapter(bookPath, meta.chapters[0].id).then(
+      () => null,
+      (err) => err
+    );
+  } finally {
+    restore();
+  }
+  assert.ok(failed && failed.code === 'DELETE_FAILED');
+
+  // 预置的旧备份一个都没被覆盖（旧实现会把同秒那一个直接 rename 盖掉）
+  for (const [name, content] of planted) {
+    assert.equal(await fs.readFile(path.join(bookPath, '_trash', name), 'utf8'), content, `${name} 被覆盖了`);
+  }
+  // 自动补章进了 _trash，并且因为撞名拿到了 moveToTrash 的 `-2-` 序号
+  const entries = await fs.readdir(path.join(bookPath, '_trash'));
+  const autoEntries = entries.filter((name) => name.endsWith(`-${autoFile}`) && !planted.has(name));
+  assert.equal(autoEntries.length, 1, '自动补章要进 _trash（不是真删）');
+  assert.match(autoEntries[0], /^\d{4}-\d{2}-\d{2}-\d{6}-2-002-未命名\.txt$/, '撞名后要用 -2- 序号避让');
+  // 书文件夹里不留孤儿 txt，原章照常放回
+  assert.deepEqual(
+    (await fs.readdir(bookPath)).filter((name) => name.endsWith('.txt')),
+    [file0]
+  );
+  assert.equal(await fs.readFile(path.join(bookPath, file0), 'utf8'), '唯一的一章。');
+});
+
 // ---------- 2. 批次操作：中途失败要留下「现场」 ----------
 
 const FORMAT_OPTIONS = { indent: '2', blankLines: 'keep', trimTrailing: true, normalizePunct: true };

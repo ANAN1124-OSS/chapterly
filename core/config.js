@@ -30,6 +30,9 @@ const LONG_PARAGRAPH_LIMITS = [50, 20000];
 // 再保存一次」不再把新字段静默抹掉。上限只防手改出 1e308 这种无意义值，不参与判断。
 const CONFIG_VERSION = 1;
 const CONFIG_VERSION_MAX = 1000000;
+// V103（v1.8.0 WP-26）：窗口宽 / 高的配置上限。以前是 4000 / 3000，超宽屏（5K）的正常窗口
+// 会被截小；这里放宽到只挡离谱坏值，实际显示范围由 main.js 的 clampBounds 按 screen.workArea 夹。
+const MAX_WINDOW_DIMENSION = 20000;
 const DEFAULTS = Object.freeze({
   // 配置结构版本（本版 = 1）：放第一个，config.json 落盘时一眼能看到自己出自哪一版的结构。
   configVersion: CONFIG_VERSION,
@@ -210,10 +213,22 @@ function sanitizeBookDisplay(raw) {
     const key = typeof bookId === 'string' ? bookId.trim() : '';
     if (!key || key.length > 200) continue;
     const clean = sanitizeBookDisplayEntry(entry);
-    if (Object.keys(clean).length) out[key] = clean;
+    if (Object.keys(clean).length) setOwnEntry(out, key, clean);
   }
   return out;
 }
+
+// C29（v1.8.0 WP-26）：bookDisplay 的键是书 id，渲染层可以传 `__proto__` 这类特殊字符串。
+// 普通赋值 `obj['__proto__'] = {...}` 改的是对象原型而不是加条目 —— 这本书的显示覆盖会
+// 静默丢失（Object.keys / spread 都看不到），所以统一用 defineProperty 写成自有可枚举属性。
+function setOwnEntry(target, key, value) {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+  return target;
+}
+
+// C28（v1.8.0 WP-26）：最近书去重窗口。打开书时 open + set-last 会连着报同一个位置，
+// 5 秒内不重复写盘（换章照常更新）；判断在 configStore 的写队列里做（见 rememberLastBook）。
+const RECENT_BOOK_DEDUPE_MS = 5000;
 
 // 「继续上次写作」：只记书架级的位置，读的时候一律清洗；坏值/空值当作没记过（null），
 // 不影响旧配置文件（没有 lastBook 就显示不出入口，其余功能照常）。
@@ -446,8 +461,11 @@ function sanitize(raw) {
     cfg.windowBounds = {
       x: Number.isFinite(Number(b.x)) ? Math.round(Number(b.x)) : DEFAULTS.windowBounds.x,
       y: Number.isFinite(Number(b.y)) ? Math.round(Number(b.y)) : DEFAULTS.windowBounds.y,
-      width: clampRoundedInt(b.width, 960, 4000, DEFAULTS.windowBounds.width),
-      height: clampRoundedInt(b.height, 620, 3000, DEFAULTS.windowBounds.height),
+      // V103（v1.8.0 WP-26）：窗口尺寸不再夹死 4000/3000 —— 5K 超宽屏的正常窗口会被这条截小，
+      // 重启后永远小一圈。这里只挡明显离谱的值（防止坏配置开出巨窗），真正的「不超出当前
+      // 显示器工作区」由 main.js 的 clampBounds(screen.workArea) 在恢复窗口时完成。
+      width: clampRoundedInt(b.width, 960, MAX_WINDOW_DIMENSION, DEFAULTS.windowBounds.width),
+      height: clampRoundedInt(b.height, 620, MAX_WINDOW_DIMENSION, DEFAULTS.windowBounds.height),
       maximized: b.maximized === true
     };
   } else {
@@ -625,7 +643,8 @@ function createConfigStore(userDataDir, deps = {}) {
       if (!key) throw new Error('缺少书籍 id');
       const merged = sanitizeBookDisplayEntry({ ...(cfg.bookDisplay[key] || {}), ...(patch || {}) });
       const bookDisplay = { ...cfg.bookDisplay };
-      if (Object.keys(merged).length) bookDisplay[key] = merged;
+      // C29（v1.8.0 WP-26）：`__proto__` 这类书 id 必须按自有属性写入，否则改的是原型、条目丢失。
+      if (Object.keys(merged).length) setOwnEntry(bookDisplay, key, merged);
       else delete bookDisplay[key];
       const next = sanitize({ ...cfg, bookDisplay });
       await writeJson(file, next);
@@ -687,6 +706,44 @@ function createConfigStore(userDataDir, deps = {}) {
     });
   }
 
+  // C28（v1.8.0 WP-26）：最近书（lastBook）的「读旧值 → 去重 / at 守卫 → 写盘」必须全部在
+  // 同一个写队列里完成。以前 main.js 在 configStore.set 之前单独 get 一次：两个窗口并发时
+  // 都看到同一份旧值、都通过 at 守卫，迟到的旧切章记录能把更晚的「上次写作」盖掉。
+  // 现在第二次调用一定看见第一次写下的值（队列串行），守卫判断与写盘之间也没有新窗口。
+  // 返回 { written, reason, config }：written=false 表示按规则跳过（不是失败）；读失败等异常照常抛。
+  function rememberLastBook(raw, options = {}) {
+    const auto = !options || options.auto !== false;
+    const now = Number.isFinite(Number(options && options.now)) ? Number(options.now) : Date.now();
+    const dedupeMs = Number.isFinite(Number(options && options.dedupeWindowMs))
+      ? Math.max(0, Math.round(Number(options.dedupeWindowMs)))
+      : RECENT_BOOK_DEDUPE_MS;
+    return enqueue(async () => {
+      await gateWrite(auto);
+      const current = await get();
+      const prev = current.lastBook;
+      const next = sanitizeLastBook(raw);
+      // 缺 path / chapterId 的记录不算「上次写作」（与 main.js 旧入口的守卫一致）
+      if (!next || !next.chapterId) return { written: false, reason: 'invalid', config: { ...current } };
+      // 打开书时 open + set-last 会连着报同一个位置：5 秒内不重复写盘（换章照常更新）
+      if (
+        prev &&
+        prev.path === next.path &&
+        prev.chapterId === next.chapterId &&
+        now - prev.at < dedupeMs
+      ) {
+        return { written: false, reason: 'duplicate', config: { ...current } };
+      }
+      // 迟到的切章记录不许盖掉更晚的「上次写作」位置（多窗口：A 保存得更晚，B 的旧切章不能翻上去）
+      if (prev && Number.isFinite(Number(prev.at)) && Number(prev.at) > next.at) {
+        return { written: false, reason: 'stale', config: { ...current } };
+      }
+      const saved = sanitize({ ...current, lastBook: next });
+      await writeJson(file, saved);
+      cache = saved;
+      return { written: true, reason: 'written', config: { ...cache } };
+    });
+  }
+
   return {
     file,
     load,
@@ -694,6 +751,7 @@ function createConfigStore(userDataDir, deps = {}) {
     set,
     retryLoad,
     takeLoadWarning,
+    rememberLastBook,
     getBookDisplay,
     setBookDisplay,
     resetBookDisplay,

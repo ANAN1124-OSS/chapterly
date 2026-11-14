@@ -6,6 +6,7 @@
 // 失败时凭证能放回（不把作者唯一的退路烧掉）、上限与过期清理、脏参数不发凭证。
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const tokenLib = require('../core/ipc-restore-token');
 
 const BOOK = 'D:/书库/书甲';
@@ -91,6 +92,34 @@ test('撤销凭证：跨书 / trashName 对不上被拒，且不烧掉作者手�
   });
   // 两次错误尝试之后，正确的这次仍然可用
   assert.equal(store.take(token, { bookPath: BOOK, trashName: TRASH }).ok, true);
+});
+
+test('C27/WP-26：同一本书换大小写 / 斜杠写法仍算同一本（pathKey 口径），别的书照旧拒绝', () => {
+  const { store } = makeStore();
+  const token = issueOne(store);
+  // 同一路径的另一种写法：先按本机原生分隔符 resolve，再整体换大小写。
+  // 生产两端都经 assertBookPath 归一，这里钉的是「某个新入口忘了归一」时的口径兜底。
+  const native = path.resolve(BOOK);
+  assert.equal(
+    store.take(token, { bookPath: native.toLowerCase(), trashName: TRASH }).ok,
+    true,
+    '大小写不同仍是同一本书'
+  );
+
+  const second = makeStore();
+  const token2 = issueOne(second.store);
+  assert.equal(
+    second.store.take(token2, { bookPath: native, trashName: TRASH }).ok,
+    true,
+    '同一路径的另一种写法仍是同一本书'
+  );
+
+  const third = makeStore();
+  const token3 = issueOne(third.store);
+  assert.deepEqual(third.store.take(token3, { bookPath: OTHER_BOOK, trashName: TRASH }), {
+    ok: false,
+    reason: 'book-mismatch'
+  });
 });
 
 test('撤销凭证：还原失败可 release 回去再试一次（expiresAt 不续期）', () => {

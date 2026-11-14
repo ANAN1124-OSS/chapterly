@@ -161,6 +161,50 @@ test('撤销删除：路径安全——绝对路径 / 目录穿越 / 非 txt / �
   );
 });
 
+// C34（v1.8.0 WP-26）：trashName 必须正好是 moveToTrash 的命名（`<时间戳>-<文件名>` /
+// `<时间戳>-<序号>-<文件名>`）。旧判定只做 endsWith(`-${file}`)：往 _trash 放一个
+// `<时间戳>-x-<文件名>` 就能冒充这一章的备份，被撤销逻辑放回书里。
+test('C34/WP-26：撤销删除按结构化名匹配——x-<文件名> 冒充不了 <文件名>，真实序号形式照旧', async () => {
+  const root = await mkTmp();
+  const { bookPath, meta } = await makeBook(root);
+  const chapter = snapshot(meta, 1);
+  const deleted = await storage.deleteChapter(bookPath, chapter.id);
+  const genuine = path.basename(deleted.trashPath);
+  const stamp = genuine.slice(0, 17); // YYYY-MM-DD-HHMMSS
+
+  const spoof = `${stamp}-x-${chapter.file}`;
+  await fs.writeFile(path.join(bookPath, '_trash', spoof), '别的备份内容', 'utf8');
+  await assert.rejects(
+    () => storage.restoreDeletedChapterFromTrash(bookPath, { trashName: spoof, index: 1, chapter }),
+    (err) => {
+      assert.equal(err.code, 'RESTORE_BAD_TRASH');
+      return true;
+    }
+  );
+  // 冒充被拒后：真备份还在、书里没多出这一章、冒充文件一个字节没动
+  assert.ok((await fs.readdir(path.join(bookPath, '_trash'))).includes(genuine));
+  assert.equal((await storage.readBookMeta(bookPath)).chapters.some((c) => c.id === chapter.id), false);
+  assert.equal(await fs.readFile(path.join(bookPath, '_trash', spoof), 'utf8'), '别的备份内容');
+
+  // 真名照常撤销
+  const restored = await storage.restoreDeletedChapterFromTrash(bookPath, { trashName: genuine, index: 1, chapter });
+  assert.equal(restored.chapter.id, chapter.id);
+
+  // 真撞名序号（`<时间戳>-2-<文件名>`）仍然认：把刚删的备份手工改成序号形式再撤销
+  const current = await storage.readBookMeta(bookPath);
+  const target = snapshot(current, 0);
+  const deleted2 = await storage.deleteChapter(bookPath, target.id);
+  const name2 = path.basename(deleted2.trashPath);
+  const ordinalName = `${name2.slice(0, 17)}-2-${target.file}`;
+  await fs.rename(path.join(bookPath, '_trash', name2), path.join(bookPath, '_trash', ordinalName));
+  const back = await storage.restoreDeletedChapterFromTrash(bookPath, {
+    trashName: ordinalName,
+    index: 0,
+    chapter: target
+  });
+  assert.equal(back.chapter.id, target.id);
+});
+
 test('撤销删除：目标已存在 / 备份不在 / id 重复都报错，且不动任何文件', async () => {
   const root = await mkTmp();
   const { bookPath, meta } = await makeBook(root);

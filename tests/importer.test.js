@@ -112,6 +112,20 @@ test('V106/WP-21：导入文件夹撞名后缀 999 硬上限，撞满明确报 B
   assert.equal(await importer.uniqueFolderName(booksRoot, '导入的书'), '导入的书-4');
 });
 
+// C30（v1.8.0 WP-26）：目录包含判定走 core/path-utils 的 normalizePath（resolve + 小写），
+// 与 core/storage.js 的 assertInside / assertBookPath 同一口径。旧实现逐字 startsWith：
+// Windows 上大小写不同的同一目录会绕过「已经在书架里 / 不能导入上级」两道守卫。
+test('C30/WP-26：isInside 大小写不敏感（书架根守卫与 storage.assertInside 同口径）', () => {
+  const base = path.join(os.tmpdir(), 'cw-import-inside', '书架');
+  const child = path.join(base, '子目录');
+  assert.equal(importer.isInside(base, child), true);
+  assert.equal(importer.isInside(base.toLowerCase(), child.toUpperCase()), true, '大小写不同的同一路径仍算在内');
+  assert.equal(importer.isInside(child, base), false, '反方向不算包含');
+  assert.equal(importer.isInside(base, `${base}2`), false, '前缀相同但不是子目录');
+  // 相对路径先 resolve 再比较（旧实现同样先 resolve）
+  assert.equal(importer.isInside(path.resolve('书架'), path.resolve(path.join('书架', '书'))), true);
+});
+
 test('没有书也没有 txt 的文件夹被跳过', async () => {
   const base = await mkTmp();
   const src = path.join(base, '空文件夹');

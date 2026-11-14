@@ -274,14 +274,31 @@ async function readBookMeta(bookPath) {
   // 版本迁移：v0.4.x 的书没有 schemaVersion，按版本 0 走一遍迁移（目前是空迁移），
   // 只在内存里补成 1；下次正常写盘才会落进 书目.json。未来版本号原样保留。
   meta = schemaLib.migrateMeta(meta);
-  meta.chapters = meta.chapters.map((c, i) =>
-    chaptersLib.cleanChapterMeta({
+  // C32（v1.8.0 WP-26）：缺 id 的章按位置补 `ch_NNN` 时必须查唯一性。旧实现直接按位置拼，
+  // 与既有 id 撞车时改名 / 删除 / 保存会作用到错误的章（findChapterIndex 只认第一个同名 id）。
+  // 先收齐已有 id，缺失的从「位置号」开始往后找到第一个没被占用的；只补缺失项，
+  // 已有 id（哪怕是坏值）一个都不改写 —— 那是书目的既有事实。
+  const usedChapterIds = new Set();
+  for (const chapter of meta.chapters) {
+    if (chapter && typeof chapter.id === 'string' && chapter.id) usedChapterIds.add(chapter.id);
+  }
+  meta.chapters = meta.chapters.map((c, i) => {
+    let id = typeof c.id === 'string' && c.id ? c.id : '';
+    if (!id) {
+      let n = i + 1;
+      do {
+        id = `ch_${chaptersLib.pad3(n)}`;
+        n += 1;
+      } while (usedChapterIds.has(id));
+      usedChapterIds.add(id);
+    }
+    return chaptersLib.cleanChapterMeta({
       ...c,
-      id: typeof c.id === 'string' && c.id ? c.id : `ch_${chaptersLib.pad3(i + 1)}`,
+      id,
       name: typeof c.name === 'string' ? c.name : '',
       createdAt: typeof c.createdAt === 'string' ? c.createdAt : nowIso()
-    })
-  );
+    });
+  });
   if (typeof meta.titleTemplate !== 'string' || !meta.titleTemplate.trim()) {
     meta.titleTemplate = chaptersLib.TITLE_TEMPLATE;
   }
@@ -976,6 +993,22 @@ async function moveToTrash(bookPath, file) {
   return dest;
 }
 
+// C34（v1.8.0 WP-26）：撤销删除的 trashName 必须正好是 moveToTrash 的命名：
+//   `<时间戳>-<原文件名>` 或 `<时间戳>-<序号>-<原文件名>`（序号从 2 开始，不补零）。
+// 旧判定只做 `endsWith('-' + file)`：`2026-…-x-起风.txt`（别的备份 / 手工放进 _trash 的文件）
+// 也能冒充「起风.txt」的备份。这里改成结构化解析：去掉时间戳后，剩下要么就是原文件名，
+// 要么是「序号-原文件名」且序号后的整段与原文件名逐字相等。
+function isMoveToTrashName(trashName, file) {
+  const match = /^(\d{4}-\d{2}-\d{2}-\d{6})-(.+)$/.exec(trashName);
+  if (!match) return false;
+  const rest = match[2];
+  if (rest === file) return true;
+  // 序号只认 moveToTrash 会生成的 2、3…（1 位且 ≥2，或 2 位以上无前导零）；
+  // 不认前导零，避免把 3 位章号当序号。
+  const ordinal = /^([2-9]|[1-9]\d+)-(.+)$/.exec(rest);
+  return Boolean(ordinal) && ordinal[2] === file;
+}
+
 async function deleteChapter(bookPath, chapterId) {
   const meta = await readBookMeta(bookPath);
   const index = chapterIndexOrThrow(meta, chapterId);
@@ -1011,10 +1044,9 @@ async function deleteChapter(bookPath, chapterId) {
     // 「删到空自动补一章」时刚建的那张空章也要先挪走，否则它会占着与原章节同名的位置。
     if (newChapter) {
       try {
-        await fs.rename(
-          path.join(bookPath, newChapter.file),
-          path.join(path.dirname(trashPath), `${timestampForFile()}-${newChapter.file}`)
-        );
+        // C34（v1.8.0 WP-26）：回滚挪空章也走 moveToTrash —— 与删章同一套路径校验与撞名循环。
+        // 旧实现直接 rename 成 `<时间戳>-<文件名>`：同秒两次回滚会撞同一个名字，把上一次的备份覆盖掉。
+        await moveToTrash(bookPath, newChapter.file);
       } catch { /* 挪不走就算了：它是本书目写完才会登记的空章，不会覆盖正文 */ }
     }
     let rolledBack = false;
@@ -1075,7 +1107,8 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     throw new StorageError('RESTORE_BAD_TRASH', '撤销删除只能从本书 _trash 里放回单章 txt');
   }
   // moveToTrash 的命名 = `<时间戳>-[序号-]<原文件名>`：必须真的指向这一章的文件名
-  if (!trashName.endsWith(`-${file}`)) {
+  // C34（v1.8.0 WP-26）：结构化解析（旧 endsWith 能被 `x-<file>` 冒充，见 isMoveToTrashName）
+  if (!isMoveToTrashName(trashName, file)) {
     throw new StorageError('RESTORE_BAD_TRASH', '撤销删除的备份文件与章节文件名对不上');
   }
   const source = path.resolve(trashDir, trashName);
