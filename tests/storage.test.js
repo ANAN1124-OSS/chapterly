@@ -1421,6 +1421,73 @@ test('书架扫描：1 正常章 + 1 超限章 → 只回填正常章、超限�
   assert.equal(books[0].totalChars, normalOnDisk.chars, '总字数只算正常章');
 });
 
+// ---------- C17/V104（v1.8.0 WP-19）：书目 / 撤销删除读盘的独立大小闸门 ----------
+// 128 MB 闸门以前只覆盖章节 / 还原 / 快照；书目.json、.bak、撤销删除读 autoChapterFile 仍是裸
+// readFile 再 JSON.parse / trim —— 被外部程序换成超大文件时同样会顶爆主进程。这里把三处补上，
+// 书目给更小的独立上限（32 MB，够两万章的书目）。
+
+test('readSizeProblem：limit 可给书目 / 索引用更小的独立上限，默认仍是章节的 128 MB', () => {
+  const metaBytes = storage.MAX_META_READ_BYTES + 1;
+  const problem = storage.readSizeProblem(metaBytes, {
+    code: 'META_TOO_LARGE',
+    label: '书目.json',
+    limit: storage.MAX_META_READ_BYTES,
+    tail: '没有读进内存'
+  });
+  assert.equal(problem.code, 'META_TOO_LARGE');
+  assert.equal(problem.message, '书目.json有 32 MB，超过单文件读取上限 32 MB，没有读进内存');
+  // 同一个尺寸在章节口径下是放行的 —— 证明 limit 真的在起作用，而不是把默认值改小了
+  assert.equal(storage.readSizeProblem(metaBytes, { code: 'X', label: 'x' }), null);
+  // 正好等于上限放行；坏 limit（0 / NaN）回落到章节口径 128 MB
+  assert.equal(
+    storage.readSizeProblem(storage.MAX_META_READ_BYTES, { code: 'X', label: 'x', limit: storage.MAX_META_READ_BYTES }),
+    null
+  );
+  assert.equal(storage.readSizeProblem(metaBytes, { code: 'X', label: 'x', limit: 0 }), null);
+  assert.equal(
+    storage.readSizeProblem(storage.MAX_CHAPTER_READ_BYTES + 1, { code: 'X', label: 'x', limit: 0 }).code,
+    'X'
+  );
+});
+
+test('C17/WP-19：超大 书目.json 明确报 META_TOO_LARGE、一个字节都不读，书卡 reason 可读且不带路径', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '超大书目');
+  const metaPath = path.join(bookPath, storage.BOOK_FILE);
+  const original = await fs.readFile(metaPath);
+  // 稀疏文件：只把长度改到上限 +1 KB，不真写 32 MB
+  await fs.truncate(metaPath, storage.MAX_META_READ_BYTES + 1024);
+  const counter = countReadFileFor(metaPath);
+  try {
+    await assert.rejects(
+      () => storage.readBookMeta(bookPath),
+      (err) => {
+        assert.equal(err.code, 'META_TOO_LARGE');
+        assert.match(err.message, /超过单文件读取上限 32 MB/);
+        assert.match(err.message, /没有读进内存/);
+        assert.equal(err.message.includes(bookPath), false, '错误文案不能带本机完整路径');
+        return true;
+      }
+    );
+    assert.equal(counter.hugeReads(), 0, '超限书目一次都不许 readFile（不许进内存）');
+    // 书架扫描：书卡照常列出、标 corrupt、reason 是人能看懂的一句（不能被大文件拖死 / 读爆）
+    const books = await storage.listBooks(root);
+    assert.equal(books.length, 1);
+    assert.equal(books[0].status, 'corrupt');
+    assert.match(books[0].reason, /超过单文件读取上限/);
+    assert.equal(books[0].reason.includes(bookPath), false);
+    assert.equal(books[0].totalChars, 0);
+  } finally {
+    counter.restore();
+  }
+  // 恢复正常大小：行为逐字不变（错误码只在超限时出现）
+  await fs.writeFile(metaPath, original);
+  const meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapters.length, 1);
+  const booksAfter = await storage.listBooks(root);
+  assert.equal(booksAfter[0].status, 'ok');
+});
+
 test('显式保存仍更新 updatedAt：改章节状态 / 改名会写，扫描回填不写', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '保存测试');

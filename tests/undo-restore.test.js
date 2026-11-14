@@ -481,3 +481,48 @@ test('撤销删除：撤销凭证——storage 失败时凭证放回去，修好
   assert.equal(restored.chapter.file, chapter.file);
   assert.equal((await storage.readBookMeta(bookPath)).chapters.length, meta.chapters.length);
 });
+
+// ---------- V104（v1.8.0 WP-19）：撤销删除读「自动补章」的 128 MB 闸门 ----------
+// 撤销删除要判断「删空自动补的空章是不是还空着」：以前整份 readFile 再 trim。补章被外部换成
+// 超大文件（误放的视频 / 坏同步盘）时同样会顶爆主进程。现在先 stat + 章节同一条上限：
+// 超限 = 量不出「空」→ 按非空处理（保留补章，宁可多一章，也不静默丢字），一个字节都不读。
+test('撤销删除：自动补章被换成超大文件 → 不读内容、按非空保留补章（宁可多一章）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '超限补章');
+  const meta = await storage.readBookMeta(bookPath);
+  const chapter = snapshot(meta, 0);
+  await storage.saveChapterText(bookPath, chapter.file, '唯一的一章');
+  const deleted = await storage.deleteChapter(bookPath, chapter.id);
+  const autoFile = deleted.newChapter.file;
+  const autoPath = path.join(bookPath, autoFile);
+  // 稀疏文件：只把长度改到上限 +1，不真写 128 MB
+  await fs.truncate(autoPath, storage.MAX_CHAPTER_READ_BYTES + 1);
+
+  const realReadFile = fs.readFile;
+  let autoReads = 0;
+  fs.readFile = async (...args) => {
+    if (String(args[0]) === autoPath) {
+      autoReads += 1;
+      throw new Error('超限补章不许走进 readFile');
+    }
+    return realReadFile(...args);
+  };
+  let restored;
+  try {
+    restored = await storage.restoreDeletedChapterFromTrash(bookPath, {
+      trashName: path.basename(deleted.trashPath),
+      index: 0,
+      chapter,
+      autoChapterFile: autoFile
+    });
+  } finally {
+    fs.readFile = realReadFile;
+  }
+
+  assert.equal(autoReads, 0, '超限补章一次都不许 readFile（不许进内存）');
+  assert.equal(restored.autoChapterRemoved, false, '量不出空 → 按非空处理，不撤补章');
+  const after = await storage.readBookMeta(bookPath);
+  assert.deepEqual(after.chapters.map((c) => c.file), [chapter.file, autoFile], '原章放回、补章保留');
+  assert.equal((await storage.loadChapterText(bookPath, chapter.file)).text, '唯一的一章');
+  await fs.truncate(autoPath, 0).catch(() => {});
+});

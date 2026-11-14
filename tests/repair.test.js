@@ -103,6 +103,48 @@ test('没有 .bak 时给出可读错误', async () => {
   await assert.rejects(() => repair.restoreFromBak(bookPath), (err) => err.code === 'NO_BAK');
 });
 
+// V104（v1.8.0 WP-19）：.bak 也是「整份读进内存 → JSON.parse」的小文件，与 readBookMeta 同一条
+// 独立上限（32 MB）。坏同步盘把 .bak 换成超大文件时以前会整份读进主进程；现在 stat 先拒绝。
+test('从 .bak 恢复：.bak 超限 → BAK_TOO_LARGE，不读内容、坏书目与 .bak 一个字节不动', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '超大备份');
+  await storage.renameBook(bookPath, '超大备份-第二版'); // 写入时自动生成 .bak（上一版）
+  await fs.writeFile(path.join(bookPath, '书目.json'), '彻底坏掉', 'utf8');
+  const bakPath = path.join(bookPath, '书目.json.bak');
+  const corruptBefore = await fs.readFile(path.join(bookPath, '书目.json'), 'utf8');
+  // 稀疏文件：只把长度改到独立上限 +1，不真写 32 MB
+  await fs.truncate(bakPath, storage.MAX_META_READ_BYTES + 1);
+
+  const realReadFile = fs.readFile;
+  let bakReads = 0;
+  fs.readFile = async (...args) => {
+    if (String(args[0]) === bakPath) {
+      bakReads += 1;
+      throw new Error('超限 .bak 不许走进 readFile');
+    }
+    return realReadFile(...args);
+  };
+  let failed = null;
+  try {
+    failed = await repair.restoreFromBak(bookPath).then(() => null, (err) => err);
+  } finally {
+    fs.readFile = realReadFile;
+  }
+
+  assert.ok(failed, '超限 .bak 必须明确报错');
+  assert.equal(failed.code, 'BAK_TOO_LARGE');
+  assert.match(failed.message, /超过单文件读取上限 32 MB/);
+  assert.match(failed.message, /没有读进内存/);
+  assert.equal(failed.message.includes(bookPath), false, '错误文案不能带本机完整路径');
+  assert.equal(bakReads, 0, '超限 .bak 一次都不许 readFile（不许进内存）');
+  // 一个字节都不写：坏书目还在原位（没被归档），也没有临时文件
+  assert.equal(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'), corruptBefore);
+  const names = await fs.readdir(bookPath);
+  assert.equal(names.some((name) => name.startsWith(storage.CORRUPT_PREFIX)), false);
+  assert.equal(names.some((name) => name.startsWith('.repair-meta')), false);
+  await fs.truncate(bakPath, 0).catch(() => {});
+});
+
 // ---------- 修复失败语义（1.6.0 A3 / 审计 E-07） ----------
 // 修书目必须「先写新书目 → 再归档旧文件」。反过来做（旧代码）一旦写盘失败（ENOSPC / EPERM），
 // 坏书目已经被改名挪走，书在书架上看不见了，只能靠用户自己翻 _trash 找回来。

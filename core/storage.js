@@ -63,6 +63,11 @@ function batchFailure(err, { code, action, notes = [] }) {
 // 口径对齐 core/importer.js 的导入上限（1000 万字中文小说约 30 MB，128 MB 有三倍以上余量）。
 // 这里不 require('./importer')：importer 依赖 storage，反向引用会成环；体量文案口径保持一致。
 const MAX_CHAPTER_READ_BYTES = 128 * 1024 * 1024;
+// C17/V104（v1.8.0 WP-19）：书目.json / 书目.json.bak 是「整份读进内存 → JSON.parse」的小文件，
+// 以前没有 stat 闸门：被外部程序换成超大文件（误放的视频 / 坏同步盘）时，书架扫描 / 导入分析 /
+// 索引构建都会在 JSON.parse 之前把主进程内存打爆。书目给独立小上限：20000 章 × 最坏一条
+// 约 1 KB（章名 40 字 + 备注 200 字）≈ 20 MB，32 MB 留足余量；同时比章节的 128 MB 严格。
+const MAX_META_READ_BYTES = 32 * 1024 * 1024;
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB'];
 
 // 体量文案（与 core/importer.js 的 formatImportSize 同口径：1 位小数直到 10 以上）
@@ -82,14 +87,16 @@ function formatByteSize(bytes) {
 
 // 纯逻辑：把一个「整文件读进内存」的尺寸判成 null（放行）或 { code, message }（拒绝）。
 // stat 拿不到 / 坏尺寸（NaN、负数）不在这里拦，交给后面的读盘按原样报错。
-function readSizeProblem(bytes, { code, label, tail = '' } = {}) {
+// limit 可给「更小的独立上限」（C17/V104：书目 / .bak / 索引这类小文件，见 MAX_META_READ_BYTES）；
+// 不传时仍是章节口径的 128 MB，正文 / 备份 / 快照的既有调用点一个都不改。
+function readSizeProblem(bytes, { code, label, tail = '', limit = MAX_CHAPTER_READ_BYTES } = {}) {
   const size = Number(bytes);
   if (!Number.isFinite(size) || size < 0) return null;
-  if (size <= MAX_CHAPTER_READ_BYTES) return null;
-  const limit = formatByteSize(MAX_CHAPTER_READ_BYTES);
+  const cap = Number.isFinite(limit) && limit > 0 ? limit : MAX_CHAPTER_READ_BYTES;
+  if (size <= cap) return null;
   return {
     code,
-    message: `${label}有 ${formatByteSize(size)}，超过单文件读取上限 ${limit}${tail ? `，${tail}` : ''}`
+    message: `${label}有 ${formatByteSize(size)}，超过单文件读取上限 ${formatByteSize(cap)}${tail ? `，${tail}` : ''}`
   };
 }
 
@@ -211,6 +218,26 @@ function validateMeta(meta) {
 
 async function readBookMeta(bookPath) {
   const metaPath = path.join(bookPath, BOOK_FILE);
+  // C17（v1.8.0 WP-19）：先 stat + 独立小上限再读 —— 这一份要 JSON.parse，被外部换成超大文件时
+  // 以前会整份读进内存（2 GB 的书目直接顶爆主进程）。超限明确报 META_TOO_LARGE，与「内容坏」
+  // 的 PARSE_ERROR / INVALID_META 区分开（书架书卡 / 导入分析按 code 分支），一个字节都不读。
+  // stat 本身失败（ENOENT / EACCES / 被占用）不在这里拦，留给下面的 readFile 按原逻辑报错 ——
+  // 与 preflightRestoreSources 同一条口径，保证「读不到」的既有错误码 / 文案一个都不变。
+  let stat = null;
+  try {
+    stat = await fs.stat(metaPath);
+  } catch {
+    stat = null;
+  }
+  if (stat) {
+    const tooLarge = readSizeProblem(stat.size, {
+      code: 'META_TOO_LARGE',
+      label: BOOK_FILE,
+      limit: MAX_META_READ_BYTES,
+      tail: '没有读进内存'
+    });
+    if (tooLarge) throw new StorageError(tooLarge.code, tooLarge.message);
+  }
   let raw;
   try {
     raw = await fs.readFile(metaPath, 'utf8');
@@ -1064,8 +1091,21 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     autoChapter = meta.chapters.find((chapter) => chapter && chapter.file === autoFile) || null;
     if (autoChapter) {
       try {
-        const text = await fs.readFile(assertChapterFile(bookPath, autoFile), 'utf8');
-        if (stripBom(text).trim() !== '') autoChapter = null;
+        const autoPath = assertChapterFile(bookPath, autoFile);
+        // V104（v1.8.0 WP-19）：这里的读取只是为了判断补章是不是还空着，以前整份 readFile 再 trim
+        // —— 补章被外部换成超大文件时同样会顶爆主进程。先 stat + 章节同一条上限；超限 = 量不出空，
+        // 按「非空」处理（保留补章：宁可多一章，也不静默丢字），一个字节都不读。
+        const autoStat = await fs.stat(autoPath);
+        const tooLarge = readSizeProblem(autoStat.size, {
+          code: 'CHAPTER_TOO_LARGE',
+          label: `自动补章「${autoFile}」`,
+          tail: '按非空处理（保留补章）'
+        });
+        if (tooLarge) autoChapter = null;
+        else {
+          const text = await fs.readFile(autoPath, 'utf8');
+          if (stripBom(text).trim() !== '') autoChapter = null;
+        }
       } catch {
         autoChapter = null;
       }
@@ -1782,7 +1822,14 @@ async function restoreDeletedChapter(bookPath, group, entry) {
     throw new StorageError('HISTORY_TARGET_EXISTS', `书文件夹里已经有 ${entry.name}，没有覆盖`);
   }
   const source = historyLib.resolveHistoryPath(bookPath, group.id, entry.name);
-  const buffer = await fs.readFile(source);
+  // C18（v1.8.0 WP-19）：删章散文件还原是 128 MB 闸门的漏网入口 —— 以前直读 _trash 里的备份。
+  // 与 copyHistoryEntryToBook / 整组预检同一条口径：先 stat + 章节上限，超限明确报 HISTORY_TOO_LARGE，
+  // 绝不整份读进内存（也不建任何还原前备份：此时一个字节都还没写）。
+  const buffer = await loadChapterSource(source, {
+    code: 'HISTORY_TOO_LARGE',
+    label: `备份文件「${entry.name}」`,
+    tail: '没有还原到书里'
+  });
   await atomicWriteFile(target, buffer);
   return {
     restored: 1,
@@ -2067,6 +2114,8 @@ module.exports = {
   StorageError,
   // P2-3：还原 / 快照读文件前的大小闸门（测试用稀疏文件验证超限路径）
   MAX_CHAPTER_READ_BYTES,
+  // C17/V104（WP-19）：书目 / .bak 用独立小上限（32 MB）；修复、索引等模块共用这一条口径
+  MAX_META_READ_BYTES,
   readSizeProblem,
   nowIso,
   exists,

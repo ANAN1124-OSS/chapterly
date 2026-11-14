@@ -26,6 +26,12 @@ const chaptersLib = require('./chapters');
 
 const INDEX_FILE_NAME = 'search-index.json';
 const INDEX_VERSION = 1;
+// C17（v1.8.0 WP-19）：索引是「整份读进内存 → JSON.parse」的小文件，以前没有 stat 闸门 ——
+// 被外部程序换成超大文件（误放的视频 / 坏同步盘）时先读后 parse，2 GB 直接顶爆主进程。
+// 独立上限：每本书一份 Bloom 位图（25 万字的书约 100 KB）+ 每章指纹，280 本 ≈ 22 MB，
+// 64 MB 够约 500 本以上的架子；超限记 INDEX_TOO_LARGE（与索引内容坏的 CORRUPT 区分），
+// 按空索引重建 —— 重建会把超限文件覆盖成正常大小，不影响正文。
+const MAX_INDEX_READ_BYTES = 64 * 1024 * 1024;
 
 // Bloom 参数：每项 8 bit、3 个哈希。一本书 8 万个双字 ≈ 80KB，单项误报率约 3%。
 const BITS_PER_ITEM = 8;
@@ -603,6 +609,20 @@ function createSearchStore(options = {}) {
     if (loaded) return index;
     loaded = true;
     try {
+      // C17（v1.8.0 WP-19）：先 stat + 独立上限再读。超限与「内容坏了」分开记（INDEX_TOO_LARGE /
+      // CORRUPT），都按空索引重建；区别是界面 / 排查时能看出「是被换成了大文件」而不是索引写坏。
+      const info = await fs.stat(filePath);
+      const tooLarge = storage.readSizeProblem(info.size, {
+        code: 'INDEX_TOO_LARGE',
+        label: '搜索索引文件',
+        limit: MAX_INDEX_READ_BYTES,
+        tail: '没有读进内存'
+      });
+      if (tooLarge) {
+        loadProblem = tooLarge.code;
+        index = emptyIndex('');
+        return index;
+      }
       const text = await fs.readFile(filePath, 'utf8');
       indexBytes = Buffer.byteLength(text);
       const parsed = parseIndex(text);
@@ -1159,6 +1179,8 @@ function createSearchStore(options = {}) {
 module.exports = {
   INDEX_FILE_NAME,
   INDEX_VERSION,
+  // C17（WP-19）：索引读盘的独立上限（测试用稀疏文件验证超限路径）
+  MAX_INDEX_READ_BYTES,
   MIN_BLOOM_BITS,
   BLOOM_CACHE_MAX,
   MAX_SNIPPETS_PER_CHAPTER,
