@@ -31,7 +31,8 @@
  *       setDisplayPreset,                   //   「显示 → 紧凑 / 标准 / 宽松」
  *       applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, // 当前段落高亮
  *       runFormatBook,                      //   「一键整理本书…」（一键整理域）
- *       scrollCaretIntoView                 //   整理 / 撤销后把光标滚进视野（共享胶水，本体留在 renderer）
+ *       scrollCaretIntoView,                //   整理 / 撤销后把光标滚进视野（共享胶水，本体留在 renderer）
+ *       effectiveConfig                     //   生效配置 = 全局 + 当前书覆盖（1.8.0 WP-12 / V201：setConfig 回包是纯全局，不能直接赋给 state.config）
  *     }
  *   }
  * 缺任何一个（含分组内成员）直接抛 TypeError。分组在 create 时一次解构，行为等价。
@@ -69,12 +70,12 @@
       if (menus[key] === undefined || menus[key] === null) throw new TypeError('createTidyCardUi 的 host.menus 缺少 ' + key);
     }
     if (typeof peers !== 'object') throw new TypeError('createTidyCardUi 的 host.peers 必须是对象');
-    for (const key of ['openSettings', 'toggleMarks', 'setDisplayPreset', 'applyCaretColor', 'setCaretParagraphPersisted', 'setCaretColorPersisted', 'runFormatBook', 'scrollCaretIntoView']) {
+    for (const key of ['openSettings', 'toggleMarks', 'setDisplayPreset', 'applyCaretColor', 'setCaretParagraphPersisted', 'setCaretColorPersisted', 'runFormatBook', 'scrollCaretIntoView', 'effectiveConfig']) {
       if (peers[key] === undefined || peers[key] === null) throw new TypeError('createTidyCardUi 的 host.peers 缺少 ' + key);
     }
     const { formatUi, MAX_FORMAT_UNDO, readFormatOptions, writeFormatOptions, editorEl, onEditorInput, chaptersLib, caretColorLib } = format;
     const { hideBookMenu, hideExportMenu, hideMenu, renderMarksMenu } = menus;
-    const { openSettings, toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView } = peers;
+    const { openSettings, toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView, effectiveConfig } = peers;
 
   // ---------- 「整理」按钮的悬浮选择卡 + 「显示」菜单（v0.8.5 R1） ----------
   // 点「整理」= 直接用上次记住的规则整理本章（见 formatCurrentChapterFromConfig）；
@@ -367,8 +368,14 @@
         return { ok: false, reason: 'stale' };
       }
       // 记住这次勾选的规则，下次打开对话框沿用（只记规则，不碰正文）
+      // 1.8.0 WP-12（审计 V201）：setConfig 的回包是**纯全局配置**，不能直接赋给 state.config——
+      // 后者是「全局 + 本书覆盖」的生效值。直接赋值会让本书的显示覆盖只在内存里消失，
+      // 随后打开按书设置（回填读 state.config）再保存，就把全局值写成本书覆盖（静默覆盖写盘）。
+      // 按全仓标准写法两行：先更新全局，再用 effectiveConfig() 重算生效值。
       try {
-        state.config = await call(api.setConfig, { formatOptions: options });
+        const cfg = await call(api.setConfig, { formatOptions: options });
+        state.globalConfig = cfg;
+        state.config = effectiveConfig();
       } catch { /* 记不住规则不影响整理 */ }
       closeFormatDialog();
       if (!res.changed) {
