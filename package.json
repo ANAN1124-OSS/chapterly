@@ -2,6 +2,7 @@
   "name": "chapterly",
   "version": "1.7.2",
   "private": true,
+  "license": "Apache-2.0",
   "description": "章回 / Chapterly - 整本保存、自动编号的 Windows 桌面纯文本写作工具",
   "engines": { "node": ">=22" },
   "main": "main.js",
@@ -43,7 +44,8 @@
       "preload.js",
       "core/**/*",
       "renderer/**/*",
-      "package.json"
+      "package.json",
+      "LICENSE"
     ],
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"

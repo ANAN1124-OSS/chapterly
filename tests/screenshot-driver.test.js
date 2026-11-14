@@ -463,7 +463,7 @@ test('静态闸门：焦点抢夺取只在组边界开关，组索引统一走 r
 });
 
 test('静态闸门：打包配置不含 scripts/，所以驱动不会进安装包（顶层 require 会直接崩）', () => {
-  assert.deepEqual(PKG.build.files, ['main.js', 'preload.js', 'core/**/*', 'renderer/**/*', 'package.json']);
+  assert.deepEqual(PKG.build.files, ['main.js', 'preload.js', 'core/**/*', 'renderer/**/*', 'package.json', 'LICENSE']);
   assert.equal(PKG.main, 'main.js');
   assert.ok(fs.existsSync(path.join(ROOT, 'scripts', 'screenshot-driver.js')));
   // 驱动里没有任何顶层可执行逻辑：上面已经 require 过它，没有副作用（不会退出应用 / 建窗口）
