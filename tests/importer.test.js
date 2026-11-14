@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
+const chapters = require('../core/chapters');
 const importer = require('../core/importer');
 
 const tmpCleanup = require('./tmp-cleanup');
@@ -246,6 +247,49 @@ test('默认「按原文章节导入」：章名照抄原文、正文原样保�
   // 正文不做 trim：保留原文的空白行
   assert.equal((await storage.loadChapterText(res.imported[0].path, meta.chapters[0].file)).text, '\n正文一，带 全角空格　。\n');
   assert.equal((await storage.loadChapterText(res.imported[0].path, meta.chapters[1].file)).text, '\n正文二\n');
+});
+
+test('C25/WP-24：按原文章节导入的 chars 只算正文（不含标题行），书架字数 = 各章正文之和', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '字数口径');
+  await fs.mkdir(src);
+  // 标题行带序号 + 空格；正文带空行与全角空格 —— 旧实现 chars = countChars(标题 + 正文)，
+  // 两章的标题（各 5 个非空白字）会白算进去，导入后书架字数虚高、第一次保存又回落。
+  const title1 = '第1章 开端';
+  const body1 = '\n正文一，带 全角空格　。\n';
+  const title2 = '第2章 转折';
+  const body2 = '\n正文二\n';
+  const original = `${title1}${body1}${title2}${body2}`;
+  await fs.writeFile(path.join(src, '按原文拆章.txt'), original, 'utf8');
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].chapters, 2);
+
+  const bookPath = res.imported[0].path;
+  const meta = await storage.readBookMeta(bookPath);
+  assert.deepEqual(meta.chapters.map((c) => c.name), [title1, title2]);
+
+  // 每章 chars = 写盘正文（body）的去空白字数，不是 countChars(标题 + body)
+  assert.equal(meta.chapters[0].chars, chapters.countChars(body1), '第一章只算 body');
+  assert.equal(meta.chapters[0].chars, 10, '正文一，带 全角空格　。= 10 个非空白字');
+  assert.equal(meta.chapters[1].chars, chapters.countChars(body2), '第二章只算 body');
+  assert.notEqual(meta.chapters[0].chars, chapters.countChars(`${title1}${body1}`), '不许再把标题行算进字数');
+
+  // 与磁盘正文同一口径（首次保存后 storage 会按文件内容重算 chars，这里先钉住「重算也不变」）
+  for (const chapter of meta.chapters) {
+    const loaded = await storage.loadChapterText(bookPath, chapter.file);
+    assert.equal(chapter.chars, chapters.countChars(loaded.text), `${chapter.name} 的 chars 必须等于写盘正文的正字数`);
+  }
+
+  // 书架字数 = 各章 body 之和（不是 标题+正文 之和）
+  const opened = await storage.openBook(bookPath);
+  assert.equal(opened.totalChars, chapters.countChars(body1) + chapters.countChars(body2));
+  assert.equal(opened.totalChars, 13, '10 + 3');
+  const books = await storage.listBooks(booksRoot);
+  assert.equal(books.length, 1);
+  assert.equal(books[0].totalChars, opened.totalChars, '书架卡片上的字数与各章之和一致');
 });
 
 test('整本一章模式：UTF-8 源文件按字节原样复制', async () => {

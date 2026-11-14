@@ -261,7 +261,9 @@ function build(options = {}) {
     return {
       id: item && item.id !== undefined ? Number(item.id) : index + 1,
       text: source,
-      chars: source.length,
+      // V108（WP-24）：主进程队列条目的 chars 是按 countChars 算的（去空白），rawLength 是原文长度
+      chars: capture.countChars(source),
+      rawLength: source.length,
       at: Number.isFinite(rawAt) ? rawAt : 1762340000000 + index * 60000
     };
   });
@@ -299,6 +301,7 @@ function build(options = {}) {
           entries: queue.map((item) => ({
             id: item.id,
             chars: item.chars,
+            rawLength: item.rawLength,
             at: item.at,
             previewText: capture.recordPreview(item.text),
             preview: item.text.split(/\r?\n/)[0]
@@ -311,7 +314,7 @@ function build(options = {}) {
       log.push(`api.captureQueueGet:${id}`);
       const found = queue.find((item) => item.id === Number(id));
       if (!found) return { ok: false, code: 'QUEUE_MISSING', message: '这条复制记录已经不在了' };
-      return { ok: true, data: { id: found.id, text: found.text, chars: found.chars, at: found.at } };
+      return { ok: true, data: { id: found.id, text: found.text, chars: found.chars, rawLength: found.rawLength, at: found.at } };
     },
     // 2026-11-08：「正文」插入成功后消费这一条（与「章节」同一口径）
     captureQueueRemove: async (id) => {
@@ -530,7 +533,7 @@ test('打开：队列为空 → 现读剪贴板 → 列表 pending 一条（两�
     assert.equal(records.length, 1);
     assert.deepEqual(Object.keys(records[0]).sort(), ['chars', 'kind', 'previewText']);
     assert.equal(records[0].kind, 'pending');
-    assert.equal(records[0].chars, PENDING_TEXT.length);
+    assert.equal(records[0].chars, capture.countChars(PENDING_TEXT), 'pending 行按去空白字数（V108）');
     assert.match(records[0].previewText, /^第7章 短触发/);
 
     assert.equal(ctx.dom.map.get('capture-backdrop').classList.contains('hidden'), false, '面板必须显示');
@@ -593,7 +596,7 @@ test('打开：队列非空 → 直接列表（previewText 来自 list / 序号 
       [1, 2],
       '按复制顺序（旧 → 新）'
     );
-    assert.equal(records[0].chars, QUEUE_A.length);
+    assert.equal(records[0].chars, capture.countChars(QUEUE_A));
     assert.equal(records[0].previewText, capture.recordPreview(QUEUE_A));
 
     const rows = recordEls(ctx.dom);
@@ -782,6 +785,43 @@ test('正文：pending 条目 → 直接用当前剪贴板原文，不走队列 
     assert.equal(ctx.dom.map.get('capture-queue-empty').classList.contains('hidden'), false, '空态提示出现');
     assert.equal(ctx.dom.map.get('capture-queue-empty').dataset.emptyKind, 'vacuum');
     assert.ok(ctx.log.some((item) => item.startsWith('toast:info:已插入正文')));
+  }));
+
+// V108（v1.8.0 WP-24）：面板里的「N 字」、插入成功后 toast 里的字数、状态栏本章字数必须是
+// 同一个数字（都走 core/chapters.js 的 countChars，去空白）。以前 pending 行用原文长度，
+// 含缩进 / 空行时同一段文字在列表与状态栏会差 10%+。
+test('V108/WP-24：pending / 队列记录的「N 字」= 插入回报的字数（同一段文字不再有两个字数）', () =>
+  withFakeDocument(async () => {
+    const spaced = '　　第一段 正文。\n\n第二段\t正文。';
+    const expected = capture.countChars(spaced);
+    assert.ok(expected < spaced.length, '样本必须含空白，否则这个用例证明不了口径');
+
+    const ctx = build({ clipboardText: spaced });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    assert.equal(ui.records().length, 1);
+    assert.equal(ui.records()[0].kind, 'pending');
+    assert.equal(ui.records()[0].chars, expected, '列表行按去空白字数显示');
+    assert.equal(
+      recordEls(ctx.dom)[0].children[0].children[1].textContent.startsWith(`${expected} 字`),
+      true,
+      'DOM 里的「N 字」= 去空白字数'
+    );
+
+    const result = await ui.applyBody({ pending: true });
+    assert.equal(result.ok, true);
+    assert.equal(result.chars, expected, '插入回报的字数与列表同一口径（状态栏也用这个数）');
+    assert.ok(ctx.log.includes(`toast:info:已插入正文（${expected} 字），这条记录已从列表移除`));
+
+    // 队列条目走主进程契约：list() 的 chars 与 get() 的原文同一口径（都去空白）
+    const queued = build({ queue: [{ text: QUEUE_A }] });
+    const uiQueued = captureUiModule.create(queued.host);
+    await uiQueued.open();
+    assert.equal(uiQueued.records()[0].chars, capture.countChars(QUEUE_A));
+    assert.ok(
+      uiQueued.records()[0].chars < QUEUE_A.length,
+      '样本含空行：raw 长度更大，正说明两者不是一回事'
+    );
   }));
 
 test('正文：消费 IPC 失败 → 插入仍算成功，本地列表兜底去掉这一条（不让它被重复插入）', () =>
@@ -1099,7 +1139,13 @@ test('refreshQueue：新复制进来原地刷新（pending 保留）；面板没
     const ctx = build({ queue: [{ text: QUEUE_A }] });
     const ui = captureUiModule.create(ctx.host);
     await ui.openTriggered(PENDING_TEXT, false);
-    ctx.queue.push({ id: 9, text: QUEUE_B, chars: QUEUE_B.length, at: 1762350000000 });
+    ctx.queue.push({
+      id: 9,
+      text: QUEUE_B,
+      chars: capture.countChars(QUEUE_B),
+      rawLength: QUEUE_B.length,
+      at: 1762350000000
+    });
     await ui.refreshQueue();
     assert.deepEqual(
       ui.records().map((item) => item.kind),

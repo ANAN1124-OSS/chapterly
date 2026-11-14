@@ -165,14 +165,15 @@
     }
 
     // 渲染用的记录清单：pending（当前剪贴板）在前，队列按复制顺序（旧 → 新）在后。
-    // chars 用原文长度：与主进程队列条目同一口径（core/capture-queue 的 chars = source.length）。
+    // V108（v1.8.0 WP-24）：两边都用 countChars（去空白）—— 与主进程队列条目、插入后状态栏
+    // 同一口径；以前 pending 用原文长度，同一段文字在列表与状态栏会显示两个字数。
     function buildRecords() {
       const records = [];
       const pending = panel.pendingText;
       if (typeof pending === 'string' && pending.trim()) {
         records.push({
           kind: 'pending',
-          chars: pending.length,
+          chars: captureLib.countChars(pending),
           at: 0,
           previewText: captureLib.recordPreview(pending)
         });

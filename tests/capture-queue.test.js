@@ -37,13 +37,14 @@ test('预览：跳空行取首个非空行、折叠空白、超 40 字截断加�
   assert.equal(queueLib.previewOf('两个', 1), '两…');
 });
 
-test('记一条：按复制顺序排队，列表只给元数据（id / chars / at / preview / previewText，不含正文）', () => {
+test('记一条：按复制顺序排队，列表只给元数据（id / chars / rawLength / at / preview / previewText，不含正文）', () => {
   const clock = makeClock();
   const queue = queueLib.createCaptureQueue({ now: clock.now });
   const first = queue.add(A);
   assert.equal(first.added, true);
   assert.equal(first.entry.id, 1);
-  assert.equal(first.entry.chars, A.length);
+  assert.equal(first.entry.chars, capture.countChars(A), 'chars = 去空白正文字数（与状态栏同一口径）');
+  assert.equal(first.entry.rawLength, A.length, 'rawLength = 原文长度（含空白）');
   assert.equal(first.entry.at, 1000);
   assert.equal(first.entry.previewText, capture.recordPreview(A), '入队返回值也带截断正文预览');
   clock.advance(500);
@@ -53,8 +54,12 @@ test('记一条：按复制顺序排队，列表只给元数据（id / chars / a
 
   const list = queue.list();
   assert.deepEqual(list.map((item) => item.id), [1, 2, 3], '旧 → 新');
-  assert.deepEqual(list.map((item) => item.chars), [A.length, B.length, C.length]);
-  assert.deepEqual(Object.keys(list[0]).sort(), ['at', 'chars', 'id', 'preview', 'previewText'], '列表条目就这五个字段');
+  assert.deepEqual(list.map((item) => item.chars), [A, B, C].map((text) => capture.countChars(text)));
+  assert.deepEqual(
+    Object.keys(list[0]).sort(),
+    ['at', 'chars', 'id', 'preview', 'previewText', 'rawLength'],
+    '列表条目就这六个字段'
+  );
   assert.equal(Object.prototype.hasOwnProperty.call(list[0], 'text'), false, '列表不许带正文全文');
   assert.equal(list[0].preview, queueLib.previewOf(A));
   assert.equal(list[0].previewText, capture.recordPreview(A), 'previewText 与渲染层共用 recordPreview');
@@ -114,6 +119,7 @@ test('单条超上限不入队（reason=too-large）；上限值可覆盖，默�
   assert.equal(tooLarge.added, false);
   assert.equal(tooLarge.reason, 'too-large');
   assert.equal(tooLarge.chars, 11);
+  assert.equal(tooLarge.rawLength, 11);
   assert.equal(queue.size(), 0);
   assert.equal(queue.add('字'.repeat(10)).added, true);
   assert.equal(queueLib.createCaptureQueue({ maxEntryChars: 0 }).maxEntryChars, queueLib.DEFAULT_MAX_ENTRY_CHARS, '坏值回默认');
@@ -122,6 +128,40 @@ test('单条超上限不入队（reason=too-large）；上限值可覆盖，默�
   assert.equal(defaults.maxEntryChars, 300000);
   assert.equal(defaults.maxEntryChars, capture.MAX_BODY_CHARS, '队列单条上限必须跟着捕获正文上限');
   assert.equal(defaults.maxTotalChars, 3000000, '总量上限同步放大到 300 万字（10 条满额）');
+});
+
+// V108（v1.8.0 WP-24）：chars = 去空白正文字数（与插入后状态栏 / 导入 / 书目同一口径），
+// rawLength = 含空白的原文长度。上限与总量淘汰按 rawLength（内存口径）算，显示按 chars。
+test('V108/WP-24：chars 按 countChars 算、rawLength 才是含空白原文长度；上限与总量都按 rawLength 挡', () => {
+  const spaced = '　　甲乙 丙\n\n丁\t戊';
+  assert.equal(capture.countChars(spaced), 5, '甲乙丙丁戊 = 5 个非空白字');
+  assert.equal(spaced.length, 11, '样本原文 11 个 UTF-16 码元（含全角空格 / 空格 / 换行 / 制表符）');
+
+  const queue = queueLib.createCaptureQueue();
+  const added = queue.add(spaced);
+  assert.equal(added.added, true);
+  assert.equal(added.entry.chars, 5, '列表显示的「N 字」必须是去空白字数');
+  assert.equal(added.entry.rawLength, 11, 'rawLength 保留原文长度');
+  assert.equal(queue.totalChars(), 11, '总量按 rawLength 记账（内存口径，不是显示字数）');
+  assert.equal(queue.get(added.entry.id).rawLength, 11, 'get() 与 list() 同一口径');
+  assert.equal(queue.get(added.entry.id).chars, 5);
+
+  // 上限按 rawLength 挡：正文字数只有 5，但原文 11 > 10 → 仍然不入队（内存确实要占 11）
+  const tight = queueLib.createCaptureQueue({ maxEntryChars: 10 });
+  const rejected = tight.add(spaced);
+  assert.equal(rejected.added, false);
+  assert.equal(rejected.reason, 'too-large');
+  assert.equal(rejected.chars, 5, '拒绝回执里的 chars 也按去空白算');
+  assert.equal(rejected.rawLength, 11);
+  assert.equal(tight.size(), 0);
+
+  // 删除 / 淘汰都按 rawLength 回退，总量不会漂
+  const evicting = queueLib.createCaptureQueue({ maxEntries: 10, maxTotalChars: 20 });
+  evicting.add('甲 乙');   // raw 3
+  evicting.add('丙 丁');   // raw 3
+  assert.equal(evicting.totalChars(), 6);
+  assert.equal(evicting.remove(1), true);
+  assert.equal(evicting.totalChars(), 3);
 });
 
 test('条数上限：超过 maxEntries 淘汰最旧的；列表仍按旧 → 新', () => {
@@ -177,4 +217,7 @@ test('静态闸门：队列模块不碰 fs / DOM / 日志 / Electron / 定时器
   // previewText 的截断规则只有 core/capture.js 一份：渲染层 pending 行与队列列表必须同口径
   assert.ok(source.includes("require('./capture')"), '截断预览要取 core/capture.js 的 recordPreview');
   assert.ok(source.includes('recordPreview(entry.text)'), 'list() 元数据里的 previewText 用 recordPreview');
+  // V108（WP-24）静态闸门：chars 只能来自共享 countChars，不许再写回源串长度；rawLength 才承载原文长度
+  assert.ok(source.includes('countChars = captureLib.countChars'), 'chars 必须引用共享 countChars（不另写副本）');
+  assert.equal(/chars[:=]\s*source\.length/.test(source), false, 'chars 不许再是 source.length（含空白长度）');
 });

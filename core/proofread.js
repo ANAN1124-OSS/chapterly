@@ -494,7 +494,10 @@ function proofreadText(text, rawOptions, rawGlossary) {
     // 词表命中多到异常（原始命中上限）也算明细不全，界面会提示「只列出一部分」
     truncated: collected.total > issues.length || custom.truncated,
     paragraphs: paragraphs.length,
+    // X4（v1.8.0 WP-24）：chars = 正文字数（去空白），与敏感词预检 / 捕获队列 / 状态栏同一口径；
+    // rawLength 保留「含空白的原文长度」（旧 chars 的值），两个接口的契约从此一致。
     chars: chaptersLib.countChars(source),
+    rawLength: source.length,
     // 这次实际参与匹配的校对词条数（0 = 没设置词表 / 词表不可用）
     customWordCount: custom.entryCount,
     // 这次实际生效的规则开关（渲染层面板照着画「开 / 关」，不写配置）

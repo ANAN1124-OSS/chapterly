@@ -16,6 +16,7 @@ const findLib = require('./find');
 const txtLib = require('./txt');
 const errorText = require('./error-text');
 const wordscan = require('./wordscan');
+const chaptersLib = require('./chapters');
 const { clampInt, normalizeText, lineStartsOf, positionOf } = require('./common');
 
 // 词表文件上限：再大就不像「每行一个词」的词表了，读进来只会拖慢整本检查
@@ -258,7 +259,10 @@ function scanText(text, rawWords, rawOptions) {
     wordHitCount: byWordMap.size,
     wordCount: words.length,
     truncated: scan.truncated || total > issues.length,
-    chars: source.length
+    // X4（v1.8.0 WP-24）：chars = 正文字数（去空白），与校对 / 捕获队列 / 状态栏同一口径
+    // （core/chapters.js 的 countChars）；需要「含空白的原文长度」看 rawLength。
+    chars: chaptersLib.countChars(source),
+    rawLength: source.length
   };
 }
 
