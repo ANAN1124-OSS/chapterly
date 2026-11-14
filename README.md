@@ -433,7 +433,7 @@ pnpm start -- --user-data=shots/ud-5 --books-root=shots/demo-library --dialog=se
 
 ## 目录结构
 
-> 公开仓库只放公开文档（`README.md` / `验收清单.md` / `LICENSE`）。工作清单、审计报告、执行台账、提案与开发日志这类内部文档统一放 `内部文档/`，`.gitignore` 整目录忽略（审计 D6）——别再按精确文件名维护忽略清单。
+> 公开仓库只放公开文档（`README.md` / `验收清单.md` / `沿革.md` / `LICENSE`）。工作清单、审计报告、执行台账、提案与开发日志这类内部文档统一放 `内部文档/`，`.gitignore` 整目录忽略（审计 D6 / D12）——别再按精确文件名维护忽略清单。
 
 ```
 chapterly/
