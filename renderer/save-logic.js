@@ -38,5 +38,15 @@
     return missing > 0 ? `已保存当前章，但全书有 ${missing} 个章节文件缺失` : '';
   }
 
-  return { savedToastText, verifyWarnText };
+  // 保存快照化（C1，v1.8.0 WP-01）：保存回执到达后，基线只能是「发起保存那一刻」的正文快照。
+  // 保存期间敲入的字没有写盘，必须仍算未保存（切章 / 关窗照常提醒）——以前回执后重读活值并
+  // 把 dirty 置 false，等于把没落盘的字并进基线，切章不再提醒、关窗时渲染层还自报干净。
+  // 纯函数：null / undefined 一律按空串（与编辑区 .value 的类型口径一致）。
+  function isDirtyAgainstSnapshot(snapshotText, liveText) {
+    const snapshot = snapshotText == null ? '' : String(snapshotText);
+    const live = liveText == null ? '' : String(liveText);
+    return live !== snapshot;
+  }
+
+  return { savedToastText, verifyWarnText, isDirtyAgainstSnapshot };
 });

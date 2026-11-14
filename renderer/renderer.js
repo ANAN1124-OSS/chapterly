@@ -2695,6 +2695,9 @@
   // 测试模式（?test=1）可以用 __cwTest.setTestVerifyBook 替换这一趟，E2E 靠它验证
   // 「保存不等校验」「后台失败不提示」两个时序。
   let testVerifyBook = null;
+  // WP-01/C1 验收用：?test=1 时 E2E 用 setTestSaveDelay 把保存 IPC 拖慢，制造「保存在途」窗口；
+  // 正常启动恒为 null，保存热路径就是原来的 call(api.saveChapter, ...)。
+  let testSaveChapter = null;
 
   function verifyBookInBackground(bookPath) {
     void (async () => {
@@ -2723,15 +2726,21 @@
     }
     const chapter = state.chapters[state.index];
     if (!chapter) return { ok: false, message: '章节不存在' };
+    // C1（审计高优先级）：await 前先拍正文快照，之后只认这一份——以前回执到达后重读活值并把
+    // dirty 置 false，IPC 往返（fsync / 书目 / 统计写盘）期间敲入的字没写盘却被并进基线：
+    // 切章不再提醒（静默丢稿）、关窗时渲染层自报干净还绕过了主进程的交叉判定。
+    const text = editorEl.value;
     state.saving = true;
     updateStatus();
     try {
-      const data = await call(api.saveChapter, state.bookPath, chapter.id, editorEl.value);
-      state.baseText = editorEl.value;
+      // WP-01 验收锚点：?test=1 下 E2E 注入保存延迟；正常启动 testSaveChapter 恒为 null
+      const data = await (testSaveChapter || call)(api.saveChapter, state.bookPath, chapter.id, text);
+      state.baseText = text;
       state.loadedMtimeMs = data.mtimeMs;
       state.savedAt = new Date();
       state.saveError = null;
-      state.dirty = false;
+      // 保存期间作者又敲了字：磁盘里只有快照，编辑区多出来的内容必须保持未保存（C1 的核心）
+      state.dirty = saveLogic.isDirtyAgainstSnapshot(text, editorEl.value);
       // 主进程已经把「这次保存带来的新增字数」记进 stats.json，返回的摘要直接显示，
       // 不再多跑一次 IPC（统计失败时 data.stats 为 null，界面保留旧数字）。
       if (data.stats) {
@@ -5629,6 +5638,10 @@
       // 活绑定：测试钩子会把全书校验替换掉（E2E 验「保存不等校验」的时序）
       set testVerifyBook(value) {
         testVerifyBook = value;
+      },
+      // 活绑定：测试钩子用 setTestSaveDelay 包一层保存 IPC（E2E 验「保存期间输入」的时序，WP-01/C1）
+      set testSaveChapter(value) {
+        testSaveChapter = value;
       }
     };
   }
