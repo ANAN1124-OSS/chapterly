@@ -488,16 +488,18 @@
       render();
       try {
         await call(api.captureQueueClear);
+        panel.queue = [];
+        panel.pendingText = null;
+        panel.tooLarge = false;
       } catch (err) {
         toast(`清空捕获队列失败：${err.message}`, 'error');
         return { ok: false, code: err.code, message: err.message };
       } finally {
+        // WP-16（C14）：成功与失败都要重画——失败时按钮不能停在 busy 期的禁用画面，
+        // 记录也得跟着 busy 复位回到可点状态（对照同模块 applyBody / createChapter 的 finally）。
         panel.busy = false;
+        render();
       }
-      panel.queue = [];
-      panel.pendingText = null;
-      panel.tooLarge = false;
-      render();
       toast('已清空本次运行的捕获队列');
       return { ok: true, cleared: true };
     }

@@ -1439,3 +1439,120 @@ test('refreshQueue（WP-15 / C36）：清空期间在途的刷新回执不许把
     await refreshing;
     assert.deepEqual(ui.records(), [], '清空开始即作废在途刷新，旧快照不许复活记录');
   }));
+
+// ---------- WP-16 / C14：清空队列的失败路径也要把 busy 画面画回去 ----------
+test('清空队列（WP-16 / C14）：IPC 失败 → busy 复位、按钮 / 记录回到可用态、失败文案逐字', () =>
+  withFakeDocument(async () => {
+    let release;
+    const ctx = build({ queue: [{ text: QUEUE_A }, { text: QUEUE_B }] });
+    ctx.api.captureQueueClear = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    const clearing = ui.clearQueue();
+    // 在途：列表与按钮先按 busy 禁用（作者看到的是「处理中」）
+    assert.equal(ui.isBusy(), true);
+    assert.deepEqual(
+      actionButtons(ctx.dom).map((btn) => btn.disabled),
+      [true, true, true, true]
+    );
+    assert.equal(ctx.dom.map.get('btn-capture-queue-clear').disabled, true);
+    assert.equal(ctx.dom.map.get('btn-capture-queue-cancel').disabled, true);
+    release({ ok: false, code: 'IPC_ERROR', message: '主进程不可用' });
+    const result = await clearing;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'IPC_ERROR');
+    assert.equal(result.message, '主进程不可用');
+    assert.equal(ui.isBusy(), false, '失败后必须复位 busy');
+    assert.equal(ui.isOpen(), true, '失败不关面板');
+    assert.deepEqual(
+      ui.records().map((item) => item.kind),
+      ['queue', 'queue'],
+      '清空失败，记录原样保留'
+    );
+    // C14 本体：旧实现只在成功路径 render，失败后按钮停在 busy 期的禁用画面
+    assert.deepEqual(
+      actionButtons(ctx.dom).map((btn) => btn.disabled),
+      [false, false, false, false],
+      '动作按钮必须重画回可点'
+    );
+    assert.equal(ctx.dom.map.get('btn-capture-queue-clear').disabled, false, '清空按钮必须重画回可点');
+    assert.equal(ctx.dom.map.get('btn-capture-queue-cancel').disabled, false, '取消按钮必须重画回可点');
+    assert.deepEqual(
+      actionButtons(ctx.dom).map((btn) => btn.dataset.id || btn.dataset.pending),
+      ['1', '1', '2', '2'],
+      '放在记录上的动作按钮仍对应原记录'
+    );
+    assert.ok(
+      ctx.log.some((item) => item === 'toast:error:清空捕获队列失败：主进程不可用'),
+      '失败文案逐字'
+    );
+    assert.equal(
+      ctx.log.some((item) => item.startsWith('toast:info:已清空本次运行的捕获队列')),
+      false,
+      '失败不许报成功'
+    );
+  }));
+
+test('清空队列（WP-16 / C14）：失败后按钮可用、能再点一次；成功文案与空态逐字不变', () =>
+  withFakeDocument(async () => {
+    const ctx = build({ queue: [{ text: QUEUE_A }, { text: QUEUE_B }] });
+    let attempts = 0;
+    ctx.api.captureQueueClear = async () => {
+      attempts += 1;
+      ctx.log.push(`api.captureQueueClear:${attempts}`);
+      if (attempts === 1) return { ok: false, code: 'IPC_ERROR', message: '主进程不可用' };
+      const cleared = ctx.queue.length;
+      ctx.queue.length = 0;
+      return { ok: true, data: { cleared } };
+    };
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    const failed = await ui.clearQueue();
+    assert.equal(failed.ok, false);
+    assert.equal(ui.isBusy(), false);
+    assert.equal(
+      ctx.dom.map.get('capture-queue-empty').classList.contains('hidden'),
+      true,
+      '失败时记录还在，空态不出现'
+    );
+
+    const cleared = await ui.clearQueue();
+    assert.equal(cleared.ok, true);
+    assert.equal(cleared.cleared, true);
+    assert.equal(attempts, 2, '失败后按钮可用，作者能再点一次');
+    assert.equal(ui.records().length, 0);
+    assert.equal(
+      ui.queueSummaryText(),
+      '本次运行还没有记到复制过的文字（只在本机内存，关闭应用即清空）。'
+    );
+    assert.equal(
+      ui.queueEmptyText(),
+      '在「设置 → 写作统计」里打开「后台监听剪贴板」后，复制的新文字会各记一条；' +
+        '也可以直接按 Ctrl+Alt+V 捕获当前剪贴板的一段。每条记录右侧点「正文」或「章节」处理，处理完就从列表移除。'
+    );
+    assert.equal(ctx.dom.map.get('capture-queue-empty').dataset.emptyKind, 'vacuum');
+    assert.equal(ctx.dom.map.get('btn-capture-queue-clear').disabled, true, '清空后按钮禁用');
+    assert.ok(ctx.log.some((item) => item.startsWith('toast:info:已清空本次运行的捕获队列')));
+  }));
+
+test('静态闸门（WP-16 / C14）：clearQueue 的 finally 统一复位 busy 并重画', () => {
+  const start = moduleSrc.indexOf('async function clearQueue');
+  assert.ok(start > 0, '模块里应有 clearQueue');
+  const end = moduleSrc.indexOf('\n    }', start);
+  assert.ok(end > start, '要能截出 clearQueue 函数体');
+  const body = moduleSrc.slice(start, end);
+  assert.match(
+    body,
+    /finally\s*\{[\s\S]*?panel\.busy = false;[\s\S]*?render\(\);/,
+    'busy 复位必须带 render（失败路径也要把按钮画回可用态）'
+  );
+  assert.match(body, /refreshSeq\.next\(\)/, 'WP-15 / C36：清空开始即作废在途刷新，不能被这次重画弄丢');
+  assert.equal(
+    (body.match(/toast\('已清空本次运行的捕获队列'\)/g) || []).length,
+    1,
+    '成功文案只留一处，且仍在 try 之后'
+  );
+});
