@@ -2,7 +2,7 @@
 // 不 require('electron')，可直接在 node:test 里用临时目录测试。
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { atomicWriteFile, atomicCopyFile, writeJsonAtomic, stripBom } = require('./atomic');
+const { atomicWriteFile, atomicCopyFile, writeJsonAtomic, stripBom, cleanupOrphanTmpFiles } = require('./atomic');
 const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, MAX_TEXT_BYTES } = require('./common');
 const chaptersLib = require('./chapters');
 const findLib = require('./find');
@@ -624,6 +624,10 @@ async function createBook(booksRoot, title, options = {}) {
 }
 
 async function openBook(bookPath) {
+  // X8（v1.8.0 WP-40）：打开书时顺手回收上次崩溃留在本书目录的孤儿临时文件。
+  // 只删「不是本进程 + 超过 1 小时」的 `.名.tmp-pid-时间-随机`（章节正文 / 书目 / 其它文件一个不碰）；
+  // 清理失败不影响打开书（core/atomic 内部已吞掉所有 IO 失败）。
+  await cleanupOrphanTmpFiles(bookPath);
   const meta = await readBookMeta(bookPath);
   const [stats, missing] = await Promise.all([
     bookStats(bookPath, meta),

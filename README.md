@@ -371,7 +371,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 
 
 ```bash
-pnpm test          # 单元测试（node:test，2513 项；逐项覆盖说明见 沿革.md「开发自检历史说明」）
+pnpm test          # 单元测试（node:test，2525 项；逐项覆盖说明见 沿革.md「开发自检历史说明」）
 pnpm run e2e       # 端到端自检：真实启动 Electron 走 1881 项主流程（逐组覆盖说明见 沿革.md「开发自检历史说明」）
 pnpm run demo      # 生成演示书库到 shots/demo-library（截图/演示用）
 node scripts/bench.js          # 前端基准（只读，v0.9 A-1）：临时书库 + 真实 Electron 量「书架刷新 / 书架搜索 / 打开书 / 切章 / 章节栏渲染 / 10 万字大章的输入延迟 · 输入处理 · 标记层重画 · 标记层滚动同步」耗时（--books / --chapters / --runs / --out，跑完打表并落 JSON，不碰真实书架）

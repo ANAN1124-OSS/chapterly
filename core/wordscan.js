@@ -27,6 +27,7 @@ const DEFAULT_RAW_MATCH_LIMIT = 100000;
 // 自动机建完只读，所以按「词表内容 + 顺序」缓存复用；同一词表连扫多章只建图一次。
 // 缓存上限 4 份（一份 5000 词约 1–2 MB；校对 / 敏感词两套词表 + 作者中途换词表够用），
 // 超了淘汰最早用的那份——宁可偶尔重建，也不让常驻内存跟着词表数量长。
+// X6（v1.8.0 WP-40）：指纹只当索引用，命中后还要核对词表等值，碰撞时重建而不是复用错图。
 const MAX_CACHED_AUTOMATONS = 4;
 // 词表指纹：64 位（两个独立种子）滚动哈希。键里带「下标」，因为 out 存的是 patterns 的原下标，
 // 同一批词换个顺序就是另一张图（不换会串 patternIndex）。
@@ -50,21 +51,38 @@ function automatonFingerprint(patterns) {
   return `${patterns.length}:${(low >>> 0).toString(16)}:${(high >>> 0).toString(16)}`;
 }
 
-const automatonCache = new Map(); // fingerprint -> 自动机（LRU：命中时移到末尾）
-const automatonStats = { builds: 0, hits: 0 };
+const automatonCache = new Map(); // fingerprint -> { patterns, automaton }（LRU：命中时移到末尾）
+const automatonStats = { builds: 0, hits: 0, collisions: 0 };
 
-function automatonFor(patterns) {
-  const key = automatonFingerprint(patterns);
+// X6（v1.8.0 WP-40，审计 X6）：缓存键只有 64 位滚动指纹，碰撞概率极低但一旦碰撞会静默复用错误
+// 自动机（命中词张冠李戴）。缓存条目同时留一份「建图时词表快照」，命中后先做等值核对再复用；
+// 不等值 = 撞了指纹，按未命中重建并替换条目（碰撞只多建一次图，绝不影响扫描结果）。
+// 快照用 slice()：调用方之后原地改数组也不会让旧条目「看起来等值」而串用旧图。
+function samePatterns(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
+
+// fingerprint 参数只给单测注入（模拟指纹碰撞），产品调用一律走 automatonFingerprint。
+function automatonFor(patterns, fingerprintOf) {
+  const fingerprint = typeof fingerprintOf === 'function' ? fingerprintOf : automatonFingerprint;
+  const key = fingerprint(patterns);
   const cached = automatonCache.get(key);
-  if (cached) {
+  if (cached && samePatterns(cached.patterns, patterns)) {
     automatonStats.hits += 1;
     automatonCache.delete(key);
     automatonCache.set(key, cached); // 触碰：淘汰时先丢最久没用的
-    return cached;
+    return cached.automaton;
   }
+  if (cached) automatonStats.collisions += 1;
   const auto = buildAutomaton(patterns);
   automatonStats.builds += 1;
-  automatonCache.set(key, auto);
+  automatonCache.delete(key); // 碰撞时旧条目让位；正常新增时本来就不存在
+  automatonCache.set(key, { patterns: patterns.slice(), automaton: auto });
   if (automatonCache.size > MAX_CACHED_AUTOMATONS) {
     const oldest = automatonCache.keys().next();
     if (!oldest.done) automatonCache.delete(oldest.value);
@@ -124,13 +142,14 @@ function buildAutomaton(patterns) {
 // 扫描：单次遍历正文，边走自动机边收集命中。
 // 返回 { hits: [{ patternIndex, index, length }], rawCount, truncated }；
 // patternIndex 是传入 terms 数组的下标（两个模块各自映射成 term / suggestion / word）。
+// options.fingerprint 只给单测注入（模拟指纹碰撞），产品调用不传。
 function scanTerms(text, terms, options = {}) {
   const patterns = Array.isArray(terms) ? terms : [];
   const limitValue = Number(options.rawMatchLimit);
   const rawMatchLimit = Number.isFinite(limitValue) && limitValue > 0
     ? Math.max(1, Math.floor(limitValue))
     : DEFAULT_RAW_MATCH_LIMIT;
-  const auto = automatonFor(patterns);
+  const auto = automatonFor(patterns, options.fingerprint);
   if (!auto.maxLen) return { hits: [], rawCount: 0, truncated: false };
   const source = typeof text === 'string' ? text : '';
 
@@ -220,10 +239,11 @@ function scanTerms(text, terms, options = {}) {
   return { hits, rawCount, truncated };
 }
 
-// 缓存观测（P-03 锚点用）：builds = 真建图次数，hits = 复用次数，size = 当前缓存份数。
+// 缓存观测（P-03 锚点用）：builds = 真建图次数，hits = 复用次数，size = 当前缓存份数，
+// collisions = 指纹撞车后按等值核对发现不一致、改为重建的次数（X6；正常恒为 0）。
 // 产品代码不读它，只有单测用它证明「同一词表 1000 章只建图 1 次」。
 function automatonCacheStats() {
-  return { builds: automatonStats.builds, hits: automatonStats.hits, size: automatonCache.size };
+  return { builds: automatonStats.builds, hits: automatonStats.hits, size: automatonCache.size, collisions: automatonStats.collisions };
 }
 
 // 单测用：清空缓存并归零计数（避免不同用例之间互相污染计数）。
@@ -231,11 +251,13 @@ function resetAutomatonCache() {
   automatonCache.clear();
   automatonStats.builds = 0;
   automatonStats.hits = 0;
+  automatonStats.collisions = 0;
 }
 
 module.exports = {
   DEFAULT_RAW_MATCH_LIMIT,
   scanTerms,
   automatonCacheStats,
-  resetAutomatonCache
+  resetAutomatonCache,
+  samePatterns
 };

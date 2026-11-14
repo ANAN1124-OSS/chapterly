@@ -24,6 +24,60 @@ async function renameWithRetry(from, to, { tries = 3, delay = 80, rename = fs.re
   throw lastErr;
 }
 
+// X8（v1.8.0 WP-40，审计 X8）：崩溃 / 断电会让「临时文件 -> fsync -> rename」停在第一步，
+// 目录里留下 `.名.tmp-pid-时间-随机` 的隐藏孤儿。启动时（userData）与打开书时（书目录）各回收一次。
+// 只认本模块自己造的临时文件名，且必须同时满足「不是本进程的 pid」与「mtime 早于阈值」：
+// 正在写盘的临时文件一定新鲜（阈值内），本进程自己的临时文件哪怕卡住也不动——绝不删掉在途写入。
+// 清理是尽力而为：目录不存在 / 不可读 / 单个文件被占用都只跳过，绝不让打开书或启动失败。
+const TMP_FILE_RE = /^\.(.+)\.tmp-(\d+)-(\d+)-([a-z0-9]+)$/;
+const ORPHAN_TMP_MIN_AGE_MS = 60 * 60 * 1000;
+
+function parseTmpName(name) {
+  const text = String(name == null ? '' : name);
+  const match = TMP_FILE_RE.exec(text);
+  if (!match) return null;
+  return { base: match[1], pid: Number(match[2]), stamp: Number(match[3]), tag: match[4] };
+}
+
+async function cleanupOrphanTmpFiles(dir, { olderThanMs = ORPHAN_TMP_MIN_AGE_MS, now = Date.now() } = {}) {
+  const target = String(dir == null ? '' : dir).trim();
+  if (!target) return { removed: 0, kept: 0 };
+  let entries = [];
+  try {
+    entries = await fs.readdir(target, { withFileTypes: true });
+  } catch {
+    return { removed: 0, kept: 0 }; // 目录不存在 / 不可读：清理尽力而为
+  }
+  const requested = Number(olderThanMs);
+  const minAgeMs = Number.isFinite(requested) && requested >= 0 ? requested : ORPHAN_TMP_MIN_AGE_MS;
+  const at = Number(now);
+  const nowMs = Number.isFinite(at) ? at : Date.now();
+  let removed = 0;
+  let kept = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue; // 同名目录 / 联接不碰
+    const parsed = parseTmpName(entry.name);
+    if (!parsed) continue; // 不是本应用命名的临时文件，一个都不删
+    if (parsed.pid === process.pid) {
+      kept += 1; // 本进程的临时文件可能正在写（哪怕看起来很久），不动
+      continue;
+    }
+    const full = path.join(target, entry.name);
+    try {
+      const info = await fs.stat(full);
+      if (nowMs - info.mtimeMs < minAgeMs) {
+        kept += 1; // 新鲜：可能是另一个还在运行的进程正在写
+        continue;
+      }
+      await fs.unlink(full);
+      removed += 1;
+    } catch {
+      /* 被别人先删 / 被占用：少清一个，不影响其它文件 */
+    }
+  }
+  return { removed, kept };
+}
+
 // ensureDir=false：只写「已经存在的目录」（保存章节用），目录被删时直接报错，
 // 绝不 mkdir 重建出一个只有一章 txt 的影子书文件夹。
 async function atomicWriteFile(filePath, data, encoding = 'utf8', { ensureDir = true } = {}) {
@@ -135,6 +189,10 @@ module.exports = {
   renameWithRetry,
   readJson,
   writeJsonAtomic,
+  // X8（WP-40）：孤儿临时文件回收（启动 / 打开书时），以及给单测用的命名解析
+  ORPHAN_TMP_MIN_AGE_MS,
+  parseTmpName,
+  cleanupOrphanTmpFiles,
   stripBom,
   sleep
 };

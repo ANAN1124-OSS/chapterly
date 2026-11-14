@@ -52,7 +52,7 @@ const screenshotDialog = argValue('dialog');
 const automation = isE2E || isBench || isContrast || Boolean(screenshotPath);
 
 const { createConfigStore, sanitize: sanitizeConfig, withBooksRootOverride, WORDLIST_MAX, sameWindowBounds } = require('./core/config');
-const { atomicWriteFile, atomicWriteFileStream } = require('./core/atomic');
+const { atomicWriteFile, atomicWriteFileStream, cleanupOrphanTmpFiles } = require('./core/atomic');
 const storage = require('./core/storage');
 const repair = require('./core/repair');
 const importer = require('./core/importer');
@@ -2549,6 +2549,9 @@ if (!gotLock) {
       // core/error-text 脱敏，路径只留最后一节），界面侧只保留一句固定说明。
       logError('startup-config', err);
     }
+    // X8（v1.8.0 WP-40）：启动时回收上次崩溃留在 userData 的孤儿临时文件（索引 / 配置等）。
+    // 只认本应用命名、非本进程 pid、且 mtime 超过 1 小时的临时文件；失败不影响启动。
+    await cleanupOrphanTmpFiles(app.getPath('userData')).catch(() => {});
     // b8：按配置决定要不要开始后台监听剪贴板（默认关）
     syncClipboardWatch();
     // 每次启动记一条 info（版本 / 平台 / Electron 版本），排查反馈时先看这里

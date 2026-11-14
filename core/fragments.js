@@ -195,7 +195,18 @@ function createFragmentStore(booksRoot, options = {}) {
       ? Math.floor(requestedConcurrency)
       : LIST_IO_CONCURRENCY;
   // 碎片写入串行化（同一个 txt 绝不并发写）——实现见 core/common.js 的 createWriteQueue（B6）。
-  const enqueue = createWriteQueue().enqueue;
+  // X10（v1.8.0 WP-40）：额外维护「排队 + 在跑」的写数，供 store 缓存判定「这个实例现在能不能淘汰」。
+  const writeQueue = createWriteQueue();
+  let pendingWrites = 0;
+  function enqueue(task) {
+    pendingWrites += 1;
+    const run = writeQueue.enqueue(task);
+    const settle = () => {
+      pendingWrites = Math.max(0, pendingWrites - 1);
+    };
+    run.then(settle, settle);
+    return run;
+  }
 
   // 列表：_碎片 顶层所有 .txt（含用户自己放进去的 txt），最新在前，最多 LIST_LIMIT 条。
   // 目录不存在 = 空列表，绝不因为列表动作创建文件夹。
@@ -296,7 +307,7 @@ function createFragmentStore(booksRoot, options = {}) {
     return { name, text, chars: chaptersLib.countChars(text), size: stat.size, mtimeMs: stat.mtimeMs };
   }
 
-  return { dir, list, create, read };
+  return { dir, list, create, read, hasPendingWrites: () => pendingWrites > 0 };
 }
 
 // 跨 IPC 的 store 单例缓存（V74）：写队列（core/common.js 的 createWriteQueue）是实例私有的，
@@ -305,28 +316,63 @@ function createFragmentStore(booksRoot, options = {}) {
 // 成功回执。main.js 的三个 fragments 频道改走 getFragmentStore(cfg.booksRoot)，让同一个书架根目录
 // 在所有窗口 / 频道间共用同一个 store（同一条写队列）。
 // key = path.resolve(String(booksRoot)).toLowerCase()：相对写法 / 尾分隔符归一，Windows 大小写不敏感。
-// 最多缓存 2 条（够「书库 A / B 来回切」都命中）；满了按插入顺序淘汰最旧的一条（Map 迭代序 = 插入序，
-// 命中不重排）。store 没有需要关闭的资源——写队列 settle 后条目自回收，被淘汰只是不再复用。
+// X10（v1.8.0 WP-40，审计 X10）：淘汰规则改「LRU + 仅空闲淘汰」。命中算一次使用（移到队尾）；
+// 超上限时只淘汰写队列空闲（没有排队 / 在跑任务）的实例，从最久没用的开始。正在写的实例一个都不挤掉——
+// 挤掉它、下一条同根请求就会新建第二个 store = 同根两条写队列，正好把 V74 修过的竞态请回来；
+// 全是忙的就先让缓存临时超过上限（宁可多留一份内存，也不制造第二条队列）。
+// store 没有需要关闭的资源——写队列 settle 后条目自回收，被淘汰只是不再复用。
 // createFragmentStore 保留原样：每次调用仍新建实例（既有单测与「每实例独立」语义不动）。
 const STORE_CACHE_MAX = 2;
 const storeCache = new Map();
 
-function getFragmentStore(booksRoot) {
+function isStoreBusy(store) {
+  return typeof store.hasPendingWrites === 'function' ? Boolean(store.hasPendingWrites()) : false;
+}
+
+function evictIdleStores(currentKey) {
+  let removed = 0;
+  for (const [key, store] of storeCache) {
+    if (storeCache.size <= STORE_CACHE_MAX) break;
+    if (key === currentKey) continue; // 刚交出去的实例先留着
+    if (isStoreBusy(store)) continue;
+    storeCache.delete(key);
+    removed += 1;
+  }
+  return removed;
+}
+
+// 第二个参数只给单测注入 store 工厂（验证 LRU / 忙实例不淘汰）；产品调用只传 booksRoot。
+function getFragmentStore(booksRoot, options = {}) {
   const key = path.resolve(String(booksRoot)).toLowerCase();
   const cached = storeCache.get(key);
-  if (cached) return cached;
-  const store = createFragmentStore(booksRoot);
-  storeCache.set(key, store);
-  while (storeCache.size > STORE_CACHE_MAX) {
-    storeCache.delete(storeCache.keys().next().value);
+  if (cached) {
+    // 命中即「最近使用」：Map 的插入顺序就是 LRU 顺序
+    storeCache.delete(key);
+    storeCache.set(key, cached);
+    return cached;
   }
+  const factory = typeof options.storeFactory === 'function' ? options.storeFactory : createFragmentStore;
+  const store = factory(booksRoot);
+  storeCache.set(key, store);
+  evictIdleStores(key);
   return store;
+}
+
+// 单测用：清空缓存（避免不同用例的根目录互相污染）；产品代码不调用。
+function resetFragmentStoreCache() {
+  storeCache.clear();
+}
+
+// 单测用：当前缓存里的 key（LRU 顺序，最久没用的在前），不发请求、不触发淘汰。
+function fragmentStoreCacheKeys() {
+  return Array.from(storeCache.keys());
 }
 
 module.exports = {
   MAX_TEXT_CHARS,
   MAX_READ_BYTES,
   LIST_LIMIT,
+  STORE_CACHE_MAX,
   formatDateStamp,
   isValidDayStamp,
   parseFragmentName,
@@ -337,5 +383,7 @@ module.exports = {
   sortFragments,
   assertFragmentName,
   createFragmentStore,
-  getFragmentStore
+  getFragmentStore,
+  resetFragmentStoreCache,
+  fragmentStoreCacheKeys
 };
