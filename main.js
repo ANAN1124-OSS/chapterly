@@ -52,7 +52,7 @@ const screenshotDialog = argValue('dialog');
 const automation = isE2E || isBench || isContrast || Boolean(screenshotPath);
 
 const { createConfigStore, sanitize: sanitizeConfig, withBooksRootOverride, WORDLIST_MAX } = require('./core/config');
-const { atomicWriteFile } = require('./core/atomic');
+const { atomicWriteFile, atomicWriteFileStream } = require('./core/atomic');
 const storage = require('./core/storage');
 const repair = require('./core/repair');
 const importer = require('./core/importer');
@@ -2394,6 +2394,12 @@ function registerIpc() {
   handleBook('book:restore-history-dir', async (bookPath, groupId) =>
     storage.restoreHistoryGroup(bookPath, groupId), { mutation: 'write' }
   );
+  // B6（v1.8.0 WP-28 / D-5）：手动清理三类备份（替换 / 整理 / 还原前）—— 只有历史面板的两步确认
+  // 才会调到这里；存储层只认 `dir:<三类备份目录>`、再校验落在本书 _trash 下，并跳过仍被
+  // 10 秒撤销条引用的组（protectedGroupIds 由渲染层按 TTL 现算）。绝不自动调用、绝不碰快照 / 散文件。
+  handleBook('book:delete-history-backups', async (bookPath, groupIds, options) =>
+    storage.deleteHistoryBackups(bookPath, groupIds, options), { mutation: 'write' }
+  );
   // 清空某一天的每日快照（P22-5）：只把这个目录**移入 Windows 回收站**，绝不硬删。
   // 参数只认快照目录名（storage.snapshotDirForClear 严格校验「快照-YYYYMMDD」+ 日期真实存在 +
   // 必须落在本书 _trash 下），不接受任意路径；校验不过 / 回收站不可用都只报错返回，一个文件都不动。
@@ -2558,6 +2564,37 @@ function registerIpc() {
     return collectExportTexts(bookPath, meta, override, plan.indexes);
   }
 
+  // B5（v1.8.0 WP-28）：TXT 导出流式写盘 —— 每章读出来 → 拼块 → 简繁转换 → 立刻写进临时文件，
+  // 整本 texts 数组 / 整本串 / 整本 Buffer 都不常驻（峰值从「约 2 份全书」降到「一章 + 它的导出块」）。
+  // 字节口径与旧链（collectExportTexts → buildTxtExport）逐字节一致：BOM 先写、块间 `\r\n\r\n`、末尾一个 `\r\n`。
+  // 顺序仍是「保存对话框确认 → 才开始读正文」（审计 #7）；中途失败由 atomicWriteFileStream 删掉临时文件，
+  // 目标文件一个字节不动。EPUB / DOCX 本轮评估后不动：两个 builder 需要整本 texts 才能算目录 / 打包，
+  // 改成按章喂入要重写打包层（见台账 WP-28 口径），现有 C1「就地转换 + 用完即清」保持原样。
+  async function writeTxtExport(filePath, bookPath, prepared) {
+    const { meta, plan, override } = prepared;
+    const conversion = s2tLib.normalizeMode(prepared.cfg.exportConversion);
+    const overrideIndex = exporter.chapterIndexOf(meta, override);
+    let chars = 0;
+    await atomicWriteFileStream(filePath, async (write) => {
+      await write(exporter.BOM);
+      const summary = await exporter.streamTxtExport(meta, prepared.range, {
+        conversion,
+        convertText: s2tLib.convertText,
+        readText: async (index, chapter) => {
+          if (index === overrideIndex) return override.text;
+          return (await storage.loadChapterText(bookPath, chapter.file)).text;
+        },
+        onChunk: (chunk) => write(chunk)
+      });
+      chars = summary.chars;
+    });
+    return {
+      chars,
+      includedUnsaved: overrideIndex >= 0 && plan.indexes.includes(overrideIndex),
+      conversion
+    };
+  }
+
   // EPUB / DOCX 导出成功后的返回字段（两个入口完全一致，只是 built 来自不同的纯函数）
   function archiveExportResult(filePath, built, chars, includedUnsaved, conversion, plan) {
     return {
@@ -2575,7 +2612,7 @@ function registerIpc() {
 
   handleBook('book:export', async (bookPath, override, range) => {
     const prepared = await prepareExport(bookPath, override, range);
-    const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;
+    const { meta, plan, defaultDir, range: safeRange } = prepared;
     // 文件名默认带上范围：书名.txt / 书名-卷名.txt / 书名-第X-Y章.txt（可在保存对话框里改）
     const defaultName = exporter.exportFileName(meta, safeRange);
     const { canceled, filePath } = await showSaveDialog({
@@ -2584,14 +2621,9 @@ function registerIpc() {
       filters: [{ name: '文本文件', extensions: ['txt'] }]
     });
     if (canceled || !filePath) return { canceled: true };
-    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）
-    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
-    // 简繁转换只作用于这份导出副本：字数仍按原稿算，磁盘上的章节 txt / 书目一个字节都不动
-    const conversion = s2tLib.normalizeMode(cfg.exportConversion);
-    // C1（审计 #1 / P3）：compose → 转换 → 出字节在 buildTxtExport 里串成一条链，每步之后
-    // 立刻放掉上一份整本数据（texts 数组同时被就地清空），导出字节与以前逐字节一致。
-    const buffer = exporter.buildTxtExport(meta, texts, safeRange, conversion, s2tLib.convertText);
-    await atomicWriteFile(filePath, buffer);
+    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）。
+    // B5（v1.8.0 WP-28）：TXT 改流式写盘，边读边拼边写，不物化整本 texts / 整本串 / 整本 Buffer。
+    const { chars, includedUnsaved, conversion } = await writeTxtExport(filePath, bookPath, prepared);
     // 记住这次导出的目录，下次导出默认还开在这里（记不住也不影响导出结果）
     await rememberExportDir(path.dirname(filePath));
     return {

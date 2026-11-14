@@ -788,3 +788,190 @@ test('历史（P-11）：并发度可降到 1（串行），结果与并发版�
   assert.equal(parallelResult.groupCount, serialResult.groupCount);
   assert.equal(parallelResult.totalBytes, serialResult.totalBytes);
 });
+
+// ---------- B6（v1.8.0 WP-28 / D-5）：三类备份的手动清理 ----------
+test('备份清理摘要（B6）：只算替换 / 整理 / 还原前三类，≥20 组或 ≥500MB 先到为准，只提示不删', () => {
+  const dir = (source, totalBytes) => ({ kind: 'dir', source, totalBytes });
+  const summary = history.backupCleanupSummary([
+    dir('replace', 100),
+    dir('format', 200),
+    dir('restore', 300),
+    dir('snapshot', 10_000_000_000),
+    { kind: 'file', source: 'delete', totalBytes: 10_000_000_000 },
+    { kind: 'file', source: 'bookmeta', totalBytes: 10_000_000_000 },
+    null
+  ]);
+  assert.equal(summary.groupCount, 3);
+  assert.equal(summary.totalBytes, 600);
+  assert.equal(summary.overGroups, false);
+  assert.equal(summary.overBytes, false);
+  assert.equal(summary.overLimit, false, '快照 / 删章散文件 / 书目备份不计入清理阈值');
+
+  // 阈值常量与 D-5 一致（改参数必须同步测试，不许悄悄放宽）
+  assert.equal(history.CLEANUP_REMINDER_GROUPS, 20);
+  assert.equal(history.CLEANUP_REMINDER_BYTES, 500 * 1024 * 1024);
+  assert.deepEqual([...history.CLEANABLE_SOURCES], ['replace', 'format', 'restore']);
+
+  // 20 组：命中组数（先到）
+  const twenty = Array.from({ length: 20 }, () => dir('replace', 1));
+  assert.equal(history.backupCleanupSummary(twenty).overGroups, true);
+  assert.equal(history.backupCleanupSummary(twenty).overLimit, true);
+  assert.equal(history.backupCleanupSummary(twenty.slice(0, 19)).overGroups, false);
+
+  // 500MB：命中字节（先到）；正好 500MB 算命中，差 1 字节不算
+  assert.equal(
+    history.backupCleanupSummary([dir('restore', history.CLEANUP_REMINDER_BYTES - 1)]).overBytes,
+    false
+  );
+  assert.equal(history.backupCleanupSummary([dir('restore', history.CLEANUP_REMINDER_BYTES)]).overBytes, true);
+  // 坏值 / 负数不计入，也不抛
+  const dirty = history.backupCleanupSummary([
+    dir('replace', 'x'),
+    dir('format', -5),
+    { kind: 'dir' },
+    undefined
+  ]);
+  assert.equal(dirty.groupCount, 2, '只有带可清理 source 的目录组算组数；坏字节 / 负数字节不计入总量');
+  assert.equal(dirty.totalBytes, 0);
+  assert.equal(history.backupCleanupSummary(null).groupCount, 0);
+});
+
+test('删除备份（B6）：只永久删除三类备份目录，快照 / 删章散文件 / 书目备份一个都不碰', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '备份清理书');
+  const replaceDir = await writeBackupDir(bookPath, '替换备份-2026-10-31-210000', {
+    '001-a.txt': '替换前甲',
+    '002-b.txt': '替换前乙'
+  });
+  const formatDir = await writeBackupDir(bookPath, '整理备份-2026-10-31-200000', { '001-a.txt': '整理前甲' });
+  const restoreDir = await writeBackupDir(bookPath, '还原前备份-2026-10-31-190000', { '001-a.txt': '还原前' });
+  const snapshotDir = await writeBackupDir(bookPath, '快照-20261031', { '001-a.txt': '快照正文' });
+  const looseDelete = path.join(bookPath, '_trash', '2026-10-31-215000-003-已删.txt');
+  await fs.writeFile(looseDelete, '删章正文', 'utf8');
+  const bakPath = path.join(bookPath, '书目.json.bak');
+  await fs.writeFile(bakPath, '{}', 'utf8');
+
+  const listed = await storage.listBookHistory(bookPath);
+  assert.deepEqual(listed.cleanup, history.backupCleanupSummary(listed.groups));
+  assert.equal(listed.cleanup.groupCount, 3);
+  assert.equal(listed.cleanup.overLimit, false);
+  const byId = (name) => `dir:${name}`;
+  const cleanableIds = listed.groups.filter((group) => group.cleanable).map((group) => group.id).sort();
+  assert.deepEqual(cleanableIds, [
+    byId('还原前备份-2026-10-31-190000'),
+    byId('整理备份-2026-10-31-200000'),
+    byId('替换备份-2026-10-31-210000')
+  ].sort(), '只有三类备份可清理');
+  // 快照 / 删章散文件 / 书目备份明确标不可清理
+  const snapshotGroup = listed.groups.find((group) => group.source === 'snapshot');
+  assert.equal(snapshotGroup.cleanable, false);
+  assert.equal(listed.groups.find((group) => group.source === 'delete').cleanable, false);
+  assert.equal(listed.groups.find((group) => group.source === 'bookmeta').cleanable, false);
+
+  const result = await storage.deleteHistoryBackups(bookPath, cleanableIds);
+  assert.equal(result.deletedGroups, 3);
+  assert.equal(result.skipped.length, 0);
+  assert.equal(
+    result.deletedBytes,
+    Buffer.byteLength('替换前甲') + Buffer.byteLength('替换前乙') + Buffer.byteLength('整理前甲') + Buffer.byteLength('还原前')
+  );
+  assert.deepEqual(
+    result.deleted.map((item) => item.fileCount).sort(),
+    [1, 1, 2]
+  );
+  for (const dir of [replaceDir, formatDir, restoreDir]) {
+    await assert.rejects(() => fs.access(dir), (err) => err.code === 'ENOENT', `${path.basename(dir)} 应已删除`);
+  }
+  // 非三类备份原样保留（绝不「顺手」删掉快照 / 散文件 / 书目备份）
+  assert.deepEqual(await fs.readdir(snapshotDir), ['001-a.txt']);
+  assert.equal(await fs.readFile(looseDelete, 'utf8'), '删章正文');
+  assert.equal(await fs.readFile(bakPath, 'utf8'), '{}');
+
+  // 再删一次：目录已经不在，按 missing 跳过，不抛
+  const again = await storage.deleteHistoryBackups(bookPath, cleanableIds);
+  assert.equal(again.deletedGroups, 0);
+  assert.equal(again.skipped.filter((item) => item.reason === 'missing').length, 3);
+  // 列表里只剩快照 / 删章 / 书目备份
+  const after = await storage.listBookHistory(bookPath);
+  assert.equal(after.cleanup.groupCount, 0);
+  assert.equal(after.groups.some((group) => group.cleanable), false);
+});
+
+test('删除备份（B6）：跳过 10 秒撤销引用的组并说明，其它组照常删除', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '撤销保护书');
+  await writeBackupDir(bookPath, '替换备份-2026-10-31-210000', { '001-a.txt': '替换前' });
+  const restoreDir = await writeBackupDir(bookPath, '还原前备份-2026-10-31-190000', { '001-a.txt': '还原前' });
+  const protectedId = 'dir:还原前备份-2026-10-31-190000';
+  const result = await storage.deleteHistoryBackups(
+    bookPath,
+    ['dir:替换备份-2026-10-31-210000', protectedId],
+    { protectedGroupIds: [protectedId] }
+  );
+  assert.equal(result.deletedGroups, 1);
+  assert.deepEqual(result.skipped, [{ id: protectedId, name: '还原前备份-2026-10-31-190000', reason: 'active-undo' }]);
+  assert.deepEqual(await fs.readdir(restoreDir), ['001-a.txt'], '撤销窗口内的组必须留着');
+  await assert.rejects(
+    () => fs.access(path.join(bookPath, '_trash', '替换备份-2026-10-31-210000')),
+    (err) => err.code === 'ENOENT'
+  );
+});
+
+test('删除备份（B6）：非法 id / 不可清理组一律拒绝，绝不越界删任何文件', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '清理守卫书');
+  const snapshotDir = await writeBackupDir(bookPath, '快照-20261031', { '001-a.txt': '快照' });
+  const otherDir = await writeBackupDir(bookPath, '自定义备份-2026-10-31-210000', { 'x.txt': '别的' });
+  const bakPath = path.join(bookPath, '书目.json.bak');
+  await fs.writeFile(bakPath, '{}', 'utf8');
+  const outside = await writeBackupDir(bookPath, '替换备份-2026-10-31-180000', { '001-a.txt': '外面前' });
+  const payload = [
+    'dir:../书目.json',
+    'dir:../../',
+    'file:书目.json.bak',
+    'bak',
+    'dir:快照-20261031',
+    'dir:自定义备份-2026-10-31-210000',
+    '',
+    42,
+    null,
+    '替换备份-2026-10-31-180000'
+  ];
+  const result = await storage.deleteHistoryBackups(bookPath, payload);
+  assert.equal(result.deletedGroups, 0);
+  assert.equal(result.skipped.length, payload.length);
+  for (const item of result.skipped) {
+    assert.ok(['bad-id', 'not-cleanable'].includes(item.reason), JSON.stringify(item));
+  }
+  assert.deepEqual(await fs.readdir(snapshotDir), ['001-a.txt']);
+  assert.deepEqual(await fs.readdir(otherDir), ['x.txt']);
+  assert.deepEqual(await fs.readdir(outside), ['001-a.txt']);
+  assert.equal(await fs.readFile(bakPath, 'utf8'), '{}');
+});
+
+test('删除备份（B6）：绝不自动删 —— 列历史 / 扫描备份不调用任何删除', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '不自动删书');
+  const replaceDir = await writeBackupDir(bookPath, '替换备份-2026-10-31-210000', { '001-a.txt': '替换前' });
+  await storage.listBookHistory(bookPath);
+  await storage.listReplaceBackups(bookPath);
+  await history.listHistory(bookPath, { chapterFiles: [] });
+  assert.deepEqual(await fs.readdir(replaceDir), ['001-a.txt'], '只读扫描一个字节都不许删');
+
+  // 静态闸门：列表 / 摘要路径里不出现删除调用；删除只在显式 IPC handler 与 history-ui 的确认流程里
+  const storageSrc = await fs.readFile(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  const listBody = storageSrc.slice(
+    storageSrc.indexOf('async function listBookHistory('),
+    storageSrc.indexOf('// B6（v1.8.0 WP-28）：统计一个备份目录的章节副本')
+  );
+  assert.doesNotMatch(listBody, /deleteHistoryBackups|fs\.rm\(|fs\.unlink\(/, 'listBookHistory 只能读');
+  const historySrc = await fs.readFile(path.join(__dirname, '..', 'core', 'history.js'), 'utf8');
+  const scanBody = historySrc.slice(historySrc.indexOf('async function listHistory('), historySrc.indexOf('// 严格解析渲染层传回来的备份组 id'));
+  assert.doesNotMatch(scanBody, /fs\.rm\(|fs\.unlink\(|deleteHistoryBackups/, 'listHistory 只能读');
+  const mainSrc = await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.equal(
+    (mainSrc.match(/handleBook\('book:delete-history-backups'/g) || []).length,
+    1,
+    '删除备份只有一个显式 IPC 入口'
+  );
+});

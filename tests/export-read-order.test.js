@@ -47,30 +47,48 @@ test('静态闸门：readExportTexts 是 prepareExport 的后半段（#7）', ()
 });
 
 test('静态闸门：三个导出入口都在保存对话框确认之后才读正文（#7）', () => {
-  for (const channel of ['book:export', 'book:export-epub', 'book:export-docx']) {
+  // B5（v1.8.0 WP-28）：TXT 改成流式写盘后不再走 readExportTexts，但「正文只在对话框确认后读」
+  // 这条不变——它现在锚在 writeTxtExport（内部才是 streamTxtExport 的逐章读取）。
+  // EPUB / DOCX 仍走整本读取（本轮评估不动），断言逐字保留。
+  const READ_ANCHOR = {
+    'book:export': 'await writeTxtExport(filePath, bookPath, prepared)',
+    'book:export-epub': 'await readExportTexts(bookPath, prepared)',
+    'book:export-docx': 'await readExportTexts(bookPath, prepared)'
+  };
+  for (const [channel, anchor] of Object.entries(READ_ANCHOR)) {
     const body = sliceFrom(MAIN, `  handleBook('${channel}', async (bookPath, override, range) => {`);
     const dialogAt = body.indexOf('await showSaveDialog(');
     const cancelAt = body.indexOf('if (canceled || !filePath) return { canceled: true };');
-    const readAt = body.indexOf('await readExportTexts(bookPath, prepared)');
+    const readAt = body.indexOf(anchor);
     assert.notEqual(dialogAt, -1, `${channel}：找不到保存对话框`);
     assert.notEqual(cancelAt, -1, `${channel}：找不到取消分支`);
     assert.notEqual(
       readAt,
       -1,
-      `${channel}：正文读取没走 readExportTexts（可能又改回 prepareExport 里读了）`
+      `${channel}：正文读取没走约定的入口（可能又改回 prepareExport 里读了）`
     );
     assert.ok(dialogAt < cancelAt, `${channel}：取消分支必须在保存对话框之后`);
     assert.ok(
       cancelAt < readAt,
       `${channel}：正文必须在保存对话框确认之后才读（#7：取消导出不许白读整本）`
     );
-    // 也不许绕过 readExportTexts 直接从 prepareExport 解构：那等于时序又回到对话框之前
+    // 也不许绕过约定入口直接从 prepareExport 解构：那等于时序又回到对话框之前
     assert.doesNotMatch(
       body,
       /const \{[^}]*texts[^}]*\} = await prepareExport\(/,
       `${channel}：不许再从 prepareExport 拿 texts`
     );
   }
+});
+
+test('静态闸门：TXT 导出流式写盘（B5/WP-28）——逐块写出、不物化整本', () => {
+  const body = sliceFrom(MAIN, '  async function writeTxtExport(filePath, bookPath, prepared) {');
+  assert.match(body, /atomicWriteFileStream\(filePath/, 'TXT 导出要写临时文件再 rename（原子写）');
+  assert.match(body, /exporter\.streamTxtExport\(meta, prepared\.range/, '正文由 streamTxtExport 逐章读');
+  assert.match(body, /await write\(exporter\.BOM\)/, 'BOM 必须写在最前面（老工具识别 UTF-8）');
+  assert.doesNotMatch(body, /collectExportTexts|buildTxtExport|composeBook|exportBufferFromText|Buffer\.from/, '流式路径不许退回整本拼接 / 整本 Buffer');
+  assert.doesNotMatch(body, /readExportTexts/, 'TXT 流式路径不许退回整本 texts 数组');
+  assert.match(body, /onChunk: \(chunk\) => write\(chunk\)/, '每一块直接写盘，不在内存里 join 整本');
 });
 
 test('静态闸门：book:copy 不走保存对话框，保持原样直接读（#7 只动导出三入口）', () => {

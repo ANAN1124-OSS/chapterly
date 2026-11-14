@@ -9,8 +9,9 @@
  *
  * 契约：本模块不碰 DOM、不碰 IPC、不读配置，只做上面三件事。
  *   createUndoSlot({ ttlMs, maxDepth, now }) 返回
- *     { push, peek, take, clear, expire, hasPending, remainingMs, size, ttlMs }
- *     - push({ label, run, bookPath })：登记一条撤销动作；run 必须是函数（返回值随意）。
+ *     { push, peek, take, clear, expire, hasPending, remainingMs, size, pendingGroupIds, ttlMs }
+ *     - push({ label, run, bookPath, groupId })：登记一条撤销动作；run 必须是函数（返回值随意）。
+ *       groupId 可选（形如 `dir:替换备份-…`）：这份撤销引用的 _trash 备份组，清理备份要跳过它。
  *       超出深度时丢最旧的一条，被丢的那条挂在返回值的 `evicted` 上（只带 id / label / bookPath / at，
  *       不带 run —— 给 UI 提一句「上一步的撤销已被替换」，但不留一个还会被调用的闭包）。
  *     - peek()：还活着就返回**最新**一条（顺手清掉已过期的），返回 null 表示没有可撤销的动作。
@@ -19,6 +20,8 @@
  *     - expire()：只清「已过期」的条目（可能一次清掉多条），返回是否清掉了。
  *     - remainingMs()：最新那条距离过期还剩多少毫秒（0 = 没有 / 已过期）。
  *     - size()：未过期的条数（调试 / 单测用）。
+ *     - pendingGroupIds(bookPath?)：未过期条目引用的备份组 id（去重、旧→新）；传 bookPath 只算
+ *       这一本书（跨书同名备份不互相误伤）。备份清理据此跳过活跃撤销组。
  *   isUndoKey(event, typing)：键位是 Ctrl+Z 且焦点不在输入类目标上。
  *   isTypingTarget(element)：input / select / textarea / contenteditable。
  *
@@ -61,7 +64,10 @@
     return !typing;
   }
 
-  function createUndoSlot(options) {
+  // B6（v1.8.0 WP-28）：撤销动作如果引用了一份 _trash 备份组（整本替换 / 整理 / 还原前），
+// 登记时把 `groupId`（形如 `dir:替换备份-…`）一起记下；备份清理入口按「还活着（未过 TTL）的
+// 条目」拿这几个 id 跳过，绝不把 10 秒内的撤销退路删掉。不带 groupId 的动作不受影响。
+function createUndoSlot(options) {
     const opts = options || {};
     const ttlMs = Number.isFinite(opts.ttlMs) && opts.ttlMs > 0 ? Math.floor(opts.ttlMs) : TTL_MS;
     const maxDepth =
@@ -96,6 +102,7 @@
         id: seq,
         label: action.label == null || action.label === '' ? DEFAULT_LABEL : String(action.label),
         bookPath: typeof action.bookPath === 'string' ? action.bookPath : '',
+        groupId: typeof action.groupId === 'string' ? action.groupId : '',
         run: action.run,
         at: now(),
         evicted: null
@@ -151,7 +158,22 @@
       return entries.length;
     }
 
-    return { push, peek, take, clear, expire, hasPending, remainingMs, size, ttlMs, maxDepth };
+    // B6（v1.8.0 WP-28）：还活着（未过 TTL）的撤销动作引用的 _trash 备份组 id。
+    // 备份清理入口用它跳过「10 秒内还能撤销」的组；过期条目在 prune 里清掉后自然从列表消失。
+    // 传 bookPath 时只算这一本书的条目（跨书的同名备份目录不会互相误伤；没记 bookPath 的条目照旧算）。
+    function pendingGroupIds(bookPath) {
+      prune();
+      const filter = typeof bookPath === 'string' ? bookPath.toLowerCase() : '';
+      const ids = [];
+      for (const entry of entries) {
+        if (!entry.groupId) continue;
+        if (filter && entry.bookPath && String(entry.bookPath).toLowerCase() !== filter) continue;
+        if (!ids.includes(entry.groupId)) ids.push(entry.groupId);
+      }
+      return ids;
+    }
+
+    return { push, peek, take, clear, expire, hasPending, remainingMs, size, pendingGroupIds, ttlMs, maxDepth };
   }
 
   return { TTL_MS, MAX_DEPTH, DEFAULT_LABEL, createUndoSlot, isUndoKey, isTypingTarget };

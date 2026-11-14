@@ -333,3 +333,115 @@ test('碎片单例：同 root 并发两次 create 串行、序号不撞、两份
   ]);
   assert.deepEqual(texts.map((item) => item.text).sort(), ['并发甲', '并发乙'].sort(), '两份正文都要保留');
 });
+
+// ---------- B7（v1.8.0 WP-28）：列表先粗排再只读前 300 条预览 ----------
+async function makeFragmentFiles(root, count, mtimeFor) {
+  const dir = path.join(root, '_碎片');
+  await fs.mkdir(dir, { recursive: true });
+  const names = [];
+  for (let i = 0; i < count; i += 1) {
+    const name = `某天-${i + 1}.txt`;
+    await fs.writeFile(path.join(dir, name), `正文 ${i}\n`, 'utf8');
+    await fs.utimes(path.join(dir, name), mtimeFor(i), mtimeFor(i));
+    names.push(name);
+  }
+  return names;
+}
+
+test('碎片列表（B7/WP-28）：305 条只给最新的 300 条读预览，被截掉的条目一个字节都不读', async () => {
+  const root = await mkTmp();
+  const base = 1_760_000_000; // 固定秒数，避免「同时创建」导致 mtime 相同
+  await makeFragmentFiles(root, 305, (i) => base + i);
+  const reads = [];
+  const store = frag.createFragmentStore(root, {
+    readPreview: async (filePath) => {
+      reads.push(path.basename(filePath));
+      return { preview: `预览：${path.basename(filePath)}`, text: '' };
+    }
+  });
+  const listed = await store.list();
+  assert.equal(listed.total, 305, '总数照实报');
+  assert.equal(listed.truncated, true);
+  assert.equal(listed.fragments.length, 300);
+  assert.equal(reads.length, 300, '只读会返回的前 300 条预览');
+  // 最新的 300 条 = 序号 305 → 6；被截掉的 5 条（1–5）一次都没读
+  assert.equal(listed.fragments[0].name, '某天-305.txt');
+  assert.equal(listed.fragments[299].name, '某天-6.txt');
+  assert.equal(reads.includes('某天-1.txt'), false);
+  assert.equal(reads.includes('某天-5.txt'), false);
+  assert.equal(reads.includes('某天-6.txt'), true);
+  assert.equal(listed.fragments[0].preview, '预览：某天-305.txt');
+  // size / mtimeMs / date / seq 字段与旧形状一致（手工命名的碎片 date/seq 为 null）
+  assert.equal(listed.fragments[0].date, null);
+  assert.equal(listed.fragments[0].size, Buffer.byteLength('正文 304\n'));
+  assert.ok(listed.fragments[0].mtimeMs > 0);
+});
+
+test('碎片列表（B7/WP-28）：≤300 条时逐字段与旧实现一致（最新在前 + 文件名字典序兜底）', async () => {
+  const root = await mkTmp();
+  await makeFragmentFiles(root, 3, (i) => 1_760_000_000 + i);
+  const store = frag.createFragmentStore(root, {
+    readPreview: async (filePath) => ({ preview: `P:${path.basename(filePath)}`, text: '' })
+  });
+  const listed = await store.list();
+  assert.equal(listed.truncated, false);
+  assert.deepEqual(
+    listed.fragments.map((item) => [item.name, item.preview]),
+    [
+      ['某天-3.txt', 'P:某天-3.txt'],
+      ['某天-2.txt', 'P:某天-2.txt'],
+      ['某天-1.txt', 'P:某天-1.txt']
+    ]
+  );
+});
+
+test('碎片列表（B7/WP-28）：stat 并发（峰值受并发度限制）、读不到的条目只跳过自己', async () => {
+  const root = await mkTmp();
+  await makeFragmentFiles(root, 8, (i) => 1_760_000_000 + i);
+  let active = 0;
+  let peak = 0;
+  const stat = async (target) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      return await fs.stat(target);
+    } finally {
+      active -= 1;
+    }
+  };
+  const store = frag.createFragmentStore(root, {
+    stat,
+    readPreview: async () => ({ preview: '', text: '' })
+  });
+  const listed = await store.list();
+  assert.equal(listed.total, 8);
+  assert.ok(peak >= 2, `stat 应该并发（8 条里峰值 ${peak}）`);
+  assert.ok(peak <= 8, `并发度不许超过上限（峰值 ${peak}）`);
+
+  // 并发度 1 = 串行，结果与并发版逐字段一致
+  const serial = frag.createFragmentStore(root, {
+    stat,
+    concurrency: 1,
+    readPreview: async () => ({ preview: '', text: '' })
+  });
+  peak = 0;
+  const serialListed = await serial.list();
+  assert.equal(peak, 1, '并发度 1 时一次只 stat 一个');
+  assert.deepEqual(
+    serialListed.fragments.map((item) => item.name),
+    listed.fragments.map((item) => item.name)
+  );
+
+  // 其中一个文件 stat 失败：只跳过它自己
+  const broken = frag.createFragmentStore(root, {
+    stat: async (target) => {
+      if (path.basename(target) === '某天-3.txt') throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return fs.stat(target);
+    },
+    readPreview: async () => ({ preview: '', text: '' })
+  });
+  const brokenListed = await broken.list();
+  assert.equal(brokenListed.total, 7);
+  assert.equal(brokenListed.fragments.some((item) => item.name === '某天-3.txt'), false);
+});

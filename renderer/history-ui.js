@@ -23,6 +23,7 @@
  *       confirmRestoreWithUnsaved,                     //   「还原前」未保存三选一 + 保存失败即停（与整本替换备份还原共用一份实现）
  *       openModal,                                     //   通用询问框（1.4.0 P0-2 起历史还原不再二次确认）
  *       registerUndo,                                  //   登记 10 秒撤销（历史还原用还原前备份还原；1.4.0 P0-2）
+ *       protectedUndoGroups,                           //   B6：10 秒窗口内仍可撤销的备份组 id（清理备份要跳过）
  *       refreshShelf,                                  //   还原后刷新书架
  *       reloadAfterPartialFailure,                     //   还原失败后按磁盘真相重载（可能已还原了几章）
  *       reloadOpenBookFromDisk                         //   这本书开着时，还原成功后从磁盘重载
@@ -76,7 +77,7 @@
       if (typeof guard[key] !== 'function') throw new TypeError('createHistoryUi 的 host.guard 缺少 ' + key);
     }
     if (typeof collab !== 'object') throw new TypeError('createHistoryUi 的 host.collab 必须是对象');
-    for (const key of ['confirmRestoreWithUnsaved', 'openModal', 'registerUndo', 'refreshShelf', 'reloadAfterPartialFailure', 'reloadOpenBookFromDisk']) {
+    for (const key of ['confirmRestoreWithUnsaved', 'openModal', 'registerUndo', 'protectedUndoGroups', 'refreshShelf', 'reloadAfterPartialFailure', 'reloadOpenBookFromDisk']) {
       if (collab[key] === undefined || collab[key] === null) throw new TypeError('createHistoryUi 的 host.collab 缺少 ' + key);
     }
     if (typeof menus !== 'object') throw new TypeError('createHistoryUi 的 host.menus 必须是对象');
@@ -86,7 +87,10 @@
     if (typeof fmt !== 'object' || fmt.formatBytes === undefined || fmt.formatBytes === null) {
       throw new TypeError('createHistoryUi 的 host.fmt 缺少 formatBytes');
     }
-    const { confirmRestoreWithUnsaved, openModal, registerUndo, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk } = collab;
+    const { confirmRestoreWithUnsaved, openModal, registerUndo, protectedUndoGroups, refreshShelf, reloadAfterPartialFailure, reloadOpenBookFromDisk } = collab;
+    if (typeof protectedUndoGroups !== 'function') {
+      throw new TypeError('createHistoryUi 的 host.collab.protectedUndoGroups 必须是函数');
+    }
     const { hideBookMenu, hideExportMenu } = menus;
     const { formatBytes } = fmt;
 
@@ -107,6 +111,7 @@
       groups: [],
       fileCount: 0,
       totalBytes: 0,
+      cleanup: null,
       loading: true,
       error: '',
       preview: null,
@@ -152,6 +157,8 @@
     current.groups = Array.isArray(data && data.groups) ? data.groups : [];
     current.fileCount = Number(data && data.fileCount) || 0;
     current.totalBytes = Number(data && data.totalBytes) || 0;
+    // B6（v1.8.0 WP-28）：三类备份的占用摘要（主进程算好，界面只用来提示 / 决定清理按钮）
+    current.cleanup = data && data.cleanup && typeof data.cleanup === 'object' ? data.cleanup : null;
     renderHistory();
     return data;
   }
@@ -240,6 +247,115 @@
     return button;
   }
 
+  // ---------- 三类备份的手动清理（B6 / D-5，参数已定，不重开） ----------
+  // 只清理「替换 / 整理 / 还原前」三种目录备份，且只由作者点按钮触发：
+  //   · 软提醒：单书 ≥20 组 或 合计 ≥500MB（先到为准）→ 汇总行只提示，绝不自动删；
+  //   · 入口：每组的「删除这组备份」+ 面板顶部「清理本书全部备份」；
+  //   · 两步确认：先点按钮，再在询问框里看到组数 / 占用后点「永久删除」；
+  //   · 跳过活跃撤销：10 秒撤销条引用的组即使被选中也不删，并在提示里说明；
+  //   · 永久删除：备份是副本，书里的正文仍在（与「清空这天的快照」移入回收站不同）。
+  function makeDeleteGroupButton(group) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn ghost tiny history-delete-group';
+    button.textContent = '删除这组备份';
+    button.title = '永久删除这一组备份（备份是副本，书里的正文不受影响）；10 秒撤销窗口内的组会跳过';
+    button.addEventListener('click', () => deleteBackupGroup(group));
+    return button;
+  }
+
+  // 面板顶部的清理条：只在有可清理备份时出现；按钮文案 / 提示写清「永久删除 + 跳过可撤销组」。
+  function buildCleanupBar(cleanable) {
+    const bar = document.createElement('div');
+    bar.className = 'history-cleanup';
+    const text = document.createElement('span');
+    text.className = 'history-cleanup-text';
+    const totalBytes = cleanable.reduce((sum, group) => sum + Math.max(0, Number(group.totalBytes) || 0), 0);
+    text.textContent = `可清理的备份：${cleanable.length} 组 · ${formatBytes(totalBytes)}`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn ghost tiny history-cleanup-all';
+    button.textContent = '清理本书全部备份';
+    button.title = '永久删除替换 / 整理 / 还原前三类备份（备份是副本，书里的正文不受影响）；可撤销的组会跳过';
+    button.addEventListener('click', () => deleteAllBackups());
+    bar.append(text, button);
+    return bar;
+  }
+
+  function cleanableGroupsOfCurrent() {
+    const current = state.history;
+    if (!current || !Array.isArray(current.groups)) return [];
+    return current.groups.filter((group) => group && group.cleanable === true);
+  }
+
+  // 两步确认里的第二步：列出这次会删的组数 / 占用，并说明被跳过的「10 秒撤销引用组」。
+  async function confirmDeleteBackupGroups(groups) {
+    const current = state.history;
+    if (!current) return { ok: false };
+    const list = (Array.isArray(groups) ? groups : []).filter((group) => group && group.cleanable === true);
+    if (!list.length) return { ok: false, reason: 'empty' };
+    let protectedIds;
+    try {
+      // TTL 由渲染层撤销栈维护（10 秒）；传当前书的路径，跨书同名备份目录不互相误伤。
+      // 读不到就整次放弃删除，绝不拿「读不到」当「没有保护」。
+      protectedIds = protectedUndoGroups(current.path);
+    } catch (err) {
+      toast(`暂时读不到撤销状态，这次没有删除：${err.message}`, 'error');
+      return { ok: false, message: err.message };
+    }
+    const protectedSet = new Set(
+      (Array.isArray(protectedIds) ? protectedIds : []).filter((id) => typeof id === 'string')
+    );
+    const removable = list.filter((group) => !protectedSet.has(group.id));
+    const protectedCount = list.length - removable.length;
+    if (!removable.length) {
+      toast('这些备份还在 10 秒撤销窗口里，等撤销条收起后再清理', 'warn');
+      return { ok: false, reason: 'protected' };
+    }
+    const totalBytes = removable.reduce((sum, group) => sum + Math.max(0, Number(group.totalBytes) || 0), 0);
+    const answer = await openModal({
+      title: '永久删除备份',
+      message:
+        `这会永久删除 ${removable.length} 组备份（共 ${formatBytes(totalBytes)}），删除后无法恢复。` +
+        '备份只是副本，书里的正文不受影响。' +
+        (protectedCount ? ` 另有 ${protectedCount} 组还在 10 秒撤销窗口里，这次会跳过。` : ''),
+      buttons: [
+        { label: '取消', value: 'cancel' },
+        { label: '永久删除', value: 'delete', kind: 'danger' }
+      ],
+      cancelValue: 'cancel'
+    });
+    if (!answer || answer.action !== 'delete') return { ok: false, canceled: true };
+    try {
+      const data = await call(api.deleteHistoryBackups, current.path, removable.map((group) => group.id), {
+        protectedGroupIds: Array.from(protectedSet)
+      });
+      if (state.history === current) await refreshHistory();
+      await refreshShelf();
+      const deletedGroups = Number(data && data.deletedGroups) || 0;
+      const skipped = Array.isArray(data && data.skipped) ? data.skipped : [];
+      const activeSkipped = skipped.filter((item) => item && item.reason === 'active-undo').length;
+      const failed = skipped.filter((item) => item && (item.reason === 'failed' || item.reason === 'missing')).length;
+      let message = `已永久删除 ${deletedGroups} 组备份（${formatBytes(Number(data && data.deletedBytes) || 0)}）`;
+      if (activeSkipped) message += `；${activeSkipped} 组仍在 10 秒撤销窗口里，已跳过`;
+      if (failed) message += `；${failed} 组没能删除（文件可能被占用或已经不存在）`;
+      toast(message);
+      return { ok: true, data };
+    } catch (err) {
+      toast(`删除备份失败：${err.message}`, 'error');
+      return { ok: false, message: err.message };
+    }
+  }
+
+  async function deleteBackupGroup(group) {
+    if (!group || group.cleanable !== true) return { ok: false };
+    return confirmDeleteBackupGroups([group]);
+  }
+
+  async function deleteAllBackups() {
+    return confirmDeleteBackupGroups(cleanableGroupsOfCurrent());
+  }
+
   function buildHistoryGroup(group) {
     const card = document.createElement('div');
     card.className = 'history-group';
@@ -286,6 +402,10 @@
       head.appendChild(actions);
     } else if (group.kind === 'dir' && group.restorableCount > 0) {
       head.appendChild(makeRestoreGroupButton(group));
+      // B6：可清理的三类备份多一个「删除这组备份」（快照组有自己的清空入口，不走这里）
+      if (group.cleanable) head.appendChild(makeDeleteGroupButton(group));
+    } else if (group.kind === 'dir' && group.cleanable) {
+      head.appendChild(makeDeleteGroupButton(group));
     }
     card.appendChild(head);
 
@@ -364,9 +484,18 @@
         '这本书里还没有历史备份。做过替换、整本整理、删除章节或保存过书目后，备份会自动出现在这里。';
       list.appendChild(empty);
     } else {
-      summary.textContent =
+      let summaryText =
         `共 ${current.groups.length} 组备份 · ${current.fileCount} 个文件 · ` +
         `${formatBytes(current.totalBytes)}（新 → 旧）`;
+      // B6 / D-5 软提醒：三类备份 ≥20 组或 ≥500MB（先到为准）时只提示「可清理」，绝不自动删
+      if (current.cleanup && current.cleanup.overLimit) {
+        summaryText +=
+          `；替换 / 整理 / 还原前备份占 ${formatBytes(current.cleanup.totalBytes)} / ` +
+          `${current.cleanup.groupCount} 组，可清理`;
+      }
+      summary.textContent = summaryText;
+      const cleanable = current.groups.filter((group) => group && group.cleanable === true);
+      if (cleanable.length) list.appendChild(buildCleanupBar(cleanable));
       for (const group of current.groups) list.appendChild(buildHistoryGroup(group));
     }
     renderHistoryPreview();
@@ -429,7 +558,7 @@
           await reloadOpenBookFromDisk(bookPath);
           await refreshShelf();
           if (state.history === current) await refreshHistory();
-        });
+        }, { groupId: 'dir:' + undoName, bookPath });
       }
       await refreshShelf();
       if (state.history === current) await refreshHistory();
@@ -498,6 +627,8 @@
       closeHistoryPreview,
       previewHistoryBackup,
       confirmHistoryRestore,
+      deleteBackupGroup,
+      deleteAllBackups,
       setupHistoryUi
     };
   }

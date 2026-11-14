@@ -53,6 +53,43 @@ async function atomicWriteFile(filePath, data, encoding = 'utf8', { ensureDir = 
   }
 }
 
+// B5（v1.8.0 WP-28）：流式原子写。produce(write) 里按块顺序写，整段成功后才 fsync + rename；
+// 任一块失败：关句柄、删临时文件、目标文件一个字节不动（与 atomicWriteFile 同一条红线）。
+// TXT 导出这种「边读边拼、不物化整本字符串」的路径用它；小文件仍走 atomicWriteFile。
+async function atomicWriteFileStream(filePath, produce, { ensureDir = true } = {}) {
+  if (typeof produce !== 'function') throw new TypeError('atomicWriteFileStream 需要写入回调');
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const tmp = path.join(
+    dir,
+    `.${base}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  );
+  let handle = null;
+  try {
+    if (ensureDir) await fs.mkdir(dir, { recursive: true });
+    // C6（审计 S8）：和 atomicWriteFile 一样用 'wx'，撞名 / 残留临时文件直接失败。
+    handle = await fs.open(tmp, 'wx');
+    const write = async (chunk) => {
+      if (chunk == null) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+      if (!buffer.length) return;
+      // position = null：接在当前文件位置后面顺序写（导出只追加，不回头改）
+      await handle.write(buffer, 0, buffer.length, null);
+    };
+    await produce(write);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await renameWithRetry(tmp, filePath);
+  } catch (err) {
+    if (handle) {
+      try { await handle.close(); } catch { /* 忽略 */ }
+    }
+    try { await fs.unlink(tmp); } catch { /* 忽略 */ }
+    throw err;
+  }
+}
+
 // stripBom 从 core/common.js 来（B6）：原子读写 JSON 与导入 / 捕获共用同一份「只吃开头 BOM」的实现。
 async function readJson(filePath) {
   const raw = await fs.readFile(filePath, 'utf8');
@@ -65,6 +102,7 @@ async function writeJsonAtomic(filePath, obj, options = {}) {
 
 module.exports = {
   atomicWriteFile,
+  atomicWriteFileStream,
   renameWithRetry,
   readJson,
   writeJsonAtomic,

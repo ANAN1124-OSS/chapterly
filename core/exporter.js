@@ -223,6 +223,46 @@ function buildTxtExport(meta, texts, range, conversion, convertText) {
   return exportBufferFromText(converted); // ③ BOM + 串 → Buffer
 }
 
+// B5（v1.8.0 WP-28）：TXT 导出流式拼接。按「卷 → 章」逐块交给 onChunk（已经过简繁转换），
+// 不在内存里拼整本串、也不建 blocks 数组；readText(index, chapter) 每次只让调用方读一章，
+// 整本导出期间常驻的正文从「全书 texts 数组 + 整本串 + 整本 Buffer」降到「一章 + 它的导出块」。
+// 字节口径与旧链（composeBook → convertText → exportBufferFromText）逐字节一致：
+// 块之间 `\r\n\r\n`、卷名单独一块、整本末尾一个 `\r\n`；块边界是 CRLF，简繁词条里没有换行，
+// 所以逐块转换与整本转换结果相同。
+// 返回 { chars, chapterCount }：chars 与 collectExportTexts 同口径（countChars、只为范围内章节累加）。
+async function streamTxtExport(meta, range, options) {
+  const opts = options && typeof options === 'object' ? options : {};
+  const { readText, onChunk } = opts;
+  if (typeof readText !== 'function') throw new TypeError('streamTxtExport 需要 readText 回调');
+  if (typeof onChunk !== 'function') throw new TypeError('streamTxtExport 需要 onChunk 回调');
+  const convertText = typeof opts.convertText === 'function' ? opts.convertText : null;
+  const chapters = chapterList(meta);
+  const plan = resolveExportRange(meta, range);
+  let chars = 0;
+  let first = true;
+  const emit = async (piece) => {
+    const text = convertText ? convertText(piece, opts.conversion) : piece;
+    if (first) {
+      first = false;
+      await onChunk(text);
+      return;
+    }
+    await onChunk(`\r\n\r\n${text}`);
+  };
+  for (const group of groupByVolume(meta, plan.indexes)) {
+    if (group.name) await emit(group.name);
+    for (const index of group.indexes) {
+      const chapter = chapters[index];
+      const text = await readText(index, chapter);
+      chars += chaptersLib.countChars(text);
+      const title = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
+      await emit(blockFor(title, text));
+    }
+  }
+  await onChunk('\r\n');
+  return { chars, chapterCount: plan.indexes.length };
+}
+
 // C1（审计 #1 / P3）：EPUB / DOCX 导出只需要转换后的正文，额外建一份 `texts.map(convertText)`
 // 等于多占一整份全书正文；就地替换数组元素即可。conversion 为空 / 没给转换函数时原样返回
 // （连遍历都不做，正常导出零开销）。只改数组元素，不改数组对象本身。
@@ -307,6 +347,7 @@ module.exports = {
   exportBuffer,
   exportBufferFromText,
   buildTxtExport,
+  streamTxtExport,
   convertTextsInPlace,
   releaseTexts,
   cachedCharsOf,
