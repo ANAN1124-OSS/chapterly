@@ -9,16 +9,23 @@
  *   3. 搜索：大小写 / 全半角归一后的匹配，「命中行跨分区显示、空分组与非命中行隐藏」的可见性计划；
  *   4. 深链：`section=calendar` 要切到 writing 分区再定位（U-D4 的码字日历入口）。
  *
- * 浏览器里挂 window.CWSettingsIa（index.html 排在 settings-ui.js 之前），Node 里可 require。
+ * 浏览器里挂 window.CWSettingsIa（index.html 排在 core/common.js 与 settings-ui.js 之前），Node 里可 require。
+ * 搜索的全半角换算走 core/common.js 的 toHalfWidth（A2，v1.8.0 WP-31）：浏览器分支从 window.CWCommon 取，
+ * 缺了直接报错，不许退回一份本地 0xfee0 副本。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../core/common'));
   } else if (root) {
-    root.CWSettingsIa = factory();
+    root.CWSettingsIa = factory(root.CWCommon);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (common) {
   'use strict';
+
+  if (!common || typeof common.toHalfWidth !== 'function') {
+    throw new Error('CWSettingsIa：core/common.js 没有先加载');
+  }
+  const { toHalfWidth } = common;
 
   // 左侧导航的 5 个分区（顺序 = 导航顺序 = 分区的 DOM 顺序）
   const TABS = [
@@ -168,16 +175,9 @@
 
   // 搜索归一：小写 + 全角 ASCII / 表意空格转半角 + 合并空白。
   // 不删空格（「每日 目标」和「每日目标」都该能搜到，靠下面 matchesQuery 的去空格比较）。
+  // 全半角换算走 core/common.js 的 toHalfWidth（A2，v1.8.0 WP-31）。
   function normalizeQuery(value) {
-    const raw = String(value == null ? '' : value);
-    let out = '';
-    for (const ch of raw) {
-      const code = ch.codePointAt(0);
-      if (code === 0x3000) out += ' ';
-      else if (code >= 0xff01 && code <= 0xff5e) out += String.fromCharCode(code - 0xfee0);
-      else out += ch;
-    }
-    return out.toLowerCase().replace(/\s+/g, ' ').trim();
+    return toHalfWidth(value).toLowerCase().replace(/\s+/g, ' ').trim();
   }
 
   // 匹配口径：查询串是目标串的子串即命中；两边都归一。

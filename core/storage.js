@@ -3,7 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { atomicWriteFile, atomicCopyFile, writeJsonAtomic, stripBom } = require('./atomic');
-const { pad2, nowIso, mapLimit, createKeyedWriteQueue } = require('./common');
+const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, MAX_TEXT_BYTES } = require('./common');
 const chaptersLib = require('./chapters');
 const findLib = require('./find');
 const formatLib = require('./format');
@@ -13,6 +13,7 @@ const bookInfoLib = require('./bookinfo');
 const historyLib = require('./history');
 const snapshotLib = require('./snapshot');
 const openBooksLib = require('./open-books');
+const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
 const previewCacheLib = require('./preview-cache');
 
@@ -64,8 +65,9 @@ function batchFailure(err, { code, action, notes = [] }) {
 // 章节文件被外部程序换成超大文件（误放的视频 / 日志 / 数据库导出）时，会直接把主进程内存打爆
 // 而崩掉整个应用。所以读之前先看 stat.size，超限明确拒绝、一个字节都不写。
 // 口径对齐 core/importer.js 的导入上限（1000 万字中文小说约 30 MB，128 MB 有三倍以上余量）。
-// 这里不 require('./importer')：importer 依赖 storage，反向引用会成环；体量文案口径保持一致。
-const MAX_CHAPTER_READ_BYTES = 128 * 1024 * 1024;
+// A3（v1.8.0 WP-31）：上限常量与体量文案已收编到 core/common.js（MAX_TEXT_BYTES / formatByteSize），
+// 这里只保留对外名字，注释说「不 require importer」的理由不再成立（common 不依赖任何模块，不会成环）。
+const MAX_CHAPTER_READ_BYTES = MAX_TEXT_BYTES;
 // C17/V104（v1.8.0 WP-19）：书目.json / 书目.json.bak 是「整份读进内存 → JSON.parse」的小文件，
 // 以前没有 stat 闸门：被外部程序换成超大文件（误放的视频 / 坏同步盘）时，书架扫描 / 导入分析 /
 // 索引构建都会在 JSON.parse 之前把主进程内存打爆。书目给独立小上限：20000 章 × 最坏一条
@@ -76,22 +78,6 @@ const MAX_META_READ_BYTES = 32 * 1024 * 1024;
 // 书目塞进十万条记录时，书架扫描、排序、逐章 stat、索引构建都会按条数放大开销。超限按「书目坏了」
 // 处理（与 INVALID_META / PARSE_ERROR 同族；文件太大仍走 META_TOO_LARGE），一个字节的正文都不动。
 const MAX_META_CHAPTERS = 20000;
-const BYTE_UNITS = ['B', 'KB', 'MB', 'GB'];
-
-// 体量文案（与 core/importer.js 的 formatImportSize 同口径：1 位小数直到 10 以上）
-function formatByteSize(bytes) {
-  const n = Number(bytes);
-  if (!Number.isFinite(n) || n < 0) return '0 B';
-  let value = n;
-  let unit = 0;
-  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  if (unit === 0) return `${Math.round(value)} B`;
-  const shown = value < 10 ? value.toFixed(1) : String(Math.round(value));
-  return `${shown} ${BYTE_UNITS[unit]}`;
-}
 
 // 纯逻辑：把一个「整文件读进内存」的尺寸判成 null（放行）或 { code, message }（拒绝）。
 // stat 拿不到 / 坏尺寸（NaN、负数）不在这里拦，交给后面的读盘按原样报错。
@@ -1115,7 +1101,8 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     throw new StorageError('RESTORE_BAD_TRASH', '撤销删除的备份文件与章节文件名对不上');
   }
   const source = path.resolve(trashDir, trashName);
-  if (path.dirname(source).toLowerCase() !== path.resolve(trashDir).toLowerCase()) {
+  // A9（v1.8.0 WP-31）：「同一目录」判定统一走 core/path-utils.js 的 pathKey（不再手写小写比较）
+  if (pathUtils.pathKey(path.dirname(source)) !== pathUtils.pathKey(trashDir)) {
     throw new StorageError('RESTORE_BAD_TRASH', '撤销删除的备份文件不在本书 _trash 下');
   }
 
@@ -2292,8 +2279,9 @@ async function setLastOpenChapter(bookPath, chapterId) {
 const bookQueue = createKeyedWriteQueue();
 
 function bookLockKey(bookPath) {
-  // Windows 路径不分大小写，key 统一小写，免得 C:\Books\A 与 c:\books\a 变成两把锁
-  return path.resolve(String(bookPath)).toLowerCase();
+  // Windows 路径不分大小写，key 统一走 core/path-utils.js 的 pathKey（resolve + 小写 + 正反斜杠归一），
+  // 免得 C:\Books\A 与 c:\books\a 变成两把锁。A9（v1.8.0 WP-31）：不再手写 path.resolve().toLowerCase()。
+  return pathUtils.pathKey(bookPath);
 }
 
 function withBookLock(bookPath, task) {

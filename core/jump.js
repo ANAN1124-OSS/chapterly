@@ -9,28 +9,23 @@
 // 按卷模式下章节缺有效 number 直接抛错（code = JUMP_NUMBER_MISSING），不回落成全书下标——
 // 回落会让「第 3 章」悄悄跳到别的卷，宁可报错让调用方修数据。
 
+// A2（v1.8.0 WP-31）：全角数字 → 半角换算收编到 core/common.js（与校对「全角数字」建议同一份实现）。
+const { toHalfWidth } = require('./common');
+
 const DEFAULT_LIMIT = 8;
 const MAX_QUERY_LENGTH = 100;
 const MAX_RESULTS = 50;
 const MAX_CHAPTER_NUMBER = 999999;
 
-const FULL_WIDTH_DIGIT_RE = /[０-９]/g;
-
 function normalizeQuery(raw) {
   return String(raw == null ? '' : raw).trim().slice(0, MAX_QUERY_LENGTH);
-}
-
-function toHalfWidthDigits(text) {
-  return String(text == null ? '' : text).replace(FULL_WIDTH_DIGIT_RE, (ch) =>
-    String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
-  );
 }
 
 // 纯章号查询才返回数字；「12.5」「第12章：夜雨」「abc」都不算。
 function parseChapterNumber(raw) {
   const query = normalizeQuery(raw);
   if (!query) return null;
-  const match = toHalfWidthDigits(query).match(/^第?\s*([0-9]{1,6})\s*[章节回]?$/);
+  const match = toHalfWidth(query, { digitsOnly: true }).match(/^第?\s*([0-9]{1,6})\s*[章节回]?$/);
   if (!match) return null;
   const number = Number(match[1]);
   if (!Number.isSafeInteger(number) || number < 1 || number > MAX_CHAPTER_NUMBER) return null;

@@ -38,7 +38,7 @@
   if (!common || typeof common.normalizeForMatch !== 'function') {
     throw new Error('CWCommandRegistry：core/common.js 没有先加载');
   }
-  const { normalizeForMatch } = common;
+  const { normalizeForMatch, toHalfWidth } = common;
 
   const RECENT_LIMIT = 8;
   // 组权重：数字越小越靠前。空查询时「最近」之外按这个顺序排。
@@ -50,13 +50,12 @@
   const SEARCH_TEXT_SEPARATOR = '\n';
 
   // 归一：去首尾空白 + 全角字母数字与全角空格转半角 + 小写（中文标点不动）。
+  // 全半角换算走 core/common.js 的 toHalfWidth（A2，v1.8.0 WP-31）：全角 ASCII（！…～）与全角空格
+  // 一次换完，不再在模块里各写一份 0xfee0 减法。
   // 小写这一步走 core/common.js 的 normalizeForMatch（X7 / V205，WP-25）：含 'İ' 这类「小写化会
   // 变长」的字符时整串退回原文（这一次退化为区分大小写），不再各写一份裸 toLowerCase。
   function normalize(text) {
-    const halfWidth = String(text == null ? '' : text)
-      .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
-      .replace(/\u3000/g, ' ')
-      .trim();
+    const halfWidth = toHalfWidth(text).trim();
     return normalizeForMatch(halfWidth);
   }
 

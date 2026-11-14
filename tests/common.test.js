@@ -353,13 +353,17 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
   assert.equal(/electron/.test(COMMON_CODE), false, '不许出现 electron');
   // 对外形状固定：多一个少一个都要在评审里看到（formatCount 是 2026-11-04 拍板 #1 新增的共享格式化；
   // stripBom / normalizeText / lineStartsOf / positionOf / mapLimit / nowIso 是 B6 收编进来的；
-  // caseFoldForMatch / normalizeForMatch 是 v1.8.0 WP-25 收编的大小写归一，X7 / V205）
+  // caseFoldForMatch / normalizeForMatch 是 v1.8.0 WP-25 收编的大小写归一，X7 / V205；
+  // toHalfWidth / HAN_RANGES / formatByteSize / MAX_TEXT_BYTES 是 v1.8.0 WP-31 收编的 A2/A3）
   assert.deepEqual(Object.keys(common).sort(), [
+    'HAN_RANGES',
+    'MAX_TEXT_BYTES',
     'caseFoldForMatch',
     'clampInt',
     'createKeyedWriteQueue',
     'createWriteQueue',
     'dayKeyOf',
+    'formatByteSize',
     'formatCount',
     'isValidDayKey',
     'lineStartsOf',
@@ -372,6 +376,7 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
     'positionOf',
     'sleep',
     'stripBom',
+    'toHalfWidth',
     'truncateSafe'
   ]);
 });
@@ -424,7 +429,7 @@ test('静态闸门：用到 pad2 / clampInt / sleep / formatCount / stripBom / n
     ).test(source);
   for (const rel of CORE_FILES) {
     const source = read(rel);
-    for (const name of ['pad2', 'clampInt', 'sleep', 'formatCount', 'stripBom', 'normalizeText', 'caseFoldForMatch', 'normalizeForMatch', 'lineStartsOf', 'positionOf', 'mapLimit', 'nowIso', 'parseDayKey', 'isValidDayKey', 'dayKeyOf', 'createKeyedWriteQueue', 'createWriteQueue']) {
+    for (const name of ['pad2', 'clampInt', 'sleep', 'formatCount', 'stripBom', 'normalizeText', 'caseFoldForMatch', 'normalizeForMatch', 'lineStartsOf', 'positionOf', 'mapLimit', 'nowIso', 'parseDayKey', 'isValidDayKey', 'dayKeyOf', 'createKeyedWriteQueue', 'createWriteQueue', 'toHalfWidth', 'formatByteSize']) {
       if (!new RegExp(`\\b${name}\\s*\\(`).test(source)) continue;
       assert.ok(wiredFromCommon(source, name), `${rel} 用了 ${name}，但没从 core/common.js 拿`);
     }

@@ -406,7 +406,9 @@ test('静态闸门：storage 撤销只认 _trash 下的 basename，不接收绝�
   assert.match(storageSrc, /if \(rest === file\) return true;/);
   assert.match(storageSrc, /ordinal\[2\] === file/);
   assert.equal(/trashName\.endsWith\(`-\$\{file\}`\)/.test(storageSrc), false, '不许退回 endsWith 冒充判定');
-  assert.match(storageSrc, /path\.dirname\(source\)\.toLowerCase\(\) !== path\.resolve\(trashDir\)\.toLowerCase\(\)/);
+  // A9（v1.8.0 WP-31）：「同一目录」判定统一走 core/path-utils.js 的 pathKey（不再手写小写比较）
+  assert.match(storageSrc, /pathUtils\.pathKey\(path\.dirname\(source\)\) !== pathUtils\.pathKey\(trashDir\)/);
+  assert.match(storageSrc, /pathUtils\.pathKey\(bookPath\)/, '同一本书的写锁 key 也走 pathKey');
   assert.match(storageSrc, /restoreDeletedChapterFromTrash: locked\(restoreDeletedChapterFromTrash\)/);
 });
 
