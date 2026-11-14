@@ -80,6 +80,9 @@
   // 全局 Esc 链 + 关窗清理的**有序注册表**（v0.9 B-4 / 审计 F6）：层顺序与「谁参与关窗清理」在
   // esc-registry.js 里、Node 单测覆盖；这里只做探针（现在谁开着）和动作表（动作 id → 关闭函数）。
   const escLib = window.CWEscRegistry;
+  // 弹层清单的唯一事实源（1.8.0 WP-17 / 审计 C35）：17 个 backdrop 在 backdrop-registry.js 里、
+  // Node 单测覆盖；escProbe 的 backdrop 字段与 anyBackdropOpen 都从它取，别再往本文件抄 id 清单。
+  const backdropRegistry = window.CWBackdropRegistry;
   // 导出 / 复制（v0.9 B-5 第一刀）：导出范围对话框 + TXT / EPUB / DOCX 三种导出流程 +
   // 复制整本 / 复制本章，整段在 export-ui.js 里；这里只接线（外加「当前导出格式」活绑定）。
   const exportUiModule = window.CWExportUi;
@@ -3913,12 +3916,9 @@
   // 优先级（谁先接 Esc）和「谁参与关窗清理」都在 renderer/esc-registry.js（纯逻辑、Node 单测覆盖）。
   // 这里只做渲染层那两件事：① escProbe() 摊出「现在谁开着」；② escActions 把动作 id 落到关闭函数上。
   // 改顺序 / 加一层请改注册表，别再把 if 块抄回 keydown 里。
-  const ESC_BACKDROPS = [
-    'conflict', 'bookinfo', 'history', 'format', 'export', 'settings', 'jump', 'find',
-    'fragment', 'fragments', 'proofread', 'sensitive', 'capture', 'shortcuts',
-    // 1.6.0 F5：分组管理（书架）也是锁键弹层，Esc 收起
-    'group-manage'
-  ];
+  // 弹层清单只有一份：renderer/backdrop-registry.js 的 LIST（17 层，1.8.0 WP-17 / 审计 C35）。
+  // 这里只按 CLASS_LAYERS 摊 backdrop 字段；modal / command 两层另有状态源，见下面 probe 里的两行。
+  // 新增 / 删除弹层请改注册表（tests/backdrop-registry.test.js 会与 index.html 对账），别在本文件抄 id。
 
   function escProbe() {
     const probe = {
@@ -3941,9 +3941,9 @@
       reading: state.view === 'reading',
       focus: Boolean(state.focus && state.focus.on)
     };
-    for (const name of ESC_BACKDROPS) {
-      const el = $(`${name}-backdrop`);
-      probe[name] = Boolean(el && !el.classList.contains('hidden'));
+    // 弹层字段全部按注册表的 CLASS_LAYERS 现算（顺序 / 数量只有注册表一份，WP-17 / 审计 C35）。
+    for (const name of backdropRegistry.CLASS_LAYERS) {
+      probe[name] = backdropRegistry.isOpen($, name);
     }
     return probe;
   }
@@ -4140,14 +4140,11 @@
   }
 
   // 当前有没有弹层（含不锁键的面板）开着。Ctrl+K 与 `?` 共用：两个弹层不叠在一起，
-  // 与 Esc 链「锁键层先接走」的口径一致。state.modal 单独算（它可能压在别的弹层之上）。
+  // 与 Esc 链「锁键层先接走」的口径一致。弹层清单 = backdrop-registry.js 的 17 层
+  //（state.modal 判在两处：这里先看状态，注册表里 modal-backdrop 的类名再兜一层）。
   function anyBackdropOpen() {
     if (state.modal) return true;
-    for (const name of ESC_BACKDROPS) {
-      const el = $(`${name}-backdrop`);
-      if (el && !el.classList.contains('hidden')) return true;
-    }
-    return false;
+    return backdropRegistry.isBlocked($);
   }
 
   // Ctrl+K：打开面板（lock 弹层开着时不抢 —— 与 Esc 链同一口径；输入法组字中不处理）

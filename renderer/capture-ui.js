@@ -33,11 +33,16 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../core/chapters'), require('../core/capture'), require('../core/common'));
+    module.exports = factory(
+      require('../core/chapters'),
+      require('../core/capture'),
+      require('../core/common'),
+      require('./backdrop-registry')
+    );
   } else if (root) {
-    root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon);
+    root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon, root.CWBackdropRegistry);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (chaptersLib, captureLib, commonLib) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (chaptersLib, captureLib, commonLib, backdropRegistry) {
   'use strict';
 
   // 依赖只认契约保留的公开面：章节标题格式化（toast 用）、字数 / 截断 / 上限（core/capture），
@@ -54,6 +59,10 @@
   }
   if (!commonLib || typeof commonLib.formatCount !== 'function' || typeof commonLib.pad2 !== 'function') {
     throw new TypeError('capture-ui 需要 core/common.js（window.CWCommon）先加载');
+  }
+  // 1.8.0 WP-17（C35）：弹层清单不许在本模块再抄一份，统一走 backdrop-registry.js 的 17 层。
+  if (!backdropRegistry || typeof backdropRegistry.isBlocked !== 'function') {
+    throw new TypeError('capture-ui 需要 renderer/backdrop-registry.js（window.CWBackdropRegistry）先加载');
   }
   const { formatCount, pad2 } = commonLib;
 
@@ -329,20 +338,11 @@
     }
 
     function panelBlocked() {
-      return [
-        'modal-backdrop',
-        'settings-backdrop',
-        'export-backdrop',
-        'find-backdrop',
-        'format-backdrop',
-        'jump-backdrop',
-        'history-backdrop',
-        'bookinfo-backdrop',
-        'conflict-backdrop'
-      ].some((id) => {
-        const el = $(id);
-        return el && !el.classList.contains('hidden');
-      });
+      // 弹层清单只认 renderer/backdrop-registry.js 那一份（17 层，WP-17 / 审计 C35）——
+      // 以前这里手写 9 项，校对 / 敏感词 / 灵感箱 / 插入碎片 / 分组管理 / 命令面板 / 快捷键一览
+      // 开着时捕获面板还能叠上来。except 排除自己那层：面板已开着时 preflight 的 ALREADY_OPEN
+      // 先挡，这里不该把自己算成「别的弹窗挡着」。
+      return backdropRegistry.isBlocked($, { except: 'capture' });
     }
 
     // 打开面板：preloadedText 是全局快捷键 / 测试钩子已经读好的剪贴板原文。
