@@ -6,7 +6,10 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 module.exports = async function group3SaveBook(t) {
-  const { chaptersLib, storage, sleep, exec, booksRoot, bookDir, check, waitFor, diskText, win, setWindowSize } = t;
+  const {
+    chaptersLib, storage, sleep, exec, booksRoot, bookDir, check, waitFor, diskText, win, setWindowSize,
+    resetCloseReady, waitCloseReady
+  } = t;
 
   // 3. 手动保存整本：写当前章 + 校验全书
   await exec("window.__cwTest.switchTo(0, 'discard')");
@@ -21,6 +24,65 @@ module.exports = async function group3SaveBook(t) {
   );
   const meta1 = await storage.readBookMeta(bookDir);
   check('书目.json 三章顺序正确', JSON.stringify(meta1.chapters.map((c) => c.name)) === JSON.stringify(['起风', '夜雨', '']));
+
+  // 3a. 保存快照化（v1.8.0 WP-01 / 审计 C1）：保存期间敲入的字没写盘，不能并进基线。
+  // ?test=1 用 setTestSaveDelay 把保存 IPC 拖 600ms，制造「保存还在途」的窗口：
+  //   ① 发起保存后立刻改正文 → 磁盘落的是发起那一刻的快照；
+  //   ② 回执到达后仍是未保存态，关窗 / 切章照常拦截（以前会被标成已保存 → 静默丢稿）。
+  const snapshotText = '快照正文：保存发起那一刻。';
+  const typedDuringSave = '快照正文：保存发起那一刻。\n\n保存期间又敲的这句没有写盘。';
+  await exec('window.__cwTest.setTestSaveDelay(600)');
+  await exec(`window.__cwTest.setText(${JSON.stringify(snapshotText)})`);
+  await exec("window.__cwE2ESave = window.__cwTest.save(); 'started'");
+  // 回执还没回来（延迟里）：继续在编辑区输入，模拟作者在 IPC 往返期间接着敲字
+  await exec(`window.__cwTest.setText(${JSON.stringify(typedDuringSave)})`);
+  const dirtyDuringSave = await exec('window.__cwTest.dirty()');
+  const snapshotSaveReceipt = await exec('window.__cwE2ESave');
+  await exec('delete window.__cwE2ESave');
+  const diskAfterSnapshotSave = await diskText('001-未命名.txt');
+  check(
+    '保存快照化（C1）：保存期间输入的正文不丢——落盘的是发起保存那一刻的快照',
+    dirtyDuringSave === true &&
+      Boolean(snapshotSaveReceipt && snapshotSaveReceipt.ok === true) &&
+      diskAfterSnapshotSave === snapshotText,
+    { dirtyDuringSave, snapshotSaveReceipt, diskAfterSnapshotSave }
+  );
+  const afterSnapshotSave = await exec(`(() => ({ dirty: window.__cwTest.dirty(), text: window.__cwTest.text() }))()`);
+  check(
+    '保存快照化（C1）：回执到达后编辑区多出的文字仍是未保存态（不再被并进基线）',
+    afterSnapshotSave.dirty === true && afterSnapshotSave.text === typedDuringSave,
+    afterSnapshotSave
+  );
+  // ③ 关窗：未保存必须照常拦截（以前渲染层自报干净，主进程的交叉判定也被绕过）
+  resetCloseReady();
+  win.webContents.send('app:close-requested');
+  await waitFor('window.__cwTest.modalOpen()');
+  check(
+    '保存快照化（C1）：保存期间输入的未保存内容关窗照样拦截',
+    (await exec('window.__cwTest.dialog()')) === '退出前保存'
+  );
+  await exec("window.__cwTest.answerModal('cancel')");
+  await waitFor('window.__cwTest.modalOpen() === false');
+  check(
+    '保存快照化（C1）：关窗询问选「取消」后不退出、内容仍在编辑区',
+    (await waitCloseReady()) === false && (await exec('window.__cwTest.text()')) === typedDuringSave
+  );
+  // ④ 切章：必须照常询问；选「不保存，丢弃修改」后丢弃语义成立（切到第 2 章）
+  // 注意不能 await switchTo：dirty 时它要等询问框回答，E2E 必须先拿到弹窗再点按钮。
+  await exec("void window.__cwTest.switchTo(1); 'started'");
+  await waitFor('window.__cwTest.modalOpen()');
+  check(
+    '保存快照化（C1）：保存期间输入的内容切章照样拦截',
+    (await exec('window.__cwTest.dialog()')) === '切换章节前保存'
+  );
+  await exec("window.__cwTest.answerModal('discard')");
+  check(
+    '保存快照化（C1）：切章询问选「不保存」后丢弃语义成立，真的切到目标章',
+    (await waitFor("window.__cwTest.currentTitle() === '第2章：夜雨' ? '第2章：夜雨' : null")) === '第2章：夜雨'
+  );
+  // 收尾：回到第 1 章、关掉延迟（3b 及后面的组仍在第 1 章上跑）
+  await exec("window.__cwTest.switchTo(0, 'discard')");
+  await exec('window.__cwTest.setTestSaveDelay(0)');
 
   // 3b. 保存热路径（代码审计 F2；1.3.0 T7 起反馈在状态栏）：保存一成功就刷新状态栏——
   // 章数直接用书目里的章节数（不再为了拿这个数字 await 一趟全书校验）；全书校验挪到后台，

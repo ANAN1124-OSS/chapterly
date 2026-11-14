@@ -115,16 +115,16 @@ test('测试钩子模块：Node 里能 require、导出 create，create() 不碰
   assert.strictEqual(typeof hooks.handleCloseRequest, 'function');
 });
 
-test('测试钩子模块：拆分前后钩子名称与数量不变（506 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1）', () => {
+test('测试钩子模块：拆分前后钩子名称与数量不变（508 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1 / 2026-11-14 WP-01 保存延迟注入 +1）', () => {
   const hooks = hooksModule.create(stubHost());
   const names = Object.keys(hooks).sort();
-  assert.strictEqual(names.length, 507, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
+  assert.strictEqual(names.length, 508, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
   // 每个功能域各抽一个，防止「数量对但换了一批」
   for (const name of [
     'ready', 'state', 'newBook', 'openBookPath', 'openBookInNewWindow', 'releaseBook', 'windowInfo',
     'newChapter', 'insertAfter', 'renameChapterAt', 'deleteChapterAt', 'switchTo', 'setText', 'text',
     'inputTick',
-    'save', 'saveVisible', 'toasts', 'clearToasts', 'setTestVerifyBook', 'chapterTitles',
+    'save', 'saveVisible', 'toasts', 'clearToasts', 'setTestVerifyBook', 'setTestSaveDelay', 'chapterTitles',
     'openFindPanel', 'closeFindPanel', 'openProofreadPanel', 'proofreadRun', 'openSensitivePanel',
     'sensitiveRun', 'ttsFakeState', 'ttsFakeFinish',
     'formatCurrentChapter', 'runFormatBook', 'exportFormat', 'fontDecodeMode', 'setInput', 'setSelect',
@@ -290,7 +290,12 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   `if (event.isComposing) return;` 必须长在各自的监听器里：全局 keydown 那条要赶在 Esc 注册表
   //   之前（兜住 modalInput → modal-confirm），跳章 / 书架搜索两条要赶在 preventDefault 之前；
   //   搬进独立模块就得把三个监听器的上下文反向注入，反而更绕。8 行里 5 行是解释这个语义的注释。
-  const RENDERER_LINE_BUDGET = 5812;
+  // 1.8.0 WP-01（C1，审计高优先级）：5812 → 5825（+13）：保存快照化改动三处，都要读 renderer.js
+  //   内部闭包，搬不出去——① saveCurrent 里 await 前拍正文快照（1 行 + 3 行说明）；
+  //   ② 回执后用快照重算 dirty（纯判定收进 save-logic.js，这里只接一行 + 1 行说明）；
+  //   ③ testHooksScope 的 testSaveChapter 活绑定（4 行）+ 模块级声明（1 行 + 2 行说明）。
+  //   其中 7 行是注释，实际语句只有 6 行；少一行都会让「保存期间输入 → 仍提示未保存」失效。
+  const RENDERER_LINE_BUDGET = 5825;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

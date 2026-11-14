@@ -78,6 +78,23 @@ test('后台校验：只有真的缺章才给 warn，文案与改动前一致', 
   assert.equal(saveLogic.verifyWarnText(undefined), '');
 });
 
+test('保存快照化（C1）：回执到达后只认发起保存那一刻的快照——保存期间输入必须仍算未保存', () => {
+  // 典型路径：发起保存时正文 = 快照，保存还在途时又敲了字 → 活值 ≠ 快照 = 未保存。
+  assert.equal(saveLogic.isDirtyAgainstSnapshot('第一段', '第一段'), false);
+  assert.equal(saveLogic.isDirtyAgainstSnapshot('第一段', '第一段\n\n保存期间补的一句'), true);
+  // 保存期间删字 / 改字也一样（不是长度比较，是内容比较）
+  assert.equal(saveLogic.isDirtyAgainstSnapshot('第一段', '第一'), true);
+  assert.equal(saveLogic.isDirtyAgainstSnapshot('abc', 'abd'), true);
+  // 空正文与 null / undefined 口径：都按空串，只有真差异才算脏
+  assert.equal(saveLogic.isDirtyAgainstSnapshot('', ''), false);
+  assert.equal(saveLogic.isDirtyAgainstSnapshot(null, ''), false);
+  assert.equal(saveLogic.isDirtyAgainstSnapshot(undefined, ''), false);
+  assert.equal(saveLogic.isDirtyAgainstSnapshot(null, '有字'), true);
+  // 非字符串输入不会炸（返回布尔值由调用方直接用）
+  assert.equal(saveLogic.isDirtyAgainstSnapshot(12, '12'), false);
+  assert.equal(saveLogic.isDirtyAgainstSnapshot(12, '13'), true);
+});
+
 test('保存提示是纯函数：不依赖 DOM / 全局状态，重复调用结果稳定', () => {
   const first = saveLogic.savedToastText({ chapterCount: 3, charsText: '18 字' });
   const second = saveLogic.savedToastText({ chapterCount: 3, charsText: '18 字' });
@@ -85,4 +102,7 @@ test('保存提示是纯函数：不依赖 DOM / 全局状态，重复调用结�
   assert.equal(typeof window, 'undefined');
   assert.equal(typeof saveLogic.savedToastText, 'function');
   assert.equal(typeof saveLogic.verifyWarnText, 'function');
+  // C1（WP-01）：快照判定同样是纯函数，E2E 的保存延迟窗口靠它得出 dirty
+  assert.equal(typeof saveLogic.isDirtyAgainstSnapshot, 'function');
+  assert.equal(saveLogic.isDirtyAgainstSnapshot('同一段', '同一段'), false);
 });

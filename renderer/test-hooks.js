@@ -173,9 +173,17 @@
       clearToasts() {
         state.toastLog.length = 0;
       },
-      // 替换后台全会校验（E2E 验证「保存不等校验」「后台失败不误报」）
+      // 替换后台全书校验（E2E 验证「保存不等校验」「后台失败不误报」）
       setTestVerifyBook(fn) {
         host.testVerifyBook = typeof fn === 'function' ? fn : null;
+      },
+      // 保存快照化（C1，WP-01）：E2E 用它在保存 IPC 外面包一层延迟，制造「保存还在途」的窗口。
+      // 延迟后仍走真实 call(api.saveChapter, ...)，保存链路本身一个字都不改；传 0 恢复直连。
+      setTestSaveDelay(ms) {
+        const delay = Math.max(0, Number(ms) || 0);
+        host.testSaveChapter = delay
+          ? (fn, ...args) => new Promise((resolve) => setTimeout(resolve, delay)).then(() => call(fn, ...args))
+          : null;
       },
       chapterTitles: () => state.chapters.map((c, i) => chapterTitle(i, c.name)),
       // 章节列表 DOM 里真正显示的两格拼起来（序号格 + 章名格），E2E 用它对照 core.formatTitle
