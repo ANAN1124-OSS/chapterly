@@ -22,7 +22,7 @@ const formatLib = require('./format');
 const findLib = require('./find');
 const chaptersLib = require('./chapters');
 const glossaryLib = require('./glossary');
-const { clampInt, formatCount, normalizeText, lineStartsOf, positionOf } = require('./common');
+const { clampInt, formatCount, normalizeText, lineStartsOf, positionOf, truncateSafe } = require('./common');
 
 // 报告顺序（同位置时按这个顺序排；结果列表也按规则分组显示）
 // custom-word 永远排最后：词表是作者自己加的，放内置规则后面
@@ -74,6 +74,12 @@ const DEFAULT_OPTIONS = Object.freeze({
   repeatCount: 3, // 窗口内出现几次算可疑
   maxIssues: 400 // 单章最多返回多少条（总数仍会照实统计）
 });
+
+// 正文超过这么多字符只校对前面的部分（病态输入兜底，正常一章远小于这个数）。
+// B4（v1.8.0 WP-27）：与 core/tts.js 的 MAX_SOURCE_CHARS 同一口径（100 万字）——校对是纯 CPU 的
+// 多趟扫描，百万字以上在主进程里同步跑会把界面卡住；超限时如实回 tooLarge，面板据此说明
+// 「只校对了前 100 万字」，不假装全书都查过。判定看归一换行之后的长度（与 index / 行号同一坐标系）。
+const MAX_SOURCE_CHARS = 1000000;
 
 const OPTION_LIMITS = Object.freeze({
   longParagraph: [50, 20000],
@@ -255,7 +261,11 @@ function repeatWordIssues(line, options) {
 function proofreadText(text, rawOptions, rawGlossary) {
   const options = sanitizeOptions(rawOptions);
   const rules = sanitizeRules(rawOptions && rawOptions.rules);
-  const source = normalizeText(text);
+  const whole = normalizeText(text);
+  // B4（WP-27）：规模闸——只扫前 MAX_SOURCE_CHARS 个字符（并在结果里如实标 tooLarge）。
+  // 截断点走 common.truncateSafe，不会切开代理对；坐标仍是归一后的全文坐标系（body 是前缀）。
+  const tooLarge = whole.length > MAX_SOURCE_CHARS;
+  const source = tooLarge ? truncateSafe(whole, MAX_SOURCE_CHARS) : whole;
   const collector = createCollector(options.maxIssues);
   // P-08（1.6.0 A5）：只要位置、不拼结果。整本校对明细预算用完后，后面的章只统计条数
   // （issues 会被丢掉），传 snippets:false 就不再为每条命中拼上下文片段（前后各 18 字 + 空白压缩）。
@@ -419,66 +429,74 @@ function proofreadText(text, rawOptions, rawGlossary) {
     }
   }
 
-  // ⑦ 省略号：3 个及以上半角点，或 3 个及以上「。」→ 建议「……」。
-  // 「。。。」同时会被 ④ 报一次（④ 说「连续标点」、这条说「该写成……」，各说一件事）。
-  if (rules.ellipsis) {
+  // ⑦⑧⑨ 合并成一趟逐字符扫描（B4 / WP-27）：省略号（半角点 / 「。」）、破折号（- / —）、
+  // 全角数字三组字符互不重叠，按当前字符分派即可；省掉两趟整章扫描。
+  // 命中先按规则分桶存着，扫完再按 ⑦→⑧→⑨ 的顺序交给 addIssue —— 插入顺序与拆开实现完全一致，
+  // 明细额度（maxIssues）被用满时保留哪几条也不会变（截图/回归口径逐字不变）。
+  if (rules.ellipsis || rules.dash || rules['fullwidth-digit']) {
+    const hits = { ellipsis: [], dash: [], 'fullwidth-digit': [] };
     for (let i = 0; i < source.length; ) {
       const ch = source[i];
-      if (ch !== '.' && ch !== '。') {
-        i += 1;
+      // ⑦ 省略号：3 个及以上半角点，或 3 个及以上「。」→ 建议「……」。
+      // 「。。。」同时会被 ④ 报一次（④ 说「连续标点」、这条说「该写成……」，各说一件事）。
+      if (ch === '.' || ch === '。') {
+        let j = i + 1;
+        while (j < source.length && source[j] === ch) j += 1;
+        if (rules.ellipsis && j - i >= 3) hits.ellipsis.push({ index: i, length: j - i, run: source.slice(i, j) });
+        i = j;
         continue;
       }
-      let j = i + 1;
-      while (j < source.length && source[j] === ch) j += 1;
-      const run = source.slice(i, j);
-      if (run.length >= 3) {
-        addIssue('ellipsis', i, run.length, run, `省略号「${run}」建议改成「……」`, {
-          suggestion: '……'
-        });
+      // ⑧ 破折号：「--」「---」或单个「—」→ 建议「——」。只有挨着中文才报：
+      // 日期区间 12-30、单独一行的分隔线 ---- 都不算中文破折号。
+      if (ch === '-' || ch === '—') {
+        let j = i + 1;
+        while (j < source.length && source[j] === ch) j += 1;
+        if (rules.dash) {
+          const count = j - i;
+          // C42：前后邻居也按码点取（紧挨扩展 B 汉字的破折号同样算中文语境）。
+          const prev = charBefore(source, i);
+          const next = charAt(source, j);
+          const bad = ch === '-' ? count >= 2 : count !== 2;
+          if (bad && (isCjkNeighbor(prev) || isCjkNeighbor(next))) {
+            hits.dash.push({ index: i, length: count, run: source.slice(i, j) });
+          }
+        }
+        i = j;
+        continue;
       }
-      i = j;
+      // ⑨ 全角数字：一整段全角数字合成一条，建议字符串直接给半角版本
+      if (FULLWIDTH_DIGIT_RE.test(ch)) {
+        let j = i + 1;
+        while (j < source.length && FULLWIDTH_DIGIT_RE.test(source[j])) j += 1;
+        if (rules['fullwidth-digit']) {
+          const run = source.slice(i, j);
+          hits['fullwidth-digit'].push({ index: i, length: run.length, run });
+        }
+        i = j;
+        continue;
+      }
+      i += 1;
     }
-  }
-
-  // ⑧ 破折号：「--」「---」或单个「—」→ 建议「——」。只有挨着中文才报：
-  // 日期区间 12-30、单独一行的分隔线 ---- 都不算中文破折号。
-  if (rules.dash) {
-    for (let i = 0; i < source.length; ) {
-      const ch = source[i];
-      if (ch !== '-' && ch !== '—') {
-        i += 1;
-        continue;
-      }
-      let j = i + 1;
-      while (j < source.length && source[j] === ch) j += 1;
-      const count = j - i;
-      // C42：前后邻居也按码点取（紧挨扩展 B 汉字的破折号同样算中文语境）。
-      const prev = charBefore(source, i);
-      const next = charAt(source, j);
-      const bad = ch === '-' ? count >= 2 : count !== 2;
-      if (bad && (isCjkNeighbor(prev) || isCjkNeighbor(next))) {
-        const run = source.slice(i, j);
-        addIssue('dash', i, count, run, `破折号「${run}」建议用两个「——」`, { suggestion: '——' });
-      }
-      i = j;
-    }
-  }
-
-  // ⑨ 全角数字：一整段全角数字合成一条，建议字符串直接给半角版本
-  if (rules['fullwidth-digit']) {
-    for (let i = 0; i < source.length; ) {
-      if (!FULLWIDTH_DIGIT_RE.test(source[i])) {
-        i += 1;
-        continue;
-      }
-      let j = i + 1;
-      while (j < source.length && FULLWIDTH_DIGIT_RE.test(source[j])) j += 1;
-      const run = source.slice(i, j);
-      const ascii = toHalfWidthDigits(run);
-      addIssue('fullwidth-digit', i, run.length, run, `全角数字「${run}」建议改成半角「${ascii}」`, {
-        suggestion: ascii
+    for (const hit of hits.ellipsis) {
+      addIssue('ellipsis', hit.index, hit.length, hit.run, `省略号「${hit.run}」建议改成「……」`, {
+        suggestion: '……'
       });
-      i = j;
+    }
+    for (const hit of hits.dash) {
+      addIssue('dash', hit.index, hit.length, hit.run, `破折号「${hit.run}」建议用两个「——」`, {
+        suggestion: '——'
+      });
+    }
+    for (const hit of hits['fullwidth-digit']) {
+      const ascii = toHalfWidthDigits(hit.run);
+      addIssue(
+        'fullwidth-digit',
+        hit.index,
+        hit.length,
+        hit.run,
+        `全角数字「${hit.run}」建议改成半角「${ascii}」`,
+        { suggestion: ascii }
+      );
     }
   }
 
@@ -533,8 +551,13 @@ function proofreadText(text, rawOptions, rawGlossary) {
     paragraphs: paragraphs.length,
     // X4（v1.8.0 WP-24）：chars = 正文字数（去空白），与敏感词预检 / 捕获队列 / 状态栏同一口径；
     // rawLength 保留「含空白的原文长度」（旧 chars 的值），两个接口的契约从此一致。
-    chars: chaptersLib.countChars(source),
-    rawLength: source.length,
+    // B4（WP-27）：两个字段仍按**全文**算（超长截断不改变字数契约）；scannedChars 才是实际扫过的长度。
+    chars: chaptersLib.countChars(whole),
+    rawLength: whole.length,
+    // B4（WP-27）：tooLarge = 正文超过 MAX_SOURCE_CHARS，只扫了前 scannedChars 个字符；
+    // 与 truncated（明细只列出一部分、总数照实）分开：面板要说明「只校对了前 100 万字」。
+    tooLarge,
+    scannedChars: source.length,
     // 这次实际参与匹配的校对词条数（0 = 没设置词表 / 词表不可用）
     customWordCount: custom.entryCount,
     // 这次实际生效的规则开关（渲染层面板照着画「开 / 关」，不写配置）
@@ -544,6 +567,7 @@ function proofreadText(text, rawOptions, rawGlossary) {
 }
 
 module.exports = {
+  MAX_SOURCE_CHARS,
   RULE_ORDER,
   RULE_LABELS,
   DEFAULT_RULES,

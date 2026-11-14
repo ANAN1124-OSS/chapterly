@@ -128,3 +128,70 @@ test('命中上限：正好到上限不算截断，再多一处就明确回 trun
   assert.equal(findMatchesAll('', 'a').truncated, false);
   assert.equal(findMatchesAll('abc', '').matches.length, 0);
 });
+
+// ---------- 输入热路径（v1.8.0 WP-27 / B3） ----------
+
+test('B3/WP-27：findNextMatch 增量 indexOf 与「先取全量命中再挑」口径逐案例一致', () => {
+  // 参考实现 = 旧实现（findMatchesAll 的命中列表 + 两条 findIndex 判定），只用于对照。
+  const reference = (text, query, fromIndex, options) => {
+    const matches = findMatchesAll(text, query, options).matches;
+    if (!matches.length) return null;
+    const rawFrom = Number(fromIndex);
+    const from = Math.max(0, Math.min(Number.isFinite(rawFrom) ? Math.floor(rawFrom) : 0, text.length));
+    let index = matches.findIndex((match) => match.index <= from && from < match.index + match.length);
+    if (index < 0) index = matches.findIndex((match) => match.index >= from);
+    if (index < 0) return null;
+    return { index, total: matches.length, match: matches[index] };
+  };
+  const texts = [
+    '阿明走了，阿明回头，阿明笑了。',
+    'aaaa',
+    'aaaaa',
+    'Foo foo FOO foo',
+    '\u0130stanbul istanbul Istanbul',
+    '价格 3.14 元，3.14 又是 3.14',
+    'a'.repeat(MAX_MATCHES + 3),
+    `${'的'.repeat(MAX_MATCHES + 2)}结尾`,
+    'x'.repeat(120) + '重复词'.repeat(40)
+  ];
+  const queries = ['阿明', 'aa', 'foo', 'FOO', '3.14', 'İstanbul', 'a', '的', '重复词', '不存在', ''];
+  let cases = 0;
+  for (const text of texts) {
+    for (const query of queries) {
+      for (const caseSensitive of [false, true]) {
+        const options = { caseSensitive };
+        const step = Math.max(1, Math.floor(text.length / 19));
+        for (let from = -3; from <= text.length + 3; from += step) {
+          assert.deepEqual(
+            findNextMatch(text, query, from, options),
+            reference(text, query, from, options),
+            `text=${text.length} query=${query} from=${from} cs=${caseSensitive}`
+          );
+          cases += 1;
+        }
+      }
+    }
+  }
+  assert.ok(cases > 100, '覆盖足够多的位置');
+  // 5000 上限语义：第 5001 处不可见（旧实现列表只有前 5000 处），第 5000 处照旧可见。
+  const capped = 'a'.repeat(MAX_MATCHES + 3);
+  const lastVisible = findNextMatch(capped, 'a', MAX_MATCHES - 1);
+  assert.equal(lastVisible.index, MAX_MATCHES - 1);
+  assert.equal(lastVisible.total, MAX_MATCHES, 'total 仍是列表长度（受上限约束）');
+  assert.equal(findNextMatch(capped, 'a', MAX_MATCHES), null, '第 5001 处不在命中列表里（上限语义不变）');
+});
+
+test('B3/WP-27 静态闸门：findNextMatch 不许再物化全量命中，5000 上限仍在同一个循环里', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs
+    .readFileSync(path.join(__dirname, '..', 'core', 'find.js'), 'utf8')
+    .replace(/\r\n/g, '\n');
+  const body = /function findNextMatch\([\s\S]*?\n\}\n/.exec(src);
+  assert.ok(body, '找不到 findNextMatch');
+  const code = body[0].replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  assert.ok(!/findMatches(All)?\(/.test(code), '不许在 findNextMatch 里调 findMatches / findMatchesAll');
+  assert.match(code, /indexOf\(needle, from2\)/, '必须用 indexOf 增量推进');
+  assert.match(code, /while \(total < MAX_MATCHES\)/, '命中上限必须保留在增量循环里');
+  assert.ok(!/\.push\(/.test(code), '不许把命中物化成数组');
+});

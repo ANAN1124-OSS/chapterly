@@ -2250,6 +2250,9 @@ function registerIpc() {
     const issues = [];
     let total = 0;
     let truncated = false;
+    // B4（v1.8.0 WP-27）：某一章正文超过校对规模闸（core/proofread.js 的 MAX_SOURCE_CHARS）时，
+    // 该章只扫了前缀；整本回包要把「有章节没查全」如实带给面板，不能只说「总数照实统计」。
+    let tooLarge = false;
     // P-08（1.6.0 A5）：明细预算（1500 条）用完后，后面的章只需要条数 / 各规则计数——
     // 传 snippets:false 就不再为每条命中拼上下文片段（那些明细反正会被丢掉）。
     let snippetsWanted = true;
@@ -2272,6 +2275,7 @@ function registerIpc() {
         });
       }
       if (result.truncated) truncated = true;
+      if (result.tooLarge) tooLarge = true;
       for (const issue of result.issues) {
         if (issues.length >= BOOK_ISSUE_LIMIT) {
           truncated = true;
@@ -2297,6 +2301,8 @@ function registerIpc() {
       chapterHitCount: chapters.length,
       skippedChapters,
       truncated: truncated || total > issues.length,
+      // B4（WP-27）：有章节超出校对规模闸（只扫了前缀）→ 面板说明「只校对了前 100 万字」
+      tooLarge,
       wordList,
       customWordCount: customEntries.length,
       options: limits

@@ -7,6 +7,8 @@
 // DOM / 批量动作 / 撤销链路在 E2E 第 78 组里真跑。
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const selection = require('../renderer/chapter-selection.js');
 
 const order = ['a', 'b', 'c', 'd', 'e'];
@@ -192,4 +194,48 @@ test('extendFocus 边界：末条按 Shift+↓ 焦点不动、选择不炸；坏
   const base = { ids: new Set(['a']), anchorId: 'a' };
   selection.extendFocus(base, order, 'a', 1);
   assert.deepEqual(Array.from(base.ids), ['a'], 'extendFocus 不改入参');
+});
+
+// ---------- 输入热路径（v1.8.0 WP-27 / B2） ----------
+
+test('B2/WP-27：千章目录去重用 Set（重复 id / 坏条目照旧），Shift 扩选结果与逐个 indexOf 口径一致', () => {
+  // 2000 章 + 每 3 章重复一次 + 混入 null：旧实现 indexOf 去重是 O(n²)。
+  const bigOrder = [];
+  for (let i = 0; i < 2000; i += 1) {
+    bigOrder.push(`c${i}`);
+    if (i % 3 === 0) bigOrder.push(`c${i}`);
+    if (i % 97 === 0) bigOrder.push(null);
+  }
+  const all = selection.selectAll(bigOrder);
+  assert.equal(all.ids.size, 2000, '重复 id 只留一条');
+  assert.equal(all.anchorId, 'c0');
+  const selected = selection.extendFocus(selection.createSelection(), bigOrder, 'c0', 1500);
+  assert.equal(selected.focusId, 'c1500');
+  assert.equal(selected.ids.size, 1501, 'anchor 到目标之间连选 1501 章');
+  assert.deepEqual(selection.idsInOrder(selected, bigOrder).slice(0, 3), ['c0', 'c1', 'c2']);
+  assert.equal(selection.idsInOrder(selected, bigOrder).at(-1), 'c1500');
+  // 数字 id 归一成字符串后仍是同一章（旧口径不变）
+  assert.deepEqual(Array.from(selection.selectAll([1, '1', 2]).ids), ['1', '2']);
+  // Shift+单击与 Shift+↑/↓ 在重复目录下落到同一范围
+  const mouse = selection.extendTo(selection.createSelection('c100'), bigOrder, 'c130');
+  const keyboard = selection.extendFocus(selection.createSelection('c100'), bigOrder, 'c100', 30);
+  assert.deepEqual(selection.idsInOrder(mouse, bigOrder), selection.idsInOrder(keyboard, bigOrder));
+
+  // 静态闸门：去重必须用 Set（不许退回 indexOf），且一次扩选只归一目录一遍。
+  // 先归一成 LF 再剥注释：CRLF 文件上按行剥注释会留下孤立的 \r，把函数体正则截错位。
+  const src = fs
+    .readFileSync(path.join(__dirname, '..', 'renderer', 'chapter-selection.js'), 'utf8')
+    .replace(/\r\n/g, '\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(!/\.indexOf\(/.test(src), 'chapter-selection 里不许再有 indexOf 去重 / 定位');
+  assert.match(src, /const seen = new Set\(\)/, 'normalizeOrder 必须用 Set 去重');
+  const normalizeBody = /function normalizeOrder\([\s\S]*?\r?\n  \}\r?\n/.exec(src);
+  assert.ok(normalizeBody && /seen\.has\(id\)/.test(normalizeBody[0]), 'normalizeOrder 必须查 Set');
+  for (const name of ['extendTo', 'extendFocus', 'resolveAnchor', 'moveFocus']) {
+    const body = new RegExp(`function ${name}\\([\\s\\S]*?\\r?\\n  \\}\\r?\\n`).exec(src);
+    assert.ok(body, `找不到 ${name}`);
+    assert.equal((body[0].match(/orderIndexOf\(/g) || []).length, 1, `${name} 只许归一一次目录`);
+    assert.ok(!/normalizeOrder\(/.test(body[0]), `${name} 不许直接多次 normalizeOrder`);
+  }
 });

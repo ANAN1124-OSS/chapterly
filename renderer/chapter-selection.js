@@ -53,12 +53,25 @@
 
   function normalizeOrder(order) {
     if (!Array.isArray(order)) return [];
+    // B2（v1.8.0 WP-27）：去重从 indexOf（千章书 O(n²)）改成 Set，保持「首次出现顺序」。
+    const seen = new Set();
     const out = [];
     for (const item of order) {
       const id = normalizeId(item);
-      if (id !== null && out.indexOf(id) < 0) out.push(id);
+      if (id === null || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
     }
     return out;
+  }
+
+  // B2（WP-27）：一次归一好的「目录顺序 + id→下标」，供 extendTo / extendFocus / resolveAnchor / moveFocus
+  // 共用——一次 Shift+↓ 不再反复 normalizeOrder（旧实现一次按键要归一 4 趟）。
+  function orderIndexOf(order) {
+    const list = normalizeOrder(order);
+    const at = new Map();
+    for (let i = 0; i < list.length; i += 1) at.set(list[i], i);
+    return { list, at };
   }
 
   // 任何输入（含 null / 坏形状）都归一成一份新的 { ids, anchorId }；渲染层不用到处判空。
@@ -105,25 +118,28 @@
 
   // anchor 的解析：selection.anchorId 仍在 order 里就用它；否则用调用方给的 fallbackAnchorId
   // （渲染层传「当前章」）——这就是「anchor 失效回落到当前章」。都没有返回 null。
-  function resolveAnchor(selection, order, fallbackAnchorId) {
-    const list = normalizeOrder(order);
-    const anchor = selection ? normalizeId(selection.anchorId) : null;
-    if (anchor !== null && list.indexOf(anchor) >= 0) return anchor;
-    const fallback = normalizeId(fallbackAnchorId);
-    if (fallback !== null && list.indexOf(fallback) >= 0) return fallback;
+  // B2（WP-27）：内部版本吃现成的 orderIndexOf，调用方一次归一多次使用。
+  function resolveAnchorIn(index, anchorRaw, fallbackRaw) {
+    const anchor = normalizeId(anchorRaw);
+    if (anchor !== null && index.at.has(anchor)) return anchor;
+    const fallback = normalizeId(fallbackRaw);
+    if (fallback !== null && index.at.has(fallback)) return fallback;
     return null;
+  }
+
+  function resolveAnchor(selection, order, fallbackAnchorId) {
+    return resolveAnchorIn(orderIndexOf(order), selection ? selection.anchorId : null, fallbackAnchorId);
   }
 
   // Shift+单击：从 anchor 到 target 的范围并进已选集合（并集），返回的 anchor 仍是解析后的起点
   // （不是 target）——再按一次 Shift+单击可以从同一个起点重新拉范围。
-  function extendTo(selection, order, targetId, fallbackAnchorId) {
-    const next = normalizeSelection(selection);
-    const list = normalizeOrder(order);
+  function extendInto(next, index, targetId, fallbackAnchorId) {
+    const { list } = index;
     const target = normalizeId(targetId);
-    const targetAt = target === null ? -1 : list.indexOf(target);
+    const targetAt = target === null || !index.at.has(target) ? -1 : index.at.get(target);
     if (targetAt < 0) return next;
-    const anchor = resolveAnchor(selection, list, fallbackAnchorId);
-    const anchorAt = anchor === null ? -1 : list.indexOf(anchor);
+    const anchor = resolveAnchorIn(index, next.anchorId, fallbackAnchorId);
+    const anchorAt = anchor === null ? -1 : index.at.get(anchor);
     if (anchorAt < 0) {
       // 起点和当前章都不在章节数组里：只选目标这一条，anchor 也落到它（下一次能继续拉）
       next.ids.add(target);
@@ -135,6 +151,10 @@
     for (let i = from; i <= to; i += 1) next.ids.add(list[i]);
     next.anchorId = anchor;
     return next;
+  }
+
+  function extendTo(selection, order, targetId, fallbackAnchorId) {
+    return extendInto(normalizeSelection(selection), orderIndexOf(order), targetId, fallbackAnchorId);
   }
 
   function clear() {
@@ -174,14 +194,17 @@
   // ↑/↓（1.6.0 F1）该把焦点挪到哪一章：一次挪 step 格、两端夹住不绕回。
   // 焦点章不在目录里（筛选 / 折叠后那一行没了）返回 null——调用方当「没这回事」，
   // 不猜它原本在哪，也不顺手跳到第一行。
-  function moveFocus(order, focusId, step) {
-    const list = normalizeOrder(order);
+  function moveFocusIn(index, focusId, step) {
     const focus = normalizeId(focusId);
-    const at = focus === null ? -1 : list.indexOf(focus);
-    if (at < 0) return null;
+    if (focus === null || !index.at.has(focus)) return null;
+    const at = index.at.get(focus);
     const delta = Math.trunc(Number(step));
-    if (!Number.isFinite(delta) || delta === 0) return list[at];
-    return list[Math.min(list.length - 1, Math.max(0, at + delta))];
+    if (!Number.isFinite(delta) || delta === 0) return index.list[at];
+    return index.list[Math.min(index.list.length - 1, Math.max(0, at + delta))];
+  }
+
+  function moveFocus(order, focusId, step) {
+    return moveFocusIn(orderIndexOf(order), focusId, step);
   }
 
   // Shift+↑/↓（1.6.0 F1）：焦点挪一格 + 把 anchor 到新焦点的范围并进选择（与鼠标 Shift 连选
@@ -190,13 +213,15 @@
   //   · 首按时选择里还没有 anchor（或 anchor 已失效），起点用**按下 Shift 前焦点那一章**
   //     （fallbackAnchorId，没给就用 focusId），不是正在写的当前章——键盘用户按的是看到的那行。
   // 焦点已经到头（挪不动）时返回原选择 + 原 focusId，不制造越界 id。
+  // B2（WP-27）：选择与目录各只归一一次，再复用同一份下标表（旧实现这里要归一 4 趟）。
   function extendFocus(selection, order, focusId, step, fallbackAnchorId) {
     const next = normalizeSelection(selection);
+    const index = orderIndexOf(order);
     const focus = normalizeId(focusId);
-    const target = moveFocus(order, focus, step);
+    const target = moveFocusIn(index, focus, step);
     if (target === null) return { ids: next.ids, anchorId: next.anchorId, focusId: null };
     const anchorFallback = normalizeId(fallbackAnchorId) || focus;
-    const extended = extendTo(next, order, target, anchorFallback);
+    const extended = extendInto(next, index, target, anchorFallback);
     return { ids: extended.ids, anchorId: extended.anchorId, focusId: target };
   }
 

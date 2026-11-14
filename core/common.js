@@ -115,10 +115,14 @@
 
   // 行首位置表：starts[i] = 第 i 行（0 基）在文本里的起点，永远以 0 开头。
   // 只认 \n（调用方传进来的都是 normalizeText 归一过的文本）；原来 proofread / sensitive 各一份。
+  // B1（v1.8.0 WP-27）：改用原生 indexOf 逐个换行符推进（不再逐 UTF-16 单元遍历）——
+  // 10 万字 / 3 千行实测 0.6ms → 0.07ms；它现在在「每次按键算光标段落」的热路径上。
   function lineStartsOf(text) {
     const starts = [0];
-    for (let i = 0; i < text.length; i += 1) {
-      if (text[i] === '\n') starts.push(i + 1);
+    let at = text.indexOf('\n');
+    while (at >= 0) {
+      starts.push(at + 1);
+      at = text.indexOf('\n', at + 1);
     }
     return starts;
   }

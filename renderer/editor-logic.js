@@ -37,10 +37,32 @@
   if (!paragraphsLib || typeof paragraphsLib.paragraphRanges !== 'function') {
     throw new Error('CWEditorLogic：core/paragraphs.js 没有先加载');
   }
-  const { clampInt, pad2, formatCount } = common;
+  const { clampInt, pad2, formatCount, lineStartsOf, positionOf } = common;
   const { countChars } = chaptersLib;
   // 对外继续导出同名函数（既有调用点与单测一行不用改），但拿的是共享实现那一份引用。
   const { trimmedRange, lineRanges, paragraphRanges } = paragraphsLib;
+
+  // B1（v1.8.0 WP-27）：光标段落不再每次「全文 lineRanges + 线性找行 + 逐行数段落」。
+  // 行首表按正文版本缓存（同一份正文只建一次表），候选用 common.positionOf 二分；
+  // 段落前缀表让「第几段」变成一次数组读取。正文一变（敲字）缓存自动失效，旧表只留一份。
+  let lineTableCache = null; // { text, starts, nonBlankBefore }
+  function lineTableOf(source) {
+    if (lineTableCache && lineTableCache.text === source) return lineTableCache;
+    const starts = lineStartsOf(source);
+    // nonBlankBefore[i] = 第 0..i 行里非空行的条数（第 i 行空行时该值 = 它前面最后一个非空段的段号）。
+    // 空行判定用 String#trim（与 core/paragraphs.js 的 trimmedRange 同一套空白字符表：都是
+    // ECMAScript 的 WhiteSpace + LineTerminator，全空白 ↔ trim 后为空），实测比逐字符正则快 2 倍多。
+    const nonBlankBefore = new Int32Array(starts.length);
+    let nonBlank = 0;
+    for (let i = 0; i < starts.length; i += 1) {
+      const start = starts[i];
+      const end = i + 1 < starts.length ? starts[i + 1] - 1 : source.length;
+      if (source.slice(start, end).trim() !== '') nonBlank += 1;
+      nonBlankBefore[i] = nonBlank;
+    }
+    lineTableCache = { text: source, starts, nonBlankBefore };
+    return lineTableCache;
+  }
 
   // 覆盖层最多渲染这么多字符的标记：再长就只给「超长段落」结论、不往 DOM 里塞标记。
   // （正常一章远小于这个数；「整本一章」导入的百万字单章会走到这里。）
@@ -91,10 +113,20 @@
       return { collapsed: true, chars: 0, paragraphs: 0, start: from, end: to };
     }
     const chars = countChars(source.slice(from, to));
+    // B1（WP-27）：只切「选区碰到的那几行」，不再为整章 lineRanges 建对象。
+    // 行口径与 core/paragraphs.js 的 lineRanges 一致：一行 = [行首, 换行符) 或 [行首, 文末)，
+    // blank = 去掉首尾空白后为空（含全角空格 / 制表 / \r）。选区触及判定沿用 from < 行尾 && to > 行首。
     let paragraphs = 0;
-    for (const line of lineRanges(source)) {
-      if (line.blank) continue;
-      if (from < line.end && to > line.start) paragraphs += 1;
+    let lineStart = from > 0 ? source.lastIndexOf('\n', from - 1) + 1 : 0;
+    for (;;) {
+      const newline = source.indexOf('\n', lineStart);
+      const lineEnd = newline < 0 ? source.length : newline;
+      if (from < lineEnd && to > lineStart && trimmedRange(source, lineStart, lineEnd) !== null) {
+        paragraphs += 1;
+      }
+      // 下一行的行首 = newline + 1；它已经 >= to 时后面不可能再被触及，收工。
+      if (newline < 0 || newline + 1 >= to) break;
+      lineStart = newline + 1;
     }
     return { collapsed: false, chars, paragraphs, start: from, end: to };
   }
@@ -132,33 +164,25 @@
   function caretParagraph(text, position) {
     const source = toText(text);
     const pos = clampIndex(source.length, position);
-    const lines = lineRanges(source);
-    let index = lines.length - 1;
-    for (let i = 0; i < lines.length; i += 1) {
-      if (pos <= lines[i].end) {
-        index = i;
-        break;
-      }
-    }
-    const line = lines[index];
+    // B1（WP-27）：行首表二分（common.positionOf，全仓唯一实现）+ 段落前缀表 O(1) 取段号；
+    // 同一份正文的连续调用（选中同步 / 光标移动 / 拖选）共用一张表，不再每次全文 lineRanges。
+    const table = lineTableOf(source);
+    const { starts, nonBlankBefore } = table;
+    const index = positionOf(starts, pos).line - 1;
+    const lineStart = starts[index];
+    const lineEnd = index + 1 < starts.length ? starts[index + 1] - 1 : source.length;
     // 去首尾空白也走 core/paragraphs.js 的同一份实现（v0.9 B-3 / 审计 F3）。
     // 空行（全空白）时 trimmedRange 返回 null：旧实现「左右各收缩到中间」最后落在行尾，
     // 所以这里退回 { start: line.end, end: line.end }，行为逐字不变（单测钉住空行的 start / end）。
-    const trimmed = trimmedRange(source, line.start, line.end);
-    const start = trimmed ? trimmed.start : line.end;
-    const end = trimmed ? trimmed.end : line.end;
-    const blank = line.blank;
-    let paragraph = 0;
-    if (!blank) {
-      for (let i = 0; i <= index; i += 1) {
-        if (!lines[i].blank) paragraph += 1;
-      }
-    }
+    const trimmed = trimmedRange(source, lineStart, lineEnd);
+    const start = trimmed ? trimmed.start : lineEnd;
+    const end = trimmed ? trimmed.end : lineEnd;
+    const blank = trimmed === null;
     return {
       index,
-      line: line.line,
+      line: index + 1,
       blank,
-      paragraph,
+      paragraph: blank ? 0 : nonBlankBefore[index],
       start,
       end,
       text: source.slice(start, end)
