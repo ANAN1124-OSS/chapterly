@@ -3,7 +3,7 @@
 // 钉住的事：
 //   ① Ctrl+单击切换选中、不切章；Shift+单击从 anchor 连选；普通单击清空多选并照旧切章；
 //   ② 点列表空白 / Esc（无弹层）清空；Ctrl+Space 切换焦点章的多选；
-//   ③ 当前章 .active 与多选 .selected / aria-selected 互不覆盖；
+//   ③ 当前章 .active 与多选 .selected / aria-pressed 互不覆盖（条目 role=button，不挂 aria-selected）；
 //   ④ 批量条：已选 N 章 + 六个 24px 动作按钮；空选择时整条隐藏；
 //   ⑤ 批量删除：一次删 N 章（各进本书 _trash），**一条撤销**按原位置恢复全部（正文 / 顺序一字不差）；
 //   ⑥ 批量移到卷：一次移 N 章，一条撤销全部移回原位置；改状态：逐章写书目、不做撤销；
@@ -74,16 +74,22 @@ module.exports = async function group78ChapterSelection(t) {
   const selectedAt1 = await exec(
     "document.querySelectorAll('#chapter-list .chapter-item')[1].classList.contains('selected')"
   );
-  const aria0 = await exec(
-    "document.querySelectorAll('#chapter-list .chapter-item')[0].getAttribute('aria-selected')"
+  const pressedAt0 = await exec(
+    "document.querySelectorAll('#chapter-list .chapter-item')[0].getAttribute('aria-pressed')"
   );
-  const aria1 = await exec(
-    "document.querySelectorAll('#chapter-list .chapter-item')[1].getAttribute('aria-selected')"
+  const pressedAt1 = await exec(
+    "document.querySelectorAll('#chapter-list .chapter-item')[1].getAttribute('aria-pressed')"
+  );
+  // X2（WP-41）：条目是 role=button，多选态改用 aria-pressed；旧的 aria-selected 必须彻底消失
+  // （button 角色不支持它，读屏读不到，正是这次修的东西）。
+  const ariaSelectedLeft = await exec(
+    "Array.from(document.querySelectorAll('#chapter-list .chapter-item')).filter((el) => el.hasAttribute('aria-selected')).length"
   );
   check(
-    '章节多选：当前章 .active 与多选 .selected / aria-selected 互不覆盖',
-    activeAt0 === true && selectedAt1 === true && aria0 === 'false' && aria1 === 'true',
-    { activeAt0, selectedAt1, aria0, aria1 }
+    '章节多选：当前章 .active 与多选 .selected / aria-pressed 互不覆盖（button 不挂 aria-selected）',
+    activeAt0 === true && selectedAt1 === true && pressedAt0 === 'false' && pressedAt1 === 'true' &&
+      ariaSelectedLeft === 0,
+    { activeAt0, selectedAt1, pressedAt0, pressedAt1, ariaSelectedLeft }
   );
   const barHeights = await exec(`JSON.stringify({
     bar: document.getElementById('chapter-batch-bar').getBoundingClientRect().height,

@@ -93,7 +93,22 @@ const FOCUS_ALLOW = Object.freeze([]);
 // 设置分区状态的 setup 生成器（1.4.0 P0-1）：门禁主流程停在写作页，打开设置 = 按书作用域（只有
 // 「显示」）。这里点状态栏「今日字数」走与用户相同的入口 —— 它打开的是**全局设置**并定位到码字
 // 日历（写作分区），然后再点目标分区。只轮询 DOM，不注入 <style>、不改产品状态。
+//
+// WP-41 排障：V204（WP-29）把弹层可见挪到 `await refreshStats()` 之前 —— 可见后还有一小段
+// 「回填 / 回到默认分区 / 深链定位」要跑，期间上一状态留下的写作分区 aria-selected 仍是 true。
+// 旧 setup 只点一次目标分区，会被随后的分区重算吞掉（1294 的内容 / 数据 / 关于三个状态必超时）。
+// 就绪信号取 `#settings-update-version` 的文本变更：renderUpdateSettings() 只在 openSettings()
+// 末尾（await 三份台账之后）调一次，而 openSettings 每次都会重新写 textContent（同值也会触发
+// childList mutation）。等到它再变一次 = 这次打开的分区重算已经收尾，此时点目标分区才不会被吞。
+// 门禁判据与扫描范围不变，只是不在产品初始化窗口期里抢跑。
 const settingsTabSetup = (tab) => `(() => {
+  const versionEl = document.getElementById('settings-update-version');
+  let ready = !versionEl || typeof MutationObserver !== 'function';
+  let observer = null;
+  if (!ready) {
+    observer = new MutationObserver(() => { ready = true; });
+    observer.observe(versionEl, { childList: true, characterData: true, subtree: true });
+  }
   document.getElementById('status-stats').click();
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -102,12 +117,16 @@ const settingsTabSetup = (tab) => `(() => {
       const writing = document.getElementById('settings-tab-writing');
       const target = document.getElementById('settings-tab-${tab}');
       const open = bd && !bd.classList.contains('hidden');
-      if (open && writing && writing.getAttribute('aria-selected') === 'true' && target) {
+      if (open && ready && writing && writing.getAttribute('aria-selected') === 'true' && target) {
         if (target.getAttribute('aria-selected') !== 'true') target.click();
-        resolve(true);
-        return;
+        if (target.getAttribute('aria-selected') === 'true') {
+          if (observer) observer.disconnect();
+          resolve(true);
+          return;
+        }
       }
       if (Date.now() - startedAt > 8000) {
+        if (observer) observer.disconnect();
         reject(new Error('设置分区 setup 超时：${tab}'));
         return;
       }
