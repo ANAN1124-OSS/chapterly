@@ -76,6 +76,7 @@ test('D12：README 只留当前文档，版本沿革 / 防丢稿逐轮记录 / �
   assert.equal((readme.match(/已于 \d{4}-\d{2}-\d{2} 发布/g) || []).length, 1, 'README 发布日期锚点 1 处');
   assert.ok(readme.includes('# 章回 / Chapterly v'), 'README 标题锚点仍在');
   assert.ok(readme.includes('## 许可'), 'README 许可段仍在');
+  assert.match(readme, /公开文档[^\n]*沿革\.md/, 'README 的公开文档清单要包含 沿革.md（D6 约定同步）');
 });
 
 test('X13：公开文档不再含开发机绝对路径（README / 验收清单）', () => {
