@@ -108,10 +108,16 @@ function build(options = {}) {
     bookPath: options.bookPath === undefined ? '/书库/书甲' : options.bookPath,
     index: options.index === undefined ? 0 : options.index,
     config: options.config === undefined ? { formatOptions: { indent: '2' } } : options.config,
+    // 1.8.0 WP-12（V201）：生效值 = 全局 + 本书覆盖；默认没有按书覆盖（与真实 state 一致）
+    globalConfig: options.globalConfig === undefined ? null : options.globalConfig,
+    bookDisplay: options.bookDisplay || {},
     chapters: options.chapters === undefined ? [{ id: 'c1', name: '第一章', file: 'c1.txt' }] : options.chapters,
     formatUndo: options.formatUndo || [],
     marks: { caretParagraph: false }
   };
+  // 与 renderer.js 的 effectiveConfig() 同一口径（全局 + 当前书覆盖）
+  const effectiveConfig = () => ({ ...(state.globalConfig || state.config || {}), ...(state.bookDisplay || {}) });
+  if (options.globalConfig !== undefined) state.config = effectiveConfig();
   const editorEl = makeEl('textarea');
   editorEl.value = options.text === undefined ? '第一段  文字' : options.text;
   editorEl.selectionStart = options.caret === undefined ? 0 : options.caret;
@@ -131,7 +137,7 @@ function build(options = {}) {
     async setConfig(patch) {
       calls.setConfig.push(patch);
       if (options.setConfigError) throw new Error('配置只读');
-      return { ...state.config, ...patch };
+      return { ...(state.globalConfig || state.config), ...patch };
     }
   };
   const host = {
@@ -164,7 +170,9 @@ function build(options = {}) {
       setCaretParagraphPersisted(on) { calls.setCaretParagraphPersisted.push(on); },
       setCaretColorPersisted(color) { calls.setCaretColorPersisted.push(color); },
       runFormatBook: async () => { calls.runFormatBook += 1; },
-      scrollCaretIntoView(pos) { calls.scrollCaretIntoView.push(pos); }
+      scrollCaretIntoView(pos) { calls.scrollCaretIntoView.push(pos); },
+      // 1.8.0 WP-12（V201）：生效配置访问器由渲染层注入（与 renderer.js 同一份语义）
+      effectiveConfig
     }
   };
   const ui = tidyCardUi.create(host);
@@ -193,7 +201,7 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
     delete broken.menus[key];
     assert.throws(() => tidyCardUi.create(broken), new RegExp('host\\.menus 缺少 ' + key));
   }
-  for (const key of ['openSettings', 'toggleMarks', 'setDisplayPreset', 'applyCaretColor', 'setCaretParagraphPersisted', 'setCaretColorPersisted', 'runFormatBook', 'scrollCaretIntoView']) {
+  for (const key of ['openSettings', 'toggleMarks', 'setDisplayPreset', 'applyCaretColor', 'setCaretParagraphPersisted', 'setCaretColorPersisted', 'runFormatBook', 'scrollCaretIntoView', 'effectiveConfig']) {
     const broken = { ...ctx.host, peers: { ...ctx.host.peers } };
     delete broken.peers[key];
     assert.throws(() => tidyCardUi.create(broken), new RegExp('host\\.peers 缺少 ' + key));
@@ -584,10 +592,16 @@ test('静态闸门：renderer.js 不再内嵌整理卡 / 显示菜单实现，�
     '    $, state, api, call, toast,',
     '    format: { formatUi, MAX_FORMAT_UNDO, readFormatOptions, writeFormatOptions, editorEl, onEditorInput, chaptersLib, caretColorLib },',
     '    menus: { hideBookMenu, hideExportMenu, hideMenu, renderMarksMenu },',
-    '    peers: { openSettings: () => openSettings(), toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView }'
+    '    peers: { openSettings: () => openSettings(), toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView, effectiveConfig }'
   ]) {
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);
   }
+  // 1.8.0 WP-12（V201）：setConfig 回包是纯全局配置，不许再直接赋给 state.config；
+  // 标准写法两行（先写 globalConfig，再用 host 注入的 effectiveConfig 重算生效值），全仓唯一一份。
+  assert.equal(moduleSrc.includes('state.config = await call('), false, 'V201：不许把纯全局配置直接赋给 state.config');
+  assert.ok(moduleSrc.includes('        const cfg = await call(api.setConfig, { formatOptions: options });'), '先拿回包');
+  assert.ok(moduleSrc.includes('        state.globalConfig = cfg;'), '回包写进全局配置');
+  assert.ok(moduleSrc.includes('        state.config = effectiveConfig();'), '生效值经 host 注入的 effectiveConfig 重算');
   assert.ok(rendererSrc.includes(
     'const { formatCardOpen, displayMenuOpen, refreshFormatCard, showFormatCard, hideFormatMenu, scheduleHideFormatCard, showDisplayMenu, hideDisplayMenu, openFormatDialog, closeFormatDialog, formatUndoSteps, canUndoFormat, undoFormat, formatCurrentChapterFromConfig, applyFormatToEditor, setupTidyCardUi } = tidyCardUi;'
   ), '16 个入口按原名解构');
@@ -674,4 +688,49 @@ test('applyFormatToEditor：应用期间正文被改 / 换书 / 章被删 → �
   assert.equal(r3 && r3.reason, 'stale');
   assert.equal(removed.editorEl.value, '待整理正文');
   assert.deepEqual(removed.calls.toast, [staleToast]);
+});
+
+// ---------- V201：应用排版不污染 state.config（1.8.0 WP-12） ----------
+// 修复前：`state.config = await call(api.setConfig, { formatOptions })` 把纯全局配置直接当生效值。
+// 有按书显示覆盖的书，在污染窗口里打开「按书设置」（回填读 state.config）再保存，
+// 就会把全局值写成本书覆盖 —— 本书显示偏好被静默覆盖写盘。
+// 下面按审计建议的链路走一遍语义：书有覆盖 → 排版应用 → 按书设置回填 → 保存载荷。
+test('applyFormatToEditor：应用排版只更新全局，state.config 仍是全局 + 本书覆盖（V201）', async () => {
+  const globalConfig = { formatOptions: { indent: '2' }, editorFont: 'serif', editorLineHeight: 1.6 };
+  const bookDisplay = { editorFont: 'custom', editorCustomFontPath: '/书库/字体/思源.ttf' };
+  const ctx = build({ text: '第一段  文字', globalConfig, bookDisplay });
+  const options = ctx.host.format.readFormatOptions();
+
+  await ctx.ui.applyFormatToEditor();
+  assert.equal(ctx.editorEl.value, '第一段文字');
+  assert.deepEqual(ctx.calls.setConfig, [{ formatOptions: options }], '规则只写全局配置');
+
+  // 全局：规则已更新；本书覆盖键在生效值里仍是本书自己的值
+  assert.deepEqual(ctx.state.globalConfig.formatOptions, options);
+  assert.deepEqual(ctx.state.config, {
+    formatOptions: options,
+    editorFont: 'custom',
+    editorCustomFontPath: '/书库/字体/思源.ttf',
+    editorLineHeight: 1.6
+  });
+  assert.notEqual(ctx.state.config.editorFont, 'serif', '全局 serif 不许顶掉本书的 custom 覆盖');
+
+  // 打开按书设置（settings-ui 回填读 state.config）→ 保存：覆盖值原样进 payload
+  const backfill = {
+    editorFont: ctx.state.config.editorFont,
+    editorCustomFontPath: ctx.state.config.editorCustomFontPath
+  };
+  assert.deepEqual(backfill, { editorFont: 'custom', editorCustomFontPath: '/书库/字体/思源.ttf' });
+  assert.equal(JSON.stringify(backfill).includes('serif'), false, '保存按书设置时不许把全局字体写成本书覆盖');
+});
+
+test('applyFormatToEditor：记规则失败也不污染 state.config（全局写失败时生效值原样）', async () => {
+  const globalConfig = { formatOptions: { indent: '2' }, editorFont: 'serif' };
+  const bookDisplay = { editorFont: 'custom' };
+  const ctx = build({ text: '第一段  文字', globalConfig, bookDisplay, setConfigError: true });
+  const before = { ...ctx.state.config };
+  await ctx.ui.applyFormatToEditor();
+  assert.equal(ctx.editorEl.value, '第一段文字', '记不住规则不影响整理');
+  assert.deepEqual(ctx.state.config, before, '写全局失败时生效值不许动');
+  assert.equal(ctx.state.globalConfig, globalConfig, '全局配置也不许假写');
 });
