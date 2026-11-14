@@ -72,7 +72,9 @@ test('静态闸门：open-books / search-index / config / config-gate / main 从
   for (const rel of ['core/open-books.js', 'core/search-index.js', 'core/config.js', 'core/config-gate.js']) {
     assert.ok(/require\('\.\/path-utils'\)/.test(read(rel)), `${rel} 必须从 core/path-utils.js 取路径归一`);
   }
-  assert.match(read('main.js'), /pathUtils\.pathKey\(/, 'main.js 的 bookKeyOf / 词表去重必须走 core/path-utils.js 的 pathKey');
+  // v1.8.0 WP-34（V114）：book:delete / 词表去重随域搬进 ipc/*.js —— 与 main.js 一起扫。
+  const mainAndIpc = read('main.js') + read('ipc/book.js') + read('ipc/proofread.js');
+  assert.match(mainAndIpc, /pathUtils\.pathKey\(/, 'main.js / ipc 的 bookKeyOf / 词表去重必须走 core/path-utils.js 的 pathKey');
   assert.equal(/function bookKeyOf\s*\(/.test(read('main.js')), false, 'main.js 不该再手写 bookKeyOf');
   assert.equal(/function wordlistKey\s*\(/.test(read('main.js')), false, 'main.js 不该再手写 wordlistKey');
   for (const rel of CORE_FILES) {

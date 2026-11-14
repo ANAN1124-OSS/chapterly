@@ -23,7 +23,7 @@ const path = require('node:path');
 const { lintSource, summarize, exitCodeFor, formatFinding } = require('./lint-gate-logic.js');
 
 const ROOT = path.join(__dirname, '..');
-const SCAN_DIRS = ['core', 'renderer', 'scripts', 'tests'];
+const SCAN_DIRS = ['core', 'renderer', 'ipc', 'scripts', 'tests'];
 const SCAN_FILES = ['main.js', 'preload.js'];
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'shots', 'build', 'tests-fixture', '.github', 'trial']);
 const MAX_PRINTED_WARN = 30;

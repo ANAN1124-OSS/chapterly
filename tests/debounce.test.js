@@ -169,7 +169,13 @@ test('dispose：清掉定时器、之后 schedule 不再接受', async () => {
 test('静态闸门：main.js 的切章走防抖，读书目前与退出前都 flush（B3）', () => {
   const fs = require('node:fs');
   const path = require('node:path');
-  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const source = [
+    // v1.8.0 WP-34（V114）：书 CRUD / 导出的频道搬进 ipc/*.js —— B3 的两个读入口跟着搬走。
+    fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8'),
+    fs.readFileSync(path.join(__dirname, '..', 'ipc', 'book.js'), 'utf8')
+  ]
+    .join('\n')
+    .replace(/\r\n/g, '\n');
   assert.match(source, /const \{ createKeyedDebouncer \} = require\('\.\/core\/debounce'\);/);
   // book:set-last 不再同步读写书目，只 schedule
   const setLastStart = source.indexOf("handleBook('book:set-last'");

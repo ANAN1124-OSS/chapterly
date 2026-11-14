@@ -15,6 +15,8 @@ const readSource = (rel) =>
   require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
 
 const mainSource = readSource('main.js');
+// v1.8.0 WP-34（V114）：校对域（含多份词表频道）整段搬进 ipc/proofread.js —— 接线 / 行为闸门跟着扫新位置。
+const proofreadIpcSource = readSource('ipc/proofread.js');
 const preloadSource = readSource('preload.js');
 
 // 从锚点切到下一个顶格两空格的函数 / handler 之前（与 tests/book-batch.test.js 同一手法）。
@@ -175,7 +177,7 @@ function extractAsyncArrow(source, marker) {
 }
 
 test('行为：proofread:words-info 处理器只读一次词表并透传 multi（P6 兼容，V46/V63）', async () => {
-  const arrow = extractAsyncArrow(mainSource, "  handle('proofread:words-info', async () => {");
+  const arrow = extractAsyncArrow(proofreadIpcSource, "  handle('proofread:words-info', async () => {");
   const reads = [];
   const fakeWordList = {
     ok: true,
@@ -207,7 +209,7 @@ test('行为：proofread:words-info 处理器只读一次词表并透传 multi�
 });
 
 test('行为：text:proofread 处理器把读取出口的 entries 交给 proofreadText 并标记已清洗（V44/V46）', async () => {
-  const arrow = extractAsyncArrow(mainSource, "  handle('text:proofread', async (text, options) => {");
+  const arrow = extractAsyncArrow(proofreadIpcSource, "  handle('text:proofread', async (text, options) => {");
   const seen = {};
   const fakeWordList = { ok: true, name: 'x', multi: false };
   const handler = new Function(
@@ -243,7 +245,7 @@ test('行为：text:proofread 处理器把读取出口的 entries 交给 proofre
 });
 
 test('接线：book:proofread 走同一词表出口，整本每章共用已清洗词条（V44/V46）', () => {
-  const body = sliceFrom(mainSource, "  handleBook('book:proofread', async (bookPath, options, override) => {");
+  const body = sliceFrom(proofreadIpcSource, "  handleBook('book:proofread', async (bookPath, options, override) => {");
   assert.match(body, /glossaryLib\.readProofreadWordlistForRequest\(/, 'book:proofread 走同一词表读取出口');
   assert.match(body, /entriesSanitized: true/, '整本每章共用已清洗词条，不再逐章 sanitize');
   // 两个校对频道都必须用 core 的出口，不在 main 里再留一份 helper
@@ -255,11 +257,12 @@ test('接线：book:proofread 走同一词表出口，整本每章共用已清�
     'async function readProofreadWordlistForRequest('
   ]) {
     assert.equal(mainSource.includes(marker), false, 'main.js 只接线，helper 已下沉 core：' + marker);
+    assert.equal(proofreadIpcSource.includes(marker), false, 'ipc/proofread.js 只接线，helper 已下沉 core：' + marker);
   }
 });
 
 test('静态闸门：新增的添加 / 移除频道在 main 与 preload 一一对应（F3b2）', () => {
-  const mainChannels = new Set(matchesOf(mainSource, /handle\('(proofread:[a-z-]+)'/g));
+  const mainChannels = new Set(matchesOf(mainSource + '\n' + proofreadIpcSource, /handle\('(proofread:[a-z-]+)'/g));
   const preloadChannels = new Set(matchesOf(preloadSource, /invoke\('(proofread:[a-z-]+)'/g));
   assert.deepEqual(
     [...preloadChannels].sort(),
@@ -271,17 +274,17 @@ test('静态闸门：新增的添加 / 移除频道在 main 与 preload 一一�
   }
   assert.match(preloadSource, /addProofreadWordlist:/, 'preload 要有 addProofreadWordlist');
   assert.match(preloadSource, /removeProofreadWordlist:/, 'preload 要有 removeProofreadWordlist');
-  const addBody = sliceFrom(mainSource, "  handle('proofread:wordlists-add', async () => {");
+  const addBody = sliceFrom(proofreadIpcSource, "  handle('proofread:wordlists-add', async () => {");
   assert.match(addBody, /showOpenDialog\(/, '添加走系统对话框（渲染层不能自己给路径）');
   assert.match(addBody, /canceled: true/, '取消要回 { canceled: true }');
   assert.match(addBody, /proofreadWordlists/, '要操作多份字段');
-  assert.match(addBody, /configStore\.set\(/, '要落盘');
-  const removeBody = sliceFrom(mainSource, "  handle('proofread:wordlists-remove', async (index) => {");
+  assert.match(addBody, /getConfigStore\(\)\.set\(/, '要落盘');
+  const removeBody = sliceFrom(proofreadIpcSource, "  handle('proofread:wordlists-remove', async (index) => {");
   assert.match(removeBody, /Number\.isInteger\(/, 'index 必须是整数');
   assert.match(removeBody, /splice\(/, '合法索引才能移除');
-  assert.match(removeBody, /configStore\.set\(/, '要落盘');
+  assert.match(removeBody, /getConfigStore\(\)\.set\(/, '要落盘');
   // 旧单选频道行为保留：仍走单份公开信息
-  const pickBody = sliceFrom(mainSource, "  handle('proofread:pick-words', async () => {");
+  const pickBody = sliceFrom(proofreadIpcSource, "  handle('proofread:pick-words', async () => {");
   assert.match(pickBody, /proofreadWordsPath/, 'pick-words 仍写单份旧字段');
   assert.match(pickBody, /publicGlossaryInfo\(/, 'pick-words 仍回单份公开信息');
 });
@@ -292,11 +295,11 @@ const ADD_ANCHOR = "  handle('proofread:wordlists-add', async () => {";
 // 返回 { handler, calls }；calls 记录 stat / info 的调用顺序——就是 V53 要钉的「先校验、后读词表」。
 function loadAddWordlistHandler({ picked, config }) {
   const calls = [];
-  const arrow = extractAsyncArrow(mainSource, ADD_ANCHOR);
+  const arrow = extractAsyncArrow(proofreadIpcSource, ADD_ANCHOR);
   const handler = new Function(
     'showOpenDialog',
     'getConfig',
-    'configStore',
+    'getConfigStore',
     'applyConfig',
     'proofreadWordlistInfoNow',
     'fs',
@@ -308,7 +311,8 @@ function loadAddWordlistHandler({ picked, config }) {
   )(
     async () => ({ canceled: false, filePaths: [picked] }),
     async () => config,
-    { set: async (patch) => ({ ...config, ...patch }) },
+    // WP-34：配置仓库句柄改成 getter 注入（configStore 在 getConfig 里懒建，快照会过期）
+    () => ({ set: async (patch) => ({ ...config, ...patch }) }),
     () => {},
     async () => {
       calls.push('info');

@@ -31,6 +31,11 @@ const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
 const MAIN = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+// v1.8.0 WP-34（V114）：导出 / 校对 / 书 CRUD 三个域搬进 ipc/*.js —— 频道清单 / 发送点一起扫；
+// 顶层函数体（hardenWebContents / windowPreferences 等）仍只认 main.js。
+const IPC_SOURCE = ['ipc/book.js', 'ipc/proofread.js', 'ipc/export.js']
+  .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
+  .join('\n');
 const PRELOAD = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8');
 const INDEX = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 const POLICY = require(path.join(ROOT, 'core', 'security-policy.js'));
@@ -85,7 +90,8 @@ function loadPreload({ rejectInvoke = false, testHooks = true } = {}) {
 // main.js 的主进程侧频道：注册（handle / handleBook）、单向通知（sendToSession /
 // sendToFlow / webContents.send / broadcast）、以及两个单向接收（ipcMain.on）。
 function mainChannels() {
-  const handlers = [...MAIN.matchAll(/^[ \t]+(?:handleBook|handle)\('([^']+)'/gm)].map((item) => item[1]);
+  const SOURCE = MAIN + '\n' + IPC_SOURCE;
+  const handlers = [...SOURCE.matchAll(/^[ \t]+(?:handleBook|handle)\('([^']+)'/gm)].map((item) => item[1]);
   const sent = new Set();
   for (const re of [
     /sendToSession\([^,\n]+,\s*'([^']+)'/g,
@@ -93,15 +99,15 @@ function mainChannels() {
     /webContents\.send\('([^']+)'/g,
     /broadcast\('([^']+)'/g
   ]) {
-    for (const match of MAIN.matchAll(re)) sent.add(match[1]);
+    for (const match of SOURCE.matchAll(re)) sent.add(match[1]);
   }
   // 1.6.1 P-01：强制退出的通知是动态频道 `webContents.send(plan.channel)`——上面四条正则抓不到。
   // 字面量登记在 core/close-guard.js 的 FORCE_CLOSE_CHANNEL，这里按那个常量补进来，奇偶校验才覆盖得到
   // （改频道名 / preload 忘了跟，这条就会红）。
-  if (/webContents\.send\(plan\.channel\)/.test(MAIN)) {
+  if (/webContents\.send\(plan\.channel\)/.test(SOURCE)) {
     sent.add(require(path.join(ROOT, 'core', 'close-guard.js')).FORCE_CLOSE_CHANNEL);
   }
-  const received = [...MAIN.matchAll(/ipcMain\.on\('([^']+)'/g)].map((item) => item[1]);
+  const received = [...SOURCE.matchAll(/ipcMain\.on\('([^']+)'/g)].map((item) => item[1]);
   return { handlers, sent: [...sent], received };
 }
 

@@ -15,7 +15,7 @@
 // globals 按目录**内联**在这里（不引 globals 包）：node 侧与 renderer 侧完全不同的全局环境，
 // 混成一份会让「renderer 里误用 process」这种错误静默通过。
 //
-// 扫描范围与 lint-gate 对齐：core / renderer / scripts / tests 四个目录 + main.js / preload.js。
+// 扫描范围与 lint-gate 对齐：core / renderer / ipc / scripts / tests 五个目录 + main.js / preload.js。
 
 // Node（main 进程 / preload / scripts / tests）能看到的全局名。
 const NODE_GLOBALS = {
@@ -232,7 +232,7 @@ module.exports = [
     ignores: ['node_modules/**', 'dist/**', 'out/**', 'release/**', 'coverage/**', 'build/**', 'shots/**', 'trial/**', 'tests-fixture/**'],
   },
   {
-    files: ['main.js', 'preload.js', 'core/**/*.js', 'scripts/**/*.js', 'tests/**/*.js'],
+    files: ['main.js', 'preload.js', 'core/**/*.js', 'ipc/**/*.js', 'scripts/**/*.js', 'tests/**/*.js'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'commonjs', globals: NODE_GLOBALS },
     rules: RULES,
   },

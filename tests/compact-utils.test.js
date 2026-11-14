@@ -44,6 +44,11 @@ const SCRIPT_FILES = fs
   .readdirSync(path.join(ROOT, 'scripts'))
   .filter((name) => name.endsWith('.js'))
   .map((name) => `scripts/${name}`);
+// v1.8.0 WP-34（V114）：主进程 IPC 域模块（导出 / 校对 / 书 CRUD）搬进 ipc/，同属产品代码，一起扫。
+const IPC_FILES = fs
+  .readdirSync(path.join(ROOT, 'ipc'))
+  .filter((name) => name.endsWith('.js'))
+  .map((name) => `ipc/${name}`);
 
 // 去掉注释（块注释 + 整行 // 注释）：静态闸门只看代码，注释里解释「以前怎么写」不算回潮。
 function stripComments(source) {
@@ -141,7 +146,7 @@ test('A2：四个调用点的实际输出与收编前逐字一致', () => {
 });
 
 test('A2 闸门：全角换算与汉字范围全仓只剩 core/common.js 一份', () => {
-  const files = [...CORE_FILES, ...RENDERER_FILES, 'main.js', ...SCRIPT_FILES];
+  const files = [...CORE_FILES, ...RENDERER_FILES, ...IPC_FILES, 'main.js', ...SCRIPT_FILES];
   for (const rel of files) {
     if (rel === 'core/common.js') continue;
     const source = read(rel);
@@ -210,7 +215,7 @@ test('A3：formatByteSize 与收编前的 storage / importer 两份实现逐项�
 });
 
 test('A3 闸门：体量文案与 128 MB 上限全仓只剩 core/common.js 一份', () => {
-  const files = [...CORE_FILES, ...RENDERER_FILES, 'main.js', ...SCRIPT_FILES];
+  const files = [...CORE_FILES, ...RENDERER_FILES, ...IPC_FILES, 'main.js', ...SCRIPT_FILES];
   for (const rel of files) {
     if (rel === 'core/common.js') continue;
     const source = read(rel);
@@ -223,7 +228,7 @@ test('A3 闸门：体量文案与 128 MB 上限全仓只剩 core/common.js 一�
 // ---------- A9 路径等价判定 ----------
 
 test('A9 闸门：「同一路径 / 同一目录」判定统一走 core/path-utils.js 的 pathKey', () => {
-  const files = [...CORE_FILES, ...RENDERER_FILES, 'main.js'];
+  const files = [...CORE_FILES, ...RENDERER_FILES, ...IPC_FILES, 'main.js'];
   for (const rel of files) {
     if (rel === 'core/path-utils.js') continue;
     const code = stripComments(read(rel));
@@ -242,7 +247,7 @@ test('A9 闸门：「同一路径 / 同一目录」判定统一走 core/path-uti
   assert.ok(read('core/storage.js').includes('pathUtils.pathKey(bookPath)'), 'bookLockKey 应走 pathKey');
   assert.ok(read('core/storage.js').includes('pathUtils.pathKey(path.dirname(source))'), '撤销删除 _trash 判定应走 pathKey');
   assert.ok(read('core/ipc-paths.js').includes('pathUtils.pathKey(path.dirname(target))'), 'assertBookPath 应走 pathKey');
-  assert.ok(read('main.js').includes('pathUtils.pathKey(path.dirname(target))'), 'book:delete 应走 pathKey');
+  assert.ok(read('ipc/book.js').includes('pathUtils.pathKey(path.dirname(target))'), 'book:delete 应走 pathKey');
   // 行为不变：大小写 / 末尾分隔符 / 相对写法都算同一个目录，越界照旧拒绝
   const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-compact-utils-')), '书架');
   const book = path.join(root, '某本书');

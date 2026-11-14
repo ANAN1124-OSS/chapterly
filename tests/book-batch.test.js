@@ -52,6 +52,9 @@ const readSource = (rel) =>
   require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
 
 const mainSource = readSource('main.js');
+// v1.8.0 WP-34（V114）：导出 / 校对两个域搬进 ipc/*.js，静态闸门跟着扫新位置。
+const ipcExportSource = readSource('ipc/export.js');
+const ipcProofreadSource = readSource('ipc/proofread.js');
 
 // 从锚点切到下一个顶格两空格的函数 / handler 之前（与 tests/export-read-order.test.js 同一手法）
 function sliceFrom(source, startMarker) {
@@ -211,16 +214,16 @@ test('静态闸门：整本查找 / 替换 / 预览 / 整理四处都按批读�
 test('静态闸门：导出入口释放中间引用（TXT 流式写出，归档就地转换 + 用完即清）', () => {
   // B5（v1.8.0 WP-28）：TXT 从「buildTxtExport 一次出整本 Buffer」升级为流式写盘，
   // 但「不手动 compose、不整本常驻」的意图不变——现在由 writeTxtExport 里的 streamTxtExport 保证。
-  const txt = sliceFrom(mainSource, "  handleBook('book:export', async (bookPath, override, range) => {");
+  const txt = sliceFrom(ipcExportSource, "  handleBook('book:export', async (bookPath, override, range) => {");
   assert.match(txt, /await writeTxtExport\(filePath, bookPath, prepared\)/);
   assert.doesNotMatch(txt, /exporter\.composeBook/, 'TXT 导出不再手动 compose（流式拼接里逐块做）');
   assert.doesNotMatch(txt, /exporter\.buildTxtExport/, 'TXT 导出不再建整本 Buffer（流式写盘）');
-  const writer = sliceFrom(mainSource, '  async function writeTxtExport(filePath, bookPath, prepared) {');
+  const writer = sliceFrom(ipcExportSource, '  async function writeTxtExport(filePath, bookPath, prepared) {');
   assert.match(writer, /exporter\.streamTxtExport\(/);
   assert.match(writer, /atomicWriteFileStream\(/);
   assert.doesNotMatch(writer, /collectExportTexts|buildTxtExport|Buffer\.from/);
   for (const channel of ['book:export-epub', 'book:export-docx']) {
-    const body = sliceFrom(mainSource, `  handleBook('${channel}', async (bookPath, override, range) => {`);
+    const body = sliceFrom(ipcExportSource, `  handleBook('${channel}', async (bookPath, override, range) => {`);
     assert.match(
       body,
       /exporter\.convertTextsInPlace\(texts, conversion, s2tLib\.convertText\)/,
@@ -239,17 +242,17 @@ test('静态闸门：导出入口释放中间引用（TXT 流式写出，归档�
 test('静态闸门：整本校对 / 整本导出按 32 章分批读（P2-2）', () => {
   assert.match(mainSource, /const CHAPTER_BATCH_SIZE = 32;/, '批大小 32 要与 core/storage.js 的 CHAPTER_BATCH_SIZE 同值');
   const targets = [
-    ['walkChapterTexts', '  async function walkChapterTexts(bookPath, meta, override, onChapter) {'],
-    ['collectExportTexts', '  async function collectExportTexts(bookPath, meta, override, indexes) {']
+    ['walkChapterTexts', '  async function walkChapterTexts(bookPath, meta, override, onChapter) {', ipcProofreadSource],
+    ['collectExportTexts', '  async function collectExportTexts(bookPath, meta, override, indexes) {', ipcExportSource]
   ];
-  for (const [name, anchor] of targets) {
-    const body = sliceFrom(mainSource, anchor);
+  for (const [name, anchor, source] of targets) {
+    const body = sliceFrom(source, anchor);
     assert.doesNotMatch(body, /mapLimit\(meta\.chapters,/, `${name} 不许再一次 mapLimit 整本书`);
     assert.match(body, /for \(let start = 0; start < .+; start \+= CHAPTER_BATCH_SIZE\) \{/, `${name} 要按批推进`);
     assert.match(body, /chapters\.slice\(start, start \+ CHAPTER_BATCH_SIZE\)/, `${name} 每批最多 32 章`);
     assert.match(body, /mapLimit\(batch, CHAPTER_READ_CONCURRENCY/, `${name} 批内仍限并发（批间串行）`);
   }
   // 两个整本检查（校对 / 敏感词）都走 walkChapterTexts，分批只在它里面做一次
-  const walkCalls = mainSource.match(/walkChapterTexts\(bookPath, meta, safeOverride/g) || [];
+  const walkCalls = ipcProofreadSource.match(/walkChapterTexts\(bookPath, meta, safeOverride/g) || [];
   assert.equal(walkCalls.length, 2, '校对 / 敏感词两个整本检查都走同一条分批读路径');
 });

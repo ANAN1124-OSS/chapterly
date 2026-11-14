@@ -312,7 +312,11 @@ test('修复重建：回退（归档改回原名）也失败时，必须留一�
   assert.equal(logged[0].kind, 'repair-rollback', '日志类型要能一眼看出是修复回退失败');
   assert.equal(logged[0].extra && logged[0].extra.code, 'META_ROLLBACK_FAILED');
   // 日志工具是 main.js 现有的 logError（removed: 不新造第二套 logger）：产品调用必须把它接进来
-  const mainSource = require('node:fs').readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  // v1.8.0 WP-34（V114）：book:repair 已搬进 ipc/book.js —— 两个来源一起扫。
+  const mainSource = [
+    require('node:fs').readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8'),
+    require('node:fs').readFileSync(path.join(__dirname, '..', 'ipc', 'book.js'), 'utf8')
+  ].join('\n');
   for (const fn of ['restoreFromBak', 'rebuildFromFiles']) {
     assert.match(
       mainSource,
