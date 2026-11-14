@@ -94,16 +94,45 @@ function makeSnippet(text, index, length, radius = 18) {
 // 「只替换这一处」用：从 fromIndex 往后找第一处命中。
 // fromIndex 落在某一处命中内部时返回那一处（作者可能在编辑区里点了一下那个词）；
 // 否则返回 fromIndex 及之后的下一处；找不到返回 null。
+// B3（v1.8.0 WP-27）：不再 findMatches() 物化全量命中（病态查询会建 ≤5000 个对象）。
+// 这里只用一个 indexOf 循环增量推进：边数边记「第一处该返回的命中」，命中总数仍在同一个
+// 循环里数完（界面要显示「第 N / 总 M 处」，且 M 必须与 findMatchesAll 一样受 MAX_MATCHES 上限约束）。
+// 返回形状与旧实现逐字段一致：index = 该命中在命中列表里的 0 基序号，total = 命中列表长度。
 function findNextMatch(text, query, fromIndex = 0, options = {}) {
   const source = String(text == null ? '' : text);
-  const matches = findMatches(source, query, options);
-  if (!matches.length) return null;
+  const needleRaw = String(query == null ? '' : query);
+  if (!needleRaw) return null;
+  const caseSensitive = Boolean(options.caseSensitive);
+  let haystack = source;
+  let needle = needleRaw;
+  if (!caseSensitive) {
+    // 与 scanMatches 同一口径：两边都折叠才折叠，任一边退化就两边都用原文（X7 退化语义）。
+    const foldedHay = caseFoldForMatch(source);
+    const foldedNeedle = caseFoldForMatch(needleRaw);
+    if (foldedHay.folded && foldedNeedle.folded) {
+      haystack = foldedHay.text;
+      needle = foldedNeedle.text;
+    }
+  }
   const rawFrom = Number(fromIndex);
   const from = Math.max(0, Math.min(Number.isFinite(rawFrom) ? Math.floor(rawFrom) : 0, source.length));
-  let index = matches.findIndex((match) => match.index <= from && from < match.index + match.length);
-  if (index < 0) index = matches.findIndex((match) => match.index >= from);
-  if (index < 0) return null;
-  return { index, total: matches.length, match: matches[index] };
+  const step = Math.max(1, needle.length);
+  let total = 0;
+  let pickedIndex = -1;
+  let pickedAt = -1;
+  let from2 = 0;
+  while (total < MAX_MATCHES) {
+    const at = haystack.indexOf(needle, from2);
+    if (at < 0) break;
+    total += 1;
+    if (pickedAt < 0 && (at >= from || (at <= from && from < at + needleRaw.length))) {
+      pickedIndex = total - 1;
+      pickedAt = at;
+    }
+    from2 = at + step;
+  }
+  if (pickedAt < 0) return null;
+  return { index: pickedIndex, total, match: { index: pickedAt, length: needleRaw.length } };
 }
 
 module.exports = {

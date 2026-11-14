@@ -473,18 +473,21 @@
     }
     const rules = proofreadRuleSummary(payload.byRule);
     const truncatedNote = payload.truncated ? '（明细只列出一部分，总数照实统计）' : '';
+    // B4（v1.8.0 WP-27）：正文超过 core/proofread.js 的规模闸时只校对了前 100 万字，
+    // 这里必须如实说明（和「明细只列出一部分」不是同一件事，不能共用一句话）。
+    const tooLargeNote = payload.tooLarge ? '（正文超过 100 万字，只校对了前 100 万字）' : '';
     if (payload.scope === 'book') {
       const hit = Number(payload.chapterHitCount) || 0;
       const skipped = Number(payload.skippedChapters) || 0;
       summary.textContent = payload.total
-        ? `全书 ${payload.chapterCount} 章共 ${payload.total} 处可疑，涉及 ${hit} 章：${rules}${truncatedNote}`
+        ? `全书 ${payload.chapterCount} 章共 ${payload.total} 处可疑，涉及 ${hit} 章：${rules}${truncatedNote}${tooLargeNote}`
         : `全书 ${payload.chapterCount} 章没有发现可疑的地方${
             skipped ? `（跳过 ${skipped} 个缺文件的章节）` : ''
-          }`;
+          }${tooLargeNote}`;
       return;
     }
     summary.textContent = payload.total
-      ? `本章共 ${payload.total} 处可疑：${rules}${truncatedNote}`
+      ? `本章共 ${payload.total} 处可疑：${rules}${truncatedNote}${tooLargeNote}`
       : '本章没有发现可疑的地方（只检查空白、标点、段落长度、重复用词和你的校对词表，不判断文字好坏）';
   }
 

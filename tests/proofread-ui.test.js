@@ -471,6 +471,28 @@ test('runProofread：整本 0 处 / 跳过缺文件章节 的摘要文案', asyn
   assert.equal(ctx.dom.map.get('proofread-summary').textContent, '全书 5 章没有发现可疑的地方（跳过 2 个缺文件的章节）');
 });
 
+test('B4/WP-27：正文超过校对规模闸时，摘要如实说明「只校对了前 100 万字」', async () => {
+  // 当前章：proofreadText 回包带 tooLarge
+  const current = build({
+    textResult: { total: 2, byRule: { dash: 2 }, truncated: false, tooLarge: true, issues: [] }
+  });
+  await current.ui.runProofread();
+  assert.equal(
+    current.dom.map.get('proofread-summary').textContent,
+    '本章共 2 处可疑：破折号 2（正文超过 100 万字，只校对了前 100 万字）'
+  );
+  // 整本：book:proofread 汇总的 tooLarge
+  const book = build({
+    scope: 'book',
+    bookResult: { total: 0, chapterCount: 3, chapterHitCount: 0, skippedChapters: 0, byRule: {}, issues: [], tooLarge: true }
+  });
+  await book.ui.runProofread();
+  assert.equal(
+    book.dom.map.get('proofread-summary').textContent,
+    '全书 3 章没有发现可疑的地方（正文超过 100 万字，只校对了前 100 万字）'
+  );
+});
+
 test('runProofread：当前章 0 处的说明文案（解释只查什么）', async () => {
   const ctx = build({ textResult: { total: 0, byRule: {}, truncated: false, issues: [] } });
   await ctx.ui.runProofread();

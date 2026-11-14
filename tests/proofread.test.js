@@ -689,3 +689,101 @@ test('P-08 接线闸门：整本校对明细预算用完后，后续章节只算
   assert.match(region, /snippets: false/, '预算用完后要传 snippets:false（不再为丢掉的明细拼片段）');
   assert.match(region, /snippetsWanted/, '要有一个跨章记住的「还要不要片段」状态');
 });
+
+// ---------- 输入热路径（v1.8.0 WP-27 / B4） ----------
+
+test('B4/WP-27：省略号 / 破折号 / 全角数字合并一趟扫描后，命中与文案逐条不变', () => {
+  // 三种字符混排 + 各种边界（成对破折号不报、日期不报、两点不报、半角数字不报）。
+  const text = '甲乙--丙—丁。。。戊１．己……庚----辛-壬１２３。';
+  const rules = {
+    'halfwidth-punct': false,
+    'long-paragraph': false,
+    'repeat-word': false,
+    'punct-run': false,
+    'blank-lines': false,
+    'cjk-latin-spacing': false,
+    ellipsis: true,
+    dash: true,
+    'fullwidth-digit': true,
+    'custom-word': false
+  };
+  const result = proofread.proofreadText(text, { rules });
+  assert.deepEqual(
+    result.issues.map((issue) => [issue.rule, issue.index, issue.length, issue.match, issue.suggestion]),
+    [
+      ['dash', 2, 2, '--', '——'],
+      ['dash', 5, 1, '—', '——'],
+      ['ellipsis', 7, 3, '。。。', '……'],
+      ['fullwidth-digit', 11, 1, '１', '1'],
+      ['dash', 17, 4, '----', '——'],
+      ['fullwidth-digit', 24, 3, '１２３', '123']
+    ]
+  );
+  assert.deepEqual(result.byRule, {
+    'halfwidth-punct': 0,
+    'long-paragraph': 0,
+    'repeat-word': 0,
+    'punct-run': 0,
+    'blank-lines': 0,
+    'cjk-latin-spacing': 0,
+    ellipsis: 1,
+    dash: 3,
+    'fullwidth-digit': 2,
+    'custom-word': 0
+  });
+  // 单条开关仍互不影响：关掉省略号，破折号 / 全角数字照常报
+  const noEllipsis = proofread.proofreadText(text, { rules: { ...rules, ellipsis: false } });
+  assert.deepEqual(only(noEllipsis, 'ellipsis'), []);
+  assert.deepEqual(only(noEllipsis, 'dash').map((issue) => issue.index), [2, 5, 17]);
+  assert.deepEqual(only(noEllipsis, 'fullwidth-digit').map((issue) => issue.index), [11, 24]);
+});
+
+test('B4/WP-27：MAX_SOURCE_CHARS 规模闸——超限只扫前 100 万字，如实回 tooLarge / scannedChars', () => {
+  assert.equal(proofread.MAX_SOURCE_CHARS, 1000000);
+  const rules = {
+    'halfwidth-punct': false,
+    'long-paragraph': false,
+    'repeat-word': false,
+    'punct-run': false,
+    'blank-lines': false,
+    'cjk-latin-spacing': false,
+    ellipsis: false,
+    dash: false,
+    'fullwidth-digit': false,
+    'custom-word': false
+  };
+  const exactly = 'a'.repeat(proofread.MAX_SOURCE_CHARS);
+  const at = proofread.proofreadText(exactly, { rules });
+  assert.equal(at.tooLarge, false);
+  assert.equal(at.scannedChars, proofread.MAX_SOURCE_CHARS);
+
+  const over = 'a'.repeat(proofread.MAX_SOURCE_CHARS + 1);
+  const result = proofread.proofreadText(over, { rules });
+  assert.equal(result.tooLarge, true);
+  assert.equal(result.scannedChars, proofread.MAX_SOURCE_CHARS, '只扫前 100 万字');
+  // 字数契约仍按全文算（WP-24 口径不变）：两个字数都不是截断后的值
+  assert.equal(result.chars, proofread.MAX_SOURCE_CHARS + 1);
+  assert.equal(result.rawLength, proofread.MAX_SOURCE_CHARS + 1);
+  // 截断点不切开代理对：代理对正好落在上限时退一个码元，scannedChars 少 1。
+  const surrogate = 'a'.repeat(proofread.MAX_SOURCE_CHARS - 1) + '𠮷' + 'b';
+  const split = proofread.proofreadText(surrogate, { rules });
+  assert.equal(split.tooLarge, true);
+  assert.equal(split.scannedChars, proofread.MAX_SOURCE_CHARS - 1);
+  const lastCode = surrogate.charCodeAt(split.scannedChars - 1);
+  assert.ok(lastCode < 0xd800 || lastCode > 0xdbff, '扫描前缀不能以孤立高位代理结尾');
+
+  // 静态闸门：main.js 的整本校对要把 tooLarge 汇总进回包；面板要如实提示。
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const start = main.indexOf("handleBook('book:proofread'");
+  const end = main.indexOf('\n  });', start);
+  const region = main.slice(start, end);
+  assert.match(region, /if \(result\.tooLarge\) tooLarge = true;/);
+  assert.match(region, /tooLarge,\n/, '回包必须带 tooLarge');
+  const ui = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'proofread-ui.js'), 'utf8');
+  assert.match(ui, /payload\.tooLarge/, '面板必须读 tooLarge');
+  assert.match(ui, /只校对了前 100 万字/, '面板必须说明只校对了前 100 万字');
+});
+
+

@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const logic = require('../renderer/editor-logic');
 const tts = require('../core/tts');
 
@@ -437,6 +439,85 @@ test('当前段落：和 paragraphRanges 完全对齐（段号 / 区间 / 行号
   assert.equal(tail.blank, true);
   assert.equal(tail.paragraph, 0);
   assert.equal(tail.line, 6);
+});
+
+// ---------- 输入热路径（v1.8.0 WP-27 / B1） ----------
+
+test('B1/WP-27：选中统计只切选区边界行，与「整章 lineRanges 后逐行判定」逐案例一致', () => {
+  // 2000 行、每 5 行一个纯空白行：整章约 6 万字。旧实现每次都拆整章，这里只在选区范围内走行。
+  const lines = [];
+  for (let i = 0; i < 2000; i += 1) lines.push(i % 5 === 0 ? '   ' : `第${i}段正文${'字'.repeat(i % 9)}`);
+  const text = lines.join('\n');
+  // 参考实现：整章行表 + 旧判定（from < 行尾 && to > 行首 && 非空行）
+  const ranges = [];
+  let offset = 0;
+  for (const raw of lines) {
+    ranges.push({ start: offset, end: offset + raw.length, blank: raw.trim() === '' });
+    offset += raw.length + 1;
+  }
+  const expected = (from, to) =>
+    ranges.filter((line) => !line.blank && from < line.end && to > line.start).length;
+  const cases = [
+    [0, text.length],
+    [0, 1],
+    [1, 2],
+    [0, 5],
+    [12345, 12346],
+    [25000, 30000],
+    [ranges[1500].start, ranges[1503].end],
+    [ranges[1500].end - 1, ranges[1501].start + 1],
+    [ranges[3].start, ranges[3].start],
+    [text.length - 1, text.length]
+  ];
+  for (const [from, to] of cases) {
+    const stats = logic.selectionStats(text, from, to);
+    assert.equal(stats.paragraphs, expected(from, to), `选区 [${from},${to})`);
+  }
+  // 反向 / 越界仍按旧口径夹紧后再算
+  assert.equal(logic.selectionStats(text, 30000, 25000).paragraphs, expected(25000, 30000));
+
+  // 静态闸门：不再为整章建 lineRanges，只从选区所在行开始向后切；行边界仍认 \n。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'editor-logic.js'), 'utf8');
+  const body = /function selectionStats\([\s\S]*?\r?\n  \}\r?\n/.exec(src);
+  assert.ok(body, '找不到 selectionStats');
+  assert.ok(!/lineRanges\(/.test(body[0]), 'selectionStats 不许再整章 lineRanges');
+  assert.match(body[0], /lastIndexOf\('\\n'/, '必须从选区起点回溯到行首');
+  assert.match(body[0], /indexOf\('\\n'/, '只往选区终点方向切行');
+});
+
+test('B1/WP-27：光标段落走行首表二分 + 段落前缀表，与 lineRanges 参考实现逐位置一致', () => {
+  // 混合缩进 / 空行 / 全角空格 / 行尾空白 / 末尾换行；用参考实现逐个位置对照。
+  const text = [
+    `${FW}${FW}第一段。`,
+    '',
+    '   ',
+    `${FW}第二段长一点。${FW}${FW}`,
+    `  第三段${FW}`,
+    '',
+    '',
+    `${FW}${FW}${FW}第四段！`,
+    ''
+  ].join('\n');
+  const ranges = logic.lineRanges(text);
+  for (let pos = 0; pos <= text.length; pos += 1) {
+    const lineIndex = ranges.findIndex((line) => pos <= line.end);
+    const line = ranges[lineIndex];
+    const nonBlank = ranges.slice(0, lineIndex + 1).filter((item) => !item.blank).length;
+    const got = logic.caretParagraph(text, pos);
+    assert.equal(got.index, lineIndex, `pos=${pos} 行下标`);
+    assert.equal(got.line, lineIndex + 1, `pos=${pos} 行号`);
+    assert.equal(got.blank, line.blank, `pos=${pos} 空行`);
+    assert.equal(got.paragraph, line.blank ? 0 : nonBlank, `pos=${pos} 段号`);
+  }
+
+  // 静态闸门：行首表 / 二分 / 缓存都来自共享实现，不许自己再写一份全文扫描。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'editor-logic.js'), 'utf8');
+  const body = /function caretParagraph\([\s\S]*?\r?\n  \}\r?\n/.exec(src);
+  assert.ok(body, '找不到 caretParagraph');
+  assert.match(body[0], /lineTableOf\(/, '必须用按正文版本缓存的行首表');
+  assert.match(body[0], /positionOf\(/, '行定位必须用 common.positionOf 二分');
+  assert.match(src, /lineTableCache\.text === source/, '行首表必须按正文版本缓存');
+  assert.ok(!/for \(const line of lineRanges\(source\)\)/.test(body[0]), 'caretParagraph 不许再全文 lineRanges');
 });
 
 // ---------- 标记层超长门控（v0.8.6 R5，代码审计 F9） ----------
