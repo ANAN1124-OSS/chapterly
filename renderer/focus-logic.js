@@ -95,6 +95,34 @@
     return result;
   }
 
+  // 把「光标所在行」滚进视野（C24）：查找 / 校对 / 敏感词跳转都走这里。
+  // 编辑区是 pre-wrap——长段落一行的字符数远超窗口宽度，视觉行数远大于换行符个数，
+  // 所以 caretTop 必须是镜像实测出来的真实行顶；「\n 数 × 行高」只在量不出来时兜底。
+  //   caretTop      光标行顶端（px，含 padding）
+  //   viewportHeight 正文区可视高度（clientHeight）
+  //   lineHeight    行高（决定底部留几行余量）
+  //   maxScrollTop  可滚动到的最大值（scrollHeight - clientHeight）
+  //   currentScrollTop 当前滚动位置
+  // 行已经在 [scrollTop, scrollTop + 视口 - 2 行] 之间就不动；否则把这一行放到视口上方 1/3 处。
+  function planCaretReveal(options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const caretTop = toFinite(opts.caretTop);
+    const viewportHeight = toFinite(opts.viewportHeight);
+    const lineHeight = toFinite(opts.lineHeight);
+    const maxScrollTop = Math.max(0, toFinite(opts.maxScrollTop) || 0);
+    const currentRaw = toFinite(opts.currentScrollTop);
+    const current = currentRaw == null ? 0 : Math.max(0, currentRaw);
+    const result = { scrollTop: current, adjust: false };
+    // 量不到行位置 / 正文区不可见时什么都不做（别把正文滚飞）
+    if (caretTop == null || viewportHeight == null || viewportHeight <= 0) return result;
+    const margin = lineHeight == null || lineHeight <= 0 ? 0 : lineHeight * 2;
+    const viewBottom = current + viewportHeight - margin;
+    if (caretTop >= current && caretTop <= viewBottom) return result;
+    result.scrollTop = clampScrollTop(caretTop - viewportHeight / 3, maxScrollTop);
+    result.adjust = true;
+    return result;
+  }
+
   return {
     TYPEWRITER_RATIO_DEFAULT,
     TYPEWRITER_RATIO_RANGE,
@@ -102,6 +130,7 @@
     MAX_TYPEWRITER_CHARS,
     sanitizeRatio,
     clampScrollTop,
-    planTypewriterScroll
+    planTypewriterScroll,
+    planCaretReveal
   };
 });

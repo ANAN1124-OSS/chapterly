@@ -331,7 +331,12 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   快照收进 renderer/stale-guard.js（Node 单测覆盖），renderer.js 只多 ① 模块级
   //   `const staleGuard = window.CWStaleGuard;`（2 行说明 + 1 行声明）与 ② 查找 / 导出两处装配的
   //   `staleGuard,`（其余 6 个面板的 host 在同一行追加，不增行）。
-  const RENDERER_LINE_BUDGET = 6168;
+  // 1.8.0 WP-18（C22/C24/C38/C39）：6168 → 6176（+8，当前 6176 行）：C24 让 scrollCaretIntoView
+  //   复用专注模式打字机的镜像实测（软换行下「\n 数 × 行高」会把几十个视觉行算成 1 行）；
+  //   测量与滚动判定都进了 focus-logic.js（planCaretReveal 有单测），renderer.js 只剩
+  //   「量不到才退回换行数估算」的装配（6 行语句）+ 5 行说明为什么要这样接。C22 / C38 / C39
+  //   分别在 menu-keyboard / drag-sort-ui / fragments-ui 里，renderer.js 一行都没加。
+  const RENDERER_LINE_BUDGET = 6176;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

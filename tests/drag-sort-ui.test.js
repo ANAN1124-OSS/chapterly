@@ -317,6 +317,7 @@ test('updateChapterDrag：位移不到 5px 不动，过了阈值加 dragging / b
   assert.equal(body.classList.contains('chapter-dragging'), true);
   assert.equal(c2.classList.contains('drop-before'), false, '旧落点标记要被清掉');
   assert.equal(c1.classList.contains('drop-before'), true, '新落点标记要打上');
+  fire('pointercancel'); // C38：这里进过顶部边缘区，收掉持续滚动定时器（不让测试进程挂着）
 });
 
 test('updateChapterDrag：卷标题落点打 drop-into；靠近顶 / 底部自动滚动', () => {
@@ -337,6 +338,57 @@ test('updateChapterDrag：卷标题落点打 drop-into；靠近顶 / 底部自�
   // 底部 28px 内：向下滚
   fire('pointermove', event(495));
   assert.equal(list.scrollTop, before);
+  fire('pointercancel'); // C38：进过上下边缘区，收掉持续滚动定时器
+});
+
+test('updateChapterDrag（C38）：指针停在边缘不动也持续滚动；离开边缘 / 松手立即停', async () => {
+  const realSetInterval = globalThis.setInterval;
+  const realClearInterval = globalThis.clearInterval;
+  const timers = [];
+  globalThis.setInterval = (fn, ms) => {
+    const timer = { fn, ms, cleared: false };
+    timers.push(timer);
+    return timer;
+  };
+  globalThis.clearInterval = (timer) => {
+    if (timer) timer.cleared = true;
+  };
+  try {
+    const { ui, list, fire } = makeWorld();
+    const c1 = chapterEl(0, 100);
+    const c2 = chapterEl(1, 140);
+    list.children = [c1, c2];
+    list.scrollTop = 200;
+    ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+    fire('pointermove', event(105)); // 顶部边缘：当拍先滚 12px（老手感）
+    assert.equal(list.scrollTop, 188);
+    assert.equal(timers.length, 1, '进入边缘区起一个持续滚动定时器');
+    assert.equal(timers[0].ms, 16);
+    // 指针不再移动：定时器每拍继续向上滚（老实现只有 pointermove 那一拍会动）
+    timers[0].fn();
+    timers[0].fn();
+    assert.equal(list.scrollTop, 164, '不再发 pointermove 也持续向上滚');
+    assert.equal(timers.length, 1, '持续滚动复用同一个定时器');
+    // 指针离开边缘区：立刻停
+    fire('pointermove', event(300));
+    assert.equal(timers[0].cleared, true, '离开边缘区就停');
+    const stoppedAt = list.scrollTop;
+    timers[0].fn();
+    assert.equal(list.scrollTop, stoppedAt, '停掉的定时器不再滚');
+    // 换到另一头：换一个方向重新起
+    fire('pointermove', event(495));
+    assert.equal(timers.length, 2);
+    assert.equal(list.scrollTop, stoppedAt + 12);
+    const bottomAt = list.scrollTop;
+    timers[1].fn();
+    assert.equal(list.scrollTop, bottomAt + 12, '底部边缘向下持续滚');
+    // 松手：endChapterDrag 第一件事就是收定时器
+    await fire('pointerup');
+    assert.equal(timers[1].cleared, true, '松手立刻停');
+  } finally {
+    globalThis.setInterval = realSetInterval;
+    globalThis.clearInterval = realClearInterval;
+  }
 });
 
 // ---------- 收手 ----------
@@ -623,6 +675,10 @@ test('静态闸门：index.html 顺序 + 模块不摸 Electron / fs / require + 
     assert.equal(moduleCode.includes(banned), false, '模块不该出现：' + banned);
   }
   assert.equal(moduleCode.split('document.body').length - 1, 2, '只有 clearDragMarks / updateChapterDrag 两处摸 body');
+  // C38：边缘持续滚动要有定时器，且「离开边缘 / 起手 / 松手 / 系统打断」四条路都有人收
+  assert.equal(moduleCode.includes('setInterval(edgeScrollTick'), true, '边缘持续滚动靠定时器累加 scrollTop');
+  assert.equal(moduleCode.includes('stopEdgeScroll();'), true, '停止入口要真的调 stopEdgeScroll()');
+  assert.equal((moduleCode.match(/stopEdgeScroll\(\)/g) || []).length >= 4, true, '离开边缘 / 起手 / 松手 / cancel 都要停');
 });
 
 test('UMD 分支：浏览器沙箱里挂成 window.CWDragSortUi（含 create / REQUIRED_HOST）', () => {

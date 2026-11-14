@@ -288,6 +288,18 @@ test('openFragmentDialog / closeFragmentDialog：清空输入、收起顶栏菜�
   assert.equal(ctx.dom.map.get('fragment-backdrop').classList.contains('hidden'), true);
 });
 
+test('openFragmentDialog（C39）：30ms 内弹层被关掉 → 定时器不把焦点抢进隐藏输入框', async () => {
+  const ctx = build({ text: '旧内容' });
+  assert.equal(ctx.ui.openFragmentDialog(), true);
+  ctx.ui.closeFragmentDialog();
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.equal(ctx.dom.map.get('fragment-text')._focus, 0, '弹层已关，聚焦定时器到点也不许抢焦点');
+  // 重新打开仍照常聚焦（闸门只认当前开合，不是一次性的）
+  assert.equal(ctx.ui.openFragmentDialog(), true);
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.equal(ctx.dom.map.get('fragment-text')._focus, 1, '弹层开着时照旧聚焦');
+});
+
 test('saveFragment：忙时早退 / 空内容报错并聚焦 / 成功关闭并 toast / 失败恢复按钮与错误文案', async () => {
   const busy = build();
   busy.state.fragmentBusy = true;
