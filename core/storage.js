@@ -910,6 +910,10 @@ function timestampForFile(date = new Date()) {
 }
 
 async function moveToTrash(bookPath, file) {
+  // WP-06（审计 C5）：本函数是「删章 / 撤销删空补章」唯一的移文件入口，必须自己再校验一次 ——
+  // 坏书目（file 含 ..\ / 绝对路径 / 非 txt / 保留名）在这里就 BAD_PATH，绝不 rename 书外文件；
+  // 校验放在 ensureDir 之前：被拒时连 _trash 目录都不会建（零副作用）。
+  const source = assertChapterFile(bookPath, file);
   const trashDir = path.join(bookPath, TRASH_DIR);
   await ensureDir(trashDir);
   const stamp = timestampForFile();
@@ -920,7 +924,7 @@ async function moveToTrash(bookPath, file) {
     i += 1;
   }
   const dest = path.join(trashDir, destName);
-  await fs.rename(path.join(bookPath, file), dest);
+  await fs.rename(source, dest);
   return dest;
 }
 
@@ -928,6 +932,11 @@ async function deleteChapter(bookPath, chapterId) {
   const meta = await readBookMeta(bookPath);
   const index = chapterIndexOrThrow(meta, chapterId);
   const target = meta.chapters[index];
+  // WP-06（审计 C5）：删章同样是写入口，书目里的 file 必须与其余写入口过同一道
+  // assertChapterFile。坏书目的 file 含 ..\ / 绝对路径 / 非 .txt 时，在任何副作用
+  // （建 _trash、rename、写书目、回滚）之前就 BAD_PATH 拒绝；下面的回滚也只使用这里
+  // 校验过的绝对路径，不再按原始字段现拼 bookPath（否则回滚能把文件写出书外）。
+  const targetPath = assertChapterFile(bookPath, target.file);
   let trashPath = null;
   try {
     trashPath = await moveToTrash(bookPath, target.file);
@@ -962,7 +971,7 @@ async function deleteChapter(bookPath, chapterId) {
     }
     let rolledBack = false;
     try {
-      await fs.rename(trashPath, path.join(bookPath, target.file));
+      await fs.rename(trashPath, targetPath);
       rolledBack = true;
     } catch { /* 放不回去就按下面的「文件在 _trash」报错 */ }
     throw batchFailure(err, {

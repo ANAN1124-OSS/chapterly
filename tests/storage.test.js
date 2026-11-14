@@ -363,6 +363,48 @@ test('路径越界防护：bookPath 之外的 file 被拒绝', async () => {
   );
 });
 
+// WP-06（审计 C5）：删章也是写入口，书目里的 file 必须过 assertChapterFile —— 坏书目（file 含 ..\）
+// 既不许把书外文件 rename 进本书 _trash，也不许沿回滚路径往书外写。被拒时零副作用。
+test('删除章节：坏书目 file 含 ..\\ 时按 BAD_PATH 拒绝，书外文件 / 书目 / _trash 零副作用', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '坏书目删章');
+  await storage.createChapter(bookPath, 1, '第二章');
+  const outsideFile = path.join(root, '书外目标.txt');
+  const outsideText = '书外文件：删章不许碰它\n';
+  await fs.writeFile(outsideFile, outsideText, 'utf8');
+  const metaPath = path.join(bookPath, '书目.json');
+  const raw = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+  assert.equal(raw.chapters.length, 2);
+  // 相对 bookPath 解析正好落到书库根的书外文件 —— 与审计 C5 的坏书目同一形态。
+  raw.chapters[1].file = `..${path.sep}${path.basename(outsideFile)}`;
+  await fs.writeFile(metaPath, JSON.stringify(raw, null, 2), 'utf8');
+  const metaBytesBefore = await fs.readFile(metaPath);
+  await assert.rejects(
+    () => storage.deleteChapter(bookPath, raw.chapters[1].id),
+    (err) => err.code === 'BAD_PATH'
+  );
+  assert.equal(await fs.readFile(outsideFile, 'utf8'), outsideText, '书外文件一个字节都不许动');
+  assert.deepEqual(await fs.readFile(metaPath), metaBytesBefore, '被拒时书目不许改写');
+  await assert.rejects(() => fs.access(path.join(bookPath, '_trash')), '被拒时连 _trash 目录都不许建');
+  // 正常的另一章还在，书没有被这次失败的删除改动
+  const after = await storage.readBookMeta(bookPath);
+  assert.equal(after.chapters.length, 2);
+  await fs.access(path.join(bookPath, after.chapters[0].file));
+});
+
+test('moveToTrash：移文件入口自己就挡越界文件名（删章 / 撤销补章共用）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '移文件闸门');
+  const outsideFile = path.join(root, '书外目标.txt');
+  await fs.writeFile(outsideFile, '不许动', 'utf8');
+  await assert.rejects(
+    () => storage.moveToTrash(bookPath, `..${path.sep}${path.basename(outsideFile)}`),
+    (err) => err.code === 'BAD_PATH'
+  );
+  await assert.rejects(() => fs.access(path.join(bookPath, '_trash')), '被拒时不许建 _trash');
+  assert.equal(await fs.readFile(outsideFile, 'utf8'), '不许动');
+});
+
 test('并发写操作串行化：改名不会被「记住上次章节」覆盖', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '并发测试');

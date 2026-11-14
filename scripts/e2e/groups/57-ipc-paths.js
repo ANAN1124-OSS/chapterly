@@ -155,4 +155,50 @@ module.exports = async function group57IpcPaths(t) {
     '路径审计：库外文件没有被读进界面（渲染层没拿到正文）',
     !JSON.stringify(ipcProbe).includes('库外的文件') && !JSON.stringify(ipcProbe).includes('不该被读到')
   );
+
+  // ---------- C5（v1.8.0 WP-06）：坏书目的删章 ----------
+  // 书目被同步盘 / 手工改坏（chapters[].file 含 ..\）时，删章曾经直接把书外文件 rename 进本书 _trash，
+  // 回滚失败还能往书外写。这里用真实 Electron IPC 复现：必须在任何副作用之前按 BAD_PATH 拒绝，
+  // 书外文件 / 书目一个字节都不动，连 _trash 目录都不建。临时书在本组收尾前删掉，不给后面的组留垃圾。
+  const corruptTitle = 'ipc-审计-坏书目删章';
+  const corruptBookDir = path.join(booksRoot, corruptTitle);
+  const corruptMetaPath = path.join(corruptBookDir, '书目.json');
+  const outsideTarget = path.join(ipcOutsideDir, '外部.txt');
+  await fs.rm(corruptBookDir, { recursive: true, force: true });
+  await fs.mkdir(corruptBookDir, { recursive: true });
+  await fs.writeFile(path.join(corruptBookDir, '正常章.txt'), '正常章：坏书目删章被拒时也不许动\n', 'utf8');
+  // 相对 corruptBookDir 解析正好落到书外那个文件：与审计 C5 的 `..\` 坏书目同一形态。
+  const corruptMeta = {
+    schemaVersion: 1,
+    title: corruptTitle,
+    titleTemplate: '第{n}章',
+    fileSeq: 2,
+    chapters: [
+      { id: 'ch_c5_bad', file: path.relative(corruptBookDir, outsideTarget), name: '坏章', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'ch_c5_ok', file: '正常章.txt', name: '正常章', createdAt: '2026-01-01T00:00:00.000Z' }
+    ]
+  };
+  await fs.writeFile(corruptMetaPath, JSON.stringify(corruptMeta, null, 2), 'utf8');
+  const corruptMetaBefore = await fs.readFile(corruptMetaPath);
+  const outsideBytesBefore = await fs.readFile(outsideTarget);
+  const badDelete = await exec(
+    `window.api.deleteChapter(${JSON.stringify(corruptBookDir)}, 'ch_c5_bad')`
+  );
+  const corruptMetaAfter = await fs.readFile(corruptMetaPath);
+  const outsideBytesAfter = await fs.readFile(outsideTarget);
+  const badTrashCreated = await fileExists(path.join(corruptBookDir, '_trash'));
+  check(
+    '路径审计：书目 file 含 ..\\ 的删章被拒（BAD_PATH，C5）',
+    Boolean(badDelete && badDelete.ok === false && badDelete.code === 'BAD_PATH'),
+    badDelete
+  );
+  check(
+    '路径审计：坏书目删章零副作用（书外文件 / 书目字节不变，没建 _trash）',
+    outsideBytesBefore.equals(outsideBytesAfter) &&
+      corruptMetaBefore.equals(corruptMetaAfter) &&
+      badTrashCreated === false,
+    { sameOutside: outsideBytesBefore.equals(outsideBytesAfter), sameMeta: corruptMetaBefore.equals(corruptMetaAfter), badTrashCreated }
+  );
+  await fs.rm(corruptBookDir, { recursive: true, force: true });
+  check('路径审计：坏书目临时书已清理（不给后面的组留垃圾）', (await fileExists(corruptBookDir)) === false);
 };

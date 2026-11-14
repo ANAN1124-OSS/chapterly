@@ -386,6 +386,23 @@ test('静态闸门：删章必须「先移文件 → 再写书目」，失败分
   assert.match(body, /fs\.rename\(trashPath/, '失败后必须尝试把文件放回原处');
 });
 
+// WP-06（审计 C5）：删章路径（deleteChapter + moveToTrash + 回滚）必须过 assertChapterFile，
+// 否则坏书目的 file 含 ..\ 时能把书外文件 rename 进本书、回滚还能往书外写。
+test('静态闸门：删章入口先过 assertChapterFile，回滚只用校验过的绝对路径（C5）', () => {
+  const body = functionBody(STORAGE_SOURCE, 'async function deleteChapter(', '');
+  const assertAt = body.indexOf('assertChapterFile(');
+  const moveAt = body.indexOf('moveToTrash(');
+  assert.ok(assertAt >= 0, '删章入口必须过 assertChapterFile（坏书目的 file 不许进 moveToTrash）');
+  assert.ok(assertAt < moveAt, '校验必须在移文件之前：任何副作用之前就拒绝');
+  assert.match(body, /const targetPath = assertChapterFile\(bookPath, target\.file\)/, '回滚路径复用校验结果');
+  assert.equal(body.includes('path.join(bookPath, target.file)'), false, '回滚不许按原始字段现拼路径（否则能写出书外）');
+  assert.match(body, /fs\.rename\(trashPath, targetPath\)/, '回滚必须用校验过的绝对路径');
+  const moveBody = functionBody(STORAGE_SOURCE, 'async function moveToTrash(', '');
+  const moveAssertAt = moveBody.indexOf('assertChapterFile(');
+  assert.ok(moveAssertAt >= 0, 'moveToTrash 自己也要挡（撤销删空补章同走这里）');
+  assert.ok(moveAssertAt < moveBody.indexOf('ensureDir('), '校验先于建 _trash 目录：被拒时零副作用');
+});
+
 test('静态闸门：三个批次操作的中途失败都要带「改了几章 + 备份目录名」', () => {
   const cases = [
     ['async function formatBook(', 'FORMAT_FAILED', '整理备份'],
