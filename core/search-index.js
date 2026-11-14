@@ -18,7 +18,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { atomicWriteFile } = require('./atomic');
-const { nowIso, mapLimit } = require('./common');
+const { nowIso, mapLimit, normalizeForMatch } = require('./common');
 // 路径归一只有一份实现（core/path-utils.js）：和 open-books 判「同一本书」用同一个口径
 const { normalizePath } = require('./path-utils');
 const storage = require('./storage');
@@ -81,18 +81,17 @@ const BLOOM_CACHE_MAX = 32;
 // （限并发、ISO 时间戳）；这里不再各抄一份。
 // 路径归一（书架目录 / 书目录转小写）从 core/path-utils.js 来（C4）：和 open-books 同一份。
 
-// V76（1.7.2 D6）：个别字符小写后会「变长」（'İ' U+0130 → 'i' + U+0307，两个码元）。拿小写化的
-// 结果当扫描用的干草堆时，长度一变 matchIndex 与片段位置就整体后移——列表里高亮的不是命中的那几个字。
-// core/find.js:18-20 对同一件事有长度防御，这里用同一口径：小写化长度变了就回退原文扫描
-// （宁可少一次大小写不敏感匹配，也不许把片段指到别的字上）。
-function lowerText(value) {
-  const source = String(value == null ? '' : value);
-  const lower = source.toLowerCase();
-  return lower.length === source.length ? lower : source;
-}
-
+// V76（1.7.2 D6）/ X7 / V205（v1.8.0 WP-25）：个别字符小写后会「变长」（'İ' U+0130 → 'i' + U+0307，
+// 两个码元）。拿小写化的结果当扫描用的干草堆时，长度一变 matchIndex 与片段位置就整体后移——列表里
+// 高亮的不是命中的那几个字。长度防御与「小写化」现在只有 core/common.js 的 normalizeForMatch 一份
+// （core/find.js 同一口径）；本模块不再保留本地 lowerText 副本。
+//
+// C20 勘误（复核意见 R1–R6）：建图 addText、查询 normalizeQuery、核对扫描三处都走 normalizeForMatch，
+// 是**同一个函数、同一套「长度变化即回退」规则**，所以凡核对扫描能命中的串，其双字必在建图集合里，
+// Bloom 只误报、不漏报。tests/match-normalize.test.js 用含 'İ' 的矩阵钉住这条不变量：
+// 以后若把任何一处改成别的归一（哪怕只改一处），那条用例会先红。
 function normalizeQuery(value) {
-  return lowerText(value).trim();
+  return normalizeForMatch(value).trim();
 }
 
 // 双字（UTF-16 码元）32 位哈希：中文正文几乎都在 BMP，代理对按两个码元算也一致。
@@ -162,7 +161,7 @@ function createBookBloom() {
   const set = new Set();
   return {
     addText(text) {
-      addBigramsToSet(lowerText(text), set);
+      addBigramsToSet(normalizeForMatch(text), set);
       return set.size;
     },
     finish() {
@@ -1003,7 +1002,7 @@ function createSearchStore(options = {}) {
       } catch {
         return focusError('聚焦的章节读取失败');
       }
-      const haystack = lowerText(text);
+      const haystack = normalizeForMatch(text);
       // P3：计数与片段位置同一次扫描产出（改前是计数 1 遍 + 片段 1 遍）。
       const scanInfo = scanChapterMatches(haystack, normalized, MAX_CHAPTER_MATCH_COUNT, focusLimit, () =>
         Date.now() - startedAt > timeBudgetMs
@@ -1096,7 +1095,7 @@ function createSearchStore(options = {}) {
           continue;
         }
         scannedChapters += 1;
-        const haystack = lowerText(text);
+        const haystack = normalizeForMatch(text);
         // P22-4：先数清这一章到底几处命中（单次 indexOf 循环），再按旧口径只列前 3 条。
         // 计数上限 / 时间预算只影响 chapterMatchCount 的精度（capped 时界面显示「N+」），
         // 默认路径的结果条数 / 顺序 / limit / truncated 语义保持旧行为不变。

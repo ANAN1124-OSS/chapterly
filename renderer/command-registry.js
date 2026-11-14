@@ -22,16 +22,23 @@
  * 没调用 prepare 的旧调用方照常可用（粗筛时现算归一文本，行为不变，只是慢一点）。
  * 空查询不粗筛，仍走「最近 + 组顺序」。prepare() 返回新数组、不改入参对象。
  *
- * 浏览器里挂成全局 CWCommandRegistry（index.html 排在 renderer.js 之前），Node 里可直接 require。
+ * 浏览器里挂成全局 CWCommandRegistry（index.html 排在 core/common.js 与 renderer.js 之前），Node 里可直接 require。
+ * 大小写归一走 core/common.js 的 normalizeForMatch（X7 / V205，WP-25）：浏览器分支从 window.CWCommon 取，
+ * 缺了直接报错，不许退回一份本地 toLowerCase 副本。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../core/common'));
   } else if (root) {
-    root.CWCommandRegistry = factory();
+    root.CWCommandRegistry = factory(root.CWCommon);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (common) {
   'use strict';
+
+  if (!common || typeof common.normalizeForMatch !== 'function') {
+    throw new Error('CWCommandRegistry：core/common.js 没有先加载');
+  }
+  const { normalizeForMatch } = common;
 
   const RECENT_LIMIT = 8;
   // 组权重：数字越小越靠前。空查询时「最近」之外按这个顺序排。
@@ -42,13 +49,15 @@
   // 就算粘进来一个换行，粗筛多放行几条、打分阶段也会把它们丢掉，不会多出结果）。
   const SEARCH_TEXT_SEPARATOR = '\n';
 
-  // 归一：去首尾空白 + 小写 + 全角字母数字与全角空格转半角（中文标点不动）。
+  // 归一：去首尾空白 + 全角字母数字与全角空格转半角 + 小写（中文标点不动）。
+  // 小写这一步走 core/common.js 的 normalizeForMatch（X7 / V205，WP-25）：含 'İ' 这类「小写化会
+  // 变长」的字符时整串退回原文（这一次退化为区分大小写），不再各写一份裸 toLowerCase。
   function normalize(text) {
-    return String(text == null ? '' : text)
+    const halfWidth = String(text == null ? '' : text)
       .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
       .replace(/\u3000/g, ' ')
-      .trim()
-      .toLowerCase();
+      .trim();
+    return normalizeForMatch(halfWidth);
   }
 
   // 子序列匹配：查询的每个字符依次出现在 text 里（用于英文缩写，如 bkm → bookmark）。

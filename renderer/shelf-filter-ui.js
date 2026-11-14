@@ -26,16 +26,23 @@
  * 显示更多的事件绑定（事件绑定段）、测试钩子宿主契约段——都按原名取本模块交出的入口。
  * shelfGroupMatches / matchBookForSearch 是内部件（区外 0 引用），不导出（导出会让 sweep ⑤ 新增一条）。
  *
- * 浏览器里挂成全局 CWShelfFilterUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
+ * 浏览器里挂成全局 CWShelfFilterUi（index.html 排在 core/common.js 与 renderer.js 之前），Node 里可以直接 require。
+ * 大小写归一走 core/common.js 的 normalizeForMatch（X7 / V205，WP-25）：浏览器分支从 window.CWCommon 取，
+ * 缺了直接报错，不许退回一份本地 toLowerCase 副本。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../core/common'));
   } else if (root) {
-    root.CWShelfFilterUi = factory();
+    root.CWShelfFilterUi = factory(root.CWCommon);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (common) {
   'use strict';
+
+  if (!common || typeof common.normalizeForMatch !== 'function') {
+    throw new Error('CWShelfFilterUi：core/common.js 没有先加载');
+  }
+  const { normalizeForMatch } = common;
 
   const REQUIRED_HOST = ['$', 'state', 'bookInfoLib', 'chapterTitle', 'openContentResult', 'CONTENT_SEARCH_MIN_CHARS'];
 
@@ -79,8 +86,9 @@
 
   function matchBookForSearch(book, queryLower) {
     if (!queryLower) return { visible: true, titleMatch: false, infoMatch: false, chapterHits: [] };
-    const title = String(book.title || '').toLowerCase();
-    const folder = String(book.folder || '').toLowerCase();
+    // X7 / V205（WP-25）：书名 / 文件夹 / 章名与查询串都走 core/common.js 的 normalizeForMatch。
+    const title = normalizeForMatch(book.title);
+    const folder = normalizeForMatch(book.folder);
     const titleMatch = title.includes(queryLower) || folder.includes(queryLower);
     // 作者 / 分组 / 标签（v0.8-3）：和书名一样是内存里的字面量匹配
     const infoMatch = bookInfoLib.bookInfoMatches(book, queryLower);
@@ -91,13 +99,13 @@
     const chapterHits = [];
     for (let i = 0; i < names.length && chapterHits.length < 3; i += 1) {
       const name = String(names[i] || '');
-      if (name && name.toLowerCase().includes(queryLower)) chapterHits.push({ index: i, name });
+      if (name && normalizeForMatch(name).includes(queryLower)) chapterHits.push({ index: i, name });
     }
     return { visible: infoMatch || chapterHits.length > 0, titleMatch: false, infoMatch, chapterHits };
   }
 
   function shelfSearchResults() {
-    const queryLower = shelfQueryText().toLowerCase();
+    const queryLower = normalizeForMatch(shelfQueryText());
     const rows = [];
     for (const book of state.books) {
       if (!shelfGroupMatches(book)) continue;

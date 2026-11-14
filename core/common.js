@@ -92,6 +92,27 @@
     return stripBom(text).replace(/\r\n?/g, '\n');
   }
 
+  // X7 / V205（v1.8.0 WP-25）：全仓「大小写归一」的唯一实现（匹配 / 检索用，不用于展示）。
+  // 少数语言字符小写化后会**变长**：典型是 'İ'（U+0130）→ 'i' + U+0307 两个码元。拿小写结果当
+  // 扫描用的干草堆时，命中位置与片段位置会整体后移（core/find.js / core/search-index.js 的 V76 防御）。
+  // 这里沿用那两处既有口径：整串小写化长度一变，就整串退回原文 —— 这一次「不区分大小写」退化为
+  // 区分大小写，宁可少一次命中，也不许把命中指到别的字上（X7 的已知语义限制）。
+  // 返回值带 folded 标记：false = 这一次发生了退化。需要「两边都折叠才折叠」的调用方
+  // （core/find.js 的查找 / 替换）按它判断，避免出现「干草堆折叠、针不折叠」的混合匹配。
+  function caseFoldForMatch(value) {
+    const source = String(value == null ? '' : value);
+    const lower = source.toLowerCase();
+    return lower.length === source.length
+      ? { text: lower, folded: true }
+      : { text: source, folded: false };
+  }
+
+  // 只要归一后的字符串时用这个：core/search-index.js 的建图与查询、core/bookinfo.js 的作者 / 分组 /
+  // 标签匹配、renderer/ command-registry.js 的命令面板、shelf-filter-ui.js 的书架搜索都用它。
+  function normalizeForMatch(value) {
+    return caseFoldForMatch(value).text;
+  }
+
   // 行首位置表：starts[i] = 第 i 行（0 基）在文本里的起点，永远以 0 开头。
   // 只认 \n（调用方传进来的都是 normalizeText 归一过的文本）；原来 proofread / sensitive 各一份。
   function lineStartsOf(text) {
@@ -253,6 +274,8 @@
     formatCount,
     stripBom,
     normalizeText,
+    caseFoldForMatch,
+    normalizeForMatch,
     lineStartsOf,
     positionOf,
     mapLimit,
