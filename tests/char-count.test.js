@@ -22,6 +22,9 @@ const path = require('node:path');
 const chapters = require('../core/chapters');
 const fragments = require('../core/fragments');
 const search = require('../core/search-index');
+const sensitive = require('../core/sensitive');
+const proofread = require('../core/proofread');
+const captureQueue = require('../core/capture-queue');
 const editorLogic = require('../renderer/editor-logic');
 
 const ROOT = path.join(__dirname, '..');
@@ -147,6 +150,44 @@ test('跨实现一致：search-index 建索引时写进 chapters[].chars 的值�
   } finally {
     await fsp.rm(base, { recursive: true, force: true });
   }
+});
+
+// WP-24（V108 / X4）：敏感词预检 / 校对 / 捕获队列三处的 chars 契约统一为 countChars。
+// 样本刻意含全角空格、半角空格、制表符、CRLF 与空行 —— 同一段文字在三处必须算出同一个数字，
+// 「含空白原文长度」改由 rawLength 承载（不再挂在 chars 上，免得同一段文字两个字数）。
+const MIXED_TEXT = '　　雨 下了一夜。\n\n他\t收起了帆。\r\n';
+
+test('跨实现一致：敏感词预检 / 校对 / 捕获队列的 chars 都等于 core 口径（V108 / X4）', () => {
+  const expected = chapters.countChars(MIXED_TEXT);
+  assert.equal(expected, 12, '样本手算：雨下了一夜。（6）+ 他收起了帆。（6）');
+  assert.ok(expected < MIXED_TEXT.length, '样本必须含空白，否则这个用例证明不了口径');
+
+  // 敏感词预检：旧实现 chars = source.length（含空白），现在只算去空白字数
+  const sensitiveResult = sensitive.scanText(MIXED_TEXT, ['雨']);
+  assert.equal(sensitiveResult.chars, expected, '敏感词预检的 chars 必须是去空白字数');
+  assert.equal(
+    sensitiveResult.rawLength,
+    MIXED_TEXT.replace(/\r\n/g, '\n').length,
+    'rawLength 保留旧 chars 的口径：归一换行后、含空白的长度（与 index / 行号同一坐标系）'
+  );
+
+  // 校对：chars 本来就是 countChars（X4 的分裂点），rawLength 是本次补上的同一个出口
+  const proofreadResult = proofread.proofreadText(MIXED_TEXT);
+  assert.equal(proofreadResult.chars, expected, '校对的 chars 必须是同一个数字');
+  assert.equal(proofreadResult.rawLength, MIXED_TEXT.replace(/\r\n/g, '\n').length, '校对的 rawLength 与敏感词同口径');
+
+  // 捕获队列：chars 与插入后状态栏同一口径；rawLength 承载原文长度（内存上限按它算）
+  const queue = captureQueue.createCaptureQueue();
+  const added = queue.add(MIXED_TEXT);
+  assert.equal(added.added, true);
+  assert.equal(added.entry.chars, expected, '队列条目的 chars 必须是去空白字数');
+  assert.equal(added.entry.rawLength, MIXED_TEXT.length, 'rawLength 是原文长度（含空白、含 CRLF）');
+  assert.deepEqual(
+    queue.list().map((item) => item.chars),
+    [expected],
+    'list() 下发的 chars 与 get() 是同一个数字'
+  );
+  assert.equal(queue.get(added.entry.id).chars, expected);
 });
 
 test('静态闸门：core/ 与 renderer/ 只剩 core/chapters.js 一处「剔除空白」口径', () => {

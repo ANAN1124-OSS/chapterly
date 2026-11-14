@@ -187,6 +187,19 @@ module.exports = async function group72Capture(t) {
     '剪贴板面板：插入后光标停在插入内容末尾（这条已消费，不会误插到前面）',
     (await exec('window.__cwTest.caret()')) === INSERT_AT + DIRECT_TEXT.length
   );
+  // V108（v1.8.0 WP-24）：捕获列表的「N 字」与插入后状态栏本章字数必须是同一个数字
+  //（都走 countChars / 去空白）。DIRECT_TEXT 含空行，原文长度比正文字数大，正好区分两个口径。
+  const expectedStatusAfterDirect = `本章 ${countChars(BASE_TEXT) + pendingRecords[0].chars} 字`;
+  await waitFor(
+    `window.__cwTest.charCountText().startsWith(${JSON.stringify(expectedStatusAfterDirect)})`
+  );
+  check(
+    '剪贴板面板：列表字数与插入后状态栏字数一致（都按去空白正文字数，V108）',
+    pendingRecords[0].chars === countChars(DIRECT_TEXT) &&
+      (await exec('window.__cwTest.charCountText()')).startsWith(expectedStatusAfterDirect),
+    { listChars: pendingRecords[0].chars, status: await exec('window.__cwTest.charCountText()') }
+  );
+
   const afterBodyState = {
     open: await exec('window.__cwTest.captureOpen()'),
     records: await exec('window.__cwTest.captureRecords()'),
@@ -430,6 +443,18 @@ module.exports = async function group72Capture(t) {
     ),
     { keys: queueEntries.map((entry) => Object.keys(entry)) }
   );
+  // V108（v1.8.0 WP-24）：队列条目的 chars = 去空白正文字数（不是旧实现的原文长度）；
+  // rawLength 才是含空白的原文长度。两段样本都带标题行与空行，两个数字必须不同。
+  check(
+    '剪贴板面板：队列条目字数是去空白正文字数、rawLength 才是原文长度（V108）',
+    queueEntries[0].chars === countChars(QUEUE_A_TEXT) &&
+      queueEntries[1].chars === countChars(QUEUE_B_TEXT) &&
+      queueEntries[0].chars < QUEUE_A_TEXT.length &&
+      queueEntries[1].chars < QUEUE_B_TEXT.length &&
+      queueEntries[0].rawLength === QUEUE_A_TEXT.length &&
+      queueEntries[1].rawLength === QUEUE_B_TEXT.length,
+    queueEntries.map((entry) => ({ chars: entry.chars, rawLength: entry.rawLength }))
+  );
 
   // 顶栏「捕获」：队列非空 → 直接打开列表（2 条队列记录，不读当前剪贴板）
   await exec("document.getElementById('btn-capture').click()");
@@ -483,6 +508,18 @@ module.exports = async function group72Capture(t) {
       afterQueueBody.text.includes(QUEUE_A_BODY) &&
       afterQueueBody.dirty === true,
     { got: afterQueueBody.text.length, want: (queueChapterBefore + QUEUE_A_TEXT).length }
+  );
+  // V108（v1.8.0 WP-24）：队列插入后状态栏本章字数 = 插入前字数 + 该条记录的字数 ——
+  // 同一段文字在捕获列表与状态栏是同一个数字（旧实现列表用原文长度，含空行时差 10%+）。
+  const expectedQueueStatus = `本章 ${countChars(queueChapterBefore) + queueEntries[0].chars} 字`;
+  await waitFor(
+    `window.__cwTest.charCountText().startsWith(${JSON.stringify(expectedQueueStatus)})`
+  );
+  check(
+    '剪贴板面板：队列插入后状态栏本章字数 = 插入前字数 + 该条记录的字数（V108 口径一致）',
+    queueEntries[0].chars === countChars(QUEUE_A_TEXT) &&
+      (await exec('window.__cwTest.charCountText()')).startsWith(expectedQueueStatus),
+    { queueChars: queueEntries[0].chars, status: await exec('window.__cwTest.charCountText()') }
   );
   check(
     '剪贴板面板：队列「正文」插入成功后该条被消费（只剩另 1 条，面板保持打开）',

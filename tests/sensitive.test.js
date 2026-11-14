@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const sensitive = require('../core/sensitive');
+const chapters = require('../core/chapters');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -232,4 +233,25 @@ test('敏感词：长章节也能扫，结果按位置排序、序号递增', ()
   assert.equal(result.issues[0].index, paragraph.length);
   assert.equal(result.issues[1].index, paragraph.length * 2 + 2);
   assert.ok(result.issues[0].index < result.issues[1].index);
+});
+
+// X4（v1.8.0 WP-24）：敏感词预检与校对是两个同构面板，chars 契约必须一致 ——
+// chars = 去空白正文字数（core/chapters.js 的 countChars，与状态栏 / 捕获队列 / 导入同一口径）；
+// rawLength = 归一换行后含空白的原文长度（旧 chars 的值，位置 / 行号也在同一坐标系）。
+test('敏感词：chars 是去空白字数、rawLength 是含空白原文长度（X4 / WP-24）', () => {
+  const text = '第一行　有 空格。\r\n第二行\t也有。';
+  const result = sensitive.scanText(text, []);
+  assert.equal(result.chars, 13, '手算：第一行有空格。（7）+ 第二行也有。（6）');
+  assert.equal(result.chars, chapters.countChars(text));
+  assert.equal(result.rawLength, text.replace(/\r\n/g, '\n').length, 'rawLength 在归一换行后的坐标系里');
+  assert.ok(result.rawLength > result.chars, '样本含空白：两个数字必须不同');
+
+  // 空 / null 都给 0，不出现 NaN 或 undefined
+  for (const input of ['', null, undefined, '   \n\t']) {
+    const empty = sensitive.scanText(input, []);
+    assert.equal(empty.chars, 0);
+    assert.equal(empty.rawLength, typeof input === 'string' ? input.replace(/\r\n/g, '\n').length : 0);
+  }
+  // 无命中 / 有命中的 chars 与正文有关、与词表无关
+  assert.equal(sensitive.scanText(text, ['空格']).chars, result.chars);
 });

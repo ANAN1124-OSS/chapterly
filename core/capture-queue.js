@@ -9,12 +9,18 @@
 //   · maxEntryChars  单条最多 30 万字（=捕获正文上限 core/capture.js MAX_BODY_CHARS，直接引用，
 //                    超了不入队（仍可直接捕获 / 用「正文」插进当前章）；
 //   · maxTotalChars  总量最多 300 万字（=10 条满额），超了淘汰最旧的。
+// 两个 chars 上限都按 **rawLength**（含空白的原文长度）算 —— 它们挡的是内存，不是显示字数。
 // 顺序：entries 从旧到新，list() 也按复制顺序返回（逐条捕获时从上往下点）。
 'use strict';
 
 // 单列表视图每条记录整块展示，需要截断正文（≤300 字 / 6 行）：截断规则与渲染层 pending 行
 // 共用 core/capture.js 的 recordPreview，免得列表与面板两边显示不一样。只取纯函数，不引入 IO。
 const captureLib = require('./capture');
+
+// V108（v1.8.0 WP-24）：chars 就是「正文字数」（去空白），直接复用 core/chapters.js 的唯一实现
+// （core/capture.js 已经引用同一份）。存进条目的 rawLength 才是含空白的原文长度 ——
+// 上限 / 淘汰按它算（上限是内存口径，不是字数口径）。
+const countChars = captureLib.countChars;
 
 const DEFAULT_MAX_ENTRIES = 50;
 // 单条上限不再另写一份：直接跟 core/capture.js 的捕获正文上限走（2026-11-08 提到 30 万字），
@@ -48,14 +54,15 @@ function createCaptureQueue(options = {}) {
   const maxTotalChars = positiveInt(options.maxTotalChars, DEFAULT_MAX_TOTAL_CHARS);
   const now = typeof options.now === 'function' ? options.now : Date.now;
 
-  let entries = []; // 旧 → 新：[{ id, text, chars, at }]
+  let entries = []; // 旧 → 新：[{ id, text, chars, rawLength, at }]
   let nextId = 1;
-  let totalChars = 0;
+  let totalChars = 0; // 各条 rawLength 之和（内存口径；上限按它淘汰）
 
   function metaOf(entry) {
     return {
       id: entry.id,
       chars: entry.chars,
+      rawLength: entry.rawLength,
       at: entry.at,
       preview: previewOf(entry.text),
       // 整条记录的截断正文（列表项正文区用）；仍是截断文本，不是全文。
@@ -68,7 +75,7 @@ function createCaptureQueue(options = {}) {
     while (entries.length > maxEntries || totalChars > maxTotalChars) {
       const removed = entries.shift();
       if (!removed) break;
-      totalChars -= removed.chars;
+      totalChars -= removed.rawLength;
     }
   }
 
@@ -76,20 +83,22 @@ function createCaptureQueue(options = {}) {
   //   added=false / reason='empty'     空文本或全空白（不入队）；
   //   added=false / reason='too-large' 单条超过 maxEntryChars（不入队，调用方可引导直接捕获）；
   //   added=false / reason='duplicate' 与最新一条完全相同（重复触发不入队）；
-  //   added=true  / entry 是该条的元数据（id / chars / at / preview / previewText）。
+  //   added=true  / entry 是该条的元数据（id / chars / rawLength / at / preview / previewText）。
+  // chars 是去空白正文字数（V108：与插入后状态栏同一口径）；maxEntryChars 按 rawLength 挡（内存口径）。
   function add(text) {
     const source = typeof text === 'string' ? text : '';
-    const chars = source.length;
-    if (!chars || !source.trim()) return { added: false, reason: 'empty' };
-    if (chars > maxEntryChars) return { added: false, reason: 'too-large', chars };
+    const rawLength = source.length;
+    if (!source.trim()) return { added: false, reason: 'empty' };
+    const chars = countChars(source);
+    if (rawLength > maxEntryChars) return { added: false, reason: 'too-large', chars, rawLength };
     const newest = entries[entries.length - 1];
     if (newest && newest.text === source) {
       return { added: false, reason: 'duplicate', entry: metaOf(newest) };
     }
-    const entry = { id: nextId, text: source, chars, at: now() };
+    const entry = { id: nextId, text: source, chars, rawLength, at: now() };
     nextId += 1;
     entries.push(entry);
-    totalChars += chars;
+    totalChars += rawLength;
     evictOverflow();
     return { added: true, entry: metaOf(entry) };
   }
@@ -102,7 +111,15 @@ function createCaptureQueue(options = {}) {
   // 取一条的正文（只在用户显式点开某一条时调用）；不存在返回 null。
   function get(id) {
     const at = entries.findIndex((entry) => entry.id === id);
-    return at < 0 ? null : { id: entries[at].id, text: entries[at].text, chars: entries[at].chars, at: entries[at].at };
+    return at < 0
+      ? null
+      : {
+          id: entries[at].id,
+          text: entries[at].text,
+          chars: entries[at].chars,
+          rawLength: entries[at].rawLength,
+          at: entries[at].at
+        };
   }
 
   // 队列里是否有这段原文（Ctrl+Alt+V 触发时判断「刚复制的这段是否已经入队」用）。
@@ -114,7 +131,7 @@ function createCaptureQueue(options = {}) {
   function remove(id) {
     const at = entries.findIndex((entry) => entry.id === id);
     if (at < 0) return false;
-    totalChars -= entries[at].chars;
+    totalChars -= entries[at].rawLength;
     entries.splice(at, 1);
     return true;
   }
@@ -134,6 +151,7 @@ function createCaptureQueue(options = {}) {
     remove,
     clear,
     size: () => entries.length,
+    // 队列总原始长度（各条 rawLength 之和，含空白）：maxTotalChars 的淘汰口径，不是显示字数。
     totalChars: () => totalChars,
     maxEntries,
     maxEntryChars,

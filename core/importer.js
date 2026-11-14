@@ -379,7 +379,10 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
           id: `ch_${chaptersLib.pad3(seq)}`,
           file,
           name: title,
-          chars: chaptersLib.countChars(`${title}${parts[i].body}`),
+          // C25（v1.8.0 WP-24）：写盘文件只有 body（标题行在 name 里，不重复计字），所以 chars
+          // 也只算 body —— 与编辑区 / 状态栏 / 首次保存后 storage 的重算同一口径。以前把标题行
+          // 一起算进去，导入后书架字数系统性虚高、第一次保存又回落。
+          chars: chaptersLib.countChars(parts[i].body),
           createdAt: now
         });
       }

@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const proofread = require('../core/proofread');
+const chapters = require('../core/chapters');
 const format = require('../core/format');
 const glossary = require('../core/glossary');
 
@@ -22,6 +23,23 @@ test('校对：空文本 / null / 纯空白都安全', () => {
     assert.equal(result.total, 0);
     assert.deepEqual(result.issues, []);
     assert.equal(result.chars, 0);
+  }
+});
+
+// X4（v1.8.0 WP-24）：校对与敏感词预检是两个同构面板，返回契约必须一致 ——
+// chars = 去空白正文字数（唯一实现对 core/chapters.js 的 countChars）；
+// rawLength = 归一换行后含空白的原文长度（新出口，敏感词那边的同类字段）。
+test('校对：chars 是去空白字数、rawLength 是含空白原文长度（X4 / WP-24）', () => {
+  const text = '　　风从海面吹来。\r\n\r\n他 收起了帆。';
+  const result = proofread.proofreadText(text);
+  assert.equal(result.chars, chapters.countChars(text), '与 core 口径同一函数');
+  assert.equal(result.chars, 13, '风从海面吹来。（7）+ 他收起了帆。（6）');
+  assert.equal(result.rawLength, text.replace(/\r\n/g, '\n').length, 'rawLength 在归一换行后的坐标系里');
+  assert.ok(result.rawLength > result.chars, '样本含空白：两个数字必须不同');
+  for (const input of ['', null, undefined, '   ']) {
+    const empty = proofread.proofreadText(input);
+    assert.equal(empty.chars, 0);
+    assert.equal(empty.rawLength, typeof input === 'string' ? input.length : 0);
   }
 });
 
