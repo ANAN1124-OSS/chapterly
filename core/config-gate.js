@@ -148,6 +148,44 @@ function filterBookDisplayPatch(patch, options = {}) {
   return { patch: result, rejected };
 }
 
+// E1（审计 E1）：config:set 里的 patch.bookDisplay 是一整张按书显示设置 map，filterPathPatch 会把
+// 不认识的顶层键原样透传——其中每本书的 editorCustomFontPath 也会被 font:read 整份 base64 读回渲染层，
+// 等于绕过了 font:pick 的来源闸门（book:set-display 那条路已经逐书过滤，只有 config:set 漏了）。
+// 这里对 map 逐书套用同一个 filterBookDisplayPatch：放行的字段并回该书原条目（被拒的字体路径保留
+// 原值，绝不整条替换掉这本书的其它显示项），返回「只含放行条目」的 map 交给调用方合并。
+// 形状不对（不是对象 / 条目不是对象 / 书 id 不合法）整项不生效：patch 回 null，调用方丢弃这个键、
+// 保留原配置，不能因为一次坏 patch 把整份 bookDisplay 抹掉。
+function filterBookDisplayMapPatch(raw, options = {}) {
+  const current = options.current && typeof options.current === 'object' ? options.current : {};
+  const currentMap =
+    current.bookDisplay && typeof current.bookDisplay === 'object' && !Array.isArray(current.bookDisplay)
+      ? current.bookDisplay
+      : {};
+  const picked = options.picked && typeof options.picked === 'object' ? options.picked : {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { patch: null, rejected: ['bookDisplay'] };
+  const entries = [];
+  let rejected = false;
+  for (const [bookId, entry] of Object.entries(raw)) {
+    const key = typeof bookId === 'string' ? bookId.trim() : '';
+    if (!key || key.length > 200 || !entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      rejected = true;
+      continue;
+    }
+    const existing =
+      Object.prototype.hasOwnProperty.call(currentMap, key) &&
+      currentMap[key] &&
+      typeof currentMap[key] === 'object' &&
+      !Array.isArray(currentMap[key])
+        ? currentMap[key]
+        : {};
+    const gated = filterBookDisplayPatch(entry, { current: existing, global: current, picked });
+    if (gated.rejected.length) rejected = true;
+    entries.push([key, { ...existing, ...gated.patch }]);
+  }
+  // Object.fromEntries 用的是 CreateDataProperty：书 id 写成 __proto__ 也不会改原型链。
+  return { patch: Object.fromEntries(entries), rejected: rejected ? ['bookDisplay'] : [] };
+}
+
 // 按窗口记「刚在系统对话框里选中的路径」：windowId -> { 字段: 路径 }。
 // 每个窗口每个字段只留最后一次（作者重选就覆盖），窗口关了要 forget（main.js 的 closed 事件）。
 function createPickedPathStore() {
@@ -206,5 +244,6 @@ module.exports = {
   samePath,
   filterPathPatch,
   filterBookDisplayPatch,
+  filterBookDisplayMapPatch,
   createPickedPathStore
 };

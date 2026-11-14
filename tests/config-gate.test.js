@@ -350,6 +350,102 @@ test('字体路径来源校验：伪造路径被忽略，原值 / 全局 / 刚�
   });
 });
 
+// E1（审计 E1）：config:set 里的 bookDisplay 是一整张按书显示设置 map——它不能被「顶层字段原样透传」
+// 放过，否则被注入的渲染层能把当前书的 editorCustomFontPath 指到任意 .ttf/otf/ttc，再由 font:read
+// 整份 base64 读回。这里锁逐书过滤 + 按书合并的口径（book:set-display 用的是同一个单条目判定）。
+test('按书显示 map 来源校验：config:set 夹带的字体路径被拒，原条目保留、别的书不在这份 patch 里（E1）', () => {
+  const fonts = path.join(ROOT, '字体-map');
+  const bookFont = path.join(fonts, 'book.ttf');
+  const pickedFont = path.join(fonts, 'picked.ttf');
+  const forged = path.join(fonts, 'forged.ttf');
+  const globalFont = path.join(fonts, 'global.ttf');
+  const current = {
+    editorCustomFontPath: globalFont,
+    bookDisplay: {
+      bookA: { editorFontSize: 22, editorCustomFontPath: bookFont },
+      bookB: { editorPaper: 'night' }
+    }
+  };
+
+  // 伪造路径：只摘掉 editorCustomFontPath，其它显示项照旧生效；被拒的字体路径保留原条目里的值
+  const forgedResult = configGate.filterBookDisplayMapPatch(
+    { bookA: { editorFont: 'custom', editorFontSize: 24, editorCustomFontPath: forged } },
+    { current }
+  );
+  assert.deepEqual(forgedResult.patch, {
+    bookA: { editorFont: 'custom', editorFontSize: 24, editorCustomFontPath: bookFont }
+  });
+  assert.deepEqual(forgedResult.rejected, ['bookDisplay']);
+  // 只回「patch 里点到的书」：bookB 的覆盖不在这份 patch 里（调用方按书合并，不会把它抹掉）
+  assert.deepEqual(Object.keys(forgedResult.patch), ['bookA']);
+
+  // 正当来源：刚在字体对话框里选中的 / 该书原值 / 与全局相同 / 清空，一律放行
+  assert.equal(
+    configGate.filterBookDisplayMapPatch(
+      { bookA: { editorCustomFontPath: pickedFont } },
+      { current, picked: { editorCustomFontPath: pickedFont } }
+    ).patch.bookA.editorCustomFontPath,
+    pickedFont,
+    '本窗口刚选中的放行'
+  );
+  assert.equal(
+    configGate.filterBookDisplayMapPatch({ bookA: { editorCustomFontPath: bookFont } }, { current }).rejected.length,
+    0,
+    '原值原样回传不算来源不明'
+  );
+  assert.equal(
+    configGate.filterBookDisplayMapPatch({ bookA: { editorCustomFontPath: globalFont } }, { current }).patch.bookA
+      .editorCustomFontPath,
+    globalFont,
+    '与全局配置相同也放行（清掉按书覆盖时表单会回传全局值）'
+  );
+  assert.equal(
+    configGate.filterBookDisplayMapPatch({ bookA: { editorCustomFontPath: '' } }, { current }).patch.bookA
+      .editorCustomFontPath,
+    '',
+    '清空放行'
+  );
+  // 当前没有覆盖的书：伪造路径被拒后只剩空条目（配置清洗会把空条目丢掉，不会凭空建一条覆盖）
+  assert.deepEqual(configGate.filterBookDisplayMapPatch({ bookNew: { editorCustomFontPath: forged } }, { current }), {
+    patch: { bookNew: {} },
+    rejected: ['bookDisplay']
+  });
+
+  // 形状不对（不是对象）：整项不生效——调用方丢弃这个键、保留原配置，不能抹掉整份 bookDisplay
+  for (const bad of [null, 'x', 42, [], true]) {
+    assert.deepEqual(configGate.filterBookDisplayMapPatch(bad, { current }), {
+      patch: null,
+      rejected: ['bookDisplay']
+    });
+  }
+  // 条目 / 书 id 不合法：只跳过坏条目，好的照旧放行；坏过一次就要回字段名（记日志用）
+  const badEntries = configGate.filterBookDisplayMapPatch(
+    { bookA: 5, '': { editorPaper: 'night' }, bookB: { editorPaper: 'kraft' } },
+    { current }
+  );
+  assert.deepEqual(badEntries.patch, { bookB: { editorPaper: 'kraft' } });
+  assert.deepEqual(badEntries.rejected, ['bookDisplay']);
+
+  // 书 id 写成 __proto__ 也只当一个普通键（Object.fromEntries 用 CreateDataProperty，不改原型链）
+  const protoRaw = JSON.parse('{"__proto__": {"editorFontSize": 20}}');
+  const protoResult = configGate.filterBookDisplayMapPatch(protoRaw, { current });
+  assert.equal(Object.prototype.hasOwnProperty.call(protoResult.patch, '__proto__'), true);
+  assert.equal({}.editorFontSize, undefined, '不能污染 Object.prototype');
+});
+
+test('静态闸门：config:set 的 bookDisplay 逐书过来源校验并按书合并（E1）', () => {
+  const start = MAIN_SOURCE.indexOf("handle('config:set'");
+  assert.ok(start > 0, 'main.js 里找不到 config:set');
+  const body = MAIN_SOURCE.slice(start, MAIN_SOURCE.indexOf('\n  handle(', start + 1));
+  assert.match(body, /configGate\.filterBookDisplayMapPatch\(/, 'config:set 必须逐书过字体来源校验（E1 旁路）');
+  assert.match(
+    body,
+    /\.\.\.Object\.entries\(current\.bookDisplay/,
+    '按书合并：只带一本书的 patch 不能抹掉别的书的显示覆盖'
+  );
+  assert.match(body, /delete gated\.patch\.bookDisplay/, '形状不对的 bookDisplay 整项丢弃（保留原配置）');
+});
+
 test('静态闸门：book:set-display 过 filterBookDisplayPatch；字体对话框把路径记进来源登记（C1）', () => {
   assert.ok(
     (MAIN_SOURCE.match(/configGate\.filterBookDisplayPatch\(/g) || []).length === 1,
