@@ -496,7 +496,8 @@ async function saveRecentWindowBounds(session) {
       await new Promise((resolve) => setTimeout(resolve, e2eCloseBoundsDelayMs));
       if (session.win.isDestroyed()) return false;
     }
-    await configStore.set({ windowBounds: { ...session.win.getBounds(), maximized: session.win.isMaximized() } });
+    // C7（审计 C7）：窗口位置是自动写——读失败期间不许落盘（否则 resize 防抖写会把真配置换成默认值）。
+    await configStore.set({ windowBounds: { ...session.win.getBounds(), maximized: session.win.isMaximized() } }, { auto: true });
     return true;
   } catch {
     return false;
@@ -939,7 +940,7 @@ async function rememberExportDir(dir) {
   const cfg = await getConfig();
   if (dir === cfg.lastExportDir) return;
   try {
-    const updated = await configStore.set({ lastExportDir: dir });
+    const updated = await configStore.set({ lastExportDir: dir }, { auto: true });
     applyConfig(updated);
   } catch {
     /* 忽略：只是记个位置 */
@@ -975,7 +976,7 @@ async function rememberRecentBook(bookPath, info) {
     }
     // 迟到的切章记录不许盖掉更晚的「上次写作」位置（多窗口：A 保存得更晚，B 的旧切章不能翻上去）
     if (prev && Number.isFinite(Number(prev.at)) && Number(prev.at) > payload.at) return false;
-    const updated = await configStore.set({ lastBook: payload });
+    const updated = await configStore.set({ lastBook: payload }, { auto: true });
     applyConfig(updated);
     return true;
   } catch {
@@ -1249,7 +1250,19 @@ function registerIpc() {
   // 设置界面本来就只有「选择…」按钮（输入框都是只读的），所以正常用起来毫无区别；
   // 被注入的脚本想借 config:set 让主进程去读写别的目录 / 文件，会被 core/config-gate.js 挡掉。
   handle('config:set', async (patch) => {
-    const current = await getConfig();
+    // WP-10（C7）：配置读过失败的话，保存设置前先重试读盘——读到真的配置再按它合并 / 算目标书架目录，
+    // 仍读不到就明确失败（CONFIG_READ_FAILED），绝不拿内存里的默认值写盘，把书库根目录等设置抹掉。
+    await getConfig(); // 确保配置仓库已就绪（首次用到时才创建，见 getConfig）
+    const recovery = await configStore.retryLoad();
+    if (!recovery.ok) {
+      throw Object.assign(new Error(recovery.message), {
+        code: recovery.code,
+        errorCode: recovery.errorCode
+      });
+    }
+    let current = await getConfig();
+    // 读盘恢复了：主进程缓存还是启动时的默认值，先换成真配置再继续（applyConfig 会同步标题栏配色）。
+    if (recovery.recovered) current = applyConfig(await configStore.get());
     const previousRoot = current.booksRoot;
     const session = flowSession();
     const picked = session ? pickedConfigPaths.snapshot(session.id) : null;
