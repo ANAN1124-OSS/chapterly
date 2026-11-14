@@ -19,7 +19,17 @@ module.exports = async function group30ReplaceBackup(t) {
   );
   // 1.4.0 P0-2（撤销优先于确认）：还原到替换前不再弹二次确认 —— 直接还原（还原前照旧再备份一份），
   // 10 秒内可撤销。
-  const restoreResult = await exec('window.__cwTest.restoreReplaceBackupFlow()');
+  // v1.8.0 WP-02（C2）：还原是长操作，期间编辑区要锁定；用 setTestBookOpDelay 把还原 IPC 拖 300ms
+  // 制造窗口，确认「进行中只读、完成后解锁」，链路本身仍走真实 restoreReplaceBackup。
+  await exec('window.__cwTest.setTestBookOpDelay(300)');
+  await exec("window.__cwE2ERestore = window.__cwTest.restoreReplaceBackupFlow(); 'started'");
+  await waitFor('window.__cwTest.editorLocked() === true');
+  const restoreLockedDuring = await exec('window.__cwTest.editorLocked()');
+  const restoreResult = await exec('window.__cwE2ERestore');
+  await exec('delete window.__cwE2ERestore');
+  await exec('window.__cwTest.setTestBookOpDelay(0)');
+  check('替换备份：还原进行中编辑区锁定成只读（C2）', restoreLockedDuring === true);
+  check('替换备份：还原完成后编辑区解锁（C2）', (await exec('window.__cwTest.editorLocked()')) === false);
   check('替换备份：还原不再弹确认框（直接执行）', (await exec('window.__cwTest.modalOpen()')) === false);
   check(
     '替换备份：还原后出现 10 秒撤销条',

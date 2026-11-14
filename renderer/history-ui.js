@@ -403,7 +403,9 @@
         : await call(api.restoreHistoryFile, current.path, group.id, file.name);
       const wasOpen = sameBookPath(state.bookPath, current.path);
       if (wasOpen && Number(data && data.restored) > 0 && group.source !== 'delete') {
-        await reloadOpenBookFromDisk();
+        // WP-02/C2：重载只认发起时那本书（current.path）——期间切了书 / 敲了字，
+        // reloadOpenBookFromDisk 会自己拒绝，不会把另一本书或未保存正文盖掉。
+        await reloadOpenBookFromDisk(current.path);
       }
       const undoName = data && data.restoreBackupDir ? String(data.restoreBackupDir).split(/[\\/]/).pop() : '';
       if (undoName && group.source !== 'delete' && typeof registerUndo === 'function') {
@@ -415,7 +417,7 @@
           await guard.assertUnchanged(bookPath, expectedBackup);
           const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
           if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');
-          await reloadOpenBookFromDisk();
+          await reloadOpenBookFromDisk(bookPath);
           await refreshShelf();
           if (state.history === current) await refreshHistory();
         });
