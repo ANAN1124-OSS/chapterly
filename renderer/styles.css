@@ -365,6 +365,9 @@ html, body {
 
 #app { height: 100%; position: relative; }
 
+/* 显隐机制（审计 X12 / WP-39）：普通元素一律用 .hidden 类切换；原生 hidden 属性只留给语义场景
+   （设置分区 role=tabpanel 由 settings-ui 切换 section.hidden、历史值 <option hidden>），
+   两者不许混用在同一个元素上。 */
 .hidden { display: none !important; }
 .muted { color: var(--ink-faint); }
 .small { font-size: 11.5px; }
@@ -2440,7 +2443,7 @@ body.theme-night .long-para-bar { background: var(--warn);
   border-color: var(--line-strong);}
 .settings-tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .settings-body .settings-scroll { flex: 1 1 auto; min-width: 0; }
-/* 分区显隐走 hidden 属性：字段自己的 .hidden（作用域显隐）一律不碰，两条显隐互不覆盖 */
+/* 分区显隐走原生 hidden 属性（role=tabpanel 的语义显隐，边界见文件顶部 .hidden 的注释）：字段自己的 .hidden 一律不碰，两条显隐互不覆盖 */
 .settings-section { display: block; }
 .settings-section[hidden] { display: none; }
 /* 每个分区的第一块不再画顶部发丝线：它头上就是搜索栏，不是「上一组结束了」 */
@@ -3213,6 +3216,8 @@ body.theme-night .long-para-bar { background: var(--warn);
 }
 .format-rules .field.inline > span { display: block; margin: 0; white-space: nowrap; }
 .format-rules .field.inline .text-input { width: 100%; max-width: 320px; }
+/* X5：blankLines 各模式都会收紧首尾空行，说明放在 select 下面一行（与 check-row 同一左缩进） */
+.format-rules .format-blank-hint { margin: 6px 0 0; padding-left: 110px; }
 .format-rules .check-row { padding-left: 110px; }
 /* 原生 checkbox 自带 3–4px 外边距，会让勾选框比上面的 select 往右错 4px */
 .format-rules .check-row input { margin: 0; }

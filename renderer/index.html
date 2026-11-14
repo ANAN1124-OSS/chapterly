@@ -39,7 +39,7 @@
             <div class="shelf-stats-row">
               <span id="shelf-stats-today" class="shelf-stats-today"></span>
               <span id="shelf-stats-goal" class="shelf-stats-goal"></span>
-              <span id="shelf-stats-streak" class="shelf-stats-streak" hidden></span>
+              <span id="shelf-stats-streak" class="shelf-stats-streak hidden"></span>
             </div>
             <span class="goal-track" id="shelf-goal-track"><i id="shelf-goal-fill"></i></span>
           </div>
@@ -806,6 +806,7 @@
               <option value="none">不空行（紧凑）</option>
             </select>
           </label>
+          <p class="muted small format-blank-hint">所有模式都会去掉正文开头的空行，结尾连续空行只保留一个；「保持原样」保持的是段与段之间的空行数。</p>
           <label class="check-row"><input type="checkbox" id="fmt-trailing" /> 删除每行行尾空白</label>
           <label class="check-row"><input type="checkbox" id="fmt-punct" /> 中文旁边的半角标点转全角（，。；：！？）</label>
           <div class="check-row-pair">
@@ -1060,7 +1061,7 @@
           <button id="stats-csv-build" class="btn ghost tiny" type="button">生成 CSV</button>
           <span id="stats-csv-hint" class="muted small"></span>
         </div>
-        <textarea id="stats-csv-text" class="text-input stats-csv-text" rows="4" readonly hidden aria-label="统计 CSV 文本"></textarea>
+        <textarea id="stats-csv-text" class="text-input stats-csv-text hidden" rows="4" readonly aria-label="统计 CSV 文本"></textarea>
       </div>
       <div class="field" id="settings-calendar-field">
         <span>码字日历（周一开头；只统计按保存时写下的字数）</span>

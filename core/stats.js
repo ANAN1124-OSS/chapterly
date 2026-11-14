@@ -535,8 +535,9 @@ function createStatsStore(userDataDir) {
     return enqueue(async () => {
       const current = await load();
       const result = recordChars(current, { day, bookId, delta });
-      // 先把新统计写盘，成功了才更新内存缓存：写盘失败时缓存保持旧值，
-      // 下次成功保存会重新带上这次增量，不会出现「内存多算了、文件里没有」。
+      // 先把新统计写盘，成功了才更新内存缓存：写盘失败时缓存保持旧值——
+      // 这次增量直接丢弃（不补记，下次成功保存也不会重带）：正文已经原子落盘，
+      // 章字数基线已经前移，没有可靠的旧值可以回填；失败向上抛，由调用方记 warn 日志。
       if (result.added > 0) await writeJsonAtomic(file, result.stats);
       cache = result.stats;
       return { added: result.added, day: result.day, stats: cloneStats(cache) };
