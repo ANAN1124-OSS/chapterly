@@ -25,7 +25,14 @@ const PAPER_THEMES = ['paper', 'cream', 'green', 'night', 'kraft', 'grid'];
 // 全局默认写 config.longParagraphThreshold，按书覆盖写 config.bookDisplay[本书].longParagraphThreshold。
 const LONG_PARAGRAPH_DEFAULT = 500;
 const LONG_PARAGRAPH_LIMITS = [50, 20000];
+// D-7（V110）：配置文件结构版本。本版 = 1。任何一次写盘都会带上它（旧配置没有这个键 = 1，零迁移）；
+// 读到更高的版本时保留版本号 + 限类型/大小后的未知顶层键（见 sanitize），让「新版本写过 → 回退旧版本
+// 再保存一次」不再把新字段静默抹掉。上限只防手改出 1e308 这种无意义值，不参与判断。
+const CONFIG_VERSION = 1;
+const CONFIG_VERSION_MAX = 1000000;
 const DEFAULTS = Object.freeze({
+  // 配置结构版本（本版 = 1）：放第一个，config.json 落盘时一眼能看到自己出自哪一版的结构。
+  configVersion: CONFIG_VERSION,
   booksRoot: DEFAULT_BOOKS_ROOT,
   // windowBounds.maximized（1.7.2 D6 / V89）：既有的窗口位置记忆多记一个「上次退出时是最大化」。
   // 只加这一个子键，不新增顶层字段、不写迁移代码；旧配置没有它就按 false（普通窗口）。
@@ -108,7 +115,10 @@ const DEFAULTS = Object.freeze({
 // 一处，这里自动跟着长。config:set / 加载旧 config 时只认名单里的键，未知键直接丢弃：
 // 以前 sanitize 用 `{...DEFAULTS, ...raw}` 起手，一个手改 / 注入的配置能把任意大对象写进
 // config.json，再整份回给渲染层。旧配置缺少新键不在这里处理（下面各字段清洗时补默认值）。
+// D-7（V110）补充：只有「更高版本」（configVersion > 本版）的配置才保留未知顶层键（限类型 / 深度 /
+// 大小，见 sanitizeUnknownTopKeys）；同版本 / 低版本的未知键仍按 S4 丢弃，防注入口径不松。
 const KNOWN_KEYS = Object.freeze(Object.keys(DEFAULTS));
+const KNOWN_KEY_SET = new Set(KNOWN_KEYS);
 
 // 四舍五入的整数夹紧（和 core/common.js 的 clampInt 不是一件事：那个是向下取整、
 // 参数是 [下限, 上限] 数组）。这里保留自己的参数顺序，因为 12 个调用点都是「常量下限 + 常量上限 + 默认值」；
@@ -252,6 +262,85 @@ function sanitizeWordlistPaths(raw) {
   return out;
 }
 
+// ---------- D-7（V110）：配置版本与前向兼容 ----------
+// 未知顶层键的放行上限：只有更高版本的配置才走到这里，而且必须限住，免得把「任意大对象」重新
+// 变成写进 config.json / 回给渲染层的通道（S4 防的就是这个）。超限的键整条丢弃，不截断、不改写。
+const UNKNOWN_TOP_KEY_MAX = 100;
+const UNKNOWN_KEY_LENGTH_MAX = 200;
+const UNKNOWN_DEPTH_MAX = 8;
+const UNKNOWN_ARRAY_MAX = 1000;
+const UNKNOWN_OBJECT_KEY_MAX = 200;
+const UNKNOWN_TEXT_MAX = 8000;
+const UNKNOWN_VALUE_BYTES_MAX = 16 * 1024;
+const UNKNOWN_TOTAL_BYTES_MAX = 64 * 1024;
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+// 版本号只做整数化：缺键 / 坏值（null / '' / 非数字 / 负数）= 本版；更高版本原样保留（不降级）。
+function normalizeConfigVersion(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return CONFIG_VERSION;
+  const rounded = Math.round(n);
+  if (rounded < CONFIG_VERSION) return CONFIG_VERSION;
+  return Math.min(rounded, CONFIG_VERSION_MAX);
+}
+
+// 深拷贝一个未知键的值，只认 JSON 能表达的类型。**要么原样透传，要么整条丢弃**：值里任何一处
+// 越界（类型 / 深度 / 长度 / 条目数）或出现不安全键，都返回 undefined，不做半截改写。
+function copyUnknownValue(value, depth) {
+  if (value === null) return null;
+  const type = typeof value;
+  if (type === 'boolean') return value;
+  if (type === 'number') return Number.isFinite(value) ? value : undefined;
+  if (type === 'string') return value.length > UNKNOWN_TEXT_MAX ? undefined : value;
+  if (type !== 'object' || depth >= UNKNOWN_DEPTH_MAX) return undefined;
+  if (Array.isArray(value)) {
+    if (value.length > UNKNOWN_ARRAY_MAX) return undefined;
+    const list = [];
+    for (const item of value) {
+      const clean = copyUnknownValue(item, depth + 1);
+      if (clean === undefined) return undefined;
+      list.push(clean);
+    }
+    return list;
+  }
+  const keys = Object.keys(value);
+  if (keys.length > UNKNOWN_OBJECT_KEY_MAX) return undefined;
+  const entries = [];
+  for (const key of keys) {
+    if (key.length > UNKNOWN_KEY_LENGTH_MAX || UNSAFE_KEYS.has(key)) return undefined;
+    const clean = copyUnknownValue(value[key], depth + 1);
+    if (clean === undefined) return undefined;
+    entries.push([key, clean]);
+  }
+  return Object.fromEntries(entries);
+}
+
+// 高版本配置的未知顶层键：限类型 / 深度 / 单值大小 / 总大小后原样透传。返回的是一个新对象，
+// 调用方把它并进 sanitize 的结果里；这样任何一次常规保存都会把这些键一起写回去（不降级）。
+function sanitizeUnknownTopKeys(source) {
+  const entries = [];
+  let totalBytes = 0;
+  for (const key of Object.keys(source)) {
+    if (KNOWN_KEY_SET.has(key)) continue;
+    if (entries.length >= UNKNOWN_TOP_KEY_MAX) break;
+    if (typeof key !== 'string' || !key || key.length > UNKNOWN_KEY_LENGTH_MAX) continue;
+    if (UNSAFE_KEYS.has(key)) continue;
+    const clean = copyUnknownValue(source[key], 0);
+    if (clean === undefined) continue;
+    let bytes = 0;
+    try {
+      bytes = Buffer.byteLength(JSON.stringify([key, clean]), 'utf8');
+    } catch {
+      continue;
+    }
+    if (bytes > UNKNOWN_VALUE_BYTES_MAX) continue;
+    if (totalBytes + bytes > UNKNOWN_TOTAL_BYTES_MAX) break;
+    totalBytes += bytes;
+    entries.push([key, clean]);
+  }
+  return Object.fromEntries(entries);
+}
+
 function sanitize(raw) {
   // S4（审计 S4）：只认 DEFAULTS 里登记过的键——未知键丢弃（以前是原样透传）。
   // 旧配置缺新键不受影响：下面各字段清洗时会从 DEFAULTS 补默认值。
@@ -259,6 +348,15 @@ function sanitize(raw) {
   const cfg = { ...DEFAULTS };
   for (const key of KNOWN_KEYS) {
     if (Object.prototype.hasOwnProperty.call(source, key)) cfg[key] = source[key];
+  }
+  // D-7（V110）：版本号先归一。缺键 / 坏值 = 本版（旧配置零迁移）；更高的版本号原样保留——
+  // 本版只是「不认识那些键」，不是「那些键属于更旧的结构」，写成 1 等于对下一个新版谎报版本。
+  cfg.configVersion = normalizeConfigVersion(cfg.configVersion);
+  // D-7（V110，对照 core/schema.js:26-31 的「更高 schemaVersion 原样保留、不降级」）：
+  // 只有更高版本的配置才保留未知顶层键，而且必须过类型 / 深度 / 大小闸门；同版本 / 低版本的
+  // 未知键仍按 S4 丢弃。普通旧配置（没有 configVersion）的行为与以前逐字一致。
+  if (cfg.configVersion > CONFIG_VERSION) {
+    Object.assign(cfg, sanitizeUnknownTopKeys(source));
   }
 
   if (typeof cfg.booksRoot !== 'string' || !cfg.booksRoot.trim() || cfg.booksRoot.length > 1000) {
@@ -370,6 +468,10 @@ function createConfigStore(userDataDir, deps = {}) {
   const readJson = typeof deps.readFile === 'function' ? deps.readFile : (target, encoding) => fs.readFile(target, encoding);
   let cache = null;
   let loadWarning = null; // 配置损坏被归档时，给界面提示一次
+  // C7（审计 C7）：非 ENOENT 的读失败会置这里（错误码 + 一句话），**自动写一律被拦**，
+  // 显式保存先重试读；读到真的配置才允许写盘。不放进 loadWarning 里，是因为提示只给一次，
+  // 而写闸门要一直记着「这份 cache 是默认值、不是真配置」直到读盘恢复。
+  let readFailure = null;
   // 配置写入串行化：并发 set 时各自拿旧 cache 合并会吞掉对方的 patch（例如拖完分隔条同时点保存设置）
   // —— 队列实现见 core/common.js 的 createWriteQueue（B6：与碎片 / 日志 / 统计四个 store 共用一份）。
   const writeQueue = createWriteQueue();
@@ -390,19 +492,28 @@ function createConfigStore(userDataDir, deps = {}) {
       // 提示（界面启动后取到）+ 带错误码，不给排障留空白。坏 JSON 的归档逻辑保持原样（见下面）。
       if (!err || err.code !== 'ENOENT') {
         cache = defaults();
-        loadWarning = {
-          code: 'CONFIG_READ_FAILED',
+        readFailure = {
           errorCode: (err && err.code) || 'UNKNOWN',
           message: `配置文件读取失败（${(err && err.code) || '未知错误'}），本次使用默认设置；请检查文件权限或磁盘后重启应用。`
+        };
+        loadWarning = {
+          code: 'CONFIG_READ_FAILED',
+          errorCode: readFailure.errorCode,
+          message: readFailure.message
         };
         return { ...cache };
       }
       // 没有配置文件 = 首次启动，用默认值（这不算损坏，不提示）
       cache = defaults();
+      readFailure = null;
+      loadWarning = null;
       return { ...cache };
     }
+    readFailure = null;
     try {
       cache = sanitize(JSON.parse(stripBom(raw)));
+      // 读盘恢复后，上一次读失败留下的一次性提示已经过时（本次拿到的就是真配置）。
+      loadWarning = null;
     } catch {
       // 配置坏了：先归档损坏文件（不直接删），再回默认值，并让界面提示一次，
       // 否则书架路径会悄悄变回「文档\我的小说」，用户会以为书全没了。
@@ -430,13 +541,65 @@ function createConfigStore(userDataDir, deps = {}) {
     return warning;
   }
 
+  // C7（审计 C7）：读失败时构造统一错误。自动写 / 显式写读盘仍失败都抛这个（code 让界面与 E2E
+  // 按码分支）；文案只说「没写入」，不带任何完整路径。
+  function readFailedError() {
+    const errorCode = (readFailure && readFailure.errorCode) || 'UNKNOWN';
+    const err = new Error(
+      `配置文件读取失败（${errorCode}），本次没有写入任何设置；请检查文件权限或磁盘后重试。`
+    );
+    err.code = 'CONFIG_READ_FAILED';
+    err.errorCode = errorCode;
+    return err;
+  }
+
+  // C7：显式保存前的「先重试读」——读成功就按真实配置合并（默认值不覆盖真配置）；
+  // 仍失败返回 false，由调用方抛 readFailedError，绝不拿默认值落盘。
+  async function recoverRead() {
+    if (!readFailure) return true;
+    await load();
+    return !readFailure;
+  }
+
   async function get() {
     if (!cache) await load();
     return { ...cache };
   }
 
-  function set(patch) {
+  // C7：写闸门（所有写通道共用一个入口）。
+  // - 自动写（auto: true：窗口位置 / 最近书 / 最近导出目录）在读失败期间一律不写盘、不重试：
+  //   一次 resize 的防抖写就能把读不到的真配置整份换成默认值（booksRoot 全丢，正是审计 C7）。
+  // - 显式写（用户在设置里点保存 / 改按书显示 / 存书签）先重试读：磁盘恢复就按真配置合并，
+  //   仍读不到就明确失败，界面看到「保存失败」而不是下一次启动发现设置全没。
+  async function gateWrite(auto) {
+    if (!readFailure) return;
+    if (auto) throw readFailedError();
+    if (!(await recoverRead())) throw readFailedError();
+  }
+
+  // C7：给主进程的「保存设置」入口用——不改任何设置，只重试读盘并报告是否恢复。
+  // 返回 { ok, recovered }；失败时带 code / errorCode / message 供调用方原样抛给界面。
+  function retryLoad() {
     return enqueue(async () => {
+      const hadFailure = Boolean(readFailure);
+      const ok = await recoverRead();
+      if (!ok) {
+        return {
+          ok: false,
+          recovered: false,
+          code: 'CONFIG_READ_FAILED',
+          errorCode: (readFailure && readFailure.errorCode) || 'UNKNOWN',
+          message: readFailedError().message
+        };
+      }
+      return { ok: true, recovered: hadFailure };
+    });
+  }
+
+  function set(patch, options = {}) {
+    const auto = Boolean(options && options.auto);
+    return enqueue(async () => {
+      await gateWrite(auto);
       const current = await get();
       const next = sanitize({ ...current, ...(patch || {}) });
       // 先写盘：失败就抛出，cache 保持旧值（内存不再「假装已保存」）
@@ -456,6 +619,7 @@ function createConfigStore(userDataDir, deps = {}) {
 
   async function setBookDisplay(bookId, patch) {
     return enqueue(async () => {
+      await gateWrite(false);
       const cfg = await get();
       const key = String(bookId == null ? '' : bookId).trim();
       if (!key) throw new Error('缺少书籍 id');
@@ -472,6 +636,7 @@ function createConfigStore(userDataDir, deps = {}) {
 
   async function resetBookDisplay(bookId) {
     return enqueue(async () => {
+      await gateWrite(false);
       const cfg = await get();
       const key = String(bookId == null ? '' : bookId).trim();
       if (!key || !cfg.bookDisplay[key]) return false;
@@ -494,6 +659,7 @@ function createConfigStore(userDataDir, deps = {}) {
 
   function upsertFindBookmark(entry) {
     return enqueue(async () => {
+      await gateWrite(false);
       const cfg = await get();
       const clean = bookmarksLib.normalizeBookmark(entry);
       if (!clean) throw new Error('书签缺少书籍 / 章节 id 或查找词');
@@ -511,6 +677,7 @@ function createConfigStore(userDataDir, deps = {}) {
 
   function removeFindBookmark(bookId, chapterId) {
     return enqueue(async () => {
+      await gateWrite(false);
       const cfg = await get();
       const list = bookmarksLib.removeBookmark(cfg.findBookmarks, bookId, chapterId);
       const next = sanitize({ ...cfg, findBookmarks: list });
@@ -525,6 +692,7 @@ function createConfigStore(userDataDir, deps = {}) {
     load,
     get,
     set,
+    retryLoad,
     takeLoadWarning,
     getBookDisplay,
     setBookDisplay,
