@@ -72,7 +72,7 @@
       if (peers[key] === undefined || peers[key] === null) throw new TypeError('createTidyCardUi 的 host.peers 缺少 ' + key);
     }
     const { formatUi, MAX_FORMAT_UNDO, readFormatOptions, writeFormatOptions, editorEl, onEditorInput, chaptersLib, caretColorLib } = format;
-    const { hideBookMenu, hideExportMenu, hideMenu, renderMarksMenu } = menus;
+    const { hideExportMenu, hideMenu, renderMarksMenu } = menus;
     const { openSettings, toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView, effectiveConfig } = peers;
 
   // ---------- 「整理」按钮的悬浮选择卡 + 「显示」菜单（v0.8.5 R1） ----------

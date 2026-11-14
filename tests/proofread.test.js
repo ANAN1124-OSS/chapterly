@@ -668,8 +668,11 @@ test('P-08：snippets:false 只要位置、不拼上下文片段（条数 / 规�
     lean.issues.every((issue) => issue.snippet === null),
     '不拼片段时 snippet 一律 null（含 blank-lines 自己拼的那条）'
   );
+  // WP-36（D5）：rest 兄弟解构里的 snippet 本来就是「显式剔掉这个字段」的写法，
+  // 改成 delete 后语义不变，也不用为它开 ignoreRestSiblings。
   const strip = (issue) => {
-    const { snippet, ...rest } = issue;
+    const rest = { ...issue };
+    delete rest.snippet;
     return rest;
   };
   assert.deepEqual(lean.issues.map(strip), full.issues.map(strip), '位置 / 行号 / 匹配文本 / 提示文案不许因为不拼片段而变');

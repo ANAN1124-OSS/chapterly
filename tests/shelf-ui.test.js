@@ -237,7 +237,7 @@ test('openContinueBook：打开那本书，返回值按打开后的 view / index
   const ok = makeHost({
     recentBook: { path: BOOK.path, chapterIndex: 2 },
     books: [BOOK],
-    afterOpen: (state, bookPath) => {
+    afterOpen: (state) => {
       state.view = 'editor';
       state.index = 2;
     }

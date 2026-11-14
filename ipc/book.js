@@ -276,7 +276,6 @@ function registerBookIpc(host) {
   });
 
   handleBook('book:delete', async (bookPath) => {
-    const session = flowSession();
     const cfg = await getConfig();
     const root = path.resolve(cfg.booksRoot);
     const target = path.resolve(String(bookPath || ''));

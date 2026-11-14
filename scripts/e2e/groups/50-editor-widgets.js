@@ -910,7 +910,6 @@ module.exports = async function group50EditorWidgets(t) {
   const findChapterFile = findMetaBeforeJson.chapters[0].file;
   const findTxtPath = path.join(findBookPath, findChapterFile);
   const findTxtBefore = await fs.stat(findTxtPath);
-  const findMetaBefore = await fs.readFile(findMetaPath, 'utf8');
   const findConfigBefore = await fs.readFile(findConfigPath, 'utf8');
   const findDirBefore = (await fs.readdir(findBookPath)).sort().join('|');
 
@@ -1521,7 +1520,6 @@ module.exports = async function group50EditorWidgets(t) {
   const bmTxt1Path = path.join(bmBookPath, bmMetaSetup.chapters[0].file);
   const bmTxt2Path = path.join(bmBookPath, bmMetaSetup.chapters[1].file);
   const bmTxt1Before = await fs.stat(bmTxt1Path);
-  const bmTxt2Before = await fs.stat(bmTxt2Path);
   const bmDirBefore = (await fs.readdir(bmBookPath)).sort().join('|');
   const bmConfigBefore = JSON.parse(await fs.readFile(bmConfigPath, 'utf8'));
   const bmAllowedKeys = [
@@ -2045,9 +2043,6 @@ module.exports = async function group50EditorWidgets(t) {
   const r1MetaAfterSecond = JSON.parse(await fs.readFile(r1MetaPath, 'utf8'));
   const r1Txt1Path = path.join(r1BookPath, r1MetaAfterSecond.chapters[1].file);
   const r1Txt1Before = await fs.stat(r1Txt1Path);
-  const r1Txt0BeforeModal = await fs.stat(r1Txt0Path);
-  const r1MetaBeforeModal = await fs.readFile(r1MetaPath, 'utf8');
-  const r1DirBeforeModal = (await fs.readdir(r1BookPath)).sort().join('|');
   await exec('window.__cwTest.openFormatMenu()');
   await exec("document.querySelector('#format-menu button[data-action=\"apply-book\"]').click()");
   await waitFor('window.__cwTest.modalOpen() === false', 4000).catch(() => false);
@@ -2228,7 +2223,6 @@ module.exports = async function group50EditorWidgets(t) {
       })()
     };
   })()`);
-  const uiTops = uiLayout.rects.map((r) => Math.round(r.top));
   check(
     '界面优化：顶栏按「写作 / 插入 / 整理与显示 / 导出」分成 4 组，按钮 id 与顺序不变、保存按钮独立在组外',
     uiLayout.groups === 4 &&

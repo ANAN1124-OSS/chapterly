@@ -603,12 +603,12 @@ test('静态闸门：renderer.js 不再内嵌整理卡 / 显示菜单实现，�
   assert.ok(moduleSrc.includes('        state.globalConfig = cfg;'), '回包写进全局配置');
   assert.ok(moduleSrc.includes('        state.config = effectiveConfig();'), '生效值经 host 注入的 effectiveConfig 重算');
   assert.ok(rendererSrc.includes(
-    'const { formatCardOpen, displayMenuOpen, refreshFormatCard, showFormatCard, hideFormatMenu, scheduleHideFormatCard, showDisplayMenu, hideDisplayMenu, openFormatDialog, closeFormatDialog, formatUndoSteps, canUndoFormat, undoFormat, formatCurrentChapterFromConfig, applyFormatToEditor, setupTidyCardUi } = tidyCardUi;'
-  ), '16 个入口按原名解构');
+    'const { formatCardOpen, displayMenuOpen, showFormatCard, hideFormatMenu, showDisplayMenu, hideDisplayMenu, openFormatDialog, closeFormatDialog, formatUndoSteps, canUndoFormat, undoFormat, formatCurrentChapterFromConfig, applyFormatToEditor, setupTidyCardUi } = tidyCardUi;'
+  ), '14 个入口按原名解构（refreshFormatCard / scheduleHideFormatCard 只在模块内部用）');
   for (const id of ['btn-format', 'format-menu', 'btn-display', 'display-menu', 'format-caret-color', 'btn-format-apply', 'btn-format-cancel', 'btn-format-reset', 'fmt-blank']) {
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
-  assert.equal(rendererSrc.split('tidyCardUi.setupTidyCardUi();').length - 1, 1, 'setup 只调一次');
+  assert.equal(rendererSrc.split('setupTidyCardUi();').length - 1, 1, 'setup 只调一次');
   // Esc 表仍按名字取（formatCardOpen / displayMenuOpen / hideFormatMenu / hideDisplayMenu / closeFormatDialog）
   for (const needle of ['formatCardOpen()', 'displayMenuOpen()', 'hideFormatMenu()', 'hideDisplayMenu()', 'closeFormatDialog()']) {
     assert.ok(rendererSrc.includes(needle), 'Esc 链里少了 ' + needle);

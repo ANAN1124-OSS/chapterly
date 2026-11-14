@@ -679,7 +679,7 @@ test('静态闸门：renderer.js 不再内嵌校对实现，只剩装配与转�
   for (const id of ['btn-proofread', 'btn-proofread-run', 'btn-proofread-close', 'proofread-scope']) {
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
-  assert.equal(rendererSrc.split('proofreadUi.setupProofreadUi();').length - 1, 1, 'setup 只调一次');
+  assert.equal(rendererSrc.split('setupProofreadUi();').length - 1, 1, 'setup 只调一次');
   // Esc 动作表 / 查找替换 / 敏感词 / 设置 / 测试钩子仍按名字取
   assert.match(rendererSrc, /'close-proofread': \(\) => closeProofreadPanel\(\),/);
   assert.ok(rendererSrc.includes('proofreadWordListText'), '设置域仍按名字用 proofreadWordListText');

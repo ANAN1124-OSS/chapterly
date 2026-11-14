@@ -254,7 +254,7 @@ test('光标在全文末尾（刚载入章节的默认位置）→ 按「从头�
 test('打开成功：状态 playing、按钮变「暂停」、念的是当前段；念完自动接下一段，最后一段念完变已读完', async () => {
   const { host, state, editorEl, get } = makeHost({ follow: true });
   const engine = makeEngine();
-  const { tts, result } = await openWith(host, engine);
+  const { result } = await openWith(host, engine);
 
   assert.equal(result.ok, true);
   assert.deepEqual({ chunks: result.chunks, index: result.index }, { chunks: 3, index: 0 });

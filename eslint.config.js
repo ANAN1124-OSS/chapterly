@@ -1,14 +1,14 @@
 'use strict';
-// 1.7.0 G1a；1.8.0 WP-35：eslint 门禁（flat config，本地 + CI）。
+// 1.7.0 G1a；1.8.0 WP-35：eslint 门禁（flat config，本地 + CI）；1.8.0 WP-36：两条规则都收成 error、清残留 ignores。
 //
 // 定位：只做**语法级**的两件事——没声明的名字（no-undef）和声明了没人读的名字（no-unused-vars）。
 // 语义级检查（floating promise / unhandled rejection）仍由零依赖的 `scripts/lint-gate.js` 负责：
 // 那条规则要 TS 解析器才能做准，eslint 这套替代不了，所以这里**不重复造**，两套门禁并存：
 //   pnpm lint        → node scripts/lint-gate.js（零依赖，0 ERROR / 30 WARN）
-//   npx eslint .     → 本文件（0 ERROR；本地与 CI 都跑）
+//   npx eslint .     → 本文件（0 ERROR / 0 WARN；本地与 CI 都跑）
 //
-// 与 CI 的边界（1.8.0 D-4 / WP-35）：`.github/workflows/verify.yml` 现在**跑** `npx eslint .`
-// （no-undef 为 error；no-unused-vars 暂为 WARN，清理后升 error），CI 同时保留
+// 与 CI 的边界（1.8.0 D-4 / WP-35，WP-36 收口）：`.github/workflows/verify.yml` 现在**跑** `npx eslint .`
+// （no-undef / no-unused-vars 均为 error），CI 同时保留
 // `node --check` / `npm test` / `a11y --static`。E2E 与打包冒烟仍不进 CI。
 // lint-gate 也一直被 CI 强制：`tests/lint-gate.test.js` 在 `npm test` 里 spawn 全仓 lint-gate（0 ERROR 才算过）。
 //
@@ -222,14 +222,18 @@ const PAGE_EXTRA_GLOBALS = {
 // 约定规则集：只有这两条。改这里之前先看 tests/eslint-config.test.js。
 const RULES = {
   'no-undef': 'error',
-  // 本轮（G1a）只把 no-undef 当 ERROR：它是真会 ReferenceError 的硬错。
-  // no-unused-vars 先记 WARN（实测 66 处历史残留），逐文件清理是独立一轮；清完再升 error。
-  'no-unused-vars': ['warn', { args: 'after-used', caughtErrors: 'none', varsIgnorePattern: '^_' }],
+  // 1.8.0 WP-36（D5）：此前记 WARN 的 66 处历史残留（WP-34 把 ipc/ 纳入扫描后为 68 处）已全部清零，
+  // 与 no-undef 同为 ERROR。口径不变：只查「已声明但没人读」；函数形参只查最后一个之后（args: 'after-used'），
+  // catch 参数不查（caughtErrors: 'none'），`_` 前缀视为有意忽略。
+  'no-unused-vars': ['error', { args: 'after-used', caughtErrors: 'none', varsIgnorePattern: '^_' }],
 };
 
 module.exports = [
   {
-    ignores: ['node_modules/**', 'dist/**', 'out/**', 'release/**', 'coverage/**', 'build/**', 'shots/**', 'trial/**', 'tests-fixture/**'],
+    // 只忽略「不该进语法扫描」的目录：node_modules / 构建产物（dist、out、release、coverage、build 图标资源）/ 本地证据 shots。
+    // 1.8.0 WP-36（D13）：删掉 trial/** 与 tests-fixture/** —— 两个目录都不存在，
+    // 真实夹具在 tests/fixtures，必须留在扫描范围里（以前被 tests-fixture 这条挡在外面的只有历史目录）。
+    ignores: ['node_modules/**', 'dist/**', 'out/**', 'release/**', 'coverage/**', 'build/**', 'shots/**'],
   },
   {
     files: ['main.js', 'preload.js', 'core/**/*.js', 'ipc/**/*.js', 'scripts/**/*.js', 'tests/**/*.js'],

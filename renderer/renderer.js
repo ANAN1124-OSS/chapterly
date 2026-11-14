@@ -1115,9 +1115,9 @@
   });
   const {
     openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,
-    openGroupManageDialog, closeGroupManageDialog, renameShelfGroup, mergeShelfGroup, moveBookToGroup,
+    openGroupManageDialog, closeGroupManageDialog, moveBookToGroup,
     openBookGroupChooser, closeBookGroupChooser, newGroupForBook,
-    renderShelf, createBookWithTitle, onNewBookClick, setupBookinfoUi, maybeShowFirstRunTip
+    renderShelf, createBookWithTitle, onNewBookClick, maybeShowFirstRunTip
   } = bookinfoUi;
 
   // ---------- 开书 / 载章状态机（v1.8.0 WP-03 / 审计 V101、V102、C9、C10） ----------
@@ -2667,7 +2667,7 @@
       closeProofreadPanel: () => closeProofreadPanel(), renderFindBookmarks: () => renderFindBookmarks(),
       refreshFindBookmarks: () => refreshFindBookmarks(), refreshReplaceBackups: () => refreshReplaceBackups() }
   });
-  const { findOverlayEl, findPanelOpen, findSessionActive, findSessionMatchesOptions, hideFindHighlights, clearFindSession, findNavCountText, updateFindNavUi, renderFindStatusChip, syncFindOverlayScroll, markFindCurrentHit, renderFindHighlights, selectFindMatch, startFindSession, stepFind, openFindPanel, closeFindPanel, readFindOptions, renderFindResults, jumpToFindResult, runFind, replaceEditorText, runReplaceAll, setupFindUi } = findUi;
+  const { findPanelOpen, findSessionActive, findSessionMatchesOptions, clearFindSession, renderFindStatusChip, syncFindOverlayScroll, renderFindHighlights, selectFindMatch, startFindSession, stepFind, openFindPanel, closeFindPanel, readFindOptions, runFind, runReplaceAll } = findUi;
   // ---------- 查找书签 ----------
   // 第 4 步九刀·补刀 9b：实现在 renderer/find-bookmark-ui.js（模块头有契约），这里只装配与接线；
   const findBookmarkUi = findBookmarkUiModule.create({
@@ -2685,7 +2685,7 @@
     marks: { scheduleMarksRender, syncMarksScroll },
     menus: { hideContextMenu, hideHeaderMenus, hideVolumeMenu }
   });
-  const { focusActive, updateFocusBar, ensureFocusMirror, measureCaretTop, alignTypewriter, scheduleTypewriterAlign, restoreFocusScroll, resetCaretMeasureCache, setFocusMode, toggleFocusMode, setFocusTypewriter, setupFocusModeUi } = focusModeUi;
+  const { focusActive, updateFocusBar, measureCaretTop, alignTypewriter, scheduleTypewriterAlign, resetCaretMeasureCache, setFocusMode, toggleFocusMode, setFocusTypewriter, setupFocusModeUi } = focusModeUi;
 
   // ---------- 阅读模式 ----------
   // 第 4 步九刀·第二刀：实现在 renderer/reading-ui.js（模块头有契约），这里只装配与接线；
@@ -3658,7 +3658,6 @@
       const neighborBeforeId = index > 0 && state.chapters[index - 1] ? state.chapters[index - 1].id : '';
       const neighborAfterId = state.chapters[index + 1] ? state.chapters[index + 1].id : '';
       try {
-        // eslint-disable-next-line no-await-in-loop
         const data = await call(api.deleteChapter, bookPath, chapter.id);
         deleted.push({
           chapter,
@@ -3716,7 +3715,6 @@
         const current = state.chapters[state.index];
         // 删空自动补的空章：只在它还空着、编辑区也没动过它时一起收走（与单章撤销同一口径）
         const canRemoveAuto = Boolean(autoFile) && !(state.dirty && current && current.file === autoFile);
-        // eslint-disable-next-line no-await-in-loop
         lastData = await call(api.restoreDeletedChapter, bookPath, {
           trashName: entry.trashName,
           undoToken: entry.undoToken || '',
@@ -3780,7 +3778,6 @@
     let failed = null;
     for (const move of moves) {
       try {
-        // eslint-disable-next-line no-await-in-loop
         const data = await call(api.moveChapterToVolume, bookPath, move.chapter.id, volumeId || null);
         applyMetaAndRelocate(data, keepCurrentId);
         done.push(move);
@@ -3804,7 +3801,6 @@
             (chapter) => chapter && String(chapter.id) === String(move.chapter.id)
           );
           if (at < 0) throw new Error('有一章已经不在书里了');
-          // eslint-disable-next-line no-await-in-loop
           const back = await moveChapterByDrop(state.chapters[at], {
             volumeId: move.fromVolumeId,
             beforeChapterId: move.beforeId
@@ -3835,7 +3831,6 @@
       const chapter = state.chapters[index];
       if (!chapter) continue;
       try {
-        // eslint-disable-next-line no-await-in-loop
         const data = await call(api.updateChapterMeta, bookPath, chapter.id, { status });
         applyMetaAndRelocate(data);
         if (data.changed) changed += 1;
@@ -4912,7 +4907,7 @@
     menus: { hideBookMenu, hideExportMenu, hideMenu, renderMarksMenu },
     peers: { openSettings: () => openSettings(), toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView, effectiveConfig }
   });
-  const { formatCardOpen, displayMenuOpen, refreshFormatCard, showFormatCard, hideFormatMenu, scheduleHideFormatCard, showDisplayMenu, hideDisplayMenu, openFormatDialog, closeFormatDialog, formatUndoSteps, canUndoFormat, undoFormat, formatCurrentChapterFromConfig, applyFormatToEditor, setupTidyCardUi } = tidyCardUi;
+  const { formatCardOpen, displayMenuOpen, showFormatCard, hideFormatMenu, showDisplayMenu, hideDisplayMenu, openFormatDialog, closeFormatDialog, formatUndoSteps, canUndoFormat, undoFormat, formatCurrentChapterFromConfig, applyFormatToEditor, setupTidyCardUi } = tidyCardUi;
 
   // ---------- 一键整理本书 ----------
   let formatBookProgressEl = null;
@@ -5125,8 +5120,8 @@
   function bindEvents() {
     // B16：弹层开合观察器（17 层 class 变化 → 缓存；没有 MutationObserver 时模块内部退回现算）
     backdropWatcher = backdropRegistry.createOpenWatcher($);
-    settingsUi.setupSettingsUi();
-    writeTimerUi.setupWriteTimerUi();
+    setupSettingsUi();
+    setupWriteTimerUi();
     // 统计筛选（1.6.0 F2）：两个下拉 + 「生成 CSV」（只绑定、不写盘）
     setupStatsUi();
     // 码字日历：翻月 / 回到本月（只读；点击不会写 stats.json）
@@ -5149,7 +5144,7 @@
 
     $('btn-import').addEventListener('click', onImportClick);
 
-    fragmentsUi.setupFragmentsUi();
+    setupFragmentsUi();
 
     // 剪贴板捕获（P0 列表视图）：顶栏按钮与全局快捷键走同一条流程——打开单列表，
     // 每一条记录右侧两个按钮「正文」（插进当前章）/「章节」（新建一章）
@@ -5320,11 +5315,11 @@
     // 命令面板（1.4.0 P0-3）：输入框 / 列表 / 遮罩只挂一次。
     commandPalette.setup();
     findUi.setupFindUi();
-    focusModeUi.setupFocusModeUi();
+    setupFocusModeUi();
     readingUi.setupReadingUi();
     // 查找书签（v0.8-11b）：把当前章的词 + 大小写存进 config；只写配置，不碰正文 / 书目
-    findBookmarkUi.setupFindBookmarkUi();
-    proofreadUi.setupProofreadUi();
+    setupFindBookmarkUi();
+    setupProofreadUi();
     // 朗读本章（只读正文；悬浮小条：播放 / 暂停 / 停止 / 上一段 / 下一段 / 语速 / 语音 / 跟随高亮）
     $('btn-tts').addEventListener('click', () => {
       if (state.tts.open) closeTtsBar();
@@ -5347,7 +5342,7 @@
       });
     }
     $('btn-restore-replace').addEventListener('click', () => restoreReplaceBackupFlow());
-    sensitiveUi.setupSensitiveUi();
+    setupSensitiveUi();
     setupChapterDrag();
     $('btn-export').addEventListener('click', (event) => {
       event.stopPropagation();
@@ -5390,7 +5385,7 @@
     $('btn-jump-cancel').addEventListener('click', closeJumpDialog);
     $('btn-jump-confirm').addEventListener('click', () => confirmJumpFromDialog());
 
-    tidyCardUi.setupTidyCardUi();
+    setupTidyCardUi();
 
 
     $('context-menu').addEventListener('click', async (event) => {

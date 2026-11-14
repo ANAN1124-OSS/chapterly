@@ -61,7 +61,7 @@ function mixedChapterText() {
   ].join('');
 }
 
-function buildCorpus(base) {
+function buildCorpus() {
   return {
     big: bigChapterText(),
     capped: cappedChapterText(),

@@ -13,8 +13,6 @@
 // 为什么必须 E2E：Tab 焦点遍历是浏览器默认行为，渲染层 dispatch 的 KeyboardEvent 根本
 // 走不到；这里用 win.webContents.sendInputEvent 发**真实按键**，读 document.activeElement。
 // 自足：自己造一本 2 章的演练书，收尾走书架 _trash 删掉；不写配置、不碰真实书架。
-const fs = require('node:fs/promises');
-const path = require('node:path');
 
 const FOCUSABLE = [
   'a[href]',

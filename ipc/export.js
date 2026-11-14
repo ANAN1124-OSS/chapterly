@@ -47,7 +47,7 @@ const REQUIRED_HOST = [
 function registerExportIpc(host) {
   assertHost('ipc/export.registerExportIpc', host, REQUIRED_HOST);
   const {
-    handle, handleBook, storage, exporter,
+    handleBook, storage, exporter,
     chaptersLib, epubLib, docxLib, s2tLib,
     ipcLimits, mapLimit, CHAPTER_READ_CONCURRENCY, CHAPTER_BATCH_SIZE,
     path, app, fsSync, getConfig,

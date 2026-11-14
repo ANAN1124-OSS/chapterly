@@ -1131,7 +1131,7 @@ test('静态闸门：renderer.js 不再内嵌查找 / 替换实现，只剩装�
   assert.match(rendererSrc, /'clear-find-session': \(\) => clearFindSession\(\{ toastHint: true \}\),/);
   // 查找书签按钮绑定已在补刀 9b 随书签域搬到 find-bookmark-ui.js：这里只断言 renderer 不再内嵌
   assert.equal(rendererSrc.includes("$('btn-find-bookmark').addEventListener"), false, '书签绑定应只在书签模块');
-  assert.ok(rendererSrc.includes('findBookmarkUi.setupFindBookmarkUi();'), '书签 setup 调用一次');
+  assert.ok(rendererSrc.includes('setupFindBookmarkUi();'), '书签 setup 调用一次');
 });
 
 test('静态闸门：index.html 在 renderer.js 之前加载 find-ui.js，且只加载一次', () => {

@@ -851,7 +851,7 @@ async function deleteVolume(bookPath, volumeId) {
 // 把一章移到某卷（volumeId 传 null = 移回「未分卷」）；移完按卷重新归一顺序
 async function moveChapterToVolume(bookPath, chapterId, volumeId = null) {
   const meta = await readBookMeta(bookPath);
-  const index = chapterIndexOrThrow(meta, chapterId);
+  chapterIndexOrThrow(meta, chapterId);
   const wanted = chaptersLib.sanitizeVolumes(meta.volumes).some((v) => v.id === volumeId) ? volumeId : null;
   const chapters = meta.chapters.map((c) => (c.id === chapterId ? { ...c, volumeId: wanted } : c));
   const saved = await writeBookMeta(bookPath, chaptersLib.normalizeChapterOrder({ ...meta, chapters }), { structural: true });

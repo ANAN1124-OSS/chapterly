@@ -40,7 +40,7 @@ test('workflow 能按 UTF-8 读出来：不带 BOM、没有 tab 缩进、末尾�
   assert.ok(text.endsWith('\n'), 'workflow 末尾缺换行');
   // 「文本级可读」的最小结构：至少三行非空、每行要么是注释/空白，要么以空格或键名开头
   const lines = text.split(/\r?\n/);
-  const bad = lines.find((line, i) => line.trim() && !/^(\s|#)/.test(line) && !/^[A-Za-z_][\w.-]*:/.test(line));
+  const bad = lines.find((line) => line.trim() && !/^(\s|#)/.test(line) && !/^[A-Za-z_][\w.-]*:/.test(line));
   assert.equal(bad, undefined, '有行既不是缩进行、也不是顶层键、也不是注释：' + String(bad));
 });
 

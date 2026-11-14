@@ -1,8 +1,8 @@
 name: verify
 
-# 章回 / Chapterly 的最小验证 CI（1.7.0 G1b；1.8.0 WP-35 起加入 eslint）。
+# 章回 / Chapterly 的最小验证 CI（1.7.0 G1b；1.8.0 WP-35 起加入 eslint，WP-36 把两条规则都收为 error）。
 # 应用是 Windows 桌面工具：单测里含 Windows 路径 / GBK / UNC 语义，ubuntu 跑会假红，所以只挂 windows-latest。
-# 只做四件事：全量语法检查、单测、eslint（no-undef 为 error）、无障碍静态门禁。
+# 只做四件事：全量语法检查、单测、eslint（no-undef / no-unused-vars 均为 error）、无障碍静态门禁。
 # E2E 要起 Electron 真窗口，不进 CI（只留本地 pnpm e2e）；打包冒烟也不进 CI，按发版门禁在发版前本地执行（D-4）。
 on:
   push:
@@ -58,7 +58,7 @@ jobs:
         env:
           TZ: Asia/Shanghai
 
-      - name: eslint（no-undef 为 error；no-unused-vars 暂为 WARN）
+      - name: eslint（no-undef / no-unused-vars 均为 error）
         run: npx eslint .
 
       - name: 无障碍静态门禁

@@ -15,8 +15,7 @@ const undoUiModule = require('../renderer/undo-ui');
 const { loadSourceGate } = require('./ui-test-preambles');
 
 const ROOT = path.join(__dirname, '..');
-const { rendererSrc, rendererCode, indexSrc } = loadSourceGate('undo-action.js');
-const undoUiSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'undo-ui.js'), 'utf8');
+const { rendererCode, indexSrc } = loadSourceGate('undo-action.js');
 const storageSrc = fs.readFileSync(path.join(ROOT, 'core', 'storage.js'), 'utf8');
 const stylesSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
 

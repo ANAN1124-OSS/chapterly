@@ -79,7 +79,7 @@
     }
     const { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput } = find;
     const { chapterTitle, switchChapter, loadChapterAt, currentChapterLabel, hideHeaderMenus } = nav;
-    const { askUnsaved, saveCurrent, openModal, registerUndo, refreshShelf, renderChapterList, reloadAfterPartialFailure, closeProofreadPanel, runReplaceOne, renderFindBookmarks, refreshFindBookmarks, refreshReplaceBackups } = collab;
+    const { askUnsaved, saveCurrent, registerUndo, refreshShelf, renderChapterList, reloadAfterPartialFailure, closeProofreadPanel, runReplaceOne, renderFindBookmarks, refreshFindBookmarks, refreshReplaceBackups } = collab;
 
   // ---------- 查找会话（v0.8-11，提案 N11）----------
   // 当前章的「上一处 / 下一处」+「结果持续高亮」：

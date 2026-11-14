@@ -222,7 +222,7 @@ function build(options = {}) {
   dom.map.get('editor-marks').classList.add('hidden');
   dom.map.get('editor-marks-gutter').classList.add('hidden');
   globalThis.document = dom.doc;
-  globalThis.getComputedStyle = (el) => ({
+  globalThis.getComputedStyle = () => ({
     paddingTop: '10px', paddingBottom: '10px', paddingLeft: '56px', paddingRight: '56px',
     fontFamily: '"SimSun"', fontSize: '18px', fontWeight: '400', fontStyle: 'normal',
     lineHeight: '1.95', letterSpacing: '0.02em'

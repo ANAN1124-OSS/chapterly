@@ -183,8 +183,10 @@ test('B11：搜索候选书逐章读盘按批并发（结果与串行版逐字�
     const parallel = await store.search({ booksRoot: root, query: '青柠色', limit: 60, readConcurrency: 4 });
     assert.ok(peak > 1, `并发预读应叠起 IO（峰值 ${peak}）`);
     assert.ok(peak <= 4, `峰值不超过 readConcurrency（峰值 ${peak}）`);
+    // WP-36（D5）：同 tests/proofread.test.js，剔掉耗时字段用 delete，语义不变。
     const strip = (result) => {
-      const { elapsedMs, ...rest } = result;
+      const rest = { ...result };
+      delete rest.elapsedMs;
       return rest;
     };
     assert.deepEqual(strip(parallel), strip(serial), '并发版结果（条数 / 顺序 / 计数 / truncated）与串行版逐字段一致');

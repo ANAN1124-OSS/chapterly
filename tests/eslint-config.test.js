@@ -1,7 +1,7 @@
 'use strict';
-// 1.7.0 G1a；1.8.0 WP-35：eslint 门禁的静态锚点（本地 + CI 同一份配置）。
+// 1.7.0 G1a；1.8.0 WP-35：eslint 门禁的静态锚点（本地 + CI 同一份配置）；1.8.0 WP-36（D5/D13）收口。
 //
-// 只锁四件事，防止「装着装着把门禁换了」：
+// 只锁五件事，防止「装着装着把门禁换了」：
 //   ① `devDependencies` 里只有 eslint 一个新增包，且是**精确版本**（不带 ^ / ~ / 范围）——
 //      范围版本会让不同机器、不同 CI 跑出不同的规则集，门禁结论不可复现；
 //   ② `eslint.config.js` 存在，且启用的规则只有约定规则集（`no-undef` / `no-unused-vars`）——
@@ -9,7 +9,10 @@
 //      的既有 promise 检查负责，两套口径并存会互相打架；
 //   ③ `scripts.lint` 仍是 `node scripts/lint-gate.js` —— eslint 不能顶替零依赖门禁
 //      （lint-gate 的 floating promise 检查 eslint 这套替代不了，删了就少一道闸）；
-//   ④ globals 按目录**内联**在 config 里，不引 `globals` 包，也不引任何 eslint 插件 / 共享配置包。
+//   ④ globals 按目录**内联**在 config 里，不引 `globals` 包，也不引任何 eslint 插件 / 共享配置包；
+//   ⑤ 两条规则在所有配置段都是 error（WP-36 清完 no-unused-vars 残留后与 no-undef 同档），
+//      且 `ignores` 只留真正该忽略的目录——`trial/**` / `tests-fixture/**` 这类不存在的历史目录
+//      不许回来（真实夹具在 tests/fixtures，必须被扫描）。
 //
 // CI（`.github/workflows/verify.yml`）从 1.8.0 WP-35 起**跑** `npx eslint .`（D-4 口径）：
 // 它同时跑 `node --check` / `npm test` / `a11y --static`；E2E 与打包冒烟仍只在本地。
@@ -91,6 +94,35 @@ test('no-undef 在所有配置段都是 error（CI 的 eslint 步骤才真能拦
     const severity = Array.isArray(entry.rules['no-undef']) ? entry.rules['no-undef'][0] : entry.rules['no-undef'];
     assert.equal(severity, 'error', 'no-undef 必须是 error（WARN 会让 CI 静默放行）');
   }
+});
+
+// WP-36（D5）：no-unused-vars 从 WARN 升 ERROR。清理掉 68 处声明后，这条规则必须和 no-undef 同档，
+// 否则新增的未读声明又会静默过关（WARN 不影响 eslint 退出码）。
+test('no-unused-vars 在所有配置段都是 error（WP-36 清完残留后与 no-undef 同档）', () => {
+  const config = readConfig();
+  const entries = config.filter((entry) => entry.rules && entry.rules['no-unused-vars'] !== undefined);
+  assert.ok(entries.length >= 3, 'no-unused-vars 应覆盖 node / 页面驱动 / renderer 三类配置段');
+  for (const entry of entries) {
+    const severity = Array.isArray(entry.rules['no-unused-vars'])
+      ? entry.rules['no-unused-vars'][0]
+      : entry.rules['no-unused-vars'];
+    assert.equal(severity, 'error', 'no-unused-vars 必须是 error（仍是 WARN 等于没有门禁）');
+  }
+});
+
+// WP-36（D13）：ignores 里只剩真正会出现在仓库里的目录；不存在的历史目录要清掉，
+// 但 tests/fixtures 这类真实夹具必须落在扫描范围里（以前 tests-fixture/** 挡的是历史目录）。
+test('eslint ignores 不再残留不存在的目录（D13），真实夹具目录必须被扫描', () => {
+  const config = readConfig();
+  const ignores = config.flatMap((entry) => [].concat(entry.ignores || []));
+  assert.ok(ignores.includes('node_modules/**'), 'node_modules 必须忽略');
+  for (const stale of ['trial/**', 'tests-fixture/**']) {
+    assert.ok(!ignores.includes(stale), `ignores 里残留不存在的目录「${stale}」`);
+  }
+  for (const generated of ['dist/**', 'out/**', 'release/**', 'coverage/**', 'shots/**']) {
+    assert.ok(ignores.includes(generated), `构建 / 本地证据目录「${generated}」仍应忽略`);
+  }
+  assert.ok(!ignores.some((pattern) => pattern.startsWith('tests/')), 'tests/ 必须整体扫描（fixtures 在 tests/fixtures）');
 });
 
 test('scripts.lint 仍是 node scripts/lint-gate.js（eslint 不能顶替零依赖门禁）', () => {

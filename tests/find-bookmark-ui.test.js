@@ -493,7 +493,7 @@ test('静态闸门：renderer.js 不再内嵌查找书签实现，只剩装配�
     'const { renderFindBookmarks, refreshFindBookmarks, saveFindBookmark, deleteFindBookmark, jumpToFindBookmark, restoreFindBookmarkForCurrentChapter, setupFindBookmarkUi } = findBookmarkUi;'
   ), '7 个入口按原名解构');
   assert.equal(rendererSrc.includes("$('btn-find-bookmark').addEventListener"), false, '绑定应该只在模块里');
-  assert.equal(rendererSrc.split('findBookmarkUi.setupFindBookmarkUi();').length - 1, 1, 'setup 只调一次');
+  assert.equal(rendererSrc.split('setupFindBookmarkUi();').length - 1, 1, 'setup 只调一次');
   for (const key of ['deleteFindBookmark', 'jumpToFindBookmark', 'restoreFindBookmarkForCurrentChapter', 'saveFindBookmark']) {
     assert.match(rendererSrc, new RegExp('^      ' + key + ',$', 'm'), 'testHooksScope 少了 ' + key);
   }
