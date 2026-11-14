@@ -33,6 +33,7 @@ const ROOT = path.join(__dirname, '..');
 const MAIN = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
 const PRELOAD = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8');
 const INDEX = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
+const POLICY = require(path.join(ROOT, 'core', 'security-policy.js'));
 
 // 取 main.js 里一个顶层函数的函数体。顶层函数的开头与结尾都在第 0 列，所以用
 // `^function 名字(...) { ... ^}` 的非贪婪匹配就够；断言里再核对拿到的东西确实像函数体。
@@ -44,7 +45,10 @@ function functionBody(source, name) {
 
 // 加载 preload.js：在 vm 沙箱里把 `electron` 换成假的，记录桥接暴露了什么、
 // 每个 API 实际用了哪些频道。preload 只 require('electron')，不需要别的注入。
-function loadPreload({ rejectInvoke = false } = {}) {
+// E5（v1.8.0 WP-11）：4 个自检 API 现在按 process.argv 里的 automation 开关决定挂不挂，
+// 沙箱里必须补一个假 process —— testHooks=true（默认，等价自动化启动）带开关，
+// false 等价普通启动 / 打包版（没有开关）。
+function loadPreload({ rejectInvoke = false, testHooks = true } = {}) {
   const calls = { invoked: [], subscribed: [], sent: [] };
   let exposed = null;
   const fakeElectron = {
@@ -72,7 +76,8 @@ function loadPreload({ rejectInvoke = false } = {}) {
     assert.equal(id, 'electron', `preload 只该 require('electron')，实际 require('${id}')`);
     return fakeElectron;
   };
-  new vm.Script(PRELOAD, { filename: 'preload.js' }).runInNewContext({ require: requireShim, console });
+  const fakeProcess = { argv: ['electron.exe', ...(testHooks ? [POLICY.TEST_HOOKS_SWITCH] : [])] };
+  new vm.Script(PRELOAD, { filename: 'preload.js' }).runInNewContext({ require: requireShim, console, process: fakeProcess });
   assert.ok(exposed, 'preload.js 没有调用 contextBridge.exposeInMainWorld');
   return { exposed, calls };
 }
@@ -210,6 +215,19 @@ test('preload：单向通知 / 上报频道与 main.js 一一对应（11 条通�
   assert.equal(calls.sent.length, 2);
 });
 
+test('preload：4 个自检 API 只在自动化模式暴露（E5 / WP-11）', () => {
+  const TEST_APIS = ['testPickConfigPath', 'testPickFont', 'setUpdateMock', 'setClipboardWatchTestText'];
+  // 普通启动 / 打包版：process.argv 里没有 automation 开关 → window.api 上这 4 个键根本不存在
+  const prod = loadPreload({ testHooks: false }).exposed.api;
+  for (const name of TEST_APIS) assert.equal(typeof prod[name], 'undefined', `无开关时不该暴露 ${name}`);
+  // 自动化启动（--e2e / --bench / --contrast / --screenshot）：4 个键都在
+  const auto = loadPreload().exposed.api;
+  for (const name of TEST_APIS) assert.equal(typeof auto[name], 'function', `自动化模式必须暴露 ${name}`);
+  // preload 在 sandbox 下不能 require 产品模块，开关字面量只能抄一份：两边必须一致（改一边忘另一边会红）
+  assert.equal(POLICY.TEST_HOOKS_SWITCH, '--chapterly-test-hooks');
+  assert.ok(PRELOAD.includes(`'${POLICY.TEST_HOOKS_SWITCH}'`), 'preload 的自检开关必须与 core/security-policy 一致');
+});
+
 test('preload：主进程抛错只在渲染层得到 {ok:false, code:IPC_ERROR}，不把异常抛进页面', async () => {
   const { exposed } = loadPreload({ rejectInvoke: true });
   const result = await exposed.api.appVersion();
@@ -227,8 +245,8 @@ test('main.js：窗口安全开关只有 core/security-policy.js 一个来源，
   assert.equal((MAIN.match(/webPreferences\s*:/g) || []).length, 1, 'webPreferences 只许写一次');
   assert.match(
     MAIN,
-    /webPreferences:\s*securityPolicy\.windowPreferences\(path\.join\(__dirname, 'preload\.js'\)\)/,
-    'webPreferences 必须来自 securityPolicy.windowPreferences(preload)'
+    /webPreferences:\s*securityPolicy\.windowPreferences\(\s*path\.join\(__dirname, 'preload\.js'\),\s*\{\s*testHooks: automation\s*\}\s*\)/,
+    'webPreferences 必须来自 securityPolicy.windowPreferences(preload)，且自检 API 开关只跟 automation 走（E5）'
   );
 });
 

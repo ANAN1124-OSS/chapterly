@@ -216,7 +216,12 @@ async function readBookMeta(bookPath) {
     raw = await fs.readFile(metaPath, 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') throw new StorageError('NO_BOOK', `没有找到 ${BOOK_FILE}`);
-    throw err;
+    // E7（审计 WP-11）：EACCES / EPERM 这类读失败的 message 带完整本机路径（`EACCES: permission
+    // denied, open 'C:\Users\…\书目.json'`），原样 throw 会经 listBooks 的 reason / 导入分析文案
+    // 直接进 IPC 回包。统一按 core/error-text 的口径收成「一句中文 + 最后一节文件名」；
+    // 错误码原样保留（界面与 E2E 按 code 分支）。
+    const described = errorText.describeForUi(err);
+    throw new StorageError(described.code, `读取 ${BOOK_FILE} 失败：${described.message}`);
   }
   let meta;
   try {
@@ -507,7 +512,9 @@ async function listBooks(booksRoot, options = {}) {
         conflicts: await scanConflictCopies(bookPath),
         totalChars: 0,
         lastModified: 0,
-        reason: err.message,
+        // E7（审计 WP-11）：损坏书卡的 reason 会原样回给书架，读盘失败的系统文案可能带完整
+        // 本机路径（readBookMeta 已先收一层，这里再兜一次底：任何异常都不许把绝对路径带出去）。
+        reason: errorText.cleanText(errorText.redactPaths(err && err.message)),
         missing: []
       };
     }
