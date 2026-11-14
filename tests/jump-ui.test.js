@@ -529,7 +529,12 @@ test('静态闸门：index.html 在 renderer.js 之前加载 jump-ui.js，模块
   assert.ok(moduleIdx > 0, 'index.html 没有加载 jump-ui.js');
   assert.ok(moduleIdx < rendererIdx, 'jump-ui.js 必须排在 renderer.js 之前');
   assert.ok(indexSrc.indexOf('src="export-ui.js"') < moduleIdx, '排在 export-ui.js 之后（便于阅读）');
-  assert.equal(/\brequire\s*\(/.test(moduleCode), false, 'jump-ui.js 不许 require');
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js；
+  // 运行时代码仍不许 require 任何东西。
+  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
+  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  assert.equal(/\brequire\s*\(/.test(runtimeCode), false, 'jump-ui.js 不许 require');
   assert.equal(/ipcRenderer|node:fs|\bwindow\s*\.\s*cwApi/.test(moduleCode), false, '不许自己摸 Electron / 文件系统');
   assert.equal(/^ {2}\$\(/m.test(moduleCode), false, '模块顶层不许直接查 DOM');
 });

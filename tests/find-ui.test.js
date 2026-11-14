@@ -1143,8 +1143,13 @@ test('静态闸门：index.html 在 renderer.js 之前加载 find-ui.js，且只
 });
 
 test('静态闸门：模块不 require / 不摸 Electron·fs / 不注册全局监听；window 只读选区', () => {
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js（浏览器走 window.CWAssertHost）；
+  // 运行时代码仍不许 require 任何东西。
+  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
+  const runtimeCode = moduleCode.split(assertHostBranch).join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'process.']) {
-    assert.equal(moduleCode.includes(forbidden), false, 'find-ui.js 不许出现 ' + forbidden);
+    assert.equal(runtimeCode.includes(forbidden), false, 'find-ui.js 不许出现 ' + forbidden);
   }
   assert.equal(/window\.addEventListener|document\.addEventListener/.test(moduleCode), false);
   assert.ok(moduleCode.includes('window.getSelection'), '只允许读选区');

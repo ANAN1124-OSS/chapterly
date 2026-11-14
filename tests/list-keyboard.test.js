@@ -408,8 +408,12 @@ test('静态闸门：Delete 删除章节接线（复用 deleteChapterAt，不抄
   assert.ok(RENDERER.includes('allowDelete: true'), '章节列表要打开删除键');
   assert.ok(RENDERER.includes('onDelete: (item, position)'), '章节列表要装 onDelete');
   assert.ok(RENDERER.includes('void deleteChapterAt(position)'), 'Delete 必须复用现成的 deleteChapterAt');
-  assert.ok(RENDERER.includes('if (deleted) focusChapterAfterDelete(position)'), '删完把焦点放回列表（不掉回 body）');
-  assert.ok(RENDERER.includes('function focusChapterAfterDelete('), '焦点归位 helper 要在渲染层');
+  assert.ok(
+    RENDERER.includes("if (deleted) focusChapterItem({ mode: 'position', position })"),
+    '删完把焦点放回列表（不掉回 body）'
+  );
+  // A7（WP-32）：三种焦点归位合并成一个 focusChapterItem，删除路径用 position 落点
+  assert.ok(RENDERER.includes('function focusChapterItem('), '焦点归位 helper 要在渲染层');
   assert.equal(
     (RENDERER.match(/allowDelete: true/g) || []).length,
     1,
@@ -463,9 +467,15 @@ test('静态闸门：Ctrl+PageUp/PageDown 切章接线（复用 switchChapter，
   assert.equal(seg.includes('saveCurrent('), false, '不许在这里自己保存：保存语义只在 switchChapter 里');
   assert.equal(seg.includes('askUnsaved('), false, '不许自己再写一套未保存询问');
   assert.equal(seg.includes('loadChapterAt('), false, '不许绕过 switchChapter 直接加载正文');
-  assert.ok(RENDERER.includes('function focusChapterAfterSwitch('), '切章后焦点归位 helper 要在渲染层');
-  const focusAt = RENDERER.indexOf('function focusChapterAfterSwitch(');
-  const focusSeg = RENDERER.slice(focusAt, focusAt + 700);
+  assert.ok(
+    RENDERER.includes("focusChapterItem({ mode: 'switch', index })"),
+    '切章后焦点归位走合并后的落点入口'
+  );
+  // A7（WP-32）：三种焦点归位合并成一个 focusChapterItem；'switch' 这一路仍只看
+  // activeElement 是否在章节列表里（不许从编辑区抢走）。
+  const focusAt = RENDERER.indexOf('function focusChapterItem(');
+  assert.ok(focusAt > 0, '焦点归位 helper 要在渲染层');
+  const focusSeg = RENDERER.slice(focusAt, focusAt + 2000);
   assert.ok(
     focusSeg.includes("closest('#chapter-list')"),
     '只有焦点本来就在章节列表里才挪焦点（不许从编辑区抢走）'
@@ -656,7 +666,10 @@ test('静态闸门：Alt+↑/↓ 章节上移 / 下移接线（列表接管、�
     '目标计算走纯逻辑（同卷相邻才给目标）'
   );
   assert.ok(RENDERER.includes('await moveChapterByDrag(index, target.toIndex)'), '移动复用现成的 moveChapterByDrag（不抄第二份写盘）');
-  assert.ok(RENDERER.includes('focusChapterById(chapter.id)'), '移动后焦点回到同一章（连按才走得动）');
+  assert.ok(
+    RENDERER.includes("focusChapterItem({ mode: 'id', id: chapter.id })"),
+    '移动后焦点回到同一章（连按才走得动）'
+  );
   assert.ok(read('renderer/drag-sort-ui.js').includes('function stepMoveTarget'), '纯逻辑实现留在拖拽模块');
   // U-D1：卷边界上的 Alt+↑/↓ 跨到相邻的一个卷 —— 目标由 core 纯逻辑算，写盘复用拖拽那条；
   // 1.4.0 P0-2 起跨卷**不再弹确认框**（直接执行 + 10 秒撤销）；不许在渲染层抄第二份

@@ -1404,7 +1404,7 @@
     const target = dragSortUiModule.stepMoveTarget(state.chapters, index, direction, chapterVolumeId);
     if (target) {
       await moveChapterByDrag(index, target.toIndex);
-      focusChapterById(chapter.id);
+      focusChapterItem({ mode: 'id', id: chapter.id });
       return true;
     }
     const cross = chaptersLib.crossVolumeTarget(state.meta, index, direction);
@@ -1422,7 +1422,7 @@
       beforeChapterId: cross.beforeChapterId
     });
     if (!moved || moved.ok !== true) return false;
-    focusChapterById(chapter.id);
+    focusChapterItem({ mode: 'id', id: chapter.id });
     undoUi.activate(`已把「${chapterTitle(index, chapter.name)}」移到「${toVolume}」`, async () => {
       if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
       const at = state.chapters.findIndex((c) => c.id === chapter.id);
@@ -1432,52 +1432,47 @@
         beforeChapterId: beforeId
       });
       if (!back || back.ok !== true) throw new Error((back && back.message) || '移动没有生效');
-      focusChapterById(chapter.id);
+      focusChapterItem({ mode: 'id', id: chapter.id });
     });
     return true;
   }
 
-  // 移动后列表会整表重建：焦点放回同一章（否则连按 Alt+↓，按一次焦点就丢到 body），
-  // roving 停留点也跟着这一条（和方向键移焦点同一个口径）。
-  function focusChapterById(chapterId) {
+  // A7（WP-32 / 审计 A7）：focusChapterById / AfterDelete / AfterSwitch 三份约 80% 重复的
+  // 「把焦点放回章节列表」实现合并成这一份，差异只在落点怎么算（locator.mode）：
+  //   'id'       —— 拖拽 / Alt+↑↓ 移动后列表整表重建，按章 id 找回来（否则连按 Alt+↓，
+  //                 按一次焦点就丢到 body），roving 停留点也跟着这一条（与方向键移焦点同口径）；
+  //   'position' —— U-D9：键盘 Delete 删除整表重建后按位置落回（删的是最后一条就落到新的
+  //                 最后一条；主进程给的下一章下标正好是同一位置），连按 Delete 才删得动；
+  //   'switch'   —— U-D12：Ctrl+PageUp/Dn / 命令面板切章走的是「只改高亮 / tabIndex」的快路径，
+  //                 只有焦点原本就在章节列表里才把它带到新当前章；焦点在编辑区 / 工具栏时
+  //                 一个字都不动 —— 绝不把焦点从正文抢走（这一路也不滚动）。
+  function focusChapterItem(locator) {
     const list = $('chapter-list');
-    const at = state.chapters.findIndex((c) => c.id === chapterId);
-    if (!list || at < 0) return;
+    if (!list) return false;
+    if (locator.mode === 'switch') {
+      const active = document.activeElement;
+      if (!active || typeof active.closest !== 'function') return false;
+      if (!active.closest('#chapter-list')) return false;
+      const item = list.querySelector(`.chapter-item[data-index="${locator.index}"]`);
+      if (!item || typeof item.focus !== 'function') return false;
+      item.focus();
+      return true;
+    }
     const items = Array.from(list.querySelectorAll('.chapter-item'));
+    let at;
+    if (locator.mode === 'id') {
+      at = state.chapters.findIndex((c) => c.id === locator.id);
+      if (at < 0) return false;
+    } else {
+      if (!items.length) return false;
+      const want = Number.isFinite(locator.position) ? Math.floor(locator.position) : 0;
+      at = Math.max(0, Math.min(want, items.length - 1));
+    }
     listKeyboard.applyTabStops(items, at);
     const el = items[at];
-    if (!el) return;
+    if (!el) return false;
     if (typeof el.focus === 'function') el.focus();
     if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
-  }
-
-  // U-D9：键盘删除后列表会整表重建（删当前章还会切到下一章）——把焦点放回列表里的原位置
-  // （删的是最后一条就落到新的最后一条），连按 Delete 才删得动，不会掉回窗口 body。
-  // 删掉当前章时主进程给的下一章下标正好是同一位置，所以落点就是新的当前章。
-  function focusChapterAfterDelete(position) {
-    const list = $('chapter-list');
-    if (!list) return;
-    const items = Array.from(list.querySelectorAll('.chapter-item'));
-    if (!items.length) return;
-    const want = Number.isFinite(position) ? Math.floor(position) : 0;
-    const at = Math.max(0, Math.min(want, items.length - 1));
-    listKeyboard.applyTabStops(items, at);
-    const el = items[at];
-    if (typeof el.focus === 'function') el.focus();
-    if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
-  }
-
-  // U-D12：Ctrl+PageUp / PageDown 切章后，焦点原本在左侧章节列表里时把它带到新当前章
-  // （切章走的是「只改高亮 / tabIndex」的快路径，旧条目还在，焦点留在旧章会和当前章对不上）。
-  // 焦点在编辑区 / 工具栏时一个字都不动 —— 绝不把焦点从正文抢走。
-  function focusChapterAfterSwitch(index) {
-    const list = $('chapter-list');
-    const active = document.activeElement;
-    if (!list || !active || typeof active.closest !== 'function') return false;
-    if (!active.closest('#chapter-list')) return false;
-    const item = list.querySelector(`.chapter-item[data-index="${index}"]`);
-    if (!item || typeof item.focus !== 'function') return false;
-    item.focus();
     return true;
   }
 
@@ -3679,12 +3674,11 @@
     // 选中集合是一次性动作的上下文：执行完就收起（失败也收起，避免重试时重复删已删的章）
     state.selectedIds = new Set();
     state.selectAnchorId = null;
-    const missed = state.chapters.findIndex((chapter, index) => index === state.index && !chapter);
     if (currentSelected) {
       state.index = Math.min(firstIndex, Math.max(0, state.chapters.length - 1));
       state.dirty = false;
       await loadChapterAt(state.index);
-    } else if (missed >= 0 || !state.chapters[state.index]) {
+    } else if (!state.chapters[state.index]) {
       // 当前章在书目里找不到了（极端情况：书目被外部改坏）：回第一处原下标，别停在一个空下标上
       state.index = Math.min(firstIndex, Math.max(0, state.chapters.length - 1));
       await loadChapterAt(state.index);
@@ -4169,7 +4163,7 @@
           run: () => {
             void switchChapter(index).then((result) => {
               if (!result || result.ok !== true) return;
-              focusChapterAfterSwitch(index);
+              focusChapterItem({ mode: 'switch', index });
             });
           }
         });
@@ -5774,7 +5768,7 @@
         void switchChapter(target)
           .then((result) => {
             if (!result || result.ok !== true || result.same) return;
-            focusChapterAfterSwitch(target);
+            focusChapterItem({ mode: 'switch', index: target });
           })
           .catch((err) => reportChainFailure('切换章节失败', err));
         return;
@@ -6125,7 +6119,7 @@
         if (state.selectedIds.size > 1 && state.selectedIds.has(chapterIdAt(position))) {
           void deleteSelectedChapters()
             .then((deleted) => {
-              if (deleted) focusChapterAfterDelete(position);
+              if (deleted) focusChapterItem({ mode: 'position', position });
             })
             .catch((err) => reportChainFailure('批量删除失败', err));
           return;
@@ -6133,7 +6127,7 @@
         // B1（审计 E2）：删除失败不再静默（原来 .then 没有 .catch，焦点恢复那步永不执行）
         void deleteChapterAt(position)
           .then((deleted) => {
-            if (deleted) focusChapterAfterDelete(position);
+            if (deleted) focusChapterItem({ mode: 'position', position });
           })
           .catch((err) => reportChainFailure('删除这一章失败', err));
       },

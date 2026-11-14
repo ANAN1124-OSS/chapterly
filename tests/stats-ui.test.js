@@ -489,7 +489,12 @@ test('静态闸门：index.html 在 renderer.js 之前加载 stats-ui.js，模�
   assert.ok(moduleIdx > 0, 'index.html 没有加载 stats-ui.js');
   assert.ok(moduleIdx < rendererIdx, 'stats-ui.js 必须排在 renderer.js 之前');
   assert.ok(indexSrc.indexOf('src="stats-logic.js"') < moduleIdx, '排在 stats-logic.js 之后');
-  assert.equal(/\brequire\s*\(/.test(moduleCode), false, 'stats-ui.js 不许 require');
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js；
+  // 运行时代码仍不许 require 任何东西。
+  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
+  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  assert.equal(/\brequire\s*\(/.test(runtimeCode), false, 'stats-ui.js 不许 require');
   assert.equal(/ipcRenderer|node:fs|\bwindow\s*\.\s*cwApi/.test(moduleCode), false, '不许自己摸 Electron / 文件系统');
   assert.equal(/^ {2}\$\(/m.test(moduleCode), false, '模块顶层不许直接查 DOM');
   assert.equal(/\bprocess\./.test(moduleCode), false, 'stats-ui.js 不许碰 process');

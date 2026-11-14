@@ -37,12 +37,13 @@
       require('../core/chapters'),
       require('../core/capture'),
       require('../core/common'),
-      require('./backdrop-registry')
+      require('./backdrop-registry'),
+      require('./assert-host').assertHost
     );
   } else if (root) {
-    root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon, root.CWBackdropRegistry);
+    root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon, root.CWBackdropRegistry, root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (chaptersLib, captureLib, commonLib, backdropRegistry) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (chaptersLib, captureLib, commonLib, backdropRegistry, assertHost) {
   'use strict';
 
   // 依赖只认契约保留的公开面：章节标题格式化（toast 用）、字数 / 截断 / 上限（core/capture），
@@ -104,12 +105,8 @@
   }
 
   function createCaptureUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createCaptureUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) {
-        throw new TypeError('createCaptureUi 的 host 缺少 ' + key);
-      }
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createCaptureUi', host, REQUIRED_HOST);
     const { $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody, staleGuard } = host;
     if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
       throw new TypeError('createCaptureUi 的 host.staleGuard 必须是 stale-guard.js 的导出');

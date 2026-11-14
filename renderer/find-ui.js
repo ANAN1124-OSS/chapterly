@@ -47,20 +47,18 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./assert-host').assertHost);
   } else if (root) {
-    root.CWFindUi = factory();
+    root.CWFindUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'longOpLogic', 'staleGuard', 'find', 'nav', 'collab'];
 
   function createFindUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createFindUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) throw new TypeError('createFindUi 的 host 缺少 ' + key);
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createFindUi', host, REQUIRED_HOST);
     const { $, state, api, call, toast, imeGuard, longOpLogic, staleGuard, find, nav, collab } = host;
     if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
       throw new TypeError('createFindUi 的 host.staleGuard 必须是 stale-guard.js 的导出');

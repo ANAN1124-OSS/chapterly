@@ -32,20 +32,18 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./assert-host').assertHost);
   } else if (root) {
-    root.CWFindBookmarkUi = factory();
+    root.CWFindBookmarkUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'find', 'nav'];
 
   function createFindBookmarkUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createFindBookmarkUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) throw new TypeError('createFindBookmarkUi 的 host 缺少 ' + key);
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createFindBookmarkUi', host, REQUIRED_HOST);
     const { $, state, api, call, toast, find, nav } = host;
     if (typeof find !== 'object') throw new TypeError('createFindBookmarkUi 的 host.find 必须是对象');
     for (const key of ['bookmarksLib', 'chaptersLib', 'editorEl', 'readFindOptions', 'findSessionMatchesOptions', 'findPanelOpen', 'closeFindPanel', 'renderFindStatusChip', 'startFindSession', 'clearFindSession']) {

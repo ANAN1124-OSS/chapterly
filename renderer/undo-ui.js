@@ -22,23 +22,19 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./assert-host').assertHost);
   } else if (root) {
-    root.CWUndoUi = factory();
+    root.CWUndoUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['$', 'slot', 'toast'];
   const TTL_MS = 10000;
 
   function createUndoUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createUndoUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) {
-        throw new TypeError('createUndoUi 的 host 缺少 ' + key);
-      }
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createUndoUi', host, REQUIRED_HOST);
     const { $, slot, toast } = host;
     // 停留时长以 slot 的 TTL 为准（单测会传很小的值；生产是 undo-action.js 的 10s）
     const ttlMs = Number.isFinite(slot.ttlMs) && slot.ttlMs > 0 ? slot.ttlMs : TTL_MS;

@@ -38,20 +38,18 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./assert-host').assertHost);
   } else if (root) {
-    root.CWEditorMarksUi = factory();
+    root.CWEditorMarksUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'toast', 'persistMarks', 'editor', 'find', 'focus', 'stats', 'scroll'];
 
   function createEditorMarksUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createEditorMarksUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) throw new TypeError('createEditorMarksUi 的 host 缺少 ' + key);
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createEditorMarksUi', host, REQUIRED_HOST);
     // 两个编辑器小件开关按书记忆（1.1.0）：写盘回调必须是函数，否则 create 时就报错，别等到点开关才发现。
     if (typeof host.persistMarks !== 'function') {
       throw new TypeError('createEditorMarksUi 的 host.persistMarks 必须是函数');

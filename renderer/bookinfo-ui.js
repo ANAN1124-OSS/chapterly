@@ -54,11 +54,11 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./assert-host').assertHost);
   } else if (root) {
-    root.CWBookinfoUi = factory();
+    root.CWBookinfoUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'render', 'shelf', 'actions'];
@@ -75,10 +75,8 @@
   let shelfFilterSignature = '';
 
   function createBookinfoUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createBookinfoUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) throw new TypeError('createBookinfoUi 的 host 缺少 ' + key);
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createBookinfoUi', host, REQUIRED_HOST);
     const { $, state, api, call, toast, imeGuard, render, shelf, actions } = host;
     if (typeof render !== 'object') throw new TypeError('createBookinfoUi 的 host.render 必须是对象');
     for (const key of ['bookInfoLib', 'bookGroupOf', 'chapterTitle', 'formatChars', 'formatRelativeTime']) {

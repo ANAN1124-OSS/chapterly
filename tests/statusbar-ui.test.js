@@ -502,13 +502,18 @@ test('静态闸门：index.html 在 renderer.js 之前加载 statusbar-ui.js，�
   assert.ok(at < rendererAt, 'statusbar-ui.js 必须排在 renderer.js 之前');
   assert.equal(indexSrc.split('statusbar-ui.js').length - 1, 1);
   // 模块自己挂全局 CWStatusbarUi，渲染层按这个全局名字取
-  assert.match(moduleSrc, /root\.CWStatusbarUi = factory\(\);/);
+  assert.match(moduleSrc, /root\.CWStatusbarUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost\);/);
   assert.match(rendererSrc, /const statusbarUiModule = window\.CWStatusbarUi;/);
 });
 
 test('静态闸门：模块只读 state / 只碰 DOM 与 window，不摸文件系统与 IPC', () => {
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js（浏览器走 window.CWAssertHost）；
+  // 运行时代码仍不许 require 任何东西。
+  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
+  const runtimeCode = moduleCode.split(assertHostBranch).join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'document.']) {
-    assert.equal(moduleCode.includes(forbidden), false, forbidden);
+    assert.equal(runtimeCode.includes(forbidden), false, forbidden);
   }
   // 只读 state：一处写都没有（外部修改检测也只读 state）
   assert.equal(/state\.[A-Za-z_$][\w$]*\s*=/.test(moduleCode), false, '模块不许写 state');
