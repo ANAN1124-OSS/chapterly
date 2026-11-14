@@ -185,6 +185,16 @@
           ? (fn, ...args) => new Promise((resolve) => setTimeout(resolve, delay)).then(() => call(fn, ...args))
           : null;
       },
+      // 长操作编辑区保护（C2，WP-02）：E2E 用它在「整本整理 / 还原替换备份」IPC 外面包一层延迟，
+      // 制造「长操作还在进行」的窗口；延迟后仍走真实 call(...)，两个写盘链路本身一个字都不改。
+      setTestBookOpDelay(ms) {
+        const delay = Math.max(0, Number(ms) || 0);
+        host.testBookOp = delay
+          ? (fn, ...args) => new Promise((resolve) => setTimeout(resolve, delay)).then(() => call(fn, ...args))
+          : null;
+      },
+      // 长操作期间编辑区是否被锁成只读（C2，WP-02）：进度期间作者不该还能往正文里敲字
+      editorLocked: () => editorEl.readOnly === true,
       chapterTitles: () => state.chapters.map((c, i) => chapterTitle(i, c.name)),
       // 章节列表 DOM 里真正显示的两格拼起来（序号格 + 章名格），E2E 用它对照 core.formatTitle
       chapterListLabels: () =>

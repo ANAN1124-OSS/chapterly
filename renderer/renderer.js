@@ -50,6 +50,10 @@
   // 保存热路径（代码审计 F2）：保存提示文案 + 后台全书校验的结论，save-logic.js 里、
   // Node 单测覆盖；这里只负责「先出提示、后台再校验」的时序。
   const saveLogic = window.CWSaveLogic;
+  // 长异步操作（整本整理 / 还原备份 / 从磁盘重载）的收尾判定（v1.8.0 WP-02 / 审计 C2）：
+  // 回执到达时「书换没换 / 期间有没有新输入」在 long-op-logic.js 里、Node 单测覆盖；
+  // 这里只按结论决定「重载 / 保留编辑区 / 什么都不动」。
+  const longOpLogic = window.CWLongOpLogic;
   // 自定义字体的 base64 解码（代码审计 F11）：font-logic.js 里、Node 单测覆盖；
   // 优先浏览器原生 data: URL 解码，失败才回退 atob 循环。
   const fontLogic = window.CWFontLogic;
@@ -4211,6 +4215,37 @@
     hideMenu('export-menu');
   }
 
+  // ---------- 长操作编辑区保护（v1.8.0 WP-02 / 审计 C2） ----------
+  // 整本整理 / 还原备份会写盘、完成后再从磁盘重载正文。以前操作入口查一次 dirty 就开始跑，
+  // 进度期间编辑区照常能输入，完成时 loadChapterAt 无条件覆盖正文并把 dirty 清成 false——
+  // 期间敲的字静默消失。现在长操作期间把编辑区设为只读（进度提示里会说明），完成时再按
+  // 「书没换 / 期间有没有新输入」复核（long-op-logic.js）；输入法补字、程序化写入这类漏网输入
+  // 一律正文优先：保留编辑区，不拿磁盘结果盖掉。
+  let longOpLockCount = 0;
+  // ?test=1 时 E2E 用 setTestBookOpDelay 给「整本整理 / 还原备份」的 IPC 外面包一层延迟，
+  // 制造「操作还在进行」的窗口；正常启动恒为 null，两个入口直接走 call(api.formatBook / api.restoreReplaceBackup)。
+  let testBookOp = null;
+
+  function beginLongOpLock() {
+    longOpLockCount += 1;
+    if (longOpLockCount === 1) {
+      editorEl.readOnly = true;
+      editorEl.setAttribute('aria-busy', 'true');
+    }
+  }
+
+  function endLongOpLock() {
+    longOpLockCount = Math.max(0, longOpLockCount - 1);
+    if (longOpLockCount === 0) {
+      editorEl.readOnly = false;
+      editorEl.removeAttribute('aria-busy');
+    }
+  }
+
+  function longOpLocked() {
+    return longOpLockCount > 0;
+  }
+
   // ---------- 整本替换的备份还原 ----------
   // 备份都在书内 _trash/替换备份-时间戳/（storage 负责读写），这里只负责展示和确认。
   async function refreshReplaceBackups() {
@@ -4300,12 +4335,23 @@
   }
 
   // 从最近的「整本替换」备份还原；还原前二次确认，并由 storage 把当前内容再备份一份。
+  // WP-02/C2：入口先捕获 bookPath，之后每个 await（列备份 / 未保存询问 / 还原 / 重载）回来
+  // 都核对还是不是这本书——期间换了书就取消，绝不把回执用到另一本书上。
   async function restoreReplaceBackupFlow(backupName) {
-    if (!state.bookPath) {
+    const bookPath = state.bookPath;
+    if (!bookPath) {
       toast('还没有打开一本书', 'warn');
       return { ok: false };
     }
+    if (longOpLocked()) {
+      toast('正在执行另一个长操作，请稍候', 'warn');
+      return { ok: false, busy: true };
+    }
     await refreshReplaceBackups();
+    if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) {
+      toast('已经换了书，取消还原', 'warn');
+      return { ok: false };
+    }
     const target =
       state.replaceBackups.find((item) => item.name === backupName) || state.replaceBackups[0];
     if (!target) {
@@ -4317,15 +4363,24 @@
         '还原会用备份覆盖磁盘上的章节，并从磁盘重新载入正文；当前章的未保存修改会丢失。'
       );
       if (!guard.ok) return guard.canceled ? { ok: false, canceled: true } : guard.saved;
+      // 询问期间也可能切了书（弹窗不阻塞其它入口）：这时的 target 属于原来那本，不能还原。
+      if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) {
+        toast('已经换了书，取消还原', 'warn');
+        return { ok: false };
+      }
     }
     const others = state.replaceBackups.length - 1;
     // 1.4.0 P0-2（撤销优先于确认）：还原到替换前不再弹二次确认 —— 直接还原
     // （storage 会先把当前内容备份到 _trash/还原前备份-*），10 秒内可撤销（= 用那份还原前备份再还原一次）。
     // 未保存拦截仍在前一步：这个动作会从磁盘重载正文，编辑区没写盘的字找不回来。
-    const bookPath = state.bookPath;
+    beginLongOpLock();
+    showFormatBookProgress('正在从备份还原…（编辑区已暂锁）');
     try {
-      const data = await call(api.restoreReplaceBackup, state.bookPath, target.name);
-      await reloadOpenBookFromDisk();
+      // WP-02/C2：还原只针对发起时捕获的那本书；延迟注入只包 IPC，不改变还原链路本身。
+      const data = await (testBookOp || call)(api.restoreReplaceBackup, bookPath, target.name);
+      // 期间换了书 / 又敲了字时，reloadOpenBookFromDisk 内部会拒绝重载（正文优先），
+      // 这里的刷新与撤销登记仍然按捕获的 bookPath 走。
+      await reloadOpenBookFromDisk(bookPath);
       await refreshShelf();
       await refreshReplaceBackups();
       const undoName = data.restoreBackupDir ? String(data.restoreBackupDir).split(/[\\/]/).pop() : '';
@@ -4333,11 +4388,11 @@
         // 1.5.0 P0-5（审计 V-2）：登记撤销时记下这份「还原前备份」的指纹；撤销前核对它还是不是那一份。
         const expectedBackup = await backupGuard.fingerprint(bookPath, undoName);
         undoUi.activate(`已还原到「${target.name}」前的正文`, async () => {
-          if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) throw new Error('已经换了书，不能撤销');
           await backupGuard.assertUnchanged(bookPath, expectedBackup);
           const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
           if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');
-          await reloadOpenBookFromDisk();
+          await reloadOpenBookFromDisk(bookPath);
           await refreshShelf();
           await refreshReplaceBackups();
         });
@@ -4350,17 +4405,42 @@
       return { ok: true, data };
     } catch (err) {
       toast(`还原失败：${err.message}`, 'error');
-      await reloadAfterPartialFailure(state.bookPath); // 可能已经还原了几章，界面回到磁盘的真相
+      await reloadAfterPartialFailure(bookPath); // 可能已经还原了几章，界面回到磁盘的真相
       return { ok: false, message: err.message };
+    } finally {
+      endLongOpLock();
+      hideFormatBookProgress();
     }
   }
 
   // 还原 / 外部改动后从磁盘重载当前书（章节列表、字数、当前章）。
   // 章节 id 保持不变就回到原来那一章；章节被删/书目重建时回到第 1 章。
-  async function reloadOpenBookFromDisk() {
-    if (!state.bookPath) return null;
+  // WP-02/C2：expectedBookPath 是调用方 await 前捕获的路径（不传就用当前书）。重载前与
+  // openBook await 之后各查一次「还是不是这本书 / 有没有未保存修改」——期间切了书、敲了字，
+  // 这次重载一律作废，绝不把另一本书或作者刚写的正文盖掉。
+  async function reloadOpenBookFromDisk(expectedBookPath = null) {
+    const bookPath = expectedBookPath || state.bookPath;
+    if (!bookPath) return null;
+    const mayReload = () =>
+      longOpLogic.canReloadFromDisk({
+        expectedBookPath: bookPath,
+        currentBookPath: state.bookPath,
+        dirty: state.dirty
+      });
+    if (!mayReload()) {
+      if (longOpLogic.sameBookPath(state.bookPath, bookPath) && state.dirty) {
+        toast('正文有未保存修改，没有从磁盘重新载入', 'warn');
+      }
+      return null;
+    }
     const currentId = state.chapters[state.index] && state.chapters[state.index].id;
-    const opened = await call(api.openBook, state.bookPath);
+    const opened = await call(api.openBook, bookPath);
+    if (!mayReload()) {
+      if (longOpLogic.sameBookPath(state.bookPath, bookPath) && state.dirty) {
+        toast('正文有未保存修改，没有从磁盘重新载入', 'warn');
+      }
+      return null;
+    }
     state.meta = opened.meta;
     state.chapters = opened.meta.chapters;
     state.bookId = opened.meta.id;
@@ -4388,9 +4468,9 @@
   // bookPath 给了就只在「那本书正是当前打开的这本」时重载（历史弹层也能看别的书的备份）。
   async function reloadAfterPartialFailure(bookPath = null) {
     if (state.dirty || !state.bookPath) return false;
-    if (bookPath && !sameBookPath(state.bookPath, bookPath)) return false;
+    if (bookPath && !longOpLogic.sameBookPath(state.bookPath, bookPath)) return false;
     try {
-      await reloadOpenBookFromDisk();
+      await reloadOpenBookFromDisk(bookPath || state.bookPath);
       return true;
     } catch {
       return false; // 重载失败不影响上面的错误提示（提示里已经写清现场）
@@ -4641,7 +4721,7 @@
       toast('先打开一本书再整理', 'warn');
       return { ok: false };
     }
-    if (state.formatBookRunning) {
+    if (state.formatBookRunning || longOpLocked()) {
       toast('正在整理这本书，请稍候', 'warn');
       return { ok: false, busy: true };
     }
@@ -4664,48 +4744,90 @@
     }
 
     const options = formatUi.mergeOptions(state.config && state.config.formatOptions);
-    let preview;
-    try {
-      preview = await call(api.formatPreviewBook, state.bookPath, options);
-    } catch (err) {
-      toast(`预检查失败：${err.message}`, 'error');
-      return { ok: false, message: err.message };
-    }
-    if (!preview.chaptersChanged) {
-      toast('这本书已经是整理后的格式，没有可改的地方' + (preview.skippedTooLarge ? `；有 ${preview.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''));
-      return { ok: true, changed: 0, data: preview };
-    }
-
-    const listText = preview.changed
-      .slice(0, 6)
-      .map((item) => chapterTitle(item.index, item.name))
-      .join('、');
-    const moreText =
-      preview.chaptersChanged > 6
-        ? ` 等共 ${preview.chaptersChanged} 章`
-        : `（共 ${preview.chaptersChanged} 章）`;
-    // 1.4.0 P0-2（撤销优先于确认）：整本整理不再弹确认框 —— 直接整理（写前照旧备份到
-    // _trash/整理备份-*），10 秒内可撤销（撤销 = 用这份备份还原整组，还原前还会再备份一份）。
-    // 准备信息进 toast，作者不用点确认也知道改了几章。
-    const planText = `规则：${formatUi.describeRules(options)}；会改 ${preview.chaptersChanged} 章（${listText}${moreText}）`;
-
+    // WP-02/C2：从预检查起就锁编辑区（预检查也要读完整本书，千章书不短），并把「进行中」
+    // 标志提前到预检查之前防重复触发。完成时按「书没换 / 期间有没有新输入」决定怎么重载。
     state.formatBookRunning = true;
     const bookPath = state.bookPath;
-    const currentId = state.chapters[state.index] && state.chapters[state.index].id;
-    showFormatBookProgress(`正在整理整本书…（共 ${preview.chaptersChanged} 章要改）`);
+    beginLongOpLock();
     try {
-      const result = await call(api.formatBook, state.bookPath, options);
-      // 整理后重新载入书和当前章（正文、字数缓存都变了）
-      const opened = await call(api.openBook, state.bookPath);
+      let preview;
+      try {
+        showFormatBookProgress('正在检查整本书…（编辑区已暂锁）');
+        preview = await call(api.formatPreviewBook, bookPath, options);
+      } catch (err) {
+        toast(`预检查失败：${err.message}`, 'error');
+        return { ok: false, message: err.message };
+      }
+      if (!preview.chaptersChanged) {
+        toast('这本书已经是整理后的格式，没有可改的地方' + (preview.skippedTooLarge ? `；有 ${preview.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''));
+        return { ok: true, changed: 0, data: preview };
+      }
+
+      const listText = preview.changed
+        .slice(0, 6)
+        .map((item) => chapterTitle(item.index, item.name))
+        .join('、');
+      const moreText =
+        preview.chaptersChanged > 6
+          ? ` 等共 ${preview.chaptersChanged} 章`
+          : `（共 ${preview.chaptersChanged} 章）`;
+      // 1.4.0 P0-2（撤销优先于确认）：整本整理不再弹确认框 —— 直接整理（写前照旧备份到
+      // _trash/整理备份-*），10 秒内可撤销（撤销 = 用这份备份还原整组，还原前还会再备份一份）。
+      // 准备信息进 toast，作者不用点确认也知道改了几章。
+      const planText = `规则：${formatUi.describeRules(options)}；会改 ${preview.chaptersChanged} 章（${listText}${moreText}）`;
+
+      showFormatBookProgress(`正在整理整本书…（共 ${preview.chaptersChanged} 章要改，编辑区暂锁）`);
+      // WP-02/C2：只整理发起时捕获的那本书（不使用 await 之后的活值）。
+      const result = await (testBookOp || call)(api.formatBook, bookPath, options);
+      const doneText = `已整理全书：${result.chaptersChanged} 章${planText ? `（${planText}）` : ''}${
+        result.backupDir ? ' · 原文已备份到 _trash' : ''
+      }${
+        result.skippedTooLarge ? `；有 ${result.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''
+      }`;
+      // 完成时先按「书没换 / 期间有没有新输入」判定（C2）：回执只属于发起时那本书。
+      const decide = () =>
+        longOpLogic.decideAfterLongOp({
+          expectedBookPath: bookPath,
+          currentBookPath: state.bookPath,
+          dirty: saveLogic.isDirtyAgainstSnapshot(state.baseText, editorEl.value)
+        });
+      let plan = decide();
+      if (plan === 'book-changed') {
+        // 整理期间切了书：旧书照常整理完，但界面一个字都不动（以前会用活值重载到另一本书）
+        await refreshShelf();
+        toast(`${doneText}（你已切换到另一本书，切回后看到的就是整理结果）`);
+        return { ok: true, changed: result.chaptersChanged, data: result };
+      }
+      // 同一本书：读回整理后的书目（章节字数缓存变了）
+      const opened = await call(api.openBook, bookPath);
+      plan = decide(); // openBook 期间也可能换书 / 再输入
+      if (plan === 'book-changed') {
+        await refreshShelf();
+        toast(`${doneText}（你已切换到另一本书，切回后看到的就是整理结果）`);
+        return { ok: true, changed: result.chaptersChanged, data: result };
+      }
+      const liveId = state.chapters[state.index] && state.chapters[state.index].id;
       state.meta = opened.meta;
       state.chapters = opened.meta.chapters;
-      const index = Math.max(
-        0,
-        state.chapters.findIndex((chapter) => chapter.id === currentId)
-      );
-      await loadChapterAt(index);
-      renderChapterList();
-      renderEditorHeader();
+      if (plan === 'keep-edits') {
+        // 整理期间编辑区里又有字（输入法补字 / 程序化写入等漏网输入）：磁盘已经整理好，
+        // 但正文优先——保留编辑区并维持未保存态，绝不拿整理结果盖掉作者的字。
+        state.dirty = true;
+        renderChapterList();
+        renderEditorHeader();
+        updateStatus();
+        toast(doneText);
+        toast('整理已完成写盘；你在整理期间输入的修改还留在编辑区（未保存，Ctrl+S 保存后生效）', 'warn');
+      } else {
+        // 整理后重新载入当前章（章节 id 保持不变；期间切过章就按现在这一章重载）
+        const index = liveId
+          ? Math.max(0, state.chapters.findIndex((chapter) => chapter.id === liveId))
+          : Math.min(state.index, Math.max(0, state.chapters.length - 1));
+        await loadChapterAt(index);
+        renderChapterList();
+        renderEditorHeader();
+        toast(doneText);
+      }
       await refreshShelf();
       // 撤销：用这次整理写盘前的备份整组还原（storage 会先把现在的内容再备份到 _trash/还原前备份-*）
       const backupName = result.backupDir ? String(result.backupDir).split(/[\\/]/).pop() : '';
@@ -4713,25 +4835,21 @@
         // 1.5.0 P0-5（审计 V-2）：登记撤销时记下整理备份的指纹；撤销前核对它还是不是那一份。
         const expectedBackup = await backupGuard.fingerprint(bookPath, backupName);
         undoUi.activate(`已整理全书 ${result.chaptersChanged} 章`, async () => {
-          if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) throw new Error('已经换了书，不能撤销');
           await backupGuard.assertUnchanged(bookPath, expectedBackup);
           const data = await call(api.restoreHistoryDir, bookPath, `dir:${backupName}`);
           if (!data || !Number(data.restored)) throw new Error('整理备份里没有可还原的章节');
-          await reloadOpenBookFromDisk();
+          await reloadOpenBookFromDisk(bookPath);
           await refreshShelf();
         });
       }
-      toast(
-        `已整理全书：${result.chaptersChanged} 章${planText ? `（${planText}）` : ''}${
-          result.backupDir ? ' · 原文已备份到 _trash' : ''}${
-          result.skippedTooLarge ? `；有 ${result.skippedTooLarge} 章超过 128 MB，本次已跳过（文件没动）` : ''}`
-      );
       return { ok: true, changed: result.chaptersChanged, data: result };
     } catch (err) {
       toast(`整理本书失败：${err.message}`, 'error');
-      await reloadAfterPartialFailure(); // 可能已经整理了好几章，别让编辑区停在旧正文上
+      await reloadAfterPartialFailure(bookPath); // 可能已经整理了好几章，别让编辑区停在旧正文上
       return { ok: false, message: err.message };
     } finally {
+      endLongOpLock();
       state.formatBookRunning = false;
       hideFormatBookProgress();
     }
@@ -5642,6 +5760,10 @@
       // 活绑定：测试钩子用 setTestSaveDelay 包一层保存 IPC（E2E 验「保存期间输入」的时序，WP-01/C1）
       set testSaveChapter(value) {
         testSaveChapter = value;
+      },
+      // 活绑定：测试钩子用 setTestBookOpDelay 包一层「整本整理 / 还原备份」IPC（WP-02/C2）
+      set testBookOp(value) {
+        testBookOp = value;
       }
     };
   }

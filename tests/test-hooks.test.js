@@ -115,16 +115,17 @@ test('测试钩子模块：Node 里能 require、导出 create，create() 不碰
   assert.strictEqual(typeof hooks.handleCloseRequest, 'function');
 });
 
-test('测试钩子模块：拆分前后钩子名称与数量不变（508 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1 / 2026-11-14 WP-01 保存延迟注入 +1）', () => {
+test('测试钩子模块：拆分前后钩子名称与数量不变（510 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1 / 2026-11-14 WP-01 保存延迟注入 +1 / WP-02 长操作延迟注入 +1、编辑区锁查询 +1）', () => {
   const hooks = hooksModule.create(stubHost());
   const names = Object.keys(hooks).sort();
-  assert.strictEqual(names.length, 508, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
+  assert.strictEqual(names.length, 510, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
   // 每个功能域各抽一个，防止「数量对但换了一批」
   for (const name of [
     'ready', 'state', 'newBook', 'openBookPath', 'openBookInNewWindow', 'releaseBook', 'windowInfo',
     'newChapter', 'insertAfter', 'renameChapterAt', 'deleteChapterAt', 'switchTo', 'setText', 'text',
     'inputTick',
     'save', 'saveVisible', 'toasts', 'clearToasts', 'setTestVerifyBook', 'setTestSaveDelay', 'chapterTitles',
+    'setTestBookOpDelay', 'editorLocked',
     'openFindPanel', 'closeFindPanel', 'openProofreadPanel', 'proofreadRun', 'openSensitivePanel',
     'sensitiveRun', 'ttsFakeState', 'ttsFakeFinish',
     'formatCurrentChapter', 'runFormatBook', 'exportFormat', 'fontDecodeMode', 'setInput', 'setSelect',
@@ -295,7 +296,16 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   ② 回执后用快照重算 dirty（纯判定收进 save-logic.js，这里只接一行 + 1 行说明）；
   //   ③ testHooksScope 的 testSaveChapter 活绑定（4 行）+ 模块级声明（1 行 + 2 行说明）。
   //   其中 7 行是注释，实际语句只有 6 行；少一行都会让「保存期间输入 → 仍提示未保存」失效。
-  const RENDERER_LINE_BUDGET = 5825;
+  // 1.8.0 WP-02（C2，审计高优先级）：5825 → 5947（+122）：长操作编辑区保护必须读 renderer.js 的
+  //   内部闭包（editorEl / state / 三个异步流程），纯判定部分（书换没换 / 期间有没有新输入）已经
+  //   抽进 renderer/long-op-logic.js 并有单测；留在这里的是三处无法搬走的时序接线——
+  //   ① 编辑区只读锁的 begin/end/locked（约 20 行，含 9 行说明：为什么要锁、什么时候解）；
+  //   ② restoreReplaceBackupFlow 入口捕获 bookPath + 四个 await 后复核（约 30 行）；
+  //   ③ reloadOpenBookFromDisk 重载前 / openBook await 后双重复核（约 20 行）；
+  //   ④ runFormatBook 把预检查拖进锁内、完成后按判定分流重载 / 保留编辑区（约 50 行）。
+  //   搬进独立模块就得把 editorEl、state、call、toast、loadChapterAt 全部反向注入，比现在更绕；
+  //   新增行里约 55 行是解释「为什么不能再退回旧写法」的注释，实际语句约 65 行。
+  const RENDERER_LINE_BUDGET = 5947;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,
