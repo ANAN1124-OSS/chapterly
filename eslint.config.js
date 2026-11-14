@@ -1,16 +1,16 @@
 'use strict';
-// 1.7.0 G1a：本地 eslint 门禁（flat config）。
+// 1.7.0 G1a；1.8.0 WP-35：eslint 门禁（flat config，本地 + CI）。
 //
 // 定位：只做**语法级**的两件事——没声明的名字（no-undef）和声明了没人读的名字（no-unused-vars）。
 // 语义级检查（floating promise / unhandled rejection）仍由零依赖的 `scripts/lint-gate.js` 负责：
 // 那条规则要 TS 解析器才能做准，eslint 这套替代不了，所以这里**不重复造**，两套门禁并存：
 //   pnpm lint        → node scripts/lint-gate.js（零依赖，0 ERROR / 30 WARN）
-//   npx eslint .     → 本文件（0 ERROR；**只在本地跑**）
+//   npx eslint .     → 本文件（0 ERROR；本地与 CI 都跑）
 //
-// 与 CI 的边界（V62）：`.github/workflows/verify.yml` **不跑** `npx eslint .`——CI 只跑
-// `node --check` / `npm test` / `a11y --static`。lint-gate 仍然被 CI 强制，是因为
-// `tests/lint-gate.test.js` 在 `npm test` 里 spawn 全仓 lint-gate（0 ERROR 才算过）；
-// 本文件的规则本体只在本地 `npx eslint .` 里跑，**不构成 CI 门禁**（CI 文件由作者拍板，本轮不改）。
+// 与 CI 的边界（1.8.0 D-4 / WP-35）：`.github/workflows/verify.yml` 现在**跑** `npx eslint .`
+// （no-undef 为 error；no-unused-vars 暂为 WARN，清理后升 error），CI 同时保留
+// `node --check` / `npm test` / `a11y --static`。E2E 与打包冒烟仍不进 CI。
+// lint-gate 也一直被 CI 强制：`tests/lint-gate.test.js` 在 `npm test` 里 spawn 全仓 lint-gate（0 ERROR 才算过）。
 //
 // globals 按目录**内联**在这里（不引 globals 包）：node 侧与 renderer 侧完全不同的全局环境，
 // 混成一份会让「renderer 里误用 process」这种错误静默通过。

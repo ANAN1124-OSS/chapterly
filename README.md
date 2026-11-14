@@ -30,7 +30,7 @@
 - Node.js ≥ 22（开发机实测 v24.22.1）
 - pnpm ≥ 10（实测 12.11.2）
 
-> **CI**：GitHub Actions（`.github/workflows/verify.yml`，windows-latest）在每次 push / PR 上跑三步——全量 `node --check`、`npm test`、`node scripts/a11y-gate.js --static`。**E2E 只在本地跑**（`pnpm e2e`，要起 Electron 真窗口）。提交前本地仍按 `pnpm lint` + `npm test` 自查。
+> **CI**：GitHub Actions（`.github/workflows/verify.yml`，windows-latest）在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef 为 error）、`node scripts/a11y-gate.js --static`。**E2E 只在本地跑**（`pnpm e2e`，要起 Electron 真窗口）；**打包冒烟也不进 CI**，按发版门禁在发版前本地执行。提交前本地仍按 `pnpm lint` + `npm test` 自查。
 
 ## 安装与启动
 

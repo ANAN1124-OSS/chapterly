@@ -7,8 +7,8 @@
 //      解析器，这里做的是「文本级可读 + 结构齐全」校验，真正的语法由 push 后 Actions 首跑判定；
 //   ③ runs-on 必须是 **windows-latest**：单测里含 Windows 路径 / GBK / UNC 语义，ubuntu 会假红；
 //   ④ 必备步骤按序齐全：`pnpm install --frozen-lockfile` → 全量 `node --check` → `npm test` →
-//      `node scripts/a11y-gate.js --static`（npm 级命令写死，避免只改 package.json 就偷换门禁）；
-//   ⑤ E2E 不进 CI（要起 Electron、要真窗口，只留本地 `pnpm e2e`）。
+//      `npx eslint .` → `node scripts/a11y-gate.js --static`（npm 级命令写死，避免只改 package.json 就偷换门禁）；
+//   ⑤ E2E 与打包冒烟都不进 CI（E2E 要起 Electron 真窗口；打包冒烟按发版门禁在发版前本地执行）。
 //
 // 为什么用「文本断言」而不是解析 YAML：不新增 devDependency（红线：只加不错），Node 24 也没有
 // 内置 YAML 解析器；把结构约束写成逐条文本断言，既零依赖，坏了也能一眼看出哪条被改。
@@ -64,7 +64,7 @@ test('runs-on 是 windows-latest（Windows 桌面工具的路径 / GBK / UNC 语
   assert.doesNotMatch(text, /\bubuntu-|\bmacos-/, '不允许再挂 ubuntu / macos 矩阵');
 });
 
-test('步骤按序齐全：checkout → setup-node 24 → pnpm 12.11.2（run_install: false）→ frozen-lockfile → node --check → npm test → a11y --static', () => {
+test('步骤按序齐全：checkout → setup-node 24 → pnpm 12.11.2（run_install: false）→ frozen-lockfile → node --check → npm test → eslint → a11y --static', () => {
   const text = readWorkflow();
   const order = [
     'actions/checkout@v4',
@@ -77,6 +77,7 @@ test('步骤按序齐全：checkout → setup-node 24 → pnpm 12.11.2（run_ins
     'node --check "$f"',
     'git ls-files',
     'npm test',
+    'npx eslint .',
     'node scripts/a11y-gate.js --static',
   ];
   let last = -1;
@@ -109,4 +110,30 @@ test('依赖安装以锁文件为准：pnpm-lock.yaml 入库且步骤里不出�
   assert.ok(fs.existsSync(path.join(ROOT, 'pnpm-lock.yaml')), 'pnpm-lock.yaml 必须入库');
   const text = readWorkflow();
   assert.doesNotMatch(text, /pnpm install(?! --frozen-lockfile)/, '安装步骤只能带 --frozen-lockfile');
+});
+
+test('eslint 进 CI 且只做检查：npx eslint . 独立步骤、不许 --fix / continue-on-error（D-4 / WP-35）', () => {
+  const text = readWorkflow();
+  assert.match(text, /^ {8}run: npx eslint \.$/m, 'CI 必须有一行 run: npx eslint .（no-undef 为 error）');
+  const commands = text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+  assert.doesNotMatch(commands, /eslint[^\n]*--fix/, 'CI 里不许 --fix：检查步骤不能偷偷改工作区');
+  assert.doesNotMatch(commands, /continue-on-error/, 'eslint 步骤不许 continue-on-error（失败必须红）');
+  const npmTest = commands.indexOf('npm test');
+  const eslint = commands.indexOf('npx eslint .');
+  const a11y = commands.indexOf('node scripts/a11y-gate.js --static');
+  assert.ok(npmTest >= 0, '找不到 npm test 步骤');
+  assert.ok(eslint > npmTest, 'eslint 必须排在单测之后');
+  assert.ok(a11y > eslint, 'a11y 静态门禁必须排在 eslint 之后');
+});
+
+test('打包冒烟不进 CI：命令里不出现 electron-builder / dist 脚本（D-4）', () => {
+  const text = readWorkflow();
+  const commands = text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+  assert.doesNotMatch(commands, /electron-builder|(?:pnpm|npm|npx|yarn)\s+(?:run\s+)?dist(?::dir)?\b/i, 'CI 里不允许打包命令');
 });

@@ -1,5 +1,5 @@
 'use strict';
-// 1.7.0 G1a：本地 eslint 门禁的静态锚点（先于实现写，首跑必须是 RED）。
+// 1.7.0 G1a；1.8.0 WP-35：eslint 门禁的静态锚点（本地 + CI 同一份配置）。
 //
 // 只锁四件事，防止「装着装着把门禁换了」：
 //   ① `devDependencies` 里只有 eslint 一个新增包，且是**精确版本**（不带 ^ / ~ / 范围）——
@@ -11,9 +11,9 @@
 //      （lint-gate 的 floating promise 检查 eslint 这套替代不了，删了就少一道闸）；
 //   ④ globals 按目录**内联**在 config 里，不引 `globals` 包，也不引任何 eslint 插件 / 共享配置包。
 //
-// CI（`.github/workflows/verify.yml`，1.7.0 G1b 已落地）**不跑** `npx eslint .`：它只跑
-// `node --check` / `npm test` / `a11y --static`（V62 口径，见 eslint.config.js 头注释）。
-// 但 lint-gate 仍被 CI 强制：`tests/lint-gate.test.js` 在 `npm test` 里 spawn 全仓 lint-gate。
+// CI（`.github/workflows/verify.yml`）从 1.8.0 WP-35 起**跑** `npx eslint .`（D-4 口径）：
+// 它同时跑 `node --check` / `npm test` / `a11y --static`；E2E 与打包冒烟仍只在本地。
+// lint-gate 也一直被 CI 强制：`tests/lint-gate.test.js` 在 `npm test` 里 spawn 全仓 lint-gate。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -26,10 +26,11 @@ const CONFIG_PATH = path.join(ROOT, 'eslint.config.js');
 // 约定规则集：只有这两条（加选项不算新增规则）。
 const ALLOWED_RULES = ['no-undef', 'no-unused-vars'];
 
-// 约定扫描范围：core / renderer / scripts / tests 四个目录 + 两个根文件。
+// 约定扫描范围：core / renderer / ipc / scripts / tests 五个目录 + 两个根文件（ipc 见 WP-34 / D1）。
 const CONTRACT_FILES = [
   'core/**/*.js',
   'renderer/**/*.js',
+  'ipc/**/*.js',
   'main.js',
   'preload.js',
   'scripts/**/*.js',
@@ -79,6 +80,16 @@ test('eslint.config.js 存在，且启用的规则只有约定规则集', () => 
   }
   for (const name of ALLOWED_RULES) {
     assert.ok(ruleNames.has(name), `约定规则「${name}」必须在 config 里启用`);
+  }
+});
+
+test('no-undef 在所有配置段都是 error（CI 的 eslint 步骤才真能拦住未声明名字）', () => {
+  const config = readConfig();
+  const entries = config.filter((entry) => entry.rules && entry.rules['no-undef'] !== undefined);
+  assert.ok(entries.length >= 3, 'no-undef 应覆盖 node / 页面驱动 / renderer 三类配置段');
+  for (const entry of entries) {
+    const severity = Array.isArray(entry.rules['no-undef']) ? entry.rules['no-undef'][0] : entry.rules['no-undef'];
+    assert.equal(severity, 'error', 'no-undef 必须是 error（WARN 会让 CI 静默放行）');
   }
 });
 
