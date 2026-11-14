@@ -463,8 +463,20 @@ test('静态闸门：焦点抢夺取只在组边界开关，组索引统一走 r
 });
 
 test('静态闸门：打包配置不含 scripts/，所以驱动不会进安装包（顶层 require 会直接崩）', () => {
-  assert.deepEqual(PKG.build.files, ['main.js', 'preload.js', 'core/**/*', 'renderer/**/*', 'package.json', 'LICENSE']);
+  assert.deepEqual(PKG.build.files, ['main.js', 'preload.js', 'core/**/*', 'ipc/**/*', 'renderer/**/*', 'package.json', 'LICENSE']);
   assert.equal(PKG.main, 'main.js');
   assert.ok(fs.existsSync(path.join(ROOT, 'scripts', 'screenshot-driver.js')));
+  // 生产相对依赖必须全部进包：scripts/ 是自动化模式里懒加载、刻意不进包；其余顶层目录
+  // 少一条就是「安装完启动 Cannot find module」（v1.8.0 试用构建实测：WP-34 拆出 ipc/ 后
+  // 打包清单漏了 ipc/**/*，装完主进程 require('./ipc/book') 直接崩）。
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  const dirs = new Set(
+    [...mainSrc.matchAll(/require\(['"]\.\/([A-Za-z0-9_-]+)\//g)].map((match) => match[1])
+  );
+  assert.deepEqual([...dirs].sort(), ['core', 'ipc', 'scripts'], 'main.js 顶层相对依赖目录变了：同步本断言与 package.json build.files');
+  for (const dir of dirs) {
+    if (dir === 'scripts') continue;
+    assert.ok(PKG.build.files.includes(`${dir}/**/*`), `打包清单必须包含 ${dir}/**/*，否则安装版启动时主进程 require 会崩`);
+  }
   // 驱动里没有任何顶层可执行逻辑：上面已经 require 过它，没有副作用（不会退出应用 / 建窗口）
 });

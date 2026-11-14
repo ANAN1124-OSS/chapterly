@@ -44,6 +44,7 @@
       "main.js",
       "preload.js",
       "core/**/*",
+      "ipc/**/*",
       "renderer/**/*",
       "package.json",
       "LICENSE"
