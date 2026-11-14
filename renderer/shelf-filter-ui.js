@@ -32,11 +32,11 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../core/common'));
+    module.exports = factory(require('../core/common'), require('./assert-host').assertHost);
   } else if (root) {
-    root.CWShelfFilterUi = factory(root.CWCommon);
+    root.CWShelfFilterUi = factory(root.CWCommon, root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (common) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (common, assertHost) {
   'use strict';
 
   if (!common || typeof common.normalizeForMatch !== 'function') {
@@ -47,12 +47,8 @@
   const REQUIRED_HOST = ['$', 'state', 'bookInfoLib', 'chapterTitle', 'openContentResult', 'CONTENT_SEARCH_MIN_CHARS'];
 
   function createShelfFilterUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createShelfFilterUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) {
-        throw new TypeError('createShelfFilterUi 的 host 缺少 ' + key);
-      }
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createShelfFilterUi', host, REQUIRED_HOST);
     const { $, state, bookInfoLib, chapterTitle, openContentResult, CONTENT_SEARCH_MIN_CHARS } = host;
   // ---------- 书架搜索（书名 / 作者 / 分组 / 标签 + 章节名 + 正文） ----------
   // 书名 / 作者 / 分组 / 标签 / 章节名是内存过滤（输入即出）；正文走主进程的搜索索引，防抖后异步查。

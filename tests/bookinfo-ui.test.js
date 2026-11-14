@@ -1029,8 +1029,13 @@ test('静态闸门：index.html 在 renderer.js 之前加载 bookinfo-ui.js，�
 });
 
 test('静态闸门：模块不 require / 不摸 Electron·fs·网络', () => {
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js（浏览器走 window.CWAssertHost）；
+  // 运行时代码仍不许 require 任何东西。
+  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
+  const runtimeCode = moduleCode.split(assertHostBranch).join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'process.']) {
-    assert.equal(moduleCode.includes(forbidden), false, 'bookinfo-ui.js 不许出现 ' + forbidden);
+    assert.equal(runtimeCode.includes(forbidden), false, 'bookinfo-ui.js 不许出现 ' + forbidden);
   }
   assert.equal(/window\.addEventListener|document\.addEventListener/.test(moduleCode), false, '模块不注册全局监听');
   // 1.3.0 T5：唯一的定时器 = 首次运行提示的 4s 自动收起（只在 maybeShowFirstRunTip 里建）

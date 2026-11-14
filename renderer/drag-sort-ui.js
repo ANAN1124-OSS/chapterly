@@ -27,11 +27,11 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./assert-host').assertHost);
   } else if (root) {
-    root.CWDragSortUi = factory();
+    root.CWDragSortUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['$', 'api', 'call', 'chapterVolumeId', 'renderChapterList', 'renderEditorHeader', 'state', 'toast', 'updateStatus', 'volumeDisplayName'];
@@ -55,12 +55,8 @@
   }
 
   function createDragSortUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createDragSortUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) {
-        throw new TypeError('createDragSortUi 的 host 缺少 ' + key);
-      }
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createDragSortUi', host, REQUIRED_HOST);
     const { $, api, call, chapterVolumeId, renderChapterList, renderEditorHeader, state, toast, updateStatus, volumeDisplayName } = host;
   // ---------- 章节拖拽排序 ----------
   // 只改 书目.json 的顺序，章节文件永不重命名；拖拽用 pointer 事件（比 HTML5 DnD 好测、也不挑渲染层）。

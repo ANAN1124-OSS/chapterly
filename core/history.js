@@ -19,45 +19,42 @@ const SOURCE_META = {
   replace: {
     label: '整本替换',
     prefix: '替换备份-',
-    restorable: true,
     note: '整本替换前自动备份的原文。可以预览、还原单章或整组；只还原现在仍在书里的章节，已删除的章节不会偷偷复活。'
   },
   format: {
     label: '整本整理',
     prefix: '整理备份-',
-    restorable: true,
     note: '整本整理前自动备份的原文。可以预览、还原单章或整组；只还原现在仍在书里的章节。'
   },
   restore: {
     label: '还原前备份',
     prefix: '还原前备份-',
-    restorable: true,
     note: '每次还原前自动留下的反向备份，方便把还原这一步也退回去。可以预览、还原单章或整组。'
   },
   snapshot: {
     label: '每日快照',
     prefix: '快照-',
-    restorable: true,
     note: '每日快照留下的章节副本。可以预览、还原单章或整组。'
   },
   delete: {
     label: '删除章节',
-    restorable: true,
     note: '删除章节时移到 _trash 的原文。还原会把 txt 放回书文件夹，但不会自动加回章节列表（需要的话可用「从目录重建」找回）；书里已有同名文件时不会覆盖。'
   },
   bookmeta: {
     label: '书目备份',
-    restorable: false,
     note: '上一版 书目.json。只供查看，避免用旧书目覆盖现在的章节列表；损坏时请走书卡的「修复」。'
   },
   other: {
     label: '其他备份',
-    restorable: false,
     note: '没有识别出用途的备份文件，只供查看；写作器不会自动处理、移动或删除它们。'
   }
 };
 
 const KNOWN_DIR_SOURCES = ['replace', 'format', 'restore', 'snapshot'];
+// A4（WP-32 / 审计 A4）：哪些来源的备份「能还原」只在这里说一次。SOURCE_META 里曾有
+// restorable 字段，但全仓没有任何读取点，真正生效的是这个 Set；两份事实并存时改一份就会说谎，
+// 所以删掉死字段、只留 Set。散文件（删除章节的原文）在 listHistory 的 file 分支单独按
+// source === 'delete' 给 restorable（它不经过目录分类，也不在本 Set 的判定范围里）。
 const RESTORABLE_SOURCES = new Set(['replace', 'format', 'restore', 'snapshot']);
 const TEXT_EXTS = new Set(['.txt', '.json', '.bak', '.md']);
 

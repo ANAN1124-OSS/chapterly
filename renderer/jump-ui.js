@@ -25,22 +25,18 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./assert-host').assertHost);
   } else if (root) {
-    root.CWJumpUi = factory();
+    root.CWJumpUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['api', '$', 'call', 'state', 'chapterTitle', 'chaptersLib', 'CHAPTER_STATUS_LABELS', 'chapterStatus', 'switchChapter'];
 
   function createJumpUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createJumpUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) {
-        throw new TypeError('createJumpUi 的 host 缺少 ' + key);
-      }
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createJumpUi', host, REQUIRED_HOST);
     const { api, $, call, state, chapterTitle, chaptersLib, CHAPTER_STATUS_LABELS, chapterStatus, switchChapter } = host;
   // V206（v1.8.0 WP-29）：跳章 payload 按「书目 / 章节数组的引用」缓存。输入框每 80ms 防抖后都会
   // refreshJumpMatches，千章书以前每次都重建 1000 个对象、逐章算章号再整体过 IPC；章号 / 卷名的

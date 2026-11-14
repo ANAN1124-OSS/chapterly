@@ -23,11 +23,11 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./assert-host').assertHost);
   } else if (root) {
-    root.CWCommandPaletteUi = factory();
+    root.CWCommandPaletteUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['$', 'imeGuard', 'registry', 'items', 'onRun', 'onClose'];
@@ -35,12 +35,8 @@
   const MAX_ROWS = 60;
 
   function createCommandPaletteUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createCommandPaletteUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) {
-        throw new TypeError('createCommandPaletteUi 的 host 缺少 ' + key);
-      }
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createCommandPaletteUi', host, REQUIRED_HOST);
     const { $, imeGuard, registry, items, onRun, onClose } = host;
     // 测试里没有全局 document：允许 host.doc 注入（浏览器里就是真 document）
     const doc = host.doc || (typeof document !== 'undefined' ? document : null);

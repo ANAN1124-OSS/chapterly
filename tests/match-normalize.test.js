@@ -188,15 +188,19 @@ test('静态闸门：五个消费方都引用 core/common.js 的共享实现，�
     'core/find.js': /const \{ caseFoldForMatch \} = require\('\.\/common'\);/,
     'core/search-index.js': /const \{ nowIso, mapLimit, normalizeForMatch \} = require\('\.\/common'\);/,
     'core/bookinfo.js': /const \{ truncateSafe, normalizeForMatch \} = common;/,
-    'renderer/shelf-filter-ui.js': /module\.exports = factory\(require\('\.\.\/core\/common'\)\);/,
+    'renderer/shelf-filter-ui.js': /module\.exports = factory\(require\('\.\.\/core\/common'\), require\('\.\/assert-host'\)\.assertHost\);/,
     'renderer/command-registry.js': /module\.exports = factory\(require\('\.\.\/core\/common'\)\);/
   };
   for (const [rel, pattern] of Object.entries(wired)) {
     assert.ok(pattern.test(read(rel)), `${rel} 必须从 core/common.js 取归一实现`);
   }
   // 书架搜索 / 命令面板的浏览器分支也必须接上 window.CWCommon
-  for (const rel of ['renderer/shelf-filter-ui.js', 'renderer/command-registry.js']) {
-    assert.ok(/factory\(root\.CWCommon\)/.test(read(rel)), `${rel} 的浏览器分支要取 window.CWCommon`);
+  // （A8/WP-32：shelf-filter 还多收一个 window.CWAssertHost，那是 host 校验，不是归一实现）
+  for (const [rel, pattern] of [
+    ['renderer/shelf-filter-ui.js', /factory\(root\.CWCommon, root\.CWAssertHost && root\.CWAssertHost\.assertHost\)/],
+    ['renderer/command-registry.js', /factory\(root\.CWCommon\)/]
+  ]) {
+    assert.ok(pattern.test(read(rel)), `${rel} 的浏览器分支要取 window.CWCommon`);
   }
   // 全仓只许 core/common.js 定义这两份实现
   const files = [];

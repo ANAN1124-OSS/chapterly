@@ -41,22 +41,18 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./assert-host').assertHost);
   } else if (root) {
-    root.CWShelfUi = factory();
+    root.CWShelfUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'chapterTitle', 'formatRelativeTime', 'openBookByPath', 'askUnsaved', 'saveCurrent', 'loadChapterAt'];
 
   function createShelfUi(host) {
-    if (!host || typeof host !== 'object') throw new TypeError('createShelfUi 需要 host 对象');
-    for (const key of REQUIRED_HOST) {
-      if (host[key] === undefined || host[key] === null) {
-        throw new TypeError('createShelfUi 的 host 缺少 ' + key);
-      }
-    }
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
+    assertHost('createShelfUi', host, REQUIRED_HOST);
     const { $, state, chapterTitle, formatRelativeTime, openBookByPath, askUnsaved, saveCurrent, loadChapterAt, waitForSavingIdle, waitForLoadingIdle } = host;
   // ---------- 继续上次写作 ----------
   // 主进程在打开书 / 切章 / 保存时记 config.lastBook；这里只负责把它显示出来。

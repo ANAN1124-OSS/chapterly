@@ -1053,8 +1053,13 @@ test('静态闸门：index.html 在 renderer.js 之前加载 history-ui.js，且
 });
 
 test('静态闸门：模块不 require / 不摸 Electron·fs·网络，也不注册 window/document 级监听', () => {
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js（浏览器走 window.CWAssertHost）；
+  // 运行时代码仍不许 require 任何东西。
+  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
+  const runtimeCode = moduleCode.split(assertHostBranch).join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'process.']) {
-    assert.equal(moduleCode.includes(forbidden), false, 'history-ui.js 不许出现 ' + forbidden);
+    assert.equal(runtimeCode.includes(forbidden), false, 'history-ui.js 不许出现 ' + forbidden);
   }
   // 事件绑定随域搬：按钮 click 只在 setupHistoryUi 与 buildHistoryGroup（渲染时逐行建）里注册
   assert.equal(moduleCode.includes('addEventListener'), true, '绑定必须搬进模块');

@@ -1383,9 +1383,9 @@ test('静态闸门：面板实现只在 renderer/capture-ui.js，renderer.js 不
   assert.ok(moduleSrc.includes('function createCaptureUi(host)'), '模块必须交出 createCaptureUi(host)');
   assert.ok(
     moduleSrc.includes(
-      'root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon, root.CWBackdropRegistry)'
+      'root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon, root.CWBackdropRegistry, root.CWAssertHost && root.CWAssertHost.assertHost)'
     ),
-    '浏览器挂载口径（1.8.0 WP-17：第 4 个依赖是弹层注册表）'
+    '浏览器挂载口径（1.8.0 WP-17：第 4 个依赖是弹层注册表；A8/WP-32：第 5 个是共享 host 校验）'
   );
   assert.ok(moduleSrc.includes('REQUIRED_HOST'), '必须有 host 契约清单');
   for (const forbidden of [

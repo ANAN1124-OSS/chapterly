@@ -578,13 +578,21 @@ test('静态闸门：index.html 在 renderer.js 之前加载 shelf-search-ui.js�
   // 顺序：statusbar-ui.js → shelf-search-ui.js → renderer.js
   assert.ok(indexSrc.indexOf('<script src="statusbar-ui.js"></script>') < at);
   // 模块自己挂全局 CWShelfSearchUi，渲染层按这个全局名字取
-  assert.match(moduleSrc, /root\.CWShelfSearchUi = factory\(\);/);
+  assert.match(
+    moduleSrc,
+    /root\.CWShelfSearchUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost\);/
+  );
   assert.match(rendererSrc, /const shelfSearchUiModule = window\.CWShelfSearchUi;/);
 });
 
 test('静态闸门：模块不摸文件系统 / IPC / DOM / 存储，只读写 state.shelfContent', () => {
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js（浏览器走 window.CWAssertHost）；
+  // 运行时代码仍不许 require 任何东西。
+  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
+  const runtimeCode = moduleCode.split(assertHostBranch).join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'document.', 'addEventListener', 'window.']) {
-    assert.equal(moduleCode.includes(forbidden), false, forbidden);
+    assert.equal(runtimeCode.includes(forbidden), false, forbidden);
   }
   // 只动 state.shelfContent 这一个子对象（正文搜索的既有效果），不许改 state 顶层字段
   assert.equal(/(?<![=!<>])state\.[A-Za-z_$][\w$]*\s*=(?!=)/.test(moduleCode), false, '模块不许写 state 顶层字段');

@@ -671,8 +671,13 @@ test('静态闸门：index.html 顺序 + 模块不摸 Electron / fs / require + 
     'drag-sort-ui.js 要排 import-ui.js 之后、renderer.js 之前'
   );
   assert.equal((indexSrc.match(/drag-sort-ui\.js/g) || []).length, 1, 'index.html 只该加载一次');
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js（浏览器走 window.CWAssertHost）；
+  // 运行时代码仍不许 require 任何东西。
+  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
+  const runtimeCode = moduleCode.split(assertHostBranch).join('');
   for (const banned of ['require(', 'electron', 'process.', 'fs.', 'ipcRenderer']) {
-    assert.equal(moduleCode.includes(banned), false, '模块不该出现：' + banned);
+    assert.equal(runtimeCode.includes(banned), false, '模块不该出现：' + banned);
   }
   assert.equal(moduleCode.split('document.body').length - 1, 2, '只有 clearDragMarks / updateChapterDrag 两处摸 body');
   // C38：边缘持续滚动要有定时器，且「离开边缘 / 起手 / 松手 / 系统打断」四条路都有人收

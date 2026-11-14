@@ -198,19 +198,19 @@ function normalizeInput(input) {
   const texts = Array.isArray(input && input.texts) ? input.texts : [];
   const title = String(meta.title == null ? '' : meta.title).trim() || '未命名书籍';
   const author = String(meta.author == null ? '' : meta.author).trim();
-  const lang =
-    typeof (input && input.language) === 'string' && input.language.trim()
-      ? input.language.trim()
-      : WORD_LANGUAGE;
+  // V115（WP-32 / 审计 V115）：这里原来读 input.language 并存进 bundle.lang，但 styles.xml 的
+  // w:lang 是固定模板（WORD_LANGUAGE），返回值也没有任何消费者 —— 「传了但没写」的接口空洞。
+  // 导出对话界面没有语言选项（简繁转换走 exporter/conversion，不是语言标记），所以删掉这个参数，
+  // 而不是凭空调一个 w:lang。以后真要按书设置语言，先加导出入口与 XML 断言。
   // 范围解析和 TXT / EPUB 导出共用同一份纯逻辑：只读，不改 meta。
   const plan = exporter.resolveExportRange(meta, input && input.range);
   if (!plan.count) throw new Error('EMPTY_EXPORT_RANGE：所选范围里没有章节');
   const stamp = isoTimestamp(input && input.modified);
-  return { meta, chapters, texts, title, author, lang, stamp, plan };
+  return { meta, chapters, texts, title, author, stamp, plan };
 }
 
 function buildBundle(input) {
-  const { meta, chapters, texts, title, author, lang, stamp, plan } = normalizeInput(input);
+  const { meta, chapters, texts, title, author, stamp, plan } = normalizeInput(input);
   const content = [];
   let volumeCount = 0;
   for (const group of exporter.groupByVolume(meta, plan.indexes)) {
@@ -252,7 +252,6 @@ function buildBundle(input) {
     files,
     title,
     author,
-    lang,
     chapterCount: plan.count,
     volumeCount,
     modified: stamp.iso,
@@ -269,7 +268,7 @@ function docxFiles(input) {
 }
 
 // 产出可写盘的 DOCX 字节（异步：zip 压缩在线程池里跑，整本导出不卡主进程）。
-// input = { meta, texts, range?, language?, modified?, zipDate? }
+// input = { meta, texts, range?, modified?, zipDate? }
 //   meta / texts 和 TXT / EPUB 导出一致（texts 与 meta.chapters 顺序对齐）；
 //   range 可选（见 core/exporter.resolveExportRange）：只导出选中的卷 / 章节范围；
 //   modified 默认现在；传固定值（再配 zipDate）可让同样的内容导出成完全一样的字节（单测用）。
