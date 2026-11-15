@@ -13,6 +13,15 @@
 //
 // 一致性：每章存 mtime + size，搜索 / 回书架时校验。只有正文变过的书才重建位图，
 // 改章名 / 调顺序只更新元数据；删书 / 删章 / 外部改 txt 都会被校验发现。
+//
+// E4（审计修复 #8）：只比 mtime / size 会漏掉「保留时间戳的同大小改写」（robocopy /COPY:DAT、
+// rsync -t、部分同步盘后台落盘）：位图缺新内容的双字 → Bloom 把这本书滤掉 → 静默漏报。
+// 每章指纹再加一条「首尾各 4 KB 内容哈希」（contentHash，含文件大小与两段采样），
+// 深度校验时重算比对；正文没变就不重建位图。索引仍是派生数据，不含正文。
+//
+// E5（审计修复 #8）：位图解码强制 bits === 字节数 × 8（且落在 [MIN_BLOOM_BITS, MAX_BLOOM_BITS]），
+// 每本书另存一条 CRC32。校验不过就当「没有位图」——这本书永远是候选、逐章核对（只降速不漏报），
+// 并顺手登记脏书，让下一次校验重建位图自愈（旧索引没有这两项，靠 INDEX_VERSION 升版本一次性重建）。
 // 索引坏了 / 版本不对 / 书架目录换了 → 当作没有索引自动重建，作者不用手动操作。
 // 写盘走 core/atomic；索引读写失败只让本次搜索降级，绝不影响正文保存与界面。
 const fs = require('node:fs/promises');
@@ -25,7 +34,9 @@ const storage = require('./storage');
 const chaptersLib = require('./chapters');
 
 const INDEX_FILE_NAME = 'search-index.json';
-const INDEX_VERSION = 1;
+// E5（审计修复 #8）：索引形状升级为 2 = 每章多 contentHash、每书多 bloomCrc。
+// 老版本索引按「版本不对 → 空索引自动重建」的既有口径一次性重建（派生数据，不碰正文）。
+const INDEX_VERSION = 2;
 // C17（v1.8.0 WP-19）：索引是「整份读进内存 → JSON.parse」的小文件，以前没有 stat 闸门 ——
 // 被外部程序换成超大文件（误放的视频 / 坏同步盘）时先读后 parse，2 GB 直接顶爆主进程。
 // 独立上限：每本书一份 Bloom 位图（25 万字的书约 100 KB）+ 每章指纹，280 本 ≈ 22 MB，
@@ -38,6 +49,8 @@ const BITS_PER_ITEM = 8;
 const HASH_COUNT = 3;
 const MIN_BLOOM_BITS = 1024;
 const MAX_BLOOM_BITS = 64 * 1024 * 1024; // 单本 8MB 位图上限（异常输入兜底）
+// E4（审计修复 #8）：章文件指纹的首 / 尾采样大小。只读 4 KB × 2，够发现同大小改写又不拖慢校验。
+const FINGERPRINT_SAMPLE_BYTES = 4096;
 
 const MIN_QUERY_CHARS = 2; // 正文搜索至少两个字（单字几乎没有筛选意义）
 const DEFAULT_RESULT_LIMIT = 40;
@@ -124,6 +137,75 @@ function queryBigrams(query) {
   return Array.from(set);
 }
 
+// CRC32（IEEE 802.3，多项式 0xEDB88320）：每本书 Bloom 位图的校验和（E5 / 审计修复 #8）。
+// 零依赖表驱动实现：core 层不引第三方包，zlib.crc32 在项目支持的各 Electron 版本上不保证有。
+const CRC32_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let value = i;
+    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    table[i] = value;
+  }
+  return table;
+})();
+
+function crc32(buffer) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) return 0;
+  let crc = -1;
+  for (let i = 0; i < buffer.length; i += 1) crc = CRC32_TABLE[(crc ^ buffer[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ -1) >>> 0;
+}
+
+// 首尾内容指纹用 FNV-1a 32 位（与 core/clipboard-watch.js 同一套思路）：不是加密哈希，
+// 只回答「这一段字节还是不是原来那一段」。检出「同大小、同时间戳的改写」即可，不做安全判定。
+function sampleHashOf(buffer, seed) {
+  let hash = seed >>> 0;
+  for (let i = 0; i < buffer.length; i += 1) {
+    hash ^= buffer[i];
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+// 从文件指定位置读一小段（本地文件偶发短读时循环补齐；读不满就按实际字节算哈希）。
+async function readSampleAt(handle, length, position) {
+  if (length <= 0) return Buffer.alloc(0);
+  const buffer = Buffer.alloc(length);
+  let done = 0;
+  while (done < length) {
+    const result = await handle.read(buffer, done, length - done, position + done);
+    if (!result || !result.bytesRead) break;
+    done += result.bytesRead;
+  }
+  return done === length ? buffer : buffer.subarray(0, done);
+}
+
+// E4：一章文件的内容指纹 = 字节数 + 首 4 KB 哈希 + 尾 4 KB 哈希。
+// 读不到（被占用 / 权限）时返回空串：下一次校验会把它当「变化」重算，宁可重建也不漏报。
+async function chapterContentHashOf(filePath, size) {
+  let handle = null;
+  try {
+    handle = await fs.open(filePath, 'r');
+    const total = Math.max(0, Math.floor(Number(size) || 0));
+    const head = await readSampleAt(handle, Math.min(FINGERPRINT_SAMPLE_BYTES, total), 0);
+    const tailLength = Math.min(FINGERPRINT_SAMPLE_BYTES, total - head.length);
+    const tail = tailLength > 0 ? await readSampleAt(handle, tailLength, total - tailLength) : Buffer.alloc(0);
+    const headHash = sampleHashOf(head, 0x811c9dc5).toString(16).padStart(8, '0');
+    const tailHash = sampleHashOf(tail, 0x7f4a7c15).toString(16).padStart(8, '0');
+    return `${total}:${headHash}:${tailHash}`;
+  } catch {
+    return '';
+  } finally {
+    if (handle) {
+      try {
+        await handle.close();
+      } catch {
+        /* 关不掉也不影响指纹 */
+      }
+    }
+  }
+}
+
 function bloomParams(itemCount) {
   const n = Math.max(0, Math.floor(Number(itemCount) || 0));
   const wanted = n * BITS_PER_ITEM;
@@ -191,13 +273,24 @@ function encodeBloom(bloom) {
   return Buffer.isBuffer(bloom) ? bloom.toString('base64') : '';
 }
 
-function decodeBloom(text, bits) {
+// E5（审计修复 #8）：位图解码同时做三项硬校验，任何一项不过都回 null（= 本书当候选、逐章核对）：
+//   ① bits 是 [MIN_BLOOM_BITS, MAX_BLOOM_BITS] 内的整数；
+//   ② bits === 字节数 × 8 —— 旧实现只比 ceil(bits/8)，`bloomBits:0` + 1 字节能混过，
+//      同长度位翻转也查不出；
+//   ③ 每本书存一条 CRC32，与位图一起比对（指纹复用期位图被改坏也能当场发现）。
+// 调用方在拿到 null 时还会登记脏书，让下一次校验重建位图自愈（见 bloomFor / createSearchStore）。
+function decodeBloom(text, bits, crc) {
   if (typeof text !== 'string' || !text) return null;
+  const bitCount = Number(bits);
+  const expectedCrc = Number(crc);
+  if (!Number.isFinite(bitCount) || !Number.isFinite(expectedCrc)) return null;
   try {
     const buffer = Buffer.from(text, 'base64');
     if (!buffer.length) return null;
-    const wanted = Math.ceil(Math.max(1, Number(bits) || 0) / 8);
-    if (buffer.length !== wanted) return null;
+    const wanted = Math.floor(bitCount);
+    if (wanted !== bitCount || wanted < MIN_BLOOM_BITS || wanted > MAX_BLOOM_BITS) return null;
+    if (wanted !== buffer.length * 8) return null;
+    if (crc32(buffer) !== Math.floor(expectedCrc) >>> 0) return null;
     return buffer;
   } catch {
     return null;
@@ -289,6 +382,8 @@ function sanitizeChapter(raw) {
     index: Number.isFinite(index) ? Math.max(0, Math.round(index)) : 0,
     mtimeMs: Number.isFinite(mtimeMs) ? mtimeMs : 0,
     size: Number.isFinite(size) ? Math.max(0, size) : 0,
+    // E4（审计修复 #8）：首尾内容指纹。老 / 缺字段的条目记空串 —— 下一次深度校验会当「变化」重建。
+    contentHash: typeof raw.contentHash === 'string' ? raw.contentHash.slice(0, 80) : '',
     chars: Number.isFinite(Number(raw.chars)) ? Math.max(0, Math.round(Number(raw.chars))) : null
   };
 }
@@ -303,6 +398,9 @@ function sanitizeBook(raw) {
   const bloom = typeof raw.bloom === 'string' ? raw.bloom : '';
   const bloomBits = Number(raw.bloomBits);
   const bits = Number.isFinite(bloomBits) ? Math.max(0, Math.round(bloomBits)) : 0;
+  // E5（审计修复 #8）：位图 CRC32；缺失记 -1（解码一定失败 → 当候选，不影响正确性）。
+  const rawCrc = Number(raw.bloomCrc);
+  const bloomCrc = Number.isFinite(rawCrc) ? Math.floor(rawCrc) >>> 0 : -1;
   const metaMtimeMs = Number(raw.metaMtimeMs);
   const lastModified = Number(raw.lastModified);
   return {
@@ -314,6 +412,7 @@ function sanitizeBook(raw) {
     lastModified: Number.isFinite(lastModified) ? lastModified : 0,
     bloom: bloom.slice(0, MAX_BLOOM_BITS), // base64 字符数上限（异常输入兜底）
     bloomBits: bits,
+    bloomCrc,
     itemCount: Number.isFinite(Number(raw.itemCount)) ? Math.max(0, Math.round(Number(raw.itemCount))) : 0,
     chapters
   };
@@ -361,6 +460,7 @@ function sameChapter(a, b) {
     a.index === b.index &&
     a.mtimeMs === b.mtimeMs &&
     a.size === b.size &&
+    a.contentHash === b.contentHash &&
     a.chars === b.chars
   );
 }
@@ -376,6 +476,7 @@ function sameBook(a, b) {
     a.lastModified !== b.lastModified ||
     a.bloom !== b.bloom ||
     a.bloomBits !== b.bloomBits ||
+    a.bloomCrc !== b.bloomCrc ||
     a.itemCount !== b.itemCount
   ) {
     return false;
@@ -430,20 +531,26 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     metaMtimeMs = 0;
   }
   const rawChapters = Array.isArray(meta.chapters) ? meta.chapters : [];
-  // 章节文件指纹：并发 stat（大书架一次要 3000+ 次，串行会明显拖慢校验）
+  const oldChapters = new Map(
+    (old && Array.isArray(old.chapters) ? old.chapters : []).map((chapter) => [chapter.file, chapter])
+  );
+  // 章节文件指纹：并发 stat + 首尾各 4 KB 内容采样（E4：同 mtime / size 的改写也要能发现）。
+  // 采样读不到时 contentHash 为空串：下次校验会当「变化」重算（宁可重建，不可漏报）。
   const stats = await mapLimit(rawChapters, 24, async (chapter) => {
     try {
-      const stat = await fs.stat(storage.assertChapterFile(bookPath, chapter.file));
+      const filePath = storage.assertChapterFile(bookPath, chapter.file);
+      const stat = await fs.stat(filePath);
       if (!stat.isFile()) return null;
-      return { mtimeMs: stat.mtimeMs, size: stat.size };
+      return {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        contentHash: await chapterContentHashOf(filePath, stat.size)
+      };
     } catch {
       return null; // 缺文件的章节不参与搜索（书目里还在，历史面板能找回）
     }
   });
 
-  const oldChapters = new Map(
-    (old && Array.isArray(old.chapters) ? old.chapters : []).map((chapter) => [chapter.file, chapter])
-  );
   const chapters = [];
   let textChanged = force || dirty;
   for (let i = 0; i < rawChapters.length; i += 1) {
@@ -455,7 +562,13 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     }
     const previous = oldChapters.get(chapter.file);
     // 只有「新章 / 正文指纹变了」才需要重算位图；章节序号 / 章名变化由下面的元数据更新覆盖。
-    if (!previous || previous.mtimeMs !== stat.mtimeMs || previous.size !== stat.size) {
+    // E4：指纹 = mtime + size + 首尾内容哈希（同大小、保留时间戳的改写靠第三项发现）。
+    if (
+      !previous ||
+      previous.mtimeMs !== stat.mtimeMs ||
+      previous.size !== stat.size ||
+      previous.contentHash !== stat.contentHash
+    ) {
       textChanged = true;
     }
     chapters.push({
@@ -465,6 +578,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
       index: i,
       mtimeMs: stat.mtimeMs,
       size: stat.size,
+      contentHash: stat.contentHash,
       chars: Number.isFinite(Number(chapter.chars))
         ? Math.max(0, Math.round(Number(chapter.chars)))
         : previous && Number.isFinite(previous.chars)
@@ -493,6 +607,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     lastModified,
     bloom: '',
     bloomBits: 0,
+    bloomCrc: 0,
     itemCount: 0,
     chapters
   };
@@ -504,6 +619,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
         ...base,
         bloom: old.bloom,
         bloomBits: old.bloomBits,
+        bloomCrc: old.bloomCrc,
         itemCount: old.itemCount,
         chapters: base.chapters.map((chapter) => {
           const previous = oldChapters.get(chapter.file);
@@ -541,7 +657,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
   }
   if (missingText) {
     // 有章节读不了：不给位图，搜索时这本书永远进候选、逐章核对（字数也不补，与旧实现一致）
-    return { entry: { ...base, bloom: '', bloomBits: 0, itemCount: 0 }, rebuilt: true };
+    return { entry: { ...base, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0 }, rebuilt: true };
   }
   const built = builder.finish();
   for (let i = 0; i < chapters.length; i += 1) {
@@ -552,6 +668,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
       ...base,
       bloom: encodeBloom(built.bloom),
       bloomBits: built.bits,
+      bloomCrc: crc32(built.bloom),
       itemCount: built.items
     },
     rebuilt: true
@@ -600,16 +717,21 @@ function createSearchStore(options = {}) {
   function bloomFor(book) {
     if (!book.bloom) return null;
     const cached = bloomCache.get(book.path);
-    if (cached && cached.bloom === book.bloom && cached.bits === book.bloomBits) {
+    if (cached && cached.bloom === book.bloom && cached.bits === book.bloomBits && cached.crc === book.bloomCrc) {
       // 命中：挪到队尾（Map 的插入顺序就是 LRU 顺序）。位图变了（重建过）算未命中。
       bloomCache.delete(book.path);
       bloomCache.set(book.path, cached);
       return cached.buffer;
     }
-    const buffer = decodeBloom(book.bloom, book.bloomBits);
-    if (!buffer) return null;
+    const buffer = decodeBloom(book.bloom, book.bloomBits, book.bloomCrc);
+    if (!buffer) {
+      // E5（审计修复 #8）：位图 / CRC 校验不过 → 搜这本书时永远当候选、逐章核对（只降速不漏报），
+      // 并登记脏书把搜索窗口关掉，让下一次校验重建它（自愈）。旧实现会静默用坏位图漏报。
+      markDirty(book.path);
+      return null;
+    }
     bloomCache.delete(book.path); // 旧位置 / 旧位图先摘掉，重新插到队尾
-    bloomCache.set(book.path, { bloom: book.bloom, bits: book.bloomBits, buffer });
+    bloomCache.set(book.path, { bloom: book.bloom, bits: book.bloomBits, crc: book.bloomCrc, buffer });
     while (bloomCache.size > BLOOM_CACHE_MAX) {
       const oldest = bloomCache.keys().next().value;
       bloomCache.delete(oldest);
@@ -1257,6 +1379,9 @@ module.exports = {
   MAX_CHAPTER_MATCH_COUNT,
   MAX_FOCUS_SNIPPETS,
   MAX_FOCUS_FIELD_CHARS,
+  // E4 / E5（审计修复 #8）：章文件首尾采样指纹与每书位图 CRC32（单测直接钉住形状与校验）
+  crc32,
+  chapterContentHashOf,
   normalizeQuery,
   bigramHash,
   queryBigrams,

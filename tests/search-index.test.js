@@ -84,13 +84,23 @@ test('正文索引：Bloom 位图对文中出现过的双字绝不漏报，编�
     }
   }
   const encoded = search.encodeBloom(built.bloom);
-  const decoded = search.decodeBloom(encoded, built.bits);
+  const builtCrc = search.crc32(built.bloom);
+  const decoded = search.decodeBloom(encoded, built.bits, builtCrc);
   assert.ok(Buffer.isBuffer(decoded));
   assert.deepEqual(decoded, built.bloom);
-  assert.equal(search.decodeBloom('不是 base64', built.bits + 8), null);
-  assert.equal(search.decodeBloom('', built.bits), null);
+  assert.equal(search.decodeBloom('不是 base64', built.bits + 8, builtCrc), null);
+  assert.equal(search.decodeBloom('', built.bits, builtCrc), null);
   // 位数与字节数对不上（索引被截断 / 损坏）时不给位图：搜索按「本书永远是候选」处理
-  assert.equal(search.decodeBloom(encoded, built.bits * 2), null);
+  assert.equal(search.decodeBloom(encoded, built.bits * 2, builtCrc), null);
+  // E5（审计修复 #8）：CRC 对不上 / 缺 CRC / bits 不是字节数 × 8 一律不给位图。
+  assert.equal(search.decodeBloom(encoded, built.bits, (builtCrc + 1) >>> 0), null, 'CRC 不符要拒绝');
+  assert.equal(search.decodeBloom(encoded, built.bits, undefined), null, '没有 CRC 的条目当候选');
+  const flipped = Buffer.from(built.bloom);
+  flipped[0] ^= 0xff; // 同长度位翻转：旧实现查不出
+  assert.equal(search.decodeBloom(flipped.toString('base64'), built.bits, builtCrc), null);
+  const oneByte = Buffer.from([0xff]).toString('base64');
+  assert.equal(search.decodeBloom(oneByte, 0, search.crc32(Buffer.from([0xff]))), null, 'bloomBits:0 不再混过');
+  assert.equal(search.decodeBloom(oneByte, 8, search.crc32(Buffer.from([0xff]))), null, '低于最小位数也拒绝');
 });
 
 test('正文索引：空书不误报（全零位图）', () => {
@@ -99,6 +109,94 @@ test('正文索引：空书不误报（全零位图）', () => {
   for (const hash of search.queryBigrams('青柠')) {
     assert.equal(search.bloomHas(built.bloom, built.bits, hash), false);
   }
+});
+
+// E4（审计修复 #8）：旧指纹只有 mtime / size，robocopy /COPY:DAT、rsync -t、部分同步盘
+// 保留时间戳的同大小改写会漏检 → Bloom 缺新内容的双字 → 静默漏报。每章指纹补首尾 4 KB 内容哈希。
+test('正文索引（E4）：保留 mtime / size 的同大小改写也会被首尾内容指纹发现并重建', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const { bookPath, meta } = await makeBook(booksRoot, '指纹书', '指纹书', [
+    { name: '章一', text: '旧车站的雨伞是灰色的。' }
+  ]);
+  const chapterPath = path.join(bookPath, meta.chapters[0].file);
+  // 固定到整秒时间戳，稍后原样 utimes 回去（避开 Windows 文件时间精度抖动）
+  const fixedAt = new Date(Math.floor((Date.now() - 60000) / 1000) * 1000);
+  await fs.utimes(chapterPath, fixedAt, fixedAt);
+  const before = await fs.stat(chapterPath);
+  const oldHash = await search.chapterContentHashOf(chapterPath, before.size);
+  assert.match(oldHash, /^\d+:[0-9a-f]{8}:[0-9a-f]{8}$/, '首尾指纹形状：size:headHash:tailHash');
+
+  const store = makeStore(userData);
+  await store.ensure({ booksRoot });
+  const builtIndex = JSON.parse(await fs.readFile(path.join(userData, search.INDEX_FILE_NAME), 'utf8'));
+  const builtChapter = builtIndex.books.find((book) => book.folder === '指纹书').chapters[0];
+  assert.equal(builtChapter.contentHash, oldHash, '建索引时要把首尾指纹记进索引');
+
+  // 同大小改写 + 把 mtime 原样改回去（模拟 robocopy /COPY:DAT、rsync -t）
+  const nextSource = '旧车站的雨伞是青柠的。';
+  assert.equal(Buffer.byteLength(nextSource, 'utf8'), before.size, '前提：字节数完全相同');
+  await fs.writeFile(chapterPath, nextSource, 'utf8');
+  await fs.utimes(chapterPath, before.atime, before.mtime);
+  const after = await fs.stat(chapterPath);
+  assert.equal(after.size, before.size, '前提：大小没变');
+  assert.equal(after.mtimeMs, before.mtimeMs, '前提：时间戳也没变（否则测的是旧 mtime 口径）');
+
+  const status = await store.ensure({ booksRoot });
+  assert.equal(status.lastRun.rebuiltBooks, 1, '同大小同时间戳的改写必须重建位图');
+  const freshIndex = JSON.parse(await fs.readFile(path.join(userData, search.INDEX_FILE_NAME), 'utf8'));
+  const freshChapter = freshIndex.books.find((book) => book.folder === '指纹书').chapters[0];
+  assert.notEqual(freshChapter.contentHash, oldHash, '内容指纹必须跟着变');
+  const newTerm = await store.search({ booksRoot, query: '青柠' });
+  assert.equal(newTerm.results.length, 1, '新内容要能搜到（不许静默漏报）');
+  const oldTerm = await store.search({ booksRoot, query: '灰色' });
+  assert.equal(oldTerm.results.length, 0, '旧内容不许再命中');
+});
+
+// E5（审计修复 #8）：decodeBloom 以前只查 ceil(bits/8)，bloomBits:0 + 1 字节能混过，
+// 同长度位翻转也查不出。现在 bits 必须 === 字节数 × 8 且落在合法区间，另加每书 CRC32。
+test('正文索引（E5）：位图 CRC / bits 校验不过 → 当候选逐章核对（不漏报）并在下一次校验重建自愈', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '坏位图书', '坏位图书', [{ name: '章一', text: '青柠色的雨伞挂在门口。' }]);
+  const indexPath = path.join(userData, search.INDEX_FILE_NAME);
+  const warmStore = makeStore(userData);
+  await warmStore.ensure({ booksRoot });
+
+  // ① 建好的索引里有每书 CRC 与每章内容指纹；CRC 与位图对得上
+  const first = JSON.parse(await fs.readFile(indexPath, 'utf8'));
+  assert.equal(first.version, search.INDEX_VERSION);
+  const warm = first.books.find((book) => book.folder === '坏位图书');
+  assert.equal(warm.bloomCrc, search.crc32(Buffer.from(warm.bloom, 'base64')));
+  assert.ok(Buffer.isBuffer(search.decodeBloom(warm.bloom, warm.bloomBits, warm.bloomCrc)), '正常位图要能解码');
+
+  // ② 篡改位图但保持长度 / bits / CRC 字段不变（同长度位翻转）：新窗口读回这份坏索引
+  const damaged = JSON.parse(await fs.readFile(indexPath, 'utf8'));
+  const target = damaged.books.find((book) => book.folder === '坏位图书');
+  const buffer = Buffer.from(target.bloom, 'base64');
+  buffer[0] ^= 0xff;
+  target.bloom = buffer.toString('base64');
+  await fs.writeFile(indexPath, JSON.stringify(damaged), 'utf8');
+
+  const store = makeStore(userData);
+  const hit = await store.search({ booksRoot, query: '青柠色' });
+  assert.equal(hit.results.length, 1, '位图坏了不能漏报：本书必须当候选书逐章核对');
+  assert.ok(
+    store.dirtyList().some((item) => item.endsWith('坏位图书')),
+    '解码失败要登记脏书，关掉搜索窗口让下一次校验重建'
+  );
+  const rebuilt = await store.ensure({ booksRoot });
+  assert.equal(rebuilt.lastRun.rebuiltBooks, 1, '下一次校验必须重建这本（自愈）');
+  const repaired = JSON.parse(await fs.readFile(indexPath, 'utf8'));
+  const fixed = repaired.books.find((book) => book.folder === '坏位图书');
+  assert.ok(search.decodeBloom(fixed.bloom, fixed.bloomBits, fixed.bloomCrc), '重建后位图与 CRC 对得上');
+  assert.equal((await store.search({ booksRoot, query: '青柠色' })).results.length, 1);
 });
 
 test('正文索引：上下文片段保留前后各一段、换行折成空格、标明是否截断', () => {
