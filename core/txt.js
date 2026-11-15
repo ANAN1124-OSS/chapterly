@@ -69,39 +69,48 @@ function decodeUtf32Le(buffer, offset) {
 // 严格解码：只认「能完整识别」的编码，识别不了返回 null（不产出 U+FFFD）。
 // 词表读取用它区分「解码器替换出来的坏字符」与「原文里本来就有的 U+FFFD」。
 //   UTF-8 BOM → UTF-32LE BOM（先于 UTF-16LE）→ UTF-16 BOM → 严格 UTF-8 → 严格 GB18030
-function decodeBufferStrict(buffer) {
-  if (!buffer || !buffer.length) return '';
+// 审计修复 #54（P10）：判定结果同时带 encoding（utf-8 / utf-16le / utf-16be / utf-32le / gb18030 /
+// empty）。导入 raw 模式要在「同一份解码结果」上判断源文件是不是 UTF-8（旧实现 decodeBuffer 解一遍、
+// isUtf8 再整本 fatal 解一遍 —— 128 MB 文件双倍解码），有了 encoding 就不必再解第二次。
+function decodeBufferStrictInfo(buffer) {
+  if (!buffer || !buffer.length) return { text: '', encoding: 'empty' };
   if (buffer.length >= 3 && buffer.subarray(0, 3).equals(BOM_UTF8)) {
     try {
-      return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(3));
+      return { text: new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(3)), encoding: 'utf-8' };
     } catch {
       return null;
     }
   }
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) {
-    return decodeUtf32Le(buffer, 4);
+    const text = decodeUtf32Le(buffer, 4);
+    return text === null ? null : { text, encoding: 'utf-32le' };
   }
   if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16LE)) {
     try {
-      return new TextDecoder('utf-16le', { fatal: true }).decode(buffer.subarray(2));
+      return { text: new TextDecoder('utf-16le', { fatal: true }).decode(buffer.subarray(2)), encoding: 'utf-16le' };
     } catch {
       return null;
     }
   }
   if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16BE)) {
     try {
-      return new TextDecoder('utf-16be', { fatal: true }).decode(buffer.subarray(2));
+      return { text: new TextDecoder('utf-16be', { fatal: true }).decode(buffer.subarray(2)), encoding: 'utf-16be' };
     } catch {
       return null;
     }
   }
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(buffer), encoding: 'utf-8' };
   } catch { /* 不是合法 UTF-8，继续试中文编码 */ }
   try {
-    return new TextDecoder('gb18030', { fatal: true }).decode(buffer);
+    return { text: new TextDecoder('gb18030', { fatal: true }).decode(buffer), encoding: 'gb18030' };
   } catch { /* 识别不了 */ }
   return null;
+}
+
+function decodeBufferStrict(buffer) {
+  const info = decodeBufferStrictInfo(buffer);
+  return info ? info.text : null;
 }
 
 // 把任意编码的文本文件解码成字符串：UTF-8（含 BOM）→ UTF-32LE BOM → UTF-16 BOM →
@@ -110,11 +119,15 @@ function decodeBufferStrict(buffer) {
 // （几乎不抛），那一行永远走不到 —— 是死代码。这里删掉死分支：能完整识别就按严格结果返回，
 // 识别不了就用 GB18030 非 fatal 把坏字节替成 U+FFFD（导入老文件不中断），词表读取侧再据
 // decodeBufferStrict 做严格判断（见 core/wordlist.js）。
+// 审计修复 #54（P10）：带编码信息的同一份解码入口（见 decodeBufferStrictInfo 的注释）。
+function decodeBufferWithEncoding(buffer) {
+  const info = decodeBufferStrictInfo(buffer);
+  if (info) return info;
+  return { text: new TextDecoder('gb18030').decode(buffer), encoding: 'gb18030' };
+}
+
 function decodeBuffer(buffer) {
-  if (!buffer || !buffer.length) return '';
-  const strict = decodeBufferStrict(buffer);
-  if (strict !== null) return strict;
-  return new TextDecoder('gb18030').decode(buffer);
+  return decodeBufferWithEncoding(buffer).text;
 }
 
 
@@ -285,6 +298,7 @@ function splitLongUntitled(text, options = {}) {
 
 module.exports = {
   decodeBuffer,
+  decodeBufferWithEncoding,
   decodeBufferStrict,
   parseHeading,
   isChapterHeading,

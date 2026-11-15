@@ -230,43 +230,50 @@ async function listHistory(bookPath, options = {}) {
     )
   );
   const groups = [];
+  // 审计修复 #54（P8）：单组还原（storage.findHistoryGroup）不需要扫全量历史 —— 旧实现为一个组
+  // 把几百个备份目录的 readdir + 全部文件 stat 都跑一遍。only 先过 resolveGroup 的同一套严格校验
+  // （路径穿越 / 非法组名照旧拒绝），下面只收命中的那一个组；不传时行为与以前逐字一致。
+  const only = options.only ? resolveGroup(root, String(options.only)) : null;
 
   // 1) 书文件夹根部的 书目.json.bak（不是 _trash 里，但也是可回看的「历史」）
   const bakPath = path.join(root, BOOK_BAK);
-  try {
-    const stat = await fs.stat(bakPath);
-    if (stat.isFile()) {
-      groups.push({
-        id: 'bak',
-        kind: 'file',
-        source: 'bookmeta',
-        sourceLabel: sourceLabel('bookmeta'),
-        note: sourceNote('bookmeta'),
-        stamp: '',
-        time: Math.round(stat.mtimeMs),
-        timeText: formatHistoryTime(stat.mtimeMs),
-        fileName: BOOK_BAK,
-        dirName: '',
-        fileCount: 1,
-        totalBytes: stat.size,
-        restorableCount: 0,
-        cleanable: false,
-        files: [
-          makeFileEntry({
-            name: BOOK_BAK,
-            trashName: BOOK_BAK,
-            size: stat.size,
-            mtimeMs: stat.mtimeMs,
-            inBook: false,
-            restorable: false,
-            reason: '书目备份只供查看，不能自动覆盖现在的书目',
-            source: 'bookmeta'
-          })
-        ]
-      });
+  const wantsBak = !only || (only.kind === 'file' && only.source === 'bookmeta');
+  if (wantsBak) {
+    try {
+      const stat = await fs.stat(bakPath);
+      if (stat.isFile()) {
+        groups.push({
+          id: 'bak',
+          kind: 'file',
+          source: 'bookmeta',
+          sourceLabel: sourceLabel('bookmeta'),
+          note: sourceNote('bookmeta'),
+          stamp: '',
+          time: Math.round(stat.mtimeMs),
+          timeText: formatHistoryTime(stat.mtimeMs),
+          fileName: BOOK_BAK,
+          dirName: '',
+          fileCount: 1,
+          totalBytes: stat.size,
+          restorableCount: 0,
+          cleanable: false,
+          files: [
+            makeFileEntry({
+              name: BOOK_BAK,
+              trashName: BOOK_BAK,
+              size: stat.size,
+              mtimeMs: stat.mtimeMs,
+              inBook: false,
+              restorable: false,
+              reason: '书目备份只供查看，不能自动覆盖现在的书目',
+              source: 'bookmeta'
+            })
+          ]
+        });
+      }
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
     }
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
   }
 
   // 2) 书内 _trash：备份目录 + 散文件
@@ -294,12 +301,17 @@ async function listHistory(bookPath, options = {}) {
     if (!entry || entry.name.startsWith('.')) continue;
     if (entry.isDirectory()) {
       const info = classifyDirName(entry.name);
-      if (info) dirEntries.push({ name: entry.name, info });
+      if (!info) continue;
+      // 审计修复 #54（P8）：only 时只收命中的那一个组，其余目录连 readdir / stat 都不做。
+      if (only && (only.kind !== 'dir' || only.dirName !== entry.name)) continue;
+      dirEntries.push({ name: entry.name, info });
       continue;
     }
     if (!entry.isFile()) continue;
     const info = classifyLooseName(entry.name);
-    if (info) looseEntries.push({ name: entry.name, info });
+    if (!info) continue;
+    if (only && (only.kind !== 'file' || only.fileName !== entry.name)) continue;
+    looseEntries.push({ name: entry.name, info });
   }
 
   // ① 备份目录 readdir（并发 8 路）：目录刚好被移走 / 占用就跳过（旧行为）

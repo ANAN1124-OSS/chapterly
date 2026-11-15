@@ -41,6 +41,22 @@ const TRASH_STAT_CONCURRENCY = 8;
 // 预览（整本查找 / 整理预检查）把读到的正文连同当时的 mtime / size 记进快照；执行（整本替换 /
 // 整本整理）命中且文件没变就直接复用，不再读第二遍。有 TTL 与容量上界，超了照旧读盘。
 const chapterPreviewCache = previewCacheLib.createPreviewCache();
+// 审计修复 #54（P8）：readBookMeta 读盘时顺手记下 书目.json 的文件身份（size + mtimeMs），
+// 挂在返回对象的一个不可枚举 Symbol 上（JSON.stringify / {...meta} / 写盘都不会带出去）。
+// 书架扫描补字数缓存要「锁内重读」防覆盖并发写入；这份身份能证明「从我读到锁内这段没人写过」，
+// 没变就不必把整份书目再 JSON.parse + 迁移 + 归一一遍（大书 CPU 翻倍的那一趟）。
+const BOOK_META_STAMP = Symbol('bookMetaStamp');
+
+function stampOfMeta(meta) {
+  const stamp = meta && meta[BOOK_META_STAMP];
+  return stamp && typeof stamp === 'object' ? stamp : null;
+}
+
+function metaStampMatches(meta, stat) {
+  const stamp = stampOfMeta(meta);
+  if (!stamp || !stat) return false;
+  return stat.size === stamp.size && stat.mtimeMs === stamp.mtimeMs;
+}
 
 class StorageError extends Error {
   constructor(code, message) {
@@ -408,7 +424,18 @@ async function readBookMeta(bookPath) {
   });
   // 书籍信息（v0.8-3）：作者 / 简介 / 分组 / 标签都是可选的，读取时清洗但不补字段；
   // 旧书目没有它们照常打开（下次正常写盘也不会凭空多出来）。
-  return bookInfoLib.cleanBookInfo(normalized);
+  const cleanMeta = bookInfoLib.cleanBookInfo(normalized);
+  // 审计修复 #54（P8）：记下这份 meta 对应的文件身份（stat 在函数开头已取过），供补字数缓存时
+  // 判断「锁内还用不用重读」。stat 读不到（ENOENT / EACCES）时 readFile 会按原错误路径抛出，
+  // 这里只在 stat 有效时挂。
+  if (stat && stat.isFile && stat.isFile()) {
+    Object.defineProperty(cleanMeta, BOOK_META_STAMP, {
+      value: { size: stat.size, mtimeMs: stat.mtimeMs },
+      enumerable: false,
+      configurable: true
+    });
+  }
+  return cleanMeta;
 }
 
 // 写盘前把书目归一（版本号 + updatedAt）——writeBookMeta 与「修复 / 从 .bak 恢复」的
@@ -577,6 +604,21 @@ async function backfillChapterChars(bookPath, chapters, options = {}) {
   return changed;
 }
 
+// 审计修复 #54（P8）：锁内重读的轻量路径。锁外已有一份 readBookMeta 的结果（带文件身份），
+// 锁内先 stat 一次：size + mtimeMs 都没变 = 这段时间没人写过书目，直接复用那份已解析 / 已迁移 /
+// 已归一的对象；变了才整份重读（并发写入的合并语义与以前完全一样，绝不拿旧对象覆盖）。
+async function readFreshBookMetaForCache(bookPath, knownMeta) {
+  if (stampOfMeta(knownMeta)) {
+    try {
+      const stat = await fs.stat(path.join(bookPath, BOOK_FILE));
+      if (metaStampMatches(knownMeta, stat)) return knownMeta;
+    } catch {
+      /* 读不到 / 刚被删：照旧整份重读，让既有错误路径处理 */
+    }
+  }
+  return readBookMeta(bookPath);
+}
+
 async function bookStats(bookPath, meta, { writeCache = true, readText, backfillConcurrency } = {}) {
   let totalChars = 0;
   const needRead = [];
@@ -594,8 +636,13 @@ async function bookStats(bookPath, meta, { writeCache = true, readText, backfill
       // 否则「扫描读到的旧 meta + 补字数」会覆盖掉同时发生的建章/改名/删除（真实丢操作路径）。
       try {
         await withBookLock(bookPath, async () => {
-          const fresh = await readBookMeta(bookPath);
-          const merged = mergeCharsCache(fresh, needRead);
+          // 审计修复 #54（P8）：书目没被并发写过就直接复用扫描时已解析的对象（不重复 parse / 迁移）。
+          const fresh = await readFreshBookMetaForCache(bookPath, meta);
+          // 复用同一份对象时，backfillChapterChars 已经把字数写进它的 chapters；mergeCharsCache 会
+          // 因为「目标章已有 chars」而判成无需写盘 —— 走过回填且文件没变，这份缓存就必须落盘。
+          const merged = fresh === meta
+            ? { meta: fresh, changed: true }
+            : mergeCharsCache(fresh, needRead);
           // 只补字数缓存：这不是用户操作，updatedAt 保持原值（审计 E-06）
           if (merged.changed) await writeBookMeta(bookPath, merged.meta, { touchUpdatedAt: false });
         });
@@ -2056,7 +2103,9 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
 async function findHistoryGroup(bookPath, groupId, chapterFiles) {
   // 先做 id / 路径校验：非法 id（目录穿越等）直接拒绝，不去扫描
   historyLib.resolveGroup(bookPath, groupId);
-  const data = await historyLib.listHistory(bookPath, { chapterFiles });
+  // 审计修复 #54（P8）：只扫要还原的那一个组（旧实现为一个组把全部备份目录 / 文件的 readdir + stat
+  // 都跑一遍）；only 会在 listHistory 里再过一次同一套 resolveGroup 校验。
+  const data = await historyLib.listHistory(bookPath, { chapterFiles, only: groupId });
   const group = data.groups.find((item) => item.id === groupId);
   if (!group) throw new StorageError('HISTORY_GROUP_MISSING', '这个备份已经不存在了');
   return group;

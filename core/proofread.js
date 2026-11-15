@@ -156,6 +156,18 @@ function createCollector(maxIssues) {
   const kept = new Map(); // 规则 → 明细（按扫描顺序 = 位置顺序）
   let total = 0;
   return {
+    // 审计修复 #54（P7）：这条规则还能不能再收明细。addIssue 在构建 snippet / 完整 issue 对象之前
+    // 先问一次 —— 病态输入（一整章英文引号 / 百万字连排标点）后面成千上万条命中会被 collector
+    // 丢掉，旧实现却是「先构建再丢弃」，白拼片段、白建对象。
+    wants(rule) {
+      const list = kept.get(rule);
+      return !list || list.length < cap;
+    },
+    // 只记账、不留明细（明细已满时 addIssue 走这里，不再构建 issue 对象）。
+    countOnly(rule) {
+      total += 1;
+      byRule[rule] = (byRule[rule] || 0) + 1;
+    },
     add(issue) {
       total += 1;
       byRule[issue.rule] = (byRule[issue.rule] || 0) + 1;
@@ -256,23 +268,25 @@ function isCjkNeighbor(ch) {
 // E14（审计修复 #17）：去重距离与窗口宽度都按「字（码点）」算 —— 内部一律用码点序号，只在回包时
 // 折算回 UTF-16 下标（source / 片段 / 高亮都用这一套坐标）。旧实现把代理对文本的 UTF-16 长度当
 // 字数：重叠去重的「起点差 < 3 字」被放大成 6 个码元（同一短语刷两条），repeatWindow 也减半。
+// 审计修复 #54（P7）：旧实现先建 chars[] + starts[] 两个按码点的数组（百万字单段 = 瞬时百万个
+// 字符串对象 + 百万个数字），再把每个二字词的码点起点塞进 Map。现在单遍扫描直接看相邻两个整字，
+// 只记「二字词 → 码点起点」；UTF-16 下标等最终保留的命中确定后，再顺序扫一遍折算（命中数量很小）。
 function repeatWordIssues(line, options) {
   const positions = new Map();
-  const chars = [];
-  const starts = []; // 码点序号 → UTF-16 起点（末尾补 line.length）
-  for (let i = 0; i < line.length; ) {
+  let prevCh = '';
+  let prevCp = -1;
+  let cp = 0;
+  for (let i = 0; i < line.length; cp += 1) {
     const ch = charAt(line, i);
-    chars.push(ch);
-    starts.push(i);
+    if (prevCh && isHanChar(prevCh) && isHanChar(ch)) {
+      const word = prevCh + ch;
+      const list = positions.get(word);
+      if (list) list.push(prevCp);
+      else positions.set(word, [prevCp]);
+    }
+    prevCh = ch;
+    prevCp = cp;
     i += ch.length;
-  }
-  starts.push(line.length);
-  for (let k = 0; k + 1 < chars.length; k += 1) {
-    if (!isHanChar(chars[k]) || !isHanChar(chars[k + 1])) continue;
-    const word = chars[k] + chars[k + 1];
-    const list = positions.get(word);
-    if (list) list.push(k);
-    else positions.set(word, [k]);
   }
   const found = []; // { word, start（码点序号）, count }
   for (const [word, raw] of positions) {
@@ -306,7 +320,18 @@ function repeatWordIssues(line, options) {
     if (last && hit.start < last.start + 3) continue;
     kept.push(hit);
   }
-  return kept.map((hit) => ({ word: hit.word, start: starts[hit.start], count: hit.count }));
+  // 码点序号 → UTF-16 下标：命中按 start 升序，顺序扫一遍就够（不保留整篇的码点表）。
+  const out = [];
+  let atCp = 0;
+  let at = 0;
+  for (const hit of kept) {
+    while (atCp < hit.start) {
+      at += charAt(line, at).length;
+      atCp += 1;
+    }
+    out.push({ word: hit.word, start: at, count: hit.count });
+  }
+  return out;
 }
 
 // rawGlossary 可选：作者自己的校对词表（[{ term, suggestion }]，建议可为空）。
@@ -326,7 +351,13 @@ function proofreadText(text, rawOptions, rawGlossary) {
   const wantSnippets = !(rawOptions && typeof rawOptions === 'object' && rawOptions.snippets === false);
 
   // 统一兜底：位置、行号、上下文片段一次生成，各规则只关心「报什么」
+  // 审计修复 #54（P7）：明细额度预检 —— 这条规则已经收满 maxIssues 条时只计数，
+  // 不再拼 snippet、不再建 issue 对象（后面 collector 本来也会把它丢掉）。
   const addIssue = (rule, index, selectLength, match, message, extra) => {
+    if (!collector.wants(rule)) {
+      collector.countOnly(rule);
+      return;
+    }
     const cleanMatch = String(match == null ? '' : match);
     const matchLength = cleanMatch.length || Math.min(Math.max(selectLength, 1), PARAGRAPH_PREFIX);
     const snippet = !wantSnippets

@@ -15,7 +15,7 @@ const chaptersLib = require('./chapters');
 const storage = require('./storage');
 const repair = require('./repair');
 const {
-  decodeBuffer,
+  decodeBufferWithEncoding,
   splitChapters,
   splitChaptersRaw,
   splitLongUntitled,
@@ -35,15 +35,6 @@ const errorText = require('./error-text');
 const CHAPTER_TITLE_RE = heading.anchorRe('import');
 const CHAPTER_SEQ_RE = /^\s*\d+\s*[-_.、\s]/;
 const CHAPTER_PURE_NUMBER_RE = /^\s*(?:0\d+|\d{1,3})\s*$/;
-
-function isUtf8(buffer) {
-  try {
-    new TextDecoder('utf-8', { fatal: true }).decode(buffer);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // C30（v1.8.0 WP-26）：判「在不在书架目录里」走 core/path-utils 的 normalizePath（resolve +
 // 小写），与 core/storage.js 的 assertInside / assertBookPath 同一口径。旧实现逐字 startsWith：
@@ -360,7 +351,8 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
       `《${baseName}》看起来不是纯文本文件（含 0 字节），已跳过`
     );
   }
-  const decoded = decodeBuffer(buffer);
+  const decodedInfo = decodeBufferWithEncoding(buffer);
+  const decoded = decodedInfo.text;
   if (!normalizeText(decoded).trim()) {
     throw new storage.StorageError('EMPTY_FILE', `《${baseName}》是空文件，跳过`);
   }
@@ -443,8 +435,9 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
     } else {
       // 原封不动整本模式：整篇作为一章「全文」
       const file = chaptersLib.buildFileName(1, '全文');
-      if (isUtf8(buffer)) {
-        // 源文件本来就是 UTF-8：按字节原样复制，连 BOM/换行都不动
+      // 审计修复 #54（P10）：源文件本来就是 UTF-8（含 UTF-8 BOM）时按字节原样复制，连 BOM / 换行都不动。
+      // 编码判定与上面的解码是同一趟（decodedInfo.encoding），不再整本 fatal 解码第二遍。
+      if (decodedInfo.encoding === 'utf-8') {
         await fs.writeFile(path.join(staging, file), buffer);
       } else {
         // 非 UTF-8（如 GBK）必须转成 UTF-8 应用才能读；只转编码，文字内容不变

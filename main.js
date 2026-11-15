@@ -973,10 +973,12 @@ function getStatsStore() {
 
 // 统计摘要统一出口：今天 + 近 30 天 + 连续写作天数（保存后与 stats:get 用同一套口径）。
 // v0.8-2 起带上「写作时长」开关状态，界面据此决定要不要显示计时按钮（默认关）。
+// 审计修复 #54（P9）：stats 来自 getStatsStore() / record（已 sanitize），传 sanitized: true
+// 让 summary / streak 跳过重复清洗（stats:get 一次请求原来把同一份统计洗四遍）。
 function statsSummaryPayload(stats, cfg, now = new Date()) {
   return {
-    ...statsLib.summary(stats, { goal: cfg.dailyGoal, now }),
-    streak: statsLib.streak(stats, { now }),
+    ...statsLib.summary(stats, { goal: cfg.dailyGoal, now, sanitized: true }),
+    streak: statsLib.streak(stats, { now, sanitized: true }),
     writeDurationEnabled: cfg.writeDurationEnabled === true
   };
 }
@@ -1458,10 +1460,11 @@ function registerIpc() {
     const now = new Date();
     return {
       ...statsSummaryPayload(stats, cfg, now),
-      calendar: statsLib.monthView(stats, { now, goal: cfg.dailyGoal }),
+      calendar: statsLib.monthView(stats, { now, goal: cfg.dailyGoal, sanitized: true }),
       // 1.6.0 F2：按书 / 按年汇总（只读现算，不写 stats.json；筛选由渲染层的两个下拉传进来，
       // 坏值在 core/stats 里当作「不筛」）。summary 仍是全书架口径，书架头 / 状态栏不受筛选影响。
-      aggregate: statsLib.aggregate(stats, filter)
+      // 审计修复 #54（P9）：同一份已清洗统计直接复用（sanitized: true），不再洗第四遍。
+      aggregate: statsLib.aggregate(stats, filter, { sanitized: true })
     };
   });
   handle('stats:calendar', async (request) => {
@@ -1473,9 +1476,10 @@ function registerIpc() {
         year: request && request.year,
         month: request && request.month,
         now,
-        goal: cfg.dailyGoal
+        goal: cfg.dailyGoal,
+        sanitized: true
       }),
-      streak: statsLib.streak(stats, { now })
+      streak: statsLib.streak(stats, { now, sanitized: true })
     };
   });
   // 写作时长（v0.8-2）：渲染层在计时暂停 / 保存 / 每 30 秒上报一次整秒。
@@ -1894,6 +1898,8 @@ function registerIpc() {
   // 当前书的 bookDisplay / 全局配置」这三种主进程自己知道的路径，渲染层传进来的路径一律不看。
   // B18（WP-29）：pickedFontPaths 本身在模块级（关窗清理要在 createWindow 里做）。
   // B9（v1.8.0 WP-29）：字体文件读盘 + base64 编码缓存（最近 2 份，按 realpath + mtime + size 失效）。
+  // 审计修复 #54（P11）：另加 base64 驻留预算（core/font-cache.js 默认 40 MB）—— 两份 24 MB 字体的
+  // base64 加起来 ≈ 64 MB 常驻，超预算时只保留最近使用的那一份大字体；小字体仍可两份都命中。
   // 仍然每次都做 realpath / 扩展名 / 大小闸门 / 来源校验，只跳过「同一个没变的文件」的二次读取。
   const fontReadCache = createFontReadCache({ maxEntries: 2 });
 
