@@ -370,3 +370,41 @@ test('行为：添加词表先 stat / 判重 / 判上限，再读词表；被拒
     await fsPromises.rm(dir, { recursive: true, force: true });
   }
 });
+const REMOVE_ANCHOR = "  handle('proofread:wordlists-remove', async (index) => {";
+
+// 把 remove 处理器装进假作用域：配置读写与公开信息都是替身，断言的是「改没改配置」。
+function loadRemoveWordlistHandler({ config }) {
+  const writes = [];
+  const arrow = extractAsyncArrow(proofreadIpcSource, REMOVE_ANCHOR);
+  const handler = new Function(
+    'getConfig',
+    'getConfigStore',
+    'applyConfig',
+    'proofreadWordlistInfoNow',
+    `return (${arrow});`
+  )(
+    async () => config,
+    () => ({ set: async (patch) => { writes.push(patch); return { ...config, ...patch }; } }),
+    () => {},
+    async () => ({ lists: [], total: 0 })
+  );
+  return { handler, writes };
+}
+
+// 审计修复 #12（E8）：Number(null / '' / false / []) === 0，旧实现会把「没带索引」的调用当成
+// 「删第 0 份」，静默删掉作者的第一份词表。判型收紧后这些坏值一律走 WORDLIST_NOT_FOUND、配置不动。
+test('行为：wordlists-remove 先判型再动弹，null / \"\" / false / [] / \"0\" 不许当成「删第 0 份」（E8）', async () => {
+  const config = { proofreadWordlists: ['甲.txt', '乙.txt'] };
+  for (const bad of [null, '', false, [], '0', 0.5, undefined, true, {}]) {
+    const { handler, writes } = loadRemoveWordlistHandler({ config });
+    const res = await handler(bad);
+    assert.equal(res.removed, false, '坏索引不许移除：' + String(bad));
+    assert.equal(res.code, 'WORDLIST_NOT_FOUND', '坏索引走同一条错误码：' + String(bad));
+    assert.deepEqual(writes, [], '坏索引一个字节都不写配置：' + String(bad));
+  }
+  // 真索引照旧：删第 1 份（乙）→ 落盘后替换列表 → 回 removed:true
+  const { handler, writes } = loadRemoveWordlistHandler({ config });
+  const ok = await handler(1);
+  assert.equal(ok.removed, true);
+  assert.deepEqual(writes, [{ proofreadWordlists: ['甲.txt'] }], '只 splice 掉那一份，顺序不变');
+});

@@ -157,8 +157,11 @@ function registerProofreadIpc(host) {
   handle('proofread:wordlists-remove', async (index) => {
     const cfg = await getConfig();
     const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
-    const at = Number(index);
-    if (!Number.isInteger(at) || at < 0 || at >= current.length) {
+    // 审计修复 #12（E8）：判型先要求 number —— Number(null / '' / false / []) 全是 0，会通过下面的
+    // 整数与边界检查，把「没带索引」的坏调用当成「删第 0 份」，静默删掉作者的第一份词表。
+    // 非 number 一律记 -1（走同一条 WORDLIST_NOT_FOUND，不新增错误码，界面文案不变）。
+    const at = typeof index === 'number' && Number.isInteger(index) ? index : -1;
+    if (at < 0 || at >= current.length) {
       return { canceled: false, removed: false, code: 'WORDLIST_NOT_FOUND', message: '这一份词表不在列表里，可能已经被移除了', ...(await proofreadWordlistInfoNow()) };
     }
     current.splice(at, 1);

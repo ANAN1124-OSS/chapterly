@@ -320,8 +320,10 @@ function wordlistIndexesForRequest(paths, options) {
   if (!enabled) return null;
   const picked = new Set();
   for (const item of enabled) {
-    const index = Number(item);
-    if (Number.isInteger(index) && index >= 0 && index < paths.length) picked.add(index);
+    // 审计修复 #12（E8）：判型先要求 typeof number —— Number(null / '' / false / []) 都是 0，
+    // 会把坏值当成「勾了第 0 份」，与上面「坏值 = 全开」的约定正好相反（本该全开，却悄悄只剩第一份）。
+    // 只认真正的整数下标；字符串 '0' 之类也当坏值丢掉（宁可多跑几份，不猜调用方的意图）。
+    if (typeof item === 'number' && Number.isInteger(item) && item >= 0 && item < paths.length) picked.add(item);
   }
   return picked.size ? picked : null;
 }

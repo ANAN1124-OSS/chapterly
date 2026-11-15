@@ -371,7 +371,15 @@ test('校对词表：wordlistPathsForRequest 缺省与坏值全开，一份都�
     { enabledLists: null },
     { enabledLists: '1' },
     { enabledLists: [9, -1, 1.5] },
-    { enabledLists: [] }
+    { enabledLists: [] },
+    // 审计修复 #12（E8）：Number() 强转族 —— null / '' / false / [] / '0' 都曾被当成索引 0，
+    // 把「坏值 = 全开」悄悄变成「只开第一份」。判型收紧后它们只剩「坏值」这一个身份。
+    { enabledLists: [null] },
+    { enabledLists: [''] },
+    { enabledLists: [false] },
+    { enabledLists: [[]] },
+    { enabledLists: ['0'] },
+    { enabledLists: [{ valueOf: () => 1 }] }
   ]) {
     assert.deepEqual(glossary.wordlistPathsForRequest(paths, options), paths, '坏值 / 缺省都当全开：' + JSON.stringify(options));
   }
