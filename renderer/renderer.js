@@ -2767,7 +2767,10 @@
       editorEl.value = expected;
       // 统一走 onEditorInput：标脏 / 字数 / 状态栏 / 标记层全按正常输入刷新（不写盘）。
       onEditorInput();
-      editorEl.setSelectionRange(start + value.length, start + value.length);
+      const caret = start + value.length;
+      editorEl.setSelectionRange(caret, caret);
+      // 整串赋值不会像原生输入那样把光标滚进视野：自己滚一下，插完就能看到开头 / 光标位置。
+      scrollCaretIntoView(caret);
       // 焦点还给面板（面板保持打开）；blur 不改内容，也不会触发保存。
       editorEl.blur();
       bulkWriteUndo = { before, after: expected, start, end };
