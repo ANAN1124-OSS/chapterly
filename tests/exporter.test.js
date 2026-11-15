@@ -105,9 +105,12 @@ test('当前章覆盖：按 id 找到章节下标', () => {
   assert.equal(chapterIndexOf(meta, { chapterId: 'ch_1', text: '未保存内容' }), 1);
 });
 
-test('当前章覆盖：id 对不上时按文件名兜底', () => {
+test('当前章覆盖：id 对不上就是匹配不到（不按文件名兜底，避免过期 id 拼进错章）', () => {
   const meta = metaOf('起风', '夜雨');
-  assert.equal(chapterIndexOf(meta, { chapterId: 'ch_x', chapterFile: '0.txt', text: 'x' }), 0);
+  // 审计修复 #44（E18）：给了 chapterId 就只按 id 结算；命不中返回 -1（这次按磁盘内容导出）
+  assert.equal(chapterIndexOf(meta, { chapterId: 'ch_x', chapterFile: '0.txt', text: 'x' }), -1);
+  // 完全没给 id 时才按文件名找（「复制本章」等只带 file 的旧调用不受影响）
+  assert.equal(chapterIndexOf(meta, { chapterFile: '0.txt', text: 'x' }), 0);
 });
 
 test('当前章覆盖：匹配不到 / 文本不是字符串时返回 -1（按磁盘内容导出）', () => {
@@ -141,6 +144,19 @@ test('导出目录：上次的目录已经不存在时退回默认目录', () =>
   assert.equal(resolveExportDir('D:\\还在', 'C:\\Users\\x\\Documents', exists), 'D:\\还在');
 });
 
+test('导出目录（#44 / E18）：exists 只认同步 true —— async 谓词 / 非布尔真值不再被当成「目录还在」', () => {
+  // 以前 Boolean(exists(dir)) 对 Promise 恒真：传 async 函数等于关掉「目录没了就退回文档」这道兜底
+  const asyncExists = async () => false;
+  assert.equal(resolveExportDir('D:\\删掉了', 'C:\\Users\\x\\Documents', asyncExists), 'C:\\Users\\x\\Documents');
+  assert.equal(resolveExportDir('D:\\还在', 'C:\\Users\\x\\Documents', async () => true), 'C:\\Users\\x\\Documents');
+  // 同步但返回非布尔真值（1 / 'yes'）同样不许通过：谓词契约是同步 boolean
+  assert.equal(resolveExportDir('D:\\还在', 'C:\\Users\\x\\Documents', () => 1), 'C:\\Users\\x\\Documents');
+  assert.equal(resolveExportDir('D:\\还在', 'C:\\Users\\x\\Documents', () => 'yes'), 'C:\\Users\\x\\Documents');
+  // 正常布尔谓词照旧
+  assert.equal(resolveExportDir('D:\\还在', 'C:\\Users\\x\\Documents', () => true), 'D:\\还在');
+  assert.equal(resolveExportDir('D:\\删掉了', 'C:\\Users\\x\\Documents', () => false), 'C:\\Users\\x\\Documents');
+});
+
 test('导出目录：不是字符串（配置被手改坏）时退回默认目录', () => {
   assert.equal(resolveExportDir(123, 'C:\\Users\\x\\Documents'), 'C:\\Users\\x\\Documents');
   assert.equal(resolveExportDir({ a: 1 }, 'C:\\Users\\x\\Documents'), 'C:\\Users\\x\\Documents');
@@ -149,7 +165,10 @@ test('导出目录：不是字符串（配置被手改坏）时退回默认目�
 test('章节引用：按 id 找下标，不需要带正文（复制本章用）', () => {
   const meta = metaOf('起风', '夜雨');
   assert.equal(chapterRefIndex(meta, { chapterId: 'ch_1' }), 1);
-  assert.equal(chapterRefIndex(meta, { chapterId: 'ch_x', chapterFile: '1.txt' }), 1);
+  // 审计修复 #44（E18）：id 没命中的过期引用不再回退 file 匹配 —— 认不出来就报 -1（调用方给「找不到这一章」）
+  assert.equal(chapterRefIndex(meta, { chapterId: 'ch_x', chapterFile: '1.txt' }), -1);
+  // 没给 id 的调用仍按 file 找
+  assert.equal(chapterRefIndex(meta, { chapterFile: '1.txt' }), 1);
   assert.equal(chapterRefIndex(meta, { chapterId: 'ch_x' }), -1);
   assert.equal(chapterRefIndex(meta, {}), -1);
   assert.equal(chapterRefIndex(meta, null), -1);
@@ -371,6 +390,20 @@ test('默认文件名：全书 / 按卷 / 章节范围', () => {
   assert.equal(exportFileName(meta, { mode: 'volume', volumeId: null }), '测试书-未分卷.txt');
   assert.equal(exportFileName(meta, { mode: 'range', from: 2, to: 3 }), '测试书-第2-3章.txt');
   assert.equal(exportFileName(meta, { mode: 'range', from: 2, to: 2 }), '测试书-第2章.txt');
+});
+
+test('默认文件名（#44 / E18）：空书按章节范围导出时不再编「第 0 章」——只留书名', () => {
+  const empty = { title: '空书', chapters: [] };
+  assert.equal(exportFileName(empty, { mode: 'range', from: 1, to: 1 }), '空书.txt');
+  assert.equal(exportFileName(empty, { mode: 'range', from: 2, to: 3 }, 'epub'), '空书.epub');
+  assert.equal(exportFileName({ chapters: [] }, { mode: 'range', from: 1, to: 1 }), '未命名.txt');
+  // 范围标签也不再伪造章号（导出对话框拿到 empty=true 会先拦下，这里钉住 core 的产出）
+  const plan = resolveExportRange(empty, { mode: 'range', from: 1, to: 1 });
+  assert.equal(plan.label, '');
+  assert.equal(plan.count, 0);
+  assert.equal(plan.empty, true);
+  assert.equal(plan.from, 0);
+  assert.equal(plan.to, 0);
 });
 
 test('默认文件名：书名里的非法字符会被清掉（和书文件夹命名规则一致）', () => {
