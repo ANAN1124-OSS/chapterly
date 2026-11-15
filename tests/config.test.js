@@ -819,6 +819,32 @@ test('E25/#52：写前重试成功时，还没取走的损坏提示自动更正�
   assert.match(warning.message, /已归档为 config\.json\.corrupt-/);
 });
 
+// 审计残留修复 R28（#52/E25）：主进程启动时以前直接 takeLoadWarning 取走提示，store 里那份
+// 「写前重试成功 → 自动更正」的提示再没人读 —— 界面拿到的是启动那一刻的旧文案（归档失败已过期）。
+// 现在主进程用 peekLoadWarning 只记日志、提示留在 store 里，由 app:warning 取当前值。
+test('R28/#52：peekLoadWarning 不清提示，重试更正后的文案能被消费方取到', async () => {
+  const dir = await mkTmp();
+  await fs.writeFile(path.join(dir, 'config.json'), '{ 坏配置 ', 'utf8');
+  let blocked = true;
+  const rename = async (from, to) => {
+    if (blocked) throw Object.assign(new Error('EBUSY: 被占用（模拟）'), { code: 'EBUSY' });
+    await fs.rename(from, to);
+  };
+  const store = createConfigStore(dir, { rename });
+  await store.get();
+  // peek 只读不清：主进程启动时用它记日志，提示仍留给界面取（以前在这里 take，后面就取不到了）
+  assert.equal(store.peekLoadWarning().archiveError, 'EBUSY');
+  assert.equal(store.peekLoadWarning().archiveError, 'EBUSY', 'peek 连读两次都还在（没有被消费）');
+  // 写前重试归档成功 → store 里的提示自动更正成「已归档」；界面随后取到的是更正后的值
+  blocked = false;
+  await store.set({ dailyGoal: 456 });
+  const latest = store.takeLoadWarning();
+  assert.equal(latest.code, 'CONFIG_CORRUPT');
+  assert.equal(latest.archiveError, undefined, '界面不该再看到过期的「无法归档」');
+  assert.match(latest.message, /已归档为 config\.json\.corrupt-/);
+  assert.equal(store.peekLoadWarning(), null, '取走之后 peek 也看不到了');
+});
+
 // 审计残留修复 #52（E25）：损坏文件被外部删除 → 归档重试遇 ENOENT 必须视为「文件已不在」放行。
 // 旧实现把 ENOENT 也当归档失败，本会话此后每次保存都被拒绝（CONFIG_CORRUPT），只能重启应用。
 test('残留 E25/#52：损坏文件被外部删除 → 归档重试遇 ENOENT 放行，设置正常落盘', async () => {
@@ -1815,3 +1841,22 @@ test('C7 / V110 接线静态闸门：自动写带 auto 标记、config:set 先�
   assert.match(body, /recovery\.recovered/, '读盘恢复后要刷新主进程缓存再继续');
 });
 
+// 审计残留修复 R28（#52/E25）：主进程启动时只能 peek（记日志用），提示留给 app:warning 取当前值；
+// 启动就 take 走的话，写前重试归档成功后的「已归档」更正永远没人读（旧实现的死代码）。
+test('R28 静态闸门：main.js 启动只 peek 提示，app:warning 取 store 当前值', async () => {
+  const mainSource = await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(mainSource, /configWarning = configStore\.peekLoadWarning\(\);/);
+  assert.doesNotMatch(
+    mainSource,
+    /configWarning = configStore\.takeLoadWarning\(\)/,
+    '启动就 take 会把 store 的自动更正变成没人读的死代码'
+  );
+  const handlerAt = mainSource.indexOf("handle('app:warning'");
+  assert.ok(handlerAt > 0, 'app:warning 处理器还在');
+  const handler = mainSource.slice(handlerAt, mainSource.indexOf('});', handlerAt));
+  assert.match(
+    handler,
+    /const warning = configStore \? configStore\.takeLoadWarning\(\) : configWarning;/,
+    'app:warning 取 store 里的当前值（不是启动快照）'
+  );
+});

@@ -159,7 +159,7 @@ let e2eCloseBoundsDelayMs = 0;
 let configStore = null;
 let config = null;
 let statsStore = null; // 每日字数统计（userData/stats.json，绝不写书库）
-let configWarning = null; // 配置损坏被归档时的提示，界面启动后取一次
+let configWarning = null; // 配置损坏被归档时的提示：启动时只留一份给日志（界面取 store 里的当前值）
 // 配置里「指向磁盘」的三项（书架目录 / 两份词表）只认对话框选中的值：
 // 按窗口记「刚在系统对话框里选中的路径」，config:set 拿它做来源校验（v0.9 C-2b）。
 // 只在内存里，窗口关闭时清掉；不写盘、不跨窗口。
@@ -951,7 +951,9 @@ async function getConfig() {
   if (!config) {
     configStore = createConfigStore(app.getPath('userData'));
     config = decorateConfig(await configStore.get());
-    configWarning = configStore.takeLoadWarning();
+    // 审计残留修复 R28（#52/E25）：这里只 peek 记日志、不取走 —— 提示留在 store 里由 app:warning
+    // 取「当前值」（写前重试归档成功会把它更正成「已归档」，启动就 take 走的话那份更正永远没人读）。
+    configWarning = configStore.peekLoadWarning();
     // A5（审计 E2）：配置读失败（EACCES / EIO / EBUSY…）与损坏归档都留一条本机日志，
     // 只记错误码与中文结论，不含路径、不含配置内容；界面仍走 app:warning 提示一次。
     if (configWarning) {
@@ -1329,8 +1331,11 @@ function registerIpc() {
   // 界面上的版本号从 package.json 读，免得每次发版忘了改静态文字
   handle('app:version', async () => ({ version: app.getVersion() }));
   // 启动后取一次「配置损坏被归档」之类的提示（取完即清空）
+  // 审计残留修复 R28（#52/E25）：以 store 里的当前值为准 —— 写前重试归档成功会把「无法归档」
+  // 更正成「已归档」、读盘恢复会把过期提示作废；主进程启动时只 peek 记日志、不取走，否则界面
+  // 拿到的是启动那一刻的快照（store 里的自动更正成了没人读的死代码）。
   handle('app:warning', async () => {
-    const warning = configWarning;
+    const warning = configStore ? configStore.takeLoadWarning() : configWarning;
     configWarning = null;
     return warning;
   });

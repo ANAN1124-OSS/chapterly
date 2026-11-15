@@ -596,6 +596,12 @@ function createConfigStore(userDataDir, deps = {}) {
     loadWarning = null;
     return warning;
   }
+  // 审计残留修复 R28（#52/E25）：只读不清的版本 —— 主进程启动时用它记一条日志，提示留在 store 里，
+  // 由真正给界面看的 app:warning 取「当前值」（写前重试归档成功会把「无法归档」更正成「已归档」，
+  // 读盘恢复会把过期提示作废；启动就 take 的话这些更正永远没人读，等于死代码）。
+  function peekLoadWarning() {
+    return loadWarning;
+  }
 
   // C7（审计 C7）：读失败时构造统一错误。自动写 / 显式写读盘仍失败都抛这个（code 让界面与 E2E
   // 按码分支）；文案只说「没写入」，不带任何完整路径。
@@ -874,6 +880,7 @@ function createConfigStore(userDataDir, deps = {}) {
     set,
     retryLoad,
     takeLoadWarning,
+    peekLoadWarning,
     rememberLastBook,
     getBookDisplay,
     setBookDisplay,
