@@ -92,6 +92,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 - 镜像优先级（@electron/get）：`npm_config_electron_mirror`（`.npmrc` 或环境变量）> `ELECTRON_MIRROR` > `package.json` 的 `build.electronDownload.mirror` > 官方 GitHub；打包默认镜像仍写在 `build.electronDownload.mirror`，海外可直接用 `ELECTRON_MIRROR` 覆盖。
 - 目前**没有代码签名**（个人自用省掉证书），所以每台新机器首次安装会看到 SmartScreen 提示。
 - 安装包产物在 `dist/`（已加进 `.gitignore`，不进仓库）；`build/icon.*` 是图标源文件，会进仓库。
+- 打包时排除 `renderer/test-hooks.js`（E2E / 截图自检用的调试钩子，只在开发版地址带 `?test=1` 时动态加载）：`build.files` 里的 `"!renderer/test-hooks.js"` 保证安装包内没有这份死代码（v1.8.0 审计 O2 / #30）。
 - 产物文件名用 **ASCII**（`chapterly-<版本>-win-x64-setup.exe`）：`gh` 在 Windows 上传中文文件名会被吞成坏名，所以发布资产别用中文名；安装后的程序显示名 / 快捷方式为「章回」。
 - 发布到 GitHub：`gh release create v<版本> "dist/chapterly-<版本>-win-x64-setup.exe" --title "章回 v<版本>" --notes-file <说明.md>`（`gh` 走 HTTPS，国内需 `HTTPS_PROXY`）。
 - **版本号只有 `package.json` 一处权威（v1.8.0 / 审计 D10）**：`renderer/index.html` 不写版本串，界面由主进程 `app.getVersion()` 启动时经 `app:version` 注入；README / 验收清单的标题、下载名与单测 / E2E 计数用 `node scripts/version-sync.js --write --unit <N> --e2e <M>` 同步（`--check` 只校验漂移，`tests/version-sync.test.js` 同口径）。发版前先跑一次同步，再打包。
@@ -600,7 +601,7 @@ chapterly/
 - **破坏性操作中途失败的边界（v0.9 C-8 审计结论）**：删章失败会**自动回滚**（把刚移走的章节文件 rename 回原处，书还是删除前的样子；只有连回滚都失败时才提示「文件在 `_trash/…`，可用本书历史的删除备份放回」）。但**整本整理 / 整本替换 / 还原到替换前是逐章写盘**，中途失败（磁盘满 / 杀软占住 / 某个章节文件只读）时前面几章已经改好，**不会自动退回**——错误提示会告诉你已经改了几章、原件备份在 `_trash/整理备份-…` 这类相对位置，需要的话按提示把原件拷回去；替换 / 还原类还可以直接重试（已经改过的章不会再变，剩下没改的会补上；还原本身是幂等的）。整本整理仍然**没有「一键撤销上次整理」**，要用就去「本书历史 → 整理备份-时间戳 → 还原整组 / 还原单章」（还原前会再把当前内容备份一份）。另外，删除当前章时如果还有未保存的修改，现在会先问一句（保存后删除 / 不保存直接删除 / 取消）——没写盘的字不在 `_trash` 里，选中「不保存直接删除」就是真的放弃它们。
 - **前端基准只在同一台机器上有可比性（v0.9 A-1）**：`node scripts/bench.js` 是开发自检脚本，数字受机器、杀软、盘、窗口大小与设备像素比影响（本机基线见第 46 条），**只用于同一台机器上改前 / 改后的对比**，别拿它跨机器比快慢。它不打包、不影响正常启动，跑一次会在系统临时目录留一套临时书库（路径会打印出来，可留可手动清）；脚本本身不删任何文件，也绝不读写真实书架。对作者来说这一条不需要任何操作——正常双击启动完全不经过这些脚本。
 - **章节栏的「屏幕外条目不渲染」依赖 Chromium 的 `content-visibility`（v0.9 A-2）**：`.chapter-item` 用 `content-visibility: auto` + `contain-intrinsic-size: auto 38px` 让千章列表只真正排版屏幕内的十几条，条目本身仍在 DOM 里（选择器 / 文本 / 键盘 / 当前章高亮都照常）。Electron 45 内置的 Chromium 支持这两个属性；万一以后换渲染内核而不支持，最坏结果是退回整表排版（只是慢一点），**不影响数据与功能**。`38px` 是实测行高，若以后调整章节条目的字号 / 内边距，请同步改这个值（单测会在 20–80px 之外报错）。
-- **测试钩子文件会进安装包但永不加载（v0.9 B-2；**出包决策已定稿：保持现状**）**：`renderer/test-hooks.js`（给 E2E / 截图自检用的 472 个调试钩子，**80,259 B**）因为打包配置 `files` 含 `renderer/**/*` 而躺在安装包里，但页面只在地址带 `?test=1` 时才会动态加载它——正常双击启动既不请求也不执行（`window.__cwTest` 在正常窗口里是 `undefined`）。**结论（2026-11-04 长跑第 5 步）：不把它排除出安装包，就以「保持现状」为最终口径，不再作为待办**——80 KB 对 121.5 MB 的安装包只有 **0.066%**，而排除出去（`build.files` 加 `"!renderer/test-hooks.js"`）后自检版必须另带一份开发目录、还要额外维护「asar 里没有它时 `?test=1` 的清晰失败提示」，收益远小于维护成本。这条现在只作为事实记录，不是待评估项。
+- **测试钩子文件不进安装包（v0.9 B-2 曾定「保持现状」；v1.8.0 审计 O2 / #30 改为排除）**：`renderer/test-hooks.js`（给 E2E / 截图自检用的调试钩子，只在开发版地址带 `?test=1` 时动态加载）已由 `build.files` 的 `"!renderer/test-hooks.js"` 排除出安装包——打包版既不加载它、也没有 `window.__cwTest`；E2E / 截图照旧只在开发版（`pnpm start` / `pnpm e2e`）跑，`pnpm dist*` 产物里少一份约 92 KB 的死代码与钩子名单。`tests/package-meta.test.js` 与 `tests/test-hooks.test.js` 钉住「排除项存在 + `index.html` 无静态引用 + 钩子文件仍在仓库」。
 - 无自动保存、**默认无每日备份**、无云同步、无多端（按作者要求；自动保存只有「新建 / 插入章节前自动保存当前章」这一处例外；每日备份是手动打开的「可选每日快照」，默认关）
 - 无富文本、无大纲、无设定库、无 AI 辅助（需求砍掉）
 - 「智能排版」默认只处理当前章（点「整理」就是整理这一章）；整本要排得显式点选择卡里的「一键整理本书…」（会直接写盘，写前备份）
