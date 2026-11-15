@@ -298,6 +298,49 @@ test('校对：超量时只保留前 maxIssues 条，但总数与各规则条数
   );
 });
 
+// 审计修复 #15（E12）：明细额度按规则顺序填充时，半角标点就能把 keepLimit 占满，
+// 后序规则（尤其最后统一结算的自定义词表）只剩 byRule 计数、一条明细都留不下。
+test('E12：半角标点占满预算时，自定义词表仍要在明细里出现（按规则配额）', () => {
+  const entries = [{ term: '做为', suggestion: '作为' }];
+  // 300 条半角标点在先，词表命中只有 1 条且在末尾：旧实现 20 条明细全是标点
+  const text = '他,'.repeat(300) + '他做为见证人。';
+  const result = proofread.proofreadText(text, { maxIssues: 20, longParagraph: 20000 }, entries);
+  assert.equal(result.byRule['halfwidth-punct'], 300);
+  assert.equal(result.byRule['custom-word'], 1);
+  assert.equal(result.total, 301);
+  assert.equal(result.issues.length, 20, '明细预算照旧用满（空出来的额度按规则轮转补回）');
+  const custom = result.issues.filter((issue) => issue.rule === 'custom-word');
+  assert.equal(custom.length, 1, '词表命中必须有明细（旧实现是 0 条）');
+  assert.equal(custom[0].match, '做为');
+  assert.equal(result.issues.filter((issue) => issue.rule === 'halfwidth-punct').length, 19);
+  assert.equal(result.truncated, true);
+  // 明细仍按位置排序（配额只决定「选谁」，不改变顺序）
+  const indexes = result.issues.map((issue) => issue.index);
+  assert.deepEqual(indexes, [...indexes].sort((a, b) => a - b));
+
+  // 默认预算（400）：5000 条标点 + 3 条词表 → 词表 3 条一条不少，标点补满其余位置
+  const many = '他,'.repeat(5000) + '做为做为做为';
+  const big = proofread.proofreadText(many, {}, entries);
+  assert.equal(big.byRule['halfwidth-punct'], 5000);
+  assert.equal(big.byRule['custom-word'], 3);
+  assert.equal(big.issues.length, 400, '预算 400 照旧用满');
+  assert.equal(big.issues.filter((issue) => issue.rule === 'custom-word').length, 3);
+});
+
+test('E12：两条规则都超预算时按配额分（谁也不被整段挤掉），条数仍如实统计', () => {
+  // 300 条破折号（--）+ 300 条半角标点：两条规则都超过 20 的预算
+  const text = '甲--乙,丙--丁,'.repeat(150);
+  const result = proofread.proofreadText(text, { maxIssues: 20, longParagraph: 20000 });
+  assert.equal(result.byRule.dash, 300);
+  assert.equal(result.byRule['halfwidth-punct'], 300);
+  const dash = result.issues.filter((issue) => issue.rule === 'dash');
+  const punct = result.issues.filter((issue) => issue.rule === 'halfwidth-punct');
+  assert.equal(dash.length, 10, '配额均分：20 / 2 条规则各 10');
+  assert.equal(punct.length, 10);
+  assert.equal(result.issues.length, 20);
+  assert.equal(result.truncated, true);
+});
+
 test('校对：选项清洗——脏值回落默认、越界夹紧、字符串数字可用', () => {
   assert.deepEqual(proofread.sanitizeOptions(undefined), { ...proofread.DEFAULT_OPTIONS });
   assert.deepEqual(proofread.sanitizeOptions(null), { ...proofread.DEFAULT_OPTIONS });

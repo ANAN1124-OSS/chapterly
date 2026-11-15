@@ -138,21 +138,66 @@ function sanitizeRules(raw) {
 // normalizeText / lineStartsOf / positionOf 都从 core/common.js 来（B6）：和 storage.loadChapterText /
 // 编辑区同一份口径（去掉开头 BOM、CRLF 归一成 LF），行号列号也与 sensitive 预检同一份算法。
 
-// 统计收集器：总数 / 各条数照实统计；真正保留的条目有上限（单章最多 maxIssues 条），
+// 统计收集器：总数 / 各条数照实统计；真正保留的明细按规则各留上限（单章最多 maxIssues 条），
 // 避免「一整章英文引号」这类极端文本把内存和界面刷爆。
+// 审计修复 #15（E12）：旧实现是一份全局 keepLimit（maxIssues × 2）先到先得 —— 先扫到的规则把它
+// 占满后，后序规则（尤其最后统一结算的自定义词表）只剩 byRule 计数、一条明细都留不下，作者在
+// 面板里看得见「命中 N 处」却定位不到任何一处。现在每条规则各留最多 maxIssues 条（规则数 ×
+// maxIssues 仍是每章一个常数：默认 10 × 400 = 4000 个小对象，单条规则反而比改前的 800 更少），
+// 结算时把明细预算按「有命中的规则数」均分（余数按 RULE_ORDER 补给前面的规则），谁也不会被挤没。
 function createCollector(maxIssues) {
+  const cap = Math.max(maxIssues, 1);
   const byRule = {};
   for (const rule of RULE_ORDER) byRule[rule] = 0;
-  const issues = [];
-  const keepLimit = Math.min(Math.max(maxIssues, 1) * 2, 10000);
+  const kept = new Map(); // 规则 → 明细（按扫描顺序 = 位置顺序）
   let total = 0;
   return {
     add(issue) {
       total += 1;
       byRule[issue.rule] = (byRule[issue.rule] || 0) + 1;
-      if (issues.length < keepLimit) issues.push(issue);
+      let list = kept.get(issue.rule);
+      if (!list) {
+        list = [];
+        kept.set(issue.rule, list);
+      }
+      if (list.length < cap) list.push(issue);
     },
     finish() {
+      // 只给真有命中的规则分额度；规则数（≤10）永远小于预算下限（maxIssues ≥ 20），
+      // 所以每条规则至少能分到 1 条明细 —— 这正是「有计数没条目」不再发生的条件。
+      const rules = RULE_ORDER.filter((rule) => kept.has(rule));
+      const base = Math.floor(cap / rules.length);
+      const extra = cap % rules.length;
+      const quota = new Map();
+      rules.forEach((rule, index) => quota.set(rule, Math.max(1, base + (index < extra ? 1 : 0))));
+      const cursor = new Map();
+      const issues = [];
+      let budget = cap;
+      // 第一轮：每条规则先拿自己那份配额（命中数不到配额就少拿，单条规则照旧最多 cap 条）
+      for (const rule of rules) {
+        const list = kept.get(rule);
+        const take = Math.min(list.length, quota.get(rule), budget);
+        for (let i = 0; i < take; i += 1) issues.push(list[i]);
+        cursor.set(rule, take);
+        budget -= take;
+      }
+      // 第二轮：有规则没交够（命中本来就少）时，空出来的额度按规则轮转补回去 ——
+      // 明细预算尽量用满，不因为某条规则命中少就白扔掉别的规则还能显示的位置。
+      let progressed = rules.length > 0;
+      while (budget > 0 && progressed) {
+        progressed = false;
+        for (const rule of rules) {
+          if (budget <= 0) break;
+          const list = kept.get(rule);
+          const at = cursor.get(rule);
+          if (at < list.length) {
+            issues.push(list[at]);
+            cursor.set(rule, at + 1);
+            budget -= 1;
+            progressed = true;
+          }
+        }
+      }
       return { issues, total, byRule };
     }
   };
@@ -520,6 +565,8 @@ function proofreadText(text, rawOptions, rawGlossary) {
   }
 
   // 按位置排（同位置按规则顺序），再补 1 基的行 / 列
+  // 审计修复 #15（E12）：collector 已按规则配额结算（每条规则都在明细里占到自己那份），
+  // 这里只按位置排序 + 再兜一次总上限 —— 不再是「按规则顺序先到先得」把后序规则整段截掉。
   const collected = collector.finish();
   const sorted = collected.issues
     .slice()
