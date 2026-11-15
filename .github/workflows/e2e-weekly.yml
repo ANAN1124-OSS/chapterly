@@ -6,6 +6,8 @@ name: e2e-weekly
 #
 # 供应链：所有 actions 固定到提交 SHA（Dependabot 每周提更新），不跟浮动的 @v4 标签；
 # 运行镜像固定 windows-2022（不用浮动的 windows-latest）。
+# 审计残留修复 R25（#29/O1）：下面三条 pin 的版本注释已按上游 tag 核对（2026-11-15）——checkout /
+# setup-node 的提交就是 v4.4.0；pnpm/action-setup 的同一提交上游也标了 v5.0.0，注释取较先发布的 v4.4.0。
 on:
   schedule:
     # 每周日 20:17 UTC（周一 04:17 Asia/Shanghai），避开整点拥堵
