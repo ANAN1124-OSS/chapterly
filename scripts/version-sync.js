@@ -276,6 +276,10 @@ function guaranteeAnchorRows(readme) {
 // 审计修复 #26（M1 / ▲V309）：保证清单 ↔ 代码锚点一一对应，且锚点真的落在源码里。
 // 这不是「文档格式检查」——它把「README 承诺了什么」和「代码里有没有这条实现」绑在一起：
 // 删实现 / 改函数名 / 增删保证条目而忘改锚点，都会在发版前报红。
+// 口径（审计残留修复 #R16 / #26-M1）：符号校验是「源码文本 includes」，不是 AST —— 符号只要
+// 出现在文件任意位置就算命中（包括注释 / 字符串）。它防的是「删实现 / 改函数名后旧名从源码里
+// 彻底消失」这类漂移，不是语义级实现证明；升 AST 要引入解析器依赖（本阶段不为此加依赖），
+// 故保持文本匹配并在 README 锚点小节写明这条口径。
 function checkGuaranteeAnchors(readme, root = ROOT) {
   const problems = [];
   const ids = guaranteeItemIds(readme);
@@ -312,6 +316,7 @@ function checkGuaranteeAnchors(readme, root = ROOT) {
         problems.push(`保证 ${row.id} 的代码位置不存在：${rel}`);
         continue;
       }
+      // 审计残留修复 #R16：文本 includes 命中即可（注释里出现也算）——见函数头口径说明。
       if (!fs.readFileSync(abs, 'utf8').includes(symbol)) {
         problems.push(`保证 ${row.id} 的落点 ${rel} 里找不到「${symbol}」`);
       }
