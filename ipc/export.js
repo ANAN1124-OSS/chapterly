@@ -64,6 +64,12 @@ function registerExportIpc(host) {
   // indexes 可选：只读选中的章（按范围导出用），没选中的位置留空字符串但保持下标对齐
   // P2-2（1.5.0）：按 CHAPTER_BATCH_SIZE 章一批读（批内仍限并发 CHAPTER_READ_CONCURRENCY、批间串行）。
   // texts 仍按书目下标填、没选中的位置留空串，顺序 / 内容 / chars 与「一次读完再求和」逐字一致。
+  // 审计残留修复 #R14（#44/E18）口径注记：override 在「整本 / 按范围导出」与「复制整本」里是
+  // 「能对上就替、对不上就按磁盘」——过期 chapterId（章刚被删 / 编辑区换了书）只会让
+  // includedUnsaved 如实回 false，导出照常按磁盘内容完成（不报错、也不会拼进错章，见
+  // core/exporter.js chapterRefIndex 的「有 id 只按 id 结算」）。只有单章动作
+  // chapter:copy-platform 找不到章才抛 CHAPTER_NOT_FOUND —— 那一条的语义就是「复制这一章」，
+  // 章不在就不能拿别的章冒充。README「已知限制」里写明同一条口径。
   async function collectExportTexts(bookPath, meta, override, indexes) {
     const selected = Array.isArray(indexes) ? new Set(indexes) : null;
     const overrideIndex = exporter.chapterIndexOf(meta, override);
