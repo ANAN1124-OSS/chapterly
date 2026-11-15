@@ -1170,6 +1170,28 @@ function timestampForFile(date = new Date()) {
 // 名字在真正落位期间占住，另一路会自动顺延到下一个序号。
 const inflightTrashTargets = new Set();
 
+// 审计残留修复 #45（E20）：试占一个 _trash 目标名。返回 true = 这个名字现在归调用方，
+// rename 结束后必须 release（delete）。
+// 不变量：登记发生在查 exists 之前 —— 旧实现是 `has || await exists` 通过之后才 add，
+// 「检查空闲」与「登记占用」之间跨了一次 await，并发路径可以同时判定同一个名字空闲，
+// 后一次 rename 直接覆盖前一次的备份。这里名字一进 Set 就不再放开（除磁盘已被占用 / 读盘出错）。
+async function claimTrashTarget(dest) {
+  if (inflightTrashTargets.has(dest)) return false;
+  inflightTrashTargets.add(dest);
+  let free;
+  try {
+    free = !(await exists(dest));
+  } catch (err) {
+    inflightTrashTargets.delete(dest);
+    throw err;
+  }
+  if (!free) {
+    inflightTrashTargets.delete(dest); // 磁盘上已有同名文件：让位，换下一个序号
+    return false;
+  }
+  return true;
+}
+
 async function moveToTrash(bookPath, file) {
   // WP-06（审计 C5）：本函数是「删章 / 撤销删空补章」唯一的移文件入口，必须自己再校验一次 ——
   // 坏书目（file 含 ..\ / 绝对路径 / 非 txt / 保留名）在这里就 BAD_PATH，绝不 rename 书外文件；
@@ -1181,12 +1203,12 @@ async function moveToTrash(bookPath, file) {
   let destName = `${stamp}-${file}`;
   let i = 2;
   let dest = path.join(trashDir, destName);
-  while (inflightTrashTargets.has(dest) || (await exists(dest))) {
+  // 审计残留修复 #45（E20）：先登记占用、再查磁盘（见 claimTrashTarget）
+  while (!(await claimTrashTarget(dest))) {
     destName = `${stamp}-${i}-${file}`;
     i += 1;
     dest = path.join(trashDir, destName);
   }
-  inflightTrashTargets.add(dest);
   try {
     await fs.rename(source, dest);
   } finally {

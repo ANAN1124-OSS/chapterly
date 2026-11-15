@@ -177,3 +177,45 @@ test('E20（#45）：_trash 里已有同秒同名备份时，moveToTrash 顺延�
   assert.equal(await fs.readFile(planted, 'utf8'), '预置的旧备份', '先备份的字节一个都没被覆盖');
   assert.equal(await fs.readFile(deleted.trashPath, 'utf8'), '要被删掉的正文\r\n', '这次删章的内容完整落在新名字上');
 });
+
+// 审计残留修复 #45（E20）：占用表必须「先登记、再查 exists」。旧实现是
+// `while (has(dest) || await exists(dest))` 通过之后才 add —— 两次检查之间跨了一次 await，
+// 同秒并发（直接调 moveToTrash 绕过书锁，模拟防御性路径）时两边都在 add 之前判成空闲，
+// 后一次 rename 直接把前一次的备份覆盖掉（Windows rename 是替换语义）。
+test('残留 E20（#45）：同秒并发 moveToTrash 两份备份 —— 名字不撞、谁也没覆盖谁', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '并发撞名');
+  const first = await storage.readBookMeta(bookPath);
+  const fileA = first.chapters[0].file;
+  await storage.saveChapterText(bookPath, fileA, '甲的正文\n');
+  await storage.createChapterWithText(bookPath, { insertIndex: 1, name: '乙', text: '乙的正文\n' });
+  const second = await storage.readBookMeta(bookPath);
+  const fileB = second.chapters[1].file;
+
+  const [destA, destB] = await Promise.all([
+    storage.moveToTrash(bookPath, fileA),
+    storage.moveToTrash(bookPath, fileB)
+  ]);
+  assert.notEqual(destA, destB, '两个目的名必须不同（占用表先登记再查）');
+  const trash = path.join(bookPath, '_trash');
+  assert.deepEqual(
+    (await fs.readdir(trash)).sort(),
+    [path.basename(destA), path.basename(destB)].sort(),
+    '_trash 里正好两份备份（旧实现会在同一个名字上互相覆盖，只剩一份）'
+  );
+  assert.equal(await fs.readFile(destA, 'utf8'), '甲的正文\r\n');
+  assert.equal(await fs.readFile(destB, 'utf8'), '乙的正文\r\n');
+});
+
+// 静态闸门：claimTrashTarget 里「登记」必须早于「查磁盘」——顺序反过来就又会跨 await 暴露窗口。
+test('残留 E20（#45）静态闸门：_trash 目标名先登记占用再查 exists', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  const claimAt = src.indexOf('async function claimTrashTarget(');
+  assert.ok(claimAt > 0, '找不到 claimTrashTarget');
+  const body = src.slice(claimAt, claimAt + 900);
+  const addAt = body.indexOf('inflightTrashTargets.add(dest)');
+  const existsAt = body.indexOf('await exists(dest)');
+  assert.ok(addAt > 0 && existsAt > 0, 'claim 里必须有 add 与 exists');
+  assert.ok(addAt < existsAt, '必须先 inflightTrashTargets.add(dest) 再 await exists(dest)');
+  assert.match(body, /inflightTrashTargets\.delete\(dest\)/, '让位 / 出错时要释放登记');
+});
