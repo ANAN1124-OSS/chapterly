@@ -103,7 +103,7 @@ function registerBookDataIpc(host) {
         `移入回收站失败，快照没有动：${errorText.describeForUi(err).message}`
       );
     }
-    return { ok: true, dir: path.basename(dir) };
+    return { dir: path.basename(dir) };
   }, { mutation: MUTATION.WRITE });
 
   // 整本智能排版：预检查只算不写；正式整理逐章写盘（写前把原章节备份到 _trash/整理备份-*）

@@ -4,8 +4,10 @@
 // 定位：只做**语法级**的两件事——没声明的名字（no-undef）和声明了没人读的名字（no-unused-vars）。
 // 语义级检查（floating promise / unhandled rejection）仍由零依赖的 `scripts/lint-gate.js` 负责：
 // 那条规则要 TS 解析器才能做准，eslint 这套替代不了，所以这里**不重复造**，两套门禁并存：
-//   pnpm lint        → node scripts/lint-gate.js（零依赖，0 ERROR / 30 WARN）
-//   npx eslint .     → 本文件（0 ERROR / 0 WARN；本地与 CI 都跑）
+//   pnpm lint        → node scripts/lint-gate.js（零依赖；审计 #53 / R6 起只查 floating-promise）
+//   npx eslint .     → 本文件（no-undef / no-unused-vars，0 ERROR / 0 WARN；本地与 CI 都跑）
+// 审计修复 #53（R6）：lint-gate 原来的 no-undef / no-unused-vars 两条已删 —— 与这里逐项重叠，
+// 两套全局白名单只会互相漂移；语法级检查从此只有本文件这一份。
 //
 // 与 CI 的边界（1.8.0 D-4 / WP-35，WP-36 收口）：`.github/workflows/verify.yml` 现在**跑** `npx eslint .`
 // （no-undef / no-unused-vars 均为 error），CI 同时保留

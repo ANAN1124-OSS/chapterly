@@ -296,13 +296,13 @@ test('行为：清空某日快照只认快照目录、拒绝联接、回收站�
       return true;
     }
   );
-  // 4) 成功：回 basename（不带路径）
+  // 4) 成功：回 basename（不带路径）。审计修复 #53（R8）：内层不再自带 {ok:true} ——
+  //    handleBook 的 ok() 包装已经给出唯一一份 ok 字段。
   const ok = makeBookDataHost({
     storage: baseStore,
     fs: { lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }) }
   });
   assert.deepEqual(await ok.channels.get('book:clear-snapshot-day').fn('D:\\书库\\书', '快照-20260101'), {
-    ok: true,
     dir: '快照-20260101'
   });
 });

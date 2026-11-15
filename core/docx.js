@@ -31,8 +31,9 @@ const WORD_LINE_SPACING = 360; // 240 = 单倍行距，360 = 1.5 倍
 
 // ---------- XML ----------
 // 字符清洗 / 转义 / 切段在 core/xml.js（和 EPUB 导出共用同一份实现），这里只拼 WordprocessingML 标签。
-function paragraph(style, text, extraProperties) {
-  const properties = `<w:pPr><w:pStyle w:val="${escapeXml(style)}"/>${extraProperties || ''}</w:pPr>`;
+// 审计修复 #53（R8）：删掉第三个死参数 extraProperties（全仓没有调用方传过，paragraph 只产样式 + 文本）。
+function paragraph(style, text) {
+  const properties = `<w:pPr><w:pStyle w:val="${escapeXml(style)}"/></w:pPr>`;
   return `  <w:p>${properties}<w:r><w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
 }
 

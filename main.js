@@ -1366,7 +1366,9 @@ function registerIpc() {
   handle('config:set', async (patch) => {
     // WP-10（C7）：配置读过失败的话，保存设置前先重试读盘——读到真的配置再按它合并 / 算目标书架目录，
     // 仍读不到就明确失败（CONFIG_READ_FAILED），绝不拿内存里的默认值写盘，把书库根目录等设置抹掉。
-    await getConfig(); // 确保配置仓库已就绪（首次用到时才创建，见 getConfig）
+    // 审计修复 #53（R8）：这次 getConfig 的返回值直接复用（旧实现紧接着又 await getConfig() 一次，
+    // 只是从同一个内存缓存再拷一遍）；ensure 配置仓库已就绪的语义不变。
+    let current = await getConfig();
     const recovery = await configStore.retryLoad();
     if (!recovery.ok) {
       throw Object.assign(new Error(recovery.message), {
@@ -1374,7 +1376,6 @@ function registerIpc() {
         errorCode: recovery.errorCode
       });
     }
-    let current = await getConfig();
     // 读盘恢复了：主进程缓存还是启动时的默认值，先换成真配置再继续（applyConfig 会同步标题栏配色）。
     if (recovery.recovered) current = applyConfig(await configStore.get());
     // C23（整合版审计）：「换根前的生效根」也走「sanitize + 装饰层」——设置了 --books-root 时它就是

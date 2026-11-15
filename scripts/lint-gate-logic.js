@@ -1,20 +1,13 @@
 'use strict';
 // 零依赖 lint 门禁的判定核心（1.6.0 G1）。
 //
-// 为什么要自己写：1.6.0 时本仓还没有 ESLint / CI（执行卡 §9 保守默认），现在两者都已接上，
-// 但这个门禁仍补 ESLint 默认规则不覆盖的一面 ——「未处理的 promise rejection / 没声明的名字 /
-// 死变量」这三类问题靠人眼在全仓 400+ 个 js 里找必然漏，而且往往要到运行期才炸。
-// 这个模块只做**字符串进、结论出**的纯判定，不碰 fs / 配置 / 网络，CLI 在 `scripts/lint-gate.js`，
-// 两边共用同一套口径。
-//
-// 三条规则与严重级别（见执行卡 G1）：
-//   ① floating-promise → **ERROR**：同文件里能证明是 `async` 的函数，被语句级调用却没人接
-//      （没有 await / return / void / .then / .catch / .finally / 赋值 / 传参）——
-//      失败时会变成 unhandledRejection，静默不报错。
-//   ② undefined-ref → **ERROR**：文件里没声明、也不在已知全局 / 仓库全局白名单里的标识符——
-//      真跑起来就是 ReferenceError。
-//   ③ unused-variable → **WARN**：函数内 `const / let / var` 声明的简单名字，函数体里一次没读。
-//      存量代码里可能有人为保留的占位，先以 WARN 暴露（ERROR>0 才挡门禁），清理批次再收紧。
+// 审计修复 #53（R6）：本门禁只保留 ESLint 替代不了的那一条 —— floating-promise。
+// 原来的 undefined-ref / unused-variable 两条与 eslint.config.js 的 no-undef / no-unused-vars
+// （均 error，扫描范围相同）逐项重叠，还各自维护一份全局白名单；两套口径并存只会让「改了一边忘了
+// 另一边」成为常态。现在分工是：
+//   `npx eslint .`        → 语法级：没声明的名字（no-undef）、声明了没人读的名字（no-unused-vars）；
+//   `node scripts/lint-gate.js` → 语义级：语句级调用 async 函数却没人接（unhandledRejection —— 这条
+//                                需要 TS 解析器，eslint 这套替代不了，删了就少一道闸）。
 //
 // 判定刻意**保守**（宁可漏报不可误报，误报会让门禁被人绕过）：
 //   · 只认同文件里写明的 `async function NAME` / `NAME = async …` / `async NAME(`；
@@ -22,13 +15,9 @@
 //   · 只认「语句级调用」（行首 / `;` / `{` / `}` / `)` 之后），表达式里出现的算已处理。
 //   · 字符串、注释、模板字面量文本、正则字面量里的文字先遮成空格，再在遮过的文本上判定；
 //     `${…}` 里的表达式是真代码，保留。
-//   · 未定义引用会把「属性名 / 对象字面量的键 / 方法定义名 / label」排除；声明收集宁可多收
-//     （解构的键、默认值里的名字都算声明），多收只会漏报，不会误报。
 
 const RULES = {
-  FLOATING_PROMISE: 'floating-promise',
-  UNUSED_VARIABLE: 'unused-variable',
-  UNDEFINED_REF: 'undefined-ref'
+  FLOATING_PROMISE: 'floating-promise'
 };
 
 const SEVERITY = {
@@ -43,39 +32,6 @@ const KEYWORDS = new Set([
   'if', 'import', 'in', 'instanceof', 'let', 'new', 'null', 'of', 'return', 'set', 'static', 'super',
   'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield',
   'implements', 'interface', 'package', 'private', 'protected', 'public', 'enum'
-]);
-
-// 已知全局：Node 内置 + 浏览器 / Electron 渲染层常用。命中即不算未定义引用。
-const KNOWN_GLOBALS = new Set([
-  // CommonJS / Node
-  'require', 'module', 'exports', '__dirname', '__filename', 'process', 'global', 'globalThis',
-  'Buffer', 'setImmediate', 'clearImmediate', 'console', 'queueMicrotask', 'structuredClone',
-  'WebAssembly', 'Intl', 'Atomics', 'SharedArrayBuffer', 'ArrayBuffer', 'DataView',
-  'Uint8Array', 'Uint8ClampedArray', 'Uint16Array', 'Uint32Array', 'Int8Array', 'Int16Array',
-  'Int32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'BigInt',
-  // JS 内置
-  'Object', 'Array', 'String', 'Number', 'Boolean', 'Symbol', 'Math', 'JSON', 'Date', 'RegExp',
-  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError',
-  'AggregateError', 'Promise', 'Proxy', 'Reflect', 'Map', 'Set', 'WeakMap', 'WeakSet', 'WeakRef',
-  'FinalizationRegistry', 'Function', 'eval', 'arguments', 'undefined', 'NaN', 'Infinity',
-  'isNaN', 'isFinite', 'parseInt', 'parseFloat', 'encodeURI', 'encodeURIComponent', 'decodeURI',
-  'decodeURIComponent', 'escape', 'unescape', 'TextEncoder', 'TextDecoder', 'URL', 'URLSearchParams',
-  // 定时器 / 任务
-  'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
-  // 浏览器 / DOM
-  'window', 'self', 'document', 'navigator', 'location', 'history', 'localStorage', 'sessionStorage',
-  'fetch', 'XMLHttpRequest', 'Headers', 'Request', 'Response', 'FormData', 'Blob', 'File', 'FileList',
-  'FileReader', 'AbortController', 'AbortSignal', 'Event', 'CustomEvent', 'MouseEvent', 'KeyboardEvent',
-  'ClipboardEvent', 'DragEvent', 'FocusEvent', 'InputEvent', 'UIEvent', 'WheelEvent', 'EventTarget',
-  'MutationObserver', 'IntersectionObserver', 'ResizeObserver', 'getComputedStyle', 'matchMedia',
-  'requestAnimationFrame', 'cancelAnimationFrame', 'alert', 'confirm', 'prompt', 'DOMParser',
-  'Node', 'Element', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLButtonElement',
-  'HTMLDivElement', 'HTMLSelectElement', 'HTMLOptionElement', 'HTMLDialogElement', 'HTMLCanvasElement',
-  'CanvasRenderingContext2D', 'Image', 'CSS', 'crypto', 'performance', 'indexedDB', 'caches',
-  'FontFace', 'WebSocket', 'ReadableStream', 'WritableStream', 'TransformStream', 'BroadcastChannel',
-  'MessageChannel', 'MessagePort', 'Audio', 'AudioContext', 'OffscreenCanvas', 'ImageBitmap', 'Worker',
-  'EventSource', 'MediaQueryList', 'TouchEvent', 'PointerEvent', 'CSSStyleSheet', 'HTMLCollection',
-  'NodeList', 'DOMRect', 'Range', 'Selection'
 ]);
 
 // 这些词之后出现的 `/` 是正则字面量的开头，不是除号。
@@ -282,12 +238,6 @@ function maskSource(text) {
 
 // ---------------------------------------------------------------- 通用扫描
 
-function skipWhitespace(text, index) {
-  let i = index;
-  while (i < text.length && /\s/.test(text[i])) i += 1;
-  return i;
-}
-
 function nextSignificant(text, index) {
   let i = index;
   while (i < text.length && /\s/.test(text[i])) i += 1;
@@ -370,132 +320,6 @@ function lineColumnOf(text, index) {
     }
   }
   return { line, column: index - lineStart + 1 };
-}
-
-// 跳过一段表达式：括号内整段跳过，停在顶层的 , ; ) ] } 或文件结尾。
-function skipExpression(text, from) {
-  let i = from;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch === '(' || ch === '[' || ch === '{') {
-      const close = matchClose(text, i);
-      if (close < 0) return text.length;
-      i = close + 1;
-      continue;
-    }
-    if (ch === ',' || ch === ';' || ch === ')' || ch === ']' || ch === '}') return i;
-    i += 1;
-  }
-  return i;
-}
-
-// 跳过 `= 表达式` 的默认值 / 初始化部分（没有 `=` 就原地返回）。
-function skipInitializer(text, from) {
-  const i = skipWhitespace(text, from);
-  if (text[i] !== '=' || text[i + 1] === '=' || text[i + 1] === '>') return from;
-  return skipExpression(text, i + 1);
-}
-
-// 读一个声明项（简单名字或解构模式），返回 { names, simple, end }。
-function readDeclarator(text, from) {
-  const i = skipWhitespace(text, from);
-  const ch = text[i];
-  if (ch === '{' || ch === '[') {
-    const close = matchClose(text, i);
-    if (close < 0) return null;
-    const names = [];
-    const inner = text.slice(i + 1, close);
-    const re = /[A-Za-z_$][\w$]*/g;
-    let m;
-    while ((m = re.exec(inner))) {
-      names.push({ name: m[0], index: i + 1 + m.index });
-    }
-    return { names, simple: false, end: skipInitializer(text, close + 1) };
-  }
-  const id = readIdentifier(text, i);
-  if (!id) return null;
-  return { names: [{ name: id.name, index: i }], simple: true, end: skipInitializer(text, id.end) };
-}
-
-// 解析一条 const/let/var 声明里的所有声明项（逗号分隔）。
-function parseDeclaratorList(text, from) {
-  const out = [];
-  let i = from;
-  for (;;) {
-    const declarator = readDeclarator(text, i);
-    if (!declarator) break;
-    out.push(declarator);
-    i = skipWhitespace(text, declarator.end);
-    if (text[i] !== ',') break;
-    i += 1;
-  }
-  return out;
-}
-
-// for (...) 头部范围：里面的 const/let 是循环绑定，不算「函数内未用变量」。
-function forHeaderRanges(text) {
-  const ranges = [];
-  const re = /\bfor\b/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const open = nextSignificant(text, m.index + 3);
-    if (open < 0 || text[open] !== '(') continue;
-    const close = matchClose(text, open);
-    if (close > 0) ranges.push({ from: open, to: close });
-  }
-  return ranges;
-}
-
-function insideRanges(index, ranges) {
-  return ranges.some((range) => index > range.from && index < range.to);
-}
-
-function collectFunctionBodies(text) {
-  const bodies = [];
-  const pushBody = (braceIndex) => {
-    const end = matchClose(text, braceIndex);
-    if (end > 0) bodies.push({ from: braceIndex, to: end });
-  };
-  const fnRe = /\bfunction\b/g;
-  let m;
-  while ((m = fnRe.exec(text))) {
-    let cursor = nextSignificant(text, m.index + 'function'.length);
-    if (cursor >= 0 && text[cursor] === '*') cursor = nextSignificant(text, cursor + 1);
-    const name = cursor >= 0 ? readIdentifier(text, cursor) : null;
-    if (name) cursor = nextSignificant(text, name.end);
-    const open = cursor;
-    if (open < 0 || text[open] !== '(') continue;
-    const close = matchClose(text, open);
-    if (close < 0) continue;
-    const brace = nextSignificant(text, close + 1);
-    if (brace >= 0 && text[brace] === '{') pushBody(brace);
-  }
-  const arrowRe = /=>/g;
-  while ((m = arrowRe.exec(text))) {
-    const brace = nextSignificant(text, m.index + 2);
-    if (brace >= 0 && text[brace] === '{') pushBody(brace);
-  }
-  return bodies;
-}
-
-// `obj.name` / `obj?.name` 是属性访问；`...name`（展开）不是，别把展开里的名字漏掉。
-function isPropertyAccess(text, index) {
-  const dot = index - 1;
-  if (dot < 0 || text[dot] !== '.') return false;
-  if (text[dot - 1] === '.' && text[dot - 2] === '.') return false;
-  return true;
-}
-
-// 单次扫出「不是属性访问」的标识符计数（用于未用变量判定）。
-function identifierCounts(text) {
-  const counts = new Map();
-  const re = /(?<![\w$])([A-Za-z_$][\w$]*)/g;
-  let m;
-  while ((m = re.exec(text))) {
-    if (isPropertyAccess(text, m.index)) continue;
-    counts.set(m[1], (counts.get(m[1]) || 0) + 1);
-  }
-  return counts;
 }
 
 function collectFunctionScopes(text) {
@@ -596,7 +420,7 @@ function statementStart(text, index) {
   return false;
 }
 
-// ---------------------------------------------------------------- 规则 ①：floating promise
+// ---------------------------------------------------------------- 规则：floating promise
 
 function checkFloatingPromises(text) {
   const asyncNames = collectAsyncNames(text);
@@ -636,158 +460,15 @@ function checkFloatingPromises(text) {
   return findings;
 }
 
-// ---------------------------------------------------------------- 规则 ②：未使用变量
-
-function checkUnusedVariables(text) {
-  const findings = [];
-  for (const body of collectFunctionBodies(text)) {
-    const block = text.slice(body.from, body.to + 1);
-    const headers = forHeaderRanges(block);
-    const counts = identifierCounts(block);
-    const declRe = /\b(?:const|let|var)\s+/g;
-    let m;
-    while ((m = declRe.exec(block))) {
-      if (insideRanges(m.index, headers)) continue;
-      for (const declarator of parseDeclaratorList(block, m.index + m[0].length)) {
-        if (!declarator.simple) continue;
-        for (const entry of declarator.names) {
-          if (entry.name.startsWith('_')) continue;
-          if ((counts.get(entry.name) || 0) <= 1) {
-            findings.push({
-              rule: RULES.UNUSED_VARIABLE,
-              severity: SEVERITY.WARN,
-              index: body.from + entry.index,
-              message: `声明了 ${entry.name} 但函数内一次也没读`
-            });
-          }
-        }
-      }
-    }
-  }
-  return findings;
-}
-
-// ---------------------------------------------------------------- 规则 ③：未定义引用
-
-function addIdentifiers(names, text, from, to) {
-  const inner = text.slice(from, to);
-  const re = /[A-Za-z_$][\w$]*/g;
-  let m;
-  while ((m = re.exec(inner))) {
-    if (!KEYWORDS.has(m[0])) names.add(m[0]);
-  }
-}
-
-function addParameterNames(names, text, parenIndex) {
-  const close = matchClose(text, parenIndex);
-  if (close < 0) return;
-  addIdentifiers(names, text, parenIndex + 1, close);
-}
-
-// 参数表：`(a, b = 1) =>`、`name(a, { b } = {}) {`、`function (a)`。
-// 用 matchClose 而不是正则在括号里滚，才能吃掉 `(now = new Date())` 这种带调用的默认值。
-function collectParameterNames(names, text) {
-  const re = /\(/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const open = m.index;
-    const close = matchClose(text, open);
-    if (close < 0) continue;
-    const after = nextSignificant(text, close + 1);
-    if (after < 0) continue;
-    let qualifies = text.slice(after, after + 2) === '=>';
-    if (!qualifies && text[after] === '{') {
-      const prev = prevSignificant(text, open - 1);
-      if (prev >= 0 && text[prev] === '*') {
-        qualifies = true;
-      } else if (prev >= 0 && IDENTIFIER_PART_RE.test(text[prev])) {
-        let start = prev;
-        while (start >= 0 && IDENTIFIER_PART_RE.test(text[start])) start -= 1;
-        const name = text.slice(start + 1, prev + 1);
-        qualifies = !KEYWORDS.has(name) || name === 'get' || name === 'set' || name === 'async' || name === 'static';
-      }
-    }
-    if (qualifies) addParameterNames(names, text, open);
-  }
-}
-
-function collectDeclaredNames(text) {
-  const names = new Set();
-  let m;
-  const declRe = /\b(?:const|let|var)\s+/g;
-  while ((m = declRe.exec(text))) {
-    for (const declarator of parseDeclaratorList(text, m.index + m[0].length)) {
-      for (const entry of declarator.names) names.add(entry.name);
-    }
-  }
-  const fnRe = /\bfunction\b\s*\*?\s*([A-Za-z_$][\w$]*)?\s*\(/g;
-  while ((m = fnRe.exec(text))) {
-    if (m[1]) names.add(m[1]);
-    addParameterNames(names, text, m.index + m[0].length - 1);
-  }
-  collectParameterNames(names, text);
-  const bareArrowRe = /\b([A-Za-z_$][\w$]*)\s*=>/g;
-  while ((m = bareArrowRe.exec(text))) {
-    if (!KEYWORDS.has(m[1])) names.add(m[1]);
-  }
-  const classRe = /\bclass\s+([A-Za-z_$][\w$]*)/g;
-  while ((m = classRe.exec(text))) names.add(m[1]);
-  const catchRe = /\bcatch\s*\(([^()]*)\)/g;
-  while ((m = catchRe.exec(text))) addIdentifiers(names, text, m.index + m[0].indexOf('(') + 1, m.index + m[0].length - 1);
-  return names;
-}
-
-function checkUndefinedRefs(text, extraGlobals) {
-  const declared = collectDeclaredNames(text);
-  const findings = [];
-  const re = /(?<![\w$])([A-Za-z_$][\w$]*)/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const name = m[1];
-    if (KEYWORDS.has(name)) continue;
-    if (KNOWN_GLOBALS.has(name) || extraGlobals.has(name) || declared.has(name)) continue;
-    const start = m.index;
-    const end = start + name.length;
-    if (isPropertyAccess(text, start)) continue;
-    const prev = prevSignificant(text, start - 1);
-    if (prev >= 0 && text[prev] === '#') continue;
-    const after = nextSignificant(text, end);
-    if (after < 0) continue;
-    // 属性键 / label / case 标签：`{ name: … }`、`outer:`
-    if (text[after] === ':') continue;
-    // 方法定义（`create() { … }`）：名字后面跟参数表和 `{`，不是引用
-    if (text[after] === '(') {
-      const close = matchClose(text, after);
-      if (close > 0) {
-        const brace = nextSignificant(text, close + 1);
-        if (brace >= 0 && text[brace] === '{') continue;
-      }
-    }
-    findings.push({
-      rule: RULES.UNDEFINED_REF,
-      severity: SEVERITY.ERROR,
-      index: start,
-      message: `标识符 ${name} 没有声明（也不在已知全局 / 仓库全局白名单里）`
-    });
-  }
-  return findings;
-}
-
 // ---------------------------------------------------------------- 出口
 
 function lintSource(source, options) {
   const text = String(source == null ? '' : source);
   const opts = options || {};
-  const extraGlobals = new Set(opts.globals || []);
   const masked = maskSource(text);
-  const raw = [
-    ...checkFloatingPromises(masked),
-    ...checkUnusedVariables(masked),
-    ...checkUndefinedRefs(masked, extraGlobals)
-  ];
-  const seen = new Set();
   const findings = [];
-  for (const finding of raw) {
+  const seen = new Set();
+  for (const finding of checkFloatingPromises(masked)) {
     const key = finding.rule + '@' + finding.index;
     if (seen.has(key)) continue;
     seen.add(key);

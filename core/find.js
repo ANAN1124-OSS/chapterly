@@ -13,24 +13,26 @@ const { caseFoldForMatch } = require('./common');
 // 必须如实提示「只统计 / 只替换了前 N 处」，绝不能把截断值当成「全部处理完成」。
 const MAX_MATCHES = 5000;
 
+// 审计修复 #53（R5）：查找 / 替换 / findNextMatch 共用的「干草堆 + 针」折叠口径。
+// 两边同源：任一边含「小写化会变长」的字符（如 'İ' U+0130）时两边都退回原文扫描，不许出现
+// 「干草堆折叠、针不折叠」的混合匹配（X7 的退化语义，common 里带 folded 标记）。
+function resolveScanText(source, needleRaw, caseSensitive) {
+  if (caseSensitive) return { haystack: source, needle: needleRaw };
+  const foldedHay = caseFoldForMatch(source);
+  const foldedNeedle = caseFoldForMatch(needleRaw);
+  if (foldedHay.folded && foldedNeedle.folded) {
+    return { haystack: foldedHay.text, needle: foldedNeedle.text };
+  }
+  return { haystack: source, needle: needleRaw };
+}
+
 function scanMatches(text, query, options = {}, limit = MAX_MATCHES) {
   const source = String(text == null ? '' : text);
   const needleRaw = String(query == null ? '' : query);
   const cap = Math.max(1, Math.floor(Number(limit) || MAX_MATCHES));
   if (!needleRaw) return { matches: [], truncated: false, limit: cap };
   const caseSensitive = Boolean(options.caseSensitive);
-  let haystack = source;
-  let needle = needleRaw;
-  if (!caseSensitive) {
-    // 查找 / 替换必须**两边同源**：任一边含「小写化会变长」的字符（如 'İ' U+0130）时两边都退回
-    // 原文扫描，不许出现「干草堆折叠、针不折叠」的混合匹配（X7 的退化语义，common 里带 folded 标记）。
-    const foldedHay = caseFoldForMatch(source);
-    const foldedNeedle = caseFoldForMatch(needleRaw);
-    if (foldedHay.folded && foldedNeedle.folded) {
-      haystack = foldedHay.text;
-      needle = foldedNeedle.text;
-    }
-  }
+  const { haystack, needle } = resolveScanText(source, needleRaw, caseSensitive);
   const matches = [];
   let from = 0;
   for (;;) {
@@ -118,17 +120,7 @@ function findNextMatch(text, query, fromIndex = 0, options = {}) {
   const needleRaw = String(query == null ? '' : query);
   if (!needleRaw) return null;
   const caseSensitive = Boolean(options.caseSensitive);
-  let haystack = source;
-  let needle = needleRaw;
-  if (!caseSensitive) {
-    // 与 scanMatches 同一口径：两边都折叠才折叠，任一边退化就两边都用原文（X7 退化语义）。
-    const foldedHay = caseFoldForMatch(source);
-    const foldedNeedle = caseFoldForMatch(needleRaw);
-    if (foldedHay.folded && foldedNeedle.folded) {
-      haystack = foldedHay.text;
-      needle = foldedNeedle.text;
-    }
-  }
+  const { haystack, needle } = resolveScanText(source, needleRaw, caseSensitive);
   const rawFrom = Number(fromIndex);
   const from = Math.max(0, Math.min(Number.isFinite(rawFrom) ? Math.floor(rawFrom) : 0, source.length));
   const step = Math.max(1, needle.length);

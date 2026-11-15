@@ -1,20 +1,19 @@
 'use strict';
-// 零依赖 lint 门禁 CLI（1.6.0 G1）。
+// 零依赖 lint 门禁 CLI（1.6.0 G1；审计修复 #53 / R6 收成单条规则）。
 //
 // 判定口径全部在 `scripts/lint-gate-logic.js`（纯字符串进 / 结论出，单测直接 require 它）；
-// 这个文件只负责三件事：收集要扫的文件、收集「仓库级全局名」、把结论打出来并按 ERROR 数量给退出码。
+// 这个文件只负责三件事：收集要扫的文件、把结论打出来、按 ERROR 数量给退出码。
 //
 // 用法：
 //   node scripts/lint-gate.js            # 人读摘要：ERROR / WARN 逐条，ERROR>0 → 退出 1
 //   node scripts/lint-gate.js --json     # 结构化（给测试 / 其它脚本用），stdout 只有 JSON
 //   node scripts/lint-gate.js --quiet    # 只打最后一行结论
 //
-// 为什么扫 `tests/**`：测试里的 floating promise 会让用例自己挂掉、未定义引用会让用例静默走错分支，
-// 一样值得拦；`tests/` 里的 WARN（未用变量）不挡门禁。
+// 只查 floating-promise（语句级调用 async 函数却没人接 → unhandledRejection）：
+// no-undef / no-unused-vars 已由 `npx eslint .`（eslint.config.js，两条规则均 error）覆盖，
+// 这里不再重复维护第二份全局白名单（审计 R6）。
 //
-// 为什么要有「仓库级全局名」：渲染层各模块用 UMD 挂 `root.CWxxx = factory()` 互相引用，
-// 只扫单文件会把 `CWxxx` 误判成未定义。收集所有 `window./globalThis./self./global./root.名字 =`
-// 的赋值（不区分文件），把结果并进白名单——多收只会漏报，不会误报。
+// 为什么扫 `tests/**`：测试里的 floating promise 会让用例自己挂掉，一样值得拦。
 //
 // 零依赖、只读：不写文件、不碰配置、不碰书库、不联网。
 const fs = require('node:fs');
@@ -59,29 +58,15 @@ function collectFiles(root) {
     .sort();
 }
 
-const GLOBAL_ASSIGN_RE = /\b(?:window|globalThis|self|global|root)\.([A-Za-z_$][\w$]*)\s*=/g;
-
-function collectRepoGlobals(root, files) {
-  const globals = new Set();
-  for (const rel of files) {
-    const text = fs.readFileSync(path.join(root, rel), 'utf8');
-    GLOBAL_ASSIGN_RE.lastIndex = 0;
-    let match;
-    while ((match = GLOBAL_ASSIGN_RE.exec(text))) globals.add(match[1]);
-  }
-  return globals;
-}
-
 function lintRepo(root) {
   const base = root || ROOT;
   const files = collectFiles(base);
-  const globals = collectRepoGlobals(base, files);
   const findings = [];
   for (const rel of files) {
     const source = fs.readFileSync(path.join(base, rel), 'utf8');
-    for (const finding of lintSource(source, { file: rel, globals })) findings.push(finding);
+    for (const finding of lintSource(source, { file: rel })) findings.push(finding);
   }
-  return { root: base, files, globals, findings };
+  return { root: base, files, findings };
 }
 
 function printReport(report, options) {

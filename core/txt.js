@@ -2,12 +2,13 @@
 // 给「导入小说」用：一个 txt 就是一本书时，按「第X章 / 第X幕 / 楔子 / 番外 / Chapter N」等标题行切章。
 // 注意：标题识别只决定「在哪里切」，章节名一律保留原文标题行，不改写作者的字。
 // stripBom / normalizeText 从 core/common.js 来（B6）：导入、捕获、查找、校对、朗读共用同一份
-// 「去开头 BOM + CRLF/CR 归一成 \n」的实现，这里只保留导出（旧调用方按名字取）。
+// 「去开头 BOM + CRLF/CR 归一成 \n」的实现。审计修复 #53（R5）：本文件不再手写这两步，
+// splitChaptersRaw / splitLongUntitled 与 splitChapters 都直接走 normalizeText（第三种写法收掉）。
 //
 // A1 / V113（v1.8.0 WP-30）：标题词表统一在 core/heading.js 的 import 场景（最严格——
 // 不认繁体「話」、不认全角数字、不认「开篇」关键词；「Chapter N」算关键词标题）。
 // 本文件只保留自己的切分逻辑与分隔符 / 长度严格度，别再往这里抄词表。
-const { stripBom, normalizeText } = require('./common');
+const { normalizeText } = require('./common');
 const heading = require('./heading');
 const CHAPTER_NUM_RE = new RegExp(
   `^\\s*第\\s*([${heading.numeralClass('import')}]${heading.numeralRun('import')})\\s*` +
@@ -204,7 +205,7 @@ function splitChapters(text) {
 // 用于「按原文章节导入」：章名和正文都保持原样。
 // 第一个标题之前的书名/作者/简介等，会并入第一章正文，避免多出一个原文没有的「开篇」章。
 function splitChaptersRaw(text) {
-  const normalized = stripBom(String(text == null ? '' : text)).replace(/\r\n?/g, '\n');
+  const normalized = normalizeText(text);
   const lines = normalized.split('\n');
   const marks = [];
   lines.forEach((line, index) => {
@@ -237,7 +238,7 @@ const LONG_UNTITLED_CHUNK = 50000;
 const LONG_UNTITLED_MIN_RATIO = 0.6;
 
 function splitLongUntitled(text, options = {}) {
-  const normalized = stripBom(String(text == null ? '' : text)).replace(/\r\n?/g, '\n');
+  const normalized = normalizeText(text);
   const rawChunk = Number(options.chunkChars);
   const chunkChars = Number.isFinite(rawChunk) && rawChunk > 0 ? Math.max(1000, Math.round(rawChunk)) : LONG_UNTITLED_CHUNK;
   const rawThreshold = Number(options.threshold);
