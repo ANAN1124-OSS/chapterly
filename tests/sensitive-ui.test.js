@@ -677,6 +677,29 @@ test('runSensitiveCheck（#43 / E17）：整本回包 matches 不是数组 → �
   assert.equal(ctx.dom.map.get('sensitive-results').children.length, 0);
 });
 
+test('runSensitiveCheck（残留 #43 / E17）：整本 ok:false（词表读不了）→ 真实错误 + 刷新词表，不误报「格式不对」', async () => {
+  // 背景：整本失败回包只有 { ok:false, code, message, wordList }，没有 matches。
+  // 旧顺序先判 !Array.isArray(payload.matches) → 一律 failSensitivePayload()，界面显示
+  // 「预检结果格式不对」而不是「词表文件不存在」，且新 wordList 没有写进 state（状态还是旧的）。
+  const dom = makeDocument();
+  const wordList = { ok: false, code: 'WORD_LIST_NOT_FOUND', message: '词表文件不存在' };
+  const ctx = build({
+    dom,
+    scope: 'book',
+    wordList: { ok: true, name: '旧词表.txt', count: 3 },
+    bookResult: { ok: false, code: 'WORD_LIST_NOT_FOUND', message: '词表文件不存在', wordList }
+  });
+  assert.deepEqual(await ctx.ui.runSensitiveCheck(), { ok: false, total: 0, scope: 'book' });
+  assert.equal(ctx.state.sensitive.ok, false);
+  assert.deepEqual(ctx.state.sensitive.matches, [], '失败回包补成完整形状（下游 .length / .slice 安全）');
+  assert.equal(dom.map.get('sensitive-summary').textContent, '词表文件不存在');
+  assert.notEqual(dom.map.get('sensitive-summary').textContent, MALFORMED_TEXT, '不许吞掉真实错误换成「格式不对」');
+  assert.deepEqual(ctx.state.sensitiveWordList, wordList, '失败回包也带 wordList，必须刷新词表状态');
+  assert.equal(dom.map.get('sensitive-wordlist-text').textContent, '词表文件不存在');
+  assert.equal(dom.map.get('sensitive-wordlist-text').classList.contains('warn'), true);
+  assert.equal(dom.map.get('sensitive-results').children.length, 0);
+});
+
 test('runSensitiveCheck（#43 / E17）：失败路径按发起时的身份结算 —— 在飞期间换书，不把上一本书的错误写上眼前面板', async () => {
   const ctx = build();
   ctx.host.api.sensitiveCheckText = async () => {

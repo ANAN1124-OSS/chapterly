@@ -372,7 +372,14 @@
             };
       }
       // 审计修复 #43（E17）：整本回包同样先确认 matches 是数组，后面 .length / .slice 才安全。
-      if (!Array.isArray(payload.matches)) return failSensitivePayload();
+      // 审计残留修复 #43（E17）：必须先排除 ok===false —— 词表读不了之类的失败回包本来就没有
+      // matches，旧顺序把它也判成「预检结果格式不对」，吞掉真实错误（词表文件不存在）、
+      // wordList 也不刷新。失败回包补成完整形状后交给下面的统一降级路径（摘要显示真实原因）。
+      if (payload.ok === false) {
+        payload = { ...payload, total: 0, matches: [], byWord: [], wordHitCount: 0 };
+      } else if (!Array.isArray(payload.matches)) {
+        return failSensitivePayload();
+      }
       state.sensitive = payload;
       if (payload.wordList) state.sensitiveWordList = payload.wordList;
       renderSensitiveWordList();
