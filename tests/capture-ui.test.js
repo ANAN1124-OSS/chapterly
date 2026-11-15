@@ -858,6 +858,44 @@ test('正文：消费 IPC 失败 → 插入仍算成功，本地列表兜底去�
       [2],
       '本地兜底：正文已经进编辑区，列表里不能再留着这条'
     );
+    // 审计修复 #42（V405）：删队列失败必须出声（以前静默摘掉本地行，作者不知道主进程队列里还在）
+    assert.ok(
+      ctx.log.includes(
+        'toast:warn:这条记录没能从队列移除（本窗口已隐藏它，刷新不会再画回来；其它窗口若仍出现请勿重复插入）'
+      ),
+      '删队列失败要有一条 warn 提示'
+    );
+
+    // 再刷新一次（模拟作者又复制了一段 → clipboard:recorded → refreshQueue 全量重拉）：
+    // 主进程队列里这条还在，但本地消费登记把它挡住 —— 不许画回来，否则再点「正文」就是重复插入。
+    await ui.refreshQueue();
+    assert.deepEqual(ui.records().map((item) => item.id), [2], '刷新后也不许把已消费的那条画回来');
+    assert.equal(
+      ui.records()[0].kind,
+      'queue',
+      '剩下的仍是那条没处理过的队列记录'
+    );
+
+    // 面板关掉再打开（fetchQueue 同样过滤）：不许借「重新打开」绕开消费登记
+    ui.close();
+    await ui.open();
+    assert.deepEqual(ui.records().map((item) => item.id), [2], '关掉再打开也不许画回来');
+  }));
+
+test('正文：清空队列成功后消费登记作废（新记录不会被上一次失败的登记误过滤）', () =>
+  withFakeDocument(async () => {
+    const ctx = build({ queue: [{ text: QUEUE_A }], removeFails: true });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    await ui.applyBody({ id: 1 });
+    assert.deepEqual(ui.records().map((item) => item.id), [], '失败的这一条已从本地列表摘掉');
+    // 主进程清空成功：队列真空，消费登记必须一起作废
+    ctx.queue.length = 0;
+    await ui.clearQueue();
+    // 之后主进程又有了一条新记录（id 复用也不该被上一次的登记挡住）
+    ctx.queue.push({ id: 1, text: QUEUE_B, chars: capture.countChars(QUEUE_B), rawLength: QUEUE_B.length, at: 1762340000000 });
+    await ui.refreshQueue();
+    assert.deepEqual(ui.records().map((item) => item.id), [1], '清空之后的新记录照常显示');
   }));
 
 test('正文：insertIntoBody 失败 → 保留记录 + toast error + 解锁', () =>

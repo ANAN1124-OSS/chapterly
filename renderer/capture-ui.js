@@ -122,8 +122,28 @@
       position: 'end', // b11：'end'（全书末尾，默认）/ 'after-current'（当前章之后）
       queue: [], // [{ id, chars, at, previewText }] 主进程队列元数据，不含正文
       pendingText: null, // 直捕：当前剪贴板原文（未入队，只有这一条在渲染层内存里）
-      tooLarge: false // 直捕正文 >30 万字点「章节」后置位：显示「去导入小说…」
+      tooLarge: false, // 直捕正文 >30 万字点「章节」后置位：显示「去导入小说…」
+      consumedIds: new Set() // 审计修复 #42（V405）：正文已插入、但 queue-remove 失败的 id
     };
+
+    // 审计修复 #42（V405）：正文插入成功但 capture:queue-remove 失败（主进程忙 / 这条已被别处消费）时，
+    // 主进程队列里它还在。以前只在失败分支把本地列表摘掉，下一次 refreshQueue 全量重拉又会把它画回来——
+    // 作者再点「正文」就重复插入同一段。这里登记「本窗口已消费」的 id，fetchQueue 一律过滤；
+    // 正常删除不需要登记（主进程已删，拉回来本来就没有）。上限 200 条：失败是罕见路径，防止长期运行无限涨。
+    const MAX_CONSUMED_IDS = 200;
+
+    function markConsumed(id) {
+      if (id == null) return;
+      panel.consumedIds.add(id);
+      while (panel.consumedIds.size > MAX_CONSUMED_IDS) {
+        panel.consumedIds.delete(panel.consumedIds.values().next().value);
+      }
+    }
+
+    function dropConsumed(list) {
+      if (!panel.consumedIds.size) return list;
+      return list.filter((item) => !panel.consumedIds.has(item.id));
+    }
 
     // 时间只显示「时:分」：队列只记本次运行，日期没有信息量。
     function clockText(at) {
@@ -138,24 +158,24 @@
       if (!api || typeof api.captureQueueList !== 'function') return [];
       const data = await call(api.captureQueueList);
       const entries = data && Array.isArray(data.entries) ? data.entries : [];
-      return entries
-        .map((item) => {
-          // previewText 是契约 §3 的新字段（300 字 / 6 行）；T2 未升级的主进程只给首行 preview，
-          // 这里兼容一下，面板不至于空白。
-          const previewText =
-            typeof (item && item.previewText) === 'string'
-              ? item.previewText
-              : typeof (item && item.preview) === 'string'
-                ? item.preview
-                : '';
-          return {
-            id: Number(item && item.id),
-            chars: Number(item && item.chars) || 0,
-            at: Number(item && item.at) || 0,
-            previewText
-          };
-        })
-        .filter((item) => Number.isFinite(item.id));
+      const mapped = entries.map((item) => {
+        // previewText 是契约 §3 的新字段（300 字 / 6 行）；T2 未升级的主进程只给首行 preview，
+        // 这里兼容一下，面板不至于空白。
+        const previewText =
+          typeof (item && item.previewText) === 'string'
+            ? item.previewText
+            : typeof (item && item.preview) === 'string'
+              ? item.preview
+              : '';
+        return {
+          id: Number(item && item.id),
+          chars: Number(item && item.chars) || 0,
+          at: Number(item && item.at) || 0,
+          previewText
+        };
+      }).filter((item) => Number.isFinite(item.id));
+      // 审计修复 #42（V405）：本窗口已经消费、但主进程没删掉的条目不许再画回来（防止重复插入）。
+      return dropConsumed(mapped);
     }
 
     function queueSupported() {
@@ -490,6 +510,8 @@
         panel.queue = [];
         panel.pendingText = null;
         panel.tooLarge = false;
+        // 审计修复 #42（V405）：主进程队列已经真空，消费登记随之作废（id 不复用，留着只会白过滤）
+        panel.consumedIds.clear();
       } catch (err) {
         toast(`清空捕获队列失败：${err.message}`, 'error');
         return { ok: false, code: err.code, message: err.message };
@@ -573,7 +595,14 @@
             /* 插入已经成功：删队列失败不打断，下面兜底把本地列表里这条去掉 */
           }
           if (removed) await reloadQueue(resolved.id);
-          else panel.queue = panel.queue.filter((item) => item.id !== resolved.id);
+          else {
+            // 审计修复 #42（V405）：删队列失败（主进程忙 / 这条已被别处消费）不能只静默摘本地列表——
+            // 主进程队列里它还在，下一次 clipboard:recorded 触发的 refreshQueue 会把它画回来，
+            // 作者再点「正文」就重复插入同一段。这里登记消费，并明确告诉作者为什么它「没删掉」。
+            markConsumed(resolved.id);
+            panel.queue = panel.queue.filter((item) => item.id !== resolved.id);
+            toast('这条记录没能从队列移除（本窗口已隐藏它，刷新不会再画回来；其它窗口若仍出现请勿重复插入）', 'warn');
+          }
         }
         toast(`已插入正文（${formatCount(chars)} 字），这条记录已从列表移除`);
         // 键盘连续处理：焦点交给下一条的「正文」（列表空了就落到「取消」），不用每次重新 Tab。
