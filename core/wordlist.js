@@ -87,8 +87,9 @@ function createReader(options) {
     : {};
 
   // 词表字节 → { ok, [field], stats } 或 { ok:false, code, message }。
-  // 编码复用 txt.decodeBuffer（UTF-8 / UTF-16 BOM / GB18030），并额外识别两种「不是纯文本」：
-  // 带 NUL 的二进制、解码出替换字符 U+FFFD 的坏编码。
+  // 编码复用 txt.decodeBuffer（UTF-8 / UTF-16 BOM / UTF-32LE BOM / GB18030），并额外识别两种
+  // 「不是纯文本」：带 NUL 的二进制（提示里说明可能是无 BOM 的 UTF-16）、严格解码失败的坏编码
+  //（不再用「解出 U+FFFD」判坏——合法的 U+FFFD 是原文，见审计修复 #49 / E24）。
   function decodeBuffer(buffer) {
     if (!buffer || !buffer.length) {
       return { ok: false, code: code('empty'), message: message('emptyFile') };
@@ -114,9 +115,19 @@ function createReader(options) {
     if (typeof text !== 'string') {
       return { ok: false, code: parseFailedCode, message: parseFailedMessage };
     }
-    if (text.includes('\uFFFD')) {
+    // 审计修复 #49（E24）：旧实现用「解出 U+FFFD」判定坏编码 —— 原文里本来就有一个合法的
+    // U+FFFD（UTF-8 EF BF BD）也会被拒。改成再走一遍严格解码：能完整识别就是合法文本
+    //（其中的 U+FFFD 是原文）；严格解码返回 null 才是真坏编码（宽容解码替换出来的 U+FFFD）。
+    let exact;
+    try {
+      exact = txtLib.decodeBufferStrict(buffer);
+    } catch {
+      exact = null;
+    }
+    if (exact === null) {
       return { ok: false, code: code('badEncoding'), message: message('badEncoding') };
     }
+    text = exact;
     let parsed;
     try {
       parsed = parse(text);

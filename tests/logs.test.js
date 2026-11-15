@@ -325,9 +325,12 @@ test('V105/WP-26：单日日志 999 份全满时丢弃并计数，不再往满�
   });
   const result = await store.write({ level: 'error', kind: 'uncaughtException', message: '满到上限了' });
   const after = await fs.stat(path.join(dir, last));
-  assert.equal(result.ok, true);
+  // 审计修复 #49（E24）：丢弃不是成功 —— ok:false + 明确错误码/文案，只看 ok 的调用方不会再误判
+  assert.equal(result.ok, false);
   assert.equal(result.suppressed, true);
   assert.equal(result.dropped, true);
+  assert.equal(result.code, 'LOG_DROPPED');
+  assert.match(result.message, /没有写入/);
   assert.equal(result.file, null);
   assert.equal(store.counters().dropped, 1, '丢弃要计数');
   assert.equal(store.counters().written, 0);
@@ -481,6 +484,24 @@ test('崩溃日志：同样的错误 5 秒内只记一条，过了窗口再记',
     assert.equal((text.match(/同一个错误/g) || []).length, 2);
     assert.equal(store.counters().written, 2);
     assert.equal(store.counters().suppressed, 1);
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test('崩溃日志（审计 #49 / E24）：去重签名含 path，不同文件的同一句错误各记一条', async () => {
+  const base = await mkTmp();
+  try {
+    const store = logsLib.createLogStore(base, { now: () => new Date(2026, 10, 1, 8, 0, 0) });
+    const first = await store.write({ level: 'error', kind: 'save-failed', path: '甲书\\第1章.txt', message: '找不到文件' });
+    const second = await store.write({ level: 'error', kind: 'save-failed', path: '乙书\\第2章.txt', message: '找不到文件' });
+    assert.equal(first.ok, true);
+    assert.equal(first.suppressed, false);
+    assert.equal(second.ok, true);
+    assert.equal(second.suppressed, false, '不同 path 的同一句错误不能被去重吞掉');
+    const text = await readAll(store.dir);
+    assert.equal((text.match(/找不到文件/g) || []).length, 2);
+    assert.equal(store.counters().suppressed, 0);
   } finally {
     await fs.rm(base, { recursive: true, force: true });
   }

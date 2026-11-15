@@ -159,7 +159,8 @@ const READER = wordlist.createReader({
     emptyFile: '词表是空文件（每行一个词，可写「错词 → 建议」）',
     emptyList: '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）',
     tooBig: '词表文件太大（上限 4MB），请换一个小一点的 txt',
-    binary: '词表不像是纯文本（检测到二进制内容），请用 UTF-8 / UTF-16 / GBK 编码的 txt',
+    // 审计修复 #49（E24）：含 NUL 不一定是二进制 —— 无 BOM 的 UTF-16 也长这样，提示不要误导。
+    binary: '词表含 NUL 空字节（可能是无 BOM 的 UTF-16，也可能是二进制文件），请用 UTF-8 / UTF-16（带 BOM）/ GBK 编码的 txt',
     badEncoding: '词表编码无法识别（不是 UTF-8 / UTF-16 / GBK 文本），请另存为 UTF-8 的 txt',
     notConfigured: '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的五条规则）',
     publicEmpty: '还没有指定校对词表',
@@ -220,18 +221,28 @@ function mergeListEntries(lists, indexes) {
   const entries = [];
   const seen = new Set();
   const picked = Array.isArray(lists) ? lists : [];
-  for (let index = 0; index < picked.length; index += 1) {
+  // 审计修复 #49（E24）：子集合并以前只回 entries，截断标记在调用方丢失。
+  // 现在把「这份文件自己读时被截断」与「合并时撞到 5000 上限」都如实带回。
+  let truncated = false;
+  let capped = false;
+  for (let index = 0; index < picked.length && !capped; index += 1) {
     if (indexes && !indexes.has(index)) continue;
-    const own = picked[index] && Array.isArray(picked[index].entries) ? picked[index].entries : [];
+    const list = picked[index];
+    if (list && list.ownTruncated === true) truncated = true;
+    const own = list && Array.isArray(list.entries) ? list.entries : [];
     for (const entry of own) {
       // 和单文件 parseGlossary 同一顺序：先去重，再看总数上限
       if (seen.has(entry.term)) continue;
-      if (entries.length >= MAX_ENTRIES) return entries;
+      if (entries.length >= MAX_ENTRIES) {
+        truncated = true;
+        capped = true;
+        break;
+      }
       seen.add(entry.term);
       entries.push({ term: entry.term, suggestion: entry.suggestion });
     }
   }
-  return entries;
+  return { entries, truncated };
 }
 
 async function readGlossaryFiles(paths) {
@@ -245,7 +256,10 @@ async function readGlossaryFiles(paths) {
   let anyOk = false;
   for (const one of read) {
     const own = one.ok && Array.isArray(one.entries) ? one.entries : [];
-    let truncated = Boolean(one.ok && one.stats && one.stats.truncated);
+    // ownTruncated 是「这一份文件自己」的截断；truncated 还会在总数上限处被合并逻辑标真。
+    // 子集合并要区分这两件事（unselected 的份把额度占掉，不代表选中的这份不完整）。
+    const ownTruncated = Boolean(one.ok && one.stats && one.stats.truncated);
+    let truncated = ownTruncated;
     for (const entry of own) {
       // 和单文件 parseGlossary 同一顺序：先去重，再看总数上限
       if (seen.has(entry.term)) continue;
@@ -261,6 +275,7 @@ async function readGlossaryFiles(paths) {
       count: own.length,
       error: one.ok === true ? '' : glossaryErrorText(one.code),
       truncated,
+      ownTruncated,
       entries: own
     });
     if (one.ok === true) anyOk = true;
@@ -372,7 +387,18 @@ async function readProofreadWordlistForRequest(config, options) {
   const all = await readGlossaryFiles(allPaths);
   const wordList = proofreadWordListInfo(all, allPaths);
   const picked = wordlistIndexesForRequest(allPaths, options);
-  const entries = picked ? mergeListEntries(all.lists, picked) : all.ok ? all.entries : [];
+  let entries;
+  if (picked) {
+    // 审计修复 #49（E24）：子集合并的截断标记按「这次实际参与的份」结算，
+    // 不再沿用全部词表的合并结果（未勾选的份把 5000 额度占掉时，不能把选中的词表误标成截断）。
+    const merged = mergeListEntries(all.lists, picked);
+    entries = merged.entries;
+    wordList.truncated = merged.truncated;
+  } else {
+    // 全部参与时，顶层的 truncated 由任一参与文件被截断决定（多份公开信息以前没有这个字段）。
+    wordList.truncated = all.lists.some((list) => list && list.truncated === true);
+    entries = all.ok ? all.entries : [];
+  }
   return { entries, wordList };
 }
 

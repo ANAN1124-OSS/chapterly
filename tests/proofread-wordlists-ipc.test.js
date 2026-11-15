@@ -126,8 +126,11 @@ test('行为：双表（坏份 / 超上限 / 重复词）合并与校对结果�
         { ok: true, count: 5000, error: '', truncated: true }
       ],
       count: 5000,
-      name: '2 份词表'
-    }, '公开信息与改前逐字一致（坏份只影响自己那一条）');
+      name: '2 份词表',
+      // 审计修复 #49（E24）：多份信息补顶层 truncated（任一参与文件被截断即 true）；
+      // 其余字段与改前逐字一致。
+      truncated: true
+    }, '公开信息其余字段与改前逐字一致（坏份只影响自己那一条）');
 
     const text = '重复在乙词3与乙词4997。';
     const result = proofread.proofreadText(text, { maxIssues: 20 }, words.entries);

@@ -260,6 +260,17 @@ test('校对：连续标点——3 个及以上才报，「！？」「……」
   assert.equal(only(proofread.proofreadText('「……？！」'), 'punct-run').length, 1);
   // 不跨行
   assert.equal(only(proofread.proofreadText('？\n？\n？'), 'punct-run').length, 0);
+  // 审计修复 #49（E24）：全角 + 半角混排的 3 个标点也要报（旧集合在半角处断开，只数到 2）
+  for (const [line, match] of [
+    ['他说完了。。.', '。。.'],
+    ['他转身就走-——', '-——'],
+    ['真的吗?!.', '?!.']
+  ]) {
+    const mixed = only(proofread.proofreadText(line), 'punct-run');
+    assert.equal(mixed.length, 1, `混排连排应报一次：${line}`);
+    assert.equal(mixed[0].match, match);
+    assert.match(mixed[0].message, /连续 3 个标点/);
+  }
 });
 
 test('校对：多余空行——2 个及以上连续空行才报，单个空行不报', () => {

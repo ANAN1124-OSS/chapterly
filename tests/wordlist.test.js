@@ -133,6 +133,16 @@ test('decodeBuffer：编码（UTF-8 BOM / UTF-16LE / GBK）与空 / 超限 / 二
   });
   // 坏字节解出 U+FFFD
   assert.equal(reader.decodeBuffer(Buffer.from([0xff, 0xff, 0x0a, 0x41])).message, '演示词表编码坏了');
+  // 审计修复 #49（E24）：原文里合法的 U+FFFD（UTF-8 EF BF BD）不能被当成坏编码
+  const literal = reader.decodeBuffer(Buffer.from('替换\uFFFD词', 'utf8'));
+  assert.equal(literal.ok, true);
+  assert.deepEqual(literal.words, ['替换\uFFFD词']);
+  // UTF-32LE BOM 也走严格解码（#50 的解码器 + #49 的严格判定）
+  const utf32 = Buffer.alloc(4 + Array.from('甲词').length * 4);
+  Buffer.from([0xff, 0xfe, 0x00, 0x00]).copy(utf32, 0);
+  Array.from('甲词').forEach((ch, index) => utf32.writeUInt32LE(ch.codePointAt(0), 4 + index * 4));
+  assert.equal(reader.decodeBuffer(utf32).ok, true);
+  assert.deepEqual(reader.decodeBuffer(utf32).words, ['甲词']);
   // 超过 4MB（共享上限）
   const tooBig = reader.decodeBuffer(Buffer.alloc(wordlist.MAX_FILE_BYTES + 1, 0x41));
   assert.deepEqual(tooBig, { ok: false, code: 'DEMO_TOO_BIG', message: '演示词表太大' });
@@ -317,7 +327,7 @@ test('敏感词 / 校对词表：同一份字节在两边得到各自的错误�
   assert.equal(glossary.decodeGlossaryBuffer(binary).code, 'GLOSSARY_BAD_ENCODING');
 
   // 有内容但没有有效词：错误码同 EMPTY，文案各用各的（行解析的差异留在模块里）
-  assert.equal(sensitive.decodeWordListBuffer(Buffer.from(' \r\n\t', 'utf8')).message, '词表里没有有效的词（每行一个词，空行会被忽略）');
+  assert.equal(sensitive.decodeWordListBuffer(Buffer.from(' \r\n\t', 'utf8')).message, '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）');
   assert.equal(
     glossary.decodeGlossaryBuffer(Buffer.from(' \r\n# 只有注释\n', 'utf8')).message,
     '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）'

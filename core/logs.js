@@ -349,7 +349,9 @@ function createLogStore(baseDir, options = {}) {
       try {
         const now = toDate(clock());
         const entry = sanitizeEntry(raw, now);
-        const signature = `${entry.level}|${entry.kind}|${entry.code}|${entry.message}`;
+        // 审计修复 #49（E24）：签名补 path —— 不同文件里的同一句「找不到文件」不再被去重吞掉；
+        // 同一文件同一错误仍按 5 秒窗口抑制。
+        const signature = `${entry.level}|${entry.kind}|${entry.code}|${entry.path}|${entry.message}`;
         const stamp = entry.time.getTime();
         if (signature === lastSignature && stamp - lastSignatureAt < DEDUPE_WINDOW_MS) {
           counters.suppressed += 1;
@@ -360,7 +362,16 @@ function createLogStore(baseDir, options = {}) {
         const written = await append(renderEntry(entry), entry.time);
         if (written.dropped) {
           // V105：单日日志已到 999 份且全部写满 —— 如实回报「这条没写」，不假装成功。
-          return { ok: true, suppressed: true, dropped: true, file: null, pruned: [] };
+          // 审计修复 #49（E24）：ok 也必须是 false —— 只看 ok 的调用方以前会把「丢弃」当成功。
+          return {
+            ok: false,
+            suppressed: true,
+            dropped: true,
+            code: 'LOG_DROPPED',
+            message: '日志文件已达当日上限，这一条没有写入',
+            file: null,
+            pruned: []
+          };
         }
         counters.written += 1;
         return { ok: true, suppressed: false, file: written.file, pruned: written.pruned };

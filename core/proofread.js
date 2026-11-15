@@ -109,7 +109,11 @@ function charBefore(text, index) {
   return text.slice(index - 1, index);
 }
 // 连续标点判定里认的全角标点（半角标点由第 ① 条单独报，避免一条内容报两次）
-const RUN_PUNCT = new Set(['，', '。', '；', '：', '！', '？', '、', '…', '—']);
+const CJK_RUN_PUNCT = new Set(['，', '。', '；', '：', '！', '？', '、', '…', '—']);
+// 审计修复 #49（E24）：半角标点也参与「连续」判定 —— 旧集合只有全角，遇到「。。.」「-——」
+// 这类混排会在半角处停下，三位标点只数到两位而漏报。半角仍由第 ① 条单独给改法，两条各说一件事。
+const ASCII_RUN_PUNCT = new Set(['.', ',', ';', ':', '!', '?', '-']);
+const RUN_PUNCT = new Set([...CJK_RUN_PUNCT, ...ASCII_RUN_PUNCT]);
 const SNIPPET_RADIUS = 18;
 const PARAGRAPH_PREFIX = 24;
 
@@ -203,15 +207,21 @@ function createCollector(maxIssues) {
   };
 }
 
-// 连续标点数：把连排的「……」/「——」各折叠成一个单位，其余每个标点算一个单位
+// 连续标点数：把连排的「……」/「——」各折叠成一个单位，其余每个标点算一个单位。
+// 审计修复 #49（E24）：全角 + 半角混排时按字符数算 —— 「-——」「。。.」这类 3 个标点
+// 如果仍按折叠单位数（2）就会被漏报；纯 ASCII / 纯全角连排维持原有折叠口径。
 function countPunctUnits(run) {
   let units = 0;
+  let hasAscii = false;
+  let hasCjk = false;
   for (let i = 0; i < run.length; i += 1) {
     const ch = run[i];
+    if (ASCII_RUN_PUNCT.has(ch)) hasAscii = true;
+    else if (CJK_RUN_PUNCT.has(ch)) hasCjk = true;
     if ((ch === '…' || ch === '—') && i > 0 && run[i - 1] === ch) continue;
     units += 1;
   }
-  return units;
+  return hasAscii && hasCjk ? run.length : units;
 }
 
 // 中文句读（破折号判定的「中文侧」基础集合）。不含「——」「……」——

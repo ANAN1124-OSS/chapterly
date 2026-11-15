@@ -26,6 +26,11 @@ test('敏感词：parseWordList 每行一个词，去空白 / 空行 / 重复，
   // 全空
   assert.deepEqual(sensitive.parseWordList(' \n\t\n\u3000').words, []);
   assert.deepEqual(sensitive.parseWordList(null).words, []);
+  // 审计修复 #49（E24）：与校对词表同一口径 —— # 开头是注释，不会变成词「#」
+  const commented = sensitive.parseWordList('# 说明一行\n色情\n  # 缩进注释\n暴力\n');
+  assert.deepEqual(commented.words, ['色情', '暴力']);
+  assert.equal(commented.stats.comments, 2);
+  assert.equal(sensitive.parseWordList('# 只有注释\n').words.length, 0);
 });
 
 test('敏感词：词表最多取前 5000 个词，超出标 truncated', () => {
@@ -61,6 +66,15 @@ test('敏感词：词表解码 UTF-8（含 BOM）/ UTF-16LE / GBK，空与二进
   const broken = sensitive.decodeWordListBuffer(Buffer.from([0xff, 0xff, 0x0a, 0x41]));
   assert.equal(broken.ok, false);
   assert.equal(broken.code, 'WORD_LIST_BAD_ENCODING');
+  // 审计修复 #49（E24）：原文里合法的 U+FFFD 不能再被当成坏编码
+  const literal = sensitive.decodeWordListBuffer(Buffer.from('色情\n替换\uFFFD词', 'utf8'));
+  assert.equal(literal.ok, true);
+  assert.deepEqual(literal.words, ['色情', '替换\uFFFD词']);
+  // 无 BOM 的 UTF-16 含 NUL：仍拒绝，但提示要说明可能是 UTF-16（不再武断说「二进制」）
+  const noBomUtf16 = sensitive.decodeWordListBuffer(Buffer.from('色情 word', 'utf16le'));
+  assert.equal(noBomUtf16.ok, false);
+  assert.equal(noBomUtf16.code, 'WORD_LIST_BAD_ENCODING');
+  assert.match(noBomUtf16.message, /无 BOM 的 UTF-16/);
 });
 
 test('敏感词：readWordListFile 未设置 / 不存在 / 是目录 / 正常文件 都给结构化结果', async () => {
