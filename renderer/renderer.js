@@ -5553,7 +5553,12 @@
       const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
       if (key !== 'z') return;
       event.preventDefault();
-      undoBulkWrite();
+      const undone = undoBulkWrite();
+      // 审计修复 #40（V403）：命中并真的执行了就不再冒泡到 document —— 那里还有一条「整理快照优先」
+      // 的 Ctrl+Z（undoFormat）。两套通道没有互斥时，「整理本章 → 大段插入」连做后按一次 Ctrl+Z
+      // 会连退两步（bulk 快照退一步 + 整理快照再退一步），与「一次按键撤销一步」的预期相反。
+      // 只在执行成功时停止冒泡：快照已作废（换书 / 换章）时让 document 的整理通道照旧工作。
+      if (undone) event.stopPropagation();
     });
     setupEditorMarks();
 

@@ -382,6 +382,19 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   assert.match(rendererCode, /Math\.min\(info\.index, state\.chapters\.length\)/, '找不到邻居才退回捕获下标');
 });
 
+test('静态闸门（V403）：正文 Ctrl+Z 拦截器执行成功后停止冒泡，不再叠上 document 级「撤销整理」', () => {
+  // 背景：正文上的拦截器处理 bulk 一次性快照（preventDefault 不会阻止冒泡）；document 级还有
+  // 「整理快照优先」的 Ctrl+Z。两套通道没有互斥时，「整理本章 → 大段插入」后按一次 Ctrl+Z
+  // 会连退两步。这里把「执行成功才 stopPropagation」钉住（快照作废时仍让整理通道照旧工作）。
+  assert.match(
+    rendererCode,
+    /if \(key !== 'z'\) return;\n\s+event\.preventDefault\(\);\n\s+const undone = undoBulkWrite\(\);\n(?:\s+\/\/[^\n]*\n)*\s+if \(undone\) event\.stopPropagation\(\);/,
+    '正文拦截器要在 undoBulkWrite() 成功后 stopPropagation；preventDefault 与快照作废时的放行都要在'
+  );
+  // document 级那条「整理快照优先」的分支必须还在（只让位，不删除）
+  assert.match(rendererCode, /if \(state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/);
+});
+
 test('静态闸门：删除章节不再弹「删除章节」确认框（P0-2 只留两处确认）', () => {
   const start = rendererCode.indexOf('async function deleteChapterAt');
   const end = rendererCode.indexOf('function activateDeleteUndo');

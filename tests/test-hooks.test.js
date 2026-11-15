@@ -366,7 +366,9 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   core/search-index.js，空态文案在 renderer/shelf-filter-ui.js。
   // 审计修复 #41（V404）：6303 → 6304（+1）：createCaptureUi 装配注释从漂移的「9 个成员」改成实际的
   //   10 个，顺带写明第 10 个 staleGuard 的来历（注释换行多出一行）；代码零新增。
-  const RENDERER_LINE_BUDGET = 6304;
+  // 审计修复 #40（V403）：6304 → 6309（+5）：正文 Ctrl+Z 拦截器执行成功后 stopPropagation（+1 行代码
+  //   `const undone` / `if (undone)` 两处 + 4 行说明），让一次按键只撤销一步；判定仍全在渲染层闭包里。
+  const RENDERER_LINE_BUDGET = 6309;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

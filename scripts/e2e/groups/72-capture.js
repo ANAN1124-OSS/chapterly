@@ -672,6 +672,55 @@ module.exports = async function group72Capture(t) {
       (await exec('window.__cwTest.caret()')) === caretBulk
   );
 
+  // 72i3. 审计修复 #40（V403）：整理快照与 bulk 一次性快照互斥 —— 一次 Ctrl+Z 只撤销一步。
+  // 以前正文拦截器 preventDefault 后事件继续冒泡到 document 的「整理快照优先」分支：
+  // 「整理本章 → 大段插入」连做后按一次 Ctrl+Z 会连退两步（插入 + 整理），与作者预期相反。
+  const formatBefore = '整理前：段落一。  \n\n\n\n段落二。   ';
+  await exec(`window.__cwTest.setText(${JSON.stringify(formatBefore)})`);
+  await exec("window.__cwTest.writeFormatOptions({ indent: '2', blankLines: 'single', trimTrailing: true, normalizePunct: true })");
+  await exec('window.__cwTest.applyFormat()');
+  const formatted = await exec('window.__cwTest.text()');
+  const stepsAfterFormat = await exec('window.__cwTest.formatUndoSteps()');
+  check(
+    '剪贴板面板（V403 前导）：整理本章 → 正文变了、留下 1 步整理快照',
+    formatted !== formatBefore && stepsAfterFormat === 1,
+    { formatted, stepsAfterFormat }
+  );
+  const caretFormatted = await exec('window.__cwTest.caret()');
+  await exec(`window.__cwTest.openCapture(${JSON.stringify(bulkText)})`);
+  await waitFor('window.__cwTest.captureOpen() === true');
+  const bulkAfterFormat = JSON.parse(
+    await exec('window.__cwTest.captureApplyBody({ pending: true }).then((r) => JSON.stringify(r || null))')
+  );
+  await exec('window.__cwTest.closeCapture()');
+  check(
+    '剪贴板面板（V403 前导）：整理后再大段插入（正文 = 整理后 + 2 万字，bulk 快照建立）',
+    Boolean(bulkAfterFormat && bulkAfterFormat.ok === true) &&
+      (await exec('window.__cwTest.text()')) === formatted.slice(0, caretFormatted) + bulkText + formatted.slice(caretFormatted)
+  );
+  const v403One = await exec(`(() => {
+    const el = document.getElementById('editor');
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+    return { text: el.value, steps: window.__cwTest.formatUndoSteps(), dirty: window.__cwTest.dirty() };
+  })()`);
+  check(
+    '剪贴板面板（V403）：一次 Ctrl+Z 只退大段插入（回到整理后，整理快照仍留着）',
+    v403One.text === formatted && v403One.steps === 1 && v403One.dirty === true,
+    { ...v403One, formatted }
+  );
+  const v403Two = await exec(`(() => {
+    const el = document.getElementById('editor');
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+    return { text: el.value, steps: window.__cwTest.formatUndoSteps() };
+  })()`);
+  check(
+    '剪贴板面板（V403）：第二下 Ctrl+Z 才退掉整理（两套撤销通道各走一步、都还能用）',
+    v403Two.text === formatBefore && v403Two.steps === 0,
+    v403Two
+  );
+
   // 72j. 关掉后台监听：队列立刻清空（隐私口径），之后再复制也不入队
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
