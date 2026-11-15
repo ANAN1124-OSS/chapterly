@@ -23,7 +23,13 @@ const MAX_NO_SEPARATOR_TITLE = 80;
 const MAX_KEYWORD_HEADING = 40;
 
 // 「第X章」后面的分隔符（不带逗号句号，避免把「第一章，他……」这种正文当标题）
-const NUM_SEPARATORS = /^[：:、.．\-—–”"'‘’】）》」』（(【《「『，,;；\s]/;
+// 审计修复 #1（E1）：字符类里原来还留着 `，,;；`，和这行注释自相矛盾 —— 正文行「第三章，夜色渐深」
+// 因此 hasSeparator=true、绕过下面的长度守卫被直接当成标题，默认「按原文章节」导入会静默错划结构。
+// 逗号 / 分号都不是标题分隔符：这里按注释意图删掉；逗号另有语境守卫（见 parseHeading），
+// 分号只由「无分隔符短标题」的长度守卫兜底（「第四章;转生成铃兰小姐后…」这类真实短标题仍认）。
+const NUM_SEPARATORS = /^[：:、.．\-—–”"'‘’】）》」』（(【《「『\s]/;
+// 紧跟「第X章」的逗号是正文句读（「第三章，夜色渐深」），不是标题分隔符
+const PROSE_AFTER_NUM_MARKER = /^[，,]/;
 // 关键词标题（楔子/番外/后记…）后面的分隔符可以更宽，因为关键词本身已经很明确
 const KEY_SEPARATORS = /^[：:、.．\-—–”"'‘’】）》」』（(【《「『，,;；。!！?？·…\s]/;
 // 关键词标题后面没有分隔符时，只有这些开头才像标题；
@@ -73,6 +79,10 @@ function parseHeading(line) {
   if (numMatch) {
     const restRaw = numMatch[3] || '';
     const marker = numMatch[2];
+    // 审计修复 #1（E1）：「第三章，夜色渐深」这类正文句式一律按正文处理。
+    // 光把逗号从 NUM_SEPARATORS 删掉还不够 —— 短行会落到下面的「无分隔符短标题」分支；
+    // 这里在两种分支之前先挡掉，长句和短句都不会再被误切。
+    if (PROSE_AFTER_NUM_MARKER.test(restRaw)) return null;
     const hasSeparator = restRaw === '' || NUM_SEPARATORS.test(restRaw);
     if (!hasSeparator) {
       // 「第三节课…」「第二节课后…」是正文常用说法，不是章节标题

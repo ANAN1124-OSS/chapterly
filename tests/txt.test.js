@@ -135,6 +135,20 @@ test('正文长句不会被当成标题', () => {
   assert.ok(parseHeading('第一章男朋友（无色）'));
 });
 
+// 审计修复 #1（E1）：NUM_SEPARATORS 原来含 `，,;；`，与注释「不带逗号句号」矛盾 ——
+// 「第三章，夜色渐深」hasSeparator=true 绕过长度守卫被当成标题，按原文章节导入时静默错划结构。
+test('标题识别：「第X章，」的逗号句式是正文，不是标题（审计修复 #1 / E1）', () => {
+  assert.equal(isChapterHeading('第三章，夜色渐深'), false, '短正文行也不能因为逗号被当成标题');
+  assert.equal(isChapterHeading('第三章,夜色渐深'), false, '半角逗号同样不算分隔符');
+  assert.equal(isChapterHeading('第一章，他推开门，走廊尽头的窗没关。'), false);
+  // 真分隔符照旧：冒号后面的短标题仍认
+  assert.deepEqual(parseHeading('第三章：夜色渐深'), { kind: 'num', raw: '第三章：夜色渐深', name: '夜色渐深' });
+  // 分号也移出了分隔符表：短的真实标题仍走「无分隔符短标题」长度守卫，
+  // 但长正文行不再靠分号绕过长度守卫
+  assert.ok(parseHeading('第四章;转生成铃兰小姐后，为了还债只能被迫在浴馆中打工'), '真实短标题仍认');
+  assert.equal(isChapterHeading(`第五章;${'他'.repeat(80)}`), false, '超过 80 字的分号正文行不能当标题');
+});
+
 test('原样切章：没有标题行时整本一章、正文原样', () => {
   const text = '这是一整篇没有章节标题的短篇小说。\n\n第二段。\n';
   const parts = splitChaptersRaw(text);
