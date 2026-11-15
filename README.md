@@ -97,6 +97,19 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 - 发布到 GitHub：`gh release create v<版本> "dist/chapterly-<版本>-win-x64-setup.exe" --title "章回 v<版本>" --notes-file <说明.md>`（`gh` 走 HTTPS，国内需 `HTTPS_PROXY`）。
 - **版本号只有 `package.json` 一处权威（v1.8.0 / 审计 D10）**：`renderer/index.html` 不写版本串，界面由主进程 `app.getVersion()` 启动时经 `app:version` 注入；README / 验收清单的标题、下载名与单测 / E2E 计数用 `node scripts/version-sync.js --write --unit <N> --e2e <M>` 同步（`--check` 只校验漂移，`tests/version-sync.test.js` 同口径）。发版前先跑一次同步，再打包。
 
+### 构建供应链（Electron 二进制）
+
+- v1.8.0 审计 ▲V308：Electron 二进制默认走国内镜像：`.npmrc` 的 `electron_mirror` 与 `package.json` 的 `build.electronDownload.mirror` 都指向 `https://npmmirror.com/mirrors/electron/`（覆盖方式见上）。
+  **镜像只是下载加速，不是来源证明**：镜像被替换 / 构建机被投毒时，产物本身没有任何可验证锚。
+- 发布构建前建议核对一次官方校验和（**可选、离线**）：从官方 release 下载与所装版本一致的 `SHASUMS256.txt`（`https://github.com/electron/electron/releases/download/v<版本>/SHASUMS256.txt`），然后：
+
+  ```bash
+  node scripts/verify-electron-checksum.js --shasums <下载的 SHASUMS256.txt>
+  ```
+
+  脚本在 `%LOCALAPPDATA%\electron\Cache`（或 `ELECTRON_CACHE` 指向的目录）里按文件名找到 `electron-v<版本>-win32-x64.zip` 并比对 SHA-256；`--zip <文件>` 可指定压缩包，`--version <版本>` 可指定要校验的版本。不一致 / 清单里没有这一项 / 找不到缓存 zip 都直接非 0 退出，不要继续打包。这一步**不联网、不自动下载**，也**不在** `pnpm run dist` 里自动执行（离线 / CI 构建不应该多一个网络失败面）。
+- 目前**没有代码签名**（见安装说明，属成本决策）：校验和能证明「二进制来自官方发布」，证明不了「安装包是这个仓库构建出来的」——后者需要代码签名，长期看比上面两条都重要。
+
 ## 数据在哪
 
 ```
