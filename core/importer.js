@@ -1,7 +1,7 @@
 // 导入小说：把外部文件夹 / txt 文件变成书架里的一本书或多本书。
 // 支持三种来源：
 //   1) 现成的章回书（含合法 书目.json）→ 整本复制
-//   2) 一本书的章节目录（txt 文件名形如 001-xxx.txt / 第一章 xxx.txt）→ 复制后重建书目
+//   2) 一本书的章节目录（txt 文件名形如 001-xxx.txt / 001.txt / 第一章 xxx.txt）→ 复制后重建书目
 //   3) 一堆独立小说 txt（每个 txt 是一整本小说，来自同一个收藏夹文件夹）
 //      → 每个 txt 导入成一本书
 //        mode='chapters'（默认）：按原文的章节标题切开，章名和正文都保持原文，一字不改
@@ -10,6 +10,7 @@
 // 只复制、不移动源文件；文件夹重名自动加 -2/-3。
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const heading = require('./heading');
 const chaptersLib = require('./chapters');
 const storage = require('./storage');
 const repair = require('./repair');
@@ -24,8 +25,16 @@ const { normalizeText, formatByteSize, MAX_TEXT_BYTES } = require('./common');
 const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
 
-const CHAPTER_FILE_RE =
-  /^\s*(?:\d+\s*[-_.、\s]|第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*[章节回卷集篇部])/;
+// 审计修复 #13（E9）：章节目录的「文件名像章节」判定不再手抄词表 —— 数字 / 单位 / 关键词
+// （楔子 / 序章 / 番外 / Chapter N）全部取 core/heading.js 的 import 场景，与 core/txt.js 的切分
+// 同一套。旧实现把词表写死成 [0-9零〇一二三四五六七八九十百千万两] + [章节回卷集篇部]，结果是：
+//   · 「第 1 话.txt」「第 3 幕.txt」不算章节文件（词表里没有 话 / 幕），章节目录被拆成一堆独立小说；
+//   · 纯数字名（001.txt）因为要求序号后必须跟分隔符而不匹配，同理整目录按 novels 导入。
+// 纯数字名单独一条：带前导零的任意位数（001 / 0001），或 1–3 位（1 / 12 / 123）。
+// 1984.txt 这类「年份 / 纯数字书名」按独立小说处理 —— 前导零 / 短序号才是章节序号的写法。
+const CHAPTER_TITLE_RE = heading.anchorRe('import');
+const CHAPTER_SEQ_RE = /^\s*\d+\s*[-_.、\s]/;
+const CHAPTER_PURE_NUMBER_RE = /^\s*(?:0\d+|\d{1,3})\s*$/;
 
 function isUtf8(buffer) {
   try {
@@ -88,10 +97,12 @@ async function uniqueFolderName(booksRoot, desired, { maxSuffix = MAX_FOLDER_SUF
   );
 }
 
-// 文件名看起来像「一本书的章节文件」（001-xxx.txt / 第一章 xxx.txt），而不是一本完整小说
+// 文件名看起来像「一本书的章节文件」（001-xxx.txt / 第一章 xxx.txt / 001.txt），而不是一本完整小说
 function looksLikeChapterFile(fileName) {
   const base = String(fileName || '').replace(/\.txt$/i, '');
-  return CHAPTER_FILE_RE.test(base);
+  return (
+    CHAPTER_PURE_NUMBER_RE.test(base) || CHAPTER_SEQ_RE.test(base) || CHAPTER_TITLE_RE.test(base)
+  );
 }
 
 async function analyzeSource(sourceDir) {
@@ -610,5 +621,8 @@ module.exports = {
   listTxtFilesDeep,
   importSizeProblem,
   isProbablyBinary,
-  hasUtf16Bom
+  hasUtf16Bom,
+  // 审计修复 #13（E9）：来源形态判定词表已并入 core/heading.js，导出这个判定给单测钉住
+  // 「章节目录 / 独立小说」的分界（生产调用点仍只有 analyzeSource 一处）。
+  looksLikeChapterFile
 };

@@ -717,3 +717,74 @@ test('dropped / willLose 用相对名，同名不同目录的章不会被一起�
   assert.ok(meta.chapters.some((c) => c.id === meta.lastOpenChapterId), '上次打开章节要落在仍在的章上');
   assert.equal((await storage.loadChapterText(importedPath, '002.txt')).text, '第1章 甲\n\n正文甲');
 });
+
+// ---------- 审计修复 #13（E9）：章节文件名判定复用 heading 词表 + 认纯数字名 ----------
+
+test('E9 形态判定：数字 / 单位 / 关键词跟 heading.js 的 import 词表走，纯数字名也算章节', () => {
+  // 章节文件：序号 + 分隔符 / 「第X章」式标题（含 话 / 幕）/ 纯数字名 / 关键词标题
+  for (const name of [
+    '001-雪夜.txt',
+    '12_卷名.txt',
+    '3、序.txt',
+    '第1章 雪夜.txt',
+    '第 12 章.txt',
+    '第3话 归途.txt', // 旧实现词表写死成 章节回卷集篇部，话 / 幕 不算章节
+    '第7幕 收束.txt',
+    '楔子.txt',
+    '序章.txt',
+    '番外1.txt',
+    'Chapter 1.txt',
+    '001.txt', // 纯数字名：旧实现要求尾随分隔符，整目录被判成 novels
+    '1.txt',
+    '12.txt',
+    '123.txt',
+    '0001.txt'
+  ]) {
+    assert.equal(importer.looksLikeChapterFile(name), true, '应算章节文件：' + name);
+  }
+  // 独立小说：书名 / 「书名 - 作者」/ 年份或纯数字书名 / 非章节式标题
+  for (const name of [
+    '星海旅人.txt',
+    '星海旅人 - 某作者.txt',
+    '1984.txt', // 4 位纯数字更像年份 / 书名，仍按一本独立小说
+    '2024年度总结.txt', // 数字后面直接接汉字，不是章节序号
+    '第X章.txt', // 非数字序号不算
+    '第1話.txt' // import 场景有意不认繁体「話」（heading.test.js 的跨场景差异表）
+  ]) {
+    assert.equal(importer.looksLikeChapterFile(name), false, '应算独立小说：' + name);
+  }
+});
+
+test('E9：纯数字文件名的章节目录整目录导入成一本书（不再每个文件各导成一书）', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '纯数字章节目录');
+  await fs.mkdir(src);
+  await fs.writeFile(path.join(src, '001.txt'), '开篇正文', 'utf8');
+  await fs.writeFile(path.join(src, '002.txt'), '承接正文', 'utf8');
+  await fs.writeFile(path.join(src, '003.txt'), '收束正文', 'utf8');
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+  assert.equal(res.imported.length, 1, '三个 001/002/003.txt 是同一本书的三章');
+  assert.equal(res.imported[0].kind, 'chapter-folder');
+  assert.equal(res.imported[0].chapters, 3);
+  assert.equal(res.imported[0].title, '纯数字章节目录');
+
+  const meta = await storage.readBookMeta(res.imported[0].path);
+  assert.equal(meta.chapters.length, 3);
+  assert.equal((await storage.loadChapterText(res.imported[0].path, '002.txt')).text, '承接正文');
+  assert.equal((await storage.listBooks(booksRoot)).length, 1, '书架里只有一本书');
+});
+
+test('E9：单个纯数字 txt 按「一本书的章节目录」导入，不占书名', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '旧稿夹');
+  await fs.mkdir(src);
+  await fs.writeFile(path.join(src, '001.txt'), '唯一一章的正文', 'utf8');
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].kind, 'chapter-folder', '单个 001.txt 就是章节目录');
+  assert.equal(res.imported[0].title, '旧稿夹', '书名取文件夹名（独立小说才取文件名）');
+});
