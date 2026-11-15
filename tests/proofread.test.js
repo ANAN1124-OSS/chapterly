@@ -264,13 +264,17 @@ test('校对：连续标点——3 个及以上才报，「！？」「……」
   for (const [line, match] of [
     ['他说完了。。.', '。。.'],
     ['他转身就走-——', '-——'],
-    ['真的吗?!.', '?!.']
+    ['真的吗?!。', '?!。']
   ]) {
     const mixed = only(proofread.proofreadText(line), 'punct-run');
     assert.equal(mixed.length, 1, `混排连排应报一次：${line}`);
     assert.equal(mixed[0].match, match);
     assert.match(mixed[0].message, /连续 3 个标点/);
   }
+  // 纯 ASCII 连排不归「连续标点」管：省略号 / 破折号各有自己的规则（与旧行为一致）
+  assert.equal(only(proofread.proofreadText('他说...'), 'punct-run').length, 0);
+  assert.equal(only(proofread.proofreadText('他说---好'), 'punct-run').length, 0);
+  assert.equal(only(proofread.proofreadText('什么?!'), 'punct-run').length, 0);
 });
 
 test('校对：多余空行——2 个及以上连续空行才报，单个空行不报', () => {

@@ -128,7 +128,7 @@ const READER = wordlist.createReader({
     emptyList: '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）',
     tooBig: '词表文件太大（上限 4MB），请换一个小一点的 txt',
     // 审计修复 #49（E24）：含 NUL 不一定是二进制 —— 无 BOM 的 UTF-16 也长这样，提示不要误导。
-    binary: '词表含 NUL 空字节（可能是无 BOM 的 UTF-16，也可能是二进制文件），请用 UTF-8 / UTF-16（带 BOM）/ GBK 编码的 txt',
+    binary: '词表不像是纯文本（检测到 NUL 空字节，可能是无 BOM 的 UTF-16，也可能是二进制文件），请用 UTF-8 / UTF-16（带 BOM）/ GBK 编码的 txt',
     badEncoding: '词表编码无法识别（不是 UTF-8 / UTF-16 / GBK 文本），请另存为 UTF-8 的 txt',
     notConfigured: '还没有指定敏感词表（应用不内置词表，请先选一个自己的 txt）',
     publicEmpty: '还没有指定敏感词表',

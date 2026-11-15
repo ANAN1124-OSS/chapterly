@@ -209,7 +209,9 @@ function createCollector(maxIssues) {
 
 // 连续标点数：把连排的「……」/「——」各折叠成一个单位，其余每个标点算一个单位。
 // 审计修复 #49（E24）：全角 + 半角混排时按字符数算 —— 「-——」「。。.」这类 3 个标点
-// 如果仍按折叠单位数（2）就会被漏报；纯 ASCII / 纯全角连排维持原有折叠口径。
+// 如果仍按折叠单位数（2）就会被漏报。
+// 纯 ASCII 连排（「...」「---」「?!」）一律返回 0：它们分别由省略号 / 破折号规则负责，
+// 旧行为也不把它们算进「连续标点」，不能为了混排把纯 ASCII 文本变成新的误报。
 function countPunctUnits(run) {
   let units = 0;
   let hasAscii = false;
@@ -221,7 +223,8 @@ function countPunctUnits(run) {
     if ((ch === '…' || ch === '—') && i > 0 && run[i - 1] === ch) continue;
     units += 1;
   }
-  return hasAscii && hasCjk ? run.length : units;
+  if (!hasCjk) return 0;
+  return hasAscii ? run.length : units;
 }
 
 // 中文句读（破折号判定的「中文侧」基础集合）。不含「——」「……」——
