@@ -2842,8 +2842,9 @@
     return true;
   }
 
-  // 剪贴板捕获（P0）：createCaptureUi(host) 一次装配，host 正好 9 个成员（契约 v1；T1 的
-  // REQUIRED_HOST 同步为这 9 个键）。insertIntoBody 用函数声明，装配时引用已提升。
+  // 剪贴板捕获（P0）：createCaptureUi(host) 一次装配，host 正好 10 个成员（契约 §5；T1 的
+  // REQUIRED_HOST 同步为这 10 个键，第 10 个 staleGuard 是 WP-15 的 C16 / C36 新增的）。审计修复 #41（V404）
+  // 把两处注释从漂移的「9」改成实际值。insertIntoBody 用函数声明，装配时引用已提升。
   // 装配点必须放在 statsUi 之后：renderStatsUi 是上面那一行解构出来的 const。
   // 「打开面板前收起顶栏菜单」不进 host：事件绑定 / 测试钩子走 open(text, { beforeOpen: hideHeaderMenus })。
   const captureUi = captureUiModule.create({

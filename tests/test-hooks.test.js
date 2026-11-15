@@ -364,7 +364,9 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   onSearchProgress 的 done 分支要多判一次「当前结果还挂着建索引中」并按原查询自动重搜
   //   （+4 行说明与分支），否则界面「建好后自动更新结果」无法兑现。判定与短路在
   //   core/search-index.js，空态文案在 renderer/shelf-filter-ui.js。
-  const RENDERER_LINE_BUDGET = 6303;
+  // 审计修复 #41（V404）：6303 → 6304（+1）：createCaptureUi 装配注释从漂移的「9 个成员」改成实际的
+  //   10 个，顺带写明第 10 个 staleGuard 的来历（注释换行多出一行）；代码零新增。
+  const RENDERER_LINE_BUDGET = 6304;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

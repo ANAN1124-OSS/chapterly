@@ -469,6 +469,23 @@ test('契约：createCaptureUi 的 host 正好 10 个成员（含 insertIntoBody
   }
 });
 
+// 审计修复 #41（V404）：契约注释与 REQUIRED_HOST 的成员数必须一致。V404 前源码两处还写着「9 个成员」
+// （测试早已是 10），按注释理解契约的人会数不出第 10 个 staleGuard。这里把三处注释一起钉住。
+test('契约注释（V404）：capture-ui / renderer.js 都写「正好 10 个成员」，不再残留 9', () => {
+  assert.equal(/正好 9 个成员|这 9 个键/.test(moduleSrc), false, 'capture-ui.js 还有「9 个成员」的旧计数');
+  assert.match(moduleSrc, /host 正好 10 个成员（契约 §5）/);
+  assert.match(moduleSrc, /契约 §5：host 正好 10 个成员/);
+  // 契约成员清单也要和 REQUIRED_HOST 一字不差（含第 10 个 staleGuard）
+  const listed = [...moduleSrc.matchAll(/契约：createCaptureUi\(host\) 由渲染层调用一次，host 正好 10 个成员（契约 §5）：\r?\n \*   \{ ([^}]+) \}/g)][0];
+  assert.ok(listed, '契约头部的成员清单不见了');
+  assert.deepEqual(
+    listed[1].split(',').map((item) => item.trim()),
+    ['$', 'state', 'api', 'call', 'toast', 'saveCurrent', 'loadChapterAt', 'renderStatsUi', 'insertIntoBody', 'staleGuard']
+  );
+  assert.equal(/host 正好 9 个成员/.test(rendererSrc), false, 'renderer.js 装配注释还在写 9 个成员');
+  assert.match(rendererSrc, /createCaptureUi\(host\) 一次装配，host 正好 10 个成员/);
+});
+
 test('契约：导出 API 齐全；旧逐行表单 API 全部删除；view() 恒为 list', () => {
   const ui = captureUiModule.create(build().host);
   for (const name of [

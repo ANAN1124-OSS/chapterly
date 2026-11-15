@@ -18,8 +18,8 @@
  * 事件绑定（列表点击委托 / 插入位置 change / Esc）留在 renderer.js（与其它已拆模块同一惯例）；
  * 测试钩子在 renderer/test-hooks.js，按名字调用这里交出的入口。
  *
- * 契约：createCaptureUi(host) 由渲染层调用一次，host 正好 9 个成员（契约 §5）：
- *   { $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody }
+ * 契约：createCaptureUi(host) 由渲染层调用一次，host 正好 10 个成员（契约 §5）：
+ *   { $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody, staleGuard }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到点捕获时 ReferenceError）。
  * insertIntoBody(text) → { ok, chars?, message? }：T3 在 renderer.js 实现（原生 execCommand 保 Ctrl+Z，
  * 失败手动拼接兜底）；本模块只负责「什么时候调、成功 / 失败怎么反馈」。
@@ -67,7 +67,8 @@
   }
   const { formatCount, pad2 } = commonLib;
 
-  // 契约 §5：host 正好 9 个成员。insertIntoBody 是 2026-11-07 新增的（正文按钮把内容插进当前章）。
+  // 契约 §5：host 正好 10 个成员。insertIntoBody 是 2026-11-07 新增的（正文按钮把内容插进当前章），
+  // 第 10 个 staleGuard 是 WP-15（C16 / C36）新增的（连点 / 在途回执世代令牌）；审计修复 #41（V404）同步计数。
   const REQUIRED_HOST = [
     '$',
     'state',
