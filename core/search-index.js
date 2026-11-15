@@ -895,19 +895,29 @@ function createSearchStore(options = {}) {
       try {
         // C17（v1.8.0 WP-19）：先 stat + 独立上限再读。超限与「内容坏了」分开记（INDEX_TOO_LARGE /
         // CORRUPT），都按空索引重建；区别是界面 / 排查时能看出「是被换成了大文件」而不是索引写坏。
-        const info = await fs.stat(filePath);
-        const tooLarge = storage.readSizeProblem(info.size, {
-          code: 'INDEX_TOO_LARGE',
-          label: '搜索索引文件',
-          limit: MAX_INDEX_READ_BYTES,
-          tail: '没有读进内存'
-        });
-        if (tooLarge) {
-          loadProblem = tooLarge.code;
-          index = emptyIndex('');
-          return index;
+        // 审计修复 #45（S8）：闸门与读盘绑在同一个句柄上（open → fstat → 从同一句柄读）——
+        // 旧实现 stat 之后按路径 readFile，间隙里索引文件被换成大文件就整份读进内存。
+        const handle = await fs.open(filePath, 'r');
+        let text;
+        try {
+          const info = await handle.stat();
+          const tooLarge = storage.readSizeProblem(info.size, {
+            code: 'INDEX_TOO_LARGE',
+            label: '搜索索引文件',
+            limit: MAX_INDEX_READ_BYTES,
+            tail: '没有读进内存'
+          });
+          if (tooLarge) {
+            loadProblem = tooLarge.code;
+            index = emptyIndex('');
+            return index;
+          }
+          text = await handle.readFile('utf8');
+        } finally {
+          try {
+            await handle.close();
+          } catch { /* 关不掉不影响已读到的内容 */ }
         }
-        const text = await fs.readFile(filePath, 'utf8');
         indexBytes = Buffer.byteLength(text);
         const parsed = parseIndex(text);
         if (parsed) {

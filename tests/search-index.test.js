@@ -1448,3 +1448,15 @@ test('正文索引（#33）：预算淘汰落盘后可读回、搜索仍命中�
   assert.equal(rerun.lastRun.rebuiltBooks, 0, '被淘汰且正文没变的书不许每轮重建位图');
   assert.ok(Buffer.byteLength(await fs.readFile(filePath, 'utf8')) <= cap, '重载后仍不超过预算');
 });
+
+// S8（审计修复 #45）：索引文件「先 stat 再按路径 readFile」的 TOCTOU —— 闸门与读盘必须绑在同一个句柄上。
+test('S8（#45）：索引文件的大小闸门与读盘走同一个句柄（open → fstat → handle.readFile）', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'search-index.js'), 'utf8');
+  const start = src.indexOf('function load()');
+  assert.ok(start >= 0, '找不到 load()');
+  const body = src.slice(start, src.indexOf('function ensure()', start));
+  assert.ok(body.includes('fs.open(filePath, \'r\')'), '必须先 open 再 fstat');
+  assert.ok(body.includes('handle.stat()'), '上限要用句柄上的 fstat 结论');
+  assert.ok(body.includes("handle.readFile('utf8')"), '内容必须从同一个句柄读');
+  assert.equal(body.includes('fs.readFile(filePath'), false, '不许再按路径 readFile（TOCTOU 窗口）');
+});

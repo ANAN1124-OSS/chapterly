@@ -2,7 +2,7 @@
 // 不 require('electron')，可直接在 node:test 里用临时目录测试。
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { atomicWriteFile, atomicCopyFile, writeJsonAtomic, stripBom, cleanupOrphanTmpFiles } = require('./atomic');
+const { atomicWriteFile, atomicCopyFile, stripBom, cleanupOrphanTmpFiles } = require('./atomic');
 const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, MAX_TEXT_BYTES } = require('./common');
 const chaptersLib = require('./chapters');
 const findLib = require('./find');
@@ -429,6 +429,18 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
   if (ensureDirectory) await ensureDir(bookPath);
   const metaPath = path.join(bookPath, BOOK_FILE);
   const bakPath = path.join(bookPath, BOOK_BAK);
+  const next = prepareBookMeta(meta, { touchUpdatedAt });
+  // 审计修复 #45（E19）：写侧也过和读侧同一道 32 MB 闸门（纵深防御）。IPC 的 500 万字限 ≈15 MB
+  // 够不着这条线，但内部构造 / 手改后的书目不该把一份超过单文件上限的 书目.json 写出去 ——
+  // 下一次读它会直接 META_TOO_LARGE，书就打不开了。超限一个字节都不写（.bak 也不轮换）。
+  const serialized = `${JSON.stringify(next, null, 2)}\n`;
+  const writtenBytes = Buffer.byteLength(serialized, 'utf8');
+  if (writtenBytes > MAX_META_READ_BYTES) {
+    throw new StorageError(
+      'META_TOO_LARGE',
+      `${BOOK_FILE}内容有 ${formatByteSize(writtenBytes)}，超过单文件写入上限 ${formatByteSize(MAX_META_READ_BYTES)}，没有写盘`
+    );
+  }
   // B2（审计 P2）：.bak 只在「结构性变更」时轮换（增删章 / 改名 / 分卷 / 导入 / 改书名…），
   // 普通保存（章节正文、字数缓存、上次打开章节）跳过第二次 fsync。
   // 备份语义刻意保守：调用方要显式传 { structural: true } 才轮换；不传 = 只写主文件。
@@ -436,14 +448,25 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
   // 不会用坏文件覆盖掉唯一可用的 .bak。
   if (structural) {
     try {
-      const old = await fs.readFile(metaPath);
-      await atomicWriteFile(bakPath, old, 'utf8', { ensureDir: ensureDirectory });
+      // 审计修复 #45（E19）：轮换前先 stat（C17 的读闸门漏了这一处）—— 旧实现直接 fs.readFile，
+      // 主文件被外部换成超大文件时，一次结构性保存会把它整份读进内存再写 .bak。
+      // 超限时按「没有上一版」跳过轮换（这种情况 readBookMeta 本来就会报 META_TOO_LARGE）。
+      const oldStat = await fs.stat(metaPath);
+      const tooLarge = readSizeProblem(oldStat.size, {
+        code: 'META_TOO_LARGE',
+        label: BOOK_FILE,
+        limit: MAX_META_READ_BYTES,
+        tail: '没有轮换成 .bak'
+      });
+      if (!tooLarge) {
+        const old = await fs.readFile(metaPath);
+        await atomicWriteFile(bakPath, old, 'utf8', { ensureDir: ensureDirectory });
+      }
     } catch (err) {
       if (err.code !== 'ENOENT') throw err;
     }
   }
-  const next = prepareBookMeta(meta, { touchUpdatedAt });
-  await writeJsonAtomic(metaPath, next, { ensureDir: ensureDirectory });
+  await atomicWriteFile(metaPath, serialized, 'utf8', { ensureDir: ensureDirectory });
   return next;
 }
 
@@ -1093,6 +1116,12 @@ function timestampForFile(date = new Date()) {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}-${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}`;
 }
 
+// 进程内「正在落位的 _trash 目标名」：审计修复 #45（E20）补上 exists→rename 之间的空档。
+// 单实例锁保证只有一个进程在写书库；同一个进程里两次删章 / 回滚在同一秒并发时，两边可能同时
+// 看到空位、后一次 rename 把先一次的备份覆盖掉（Windows 的 rename 是替换语义）。
+// 名字在真正落位期间占住，另一路会自动顺延到下一个序号。
+const inflightTrashTargets = new Set();
+
 async function moveToTrash(bookPath, file) {
   // WP-06（审计 C5）：本函数是「删章 / 撤销删空补章」唯一的移文件入口，必须自己再校验一次 ——
   // 坏书目（file 含 ..\ / 绝对路径 / 非 txt / 保留名）在这里就 BAD_PATH，绝不 rename 书外文件；
@@ -1103,12 +1132,18 @@ async function moveToTrash(bookPath, file) {
   const stamp = timestampForFile();
   let destName = `${stamp}-${file}`;
   let i = 2;
-  while (await exists(path.join(trashDir, destName))) {
+  let dest = path.join(trashDir, destName);
+  while (inflightTrashTargets.has(dest) || (await exists(dest))) {
     destName = `${stamp}-${i}-${file}`;
     i += 1;
+    dest = path.join(trashDir, destName);
   }
-  const dest = path.join(trashDir, destName);
-  await fs.rename(source, dest);
+  inflightTrashTargets.add(dest);
+  try {
+    await fs.rename(source, dest);
+  } finally {
+    inflightTrashTargets.delete(dest);
+  }
   return dest;
 }
 
@@ -1917,8 +1952,11 @@ async function cleanupSnapshots(bookPath, { keepDays = snapshotLib.DEFAULT_KEEP_
   const dirNames = entries
     .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
     .map((entry) => entry.name);
+  // 审计修复 #45（E20）：kept 只数「快照目录」，以前数的是 _trash 下的全部目录
+  // （替换备份-* / 整理备份-* / 还原前备份-* 全被算成快照，界面上的「保留 N 天」就虚高了）。
+  const snapshotNames = dirNames.filter((name) => snapshotLib.parseSnapshotDirName(name));
   const expired = new Set(snapshotLib.selectExpiredSnapshotDirs(dirNames, now, keepDays));
-  if (!expired.size) return { removed: [], failed: [], kept: dirNames.length };
+  if (!expired.size) return { removed: [], failed: [], kept: snapshotNames.length };
   const removed = [];
   const failed = [];
   for (const name of dirNames) {
@@ -1933,7 +1971,7 @@ async function cleanupSnapshots(bookPath, { keepDays = snapshotLib.DEFAULT_KEEP_
       failed.push(name); // 被占用 / 权限问题：下次保存再试，不影响这次保存
     }
   }
-  return { removed, failed, kept: dirNames.length - removed.length };
+  return { removed, failed, kept: snapshotNames.length - removed.length };
 }
 
 // 保存前留一份当天快照。返回 { taken, reason, dir, file, bytes, cleanup }：
@@ -1950,10 +1988,9 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
     throw new StorageError('BAD_SNAPSHOT_FILE', '只能给章节 txt 做快照');
   }
   const source = assertInside(bookPath, raw);
-  let sourceStat;
   try {
     // P2-3：先看大小再读 —— 这一章被外部换成超大文件时，不能把主进程内存打爆
-    sourceStat = await assertSourceSize(source, {
+    await assertSourceSize(source, {
       code: 'SNAPSHOT_TOO_LARGE',
       label: `这一章正文（${raw}）`,
       tail: '这次没有留快照（保存继续）'
@@ -1970,8 +2007,16 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
   const snapshotDir = path.join(trashDir, dir);
   const target = path.join(snapshotDir, raw);
   let taken = false;
-  let bytes = sourceStat.size;
-  if (!(await exists(target))) {
+  let bytes = 0;
+  if (await exists(target)) {
+    // 审计修复 #45（E20）：ALREADY_TODAY 回报的是「已有的那份快照」的大小 —— 旧实现回源文件当前的
+    // size，源在两次保存之间又改过时，界面 / 日志会把「快照多少字节」说错。
+    try {
+      bytes = (await fs.stat(target)).size;
+    } catch {
+      bytes = 0; // 快照刚被外部删 / 读不到：如实报 0，不冒充源文件的尺寸
+    }
+  } else {
     await ensureDir(snapshotDir);
     // B19（v1.8.0 WP-29）：改成流式复制 —— 不再把 ≤128 MB 的整章读进内存再原子写。
     // 目标不存在才复制（当天已经有一份就跳过，与旧行为一致）；读源失败的 ENOENT 仍按 MISSING 处理。
@@ -1979,6 +2024,11 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
       bytes = await atomicCopyFile(source, target); // 原样复制字节（CRLF / BOM 都不动）
     } catch (err) {
       if (err.code === 'ENOENT') {
+        // 审计修复 #45（E20）：源在 stat 与复制之间被删 / 移走时，刚建出来的空快照目录要收掉 ——
+        // 否则它会像一份「什么都没有的备份」留在历史面板里，也被清理逻辑当快照计数。
+        try {
+          await fs.rmdir(snapshotDir); // 只在目录为空时成功；已有别的快照就保持原样
+        } catch { /* 删不掉（非空 / 被占用）：保持原样，不影响 MISSING 的结论 */ }
         return { taken: false, reason: 'MISSING', dir: null, file: raw, bytes: 0, cleanup: { removed: [], failed: [], kept: 0 } };
       }
       throw err;
@@ -2032,7 +2082,8 @@ async function restoreDeletedChapter(bookPath, group, entry) {
   if (!entry || !/\.txt$/i.test(entry.name)) {
     throw new StorageError('HISTORY_NOT_CHAPTER', '这个备份不是章节 txt，不能放回书里');
   }
-  const target = assertInside(bookPath, entry.name);
+  // 审计修复 #45（E19）：放回书文件夹的目标也要过 assertChapterFile（与其余写入口同一道闸门）
+  const target = assertChapterFile(bookPath, entry.name);
   if (await exists(target)) {
     throw new StorageError('HISTORY_TARGET_EXISTS', `书文件夹里已经有 ${entry.name}，没有覆盖`);
   }
@@ -2080,7 +2131,10 @@ async function loadRestorableHistoryGroup(bookPath, groupId) {
 // 返回是否真的备份了（失败提示里据此写「还原前的正文备份在 …」）。三处还原共用：
 // 整本替换备份还原、历史单文件还原、历史整组还原。
 async function backupCurrentToRestoreDir(bookPath, fileName, restoreDir) {
-  const target = assertInside(bookPath, fileName);
+  // 审计修复 #45（E19）：还原 / 反向备份也要过和写盘同一道 assertChapterFile（C19 自述的「闸门单口径」）。
+  // 旧实现只 assertInside —— 空串 / 子目录 / 非 txt / 保留名能通过前缀检查，把文件写到奇怪的位置。
+  // entry.name 来自扫描、外部不可直接注入，但那条「还原路径不拦退化名」的口子不该留着。
+  const target = assertChapterFile(bookPath, fileName);
   if (!(await exists(target))) return false;
   await ensureDir(restoreDir);
   // 审计修复 #3（E3）：还原前备份同样是「退路」，必须原子写完并核对字节数
@@ -2094,7 +2148,8 @@ async function backupCurrentToRestoreDir(bookPath, fileName, restoreDir) {
 // 整组还原只在真要备份时才建，不留下空目录）。
 async function copyHistoryEntryToBook(bookPath, group, entry, restoreDir) {
   await backupCurrentToRestoreDir(bookPath, entry.name, restoreDir);
-  const target = assertInside(bookPath, entry.name);
+  // 审计修复 #45（E19）：写回目标同样过 assertChapterFile（理由见 backupCurrentToRestoreDir）
+  const target = assertChapterFile(bookPath, entry.name);
   const source = historyLib.resolveHistoryPath(bookPath, group.id, entry.name);
   // P2-3：备份文件被外部换成超大文件时，先 stat 再读，绝不把整份读进内存
   const buffer = await loadChapterSource(source, {
@@ -2423,8 +2478,11 @@ async function setLastOpenChapter(bookPath, chapterId) {
       chapterIndex: index,
       chapterName: String(chapter.name == null ? '' : chapter.name)
     };
-  } catch {
-    return { ok: false };
+  } catch (err) {
+    // 审计修复 #45（E20）：外层 catch 不再只给一个光秃秃的 { ok: false } —— 读 / 写书目失败的错误码
+    // 原样带回（NO_BOOK / META_TOO_LARGE / BAD_PATH…），主进程日志与界面能分清是哪一步坏了。
+    const described = errorText.describeForUi(err);
+    return { ok: false, code: described.code, message: described.message };
   }
 }
 

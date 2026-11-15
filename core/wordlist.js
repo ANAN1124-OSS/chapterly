@@ -130,6 +130,19 @@ function createReader(options) {
     return { ok: true, [field]: items, stats: parsed.stats };
   }
 
+  // 读文件失败的两类回包（stat / open 共用一份文案，避免两处漂移）
+  function readFailure(base, resolved, err) {
+    const missing = err && err.code === 'ENOENT';
+    return {
+      ...base,
+      ok: false,
+      code: missing ? code('missing') : code('unreadable'),
+      message: missing
+        ? `词表文件不存在：${errorText.maskPath(resolved)}（可能被移动或删除了，请重新选择）`
+        : `读不了词表文件：${errorText.describeForUi(err).message}`
+    };
+  }
+
   // 读词表文件（只读）。任何失败都返回结构化结果，由界面给出明确提示，不抛异常。
   async function readFile(filePath) {
     const rawPath = typeof filePath === 'string' ? filePath.trim() : '';
@@ -150,38 +163,36 @@ function createReader(options) {
     try {
       stat = await fs.stat(resolved);
     } catch (err) {
-      const missing = err && err.code === 'ENOENT';
-      return {
-        ...base,
-        ok: false,
-        code: missing ? code('missing') : code('unreadable'),
-        message: missing
-          ? `词表文件不存在：${errorText.maskPath(resolved)}（可能被移动或删除了，请重新选择）`
-          : `读不了词表文件：${errorText.describeForUi(err).message}`
-      };
+      return readFailure(base, resolved, err);
     }
     if (!stat.isFile()) {
       return { ...base, ok: false, code: code('notFile'), message: message('notFile') };
     }
-    if (stat.size > MAX_FILE_BYTES) {
-      return {
-        ...base,
-        ok: false,
-        size: stat.size,
-        code: code('tooBig'),
-        message: message('tooBig')
-      };
-    }
     let buffer;
     try {
-      buffer = await fs.readFile(resolved);
+      // 审计修复 #45（S8）：大小闸门与读盘绑在同一个句柄上。旧实现 stat 之后按路径 readFile，
+      // 间隙里文件被换成大文件（云同步 / 外部工具）就整份读进内存，绕过 4 MB 上限；
+      // 现在 open → fstat → 从同一句柄读，闸门看到的和读到的是同一份文件。
+      const handle = await fs.open(resolved, 'r');
+      try {
+        const fresh = await handle.stat();
+        if (fresh.size > MAX_FILE_BYTES) {
+          return {
+            ...base,
+            ok: false,
+            size: fresh.size,
+            code: code('tooBig'),
+            message: message('tooBig')
+          };
+        }
+        buffer = await handle.readFile();
+      } finally {
+        try {
+          await handle.close();
+        } catch { /* 关不掉不影响读到的内容 */ }
+      }
     } catch (err) {
-      return {
-        ...base,
-        ok: false,
-        code: code('unreadable'),
-        message: `读不了词表文件：${errorText.describeForUi(err).message}`
-      };
+      return readFailure(base, resolved, err);
     }
     const decoded = decodeBuffer(buffer);
     if (!decoded.ok) return { ...base, size: stat.size, ...decoded };

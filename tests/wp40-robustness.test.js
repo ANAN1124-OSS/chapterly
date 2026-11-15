@@ -232,18 +232,19 @@ test('X9：索引首载并发共享同一趟读盘——第二个调用方不会
   assert.ok((await fsp.stat(indexPath)).size > 0);
 
   const store = search.createSearchStore({ userDataDir: userData, validateIntervalMs: 0 });
-  const realReadFile = fsp.readFile;
+  // 审计修复 #45（S8）：首载改成 open → fstat → handle.readFile，这里改为卡住 open 来观察并发共享。
+  const realOpen = fsp.open;
   let indexReads = 0;
   let releaseRead;
   const readGate = new Promise((resolve) => {
     releaseRead = resolve;
   });
-  fsp.readFile = async (...args) => {
+  fsp.open = async (...args) => {
     if (String(args[0]) === indexPath) {
       indexReads += 1;
       await readGate;
     }
-    return realReadFile(...args);
+    return realOpen(...args);
   };
   try {
     const first = store.load();
@@ -269,7 +270,7 @@ test('X9：索引首载并发共享同一趟读盘——第二个调用方不会
     assert.equal((await store.load()).books.length, 1, '已加载后直接复用内存索引');
     assert.equal(indexReads, 1);
   } finally {
-    fsp.readFile = realReadFile;
+    fsp.open = realOpen;
   }
 });
 
@@ -282,14 +283,15 @@ test('X9：首载读盘失败也只尝试一次（与原口径一致），并发
   const indexPath = path.join(userData, search.INDEX_FILE_NAME);
   await fsp.writeFile(indexPath, '{"version":1,"books":[]}', 'utf8');
 
-  const realReadFile = fsp.readFile;
+  // 审计修复 #45（S8）：读盘入口改成 open（失败码也从这里出），模拟读失败要卡在 open 上。
+  const realOpen = fsp.open;
   let reads = 0;
-  fsp.readFile = async (...args) => {
+  fsp.open = async (...args) => {
     if (String(args[0]) === indexPath) {
       reads += 1;
       throw Object.assign(new Error('EACCES: 模拟读失败'), { code: 'EACCES' });
     }
-    return realReadFile(...args);
+    return realOpen(...args);
   };
   const store = search.createSearchStore({ userDataDir: userData, validateIntervalMs: 0 });
   try {
@@ -301,7 +303,7 @@ test('X9：首载读盘失败也只尝试一次（与原口径一致），并发
     await store.load();
     assert.equal(reads, 1, '进程内只尝试一次（后续由 ensure 走重建 / 自愈）');
   } finally {
-    fsp.readFile = realReadFile;
+    fsp.open = realOpen;
   }
 });
 

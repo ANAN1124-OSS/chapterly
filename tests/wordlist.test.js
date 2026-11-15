@@ -364,3 +364,16 @@ test('静态闸门：读词表流水线只有 core/wordlist.js 一份，两模�
   const implementations = coreFiles.filter((rel) => read(rel).includes('MAX_FILE_BYTES = 4 * 1024 * 1024'));
   assert.deepEqual(implementations, ['core/wordlist.js']);
 });
+
+// S8（审计修复 #45）：先 stat 后按路径 readFile 的 TOCTOU —— 同一份词表在上限检查之后被换成大文件，
+  // 旧实现会把整份读进内存（4 MB 上限形同虚设）。现在闸门与读盘绑在同一个句柄上。
+test('S8（#45）：词表的大小闸门与读盘走同一个句柄（open → fstat → handle.readFile）', () => {
+  const src = read('core/wordlist.js');
+  const start = src.indexOf('async function readFile(filePath)');
+  assert.ok(start >= 0, '找不到 readFile');
+  const body = src.slice(start, src.indexOf('\n  // 只给渲染层的词表信息', start));
+  assert.ok(body.includes('fs.open(resolved, \'r\')'), '必须先 open 再 fstat');
+  assert.ok(body.includes('handle.stat()'), '上限要用句柄上的 fstat 结论');
+  assert.ok(body.includes('handle.readFile()'), '内容必须从同一个句柄读');
+  assert.equal(body.includes('fs.readFile(resolved'), false, '不许再按路径 readFile（TOCTOU 窗口）');
+});
