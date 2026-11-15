@@ -110,7 +110,6 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 │  ├─ 001-未命名.txt             ← 创建序号 + 名字，文件名永不修改
 │  ├─ 002-夜雨.txt
 │  ├─ 003-未命名.txt
-│  ├─ 003-未命名.txt
 │  └─ _trash\                    ← 删除的章节、替换/整理/还原前备份、可选每日快照，不真删
 │     └─ 快照-YYYYMMDD\          ← 只有开启「可选每日快照」后才有
 └─ 另一本草稿\
@@ -346,7 +345,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
     `_trash` 备份的目录名 + 文件数 + 最新修改时间；10 秒窗口里这份备份被外部增删或改写，就提示
     「备份已变化，撤销取消」并早退（不拿变了的备份覆盖正文）。
     弹确认框的只剩两处：**未保存拦截**（切书 / 关窗 / 还原前先处理没写盘的字）与**删除整本书**（整本进回收站，应用内没有还原通道）。
-7. **外部修改检测**：用记事本改了当前章节后，切回应用会提示「重新加载 / 保留我的」。
+7. **外部修改检测 + 保存前置校验**：窗口重新获得前台时比对**当前章**的 mtime —— 没变不打扰；有未保存修改只 toast 警告；否则问「重新加载 / 保留我的」。其它章不主动查，打开时才核对（`renderer/statusbar-ui.js` 的 `setupExternalChangeWatch`）。保存链路另带 `expectedMtimeMs` 前置条件：载入 / 上次保存回执记下 mtime，保存前磁盘上的 mtime 已经变了就抛 `EXTERNAL_CHANGE`、**一个字节都不写**，界面给「取消 / 放弃我的修改并重载 / 仍然覆盖保存 / 先另存一份」四选（`saveCurrent({ force: true })` 才跳过校验；判定在 `core/open-books.js` 的 `verifySaveTarget`）。
 8. **损坏恢复**：`书目.json` 坏了，可以从 `.bak` 恢复，或按目录里的 txt 文件名重建书目（损坏文件改名为 `.corrupt-时间戳` 保留）。
 9. **保存失败不更新「已保存」状态**：状态栏红字显示具体错误。
 10. **整本替换前自动备份**：改动的原章节先复制到书内 `_trash\替换备份-时间戳\`，再原子写盘；应用内可「还原到替换前」一键退回，还原前还会把当前内容再备份一份到 `_trash\还原前备份-时间戳\`；这些备份不会被自动删（每日快照是唯一例外，见下一条）。备份目录名精确到秒，**同一秒内连做两次替换会自动加 `-2`**（两份备份各存各的，不会互相覆盖）。**1.5.0 起还原读盘前先验大小**：还原到替换前 / 本书历史还原读备份文件前先看 `stat.size`，单文件超过 128 MB（与导入上限同一口径）就明确拒绝 —— 不读进内存、不建还原前备份、一个字节都不写。
@@ -365,14 +364,46 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 23. **查找高亮只画不写**：当前章查找后，全部命中画在 `#editor-find-marks` 只读影子层上（和编辑器小件共用同一套「按编辑区实测字体 / 宽高对齐、跟着滚动」的逻辑），当前那处只切一个 class，**不重画正文、不改正文**；「上一处 / 下一处」只移动选区与滚动。命中超过 **500 处**时只画当前附近一屏，导航仍覆盖全部命中（单章上限 5000 处，`findMatchesAll` 会明确回报是否被上限截断）；绕回 / 窗口 / 正文切片 / 行号都在 `renderer/find-logic.js` 里，有单测。会话只记内存：改正文、切章、换书、离开写作页就结束，`Esc` 也能清除，不写配置、不写书库。
 24. **查找书签只记查询条件、不记正文**：书签按「书 + 章」存 `config.json` 的 `findBookmarks`（`core/bookmarks.js` 负责清洗 / 按「书 + 章」去重 / 增删，有单测），每条只有 `bookId` / `chapterId` / `query` / `caseSensitive` 与几个显示字段（书名 / 章名 / 章号 / 书路径）+ 时间戳，**没有正文、没有命中位置**。打开这一章时由渲染层按**当前编辑区正文**重新扫描并高亮（正文改过也能重新定位；改到没有命中时高亮收起、书签保留）；面板里可以列出本机书签、跨书跳转、删除。存 / 跳 / 删全部走主进程的只读 IPC + 原子写配置：**绝不写书库 / 书目 / 章节文件**，渲染层仍然没有 fs 权限；旧 config 没有这个字段 = 没有书签，照常启动。最多 200 条，同一「书 + 章」只保留一条（再存 = 更新查询词 / 大小写）。
 
+### 保证清单的代码锚点（version-sync 门禁）
+
+> 上面 24 条保证（含 6b）每条都要有一个可检查的落点。`node scripts/version-sync.js --check` 会逐条核对「文件存在 + 文件里确实有这个实现符号」，并核对本表编号与上面的保证条目一一对应；改实现或增删保证时同步改本表，漏改会直接拦在发版前（审计 M1 / M5 / ▲V309）。
+
+| 编号 | 代码位置（文件 → 实现符号） |
+|---|---|
+| 1 | `core/atomic.js` → `function atomicWriteFile` |
+| 2 | `core/storage.js` → `function writeBookMeta` |
+| 3 | `core/storage.js` → `function moveToTrash` |
+| 4 | `renderer/renderer.js` → `function updateWindowTitle` |
+| 5 | `renderer/renderer.js` → `function askUnsaved` |
+| 6 | `renderer/renderer.js` → `async function handleCloseRequest` |
+| 6b | `renderer/undo-ui.js` → `function createUndoUi` |
+| 7 | `renderer/statusbar-ui.js` → `function setupExternalChangeWatch`；`core/open-books.js` → `function verifySaveTarget` |
+| 8 | `core/repair.js` → `function restoreFromBak` |
+| 9 | `renderer/save-status-ui.js` → `function saveStateModel` |
+| 10 | `core/storage.js` → `function copyReadableChapterToBackup` |
+| 11 | `core/config.js` → `CONFIG_CORRUPT` |
+| 12 | `core/storage.js` → `async function takeDailySnapshot` |
+| 13 | `core/stats.js` → `function recordSaveChars` |
+| 14 | `core/proofread.js` → `function proofreadText` |
+| 15 | `core/fragments.js` → `function createFragmentStore` |
+| 16 | `core/sensitive.js` → `function scanText` |
+| 17 | `renderer/tts-ui.js` → `function createTtsUi` |
+| 18 | `renderer/editor-marks-ui.js` → `function createEditorMarksUi` |
+| 19 | `renderer/focus-mode-ui.js` → `function createFocusModeUi` |
+| 20 | `core/logs.js` → `function createLogStore` |
+| 21 | `core/search-index.js` → `function createSearchStore` |
+| 22 | `core/storage.js` → `function registerOpenBook`；`core/open-books.js` → `function verifySaveTarget` |
+| 23 | `renderer/find-ui.js` → `function createFindUi` |
+| 24 | `core/bookmarks.js` → `function sanitizeBookmarks` |
+
 > **历史记录**：25–82 条是 v0.8.5 起的逐轮改动沿革（整理交互 / 视觉打磨 / 安全加固 / 测试有效性治理等），原文已移到 [沿革.md](沿革.md) 的「防丢稿设计逐轮记录」；当前生效的保证只有上面 1–24 条（含 6b）。
 
 ## 开发与自检
 
 
 ```bash
-pnpm test          # 单元测试（node:test，2535 项；逐项覆盖说明见 沿革.md「开发自检历史说明」）
-pnpm run e2e       # 端到端自检：真实启动 Electron 走 1885 项主流程（逐组覆盖说明见 沿革.md「开发自检历史说明」）
+pnpm test          # 单元测试（node:test，2617 项；逐项覆盖说明见 沿革.md「开发自检历史说明」）
+pnpm run e2e       # 端到端自检：真实启动 Electron 走 1894 项主流程（逐组覆盖说明见 沿革.md「开发自检历史说明」）
 pnpm run demo      # 生成演示书库到 shots/demo-library（截图/演示用）
 node scripts/bench.js          # 前端基准（只读，v0.9 A-1）：临时书库 + 真实 Electron 量「书架刷新 / 书架搜索 / 打开书 / 切章 / 章节栏渲染 / 10 万字大章的输入延迟 · 输入处理 · 标记层重画 · 标记层滚动同步」耗时（--books / --chapters / --runs / --out，跑完打表并落 JSON，不碰真实书架）
 node scripts/contrast.js       # 对比度审计（只读，v0.9 A-4 起，v1.0 V-3 扩到 86 条规格）：系统临时目录里造演练书库（含一份书内历史备份）+ 真实 Electron，把 6 套纸色主题挨个切一遍读实际颜色，按 WCAG 2.1 算对比度（普通文字 4.5:1 / 大字号与界面图形 3:1）。除书架 / 写作页默认态外，还真实打开设置 / 导出范围 / 排版 / 查找 / 校对 / 历史六个弹层逐主题采样，并用 CDP 强制 `:hover` / `:active` 采真实交互态颜色；禁用态按 WCAG 1.4.3 豁免（只记录比值、报告里用 `·` 标出，不计失败）。打「规格 × 主题」的表并落 shots/contrast-<时间>.json（--themes / --out / --timeout / --no-fail；有低于阈值时返回码 1）。v1.0 实测 **504/504 达标 + 12 条禁用态豁免**
@@ -522,7 +553,7 @@ chapterly/
 │  ├─ fragments-ui.js       # 灵感箱 / 碎片速记（补刀 10）：createFragmentsUi(host) 交出「＋ 碎片」记录弹层与「插入碎片…」面板（列表 / 预览 / 插入到打开面板前的光标处）；只改编辑区、仍是未保存，原碎片保留不删；host 8（基础 5 + common / editor / menus 分组），8 个绑定随域 setupFragmentsUi
 │  ├─ write-timer-ui.js     # 写作时长（补刀 11）：createWriteTimerUi(host) 交出状态栏写作计时按钮（开始 / 暂停 / 秒表 / 每 30 秒整秒上报 / 换书与回书架自动停表）；只记整秒、不读正文不记按键，时长与字数同存 userData/stats.json；host 6（基础 4 + common / statsUi 分组），按钮绑定随域 setupWriteTimerUi
 │  ├─ focus-mode-ui.js      # 专注模式（补刀 12）：createFocusModeUi(host) 交出 F11 / 「专注」进出、打字机对齐、右上角半透明小条与退出时的布局还原；只改布局与滚动位置、不写配置不写盘；host 5（基础 2 + focus / marks / menus 分组），3 个绑定随域 setupFocusModeUi
-│  └─ renderer.js / index.html / styles.css   # 界面与事件（2026-11-04 长跑后：renderer.js 3456 行 = 胶水层；26 个域模块各管一块，标记只画在影子层，不碰正文）
+│  └─ renderer.js / index.html / styles.css   # 界面与事件（2026-11-04 长跑后：renderer.js = 胶水层；各域模块各管一块，标记只画在影子层，不碰正文）
 ├─ build/                   # 打包资源
 │  ├─ icon.ico              # 安装包/exe 图标（多尺寸）
 │  └─ icon.png              # 图标预览/源图
@@ -533,8 +564,8 @@ chapterly/
 │  ├─ bench.js              # 前端基准（v0.9 A-1）：在临时书库里造「书架 N 本 + 千章大书」，真实 Electron 量「书架刷新 / 书架搜索 / 打开书 / 切章 / 章节栏渲染」耗时；零依赖、只读、不删文件，结果落 shots/bench-<时间>.json
 │  ├─ bench-driver.js       # 基准驱动（v0.9 A-1）：只在 --bench 时由 main.js 懒加载，把测量脚本注入渲染层；不进安装包
 │  ├─ e2e-scenario.js       # 端到端自检场景（2026-11-04 长跑第 2 步拆组收官：**9996 → 374 行**）——只剩文件头 require、ctx 解构、harness 装配 + 前缀工具、导出对话框 6 件套、`state` 袋子 + `groupContext()`、组调用序列（第 0–51 组一组一次原位调用、52–72 组调用点原样位移）、`return`；断言一条没改
-│  ├─ e2e/harness.js        # E2E 公共工具（v0.9 B-7；2026-11-04 长跑第 2 步下沉 7 个前导工具）：check / waitFor / 删书重试 / 读日志 / 文件存在 / ensureWindowFocus / diskText / waitForFile / waitForSummary / waitCloseReady / readClipboard / waitForClipboard，场景与 73 个组文件共用一份
-│  ├─ e2e/groups/           # 按组拆开的 E2E 场景（v0.9 B-7 起，2026-11-04 长跑第 2 步补齐）：index.js 按组号派发（runGroups / idsFrom），**73 个组文件（0–72）**——第 0–51 组在 2026-11-04 长跑从 `scripts/e2e-scenario.js` 原样搬入（组体逐行一致、断言一条未改、组间共享值走 `t.state`），第 52–72 组是 v0.9 / v0.10 阶段已拆的组（调用点与文件保持原位）。组文件只 `require('node:…')` 内建，不碰产品代码 / electron
+│  ├─ e2e/harness.js        # E2E 公共工具（v0.9 B-7；2026-11-04 长跑第 2 步下沉 7 个前导工具）：check / waitFor / 删书重试 / 读日志 / 文件存在 / ensureWindowFocus / diskText / waitForFile / waitForSummary / waitCloseReady / readClipboard / waitForClipboard，场景与 83 个组文件共用一份
+│  ├─ e2e/groups/           # 按组拆开的 E2E 场景（v0.9 B-7 起，2026-11-04 长跑第 2 步补齐）：index.js 按组号派发（runGroups / idsFrom），**83 个组文件（00–82）**——第 0–51 组在 2026-11-04 长跑从 `scripts/e2e-scenario.js` 原样搬入（组体逐行一致、断言一条未改、组间共享值走 `t.state`），第 52–72 组是 v0.9 / v0.10 阶段已拆的组（调用点与文件保持原位）。组文件只 `require('node:…')` 内建，不碰产品代码 / electron
 │  ├─ contrast.js           # 对比度审计（v0.9 A-4 起，v1.0 V-3 扩展到 86 条规格 / 504 条通过 + 12 条禁用态豁免）：系统临时目录里造演练书库 + 真实 Electron，6 套主题逐一切换后读实际颜色、按 WCAG 2.1 打表并落 shots/contrast-<时间>.json
 │  ├─ contrast-driver.js    # 对比度采样驱动（v0.9 A-4，v1.0 V-3 扩到弹层内部 + 交互态）：只在 --contrast 时由 main.js 懒加载，把采样脚本注入渲染层（切主题 / 读计算色 / 关过渡 / 真实打开六个弹层），交互态由主进程用 CDP `CSS.forcePseudoState` 强制 :hover / :active 后逐主题采样；不进安装包
 │  ├─ contrast-color.js     # 颜色与 WCAG 公式（v0.9 A-4，纯逻辑）：解析浏览器计算值（含 color(srgb …)）、半透明叠加、相对亮度与对比度
@@ -552,7 +583,7 @@ chapterly/
 ## 已知限制（仍有意不做）
 
 - 安装包**未签名**：首次安装 Windows SmartScreen 会提示「已保护你的电脑」，点「更多信息 → 仍要运行」即可；自动更新只做了**轻量版**（手动检查 → 打开 GitHub 下载页），**没有自动下载、自动安装、后台静默升级，也没有代码签名**，升级仍需你自己下载安装包覆盖安装
-- **Electron 安全开关之外的残余风险（v0.9 C-1 审计结论，本阶段只记录不修改）**：页面仍用 `file://` 加载（没有换成自定义协议），打包配置里也**没有**开 `grantFileProtocolExtraPrivileges: false` 与 `enableEmbeddedAsarIntegrityValidation` 这两个 fuse——它们只有打包后才验证得出来，而本阶段按约定不打包，留到下次发版时评估；`Ctrl+Shift+I` 只在**开发 / 自检构建**里能打开开发者工具（**打包后的正式版已不绑定**，见 2026-11-05 审计整改；窗口开着 `sandbox` + `contextIsolation`，里面同样没有 Node 能力）。这些都不改变「渲染层没有文件系统权限、正文只能由主进程按既有校验读写」这条主线
+- **Electron 安全开关之外的残余风险（v0.9 C-1 审计结论，本阶段只记录不修改）**：页面仍用 `file://` 加载（没有换成自定义协议），打包配置**已开** `enableEmbeddedAsarIntegrityValidation` 与 `onlyLoadAppFromAsar` 这两个 fuse（`grantFileProtocolExtraPrivileges` 未显式关，仍是 Electron 默认）——它们只有打包后才验证得出来，本阶段按约定不打包，发版时由打包后的冒烟检查覆盖；`Ctrl+Shift+I` 只在**开发 / 自检构建**里能打开开发者工具（**打包后的正式版已不绑定**，见 2026-11-05 审计整改；窗口开着 `sandbox` + `contextIsolation`，里面同样没有 Node 能力）。这些都不改变「渲染层没有文件系统权限、正文只能由主进程按既有校验读写」这条主线
 - **路径校验的剩余边界（v0.9 C-2 / C-2b 审计结论）**：①书文件夹如果本身是**符号链接 / 目录联接**并指向书架外，文本路径判定拦不住（要先有人在你自己的书架上造出这种链接）；②`config:set` 里的 `booksRoot` 与两份词表路径现在只认**主进程自己弹出的对话框刚选中的那个**（来源校验见第 35 条），所以设置里的「书架目录」输入框改成只读——改目录请点右侧「选择…」，行为与提示跟以前一致；③来源校验按**字符串等价**判断：如果你先在对话框里选了 `D:\书架`，再手动写出它的子目录 `D:\书架\子目录` 当书架，会被当成「来源不明」忽略（重新点「选择…」选一次即可）；④改坏了也只是读不到，不会写坏书库
 - **目录联接书库（2026-11-06 拍板）**：书架根目录可以是指向别的盘 / 别的目录的**目录联接**（Windows junction）——列书、打开、读章、保存都照常走真实目录，「整个书库放在别的盘、用联接挂进来」这种用法**受支持**，并由回归用例 `tests/junction-library.test.js` 钉住（防止以后的路径规范化改动把它弄坏）。代价是应用**不做 realpath、也不校验符号链接指向**：安全边界依赖本机文件系统权限（只有你自己能在这台机器上造链接）；同一个物理书库用两个不同路径名打开时会被当成两本（正常从书架入口打开不会发生——书架永远只用配置里那一个书库路径）。另一条现有边界：**书文件夹本身**若是联接，书架列举只认直接子目录，它不会自动出现在书架（路径已知时仍能读章 / 保存）；要让它自动出现属于行为变更，本版未做（见 `下一阶段提案.md` §6）。
 - **2026-11-05 审计整改后的四条边界**：①`config.json` 只认已知字段——手动往配置里塞的未知键在加载 / 保存时会被丢弃（旧配置缺新键照常打开、自动补默认值）；路径字段（书架目录 / 两份词表 / 编辑器自定义字体）只认「原值 / 设置里刚用「选择…」选中的那个」，其它来源一律忽略并留一条日志。②`font:read` 先 `realpath` 再按真实路径校验 `.ttf` / `.otf` / `.ttc` 与 24MB 上限；按书 / 全局配置解析出的本机绝对路径**不再回传给渲染层**。③打包后的正式版**不认** `--e2e` / `--bench` / `--contrast` / `--screenshot` 这些自动化开关（自检频道不注册、窗口与关闭流程都走正常路径）；安装版冒烟用的 `--user-data` / `--books-root` 与 Chromium 自己的 `--remote-debugging-port` 保留。④关窗放行由主进程按「自己掌握的未保存状态 + 最近一次保存成功回执」交叉判定，界面单方说「可以关」不再足够；「不保存退出」会在界面侧先如实清掉脏状态再放行

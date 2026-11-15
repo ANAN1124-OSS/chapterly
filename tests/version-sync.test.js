@@ -7,8 +7,10 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const tmpCleanup = require('./tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
 const versionSync = require(path.join(ROOT, 'scripts', 'version-sync.js'));
@@ -127,12 +129,128 @@ test('版本锚点检查：index.html 两个版本元素必须是空占位（运
   assert.match(versionSync.checkIndexHtml('<span id="app-version"></span>')[0], /找不到 #settings-update-version/);
 });
 
+// 审计修复 #26（M1 / M5 / ▲V309）：README 的「防丢稿保证」与结构描述进门禁。
+// 下面用合成 README + 临时根目录驱动三个门禁，测「锚点错了会不会报」；仓库现状由下一条钉住。
+function guaranteeSampleReadme() {
+  return [
+    '## 防丢稿设计（当前保证）',
+    '',
+    '1. **第一条保证**：说明一。',
+    '2. **第二条保证**：说明二。',
+    '6b. **可连退的破坏性动作**：说明。',
+    '',
+    '### 保证清单的代码锚点（version-sync 门禁）',
+    '',
+    '| 编号 | 代码位置（文件 → 实现符号） |',
+    '|---|---|',
+    '| 1 | `core/one.js` → `function one` |',
+    '| 2 | `core/two.js` → `function two`；`core/two.js` → `TWO_FLAG` |',
+    '| 6b | `core/one.js` → `ONE_FLAG` |',
+    '',
+    '> **历史记录**：25–82 条已移出。'
+  ].join(CRLF);
+}
+
+function makeGuaranteeRoot() {
+  const root = tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-version-sync-')));
+  fs.mkdirSync(path.join(root, 'core'));
+  fs.writeFileSync(path.join(root, 'core', 'one.js'), 'function one() {}\nconst ONE_FLAG = true;\n');
+  fs.writeFileSync(path.join(root, 'core', 'two.js'), 'function two() {}\nconst TWO_FLAG = true;\n');
+  return root;
+}
+
+test('#26 M1/V309：保证清单每条都要有代码锚点，且锚点真的落在源码里', () => {
+  const root = makeGuaranteeRoot();
+  assert.deepEqual(versionSync.checkGuaranteeAnchors(guaranteeSampleReadme(), root), [], '对齐的清单应通过');
+
+  // 缺锚点：删掉 2 那一行
+  const missing = guaranteeSampleReadme().replace(/\| 6b \|.*\r?\n/, '');
+  assert.match(
+    versionSync.checkGuaranteeAnchors(missing, root).join('\n'),
+    /保证条目没有代码锚点：6b/,
+    '删掉锚点行要报出缺哪条'
+  );
+  // 多锚点：表里写了不存在的编号
+  const extra = guaranteeSampleReadme().replace('| 6b |', '| 7 |');
+  assert.match(versionSync.checkGuaranteeAnchors(extra, root).join('\n'), /不存在的保证编号：7/);
+  // 文件不存在 / 符号不存在 / 格式不对
+  assert.match(
+    versionSync.checkGuaranteeAnchors(guaranteeSampleReadme().replace('core/two.js', 'core/nope.js'), root).join('\n'),
+    /保证 2 的代码位置不存在：core\/nope\.js/
+  );
+  assert.match(
+    versionSync.checkGuaranteeAnchors(guaranteeSampleReadme().replace('`function two`', '`function nope`'), root).join('\n'),
+    /保证 2 的落点 core\/two\.js 里找不到「function nope」/
+  );
+  assert.match(
+    versionSync.checkGuaranteeAnchors(guaranteeSampleReadme().replace('`core/one.js` → `function one`', 'core/one.js function one'), root).join('\n'),
+    /保证 1 的锚点格式不对/
+  );
+  // 小节缺失 / 锚点小节缺失
+  assert.match(
+    versionSync.checkGuaranteeAnchors('# 没有保证小节的 README', root).join('\n'),
+    /找不到「## 防丢稿设计（当前保证）」小节/
+  );
+  const noAnchorSection = guaranteeSampleReadme().split('### 保证清单的代码锚点')[0];
+  assert.match(
+    versionSync.checkGuaranteeAnchors(noAnchorSection, root).join('\n'),
+    /找不到「### 保证清单的代码锚点（version-sync 门禁）」小节/
+  );
+});
+
+test('#26 M1：E2E 组文件数量 / 编号与 README 两处描述一致', () => {
+  const root = tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-e2e-groups-')));
+  const dir = path.join(root, 'scripts', 'e2e', 'groups');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, '00-a.js'), '');
+  fs.writeFileSync(path.join(dir, '01-b.js'), '');
+  fs.writeFileSync(path.join(dir, 'index.js'), '');
+  const readme = [
+    '场景与 2 个组文件共用一份',
+    '**2 个组文件（00–01）**'
+  ].join(CRLF);
+  assert.deepEqual(versionSync.checkE2eGroupDocs(readme, root), []);
+
+  assert.match(
+    versionSync.checkE2eGroupDocs(readme.replace('场景与 2 个', '场景与 3 个'), root).join('\n'),
+    /README\.md 写 3 个组文件，实际 2 个/
+  );
+  assert.match(
+    versionSync.checkE2eGroupDocs(readme.replace('（00–01）', '（0–1）'), root).join('\n'),
+    /组文件编号范围应为 00–01/
+  );
+  // 编号断档（00 / 02）也要报
+  fs.renameSync(path.join(dir, '01-b.js'), path.join(dir, '02-b.js'));
+  assert.match(
+    versionSync.checkE2eGroupDocs(readme, root).join('\n'),
+    /组文件编号应从 00 连续排到/
+  );
+});
+
+test('#26 M1：README 的 Electron fuse 说明必须与 package.json 实配一致', () => {
+  const pkg = { build: { electronFuses: { enableEmbeddedAsarIntegrityValidation: true, onlyLoadAppFromAsar: true } } };
+  const readme = '打包配置**已开** `enableEmbeddedAsarIntegrityValidation` 与 `onlyLoadAppFromAsar` 这两个 fuse';
+  assert.deepEqual(versionSync.checkFuseDocs(readme, pkg), []);
+  assert.match(
+    versionSync.checkFuseDocs('打包配置没有开 enableEmbeddedAsarIntegrityValidation', pkg).join('\n'),
+    /要如实写明/
+  );
+  const fusedOff = { build: { electronFuses: { enableEmbeddedAsarIntegrityValidation: false, onlyLoadAppFromAsar: true } } };
+  assert.match(
+    versionSync.checkFuseDocs(readme, fusedOff).join('\n'),
+    /enableEmbeddedAsarIntegrityValidation 应为 true/
+  );
+  assert.match(versionSync.checkFuseDocs(readme, {}).join('\n'), /缺 build\.electronFuses/);
+});
+
 test('版本单一事实来源：仓库现状无漂移（锚点 = package.json、两处计数一致、界面 0 处静态版本串）', () => {
   const problems = versionSync.checkDocs({
     readme: README,
     checklist: CHECKLIST,
     indexHtml: INDEX_HTML,
-    version: PKG.version
+    version: PKG.version,
+    // 审计 #26：结构描述（保证清单锚点 / 组数 / fuse）也一起核对
+    packageJson: PKG
   });
   assert.deepEqual(
     problems,
