@@ -104,6 +104,26 @@ test('collect：齐全时返回「本地名 → 模块对象」；assertInstalle
   assert.equal(Object.keys(modules).length, manifest.MODULES.filter((entry) => entry[2]).length);
 });
 
+// 审计残留修复 #R12（#55/M4）：清单模块自己没加载时，renderer.js 不许抛原生 TypeError
+// （Cannot read properties of undefined），要走与 collect() 同一套聚合报错（TypeError + code + missing）。
+test('renderer.js 启动守卫：清单自身漏加载也报同一种聚合错（不是原生 TypeError）', () => {
+  const source = read('renderer/renderer.js');
+  // 找真正的调用点（注释里也出现过同一句，所以按「行首两个空格 + 没有 //」定位）
+  const callAt = source.indexOf('\n  window.CWRendererAssembly.assertInstalled(window);');
+  assert.ok(callAt > 0, 'renderer.js 必须调用装配清单的 assertInstalled(window)');
+  const at = callAt + 1;
+  const guard = source.slice(Math.max(0, at - 900), at);
+  assert.match(guard, /if \(!window\.CWRendererAssembly \|\| typeof window\.CWRendererAssembly\.assertInstalled !== 'function'\) \{/,
+    '调用前必须先判清单对象与 assertInstalled 是不是函数');
+  assert.match(guard, /new TypeError\(/, '缺清单时抛的必须是 TypeError（与 host 缺成员同一口径）');
+  assert.match(guard, /missingAssembly\.code = 'RENDERER_MODULE_MISSING'/, '复用装配清单的错误码');
+  assert.deepEqual(guard.match(/missingAssembly\.missing = \['(\w+)'\]/)[1], 'CWRendererAssembly', 'missing 要点名清单模块本身');
+  assert.match(guard, /index\.html 的 <script> 顺序/, '提示要指向 index.html 的 <script> 顺序');
+  assert.match(guard, /throw missingAssembly;/, '判不过必须抛出去，不许静默继续');
+  // 守卫之后的调用点仍是清单本身（不许改走别的入口）
+  assert.match(source.slice(at), /^ {2}window\.CWRendererAssembly\.assertInstalled\(window\);/);
+});
+
 test('assertInstalled：缺模块一次报全（TypeError + code + missing），不静默放行', () => {
   const fake = {};
   for (const [file, global, key] of manifest.MODULES) fake[global] = { from: file, key };

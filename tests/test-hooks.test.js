@@ -380,7 +380,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   焦点守卫（focusEl / inOtherInput 两行代码 + 3 行说明）—— 焦点在查找 / 替换等输入框里时不抢
   //   Ctrl+Z；编辑区自己例外（整理快照撤的就是正文）。判定只读 document.activeElement 与共享的
   //   undo-action.isTypingTarget，没有新增模块依赖。
-  const RENDERER_LINE_BUDGET = 6401;
+  // 审计残留修复 #R12（#55/M4，第二阶段）：6401 → 6412（+11）：装配清单自身漏加载时走同一种聚合报错
+  //   （8 行守卫：判 assertInstalled 是不是函数、造带 code / missing 的 TypeError 再抛）+ 3 行说明；
+  //   清单文件没加载时不再抛「Cannot read properties of undefined」，报错点名的就是缺的那个脚本。
+  const RENDERER_LINE_BUDGET = 6412;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

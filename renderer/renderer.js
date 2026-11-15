@@ -171,6 +171,17 @@
   const focusModeUiModule = window.CWFocusModeUi;
   // 审计修复 #55（M4）：装配清单化。模块顺序 / 全局名 / 本地名清单在 renderer/assembly-manifest.js，
   // 启动时一次报全缺失模块（以前哪个 window.CW 全局名没加载，对应 const 静默 undefined，报错点离原因很远）。
+  // 审计残留修复 #R12（#55/M4）：清单自身漏加载时也报同一种聚合错。旧实现直接
+  // window.CWRendererAssembly.assertInstalled(window) —— 清单文件没加载时抛的是原生 TypeError
+  //（Cannot read properties of undefined），既没有错误码、也看不出缺的是什么。
+  if (!window.CWRendererAssembly || typeof window.CWRendererAssembly.assertInstalled !== 'function') {
+    const missingAssembly = new TypeError(
+      '渲染层装配缺少模块：CWRendererAssembly（检查 index.html 的 <script> 顺序 / 是否漏 assembly-manifest.js）'
+    );
+    missingAssembly.code = 'RENDERER_MODULE_MISSING';
+    missingAssembly.missing = ['CWRendererAssembly'];
+    throw missingAssembly;
+  }
   window.CWRendererAssembly.assertInstalled(window);
   // 写作计时（v0.8-2）：每 30 秒把整秒上报一次；不足 1 秒的零头留在内存里下次一起算。
   const WRITE_TIMER_FLUSH_MS = 30000;
