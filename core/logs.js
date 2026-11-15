@@ -5,10 +5,11 @@
 // - 只记元数据：时间、级别、类型、错误码、IPC 频道、路径、应用版本、pid、栈。
 //   **绝不写正文**：调用方只传这些字段；message / stack 里还会把连续 24 个以上的汉字
 //   当成正文隐去（错误信息、路径、栈里正常不会出现这么长的连续汉字）。
-// - **不写本机完整路径**（v0.9 C-4，安全审计 C5）：message / stack 里的绝对路径统一收成
+// - **不写本机完整路径**（v0.9 C-4，安全审计 C5）：message / stack / path 里的绝对路径统一收成
 //   `…\最后一节`（栈保留最后两节，`…\core\storage.js` 仍看得懂是哪一行），
 //   本机用户名 / 书架上级目录 / 章节所在书的完整位置都不会落进日志。
-//   路径字段（path）只收调用方显式给出的「书相对」信息，不在这里做二次改写。
+//   路径字段（path）期望调用方传「书相对」信息，但落盘前同样过一遍脱敏（审计修复 #23 / S3），
+//   不再只靠调用方自律。
 // - 写日志永远吞掉错误：日志目录没权限、磁盘满、被别的程序占用都不能影响正文保存与界面。
 // - 按天 + 按大小滚动：每天一个 chapter-writer-YYYY-MM-DD[.N].log，单份超过上限就换下一个
 //   序号；只保留最近 12 份（旧的按文件名里的日期 / 序号删，不碰别的文件）。
@@ -30,6 +31,8 @@ const MAX_STACK_LINES = 20;
 const MAX_STACK_LINE_CHARS = 320;
 const MAX_STACK_CHARS = 4000;
 // 连续这么多个汉字几乎不可能是错误信息 / 路径，按「正文」隐去（防手滑把正文拼进错误信息）。
+// 审计修复 #23（S3）：旧字符类只覆盖 BMP 的 CJK / 扩展 A / 兼容区，含扩展 B+ 生僻字的正文
+// 可以整段绕过遮罩；改用 \p{Script=Han}（u 标志覆盖扩展 B–H 等全部汉字区）。
 const CJK_RUN = 24;
 // 同一个错误一秒内可能抛很多次（渲染进程崩溃循环等），5 秒内同样的内容只记一条。
 const DEDUPE_WINDOW_MS = 5000;
@@ -39,8 +42,10 @@ const KIND_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,59}$/;
 const CODE_RE = /^[A-Za-z0-9_.-]{1,40}$/;
 const CHANNEL_RE = /^[A-Za-z0-9:_-]{1,60}$/;
 const VERSION_RE = /^[A-Za-z0-9._-]{0,24}$/;
-const CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
-const CJK_RE = new RegExp(`[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]{${CJK_RUN},}`, 'g');
+// 审计修复 #23（S3）：控制字符集补 C1（U+0080–U+009F，含 NEL U+0085）与行/段分隔符
+// U+2028 / U+2029 —— 部分解析器把它们当换行，留在日志里就是一个「伪造日志条目」的入口。
+const CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u2028\u2029]/g;
+const CJK_RE = new RegExp(`\\p{Script=Han}{${CJK_RUN},}`, 'gu');
 const LOG_NAME_RE = /^chapter-writer-(\d{4}-\d{2}-\d{2})(?:\.(\d{1,3}))?\.log$/;
 
 function toDate(value, fallback = new Date()) {
@@ -88,7 +93,8 @@ function parseLogFileName(name) {
 }
 
 function maskLongCjk(text) {
-  return String(text == null ? '' : text).replace(CJK_RE, (run) => `[正文已隐藏 ${run.length} 字]`);
+  // 字数按码点算：扩展 B 的汉字在 UTF-16 里占两个码元，按 length 报会把遮罩字数说成两倍。
+  return String(text == null ? '' : text).replace(CJK_RE, (run) => `[正文已隐藏 ${Array.from(run).length} 字]`);
 }
 
 function safeString(value) {
@@ -131,6 +137,11 @@ function sanitizeMessage(value) {
 function sanitizePath(value) {
   let text = safeString(value).replace(/[\r\n\t]+/g, ' ');
   text = text.replace(CONTROL_RE, '').trim();
+  if (!text) return '';
+  // 审计修复 #23（S3）：path 字段也过 message 同一套脱敏 —— 先收本机绝对路径（只留最后一节），
+  // 再把≥24 个连续汉字当正文隐去。以前这里只去控制字符 + 截断，完全靠「调用方只传书相对信息」
+  // 这一层自律；调用方手滑填了本机目录 / 长书名就会原样落进日志。
+  text = maskLongCjk(errorText.redactPaths(text));
   if (!text) return '';
   return text.length > MAX_PATH_CHARS ? `${text.slice(0, MAX_PATH_CHARS)}…` : text;
 }

@@ -116,11 +116,33 @@ test('崩溃日志：sanitizeMessage 里的本机绝对路径只留最后一节�
   assert.match(logsLib.sanitizeMessage("ENOENT: no such file or directory, scandir 'D:\\我的小说'"), /…\\我的小说'$/);
 });
 
-test('崩溃日志：sanitizePath 单行、去控制字符、超长截断', () => {
-  assert.equal(logsLib.sanitizePath('D:\\小说\\书\\001-起风.txt'), 'D:\\小说\\书\\001-起风.txt');
+test('崩溃日志：sanitizePath 单行、去控制字符、脱敏、超长截断（审计 #23/S3）', () => {
+  // 绝对路径与 message 同口径：只留最后一节 —— 以前 path 字段只去控制字符，靠调用方自律传「书相对」值
+  assert.equal(logsLib.sanitizePath('D:\\小说\\书\\001-起风.txt'), '…\\001-起风.txt');
+  // 正常调用方传的书相对路径照旧不动
+  assert.equal(logsLib.sanitizePath('我的小说\\书\\001-起风.txt'), '我的小说\\书\\001-起风.txt');
   assert.equal(logsLib.sanitizePath('a\nb\tc'), 'a b c');
+  // C1（含 NEL）/ U+2028 / U+2029 一并清掉（部分解析器把它们当换行 → 日志条目伪造面）
+  assert.equal(logsLib.sanitizePath('a\u0085b\u2028c\u2029d'), 'abcd');
+  // 长串汉字（书名 / 目录名）同样按正文隐去
+  assert.equal(logsLib.sanitizePath(`D:\\书\\${'长'.repeat(30)}`), '…\\[正文已隐藏 30 字]');
   assert.equal(logsLib.sanitizePath('x'.repeat(400)).length, logsLib.MAX_PATH_CHARS + 1);
   assert.equal(logsLib.sanitizePath(null), '');
+});
+
+test('崩溃日志：扩展 B 生僻字也按正文遮罩，控制字符补 C1 / 行分隔符（审计 #23/S3）', () => {
+  // 旧 CJK_RE 只覆盖 BMP（3400-4DBF / 4E00-9FFF / F900-FAFF），扩展 B+ 的汉字整段绕过遮罩
+  const extB = String.fromCodePoint(0x20000).repeat(26);
+  const masked = logsLib.maskLongCjk(extB);
+  assert.equal(masked, '[正文已隐藏 26 字]', '扩展 B 生僻字要遮，字数按码点算（不是 52）');
+  const mixed = `${'字'.repeat(5)}${String.fromCodePoint(0x2A6DF).repeat(20)}`;
+  assert.match(logsLib.maskLongCjk(mixed), /^\[正文已隐藏 25 字\]$/);
+  // 控制字符集补 C1（含 NEL U+0085）与 U+2028 / U+2029：不能再留成「可换行」的假条目标记
+  assert.equal(logsLib.sanitizeMessage('前\u0085中\u2028后\u2029尾'), '前中后尾');
+  assert.deepEqual(logsLib.sanitizeStack('Error: 前\u0085中\n    at x\u2028y'), ['Error: 前中', 'at xy']);
+  // 长串扩展 B 正文在 message / stack 里都遮住
+  assert.match(logsLib.sanitizeMessage(`读取失败：${extB}`), /读取失败：\[正文已隐藏 26 字\]/);
+  assert.match(logsLib.sanitizeStack(`Error: ${extB}`)[0], /Error: \[正文已隐藏 26 字\]/);
 });
 
 test('崩溃日志：sanitizeStack 去空行、限行数、限单行长度、隐去正文', () => {
@@ -169,7 +191,7 @@ test('崩溃日志：sanitizeEntry 只留白名单字段，坏值回落默认', 
   assert.equal(entry.day, '2026-11-01');
   assert.equal(entry.pid, 1234);
   assert.equal(entry.app, '0.4.1');
-  assert.equal(entry.path, 'D:\\书\\001.txt');
+  assert.equal(entry.path, '…\\001.txt');
   assert.equal(entry.bookPath, undefined);
   assert.equal(entry.text, undefined);
   assert.equal(entry.time, now);
@@ -225,7 +247,7 @@ test('崩溃日志：格式是一条带时间 / 级别 / 类型 / 码 / 频道 /
     now
   );
   assert.match(text, /^2026-11-01 02:05:03\.017 [+-]\d{2}:\d{2} ERROR save-failed code=EPERM channel=chapter:save pid=999 app=0\.4\.1\n/);
-  assert.match(text, /\n {2}path: D:\\书\\001\.txt\n/);
+  assert.match(text, /\n {2}path: …\\001\.txt\n/);
   assert.match(text, /\n {2}message: 写入失败\n/);
   assert.match(text, /\n {2}stack:\n {4}Error: 写入失败\n {4}at x \(main\.js:1:1\)\n\n$/);
   // info 级别不带栈也能读
@@ -359,7 +381,7 @@ test('崩溃日志：写一条 → 建 logs 目录、按天命名、含错误信
     assert.equal(result.file, 'chapter-writer-2026-11-01.log');
     const text = await fs.readFile(path.join(store.dir, result.file), 'utf8');
     assert.match(text, /ERROR save-failed code=EPERM channel=chapter:save pid=4242 app=0\.4\.1/);
-    assert.match(text, /path: D:\\临时书库\\测试书\\001-起风\.txt/);
+    assert.match(text, /path: …\\001-起风\.txt/);
     assert.match(text, /message: 写入失败：\[正文已隐藏 \d+ 字\]/);
     assert.equal(text.includes('绝不应该出现在日志里的正文句子'), false);
     assert.match(text, /stack:/);

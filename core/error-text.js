@@ -21,6 +21,13 @@ const FILE_URL_RE = /file:\/{2,3}[^\s'"<>「」（）()[\]]*/gi;
 // 起点之后的真实结尾统一交给 readPathEnd（含空格判断）：旧的三条「遇空白就断」正则已删除。
 const DEVICE_PREFIX_RE = /\\\\\?\\/g;
 const UNC_START_RE = /\\\\[^\s'"<>|*?\\]+\\/g;
+// 审计修复 #23（S2）：正斜杠 UNC `//server/share/…` —— 旧实现只认反斜杠形态，POSIX 起点正则
+// 又要求「前面有分隔符 + 至少两段」，这种形状两个都不命中，整条原样漏出去。
+const UNC_FWD_START_RE = /\/\/[^\s'"<>|*?\\/]+\//g;
+// 审计修复 #23（S2）：%5C / %2F 编码分隔符（以及 %3A 编码冒号）的盘符路径，
+// 例如 `C%3A%5CUsers%5CZhang%5CSan`。起点只认「带编码成分」的形态，普通 `C:\` 仍归 DRIVE_START_RE。
+const ENCODED_DRIVE_START_RE =
+  /[A-Za-z](?:%3A|%3a)(?:%5C|%5c|%2F|%2f|[\\/])|[A-Za-z]:(?:%5C|%5c|%2F|%2f)/g;
 const POSIX_START_RE = /(^|[\s'"（(「【:：,，;；=])(\/[^\s'"<>|*?/]+\/)/g;
 // 盘符路径的**起点**与分段规则（1.6.0 H4 / S-01）：旧口径 `[^\s'"<>|*?]*` 遇到空格就断，
 // `C:\Users\Zhang San\Documents\我的小说\书\001-第 1 章.txt` 只会遮住 `C:\Users\Zhang`，
@@ -74,8 +81,15 @@ function normalizeKeep(value) {
 // 只有盘符根（`C:\`）时收成一个省略号。
 function maskPath(raw, keep = 1) {
   const text = safeString(raw);
-  const sep = text.includes('\\') ? '\\' : '/';
-  const segments = text
+  // 审计修复 #23（S2）：编码分隔符也按分隔符切段 —— `C%3A%5CUsers%5CZhang%5CSan` 以前整条
+  // 算一个分段，遮罩后会把用户名原样留在「最后一节」里。解码只用于切段与展示，不改原输入。
+  const decoded = text
+    .replace(/%3A/gi, ':')
+    .replace(/%5C/gi, '\\')
+    .replace(/%2F/gi, '/')
+    .replace(/%20/gi, ' ');
+  const sep = decoded.includes('\\') ? '\\' : '/';
+  const segments = decoded
     .split(/[\\/]+/)
     .filter((seg) => seg !== '' && seg !== '.' && seg !== '..' && !/^[A-Za-z]:$/.test(seg));
   const kept = keep > 0 ? segments.slice(-keep) : [];
@@ -96,20 +110,19 @@ function nextPathToken(text) {
   return { token, rest: text.slice(end) };
 }
 
-// 空格后面这个词还算不算同一条盘符路径的一段（1.6.0 H4 / S-01）：
+// 空格后面这个词还算不算同一条盘符路径的一段（1.6.0 H4 / S-01、审计修复 #23 / S2）：
 //   · 以下一条绝对路径开头（/ 或 \）→ 不算，那是另一条；
 //   · 自带分隔符 / 带 ASCII 扩展名 → 算（`San\Documents`、`章.txt`）；
-//   · 纯 ASCII 词（`Zhang`、`1`）→ 只有它后面**还**跟着像路径的一段才算（最多回看 3 个词，避免长句里反复试探）；
+//   · 纯 ASCII 词（`Zhang`、`San`、`1`）→ 算，**包括路径末尾那一个**：旧实现要求「后面还得再
+//     有一段像路径的东西」，于是 `C:\Users\Zhang San` 只遮到 `…\Users`，把用户名原样露出来；
+//     也不再设回看深度上限（≥4 个连续 ASCII 空格词以前会断链），一串空格词一路读到句法终点。
 //   · 中文正文 / 标点开头的词 → 不算（`打不开`、`后面还有字` 都不应该被吞进路径）。
-function isPathContinuationToken(token, rest, depth = 0) {
+function isPathContinuationToken(token) {
   if (!token) return false;
   if (token[0] === '/' || token[0] === '\\') return false;
   if (token.includes('\\') || token.includes('/')) return true;
   if (EXT_PATH_TOKEN_RE.test(token)) return true;
-  if (!ASCII_PATH_TOKEN_RE.test(token)) return false;
-  if (depth >= 3) return false;
-  const next = nextPathToken(rest);
-  return next ? isPathContinuationToken(next.token, next.rest, depth + 1) : false;
+  return ASCII_PATH_TOKEN_RE.test(token);
 }
 
 // 从某处（`X:\` 之后、`\\?\` 剥掉前缀之后、UNC 的 `\\server\share` 首段之后、POSIX 前两段之后）
@@ -122,7 +135,7 @@ function readPathEnd(text, from) {
     if (PATH_STOP_CHAR_RE.test(ch)) break;
     if (ch === ' ' || ch === '\t') {
       const next = nextPathToken(text.slice(end + 1));
-      if (!next || !isPathContinuationToken(next.token, next.rest, 0)) break;
+      if (!next || !isPathContinuationToken(next.token)) break;
       end += 1;
       continue;
     }
@@ -165,6 +178,42 @@ function maskDevicePaths(text, keep) {
     out += text.slice(last, start) + maskPath(text.slice(from, end), keep);
     last = end;
     DEVICE_PREFIX_RE.lastIndex = end;
+  }
+  return out + text.slice(last);
+}
+
+// 审计修复 #23（S2）：正斜杠 UNC `//server/share/…`。起点只吃到 `//server/`，共享名与后面各段
+// （可能含空格）交给 readPathEnd；输出按原路径的 `/` 分隔符收成 `…/最后一节`。
+function maskUncForwardPaths(text, keep) {
+  UNC_FWD_START_RE.lastIndex = 0;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = UNC_FWD_START_RE.exec(text)) !== null) {
+    const start = match.index;
+    if (start < last) continue;
+    const end = readPathEnd(text, start + match[0].length);
+    out += text.slice(last, start) + maskPath(text.slice(start, end), keep);
+    last = end;
+    UNC_FWD_START_RE.lastIndex = end;
+  }
+  return out + text.slice(last);
+}
+
+// 审计修复 #23（S2）：带 %3A / %5C / %2F 编码的盘符路径。结尾仍交给 readPathEnd（编码串里没有
+// 真正的空格，整段会被读完）；maskPath 解码后按真实分隔符切段，只留最后一节。
+function maskEncodedPaths(text, keep) {
+  ENCODED_DRIVE_START_RE.lastIndex = 0;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = ENCODED_DRIVE_START_RE.exec(text)) !== null) {
+    const start = match.index;
+    if (start < last) continue;
+    const end = readPathEnd(text, start + match[0].length);
+    out += text.slice(last, start) + maskPath(text.slice(start, end), keep);
+    last = end;
+    ENCODED_DRIVE_START_RE.lastIndex = end;
   }
   return out + text.slice(last);
 }
@@ -214,6 +263,10 @@ function redactInText(text, keep) {
   out = maskDevicePaths(out, keep);
   // \\server\share\…：UNC 路径，从 `\\server\` 之后交给 readPathEnd
   out = maskUncPaths(out, keep);
+  // //server/share/…：正斜杠形态的 UNC（审计修复 #23 / S2）
+  out = maskUncForwardPaths(out, keep);
+  // C%3A%5C… / C:%5C…：编码分隔符形态的盘符路径（审计修复 #23 / S2）
+  out = maskEncodedPaths(out, keep);
   // C:\… / C:/…（含空格的本机路径整条遮罩，见 maskAbsolutePaths）
   out = maskAbsolutePaths(out, keep);
   // /home/user/x：POSIX 绝对路径（至少两段，前面必须有分隔符，避免误伤 `UTF-8 / UTF-16`）

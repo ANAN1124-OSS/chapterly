@@ -321,6 +321,36 @@ test('错误脱敏：空格启发式不吞掉路径后面的普通正文', () =>
   assert.equal(redactPaths(`打不开下载页 ${url}`), `打不开下载页 ${url}`);
 });
 
+test('错误脱敏（审计 #23/S2）：路径末尾的纯 ASCII 词并入、丢掉回看深度上限', () => {
+  // 旧实现要求「ASCII 词后面还得再有一段像路径的东西」才算同一段路径，于是
+  // `C:\Users\Zhang San` 只遮到 `…\Users`，「Zhang San」原样漏在遮罩外面。
+  const trailing = redactPaths('C:\\Users\\Zhang San');
+  assert.equal(trailing, '…\\Zhang San', '末尾用户名要并进路径、按「最后一节」口径收掉');
+  assert.equal(trailing.includes('Users'), false);
+  // ≥4 个连续空格词：旧实现回看深度上限 3 直接断链（只遮到 …\Users）
+  const deep = redactPaths('C:\\Users\\A B C D E F');
+  assert.equal(deep, '…\\A B C D E F');
+  assert.equal(deep.includes('Users'), false);
+  // 路径后面跟中文正文：中文词不在「像路径」的集合里，照旧留在遮罩外
+  assert.equal(redactPaths('打开 C:\\Users\\Zhang San 失败了'), '打开 …\\Zhang San 失败了');
+  // 已知取舍：路径后面跟纯 ASCII 的英文句子时，会按同一段路径收进最后一节（隐私优先）；
+  // 中文正文 / 全角标点不受影响（见上一条用例）。
+  assert.equal(redactPaths('D:\\a.txt is missing'), '…\\a.txt is missing');
+});
+
+test('错误脱敏（审计 #23/S2）：正斜杠 UNC 与 %5C / %2F / %3A 编码路径也收掉', () => {
+  // 正斜杠 UNC `//server/share/…`：旧实现既不被 UNC（反斜杠）也不被 POSIX（至少两段 + 前导分隔符）认出来
+  assert.equal(redactPaths('//server/share/folder/001-第1章.txt'), '…/001-第1章.txt');
+  assert.equal(redactPaths('打不开 //server/share/folder 这本书'), '打不开 …/folder 这本书');
+  // %3A 编码冒号 + %5C 编码分隔符：旧实现整条留在最后一节里（用户名照旧漏）
+  assert.equal(redactPaths('C%3A%5CUsers%5CZhang%5CSan'), '…\\San');
+  assert.equal(redactPaths('C:%5CUsers%5CZhang'), '…\\Zhang');
+  // 普通盘符 + 中间夹杂编码分隔符
+  assert.equal(redactPaths('C:\\Users%5CZhang%5CSan'), '…\\San');
+  // 编码形态混进普通正文时也只留最后一节
+  assert.equal(redactPaths('读取 C%3A%5CUsers%5CZhang%5C书%5C001.txt 失败'), '读取 …\\001.txt 失败');
+});
+
 test('错误脱敏：含空格路径走 describeForUi 也不漏用户名（S-01）', () => {
   const spaced = 'C:\\Users\\Zhang San\\Documents\\我的小说\\书\\001-第 1 章.txt';
   const eperm = describeForUi(fsError('EPERM', 'operation not permitted', spaced));
