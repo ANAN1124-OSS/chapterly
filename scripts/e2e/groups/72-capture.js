@@ -675,6 +675,9 @@ module.exports = async function group72Capture(t) {
   // 72i3. 审计修复 #40（V403）：整理快照与 bulk 一次性快照互斥 —— 一次 Ctrl+Z 只撤销一步。
   // 以前正文拦截器 preventDefault 后事件继续冒泡到 document 的「整理快照优先」分支：
   // 「整理本章 → 大段插入」连做后按一次 Ctrl+Z 会连退两步（插入 + 整理），与作者预期相反。
+  // 下面的 V403 / V402 两小节都会改正文并留下脏标记：先记下 72i2 收尾时的干净正文，两节跑完恢复，
+  // 否则 72j 的「返回书架」会正常弹出未保存三选一（E2E 没人回答，整轮会卡住）。
+  const cleanTextBeforeV40x = await exec('window.__cwTest.text()');
   const formatBefore = '整理前：段落一。  \n\n\n\n段落二。   ';
   await exec(`window.__cwTest.setText(${JSON.stringify(formatBefore)})`);
   await exec("window.__cwTest.writeFormatOptions({ indent: '2', blankLines: 'single', trimTrailing: true, normalizePunct: true })");
@@ -771,6 +774,13 @@ module.exports = async function group72Capture(t) {
   } finally {
     await exec("document.execCommand = window.__cwE2EExec; delete window.__cwE2EExec; 'restored'");
   }
+  // 恢复 72i2 收尾时的干净正文（V403 / V402 两节只验证撤销通道，不该把脏状态留给 72j / 72k）。
+  await exec(`window.__cwTest.setText(${JSON.stringify(cleanTextBeforeV40x)})`);
+  check(
+    '剪贴板面板（V403/V402 收尾）：正文与脏标记恢复到 72i2 收尾状态（后续返回书架不被未保存框卡住）',
+    (await exec('window.__cwTest.text()')) === cleanTextBeforeV40x &&
+      (await exec('window.__cwTest.dirty()')) === false
+  );
 
   // 72j. 关掉后台监听：队列立刻清空（隐私口径），之后再复制也不入队
   await exec('window.__cwTest.backToShelf()');
