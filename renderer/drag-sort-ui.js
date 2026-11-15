@@ -61,6 +61,14 @@
   // ---------- 章节拖拽排序 ----------
   // 只改 书目.json 的顺序，章节文件永不重命名；拖拽用 pointer 事件（比 HTML5 DnD 好测、也不挑渲染层）。
   let chapterDrag = null;
+  // 审计修复 #20（P4）：拖拽行几何缓存 + 定点清标记。
+  // 旧实现每次 pointermove（跟手时约每帧一次）都对 #chapter-list 的全部子节点读一遍
+  // getBoundingClientRect —— 千章书就是每帧上千次布局读；落点标记也是每帧全表 querySelectorAll 清。
+  // 现在一次拖拽只在「进入拖拽态」那一刻量一次几何（{ listTop, items }，top 用列表内容坐标），
+  // 之后每帧只拿指针位置 + 实时 scrollTop 折算后二分查行；标记只摘掉上一次打上的那一行。
+  // 缓存整场有效的依据：保存 / 加载中不许起手、拖拽期间不重建章节列表，落点标记只用 box-shadow
+  // 与 opacity（不改布局）；边缘自动滚动只改 scrollTop，折算时读的就是实时值。
+  let dragMarkEl = null;
 
   // C38：拖到列表顶部 / 底部边缘时，以前只在 pointermove 那一拍滚 12px——指针停在边缘不动就
   // 不滚，长列表拖不到底。现在进入边缘区先滚一拍（保持原来「一进边缘立刻有反应」的手感），
@@ -114,6 +122,8 @@
       active: false,
       targetIndex: index,
       drop: null,
+      // 审计修复 #20（P4）：进入拖拽态时量一次的行几何（{ listTop, items }），跟手阶段只读它
+      geometry: null,
       // 委托后 event.currentTarget 是 #chapter-list 容器；由调用方显式给条目元素
       item: itemEl || event.currentTarget
     };
@@ -122,30 +132,62 @@
   function clearDragMarks() {
     const list = $('chapter-list');
     if (!list) return;
+    // 整表清扫只留在这里（收手 / 系统打断各一次）：拖拽跟手期间的清标记走 dragMarkEl 定点清理。
     list.querySelectorAll('.chapter-item.dragging, .chapter-item.drop-before, .chapter-item.drop-after, .volume-item.drop-into')
       .forEach((el) => el.classList.remove('dragging', 'drop-before', 'drop-after', 'drop-into'));
+    dragMarkEl = null;
     document.body.classList.remove('chapter-dragging');
+  }
+
+  // 审计修复 #20（P4）：量一次列表几何。top 统一折算成「列表内容坐标」（含当时的 scrollTop），
+  // 之后指针位置也按同一个坐标折算，滚动只影响折算值、不用重新量行。
+  function captureDragGeometry() {
+    const list = $('chapter-list');
+    if (!list) return null;
+    const listRect = list.getBoundingClientRect();
+    const scrollTop = Number(list.scrollTop) || 0;
+    const items = Array.from(list.children).map((el) => {
+      const rect = el.getBoundingClientRect();
+      return { el, top: rect.top - listRect.top + scrollTop, height: rect.height };
+    });
+    return { listTop: listRect.top, items };
+  }
+
+  // 缓存行按文档流顺序 top 单调递增：二分找「top ≤ 指针内容坐标」的最后一行（O(log n)）。
+  function rowIndexAt(items, y) {
+    let lo = 0;
+    let hi = items.length - 1;
+    let hit = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (items[mid].top <= y) {
+        hit = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return hit;
   }
 
   // 拖拽落点：可以落在章节条目上（插到它前/后），也可以落在卷标题上（放进这一卷）
   function computeDropTarget(event) {
     const list = $('chapter-list');
-    const children = Array.from(list.children);
-    if (!children.length) return null;
-    const y = event.clientY;
-    let hovered = null;
-    for (const el of children) {
-      const rect = el.getBoundingClientRect();
-      if (y >= rect.top && y <= rect.bottom) {
-        hovered = el;
-        break;
-      }
-    }
+    if (!list) return null;
+    // 拖拽中复用起手时量好的几何；直接调用（单测 / 测试钩子）没有拖拽，就现量一次，语义不变。
+    const geometry = (chapterDrag && chapterDrag.geometry) || captureDragGeometry();
+    if (!geometry) return null;
+    const items = geometry.items;
+    if (!items.length) return null;
+    const count = items.length;
+    const y = event.clientY - geometry.listTop + (Number(list.scrollTop) || 0);
+    const hit = rowIndexAt(items, y);
+    const hovered = hit >= 0 && y <= items[hit].top + items[hit].height ? items[hit].el : null;
     const chapterOf = (el) => (el && el.classList.contains('chapter-item') ? state.chapters[Number(el.dataset.index)] : null);
     if (!hovered) {
       // 指针在列表末尾之后：落到最后一组的末尾
-      for (let i = children.length - 1; i >= 0; i -= 1) {
-        const el = children[i];
+      for (let i = count - 1; i >= 0; i -= 1) {
+        const el = items[i].el;
         const chapter = chapterOf(el);
         if (chapter) return { volumeId: chapterVolumeId(chapter), beforeChapterId: null, el, mode: 'after' };
         if (el.classList.contains('volume-item')) {
@@ -156,10 +198,10 @@
     }
     if (hovered.classList.contains('volume-item')) {
       const volumeId = hovered.dataset.volumeId || null;
-      const start = children.indexOf(hovered);
+      const start = hit;
       let before = null;
-      for (let i = start + 1; i < children.length; i += 1) {
-        const el = children[i];
+      for (let i = start + 1; i < count; i += 1) {
+        const el = items[i].el;
         if (el.classList.contains('volume-item')) break;
         const chapter = chapterOf(el);
         if (chapter) {
@@ -172,14 +214,15 @@
     const chapter = chapterOf(hovered);
     if (!chapter) return null;
     const volumeId = chapterVolumeId(chapter);
-    const rect = hovered.getBoundingClientRect();
-    if (y < rect.top + rect.height / 2) {
+    const top = items[hit].top;
+    const height = items[hit].height;
+    if (y < top + height / 2) {
       return { volumeId, beforeChapterId: chapter.id, el: hovered, mode: 'before' };
     }
-    const start = children.indexOf(hovered);
+    const start = hit;
     let next = null;
-    for (let i = start + 1; i < children.length; i += 1) {
-      const el = children[i];
+    for (let i = start + 1; i < count; i += 1) {
+      const el = items[i].el;
       if (el.classList.contains('volume-item')) break;
       const candidate = chapterOf(el);
       if (candidate) {
@@ -204,8 +247,12 @@
     if (!chapterDrag) return;
     const list = $('chapter-list');
     if (!list) return;
-    list.querySelectorAll('.chapter-item.drop-before, .chapter-item.drop-after, .volume-item.drop-into')
-      .forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-into'));
+    // 审计修复 #20（P4）：定点清标记 —— 只摘掉上一帧打上的那一行，不再整表 querySelectorAll。
+    // 拖拽期间不会有人从模块外改落点标记（起手 / 收手 / cancel 各有一条完整清扫路径）。
+    if (dragMarkEl) {
+      dragMarkEl.classList.remove('drop-before', 'drop-after', 'drop-into');
+      dragMarkEl = null;
+    }
 
     const target = computeDropTarget({ clientY });
     chapterDrag.drop = target;
@@ -213,6 +260,7 @@
       if (target.mode === 'header') target.el.classList.add('drop-into');
       else if (target.mode === 'before') target.el.classList.add('drop-before');
       else target.el.classList.add('drop-after');
+      dragMarkEl = target.el;
     }
   }
 
@@ -237,6 +285,8 @@
     if (!chapterDrag.active) {
       if (Math.abs(event.clientY - chapterDrag.startY) < 5) return;
       chapterDrag.active = true;
+      // 审计修复 #20（P4）：进入拖拽态才量几何（一次拖拽只量这一次），跟手阶段全部走缓存。
+      chapterDrag.geometry = captureDragGeometry();
       chapterDrag.item.classList.add('dragging');
       document.body.classList.add('chapter-dragging');
     }
