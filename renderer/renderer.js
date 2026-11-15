@@ -2677,7 +2677,7 @@
   // ---------- 查找 / 替换核心 ----------
   // 第 4 步九刀·补刀 9a：实现在 renderer/find-ui.js（模块头有契约），这里只装配与接线；
   const findUi = findUiModule.create({
-    $, state, api, call, toast,
+    $, state, api, call, toast, recordFallbackWrite,
     longOpLogic,
     staleGuard,
     imeGuard,

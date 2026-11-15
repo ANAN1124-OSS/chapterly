@@ -419,8 +419,9 @@ test('静态闸门（V402）：兜底整串赋值统一配一次性快照 + 提�
 });
 
 // 审计修复 #39（V402）：两个 UI 模块的兜底赋值路径也必须报告给渲染层（否则它们仍静默清空撤销栈）
-test('静态闸门（V402）：fragments / tidy 的兜底赋值都走 host.recordFallbackWrite', () => {
-  for (const rel of ['renderer/fragments-ui.js', 'renderer/tidy-card-ui.js']) {
+// 审计残留修复 #39（V402）：find-ui 的「当前章全部替换」是第三处漏覆盖的兜底整串赋值。
+test('静态闸门（V402）：fragments / tidy / find 的兜底赋值都走 host.recordFallbackWrite', () => {
+  for (const rel of ['renderer/fragments-ui.js', 'renderer/tidy-card-ui.js', 'renderer/find-ui.js']) {
     const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     assert.match(src, /'recordFallbackWrite'/, rel + '：host 契约必须列 recordFallbackWrite');
     assert.match(src, /recordFallbackWrite\(\{/, rel + '：兜底赋值后必须记账');
@@ -434,6 +435,15 @@ test('静态闸门（V402）：fragments / tidy 的兜底赋值都走 host.recor
     tidy,
     /if \(!inserted \|\| editorEl\.value !== text\) \{[\s\S]{0,200}?fallbackUsed = true;[\s\S]{0,400}?recordFallbackWrite\(\{[\s\S]{0,100}?before: beforeText/
   );
+  // find-ui：「当前章全部替换」的兜底整串赋值同样先 onEditorInput() 再记账，快照带写入前的整章正文
+  const findUi = fs.readFileSync(path.join(ROOT, 'renderer', 'find-ui.js'), 'utf8');
+  assert.match(
+    findUi,
+    /const fallbackUsed = !inserted \|\| editorEl\.value !== text;[\s\S]{0,260}?onEditorInput\(\);[\s\S]{0,260}?recordFallbackWrite\(\{ before, after: text, start: 0/,
+    'find-ui 兜底赋值必须先 onEditorInput 再记账（否则刚记的快照会被输入处理作废）'
+  );
+  // 装配点必须真的传进去（renderer.js 的 findUiModule.create 那一段）
+  assert.match(rendererCode, /\$, state, api, call, toast, recordFallbackWrite,/);
 });
 
 test('静态闸门：删除章节不再弹「删除章节」确认框（P0-2 只留两处确认）', () => {
