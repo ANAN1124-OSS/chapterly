@@ -6,7 +6,9 @@
 // splitChaptersRaw / splitLongUntitled 与 splitChapters 都直接走 normalizeText（第三种写法收掉）。
 //
 // A1 / V113（v1.8.0 WP-30）：标题词表统一在 core/heading.js 的 import 场景（最严格——
-// 不认繁体「話」、不认全角数字、不认「开篇」关键词；「Chapter N」算关键词标题）。
+// 不认繁体「話」、不认全角数字；「Chapter N」算关键词标题）。审计残留 #50（E15）起 import 也认
+// 「开篇」（旧版自动分章把首个标题前内容合成「开篇」，导出再按原文导入要能原样往返）；
+// capture 锚点词表仍不含它，但 capture.looksLikeHeading 先走本文件的 parseHeading，最终同样认。
 // 本文件只保留自己的切分逻辑与分隔符 / 长度严格度，别再往这里抄词表。
 const { normalizeText } = require('./common');
 const heading = require('./heading');

@@ -52,7 +52,7 @@
       // 审计修复 #50（E15）：旧版自动分章会把第一个标题之前的内容合成标题「开篇」；
       // 导出成 txt 再按原文章节导入时（splitChaptersRaw 走 import 词表），
       // import 不认「开篇」就会把它并进下一章正文，往返不对称。capture 的锚点词表仍不含它，
-// 但 capture.looksLikeHeading 先走 txt.parseHeading，所以最终同样认（见 tests/heading.test.js）。
+      // 但 capture.looksLikeHeading 先走 txt.parseHeading，所以最终同样认（见 tests/heading.test.js）。
       keywords: `${KEYWORDS}|开篇`,
       numeralRun: '{1,12}',
       englishIn: 'keyword'
