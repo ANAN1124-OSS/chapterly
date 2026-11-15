@@ -31,7 +31,7 @@
 - pnpm ≥ 10（实测 12.11.2）
 - Python ≥ 3.7（只有重新生成图标 `pnpm run icon` 用到；纯标准库，不需要 Pillow，不参与运行与打包）
 
-> **CI**：GitHub Actions（`.github/workflows/verify.yml`，windows-latest）在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`。**E2E 只在本地跑**（`pnpm e2e`，要起 Electron 真窗口）；**打包冒烟也不进 CI**，按发版门禁在发版前本地执行。提交前本地仍按 `pnpm lint` + `npm test` 自查。
+> **CI**：GitHub Actions 两套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；② `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
 
 ## 安装与启动
 

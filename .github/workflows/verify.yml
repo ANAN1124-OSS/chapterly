@@ -1,9 +1,11 @@
 name: verify
 
 # 章回 / Chapterly 的最小验证 CI（1.7.0 G1b；1.8.0 WP-35 起加入 eslint，WP-36 把两条规则都收为 error）。
-# 应用是 Windows 桌面工具：单测里含 Windows 路径 / GBK / UNC 语义，ubuntu 跑会假红，所以只挂 windows-latest。
+# 应用是 Windows 桌面工具：单测里含 Windows 路径 / GBK / UNC 语义，ubuntu 跑会假红，所以只挂 windows。
 # 只做四件事：全量语法检查、单测、eslint（no-undef / no-unused-vars 均为 error）、无障碍静态门禁。
-# E2E 要起 Electron 真窗口，不进 CI（只留本地 pnpm e2e）；打包冒烟也不进 CI，按发版门禁在发版前本地执行（D-4）。
+# 审计修复 #29（O1）：运行镜像固定 windows-2022（不用浮动的 windows-latest），所有 actions 固定到
+# 提交 SHA（Dependabot 每周提更新）；E2E 不进本工作流（要起 Electron 真窗口，另有每周定时的
+# .github/workflows/e2e-weekly.yml），打包冒烟仍按发版门禁在发版前本地执行（D-4）。
 on:
   push:
     branches: [main]
@@ -19,16 +21,16 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 12.11.2
           run_install: false
