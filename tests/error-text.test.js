@@ -119,6 +119,12 @@ test('错误脱敏：常见文件系统错误码换成中文，路径只留最�
     assert.equal(described.code, code);
     assert.equal(described.message, text);
   }
+  // 审计修复 #48（E23）：以前缺的几个常见码（英文原文会直接顶到 toast）
+  for (const code of ['ENOTEMPTY', 'EXDEV', 'EIO', 'ENOMEM', 'EAGAIN']) {
+    const described = describeForUi(Object.assign(new Error(`${code}: boom, write`), { code }));
+    assert.equal(described.message, FS_CODE_TEXT[code]);
+    assert.equal(/[A-Z]{2,}:/.test(described.message), false);
+  }
 });
 
 test('错误脱敏：自定义错误码与中文原文照旧（自研 StorageError 的提示不能被改写）', () => {
@@ -336,6 +342,15 @@ test('错误脱敏（审计 #23/S2）：路径末尾的纯 ASCII 词并入、丢
   // 已知取舍：路径后面跟纯 ASCII 的英文句子时，会按同一段路径收进最后一节（隐私优先）；
   // 中文正文 / 全角标点不受影响（见上一条用例）。
   assert.equal(redactPaths('D:\\a.txt is missing'), '…\\a.txt is missing');
+  // 审计修复 #48（E23）：连接词（and）后面还有另一条绝对路径时，不许把两条路径吞成一条。
+  assert.equal(
+    redactPaths('C:\\Users\\Zhang San\\a.txt and D:\\我的 小说\\b.txt 都失败'),
+    '…\\a.txt and …\\b.txt 都失败'
+  );
+  assert.equal(
+    redactPaths('C:\\a\\x.txt or /home/u/y.txt 都失败'),
+    '…\\x.txt or …/y.txt 都失败'
+  );
 });
 
 test('错误脱敏（审计 #23/S2）：正斜杠 UNC 与 %5C / %2F / %3A 编码路径也收掉', () => {

@@ -40,6 +40,10 @@ const PATH_STOP_CHAR_RE = /[\u0000-\u001f<>|*?'"\[\]{}「」『』（）【】�
 // 空格之后仍算路径一段的「词」：纯 ASCII 片段（San / 1 / chapter-writer）或带 ASCII 扩展名的片段（第1章.txt）。
 const ASCII_PATH_TOKEN_RE = /^[A-Za-z0-9_.~%+-]+$/;
 const EXT_PATH_TOKEN_RE = /^[^\s'"<>|*?/\\]+\.[A-Za-z0-9]{1,8}$/;
+// 审计修复 #48（E23）：空格后的下一个词如果本身就是另一条绝对路径（盘符 / UNC / POSIX），
+// 不能再并进前一条路径 —— 旧实现会把「C:\a.txt and D:\b.txt」整段吞成「…\b.txt」，
+// 两条路径的定位信息只剩一条。ASCII 连接词（and / or …）后紧跟绝对路径时也在此断开。
+const ABSOLUTE_PATH_START_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/|\/[^\s/])/;
 const TOKEN_STOP_RE = /[\s'"<>|*?\[\]{}「」『』（）【】《》，。；：、！？,;=]/;
 
 // 常见文件系统错误码 → 一句作者看得懂的中文（英文原文只留在本机日志里）。
@@ -58,6 +62,15 @@ const FS_CODE_TEXT = Object.freeze({
   ENFILE: '系统打开的文件太多，请稍后再试',
   ENAMETOOLONG: '文件名或路径太长',
   ELOOP: '路径里有循环的快捷方式',
+  // 审计修复 #48（E23）：补常见但以前只显示英文原文的文件系统错误码。
+  ENOTEMPTY: '文件夹里还有文件，不能直接删除或替换',
+  EXDEV: '不能跨磁盘直接移动文件，请先复制再删除',
+  EIO: '读写磁盘时出错（磁盘或文件系统可能有问题）',
+  ENODEV: '找不到对应的磁盘或设备',
+  ENOMEM: '内存不足，请关闭一些程序后再试',
+  EINVAL: '参数或文件名不合法',
+  ETIMEDOUT: '操作超时（磁盘或网络可能没有响应）',
+  EAGAIN: '资源暂时不可用，请稍后再试',
   UNKNOWN: '系统拒绝了这次操作'
 });
 
@@ -119,10 +132,21 @@ function nextPathToken(text) {
 //   · 中文正文 / 标点开头的词 → 不算（`打不开`、`后面还有字` 都不应该被吞进路径）。
 function isPathContinuationToken(token) {
   if (!token) return false;
+  // 另一条绝对路径（包括盘符开头）不是前一条路径的一段
+  if (ABSOLUTE_PATH_START_RE.test(token)) return false;
   if (token[0] === '/' || token[0] === '\\') return false;
   if (token.includes('\\') || token.includes('/')) return true;
   if (EXT_PATH_TOKEN_RE.test(token)) return true;
   return ASCII_PATH_TOKEN_RE.test(token);
+}
+
+// 当前路径后面（空格之后）的下一个词是 ASCII 连接词，且连接词之后又是一条绝对路径时，
+// 把连接词留在路径外（「C:\a and D:\b」→ 两条路径各自遮罩）。真实用户名里出现
+// 「Zhang D:\…」几乎不可能，这个前瞻只在「词本身没有路径分隔符」时生效。
+function startsAnotherPathAfterToken(rest) {
+  if (!ASCII_PATH_TOKEN_RE.test(rest.token)) return false;
+  const after = nextPathToken(rest.rest);
+  return Boolean(after && ABSOLUTE_PATH_START_RE.test(after.token));
 }
 
 // 从某处（`X:\` 之后、`\\?\` 剥掉前缀之后、UNC 的 `\\server\share` 首段之后、POSIX 前两段之后）
@@ -136,6 +160,8 @@ function readPathEnd(text, from) {
     if (ch === ' ' || ch === '\t') {
       const next = nextPathToken(text.slice(end + 1));
       if (!next || !isPathContinuationToken(next.token)) break;
+      // 「and D:\…」：连接词后面还有一条绝对路径 → 前一条路径在连接词前结束
+      if (startsAnotherPathAfterToken(next)) break;
       end += 1;
       continue;
     }

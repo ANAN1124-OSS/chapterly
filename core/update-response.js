@@ -18,6 +18,9 @@
 // tooLarge = true 时 text 是 maxChars + 1 个字符（刚好能让上层判定超限，又不会继续涨）。
 async function readResponseTextLimited(response, maxChars) {
   const limit = Number.isFinite(Number(maxChars)) && Number(maxChars) > 0 ? Math.round(Number(maxChars)) : 0;
+  // 审计修复 #48（E23）：上限非法时两条分支统一先拒绝 —— 旧实现只有流式分支会抛错，
+  // 非流式回退分支会照旧 await text() 把整包读进内存且不截断。
+  if (!limit) throw new TypeError('readResponseTextLimited 需要正数上限（否则等于整包读）');
   if (!response || typeof response !== 'object') return { text: '', tooLarge: false };
   const body = response.body;
   // 非流式响应（测试桩 / 老接口）：照旧读字符串，但同样按上限截断，不把整包留在内存里。
@@ -29,10 +32,9 @@ async function readResponseTextLimited(response, maxChars) {
       return { text: '', tooLarge: false };
     }
     if (typeof text !== 'string') return { text: '', tooLarge: false };
-    if (limit && text.length > limit) return { text: text.slice(0, limit + 1), tooLarge: true };
+    if (text.length > limit) return { text: text.slice(0, limit + 1), tooLarge: true };
     return { text, tooLarge: false };
   }
-  if (!limit) throw new TypeError('readResponseTextLimited 需要正数上限（否则等于整包读）');
   const reader = body.getReader();
   const decoder = new TextDecoder('utf-8');
   let text = '';

@@ -34,9 +34,16 @@ test('检查更新：版本号解析接受 v 前缀 / 两位 / 预发布 / build
   assert.equal(updateLib.parseVersion('0.5.0-beta.2').text, '0.5.0-beta.2');
   assert.equal(updateLib.parseVersion('0.5.0+build.9').text, '0.5.0');
   assert.equal(updateLib.parseVersion('0.5.0-rc.1+build.9').text, '0.5.0-rc.1');
-  for (const bad of ['', '   ', 'v', '0.4.1.2', '0..1', '0.4.x', '-1.0.0', '0.4.1-', '0.4.1-beta..1', null, 42]) {
+  for (const bad of [
+    '', '   ', 'v', '0.4.1.2', '0..1', '0.4.x', '-1.0.0', '0.4.1-', '0.4.1-beta..1',
+    // 审计修复 #48（E23）：semver 数字段 / 数字标识不允许前导零
+    '01.2.3', '1.02.0', '1.2.03', '1.0.0-01', '1.0.0-beta.007',
+    null, 42
+  ]) {
     assert.equal(updateLib.parseVersion(bad), null, `应拒绝 ${JSON.stringify(bad)}`);
   }
+  assert.equal(updateLib.parseVersion('0.0.0').text, '0.0.0');
+  assert.equal(updateLib.parseVersion('1.0.0-0').text, '1.0.0-0');
 });
 
 test('检查更新：版本比较按 主.次.修订 逐段比', () => {
@@ -57,6 +64,10 @@ test('检查更新：预发布版排序（beta < rc、数字 < 字母、正式�
   assert.equal(updateLib.compareVersions('1.0.0-1', '1.0.0-alpha'), -1);
   assert.equal(updateLib.compareVersions('1.0.0', '1.0.0-rc.9'), 1);
   assert.equal(updateLib.compareVersions('1.0.0-rc.1', '1.0.0'), -1);
+  // 审计修复 #48（E23）：超过 Number.MAX_SAFE_INTEGER 的数字标识按字符串比较，不得舍入成相等
+  assert.equal(updateLib.compareVersions('1.0.0-9007199254740993', '1.0.0-9007199254740992'), 1);
+  assert.equal(updateLib.compareVersions('1.0.0-9007199254740992', '1.0.0-9007199254740993'), -1);
+  assert.equal(updateLib.compareVersions('1.0.0-99999999999999999999', '1.0.0-9007199254740993'), 1);
   assert.equal(updateLib.compareVersions('bad', '1.0.0'), null);
 });
 
@@ -106,6 +117,20 @@ test('检查更新：解析 GitHub Release JSON，字段清洗后只留需要的
     parsed.release.url,
     'https://github.com/ANAN1124-OSS/chapterly/releases/tag/v0.7.0'
   );
+});
+
+test('检查更新：release.name 去控制字符 / 压成一行 / 限长（审计 #48 / S6）', () => {
+  const parsed = updateLib.parseReleasePayload(
+    JSON.parse(releaseJson({ name: '  1.0.0\n\t发布\u0007说明\u2028第二行  ' }))
+  );
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.release.name, '1.0.0 发布说明 第二行');
+  assert.equal(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(parsed.release.name), false);
+  const long = updateLib.parseReleasePayload(JSON.parse(releaseJson({ name: '书'.repeat(400) })));
+  assert.ok(long.release.name.length <= 160);
+  // 名字只有控制字符 → 回落 tag，不留空串
+  const blank = updateLib.parseReleasePayload(JSON.parse(releaseJson({ name: '\u0000\u0007' })));
+  assert.equal(blank.release.name, 'v0.7.0');
 });
 
 test('检查更新：恶意 html_url 退回按 tag 拼的官方下载页', () => {
@@ -162,6 +187,27 @@ test('检查更新：当前版本是预发布时，同号正式版算更新', as
   });
   assert.equal(result.status, 'update');
   assert.equal(result.currentVersion, '0.7.0-beta.1');
+});
+
+test('检查更新：GitHub 把预发布设为 latest 时不提示更新（审计 #48 / S6）', async () => {
+  const result = await updateLib.checkForUpdates({
+    currentVersion: '0.6.0',
+    fetchText: fakeFetch({
+      status: 200,
+      text: releaseJson({ tag_name: 'v0.7.0-beta.1', prerelease: true })
+    })
+  });
+  assert.equal(result.status, 'latest');
+  assert.equal(result.prerelease, true);
+  assert.equal(result.prereleaseIgnored, true);
+  assert.equal(result.latestVersion, '0.7.0-beta.1');
+  assert.match(result.message, /预发布版 v0\.7\.0-beta\.1/);
+  // 当前版本本身就是这个预发布版时也不提示更新
+  const same = await updateLib.checkForUpdates({
+    currentVersion: '0.7.0-beta.1',
+    fetchText: fakeFetch({ status: 200, text: releaseJson({ tag_name: 'v0.7.0-beta.1', prerelease: true }) })
+  });
+  assert.equal(same.status, 'latest');
 });
 
 test('检查更新：没网 / 超时都转成友好错误，不抛错', async () => {
@@ -350,6 +396,17 @@ test('更新响应限长：跨 chunk 的多字节字符不乱码，正常小响�
     text: '',
     tooLarge: false
   });
+  // 审计修复 #48（E23）：非法上限在「非流式回退」分支同样先拒绝，不得把整包读进内存
+  let called = false;
+  await assert.rejects(
+    updateResponseLib.readResponseTextLimited(
+      { text: async () => { called = true; return 'x'.repeat(10); } },
+      0
+    ),
+    /正数上限/
+  );
+  assert.equal(called, false, '上限非法时不该调用 response.text()');
+  await assert.rejects(updateResponseLib.readResponseTextLimited(new Response('x'), NaN), /正数上限/);
 });
 
 test('检查更新：in-flight 单飞 —— 并发两次只发一次请求，结束后再点会重新发', async () => {
