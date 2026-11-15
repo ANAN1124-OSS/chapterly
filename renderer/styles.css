@@ -2491,6 +2491,9 @@ body.theme-night .long-para-bar { background: var(--warn);
 #settings-update-field .field-row { flex-wrap: wrap; align-items: center; }
 #settings-update-status { flex: 1 1 100%; line-height: 1.6; }
 #settings-update-status.warn { color: var(--danger); }
+/* 审计修复 #37（▲V310）：日志分享提示。日志里可能有书名 / 章名（不是正文，但仍是作品信息），
+   提示放在「打开日志文件夹」下面一行，分享前先自查；遮罩阈值（连续 24 个汉字）一个字节不改。 */
+.logs-share-hint { margin: 8px 0 0; line-height: 1.6; }
 .settings-modal .modal-buttons {
   flex: 0 0 auto;
   border-top: 1px solid var(--line);
