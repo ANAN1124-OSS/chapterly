@@ -752,9 +752,11 @@ function assertBookNotBusy(bookPath, windowId, action = 'write') {
   return true;
 }
 
-// 保存前校验：书文件夹在 → 书目能读 → 章节还在书目里 → 章节文件也在。
+// 保存前校验：书文件夹在 → 书目能读 → 章节还在书目里 → 章节文件也在 → 磁盘那一版还是载入时那一版。
 // 任一失效都抛错阻止写盘（saveChapterText 会带 ensureDir:false，atomic 不会重建目录）。
-async function prepareChapterSave(bookPath, chapterId, { windowId = null, file = null } = {}) {
+// 审计修复 #5（V301）：expectedMtimeMs 是渲染层载入 / 上次保存拿到的 mtime；文件被应用外改过时
+// 抛 EXTERNAL_CHANGE（「磁盘上这一版不是载入时那一版」），由渲染层弹覆盖 / 另存 / 重载三选。
+async function prepareChapterSave(bookPath, chapterId, { windowId = null, file = null, expectedMtimeMs = null } = {}) {
   assertBookNotBusy(bookPath, windowId, 'save');
   let bookStat = null;
   try {
@@ -777,10 +779,13 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
       ? meta.chapters.find((item) => item && item.id === chapterId)
       : null;
   let chapterExists = false;
+  let chapterMtimeMs = null;
   if (chapter) {
     try {
       const stat = await fs.stat(assertChapterFile(bookPath, chapter.file));
       chapterExists = stat.isFile();
+      // 审计修复 #5（V301）：交给 verifySaveTarget 与 expectedMtimeMs 比对（只在文件确实在时才有意义）
+      chapterMtimeMs = stat.mtimeMs;
     } catch {
       chapterExists = false;
     }
@@ -792,7 +797,9 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
     metaCode,
     chapterId,
     file: file || (chapter ? chapter.file : null),
-    chapterExists
+    chapterExists,
+    chapterMtimeMs,
+    expectedMtimeMs
   });
   if (!checked.ok) throw new StorageError(checked.code, checked.message);
   return { meta, chapter: checked.chapter, index: checked.index };

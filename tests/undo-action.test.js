@@ -364,7 +364,11 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   assert.match(rendererCode, /function activateDeleteUndo\(info\)/);
   assert.match(rendererCode, /api\.restoreDeletedChapter/);
   assert.match(rendererCode, /if \(view !== 'editor'\) undoUi\.clear\(\)/);
-  assert.match(rendererCode, /undoUi\.clear\(\);\n    \/\/ 换书前先停掉上一本的写作计时/);
+  // 审计修复 #7（V401）：换书时撤销条与大段插入快照必须一起作废（快照跨书会串台）
+  assert.match(
+    rendererCode,
+    /undoUi\.clear\(\);\n    \/\/ 审计修复 #7（V401）：[\s\S]{0,220}?bulkWriteUndo = null;\n    \/\/ 换书前先停掉上一本的写作计时/
+  );
   // 1.5.0 P0-4（E4 / H-1 / H-2 / H-5 / H-9）的接线不许丢：手动关闭、长按不抖、撤销按 id / 邻居重算落点
   assert.match(rendererCode, /'close-undo-bar': \(\) => undoUi\.dismiss\(\)/);
   assert.match(rendererCode, /!event\.repeat/, 'Ctrl+K 要判 event.repeat（长按不许开-关抖动）');

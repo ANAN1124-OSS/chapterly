@@ -1985,3 +1985,37 @@ test('读盘失败脱敏：readBookMeta / listBooks 不回完整本机路径（E
   }
 });
 
+
+// ---------- 审计修复 #5（V301）：保存前校验带 expectedMtimeMs ----------
+test('保存前校验（V301）：expectedMtimeMs 与磁盘一致 → 放行；被外部改过 → EXTERNAL_CHANGE 且一个字节都不写', async () => {
+  resetRegistry();
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '外部改动');
+  const meta = await storage.readBookMeta(bookPath);
+  const chapter = meta.chapters[0];
+  const filePath = path.join(bookPath, chapter.file);
+  const loaded = await storage.statChapter(bookPath, chapter.file);
+
+  // 载入后没变：带着载入 mtime 保存 → 允许
+  const same = await storage.prepareChapterSave(bookPath, chapter.id, { expectedMtimeMs: loaded.mtimeMs });
+  assert.equal(same.chapter.id, chapter.id);
+
+  // 外部把 mtime 推后（记事本 / 同步盘落盘）：旧 expectedMtimeMs 必须被拦下
+  const before = await fs.readFile(filePath, 'utf8');
+  const future = new Date(Date.now() + 5000);
+  await fs.utimes(filePath, future, future);
+  await assert.rejects(
+    () => storage.prepareChapterSave(bookPath, chapter.id, { expectedMtimeMs: loaded.mtimeMs }),
+    (err) => err.code === 'EXTERNAL_CHANGE' && /应用外/.test(err.message) && /已阻止这次保存/.test(err.message)
+  );
+  assert.equal(await fs.readFile(filePath, 'utf8'), before, '被拦下的保存绝不写盘');
+
+  // 重新 stat 拿到新 mtime → 又能保存（作者在对话框里选「仍然覆盖保存」后走的就是这条）
+  const fresh = await storage.statChapter(bookPath, chapter.file);
+  assert.notEqual(fresh.mtimeMs, loaded.mtimeMs);
+  await storage.prepareChapterSave(bookPath, chapter.id, { expectedMtimeMs: fresh.mtimeMs });
+
+  // 不带 expectedMtimeMs（老调用方 / 覆盖保存传 0）仍然放行
+  await storage.prepareChapterSave(bookPath, chapter.id);
+  await storage.prepareChapterSave(bookPath, chapter.id, { expectedMtimeMs: 0 });
+});

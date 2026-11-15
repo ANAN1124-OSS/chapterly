@@ -10,6 +10,8 @@
  * 1.6.0 A5/P-09 的唯一改动：字数统计改成「输入路径统一 200ms 防抖」—— 打字时每敲一个字都全章重算
  * （去空白字符数）是热路径，200ms 内连打只算最后一次；切章 / 保存 / 套用等非输入路径仍同步算
  * （renderCharCount 不传 defer）。20 万字符分档与 400ms 阈值随之取消（不再按章长走两条路）。
+ * 审计修复 #5（V301）的唯一改动：外部修改检测的 500ms 失焦门槛降到 0 —— 以前快速 Alt+Tab 切回
+ * 根本不查、同步盘后台落盘永远不查，外部改动就会被保存静默覆盖；现在窗口一重新获得焦点就查一次。
  *
  * 契约：createStatusbarUi(host) 由渲染层调用一次，host 提供：
  *   host = {
@@ -19,9 +21,10 @@
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到打字 / 回到前台时 ReferenceError）。
  * host 成员全是一次性解构的稳定引用；它们在渲染层都是函数声明（会提升）或先于装配点的 const。
  *
- * 事件监听：外部修改检测的两个 window 监听由 setupExternalChangeWatch() 注册，渲染层在**原来的
+ * 事件监听：外部修改检测的 window focus 监听由 setupExternalChangeWatch() 注册，渲染层在**原来的
  * 位置**（原 4394 行处）调用它——监听顺序与搬之前逐条一致；create() 本身不注册任何监听。
- * 状态栏的 200ms 输入防抖定时器（charCountTimer）与 lastBlurAt 都是本模块内部状态，不对外导出。
+ * 状态栏的 200ms 输入防抖定时器（charCountTimer）是本模块内部状态，不对外导出。
+ * （审计修复 #5 之后 blur 监听与 lastBlurAt 一起删掉了：检测不再看「失焦了多久」，只认 focus。）
  *
  * 浏览器里挂成全局 CWStatusbarUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
  */
@@ -131,17 +134,14 @@
   }
 
   // ---------- 外部修改检测 ----------
-  let lastBlurAt = 0;
-
-  // 在渲染层原来的位置（原 4394 行处）装配；监听顺序与搬之前一致。
+  // 审计修复 #5（V301）：以前只在「失焦满 500ms 再回来」时才查，快速 Alt+Tab（<500ms）与同步盘
+  // 后台落盘（窗口从未失焦）都不查 —— 保存照旧执行就静默盖掉了外部那一版。现在不再设门槛：
+  // 窗口重新获得焦点就查一次（state 守卫仍在：没书 / 载章中 / 保存中 / 弹层开着 / 阅读模式都不查），
+  // 单次检查只是一个 chapter:stat IPC，频率跟作者切窗口一致。改了磁盘内容之后真正拦下保存的是
+  // chapter:save 的 expectedMtimeMs（见 core/storage.js prepareChapterSave）。
   function setupExternalChangeWatch() {
-    window.addEventListener('blur', () => {
-      lastBlurAt = Date.now();
-    });
     window.addEventListener('focus', async () => {
-      const since = Date.now() - lastBlurAt;
-      lastBlurAt = 0;
-      if (!state.bookPath || state.index < 0 || state.loading || state.saving || state.modal || state.reading.open || since < 500) return;
+      if (!state.bookPath || state.index < 0 || state.loading || state.saving || state.modal || state.reading.open) return;
       const chapter = state.chapters[state.index];
       if (!chapter) return;
       // WP-15（C40）：发起时记下「书 + 章 + 载入 mtime」。await 期间切章时 state.loadedMtimeMs

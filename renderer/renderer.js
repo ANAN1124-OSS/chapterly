@@ -104,6 +104,9 @@
   // 保存态（1.3.0 T7 = 规范 C-05 / I-01）：状态栏四态渲染 / 成功 2s 淡化 / 失败点重试
   // 在 save-status-ui.js 里；这里只接线（文案仍由 updateStatus 的调用点驱动，见下）。
   const saveStatusUiModule = window.CWSaveStatusUi;
+  // 保存失败的两个救稿出口（审计修复 #5 V301 / #6 V302）：外部改动三选 / 书章文件没了给另存 + 复制。
+  // 对话框与动作编排都在 save-rescue-ui.js 里；这里只装配（正文取编辑区现值、写盘仍走 saveCurrent）。
+  const saveRescueUiModule = window.CWSaveRescueUi;
   // 撤销层（1.4.0 P0-2：撤销优先）：单槽 + 10s TTL + Ctrl+Z 焦点保护纯逻辑在 undo-action.js，
   // 全局撤销条 DOM / 定时器在 undo-ui.js；这里只接线（删除章节等动作直接执行后登记撤销）。
   const undoActionModule = window.CWUndoAction;
@@ -1290,6 +1293,10 @@
   async function commitOpenBook(bookPath, data, target, isStale) {
     // 换书：撤销条不跨书（撤销闭包里还会再核对一次 state.bookPath）
     undoUi.clear();
+    // 审计修复 #7（V401）：大段插入的一次性快照也必须跟着换书作废 —— 以前这里只清 undoUi，
+    // bulkWriteUndo 会跨书活到「新书载章失败」的遮罩态：那时编辑区只是 readOnly（仍可聚焦），
+    // 一下 Ctrl+Z 就把上一本整章正文写进新书空编辑区 + 假脏态。快照自身也带身份核对（见 undoBulkWrite）。
+    bulkWriteUndo = null;
     // 换书前先停掉上一本的写作计时：把没上报的整秒记下，新书从 0 开始
     await resetWriteTimer({ flush: true });
     if (isStale()) return false;
@@ -2605,6 +2612,11 @@
   // 保存态（1.3.0 T7）：四态文案 / 圆点 / 成功 2s 淡化 / 失败点重试整段在 save-status-ui.js 里。
   // saveCurrent 是函数声明（会提升），装配时引用没问题；重试仍然走同一条保存路径（非静默）。
   const saveStatusUi = saveStatusUiModule.create({ $, state, formatClock, saveCurrent });
+  // 保存失败的两个救稿出口（审计修复 #5 V301 / #6 V302）：对话框 / 覆盖 / 另存 / 复制 / 重载
+  // 全在 save-rescue-ui.js 里；这里只装配（saveCurrent / loadChapterAt / chapterTitle 都是函数声明，已提升）。
+  const saveRescueUi = saveRescueUiModule.create({
+    state, api, call, openModal, toast, editorEl, saveCurrent, loadChapterAt, chapterTitle
+  });
 
   // 撤销层（1.4.0 P0-2）：删除章节等「确认型」动作直接执行后登记一条撤销（10 秒窗口）。
   // 纯逻辑（单槽 / TTL / 键位判定）在 undo-action.js，条子渲染在 undo-ui.js；
@@ -2723,9 +2735,10 @@
   // 1.6.0 F2：统计筛选 / CSV 是设置页里那一块自己的入口（不进上面那 5 个通用入口）
   const { applyStatsFilter, buildStatsCsv, setupStatsUi } = statsUi;
 
-  // 大段插入（试用分支 B）的一次性撤销快照：{ before, after, start, end }。
+  // 大段插入（试用分支 B）的一次性撤销快照：{ before, after, start, end, bookPath, chapterId }。
   // 只有「这次插入走了 .value 整串赋值、没进原生撤销栈」时才存在；下一次真实输入 / 切换章节立刻作废，
-  // 免得点「撤销」把作者后来打的字一起退掉。
+  // 免得点「撤销」把作者后来打的字一起退掉。审计修复 #7（V401）：bookPath / chapterId 是设置快照
+  // 那一刻的身份——执行撤销时逐字核对，换书 / 换章（含载章失败后的遮罩态）一律作废，绝不跨书串台。
   let bulkWriteUndo = null;
 
   // 剪贴板面板「正文」按钮：把一条记录插到**当前打开章节**的光标处（有选区就替换选区）。
@@ -2774,7 +2787,7 @@
       scrollCaretIntoView(caret);
       // 焦点还给面板（面板保持打开）；blur 不改内容，也不会触发保存。
       editorEl.blur();
-      bulkWriteUndo = { before, after: expected, start, end };
+      bulkWriteUndo = { before, after: expected, start, end, bookPath: state.bookPath, chapterId: state.loadedChapterId };
       toastActionable(
         `已插入 ${formatCount(chars)} 字（大段插入会清掉撤销历史：Ctrl+Z 或「撤销」退回到插入前）`,
         '撤销',
@@ -2807,6 +2820,15 @@
   function undoBulkWrite() {
     if (!bulkWriteUndo) {
       toast('这次大段插入已经不能整段撤销了（中间又改过正文）', 'warn');
+      return false;
+    }
+    // 审计修复 #7（V401）：快照只对「设置它时那一本书 + 那一章」有效。同文件其余 7 处撤销闭包
+    // 一律以 state.bookPath 核对身份，这条 v1.8.0 新链路以前只信自己 —— 换书后（尤其新书载章
+    // 失败、编辑区只读遮罩时）按 Ctrl+Z 会把上一本整章正文写进眼前这个空编辑区。不符即作废，
+    // 编辑区一个字节都不动。
+    if (bulkWriteUndo.bookPath !== state.bookPath || bulkWriteUndo.chapterId !== state.loadedChapterId) {
+      bulkWriteUndo = null;
+      toast('这次大段插入已经不能整段撤销了（换过书或换过章）', 'warn');
       return false;
     }
     const snapshot = bulkWriteUndo;
@@ -3024,7 +3046,7 @@
     })();
   }
 
-  async function saveCurrent({ silent = false } = {}) {
+  async function saveCurrent({ silent = false, force = false } = {}) {
     if (!state.bookPath || state.index < 0) {
       return { ok: false, code: 'NO_CHAPTER', message: '当前没有可保存的章节' };
     }
@@ -3055,11 +3077,15 @@
     const bookPath = state.bookPath;
     const chapterId = chapter.id;
     const text = editorEl.value;
+    // 审计修复 #5（V301）：把「载入时那一版磁盘 mtime」带进保存请求。主进程比对不符时抛
+    // EXTERNAL_CHANGE（同步盘后台落盘 / 记事本改过 / 检测只 toast 过的场景都在这里被拦下），
+    // 绝不静默覆盖外部那一版正文。force = 作者在对话框里明确选了「仍然覆盖保存」。
+    const expectedMtimeMs = force ? 0 : state.loadedMtimeMs;
     state.saving = true;
     updateStatus();
     try {
       // WP-01 验收锚点：?test=1 下 E2E 注入保存延迟；正常启动 testSaveChapter 恒为 null
-      const data = await (testSaveChapter || call)(api.saveChapter, bookPath, chapterId, text);
+      const data = await (testSaveChapter || call)(api.saveChapter, bookPath, chapterId, text, expectedMtimeMs);
       // WP-03（C10）：保存在途时作者可能已经切章 / 换书。回执按快照章身份完成——
       // 快照那一章的字数缓存该更新，但当前章的 mtime / baseText / dirty / 状态栏一个字都不许回写。
       const sameBook = bookPath === state.bookPath;
@@ -3142,6 +3168,13 @@
       if (!sameChapter) return { ok: false, code: err.code, message: err.message };
       state.saveError = err.message;
       updateStatus();
+      // 审计修复 #5 / #6（V301 / V302）：两个「救稿出口」只在这两个码上出现——
+      //   ① EXTERNAL_CHANGE：外部改动三选（覆盖 / 先另存一份 / 放弃我的修改并重载）；
+      //   ② BOOK_MISSING / CHAPTER_MISSING：另存这一章为 txt… / 复制正文 / 留在这里。
+      // 其余失败照旧只写状态栏 + 一条 toast；救稿出口自己弹完对话框后原样上抛失败结果。
+      if (saveRescueUi.rescuePlanFor(err.code)) {
+        return await saveRescueUi.handleSaveFailure(err, { silent });
+      }
       if (!silent) toast(`保存失败：${err.message}`, 'error');
       return { ok: false, code: err.code, message: err.message };
     } finally {

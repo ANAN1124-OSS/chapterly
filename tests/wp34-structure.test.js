@@ -29,7 +29,10 @@ const DOMAIN_CHANNELS = {
     'book:export-epub',
     'book:export-docx',
     'book:copy',
-    'chapter:copy-platform'
+    'chapter:copy-platform',
+    // 审计修复 #6（V302）：保存被 BOOK_MISSING / CHAPTER_MISSING 阻断时的救稿出口（另存 / 复制正文）。
+    // 追加在导出域尾部（书 / 章文件可能已经不在，所以不走 handleBook、不碰书库）。
+    'chapter:rescue'
   ],
   proofread: [
     'text:proofread',
@@ -87,7 +90,10 @@ const PLAIN_HANDLE_CHANNELS = new Set([
   // 书架级：list 不带路径、create 只有书名、import 走 ipc-paths.importSourceDirs
   'books:list',
   'book:create',
-  'book:import'
+  'book:import',
+  // 审计修复 #6（V302）：第一个参数是编辑区正文（不是书路径）；书 / 章文件可能已经不在，
+  // 所以这条救稿通道刻意不碰书库，详见 ipc/export.js 的实现注释。
+  'chapter:rescue'
 ]);
 
 // host 占位：handle / handleBook 换成记录器，其余成员给一个非 null 的占位函数 ——
@@ -136,8 +142,8 @@ test('WP-34：三个域模块的频道清单 / 顺序 / 注册器种类与搬前
     total += registered.length;
   }
   assert.equal(total, ALL_DOMAIN_CHANNELS.length);
-  // 41 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）
-  assert.equal(total, 41, '三个域的频道总数变了（多一个少一个都要同步本闸门）');
+  // 42 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）+ 审计修复 #6 新增的 chapter:rescue
+  assert.equal(total, 42, '三个域的频道总数变了（多一个少一个都要同步本闸门）');
 });
 
 test('WP-34：host 契约缺成员在 register() 装配时直接 TypeError（与渲染层 A8 同一口径）', () => {
@@ -200,10 +206,11 @@ test('WP-34：模块自己不 require electron；依赖由 main.js 的 buildIpcH
   assert.equal(IPC_SOURCE.includes('activeClipboard.writeText('), false, 'ipc 模块里不许直呼 activeClipboard');
 });
 
-test('WP-34：频道总数不丢（main + ipc = 104），preload 的 invoke 全在注册点里', () => {
+test('WP-34：频道总数不丢（main + ipc = 105），preload 的 invoke 全在注册点里', () => {
   const registered = registrationsOf(MAIN + '\n' + IPC_SOURCE);
-  assert.equal(registered.length, 104, '主进程 IPC 注册点数量与搬前（104）不一致');
-  assert.equal(new Set(registered.map((item) => item.channel)).size, 104, '有频道被重复注册');
+  // 105 = 搬前 104 + 审计修复 #6（V302）新增的 chapter:rescue（导出域尾部）
+  assert.equal(registered.length, 105, '主进程 IPC 注册点数量与「搬前 104 + V302 的 chapter:rescue」不一致');
+  assert.equal(new Set(registered.map((item) => item.channel)).size, 105, '有频道被重复注册');
   const all = new Set(registered.map((item) => item.channel));
   for (const channel of ALL_DOMAIN_CHANNELS) assert.ok(all.has(channel), `频道总数里找不到 ${channel}`);
   const preload = read('preload.js');

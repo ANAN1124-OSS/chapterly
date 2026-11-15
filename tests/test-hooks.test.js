@@ -350,7 +350,14 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // 拦截（只有快照还在时接管，不能搬去全局键盘表，否则会抢别的输入框）；③ 捕获超限的提示分支
   // （onClipboardChanged 订阅在渲染层的同一处）。纯判定（shouldBulkWrite / 阈值夹紧）已经进了
   // renderer/editor-logic.js 并有单测；搬走这三块要把插入链路与编辑器状态整体反向注入，反而更绕。
-  const RENDERER_LINE_BUDGET = 6256;
+  // 审计修复 #5 / #6 / #7（V301 / V302 / V401）：6256 → 6289（+33）。三条都必须在渲染层闭包里接线：
+//   ① V401：commitOpenBook 清 bulkWriteUndo（+1 行代码 + 4 行说明）、快照带 bookPath / chapterId、
+//      undoBulkWrite 执行前核对身份（约 +12 行，读写的是编辑器状态与 toast，搬走要反向注入整条链路）；
+//   ② V301 / V302：saveCurrent 的失败分支接救稿出口（+7 行）与 expectedMtimeMs 参数（+4 行）——
+//      saveCurrent 是函数声明、被 8 个入口与本文件闭包共享，只能在原地改；
+//      对话框 / 覆盖 / 另存 / 复制 / 重载的行为全部在 renderer/save-rescue-ui.js（新模块，约 170 行）。
+//   renderer.js 其余零新增；以后再加功能仍按「搬进独立模块」办，别把行数当预算花。
+  const RENDERER_LINE_BUDGET = 6289;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

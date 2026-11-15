@@ -34,6 +34,10 @@ const ALLOWED = [
   ['import-ui.js', "title: '导入小说'", '导入模式：按原文章节 / 整本一章（选择型）'],
   ['import-ui.js', "title: '删除这本书'", '删除整本书（保留 ②）'],
   ['statusbar-ui.js', "title: '检测到外部修改'", '外部修改：重新加载 / 保留当前（选择型）'],
+  // 审计修复 #5（V301）/ #6（V302）：两个「保存被拦下」的选择型弹窗（不是确认），
+  // 全都只给出口、不做破坏性动作；标题常量在 save-rescue-ui.js 顶部。
+  ['save-rescue-ui.js', 'title: RESCUE_TITLE', '保存被阻断（V302）：另存 / 复制正文 / 留在这里（选择型）'],
+  ['save-rescue-ui.js', 'title: CONFLICT_TITLE', '外部改动（V301）：覆盖 / 先另存一份 / 放弃我的修改并重载（选择型）'],
   ['history-ui.js', "title: '永久删除备份'", '永久删除备份（保留 ③ / D-5）：删的是副本、应用内没有撤销通道，必须两步确认并列出组数 / 占用']
 ];
 
@@ -73,7 +77,7 @@ function openModalSites(source) {
 }
 
 test('模态审计：openModal 的调用点数量与用途固定（多了少了都要在评审里说清）', () => {
-  const files = ['renderer.js', 'import-ui.js', 'statusbar-ui.js', 'find-ui.js', 'history-ui.js'];
+  const files = ['renderer.js', 'import-ui.js', 'statusbar-ui.js', 'find-ui.js', 'history-ui.js', 'save-rescue-ui.js'];
   const found = [];
   for (const file of files) {
     for (const site of openModalSites(read(file))) found.push({ file, ...site });

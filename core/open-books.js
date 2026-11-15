@@ -15,7 +15,9 @@ const CODE = {
   CROSS_WINDOW_BUSY: 'CROSS_WINDOW_BUSY',
   BOOK_MISSING: 'BOOK_MISSING',
   CHAPTER_MISSING: 'CHAPTER_MISSING',
-  CHAPTER_NOT_FOUND: 'CHAPTER_NOT_FOUND'
+  CHAPTER_NOT_FOUND: 'CHAPTER_NOT_FOUND',
+  // 审计修复 #5（V301）：保存前校验发现「载入之后磁盘上这一章被应用外的程序改过」。
+  EXTERNAL_CHANGE: 'EXTERNAL_CHANGE'
 };
 
 const KIND_LABEL = {
@@ -209,7 +211,20 @@ function checkMutation({ registry, windowId, bookPath, action = 'write' }) {
 // 保存前校验（纯函数，探针结果由 storage 提供）：
 // 书文件夹在、书目能读、章节还在书目里、章节文件也在 → 才允许写盘。
 // 任何一项失效都返回明确错误；调用方由此阻止 atomicWriteFile 的 mkdir 重建影子文件。
-function verifySaveTarget({ bookPath, bookExists, meta, metaCode, chapterId, file, chapterExists }) {
+// 审计修复 #5（V301）：expectedMtimeMs（渲染层载入 / 上次保存拿到的 mtime）给了就必须与磁盘一致，
+// 不一致 = 载入之后被应用外的程序（同步盘 / 记事本）改过 → EXTERNAL_CHANGE，绝不静默覆盖。
+// 0 / null / 非数字一律视为「不校验」（覆盖保存与老调用方）。
+function verifySaveTarget({
+  bookPath,
+  bookExists,
+  meta,
+  metaCode,
+  chapterId,
+  file,
+  chapterExists,
+  chapterMtimeMs,
+  expectedMtimeMs
+}) {
   if (!bookExists) {
     return {
       ok: false,
@@ -250,6 +265,17 @@ function verifySaveTarget({ bookPath, bookExists, meta, metaCode, chapterId, fil
       ok: false,
       code: CODE.CHAPTER_MISSING,
       message: '这一章的正文文件已经不在了（可能已在另一个窗口或应用外删除）。为避免重新生成影子文件，已阻止这次保存。'
+    };
+  }
+  // 审计修复 #5（V301）：文件还在，但已经不是载入时那一版了 —— 外部改动被静默覆盖的丢稿路径。
+  // 只在调用方带了正的 expectedMtimeMs 时才比（覆盖保存传 0 表示作者已明确选择覆盖）。
+  const expected = Number(expectedMtimeMs);
+  const actual = Number(chapterMtimeMs);
+  if (Number.isFinite(expected) && expected > 0 && Number.isFinite(actual) && actual !== expected) {
+    return {
+      ok: false,
+      code: CODE.EXTERNAL_CHANGE,
+      message: `「${bookLabel(bookPath)}」的这一章在载入之后被应用外的程序改过（可能是同步盘或记事本）。为避免覆盖外部那一版正文，已阻止这次保存。`
     };
   }
   return { ok: true, chapter, index };

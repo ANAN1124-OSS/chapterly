@@ -10,6 +10,10 @@
  * atomicWriteFileStream 流式写盘（B5 / WP-28）、EPUB / DOCX 仍是「就地转换 + 用完即清」（C1）。
  * 其余频道（导入 / 整理 / 历史 / 排版…）本版仍留在 main.js —— D-6 只拆导出 / 校对 / 书 CRUD 三块。
  *
+ * 本模块唯一的新增（不属于搬移范围）：审计修复 #6（V302）的 chapter:rescue —— 保存被阻断时的
+ * 救稿出口。它同样属于「导出 / 复制」域（另存本章 txt / 复制正文），复用本模块已有的保存对话框、
+ * 原子写与剪贴板句柄；因为书 / 章文件可能已经不在，它刻意不读也不写书库。
+ *
  * 契约：register(host) —— host 成员逐条列在 REQUIRED_HOST 里；缺任何一个在 registerIpc() 装配时
  * 直接抛 TypeError（宁可在启动时炸，也不要到点频道才 ReferenceError）。host 成员都是 main.js 的
  * 函数 / 常量 / 活绑定，模块自己不 require electron、不缓存状态快照。
@@ -47,7 +51,7 @@ const REQUIRED_HOST = [
 function registerExportIpc(host) {
   assertHost('ipc/export.registerExportIpc', host, REQUIRED_HOST);
   const {
-    handleBook, storage, exporter,
+    handle, handleBook, storage, exporter,
     chaptersLib, epubLib, docxLib, s2tLib,
     ipcLimits, mapLimit, CHAPTER_READ_CONCURRENCY, CHAPTER_BATCH_SIZE,
     path, app, fsSync, getConfig,
@@ -354,6 +358,32 @@ function registerExportIpc(host) {
       chars: result.chars,
       includedUnsaved: fromEditor
     };
+  });
+
+  // 审计修复 #6（V302）：保存被 BOOK_MISSING / CHAPTER_MISSING 阻断时的救稿出口。
+  // 书文件夹 / 章节文件可能已经在应用外被删 / 移走 —— 这条通道因此**完全不碰书库**：正文由渲染层
+  // 从编辑区现取（text），这里只负责选落点并原子写盘（mode='save'），或写进系统剪贴板（mode='copy'）。
+  // 正文仍走 core/ipc-limits.js 的 500 万字上限（与 chapter:save 同一条口径）；文件名只作默认值，
+  // 主进程用 chaptersLib.safeName 清洗后再拼进保存对话框，用户可以在对话框里改成任何路径。
+  // 写出的 txt 与章节文件同格式（UTF-8 无 BOM、CRLF 换行），落点确认之后才写盘（与三个导出同一时序）。
+  handle('chapter:rescue', async (text, mode, suggestedName) => {
+    const body = ipcLimits.assertText(text);
+    if (mode === 'copy') {
+      await getClipboard().writeText(body);
+      return { copied: true, chars: chaptersLib.countChars(body) };
+    }
+    const cfg = await getConfig();
+    const defaultDir = exporter.resolveExportDir(cfg.lastExportDir, app.getPath('documents'), isDirectory);
+    const { canceled, filePath } = await showSaveDialog({
+      title: '另存这一章为 TXT',
+      defaultPath: path.join(defaultDir, `${chaptersLib.safeName(suggestedName)}.txt`),
+      filters: [{ name: '文本文件', extensions: ['txt'] }]
+    });
+    if (canceled || !filePath) return { canceled: true };
+    await atomicWriteFile(filePath, chaptersLib.toDiskNewlines(body), 'utf8');
+    // 记住这次落点，下次另存 / 导出默认还开在这里（记不住也不影响救稿结果）
+    await rememberExportDir(path.dirname(filePath));
+    return { canceled: false, filePath, chars: chaptersLib.countChars(body) };
   });
 }
 

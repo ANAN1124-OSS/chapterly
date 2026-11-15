@@ -60,7 +60,13 @@ const api = {
 
   loadChapter: (bookPath, file) => invoke('chapter:load', bookPath, file),
   statChapter: (bookPath, file) => invoke('chapter:stat', bookPath, file),
-  saveChapter: (bookPath, chapterId, text) => invoke('chapter:save', bookPath, chapterId, text),
+  // 审计修复 #5（V301）：第四个参数 = 载入时那一版磁盘 mtime（0 / 不传 = 不校验，仅覆盖保存用）
+  saveChapter: (bookPath, chapterId, text, expectedMtimeMs) =>
+    invoke('chapter:save', bookPath, chapterId, text, expectedMtimeMs),
+  // 审计修复 #6（V302）：保存被阻断（书 / 章文件在应用外没了）时的救稿出口——把编辑区正文
+  // 另存成用户选的 txt 或写进剪贴板；不碰书库（主进程只做保存对话框 + 原子写 / 剪贴板）。
+  rescueChapterText: (text, mode, suggestedName) =>
+    invoke('chapter:rescue', text, mode, suggestedName),
   formatText: (text, options) => invoke('text:format', text, options),
   // text:find 单次查找：只被 E2E 第 61 组（core/ipc-limits.js 文本上限）当自检入口用，
   // 产品界面的查找走下面的 findAll / findNext / replaceInText；别以为它是死接口就删

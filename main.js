@@ -1752,7 +1752,7 @@ function registerIpc() {
     return findLib.findNextMatch(text, ipcLimits.assertQuery(query), fromIndex, options);
   });
 
-  handleBook('chapter:save', async (bookPath, chapterId, text) => {
+  handleBook('chapter:save', async (bookPath, chapterId, text, expectedMtimeMs) => {
     // A2（审计 E6）：全仓唯一漏掉正文校验的写盘通道。与 text:format / text:find / replace
     // 同一口径：正文必须是字符串且不超过 500 万字（core/ipc-limits.js），超限回 TEXT_TOO_LARGE。
     // C26（v1.8.0 WP-26）：null / undefined 不再当空章写盘（旧实现刻意兼容成 ''）。渲染层拿到
@@ -1763,8 +1763,11 @@ function registerIpc() {
       const cfg = await getConfig();
       // 保存前校验（写盘安全检查）：书文件夹、书目、章节记录、章节文件都还在才允许写，
       // 且书不能正开在另一个窗口。任何一项失效都报错，绝不 mkdir 重建影子文件。
+      // 审计修复 #5（V301）：渲染层带来的 expectedMtimeMs 也在这里比对——载入之后磁盘被
+      // 应用外改过就抛 EXTERNAL_CHANGE，交给 save-rescue-ui.js 的三选，绝不静默覆盖外部版本。
       const prepared = await storage.prepareChapterSave(bookPath, chapterId, {
-        windowId: session ? session.id : null
+        windowId: session ? session.id : null,
+        expectedMtimeMs
       });
       const meta = prepared.meta;
       const chapter = prepared.chapter;
