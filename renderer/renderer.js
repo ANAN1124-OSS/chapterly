@@ -2725,7 +2725,7 @@
   }
   // stats-logic 的三个调用点同样被静态闸门按字面钉在渲染层，经 host 回调交给模块（结果与时机不变）。
   const statsUi = statsUiModule.create({
-    $, api, call, state, statsLogic, statsFormat, formatChars, formatCount, formatDuration,
+    $, api, call, state, statsLogic, statsFormat, formatChars, formatCount, formatDuration, staleGuard,
     writeDurationEnabled: () => writeDurationEnabled(), renderDurationSettings: () => renderDurationSettings(), renderWriteTimer: () => renderWriteTimer(), calendarSummaryText,
     calendarCells: (view) => statsLogic.calendarCells(view, statsFormat),
     shiftCalendarCursor: (cursor, delta) => statsLogic.shiftCalendarCursor(cursor, delta),

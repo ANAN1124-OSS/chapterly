@@ -686,6 +686,73 @@ test('拖拽落点：取不到落点时退回当前光标；外部文本拖拽�
   assert.deepEqual(gone.calls.toast.at(-1), ['这条碎片已经不在列表里了', 'warn']);
 });
 
+// 审计修复 #14（E10）：落点在 await 之前算好，回来只比 bookPath 时「同一本书里切了章」会把碎片
+// 插进新章按旧下标钳制出来的落点（内容不丢、可撤销，但写错了地方很难察觉）。
+test('拖拽结算：读碎片期间在同一本书里换了章 → 插入取消，新章正文不进碎片（E10）', async () => {
+  const ctx = build({ editorText: 'ABCDEF', selection: 3, selectionEnd: 3 });
+  ctx.state.chapters = [{ id: 'ch_001' }, { id: 'ch_002' }];
+  ctx.state.index = 0;
+  ctx.dom.doc.caretPositionFromPoint = () => ({ offsetNode: ctx.editorEl, offset: 2 });
+  ctx.ui.setupFragmentsUi();
+  ctx.ui.openInsertFragmentDialog();
+  await ctx.ui.refreshFragments();
+
+  let release;
+  ctx.host.api.readFragment = (name) =>
+    new Promise((resolve) => {
+      release = () => resolve({ name, text: '这是碎片正文', chars: 6, size: 30 });
+    });
+
+  const row = rowEls(ctx.dom.map.get('fragments-list'))[0];
+  const dt = makeDataTransfer();
+  row._fire('dragstart', { dataTransfer: dt });
+  const drop = {
+    dataTransfer: dt, clientX: 10, clientY: 20, prevented: 0,
+    preventDefault() { drop.prevented += 1; }, stopPropagation() {}
+  };
+  const dropped = ctx.editorEl._fire('drop', drop);
+  // 读碎片还在途：切到同一本书的第 2 章（书没换，index / chapters 换了，编辑区换成新章正文）
+  ctx.state.index = 1;
+  ctx.editorEl.value = '新章的正文';
+  release();
+  const res = await dropped;
+  assert.equal(res.ok, false);
+  assert.equal(res.message, '已经换了章，插入取消');
+  assert.equal(ctx.editorEl.value, '新章的正文', '新章正文一个字符都不该多');
+  assert.deepEqual(ctx.calls.toast.at(-1), ['已经换了章，插入取消', 'warn']);
+  assert.equal(ctx.calls.onEditorInput, 0, '没有插入就不该走输入处理');
+  assert.equal(ctx.state.fragmentDragDropped, false, '收尾照旧复位');
+});
+
+test('拖拽结算：同书同章不受影响，照旧插在落点处（E10 不误拦）', async () => {
+  const ctx = build({ editorText: 'ABCDEF', selection: 3, selectionEnd: 3 });
+  ctx.state.chapters = [{ id: 'ch_001' }];
+  ctx.state.index = 0;
+  ctx.dom.doc.caretPositionFromPoint = () => ({ offsetNode: ctx.editorEl, offset: 2 });
+  ctx.ui.setupFragmentsUi();
+  ctx.ui.openInsertFragmentDialog();
+  await ctx.ui.refreshFragments();
+
+  // 读碎片期间只重画了列表 / 改了别的字段，章身份一点没动
+  let release;
+  ctx.host.api.readFragment = (name) =>
+    new Promise((resolve) => {
+      release = () => resolve({ name, text: '这是碎片正文', chars: 6, size: 30 });
+    });
+  const row = rowEls(ctx.dom.map.get('fragments-list'))[0];
+  const dt = makeDataTransfer();
+  row._fire('dragstart', { dataTransfer: dt });
+  const drop = {
+    dataTransfer: dt, clientX: 10, clientY: 20, prevented: 0,
+    preventDefault() {}, stopPropagation() {}
+  };
+  const dropped = ctx.editorEl._fire('drop', drop);
+  release();
+  const res = await dropped;
+  assert.equal(res.ok, true);
+  assert.equal(ctx.editorEl.value, 'AB这是碎片正文CDEF');
+});
+
 test('拖拽结束没落在正文：面板恢复可点（ghost 摘掉、面板仍开着），正文不动', async () => {
   const ctx = build({ editorText: 'ABCDEF', selection: 2, selectionEnd: 2 });
   ctx.ui.setupFragmentsUi();

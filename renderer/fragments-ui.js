@@ -455,11 +455,15 @@
     event.preventDefault();
     event.stopPropagation();
     const name = state.fragmentDragName;
+    // 审计修复 #14（E10）：落点下标必须在 await 之前算好，所以身份快照也要同时拍 ——
+    // 只比 bookPath 时，「读碎片期间在同一本书里切了章」会把碎片插进新章按旧下标钳制出来的落点
+    // （内容不丢、可撤销，但写错了地方很难察觉）。身份口径与 stale-guard 其它面板一致：
+    // 书 + 第几章 + 章 id，任一不同即作废。
+    const expectedChapter = staleGuard.chapterIdentity(state);
     const offset = caretOffsetFromPointEvent(event);
-    const bookPath = state.bookPath;
     state.fragmentDragDropped = true;
     try {
-      if (!bookPath) {
+      if (!expectedChapter.bookPath) {
         toast('先打开一本书再插入碎片', 'warn');
         return { ok: false, message: '先打开一本书' };
       }
@@ -470,10 +474,12 @@
       }
       // 完整内容按名字现读：dataTransfer 里只有名字
       const data = await call(api.readFragment, fragment.name);
-      if (state.bookPath !== bookPath) {
-        // 读的过程中换了书：绝不把内容写进另一本书的编辑区
-        toast('已经换了书，插入取消', 'warn');
-        return { ok: false, message: '已经换了书，插入取消' };
+      if (!staleGuard.sameChapterIdentity(expectedChapter, staleGuard.chapterIdentity(state))) {
+        // 读的过程中换了书 / 换了章：绝不把内容写进另一章的编辑区（落点属于旧章）
+        const switchedBook = state.bookPath !== expectedChapter.bookPath;
+        const message = switchedBook ? '已经换了书，插入取消' : '已经换了章，插入取消';
+        toast(message, 'warn');
+        return { ok: false, message };
       }
       const result = insertFragmentAt({ name: data.name, text: data.text, chars: data.chars }, offset, offset);
       closeInsertFragmentDialog();
