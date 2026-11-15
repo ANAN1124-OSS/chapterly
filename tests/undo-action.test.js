@@ -392,7 +392,27 @@ test('静态闸门（V403）：正文 Ctrl+Z 拦截器执行成功后停止冒�
     '正文拦截器要在撤销执行成功后 stopPropagation（preventDefault 不等于阻止冒泡）'
   );
   // document 级那条「整理快照优先」的分支必须还在（只让位，不删除）
-  assert.match(rendererCode, /if \(state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/);
+  // 审计残留修复 #40（V403）：补了焦点守卫以后条件多一个 !inOtherInput（见下一条静态闸门）
+  assert.match(rendererCode, /if \(!inOtherInput && state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/);
+});
+
+// 审计残留修复 #40（V403）：document 级「整理快照优先」的 Ctrl+Z 以前没有焦点守卫 ——
+// 整理链有效时，焦点在查找 / 替换框里按 Ctrl+Z 会撤销正文整理而不是框内文本。现在按相邻
+// undoUi 分支同一套 isTypingTarget 判据让位；编辑区自己例外（整理快照撤的就是正文）。
+test('静态闸门（V403 / 残留 #40）：整理快照的 Ctrl+Z 有焦点守卫，编辑区里仍生效', () => {
+  assert.match(
+    rendererCode,
+    /const focusEl = document\.activeElement;\r?\n\s+const inOtherInput = focusEl !== editorEl && undoActionModule\.isTypingTarget\(focusEl\);/,
+    '先算「焦点在别的输入控件里」（编辑区例外）'
+  );
+  assert.match(
+    rendererCode,
+    /if \(!inOtherInput && state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/,
+    '守卫通过才允许整理快照抢 Ctrl+Z'
+  );
+  // 共享判据来自 undo-action.js（与相邻 undoUi 分支同一份实现，不许各写一套 tag 判定）
+  assert.match(rendererCode, /undoActionModule\.isTypingTarget\(focusEl\)/);
+  assert.equal(/function isTypingTarget\(/.test(rendererCode), false, 'renderer.js 里不该再有第二份 isTypingTarget');
 });
 
 test('静态闸门（V402）：兜底整串赋值统一配一次性快照 + 提示 + Ctrl+Z，换书 / 换章即作废', () => {

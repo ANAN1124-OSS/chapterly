@@ -5947,7 +5947,12 @@
       }
       if (ctrl && String(event.key).toLowerCase() === 'z') {
         // 「整理本章」留下的快照优先撤销；没有快照就让原生 Ctrl+Z 照常工作
-        if (state.view === 'editor' && state.bookPath && undoFormat()) {
+        // 审计残留修复 #40（V403）：补焦点守卫 —— 焦点在查找 / 替换 / 跳章 / 书架搜索这些输入
+        // 控件里时，Ctrl+Z 是框内自己的文本撤销，不能拿正文整理快照抢走（与相邻 undoUi 分支
+        // 同一套 isTypingTarget 口径）。编辑区自己例外：整理快照撤的就是正文，焦点在正文里仍生效。
+        const focusEl = document.activeElement;
+        const inOtherInput = focusEl !== editorEl && undoActionModule.isTypingTarget(focusEl);
+        if (!inOtherInput && state.view === 'editor' && state.bookPath && undoFormat()) {
           event.preventDefault();
           return;
         }

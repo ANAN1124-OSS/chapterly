@@ -376,7 +376,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   `window.CWRendererAssembly.assertInstalled(window)` 与 2 行说明；清单本身（68 个模块的顺序 /
   //   window 全局名 / renderer 本地名）在 renderer/assembly-manifest.js，缺模块时启动即报全，
   //   不再让某个 const 静默 undefined。这是审计 M4 要求的「装配清单」，没有往回搬业务代码。
-  const RENDERER_LINE_BUDGET = 6396;
+  // 审计残留修复 #40（V403，第二阶段 R7）：6396 → 6401（+5）：document 级「整理快照优先」分支补
+  //   焦点守卫（focusEl / inOtherInput 两行代码 + 3 行说明）—— 焦点在查找 / 替换等输入框里时不抢
+  //   Ctrl+Z；编辑区自己例外（整理快照撤的就是正文）。判定只读 document.activeElement 与共享的
+  //   undo-action.isTypingTarget，没有新增模块依赖。
+  const RENDERER_LINE_BUDGET = 6401;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,
