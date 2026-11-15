@@ -193,6 +193,55 @@ test('词表扫描（P-03）：1000 章 × 同一词表只建图 1 次', () => {
   assert.equal(stats.size, 1);
 });
 
+// P2（审计修复 #18）：紧凑 trie —— 节点 / 边 / 输出条数全部由输入长度推出，是真常数。
+// 旧实现「每个节点一个 Map」：5000 词 × 100 字零公共前缀 ≈ 50 万节点（单图约百 MB）× LRU 4 份。
+test('P2：紧凑 trie 的规模上界 = 输入长度（零公共前缀的词表不再随分支因子膨胀）', () => {
+  // 2000 个互不共享首字符的 100 字词条：节点数必须正好 = 全部码元数 + 1
+  const words = [];
+  for (let i = 0; i < 2000; i += 1) words.push(`${String.fromCharCode(0x4e00 + i)}${'同'.repeat(99)}`);
+  const totalUnits = words.reduce((sum, word) => sum + word.length, 0);
+  const shape = wordscan.measureAutomaton(words);
+  assert.equal(shape.nodes, totalUnits + 1, '零公共前缀：每个码元一个新节点，一个不多');
+  assert.equal(shape.edges, shape.nodes - 1, '边数 = 节点数 - 1');
+  assert.ok(shape.outputs <= words.length * shape.maxLen, '输出表（含失败链继承）也有真上界');
+
+  // 结构没坏：首尾两个词都能扫到
+  assert.deepEqual(
+    wordscan.scanTerms(`${words[0]}${words[1999]}`, words).hits.map((hit) => hit.patternIndex),
+    [0, 1999]
+  );
+
+  // 静态闸门：不许退回「每个节点一个 Map」的旧结构（内存随分支因子膨胀的根因）
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'core', 'wordscan.js'), 'utf8');
+  assert.equal(source.includes('children.push(new Map())'), false, '旧结构（每节点一个 Map）不许回潮');
+  assert.equal(source.includes('children[node]'), false);
+  assert.ok(source.includes('new Uint16Array(maxNodes)'), '边用定长 typed array 一次分配');
+  assert.ok(source.includes('new Int32Array(maxNodes)'), '节点数组用定长 typed array 一次分配');
+});
+
+test('P2：代理对词条 / 正文的等价性与旧实现一致（紧凑 trie 仍按 UTF-16 码元建图）', () => {
+  const cases = [
+    ['😀😀😀', ['😀😀', '😀']],
+    ['a😀😀b😀', ['😀', '😀😀', 'a😀']],
+    ['𠮷𠮷𠮷', ['𠮷𠮷', '𠮷']],
+    ['𠮷a😀𠮷', ['𠮷a', 'a😀', '😀𠮷']]
+  ];
+  for (const [text, terms] of cases) {
+    assert.deepEqual(scanForCompare(text, terms), referenceScan(text, terms), `text=${JSON.stringify(text)}`);
+  }
+});
+
+// P2（审计修复 #18）：紧凑 trie 的规模上界见上；缓存仍是 4 份（内存不再按词表数量长）
+test('P2：自动机缓存条数上界仍是 4（紧凑结构下常驻内存有上限）', () => {
+  wordscan.resetAutomatonCache();
+  for (let i = 0; i < 8; i += 1) wordscan.scanTerms('正文', [`词表${i}`, `甲${i}`]);
+  const stats = wordscan.automatonCacheStats();
+  assert.equal(stats.builds, 8);
+  assert.equal(stats.size, 4, '缓存容量必须有上限（≤4）');
+});
+
 test('词表扫描（P-03）：词表内容 / 顺序不同各自成图，缓存有上限且不串索引', () => {
   wordscan.resetAutomatonCache();
   const a = ['甲', '甲乙'];
