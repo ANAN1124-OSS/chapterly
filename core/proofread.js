@@ -239,38 +239,42 @@ function isCjkNeighbor(ch) {
 
 // 重复用词：先按「不重叠」贪心取每个双字词的出现位置（「哈哈哈哈」的「哈哈」只算 2 次，
 // 不会因为重叠命中被误判成 3 次），再找最早一个能装下 repeatCount 次的窗口。
+// C42：按码点切字（扩展 B 汉字是代理对，逐 UTF-16 单元看会把它拆成两个「非汉字」）。
+// E14（审计修复 #17）：去重距离与窗口宽度都按「字（码点）」算 —— 内部一律用码点序号，只在回包时
+// 折算回 UTF-16 下标（source / 片段 / 高亮都用这一套坐标）。旧实现把代理对文本的 UTF-16 长度当
+// 字数：重叠去重的「起点差 < 3 字」被放大成 6 个码元（同一短语刷两条），repeatWindow 也减半。
 function repeatWordIssues(line, options) {
   const positions = new Map();
-  // C42：按码点切字（扩展 B 汉字是代理对，逐 UTF-16 单元看会把它拆成两个「非汉字」）。
-  // 位置仍记 UTF-16 下标（source / 片段 / 高亮都用这一套坐标）。
   const chars = [];
+  const starts = []; // 码点序号 → UTF-16 起点（末尾补 line.length）
   for (let i = 0; i < line.length; ) {
     const ch = charAt(line, i);
-    chars.push({ ch, start: i });
+    chars.push(ch);
+    starts.push(i);
     i += ch.length;
   }
+  starts.push(line.length);
   for (let k = 0; k + 1 < chars.length; k += 1) {
-    if (!isHanChar(chars[k].ch) || !isHanChar(chars[k + 1].ch)) continue;
-    const word = chars[k].ch + chars[k + 1].ch;
-    const start = chars[k].start;
+    if (!isHanChar(chars[k]) || !isHanChar(chars[k + 1])) continue;
+    const word = chars[k] + chars[k + 1];
     const list = positions.get(word);
-    if (list) list.push(start);
-    else positions.set(word, [start]);
+    if (list) list.push(k);
+    else positions.set(word, [k]);
   }
-  const found = [];
+  const found = []; // { word, start（码点序号）, count }
   for (const [word, raw] of positions) {
     const occ = [];
     let lastEnd = -1;
     for (const pos of raw) {
       if (pos < lastEnd) continue;
       occ.push(pos);
-      lastEnd = pos + word.length;
+      lastEnd = pos + 2; // 双字词 = 2 个字
     }
     if (occ.length < options.repeatCount) continue;
     let windowStart = -1;
     for (let j = options.repeatCount - 1; j < occ.length; j += 1) {
       const start = occ[j - options.repeatCount + 1];
-      if (occ[j] + word.length - start <= options.repeatWindow) {
+      if (occ[j] + 2 - start <= options.repeatWindow) {
         windowStart = start;
         break;
       }
@@ -289,7 +293,7 @@ function repeatWordIssues(line, options) {
     if (last && hit.start < last.start + 3) continue;
     kept.push(hit);
   }
-  return kept;
+  return kept.map((hit) => ({ word: hit.word, start: starts[hit.start], count: hit.count }));
 }
 
 // rawGlossary 可选：作者自己的校对词表（[{ term, suggestion }]，建议可为空）。
@@ -382,7 +386,7 @@ function proofreadText(text, rawOptions, rawGlossary) {
         addIssue(
           'repeat-word',
           paragraph.start + hit.start,
-          2,
+          hit.word.length,
           hit.word,
           `「${hit.word}」在 ${options.repeatWindow} 字内出现 ${hit.count} 次`,
           { count: hit.count, window: options.repeatWindow }

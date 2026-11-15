@@ -195,6 +195,55 @@ test('C42/WP-26：扩展 B 汉字参与重复用词 / 中英间距 / 破折号�
   assert.equal(only(proofread.proofreadText('A--', { rules: { dash: true } }), 'dash').length, 0);
 });
 
+// E14（审计修复 #17）：repeat-word 的重叠去重距离与 repeatWindow 都按「字（码点）」算。
+// 旧实现拿 UTF-16 长度当字数，代理对文本上：①「起点只差 1–2 字」的门槛被放大成 6 个码元
+// （同一短语的第 3 个二字词漏去重，一条短语报两条）②300 字窗口实际只装得下 150 字。
+test('E14：扩展 B 短语的重叠去重按码点算（同一短语只报一条）', () => {
+  const A = '\u{20000}';
+  const B = '\u{20001}';
+  const C = '\u{20002}';
+  const D = '\u{20003}';
+  // 「ABCD」×3：AB / BC / CD 三个二字词起点只差 1 个字（BMP 等价物「甲乙丙丁」×3 只报 AB）。
+  // 旧实现按码元算：AB=0、BC=2、CD=4，CD 不满足 < 3 的门槛 → AB 与 CD 各报一条。
+  const text = `${A}${B}${C}${D}，${A}${B}${C}${D}，${A}${B}${C}${D}。`;
+  const result = proofread.proofreadText(text);
+  const hits = result.issues.filter((issue) => issue.rule === 'repeat-word');
+  assert.equal(hits.length, 1, '同一短语只留最靠前的一条（旧实现会把第 3 个二字词也报出来）');
+  assert.equal(hits[0].match, `${A}${B}`);
+  assert.equal(hits[0].count, 3);
+  assert.equal(hits[0].index, 0);
+  assert.equal(hits[0].length, 4, 'issue.length 按 UTF-16 单元算（2 个代理对 = 4），高亮不切代理对');
+  // BMP 等价物口径不变
+  const bmp = proofread.proofreadText('甲乙丙丁，甲乙丙丁，甲乙丙丁。');
+  const bmpHits = bmp.issues.filter((issue) => issue.rule === 'repeat-word');
+  assert.equal(bmpHits.length, 1);
+  assert.equal(bmpHits[0].match, '甲乙');
+  assert.equal(bmpHits[0].length, 2);
+});
+
+test('E14：repeatWindow 按码点算（代理对正文的 300 字窗口不再减半）', () => {
+  const A = '\u{20000}';
+  const B = '\u{20001}';
+  const FILL = '😀'; // 非汉字代理对：只用来拉开距离，不参与重复用词
+  // 三次「AB」的起点（码点）：0 / 150 / 298 → 第三次命中结束于 300，正好落在 300 字窗口内。
+  // 旧实现按码元：起点 0 / 300 / 596，`594 + 2 - 0 > 300` → 一条都不报。
+  const text = `${A}${B}${FILL.repeat(148)}${A}${B}${FILL.repeat(146)}${A}${B}`;
+  const hits = proofread.proofreadText(text, { repeatWindow: 300 }).issues.filter(
+    (issue) => issue.rule === 'repeat-word' && issue.match === `${A}${B}`
+  );
+  assert.equal(hits.length, 1, '按码点折算后三次命中都在 300 字窗口内');
+  assert.equal(hits[0].count, 3);
+  assert.equal(hits[0].index, 0);
+  // 窗口外照旧不报：把第三次推远 2 个字就到 302
+  const wider = `${A}${B}${FILL.repeat(148)}${A}${B}${FILL.repeat(148)}${A}${B}`;
+  assert.equal(
+    proofread.proofreadText(wider, { repeatWindow: 300 }).issues.filter(
+      (issue) => issue.rule === 'repeat-word' && issue.match === `${A}${B}`
+    ).length,
+    0
+  );
+});
+
 test('校对：连续标点——3 个及以上才报，「！？」「……」「——」不误报', () => {
   const three = proofread.proofreadText('他喊：「？！？」');
   const issues = only(three, 'punct-run');
