@@ -148,6 +148,9 @@ function registerBookIpc(host) {
     // （core/ipc-limits.sanitizeRecentBookInfo）；坏形状 → null，不再把任意对象交给
     // rememberRecentBook 的 String / slice 兜底。
     const display = ipcLimits.sanitizeRecentBookInfo(info);
+    // 审计残留修复 #R15（#47/E22）：章名 trim 后为空 / chapterId 为空 → 不记最近书。旧实现只判
+    // typeof chapterName === 'string'，纯空白章名也会被记成一条空名最近书；空名对「继续上次写作」
+    // 没有信息量，这里按「没有可用章名就不记」处理（与 sanitizeRecentBookInfo 的注释同一口径）。
     if (display && display.chapterName && chapterIdText) {
       await rememberRecentBook(bookPath, {
         title: display.title,

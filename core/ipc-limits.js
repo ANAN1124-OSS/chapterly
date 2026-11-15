@@ -172,7 +172,10 @@ function sanitizeRange(range) {
 
 // book:set-last 的展示信息（title / chapterIndex / chapterName）：以前不判型就交给
 // rememberRecentBook（main.js 的 String / slice / round 兜底）。入口先收成白名单：
-//   · 非对象 → null（调用方不记最近书，旧行为：没有可用的章名就不记）；
+//   · 非对象 → null（调用方不记最近书）；
+//   · 审计残留修复 #R15（#47/E22）：章名 trim 后为空 → 调用方同样不记（空名章对「继续上次写作」
+//     没有信息量）。旧实现只判 typeof chapterName === 'string'，纯空白章名会把一条空名记进
+//     config.json 的最近书；这里按「没有可用章名就不记」处理，行为微变、无功能危害；
 //   · title / chapterName 只收字符串并限长（不切开代理对），数字 / 对象一律当空串；
 //   · chapterIndex 只收有限数字，四舍五入后夹在 0–1000000（与 config.sanitizeLastBook 同一口径）。
 // at / chapterId 由调用方掌握，不在这里给默认值。
