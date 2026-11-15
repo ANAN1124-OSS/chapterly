@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const errorText = require('../core/error-text');
+const logsModule = require('../core/logs');
 
 const { redactPaths, maskPath, cleanText, cleanCode, fsErrorDetail, describeForUi, FS_CODE_TEXT, sanitizeFailureReport } = errorText;
 const ROOT = path.join(__dirname, '..');
@@ -339,9 +340,13 @@ test('错误脱敏（审计 #23/S2）：路径末尾的纯 ASCII 词并入、丢
   assert.equal(deep.includes('Users'), false);
   // 路径后面跟中文正文：中文词不在「像路径」的集合里，照旧留在遮罩外
   assert.equal(redactPaths('打开 C:\\Users\\Zhang San 失败了'), '打开 …\\Zhang San 失败了');
-  // 已知取舍：路径后面跟纯 ASCII 的英文句子时，会按同一段路径收进最后一节（隐私优先）；
-  // 中文正文 / 全角标点不受影响（见上一条用例）。
+  // 审计残留修复 #23（S2/S3）：路径最后一段已经带扩展名（文件名完整）时，后面的普通英文词是
+  // 正文、不再并进最后一节（旧实现把 `…\a.txt failed to open` 整段当成一个文件名）。
+  // 显示口径逐字不变（保留的最后一节还是「…\文件名 + 后面的正文」），但路径边界不再把正文算进去。
   assert.equal(redactPaths('D:\\a.txt is missing'), '…\\a.txt is missing');
+  assert.equal(redactPaths('C:\\app\\renderer\\renderer.js:395:11 failed'), '…\\renderer.js:395:11 failed');
+  // 文件名还没出现扩展名时保持原口径：用户名片段仍要遮掉（隐私优先）
+  assert.equal(redactPaths('C:\\Users\\Zhang San\\Documents'), '…\\Documents');
   // 审计修复 #48（E23）：连接词（and）后面还有另一条绝对路径时，不许把两条路径吞成一条。
   assert.equal(
     redactPaths('C:\\Users\\Zhang San\\a.txt and D:\\我的 小说\\b.txt 都失败'),
@@ -364,6 +369,30 @@ test('错误脱敏（审计 #23/S2）：正斜杠 UNC 与 %5C / %2F / %3A 编码
   assert.equal(redactPaths('C:\\Users%5CZhang%5CSan'), '…\\San');
   // 编码形态混进普通正文时也只留最后一节
   assert.equal(redactPaths('读取 C%3A%5CUsers%5CZhang%5C书%5C001.txt 失败'), '读取 …\\001.txt 失败');
+});
+
+test('错误脱敏（审计残留 #23/S2-S3）：URL 不被正斜杠 UNC 规则误遮；路径边界不吞后随英文词', () => {
+  // 过度遮罩：`https://example.com/x` 的 `//` 是 URL 协议头，不是正斜杠 UNC。正常入口已经先按
+  // URL 整段切出去保护，这里把审计点名的形态逐字钉住（含 keep 变体与日志侧同一入口）。
+  for (const options of [undefined, { keep: 1 }, { keep: 2 }]) {
+    assert.equal(redactPaths('https://example.com/x', options), 'https://example.com/x');
+    assert.equal(redactPaths('打不开 https://example.com/x 这个页面', options), '打不开 https://example.com/x 这个页面');
+  }
+  assert.equal(logsModule.sanitizeMessage('下载 https://example.com/x 失败'), '下载 https://example.com/x 失败');
+
+  // 静态闸门：①正斜杠 UNC 规则自己就排除 http(s)://（不只靠上游先切 URL）；
+  // ②空格启发式要看「空格前那一段」是不是已经完整的文件名，是就不再并进后面的普通英文词。
+  const src = fs.readFileSync(path.join(ROOT, 'core', 'error-text.js'), 'utf8');
+  const uncAt = src.indexOf('function maskUncForwardPaths(');
+  assert.ok(uncAt > 0, '找不到 maskUncForwardPaths');
+  const uncBody = src.slice(uncAt, src.indexOf('function maskEncodedPaths(', uncAt));
+  assert.match(uncBody, /before\.endsWith\('http:'\) \|\| before\.endsWith\('https:'\)/, 'UNC 规则要排除 http(s)://');
+  assert.match(src, /const FILE_SEGMENT_RE = \/\\\.\[A-Za-z0-9\]\{1,8\}/, '要有「这一段已是完整文件名」的判据');
+  assert.match(src, /function isPathContinuationToken\(token, previousSegment = ''\)/, '空格启发式要收前一段');
+  const readEndAt = src.indexOf('function readPathEnd(');
+  const readEndBody = src.slice(readEndAt, src.indexOf('// 把文本里所有盘符路径', readEndAt));
+  assert.match(readEndBody, /const lastSegment = text\.slice\(from, end\)\.split\(\/\[\\\\\/\]\/\)\.pop\(\)/, 'readPathEnd 要传空格前那一段');
+  assert.match(readEndBody, /isPathContinuationToken\(next\.token, lastSegment\)/);
 });
 
 test('错误脱敏：含空格路径走 describeForUi 也不漏用户名（S-01）', () => {

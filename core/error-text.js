@@ -40,6 +40,9 @@ const PATH_STOP_CHAR_RE = /[\u0000-\u001f<>|*?'"\[\]{}「」『』（）【】�
 // 空格之后仍算路径一段的「词」：纯 ASCII 片段（San / 1 / chapter-writer）或带 ASCII 扩展名的片段（第1章.txt）。
 const ASCII_PATH_TOKEN_RE = /^[A-Za-z0-9_.~%+-]+$/;
 const EXT_PATH_TOKEN_RE = /^[^\s'"<>|*?/\\]+\.[A-Za-z0-9]{1,8}$/;
+// 一段路径看起来是不是「已经完整的文件名」：`a.txt` / `storage.js` / `storage.js:395:11`（栈行）。
+// 只给空格启发式用（审计残留修复 #23 / S2/S3）：这样的一段后面跟的纯 ASCII 词是正文。
+const FILE_SEGMENT_RE = /\.[A-Za-z0-9]{1,8}(?=$|[:)])/;
 // 审计修复 #48（E23）：空格后的下一个词如果本身就是另一条绝对路径（盘符 / UNC / POSIX），
 // 不能再并进前一条路径 —— 旧实现会把「C:\a.txt and D:\b.txt」整段吞成「…\b.txt」，
 // 两条路径的定位信息只剩一条。ASCII 连接词（and / or …）后紧跟绝对路径时也在此断开。
@@ -130,13 +133,19 @@ function nextPathToken(text) {
 //     有一段像路径的东西」，于是 `C:\Users\Zhang San` 只遮到 `…\Users`，把用户名原样露出来；
 //     也不再设回看深度上限（≥4 个连续 ASCII 空格词以前会断链），一串空格词一路读到句法终点。
 //   · 中文正文 / 标点开头的词 → 不算（`打不开`、`后面还有字` 都不应该被吞进路径）。
-function isPathContinuationToken(token) {
+// 审计残留修复 #23（S2/S3）：previousSegment 是「空格之前那一段」—— 它已经是一个带扩展名的
+// 文件名（`a.txt` / `storage.js`）时，后面的普通英文词是正文（`failed to open`），不再并进最后
+// 一节（旧实现会把 `…\a.txt failed to open` 整段当成一个文件名，日志里读起来像文件名里带英文）。
+// 文件名还没出现扩展名时保持原口径：`Zhang San` 这类用户名片段仍要遮，`001-第 1 章.txt` 里
+// 的空格（扩展名在最后一个词上）也照旧保留。
+function isPathContinuationToken(token, previousSegment = '') {
   if (!token) return false;
   // 另一条绝对路径（包括盘符开头）不是前一条路径的一段
   if (ABSOLUTE_PATH_START_RE.test(token)) return false;
   if (token[0] === '/' || token[0] === '\\') return false;
   if (token.includes('\\') || token.includes('/')) return true;
   if (EXT_PATH_TOKEN_RE.test(token)) return true;
+  if (FILE_SEGMENT_RE.test(previousSegment)) return false;
   return ASCII_PATH_TOKEN_RE.test(token);
 }
 
@@ -159,7 +168,9 @@ function readPathEnd(text, from) {
     if (PATH_STOP_CHAR_RE.test(ch)) break;
     if (ch === ' ' || ch === '\t') {
       const next = nextPathToken(text.slice(end + 1));
-      if (!next || !isPathContinuationToken(next.token)) break;
+      // 审计残留修复 #23（S2/S3）：空格前那一段已经带扩展名时，后面的普通英文词是正文
+      const lastSegment = text.slice(from, end).split(/[\\/]/).pop() || '';
+      if (!next || !isPathContinuationToken(next.token, lastSegment)) break;
       // 「and D:\…」：连接词后面还有一条绝对路径 → 前一条路径在连接词前结束
       if (startsAnotherPathAfterToken(next)) break;
       end += 1;
@@ -218,6 +229,11 @@ function maskUncForwardPaths(text, keep) {
   while ((match = UNC_FWD_START_RE.exec(text)) !== null) {
     const start = match.index;
     if (start < last) continue;
+    // 审计残留修复 #23（S2/S3）：`//` 前面是 `http:` / `https:` 时那是 URL 的协议头，不是正斜杠
+    // UNC（旧实现会把 `https://example.com/x` 遮成 `https:…/x`）。redactPaths 已先把完整 URL
+    // 整段切出去保护，这一层防的是「URL 被上游拆成片段 / 直接对片段调用」时再被 UNC 规则吃掉。
+    const before = text.slice(Math.max(0, start - 6), start).toLowerCase();
+    if (before.endsWith('http:') || before.endsWith('https:')) continue;
     const end = readPathEnd(text, start + match[0].length);
     out += text.slice(last, start) + maskPath(text.slice(start, end), keep);
     last = end;
