@@ -282,6 +282,88 @@ test('C32/WP-26：缺 id 的章补号避撞（位置号被占时顺延，不产�
   assert.equal(after.chapters.find((c) => c.id === 'ch_001').name, '已有 id 的章');
 });
 
+// 审计修复 #22（P6）：缺 id 回填的编号规则必须与旧实现逐项等价 —— 旧实现每个缺 id 的章都从
+// i+1 重新探测（低位号全被占 + 大量缺 id 时 20000 章约 4×10^8 次探测）；新技术只把探测换成
+// 单调空闲游标（O(n)），编号口径一个都不变。这里同时钉住「等价」与「大样本能跑完」。
+function referenceBackfillChapterIds(chapters) {
+  const used = new Set();
+  for (const chapter of chapters) {
+    if (chapter && typeof chapter.id === 'string' && chapter.id) used.add(chapter.id);
+  }
+  return chapters.map((chapter, i) => {
+    let id = chapter && typeof chapter.id === 'string' && chapter.id ? chapter.id : '';
+    if (!id) {
+      let n = i + 1;
+      do {
+        id = `ch_${String(n).padStart(3, '0')}`;
+        n += 1;
+      } while (used.has(id));
+      used.add(id);
+    }
+    return id;
+  });
+}
+
+test('审计 #22（P6）：缺 id 回填与旧算法逐项等价（含空洞 / 高号占用 / 连续缺号）', () => {
+  const cases = [
+    [{ file: 'a.txt' }, { file: 'b.txt' }],
+    [{ file: 'a.txt' }, { id: 'ch_001', file: 'b.txt' }],
+    [{ id: 'ch_005', file: 'a.txt' }, { file: 'b.txt' }],
+    [{ file: 'a.txt' }, { id: 'ch_002', file: 'b.txt' }, { file: 'c.txt' }],
+    // 「指针会跳」的形状：前 9 章已占 ch_001..ch_009，位置号被占时旧算法逐个顺延
+    [
+      { file: 'a.txt' },
+      { id: 'ch_001', file: 'b.txt' },
+      { id: 'ch_002', file: 'c.txt' },
+      { id: 'ch_003', file: 'd.txt' },
+      { id: 'ch_004', file: 'e.txt' },
+      { id: 'ch_005', file: 'f.txt' },
+      { id: 'ch_006', file: 'g.txt' },
+      { id: 'ch_007', file: 'h.txt' },
+      { id: 'ch_008', file: 'i.txt' },
+      { id: 'ch_009', file: 'j.txt' }
+    ],
+    // 乱序 / 坏 id（非字符串 / 空串照旧当缺失）
+    [{ id: 7, file: 'a.txt' }, { id: '', file: 'b.txt' }, { id: 'ch_003', file: 'c.txt' }, { file: 'd.txt' }]
+  ];
+  for (const chapters of cases) {
+    assert.deepEqual(
+      storage.backfillMissingChapterIds(chapters),
+      referenceBackfillChapterIds(chapters),
+      '编号要与旧算法逐项一致：' + JSON.stringify(chapters.map((c) => c.id))
+    );
+  }
+  // 只补缺失项：已有 id（哪怕不是 ch_NNN）一个都不改写；补号仍按「位置号起步」
+  const kept = storage.backfillMissingChapterIds([{ id: 'custom-id', file: 'a.txt' }, { file: 'b.txt' }]);
+  assert.deepEqual(kept, ['custom-id', 'ch_002']);
+});
+
+test('审计 #22（P6）：20000 章「前一半缺 id + 后一半占满低位号」一次扫完且编号不撞', () => {
+  const chapters = [];
+  for (let i = 0; i < 20000; i += 1) {
+    const file = `${String(i + 1).padStart(4, '0')}-章.txt`;
+    // 前 10000 章缺 id（i+1 = 1..10000 全被后一半占住），后 10000 章占着 ch_001..ch_10000
+    chapters.push(i < 10000 ? { file } : { id: `ch_${String(i - 9999).padStart(3, '0')}`, file });
+  }
+  const ids = storage.backfillMissingChapterIds(chapters);
+  assert.equal(ids.length, 20000);
+  assert.equal(new Set(ids).size, 20000, '补出来的 id 不许重复');
+  assert.equal(ids[0], 'ch_10001', '低位号全被占 → 从第 10001 个起顺延');
+  assert.equal(ids[9999], 'ch_20000');
+  assert.deepEqual(ids.slice(10000, 10003), ['ch_001', 'ch_002', 'ch_003'], '已有 id 一个都不改写');
+});
+
+test('审计 #22（P6）：静态闸门 —— 回填不再从 i+1 逐章重扫', async () => {
+  const src = await fs.readFile(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  assert.match(src, /function backfillMissingChapterIds\(chapters\)/);
+  assert.match(src, /const backfilledIds = backfillMissingChapterIds\(meta\.chapters\)/, 'readBookMeta 必须走这一份');
+  const start = src.indexOf('function backfillMissingChapterIds(chapters)');
+  const body = src.slice(start, src.indexOf('\nfunction validateMeta(', start));
+  assert.match(body, /let cursor = 1/, '必须有单调游标');
+  assert.match(body, /Math\.max\(cursor, i \+ 1\)/, '每个缺 id 的章从游标与位置号的较大者起步');
+  assert.match(body, /cursor = n/, '探测过后游标只前进');
+});
+
 test('书架扫描：完稿章数按 status=done 统计', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '完稿统计');

@@ -212,6 +212,38 @@ function chapterIndexOrThrow(meta, chapterId) {
   return index;
 }
 
+// 审计修复 #22（P6）：缺 id 回填的「单调空闲游标」。
+// 旧实现对每个缺 id 的章都从 i+1 重新探测（do/while 逐个试 ch_NNN），「低位号全被占 + 大量缺 id」
+// 时 20000 章最坏约 4×10^8 次探测，而 readBookMeta 每次操作都会跑一遍。
+// 游标只前进：扫过的号要么已被 used 占住（越过它），要么小于下一个位置的起点 i+1（以后也不会
+// 用到），所以不用回头重扫；补出来的编号与旧算法逐项一致（见 tests/storage.test.js 的等价性用例）。
+function backfillMissingChapterIds(chapters) {
+  const used = new Set();
+  for (const chapter of chapters) {
+    if (chapter && typeof chapter.id === 'string' && chapter.id) used.add(chapter.id);
+  }
+  let cursor = 1;
+  const ids = new Array(chapters.length);
+  for (let i = 0; i < chapters.length; i += 1) {
+    const chapter = chapters[i];
+    const existing = chapter && typeof chapter.id === 'string' && chapter.id ? chapter.id : '';
+    if (existing) {
+      ids[i] = existing;
+      continue;
+    }
+    let n = Math.max(cursor, i + 1);
+    let id = '';
+    do {
+      id = `ch_${chaptersLib.pad3(n)}`;
+      n += 1;
+    } while (used.has(id));
+    used.add(id);
+    cursor = n;
+    ids[i] = id;
+  }
+  return ids;
+}
+
 function validateMeta(meta) {
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
     throw new StorageError('INVALID_META', '书目.json 的内容不是一个对象');
@@ -287,27 +319,16 @@ async function readBookMeta(bookPath) {
   // 与既有 id 撞车时改名 / 删除 / 保存会作用到错误的章（findChapterIndex 只认第一个同名 id）。
   // 先收齐已有 id，缺失的从「位置号」开始往后找到第一个没被占用的；只补缺失项，
   // 已有 id（哪怕是坏值）一个都不改写 —— 那是书目的既有事实。
-  const usedChapterIds = new Set();
-  for (const chapter of meta.chapters) {
-    if (chapter && typeof chapter.id === 'string' && chapter.id) usedChapterIds.add(chapter.id);
-  }
-  meta.chapters = meta.chapters.map((c, i) => {
-    let id = typeof c.id === 'string' && c.id ? c.id : '';
-    if (!id) {
-      let n = i + 1;
-      do {
-        id = `ch_${chaptersLib.pad3(n)}`;
-        n += 1;
-      } while (usedChapterIds.has(id));
-      usedChapterIds.add(id);
-    }
-    return chaptersLib.cleanChapterMeta({
+  // 审计修复 #22（P6）：探测改成单调游标（O(n²) → O(n)），编号口径与上面一致。
+  const backfilledIds = backfillMissingChapterIds(meta.chapters);
+  meta.chapters = meta.chapters.map((c, i) =>
+    chaptersLib.cleanChapterMeta({
       ...c,
-      id,
+      id: backfilledIds[i],
       name: typeof c.name === 'string' ? c.name : '',
       createdAt: typeof c.createdAt === 'string' ? c.createdAt : nowIso()
-    });
-  });
+    })
+  );
   if (typeof meta.titleTemplate !== 'string' || !meta.titleTemplate.trim()) {
     meta.titleTemplate = chaptersLib.TITLE_TEMPLATE;
   }
@@ -2399,6 +2420,8 @@ module.exports = {
   backfillChapterChars,
   listTxtFiles,
   readBookMeta,
+  // 审计修复 #22（P6）：缺 id 回填的编号规则（单调游标 O(n)），单测直接对着它做新旧等价性核对
+  backfillMissingChapterIds,
   // 1.6.0 A3：修复流程先写临时文件再换名，归一逻辑与 writeBookMeta 共用这一份
   prepareBookMeta,
   writeBookMeta,
