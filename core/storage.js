@@ -454,25 +454,41 @@ async function readChapterTextForCount(bookPath, chapter) {
   return fs.readFile(p, 'utf8');
 }
 
-// 把「缺 chars 缓存」的章节正文并发读出来算字数，就地写回 chapter.chars。
-// readText 可注入（单测用它数并发峰值，不测墙钟）；ENOENT（章节记录还在、文件被删）跳过不抛。
-async function backfillChapterChars(bookPath, chapters, options = {}) {
+// 审计修复 #25（R4）：字数回填 / 刷新共用的「逐章读盘算字数」内核。
+// 两条链路的差别只在「挑哪些章」与「算完怎么用」；读盘口径必须只有一份 —— reader 默认先过
+// 128 MB 闸门、ENOENT（记录还在、文件被删）跳过、超限章返回 null、字数按去 BOM 口径。
+// 以前 backfillChapterChars 与 refreshChapterChars 各抄一遍 mapLimit + 闸门 + ENOENT + countChars。
+// 返回与入参等长的数组：算出的字数 / null（跳过，调用方不写缓存）。
+async function countChapterChars(bookPath, chapters, options = {}) {
   const settings = options && typeof options === 'object' ? options : {};
   const readText = settings.readText || readChapterTextForCount;
   const concurrency = settings.concurrency === undefined ? CHAPTER_BACKFILL_CONCURRENCY : settings.concurrency;
-  let changed = false;
-  await mapLimit(Array.isArray(chapters) ? chapters : [], concurrency, async (chapter) => {
-    if (!chapter || Number.isFinite(chapter.chars)) return;
+  return mapLimit(Array.isArray(chapters) ? chapters : [], concurrency, async (chapter) => {
     try {
       const text = await readText(bookPath, chapter);
-      if (text === null) return; // 超限章：不读、不算、不写缓存（有其它章成功仍会写）
-      chapter.chars = chaptersLib.countChars(stripBom(text));
-      changed = true;
+      if (text === null) return null; // 超限章：不读、不算、不写缓存
+      return chaptersLib.countChars(stripBom(text));
     } catch (err) {
-      if (err && err.code === 'ENOENT') return;
+      if (err && err.code === 'ENOENT') return null;
       throw err;
     }
   });
+}
+
+// 把「缺 chars 缓存」的章节正文并发读出来算字数，就地写回 chapter.chars。
+// readText / concurrency 可注入（单测用它数并发峰值，不测墙钟）。
+async function backfillChapterChars(bookPath, chapters, options = {}) {
+  const pending = (Array.isArray(chapters) ? chapters : []).filter(
+    (chapter) => chapter && !Number.isFinite(chapter.chars)
+  );
+  if (!pending.length) return false;
+  const counts = await countChapterChars(bookPath, pending, options);
+  let changed = false;
+  for (let index = 0; index < pending.length; index += 1) {
+    if (counts[index] == null) continue;
+    pending[index].chars = counts[index];
+    changed = true;
+  }
   return changed;
 }
 
@@ -1936,21 +1952,14 @@ async function findHistoryGroup(bookPath, groupId, chapterFiles) {
 
 async function refreshChapterChars(bookPath, meta, files, options = {}) {
   const settings = options && typeof options === 'object' ? options : {};
-  // 读盘和扫描回填同一口径：先过 128 MB 闸门；超限章（reader 返回 null）字数缓存保持原值，不按 0 写
-  const readText = settings.readText || readChapterTextForCount;
   const touched = new Set(files);
   const targets = meta.chapters.filter((chapter) => touched.has(chapter.file));
   if (!targets.length) return;
-  // B4（审计 P4）：还原后刷字数也是整本批量读，并行读、按原顺序写回缓存
-  const charCounts = await mapLimit(targets, CHAPTER_READ_CONCURRENCY, async (chapter) => {
-    try {
-      const text = await readText(bookPath, chapter);
-      if (text === null) return null;
-      return chaptersLib.countChars(stripBom(text));
-    } catch (err) {
-      if (err.code === 'ENOENT') return null;
-      throw err;
-    }
+  // 审计修复 #25（R4）：读盘 / 闸门 / ENOENT / 计数口径与扫描回填共用 countChapterChars；
+  // 这里只负责「挑被还原的章 + 按原顺序写回缓存」（B4：并行读、结果按原下标落）。
+  const charCounts = await countChapterChars(bookPath, targets, {
+    readText: settings.readText,
+    concurrency: CHAPTER_READ_CONCURRENCY
   });
   for (let i = 0; i < targets.length; i += 1) {
     if (charCounts[i] != null) targets[i].chars = charCounts[i];

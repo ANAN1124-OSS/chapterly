@@ -1,9 +1,21 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
+
+const STORAGE_SOURCE = fsSync
+  .readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8')
+  .replace(/\r\n/g, '\n');
+// 取一个顶层函数的函数体：从 `async function X(` / `function X(` 到下一个顶格 `}\n`。
+function topLevelBody(name) {
+  const start = STORAGE_SOURCE.search(new RegExp(`(?:async )?function ${name}\\(`));
+  assert.notEqual(start, -1, `storage.js 找不到 ${name}`);
+  const end = STORAGE_SOURCE.indexOf('\n}\n', start);
+  return end < 0 ? STORAGE_SOURCE.slice(start) : STORAGE_SOURCE.slice(start, end);
+}
 const { MAX_MATCHES } = require('../core/find');
 const { atomicWriteFile } = require('../core/atomic');
 
@@ -1628,6 +1640,30 @@ test('书架扫描：缺字数按 8 路并发回填（注入 reader 计数，不
   });
   assert.equal(changed3, false);
   assert.equal(untouched, 0);
+});
+
+// 审计修复 #25（R4）：backfill / refresh 两条链路的「逐章读盘算字数」收成一个内核。
+// 这两条以前各抄一份 mapLimit + 128 MB 闸门 + ENOENT 跳过 + countChars(stripBom())，闸门口径
+// 改一处漏一处；这里钉住「只有一份实现，两条链路都必须走它」，防回潮写成两份。
+test('审计 #25（R4）：字数回填 / 刷新共用同一个读盘计数内核', () => {
+  assert.equal(
+    (STORAGE_SOURCE.match(/function countChapterChars\(/g) || []).length,
+    1,
+    'countChapterChars 只许有一份实现'
+  );
+  const kernel = topLevelBody('countChapterChars');
+  for (const token of ['readChapterTextForCount', 'stripBom', 'countChars', "err.code === 'ENOENT'", 'return null']) {
+    assert.ok(kernel.includes(token), `内核必须包含 ${token}`);
+  }
+  const backfill = topLevelBody('backfillChapterChars');
+  assert.ok(backfill.includes('countChapterChars(bookPath, pending, options)'), 'backfill 必须走内核');
+  assert.equal(backfill.includes('mapLimit('), false, 'backfill 不许再自己 mapLimit');
+  assert.equal(backfill.includes('countChars('), false, 'backfill 不许再自己算字数');
+
+  const refresh = topLevelBody('refreshChapterChars');
+  assert.ok(refresh.includes('countChapterChars(bookPath, targets'), 'refresh 必须走同一个内核');
+  assert.equal(refresh.includes('mapLimit('), false, 'refresh 不许再自己 mapLimit');
+  assert.equal(refresh.includes('stripBom'), false, 'refresh 不许再自己处理 BOM / 计数');
 });
 
 // ---------- 1.6.1 R3a：字数回填 128 MB 闸门 ----------
