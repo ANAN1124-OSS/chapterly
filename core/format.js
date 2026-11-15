@@ -10,6 +10,10 @@ const INDENT = '\u3000\u3000'; // 段首缩进：两个全角空格（中文小�
 // 这里只拼正则 / 字符类，不再各写一份范围串。
 const HAN_RE = new RegExp(`[${HAN_RANGES}]`, 'u');
 const FULL_PUNCT = new Set(['，', '。', '；', '：', '！', '？']);
+// 审计修复 #51（E16）：闭引号后紧挨的句点也要转全角。旧规则只看 prev∈汉字/FULL_PUNCT，而
+// FULL_PUNCT 不含闭引号 —— 「他说：“你好”.」里的 `.` 永远漏转（二次整理也不会变，作者得手改）。
+// 闭引号只列中文排版里真正会出现的收引号；直引号 `"` / `'` 不列（英文 He said "hi". 不能改成句号）。
+const CLOSE_QUOTE = new Set(['”', '’', '」', '』']);
 const PUNCT_MAP = { ',': '，', '.': '。', ';': '；', ':': '：', '!': '！', '?': '？' };
 const BLANK_MODES = ['keep', 'single', 'singleIndent', 'none'];
 const INDENT_MODES = ['none', '0', '2'];
@@ -97,9 +101,9 @@ function convertPunct(text, onConvert) {
       prev = ch;
       continue;
     }
-    // 句点单独收紧：只认「中文 + .」，避免把 A. / 3.14 / www.a.com 里的点转成句号
+    // 句点单独收紧：只认「中文 + .」（或全角标点 / 闭引号之后），避免把 A. / 3.14 / www.a.com 里的点转成句号
     if (ch === '.') {
-      if (!(HAN_RE.test(prev) || FULL_PUNCT.has(prev))) {
+      if (!(HAN_RE.test(prev) || FULL_PUNCT.has(prev) || CLOSE_QUOTE.has(prev))) {
         parts.push(ch);
         prev = ch;
         continue;

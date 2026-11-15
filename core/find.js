@@ -77,10 +77,25 @@ function replaceAllLiteral(text, query, replacement, options = {}) {
 }
 
 // 结果列表里显示的一小段上下文（去掉换行，避免列表被撑开）
+// 审计修复 #51（E16）：上下文按 UTF-16 下标截取，起点 / 终点可能落在代理对中间（如 emoji 占两个码元），
+// 截出来的片段带孤立代理，界面显示成「�」。起点落在「高代理 + 低代理」这对的后半时往右退一个码元；
+// 终点前一个码元是高代理时往左退一个；两者都不越过命中本身（命中下标来自 indexOf，永远是绝对边界）。
 function makeSnippet(text, index, length, radius = 18) {
   const source = String(text == null ? '' : text);
-  const start = Math.max(0, index - radius);
-  const end = Math.min(source.length, index + length + radius);
+  const rawStart = Math.max(0, index - radius);
+  let start = rawStart;
+  if (start > 0 && start < index) {
+    const low = source.charCodeAt(start);
+    const high = source.charCodeAt(start - 1);
+    if (low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff) start += 1;
+  }
+  const rawEnd = Math.min(source.length, index + length + radius);
+  let end = rawEnd;
+  if (end > index + length && end < source.length) {
+    const high = source.charCodeAt(end - 1);
+    const low = source.charCodeAt(end);
+    if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) end -= 1;
+  }
   const clean = (part) => part.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ');
   return {
     before: clean(source.slice(start, index)),
