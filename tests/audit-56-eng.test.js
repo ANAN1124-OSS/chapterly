@@ -106,6 +106,29 @@ test('O5：启动章回.cmd 真读 Node 主版本号；<22 给出可执行提示
   assert.match(cmd, /node -v/, '提示里要能显示当前版本，作者才知道差多少');
 });
 
+// 审计残留修复 R26（#56/O5）：node -e 自身失败（Node 损坏）与「版本过低」是两回事 —— 旧写法两种
+// 原因都说「版本过低」，而且版本号靠单起一行 node -v 拼进括号里、排版会折行。现在先取版本串：
+// 读不到 = 执行失败；读到但主版本 <22 = 版本过低；版本号与提示写在同一行。
+test('R26：cmd 分开「node 执行失败」与「版本过低」，版本号与提示同行', () => {
+  const cmd = read('启动章回.cmd');
+  assert.match(cmd, /Node\.js 执行失败/, 'node 跑不起来要给「执行失败」提示，不能一律说版本过低');
+  assert.ok(
+    cmd.indexOf('Node.js 执行失败') < cmd.indexOf('Node.js 版本过低'),
+    '先判「读不到版本」再判「版本过低」'
+  );
+  assert.match(
+    cmd,
+    /for \/f "delims=" %%v in \('node -v 2\^>nul'\) do set "NODE_VER=%%v"/,
+    '版本串用 node -v 取一次，两个分支复用'
+  );
+  assert.match(
+    cmd,
+    /echo Node\.js 版本过低[^\r\n]*%NODE_VER%）/,
+    '当前版本要跟提示写在同一行（旧写法用单独 echo 拼接，会把「）」折到下一行）'
+  );
+  assert.doesNotMatch(cmd, /^\s*node -v\s*$/m, '不许再单起一行执行 node -v 拼版本号（排版会折行）');
+});
+
 test('O7：README 许可段记录「SPDX 可选、LICENSE 为准」（按审计「可选」口径文档化）', () => {
   const readme = read('README.md');
   assert.match(readme, /源码文件头（审计 #56 \/ O7）/, 'README 要写明 SPDX 文件头口径');
