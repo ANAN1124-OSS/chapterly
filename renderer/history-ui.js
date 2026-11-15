@@ -580,7 +580,10 @@
         // 撤销执行前再核一次，目录被增删 / 改写就报「备份已变化，撤销取消」并早退，不拿变了的备份覆盖正文。
         const expectedBackup = await guard.fingerprint(bookPath, undoName);
         registerUndo(`已还原 ${Number(data.restored) || 0} 章（${group.sourceLabel}）`, async () => {
-          if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+          // 审计修复 #43（E17）：这里和本文件其余「还是不是这本书」的判定一样走 sameBookPath
+          // （大小写不敏感）—— Windows 上 state.bookPath 与备份清单里的路径大小写不一致时，
+          // 严格比较会把「同一本书」误判成换了书，撤销被无故拒绝。
+          if (!sameBookPath(state.bookPath, bookPath)) throw new Error('已经换了书，不能撤销');
           await guard.assertUnchanged(bookPath, expectedBackup);
           const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
           if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');

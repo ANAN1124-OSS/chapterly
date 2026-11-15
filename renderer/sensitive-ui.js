@@ -298,6 +298,15 @@
     return { ok: false, stale: true, message: '预检期间已经换了书或章节' };
   }
 
+  // 审计修复 #43（E17）：主进程回包形状不对（没有命中列表数组）时不再让 .map / .length 抛一句
+  // 「res.issues.map is not a function」顶在面板上 —— 按结构化失败处理，面板文案说清下一步。
+  function failSensitivePayload() {
+    state.sensitive = null;
+    $('sensitive-summary').textContent = '预检结果格式不对（没有拿到命中列表），请再点一次预检';
+    $('sensitive-results').innerHTML = '';
+    return { ok: false, message: '预检结果格式不对' };
+  }
+
   async function runSensitiveCheck() {
     if (!state.bookPath || !state.chapters.length) {
       $('sensitive-summary').textContent = '这本书里还没有章节';
@@ -310,10 +319,13 @@
     $('sensitive-summary').textContent =
       scope === 'book' ? '正在通读全书（只读，不改正文）…' : '正在检查当前章…';
     $('sensitive-results').innerHTML = '';
+    // WP-15（V202）：发起时的书 / 章身份先记下；回执回来只对这份身份结算。
+    // 审计修复 #43（E17）：身份只取一次，成功路径与失败路径（catch）都用同一份 —— 以前 catch 不结算，
+    // 预检在飞期间换书后，上一本书的异常会被写到眼前这本书的面板上、还会清掉现在的结果。
+    const expectedIdentity = staleGuard.chapterIdentity(state);
+    const expectedBookPath = expectedIdentity.bookPath;
     try {
       let payload;
-      // WP-15（V202）：发起时的书 / 章身份先记下；回执回来只对这份身份结算。
-      const expectedBookPath = staleGuard.chapterIdentity(state).bookPath;
       if (scope === 'book') {
         const override = currentChapterRef();
         payload = await call(api.sensitiveCheckBook, expectedBookPath, {}, override);
@@ -324,10 +336,13 @@
       } else {
         const chapter = state.chapters[state.index];
         const chapterIndex = state.index;
-        const expectedChapter = staleGuard.chapterIdentity(state);
+        const expectedChapter = expectedIdentity;
         const res = await call(api.sensitiveCheckText, editorEl.value, {});
         if (!staleGuard.sameChapterIdentity(expectedChapter, staleGuard.chapterIdentity(state))) {
           return discardStaleSensitiveRun();
+        }
+        if (res.ok !== false && !Array.isArray(res.issues)) {
+          return failSensitivePayload();
         }
         payload = res.ok === false
           ? {
@@ -356,6 +371,8 @@
               chapterName: chapter ? chapter.name : ''
             };
       }
+      // 审计修复 #43（E17）：整本回包同样先确认 matches 是数组，后面 .length / .slice 才安全。
+      if (!Array.isArray(payload.matches)) return failSensitivePayload();
       state.sensitive = payload;
       if (payload.wordList) state.sensitiveWordList = payload.wordList;
       renderSensitiveWordList();
@@ -363,6 +380,12 @@
       renderSensitiveResults();
       return { ok: payload.ok !== false, total: payload.total, scope: payload.scope };
     } catch (err) {
+      // 审计修复 #43（E17）：失败也按发起时的身份结算。换了书（当前章范围再看换没换章）就不属于
+      // 眼前这份结果 —— 走与成功路径同一句作废提示，不在这里写「预检失败：上一本书的错」。
+      const moved = scope === 'book'
+        ? staleGuard.chapterIdentity(state).bookPath !== expectedBookPath
+        : !staleGuard.sameChapterIdentity(expectedIdentity, staleGuard.chapterIdentity(state));
+      if (moved) return discardStaleSensitiveRun();
       state.sensitive = null;
       $('sensitive-summary').textContent = `预检失败：${err.message}`;
       $('sensitive-results').innerHTML = '';

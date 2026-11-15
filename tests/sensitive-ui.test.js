@@ -652,3 +652,60 @@ test('runSensitiveCheck（WP-15 / V202）：整本预检在飞期间换书 → �
     '预检期间已经换了书或章节，这次结果没有显示；请重新预检'
   );
 });
+
+// ---------- 审计修复 #43（E17）：回包形状守卫 + 失败路径身份结算 ----------
+const MALFORMED_TEXT = '预检结果格式不对（没有拿到命中列表），请再点一次预检';
+
+test('runSensitiveCheck（#43 / E17）：当前章回包 issues 不是数组 → 结构化失败，不让 .map 抛错顶在面板上', async () => {
+  const ctx = build({ textResult: { ok: true, total: 1, wordHitCount: 1, byWord: [], issues: '不是数组' } });
+  const res = await ctx.ui.runSensitiveCheck();
+  assert.deepEqual(res, { ok: false, message: '预检结果格式不对' });
+  assert.equal(ctx.state.sensitive, null, '形状不对的结果不许进 state');
+  assert.equal(ctx.dom.map.get('sensitive-summary').textContent, MALFORMED_TEXT);
+  assert.equal(ctx.dom.map.get('sensitive-results').children.length, 0);
+  assert.equal(ctx.state.sensitiveBusy, false, '失败后忙碌态复位');
+});
+
+test('runSensitiveCheck（#43 / E17）：整本回包 matches 不是数组 → 同样结构化失败', async () => {
+  const ctx = build({
+    scope: 'book',
+    bookResult: { total: 1, chapterCount: 1, chapterHitCount: 1, wordHitCount: 1, skippedChapters: 0, byWord: [], matches: null }
+  });
+  assert.deepEqual(await ctx.ui.runSensitiveCheck(), { ok: false, message: '预检结果格式不对' });
+  assert.equal(ctx.state.sensitive, null);
+  assert.equal(ctx.dom.map.get('sensitive-summary').textContent, MALFORMED_TEXT);
+  assert.equal(ctx.dom.map.get('sensitive-results').children.length, 0);
+});
+
+test('runSensitiveCheck（#43 / E17）：失败路径按发起时的身份结算 —— 在飞期间换书，不把上一本书的错误写上眼前面板', async () => {
+  const ctx = build();
+  ctx.host.api.sensitiveCheckText = async () => {
+    ctx.state.bookPath = '/书库/书乙'; // 预检在飞期间换了书
+    throw new Error('上一本书的错');
+  };
+  assert.deepEqual(await ctx.ui.runSensitiveCheck(), { ok: false, stale: true, message: '预检期间已经换了书或章节' });
+  assert.equal(ctx.state.sensitive, null);
+  assert.equal(
+    ctx.dom.map.get('sensitive-summary').textContent,
+    '预检期间已经换了书或章节，这次结果没有显示；请重新预检',
+    '不许把上一本书的异常写成「预检失败」'
+  );
+  assert.equal(ctx.dom.map.get('sensitive-results').children.length, 0);
+
+  const book = build({ scope: 'book' });
+  book.host.api.sensitiveCheckBook = async () => {
+    book.state.bookPath = '/书库/书乙';
+    throw new Error('整本预检炸了');
+  };
+  assert.deepEqual(await book.ui.runSensitiveCheck(), { ok: false, stale: true, message: '预检期间已经换了书或章节' });
+  assert.equal(
+    book.dom.map.get('sensitive-summary').textContent,
+    '预检期间已经换了书或章节，这次结果没有显示；请重新预检'
+  );
+
+  // 身份没变：照常报失败（不许把正常失败也当成作废吞掉）
+  const same = build();
+  same.host.api.sensitiveCheckText = async () => { throw new Error('词表读不出来'); };
+  assert.deepEqual(await same.ui.runSensitiveCheck(), { ok: false, message: '词表读不出来' });
+  assert.equal(same.dom.map.get('sensitive-summary').textContent, '预检失败：词表读不出来');
+});

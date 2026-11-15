@@ -179,10 +179,20 @@
   }
 
   async function updateFormatPreview(token) {
+    // 审计修复 #43（E17）：发起时把正文快照下来。回执只按这份正文结算 —— 以前只拿「回来那一刻」
+    // 的编辑区判空，预览在飞期间正文被改（原生 Ctrl+Z / 兜底写入都会绕过对话框的 change 事件）时，
+    // 旧正文的结果会贴在新正文上（「无改动」按钮却按新正文可套用，或反过来）。
+    const requestedText = editorEl.value;
     try {
-      const res = await call(api.formatText, editorEl.value, readFormatOptions());
+      const res = await call(api.formatText, requestedText, readFormatOptions());
       if (token !== formatPreviewToken) return; // 已经切到新的预览请求，丢弃旧结果
-      renderFormatPreview(res, editorEl.value);
+      if (editorEl.value !== requestedText) {
+        // 正文已经不是这份结果算的那份了：按同一份规则重排一次预览（新号，旧号自然作废），
+        // 不拿旧结果给新正文贴结论。
+        scheduleFormatPreview(0);
+        return;
+      }
+      renderFormatPreview(res, requestedText);
     } catch (err) {
       if (token !== formatPreviewToken) return;
       $('fmt-summary').textContent = `预览失败：${err.message}`;

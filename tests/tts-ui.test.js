@@ -297,6 +297,40 @@ test('暂停 / 继续：调引擎 pause / resume，状态与按钮跟着变', as
   assert.equal(get('btn-tts-play').textContent, '⏸ 暂停');
 });
 
+test('setTtsRate / setTtsVoice（#43 / E17）：播放中重念这一段；暂停中只更新设置，不许偷偷恢复播放', async () => {
+  const { host, state } = makeHost();
+  const engine = makeEngine();
+  const { tts } = await openWith(host, engine);
+  assert.deepEqual(engine.log.spoken.map((item) => item.text), ['第一段。']);
+
+  // 播放中：语速 / 语音只对之后发声的 utterance 生效 → 正在读的这一段重念一遍
+  assert.equal(tts.setTtsRate(1.5), 1.5);
+  assert.equal(engine.log.spoken.length, 2);
+  assert.equal(engine.log.spoken.at(-1).rate, 1.5);
+  assert.equal(tts.setTtsVoice('fake-voice-b'), 'fake-voice-b');
+  assert.equal(engine.log.spoken.length, 3);
+  assert.equal(engine.log.spoken.at(-1).voiceURI, 'fake-voice-b');
+  assert.equal(state.tts.status, 'playing');
+
+  // 暂停中：状态保持 paused、引擎不发声、不自动 resume —— 下一次发声才用新设置
+  assert.deepEqual(tts.toggleTtsPlay(), { ok: true, action: 'pause' });
+  const spokenBefore = engine.log.spoken.length;
+  assert.equal(tts.setTtsRate(0.8), 0.8);
+  assert.equal(tts.setTtsVoice('fake-voice-a'), 'fake-voice-a');
+  assert.equal(state.tts.status, 'paused', '改设置不许把暂停改成播放');
+  assert.equal(engine.log.spoken.length, spokenBefore, '暂停中不许重新发声');
+  assert.equal(engine.log.resumed, 0, '暂停中也不许自动继续');
+  assert.equal(tts.ttsSummaryText().text, '已暂停 · 第 1/3 段');
+
+  // 手动继续后，下一段用新设置
+  assert.deepEqual(tts.toggleTtsPlay(), { ok: true, action: 'resume' });
+  assert.equal(engine.log.resumed, 1);
+  assert.equal(state.tts.status, 'playing');
+  engine.log.handlers.end();
+  assert.equal(engine.log.spoken.at(-1).rate, 0.8);
+  assert.equal(engine.log.spoken.at(-1).voiceURI, 'fake-voice-a');
+});
+
 test('步进：夹在第 1–N 段之间；播放中换段会重念，停止状态只切预览不改引擎', async () => {
   const { host, state, get } = makeHost();
   const engine = makeEngine();

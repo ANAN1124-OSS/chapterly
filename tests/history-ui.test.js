@@ -709,6 +709,38 @@ test('confirmHistoryRestore：登记时清单读不到（指纹 null）→ 撤�
   ]);
 });
 
+test('confirmHistoryRestore（#43 / E17）：撤销时的「还是不是这本书」与全文件同口径（sameBookPath），大小写不同不算换书', async () => {
+  const groups = [backupGroupFixture()];
+  const ctx = build({
+    bookPath: '/books/novel',
+    restoreResult: { restored: 1, skipped: 0, total: 1, restoreBackupDir: `/books/novel/_trash/${UNDO_DIR}` },
+    listHistory: () => ({ title: 'novel', groups })
+  });
+  ctx.state.history = { ...historyState(), path: '/Books/Novel', title: 'novel' };
+  assert.equal((await ctx.ui.confirmHistoryRestore(groupFixture(), null, true)).ok, true);
+  assert.equal(ctx.calls.registerUndo.length, 1);
+  // 备份清单里的路径与 state.bookPath 只差大小写：Windows 上是同一本书，撤销不许被「已经换了书」拒绝
+  await ctx.calls.registerUndo[0].run();
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [
+    ['/Books/Novel', 'g1'],
+    ['/Books/Novel', `dir:${UNDO_DIR}`]
+  ]);
+  assert.equal(ctx.calls.reloadOpenBookFromDisk, 2, '还原一次、撤销一次都按同一本书重载');
+});
+
+test('confirmHistoryRestore（#43 / E17）：真换了书仍然拒绝撤销', async () => {
+  const groups = [backupGroupFixture()];
+  const ctx = build({
+    restoreResult: { restored: 1, skipped: 0, total: 1, restoreBackupDir: `/书库/书甲/_trash/${UNDO_DIR}` },
+    listHistory: () => ({ title: '书甲', groups })
+  });
+  ctx.state.history = historyState();
+  assert.equal((await ctx.ui.confirmHistoryRestore(groupFixture(), null, true)).ok, true);
+  ctx.state.bookPath = '/书库/书乙';
+  await assert.rejects(() => ctx.calls.registerUndo[0].run(), /已经换了书，不能撤销/);
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [['/书库/书甲', 'g1']], '换了书就不许再调还原');
+});
+
 test('confirmHistoryRestore：单文件还原成功 → 调 api.restoreHistoryFile、当前书开着就重载、刷新书架与清单', async () => {
   const ctx = build({ modalAction: { action: 'ok' }, restoreResult: { restored: 2, skipped: 0, file: '第一章.txt' } });
   ctx.state.history = { path: '/书库/书甲', title: '书甲', groups: [], fileCount: 0, totalBytes: 0, loading: false, error: '', preview: null, token: 0 };

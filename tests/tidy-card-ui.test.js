@@ -474,6 +474,34 @@ test('renderFormatPreview：预览失败 → 「预览失败：」；关对话�
   assert.equal(stale.dom.map.get('fmt-preview').textContent, '');
 });
 
+test('updateFormatPreview（#43 / E17）：预览在飞期间正文被改 → 旧结果不许贴到新正文上，按新正文重排一次', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let release;
+  const requests = [];
+  const ctx = build({ text: '旧正文  甲' });
+  ctx.host.api.formatText = (text) => {
+    requests.push(text);
+    if (text === '旧正文  甲') return new Promise((resolve) => { release = resolve; });
+    return Promise.resolve({ changed: true, text: '新正文乙', stats: { paragraphs: 1 } });
+  };
+  ctx.ui.openFormatDialog();
+  t.mock.timers.tick(0);
+  // 预览在飞期间正文被改（原生 Ctrl+Z / 兜底写入都可能绕过对话框的 change 事件）
+  ctx.editorEl.value = '新正文  乙';
+  release({ changed: true, text: '旧正文甲', stats: { paragraphs: 1 } });
+  await flush();
+  // 旧正文的结果没有写进面板，按钮也没有按旧结果放开；已按新正文重新发起预览
+  assert.equal(ctx.dom.map.get('fmt-summary').textContent, '正在预览…');
+  assert.equal(ctx.dom.map.get('fmt-preview').textContent, '');
+  assert.equal(ctx.dom.map.get('btn-format-apply').disabled, true);
+  t.mock.timers.tick(0);
+  await flush();
+  assert.deepEqual(requests, ['旧正文  甲', '新正文  乙'], '旧结果的正文快照作废 → 按新正文重排一次');
+  assert.equal(ctx.dom.map.get('fmt-summary').textContent, formatUi.statsText({ paragraphs: 1 }));
+  assert.equal(ctx.dom.map.get('btn-format-apply').disabled, false);
+  assert.equal(ctx.dom.map.get('fmt-preview').textContent, '新正文乙');
+});
+
 test('applyFormatToEditor：没书直接返回；空正文警告；成功套用 + 记住规则；失败恢复按钮', async () => {
   const noBook = build({ bookPath: null });
   await noBook.ui.applyFormatToEditor();
