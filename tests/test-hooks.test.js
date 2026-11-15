@@ -357,7 +357,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
 //      saveCurrent 是函数声明、被 8 个入口与本文件闭包共享，只能在原地改；
 //      对话框 / 覆盖 / 另存 / 复制 / 重载的行为全部在 renderer/save-rescue-ui.js（新模块，约 170 行）。
 //   renderer.js 其余零新增；以后再加功能仍按「搬进独立模块」办，别把行数当预算花。
-  const RENDERER_LINE_BUDGET = 6289;
+  // 审计修复 #10（E6）：6289 → 6297（+8）：runReplaceOne 的返回形状多带 truncated，且命中被
+  //   单章上限截断时要说清「光标之后不再定位」（+5 行说明与哨兵分支）、「第 N/M+ 处」的合计标签
+  //   （+3 行）。判定与哨兵形状全在 core/find.js（单测覆盖），renderer.js 只负责如实转述。
+  const RENDERER_LINE_BUDGET = 6297;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

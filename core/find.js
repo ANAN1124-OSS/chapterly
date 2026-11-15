@@ -131,8 +131,16 @@ function findNextMatch(text, query, fromIndex = 0, options = {}) {
     }
     from2 = at + step;
   }
-  if (pickedAt < 0) return null;
-  return { index: pickedIndex, total, match: { index: pickedAt, length: needleRaw.length } };
+  // 审计修复 #10（E6）：到了单章上限要再确认一次「后面还有没有」，与 findMatchesAll /
+  // replaceAllLiteral 的 C4 契约同一口径如实回 truncated（旧实现静默停在 5000 处，
+  // 界面把截断值当精确总数）。判定仍在同一个 indexOf 增量循环里，不物化命中列表。
+  const truncated = total >= MAX_MATCHES && haystack.indexOf(needle, from2) >= 0;
+  if (pickedAt < 0) {
+    // 命中全在 5000 处之后（或 fromIndex 落在被截断的部分）：回一个只有 truncated 的空结果，
+    // 让调用方能说「超过单章上限」而不是误报「没有下一处」。
+    return truncated ? { index: -1, total: MAX_MATCHES, truncated: true, match: null } : null;
+  }
+  return { index: pickedIndex, total, truncated, match: { index: pickedAt, length: needleRaw.length } };
 }
 
 module.exports = {

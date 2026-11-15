@@ -133,15 +133,19 @@ test('命中上限：正好到上限不算截断，再多一处就明确回 trun
 
 test('B3/WP-27：findNextMatch 增量 indexOf 与「先取全量命中再挑」口径逐案例一致', () => {
   // 参考实现 = 旧实现（findMatchesAll 的命中列表 + 两条 findIndex 判定），只用于对照。
+  // 审计修复 #10（E6）：返回形状多了 truncated，截断且光标之后没有可定位命中时回空结果哨兵。
   const reference = (text, query, fromIndex, options) => {
-    const matches = findMatchesAll(text, query, options).matches;
-    if (!matches.length) return null;
+    const found = findMatchesAll(text, query, options);
+    const matches = found.matches;
+    const truncated = found.truncated;
     const rawFrom = Number(fromIndex);
     const from = Math.max(0, Math.min(Number.isFinite(rawFrom) ? Math.floor(rawFrom) : 0, text.length));
     let index = matches.findIndex((match) => match.index <= from && from < match.index + match.length);
     if (index < 0) index = matches.findIndex((match) => match.index >= from);
-    if (index < 0) return null;
-    return { index, total: matches.length, match: matches[index] };
+    if (index < 0) {
+      return truncated ? { index: -1, total: matches.length, truncated: true, match: null } : null;
+    }
+    return { index, total: matches.length, truncated, match: matches[index] };
   };
   const texts = [
     '阿明走了，阿明回头，阿明笑了。',
@@ -178,7 +182,25 @@ test('B3/WP-27：findNextMatch 增量 indexOf 与「先取全量命中再挑」�
   const lastVisible = findNextMatch(capped, 'a', MAX_MATCHES - 1);
   assert.equal(lastVisible.index, MAX_MATCHES - 1);
   assert.equal(lastVisible.total, MAX_MATCHES, 'total 仍是列表长度（受上限约束）');
-  assert.equal(findNextMatch(capped, 'a', MAX_MATCHES), null, '第 5001 处不在命中列表里（上限语义不变）');
+  assert.equal(lastVisible.truncated, true, '命中超过上限必须如实回 truncated（E6 / 审计 #10）');
+  // 第 5001 处：返回截断哨兵（match 为 null），让界面说「超过单章上限」而不是「没有下一处了」。
+  assert.deepEqual(
+    findNextMatch(capped, 'a', MAX_MATCHES),
+    { index: -1, total: MAX_MATCHES, truncated: true, match: null }
+  );
+});
+
+test('替换这一处（E6 / 审计 #10）：命中没到上限时 truncated 恒为 false，正常返回形状不变', () => {
+  const exact = findNextMatch('a'.repeat(MAX_MATCHES), 'a', 0);
+  assert.equal(exact.truncated, false, '正好 5000 处不算截断（与 findMatchesAll 同一口径）');
+  assert.equal(exact.total, MAX_MATCHES);
+  const small = findNextMatch('阿明走了，阿明回头。', '阿明', 0);
+  assert.equal(small.truncated, false);
+  assert.equal(small.total, 2);
+  assert.deepEqual(small.match, { index: 0, length: 2 });
+  const lastOne = findNextMatch('a'.repeat(MAX_MATCHES), 'a', MAX_MATCHES - 1);
+  assert.equal(lastOne.index, MAX_MATCHES - 1);
+  assert.equal(lastOne.truncated, false, '最后一处落在上限内：没有更多命中');
 });
 
 test('B3/WP-27 静态闸门：findNextMatch 不许再物化全量命中，5000 上限仍在同一个循环里', () => {

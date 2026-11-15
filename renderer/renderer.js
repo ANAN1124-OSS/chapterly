@@ -4591,9 +4591,14 @@
       $('find-summary').textContent = `查找失败：${err.message}`;
       return { ok: false };
     }
-    if (!picked) {
-      $('find-summary').textContent = `光标之后没有找到「${options.query}」了`;
-      return { ok: false };
+    if (!picked || !picked.match) {
+      // 审计修复 #10（E6）：命中超过单章 5000 处上限时，光标之后的位置已不在命中列表里，
+      // 要说清是「被上限截断」而不是「本章没有下一处」。
+      $('find-summary').textContent =
+        picked && picked.truncated
+          ? '本章命中超过单章上限 5000 处，光标之后的位置不再定位；换个更具体的词或先用「全部替换」'
+          : `光标之后没有找到「${options.query}」了`;
+      return { ok: false, truncated: Boolean(picked && picked.truncated) };
     }
     const match = picked.match;
     const replacement = options.replacement;
@@ -4616,7 +4621,7 @@
         caseSensitive: options.caseSensitive
       });
     } catch { /* 找下一处失败不影响已经替换的内容 */ }
-    if (next) {
+    if (next && next.match) {
       editorEl.setSelectionRange(next.match.index, next.match.index + next.match.length);
       scrollCaretIntoView(next.match.index);
     } else {
@@ -4624,10 +4629,13 @@
       editorEl.setSelectionRange(caret, caret);
       scrollCaretIntoView(caret);
     }
-    const nextHint = next ? `；已选中下一处（第 ${next.index + 1} 处）` : '；本章后面没有下一处了';
+    const nextHint = next && next.match ? `；已选中下一处（第 ${next.index + 1} 处）` : '；本章后面没有下一处了';
+    const truncated = Boolean(picked.truncated);
+    const totalLabel = truncated ? `${picked.total}+` : String(picked.total);
+    const truncatedHint = truncated ? '（本章命中超过单章上限 5000 处，只统计 / 处理前 5000 处）' : '';
     $('find-summary').textContent =
-      `已替换第 ${picked.index + 1}/${picked.total} 处（未保存：Ctrl+S 写盘，Ctrl+Z 可撤销）${nextHint}`;
-    return { ok: true, index: picked.index, total: picked.total, hasNext: Boolean(next) };
+      `已替换第 ${picked.index + 1}/${totalLabel} 处（未保存：Ctrl+S 写盘，Ctrl+Z 可撤销）${nextHint}${truncatedHint}`;
+    return { ok: true, index: picked.index, total: picked.total, truncated, hasNext: Boolean(next && next.match) };
   }
 
   // 从最近的「整本替换」备份还原；还原前二次确认，并由 storage 把当前内容再备份一份。

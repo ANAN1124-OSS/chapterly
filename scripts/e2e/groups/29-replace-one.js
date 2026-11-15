@@ -31,8 +31,9 @@ module.exports = async function group29ReplaceOne(t) {
   );
   check('替换这一处：替换后自动选中第 2 处', (await exec('window.__cwTest.selection()')).start === 4);
   check(
-    '替换这一处：返回替换序号与总数',
-    firstOne && firstOne.ok === true && firstOne.index === 0 && firstOne.total === 3,
+    '替换这一处：返回替换序号与总数（未截断时 truncated=false）',
+    firstOne && firstOne.ok === true && firstOne.index === 0 && firstOne.total === 3 &&
+      firstOne.truncated === false,
     firstOne
   );
   check('替换这一处：仍是未保存状态', (await exec('window.__cwTest.dirty()')) === true);
