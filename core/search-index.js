@@ -701,6 +701,9 @@ function createSearchStore(options = {}) {
   let loadProblem = null;
   let indexBytes = 0;
   let ensurePromise = null;
+  // P1（审计修复 #9）：当前在途 / 排队校验对应的书架根（归一化后）。搜索靠它判断
+  // 「同一个根已经有校验在飞」，避免首建期再排到它后面等一遍完整校验。
+  let ensureRoot = '';
   let lastFullValidateAt = 0;
   let lastProgress = null;
   let lastRun = null;
@@ -997,6 +1000,7 @@ function createSearchStore(options = {}) {
 
   // 同一时间只跑一次校验 / 建索引；后来的调用排在后面（force 仍会执行）。
   function ensure(opts = {}) {
+    ensureRoot = normalizePath(String(opts.booksRoot == null ? '' : opts.booksRoot));
     const previous = ensurePromise || Promise.resolve();
     const run = previous.catch(() => {}).then(() => doEnsure(opts));
     ensurePromise = run;
@@ -1058,13 +1062,31 @@ function createSearchStore(options = {}) {
     // 窗口外 / 根目录签名变了 / force 才走原来的校验路径。
     const searchRoot = normalizePath(booksRoot);
     const now = nowMs();
+    const forceEnsure = Boolean(opts.ensureOptions && opts.ensureOptions.force);
+    // P1（审计修复 #9）：首建期（本根还没有可用的内存索引）同一个根已有校验在飞时，
+    // 搜索**不再排到它后面**等一遍完整校验（旧实现大书架要阻塞数分钟，1800ms 预算在
+    // ensure 返回后才起算）。这里直接回 building:true + 空结果，界面据此显示「正在建索引」；
+    // 建完后按进度事件自动重搜（renderer.js 的 onSearchProgress）—— 结果不会丢，只是晚一步。
+    // 已经有本根可用索引时（改名 / 脏书触发的后台校验）仍走原路径：旧结果比空结果有用。
+    const hasUsableIndex = index.root === searchRoot && index.books.length > 0;
+    if (ensurePromise && ensureRoot === searchRoot && !forceEnsure && !hasUsableIndex) {
+      const state = status();
+      const buildingInfo = {
+        books: state.books,
+        chapters: state.chapters,
+        building: true,
+        problem: state.problem || '',
+        bytes: state.bytes
+      };
+      return { ...makeBase(buildingInfo), truncated: true, elapsedMs: 0 };
+    }
     const reuseIndex =
       loaded &&
       index.root === searchRoot &&
       index.version === INDEX_VERSION &&
       lastEnsureAt > 0 &&
       now - lastEnsureAt < searchEnsureIntervalMs &&
-      !(opts.ensureOptions && opts.ensureOptions.force);
+      !forceEnsure;
     let signatureChanged = false;
     if (reuseIndex && now - lastSignatureCheckAt >= SEARCH_SIGNATURE_INTERVAL_MS) {
       // 2 s 节流：连续两次 search 合计只发生这一次 stat。

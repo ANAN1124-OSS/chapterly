@@ -566,6 +566,12 @@ test('静态闸门：5 个实现已经不在 renderer.js 里，渲染层只剩�
   // 测试钩子宿主契约里的两个键还在
   assert.match(rendererSrc, /\r?\n      scheduleContentSearch,\r?\n/);
   assert.match(rendererSrc, /\r?\n      ensureSearchIndex,\r?\n/);
+  // 审计修复 #9（P1）：首建期搜索即时回 building + 空结果后，进度 done 必须按原查询自动重搜
+  //（否则界面提示「建好后自动更新结果」就成了一句空话）。
+  assert.match(
+    rendererSrc,
+    /if \(info\.phase === 'done' && content\.meta && content\.meta\.index && content\.meta\.index\.building\) \{\s*scheduleContentSearch\(\);/
+  );
 });
 
 test('静态闸门：index.html 在 renderer.js 之前加载 shelf-search-ui.js，且只加载一次', () => {

@@ -360,7 +360,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // 审计修复 #10（E6）：6289 → 6297（+8）：runReplaceOne 的返回形状多带 truncated，且命中被
   //   单章上限截断时要说清「光标之后不再定位」（+5 行说明与哨兵分支）、「第 N/M+ 处」的合计标签
   //   （+3 行）。判定与哨兵形状全在 core/find.js（单测覆盖），renderer.js 只负责如实转述。
-  const RENDERER_LINE_BUDGET = 6297;
+  // 审计修复 #9（P1）：6297 → 6303（+6）：首建期搜索现在立即回 building + 空结果，
+  //   onSearchProgress 的 done 分支要多判一次「当前结果还挂着建索引中」并按原查询自动重搜
+  //   （+4 行说明与分支），否则界面「建好后自动更新结果」无法兑现。判定与短路在
+  //   core/search-index.js，空态文案在 renderer/shelf-filter-ui.js。
+  const RENDERER_LINE_BUDGET = 6303;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

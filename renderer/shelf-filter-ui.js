@@ -283,9 +283,13 @@
           ' · 章号按全书顺序显示（书设为「每卷重新编号」时，写作页显示的是卷内号，两处不同）'
       );
     } else if (meta) {
-      parts.push(
-        `正文没有找到「${content.query}」` + (meta.truncated ? '（只查了最近的一部分书）' : '')
-      );
+      // 审计修复 #9（P1）：首建期搜索回的是 building + 空结果，这不是「没找到」——
+      // 只留下面的「正在建索引，建好后自动更新结果」提示，别让空结果冒充搜索结论。
+      if (!(meta.index && meta.index.building)) {
+        parts.push(
+          `正文没有找到「${content.query}」` + (meta.truncated ? '（只查了最近的一部分书）' : '')
+        );
+      }
     }
     const idx = content.indexStatus;
     if (idx && (idx.building || idx.ready === false)) {
@@ -321,7 +325,16 @@
     } else {
       more.classList.add('hidden');
     }
-    if (!visible.length && !content.loading && !content.error && (!meta || !meta.results || !meta.results.length)) {
+    const buildingIndex = Boolean(
+      (meta && meta.index && meta.index.building) || (content.indexStatus && content.indexStatus.building)
+    );
+    if (
+      !visible.length &&
+      !content.loading &&
+      !content.error &&
+      !buildingIndex &&
+      (!meta || !meta.results || !meta.results.length)
+    ) {
       // 1.3.0 T4（I-06）：正文命中区的空态也按三件套写——说明状态 / 学习线索 / 直接路径。
       // 这一区只在有查询词时出现，属于「筛选空」（filtered），不是真空。
       const empty = document.createElement('div');

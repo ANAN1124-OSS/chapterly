@@ -1225,3 +1225,46 @@ test('正文索引（P-01）：窗口过期 / 根目录签名变化后仍会重�
   const afterWindow = await store.search({ booksRoot, query: '铜锁扣' });
   assert.equal(afterWindow.results.length, 1, '窗口过期后必须重新校验，改过的正文要能被搜到');
 });
+
+// P1（审计修复 #9）：首建期搜索不再 await ensure —— 旧实现排在在途构建之后再跑一遍校验，
+// 1800 ms 预算从 ensure 返回后才起算，大书架首建期搜索可阻塞数分钟。同一书架根已有校验在飞时，
+// 搜索直接回 building:true + 空结果；建完后由渲染层的进度事件按原查询自动重搜。
+test('正文索引（P1）：首建期搜索立即回 building + 空结果，建完后同一查询立即可用', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
+
+  // 卡门闸：首建的根目录签名 stat 停在这里，保证搜索发生时「构建确实在飞」。
+  let released = false;
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const store = makeStore(userData, {
+    stat: (target) => {
+      const resolved = path.resolve(String(target));
+      if (!released && resolved === path.resolve(booksRoot)) return gate.then(() => fs.stat(target));
+      return fs.stat(target);
+    }
+  });
+  const buildingRun = store.ensure({ booksRoot }); // 故意不 await：首建在飞
+  const startedAt = Date.now();
+  const during = await store.search({ booksRoot, query: '青柠色' });
+  const elapsed = Date.now() - startedAt;
+  assert.equal(during.index.building, true, '构建在飞：搜索结果必须标 building');
+  assert.deepEqual(during.results, [], '首建期先回空结果，不冒充「没找到」的精确结论');
+  assert.equal(during.truncated, true, '截断标记如实（建好后会按原查询自动重搜）');
+  assert.equal(during.index.books, 0, '此时本根还没有可用索引');
+  assert.ok(elapsed < 1000, `首建期搜索必须立即返回（实际 ${elapsed} ms）`);
+
+  released = true;
+  release();
+  const done = await buildingRun;
+  assert.equal(done.books, 1);
+  const after = await store.search({ booksRoot, query: '青柠色' });
+  assert.equal(after.results.length, 1, '建完后同一查询能拿到结果（不漏结果）');
+  assert.equal((await store.status()).building, false, '这一轮校验结束后不再是 building');
+});

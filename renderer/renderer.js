@@ -5676,7 +5676,13 @@
         progress: info
       };
       if (state.view === 'shelf' && shelfQueryText().length >= CONTENT_SEARCH_MIN_CHARS) {
-        renderShelfContent();
+        // 审计修复 #9（P1）：首建期搜索立即回 building + 空结果（core/search-index.js 的 search 短路），
+        // 这一轮校验结束就按原查询自动重搜，兑现提示里的「建好后自动更新结果」；其他进度只刷新提示。
+        if (info.phase === 'done' && content.meta && content.meta.index && content.meta.index.building) {
+          scheduleContentSearch();
+        } else {
+          renderShelfContent();
+        }
       }
     });
 
