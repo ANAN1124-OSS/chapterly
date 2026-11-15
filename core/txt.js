@@ -113,16 +113,60 @@ function decodeBufferStrict(buffer) {
   return info ? info.text : null;
 }
 
+// 非 fatal 的 UTF-32LE 解码：坏码点（代理区 / 超 U+10FFFF）与不足 4 字节的尾巴都换成 U+FFFD，
+// 不返回 null。只给下面的 BOM 锁定宽容兜底用（严格版 decodeUtf32Le 仍回 null，词表读取靠它）。
+function decodeUtf32LeLoose(buffer, offset) {
+  let out = '';
+  let chunk = '';
+  let at = offset;
+  for (; at + 4 <= buffer.length; at += 4) {
+    const cp = buffer.readUInt32LE(at);
+    chunk += cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? '\uFFFD' : String.fromCodePoint(cp);
+    if (chunk.length >= UTF32_CHUNK) {
+      out += chunk;
+      chunk = '';
+    }
+  }
+  if ((buffer.length - offset) % 4 !== 0) chunk += '\uFFFD'; // 缺字节
+  return out + chunk;
+}
+
+// 审计残留修复 #50（E15，中危回归）：BOM 锁定编码（宽容版）。
+// 严格解码在「BOM 已识别但载荷坏了」时回 null（如 UTF-8 BOM 里混一个坏字节），旧兜底会把这
+// 整包（连 BOM 字节一起）按非 fatal GB18030 重解 —— 整本书变乱码 + 开头一串乱码前缀。
+// BOM 一旦认出来编码就已经定了：这里按 BOM 对应编码非 fatal 解（剥掉 BOM），坏字节只变 U+FFFD。
+// 返回 null = 没有 BOM（交给 GB18030 兜底）；严格判定仍只认 decodeBufferStrictInfo。
+function decodeBufferWithBomLocked(buffer) {
+  if (!buffer || !buffer.length) return null;
+  if (buffer.length >= 3 && buffer.subarray(0, 3).equals(BOM_UTF8)) {
+    return { text: new TextDecoder('utf-8').decode(buffer.subarray(3)), encoding: 'utf-8' };
+  }
+  // UTF-32LE BOM 的前两字节与 UTF-16LE 相同：必须先判 4 字节（与严格判定同一顺序）
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) {
+    return { text: decodeUtf32LeLoose(buffer, 4), encoding: 'utf-32le' };
+  }
+  if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16LE)) {
+    return { text: new TextDecoder('utf-16le').decode(buffer.subarray(2)), encoding: 'utf-16le' };
+  }
+  if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16BE)) {
+    return { text: new TextDecoder('utf-16be').decode(buffer.subarray(2)), encoding: 'utf-16be' };
+  }
+  return null;
+}
+
 // 把任意编码的文本文件解码成字符串：UTF-8（含 BOM）→ UTF-32LE BOM → UTF-16 BOM →
-// 严格 UTF-8 → 严格 GB18030 → 非 fatal GB18030 总兜底。
+// 严格 UTF-8 → 严格 GB18030 → BOM 锁定宽容解（只有带 BOM 的文件）→ 非 fatal GB18030 总兜底。
 // 审计修复 #50（E15）：旧实现的最后一行是 latin1 兜底，但前面的 GB18030 用了非 fatal 解码器
 // （几乎不抛），那一行永远走不到 —— 是死代码。这里删掉死分支：能完整识别就按严格结果返回，
 // 识别不了就用 GB18030 非 fatal 把坏字节替成 U+FFFD（导入老文件不中断），词表读取侧再据
 // decodeBufferStrict 做严格判断（见 core/wordlist.js）。
 // 审计修复 #54（P10）：带编码信息的同一份解码入口（见 decodeBufferStrictInfo 的注释）。
+// 审计残留修复 #50（E15）：BOM 锁定 —— 带 BOM 的文件绝不落到 GB18030 兜底（见 decodeBufferWithBomLocked）。
 function decodeBufferWithEncoding(buffer) {
   const info = decodeBufferStrictInfo(buffer);
   if (info) return info;
+  const bomLocked = decodeBufferWithBomLocked(buffer);
+  if (bomLocked) return bomLocked;
   return { text: new TextDecoder('gb18030').decode(buffer), encoding: 'gb18030' };
 }
 

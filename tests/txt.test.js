@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   decodeBuffer,
+  decodeBufferWithEncoding,
   decodeBufferStrict,
   splitChapters,
   splitChaptersRaw,
@@ -64,6 +65,56 @@ test('解码（审计 #50 / E15）：删掉不可达的 latin1 兜底；严格�
   assert.equal(decodeBuffer(literal), '替换\uFFFD字符');
   // 真正坏掉的 UTF-8 不会在严格解码里被替换成 U+FFFD
   assert.equal(decodeBufferStrict(Buffer.from([0xff, 0xff, 0x0a, 0x41])), null);
+});
+
+// 审计残留修复 #50（E15，中危回归）：BOM 已识别但载荷坏了（如 UTF-8 BOM 里混一个坏字节），
+// 严格解码回 null 后旧兜底把「含 BOM 的整包」按非 fatal GB18030 重解 → 全书乱码 + 乱码前缀。
+// 现在 BOM 锁定编码：剥掉 BOM、按 BOM 对应编码宽容解，只有坏字节变 U+FFFD，正文照常可读；
+// 严格入口（词表读取用）仍如实回 null，不被宽容解掩盖。
+test('解码（残留 #50 / E15）：BOM 锁定编码 —— 载荷坏也不整包落 GB18030', () => {
+  const head = '第一章 雪夜';
+  const tail = '他推开门，屋里没有人。';
+
+  // UTF-8 BOM + 合法正文 + 孤立 0xFF（非法 UTF-8）
+  const utf8Bad = Buffer.concat([
+    Buffer.from([0xef, 0xbb, 0xbf]),
+    Buffer.from(head, 'utf8'),
+    Buffer.from([0xff]),
+    Buffer.from(tail, 'utf8')
+  ]);
+  assert.equal(decodeBufferStrict(utf8Bad), null, '严格解码仍如实判坏编码（词表读取靠它）');
+  assert.deepEqual(decodeBufferWithEncoding(utf8Bad), {
+    text: `${head}\uFFFD${tail}`,
+    encoding: 'utf-8'
+  });
+  // 关键回归：旧行为在这里会把整本书解成 GB18030 乱码；现在正文逐字可读，只有坏字节是替换符
+  assert.equal(decodeBuffer(utf8Bad), `${head}\uFFFD${tail}`);
+
+  // UTF-16LE BOM + 合法正文 + 孤立高位代理（UTF-16 里非法的半对）
+  const utf16Bad = Buffer.concat([
+    Buffer.from([0xff, 0xfe]),
+    Buffer.from(head, 'utf16le'),
+    Buffer.from([0x00, 0xd8]), // 只有高位代理、没有低位
+    Buffer.from(tail, 'utf16le')
+  ]);
+  assert.equal(decodeBufferStrict(utf16Bad), null);
+  assert.deepEqual(decodeBufferWithEncoding(utf16Bad), {
+    text: `${head}\uFFFD${tail}`,
+    encoding: 'utf-16le'
+  });
+  assert.equal(decodeBuffer(utf16Bad).includes('\u0000'), false, '不许解出带 NUL 的 UTF-16 / GB18030 乱码');
+
+  // UTF-32LE BOM + 合法码点 + 坏码点（代理区）+ 合法码点：同样锁在 UTF-32LE，不落 GB18030
+  const utf32Bad = Buffer.alloc(4 + 3 * 4);
+  Buffer.from([0xff, 0xfe, 0x00, 0x00]).copy(utf32Bad, 0);
+  utf32Bad.writeUInt32LE('中'.codePointAt(0), 4);
+  utf32Bad.writeUInt32LE(0xd800, 8); // 孤立代理码点
+  utf32Bad.writeUInt32LE('文'.codePointAt(0), 12);
+  assert.equal(decodeBufferStrict(utf32Bad), null);
+  assert.deepEqual(decodeBufferWithEncoding(utf32Bad), { text: '中\uFFFD文', encoding: 'utf-32le' });
+
+  // 没有 BOM 的坏文件仍走 GB18030 兜底（老口径不变：坏字节变 U+FFFD）
+  assert.deepEqual(decodeBufferWithEncoding(Buffer.from([0xff])), { text: '\uFFFD', encoding: 'gb18030' });
 });
 
 test('标题识别：各种常见写法', () => {
