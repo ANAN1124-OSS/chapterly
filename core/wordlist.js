@@ -87,9 +87,13 @@ function createReader(options) {
     : {};
 
   // 词表字节 → { ok, [field], stats } 或 { ok:false, code, message }。
-  // 编码复用 txt.decodeBuffer（UTF-8 / UTF-16 BOM / UTF-32LE BOM / GB18030），并额外识别两种
-  // 「不是纯文本」：带 NUL 的二进制（提示里说明可能是无 BOM 的 UTF-16）、严格解码失败的坏编码
-  //（不再用「解出 U+FFFD」判坏——合法的 U+FFFD 是原文，见审计修复 #49 / E24）。
+  // 编码识别复用 txt 的严格解码管线（UTF-8 / UTF-16 BOM / UTF-32LE BOM / GB18030），并额外识别
+  // 「不是纯文本」：带 NUL 的二进制（提示里说明可能是无 BOM 的 UTF-16）。
+  // 审计残留修复 #R10（#49/E24）：词表只解码一次。旧实现先用 txt.decodeBuffer 宽容解一遍
+  //（只为了兜 E13 的「解码抛错」），再用 txt.decodeBufferStrict 整包重解一遍做严格判定 ——
+  // ≤ 4 MB 的词表要全量解 2 次（decodeBuffer 内部还会按编码试解）。词表最终只认严格结果，
+  // 所以直接取 decodeBufferStrictInfo 那一次：text 是严格解出的文本（其中的 U+FFFD 是原文，
+  // 见 #49），null 才是真坏编码。抛错 / 返回怪形状仍按 E13 兜成 parseFailed，绝不冒泡到 IPC。
   function decodeBuffer(buffer) {
     if (!buffer || !buffer.length) {
       return { ok: false, code: code('empty'), message: message('emptyFile') };
@@ -104,30 +108,23 @@ function createReader(options) {
       return { ok: false, code: code('badEncoding'), message: message('binary') };
     }
     // E13（审计修复 #16）：decode / parse 各包一层 —— 两者都是「外部可注入 / 可被病态输入激怒」的
-    // 环节（txt.decodeBuffer 走 TextDecoder，parse 是各模块自己的行解析）。真抛错时绝不让它冒泡到
-    // IPC，回一份和其它失败同形状的结构化结果（调用方 / 界面不用为它写第二条分支）。
-    let text;
+    // 环节（严格解码走 TextDecoder 与手写 UTF-32，parse 是各模块自己的行解析）。真抛错时绝不让它
+    // 冒泡到 IPC，回一份和其它失败同形状的结构化结果（调用方 / 界面不用为它写第二条分支）。
+    let info;
     try {
-      text = txtLib.decodeBuffer(buffer);
+      info = txtLib.decodeBufferStrictInfo(buffer);
     } catch {
       return { ok: false, code: parseFailedCode, message: parseFailedMessage };
     }
-    if (typeof text !== 'string') {
-      return { ok: false, code: parseFailedCode, message: parseFailedMessage };
-    }
-    // 审计修复 #49（E24）：旧实现用「解出 U+FFFD」判定坏编码 —— 原文里本来就有一个合法的
-    // U+FFFD（UTF-8 EF BF BD）也会被拒。改成再走一遍严格解码：能完整识别就是合法文本
-    //（其中的 U+FFFD 是原文）；严格解码返回 null 才是真坏编码（宽容解码替换出来的 U+FFFD）。
-    let exact;
-    try {
-      exact = txtLib.decodeBufferStrict(buffer);
-    } catch {
-      exact = null;
-    }
-    if (exact === null) {
+    if (info === null) {
+      // 严格解码认不出编码 = 真坏编码（宽容解码替换出来的 U+FFFD，见 #49 / E24）
       return { ok: false, code: code('badEncoding'), message: message('badEncoding') };
     }
-    text = exact;
+    if (!info || typeof info.text !== 'string') {
+      // 非对象 / 文本不是字符串（解码器被换坏、注入的怪回包）= 解析不了（E13 口径）
+      return { ok: false, code: parseFailedCode, message: parseFailedMessage };
+    }
+    const text = info.text;
     let parsed;
     try {
       parsed = parse(text);

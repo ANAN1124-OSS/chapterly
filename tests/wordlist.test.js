@@ -228,7 +228,9 @@ test('publicInfo：剥掉内容字段 / path、补 count；坏值回注入的默
 
 test('E13：decode / parse 抛错都兜成结构化失败（绝不把异常冒泡到 IPC）', () => {
   const txt = require('../core/txt');
-  const original = txt.decodeBuffer;
+  // 审计残留修复 #R10（#49/E24）：词表现在只走严格解码那一次（decodeBufferStrictInfo），
+  // 注入点从宽容解（decodeBuffer）换成严格解 —— 契约（抛错 = 结构化失败）逐条不变。
+  const original = txt.decodeBufferStrictInfo;
   const failOptions = (parse) => ({
     field: 'words',
     parse,
@@ -238,7 +240,7 @@ test('E13：decode / parse 抛错都兜成结构化失败（绝不把异常冒�
 
   // ① 解码层抛错（parseFailed 显式注入 → 用注入的码与文案）
   const reader = wordlist.createReader(failOptions((text) => ({ words: text.split(/\r?\n/).filter(Boolean), stats: {} })));
-  txt.decodeBuffer = () => {
+  txt.decodeBufferStrictInfo = () => {
     throw new Error('TextDecoder 炸了');
   };
   try {
@@ -248,14 +250,25 @@ test('E13：decode / parse 抛错都兜成结构化失败（绝不把异常冒�
       message: '演示词表解析失败（兜底）'
     });
   } finally {
-    txt.decodeBuffer = original;
+    txt.decodeBufferStrictInfo = original;
   }
-  // 解码返回非字符串也按「解析不了」处理，不再在 .includes 上抛 TypeError
-  txt.decodeBuffer = () => null;
+  // 解码回包形状坏（文本不是字符串）也按「解析不了」处理，不再在后续字符串操作上抛 TypeError
+  txt.decodeBufferStrictInfo = () => ({ text: 42 });
   try {
     assert.equal(reader.decodeBuffer(Buffer.from('色情', 'utf8')).code, 'DEMO_PARSE_FAILED');
   } finally {
-    txt.decodeBuffer = original;
+    txt.decodeBufferStrictInfo = original;
+  }
+  // 严格解码回 null 是真坏编码（#49 / E24 口径），不是「解析失败」
+  txt.decodeBufferStrictInfo = () => null;
+  try {
+    assert.deepEqual(reader.decodeBuffer(Buffer.from('色情', 'utf8')), {
+      ok: false,
+      code: 'DEMO_BAD_ENCODING',
+      message: '演示词表编码坏了'
+    });
+  } finally {
+    txt.decodeBufferStrictInfo = original;
   }
 
   // ② 行解析抛错
@@ -284,11 +297,11 @@ test('E13：decode / parse 抛错都兜成结构化失败（绝不把异常冒�
 
 test('E13：真实消费者（校对 / 敏感词）的兜底用各自错误码，读盘路径同样不抛', async () => {
   const txt = require('../core/txt');
-  const original = txt.decodeBuffer;
+  const original = txt.decodeBufferStrictInfo;
   const dir = await mkTmp();
   const file = path.join(dir, '词表.txt');
   await fsp.writeFile(file, '色情\r\n暴力\r\n', 'utf8');
-  txt.decodeBuffer = () => {
+  txt.decodeBufferStrictInfo = () => {
     throw new Error('boom');
   };
   try {
@@ -312,12 +325,53 @@ test('E13：真实消费者（校对 / 敏感词）的兜底用各自错误码�
     assert.equal(glossary.decodeGlossaryBuffer(Buffer.from('色情\n', 'utf8')).code, 'GLOSSARY_PARSE_FAILED');
     assert.equal(sensitive.decodeWordListBuffer(Buffer.from('色情\n', 'utf8')).code, 'WORD_LIST_PARSE_FAILED');
   } finally {
-    txt.decodeBuffer = original;
+    txt.decodeBufferStrictInfo = original;
   }
   // 恢复后同一份文件照常读出来（兜底没有把读取器带坏）
   const recovered = await glossary.readGlossaryFile(file);
   assert.equal(recovered.ok, true);
   assert.deepEqual(recovered.entries.map((entry) => entry.term), ['色情', '暴力']);
+});
+
+// 审计残留修复 #R10（#49/E24）：旧实现先用 txt.decodeBuffer 宽容解一遍（只为兜 E13 的抛错），
+// 再用 txt.decodeBufferStrict 整包重解一遍做严格判定 —— ≤ 4 MB 的词表全量解码 2 次。
+// 词表最终只认严格结果，现在只取 decodeBufferStrictInfo 那一次。
+test('E24/#R10：一份词表只解码一次（宽容解不再先跑一遍）', () => {
+  const txt = require('../core/txt');
+  const originalLoose = txt.decodeBuffer;
+  const originalStrictInfo = txt.decodeBufferStrictInfo;
+  let looseCalls = 0;
+  let strictCalls = 0;
+  txt.decodeBuffer = (...args) => {
+    looseCalls += 1;
+    return originalLoose(...args);
+  };
+  txt.decodeBufferStrictInfo = (...args) => {
+    strictCalls += 1;
+    return originalStrictInfo(...args);
+  };
+  try {
+    const reader = createDemoReader();
+    const utf8 = reader.decodeBuffer(Buffer.from('色情\n暴力', 'utf8'));
+    assert.deepEqual(utf8.words, ['色情', '暴力']);
+    assert.equal(looseCalls, 0, '不许再跑宽容解码（旧实现先解一遍，只为兜抛错）');
+    assert.equal(strictCalls, 1, '严格解码只跑一次');
+
+    // 严格解出的文本才是词表用的文本：原文里的合法 U+FFFD 照样保留（#49 口径不变）
+    const literal = reader.decodeBuffer(Buffer.from('替换\uFFFD词', 'utf8'));
+    assert.deepEqual(literal.words, ['替换\uFFFD词']);
+    assert.equal(looseCalls, 0, '第二份词表也不走宽容解码');
+    assert.equal(strictCalls, 2);
+
+    // GBK 字节同样只解码一次（严格管线内部按编码试解，不再是「先宽容 GB18030 再严格」）
+    const gbk = reader.decodeBuffer(Buffer.from([0xc9, 0xab, 0xc7, 0xe9]));
+    assert.deepEqual(gbk.words, ['色情']);
+    assert.equal(looseCalls, 0);
+    assert.equal(strictCalls, 3);
+  } finally {
+    txt.decodeBuffer = originalLoose;
+    txt.decodeBufferStrictInfo = originalStrictInfo;
+  }
 });
 
 // ---------------------------------------------------------------- ② 真实消费者

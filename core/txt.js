@@ -343,6 +343,9 @@ function splitLongUntitled(text, options = {}) {
 module.exports = {
   decodeBuffer,
   decodeBufferWithEncoding,
+  // 审计残留修复 #R10（#49/E24）：词表读取只解码一次 —— 它要的是「严格解出来的文本」，
+  // 导出带 encoding 的那一份结果，调用方就不必再整包重解一遍。
+  decodeBufferStrictInfo,
   decodeBufferStrict,
   parseHeading,
   isChapterHeading,
