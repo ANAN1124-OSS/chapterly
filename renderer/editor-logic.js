@@ -425,6 +425,23 @@
     return merged;
   }
 
+  // ---------- 大段程序化插入的写入通道（试用分支 B） ----------
+  // Chromium 的 <textarea> 编辑管线（execCommand('insertText') / 原生粘贴）对长串要逐行强制布局，
+  // 十几万字一次插入是秒级（Chromium issue 341564372）；直接给 .value 赋整串只排一次版，毫秒级。
+  // 阈值以下仍走原生输入（保住原生 Ctrl+Z），所以碎片 / 查找替换 / 短文插入的行为一个字节都不变。
+  // 阈值只决定「换哪条写入通道」，不改内容、不改光标口径。
+  const BULK_WRITE_CHARS = 20000;
+  const BULK_WRITE_LIMITS = [1000, 1000000];
+
+  function sanitizeBulkThreshold(value) {
+    return clampInt(value, BULK_WRITE_CHARS, BULK_WRITE_LIMITS);
+  }
+
+  // 这段文本要不要走「整串赋值」而不是原生插入。空 / 坏值按空串算（不会抛错）。
+  function shouldBulkWrite(text, rawThreshold) {
+    return toText(text).length > sanitizeBulkThreshold(rawThreshold);
+  }
+
   // 「超长段落 N 段」那个小标签点一下：从光标往后找下一段，到末尾就绕回第一段
   function nextLongParagraph(items, position) {
     if (!Array.isArray(items) || !items.length) return null;
@@ -445,6 +462,9 @@
     MAX_MARK_ITEMS,
     COMPARE_MIN_PREVIOUS,
     COMPARE_SHORT_PERCENT,
+    BULK_WRITE_CHARS,
+    BULK_WRITE_LIMITS,
+    shouldBulkWrite,
     countChars,
     lineRanges,
     paragraphRanges,
