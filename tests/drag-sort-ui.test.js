@@ -125,7 +125,7 @@ function makeWorld(options = {}) {
   };
   globalThis.document = { body };
   const ui = dragSort.create(host);
-  ui.setupChapterDrag(); // 真实装配路径：window 上的三个监听由它一次装上
+  ui.setupChapterDrag(); // 真实装配路径：window 上的 pointermove / pointerup / pointercancel / resize 由它一次装上
   const fire = (type, ev) => {
     const fns = listeners.get(type) || [];
     const last = fns[fns.length - 1];
@@ -426,6 +426,70 @@ test('updateChapterDrag（#20/P4）：一次拖拽只量一次行几何，滚动
   fire('pointercancel');
 });
 
+// 审计残留修复 #20（P4）：拖拽期间列表被重建（筛选 / 外部刷新）时，旧几何里的行已经 detach，
+// 按它算落点会把章插到错位置；缓存必须在下一帧自动失效、按新列表现量一次。
+test('updateChapterDrag（残留 #20/P4）：拖拽中列表被重建 → 几何失效，按新列表算落点', () => {
+  const { ui, list, fire } = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  list.children = [c1, c2];
+  ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+  fire('pointermove', event(150)); // 激活 + 按 [c1, c2] 量一次
+  assert.equal(c2.classList.contains('drop-before'), true, '基线：落在 c2 上半');
+  c2.classList.remove('drop-before');
+  // 模拟筛选 / 外部刷新：整表重建（行位置相同，但都是新元素）
+  const n1 = chapterEl(0, 100);
+  const n2 = chapterEl(1, 140);
+  let reads = 0;
+  for (const el of [n1, n2]) {
+    const original = el.getBoundingClientRect;
+    el.getBoundingClientRect = () => {
+      reads += 1;
+      return original();
+    };
+  }
+  list.children = [n1, n2];
+  fire('pointermove', event(150));
+  assert.equal(reads, 2, '重建后必须按新列表现量一次（每行一次）');
+  assert.equal(n2.classList.contains('drop-before'), true, '落点按新列表结算');
+  assert.equal(c2.classList.contains('drop-before'), false, '已 detach 的旧行不再被打标');
+  const afterRebuild = reads;
+  fire('pointermove', event(160));
+  fire('pointermove', event(150));
+  assert.equal(reads, afterRebuild, '重建后仍复用缓存（不逐帧重量）');
+  fire('pointercancel');
+});
+
+// 审计残留修复 #20（P4）：拖拽期间窗口 resize 会让缓存的行高 / 列表位置过期 → 作废缓存并现量一次。
+test('updateChapterDrag（残留 #20/P4）：拖拽中 resize → 行几何现量一次，落点按新布局', () => {
+  const { ui, list, fire } = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  list.children = [c1, c2];
+  let reads = 0;
+  for (const el of [c1, c2]) {
+    const original = el.getBoundingClientRect;
+    el.getBoundingClientRect = () => {
+      reads += 1;
+      return original();
+    };
+  }
+  ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+  fire('pointermove', event(150));
+  assert.equal(reads, 2, '起手量一次');
+  fire('resize');
+  // resize 后列表行高 / 位置变化（内容不再逐帧重量，必须靠这次失效重取）
+  c1.rect = { top: 100, height: 20 };
+  c2.rect = { top: 130, height: 20 };
+  fire('pointermove', event(150));
+  assert.equal(reads, 4, 'resize 后现量一次（每行一次）');
+  assert.equal(c2.classList.contains('drop-after'), true, '按新布局：y=50 落在 c2 下半');
+  const afterResize = reads;
+  fire('pointermove', event(150));
+  assert.equal(reads, afterResize, '失效重取后又回到复用缓存');
+  fire('pointercancel');
+});
+
 test('updateDragTarget（#20/P4）：落点标记定点清，跟手期间不再整表 querySelectorAll', () => {
   const { ui, list, fire } = makeWorld();
   const c1 = chapterEl(0, 100);
@@ -681,9 +745,9 @@ test('endChapterDrag：拖拽期间切书 / 原章消失 → 不写盘（按 id 
   assert.deepEqual(w2.calls, []);
 });
 
-test('setupChapterDrag：在 window 上挂 pointermove / pointerup / pointercancel 三个监听', async () => {
+test('setupChapterDrag：在 window 上挂 pointermove / pointerup / pointercancel / resize 四个监听', async () => {
   const w = makeWorld();
-  assert.deepEqual([...w.listeners.keys()].sort(), ['pointercancel', 'pointermove', 'pointerup']);
+  assert.deepEqual([...w.listeners.keys()].sort(), ['pointercancel', 'pointermove', 'pointerup', 'resize']);
   // pointermove 转发给 updateChapterDrag（没有拖拽时是空操作）
   const c1 = chapterEl(0, 100);
   w.list.children = [c1];
@@ -832,9 +896,16 @@ test('静态闸门（#20/P4）：几何只量一次、跟手不整表清标记',
   const dropAt = moduleCode.indexOf('function computeDropTarget(');
   assert.ok(dropAt > 0);
   const dropBody = moduleCode.slice(dropAt, moduleCode.indexOf('function nextChapterIdInVolume('));
-  assert.match(dropBody, /chapterDrag\.geometry/, '拖拽中必须复用缓存几何');
+  assert.match(dropBody, /const geometry = dragGeometryFor\(list\)/, '拖拽中必须复用缓存几何');
   assert.equal(dropBody.includes('getBoundingClientRect'), false, 'computeDropTarget 里不许再逐行读 rect');
+  // 审计残留修复 #20（P4）：缓存要有失效判据（列表重建 / resize），失效只在下一帧多量一次
+  const helperAt = moduleCode.indexOf('function dragGeometryFor(');
+  assert.ok(helperAt > 0, '模块里要有 dragGeometryFor');
+  const helperBody = moduleCode.slice(helperAt, moduleCode.indexOf('function rowIndexAt('));
+  assert.match(helperBody, /chapterDrag\.geometry/, '拖拽中复用缓存几何');
+  assert.match(helperBody, /geometryIsCurrent\(chapterDrag\.geometry, list\)/, '重建后要判缓存是否还有效');
   assert.match(moduleCode, /chapterDrag\.geometry = captureDragGeometry\(\);/, '进入拖拽态时量一次');
+  assert.match(moduleCode, /chapterDrag\.geometry = null/, 'resize 时作废缓存（下一次跟手现量）');
   const updateAt = moduleCode.indexOf('function updateDragTarget(');
   assert.ok(updateAt > 0);
   const updateBody = moduleCode.slice(updateAt, moduleCode.indexOf('function updateEdgeScroll('));

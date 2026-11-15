@@ -153,6 +153,29 @@
     return { listTop: listRect.top, items };
   }
 
+  // 审计残留修复 #20（P4）：缓存失效判据。拖拽期间窗口尺寸变化（行高 / 列表位置变了，见 resize
+  // 监听）或列表被重建（筛选 / 外部刷新）时，按旧几何算落点会把章插到错位置（或落在已 detach 的
+  // 行上）。这里用 DOM 上可观察的两件事判定：行集合是否仍与列表当前子节点一一对应、行还在不在文档里。
+  function geometryIsCurrent(geometry, list) {
+    if (!geometry || !list) return false;
+    const items = geometry.items;
+    if (items.length !== list.children.length) return false;
+    for (let i = 0; i < items.length; i += 1) {
+      const row = items[i];
+      if (row.el !== list.children[i]) return false;
+      if (typeof row.el.isConnected === 'boolean' && !row.el.isConnected) return false;
+    }
+    return true;
+  }
+
+  // 拖拽中取几何：缓存仍有效就复用（跟手零 rect 读）；列表重建 / resize 后现量一次（只多一次）。
+  // 直接调用 computeDropTarget（单测 / 测试钩子）没有拖拽活状态时现量一次，语义与搬前一致。
+  function dragGeometryFor(list) {
+    if (!chapterDrag) return captureDragGeometry();
+    if (!geometryIsCurrent(chapterDrag.geometry, list)) chapterDrag.geometry = captureDragGeometry();
+    return chapterDrag.geometry;
+  }
+
   // 缓存行按文档流顺序 top 单调递增：二分找「top ≤ 指针内容坐标」的最后一行（O(log n)）。
   function rowIndexAt(items, y) {
     let lo = 0;
@@ -175,7 +198,8 @@
     const list = $('chapter-list');
     if (!list) return null;
     // 拖拽中复用起手时量好的几何；直接调用（单测 / 测试钩子）没有拖拽，就现量一次，语义不变。
-    const geometry = (chapterDrag && chapterDrag.geometry) || captureDragGeometry();
+    // 审计残留修复 #20（P4）：拖拽期间列表被重建 / 窗口 resize 时缓存自动失效（dragGeometryFor）。
+    const geometry = dragGeometryFor(list);
     if (!geometry) return null;
     const items = geometry.items;
     if (!items.length) return null;
@@ -405,6 +429,11 @@
   }
 
   function setupChapterDrag() {
+    // 审计残留修复 #20（P4）：拖拽期间窗口尺寸变化会让缓存的行高 / 列表位置过期 —— 作废缓存，
+    // 下一次跟手现量一次（不取消拖拽，也不逐帧重量）。
+    window.addEventListener('resize', () => {
+      if (chapterDrag) chapterDrag.geometry = null;
+    });
     window.addEventListener('pointermove', (event) => {
       if (chapterDrag) updateChapterDrag(event);
     });
