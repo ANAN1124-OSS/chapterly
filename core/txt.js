@@ -204,6 +204,8 @@ function parseHeading(line) {
       // 审计修复 #50（E15）：部 / 集 / 篇 后面没有分隔符又直接接字时，几乎都是正文
       //（「第一部电影…」「第三集播出后…」「第一篇论文…」）；真标题请用空格 / 冒号分隔，
       // 或把标题写成「第一部」后直接换行（restRaw 为空仍走上面的 hasSeparator 分支）。
+      // 审计残留 #50（E15）：取「宁可少切、不误切正文」的取舍 —— 代价是「第一部风起」这类
+      // 无分隔符短标题会被并进上一章正文；放宽守卫无法区分它与「第一部电影……」，不细化。
       if (marker === '部' || marker === '集' || marker === '篇') return null;
       // 没有分隔符又很长：基本是正文句子
       if (trimmed.length > MAX_NO_SEPARATOR_TITLE) return null;
