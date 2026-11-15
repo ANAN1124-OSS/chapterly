@@ -504,6 +504,10 @@ function dropBookBloom(book) {
   return { ...book, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0, bloomDropped: true };
 }
 
+// 审计残留修复 #R17（#33-V307）：预算尽力而为 —— 所有书都没有可丢的位图（纯章节指纹），或丢完
+// 所有位图仍超预算时，原样返回（dropped=0），调用方照常写出。不为了凑预算删章节指纹：指纹是
+// 增量校验的依据，删掉就得每次启动全量重扫。读侧另有 MAX_INDEX_READ_BYTES（64 MB）闸门兜底，
+// 超限按空索引重建 —— 所以「写出的索引 ≤ 32 MB」是正常书架的保证，不是任何输入下的硬上界。
 function enforceIndexBudget(index, maxBytes) {
   const cap = Number(maxBytes);
   if (!Number.isFinite(cap) || cap <= 0) return { index, dropped: 0 };
@@ -530,6 +534,8 @@ function enforceIndexBudget(index, maxBytes) {
     total -= victim.size.withBloom - victim.size.withoutBloom;
     dropped += 1;
   }
+  // 审计残留修复 #R17（#33-V307）：没有可淘汰的位图 / 淘汰后仍超预算 → 原样返回，调用方照常
+  // 写盘（尽力而为；不删章节指纹，见函数头口径）。
   if (!dropped) return { index, dropped: 0 };
   return { index: { ...index, books: next }, dropped };
 }
@@ -987,8 +993,9 @@ function createSearchStore(options = {}) {
   async function saveNow() {
     try {
       // 审计修复 #33（▲V307）：先整份序列化，超出总量预算才做淘汰（正常书架一次 stringify 的
-      // 成本不变）；淘汰后重序列化一次，写出的文件大小 / 每次 flush 的写放大都有上界，
-      // 章节指纹一条不丢。
+      // 成本不变）；淘汰后重序列化一次，正常书架写出的文件大小 / 每次 flush 的写放大都有上界。
+      // 审计残留修复 #R17（#33-V307）：没有可丢位图时仍照常写出（预算尽力而为，读侧 64 MB 兜底），
+      // 章节指纹一条不丢 —— 不为了凑预算删指纹、把每次启动变成全量重扫。
       let text = serializeIndex(index);
       if (Buffer.byteLength(text) > indexMaxBytes) {
         const budgeted = enforceIndexBudget(index, indexMaxBytes);
