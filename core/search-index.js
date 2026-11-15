@@ -914,11 +914,13 @@ function createSearchStore(options = {}) {
           index = parsed;
           // 审计修复 #33（▲V307）：旧版本写出的索引可能超过新的总量预算 —— 读回时先淘汰（内存立即
           // 生效，搜索从这次起就不再用被淘汰的位图），并把结果落盘一次；写失败只记 lastSaveError，
-          // 不影响本次搜索。
-          const budgeted = enforceIndexBudget(index, indexMaxBytes);
-          if (budgeted.dropped > 0) {
-            index = budgeted.index;
-            await saveNow();
+          // 不影响本次搜索。预算内（绝大多数情况）不做任何多余序列化。
+          if (indexBytes > indexMaxBytes) {
+            const budgeted = enforceIndexBudget(index, indexMaxBytes);
+            if (budgeted.dropped > 0) {
+              index = budgeted.index;
+              await saveNow();
+            }
           }
         } else {
           loadProblem = 'CORRUPT';
@@ -960,11 +962,17 @@ function createSearchStore(options = {}) {
 
   async function saveNow() {
     try {
-      // 审计修复 #33（▲V307）：整份序列化之前先压进总量预算（超限丢最旧书目的位图），
-      // 写出的文件大小 / 每次 flush 的写放大都有上界；章节指纹一条不丢。
-      const budgeted = enforceIndexBudget(index, indexMaxBytes);
-      if (budgeted.dropped > 0) index = budgeted.index;
-      const text = serializeIndex(index);
+      // 审计修复 #33（▲V307）：先整份序列化，超出总量预算才做淘汰（正常书架一次 stringify 的
+      // 成本不变）；淘汰后重序列化一次，写出的文件大小 / 每次 flush 的写放大都有上界，
+      // 章节指纹一条不丢。
+      let text = serializeIndex(index);
+      if (Buffer.byteLength(text) > indexMaxBytes) {
+        const budgeted = enforceIndexBudget(index, indexMaxBytes);
+        if (budgeted.dropped > 0) {
+          index = budgeted.index;
+          text = serializeIndex(index);
+        }
+      }
       await atomicWriteFile(filePath, text);
       indexBytes = Buffer.byteLength(text);
       lastSaveError = null;
