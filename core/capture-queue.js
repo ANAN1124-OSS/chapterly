@@ -95,6 +95,9 @@ function createCaptureQueue(options = {}) {
     if (!source.trim()) return { added: false, reason: 'empty' };
     const chars = countChars(source);
     if (chars > maxEntryChars) return { added: false, reason: 'too-large', chars, rawLength };
+    // 单条原文比整个队列的预算还大：放进会被 evictOverflow 立刻淘汰（等于白记一条），
+    // 这里直接按 too-large 拒 —— 不然 add 会返回 added:true，而列表里什么都没有（静默）。
+    if (rawLength > maxTotalChars) return { added: false, reason: 'too-large', chars, rawLength };
     const newest = entries[entries.length - 1];
     if (newest && newest.text === source) {
       return { added: false, reason: 'duplicate', entry: metaOf(newest) };

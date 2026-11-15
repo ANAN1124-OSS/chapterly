@@ -398,7 +398,7 @@ test('renderEditorMarks：超长正文整层收起 + 只提示一次；回到阈
   assert.equal(ctx.state.marks.marksTooLarge, true);
   assert.equal(ctx.state.marks.caretTooLarge, true);
   assert.equal(ctx.calls.toast.length, 1);
-  assert.match(ctx.calls.toast[0][0], /正文超过 30 万字/);
+  assert.match(ctx.calls.toast[0][0], /正文太大（超过 30 万字，或原文过长）/);
   assert.equal(ctx.calls.toast[0][1], 'warn');
   // 再来一次不重复弹
   ctx.ui.renderEditorMarks();

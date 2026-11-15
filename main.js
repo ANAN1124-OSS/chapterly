@@ -263,7 +263,24 @@ async function pollClipboardWatch() {
     const decision = clipboardWatcher.evaluate(text, watchToken);
     // 记录与提示拆开：连续复制的几段都要各留一条（record），冷却只压轻提示（notify）。
     if (decision.record) {
-      captureQueue.add(text);
+      const added = captureQueue.add(text);
+      // 单条超限（字数 > 30 万 / 原文 > 队列总量）：以前是静默丢，作者只会看到「面板刷新了但没东西」。
+      // 现在借一次 notify 的机会把原因说清楚（仍只发数字，不发正文）；冷却期内不重复打扰。
+      if (!added.added && added.reason === 'too-large') {
+        if (decision.notify) {
+          const tooLargePayload = { tooLarge: true, chars: added.chars, queued: captureQueue.size() };
+          for (const session of windowSessions.values()) {
+            try {
+              if (session.win && !session.win.isDestroyed()) {
+                session.win.webContents.send('clipboard:changed', tooLargePayload);
+              }
+            } catch {
+              /* 单个窗口发不出去不影响其它窗口 */
+            }
+          }
+        }
+        return;
+      }
       // 面板开着时「新复制立刻出现在列表里」：每次记录都发一个不含正文的轻量事件。
       // 短复制（<20 字）不走下面的 notify，靠这个事件刷新列表，否则复制了也看不见。
       const recordedPayload = { queued: captureQueue.size() };

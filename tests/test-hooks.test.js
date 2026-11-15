@@ -344,7 +344,13 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   的章节项 DOM 与内部工具）；B16 的弹层开合缓存实现在 backdrop-registry.createOpenWatcher（单测覆盖），
   //   renderer.js 只多 watcher 创建 + anyBackdropOpen 读缓存（约 10 行）；B15 的字体度量失效只多
   //   applyEditorStyle 里一行 resetCaretMeasureCache()。其余小项都在各自模块里。
-  const RENDERER_LINE_BUDGET = 6253;
+  // 试用分支 paste-bulk-write-path（v1.8.0 试用 B）：6253 → 6256（+3，当前 6256 行）：
+  // 大段插入的三块接线都读 renderer.js 内部闭包——① insertIntoBody 的整串赋值分支 + 一次性
+  // 撤销快照（editorEl / onEditorInput / toastActionable 都在这里）；② 正文上的第一下 Ctrl+Z
+  // 拦截（只有快照还在时接管，不能搬去全局键盘表，否则会抢别的输入框）；③ 捕获超限的提示分支
+  // （onClipboardChanged 订阅在渲染层的同一处）。纯判定（shouldBulkWrite / 阈值夹紧）已经进了
+  // renderer/editor-logic.js 并有单测；搬走这三块要把插入链路与编辑器状态整体反向注入，反而更绕。
+  const RENDERER_LINE_BUDGET = 6256;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

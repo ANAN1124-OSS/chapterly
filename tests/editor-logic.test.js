@@ -522,15 +522,20 @@ test('B1/WP-27：光标段落走行首表二分 + 段落前缀表，与 lineRang
 
 // ---------- 标记层超长门控（v0.8.6 R5，代码审计 F9） ----------
 // 标记层是整章正文的 DOM 镜像：正文 > MAX_MARK_CHARS（30 万字）时渲染层入口直接整层收起。
-// 这个纯函数只判边界（正好 30 万字仍然画，和不可见字符 / 超长段落同一口径）。
-test('标记层门控：正好 30 万字仍然画，超过 1 个字就跳过（边界）', () => {
+// 2026-11-15 口径统一：主口径 = 去空白字数（和界面「N 字」/ 单章上限同一个数），
+// 原文长度留 2 倍余量兜底（MAX_MARK_RAW_CHARS = 60 万字符），挡住空白灌水。
+test('标记层门控：字数正好 30 万仍然画，超 1 个字才跳过；原文 > 60 万也跳过', () => {
   assert.equal(logic.MAX_MARK_CHARS, 300000);
+  assert.equal(logic.MAX_MARK_RAW_CHARS, 600000);
   assert.equal(logic.marksTooLarge(''), false);
   assert.equal(logic.marksTooLarge('字'.repeat(logic.MAX_MARK_CHARS)), false);
   assert.equal(logic.marksTooLarge('字'.repeat(logic.MAX_MARK_CHARS + 1)), true);
-  // 门控看的是整章文本长度（换行 / 空白也算），不是去空白后的字数
+  // 门控看的是「字数」（去空白），换行 / 空白不再把 30 万字的稿子顶出去
   assert.equal(logic.marksTooLarge(`${'a'.repeat(logic.MAX_MARK_CHARS - 1)}\n`), false);
-  assert.equal(logic.marksTooLarge(`${'a'.repeat(logic.MAX_MARK_CHARS)}\n`), true);
+  assert.equal(logic.marksTooLarge(`${'a'.repeat(logic.MAX_MARK_CHARS)}\n`), false, '30 万字 + 换行仍是 30 万字');
+  // 原文兜底：字数没超但空白太多（60 万字符以上）不建镜像
+  assert.equal(logic.marksTooLarge(`${'a'.repeat(logic.MAX_MARK_CHARS)}\n`.padEnd(logic.MAX_MARK_RAW_CHARS, '\n')), false, '原文正好 60 万仍画');
+  assert.equal(logic.marksTooLarge(`${'a'.repeat(logic.MAX_MARK_CHARS)}\n`.padEnd(logic.MAX_MARK_RAW_CHARS + 1, '\n')), true);
   // 100 万字单章（「整本一章」导入）必须跳过
   assert.equal(logic.marksTooLarge('a'.repeat(1000000)), true);
 });

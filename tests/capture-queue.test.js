@@ -235,3 +235,16 @@ test('静态闸门：队列模块不碰 fs / DOM / 日志 / Electron / 定时器
   assert.ok(source.includes('countChars = captureLib.countChars'), 'chars 必须引用共享 countChars（不另写副本）');
   assert.equal(/chars[:=]\s*source\.length/.test(source), false, 'chars 不许再是 source.length（含空白长度）');
 });
+
+test('单条原文比队列总量还大：直接按 too-large 拒（不许 added:true 之后被自己淘汰掉）', () => {
+  const queue = queueLib.createCaptureQueue({ maxTotalChars: 100, maxEntryChars: 1000 });
+  // 字数 50 在单条上限内，但原文 250 > 队列总量 100：放进去会被 evictOverflow 立刻丢掉
+  const huge = '字'.repeat(50) + ' '.repeat(200);
+  const res = queue.add(huge);
+  assert.equal(res.added, false, '比总量还大的单条不许返回 added:true');
+  assert.equal(res.reason, 'too-large');
+  assert.equal(queue.size(), 0);
+  // 正常条目照旧能进
+  assert.equal(queue.add('字'.repeat(10)).added, true);
+  assert.equal(queue.size(), 1);
+});
