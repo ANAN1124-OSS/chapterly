@@ -548,9 +548,12 @@ function createConfigStore(userDataDir, deps = {}) {
         return cloneConfig(cache);
       }
       // 没有配置文件 = 首次启动，用默认值（这不算损坏，不提示）
+      // 审计残留修复 #52（E25）：文件都不在了，上一次「归档失败」的标记也已无意义（旧实现会让
+      // 本会话此后每次写盘都先去 rename 一份不存在的 config.json，一直拒绝写入到重启）。
       cache = defaults();
       readFailure = null;
       loadWarning = null;
+      archiveFailure = null;
       return cloneConfig(cache);
     }
     readFailure = null;
@@ -558,6 +561,9 @@ function createConfigStore(userDataDir, deps = {}) {
       cache = sanitize(JSON.parse(stripBom(raw)));
       // 读盘恢复后，上一次读失败留下的一次性提示已经过时（本次拿到的就是真配置）。
       loadWarning = null;
+      // 审计残留修复 #52（E25）：这一份是健康配置 —— 会话中途文件被外部修好（或换了一份）时，
+      // 旧的「归档失败」标记必须作废，否则下一次写会把这份健康文件改名成 .corrupt-*。
+      archiveFailure = null;
     } catch {
       // 配置坏了：先归档损坏文件（不直接删），再回默认值，并让界面提示一次，
       // 否则书架路径会悄悄变回「文档\我的小说」，用户会以为书全没了。
@@ -643,12 +649,45 @@ function createConfigStore(userDataDir, deps = {}) {
     return copy;
   }
 
+  // 审计残留修复 #52（E25）：写前重试归档之前，先确认原处还是不是「那份损坏文件」。
+  // 返回 true = 原文件已经不在了、或已经被外部修成合法配置（两种情况都不该再归档、也不再拒绝写入）：
+  //   · 文件被删（ENOENT）：归档这件事已无意义，清标记放行（旧实现让本会话此后拒绝一切写入到重启）；
+  //   · 文件被修好（能解析）：不能改名成 .corrupt-*（旧实现会把用户刚修好的配置归档掉）——
+  //     重新 load 一次（成功路径会清 archiveFailure 与过期提示），写盘按磁盘上的真配置合并。
+  // 读失败（EACCES / EIO…）或仍解析不了 = false：继续走归档重试，仍失败就拒绝写盘。
+  async function archiveTargetGoneOrHealed() {
+    let raw;
+    try {
+      raw = await readJson(file, 'utf8');
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return true;
+      return false;
+    }
+    try {
+      JSON.parse(stripBom(raw));
+    } catch {
+      return false; // 还是那份坏文件
+    }
+    await load();
+    return true;
+  }
+
   // 审计修复 #52（E25）：「损坏文件归档失败」的写前再试。成功就把失败标记清掉（损坏文件已改名，
   // 现在写 config.json 不会覆盖任何东西）；仍失败则明确拒绝 —— 所有写通道都走 gateWrite，
   // 自动写（窗口位置 / 最近书）与显式保存（设置 / 书签）一个都不会把损坏原文件盖掉。
+  // 审计残留修复 #52（E25）：再试之前先看文件还在不在 / 有没有被外部修好（见 archiveTargetGoneOrHealed）。
   async function ensureCorruptArchived() {
     if (!archiveFailure) return;
+    if (await archiveTargetGoneOrHealed()) {
+      archiveFailure = null;
+      return;
+    }
     const { archived, errorCode } = await archiveCorruptConfig();
+    // 竞态：检查之后、rename 之前文件被删。源文件都不在了，归档已无意义 → 放行写入
+    if (errorCode === 'ENOENT') {
+      archiveFailure = null;
+      return;
+    }
     if (errorCode) {
       const err = new Error(
         `损坏的配置文件仍无法归档（${errorCode}），本次没有写入任何设置；请关闭占用该文件的程序后重启应用。`

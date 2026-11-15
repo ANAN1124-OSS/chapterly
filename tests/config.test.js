@@ -819,6 +819,78 @@ test('E25/#52：写前重试成功时，还没取走的损坏提示自动更正�
   assert.match(warning.message, /已归档为 config\.json\.corrupt-/);
 });
 
+// 审计残留修复 #52（E25）：损坏文件被外部删除 → 归档重试遇 ENOENT 必须视为「文件已不在」放行。
+// 旧实现把 ENOENT 也当归档失败，本会话此后每次保存都被拒绝（CONFIG_CORRUPT），只能重启应用。
+test('残留 E25/#52：损坏文件被外部删除 → 归档重试遇 ENOENT 放行，设置正常落盘', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, 'config.json');
+  await fs.writeFile(file, '{ 坏配置 ', 'utf8');
+  let renameCalls = 0;
+  const rename = async () => {
+    renameCalls += 1;
+    throw Object.assign(new Error('EPERM: 被占用（模拟）'), { code: 'EPERM' });
+  };
+  const store = createConfigStore(dir, { rename });
+  await store.get();
+  assert.equal(renameCalls, 1, '基线：load 时归档失败一次');
+  assert.equal(store.takeLoadWarning().archiveError, 'EPERM');
+
+  // 作者在会话中途把损坏文件删了（或挪到别处）
+  await fs.unlink(file);
+  await store.set({ dailyGoal: 321 });
+  assert.equal(renameCalls, 1, '文件都不在了，不该再尝试 rename');
+  const disk = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(disk.dailyGoal, 321, 'ENOENT 不再拒绝写入');
+  assert.equal(
+    (await fs.readdir(dir)).some((name) => name.startsWith('config.json.corrupt-')),
+    false,
+    '没有可归档的文件，不该凭空多一个 .corrupt-*'
+  );
+  // 自动写（窗口位置 / 最近书）同样恢复正常 —— 旧实现连这些也写不进去
+  await store.set({ editorPaper: 'night' }, { auto: true });
+  const after = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(after.editorPaper, 'night');
+  assert.equal(after.dailyGoal, 321);
+});
+
+// 审计残留修复 #52（E25）：会话中途损坏文件被外部修好 → 不能把健康配置改名成 .corrupt-*，
+// 而且写盘要按这份真配置合并（旧实现拿内存里的默认值覆盖，等于丢掉作者刚修好的设置）。
+test('残留 E25/#52：损坏文件被外部修好 → 不误归档，写盘按修好的真配置合并', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, 'config.json');
+  await fs.writeFile(file, '{ 坏配置 ', 'utf8');
+  let blocked = true;
+  let renameCalls = 0;
+  const rename = async (from, to) => {
+    renameCalls += 1;
+    if (blocked) throw Object.assign(new Error('EBUSY: 被占用（模拟）'), { code: 'EBUSY' });
+    await fs.rename(from, to);
+  };
+  const store = createConfigStore(dir, { rename });
+  await store.get();
+  assert.equal(renameCalls, 1, '基线：load 时归档失败一次');
+
+  const repaired = { booksRoot: 'D:\\作者刚修好的书架', dailyGoal: 55 };
+  await fs.writeFile(file, JSON.stringify(repaired, null, 2), 'utf8');
+  blocked = false;
+
+  await store.set({ editorFontSize: 22 });
+  assert.equal(renameCalls, 1, '健康文件不许再尝试归档');
+  assert.equal(
+    (await fs.readdir(dir)).some((name) => name.startsWith('config.json.corrupt-')),
+    false,
+    '不许把修好的配置改名成 .corrupt-*'
+  );
+  const disk = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(disk.booksRoot, repaired.booksRoot, '写盘按真配置合并，不是默认值覆盖');
+  assert.equal(disk.dailyGoal, 55);
+  assert.equal(disk.editorFontSize, 22);
+  // 读盘成功会清掉「归档失败」标记与那次损坏提示（旧实现让界面一直显示过期文案）
+  assert.equal(store.takeLoadWarning(), null, '健康配置读进来后过期提示作废');
+  await store.set({ dailyGoal: 66 }, { auto: true });
+  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).dailyGoal, 66);
+});
+
 test('配置并发写入：两个 set 的 patch 都不会被吞掉', async () => {
   const dir = await mkTmp();
   const store = createConfigStore(dir);
