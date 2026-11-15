@@ -949,6 +949,80 @@ test('快照来源但名字不是严格格式的组：不折叠、不给清空�
   assert.equal(head.children[3].className, 'btn ghost tiny history-restore-group');
 });
 
+// ---------- 审计修复 #21（P5）：文件行分页 ----------
+function manyFiles(count) {
+  return Array.from({ length: count }, (_, i) => ({
+    name: `${String(i + 1).padStart(3, '0')}-第${i + 1}章.txt`,
+    inBook: true,
+    restorable: true,
+    previewable: true,
+    reason: ''
+  }));
+}
+
+function fileRowsOf(card) {
+  return card.children.filter((child) => child.className === 'history-file');
+}
+
+test('历史面板分页（#21/P5）：非快照组先只渲染 20 行，余下点一次补全', async () => {
+  const dom = makeDom(BASE_IDS);
+  const files = manyFiles(25);
+  const big = groupFixture({ id: 'dir:整理-20261110', files, fileCount: files.length, restorableCount: files.length });
+  const ctx = build({ dom, listHistory: () => ({ title: '书甲', groups: [big], fileCount: files.length, totalBytes: 4096 }) });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  let card = dom.map.get('history-list').children[0];
+  assert.equal(card.children.length, 23, 'head + note + 20 行 + 「展开剩余」按钮');
+  assert.equal(fileRowsOf(card).length, 20, '第一屏只渲染 20 行（旧实现 25 行全量重建）');
+  assert.equal(fileRowsOf(card)[0].dataset.fileName, '001-第1章.txt');
+  // 非快照组仍然没有折叠开关（与「每日快照」的折叠是两件事）
+  assert.equal(findButtonByClass(card, 'history-group-toggle'), null, '非快照组不加折叠开关');
+  const more = findButtonByClass(card, 'history-more-files');
+  assert.ok(more, '超过了就要有「展开剩余」入口');
+  assert.equal(more.tagName, 'button');
+  assert.equal(more.type, 'button');
+  assert.equal(more.textContent, '展开剩余 5 个文件');
+  // 点一次补全：只补行、不重建已有行与组头
+  const headBefore = card.children[0];
+  const firstRowBefore = fileRowsOf(card)[0];
+  more._fire('click');
+  card = dom.map.get('history-list').children[0];
+  assert.equal(fileRowsOf(card).length, 25, '剩余 5 行一次补上');
+  assert.equal(card.children[0], headBefore, '组头不重建');
+  assert.equal(fileRowsOf(card)[0], firstRowBefore, '已渲染的行不重建（监听器不重复挂）');
+  assert.equal(fileRowsOf(card)[24].dataset.fileName, '025-第25章.txt');
+  assert.equal(more.disabled, true);
+  assert.equal(more.classList.contains('hidden'), true, '补全后按钮自己收起');
+  more._fire('click'); // 再点不会重复补行
+  assert.equal(fileRowsOf(card).length, 25);
+});
+
+test('历史面板分页（#21/P5）：20 行以内不出「展开剩余」；快照组展开后同样分页', async () => {
+  const dom = makeDom(BASE_IDS);
+  const small = groupFixture({ files: manyFiles(20), fileCount: 20, restorableCount: 20 });
+  const ctx = build({ dom, listHistory: () => ({ title: '书甲', groups: [small], fileCount: 20, totalBytes: 2048 }) });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  const card = dom.map.get('history-list').children[0];
+  assert.equal(fileRowsOf(card).length, 20);
+  assert.equal(findButtonByClass(card, 'history-more-files'), null, '刚好一页不出现展开入口');
+
+  // 快照组展开后同样按 20 行分页（折叠时 0 行的既有口径不变）
+  const dom2 = makeDom(BASE_IDS);
+  const snap = snapshotGroupFixture({ files: manyFiles(24), fileCount: 24, restorableCount: 24 });
+  const ctx2 = build({ dom: dom2, listHistory: () => ({ title: '书甲', groups: [snap], fileCount: 24, totalBytes: 4096 }) });
+  ctx2.state.history = historyPanelState();
+  await ctx2.ui.refreshHistory();
+  assert.equal(fileRowsOf(dom2.map.get('history-list').children[0]).length, 0, '快照组默认折叠');
+  dom2.map.get('history-list').children[0].children[0].children[0]._fire('click');
+  const opened = dom2.map.get('history-list').children[0];
+  assert.equal(fileRowsOf(opened).length, 20, '展开后也只先渲染 20 行');
+  const moreSnap = findButtonByClass(opened, 'history-more-files');
+  assert.equal(moreSnap.textContent, '展开剩余 4 个文件');
+  moreSnap._fire('click');
+  assert.equal(fileRowsOf(opened).length, 24);
+});
+
 // ---------- 事件绑定 ----------
 test('setupHistoryUi：按原样注册 4 个按钮；关闭 / 刷新 / 关预览 / 打开文件夹都走真实函数', async () => {
   const dom = makeDom(BASE_IDS);

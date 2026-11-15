@@ -46,7 +46,11 @@
  * 默认折叠、组头是带 aria-expanded 的原生 button（键盘可达），并多一个「清空这天的快照」——
  * 二次确认后只走 api.clearSnapshotDay 把那一个目录移入 Windows 回收站（绝不硬删），成功刷新清单 / 书架，
  * 失败只 toast、清单保持原样。折叠状态放在 state.history.collapsed（按组 id，面板关掉即失效，不写盘、不进 config）；
- * 其它来源的组仍然是「默认展开 + 只有还原整组」，行为一个字节没变。
+ * 其它来源的组仍然是「默认展开 + 只有还原整组」，折叠开关一个字节没加。
+ *
+ * 审计修复 #21（P5）：非快照组（替换 / 整理 / 还原前备份）的文件行改成分页 —— 每组先渲染
+ * 前 HISTORY_FILE_PAGE（20）行，余下的用一枚「展开剩余 N 个文件」按钮一次补全。以前整本整理
+ * 备份几百行 × 每行 2-3 个监听器全量重建，备份积累多时打开 / 刷新面板明显变慢。
  *
  * 浏览器里挂成全局 CWHistoryUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
  */
@@ -354,6 +358,51 @@
     return confirmDeleteBackupGroups(cleanableGroupsOfCurrent());
   }
 
+  // P22-5 / B6：折叠状态 / 清理入口对「其它来源」的组仍然不做任何假设；这里只加一条
+  // 「一次最多先渲染多少行文件」的分页阈值（审计修复 #21 / P5）。
+  const HISTORY_FILE_PAGE = 20;
+
+  function buildHistoryFileRow(group, file) {
+    const row = document.createElement('div');
+    row.className = 'history-file';
+    row.dataset.fileName = file.name;
+
+    const name = document.createElement('span');
+    name.className = 'history-file-name';
+    name.textContent = file.name;
+    name.title = file.reason || file.name;
+
+    const tagInfo = historyFileTag(group, file);
+    const tag = document.createElement('span');
+    tag.className = `history-file-tag ${tagInfo.className}`.trim();
+    tag.textContent = tagInfo.text;
+
+    const actions = document.createElement('span');
+    actions.className = 'history-file-actions';
+    if (file.previewable) {
+      const previewBtn = document.createElement('button');
+      previewBtn.type = 'button';
+      previewBtn.className = 'btn ghost tiny';
+      previewBtn.textContent = '预览';
+      previewBtn.addEventListener('click', () => previewHistoryBackup(group.id, file.name));
+      actions.appendChild(previewBtn);
+    }
+    if (file.restorable) {
+      const restoreBtn = document.createElement('button');
+      restoreBtn.type = 'button';
+      restoreBtn.className = 'btn ghost tiny';
+      restoreBtn.textContent = group.source === 'delete' ? '放回书文件夹' : '还原';
+      restoreBtn.title =
+        group.source === 'delete'
+          ? '只把 txt 放回书文件夹，不改章节列表；书里已有同名文件时不覆盖'
+          : '用备份覆盖这一章；还原前会先把现在的内容备份一份';
+      restoreBtn.addEventListener('click', () => confirmHistoryRestore(group, file, false));
+      actions.appendChild(restoreBtn);
+    }
+    row.append(name, tag, actions);
+    return row;
+  }
+
   function buildHistoryGroup(group) {
     const card = document.createElement('div');
     card.className = 'history-group';
@@ -413,45 +462,27 @@
     card.appendChild(note);
 
     if (collapsed) return card;
-    for (const file of group.files) {
-      const row = document.createElement('div');
-      row.className = 'history-file';
-      row.dataset.fileName = file.name;
-
-      const name = document.createElement('span');
-      name.className = 'history-file-name';
-      name.textContent = file.name;
-      name.title = file.reason || file.name;
-
-      const tagInfo = historyFileTag(group, file);
-      const tag = document.createElement('span');
-      tag.className = `history-file-tag ${tagInfo.className}`.trim();
-      tag.textContent = tagInfo.text;
-
-      const actions = document.createElement('span');
-      actions.className = 'history-file-actions';
-      if (file.previewable) {
-        const previewBtn = document.createElement('button');
-        previewBtn.type = 'button';
-        previewBtn.className = 'btn ghost tiny';
-        previewBtn.textContent = '预览';
-        previewBtn.addEventListener('click', () => previewHistoryBackup(group.id, file.name));
-        actions.appendChild(previewBtn);
-      }
-      if (file.restorable) {
-        const restoreBtn = document.createElement('button');
-        restoreBtn.type = 'button';
-        restoreBtn.className = 'btn ghost tiny';
-        restoreBtn.textContent = group.source === 'delete' ? '放回书文件夹' : '还原';
-        restoreBtn.title =
-          group.source === 'delete'
-            ? '只把 txt 放回书文件夹，不改章节列表；书里已有同名文件时不覆盖'
-            : '用备份覆盖这一章；还原前会先把现在的内容备份一份';
-        restoreBtn.addEventListener('click', () => confirmHistoryRestore(group, file, false));
-        actions.appendChild(restoreBtn);
-      }
-      row.append(name, tag, actions);
-      card.appendChild(row);
+    // 审计修复 #21（P5）：非快照组（替换 / 整理 / 还原前备份）以前全量展开所有文件行，
+    // 每个文件行 2–3 个监听器；整本整理备份动辄几百行，备份积累多了每次打开 / 刷新都要重建
+    // 「组数 × 文件数」份 DOM。现在每组先只渲染前 HISTORY_FILE_PAGE 行，余下的攒成一枚
+    // 「展开剩余 N 个文件」按钮，点开直接把剩余行补上（不整组重渲染，不重复建已有行）。
+    const files = Array.isArray(group.files) ? group.files : [];
+    const firstPage = Math.min(files.length, HISTORY_FILE_PAGE);
+    for (let i = 0; i < firstPage; i += 1) card.appendChild(buildHistoryFileRow(group, files[i]));
+    if (files.length > firstPage) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'btn ghost tiny history-more-files';
+      more.textContent = `展开剩余 ${files.length - firstPage} 个文件`;
+      more.addEventListener('click', () => {
+        if (more.disabled) return;
+        // 点开一次就把剩下的补全，按钮自己收起（.hidden 与面板其它隐藏元素同一套规则）：
+        // 不再整组重渲染、不重复挂已有行的监听器，也不会留下一个「下一页」的错觉。
+        more.disabled = true;
+        more.classList.add('hidden');
+        for (let i = firstPage; i < files.length; i += 1) card.appendChild(buildHistoryFileRow(group, files[i]));
+      });
+      card.appendChild(more);
     }
     return card;
   }
