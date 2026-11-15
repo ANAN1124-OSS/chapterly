@@ -169,6 +169,9 @@
   const writeTimerUiModule = window.CWWriteTimerUi;
   // 专注模式（第 4 步九刀·补刀 12）：专注 / 极简退出条 / 打字机整段在 focus-mode-ui.js 里；这里只接线
   const focusModeUiModule = window.CWFocusModeUi;
+  // 审计修复 #55（M4）：装配清单化。模块顺序 / 全局名 / 本地名清单在 renderer/assembly-manifest.js，
+  // 启动时一次报全缺失模块（以前哪个 window.CW 全局名没加载，对应 const 静默 undefined，报错点离原因很远）。
+  window.CWRendererAssembly.assertInstalled(window);
   // 写作计时（v0.8-2）：每 30 秒把整秒上报一次；不足 1 秒的零头留在内存里下次一起算。
   const WRITE_TIMER_FLUSH_MS = 30000;
 

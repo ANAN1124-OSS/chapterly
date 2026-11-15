@@ -545,13 +545,13 @@ function createConfigStore(userDataDir, deps = {}) {
           errorCode: readFailure.errorCode,
           message: readFailure.message
         };
-        return { ...cache };
+        return cloneConfig(cache);
       }
       // 没有配置文件 = 首次启动，用默认值（这不算损坏，不提示）
       cache = defaults();
       readFailure = null;
       loadWarning = null;
-      return { ...cache };
+      return cloneConfig(cache);
     }
     readFailure = null;
     try {
@@ -581,7 +581,7 @@ function createConfigStore(userDataDir, deps = {}) {
             message: corruptArchiveMessage(archived)
           };
     }
-    return { ...cache };
+    return cloneConfig(cache);
   }
 
   // 取出「配置损坏」提示（只给一次）
@@ -613,7 +613,34 @@ function createConfigStore(userDataDir, deps = {}) {
 
   async function get() {
     if (!cache) await load();
-    return { ...cache };
+    return cloneConfig(cache);
+  }
+
+  // 审计修复 #55（M7）：get() 以前是 `{ ...cache }` 浅拷贝，windowBounds / bookDisplay /
+  // findBookmarks / formatOptions / lastBook / proofreadWordlists 这些嵌套对象与缓存共享引用 ——
+  // 调用方就地改嵌套（当前调用方都只读，属潜在隐患）会把 cache 污染成「没写盘却生效」。
+  // 这里按配置的真实形状逐层复制；高版本配置透传的未知顶层键同样走 copyUnknownValue 深拷贝
+  // （它们本来就已经过同一套类型 / 深度 / 大小闸门，这里不会丢值）。
+  function cloneConfig(cfg) {
+    const copy = { ...cfg };
+    copy.windowBounds = { ...cfg.windowBounds };
+    copy.formatOptions = { ...cfg.formatOptions };
+    copy.lastBook = cfg.lastBook && typeof cfg.lastBook === 'object' ? { ...cfg.lastBook } : cfg.lastBook;
+    copy.proofreadWordlists = Array.isArray(cfg.proofreadWordlists)
+      ? cfg.proofreadWordlists.slice()
+      : cfg.proofreadWordlists;
+    copy.findBookmarks = (Array.isArray(cfg.findBookmarks) ? cfg.findBookmarks : []).map((item) => ({ ...item }));
+    const bookDisplay = {};
+    for (const [bookId, entry] of Object.entries(cfg.bookDisplay || {})) {
+      setOwnEntry(bookDisplay, bookId, { ...entry });
+    }
+    copy.bookDisplay = bookDisplay;
+    for (const key of Object.keys(copy)) {
+      if (KNOWN_KEY_SET.has(key)) continue;
+      const cloned = copyUnknownValue(copy[key], 0);
+      if (cloned !== undefined) copy[key] = cloned;
+    }
+    return copy;
   }
 
   // 审计修复 #52（E25）：「损坏文件归档失败」的写前再试。成功就把失败标记清掉（损坏文件已改名，
@@ -678,7 +705,7 @@ function createConfigStore(userDataDir, deps = {}) {
       // 先写盘：失败就抛出，cache 保持旧值（内存不再「假装已保存」）
       await writeJson(file, next);
       cache = next;
-      return { ...cache };
+      return cloneConfig(cache);
     });
   }
 
@@ -795,7 +822,9 @@ function createConfigStore(userDataDir, deps = {}) {
       const saved = sanitize({ ...current, lastBook: next });
       await writeJson(file, saved);
       cache = saved;
-      return { written: true, reason: 'written', config: { ...cache } };
+      // 写成功后的 config 也返回深拷贝（审计修复 #55 / M7）：set / rememberLastBook 的调用方
+      // 拿到的是快照，就地改嵌套不会污染下一次 get()。
+      return { written: true, reason: 'written', config: cloneConfig(cache) };
     });
   }
 

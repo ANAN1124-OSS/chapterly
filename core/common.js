@@ -195,16 +195,25 @@
 
   // 限并发 map：最多 limit 个任务同时在跑，结果按原顺序返回；mapper 收到 (item, index)。
   // 任一任务抛错就整体拒绝（与 Array#map 的直觉一致）；items 为空 → 空数组。
-  // 原来 storage（导入时批量读章）与 search-index（建索引）各一份。
+  // 审计修复 #55（M8）：某个任务失败后，其余 worker 不再领**新**任务（在飞的那几个照常结束）；
+  // 以前 Promise.all 立刻 reject，但其它 worker 还会把剩下的条目全部跑完，写场景里等于失败之后
+  // 继续写盘。现在只保证「不再开始新的」，已经在跑的任务没有取消语义（Promise 无法外部中断）。
   async function mapLimit(items, limit, mapper) {
     const results = new Array(items.length);
     let cursor = 0;
+    let failed = false;
     const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
       for (;;) {
+        if (failed) return;
         const index = cursor;
         cursor += 1;
         if (index >= items.length) return;
-        results[index] = await mapper(items[index], index);
+        try {
+          results[index] = await mapper(items[index], index);
+        } catch (err) {
+          failed = true;
+          throw err;
+        }
       }
     });
     await Promise.all(workers);

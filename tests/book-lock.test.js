@@ -9,6 +9,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const common = require('../core/common');
@@ -89,12 +91,82 @@ test('withBookLock：主动回收只清空闲条目，正在飞的链绝不拆',
   assert.equal(storage.bookLockCount(), before);
 });
 
-test('静态闸门：书锁只保留一份 keyed 实现，删书 / 换根入口主动回收', () => {
+// ---------------------------------------------------------------- 审计修复 #55（M6）
+// 三个底层写入口（writeBookMeta / saveChapterText / prepareChapterSave）出口内置书锁后，
+// 已经在 withBookLock 里的调用（主进程 chapter:save 的「读-改-写」整段）必须能重入，不能自己等自己。
+
+test('withBookLock：同一本书在已持锁上下文里可重入（不新增队列条目、不死锁）', async () => {
+  const bookPath = 'C:\\Books\\reentrant';
+  const before = storage.bookLockCount();
+  let nestedRan = false;
+  let countInside = -1;
+  const outer = storage.withBookLock(bookPath, async () => {
+    countInside = storage.bookLockCount();
+    await storage.withBookLock(bookPath, async () => {
+      nestedRan = true;
+    });
+    assert.equal(storage.bookLockCount(), countInside, '重入不能往同一条链里再排一个条目');
+  });
+  // 死锁会让 outer 永远 pending；用超时把它变成可读的失败，而不是整轮测试挂住
+  await Promise.race([
+    outer,
+    common.sleep(800).then(() => {
+      throw new Error('withBookLock 同书重入死锁');
+    })
+  ]);
+  assert.equal(nestedRan, true, '重入任务必须真的执行');
+  assert.equal(countInside, before + 1, '外层持锁期间只有一条队列条目');
+  await flush();
+  assert.equal(storage.bookLockCount(), before);
+});
+
+test('withBookLock：持锁期间锁另一本书仍是独立链（不把两本书并成一把锁）', async () => {
+  let otherRan = false;
+  await storage.withBookLock('C:\\Books\\outer-a', async () => {
+    await storage.withBookLock('C:\\Books\\outer-b', async () => {
+      otherRan = true;
+    });
+  });
+  assert.equal(otherRan, true);
+});
+
+test('三个内置锁写入口：在 withBookLock 里按 chapter:save 的顺序整段调用不丢结果（M6）', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-write-lock-'));
+  try {
+    const created = await storage.createBook(dir, '锁内保存');
+    const bookPath = created.path;
+    const chapter = created.meta.chapters[0];
+    // 与 main.js 的 chapter:save 同形：外层 withBookLock + 三个已内置锁的写入口
+    const saved = await storage.withBookLock(bookPath, async () => {
+      const prepared = await storage.prepareChapterSave(bookPath, chapter.id);
+      const result = await storage.saveChapterText(bookPath, prepared.chapter.file, '锁内正文\n');
+      prepared.chapter.chars = result.chars;
+      return storage.writeBookMeta(bookPath, prepared.meta, { ensureDir: false });
+    });
+    assert.equal(saved.chapters[0].chars, 4, '书目缓存里的字数要随保存更新');
+    assert.equal((await storage.loadChapterText(bookPath, chapter.file)).text, '锁内正文\n');
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('静态闸门：书锁只保留一份 keyed 实现，三个写入口内置锁，删书 / 换根入口主动回收', () => {
   const storageSource = read('core/storage.js');
   assert.equal(/bookLocks\.(get|set)\(/.test(storageSource), false, '不该再自己维护 bookLocks Map 的 promise 链');
   assert.equal(/const bookLocks = new Map\(\)/.test(storageSource), false, 'bookLocks Map 必须收进 common 的 keyed 队列');
   assert.match(storageSource, /createKeyedWriteQueue\(\)/, 'storage 必须用 core/common.js 的 keyed 写队列');
-  assert.match(storageSource, /function withBookLock\(bookPath, task\) \{\s*return bookQueue\.enqueue\(bookLockKey\(bookPath\), task\);/, 'withBookLock 只做「按路径分链」');
+  assert.match(storageSource, /const heldBookLocks = new AsyncLocalStorage\(\);/, '同书重入必须靠 AsyncLocalStorage 记「当前上下文已持有哪把锁」');
+  assert.match(
+    storageSource,
+    /if \(held && held\.has\(key\)\) return Promise\.resolve\(\)\.then\(task\);/,
+    '同一把锁已在当前上下文里时必须直接执行（否则内置锁的写入口在锁内调用会死锁）'
+  );
+  assert.match(storageSource, /writeBookMeta: lockedWriteEntry\(writeBookMeta\)/, '导出面里 writeBookMeta 必须内置书锁');
+  assert.match(storageSource, /saveChapterText: lockedWriteEntry\(saveChapterText\)/, '导出面里 saveChapterText 必须内置书锁');
+  assert.match(storageSource, /prepareChapterSave: lockedWriteEntry\(prepareChapterSave\)/, '导出面里 prepareChapterSave 必须内置书锁');
+  assert.equal(/^\s{2}writeBookMeta,$/m.test(storageSource), false, '导出表里不许再保留裸 writeBookMeta');
+  assert.equal(/^\s{2}saveChapterText,$/m.test(storageSource), false, '导出表里不许再保留裸 saveChapterText');
+  assert.equal(/^\s{2}prepareChapterSave,$/m.test(storageSource), false, '导出表里不许再保留裸 prepareChapterSave');
   const commonSource = read('core/common.js');
   assert.match(commonSource, /function createKeyedWriteQueue\s*\(/, 'keyed 写队列必须只有 common 这一份实现');
   assert.match(commonSource, /function createWriteQueue\s*\(/, '全局写队列仍要在（收成 keyed 单链特例）');

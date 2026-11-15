@@ -372,7 +372,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   （记录 / 身份核对 / 撤销 / 输入即作废 / 换书换章作废），而 toastActionable、scrollCaretIntoView、
   //   editorEl、state 身份都在渲染层闭包里；拆一半出去只会把同一条纪律分叉成两份。三处兜底调用点
   //   （插入正文 / 套模板 / 替换这一处）+ 两个 UI 模块的 host.recordFallbackWrite 接的是同一份实现。
-  const RENDERER_LINE_BUDGET = 6393;
+  // 审计修复 #55（M4，装配清单化）：6393 → 6396（+3，当前 6396 行）：renderer.js 只多一行
+  //   `window.CWRendererAssembly.assertInstalled(window)` 与 2 行说明；清单本身（68 个模块的顺序 /
+  //   window 全局名 / renderer 本地名）在 renderer/assembly-manifest.js，缺模块时启动即报全，
+  //   不再让某个 const 静默 undefined。这是审计 M4 要求的「装配清单」，没有往回搬业务代码。
+  const RENDERER_LINE_BUDGET = 6396;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

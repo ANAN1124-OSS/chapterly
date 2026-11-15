@@ -2,6 +2,7 @@
 // 不 require('electron')，可直接在 node:test 里用临时目录测试。
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { atomicWriteFile, atomicCopyFile, stripBom, cleanupOrphanTmpFiles } = require('./atomic');
 const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, MAX_TEXT_BYTES } = require('./common');
 const chaptersLib = require('./chapters');
@@ -2549,8 +2550,28 @@ function bookLockKey(bookPath) {
   return pathUtils.pathKey(bookPath);
 }
 
+// 审计修复 #55（M6）：书锁重入。三个底层写入口（writeBookMeta / saveChapterText /
+// prepareChapterSave）现在出口处内置 withBookLock；主进程 chapter:save 与既有单测又已经在
+// withBookLock 里按「读-改-写」整段调用它们 —— 队列不可重入，再排一次就会自己等自己（死锁）。
+// 用 AsyncLocalStorage 记住当前异步上下文已经持有的书锁 key：同一本书在已持锁上下文里直接执行，
+// 不重新排队（语义等价于把内层调用并进外层那一把锁）；不同书仍各排各的链。
+const heldBookLocks = new AsyncLocalStorage();
+
 function withBookLock(bookPath, task) {
-  return bookQueue.enqueue(bookLockKey(bookPath), task);
+  const key = bookLockKey(bookPath);
+  const held = heldBookLocks.getStore();
+  // 同一把锁已在当前上下文里：直接跑（仍返回 Promise，保持 withBookLock 恒返回 Promise 的契约）
+  if (held && held.has(key)) return Promise.resolve().then(task);
+  return bookQueue.enqueue(key, () => {
+    // 每层锁带一份新的 Set：外层跑完不会把「已持有」泄漏给之后排队的任务
+    const next = new Set(held || []);
+    next.add(key);
+    return heldBookLocks.run(next, task);
+  });
+}
+
+function lockedWriteEntry(fn) {
+  return (...args) => withBookLock(args[0], () => fn(...args));
 }
 
 // 删书后的主动回收：只清这一本书的空闲条目；正在跑 / 正在排队的链绝不拆（settle 后自己回收）。
@@ -2606,15 +2627,17 @@ module.exports = {
   setDiagnostics,
   // 1.6.0 A3：修复流程先写临时文件再换名，归一逻辑与 writeBookMeta 共用这一份
   prepareBookMeta,
-  writeBookMeta,
+  // 审计修复 #55（M6）：三个底层写入口内置书锁 —— 新增写入口直接从 exports 取用时不会再漏锁。
+  // withBookLock 已支持同书重入（见 heldBookLocks），所以 chapter:save 在锁内调用这几个入口不会死锁。
+  writeBookMeta: lockedWriteEntry(writeBookMeta),
   listBooks,
   createBook: safeCreateBook,
   openBook,
   verifyBook,
   loadChapterText,
   statChapter,
-  saveChapterText,
-  prepareChapterSave,
+  saveChapterText: lockedWriteEntry(saveChapterText),
+  prepareChapterSave: lockedWriteEntry(prepareChapterSave),
   openBookRegistry,
   registerOpenBook,
   releaseOpenBook,
