@@ -1193,6 +1193,92 @@ test('正文索引（V93）：bloomCache 有上界 32 条（LRU），长书架�
   assert.ok(store.getBloomCacheSize() <= search.BLOOM_CACHE_MAX);
 });
 
+// P3（审计修复 #19）：整本建图时中间「不重复双字」集合也有硬上限 —— 以前只有最终位图受
+// MAX_BLOOM_BITS 限制，中间 Set 随正文无限长大（千万字级巨书可达数百 MB）。
+test('正文索引（P3）：双字集合到上限就放弃位图（bloomOmitted），不是截断位图', () => {
+  const text = '林婉儿撑着一把青柠色的雨伞，站在旧车站的月台上。';
+  const saturated = search.makeBookBloom([text], { maxItems: 8 });
+  assert.equal(saturated.omitted, true, '超限必须如实标「放弃位图」');
+  assert.equal(saturated.bloom, null, '放弃 = 不给位图（截断位图会静默漏报）');
+  assert.equal(saturated.items, 0);
+  // 上限内照旧出位图；重复双字不重复计数，不会因为「重复读同一句」被误判超限
+  const within = search.makeBookBloom([text, text], { maxItems: 40 });
+  assert.equal(within.omitted, false);
+  const normal = search.makeBookBloom([text, text]);
+  assert.deepEqual(within, normal, '上限内与默认路径逐字节一致');
+  assert.ok(Buffer.isBuffer(normal.bloom));
+  // 上限常量：1M 不重复双字 → 8M bit ≈ 1 MB 位图，远超真实中文书（25 万字约 5–8 万不重复双字）
+  assert.equal(search.MAX_BLOOM_ITEMS, 1024 * 1024);
+});
+
+test('正文索引（P3）：放弃位图的书照常可搜、下次校验不重读正文（复用放弃结论）', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const text = '青柠色的雨伞挂在门口，林婉儿站在旧车站的月台上。';
+  const { bookPath } = await makeBook(booksRoot, '巨书', '巨书', [{ name: '第一章', text }]);
+
+  const store = makeStore(userData, { bloomMaxItems: 8 });
+  await store.ensure({ booksRoot });
+  const entry = store.getIndex().books[0];
+  assert.equal(entry.bloomOmitted, true, '超限的书要在索引里记住「主动放弃位图」');
+  assert.equal(entry.bloom, '');
+  assert.equal(entry.itemCount, 0);
+
+  // 没有位图 = 本书永远进候选、逐章核对 → 搜索照样命中（只降速不漏报）
+  const found = await store.search({ booksRoot, query: '青柠色' });
+  assert.equal(found.results.length, 1);
+  assert.equal(found.candidateBooks, 1);
+
+  // 复用：下一轮校验不许重读正文（只认 bloom 不认 bloomOmitted 的话，每轮校验都会白读全书）
+  const storage = require('../core/storage');
+  const original = storage.loadChapterText;
+  let reads = 0;
+  storage.loadChapterText = async (...args) => {
+    reads += 1;
+    return original(...args);
+  };
+  try {
+    const again = await search.buildBookEntry(bookPath, '巨书', entry, { bloomMaxItems: 8 });
+    assert.equal(again.rebuilt, false);
+    assert.equal(again.entry.bloomOmitted, true);
+    assert.equal(reads, 0, '同一本书再次校验不许重读正文');
+  } finally {
+    storage.loadChapterText = original;
+  }
+});
+
+// P3（审计修复 #19）：条数上界（32）不等于字节上界 —— 32 条 × 单本最大 8 MB 位图 ≈ 256 MB。
+test('正文索引（P3）：位图缓存除条数外还有字节预算（超预算按 LRU 淘汰，结果不丢）', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const TOTAL = 6;
+  for (let i = 0; i < TOTAL; i += 1) {
+    await makeBook(booksRoot, `书${pad3(i)}`, `书${pad3(i)}`, [
+      { name: '第一章', text: `第 ${i} 本：青柠色的雨伞挂在门口。` }
+    ]);
+  }
+  // 每本的最小位图 = MIN_BLOOM_BITS / 8 = 128 字节；预算 256 字节只装得下两本
+  const store = makeStore(userData, { bloomCacheMaxBytes: 256 });
+  await store.ensure({ booksRoot });
+  const found = await store.search({ booksRoot, query: '青柠色', limit: 60 });
+  assert.equal(found.results.length, TOTAL, '前提：六本都过了一遍位图');
+  assert.equal(search.BLOOM_CACHE_MAX_BYTES, 32 * 1024 * 1024, '生产字节预算 32 MB');
+  assert.equal(store.getBloomCacheSize(), 2, '256 字节预算 + 128 字节位图 → 只留两本');
+  assert.ok(store.getBloomCacheBytes() <= 256, `字节预算必须生效：实际 ${store.getBloomCacheBytes()} 字节`);
+
+  // 淘汰只是缓存：再搜一次结果一条不少，字节数仍受预算约束
+  const again = await store.search({ booksRoot, query: '青柠色', limit: 60 });
+  assert.equal(again.results.length, TOTAL);
+  assert.equal(again.totalMatches, TOTAL);
+  assert.ok(store.getBloomCacheBytes() <= 256);
+});
+
 test('正文索引（P-01）：窗口过期 / 根目录签名变化后仍会重新校验并重建', async () => {
   const base = await mkTmp();
   const userData = path.join(base, 'userdata');

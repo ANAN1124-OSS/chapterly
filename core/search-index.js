@@ -95,6 +95,15 @@ const BLOOM_BUILD_BATCH = 32;
 // 长书架上「搜过一遍」就等于把整架书的位图全留在主进程里（位图按字数增长，几十 KB / 本）。
 // 32 条足够覆盖一次搜索最多读的 60 本候选里的热区，冷书下次搜索重新解码，结果一条都不会少。
 const BLOOM_CACHE_MAX = 32;
+// P3（审计修复 #19）：条数上界不等于字节上界 —— 32 条 × 单本最大 8 MB 位图 ≈ 256 MB 常驻。
+// 再加一道字节预算（只给单测用 options.bloomCacheMaxBytes 覆盖）：超预算时按 LRU 继续淘汰，
+// 「最近用过的那一本」始终留着（否则每次搜索都要重解码一份超预算的大位图，白费 CPU）。
+const BLOOM_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+// P3（审计修复 #19）：整本建图时「不重复双字」集合也有硬上限。以前只有最终位图受
+// MAX_BLOOM_BITS 限制，中间 Set 随正文无限长大（千万字级巨书可达数百 MB）。
+// 1M 个不重复双字 → 位图 8M bit ≈ 1 MB，已远超真实中文书（25 万字约 5–8 万）；超过就放弃这本的
+// 位图（entry.bloomOmitted）：搜索永远把它当候选、逐章核对 —— 只降速不漏报。
+const MAX_BLOOM_ITEMS = 1024 * 1024;
 
 // nowIso / mapLimit 从 core/common.js 来（B6）：和 storage 导入时同一份实现
 // （限并发、ISO 时间戳）；这里不再各抄一份。
@@ -122,12 +131,17 @@ function bigramHash(c1, c2) {
   return h >>> 0;
 }
 
-function addBigramsToSet(text, set) {
+function addBigramsToSet(text, set, limit) {
   const source = String(text == null ? '' : text);
+  const cap = typeof limit === 'number' && Number.isFinite(limit) ? limit : Infinity;
   for (let i = 0; i < source.length - 1; i += 1) {
-    set.add(bigramHash(source.charCodeAt(i), source.charCodeAt(i + 1)));
+    const hash = bigramHash(source.charCodeAt(i), source.charCodeAt(i + 1));
+    // P3（审计修复 #19）：到上限就停下并如实告诉调用方「没装完」（集合不再长大）；
+    // 已在集合里的重复双字不算超限，一次上限判定不会让位图少掉真实存在的项。
+    if (set.size >= cap && !set.has(hash)) return false;
+    set.add(hash);
   }
-  return set;
+  return true;
 }
 
 // 查询串 → 不重复的双字哈希（查询本身也先归一化成小写）
@@ -245,26 +259,35 @@ function bloomHas(bloom, bits, hash) {
 // 批与批之间只留 Set、不留正文数组（1000 章 × 1 MB 的书以前是约 1 GB 常驻）。
 // 位图位数要等全书项数知道后才定，所以 Set 必须留到 finish()；
 // 「有没有」的判定不受影响：插入顺序与逐章顺序一致，位图字节与旧实现完全相同。
-function createBookBloom() {
+// P3（审计修复 #19）：Set 有 MAX_BLOOM_ITEMS 硬上限 —— 超过就放弃位图（finish 回 omitted），
+// 调用方把这本书标成「永远候选」，不再让中间集合随正文无限长大。
+// options.maxItems 只给单测注入（验证「超限 → 放弃位图」分支，生产不传）。
+function createBookBloom(options) {
+  const source = options && typeof options === 'object' ? options : {};
+  const cap = Number.isFinite(source.maxItems) && source.maxItems > 0 ? Math.floor(source.maxItems) : MAX_BLOOM_ITEMS;
   const set = new Set();
+  let saturated = false;
   return {
     addText(text) {
-      addBigramsToSet(normalizeForMatch(text), set);
+      if (saturated) return set.size;
+      saturated = !addBigramsToSet(normalizeForMatch(text), set, cap);
       return set.size;
     },
     finish() {
+      if (saturated) return { bloom: null, bits: 0, items: 0, omitted: true };
       const params = bloomParams(set.size);
       const bloom = Buffer.alloc(Math.ceil(params.bits / 8));
       for (const hash of set) bloomAdd(bloom, params.bits, hash);
-      return { bloom, bits: params.bits, items: set.size };
+      return { bloom, bits: params.bits, items: set.size, omitted: false };
     }
   };
 }
 
 // 一本书的所有章节文本 → Bloom 位图。位图只回答「有没有」，不保存任何正文。
 // 兼容入口（单测 / 旧调用用）：内部走同一个累积器，结果与逐批累积逐字节相同。
-function makeBookBloom(texts) {
-  const builder = createBookBloom();
+// options.maxItems 只给单测注入（见 createBookBloom）。
+function makeBookBloom(texts, options) {
+  const builder = createBookBloom(options);
   for (const text of texts) builder.addText(text);
   return builder.finish();
 }
@@ -414,6 +437,9 @@ function sanitizeBook(raw) {
     bloomBits: bits,
     bloomCrc,
     itemCount: Number.isFinite(Number(raw.itemCount)) ? Math.max(0, Math.round(Number(raw.itemCount))) : 0,
+    // P3（审计修复 #19）：这本书的双字集合超过 MAX_BLOOM_ITEMS，主动放弃位图（永远当候选）。
+    // 老索引没有这个字段 → false，照旧按 bloom 字不空就走位图。
+    bloomOmitted: raw.bloomOmitted === true,
     chapters
   };
 }
@@ -477,7 +503,8 @@ function sameBook(a, b) {
     a.bloom !== b.bloom ||
     a.bloomBits !== b.bloomBits ||
     a.bloomCrc !== b.bloomCrc ||
-    a.itemCount !== b.itemCount
+    a.itemCount !== b.itemCount ||
+    a.bloomOmitted !== b.bloomOmitted
   ) {
     return false;
   }
@@ -609,11 +636,13 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     bloomBits: 0,
     bloomCrc: 0,
     itemCount: 0,
+    bloomOmitted: false,
     chapters
   };
 
-  if (old && !textChanged && old.bloom) {
+  if (old && !textChanged && (old.bloom || old.bloomOmitted === true)) {
     // 只改了章名 / 顺序 / 状态：复用位图，不重读正文
+    // （P3：上轮「双字太多、主动放弃位图」的书也复用这个结论，不必每轮校验都白读一遍全书）
     return {
       entry: {
         ...base,
@@ -621,6 +650,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
         bloomBits: old.bloomBits,
         bloomCrc: old.bloomCrc,
         itemCount: old.itemCount,
+        bloomOmitted: old.bloomOmitted === true,
         chapters: base.chapters.map((chapter) => {
           const previous = oldChapters.get(chapter.file);
           return previous && chapter.chars == null ? { ...chapter, chars: previous.chars } : chapter;
@@ -633,7 +663,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
   if (onProgress) onProgress({ phase: 'book', book: base.title, chapters: chapters.length });
   // P2-1：逐批读正文 → 并进位图 Set → 丢引用。批内仍限并发 6、批间串行，章的先后顺序不变
   //（Set 插入顺序不变 ⇒ 位图字节与「整本 texts 一次建」完全相同）。
-  const builder = createBookBloom();
+  const builder = createBookBloom({ maxItems: options.bloomMaxItems });
   const counts = new Array(chapters.length).fill(null);
   let missingText = false;
   for (let start = 0; start < chapters.length && !missingText; start += BLOOM_BUILD_BATCH) {
@@ -657,11 +687,23 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
   }
   if (missingText) {
     // 有章节读不了：不给位图，搜索时这本书永远进候选、逐章核对（字数也不补，与旧实现一致）
-    return { entry: { ...base, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0 }, rebuilt: true };
+    return {
+      entry: { ...base, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0, bloomOmitted: false },
+      rebuilt: true
+    };
   }
   const built = builder.finish();
   for (let i = 0; i < chapters.length; i += 1) {
     if (chapters[i].chars == null && counts[i] != null) chapters[i].chars = counts[i];
+  }
+  if (built.omitted) {
+    // P3（审计修复 #19）：不重复双字超过 MAX_BLOOM_ITEMS（巨书极端形态）→ 主动放弃位图。
+    // 与「章读不了」同一口径：搜索永远把这本书当候选、逐章核对（只降速不漏报）；
+    // bloomOmitted 记住这个取舍，下次深度校验不再为同一本书白读一遍正文。
+    return {
+      entry: { ...base, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0, bloomOmitted: true },
+      rebuilt: true
+    };
   }
   return {
     entry: {
@@ -684,6 +726,10 @@ function createSearchStore(options = {}) {
     : FULL_VALIDATE_INTERVAL_MS;
   // stat 可注入：单测用它数「一次搜索到底 stat 了几次」（P-01 的锚点），产品里就是 fs.stat。
   const statFile = typeof options.stat === 'function' ? options.stat : (target) => fs.stat(target);
+  // P3（审计修复 #19）：单测用 —— 把建图双字上限压小，验证「超限 → 放弃位图」的整条链路
+  const bloomMaxItems = Number.isFinite(options.bloomMaxItems)
+    ? Math.max(1, Math.floor(options.bloomMaxItems))
+    : undefined;
   // 搜索侧窗口：validateIntervalMs=0（单测里「每次都要看到外部改动」的口径）时退回旧行为。
   const searchEnsureIntervalMs = validateIntervalMs === 0 ? 0 : SEARCH_ENSURE_INTERVAL_MS;
   const nowMs = () => {
@@ -715,15 +761,41 @@ function createSearchStore(options = {}) {
   let lastSignatureCheckAt = 0;
   const dirtyBooks = new Set();
   // V93：path -> { bloom(base64), bits, buffer }，按 LRU 只留最近用过的 BLOOM_CACHE_MAX 本。
+  // P3（审计修复 #19）：条数之外再加字节预算（BLOOM_CACHE_MAX_BYTES，单测可注入
+  // options.bloomCacheMaxBytes）—— 32 条 × 单本最大 8 MB 位图 ≈ 256 MB 的老口径在这里被压住。
   const bloomCache = new Map();
+  let bloomCacheBytes = 0;
+  const bloomCacheMaxBytes = Number.isFinite(options.bloomCacheMaxBytes)
+    ? Math.max(0, Math.floor(options.bloomCacheMaxBytes))
+    : BLOOM_CACHE_MAX_BYTES;
+
+  function forgetBloom(bookPath) {
+    const cached = bloomCache.get(bookPath);
+    if (!cached) return;
+    bloomCache.delete(bookPath);
+    bloomCacheBytes -= cached.buffer ? cached.buffer.length : 0;
+  }
+
+  function rememberBloom(bookPath, entry) {
+    forgetBloom(bookPath);
+    bloomCache.set(bookPath, entry);
+    bloomCacheBytes += entry.buffer ? entry.buffer.length : 0;
+    while (
+      bloomCache.size > BLOOM_CACHE_MAX ||
+      // 单个超预算的大位图仍留一份（否则每次搜索都重解码，白费 CPU）；其余按 LRU 让位
+      (bloomCacheBytes > bloomCacheMaxBytes && bloomCache.size > 1)
+    ) {
+      const oldest = bloomCache.keys().next().value;
+      forgetBloom(oldest);
+    }
+  }
 
   function bloomFor(book) {
     if (!book.bloom) return null;
     const cached = bloomCache.get(book.path);
     if (cached && cached.bloom === book.bloom && cached.bits === book.bloomBits && cached.crc === book.bloomCrc) {
       // 命中：挪到队尾（Map 的插入顺序就是 LRU 顺序）。位图变了（重建过）算未命中。
-      bloomCache.delete(book.path);
-      bloomCache.set(book.path, cached);
+      rememberBloom(book.path, cached);
       return cached.buffer;
     }
     const buffer = decodeBloom(book.bloom, book.bloomBits, book.bloomCrc);
@@ -733,12 +805,7 @@ function createSearchStore(options = {}) {
       markDirty(book.path);
       return null;
     }
-    bloomCache.delete(book.path); // 旧位置 / 旧位图先摘掉，重新插到队尾
-    bloomCache.set(book.path, { bloom: book.bloom, bits: book.bloomBits, crc: book.bloomCrc, buffer });
-    while (bloomCache.size > BLOOM_CACHE_MAX) {
-      const oldest = bloomCache.keys().next().value;
-      bloomCache.delete(oldest);
-    }
+    rememberBloom(book.path, { bloom: book.bloom, bits: book.bloomBits, crc: book.bloomCrc, buffer });
     return buffer;
   }
 
@@ -851,6 +918,7 @@ function createSearchStore(options = {}) {
     if (rootChanged) {
       index = emptyIndex(root);
       bloomCache.clear();
+      bloomCacheBytes = 0;
       lastFullValidateAt = 0;
     }
 
@@ -937,7 +1005,7 @@ function createSearchStore(options = {}) {
           bookPath,
           folder,
           old,
-          { force, dirty },
+          { force, dirty, bloomMaxItems },
           (info) => report({ ...info, done: doneBooks, total: folders.length })
         );
       } catch {
@@ -1386,7 +1454,9 @@ function createSearchStore(options = {}) {
     getBytes: () => indexBytes,
     getProblem: () => loadProblem,
     // V93：当前位图缓存条数（锚点用；也方便以后排查「内存里留了几本位图」）
-    getBloomCacheSize: () => bloomCache.size
+    getBloomCacheSize: () => bloomCache.size,
+    // P3（审计修复 #19）：当前位图缓存的字节数（锚点用：条数上界之外还有字节预算）
+    getBloomCacheBytes: () => bloomCacheBytes
   };
 }
 
@@ -1397,6 +1467,8 @@ module.exports = {
   MAX_INDEX_READ_BYTES,
   MIN_BLOOM_BITS,
   BLOOM_CACHE_MAX,
+  BLOOM_CACHE_MAX_BYTES,
+  MAX_BLOOM_ITEMS,
   MAX_SNIPPETS_PER_CHAPTER,
   MAX_CHAPTER_MATCH_COUNT,
   MAX_FOCUS_SNIPPETS,
