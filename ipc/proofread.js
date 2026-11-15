@@ -73,10 +73,13 @@ function registerProofreadIpc(host) {
     // 1.7.2 D2（V44/V46）：词表一次读完（勾选子集在 core 里内存过滤），读取出口的词条已清洗，
     // 给 proofreadText 带上「已清洗」标记，同一份词表不再 sanitize 第二遍；旧调用方不受影响。
     const words = await glossaryLib.readProofreadWordlistForRequest(cfg, options);
-    const proofOptions =
-      options && typeof options === 'object' && !Array.isArray(options)
-        ? { ...options, entriesSanitized: true }
-        : { entriesSanitized: true };
+    // 审计修复 #47（E22）：单章校对的 options 与整本版走同一套 core 清洗（阈值夹紧 + 规则开关
+    // 补齐默认值），不再把渲染层传来的任意键 / 任意类型原样透传给 proofreadText。
+    const proofOptions = {
+      ...proofreadLib.sanitizeOptions(options),
+      rules: proofreadLib.sanitizeRules(options && options.rules),
+      entriesSanitized: true
+    };
     const result = proofreadLib.proofreadText(text, proofOptions, words.entries);
     return { ...result, wordList: words.wordList };
   });
@@ -193,7 +196,9 @@ function registerProofreadIpc(host) {
     const list = await sensitiveLib.readWordListFile(cfg.sensitiveWordsPath);
     const wordList = sensitiveLib.publicWordListInfo(list);
     if (!list.ok) return { ok: false, code: list.code, message: list.message, wordList };
-    const result = sensitiveLib.scanText(text, list.words, options);
+    // 审计修复 #47（E22）：单章预检也先过 core/sensitive.sanitizeOptions（maxIssues 夹紧），
+    // 与整本版同一入口口径；scanText 内部还会再兜一次，不依赖调用方。
+    const result = sensitiveLib.scanText(text, list.words, sensitiveLib.sanitizeOptions(options));
     return { ok: true, ...result, wordList };
   });
 

@@ -144,8 +144,11 @@ function registerBookIpc(host) {
     });
     // 「继续上次写作」的书架级记忆（config.json，很小）仍在切章当下就写：渲染层把章的显示信息
     // 一起传上来（不必为此再读一遍书目），迟到的记录有 rememberRecentBook 的顺序保护。
-    const display = info && typeof info === 'object' ? info : null;
-    if (display && typeof display.chapterName === 'string' && chapterIdText) {
+    // 审计修复 #47（E22）：info 的 title / chapterIndex / chapterName 在入口先判型限长
+    // （core/ipc-limits.sanitizeRecentBookInfo）；坏形状 → null，不再把任意对象交给
+    // rememberRecentBook 的 String / slice 兜底。
+    const display = ipcLimits.sanitizeRecentBookInfo(info);
+    if (display && display.chapterName && chapterIdText) {
       await rememberRecentBook(bookPath, {
         title: display.title,
         chapterId: chapterIdText,

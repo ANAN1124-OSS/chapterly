@@ -228,6 +228,14 @@ test('行为：text:proofread 处理器把读取出口的 entries 交给 proofre
       }
     },
     {
+      // 审计修复 #47（E22）：单章校对改用与整本版同一套 core 清洗；这里给最小实现，断言接线。
+      sanitizeOptions: (raw) => ({
+        longParagraph: 500,
+        repeatWindow: 300,
+        repeatCount: 3,
+        maxIssues: raw && raw.maxIssues === 99 ? 99 : 400
+      }),
+      sanitizeRules: (raw) => ({ 'custom-word': Boolean(raw && raw['custom-word']), 'halfwidth-punct': true }),
       proofreadText: (text, options, entries) => {
         seen.text = text;
         seen.proofOptions = options;
@@ -236,11 +244,13 @@ test('行为：text:proofread 处理器把读取出口的 entries 交给 proofre
       }
     }
   );
-  const res = await handler('他做为见证人。', { rules: { 'custom-word': true } });
+  const res = await handler('他做为见证人。', { rules: { 'custom-word': true }, maxIssues: 99, evil: 'x' });
   assert.equal(seen.text, '他做为见证人。');
   assert.deepEqual(seen.entries, [{ term: '做为', suggestion: '作为' }], '词条来自一次读取的出口');
   assert.equal(seen.proofOptions.entriesSanitized, true, '主进程传入已清洗标记，proofreadText 不再二次 sanitize');
-  assert.deepEqual(seen.proofOptions.rules, { 'custom-word': true }, '用户选项原样保留');
+  assert.deepEqual(seen.proofOptions.rules, { 'custom-word': true, 'halfwidth-punct': true }, '规则开关走 core 清洗结果');
+  assert.equal(seen.proofOptions.maxIssues, 99);
+  assert.equal(seen.proofOptions.evil, undefined, '多余的键不再原样透传');
   assert.deepEqual(res.wordList, fakeWordList, '回包仍带 wordList（渲染层据此重画词表状态）');
 });
 

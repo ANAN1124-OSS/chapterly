@@ -26,6 +26,10 @@ const MAX_REPLACE_OUTPUT_CHARS = 20000000;
 const MAX_CHAPTER_ITEMS = 20000;
 const MAX_CHAPTER_NAME_CHARS = 2000;
 const MAX_ID_CHARS = 200;
+// 「继续上次写作」的展示信息（book:set-last 的 info）：与 main.js / config.js 的落盘清洗同一口径。
+// 入口先判型限长，避免渲染层把任意对象 / 超长字符串带进 rememberRecentBook。
+const MAX_RECENT_TITLE_CHARS = 200;
+const MAX_RECENT_CHAPTER_INDEX = 1000000;
 // 撤销删除（chapter:restore-deleted）：_trash / 书文件夹里的章节 txt 文件名按 Windows 的 260 字符封顶
 // （正常章节名在 core/chapters.js 已夹到 40 字，加时间戳前缀也远到不了这里）。
 const MAX_FILE_NAME_CHARS = 260;
@@ -44,7 +48,10 @@ class IpcLimitError extends Error {
 
 // 5000000 → '5,000,000'。2026-11-04 拍板 #1 之后这份实现收进 core/common.js（全应用字数显示
 // 与这里的超限文案用同一份，不再各写一套）；这里只保留同名引用，错误文案不受影响。
-const { formatCount } = require('./common');
+const { formatCount, truncateSafe } = require('./common');
+// 章节文件名与保留名判定复用 core/chapters.js 的唯一实现（与 storage.assertChapterFile 同一份词表），
+// 不在 IPC 层再抄一份 CON / COM1 列表。
+const chaptersLib = require('./chapters');
 
 function tooLong(label, length, max) {
   return `${label}太长（${formatCount(length)} 字，最多 ${formatCount(max)} 字）`;
@@ -149,7 +156,10 @@ function sanitizeRange(range) {
   const toNumber = (value) => {
     if (value == null) return null;
     const n = Number(value);
-    return Number.isFinite(n) ? Math.floor(n) : null;
+    // 审计修复 #47（E22）：from/to 以前没有上限，只能靠 core/exporter 再收紧。这里先夹到
+    // 书目允许的章节数硬上限（20000，与 chapters 数组上限同一常数），负数仍交给 exporter
+    // 按 1 起算的旧口径处理 —— 只拦「天文数字进核心」，不改正常范围的语义。
+    return Number.isFinite(n) ? Math.min(Math.floor(n), MAX_CHAPTER_ITEMS) : null;
   };
   let volumeId = null;
   if (typeof range.volumeId === 'string' && range.volumeId.length <= MAX_ID_CHARS) {
@@ -158,6 +168,26 @@ function sanitizeRange(range) {
     volumeId = null;
   }
   return { mode, from: toNumber(range.from), to: toNumber(range.to), volumeId };
+}
+
+// book:set-last 的展示信息（title / chapterIndex / chapterName）：以前不判型就交给
+// rememberRecentBook（main.js 的 String / slice / round 兜底）。入口先收成白名单：
+//   · 非对象 → null（调用方不记最近书，旧行为：没有可用的章名就不记）；
+//   · title / chapterName 只收字符串并限长（不切开代理对），数字 / 对象一律当空串；
+//   · chapterIndex 只收有限数字，四舍五入后夹在 0–1000000（与 config.sanitizeLastBook 同一口径）。
+// at / chapterId 由调用方掌握，不在这里给默认值。
+function sanitizeRecentBookInfo(info) {
+  if (!info || typeof info !== 'object' || Array.isArray(info)) return null;
+  const title = typeof info.title === 'string' ? info.title.trim() : '';
+  const chapterName = typeof info.chapterName === 'string' ? info.chapterName.trim() : '';
+  const rawIndex = typeof info.chapterIndex === 'number' && Number.isFinite(info.chapterIndex)
+    ? info.chapterIndex
+    : 0;
+  return {
+    title: truncateSafe(title, MAX_RECENT_TITLE_CHARS),
+    chapterIndex: Math.min(MAX_RECENT_CHAPTER_INDEX, Math.max(0, Math.round(rawIndex))),
+    chapterName: truncateSafe(chapterName, MAX_RECENT_TITLE_CHARS)
+  };
 }
 
 // 1.5.0 功能-1：复制选中章（book:copy 的可选第三参数）。
@@ -246,6 +276,11 @@ function restoreFileName(value) {
   if (!name || name.length > MAX_FILE_NAME_CHARS) return '';
   if (name.includes('/') || name.includes('\\') || name.includes('..')) return '';
   if (/[\u0000-\u001f\u007f]/.test(name)) return '';
+  // 审计修复 #47（E22）：Windows 的「:」是备用数据流分隔符（`第1章.txt:secret`），保留设备名
+  // （`CON.txt` / `COM1.txt`）也会让壳层工具无法处理。storage.assertChapterFile 本来就会兜底，
+  // 这里补齐入口口径，坏名字直接当没传（BAD_RESTORE 的中文提示不变）。
+  if (name.includes(':')) return '';
+  if (chaptersLib.reservedStem(name)) return '';
   return /\.txt$/i.test(name) ? name : '';
 }
 
@@ -325,6 +360,8 @@ module.exports = {
   MAX_CHAPTER_NAME_CHARS,
   MAX_ID_CHARS,
   MAX_FILE_NAME_CHARS,
+  MAX_RECENT_TITLE_CHARS,
+  MAX_RECENT_CHAPTER_INDEX,
   IpcLimitError,
   textProblem,
   queryProblem,
@@ -339,6 +376,7 @@ module.exports = {
   sanitizeChapterIndexes,
   sanitizeChapterList,
   sanitizeRestorePayload,
+  sanitizeRecentBookInfo,
   sanitizeSearchOptions,
   sanitizeReplaceOptions
 };
