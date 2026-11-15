@@ -735,6 +735,90 @@ test('首次启动（没有配置文件）不算损坏，不提示', async () =>
   assert.equal(store.takeLoadWarning(), null);
 });
 
+// 审计修复 #52（E25）：损坏归档 rename 失败时旧实现仍回默认值，下一次保存整份覆盖损坏原文件。
+// 现在：失败要记进提示 + 写盘前再试；仍失败就拒绝写入，损坏文件一个字节都不动。
+test('E25/#52：损坏配置归档失败 → 写前再试，仍失败拒绝写盘（损坏原文件不被覆盖）', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, 'config.json');
+  const corrupt = '{ 这不是合法 JSON ';
+  await fs.writeFile(file, corrupt, 'utf8');
+  let renameCalls = 0;
+  const rename = async () => {
+    renameCalls += 1;
+    throw Object.assign(new Error('EPERM: 文件被占用（模拟）'), { code: 'EPERM' });
+  };
+  const store = createConfigStore(dir, { rename });
+  assert.equal((await store.get()).booksRoot, DEFAULTS.booksRoot, '不阻断启动（回默认值）');
+  const warning = store.takeLoadWarning();
+  assert.equal(warning.code, 'CONFIG_CORRUPT');
+  assert.equal(warning.archiveError, 'EPERM', '提示要如实说明归档失败的原因');
+  assert.match(warning.message, /EPERM/);
+  assert.equal(warning.message.includes(dir), false, '提示不带完整路径');
+  assert.equal(await fs.readFile(file, 'utf8'), corrupt, '归档失败时损坏文件仍在原处');
+
+  // 自动写（窗口位置 / 最近书）也必须被拒绝：不能拿默认值把损坏原文件盖掉
+  let autoErr = null;
+  await assert.rejects(
+    () => store.set({ dailyGoal: 100 }, { auto: true }),
+    (err) => {
+      autoErr = err;
+      return err.code === 'CONFIG_CORRUPT';
+    }
+  );
+  assert.equal(autoErr.errorCode, 'EPERM');
+  assert.match(autoErr.message, /没有写入任何设置/);
+  // 显式保存同样拒绝
+  await assert.rejects(
+    () => store.set({ dailyGoal: 100 }),
+    (err) => err.code === 'CONFIG_CORRUPT' && err.errorCode === 'EPERM'
+  );
+  assert.equal(await fs.readFile(file, 'utf8'), corrupt, '两次写尝试之后损坏文件一个字节都没变');
+  assert.ok(renameCalls >= 3, '每次写前都要再试一次归档');
+});
+
+test('E25/#52：磁盘恢复后写前重试归档成功，损坏文件被归档、设置正常落盘', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, 'config.json');
+  const corrupt = '{ 坏配置 ';
+  await fs.writeFile(file, corrupt, 'utf8');
+  let blocked = true;
+  const rename = async (from, to) => {
+    if (blocked) throw Object.assign(new Error('EBUSY: 被占用（模拟）'), { code: 'EBUSY' });
+    await fs.rename(from, to);
+  };
+  const store = createConfigStore(dir, { rename });
+  await store.get();
+  assert.equal(store.takeLoadWarning().archiveError, 'EBUSY');
+  blocked = false;
+  await store.set({ dailyGoal: 1234 });
+  const files = await fs.readdir(dir);
+  const archived = files.find((name) => name.startsWith('config.json.corrupt-'));
+  assert.ok(archived, '重试成功后损坏文件被改名归档');
+  assert.equal(await fs.readFile(path.join(dir, archived), 'utf8'), corrupt, '归档的是原损坏内容');
+  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).dailyGoal, 1234, '新配置正常落盘');
+  assert.equal((await createConfigStore(dir).get()).dailyGoal, 1234, '重启后读得到');
+});
+
+test('E25/#52：写前重试成功时，还没取走的损坏提示自动更正为「已归档」', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, 'config.json');
+  await fs.writeFile(file, '{ 坏配置 ', 'utf8');
+  let blocked = true;
+  const rename = async (from, to) => {
+    if (blocked) throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+    await fs.rename(from, to);
+  };
+  const store = createConfigStore(dir, { rename });
+  await store.get();
+  // 先不取提示：写前重试归档成功，提示不能继续吓唬用户「归档失败」
+  blocked = false;
+  await store.set({ dailyGoal: 300 });
+  const warning = store.takeLoadWarning();
+  assert.equal(warning.code, 'CONFIG_CORRUPT');
+  assert.equal(warning.archiveError, undefined);
+  assert.match(warning.message, /已归档为 config\.json\.corrupt-/);
+});
+
 test('配置并发写入：两个 set 的 patch 都不会被吞掉', async () => {
   const dir = await mkTmp();
   const store = createConfigStore(dir);

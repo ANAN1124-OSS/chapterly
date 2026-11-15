@@ -484,8 +484,13 @@ function createConfigStore(userDataDir, deps = {}) {
   const writeJson = typeof deps.write === 'function' ? deps.write : writeJsonAtomic;
   // deps.readFile 同样只给测试注入坏读盘（EACCES / EIO / EBUSY）用，生产走 node:fs/promises。
   const readJson = typeof deps.readFile === 'function' ? deps.readFile : (target, encoding) => fs.readFile(target, encoding);
+  // deps.rename 只给测试注入「损坏文件归档失败」（EPERM / EBUSY）用；生产走 node:fs/promises。
+  const renameFile = typeof deps.rename === 'function' ? deps.rename : (from, to) => fs.rename(from, to);
   let cache = null;
   let loadWarning = null; // 配置损坏被归档时，给界面提示一次
+  // 审计修复 #52（E25）：损坏配置归档失败时记在这里。旧实现归档失败仍回默认值，下一次保存会把
+  // 那份还能人工修的损坏原文件整份覆盖掉；现在写盘前必须再试一次归档，仍失败就拒绝写盘。
+  let archiveFailure = null;
   // C7（审计 C7）：非 ENOENT 的读失败会置这里（错误码 + 一句话），**自动写一律被拦**，
   // 显式保存先重试读；读到真的配置才允许写盘。不放进 loadWarning 里，是因为提示只给一次，
   // 而写闸门要一直记着「这份 cache 是默认值、不是真配置」直到读盘恢复。
@@ -497,6 +502,27 @@ function createConfigStore(userDataDir, deps = {}) {
 
   function defaults() {
     return { ...DEFAULTS, windowBounds: { ...DEFAULTS.windowBounds }, bookDisplay: {}, findBookmarks: [] };
+  }
+
+  // 审计修复 #52（E25）：损坏配置的归档名与归档动作。errorCode 非空 = 改名失败：
+  // 此时损坏文件仍叫 config.json，写盘前必须再试（见 ensureCorruptArchived）。
+  function corruptArchiveName() {
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    return `${file}.corrupt-${stamp}`;
+  }
+
+  async function archiveCorruptConfig() {
+    const archived = corruptArchiveName();
+    try {
+      await renameFile(file, archived);
+      return { archived, errorCode: '' };
+    } catch (err) {
+      return { archived, errorCode: (err && err.code) || 'UNKNOWN' };
+    }
+  }
+
+  function corruptArchiveMessage(archived) {
+    return `配置文件损坏，已归档为 ${path.basename(archived)} 并恢复默认设置；书架目录请在「设置」里重新指定。`;
   }
 
   async function load() {
@@ -535,19 +561,25 @@ function createConfigStore(userDataDir, deps = {}) {
     } catch {
       // 配置坏了：先归档损坏文件（不直接删），再回默认值，并让界面提示一次，
       // 否则书架路径会悄悄变回「文档\我的小说」，用户会以为书全没了。
-      const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-      const archived = `${file}.corrupt-${stamp}`;
-      try {
-        await fs.rename(file, archived);
-      } catch {
-        /* 归档失败也不能阻塞启动 */
-      }
+      // 审计修复 #52（E25）：归档失败不再「静默继续」——记下失败原因，写盘前还会再试；
+      // 仍失败就拒绝写盘，绝不用默认值覆盖那份损坏原文件（它可能是唯一还能人工抢救的副本）。
+      const { archived, errorCode } = await archiveCorruptConfig();
+      archiveFailure = errorCode ? { archived, errorCode } : null;
       cache = defaults();
-      loadWarning = {
-        code: 'CONFIG_CORRUPT',
-        archived,
-        message: `配置文件损坏，已归档为 ${path.basename(archived)} 并恢复默认设置；书架目录请在「设置」里重新指定。`
-      };
+      loadWarning = errorCode
+        ? {
+            code: 'CONFIG_CORRUPT',
+            archived,
+            archiveError: errorCode,
+            message:
+              `配置文件损坏，但无法归档损坏文件（${errorCode}），它仍在原处；本次已恢复默认设置，` +
+              '保存设置前会先重试归档，仍失败就拒绝写入。请关闭占用该文件的程序后重启应用。'
+          }
+        : {
+            code: 'CONFIG_CORRUPT',
+            archived,
+            message: corruptArchiveMessage(archived)
+          };
     }
     return { ...cache };
   }
@@ -584,12 +616,35 @@ function createConfigStore(userDataDir, deps = {}) {
     return { ...cache };
   }
 
+  // 审计修复 #52（E25）：「损坏文件归档失败」的写前再试。成功就把失败标记清掉（损坏文件已改名，
+  // 现在写 config.json 不会覆盖任何东西）；仍失败则明确拒绝 —— 所有写通道都走 gateWrite，
+  // 自动写（窗口位置 / 最近书）与显式保存（设置 / 书签）一个都不会把损坏原文件盖掉。
+  async function ensureCorruptArchived() {
+    if (!archiveFailure) return;
+    const { archived, errorCode } = await archiveCorruptConfig();
+    if (errorCode) {
+      const err = new Error(
+        `损坏的配置文件仍无法归档（${errorCode}），本次没有写入任何设置；请关闭占用该文件的程序后重启应用。`
+      );
+      err.code = 'CONFIG_CORRUPT';
+      err.errorCode = errorCode;
+      throw err;
+    }
+    archiveFailure = null;
+    // 启动提示还没被取走时同步成「已归档」，免得界面拿着过期的失败文案。
+    if (loadWarning && loadWarning.code === 'CONFIG_CORRUPT' && loadWarning.archiveError) {
+      loadWarning = { code: 'CONFIG_CORRUPT', archived, message: corruptArchiveMessage(archived) };
+    }
+  }
+
   // C7：写闸门（所有写通道共用一个入口）。
   // - 自动写（auto: true：窗口位置 / 最近书 / 最近导出目录）在读失败期间一律不写盘、不重试：
   //   一次 resize 的防抖写就能把读不到的真配置整份换成默认值（booksRoot 全丢，正是审计 C7）。
   // - 显式写（用户在设置里点保存 / 改按书显示 / 存书签）先重试读：磁盘恢复就按真配置合并，
   //   仍读不到就明确失败，界面看到「保存失败」而不是下一次启动发现设置全没。
+  // - 审计修复 #52（E25）：损坏配置归档失败时，写前再试归档（自动写与显式写都要，见上）。
   async function gateWrite(auto) {
+    await ensureCorruptArchived();
     if (!readFailure) return;
     if (auto) throw readFailedError();
     if (!(await recoverRead())) throw readFailedError();
