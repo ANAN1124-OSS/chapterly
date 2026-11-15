@@ -103,8 +103,12 @@
     if (state.saving || state.loading || !state.bookPath) return;
     if (state.chapters.length < 2) return;
     stopEdgeScroll(); // C38：上一次拖拽若没走完收手流程，别把旧定时器带进这次
+    // 审计修复 #2（E2）：起手时把「是哪本书的哪一章」一起记下来。拖拽是异步结算的
+    // （pointerup 之后还要等 IPC 回包），在途切书 / 切章时不能再拿旧下标去套新列表。
     chapterDrag = {
       index,
+      chapterId: (state.chapters[index] || {}).id,
+      bookPath: state.bookPath,
       volumeId: chapterVolumeId(state.chapters[index]),
       startY: event.clientY,
       active: false,
@@ -249,7 +253,13 @@
     clearDragMarks();
     if (!drag.active) return; // 普通点击，交给 click 处理
     state.suppressChapterClick = Date.now() + 300;
-    const chapter = state.chapters[drag.index];
+    // 审计修复 #2（E2）：松手时书已经换了（拖拽在途切书）→ 这次拖拽作废，绝不写盘。
+    if (state.bookPath !== drag.bookPath) return;
+    // 按起手时记下的 chapter.id 结算；原来的那一章不在了（切章 / 删章 / 列表被重建）就不动，
+    // 不用旧下标去猜现在第 N 行是谁。
+    const chapter = drag.chapterId
+      ? state.chapters.find((item) => item && item.id === drag.chapterId)
+      : null;
     const target = drag.drop;
     if (!chapter || !target) return;
     // 原地不动就不写盘：落在自己身上、或落回自己原来的位置
@@ -259,31 +269,39 @@
   }
 
   async function moveChapterByDrop(chapter, target) {
-    const currentId = (state.chapters[state.index] || {}).id;
+    // 审计修复 #2（E2）：发起前捕获身份；await 期间切书时，旧书的回包只允许丢弃，不许覆盖新书状态。
+    const bookPath = state.bookPath;
+    const movingId = chapter && chapter.id;
+    if (!bookPath || !movingId) return { ok: false, message: '章节身份已变化，未移动' };
     try {
       const data = await call(
         api.moveChapterTo,
-        state.bookPath,
-        chapter.id,
+        bookPath,
+        movingId,
         target.volumeId || null,
         target.beforeChapterId || null
       );
+      // 回包到达时已经不是发起时那本书：主进程的移动已经生效在旧书上；
+      // 这里绝不能把旧书 meta 写进新书的内存状态（也不 toast 误导当前窗口）。
+      if (state.bookPath !== bookPath) return { ok: true, stale: true };
+      // 结算时用户真正停在的那一章（await 期间可能已切章）：按 id 重新定位，不按旧下标
+      const selectedId = (state.chapters[state.index] || {}).id;
       state.meta = data.meta;
       state.chapters = data.meta.chapters;
-      if (currentId) {
-        const at = state.chapters.findIndex((c) => c.id === currentId);
+      if (selectedId) {
+        const at = state.chapters.findIndex((c) => c && c.id === selectedId);
         if (at >= 0) state.index = at;
       }
       renderChapterList();
       renderEditorHeader();
       updateStatus();
       toast(`已移动章节（${target.volumeId ? volumeDisplayName(target.volumeId) : '未分卷'}）`);
-      if (currentId) {
+      if (selectedId) {
         try {
-          const currentChapter = state.chapters.find((c) => c.id === currentId);
+          const currentChapter = state.chapters.find((c) => c && c.id === selectedId);
           // B1（审计 E6）：走统一 call()，失败才真的进这个 catch（裸 await api.* 时 preload 回
           // {ok:false} 不抛错，这里的兜底等于没写）
-          await call(api.setLastOpenChapter, state.bookPath, currentId, {
+          await call(api.setLastOpenChapter, bookPath, selectedId, {
             title: state.meta && state.meta.title,
             chapterIndex: state.index,
             chapterName: currentChapter ? currentChapter.name : ''
@@ -302,30 +320,37 @@
   async function moveChapterByDrag(fromIndex, toIndex) {
     const chapter = state.chapters[fromIndex];
     if (!chapter || fromIndex === toIndex) return;
-    const currentId = (state.chapters[state.index] || {}).id;
+    // 审计修复 #2（E2）：与 moveChapterByDrop 同一套身份捕获 / 回包复核。
+    const bookPath = state.bookPath;
+    const movingId = chapter.id;
+    if (!bookPath || !movingId) return { ok: false, message: '章节身份已变化，未移动' };
     try {
-      const data = await call(api.moveChapter, state.bookPath, chapter.id, toIndex);
+      const data = await call(api.moveChapter, bookPath, movingId, toIndex);
+      if (state.bookPath !== bookPath) return { ok: true, stale: true };
+      const selectedId = (state.chapters[state.index] || {}).id;
       state.chapters = data.meta.chapters;
       state.meta = { ...state.meta, chapters: data.meta.chapters, updatedAt: data.meta.updatedAt };
-      const newCurrent = currentId ? state.chapters.findIndex((c) => c.id === currentId) : -1;
+      const newCurrent = selectedId ? state.chapters.findIndex((c) => c && c.id === selectedId) : -1;
       if (newCurrent >= 0) state.index = newCurrent;
       renderChapterList();
       renderEditorHeader();
       updateStatus();
       toast(`已移动章节：第 ${data.from + 1} 位 → 第 ${data.to + 1} 位（章节文件没有改名）`);
-      if (currentId) {
+      if (selectedId) {
         try {
-          const currentChapter = state.chapters.find((c) => c.id === currentId);
+          const currentChapter = state.chapters.find((c) => c && c.id === selectedId);
           // B1（审计 E6）：同上，统一 call()（失败会被下面的 catch 接住，不再被悄悄丢掉）
-          await call(api.setLastOpenChapter, state.bookPath, currentId, {
+          await call(api.setLastOpenChapter, bookPath, selectedId, {
             title: state.meta && state.meta.title,
             chapterIndex: state.index,
             chapterName: currentChapter ? currentChapter.name : ''
           });
         } catch { /* 记不住也无所谓 */ }
       }
+      return { ok: true };
     } catch (err) {
       toast(`移动章节失败：${err.message}`, 'error');
+      return { ok: false, message: err.message };
     }
   }
 

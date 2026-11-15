@@ -508,6 +508,32 @@ test('moveChapterByDrop：IPC 抛错只报错、不刷新、返回 ok:false', as
   assert.deepEqual([w.renders.list, w.renders.header, w.renders.status], [0, 0, 0]);
 });
 
+// 审计修复 #2（E2）：拖拽 / 移动结算在 await 之后，回包必须按发起时的身份复核 ——
+// 在途切书时旧书的 meta 不许覆盖新书的内存状态（对照 saveCurrent 等处的三重校验）。
+test('moveChapterByDrop：在途切书 → 丢弃旧书回包，不覆盖新书状态、不 toast、不渲染（E2）', async () => {
+  const newChapters = [{ id: 'n1', name: '新书第一章', volumeId: null }];
+  let w = null;
+  w = makeWorld({
+    onCall: (channel) => {
+      if (channel !== 'chapters:move-to') return undefined;
+      // IPC 在途：用户切到另一本书，新书的内存状态已经接管
+      w.state.bookPath = 'C:\\books\\另一本';
+      w.state.chapters = newChapters;
+      w.state.meta = { title: '另一本', chapters: newChapters, updatedAt: 'NEW' };
+      w.state.index = 0;
+      return { meta: { chapters: [{ id: 'c1', name: '一' }], updatedAt: 'OLD' } };
+    }
+  });
+  const res = await w.ui.moveChapterByDrop({ id: 'c1', name: '一', volumeId: null }, { volumeId: null, beforeChapterId: null });
+  assert.deepEqual(res, { ok: true, stale: true }, '回包要给「已丢弃」的结果，不是假装成功');
+  assert.equal(w.state.bookPath, 'C:\\books\\另一本');
+  assert.deepEqual(w.state.chapters, newChapters, '新书的章节表不许被旧书 meta 覆盖');
+  assert.equal(w.state.meta.updatedAt, 'NEW');
+  assert.deepEqual(w.toasts, [], '不能在新书里 toast「已移动章节」');
+  assert.deepEqual([w.renders.list, w.renders.header, w.renders.status], [0, 0, 0]);
+  assert.deepEqual(w.renders.lastOpen, [], '不许把旧书的章记成新书的「上次打开」');
+});
+
 test('moveChapterByDrag：同下标不写盘；成功时改 state / toast / 记住当前章', async () => {
   const w = makeWorld();
   await w.ui.moveChapterByDrag(0, 0);
@@ -540,6 +566,53 @@ test('moveChapterByDrag：IPC 抛错只报错，state 不动', async () => {
   assert.equal(JSON.stringify(w.state.chapters), before);
   assert.deepEqual(w.toasts, [{ message: '移动章节失败：只读', kind: 'error' }]);
   assert.deepEqual([w.renders.list, w.renders.header, w.renders.status], [0, 0, 0]);
+});
+
+test('moveChapterByDrag：在途切书 → 丢弃旧书回包（E2）', async () => {
+  const newChapters = [{ id: 'n1', name: '新书第一章', volumeId: null }];
+  let w = null;
+  w = makeWorld({
+    onCall: (channel) => {
+      if (channel !== 'chapters:move') return undefined;
+      w.state.bookPath = 'C:\\books\\另一本';
+      w.state.chapters = newChapters;
+      w.state.meta = { title: '另一本', chapters: newChapters, updatedAt: 'NEW' };
+      w.state.index = 0;
+      return { from: 2, to: 0, meta: { chapters: [{ id: 'c3' }], updatedAt: 'OLD' } };
+    }
+  });
+  const res = await w.ui.moveChapterByDrag(2, 0);
+  assert.deepEqual(res, { ok: true, stale: true });
+  assert.deepEqual(w.state.chapters, newChapters);
+  assert.equal(w.state.meta.updatedAt, 'NEW');
+  assert.deepEqual(w.toasts, []);
+  assert.deepEqual([w.renders.list, w.renders.header, w.renders.status], [0, 0, 0]);
+  assert.deepEqual(w.renders.lastOpen, []);
+});
+
+// 审计修复 #2（E2）：松手时按起手记下的 chapter.id 结算 —— 原章不在了就不写盘，不按旧下标猜。
+test('endChapterDrag：拖拽期间切书 / 原章消失 → 不写盘（按 id 结算，E2）', async () => {
+  const w = makeWorld();
+  const e1 = chapterEl(0, 100);
+  const hood = volumeEl('v1', 380);
+  w.list.children = [e1, chapterEl(1, 140), hood];
+  w.ui.startChapterDrag(event(100, { currentTarget: e1 }), 0);
+  w.fire('pointermove', event(400)); // 落点先算好
+  // 在途切书：书换了、章节表也换了
+  w.state.bookPath = 'C:\\books\\另一本';
+  w.state.chapters = [{ id: 'n1', name: '新书第一章', volumeId: null }];
+  await w.fire('pointerup');
+  assert.deepEqual(w.calls, [], '换书后松手不许再对旧书写盘');
+
+  // 同一本书内原章消失（列表被重建 / 那一章被删）：同样不按旧下标移动别的章
+  const w2 = makeWorld();
+  const e1b = chapterEl(0, 100);
+  w2.list.children = [e1b, chapterEl(1, 140), volumeEl('v1', 380)];
+  w2.ui.startChapterDrag(event(100, { currentTarget: e1b }), 0);
+  w2.fire('pointermove', event(400));
+  w2.state.chapters = [{ id: 'other', name: '别的章', volumeId: null }];
+  await w2.fire('pointerup');
+  assert.deepEqual(w2.calls, []);
 });
 
 test('setupChapterDrag：在 window 上挂 pointermove / pointerup / pointercancel 三个监听', async () => {
