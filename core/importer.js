@@ -184,6 +184,10 @@ async function listTxtFilesDeep(dir, prefix = '') {
 // （listTxtFilesDeep 只认 isFile），之后读章又跟随链接读到书库外；链接目录还能把任意大目录带进来。
 // 复制前扫一遍来源，有任何链接就整源跳过并说明原因（让作者换成真实文件 / 目录再导入）。
 // 扫描只用于提示，最多记 MAX_SOURCE_LINKS 条，坏目录树不会把扫描拖死。
+// 边界（审计残留修复 #R18 / #56-S7）：扫描 → fs.cp 是两趟，两趟之间新建的链接仍会被复制进去 ——
+// 这是「先扫后复制」方案的固有 TOCTOU。来源是作者本机选的文件夹、导入又受 automation 闸门限制，
+// 再扫一次只缩小窗口不能消除；想彻底关闭得改成逐条复制 + 复制时校验，代价与收益不成比例，
+// 故这里只如实注明，不加第二趟扫描。
 const MAX_SOURCE_LINKS = 100;
 
 async function listSourceLinks(dir, prefix = '') {
@@ -260,6 +264,8 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
 
   try {
     // 审计修复 #56（S7）：整目录复制前先扫符号链接 / 目录联接；有链接就整源跳过（见 listSourceLinks）。
+    // 审计残留修复 #R18：扫描与下面的 copyAsBook 是两趟，两趟之间新建的链接仍会被复制 —— 固有 TOCTOU，
+    // 口径见 listSourceLinks 上方的边界说明。
     if (analysis.kind === 'book') {
       const links = await listSourceLinks(sourceDir);
       if (links.length) {
