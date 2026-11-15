@@ -595,7 +595,9 @@
         const resolved = await resolveOrReport(ref);
         if (!resolved.ok) return resolved;
         const text = resolved.text;
-        const chars = text.length;
+        // 2026-11-15：这里也改成去空白字数（和队列 / 主进程 / 状态栏同一个口径），
+        // 原文里的换行、缩进不再把「到底超没超 30 万字」算歪。
+        const chars = captureLib.countChars(text);
         // 单条 >30 万字本来就不入队；直捕的超长内容点「章节」时这里拦下：不调 IPC，给导入引导。
         if (chars > captureLib.MAX_BODY_CHARS) {
           panel.tooLarge = true;

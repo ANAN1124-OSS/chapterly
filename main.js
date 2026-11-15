@@ -1538,15 +1538,17 @@ function registerIpc() {
   handleBook('capture:commit-record', async (bookPath, payload) => {
     const data = payload && typeof payload === 'object' ? payload : {};
     const text = data.text;
-    // 单条上限沿用捕获正文上限（2026-11-08 起 30 万字）：入了队的记录本来就 ≤30 万字，直捕超限在
+    // 单条上限沿用捕获正文上限（2026-11-08 起 30 万字；2026-11-15 起改成按**去空白字数**挡，
+    // 与界面「N 字」/ 队列 / 渲染层的口径统一）：入了队的记录本来就 ≤30 万字，直捕超限在
     // 渲染层已被引导去「导入小说」；这里再挡一次是防手误 / 绕过界面，超限拆段比硬写进一章更合理。
     if (typeof text !== 'string' || !text.trim()) {
       throw new captureLib.CaptureError('BAD_TEXT', '捕获内容格式不对');
     }
-    if (text.length > captureLib.MAX_BODY_CHARS) {
+    const captureChars = captureLib.countChars(text);
+    if (captureChars > captureLib.MAX_BODY_CHARS) {
       throw new captureLib.CaptureError(
         'TOO_LARGE',
-        `内容太长（${formatCount(text.length)} 字，最多 ${formatCount(captureLib.MAX_BODY_CHARS)} 字）；` +
+        `内容太长（${formatCount(captureChars)} 字，最多 ${formatCount(captureLib.MAX_BODY_CHARS)} 字）；` +
           '请先拆成多段再捕获'
       );
     }

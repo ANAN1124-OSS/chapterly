@@ -131,8 +131,9 @@ test('单条超上限不入队（reason=too-large）；上限值可覆盖，默�
 });
 
 // V108（v1.8.0 WP-24）：chars = 去空白正文字数（与插入后状态栏 / 导入 / 书目同一口径），
-// rawLength = 含空白的原文长度。上限与总量淘汰按 rawLength（内存口径）算，显示按 chars。
-test('V108/WP-24：chars 按 countChars 算、rawLength 才是含空白原文长度；上限与总量都按 rawLength 挡', () => {
+// rawLength = 含空白的原文长度。2026-11-15 放宽：单条上限按 chars（显示口径）挡，
+// 总量 / 淘汰仍按 rawLength（内存口径）。
+test('单条上限按去空白字数挡（2026-11-15 放宽）：原文长、字数够 30 万仍能入队', () => {
   const spaced = '　　甲乙 丙\n\n丁\t戊';
   assert.equal(capture.countChars(spaced), 5, '甲乙丙丁戊 = 5 个非空白字');
   assert.equal(spaced.length, 11, '样本原文 11 个 UTF-16 码元（含全角空格 / 空格 / 换行 / 制表符）');
@@ -146,14 +147,27 @@ test('V108/WP-24：chars 按 countChars 算、rawLength 才是含空白原文长
   assert.equal(queue.get(added.entry.id).rawLength, 11, 'get() 与 list() 同一口径');
   assert.equal(queue.get(added.entry.id).chars, 5);
 
-  // 上限按 rawLength 挡：正文字数只有 5，但原文 11 > 10 → 仍然不入队（内存确实要占 11）
+  // 上限按 chars 挡：字数 5 ≤ 10 → 照常入队（以前按 rawLength 11 > 10 会被丢掉）
   const tight = queueLib.createCaptureQueue({ maxEntryChars: 10 });
-  const rejected = tight.add(spaced);
-  assert.equal(rejected.added, false);
-  assert.equal(rejected.reason, 'too-large');
-  assert.equal(rejected.chars, 5, '拒绝回执里的 chars 也按去空白算');
-  assert.equal(rejected.rawLength, 11);
-  assert.equal(tight.size(), 0);
+  assert.equal(tight.add(spaced).added, true, '字数没超线就不该被原文长度挡掉');
+  // 字数超线才拒：11 个非空白字
+  const tooLong = tight.add('字'.repeat(11));
+  assert.equal(tooLong.added, false);
+  assert.equal(tooLong.reason, 'too-large');
+  assert.equal(tooLong.chars, 11);
+  assert.equal(tooLong.rawLength, 11);
+
+  // 作者 2026-11-15 报的场景：30 万字（去空白）+ 约 1 万个换行 → 原文 31 万，必须能入队
+  const novel = '字'.repeat(300000) + '\n'.repeat(10000);
+  const big = queueLib.createCaptureQueue();
+  const queued = big.add(novel);
+  assert.equal(queued.added, true, '30 万字按字数没超线：换行不该把它顶出去');
+  assert.equal(queued.entry.chars, 300000);
+  assert.equal(queued.entry.rawLength, 310000);
+  // 再超一个字（字数 300001）仍然拒，边界不变
+  const over = queueLib.createCaptureQueue().add('字'.repeat(capture.MAX_BODY_CHARS + 1));
+  assert.equal(over.added, false);
+  assert.equal(over.reason, 'too-large');
 
   // 删除 / 淘汰都按 rawLength 回退，总量不会漂
   const evicting = queueLib.createCaptureQueue({ maxEntries: 10, maxTotalChars: 20 });

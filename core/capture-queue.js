@@ -9,7 +9,10 @@
 //   · maxEntryChars  单条最多 30 万字（=捕获正文上限 core/capture.js MAX_BODY_CHARS，直接引用，
 //                    超了不入队（仍可直接捕获 / 用「正文」插进当前章）；
 //   · maxTotalChars  总量最多 300 万字（=10 条满额），超了淘汰最旧的。
-// 两个 chars 上限都按 **rawLength**（含空白的原文长度）算 —— 它们挡的是内存，不是显示字数。
+// 两个 chars 上限口径不同（2026-11-15 放宽）：单条按 **chars（去空白字数）** 挡 —— 和界面上
+// 「N 字」、单章上限、导入口径是同一个数；总量仍按 **rawLength（含空白的原文长度）** 挡 ——
+// 它挡的是内存，不是显示字数。以前单条也按 rawLength 挡，一段 30 万字的稿子光是换行就超线、
+// 会被静默丢掉（作者 2026-11-15 报的就是这个）。
 // 顺序：entries 从旧到新，list() 也按复制顺序返回（逐条捕获时从上往下点）。
 'use strict';
 
@@ -84,13 +87,14 @@ function createCaptureQueue(options = {}) {
   //   added=false / reason='too-large' 单条超过 maxEntryChars（不入队，调用方可引导直接捕获）；
   //   added=false / reason='duplicate' 与最新一条完全相同（重复触发不入队）；
   //   added=true  / entry 是该条的元数据（id / chars / rawLength / at / preview / previewText）。
-  // chars 是去空白正文字数（V108：与插入后状态栏同一口径）；maxEntryChars 按 rawLength 挡（内存口径）。
+  // chars 是去空白正文字数（V108：与插入后状态栏同一口径），maxEntryChars 按它挡（2026-11-15 放宽）；
+  // maxTotalChars / 淘汰仍按 rawLength（内存口径）。
   function add(text) {
     const source = typeof text === 'string' ? text : '';
     const rawLength = source.length;
     if (!source.trim()) return { added: false, reason: 'empty' };
     const chars = countChars(source);
-    if (rawLength > maxEntryChars) return { added: false, reason: 'too-large', chars, rawLength };
+    if (chars > maxEntryChars) return { added: false, reason: 'too-large', chars, rawLength };
     const newest = entries[entries.length - 1];
     if (newest && newest.text === source) {
       return { added: false, reason: 'duplicate', entry: metaOf(newest) };
