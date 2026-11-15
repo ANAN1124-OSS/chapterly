@@ -2755,8 +2755,9 @@
     const chars = chaptersLib.countChars(value);
     // 试用分支 B（粘贴大段优化）：长串插入不走 Chromium 的编辑管线。execCommand('insertText') /
     // 原生粘贴对十几万字是逐行强制布局的秒级路径（Chromium issue 341564372）；直接把整串赋给
-    // .value 只排一次版。代价是这一步进不了原生撤销栈，所以留一次性快照 + 可点的「撤销」，
-    // 并在下一次真实输入时作废（onEditorInput 里清）；阈值以下的行为一个字节都不变。
+    // .value 只排一次版。代价是浏览器会把撤销栈整个清空（不只是这一步，之前的编辑历史也没了），
+    // 所以留一次性快照 + 可点的「撤销」+ 正文上的第一下 Ctrl+Z 拦截；下一次真实输入时快照作废
+    // （onEditorInput 里清）。阈值以下的行为一个字节都不变。
     if (editorLogic.shouldBulkWrite(value)) {
       try {
         editorEl.focus({ preventScroll: true });
@@ -2775,7 +2776,7 @@
       editorEl.blur();
       bulkWriteUndo = { before, after: expected, start, end };
       toastActionable(
-        `已插入 ${formatCount(chars)} 字（大段插入没进 Ctrl+Z 撤销栈，可用「撤销」退回）`,
+        `已插入 ${formatCount(chars)} 字（大段插入会清掉撤销历史：Ctrl+Z 或「撤销」退回到插入前）`,
         '撤销',
         undoBulkWrite
       );
@@ -5500,6 +5501,18 @@
     });
 
     editorEl.addEventListener('input', onEditorInput);
+    // 大段插入（试用分支 B）后的第一下 Ctrl+Z：程序化赋值会把浏览器的撤销栈整个清空，
+    // 原生撤销对这一步（连同之前的编辑历史）已经没反应；这里把它接到一次性快照上，
+    // 让「插入 → Ctrl+Z」至少能退回到插入前。只有快照还在、焦点在正文时才生效，
+    // 不会抢别的输入框（书架搜索 / 查找替换 / 跳章）里的 Ctrl+Z。
+    editorEl.addEventListener('keydown', (event) => {
+      if (!bulkWriteUndo) return;
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
+      const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+      if (key !== 'z') return;
+      event.preventDefault();
+      undoBulkWrite();
+    });
     setupEditorMarks();
 
     setupSidebarResizer();
@@ -5547,6 +5560,15 @@
     api.onClipboardChanged((payload) => {
       const chars = Number(payload && payload.chars) || 0;
       if (!Number.isFinite(chars) || chars <= 0) return;
+      // 单条超限（主进程 captureQueue.add 拒了）：明说原因，别让作者以为「复制了却没记上」是灵异事件。
+      if (payload && payload.tooLarge === true) {
+        toast(
+          `这段 ${formatCount(chars)} 字超过单条上限（30 万字），没有自动记录；` +
+            '按 Ctrl+Alt+V 可直接捕获，或用「导入小说…」按章节拆',
+          'warn'
+        );
+        return;
+      }
       if (captureUi.isOpen()) {
         void captureUi.refreshQueue();
         return;

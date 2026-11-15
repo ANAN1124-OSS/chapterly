@@ -318,7 +318,7 @@
     if (state.marks.tooLargeWarned) return;
     state.marks.tooLargeWarned = true;
     toast(
-      '正文超过 30 万字，暂时不画标记层（不可见字符 / 超长段落 / 当前段落高亮）；正文和保存不受影响',
+      '正文太大（超过 30 万字，或原文过长），暂时不画标记层（不可见字符 / 超长段落 / 当前段落高亮）；正文和保存不受影响',
       'warn'
     );
   }

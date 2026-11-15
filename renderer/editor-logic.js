@@ -67,6 +67,9 @@
   // 覆盖层最多渲染这么多字符的标记：再长就只给「超长段落」结论、不往 DOM 里塞标记。
   // （正常一章远小于这个数；「整本一章」导入的百万字单章会走到这里。）
   const MAX_MARK_CHARS = 300000;
+  // 原文长度兜底（含空白）：正常排版（换行 / 缩进 / 空行）顶多多两成，给到 2 倍足够；
+  // 超过这一档说明是「空白灌水」，即使字数没超也不建镜像。
+  const MAX_MARK_RAW_CHARS = MAX_MARK_CHARS * 2;
   // 超长段落扫描上限：纯字符串遍历，很快；病态输入兜底。
   const MAX_LONG_PARAGRAPH_CHARS = 2000000;
   const LONG_PARAGRAPH_DEFAULT = 500; // 提案 4.1：段落 > 500 字提示
@@ -226,13 +229,17 @@
     };
   }
 
-  // 标记层字数门控（v0.8.6 R5，代码审计 F9）：标记层是「整章正文的 DOM 镜像」，正文超过
-  // MAX_MARK_CHARS 时每次按键（80ms 防抖）都会重建约 1MB 文本的 DOM——只开「当前段落高亮」
-  // 也会走到这里。所以渲染层在入口就整层不建；这个纯函数只负责判边界，不碰 DOM、不读盘。
-  // 边界：正好 300000 字仍然画（和 invisibleMarks / longParagraphs 的口径一致：> 才跳过）；
-  // 坏输入按空文本处理（和 toText 的其它函数一致），不会抛错。
+  // 标记层字数门控（v0.8.6 R5，代码审计 F9）：标记层是「整章正文的 DOM 镜像」，正文太大时
+  // 每次按键（80ms 防抖）都要重建约 1MB 文本的 DOM——只开「当前段落高亮」也会走到这里。
+  // 所以渲染层在入口就整层不建；这个纯函数只负责判边界，不碰 DOM、不读盘。
+  // 口径（2026-11-15 统一）：主口径 = **去空白字数**（与界面「N 字」/ 单章上限同一口径），
+  // 否则一段 30 万字的稿子（原文 31 万字符，光换行就上万）会被判「超长」，字数与状态栏对不上；
+  // 原文长度留 2 倍余量（MAX_MARK_RAW_CHARS）兜底，挡住「空白灌水」把 DOM 镜像白白撑大。
+  // 边界：正好 300000 字（且原文 ≤ 60 万）仍然画（> 才跳过）；坏输入按空文本处理。
   function marksTooLarge(text) {
-    return toText(text).length > MAX_MARK_CHARS;
+    const source = toText(text);
+    if (source.length > MAX_MARK_RAW_CHARS) return true;
+    return countChars(source) > MAX_MARK_CHARS;
   }
 
   function sanitizeMaxMarks(value) {
@@ -248,7 +255,7 @@
     const maxMarks = sanitizeMaxMarks(options.maxMarks);
     const source = toText(text);
     const counts = { fullwidth: 0, trailing: 0 };
-    if (source.length > MAX_MARK_CHARS) {
+    if (marksTooLarge(source)) {
       return { items: [], counts, maxMarks, truncated: false, tooLarge: true };
     }
     const items = [];
@@ -455,6 +462,7 @@
 
   return {
     MAX_MARK_CHARS,
+    MAX_MARK_RAW_CHARS,
     MAX_LONG_PARAGRAPH_CHARS,
     LONG_PARAGRAPH_DEFAULT,
     LONG_PARAGRAPH_LIMITS,

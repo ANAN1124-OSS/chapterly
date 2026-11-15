@@ -636,6 +636,42 @@ module.exports = async function group72Capture(t) {
     { logNames: logs.names }
   );
 
+  // 72i2. 大段插入通道（试用分支 B）：> 20000 字走「整串赋值」，不再进 Chromium 编辑管线
+  // 2 万字以下仍是原生 execCommand 路径（本组前面的插入已经覆盖），这一小节只钉
+  // 「大段」这条新分支：内容一字不差 / 光标停在末尾 / 标脏 / 提示条带「撤销」/ 点撤销能还原。
+  await exec('window.__cwTest.clearToasts()');
+  const beforeBulk = await exec('window.__cwTest.text()');
+  const caretBulk = await exec('window.__cwTest.caret()');
+  const bulkText = '大'.repeat(20001);
+  await exec(`window.__cwTest.openCapture(${JSON.stringify(bulkText)})`);
+  await waitFor('window.__cwTest.captureOpen() === true');
+  const bulkApplied = JSON.parse(
+    await exec('window.__cwTest.captureApplyBody({ pending: true }).then((r) => JSON.stringify(r || null))')
+  );
+  const afterBulk = await exec('window.__cwTest.text()');
+  const expectedBulk = beforeBulk.slice(0, caretBulk) + bulkText + beforeBulk.slice(caretBulk);
+  check(
+    '剪贴板面板：>2 万字「正文」插入一字不差（大段走整串赋值通道）',
+    Boolean(bulkApplied && bulkApplied.ok) && afterBulk === expectedBulk,
+    { ok: bulkApplied && bulkApplied.ok, got: afterBulk.length, want: expectedBulk.length }
+  );
+  check(
+    '剪贴板面板：大段插入后光标停在插入内容末尾、正文标脏',
+    (await exec('window.__cwTest.caret()')) === caretBulk + bulkText.length &&
+      (await exec('window.__cwTest.dirty()')) === true
+  );
+  const undoButtons = await exec("document.querySelectorAll('.toast-action').length");
+  check('剪贴板面板：大段插入后提示条带「撤销」动作', undoButtons > 0, { undoButtons });
+  await exec(
+    "document.querySelectorAll('.toast-action')[document.querySelectorAll('.toast-action').length - 1].click()"
+  );
+  await exec('window.__cwTest.closeCapture()');
+  check(
+    '剪贴板面板：大段插入点「撤销」还原成插入前（正文与光标）',
+    (await exec('window.__cwTest.text()')) === beforeBulk &&
+      (await exec('window.__cwTest.caret()')) === caretBulk
+  );
+
   // 72j. 关掉后台监听：队列立刻清空（隐私口径），之后再复制也不入队
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
