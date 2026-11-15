@@ -608,6 +608,10 @@ function logError(kind, err, extra = {}) {
   }
 }
 
+// 审计修复 #32（▲V305）：core/storage 的「书目重复章节 id 已按位置重新分配」要留一条诊断日志，
+// 但 core 模块不持有日志 store —— 启动时把现成的 logError 注入一次（写不进去只吞掉，绝不影响读书目）。
+storage.setDiagnostics({ logError });
+
 // 配置里「指向磁盘」的项被来源不明地改动时记一条 info 日志：
 // 只记字段名 —— 绝不记路径值，也不把任何路径回给渲染层（日志里没有本机目录）。
 function logRejectedConfigPaths(fields) {

@@ -217,6 +217,64 @@ function chapterIndexOrThrow(meta, chapterId) {
 // 时 20000 章最坏约 4×10^8 次探测，而 readBookMeta 每次操作都会跑一遍。
 // 游标只前进：扫过的号要么已被 used 占住（越过它），要么小于下一个位置的起点 i+1（以后也不会
 // 用到），所以不用回头重扫；补出来的编号与旧算法逐项一致（见 tests/storage.test.js 的等价性用例）。
+// 审计修复 #32（▲V305）：书目里「本来就有」的重复章节 id 自愈。
+// C32 只修「补 id 时撞车」，没覆盖外部工具（同步盘冲突合并 / 脚本批量改 / 手改 JSON）写出的
+// 「两条记录同 id」：findChapterIndex 只认第一个，第二个永远命中不到 —— 改名 / 删除 / 保存会改错章。
+// 口径：第一个保留原 id（既有事实不动），第二个及以后按「缺 id」同一套规则重新分配（`used` 里已有
+// 全部 id，补出来的号也进 `used`），并把「修过哪几条」返回给调用方落诊断日志。
+// 返回 [{ index, from, to }]；没有重复时是空数组。纯函数，单测直接对着它核规则。
+function reassignDuplicateChapterIds(ids) {
+  const used = new Set(ids);
+  const seen = new Set();
+  const repairs = [];
+  let cursor = 1;
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    if (!seen.has(id)) {
+      seen.add(id);
+      continue;
+    }
+    let n = Math.max(cursor, i + 1);
+    let next = '';
+    do {
+      next = `ch_${chaptersLib.pad3(n)}`;
+      n += 1;
+    } while (used.has(next));
+    used.add(next);
+    cursor = n;
+    ids[i] = next;
+    repairs.push({ index: i, from: id, to: next });
+  }
+  return repairs;
+}
+
+// 审计修复 #32（▲V305）：诊断日志钩子。core 模块不持有日志 store（在 main.js 里），
+// 启动时由 main 注入现成的 logError 一次；没注入 / 写失败都静默 —— 日志绝不能影响读书目。
+// 同一本书在一个进程里只记一条（readBookMeta 会被书架扫描 / 打开 / 保存反复调用）。
+let diagnosticLogError = null;
+const reportedDuplicateIdBooks = new Set();
+
+function setDiagnostics(io = {}) {
+  diagnosticLogError = io && typeof io.logError === 'function' ? io.logError : null;
+}
+
+function reportDuplicateChapterIds(bookPath, repairs) {
+  if (!diagnosticLogError || !repairs.length) return;
+  try {
+    const key = pathUtils.normalizePath(bookPath);
+    if (reportedDuplicateIdBooks.has(key)) return;
+    if (reportedDuplicateIdBooks.size >= 500) reportedDuplicateIdBooks.clear();
+    reportedDuplicateIdBooks.add(key);
+    const detail = repairs.map((item) => `第 ${item.index + 1} 条 ${item.from}→${item.to}`).join('；');
+    diagnosticLogError('meta-dup-id', {
+      code: 'META_DUP_CHAPTER_ID',
+      message: `书目里有 ${repairs.length} 个重复章节 id，已按位置重新分配（${detail}）；书：${path.basename(bookPath)}`
+    });
+  } catch {
+    /* 日志失败不影响读书目 */
+  }
+}
+
 function backfillMissingChapterIds(chapters) {
   const used = new Set();
   for (const chapter of chapters) {
@@ -321,6 +379,10 @@ async function readBookMeta(bookPath) {
   // 已有 id（哪怕是坏值）一个都不改写 —— 那是书目的既有事实。
   // 审计修复 #22（P6）：探测改成单调游标（O(n²) → O(n)），编号口径与上面一致。
   const backfilledIds = backfillMissingChapterIds(meta.chapters);
+  // 审计修复 #32（▲V305）：补完缺 id 之后再修「本来就有」的重复 id（第二个及以后重分配）。
+  // 修过的书目按「书」只记一条诊断日志（meta-dup-id）；正常书目这条分支什么都不做。
+  const duplicateRepairs = reassignDuplicateChapterIds(backfilledIds);
+  if (duplicateRepairs.length) reportDuplicateChapterIds(bookPath, duplicateRepairs);
   meta.chapters = meta.chapters.map((c, i) =>
     chaptersLib.cleanChapterMeta({
       ...c,
@@ -2431,6 +2493,10 @@ module.exports = {
   readBookMeta,
   // 审计修复 #22（P6）：缺 id 回填的编号规则（单调游标 O(n)），单测直接对着它做新旧等价性核对
   backfillMissingChapterIds,
+  // 审计修复 #32（▲V305）：重复章节 id 的「第二个及以后重分配」规则（纯函数，单测直接核）
+  reassignDuplicateChapterIds,
+  // 审计修复 #32（▲V305）：main.js 启动时注入诊断日志钩子（core 不持有 log store）
+  setDiagnostics,
   // 1.6.0 A3：修复流程先写临时文件再换名，归一逻辑与 writeBookMeta 共用这一份
   prepareBookMeta,
   writeBookMeta,

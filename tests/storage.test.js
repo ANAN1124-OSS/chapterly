@@ -2137,3 +2137,63 @@ test('保存前校验（V301）：expectedMtimeMs 与磁盘一致 → 放行；�
   await storage.prepareChapterSave(bookPath, chapter.id);
   await storage.prepareChapterSave(bookPath, chapter.id, { expectedMtimeMs: 0 });
 });
+
+// 审计修复 #32（▲V305）：书目已有重复章节 id 时，第一个保留、第二个及以后按「缺 id」同一套规则
+// 重新分配 —— findChapterIndex 只认第一个，不修就会改名 / 删除 / 保存到错误的章。
+test('审计 #32（▲V305）：重复章节 id 的第二个及以后重分配（第一个保留、编号不撞车）', () => {
+  const ids = ['ch_002', 'ch_002', 'ch_002', 'ch_001'];
+  const repairs = storage.reassignDuplicateChapterIds(ids);
+  assert.deepEqual(
+    repairs.map((item) => [item.index, item.from, item.to]),
+    [
+      [1, 'ch_002', 'ch_003'],
+      [2, 'ch_002', 'ch_004']
+    ]
+  );
+  assert.equal(ids[0], 'ch_002', '第一个保留原 id（既有事实不动）');
+  assert.equal(new Set(ids).size, ids.length, '修完必须唯一');
+  assert.deepEqual(storage.reassignDuplicateChapterIds(['ch_001', 'ch_005']), [], '没有重复时什么都不做');
+});
+
+test('审计 #32（▲V305）：读书目时自愈重复 id、按新 id 操作只作用到那一章、同一本书只记一条日志', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '重复 id 书');
+  await storage.createChapter(bookPath, 1, '第二章');
+  const metaPath = path.join(bookPath, '书目.json');
+  const disk = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+  const firstFile = disk.chapters[0].file;
+  const secondFile = disk.chapters[1].file;
+  disk.chapters = [
+    { id: 'ch_007', file: firstFile, name: '第一章' },
+    { id: 'ch_007', file: secondFile, name: '第二章' }
+  ];
+  disk.fileSeq = 2;
+  await fs.writeFile(metaPath, JSON.stringify(disk, null, 2), 'utf8');
+
+  const logged = [];
+  storage.setDiagnostics({ logError: (kind, err) => logged.push({ kind, ...err }) });
+  try {
+    const meta = await storage.readBookMeta(bookPath);
+    const ids = meta.chapters.map((chapter) => chapter.id);
+    assert.equal(ids[0], 'ch_007', '第一个保留原 id');
+    assert.notEqual(ids[1], 'ch_007', '第二个必须重分配');
+    assert.equal(new Set(ids).size, 2, '修完必须唯一');
+    assert.equal(logged.length, 1, '修过的书目要留一条诊断日志');
+    assert.equal(logged[0].kind, 'meta-dup-id');
+    assert.equal(logged[0].code, 'META_DUP_CHAPTER_ID');
+    assert.match(logged[0].message, /重复章节 id/);
+
+    // 书架扫描 / 打开会反复读同一本书：结果稳定、日志不重复写
+    const again = await storage.readBookMeta(bookPath);
+    assert.deepEqual(again.chapters.map((chapter) => chapter.id), ids);
+    assert.equal(logged.length, 1, '同一本书一个进程只记一条');
+
+    // 按第一个 id 改名只作用到第一章（第二个章现在有自己的 id）
+    await storage.renameChapter(bookPath, ids[0], '只改第一章');
+    const after = await storage.readBookMeta(bookPath);
+    assert.equal(after.chapters.find((chapter) => chapter.file === firstFile).name, '只改第一章');
+    assert.equal(after.chapters.find((chapter) => chapter.file === secondFile).name, '第二章');
+  } finally {
+    storage.setDiagnostics({});
+  }
+});
