@@ -204,6 +204,102 @@ test('publicInfo：剥掉内容字段、补 count；坏值回注入的默认文�
   assert.equal(reader.publicInfo('坏值').count, 0);
 });
 
+// ---------------------------------------------------------------- ① b E13（审计修复 #16）
+
+test('E13：decode / parse 抛错都兜成结构化失败（绝不把异常冒泡到 IPC）', () => {
+  const txt = require('../core/txt');
+  const original = txt.decodeBuffer;
+  const failOptions = (parse) => ({
+    field: 'words',
+    parse,
+    codes: { ...demoOptions().codes, parseFailed: 'DEMO_PARSE_FAILED' },
+    messages: { ...demoOptions().messages, parseFailed: '演示词表解析失败（兜底）' }
+  });
+
+  // ① 解码层抛错（parseFailed 显式注入 → 用注入的码与文案）
+  const reader = wordlist.createReader(failOptions((text) => ({ words: text.split(/\r?\n/).filter(Boolean), stats: {} })));
+  txt.decodeBuffer = () => {
+    throw new Error('TextDecoder 炸了');
+  };
+  try {
+    assert.deepEqual(reader.decodeBuffer(Buffer.from('色情', 'utf8')), {
+      ok: false,
+      code: 'DEMO_PARSE_FAILED',
+      message: '演示词表解析失败（兜底）'
+    });
+  } finally {
+    txt.decodeBuffer = original;
+  }
+  // 解码返回非字符串也按「解析不了」处理，不再在 .includes 上抛 TypeError
+  txt.decodeBuffer = () => null;
+  try {
+    assert.equal(reader.decodeBuffer(Buffer.from('色情', 'utf8')).code, 'DEMO_PARSE_FAILED');
+  } finally {
+    txt.decodeBuffer = original;
+  }
+
+  // ② 行解析抛错
+  const broken = wordlist.createReader(
+    failOptions(() => {
+      throw new Error('parse 炸了');
+    })
+  );
+  assert.deepEqual(broken.decodeBuffer(Buffer.from('色情\n暴力', 'utf8')), {
+    ok: false,
+    code: 'DEMO_PARSE_FAILED',
+    message: '演示词表解析失败（兜底）'
+  });
+
+  // ③ 两个可选键都不传 → 共享默认码 / 默认文案（老调用方 / 演示读取器零改动）
+  const plain = createDemoReader({
+    parse: () => {
+      throw new Error('parse 炸了');
+    }
+  });
+  const fallback = plain.decodeBuffer(Buffer.from('色情', 'utf8'));
+  assert.equal(fallback.ok, false);
+  assert.equal(fallback.code, 'WORDLIST_PARSE_FAILED');
+  assert.match(fallback.message, /解析失败/);
+});
+
+test('E13：真实消费者（校对 / 敏感词）的兜底用各自错误码，读盘路径同样不抛', async () => {
+  const txt = require('../core/txt');
+  const original = txt.decodeBuffer;
+  const dir = await mkTmp();
+  const file = path.join(dir, '词表.txt');
+  await fsp.writeFile(file, '色情\r\n暴力\r\n', 'utf8');
+  txt.decodeBuffer = () => {
+    throw new Error('boom');
+  };
+  try {
+    const glossaryFail = await glossary.readGlossaryFile(file);
+    assert.equal(glossaryFail.ok, false);
+    assert.equal(glossaryFail.code, 'GLOSSARY_PARSE_FAILED');
+    assert.equal(glossaryFail.configured, true, '读盘路径的 configured / name / size 仍要如实回');
+    assert.equal(glossaryFail.name, '词表.txt');
+    assert.equal(glossaryFail.size, Buffer.byteLength('色情\r\n暴力\r\n', 'utf8'));
+    // 多份合并路径的 per-list 提示走 glossaryErrorText 的新分支（不是落到「读不了这份词表」）
+    const bundle = await glossary.readGlossaryFiles([file]);
+    assert.equal(bundle.ok, false);
+    assert.equal(bundle.lists[0].error, '词表内容解析失败（文件可能不是纯文本），请检查后重试');
+
+    const sensitiveFail = await sensitive.readWordListFile(file);
+    assert.equal(sensitiveFail.ok, false);
+    assert.equal(sensitiveFail.code, 'WORD_LIST_PARSE_FAILED');
+    assert.match(sensitiveFail.message, /解析失败/);
+
+    // 单文件解码入口同样兜住（不是只有读盘路径）
+    assert.equal(glossary.decodeGlossaryBuffer(Buffer.from('色情\n', 'utf8')).code, 'GLOSSARY_PARSE_FAILED');
+    assert.equal(sensitive.decodeWordListBuffer(Buffer.from('色情\n', 'utf8')).code, 'WORD_LIST_PARSE_FAILED');
+  } finally {
+    txt.decodeBuffer = original;
+  }
+  // 恢复后同一份文件照常读出来（兜底没有把读取器带坏）
+  const recovered = await glossary.readGlossaryFile(file);
+  assert.equal(recovered.ok, true);
+  assert.deepEqual(recovered.entries.map((entry) => entry.term), ['色情', '暴力']);
+});
+
 // ---------------------------------------------------------------- ② 真实消费者
 
 test('敏感词 / 校对词表：同一份字节在两边得到各自的错误码，正常文件结构同源', async () => {

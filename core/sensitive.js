@@ -114,7 +114,9 @@ const READER = wordlist.createReader({
     notConfigured: 'WORD_LIST_NOT_CONFIGURED',
     missing: 'WORD_LIST_MISSING',
     unreadable: 'WORD_LIST_UNREADABLE',
-    notFile: 'WORD_LIST_NOT_FILE'
+    notFile: 'WORD_LIST_NOT_FILE',
+    // E13（审计修复 #16）：decode / parse 抛错时的独立错误码（共享核心的兜底用）
+    parseFailed: 'WORD_LIST_PARSE_FAILED'
   },
   messages: {
     emptyFile: '词表是空文件（每行一个词）',
@@ -124,7 +126,8 @@ const READER = wordlist.createReader({
     badEncoding: '词表编码无法识别（不是 UTF-8 / UTF-16 / GBK 文本），请另存为 UTF-8 的 txt',
     notConfigured: '还没有指定敏感词表（应用不内置词表，请先选一个自己的 txt）',
     publicEmpty: '还没有指定敏感词表',
-    notFile: '选中的不是一个文件，请选词表 txt'
+    notFile: '选中的不是一个文件，请选词表 txt',
+    parseFailed: '词表内容解析失败（文件可能不是「每行一个词」的纯文本），请检查后重试'
   }
 });
 

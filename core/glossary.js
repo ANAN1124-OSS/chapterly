@@ -151,7 +151,9 @@ const READER = wordlist.createReader({
     notConfigured: 'GLOSSARY_NOT_CONFIGURED',
     missing: 'GLOSSARY_MISSING',
     unreadable: 'GLOSSARY_UNREADABLE',
-    notFile: 'GLOSSARY_NOT_FILE'
+    notFile: 'GLOSSARY_NOT_FILE',
+    // E13（审计修复 #16）：decode / parse 抛错时的独立错误码（共享核心的兜底用）
+    parseFailed: 'GLOSSARY_PARSE_FAILED'
   },
   messages: {
     emptyFile: '词表是空文件（每行一个词，可写「错词 → 建议」）',
@@ -161,7 +163,8 @@ const READER = wordlist.createReader({
     badEncoding: '词表编码无法识别（不是 UTF-8 / UTF-16 / GBK 文本），请另存为 UTF-8 的 txt',
     notConfigured: '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的五条规则）',
     publicEmpty: '还没有指定校对词表',
-    notFile: '选中的不是一个文件，请选校对词表 txt'
+    notFile: '选中的不是一个文件，请选校对词表 txt',
+    parseFailed: '词表内容解析失败（文件可能不是「每行一个词」的纯文本），请检查后重试'
   }
 });
 
@@ -191,6 +194,9 @@ function glossaryErrorText(code) {
       return '词表编码认不出来，请存成 UTF-8 或 GBK 的 txt';
     case 'GLOSSARY_EMPTY':
       return '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）';
+    case 'GLOSSARY_PARSE_FAILED':
+      // E13（审计修复 #16）：decode / parse 抛错走这里（共享核心兜底后的结构化失败）
+      return '词表内容解析失败（文件可能不是纯文本），请检查后重试';
     default:
       return '读不了这份词表';
   }

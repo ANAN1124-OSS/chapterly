@@ -11,6 +11,12 @@
 //   · 空文件 / 超过 4MB / 带 NUL 的二进制 / 解码出 U+FFFD 的坏编码 各有独立错误码；
 //   · 公开信息永远不含词条正文，只给数量与状态。
 //
+// E13（审计修复 #16）：契约里的「绝不抛异常」以前只是约定 —— txt.decodeBuffer / parse 真抛错时
+// 整条路径会冒泡到 IPC，一次坏词表就让整次校对失败。现在 decode 与 parse 各自包一层兜底：
+// 抛错 = 结构化失败（parseFailed 码 + 文案），调用方照常拿回包、界面照常给提示。
+// parseFailed 是可选项：不传时用共享默认（STANDARD_PARSE_FAILED / DEFAULT_PARSE_FAILED_MESSAGE），
+// 各模块想给自己的错误码就传 codes.parseFailed / messages.parseFailed。
+//
 // 纯 Node 模块（主进程 / 单测用），不依赖 Electron。
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -20,10 +26,16 @@ const errorText = require('./error-text');
 // 词表文件上限：再大就不像「每行一个词」的词表了，读进来只会拖慢整本检查
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
+// E13（审计修复 #16）：解码 / 行解析抛错时的共享默认错误码与文案（各模块可覆盖）。
+const STANDARD_PARSE_FAILED = 'WORDLIST_PARSE_FAILED';
+const DEFAULT_PARSE_FAILED_MESSAGE = '词表内容解析失败（文件可能不是「每行一个词」的纯文本），请检查后重试';
+
 // 生成一份「场景读取器」。options：
 //   codes     必填 · { empty, tooBig, badEncoding, notConfigured, missing, unreadable, notFile }
+//             可选 · parseFailed（decode / parse 抛错时的错误码，缺省 STANDARD_PARSE_FAILED）
 //   messages  必填 · { emptyFile, emptyList, tooBig, binary, badEncoding,
 //                      notConfigured, publicEmpty, notFile }
+//             可选 · parseFailed（缺省 DEFAULT_PARSE_FAILED_MESSAGE）
 //   parse     必填 · (text) => { words | entries, stats }（各模块自己的行解析）
 //   field     必填 · 'words' | 'entries'：解析结果的数组字段名，也是回包字段名
 //   notConfiguredExtra 可选 · 未配置回包额外带的键（校对词表带 count: 0，敏感词不带）
@@ -63,6 +75,13 @@ function createReader(options) {
   for (const key of MESSAGE_KEYS) needString(messages, key, 'messages');
   const code = (key) => needString(codes, key, 'codes');
   const message = (key) => needString(messages, key, 'messages');
+  // E13（审计修复 #16）：parseFailed 是可选键 —— 没传就用共享默认（不新增必填项，老调用方不受影响）。
+  const parseFailedCode =
+    typeof codes.parseFailed === 'string' && codes.parseFailed ? codes.parseFailed : STANDARD_PARSE_FAILED;
+  const parseFailedMessage =
+    typeof messages.parseFailed === 'string' && messages.parseFailed
+      ? messages.parseFailed
+      : DEFAULT_PARSE_FAILED_MESSAGE;
   const extra = source.notConfiguredExtra && typeof source.notConfiguredExtra === 'object'
     ? { ...source.notConfiguredExtra }
     : {};
@@ -83,11 +102,27 @@ function createReader(options) {
     if (!hasUtf16Bom && buffer.includes(0)) {
       return { ok: false, code: code('badEncoding'), message: message('binary') };
     }
-    const text = txtLib.decodeBuffer(buffer);
+    // E13（审计修复 #16）：decode / parse 各包一层 —— 两者都是「外部可注入 / 可被病态输入激怒」的
+    // 环节（txt.decodeBuffer 走 TextDecoder，parse 是各模块自己的行解析）。真抛错时绝不让它冒泡到
+    // IPC，回一份和其它失败同形状的结构化结果（调用方 / 界面不用为它写第二条分支）。
+    let text;
+    try {
+      text = txtLib.decodeBuffer(buffer);
+    } catch {
+      return { ok: false, code: parseFailedCode, message: parseFailedMessage };
+    }
+    if (typeof text !== 'string') {
+      return { ok: false, code: parseFailedCode, message: parseFailedMessage };
+    }
     if (text.includes('\uFFFD')) {
       return { ok: false, code: code('badEncoding'), message: message('badEncoding') };
     }
-    const parsed = parse(text);
+    let parsed;
+    try {
+      parsed = parse(text);
+    } catch {
+      return { ok: false, code: parseFailedCode, message: parseFailedMessage };
+    }
     const items = parsed && Array.isArray(parsed[field]) ? parsed[field] : [];
     if (!items.length) {
       return { ok: false, code: code('empty'), message: message('emptyList') };
