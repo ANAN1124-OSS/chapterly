@@ -43,6 +43,13 @@ const INDEX_VERSION = 2;
 // 64 MB 够约 500 本以上的架子；超限记 INDEX_TOO_LARGE（与索引内容坏的 CORRUPT 区分），
 // 按空索引重建 —— 重建会把超限文件覆盖成正常大小，不影响正文。
 const MAX_INDEX_READ_BYTES = 64 * 1024 * 1024;
+// 审计修复 #33（▲V307）：索引是单文件，读侧 64 MB 只管「外部换来的大文件别顶爆进程」，
+// 写侧还要有总量预算 —— 200 本 × 数 MB 位图 = 数百 MB 的单文件，每次 flush 整份重写（写放大 =
+// 文件大小），启动首载还要整份 parse。32 MB 仍远高于真实书架（280 本 × 25 万字 ≈ 22 MB）：
+// 正常书架一本都不会被淘汰；超限时按「书目最后修改时间从旧到新」丢掉整本书的位图（章节指纹保留），
+// 被丢的书以后永远当候选、逐章核对 —— 只降速、不漏结果。
+// 只在写盘时压缩：下一次有书变脏 / 换书架根时新人选会被重新评估。
+const MAX_INDEX_BYTES = 32 * 1024 * 1024;
 
 // Bloom 参数：每项 8 bit、3 个哈希。一本书 8 万个双字 ≈ 80KB，单项误报率约 3%。
 const BITS_PER_ITEM = 8;
@@ -418,12 +425,15 @@ function sanitizeBook(raw) {
   const chapters = Array.isArray(raw.chapters)
     ? raw.chapters.map(sanitizeChapter).filter(Boolean)
     : [];
-  const bloom = typeof raw.bloom === 'string' ? raw.bloom : '';
+  // 审计修复 #33（▲V307）：总量预算淘汰过的书（bloomDropped）一律按「没有位图」读回，
+  // 防止手改 / 坏索引里同时留着 bloom 与 bloomDropped 两个矛盾的字段。
+  const bloomDropped = raw.bloomDropped === true;
+  const bloom = bloomDropped ? '' : typeof raw.bloom === 'string' ? raw.bloom : '';
   const bloomBits = Number(raw.bloomBits);
-  const bits = Number.isFinite(bloomBits) ? Math.max(0, Math.round(bloomBits)) : 0;
+  const bits = bloomDropped ? 0 : Number.isFinite(bloomBits) ? Math.max(0, Math.round(bloomBits)) : 0;
   // E5（审计修复 #8）：位图 CRC32；缺失记 -1（解码一定失败 → 当候选，不影响正确性）。
   const rawCrc = Number(raw.bloomCrc);
-  const bloomCrc = Number.isFinite(rawCrc) ? Math.floor(rawCrc) >>> 0 : -1;
+  const bloomCrc = bloomDropped ? 0 : Number.isFinite(rawCrc) ? Math.floor(rawCrc) >>> 0 : -1;
   const metaMtimeMs = Number(raw.metaMtimeMs);
   const lastModified = Number(raw.lastModified);
   return {
@@ -436,10 +446,15 @@ function sanitizeBook(raw) {
     bloom: bloom.slice(0, MAX_BLOOM_BITS), // base64 字符数上限（异常输入兜底）
     bloomBits: bits,
     bloomCrc,
-    itemCount: Number.isFinite(Number(raw.itemCount)) ? Math.max(0, Math.round(Number(raw.itemCount))) : 0,
+    itemCount:
+      bloomDropped || !Number.isFinite(Number(raw.itemCount))
+        ? 0
+        : Math.max(0, Math.round(Number(raw.itemCount))),
     // P3（审计修复 #19）：这本书的双字集合超过 MAX_BLOOM_ITEMS，主动放弃位图（永远当候选）。
     // 老索引没有这个字段 → false，照旧按 bloom 字不空就走位图。
     bloomOmitted: raw.bloomOmitted === true,
+    // 审计修复 #33（▲V307）：索引总量超预算时被丢掉位图（章节指纹保留，永远当候选、逐章核对）。
+    bloomDropped,
     chapters
   };
 }
@@ -468,6 +483,47 @@ function parseIndex(text) {
 
 function serializeIndex(index) {
   return JSON.stringify(index);
+}
+
+// 审计修复 #33（▲V307）：把整份索引压进总量预算。
+// 淘汰顺序 = 书目最后修改时间（lastModified：书目 mtime 与全部章节 mtime 的最大值）从旧到新。
+// 不用「搜索 LRU」：每次搜索都会把每本书的位图查一遍，按搜索次数算没有区分度；lastModified
+// 才是「最近有没有在写这本书」的信号，也跨进程可比。
+// 只清 bloom 字段（base64 位图就是体积大头），章节指纹 / 书名 / 章名全部保留：下次校验仍能
+// 发现正文变化，正常增量更新不受影响；被清空的书 = 永远当候选、逐章核对（只降速不漏报）。
+// 纯函数，不修改入参；返回 { index, dropped }，cap 非正数时视为不设预算。
+function dropBookBloom(book) {
+  return { ...book, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0, bloomDropped: true };
+}
+
+function enforceIndexBudget(index, maxBytes) {
+  const cap = Number(maxBytes);
+  if (!Number.isFinite(cap) || cap <= 0) return { index, dropped: 0 };
+  const books = Array.isArray(index.books) ? index.books : [];
+  // 一次算准字节数：数组序列化 = 逐项 JSON.stringify 用逗号连接，正好等于拼接结果；
+  // 用 Buffer.byteLength 按 UTF-8 计（书名 / 路径里的中文按实际写盘字节算）。
+  const baseBytes = Buffer.byteLength(serializeIndex({ ...index, books: [] }));
+  const sizes = books.map((book) => ({
+    withBloom: Buffer.byteLength(JSON.stringify(book)),
+    withoutBloom: book.bloom ? Buffer.byteLength(JSON.stringify(dropBookBloom(book))) : null
+  }));
+  let total = baseBytes + Math.max(0, books.length - 1);
+  for (const size of sizes) total += size.withBloom;
+  if (total <= cap) return { index, dropped: 0 };
+  const victims = sizes
+    .map((size, i) => ({ i, size, lastModified: Number.isFinite(books[i].lastModified) ? books[i].lastModified : 0 }))
+    .filter((item) => item.size.withoutBloom !== null)
+    .sort((a, b) => a.lastModified - b.lastModified || b.i - a.i);
+  const next = books.slice();
+  let dropped = 0;
+  for (const victim of victims) {
+    if (total <= cap) break;
+    next[victim.i] = dropBookBloom(books[victim.i]);
+    total -= victim.size.withBloom - victim.size.withoutBloom;
+    dropped += 1;
+  }
+  if (!dropped) return { index, dropped: 0 };
+  return { index: { ...index, books: next }, dropped };
 }
 
 function totalChapters(index) {
@@ -504,7 +560,9 @@ function sameBook(a, b) {
     a.bloomBits !== b.bloomBits ||
     a.bloomCrc !== b.bloomCrc ||
     a.itemCount !== b.itemCount ||
-    a.bloomOmitted !== b.bloomOmitted
+    a.bloomOmitted !== b.bloomOmitted ||
+    // 审计修复 #33（▲V307）：被总量预算丢过位图的书也计入「变了」
+    a.bloomDropped !== b.bloomDropped
   ) {
     return false;
   }
@@ -637,12 +695,15 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     bloomCrc: 0,
     itemCount: 0,
     bloomOmitted: false,
+    // 审计修复 #33（▲V307）：默认有位图；被总量预算淘汰后才为 true
+    bloomDropped: false,
     chapters
   };
 
-  if (old && !textChanged && (old.bloom || old.bloomOmitted === true)) {
+  if (old && !textChanged && (old.bloom || old.bloomOmitted === true || old.bloomDropped === true)) {
     // 只改了章名 / 顺序 / 状态：复用位图，不重读正文
     // （P3：上轮「双字太多、主动放弃位图」的书也复用这个结论，不必每轮校验都白读一遍全书）
+    // （#33：上轮被索引总量预算丢掉位图的书同理 —— 正文没变就不为它白读一遍全书）
     return {
       entry: {
         ...base,
@@ -651,6 +712,8 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
         bloomCrc: old.bloomCrc,
         itemCount: old.itemCount,
         bloomOmitted: old.bloomOmitted === true,
+        // 审计修复 #33（▲V307）：沿用「没有位图」的结论（旧索引没有这个字段 → false）
+        bloomDropped: old.bloomDropped === true,
         chapters: base.chapters.map((chapter) => {
           const previous = oldChapters.get(chapter.file);
           return previous && chapter.chars == null ? { ...chapter, chars: previous.chars } : chapter;
@@ -768,6 +831,10 @@ function createSearchStore(options = {}) {
   const bloomCacheMaxBytes = Number.isFinite(options.bloomCacheMaxBytes)
     ? Math.max(0, Math.floor(options.bloomCacheMaxBytes))
     : BLOOM_CACHE_MAX_BYTES;
+  // 审计修复 #33（▲V307）：单文件索引的总量预算（单测注入小值验证淘汰路径；0 = 不设预算）。
+  const indexMaxBytes = Number.isFinite(options.indexMaxBytes)
+    ? Math.max(0, Math.floor(options.indexMaxBytes))
+    : MAX_INDEX_BYTES;
 
   function forgetBloom(bookPath) {
     const cached = bloomCache.get(bookPath);
@@ -845,6 +912,14 @@ function createSearchStore(options = {}) {
         const parsed = parseIndex(text);
         if (parsed) {
           index = parsed;
+          // 审计修复 #33（▲V307）：旧版本写出的索引可能超过新的总量预算 —— 读回时先淘汰（内存立即
+          // 生效，搜索从这次起就不再用被淘汰的位图），并把结果落盘一次；写失败只记 lastSaveError，
+          // 不影响本次搜索。
+          const budgeted = enforceIndexBudget(index, indexMaxBytes);
+          if (budgeted.dropped > 0) {
+            index = budgeted.index;
+            await saveNow();
+          }
         } else {
           loadProblem = 'CORRUPT';
           index = emptyIndex('');
@@ -870,6 +945,8 @@ function createSearchStore(options = {}) {
       books: index.books.length,
       chapters: totalChapters(index),
       bytes: indexBytes,
+      // 审计修复 #33（▲V307）：被总量预算丢掉位图的书数（>0 时这些书搜索时逐章核对，只降速不漏报）
+      droppedBlooms: index.books.reduce((count, book) => count + (book.bloomDropped === true ? 1 : 0), 0),
       builtAt: index.builtAt || '',
       updatedAt: index.updatedAt || '',
       root: index.root,
@@ -883,6 +960,10 @@ function createSearchStore(options = {}) {
 
   async function saveNow() {
     try {
+      // 审计修复 #33（▲V307）：整份序列化之前先压进总量预算（超限丢最旧书目的位图），
+      // 写出的文件大小 / 每次 flush 的写放大都有上界；章节指纹一条不丢。
+      const budgeted = enforceIndexBudget(index, indexMaxBytes);
+      if (budgeted.dropped > 0) index = budgeted.index;
       const text = serializeIndex(index);
       await atomicWriteFile(filePath, text);
       indexBytes = Buffer.byteLength(text);
@@ -1465,6 +1546,9 @@ module.exports = {
   INDEX_VERSION,
   // C17（WP-19）：索引读盘的独立上限（测试用稀疏文件验证超限路径）
   MAX_INDEX_READ_BYTES,
+  // 审计修复 #33（▲V307）：写盘总量预算 + 超限淘汰纯函数（单测直接核淘汰顺序 / 字节上界）
+  MAX_INDEX_BYTES,
+  enforceIndexBudget,
   MIN_BLOOM_BITS,
   BLOOM_CACHE_MAX,
   BLOOM_CACHE_MAX_BYTES,
