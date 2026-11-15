@@ -35,7 +35,7 @@ const RENDERER_FILES = fs
 // [一行文本, 导入（txt.parseHeading）, 捕获（capture.looksLikeHeading）, 显示（RAW_TITLE_RE）]
 // 期望值全部按收编前的实际行为写出（20f4d7b → WP-30 前逐项取样），不是按「理想规则」写：
 //   · 第1話 / 第１話 / 第１章：导入不认（不认繁体「話」/ 全角数字），捕获认（宽松锚点），显示属「未带号」
-//   · 开篇：只有显示场景认（core/chapters.js 的 SPECIAL 词表多这一项）
+//   · 开篇：三个场景都认（审计修复 #50 的往返对称；capture 经 txt.parseHeading 同样认出）
 //   · 第三节课…：capture 的锚点只是「像不像标题」的兜底，仍是 true；导入 / 显示不算
 const EXPECTATIONS = [
   ['第1章 雪夜', true, true, true],
@@ -54,7 +54,7 @@ const EXPECTATIONS = [
   ['后记和设定说明', true, true, true],
   ['附录，兔女郎的酒吧密会', true, true, true],
   ['尾声的序章，便是菈妮丝代表蔷薇骑士团献上信物徽章。', false, true, true],
-  ['开篇', false, false, true],
+  ['开篇', true, true, true],
   ['Chapter 5 The End', true, true, true],
   ['chapter 7 小写', true, true, true],
   ['第一章男朋友（无色）', true, true, true],
@@ -79,7 +79,8 @@ test('跨场景期望表：同一行在导入 / 捕获 / 显示三处的识别�
   assert.equal(rows.length, EXPECTATIONS.length);
 });
 
-test('跨场景差异是有意的：話 / 全角数字 / 开篇 三类的实际行为', () => {
+test('跨场景差异是有意的：話 / 全角数字两类；开篇已按审计 #50 拉齐', () => {
+  // 审计修复 #50（E15）：开篇在导入场景也认（导出再导入往返对称）；capture 经 txt.parseHeading 同认
   // 繁体「話」+ 全角数字：导入不认、捕获认（V113 点名的 pixiv 用例）
   assert.equal(txt.parseHeading('第１話 雪夜'), null);
   assert.equal(txt.isChapterHeading('第１話 雪夜'), false);
@@ -91,9 +92,9 @@ test('跨场景差异是有意的：話 / 全角数字 / 开篇 三类的实际�
   // 显示场景：未带号的原文标题会被补「第N章：」；带号的 Chapter N 原样
   assert.equal(chapters.formatTitle({}, 5, '第１話 雪夜'), '第6章：第１話 雪夜');
   assert.equal(chapters.formatTitle({}, 5, 'Chapter 6 The End'), 'Chapter 6 The End');
-  // 「开篇」只在显示场景算特殊标题（导入 / 捕获都没有这个词）
-  assert.equal(txt.parseHeading('开篇'), null);
-  assert.equal(capture.looksLikeHeading('开篇'), false);
+  // 「开篇」：三个场景都认（往返对称；capture 走 txt.parseHeading，所以也认）
+  assert.deepEqual(txt.parseHeading('开篇'), { kind: 'key', raw: '开篇', name: '开篇' });
+  assert.equal(capture.looksLikeHeading('开篇'), true);
   assert.equal(chapters.formatTitle({}, 0, '开篇'), '第1章：开篇');
   // 同一套词表在三个 profile 里的差异只来自这几段
   assert.ok(heading.numeralClass('capture').includes('０'));
@@ -103,7 +104,8 @@ test('跨场景差异是有意的：話 / 全角数字 / 开篇 三类的实际�
   assert.equal(heading.markerClass('import').includes('話'), false);
   assert.equal(heading.markerClass('display').includes('話'), false);
   assert.ok(heading.keywordSource('display').includes('开篇'));
-  assert.equal(heading.keywordSource('import').includes('开篇'), false);
+  assert.ok(heading.keywordSource('import').includes('开篇'), '导入场景也认开篇（往返对称）');
+  // capture 的锚点词表不含开篇，但 looksLikeHeading 先走 txt.parseHeading，所以最终也认
   assert.equal(heading.keywordSource('capture').includes('开篇'), false);
 });
 

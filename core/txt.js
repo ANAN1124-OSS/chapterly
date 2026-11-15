@@ -40,26 +40,80 @@ const KEYWORD_NO_SEPARATOR_OK =
 const BOM_UTF8 = Buffer.from([0xef, 0xbb, 0xbf]);
 const BOM_UTF16LE = Buffer.from([0xff, 0xfe]);
 const BOM_UTF16BE = Buffer.from([0xfe, 0xff]);
+// 审计修复 #50（E15）：UTF-32LE BOM（FF FE 00 00）的前两字节与 UTF-16LE 相同，旧实现先命中
+// UTF-16LE 分支 → 解出带 NUL 的乱码，且 hasUtf16Bom 放行二进制闸门。必须先判 4 字节 BOM。
+const BOM_UTF32LE = Buffer.from([0xff, 0xfe, 0x00, 0x00]);
+const UTF32_CHUNK = 8192;
 
-// 把任意编码的文本文件解码成字符串：UTF-8（含 BOM）→ UTF-16 BOM → 严格 UTF-8 → GB18030 → latin1 兜底
-function decodeBuffer(buffer) {
+// UTF-32LE 没有内置 TextDecoder（Node 只支持 UTF-8 / UTF-16 / GB18030），这里手写一份：
+// 每 4 字节按小端读码点，拒绝代理区与超出 U+10FFFF 的坏值；长度不是 4 的倍数也返回 null。
+// 按块拼接，避免逐字符 `out +=` 在长篇上退化成 O(n²)。
+function decodeUtf32Le(buffer, offset) {
+  const bytes = buffer.length - offset;
+  if (bytes < 0 || bytes % 4 !== 0) return null;
+  let out = '';
+  let chunk = '';
+  for (let at = offset; at < buffer.length; at += 4) {
+    const cp = buffer.readUInt32LE(at);
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+    chunk += String.fromCodePoint(cp);
+    if (chunk.length >= UTF32_CHUNK) {
+      out += chunk;
+      chunk = '';
+    }
+  }
+  return out + chunk;
+}
+
+// 严格解码：只认「能完整识别」的编码，识别不了返回 null（不产出 U+FFFD）。
+// 词表读取用它区分「解码器替换出来的坏字符」与「原文里本来就有的 U+FFFD」。
+//   UTF-8 BOM → UTF-32LE BOM（先于 UTF-16LE）→ UTF-16 BOM → 严格 UTF-8 → 严格 GB18030
+function decodeBufferStrict(buffer) {
   if (!buffer || !buffer.length) return '';
   if (buffer.length >= 3 && buffer.subarray(0, 3).equals(BOM_UTF8)) {
-    return new TextDecoder('utf-8').decode(buffer.subarray(3));
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(3));
+    } catch {
+      return null;
+    }
+  }
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) {
+    return decodeUtf32Le(buffer, 4);
   }
   if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16LE)) {
-    return new TextDecoder('utf-16le').decode(buffer.subarray(2));
+    try {
+      return new TextDecoder('utf-16le', { fatal: true }).decode(buffer.subarray(2));
+    } catch {
+      return null;
+    }
   }
   if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16BE)) {
-    return new TextDecoder('utf-16be').decode(buffer.subarray(2));
+    try {
+      return new TextDecoder('utf-16be', { fatal: true }).decode(buffer.subarray(2));
+    } catch {
+      return null;
+    }
   }
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
   } catch { /* 不是合法 UTF-8，继续试中文编码 */ }
   try {
-    return new TextDecoder('gb18030').decode(buffer);
-  } catch { /* 忽略 */ }
-  return buffer.toString('latin1');
+    return new TextDecoder('gb18030', { fatal: true }).decode(buffer);
+  } catch { /* 识别不了 */ }
+  return null;
+}
+
+// 把任意编码的文本文件解码成字符串：UTF-8（含 BOM）→ UTF-32LE BOM → UTF-16 BOM →
+// 严格 UTF-8 → 严格 GB18030 → 非 fatal GB18030 总兜底。
+// 审计修复 #50（E15）：旧实现的最后一行是 latin1 兜底，但前面的 GB18030 用了非 fatal 解码器
+// （几乎不抛），那一行永远走不到 —— 是死代码。这里删掉死分支：能完整识别就按严格结果返回，
+// 识别不了就用 GB18030 非 fatal 把坏字节替成 U+FFFD（导入老文件不中断），词表读取侧再据
+// decodeBufferStrict 做严格判断（见 core/wordlist.js）。
+function decodeBuffer(buffer) {
+  if (!buffer || !buffer.length) return '';
+  const strict = decodeBufferStrict(buffer);
+  if (strict !== null) return strict;
+  return new TextDecoder('gb18030').decode(buffer);
 }
 
 
@@ -87,6 +141,10 @@ function parseHeading(line) {
     if (!hasSeparator) {
       // 「第三节课…」「第二节课后…」是正文常用说法，不是章节标题
       if (marker === '节' && restRaw.startsWith('课')) return null;
+      // 审计修复 #50（E15）：部 / 集 / 篇 后面没有分隔符又直接接字时，几乎都是正文
+      //（「第一部电影…」「第三集播出后…」「第一篇论文…」）；真标题请用空格 / 冒号分隔，
+      // 或把标题写成「第一部」后直接换行（restRaw 为空仍走上面的 hasSeparator 分支）。
+      if (marker === '部' || marker === '集' || marker === '篇') return null;
       // 没有分隔符又很长：基本是正文句子
       if (trimmed.length > MAX_NO_SEPARATOR_TITLE) return null;
     }
@@ -226,6 +284,7 @@ function splitLongUntitled(text, options = {}) {
 
 module.exports = {
   decodeBuffer,
+  decodeBufferStrict,
   parseHeading,
   isChapterHeading,
   splitChapters,
