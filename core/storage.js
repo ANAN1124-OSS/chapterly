@@ -476,20 +476,28 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
   // 不会用坏文件覆盖掉唯一可用的 .bak。
   if (structural) {
     try {
-      // 审计修复 #45（E19）：轮换前先 stat（C17 的读闸门漏了这一处）—— 旧实现直接 fs.readFile，
+      // 审计修复 #45（E19）：轮换前先过尺寸闸门（C17 的读闸门漏了这一处）—— 旧实现直接 fs.readFile，
       // 主文件被外部换成超大文件时，一次结构性保存会把它整份读进内存再写 .bak。
       // 超限时按「没有上一版」跳过轮换（这种情况 readBookMeta 本来就会报 META_TOO_LARGE）。
-      const oldStat = await fs.stat(metaPath);
-      const tooLarge = readSizeProblem(oldStat.size, {
-        code: 'META_TOO_LARGE',
-        label: BOOK_FILE,
-        limit: MAX_META_READ_BYTES,
-        tail: '没有轮换成 .bak'
-      });
-      if (!tooLarge) {
-        const old = await fs.readFile(metaPath);
-        await atomicWriteFile(bakPath, old, 'utf8', { ensureDir: ensureDirectory });
+      // 审计残留修复 #45（S8）：闸门与读盘绑在同一个句柄上（open → fstat → 同一句柄读）——
+      // 旧实现是 stat 之后按路径 readFile，间隙里文件被换成大文件就绕过上限、整份进内存。
+      let old = null;
+      const handle = await fs.open(metaPath, 'r');
+      try {
+        const oldStat = await handle.stat();
+        const tooLarge = readSizeProblem(oldStat.size, {
+          code: 'META_TOO_LARGE',
+          label: BOOK_FILE,
+          limit: MAX_META_READ_BYTES,
+          tail: '没有轮换成 .bak'
+        });
+        if (!tooLarge) old = await handle.readFile();
+      } finally {
+        try {
+          await handle.close();
+        } catch { /* 关不掉不影响已经读到的内容 */ }
       }
+      if (old) await atomicWriteFile(bakPath, old, 'utf8', { ensureDir: ensureDirectory });
     } catch (err) {
       if (err.code !== 'ENOENT') throw err;
     }

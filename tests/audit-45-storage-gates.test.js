@@ -219,3 +219,18 @@ test('残留 E20（#45）静态闸门：_trash 目标名先登记占用再查 ex
   assert.ok(addAt < existsAt, '必须先 inflightTrashTargets.add(dest) 再 await exists(dest)');
   assert.match(body, /inflightTrashTargets\.delete\(dest\)/, '让位 / 出错时要释放登记');
 });
+
+// 审计残留修复 #45（S8）：.bak 轮换的尺寸闸门与读盘必须绑在同一个句柄上 ——
+// 旧实现 stat 之后按路径 readFile，间隙里主文件被换成大文件就绕过 32 MB 上限、整份读进内存。
+test('残留 S8（#45）：.bak 轮换的尺寸闸门与读盘走同一个句柄（open → fstat → handle.readFile）', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  const start = src.indexOf('async function writeBookMeta(');
+  const end = src.indexOf('async function listTxtFiles(', start);
+  assert.ok(start >= 0 && end > start, '找不到 writeBookMeta');
+  const body = src.slice(start, end);
+  assert.ok(body.includes("fs.open(metaPath, 'r')"), '必须先 open 主文件');
+  assert.ok(body.includes('handle.stat()'), '.bak 上限要用句柄上的 fstat 结论');
+  assert.ok(body.includes('handle.readFile()'), '内容必须从同一个句柄读');
+  assert.equal(body.includes('fs.readFile(metaPath)'), false, '不许再按路径读主文件（TOCTOU 窗口）');
+  assert.equal(body.includes('fs.stat(metaPath)'), false, '不许再按路径 stat 主文件（闸门与读盘脱节）');
+});
