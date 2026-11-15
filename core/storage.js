@@ -2016,8 +2016,11 @@ async function copyHistoryEntryToBook(bookPath, group, entry, restoreDir) {
 async function restoreHistoryFile(bookPath, groupId, fileName) {
   const { meta, group } = await loadRestorableHistoryGroup(bookPath, groupId);
   if (group.kind === 'file') {
-    const entry =
-      group.files.find((file) => file.name === fileName || file.trashName === fileName) || group.files[0];
+    // 审计修复 #11（E7）：清单过期（点的那份散文件已不在组里）时必须报错 —— 旧实现回退
+    // group.files[0]，会把备份组里另一章静默还原成「点的那一章」，正文放错文件。
+    // 与 dir 分支同一口径：找不到就抛 HISTORY_FILE_MISSING，一个字节都不写。
+    const entry = group.files.find((file) => file.name === fileName || file.trashName === fileName);
+    if (!entry) throw new StorageError('HISTORY_FILE_MISSING', '这个备份文件已经不存在了');
     return restoreDeletedChapter(bookPath, group, entry);
   }
   const entry = group.files.find((file) => file.name === fileName);
