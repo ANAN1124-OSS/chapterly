@@ -496,7 +496,8 @@ test('静态闸门：storage 撤销只认 _trash 下的 basename，不接收绝�
   // A9（v1.8.0 WP-31）：「同一目录」判定统一走 core/path-utils.js 的 pathKey（不再手写小写比较）
   assert.match(storageSrc, /pathUtils\.pathKey\(path\.dirname\(source\)\) !== pathUtils\.pathKey\(trashDir\)/);
   assert.match(storageSrc, /pathUtils\.pathKey\(bookPath\)/, '同一本书的写锁 key 也走 pathKey');
-  assert.match(storageSrc, /restoreDeletedChapterFromTrash: locked\(restoreDeletedChapterFromTrash\)/);
+  // 审计残留修复 #R11（#55/M6）：书锁包装器合一后统一叫 lockedWriteEntry（原来这里写的是 locked）
+  assert.match(storageSrc, /restoreDeletedChapterFromTrash: lockedWriteEntry\(restoreDeletedChapterFromTrash\)/);
 });
 
 // ---------- B6（v1.8.0 WP-28）：撤销引用的备份组（10 秒内清理备份要跳过） ----------

@@ -1022,7 +1022,7 @@ async function createChapter(bookPath, insertIndex, name, volumeId = null) {
   return createChapterWithText(bookPath, { insertIndex, name, text: '', volumeId });
 }
 
-// ---------- 分卷操作（同一本书的写操作都要持锁，走 locked()） ----------
+// ---------- 分卷操作（同一本书的写操作都要持锁，走 lockedWriteEntry()） ----------
 async function createVolume(bookPath, name) {
   const meta = await readBookMeta(bookPath);
   const volume = { id: chaptersLib.nextVolumeId(meta), name: String(name == null ? '' : name).trim() };
@@ -1467,7 +1467,7 @@ async function moveChapter(bookPath, chapterId, toIndex) {
 // 就直接用预览读到的正文（只多一次 stat），否则照旧读盘。
 // 上下文按书路径登记，只影响下面这个 loadTextOrSkip（整本操作的唯一读取点）：
 // chapter:load / 导出 / 搜索索引 / 校对都走别的读取路径，完全不受影响。
-// 同一本书的写操作由 bookQueue 串行（replaceInBook / formatBook 都过 locked）；两本书各用各的键，
+// 同一本书的写操作由 bookQueue 串行（replaceInBook / formatBook 都过 lockedWriteEntry）；两本书各用各的键，
 // 并发互不串。预览 / 执行之间作者改过某一章 → mtime 或 size 变了 → 该章回退读盘。
 const chapterReadContexts = new Map();
 
@@ -2600,6 +2600,9 @@ function withBookLock(bookPath, task) {
   });
 }
 
+// 审计残留修复 #R11（#55/M6）：书锁包装器只留这一份。旧实现里 `lockedWriteEntry` 与 `locked`
+// 是两段逐字相同的函数（都只是 withBookLock(args[0], …) 的包装），导出面一半用这个名、一半用那个名；
+// 现在统一叫 lockedWriteEntry（它本来就是「写入口内置书锁」的意思），下面导出面全部走它。
 function lockedWriteEntry(fn) {
   return (...args) => withBookLock(args[0], () => fn(...args));
 }
@@ -2618,10 +2621,6 @@ function clearBookLocks() {
 // 单测观察用：当前 Map 里还有几条锁（产品逻辑不读它）。
 function bookLockCount() {
   return bookQueue.pendingCount();
-}
-
-function locked(fn) {
-  return (...args) => withBookLock(args[0], () => fn(...args));
 }
 
 const safeCreateBook = (booksRoot, title, options) => withBookLock(booksRoot, () => createBook(booksRoot, title, options));
@@ -2674,38 +2673,38 @@ module.exports = {
   releaseOpenBookPath,
   findOpenBookWindow,
   assertBookNotBusy,
-  createChapter: locked(createChapter),
-  createChapterWithText: locked(createChapterWithText),
-  createVolume: locked(createVolume),
-  renameVolume: locked(renameVolume),
-  deleteVolume: locked(deleteVolume),
-  moveChapterToVolume: locked(moveChapterToVolume),
-  moveChapterTo: locked(moveChapterTo),
-  moveVolume: locked(moveVolume),
-  renameChapter: locked(renameChapter),
-  updateChapterMeta: locked(updateChapterMeta),
-  updateBookInfo: locked(updateBookInfo),
-  setChapterNumbering: locked(setChapterNumbering),
-  deleteChapter: locked(deleteChapter),
-  restoreDeletedChapterFromTrash: locked(restoreDeletedChapterFromTrash),
-  moveChapter: locked(moveChapter),
+  createChapter: lockedWriteEntry(createChapter),
+  createChapterWithText: lockedWriteEntry(createChapterWithText),
+  createVolume: lockedWriteEntry(createVolume),
+  renameVolume: lockedWriteEntry(renameVolume),
+  deleteVolume: lockedWriteEntry(deleteVolume),
+  moveChapterToVolume: lockedWriteEntry(moveChapterToVolume),
+  moveChapterTo: lockedWriteEntry(moveChapterTo),
+  moveVolume: lockedWriteEntry(moveVolume),
+  renameChapter: lockedWriteEntry(renameChapter),
+  updateChapterMeta: lockedWriteEntry(updateChapterMeta),
+  updateBookInfo: lockedWriteEntry(updateBookInfo),
+  setChapterNumbering: lockedWriteEntry(setChapterNumbering),
+  deleteChapter: lockedWriteEntry(deleteChapter),
+  restoreDeletedChapterFromTrash: lockedWriteEntry(restoreDeletedChapterFromTrash),
+  moveChapter: lockedWriteEntry(moveChapter),
   searchBook,
-  replaceInBook: locked(replaceInBook),
+  replaceInBook: lockedWriteEntry(replaceInBook),
   previewFormatBook,
-  formatBook: locked(formatBook),
+  formatBook: lockedWriteEntry(formatBook),
   listReplaceBackups,
-  restoreReplaceBackup: locked(restoreReplaceBackup),
+  restoreReplaceBackup: lockedWriteEntry(restoreReplaceBackup),
   cleanupSnapshots,
   takeDailySnapshot,
   listBookHistory,
   previewHistoryFile,
-  deleteHistoryBackups: locked(deleteHistoryBackups),
+  deleteHistoryBackups: lockedWriteEntry(deleteHistoryBackups),
   snapshotDirForClear,
-  restoreHistoryFile: locked(restoreHistoryFile),
-  restoreHistoryGroup: locked(restoreHistoryGroup),
-  renameBook: locked(renameBook),
+  restoreHistoryFile: lockedWriteEntry(restoreHistoryFile),
+  restoreHistoryGroup: lockedWriteEntry(restoreHistoryGroup),
+  renameBook: lockedWriteEntry(renameBook),
   trashBook,
-  setLastOpenChapter: locked(setLastOpenChapter),
+  setLastOpenChapter: lockedWriteEntry(setLastOpenChapter),
   moveToTrash,
   withBookLock,
   clearBookLock,

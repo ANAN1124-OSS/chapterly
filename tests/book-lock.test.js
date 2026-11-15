@@ -175,3 +175,18 @@ test('静态闸门：书锁只保留一份 keyed 实现，三个写入口内置�
   assert.match(mainSource, /storage\.clearBookLock\(target\)/, '删书成功后要回收这本书的锁');
   assert.match(mainSource, /storage\.clearBookLocks\(\)/, '换书架根目录后要主动回收旧锁');
 });
+
+// 审计残留修复 #R11（#55/M6）：lockedWriteEntry 与 locked 曾是两段逐字相同的包装器 —— 导出面
+// 一半用这个名、一半用那个名。现在只留一份 lockedWriteEntry，导出面全部走它。
+test('M6/#R11：书锁包装器只留一份（lockedWriteEntry），导出面不许再出现第二个同名包装', () => {
+  const storageSource = read('core/storage.js');
+  // 只有一份「(...args) => withBookLock(args[0], …)」包装器，且名字是 lockedWriteEntry
+  const wrappers = [...storageSource.matchAll(/^function (\w+)\(fn\) \{\r?\n {2}return \(\.\.\.args\) => withBookLock\(/gm)];
+  assert.deepEqual(wrappers.map((match) => match[1]), ['lockedWriteEntry'], 'withBookLock 包装器只许有一份，且叫 lockedWriteEntry');
+  assert.equal(/function locked\(fn\)/.test(storageSource), false, '重复的 locked() 包装器不许回潮');
+  assert.equal(/[^A-Za-z0-9_]locked\(/.test(storageSource), false, '导出面不许再用旧名 locked(...)');
+  // 导出面里内置锁的写入口都走同一个包装器（分卷 / 整理 / 收尾几个跨段抽样）
+  for (const name of ['createChapter', 'createVolume', 'formatBook', 'restoreHistoryFile', 'setLastOpenChapter']) {
+    assert.match(storageSource, new RegExp(`${name}: lockedWriteEntry\\(${name}\\)`), `${name} 必须内置书锁`);
+  }
+});
