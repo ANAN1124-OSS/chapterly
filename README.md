@@ -415,7 +415,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 ## 开发与自检
 
 ```bash
-pnpm test          # 单元测试（node:test，2684 项）
+pnpm test          # 单元测试（node:test，2697 项）
 pnpm run e2e       # 端到端自检：真实启动 Electron 走 1902 项主流程（场景与 83 个组文件共用一份 harness；**83 个组文件（00–82）** 按组号派发）
 pnpm run demo      # 生成演示书库到 shots/demo-library（截图/演示用）
 ```
