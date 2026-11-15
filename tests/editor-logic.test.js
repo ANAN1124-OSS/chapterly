@@ -552,3 +552,30 @@ test('标记层门控：坏输入按空文本处理，和既有 30 万字上限�
   // 超长段落自己的兜底是 200 万字，比标记层门控更晚——门控先按 30 万字拦下，整层不建
   assert.equal(logic.longParagraphs(over).tooLarge, false);
 });
+
+test('大段写入通道（试用 B）：> 20000 字才走整串赋值，正好 20000 仍走原生输入', () => {
+  assert.equal(logic.BULK_WRITE_CHARS, 20000);
+  assert.equal(logic.BULK_WRITE_LIMITS[0], 1000);
+  assert.equal(logic.shouldBulkWrite('字'.repeat(20000)), false);
+  assert.equal(logic.shouldBulkWrite('字'.repeat(20001)), true);
+  // 空 / 坏值按空串算，不会抛错、也不会误判成「要走整串赋值」
+  for (const value of [null, undefined, '', 0, false, {}, []]) {
+    assert.equal(logic.shouldBulkWrite(value), false);
+  }
+  // 数字按字符串看（toText 口径），不是字符数
+  assert.equal(logic.shouldBulkWrite(30001), false);
+});
+
+test('大段写入通道（试用 B）：自定义阈值 / 坏阈值夹到 1000–1000000', () => {
+  assert.equal(logic.shouldBulkWrite('字'.repeat(2001), 2000), true);
+  assert.equal(logic.shouldBulkWrite('字'.repeat(2000), 2000), false);
+  // 0 / 负数 / 非数字夹到下限 1000；null / 非有限值回默认 20000
+  assert.equal(logic.shouldBulkWrite('字'.repeat(1001), 0), true);
+  assert.equal(logic.shouldBulkWrite('字'.repeat(1000), 0), false);
+  assert.equal(logic.shouldBulkWrite('字'.repeat(1000), -5), false);
+  assert.equal(logic.shouldBulkWrite('字'.repeat(1001), -5), true);
+  assert.equal(logic.shouldBulkWrite('字'.repeat(20001), null), true);
+  assert.equal(logic.shouldBulkWrite('字'.repeat(20000), 'abc'), false);
+  // 超上限夹到 100 万字：100 万字整串仍走原生输入（这一档本来就该走导入，不当成「大段插入」）
+  assert.equal(logic.shouldBulkWrite('a'.repeat(1000001), 999999999), true);
+});

@@ -2724,6 +2724,11 @@
   const { applyStatsFilter, buildStatsCsv, setupStatsUi } = statsUi;
 
   // 剪贴板面板「正文」按钮：把一条记录插到**当前打开章节**的光标处（有选区就替换选区）。
+  // 大段插入（试用分支 B）的一次性撤销快照：{ before, after, start, end }。
+  // 只有「这次插入走了 .value 整串赋值、没进原生撤销栈」时才存在；下一次真实输入 / 切换章节立刻作废，
+  // 免得点「撤销」把作者后来打的字一起退掉。
+  let bulkWriteUndo = null;
+
   // 为什么先把焦点交给编辑区：原生 insertText 只对真正拿到焦点的文本框生效，
   // 而面板是模态弹层、点按钮后焦点在弹层里；renderer/dialog-focus.js 明确「不抢程序化焦点」，
   // 所以这里可以临时 focus 编辑区、插完再 blur 回去——与「替换这一处」/ 灵感碎片插入同一条路。
@@ -2746,6 +2751,33 @@
     const start = Math.max(0, Math.min(Math.round(rawStart), size));
     const end = Math.max(start, Math.min(Math.round(rawEnd), size));
     const expected = before.slice(0, start) + value + before.slice(end);
+    // 字数只算一次（两条写入通道共用同一口径，静态闸门也钉住「renderer.js 只有 1 处 countChars」）。
+    const chars = chaptersLib.countChars(value);
+    // 试用分支 B（粘贴大段优化）：长串插入不走 Chromium 的编辑管线。execCommand('insertText') /
+    // 原生粘贴对十几万字是逐行强制布局的秒级路径（Chromium issue 341564372）；直接把整串赋给
+    // .value 只排一次版。代价是这一步进不了原生撤销栈，所以留一次性快照 + 可点的「撤销」，
+    // 并在下一次真实输入时作废（onEditorInput 里清）；阈值以下的行为一个字节都不变。
+    if (editorLogic.shouldBulkWrite(value)) {
+      try {
+        editorEl.focus({ preventScroll: true });
+      } catch {
+        editorEl.focus(); // 个别实现不认 options：退回无参 focus（最多多滚一下）
+      }
+      editorEl.setSelectionRange(start, end);
+      editorEl.value = expected;
+      // 统一走 onEditorInput：标脏 / 字数 / 状态栏 / 标记层全按正常输入刷新（不写盘）。
+      onEditorInput();
+      editorEl.setSelectionRange(start + value.length, start + value.length);
+      // 焦点还给面板（面板保持打开）；blur 不改内容，也不会触发保存。
+      editorEl.blur();
+      bulkWriteUndo = { before, after: expected, start, end };
+      toastActionable(
+        `已插入 ${formatCount(chars)} 字（大段插入没进 Ctrl+Z 撤销栈，可用「撤销」退回）`,
+        '撤销',
+        undoBulkWrite
+      );
+      return { ok: true, chars, bulk: true, undoable: true };
+    }
     try {
       editorEl.focus({ preventScroll: true });
     } catch {
@@ -2763,7 +2795,25 @@
     editorEl.setSelectionRange(start + value.length, start + value.length);
     // 焦点还给面板（面板保持打开）；blur 不改内容，也不会触发保存。
     editorEl.blur();
-    return { ok: true, chars: chaptersLib.countChars(value) };
+    return { ok: true, chars };
+  }
+
+  // 大段插入的「撤销」（试用分支 B 的配套）：把整章正文还原成插入前的样子，只改编辑区、仍是未保存。
+  // 只在快照还在时有效；作者后来打的字 / 切了章都会让快照作废，不会把后来的内容一起退掉。
+  function undoBulkWrite() {
+    if (!bulkWriteUndo) {
+      toast('这次大段插入已经不能整段撤销了（中间又改过正文）', 'warn');
+      return false;
+    }
+    const snapshot = bulkWriteUndo;
+    bulkWriteUndo = null;
+    editorEl.value = snapshot.before;
+    onEditorInput();
+    const caret = Math.max(0, Math.min(snapshot.start, editorEl.value.length));
+    editorEl.setSelectionRange(caret, caret);
+    scrollCaretIntoView(caret);
+    toast('已撤销这次大段插入（仍是未保存）');
+    return true;
   }
 
   // 剪贴板捕获（P0）：createCaptureUi(host) 一次装配，host 正好 9 个成员（契约 v1；T1 的
@@ -2813,6 +2863,9 @@
 
   // ---------- 编辑区事件 ----------
   function onEditorInput() {
+    // 试用分支 B：真实输入 / 其它程序化写入都让「撤销这次大段插入」的快照作废，
+    // 免得点撤销把作者后来打的字一起退掉。
+    bulkWriteUndo = null;
     // 正文改了，查找高亮的位置就对不上了：立刻结束会话（不写盘、不提示，重新查一次即可）。
     // 如果这次高亮来自书签，书签本身不动，Ctrl+S 保存后会按新正文重新扫描定位。
     const wasBookmark = state.find.fromBookmark;
@@ -2884,6 +2937,8 @@
       state.dirty = false;
       state.saveError = null;
       editorEl.value = data.text;
+      // 换章了：上一章的大段插入快照不能留着（撤销会把旧章正文写进新章）。
+      bulkWriteUndo = null;
       editorEl.scrollTop = 0;
       // 有效章节已载入：解除开书失败留下的遮罩（长操作锁 / 载章锁仍由 applyEditorEditable 管）
       setChapterMask(false);
