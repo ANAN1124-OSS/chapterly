@@ -42,9 +42,11 @@ test('D6：.gitignore 内部文档改目录级 pattern，公开文档不被误�
   }
   // 公开文档必须继续进仓库：整体忽略 *.md 会把 README / 验收清单一起扫掉
   assert.ok(!lines.includes('*.md'), '不能整体忽略 *.md（README.md / 验收清单.md 是公开文档）');
-  for (const rel of ['README.md', '验收清单.md', '沿革.md', 'LICENSE']) {
+  for (const rel of ['README.md', '验收清单.md', 'LICENSE']) {
     assert.ok(fs.existsSync(path.join(ROOT, rel)), `公开文档必须留在仓库里：${rel}`);
   }
+  // 审计 #28（M3）：版本沿革等纯历史文档已归档到被忽略的 内部文档/，不再进公开仓库。
+  assert.ok(!fs.existsSync(path.join(ROOT, '沿革.md')), '版本沿革分册已归档到 内部文档/，不再进公开仓库');
   // README 写明这条约定，避免下次又回去逐个人肉加文件名
   assert.ok(read('README.md').includes('内部文档/'), 'README 要写明内部文档统一放「内部文档/」并被整目录忽略');
 });
