@@ -65,11 +65,19 @@
   let statsFilter = { bookId: '', year: 0 };
 
   async function refreshStats() {
+    // 审计残留修复 #R13（#14/E10-E11）：刷新统计与翻月共用同一个世代令牌。旧实现只有
+    // loadStatsCalendar 上令牌，设置页筛选 / 保存后刷新触发的 stats:get 回执晚到时会用
+    // 「默认月」的 calendar 覆盖掉用户刚翻到的月份（跨路径竞态）。现在两条链路都从 calendarSeq
+    // 取号：只有最新发出的那次请求能写 state.calendar / streak；旧回执照常更新 state.stats
+    //（汇总 / 柱状图与日历无关，上一次数据比没有强），但不许动日历。
+    const token = calendarSeq.next();
     try {
       const payload = await call(api.getStats, { bookId: statsFilter.bookId, year: statsFilter.year });
       state.stats = payload;
-      state.streak = payload && payload.streak ? payload.streak : null;
-      state.calendar = payload && payload.calendar ? payload.calendar : null;
+      if (calendarSeq.isCurrent(token)) {
+        state.streak = payload && payload.streak ? payload.streak : null;
+        state.calendar = payload && payload.calendar ? payload.calendar : null;
+      }
     } catch {
       /* 统计读不到不影响写作，保留上一次显示 */
     }

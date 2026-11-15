@@ -442,6 +442,85 @@ test('翻月竞态：旧回执晚到整段作废，日历停在最新一次翻�
   );
 });
 
+// 审计残留修复 #R13（#14/E10-E11）：refreshStats 原来没有令牌 —— 与翻月是两条独立链路，
+// 设置页筛选 / 保存后刷新触发的 stats:get 晚到时会用「默认月」的 calendar 把用户刚翻到的月份盖回去。
+// 现在它与翻月共用 calendarSeq：只有最新一次发出的请求能写 state.calendar / streak。
+test('跨路径竞态：#R13 refreshStats 的旧回执不覆盖翻月结果（共用世代令牌）', async () => {
+  installDocument();
+  const statsGates = [];
+  const calendarGates = [];
+  const { host, state } = makeHost({
+    onCall: (channel) => {
+      if (channel === 'stats:get') return new Promise((resolve) => statsGates.push(resolve));
+      if (channel === 'stats:calendar') return new Promise((resolve) => calendarGates.push(resolve));
+      return undefined;
+    }
+  });
+  const ui = statsUi.create(host);
+  state.calendar = calendarView(); // 停在本月
+  state.streak = { current: 5, best: 9 };
+
+  const refreshing = ui.refreshStats(); // 先发出：带默认月的 payload
+  const loaded = ui.loadStatsCalendar(2026, 10); // 后发出：翻到十月 → 令牌更新
+  assert.equal(statsGates.length, 1);
+  assert.equal(calendarGates.length, 1);
+
+  // 翻月先回：十月落盘
+  const october = calendarView({ month: 10, label: '2026 年 10 月', isCurrentMonth: false });
+  calendarGates[0]({ calendar: october, streak: { current: 10, best: 10 } });
+  assert.equal(await loaded, october);
+  assert.equal(state.calendar.month, 10);
+  assert.equal(host.$('calendar-label').textContent, '2026 年 10 月');
+
+  // 先发出的刷新后回：state.stats 照常更新，但日历 / 连续天数不许被旧回执盖回默认月
+  const late = {
+    todayChars: 1200,
+    goal: 2000,
+    goalPercent: 60,
+    goalMet: false,
+    days: [],
+    recentTotal: 5000,
+    todaySeconds: 0,
+    streak: { current: 1, best: 1 },
+    calendar: calendarView()
+  };
+  statsGates[0](late);
+  assert.equal(await refreshing, late);
+  assert.equal(state.stats, late, '汇总 / 柱状图的数据照常更新');
+  assert.equal(state.calendar.month, 10, '日历停在最新一次翻月的月份');
+  assert.deepEqual(state.streak, { current: 10, best: 10 }, '连续天数不许被旧回执改回去');
+  assert.equal(host.$('calendar-label').textContent, '2026 年 10 月');
+
+  // 反向：翻月先发、刷新后发 —— 刷新是最新请求，有权写日历；旧翻月回执作废（与 E11 同一口径）
+  const gates = [];
+  const second = makeHost({
+    onCall: (channel) => new Promise((resolve) => gates.push({ channel, resolve }))
+  });
+  const ui2 = statsUi.create(second.host);
+  second.state.calendar = calendarView();
+  const staleShift = ui2.loadStatsCalendar(2026, 9);
+  const freshRefresh = ui2.refreshStats();
+  const payload = {
+    todayChars: 5,
+    goal: 0,
+    goalPercent: 0,
+    goalMet: false,
+    days: [],
+    recentTotal: 5,
+    todaySeconds: 0,
+    streak: { current: 2, best: 2 },
+    calendar: october
+  };
+  gates[1].resolve(payload); // 刷新（后发）先回
+  assert.equal(await freshRefresh, payload);
+  assert.equal(second.state.calendar, october);
+  gates[0].resolve({ calendar: calendarView({ month: 9, label: '2026 年 9 月', isCurrentMonth: false }) });
+  assert.equal(await staleShift, null, '旧翻月回执不结算');
+  assert.equal(second.state.calendar, october, '旧翻月不许把日历拉回九月');
+  assert.deepEqual(second.state.streak, { current: 2, best: 2 });
+  assert.equal(second.host.$('calendar-label').textContent, '2026 年 10 月');
+});
+
 test('renderStatsCalendar：没有视图时清空格子、汇总给提示、三个按钮都禁用', () => {
   installDocument();
   const { host, state } = makeHost();
