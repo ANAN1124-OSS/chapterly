@@ -368,7 +368,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   10 个，顺带写明第 10 个 staleGuard 的来历（注释换行多出一行）；代码零新增。
   // 审计修复 #40（V403）：6304 → 6309（+5）：正文 Ctrl+Z 拦截器执行成功后 stopPropagation（+1 行代码
   //   `const undone` / `if (undone)` 两处 + 4 行说明），让一次按键只撤销一步；判定仍全在渲染层闭包里。
-  const RENDERER_LINE_BUDGET = 6309;
+  // 审计修复 #39（V402）：6309 → 6393（+84）：兜底整串赋值的一次性快照与 bulkWriteUndo 是同一套生命周期
+  //   （记录 / 身份核对 / 撤销 / 输入即作废 / 换书换章作废），而 toastActionable、scrollCaretIntoView、
+  //   editorEl、state 身份都在渲染层闭包里；拆一半出去只会把同一条纪律分叉成两份。三处兜底调用点
+  //   （插入正文 / 套模板 / 替换这一处）+ 两个 UI 模块的 host.recordFallbackWrite 接的是同一份实现。
+  const RENDERER_LINE_BUDGET = 6393;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

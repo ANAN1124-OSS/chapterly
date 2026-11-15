@@ -1297,6 +1297,7 @@
     // bulkWriteUndo 会跨书活到「新书载章失败」的遮罩态：那时编辑区只是 readOnly（仍可聚焦），
     // 一下 Ctrl+Z 就把上一本整章正文写进新书空编辑区 + 假脏态。快照自身也带身份核对（见 undoBulkWrite）。
     bulkWriteUndo = null;
+    fallbackWriteUndo = null; // 审计修复 #39（V402）：兜底写入的一次性快照同样不跨书
     // 换书前先停掉上一本的写作计时：把没上报的整秒记下，新书从 0 开始
     await resetWriteTimer({ flush: true });
     if (isStale()) return false;
@@ -2741,6 +2742,14 @@
   // 那一刻的身份——执行撤销时逐字核对，换书 / 换章（含载章失败后的遮罩态）一律作废，绝不跨书串台。
   let bulkWriteUndo = null;
 
+  // 审计修复 #39（V402）：兜底「整串赋值」的一次性快照，形状与 bulkWriteUndo 相同（多一个 label 用于文案）。
+  // 触发面：execCommand('insertText') 失败 / 结果不符时，各处都退回 `editorEl.value = 期望值` —— 这与
+  // bulk 分支是同一种「清空浏览器撤销栈（连带之前整章的编辑历史）」的副作用，以前却只有 bulk 有快照与
+  // 提示。现在 insertIntoBody / applyChapterTemplate / runReplaceOne 三处直接记这里；fragments-ui /
+  // tidy-card-ui 两个模块通过 host.recordFallbackWrite() 汇报，用的是同一份快照（同一套身份核对与 Ctrl+Z）。
+  // 下一次真实输入 / 换章 / 换书一律作废；执行撤销时核对 bookPath / chapterId，绝不跨书串台。
+  let fallbackWriteUndo = null;
+
   // 剪贴板面板「正文」按钮：把一条记录插到**当前打开章节**的光标处（有选区就替换选区）。
   // 为什么先把焦点交给编辑区：原生 insertText 只对真正拿到焦点的文本框生效，
   // 而面板是模态弹层、点按钮后焦点在弹层里；renderer/dialog-focus.js 明确「不抢程序化焦点」，
@@ -2805,9 +2814,13 @@
     // 原生 insertText 实现）：报成功但值没变（焦点被别的层抢走 / 输入法状态异常）时
     // 也按**结果**再核一次，不一致就手动拼接兜底（会丢原生撤销链，但绝不丢内容）。
     const inserted = replaceEditorTextNative(value);
-    if (!inserted || editorEl.value !== expected) editorEl.value = expected;
+    // 审计修复 #39（V402）：兜底路会整串赋值 —— 同样清空浏览器撤销栈，记一次性快照并提示
+    // （提示放在 onEditorInput 之后，否则这里自己的输入处理会把刚记的快照清掉）。
+    const fallbackUsed = !inserted || editorEl.value !== expected;
+    if (fallbackUsed) editorEl.value = expected;
     // 统一走 onEditorInput：标脏 / 字数 / 状态栏 / 标记层全按正常输入刷新（不写盘）。
     onEditorInput();
+    if (fallbackUsed) recordFallbackWrite({ before, after: expected, start, label: '插入正文' });
     // 光标停在插入内容末尾：连着点两次「正文」不会把第二段插到第一段前面。
     editorEl.setSelectionRange(start + value.length, start + value.length);
     // 焦点还给面板（面板保持打开）；blur 不改内容，也不会触发保存。
@@ -2839,6 +2852,64 @@
     editorEl.setSelectionRange(caret, caret);
     scrollCaretIntoView(caret);
     toast('已撤销这次大段插入（仍是未保存）');
+    return true;
+  }
+
+  // 审计修复 #39（V402）：兜底整串赋值统一记账。info = { before, after, start, label }：
+  // before / after 是赋值前后的正文，start 是写入起点（撤销后光标回到这里），label 进提示文案。
+  // 与 bulk 分支同一套配套（一次性快照 + 可点「撤销」+ 正文上第一下 Ctrl+Z 拦截），
+  // 差别只是这次写入来自 execCommand 的兜底而不是大段插入。值没变时不记（没有需要撤销的东西）。
+  function recordFallbackWrite(info) {
+    const source = info && typeof info === 'object' ? info : {};
+    const before = String(source.before == null ? '' : source.before);
+    const after = String(source.after == null ? '' : source.after);
+    if (after === before) return false;
+    const chapter = state.chapters[state.index];
+    const label = typeof source.label === 'string' && source.label ? source.label : '这次写入';
+    const start = Number.isFinite(source.start) ? Math.round(source.start) : 0;
+    fallbackWriteUndo = {
+      before,
+      after,
+      start: Math.max(0, Math.min(start, before.length)),
+      bookPath: state.bookPath,
+      chapterId: chapter && chapter.id ? chapter.id : null,
+      label
+    };
+    toastActionable(
+      `${label}没能走原生输入，已改为整串写入：浏览器的撤销历史已清空（之前整章的编辑记录也一起没了）；` +
+        'Ctrl+Z 或「撤销」可退回写入前',
+      '撤销',
+      undoFallbackWrite
+    );
+    return true;
+  }
+
+  // 兜底写入的「撤销」：与 undoBulkWrite 同一套身份核对（书 + 章）与内容核对（还是写入后的样子）。
+  function undoFallbackWrite() {
+    if (!fallbackWriteUndo) {
+      toast('这次兜底写入已经不能撤销了（中间又改过正文）', 'warn');
+      return false;
+    }
+    const chapter = state.chapters[state.index];
+    const chapterId = chapter && chapter.id ? chapter.id : null;
+    if (fallbackWriteUndo.bookPath !== state.bookPath || fallbackWriteUndo.chapterId !== chapterId) {
+      fallbackWriteUndo = null;
+      toast('这次兜底写入已经不能撤销了（换过书或换过章）', 'warn');
+      return false;
+    }
+    if (editorEl.value !== fallbackWriteUndo.after) {
+      fallbackWriteUndo = null;
+      toast('这次兜底写入已经不能撤销了（中间又改过正文）', 'warn');
+      return false;
+    }
+    const snapshot = fallbackWriteUndo;
+    fallbackWriteUndo = null;
+    editorEl.value = snapshot.before;
+    onEditorInput();
+    const caret = Math.max(0, Math.min(snapshot.start, editorEl.value.length));
+    editorEl.setSelectionRange(caret, caret);
+    scrollCaretIntoView(caret);
+    toast(`已撤销${snapshot.label}（仍是未保存）`);
     return true;
   }
 
@@ -2891,8 +2962,9 @@
   // ---------- 编辑区事件 ----------
   function onEditorInput() {
     // 试用分支 B：真实输入 / 其它程序化写入都让「撤销这次大段插入」的快照作废，
-    // 免得点撤销把作者后来打的字一起退掉。
+    // 免得点撤销把作者后来打的字一起退掉。审计修复 #39（V402）：兜底写入的一次性快照同理。
     bulkWriteUndo = null;
+    fallbackWriteUndo = null;
     // 正文改了，查找高亮的位置就对不上了：立刻结束会话（不写盘、不提示，重新查一次即可）。
     // 如果这次高亮来自书签，书签本身不动，Ctrl+S 保存后会按新正文重新扫描定位。
     const wasBookmark = state.find.fromBookmark;
@@ -2966,6 +3038,7 @@
       editorEl.value = data.text;
       // 换章了：上一章的大段插入快照不能留着（撤销会把旧章正文写进新章）。
       bulkWriteUndo = null;
+      fallbackWriteUndo = null; // 审计修复 #39（V402）：兜底写入快照同理，换章即作废
       editorEl.scrollTop = 0;
       // 有效章节已载入：解除开书失败留下的遮罩（长操作锁 / 载章锁仍由 applyEditorEditable 管）
       setChapterMask(false);
@@ -3233,12 +3306,16 @@
     editorEl.focus();
     editorEl.setSelectionRange(0, before.length);
     const inserted = replaceEditorTextNative(text);
+    let fallbackUsed = false;
     if (!inserted || editorEl.value !== text) {
       // 极端兜底：execCommand 不可用时手动替换（会丢原生撤销链，但不会丢内容）
       editorEl.value = text;
+      fallbackUsed = true;
     }
     // 统一走 onEditorInput：标记未保存、刷新字数 / 状态栏 / 标记层
     onEditorInput();
+    // 审计修复 #39（V402）：兜底整串赋值会清空浏览器撤销栈 —— 记一次性快照并提示（放在输入处理之后）
+    if (fallbackUsed) recordFallbackWrite({ before, after: text, start: before.length, label: '套用章节模板' });
     const caret = editorEl.value.length;
     editorEl.setSelectionRange(caret, caret);
     scrollCaretIntoView(caret);
@@ -4606,13 +4683,19 @@
     editorEl.focus();
     editorEl.setSelectionRange(match.index, match.index + match.length);
     const inserted = replaceEditorTextNative(replacement);
+    let fallbackUsed = false;
     if (!inserted) {
       // 极端兜底：execCommand 不可用时手动拼接（会丢原生撤销链，但不会丢内容）
       const current = editorEl.value;
       editorEl.value =
         current.slice(0, match.index) + replacement + current.slice(match.index + match.length);
+      fallbackUsed = true;
     }
     onEditorInput();
+    // 审计修复 #39（V402）：兜底拼接会清空浏览器撤销栈 —— 记一次性快照并提示（放在输入处理之后）
+    if (fallbackUsed) {
+      recordFallbackWrite({ before: text, after: editorEl.value, start: match.index, label: '替换这一处' });
+    }
 
     // 选中下一处，方便连续替换
     let next = null;
@@ -4801,7 +4884,7 @@
   // ---------- 灵感箱（碎片速记） ----------
   // 第 4 步九刀·补刀 10：实现在 renderer/fragments-ui.js（模块头有契约），这里只装配与接线；
   const fragmentsUi = fragmentsUiModule.create({
-    $, state, api, call, toast, staleGuard,
+    $, state, api, call, toast, staleGuard, recordFallbackWrite,
     common: { chaptersLib, formatRelativeTime, formatCount },
     editor: { editorEl, onEditorInput, scrollCaretIntoView },
     hideHeaderMenus
@@ -5008,7 +5091,7 @@
   // ---------- 「整理」按钮的悬浮选择卡 + 「显示」菜单 ----------
   // 第 4 步九刀·第八刀：实现在 renderer/tidy-card-ui.js（模块头有契约），这里只装配与接线；
   const tidyCardUi = tidyCardUiModule.create({
-    $, state, api, call, toast,
+    $, state, api, call, toast, recordFallbackWrite,
     format: { formatUi, MAX_FORMAT_UNDO, readFormatOptions, writeFormatOptions, editorEl, onEditorInput, chaptersLib, caretColorLib },
     menus: { hideBookMenu, hideExportMenu, hideMenu, renderMarksMenu },
     peers: { openSettings: () => openSettings(), toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView, effectiveConfig }
@@ -5543,17 +5626,18 @@
     });
 
     editorEl.addEventListener('input', onEditorInput);
-    // 大段插入（试用分支 B）后的第一下 Ctrl+Z：程序化赋值会把浏览器的撤销栈整个清空，
+    // 大段插入（试用分支 B）/ 兜底整串赋值之后的第一下 Ctrl+Z：程序化赋值会把浏览器的撤销栈整个清空，
     // 原生撤销对这一步（连同之前的编辑历史）已经没反应；这里把它接到一次性快照上，
-    // 让「插入 → Ctrl+Z」至少能退回到插入前。只有快照还在、焦点在正文时才生效，
+    // 让「写入 → Ctrl+Z」至少能退回到写入前。只有快照还在、焦点在正文时才生效，
     // 不会抢别的输入框（书架搜索 / 查找替换 / 跳章）里的 Ctrl+Z。
     editorEl.addEventListener('keydown', (event) => {
-      if (!bulkWriteUndo) return;
+      if (!bulkWriteUndo && !fallbackWriteUndo) return;
       if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
       const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
       if (key !== 'z') return;
       event.preventDefault();
-      const undone = undoBulkWrite();
+      // 审计修复 #39（V402）：兜底整串赋值与 bulk 插入共用这一个「第一下 Ctrl+Z」拦截口。
+      const undone = bulkWriteUndo ? undoBulkWrite() : undoFallbackWrite();
       // 审计修复 #40（V403）：命中并真的执行了就不再冒泡到 document —— 那里还有一条「整理快照优先」
       // 的 Ctrl+Z（undoFormat）。两套通道没有互斥时，「整理本章 → 大段插入」连做后按一次 Ctrl+Z
       // 会连退两步（bulk 快照退一步 + 整理快照再退一步），与「一次按键撤销一步」的预期相反。

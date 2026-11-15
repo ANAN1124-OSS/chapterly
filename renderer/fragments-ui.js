@@ -12,7 +12,7 @@
  * 落点用 document.caretPositionFromPoint（textarea 在 Chromium 里只有它会回字符下标），取不到退回当前光标。
  * 事件绑定随域搬进 setupFragmentsUi()（＋碎片 / 保存 / 取消 / 计数 / Ctrl+Enter / 插入面板 4 个按钮）。
  *
- * 契约：createFragmentsUi(host) 由渲染层调用一次。host 8 个成员（2 个语义分组 + 基础 5 + 1 个胶水）：
+ * 契约：createFragmentsUi(host) 由渲染层调用一次。host 10 个成员（2 个语义分组 + 基础 5 + 3 个胶水）：
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（fragments、fragmentSelected、fragmentBusy、insertFragmentRange）/ IPC 白名单 / IPC 包装 / 提示
  *     common: {                             // 共享纯逻辑 / 格式化
@@ -24,7 +24,9 @@
  *       onEditorInput,                      //   插入后触发一次输入处理（dirty / 字数）
  *       scrollCaretIntoView                 //   插入后把光标滚进视野（共享胶水）
  *     },
- *     hideHeaderMenus                       // 打开弹层前收起顶栏菜单
+ *     hideHeaderMenus,                      // 打开弹层前收起顶栏菜单
+ *     staleGuard,                           //   renderer/stale-guard.js（WP-15：连点 / 刷新世代令牌）
+ *     recordFallbackWrite                   //   审计修复 #39（V402）：execCommand 兜底整串赋值后记账（渲染层统一提示）
  *   }
  * 缺任何一个（含分组内成员）直接抛 TypeError。分组在 create 时一次解构，行为等价。
  * create() 不注册事件、不建定时器、不碰 DOM；事件绑定在 setupFragmentsUi()，由 bindEvents() 在原位置调用一次
@@ -43,14 +45,18 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'common', 'editor', 'hideHeaderMenus', 'staleGuard'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'common', 'editor', 'hideHeaderMenus', 'staleGuard', 'recordFallbackWrite'];
 
   function createFragmentsUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
     assertHost('createFragmentsUi', host, REQUIRED_HOST);
-    const { $, state, api, call, toast, common, editor, hideHeaderMenus, staleGuard } = host;
+    const { $, state, api, call, toast, common, editor, hideHeaderMenus, staleGuard, recordFallbackWrite } = host;
     if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
       throw new TypeError('createFragmentsUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
+    // 审计修复 #39（V402）：兜底整串赋值要由渲染层统一记快照 + 提示（模块自己没有编辑器级拦截器）
+    if (typeof recordFallbackWrite !== 'function') {
+      throw new TypeError('createFragmentsUi 的 host.recordFallbackWrite 必须是函数');
     }
     // WP-15（C16）：连点两条碎片的「最后一次点击才算数」+ 刷新期间自动选中不得抢走用户点选。
     const selectSeq = staleGuard.createSeq();
@@ -338,12 +344,19 @@
       inserted = false;
     }
     const expectedLength = before.length - (to - from) + fragment.text.length;
+    let fallbackUsed = false;
     if (!inserted || editorEl.value.length !== expectedLength) {
       // 极端兜底：execCommand 不可用时手动拼接（会丢原生撤销链，但不会丢内容）
       editorEl.value = before.slice(0, from) + fragment.text + before.slice(to);
       editorEl.setSelectionRange(from + fragment.text.length, from + fragment.text.length);
+      fallbackUsed = true;
     }
     onEditorInput();
+    if (fallbackUsed) {
+      // 审计修复 #39（V402）：兜底整串赋值清空浏览器撤销栈 —— 由渲染层记一次性快照 + 提示
+      // （放在 onEditorInput 之后：输入处理会作废旧快照）。
+      recordFallbackWrite({ before, after: editorEl.value, start: from, label: '插入碎片' });
+    }
     scrollCaretIntoView(editorEl.selectionStart || 0);
     return {
       ok: true,

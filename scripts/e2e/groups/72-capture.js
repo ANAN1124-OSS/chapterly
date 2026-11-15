@@ -721,6 +721,57 @@ module.exports = async function group72Capture(t) {
     v403Two
   );
 
+  // 72i4. 审计修复 #39（V402）：execCommand 失败时的兜底整串赋值也要一次性快照 + 提示（以前静默清栈）。
+  // 把 document.execCommand 换成恒 false（模拟 Chromium 拒绝 / 焦点被抢），让 ≤2 万字的插入走兜底路。
+  const beforeFallback = await exec('window.__cwTest.text()');
+  const caretFallback = await exec('window.__cwTest.caret()');
+  const fallbackInsert = '兜底写入验证段';
+  await exec("window.__cwE2EExec = document.execCommand; document.execCommand = () => false; 'stubbed'");
+  try {
+    await exec('window.__cwTest.clearToasts()');
+    await exec(`window.__cwTest.openCapture(${JSON.stringify(fallbackInsert)})`);
+    await waitFor('window.__cwTest.captureOpen() === true');
+    const fbApplied = JSON.parse(
+      await exec('window.__cwTest.captureApplyBody({ pending: true }).then((r) => JSON.stringify(r || null))')
+    );
+    await exec('window.__cwTest.closeCapture()');
+    const expectedFallback = beforeFallback.slice(0, caretFallback) + fallbackInsert + beforeFallback.slice(caretFallback);
+    const fb = await exec(`(() => ({
+      text: window.__cwTest.text(),
+      dirty: window.__cwTest.dirty(),
+      toasts: window.__cwTest.toasts(),
+      lastAction: (() => {
+        const list = document.querySelectorAll('#toast-area .toast.actionable .toast-action');
+        return list.length ? list[list.length - 1].textContent : '';
+      })()
+    }))()`);
+    check(
+      '剪贴板面板（V402）：execCommand 失败 → 兜底整串赋值仍然插对（内容不丢）',
+      Boolean(fbApplied && fbApplied.ok === true) && fb.text === expectedFallback && fb.dirty === true,
+      { fbApplied, ...fb }
+    );
+    check(
+      '剪贴板面板（V402）：兜底写入明说「没能走原生输入 / 撤销历史已清空」，并带「撤销」动作',
+      fb.toasts.some((item) => String(item.message).includes('没能走原生输入')) &&
+        fb.toasts.some((item) => String(item.message).includes('撤销历史')) &&
+        fb.lastAction === '撤销',
+      { toasts: fb.toasts, lastAction: fb.lastAction }
+    );
+    const fbUndo = await exec(`(() => {
+      const el = document.getElementById('editor');
+      el.focus();
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+      return { text: el.value };
+    })()`);
+    check(
+      '剪贴板面板（V402）：兜底写入的第一下 Ctrl+Z 能退回插入前（不静默丢撤销历史）',
+      fbUndo.text === beforeFallback,
+      { got: fbUndo.text, want: beforeFallback }
+    );
+  } finally {
+    await exec("document.execCommand = window.__cwE2EExec; delete window.__cwE2EExec; 'restored'");
+  }
+
   // 72j. 关掉后台监听：队列立刻清空（隐私口径），之后再复制也不入队
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");

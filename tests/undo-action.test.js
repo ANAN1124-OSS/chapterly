@@ -367,7 +367,7 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   // 审计修复 #7（V401）：换书时撤销条与大段插入快照必须一起作废（快照跨书会串台）
   assert.match(
     rendererCode,
-    /undoUi\.clear\(\);\n    \/\/ 审计修复 #7（V401）：[\s\S]{0,220}?bulkWriteUndo = null;\n    \/\/ 换书前先停掉上一本的写作计时/
+    /undoUi\.clear\(\);\n    \/\/ 审计修复 #7（V401）：[\s\S]{0,260}?bulkWriteUndo = null;\n    fallbackWriteUndo = null; \/\/ 审计修复 #39（V402）[^\n]*\n    \/\/ 换书前先停掉上一本的写作计时/
   );
   // 1.5.0 P0-4（E4 / H-1 / H-2 / H-5 / H-9）的接线不许丢：手动关闭、长按不抖、撤销按 id / 邻居重算落点
   assert.match(rendererCode, /'close-undo-bar': \(\) => undoUi\.dismiss\(\)/);
@@ -388,11 +388,52 @@ test('静态闸门（V403）：正文 Ctrl+Z 拦截器执行成功后停止冒�
   // 会连退两步。这里把「执行成功才 stopPropagation」钉住（快照作废时仍让整理通道照旧工作）。
   assert.match(
     rendererCode,
-    /if \(key !== 'z'\) return;\n\s+event\.preventDefault\(\);\n\s+const undone = undoBulkWrite\(\);\n(?:\s+\/\/[^\n]*\n)*\s+if \(undone\) event\.stopPropagation\(\);/,
-    '正文拦截器要在 undoBulkWrite() 成功后 stopPropagation；preventDefault 与快照作废时的放行都要在'
+    /if \(key !== 'z'\) return;\n\s+event\.preventDefault\(\);\n\s+(?:\/\/[^\n]*\n\s+)*const undone = [^\n]*undo(?:BulkWrite|FallbackWrite)\(\);[^\n]*\n(?:\s+\/\/[^\n]*\n)*\s+if \(undone\) event\.stopPropagation\(\);/,
+    '正文拦截器要在撤销执行成功后 stopPropagation（preventDefault 不等于阻止冒泡）'
   );
   // document 级那条「整理快照优先」的分支必须还在（只让位，不删除）
   assert.match(rendererCode, /if \(state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/);
+});
+
+test('静态闸门（V402）：兜底整串赋值统一配一次性快照 + 提示 + Ctrl+Z，换书 / 换章即作废', () => {
+  // 快照声明 + 记账 / 撤销两个函数（提示与撤销按钮都走已有的 toastActionable，与 bulk 分支同一套）
+  assert.match(rendererCode, /let fallbackWriteUndo = null;/);
+  assert.match(rendererCode, /function recordFallbackWrite\(info\) \{/);
+  assert.match(rendererCode, /function undoFallbackWrite\(\) \{/);
+  assert.match(rendererCode, /toastActionable\(\n\s+`\$\{label\}没能走原生输入[\s\S]{0,200}?'撤销',\n\s+undoFallbackWrite\n\s+\);/);
+  // renderer.js 的三处兜底（剪贴板正文 / 章节模板 / 替换这一处）都要记账，且禁掉「整串赋值」静默清栈
+  const rendererCalls = rendererCode.match(/recordFallbackWrite\(\{/g) || [];
+  assert.equal(rendererCalls.length, 3, 'renderer.js 的三处兜底赋值都要记账');
+  for (const label of ['插入正文', '套用章节模板', '替换这一处']) {
+    assert.ok(rendererCode.includes(`label: '${label}'`), '兜底调用点少了一条：' + label);
+  }
+  // 正文上的第一下 Ctrl+Z 与 bulk 共用拦截口；兜底快照也要能被它接住
+  assert.match(rendererCode, /if \(!bulkWriteUndo && !fallbackWriteUndo\) return;/);
+  assert.match(rendererCode, /const undone = bulkWriteUndo \? undoBulkWrite\(\) : undoFallbackWrite\(\);/);
+  // 三个作废点：输入处理 / 换章成功 / 换书提交
+  assert.match(rendererCode, /function onEditorInput\(\) \{[\s\S]{0,300}bulkWriteUndo = null;\n    fallbackWriteUndo = null;/);
+  assert.match(rendererCode, /bulkWriteUndo = null;\n      fallbackWriteUndo = null; \/\/ 审计修复 #39（V402）：兜底写入快照同理/);
+  // 两个模块的兜底路径都接到同一份记账（host 注入），装配点必须真的传进去
+  assert.match(rendererCode, /\$, state, api, call, toast, staleGuard, recordFallbackWrite,/);
+  assert.match(rendererCode, /\$, state, api, call, toast, recordFallbackWrite,/);
+});
+
+// 审计修复 #39（V402）：两个 UI 模块的兜底赋值路径也必须报告给渲染层（否则它们仍静默清空撤销栈）
+test('静态闸门（V402）：fragments / tidy 的兜底赋值都走 host.recordFallbackWrite', () => {
+  for (const rel of ['renderer/fragments-ui.js', 'renderer/tidy-card-ui.js']) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    assert.match(src, /'recordFallbackWrite'/, rel + '：host 契约必须列 recordFallbackWrite');
+    assert.match(src, /recordFallbackWrite\(\{/, rel + '：兜底赋值后必须记账');
+    assert.match(src, /recordFallbackWrite 必须是函数/, rel + '：成员不是函数要当场抛 TypeError');
+  }
+  // 两个模块里兜底赋值与记账的先后：必须先 onEditorInput()（会作废旧快照）再记账
+  const fragments = fs.readFileSync(path.join(ROOT, 'renderer', 'fragments-ui.js'), 'utf8');
+  assert.match(fragments, /onEditorInput\(\);\r?\n    if \(fallbackUsed\) \{[\s\S]{0,300}?recordFallbackWrite\(\{/);
+  const tidy = fs.readFileSync(path.join(ROOT, 'renderer', 'tidy-card-ui.js'), 'utf8');
+  assert.match(
+    tidy,
+    /if \(!inserted \|\| editorEl\.value !== text\) \{[\s\S]{0,200}?fallbackUsed = true;[\s\S]{0,400}?recordFallbackWrite\(\{[\s\S]{0,100}?before: beforeText/
+  );
 });
 
 test('静态闸门：删除章节不再弹「删除章节」确认框（P0-2 只留两处确认）', () => {

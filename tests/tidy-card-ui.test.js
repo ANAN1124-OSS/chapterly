@@ -14,7 +14,8 @@ const chaptersLib = require('../core/chapters');
 // 撤销链判断、token 作废、整理期间换书作废、光标映射、预览截断这些分支在 Node 里一步都测不到。
 // 搬出来以后用「假 host + 假 DOM」逐条钉住，再用静态闸门保证渲染层不长回第二份。
 //
-// 契约：host 8 个成员 = 基础 5（$, state, api, call, toast）+ format{formatUi,MAX_FORMAT_UNDO,
+// 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ recordFallbackWrite（审计修复 #39 / V402：
+// 兜底整串赋值后由渲染层统一记快照 + 提示）+ format{formatUi,MAX_FORMAT_UNDO,
 // readFormatOptions,writeFormatOptions,editorEl,onEditorInput,chaptersLib,caretColorLib} +
 // menus{hideBookMenu,hideExportMenu,hideMenu,renderMarksMenu} + peers{openSettings,toggleMarks,
 // setDisplayPreset,applyCaretColor,setCaretParagraphPersisted,setCaretColorPersisted,runFormatBook,scrollCaretIntoView}。
@@ -125,7 +126,7 @@ function build(options = {}) {
     formatText: [], setConfig: [], toast: [], hideExportMenu: 0, hideBookMenu: 0, hideMenu: [],
     renderMarksMenu: 0, openSettings: 0, toggleMarks: [], setDisplayPreset: [], applyCaretColor: [],
     setCaretParagraphPersisted: [], setCaretColorPersisted: [], runFormatBook: 0, scrollCaretIntoView: [],
-    onEditorInput: 0
+    onEditorInput: 0, fallbackWrites: []
   };
   const api = {
     async formatText(...args) {
@@ -146,6 +147,8 @@ function build(options = {}) {
     api,
     call: async (fn, ...args) => fn(...args),
     toast(message, kind) { calls.toast.push([message, kind]); },
+    // 审计修复 #39（V402）：兜底整串赋值后由渲染层统一记快照 + 提示（生产是 renderer.js 的实现）
+    recordFallbackWrite(info) { calls.fallbackWrites.push(info); },
     format: {
       formatUi,
       MAX_FORMAT_UNDO: options.maxUndo === undefined ? 50 : options.maxUndo,
@@ -180,12 +183,17 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...tidyCardUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'format', 'menus', 'peers', 'state', 'toast']);
-  assert.equal(tidyCardUi.REQUIRED_HOST.length, 8);
+test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...tidyCardUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'format', 'menus', 'peers', 'recordFallbackWrite', 'state', 'toast']);
+  assert.equal(tidyCardUi.REQUIRED_HOST.length, 9);
   const ctx = build();
   assert.doesNotThrow(() => tidyCardUi.create(ctx.host));
   assert.throws(() => tidyCardUi.create(null), /createTidyCardUi 需要 host 对象/);
+  // 审计修复 #39（V402）：成员在但不是函数也算缺（兜底写入无声清栈）
+  assert.throws(
+    () => tidyCardUi.create({ ...ctx.host, recordFallbackWrite: 'not-a-function' }),
+    /host\.recordFallbackWrite 必须是函数/
+  );
   for (const key of tidyCardUi.REQUIRED_HOST) {
     const broken = { ...ctx.host };
     delete broken[key];
@@ -317,6 +325,9 @@ test('undoFormat：没有可撤销返回 false；有则把 before 写回编辑�
   assert.equal(ctx.calls.onEditorInput, 1, '回退也要触发输入处理（dirty / 字数）');
   assert.deepEqual(ctx.calls.toast, [['已撤销整理（仍在编辑区，未写盘）', undefined]]);
   assert.equal(ctx.state.formatUndo.length, 0);
+  // 审计修复 #39（V402）：「撤销整理」自己的回退即使走兜底赋值也不记新的可撤销写入（recordFallback:false），
+  // 否则作者会把「撤销」再撤销一次，语义绕回去。
+  assert.deepEqual(ctx.calls.fallbackWrites, [], '撤销整理的回退不该记兜底快照');
 });
 
 // ---------- 点「整理」 ----------
@@ -357,6 +368,11 @@ test('formatCurrentChapterFromConfig：成功 → 写编辑区、压撤销栈、
   assert.equal(ctx.state.formatUndo[0].after, '第一段文字');
   assert.deepEqual(ctx.calls.toast, [[formatUi.successToast(formatUi.mergeOptions({ indent: '2' }), { paragraphs: 1, indent: 1 }), undefined]]);
   assert.equal(ctx.calls.renderMarksMenu || 1, 1);
+  // 审计修复 #39（V402）：测试假 DOM 没有 execCommand → 走兜底整串赋值；这条路径必须记账（渲染层据此
+  // 记一次性快照 + 提示「退出了撤销历史」），并没有把清理正文的副作用静默吞掉。
+  assert.deepEqual(ctx.calls.fallbackWrites, [
+    { before: '第一段  文字', after: '第一段文字', start: 3, label: '整理本章' }
+  ]);
 });
 
 test('formatCurrentChapterFromConfig：整理期间正文被改 / 换书换章 → 结果作废，不给编辑区写入', async () => {
@@ -649,7 +665,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWTidyCardUi
   vm.runInContext(moduleSrc, context, { filename: 'renderer/tidy-card-ui.js' });
   assert.equal(typeof win.CWTidyCardUi, 'object');
   assert.deepEqual(Object.keys(win.CWTidyCardUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWTidyCardUi.REQUIRED_HOST.length, 8);
+  assert.equal(win.CWTidyCardUi.REQUIRED_HOST.length, 9);
   assert.equal(win.CWSettingsUi, undefined);
 });
 

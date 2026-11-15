@@ -9,9 +9,10 @@
  * **只搬不改行为**：文案 / class / 定时器延迟 / 撤销上限 / 光标映射 / 预览令牌全部一字未改。
  * 事件绑定随域搬进 setupTidyCardUi()（整理 ▾ / 整理卡 / 显示 ▾ / 显示菜单 / 取色器 / 格式对话框 6 组绑定）。
  *
- * 契约：createTidyCardUi(host) 由渲染层调用一次。host 8 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createTidyCardUi(host) 由渲染层调用一次。host 9 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（formatUndo 等）/ IPC 白名单 / IPC 包装 / 提示
+ *     recordFallbackWrite,                 // 审计修复 #39（V402）：execCommand 兜底整串赋值后由渲染层记账 + 提示
  *     format: {                             // 排版纯逻辑 + 编辑区
  *       formatUi,                           //   renderer/format-ui.js：默认规则 / 合并 / 文案
  *       MAX_FORMAT_UNDO,                    //   撤销步数上限（渲染层常量）
@@ -53,12 +54,16 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'format', 'menus', 'peers'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'recordFallbackWrite', 'format', 'menus', 'peers'];
 
   function createTidyCardUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
     assertHost('createTidyCardUi', host, REQUIRED_HOST);
-    const { $, state, api, call, toast, format, menus, peers } = host;
+    const { $, state, api, call, toast, recordFallbackWrite, format, menus, peers } = host;
+    // 审计修复 #39（V402）：兜底整串赋值要由渲染层统一记快照 + 提示（模块自己没有编辑器级拦截器）
+    if (typeof recordFallbackWrite !== 'function') {
+      throw new TypeError('createTidyCardUi 的 host.recordFallbackWrite 必须是函数');
+    }
     if (typeof format !== 'object') throw new TypeError('createTidyCardUi 的 host.format 必须是对象');
     for (const key of ['formatUi', 'MAX_FORMAT_UNDO', 'readFormatOptions', 'writeFormatOptions', 'editorEl', 'onEditorInput', 'chaptersLib', 'caretColorLib']) {
       if (format[key] === undefined || format[key] === null) throw new TypeError('createTidyCardUi 的 host.format 缺少 ' + key);
@@ -212,7 +217,10 @@
   // 把整理结果写进编辑区：用 execCommand 走原生输入，保住 Ctrl+Z 的原生撤销链；
   // 失败再退回直接赋值。两条路都会触发 input → 标记未保存。
   // hint = { text: 整理前的正文, pos: 整理前光标位置 }，用来把光标映射回原来的位置。
-  function insertFormattedText(text, hint) {
+  function insertFormattedText(text, hint, options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    // 审计修复 #39（V402）：兜底整串赋值前的正文（撤销基准；不能只信 hint.text，调用方可能不传）
+    const beforeText = editorEl.value;
     const pos = hint && Number.isFinite(hint.pos) ? hint.pos : 0;
     const caret = hint && typeof hint.text === 'string'
       ? mapCaretPosition(hint.text, text, pos)
@@ -225,12 +233,20 @@
     } catch {
       inserted = false;
     }
+    let fallbackUsed = false;
     if (!inserted || editorEl.value !== text) {
       editorEl.value = text;
       onEditorInput();
+      fallbackUsed = true;
     }
     editorEl.setSelectionRange(caret, caret);
     scrollCaretIntoView(caret);
+    if (fallbackUsed && opts.recordFallback !== false) {
+      // 审计修复 #39（V402）：兜底整串赋值清空浏览器撤销栈 —— 由渲染层记一次性快照 + 提示
+      // （放在 onEditorInput 之后：输入处理会作废旧快照）。撤销整理自己回退时传 recordFallback:false，
+      // 免得把「撤销」这一步又包装成一次可撤销写入。
+      recordFallbackWrite({ before: beforeText, after: text, start: caret, label: '整理本章' });
+    }
   }
 
   // 整理只动空白/标点，正文有效字符的顺序不变：按「第 N 个非空白字符」把光标映射回去，
@@ -282,7 +298,7 @@
     if (!canUndoFormat()) return false;
     const top = state.formatUndo.pop();
     const caret = editorEl.selectionStart || 0;
-    insertFormattedText(top.before, { text: top.after, pos: caret });
+    insertFormattedText(top.before, { text: top.after, pos: caret }, { recordFallback: false });
     toast('已撤销整理（仍在编辑区，未写盘）');
     return true;
   }
