@@ -256,8 +256,9 @@ test('整本整理：中途失败时报告已整理章数与备份目录，原�
   const metaPath = path.join(bookPath, '书目.json');
   const metaBefore = await fs.readFile(metaPath, 'utf8');
 
-  // 第二张章写到一半失败（第一张已经整理好）
-  const restore = patchRename((from, to) => (to.endsWith(`${path.sep}${f1}`) ? 'EPERM' : ''));
+  // 第二张章写到一半失败（第一张已经整理好）；备份复制也走 rename，这里只让「写回章节文件」
+  // 那一步失败，别把 _trash 里的备份复制一起打断（否则测的就不是「备份成功、写盘失败」了）
+  const restore = patchRename((from, to) => (to.endsWith(`${path.sep}${f1}`) && !to.includes(`${path.sep}_trash${path.sep}`) ? 'EPERM' : ''));
   let failed = null;
   try {
     failed = await storage.formatBook(bookPath, FORMAT_OPTIONS).then(
@@ -307,7 +308,7 @@ test('整本替换：中途失败时报告已替换章数与备份目录，备�
   meta = await storage.readBookMeta(bookPath);
   const metaBefore = await fs.readFile(path.join(bookPath, '书目.json'), 'utf8');
 
-  const restore = patchRename((from, to) => (to.endsWith(`${path.sep}${f1}`) ? 'EACCES' : ''));
+  const restore = patchRename((from, to) => (to.endsWith(`${path.sep}${f1}`) && !to.includes(`${path.sep}_trash${path.sep}`) ? 'EACCES' : ''));
   let failed = null;
   try {
     failed = await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' }).then(
@@ -352,8 +353,8 @@ test('还原到替换前：中途失败报告已还原章数与还原前备份�
   const backupName = path.basename(replaced.backupDir);
   assert.equal((await storage.loadChapterText(bookPath, f0)).text, '小明一。');
 
-  // 还原第一章能成功，第二章写盘失败
-  const restore = patchRename((from, to) => (to.endsWith(`${path.sep}${f1}`) ? 'EPERM' : ''));
+  // 还原第一章能成功，第二章写盘失败；备份复制也走 rename，这里只打断写回章节文件那一步
+  const restore = patchRename((from, to) => (to.endsWith(`${path.sep}${f1}`) && !to.includes(`${path.sep}_trash${path.sep}`) ? 'EPERM' : ''));
   let failed = null;
   try {
     failed = await storage.restoreReplaceBackup(bookPath, backupName).then(

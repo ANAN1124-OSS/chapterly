@@ -130,6 +130,26 @@ function trashDirLabel(dir) {
   return dir ? `${TRASH_DIR}/${path.basename(dir)}` : '';
 }
 
+// 审计修复 #3（E3）：整本替换 / 整理 / 还原前备份的原文复制也必须走原子写。
+// 以前三处都用裸 fs.copyFile：磁盘满 / 被杀软打断时会在 _trash 里留下半截文件，
+// 而失败提示还让作者「可以从那里把原文拷回来」—— 还原侧只 stat 尺寸，识破不了截断，
+// 等于用半截备份再覆盖一次正文（二次丢稿）。
+// 现在统一：atomicCopyFile（临时文件 → fsync → rename，失败删临时文件）→ 复制后比对
+// 「源 stat.size」与「实际写出字节数」，不一致（源在复制期间被外部改写 / 写短）就删掉
+// 这份不可信备份并报错：宁可这次不动手，也不留一份看起来能用的坏备份。
+async function copyReadableChapterToBackup(source, target) {
+  const stat = await fs.stat(source);
+  const written = await atomicCopyFile(source, target);
+  if (written !== stat.size) {
+    try { await fs.unlink(target); } catch { /* 临时文件已被清理 / 目标不存在：忽略 */ }
+    throw new StorageError(
+      'BACKUP_COPY_SHORT',
+      `备份原文时复制的字节数与源文件不一致（源 ${stat.size} B / 备份 ${written} B），已删除这份备份`
+    );
+  }
+  return written;
+}
+
 // nowIso / mapLimit 从 core/common.js 来（B6）：和 search-index 建索引时同一份实现
 // （限并发、ISO 时间戳），这里只保留 nowIso 的对外导出（旧调用方按名字取）。
 
@@ -1418,7 +1438,8 @@ async function replaceInBook(bookPath, options = {}) {
             await ensureDir(backupDir);
             backupCreated = true;
           }
-          await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
+          // 审计修复 #3（E3）：备份也走原子复制 + 复制后尺寸校验（半截备份不得留在 _trash）
+          await copyReadableChapterToBackup(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
           await saveChapterText(bookPath, chapter.file, res.text);
           chapter.chars = chaptersLib.countChars(res.text);
           chaptersChanged += 1;
@@ -1542,7 +1563,8 @@ async function formatBook(bookPath, options = {}, onProgress) {
             backupCreated = true;
           }
           // 先备份原文再写盘：整理也是「改正文」的显式动作，必须留退路
-          await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
+          // 审计修复 #3（E3）：备份走原子复制 + 复制后尺寸校验（与整本替换同一份实现）
+          await copyReadableChapterToBackup(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
           await saveChapterText(bookPath, chapter.file, res.text);
           chapter.chars = chaptersLib.countChars(res.text);
           addFormatStats(stats, res.stats);
@@ -1962,7 +1984,8 @@ async function backupCurrentToRestoreDir(bookPath, fileName, restoreDir) {
   const target = assertInside(bookPath, fileName);
   if (!(await exists(target))) return false;
   await ensureDir(restoreDir);
-  await fs.copyFile(target, path.join(restoreDir, fileName));
+  // 审计修复 #3（E3）：还原前备份同样是「退路」，必须原子写完并核对字节数
+  await copyReadableChapterToBackup(target, path.join(restoreDir, fileName));
   return true;
 }
 

@@ -36,6 +36,42 @@ function fsError(code) {
   return Object.assign(new Error(`${code}: 模拟失败`), { code });
 }
 
+// 审计修复 #3（E3）：让指定路径的 stat.size 比真实值多 1 字节，
+// 模拟「备份复制期间源文件被外部改写 / 写短」，验证复制后尺寸校验与残件清理。
+// 返回 restore()，必须放 finally。
+function patchStatSize(targetPath, extra = 1) {
+  const real = fs.stat;
+  const wanted = path.resolve(targetPath);
+  Object.defineProperty(fs, 'stat', {
+    configurable: true,
+    writable: true,
+    value: async (p, ...rest) => {
+      const stat = await real(p, ...rest);
+      if (path.resolve(String(p)) !== wanted) return stat;
+      const copy = Object.create(stat);
+      Object.defineProperty(copy, 'size', { value: stat.size + extra, enumerable: true });
+      return copy;
+    }
+  });
+  return () => Object.defineProperty(fs, 'stat', { value: real, configurable: true, writable: true });
+}
+
+async function txtUnder(trashDir, prefix = '') {
+  let entries;
+  try {
+    entries = await fs.readdir(trashDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const found = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+    const files = await fs.readdir(path.join(trashDir, entry.name));
+    for (const name of files) if (name.endsWith('.txt')) found.push(`${entry.name}/${name}`);
+  }
+  return found;
+}
+
 async function tmpEntries(dir) {
   const names = await fs.readdir(dir);
   return names.filter((name) => name.includes('.tmp-'));
@@ -126,6 +162,92 @@ test('整本整理备份：备份章数 == 预检查的「会改动 N 章」，�
   // 干净的那一章既没被备份，也没被改写
   assert.equal(backupNames.includes(files[1]), false);
   assert.equal(await fs.readFile(path.join(bookPath, files[1]), 'utf8'), raws[1]);
+});
+
+// 审计修复 #3（E3）：备份从「裸 fs.copyFile」改成 atomicCopyFile + 复制后尺寸校验。
+// 复制期间源被外部改写 / 写短时，必须在写正文之前失败，并删掉那份不可信的备份 ——
+// 不然失败提示会指着一份半截备份说「可以从那里把原文拷回来」，还原时还会用它覆盖正文。
+test('审计修复 #3（E3）：整本替换备份尺寸不符 → 失败且不留半截备份，正文一个字节不动', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '替换备份尺寸校验');
+  const meta = await storage.readBookMeta(bookPath);
+  const file0 = meta.chapters[0].file;
+  const chapterPath = path.join(bookPath, file0);
+  await fs.writeFile(chapterPath, '阿明来了。', 'utf8');
+
+  const restoreStat = patchStatSize(chapterPath);
+  try {
+    await assert.rejects(
+      () => storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' }),
+      (err) => {
+        assert.equal(err.code, 'REPLACE_FAILED');
+        assert.match(err.message, /字节数与源文件不一致/);
+        assert.match(err.message, /书里的正文一个字节都没改/);
+        return true;
+      }
+    );
+  } finally {
+    restoreStat();
+  }
+  // 正文没被改、备份目录里没有可被误用的半截 txt、也没有残留临时文件
+  assert.equal(await fs.readFile(chapterPath, 'utf8'), '阿明来了。');
+  assert.deepEqual(await txtUnder(path.join(bookPath, '_trash')), []);
+  assert.deepEqual(await tmpEntries(path.join(bookPath, '_trash')), []);
+});
+
+test('审计修复 #3（E3）：整本整理备份尺寸不符 → 失败且不留半截备份，正文一个字节不动', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '整理备份尺寸校验');
+  const meta = await storage.readBookMeta(bookPath);
+  const file0 = meta.chapters[0].file;
+  const chapterPath = path.join(bookPath, file0);
+  const raw = '他说,"第一段。"\r\n第二段\r\n';
+  await fs.writeFile(chapterPath, raw, 'utf8');
+  const options = { indent: '2', blankLines: 'single', normalizePunct: true, curlyQuotes: true, ellipsis: true };
+
+  const restoreStat = patchStatSize(chapterPath);
+  try {
+    await assert.rejects(
+      () => storage.formatBook(bookPath, options),
+      (err) => {
+        assert.equal(err.code, 'FORMAT_FAILED');
+        assert.match(err.message, /字节数与源文件不一致/);
+        return true;
+      }
+    );
+  } finally {
+    restoreStat();
+  }
+  assert.equal(await fs.readFile(chapterPath, 'utf8'), raw);
+  assert.deepEqual(await txtUnder(path.join(bookPath, '_trash')), []);
+});
+
+test('审计修复 #3（E3）：还原前备份同样原子 + 尺寸校验；失败时不覆盖正文', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '还原前备份尺寸校验');
+  const meta = await storage.readBookMeta(bookPath);
+  const file0 = meta.chapters[0].file;
+  const chapterPath = path.join(bookPath, file0);
+  await storage.saveChapterText(bookPath, file0, '阿明来了。');
+  const replaced = await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' });
+  assert.equal((await storage.loadChapterText(bookPath, file0)).text, '小明来了。');
+  const backupName = path.basename(replaced.backupDir);
+
+  const restoreStat = patchStatSize(chapterPath);
+  try {
+    await assert.rejects(
+      () => storage.restoreReplaceBackup(bookPath, backupName),
+      (err) => {
+        assert.equal(err.code, 'RESTORE_FAILED');
+        assert.match(err.message, /字节数与源文件不一致/);
+        return true;
+      }
+    );
+  } finally {
+    restoreStat();
+  }
+  assert.equal((await storage.loadChapterText(bookPath, file0)).text, '小明来了。', '还原前的正文不许被半截备份写坏');
+  assert.deepEqual(await txtUnder(path.join(bookPath, '_trash'), '还原前备份-'), [], '还原前备份目录里不许留半截文件');
 });
 
 test('书目.json.bak：等于「上一版」的原始字节，不是重新序列化出来的', async () => {
