@@ -222,15 +222,20 @@ test('静态闸门：导出入口释放中间引用（TXT 流式写出，归档�
   assert.match(writer, /exporter\.streamTxtExport\(/);
   assert.match(writer, /atomicWriteFileStream\(/);
   assert.doesNotMatch(writer, /collectExportTexts|buildTxtExport|Buffer\.from/);
+  // 审计修复 #24（R2）：EPUB / DOCX 的这段流程已收进共享内核 exportStructured，
+  // 「就地转换 + 用完即清」的检查锚在内核上，两个入口只证明委托了内核。
+  const kernel = sliceFrom(ipcExportSource, '  async function exportStructured(bookPath, override, range, options) {');
+  assert.match(
+    kernel,
+    /exporter\.convertTextsInPlace\(texts, conversion, s2tLib\.convertText\)/,
+    '共享内核要就地转换（不再 texts.map 造第二份全书数组）'
+  );
+  assert.match(kernel, /exporter\.releaseTexts\(texts\)/, '打包完要放掉整本正文');
+  assert.doesNotMatch(kernel, /texts\.map\(\(text\) => s2tLib\.convertText/);
   for (const channel of ['book:export-epub', 'book:export-docx']) {
-    const body = sliceFrom(ipcExportSource, `  handleBook('${channel}', async (bookPath, override, range) => {`);
-    assert.match(
-      body,
-      /exporter\.convertTextsInPlace\(texts, conversion, s2tLib\.convertText\)/,
-      `${channel} 要就地转换（不再 texts.map 造第二份全书数组）`
-    );
-    assert.match(body, /exporter\.releaseTexts\(texts\)/, `${channel} 打包完要放掉整本正文`);
-    assert.doesNotMatch(body, /texts\.map\(\(text\) => s2tLib\.convertText/);
+    const body = sliceFrom(ipcExportSource, `  handleBook('${channel}', async (bookPath, override, range) =>\n    exportStructured(`);
+    assert.equal(body.includes('releaseTexts'), false, `${channel} 不再自己放整本正文（在内核里做）`);
+    assert.equal(body.includes('convertTextsInPlace'), false, `${channel} 不再自己转换（在内核里做）`);
   }
 });
 

@@ -1,9 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   composeBook,
   composeSelected,
   resolveExportRange,
+  normalizeExportInput,
   exportFileName,
   exportBuffer,
   exportBufferFromText,
@@ -535,4 +538,55 @@ test('B5/WP-28 流式 TXT：逐块回调、不物化整本（块数与最大块�
   assert.ok(maxChunk < data.text.length / 100, `最大块 ${maxChunk} 不该接近整本 ${data.text.length}`);
   const totalChars = texts.reduce((sum, text) => sum + chaptersLib.countChars(text), 0);
   assert.equal(data.result.chars, totalChars);
+});
+
+// ---------- 审计修复 #24（R1）：EPUB / DOCX 共用的导出入参归一 ----------
+test('#24 R1：normalizeExportInput 是 EPUB / DOCX 唯一的入参归一（书名缺省 / texts 守卫 / 范围 / 时间戳）', () => {
+  const meta = metaOf('起风', '夜雨');
+  meta.title = '   ';
+  const fixed = '2026-01-02T03:04:05.000Z';
+  const before = JSON.stringify(meta);
+  const core = normalizeExportInput({ meta, texts: ['甲。', '乙。'], modified: fixed });
+  assert.equal(core.title, '未命名书籍', '空白书名回缺省（和两个导出构建器旧口径一致）');
+  assert.deepEqual(core.chapters, meta.chapters);
+  assert.deepEqual(core.texts, ['甲。', '乙。']);
+  assert.equal(core.plan.mode, 'all');
+  assert.equal(core.plan.count, 2);
+  assert.equal(core.stamp.iso, '2026-01-02T03:04:05Z', 'modified 传给 isoTimestamp（两个格式共用同一份时间戳）');
+  assert.equal(JSON.stringify(meta), before, '归一只读，不改 meta');
+
+  const noTexts = normalizeExportInput({ meta: metaOf('起风') });
+  assert.deepEqual(noTexts.texts, [], 'texts 不是数组按空数组处理（旧实现同一口径）');
+
+  assert.throws(
+    () => normalizeExportInput({ meta: { title: '空书', chapters: [] } }),
+    /EMPTY_BOOK：这本书里还没有章节/
+  );
+  assert.throws(
+    () => normalizeExportInput({ meta: metaOf('一', '二', '三', '四', '五'), range: { mode: 'range', from: 4, to: 2 } }),
+    /EMPTY_EXPORT_RANGE：所选范围里没有章节/
+  );
+  assert.throws(
+    () => normalizeExportInput({ meta: metaOf('起风'), range: { mode: 'volume', volumeId: 'nope' } }),
+    /EMPTY_EXPORT_RANGE/
+  );
+});
+
+test('#24 R1：epub / docx 不再各抄一份 chapterList / 空范围检查（唯一实现闸门）', () => {
+  const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  for (const rel of ['core/epub.js', 'core/docx.js']) {
+    const source = read(rel);
+    assert.match(source, /exporter\.normalizeExportInput\(/, `${rel} 必须走共享归一`);
+    assert.equal(source.includes('function chapterList('), false, `${rel} 不许再抄 chapterList`);
+    assert.equal(
+      source.includes('EMPTY_BOOK：这本书里还没有章节'),
+      false,
+      `${rel} 不许再自己判空书（唯一实现在 core/exporter.normalizeExportInput）`
+    );
+    // 空范围检查也只剩共享层一份：各自文件里不许再出现这条抛错
+    assert.equal(source.includes('EMPTY_EXPORT_RANGE：所选范围里没有章节'), false, `${rel} 不许再自己判空范围`);
+  }
+  const epub = read('core/epub.js');
+  assert.equal(epub.includes('isoTimestamp(input && input.modified)'), false, 'epub 不再自己算时间戳');
+  assert.equal(read('core/docx.js').includes('isoTimestamp(input && input.modified)'), false, 'docx 不再自己算时间戳');
 });

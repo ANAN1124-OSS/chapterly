@@ -1,6 +1,8 @@
 // 整本导出/复制的拼接逻辑。导出与复制共用，保证两处格式永远一致。
 const chaptersLib = require('./chapters');
 const formatLib = require('./format');
+// 导出时间戳与 EPUB / DOCX 共用同一份（core/xml.js 的 isoTimestamp；纯函数、无依赖）
+const { isoTimestamp } = require('./xml');
 
 const BOM = '\uFEFF';
 
@@ -139,6 +141,27 @@ function resolveExportRange(meta, range) {
     volumeId: null,
     empty: total === 0
   };
+}
+
+// 审计修复 #24（R1）：EPUB / DOCX 共用的导出入参归一。
+// 以前两个导出文件各抄一份（chapterList / meta·texts 守卫 / 书名缺省 / 范围解析 / 空范围检查位置
+// 还不一致：epub 拖到 buildBundle，docx 在 normalizeInput）—— 双份维护迟早漂移。这里收成一份：
+//   · 空书 → EMPTY_BOOK；空范围 → EMPTY_EXPORT_RANGE（两个构建器从同一处抛，错误码 / 文案不变）；
+//   · 只读：不改 meta，范围解析复用 resolveExportRange；modified 缺省 = 现在（isoTimestamp）；
+//   · texts 不是数组时按空串数组处理（与两处旧实现逐字一致）。
+// 返回 { meta, chapters, texts, title, plan, stamp }；各格式自己的字段（epub 的 lang / identifier、
+// docx 的 author）仍留在各自模块，不塞进公共层。
+function normalizeExportInput(input) {
+  const meta = (input && input.meta) || {};
+  const chapters = chapterList(meta);
+  if (!chapters.length) throw new Error('EMPTY_BOOK：这本书里还没有章节');
+  const texts = Array.isArray(input && input.texts) ? input.texts : [];
+  const title = String(meta.title == null ? '' : meta.title).trim() || '未命名书籍';
+  // 范围解析和 TXT / EPUB / DOCX 导出共用同一份纯逻辑：只读，不改 meta。
+  const plan = resolveExportRange(meta, input && input.range);
+  if (!plan.count) throw new Error('EMPTY_EXPORT_RANGE：所选范围里没有章节');
+  const stamp = isoTimestamp(input && input.modified);
+  return { meta, chapters, texts, title, plan, stamp };
 }
 
 // 导出对话框默认文件名（不含目录）：
@@ -348,6 +371,8 @@ module.exports = {
   composeSelected,
   groupByVolume,
   resolveExportRange,
+  // 审计修复 #24（R1）：EPUB / DOCX 唯一的导出入参归一
+  normalizeExportInput,
   exportFileName,
   exportBuffer,
   exportBufferFromText,

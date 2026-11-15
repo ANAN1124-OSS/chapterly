@@ -228,6 +228,35 @@ function registerExportIpc(host) {
     };
   }
 
+  // 审计修复 #24（R2）：EPUB / DOCX 的导出流程 = 保存对话框 → 读正文 → 简繁转换 → 构建 →
+  // 原子写盘 → 记目录 → 回形状，两个入口以前各抄一份（≈24 行近逐字重复）。现在只留这一份：
+  // 每个格式只提供自己的对话框标题 / 扩展名 / 默认文件名与 build 函数，其余全共用。
+  // 时序纪律不变（审计 #7）：正文只在保存对话框确认之后才读（取消 / 改主意都不白读整本）。
+  async function exportStructured(bookPath, override, range, options) {
+    const prepared = await prepareExport(bookPath, override, range);
+    const { meta, cfg, defaultDir, range: safeRange } = prepared;
+    const defaultName = options.defaultName(prepared);
+    const { canceled, filePath } = await showSaveDialog({
+      title: options.title,
+      defaultPath: path.join(defaultDir, defaultName),
+      filters: options.filters
+    });
+    if (canceled || !filePath) return { canceled: true };
+    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）。
+    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
+    // 简繁转换：书名 / 卷名 / 章名 / 正文都换成导出用的副本，目录和正文才一致；
+    // 书目与章节 txt 一概不动（chars 仍按原稿字数算）。
+    const conversion = s2tLib.normalizeMode(cfg.exportConversion);
+    const exportMeta = s2tLib.convertMeta(meta, conversion);
+    // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
+    exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
+    const built = await options.build(exportMeta, texts, safeRange);
+    exporter.releaseTexts(texts);
+    await atomicWriteFile(filePath, built.buffer);
+    await rememberExportDir(path.dirname(filePath));
+    return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, prepared.plan);
+  }
+
   handleBook('book:export', async (bookPath, override, range) => {
     const prepared = await prepareExport(bookPath, override, range);
     const { meta, plan, defaultDir, range: safeRange } = prepared;
@@ -260,57 +289,26 @@ function registerExportIpc(host) {
   // 由 EPUB 里的 CSS 控制，不动任何 txt 字节。和 TXT 导出一样：当前章未保存的内容参与拼接、只读、原子写盘。
   // range 不传 = 全书；只把选中的章节读出来打进包里。范围输入按全书顺序算；章标题走
   // chapters.formatTitle，按这本书的编号方式（按卷编号的书是各卷自己的卷内号）。
-  handleBook('book:export-epub', async (bookPath, override, range) => {
-    const prepared = await prepareExport(bookPath, override, range);
-    const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;
-    const defaultName = epubLib.epubFileName(meta, safeRange);
-    const { canceled, filePath } = await showSaveDialog({
+  handleBook('book:export-epub', async (bookPath, override, range) =>
+    exportStructured(bookPath, override, range, {
       title: '导出 EPUB',
-      defaultPath: path.join(defaultDir, defaultName),
-      filters: [{ name: 'EPUB 电子书', extensions: ['epub'] }]
-    });
-    if (canceled || !filePath) return { canceled: true };
-    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）
-    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
-    // 简繁转换：书名 / 卷名 / 章名 / 正文都换成导出用的副本，目录和正文才一致；
-    // 书目与章节 txt 一概不动（chars 仍按原稿字数算）。
-    const conversion = s2tLib.normalizeMode(cfg.exportConversion);
-    const exportMeta = s2tLib.convertMeta(meta, conversion);
-    // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
-    exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
-    const built = await epubLib.buildEpub({ meta: exportMeta, texts, range: safeRange });
-    exporter.releaseTexts(texts);
-    await atomicWriteFile(filePath, built.buffer);
-    await rememberExportDir(path.dirname(filePath));
-    return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, plan);
-  });
+      filters: [{ name: 'EPUB 电子书', extensions: ['epub'] }],
+      defaultName: (prepared) => epubLib.epubFileName(prepared.meta, prepared.range),
+      build: (meta, texts, safeRange) => epubLib.buildEpub({ meta, texts, range: safeRange })
+    })
+  );
 
   // 导出 DOCX（v0.8 P0 N9）：整本或按卷 / 按章节范围 → 一份 Word 能直接打开的书稿。
   // 和 EPUB 导出同一套规则：范围解析复用 exporter.resolveExportRange，只读选中的章，
   // 章标题走 chapters.formatTitle（范围按全书顺序，标题按书的编号方式）；当前章未保存内容参与、只读、原子写盘、简繁转换只作用于副本。
-  handleBook('book:export-docx', async (bookPath, override, range) => {
-    const prepared = await prepareExport(bookPath, override, range);
-    const { meta, plan, cfg, defaultDir, range: safeRange } = prepared;
-    const defaultName = docxLib.docxFileName(meta, safeRange);
-    const { canceled, filePath } = await showSaveDialog({
+  handleBook('book:export-docx', async (bookPath, override, range) =>
+    exportStructured(bookPath, override, range, {
       title: '导出 DOCX',
-      defaultPath: path.join(defaultDir, defaultName),
-      filters: [{ name: 'Word 文档', extensions: ['docx'] }]
-    });
-    if (canceled || !filePath) return { canceled: true };
-    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）
-    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
-    // 简繁转换：书名 / 卷名 / 章名 / 正文都换成导出用的副本（书目与章节 txt 一概不动）
-    const conversion = s2tLib.normalizeMode(cfg.exportConversion);
-    const exportMeta = s2tLib.convertMeta(meta, conversion);
-    // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
-    exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
-    const built = await docxLib.buildDocx({ meta: exportMeta, texts, range: safeRange });
-    exporter.releaseTexts(texts);
-    await atomicWriteFile(filePath, built.buffer);
-    await rememberExportDir(path.dirname(filePath));
-    return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, plan);
-  });
+      filters: [{ name: 'Word 文档', extensions: ['docx'] }],
+      defaultName: (prepared) => docxLib.docxFileName(prepared.meta, prepared.range),
+      build: (meta, texts, safeRange) => docxLib.buildDocx({ meta, texts, range: safeRange })
+    })
+  );
 
   handleBook('book:copy', async (bookPath, override, indexes) => {
     const meta = await storage.readBookMeta(bookPath);
