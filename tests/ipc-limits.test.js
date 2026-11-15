@@ -15,10 +15,12 @@ const exporter = require('../core/exporter');
 
 const MAIN_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 // v1.8.0 WP-34（V114）：导出 / 校对 / 书 CRUD 三个域搬进 ipc/*.js。频道清单与接线闸门扫
-// 「main.js + 三个域模块」的合并文本（语义不变：入口仍然只有一份）；ipcMain 包装器数量仍只认 main.js。
+// 「main.js + 域模块」的合并文本（语义不变：入口仍然只有一份）；ipcMain 包装器数量仍只认 main.js。
+// 审计修复 #38（▲V306）：书域数据面（查找替换 / 历史 / 整理 / 快照清理 / 打开书文件夹）搬到 ipc/book-data.js。
 const IPC_SOURCE = [
   'main.js',
   'ipc/book.js',
+  'ipc/book-data.js',
   'ipc/proofread.js',
   'ipc/export.js'
 ]

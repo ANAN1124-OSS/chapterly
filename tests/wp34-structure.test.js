@@ -1,11 +1,14 @@
 // v1.8.0 WP-34（D1 + V114）：主进程 IPC 结构拆分（registerIpc() 按域拆出导出 / 校对 / 书 CRUD）
 // 与渲染层继续拆分 / state 字段收敛的回归锚点。
+// 审计修复 #38（▲V306）：书域数据面（查找替换 / 历史 / 整理 / 快照清理 / 打开书文件夹）再下沉为
+// ipc/book-data.js —— 本闸门跟着扩成「四个域」。
 //
-// 纪律（D-6 已定范围）：只拆三块，其余频道本版不动；**只搬不改行为** —— 所以这里钉的是
-//   ① 三个域模块的频道清单 / 顺序 / 注册器种类（与搬前逐条一致）；
+// 纪律（D-6 已定范围）：只拆四块，其余频道本版不动；**只搬不改行为** —— 所以这里钉的是
+//   ① 四个域模块的频道清单 / 顺序 / 注册器种类（与搬前逐条一致）；
 //   ② registerIpc() 只做装配（被搬走的频道不许在 main.js 里回潮），且行数降到可导航规模；
 //   ③ 依赖注入的 host 契约：缺成员在装配时 TypeError；两个可变句柄（configStore / 剪贴板）走 getter；
-//   ④ 频道总数不丢：main.js + ipc/*.js 的注册点 = 104（与 WP-33 前一致），preload 的 invoke 全在其中；
+//   ④ 频道总数不丢：main.js + ipc/*.js 的注册点 = 105（WP-34 后 104 + V302 的 chapter:rescue），
+//      preload 的 invoke 全在其中；
 //   ⑤ 渲染层：快捷键一览整段搬进 renderer/shortcuts-ui.js；state 动态字段全部收敛声明（reportedDirty）。
 // 真实运行时的回归由 E2E 全量（重构类：PASS 名字与基线逐行一致）兜底。
 const test = require('node:test');
@@ -17,11 +20,11 @@ const ROOT = path.join(__dirname, '..');
 // 统一按 LF 读：静态闸门里既有 `^` 多行锚点，也有按 `\n}\n` 切函数体（仓库工作区是 CRLF）。
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 
-const IPC_FILES = ['ipc/book.js', 'ipc/proofread.js', 'ipc/export.js'];
+const IPC_FILES = ['ipc/book.js', 'ipc/book-data.js', 'ipc/proofread.js', 'ipc/export.js'];
 const MAIN = read('main.js');
 const IPC_SOURCE = IPC_FILES.map((rel) => read(rel)).join('\n');
 
-// 三个域的频道清单（顺序 = 注册顺序）：搬前在 registerIpc() 里逐条内联，搬后必须一条不少、顺序不变。
+// 四个域的频道清单（顺序 = 注册顺序）：搬前在 registerIpc() 里逐条内联，搬后必须一条不少、顺序不变。
 const DOMAIN_CHANNELS = {
   export: [
     'book:export-plan',
@@ -72,6 +75,22 @@ const DOMAIN_CHANNELS = {
     'book:repair',
     'book:import',
     'book:delete'
+  ],
+  // 审计修复 #38（▲V306）：书域数据面从 main.js:2010-2110 整段下沉（13 个频道，顺序与搬前一致）。
+  'book-data': [
+    'book:search',
+    'book:replace',
+    'book:list-replace-backups',
+    'book:restore-replace-backup',
+    'book:list-history',
+    'book:preview-history-file',
+    'book:restore-history-file',
+    'book:restore-history-dir',
+    'book:delete-history-backups',
+    'book:clear-snapshot-day',
+    'book:format-preview',
+    'book:format',
+    'shell:open-book-folder'
   ]
 };
 const ALL_DOMAIN_CHANNELS = Object.values(DOMAIN_CHANNELS).flat();
@@ -123,7 +142,7 @@ function registrationsOf(source) {
   return hits;
 }
 
-test('WP-34：三个域模块的频道清单 / 顺序 / 注册器种类与搬前一致', () => {
+test('WP-34：四个域模块的频道清单 / 顺序 / 注册器种类与搬前一致', () => {
   let total = 0;
   for (const [domain, expected] of Object.entries(DOMAIN_CHANNELS)) {
     const registered = registerWithSpies(`ipc/${domain}.js`);
@@ -142,8 +161,9 @@ test('WP-34：三个域模块的频道清单 / 顺序 / 注册器种类与搬前
     total += registered.length;
   }
   assert.equal(total, ALL_DOMAIN_CHANNELS.length);
-  // 42 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）+ 审计修复 #6 新增的 chapter:rescue
-  assert.equal(total, 42, '三个域的频道总数变了（多一个少一个都要同步本闸门）');
+  // 55 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）+ 审计修复 #6 新增的
+  // chapter:rescue + 审计修复 #38 下沉的书域数据面 13 个频道。
+  assert.equal(total, 55, '四个域的频道总数变了（多一个少一个都要同步本闸门）');
 });
 
 test('WP-34：host 契约缺成员在 register() 装配时直接 TypeError（与渲染层 A8 同一口径）', () => {
@@ -152,6 +172,12 @@ test('WP-34：host 契约缺成员在 register() 装配时直接 TypeError（与
     /ipc\/book\.registerBookIpc 的 host 缺少 storage/,
     '缺依赖必须炸在装配阶段，不能留到点频道才 ReferenceError'
   );
+  // 审计修复 #38（▲V306）：书域数据面模块同一口径（缺 storage 在装配时直接炸）。
+  assert.throws(
+    () => require(path.join(ROOT, 'ipc', 'book-data.js')).register({ handleBook() {} }),
+    /ipc\/book-data\.registerBookDataIpc 的 host 缺少 storage/,
+    'book-data 缺依赖也要炸在装配阶段'
+  );
   assert.throws(
     () => require(path.join(ROOT, 'ipc', 'export.js')).register(null),
     /ipc\/export\.registerExportIpc 需要 host 对象/
@@ -159,7 +185,7 @@ test('WP-34：host 契约缺成员在 register() 装配时直接 TypeError（与
 });
 
 test('WP-34：registerIpc() 只装配 —— 被搬走的频道不许回潮，行数降到可导航规模', () => {
-  // ① 41 个频道在 main.js 里一个都不许再注册
+  // ① 55 个频道在 main.js 里一个都不许再注册
   for (const channel of ALL_DOMAIN_CHANNELS) {
     const patterns = [`handle('${channel}'`, `handleBook('${channel}'`];
     for (const pattern of patterns) {
@@ -170,10 +196,11 @@ test('WP-34：registerIpc() 只装配 —— 被搬走的频道不许回潮，�
       );
     }
   }
-  // ② 三个域各一次装配调用（顺序固定：书 / 校对 / 导出）
+  // ② 四个域各一次装配调用（顺序固定：书 CRUD / 书域数据面 / 校对 / 导出）
   const assembly = [
     'const domainHost = buildIpcHost();',
     'ipcBook.register(domainHost);',
+    'ipcBookData.register(domainHost);',
     'ipcProofread.register(domainHost);',
     'ipcExport.register(domainHost);'
   ];
@@ -193,7 +220,7 @@ test('WP-34：模块自己不 require electron；依赖由 main.js 的 buildIpcH
     assert.equal(source.includes("require('electron')"), false, `${rel} 不该 require electron（装配面只在 main.js）`);
     assert.match(source, /require\('\.\.\/renderer\/assert-host'\)/, `${rel} 的 host 校验要走 A8 的共享实现`);
     assert.match(source, /module\.exports = \{ register: /, `${rel} 只导出 register 一个入口`);
-    assert.match(source, /V114/, `${rel} 的模块头要写明搬移来源（V114 / WP-34）`);
+    assert.match(source, /(V114|▲V306)/, `${rel} 的模块头要写明搬移来源（V114 / 审计修复 #38）`);
     assert.match(source, /只搬不改行为/, `${rel} 的模块头要写明「只搬不改行为」的纪律`);
   }
   assert.ok(MAIN.includes('function buildIpcHost()'), 'main.js 要有唯一的依赖装配点 buildIpcHost()');

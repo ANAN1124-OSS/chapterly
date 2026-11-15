@@ -1,0 +1,396 @@
+// 审计修复 #38（▲V306、O6）：书域数据频道下沉 + mutation 常量表 + chapter:save 广播。
+//
+// 旧结构：书域数据面（查找替换 / 历史还原 / 整本整理 / 清快照 / 打开书文件夹）12+1 个频道留在
+// main.js，与 ipc/book.js 的 CRUD 分居两处；mutation 只靠人眼记得带 —— O6（chapter:save 不广播
+// shelf:changed，跨窗口书架字数滞后）就是漏标的产物。
+//
+// 这里锁四件事：
+//   ① 真实装配 ipc/book-data.js：频道清单 / 顺序 / 注册器 / 每种 mutation 与搬前一致；
+//   ② 书域两个模块的每条 handleBook 都显式选 MUTATION.X 或 READ_ONLY（不许再靠省略参数表达只读）；
+//   ③ 行为：查找替换仍过 ipc-limits 清洗、整理进度仍走 sendToFlow、打开书文件夹仍先 stat、
+//      清快照仍只认快照目录并拒绝联接 / 回收站失败如实报错；
+//   ④ 接线：13 个频道不许回潮 main.js；chapter:save 带上 MUTATION.SAVE；handleBook 的广播语义
+//      （有 mutation 才广播、book:set-last 是唯一例外）由运行真实包装函数验证。
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const ROOT = path.join(__dirname, '..');
+const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+const MAIN = read('main.js');
+
+const bookDataIpc = require('../ipc/book-data');
+const bookIpc = require('../ipc/book');
+const mutations = require('../ipc/book-mutations');
+const { MUTATION, MUTATION_VALUES, READ_ONLY } = mutations;
+
+const DATA_CHANNELS = [
+  'book:search',
+  'book:replace',
+  'book:list-replace-backups',
+  'book:restore-replace-backup',
+  'book:list-history',
+  'book:preview-history-file',
+  'book:restore-history-file',
+  'book:restore-history-dir',
+  'book:delete-history-backups',
+  'book:clear-snapshot-day',
+  'book:format-preview',
+  'book:format',
+  'shell:open-book-folder'
+];
+
+// 装配真实 ipc/book-data.js：handleBook 记下频道 / 回调 / 第三个参数，其余宿主用最小桩。
+function makeBookDataHost(overrides = {}) {
+  const channels = new Map();
+  const sent = [];
+  const host = {
+    handleBook: (channel, fn, options) => channels.set(channel, { fn, options }),
+    storage: {
+      searchBook: async () => ({ results: [] }),
+      replaceInBook: async () => ({ chaptersChanged: 0 }),
+      listReplaceBackups: async () => ({ backups: [] }),
+      restoreReplaceBackup: async () => ({ ok: true }),
+      listBookHistory: async () => ({ groups: [] }),
+      previewHistoryFile: async () => ({ text: '' }),
+      restoreHistoryFile: async () => ({ ok: true }),
+      restoreHistoryGroup: async () => ({ ok: true }),
+      deleteHistoryBackups: async () => ({ ok: true }),
+      snapshotDirForClear: () => path.join('D:\\书库\\书', '_trash', '快照-20260101'),
+      StorageError: class StorageError extends Error {
+        constructor(code, message) {
+          super(message);
+          this.code = code;
+        }
+      },
+      previewFormatBook: async () => ({ chaptersChanged: 0 }),
+      formatBook: async () => ({ chaptersChanged: 0 })
+    },
+    ipcLimits: {
+      sanitizeSearchOptions: (value) => ({ sanitized: true, kind: 'search', value }),
+      sanitizeReplaceOptions: (value) => ({ sanitized: true, kind: 'replace', value })
+    },
+    fs: {
+      lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }),
+      stat: async () => ({ isDirectory: () => true })
+    },
+    path,
+    shell: { trashItem: async () => {}, openPath: async () => '' },
+    errorText: {
+      describeForUi: (err) => ({ message: String((err && err.message) || err) }),
+      cleanText: (text) => String(text == null ? '' : text),
+      redactPaths: (text) => String(text == null ? '' : text)
+    },
+    sendToFlow: (channel, payload) => sent.push({ channel, payload }),
+    ...overrides
+  };
+  bookDataIpc.register(host);
+  return { channels, sent };
+}
+
+function optionsOf(channels, channel) {
+  const entry = channels.get(channel);
+  assert.ok(entry, `ipc/book-data.js 没有注册 ${channel}`);
+  return entry.options;
+}
+
+function mutationOf(channels, channel) {
+  const options = optionsOf(channels, channel);
+  assert.ok(options && typeof options === 'object', `${channel} 必须显式传第三个参数（mutation / READ_ONLY）`);
+  return options.mutation;
+}
+
+// 用 Proxy 装配真实 ipc/book.js：只记录 handleBook 的频道与第三个参数（处理函数不执行）。
+function registerBookCrudSpies() {
+  const channels = new Map();
+  const host = new Proxy(
+    {},
+    {
+      get(target, key) {
+        if (key === 'handle') return () => {};
+        if (key === 'handleBook') return (channel, fn, options) => channels.set(channel, options);
+        return () => {};
+      },
+      has: () => true
+    }
+  );
+  bookIpc.register(host);
+  return channels;
+}
+
+test('mutation 常量表：六个写值 + READ_ONLY（null），全部冻结', () => {
+  assert.deepEqual(MUTATION_VALUES.slice().sort(), ['delete', 'format', 'rename', 'replace', 'save', 'write']);
+  assert.equal(Object.isFrozen(MUTATION), true, 'MUTATION 要冻结（防止运行期被改）');
+  assert.equal(Object.isFrozen(READ_ONLY), true, 'READ_ONLY 要冻结');
+  assert.equal(READ_ONLY.mutation, null, 'READ_ONLY 的语义仍是「不写、不广播」');
+});
+
+test('ipc/book-data.js：13 个频道的清单 / 顺序 / 注册器 / mutation 与搬前一致', () => {
+  const { channels } = makeBookDataHost();
+  assert.deepEqual(Array.from(channels.keys()), DATA_CHANNELS, '频道清单 / 顺序变了（与 main.js:2010-2110 搬前一致）');
+  const expected = {
+    'book:search': null,
+    'book:replace': MUTATION.REPLACE,
+    'book:list-replace-backups': null,
+    'book:restore-replace-backup': MUTATION.REPLACE,
+    'book:list-history': null,
+    'book:preview-history-file': null,
+    'book:restore-history-file': MUTATION.WRITE,
+    'book:restore-history-dir': MUTATION.WRITE,
+    'book:delete-history-backups': MUTATION.WRITE,
+    'book:clear-snapshot-day': MUTATION.WRITE,
+    'book:format-preview': null,
+    'book:format': MUTATION.FORMAT,
+    'shell:open-book-folder': null
+  };
+  for (const channel of DATA_CHANNELS) {
+    assert.equal(mutationOf(channels, channel), expected[channel], `${channel} 的 mutation 变了`);
+  }
+});
+
+test('书域两个模块：每条 handleBook 都显式选 MUTATION.X 或 READ_ONLY（新增频道漏选就红）', () => {
+  const dataChannels = makeBookDataHost().channels;
+  const crudChannels = registerBookCrudSpies();
+  const all = [
+    ...Array.from(crudChannels.entries()).map(([name, options]) => ({ module: 'ipc/book.js', name, options })),
+    ...Array.from(dataChannels.entries()).map(([name, entry]) => ({ module: 'ipc/book-data.js', name, options: entry.options }))
+  ];
+  assert.ok(all.length === 35, `书域频道数异常：${all.length}（22 个 CRUD + 13 个数据面）`);
+  for (const item of all) {
+    assert.ok(
+      item.options && Object.prototype.hasOwnProperty.call(item.options, 'mutation'),
+      `${item.module} 的 ${item.name} 没显式选 mutation / READ_ONLY（#38 起不许靠省略参数表达只读）`
+    );
+    assert.ok(
+      item.options.mutation === null || MUTATION_VALUES.includes(item.options.mutation),
+      `${item.module} 的 ${item.name} 用了常量表以外的 mutation：${item.options.mutation}`
+    );
+  }
+  // 写频道必须带书锁 / 广播标记；抽查最危险的四个（v1.8.0 审计点名的那批写操作）
+  for (const channel of ['book:replace', 'book:restore-history-dir', 'book:format', 'book:delete-history-backups']) {
+    assert.notEqual(mutationOf(dataChannels, channel), null, `${channel} 是写操作，不许标只读`);
+  }
+  // 只读频道归位（以前靠省略参数 → 现在显式）
+  for (const channel of ['book:verify', 'chapter:load', 'chapter:stat', 'book:open']) {
+    assert.equal(crudChannels.get(channel).mutation, null, `${channel} 应显式标 READ_ONLY`);
+  }
+});
+
+test('行为：查找 / 替换仍过 ipc-limits 清洗（原样把清洗结果交给 storage）', async () => {
+  const seen = [];
+  const { channels } = makeBookDataHost({
+    storage: {
+      searchBook: async (bookPath, options) => {
+        seen.push({ op: 'search', bookPath, options });
+        return { results: [{ chapterId: 'c1' }] };
+      },
+      replaceInBook: async (bookPath, options) => {
+        seen.push({ op: 'replace', bookPath, options });
+        return { chaptersChanged: 2 };
+      },
+      StorageError: class StorageError extends Error {}
+    }
+  });
+  assert.deepEqual(await channels.get('book:search').fn('D:\\书库\\书', { query: '甲' }), {
+    results: [{ chapterId: 'c1' }]
+  });
+  assert.deepEqual(await channels.get('book:replace').fn('D:\\书库\\书', { query: '甲', replacement: '乙' }), {
+    chaptersChanged: 2
+  });
+  assert.deepEqual(seen[0], { op: 'search', bookPath: 'D:\\书库\\书', options: { sanitized: true, kind: 'search', value: { query: '甲' } } });
+  assert.deepEqual(seen[1], {
+    op: 'replace',
+    bookPath: 'D:\\书库\\书',
+    options: { sanitized: true, kind: 'replace', value: { query: '甲', replacement: '乙' } }
+  });
+});
+
+test('行为：整本整理的进度仍走 format:progress、预检查只读原样透传', async () => {
+  const sentinel = { chaptersChanged: 3, skippedTooLarge: [2] };
+  const { channels, sent } = makeBookDataHost({
+    storage: {
+      previewFormatBook: async () => sentinel,
+      formatBook: async (bookPath, options, onProgress) => {
+        onProgress({ done: 1, total: 3 });
+        onProgress({ done: 3, total: 3 });
+        return { chaptersChanged: 3 };
+      },
+      StorageError: class StorageError extends Error {}
+    }
+  });
+  assert.equal(await channels.get('book:format-preview').fn('D:\\书库\\书', {}), sentinel, '预览结果原样透传');
+  const formatted = await channels.get('book:format').fn('D:\\书库\\书', {});
+  assert.deepEqual(formatted, { chaptersChanged: 3 });
+  assert.deepEqual(sent, [
+    { channel: 'format:progress', payload: { done: 1, total: 3 } },
+    { channel: 'format:progress', payload: { done: 3, total: 3 } }
+  ]);
+});
+
+test('行为：打开书文件夹先 stat 确认目录（C6 原语义随频道搬走不丢）', async () => {
+  const opened = [];
+  const { channels } = makeBookDataHost({
+    fs: {
+      stat: async () => ({ isDirectory: () => false }),
+      lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false })
+    },
+    shell: { openPath: async (value) => { opened.push(value); return ''; }, trashItem: async () => {} },
+    storage: { StorageError: class StorageError extends Error { constructor(code, message) { super(message); this.code = code; } } }
+  });
+  await assert.rejects(() => channels.get('shell:open-book-folder').fn('D:\\书库\\有exe的文件夹'), (err) => {
+    assert.equal(err.code, 'NOT_A_DIRECTORY');
+    return true;
+  });
+  assert.deepEqual(opened, [], '不是目录时一个字节都不交给系统');
+
+  const okHost = makeBookDataHost({
+    fs: { stat: async () => ({ isDirectory: () => true }), lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }) },
+    shell: { openPath: async (value) => { opened.push(value); return ''; }, trashItem: async () => {} },
+    storage: { StorageError: class StorageError extends Error {} }
+  });
+  assert.equal(await okHost.channels.get('shell:open-book-folder').fn('D:\\书库\\书'), true);
+  assert.deepEqual(opened, ['D:\\书库\\书']);
+});
+
+test('行为：清空某日快照只认快照目录、拒绝联接、回收站失败如实报错', async () => {
+  const target = path.join('D:\\书库\\书', '_trash', '快照-20260101');
+  const baseStore = {
+    snapshotDirForClear: () => target,
+    StorageError: class StorageError extends Error {
+      constructor(code, message) {
+        super(message);
+        this.code = code;
+      }
+    }
+  };
+  // 1) 目录不存在
+  const missing = makeBookDataHost({
+    storage: baseStore,
+    fs: { lstat: async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); } }
+  });
+  await assert.rejects(() => missing.channels.get('book:clear-snapshot-day').fn('D:\\书库\\书', '快照-20260101'), (err) => {
+    assert.equal(err.code, 'HISTORY_GROUP_MISSING');
+    return true;
+  });
+  // 2) 联接 / 非目录：宁可不清
+  const linked = makeBookDataHost({
+    storage: baseStore,
+    fs: { lstat: async () => ({ isDirectory: () => false, isSymbolicLink: () => false }) }
+  });
+  await assert.rejects(() => linked.channels.get('book:clear-snapshot-day').fn('D:\\书库\\书', '快照-20260101'), (err) => {
+    assert.equal(err.code, 'SNAPSHOT_NOT_DIR');
+    return true;
+  });
+  // 3) 回收站失败不降级成硬删
+  const trashFail = makeBookDataHost({
+    storage: baseStore,
+    fs: { lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }) },
+    shell: { trashItem: async () => { throw new Error('回收站被策略禁用'); }, openPath: async () => '' }
+  });
+  await assert.rejects(
+    () => trashFail.channels.get('book:clear-snapshot-day').fn('D:\\书库\\书', '快照-20260101'),
+    (err) => {
+      assert.equal(err.code, 'SNAPSHOT_TRASH_FAILED');
+      assert.match(err.message, /快照没有动/);
+      return true;
+    }
+  );
+  // 4) 成功：回 basename（不带路径）
+  const ok = makeBookDataHost({
+    storage: baseStore,
+    fs: { lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }) }
+  });
+  assert.deepEqual(await ok.channels.get('book:clear-snapshot-day').fn('D:\\书库\\书', '快照-20260101'), {
+    ok: true,
+    dir: '快照-20260101'
+  });
+});
+
+// 从 main.js 切出真实的 handleBook 包装函数（括号 / 函数体按层级配平），放进假作用域执行。
+function loadHandleBookWrapper() {
+  const start = MAIN.indexOf('function handleBook(');
+  assert.ok(start > 0, 'main.js 里找不到 handleBook');
+  const open = MAIN.indexOf('(', start);
+  let depth = 0;
+  let paramEnd = -1;
+  for (let i = open; i < MAIN.length; i += 1) {
+    if (MAIN[i] === '(') depth += 1;
+    else if (MAIN[i] === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        paramEnd = i;
+        break;
+      }
+    }
+  }
+  const bodyStart = MAIN.indexOf('{', paramEnd);
+  depth = 0;
+  for (let i = bodyStart; i < MAIN.length; i += 1) {
+    if (MAIN[i] === '{') depth += 1;
+    else if (MAIN[i] === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        const source = MAIN.slice(start, i + 1);
+        const factory = new Function(
+          'ipcMain',
+          'sessionOfSender',
+          'fail',
+          'runInWindowFlow',
+          'getConfig',
+          'assertBookPath',
+          'storage',
+          'notifyShelfChanged',
+          'ok',
+          `${source}\nreturn handleBook;`
+        );
+        const handlers = new Map();
+        const broadcasts = [];
+        const session = { id: 7 };
+        const wrapper = factory(
+          { handle: (channel, fn) => handlers.set(channel, fn) },
+          () => session,
+          (err) => ({ ok: false, code: (err && err.code) || 'ERROR' }),
+          (given, fn) => fn(),
+          async () => ({ booksRoot: 'D:\\书库' }),
+          (value) => value,
+          { assertBookNotBusy: () => true },
+          (givenSession, reason) => broadcasts.push({ sessionId: givenSession && givenSession.id, reason }),
+          (value) => ({ ok: true, data: value })
+        );
+        return { wrapper, handlers, broadcasts };
+      }
+    }
+  }
+  throw new Error('handleBook 函数体没有按预期闭合');
+}
+
+test('O6：chapter:save 带 MUTATION.SAVE（保存成功要广播 shelf:changed），13 个频道不回潮 main.js', () => {
+  const saveStart = MAIN.indexOf("handleBook('chapter:save'");
+  assert.ok(saveStart > 0, 'main.js 里找不到 chapter:save');
+  const saveEnd = MAIN.indexOf('\n  }, { mutation: MUTATION.SAVE });', saveStart);
+  assert.ok(saveEnd > saveStart, 'chapter:save 必须带 { mutation: MUTATION.SAVE }（O6）');
+  assert.ok(MAIN.includes("const { MUTATION } = require('./ipc/book-mutations');"), 'main.js 要引 mutation 常量表');
+  assert.ok(MAIN.includes('ipcBookData.register(domainHost);'), 'registerIpc() 要装配书域数据面');
+  for (const channel of DATA_CHANNELS) {
+    assert.equal(MAIN.includes(`handleBook('${channel}'`), false, `main.js 里又出现了被搬走的频道：${channel}`);
+  }
+  assert.ok(read('ipc/book-data.js').includes('module.exports = { register: '), 'book-data 只导出 register');
+});
+
+test('O6：handleBook 的广播语义（有 mutation 才广播；book:set-last 是唯一例外）', async () => {
+  const { wrapper, handlers, broadcasts } = loadHandleBookWrapper();
+  wrapper('chapter:save', async (bookPath) => ({ saved: bookPath }), { mutation: MUTATION.SAVE });
+  const saved = await handlers.get('chapter:save')({}, 'D:\\书库\\书');
+  assert.deepEqual(saved, { ok: true, data: { saved: 'D:\\书库\\书' } });
+  assert.deepEqual(broadcasts, [{ sessionId: 7, reason: 'chapter:save' }], '保存成功要让其它书架窗口刷新');
+
+  broadcasts.length = 0;
+  wrapper('book:verify', async () => ({ ok: true }), READ_ONLY);
+  await handlers.get('book:verify')({}, 'D:\\书库\\书');
+  assert.deepEqual(broadcasts, [], '只读频道不广播');
+
+  wrapper('book:set-last', async () => ({ ok: true }), { mutation: MUTATION.SAVE });
+  await handlers.get('book:set-last')({}, 'D:\\书库\\书');
+  assert.deepEqual(broadcasts, [], 'book:set-last 是唯一不广播的写频道（切章太频繁）');
+});

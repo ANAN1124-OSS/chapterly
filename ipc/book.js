@@ -18,8 +18,13 @@
  * 模块内仍保留原注释与缩进（只搬不改）：频道名 / 参数顺序 / 返回形状 / 文案 / 读盘与写盘顺序
  * 与搬运前逐字一致；依赖取值处只有两处被改成 getter —— 剪贴板句柄与配置仓库句柄都是可变绑定
  * （activeClipboard 由自检宿主替换、configStore 在 getConfig 里懒建），快照会过期。
+ *
+ * 审计修复 #38（▲V306）：mutation 改用 ipc/book-mutations.js 的域内常量表；只读频道显式传
+ * READ_ONLY（以前靠省略第三个参数）。新增书域频道必须在 MUTATION.X / READ_ONLY 里二选一，
+ * tests/book-data-ipc.test.js 会逐条核对（漏选 / 只读漏标都会红）。
  */
 const { assertHost } = require('../renderer/assert-host');
+const { MUTATION, READ_ONLY } = require('./book-mutations');
 
 const REQUIRED_HOST = [
   'handle',
@@ -115,18 +120,18 @@ function registerBookIpc(host) {
       });
     }
     return data;
-  });
-  handleBook('book:verify', async (bookPath) => storage.verifyBook(bookPath));
+  }, READ_ONLY);
+  handleBook('book:verify', async (bookPath) => storage.verifyBook(bookPath), READ_ONLY);
   handleBook('book:rename', async (bookPath, title) => storage.renameBook(bookPath, title), {
-    mutation: 'rename'
+    mutation: MUTATION.RENAME
   });
   // 书籍信息（v0.8-3）：作者 / 简介 / 分组 / 标签只写 书目.json 的可选字段，不动书文件夹 / 章节文件。
   handleBook('book:update-info', async (bookPath, patch) => storage.updateBookInfo(bookPath, patch), {
-    mutation: 'write'
+    mutation: MUTATION.WRITE
   });
   // 章号编号方式（2026-11-10）：全书连续 / 按卷独立，只写 书目.json 的可选字段。
   handleBook('book:set-chapter-numbering', async (bookPath, numbering) => storage.setChapterNumbering(bookPath, numbering), {
-    mutation: 'write'
+    mutation: MUTATION.WRITE
   });
   handleBook('book:set-last', async (bookPath, chapterId, info) => {
     // B3（审计 P3）：只记「最新一次」，1.5 秒内的连续切章合并成一次写盘（lastOpenWrites）。
@@ -150,20 +155,24 @@ function registerBookIpc(host) {
       });
     }
     return { ok: true, queued: true, chapterId: chapterIdText };
-  }, { mutation: 'save' });
+  }, { mutation: MUTATION.SAVE });
 
-  handleBook('chapter:load', async (bookPath, file) => storage.loadChapterText(bookPath, file));
-  handleBook('chapter:stat', async (bookPath, file) => storage.statChapter(bookPath, file));
+  handleBook('chapter:load', async (bookPath, file) =>
+    storage.loadChapterText(bookPath, file), READ_ONLY
+  );
+  handleBook('chapter:stat', async (bookPath, file) =>
+    storage.statChapter(bookPath, file), READ_ONLY
+  );
 
   handleBook('chapter:create', async (bookPath, insertIndex, name, volumeId) =>
-    storage.createChapter(bookPath, insertIndex, name, volumeId), { mutation: 'write' }
+    storage.createChapter(bookPath, insertIndex, name, volumeId), { mutation: MUTATION.WRITE }
   );
   handleBook('chapter:rename', async (bookPath, chapterId, name) =>
-    storage.renameChapter(bookPath, chapterId, name), { mutation: 'rename' }
+    storage.renameChapter(bookPath, chapterId, name), { mutation: MUTATION.RENAME }
   );
   // 章节状态 / 备注：只改书目可选字段（txt 不动）
   handleBook('chapter:update-meta', async (bookPath, chapterId, patch) =>
-    storage.updateChapterMeta(bookPath, chapterId, patch), { mutation: 'write' }
+    storage.updateChapterMeta(bookPath, chapterId, patch), { mutation: MUTATION.WRITE }
   );
   // 1.5.0 P0-5（审计 V-1）：删除成功后发一张进程内一次性凭证（crypto.randomUUID），
   // 只在内存 Map 里记 { bookPath, trashName, chapterId, expiresAt }（10 分钟，带上限与过期清理）。
@@ -178,7 +187,7 @@ function registerBookIpc(host) {
       : '';
     return { ...result, undoToken };
   }, {
-    mutation: 'delete'
+    mutation: MUTATION.DELETE
   });
   // 撤销删除（1.4.0 P0-2）：只把本书 _trash 下的那一个 txt 放回书文件夹，并按原位置插回书目。
   // 入参形状由 core/storage.js 的 restoreDeletedChapterFromTrash 自己校验（不信任渲染层给的路径）。
@@ -201,29 +210,29 @@ function registerBookIpc(host) {
       throw err;
     }
   }, {
-    mutation: 'write'
+    mutation: MUTATION.WRITE
   });
   handleBook('chapter:move', async (bookPath, chapterId, toIndex) =>
-    storage.moveChapter(bookPath, chapterId, toIndex), { mutation: 'write' }
+    storage.moveChapter(bookPath, chapterId, toIndex), { mutation: MUTATION.WRITE }
   );
   // 分卷：新建 / 改名 / 删除（章节回未分卷，不删章）/ 把章移到别的卷
   handleBook('volume:create', async (bookPath, name) => storage.createVolume(bookPath, name), {
-    mutation: 'write'
+    mutation: MUTATION.WRITE
   });
   handleBook('volume:rename', async (bookPath, volumeId, name) =>
-    storage.renameVolume(bookPath, volumeId, name), { mutation: 'write' }
+    storage.renameVolume(bookPath, volumeId, name), { mutation: MUTATION.WRITE }
   );
   handleBook('volume:delete', async (bookPath, volumeId) => storage.deleteVolume(bookPath, volumeId), {
-    mutation: 'write'
+    mutation: MUTATION.WRITE
   });
   handleBook('chapter:move-to-volume', async (bookPath, chapterId, volumeId) =>
-    storage.moveChapterToVolume(bookPath, chapterId, volumeId), { mutation: 'write' }
+    storage.moveChapterToVolume(bookPath, chapterId, volumeId), { mutation: MUTATION.WRITE }
   );
   handleBook('volume:move', async (bookPath, volumeId, toIndex) =>
-    storage.moveVolume(bookPath, volumeId, toIndex), { mutation: 'write' }
+    storage.moveVolume(bookPath, volumeId, toIndex), { mutation: MUTATION.WRITE }
   );
   handleBook('chapter:move-to', async (bookPath, chapterId, volumeId, beforeChapterId) =>
-    storage.moveChapterTo(bookPath, chapterId, volumeId, beforeChapterId), { mutation: 'write' }
+    storage.moveChapterTo(bookPath, chapterId, volumeId, beforeChapterId), { mutation: MUTATION.WRITE }
   );
 
   handleBook('book:repair', async (bookPath, mode) => {
@@ -232,7 +241,7 @@ function registerBookIpc(host) {
     if (mode === 'bak') return repair.restoreFromBak(bookPath, { logError });
     if (mode === 'rebuild') return repair.rebuildFromFiles(bookPath, { logError });
     throw new storage.StorageError('BAD_MODE', `未知的修复方式：${mode}`);
-  }, { mutation: 'write' });
+  }, { mutation: MUTATION.WRITE });
 
   handle('book:import', async (explicitPaths, options) => {
     // 路径入口（v0.9 C-2）：导入目录的唯一正当来源是下面这个系统对话框。
@@ -321,7 +330,7 @@ function registerBookIpc(host) {
     // A4（审计 #11 / O3、P6）：这本书的锁条目（若有）也一并回收；在飞的链留到 settle 后自己回收。
     storage.clearBookLock(target);
     return result;
-  }, { mutation: 'delete' });
+  }, { mutation: MUTATION.DELETE });
 }
 
 module.exports = { register: registerBookIpc };

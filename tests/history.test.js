@@ -992,7 +992,9 @@ test('删除备份（B6）：绝不自动删 —— 列历史 / 扫描备份不�
   const historySrc = await fs.readFile(path.join(__dirname, '..', 'core', 'history.js'), 'utf8');
   const scanBody = historySrc.slice(historySrc.indexOf('async function listHistory('), historySrc.indexOf('// 严格解析渲染层传回来的备份组 id'));
   assert.doesNotMatch(scanBody, /fs\.rm\(|fs\.unlink\(|deleteHistoryBackups/, 'listHistory 只能读');
-  const mainSrc = await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8');
+  // 审计修复 #38（▲V306）：book:delete-history-backups 已随书域数据面搬到 ipc/book-data.js —— 与 main.js 一起扫。
+  const mainSrc = (await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8')) +
+    (await fs.readFile(path.join(__dirname, '..', 'ipc', 'book-data.js'), 'utf8'));
   assert.equal(
     (mainSrc.match(/handleBook\('book:delete-history-backups'/g) || []).length,
     1,
