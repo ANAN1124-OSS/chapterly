@@ -1460,3 +1460,74 @@ test('S8（#45）：索引文件的大小闸门与读盘走同一个句柄（ope
   assert.ok(body.includes("handle.readFile('utf8')"), '内容必须从同一个句柄读');
   assert.equal(body.includes('fs.readFile(filePath'), false, '不许再按路径 readFile（TOCTOU 窗口）');
 });
+
+// ---------- 审计修复 #46（E21）：260 截断 / 错误透传 / saveNow 归一链 ----------
+test('E21（#46）：解析索引时不静默截断章节文件名 —— 真实名照原样保留，离谱长的整条丢弃', () => {
+  const longName = `${'x'.repeat(300)}.txt`; // 远超旧 slice(0,260) 的截断线，但仍是真实文件名的量级
+  const absurdName = `${'y'.repeat(5000)}.txt`; // 只可能是坏索引 / 手改 JSON
+  const raw = JSON.stringify({
+    version: search.INDEX_VERSION,
+    root: '/books',
+    books: [
+      {
+        path: '/books/书甲',
+        folder: '书甲',
+        chapters: [
+          { file: longName, index: 0, mtimeMs: 1, size: 2, contentHash: 'h' },
+          { file: absurdName, index: 1, mtimeMs: 1, size: 2, contentHash: 'h' }
+        ]
+      }
+    ]
+  });
+  const parsed = search.parseIndex(raw);
+  const files = parsed.books[0].chapters.map((chapter) => chapter.file);
+  assert.deepEqual(files, [longName], '旧实现会把长度 300 的名字切成 260，永远匹配不到真实章节');
+  assert.equal(files[0].length, longName.length);
+});
+
+test('E21（#46）：书架根读不了 → status / search 都透传错误码（不再静默空结果），且旧索引不被提前清空', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '旧书', '旧书', [{ name: '旧车站', text: '雨还在下，他在旧车站等谁。' }]);
+  const { normalizePath } = require('../core/path-utils');
+  const store = makeStore(userData);
+  const built = await store.ensure({ booksRoot, force: true });
+  assert.equal(built.books, 1);
+  assert.equal(built.error, '');
+  assert.equal((await store.status()).error, '');
+
+  // 换到一个不存在的书架根：错误码要能被看见
+  const missingRoot = path.join(base, '没有这个书架');
+  const failed = await store.ensure({ booksRoot: missingRoot });
+  assert.equal(failed.error, 'ENOENT');
+  assert.equal((await store.status()).error, 'ENOENT', 'status 也要带错误码（界面 / 排查能看出是书架路径问题）');
+  const searched = await store.search({ booksRoot: missingRoot, query: '旧车站' });
+  assert.equal(searched.error, 'ENOENT');
+  assert.equal(searched.results.length, 0);
+
+  // 确认新根可读之前不许清旧索引：内存里仍是旧根那一份（旧实现先清成空，回旧根要从头重建）
+  assert.equal((await store.status()).root, normalizePath(booksRoot));
+  assert.equal((await store.status()).books, 1);
+
+  // 根恢复后搜索照常命中，错误码被成功校验清掉
+  const back = await store.search({ booksRoot, query: '旧车站' });
+  assert.equal(back.error, undefined);
+  assert.ok(back.results.length >= 1);
+  assert.equal((await store.status()).error, '');
+});
+
+test('E21（#46）：落盘只有一条串行链 —— doEnsure / load 不再绕过 flush 直接 await saveNow()', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'search-index.js'), 'utf8');
+  // 串行链唯一入队口
+  assert.ok(src.includes('function saveThrough()'), '缺 saveThrough');
+  assert.ok(/savePromise = savePromise\.then\(saveNow, saveNow\)/.test(src));
+  // 两个曾经绕开链的调用点改为入队
+  assert.ok(src.includes('await saveThrough(); // 审计修复 #46（E21）：走与 flush 同一条串行链'));
+  assert.ok(src.includes('await saveThrough(); // 审计修复 #46（E21）：排进 flush 的串行链'));
+  // 除串行链自身以外，任何地方都不许再直调 saveNow()
+  const calls = src.match(/await saveNow\(\);/g) || [];
+  assert.equal(calls.length, 0, `仍有 ${calls.length} 处直调 saveNow()`);
+});

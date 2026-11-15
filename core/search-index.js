@@ -73,6 +73,11 @@ const MAX_FOCUS_SNIPPETS = 200;
 // focus.bookPath / focus.chapterFile 的长度上限（与 main.js 的入口校验同一口径）。
 // 真实书路径 / 章节文件名远小于这个值，超长一律当作无效聚焦，不读任何路径。
 const MAX_FOCUS_FIELD_CHARS = 260;
+// 审计修复 #46（E21）：章节文件名是索引的身份键，不许静默截断。
+// sanitizeChapter 旧实现 `file.slice(0, 260)`：名字被切短后既匹配不到真实章节（这一章「静默不可搜」），
+// 又每轮校验都被当成新章 / 缺章反复重建。真实章节名受文件系统 255 字符上限约束；这里只挡离谱长度
+// （坏索引 / 手改 JSON），超限整条丢弃，由下一次构建按真实书目补回。
+const MAX_CHAPTER_FILE_CHARS = 4096;
 const SNIPPET_RADIUS = 16;
 const MAX_CANDIDATE_BOOKS = 60; // 两字常用词可能命中一大半书：最多读这么多本
 const SEARCH_TIME_BUDGET_MS = 1800; // 超过就带着已有结果返回（结果标 truncated）
@@ -402,13 +407,16 @@ function sanitizeChapter(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const file = typeof raw.file === 'string' ? raw.file : '';
   if (!file || file.includes('\u0000')) return null;
+  // 审计修复 #46（E21）：超过「真实文件名上限」的只可能是坏索引，整条丢弃 —— 不再截断成
+  // 一个永远匹配不到任何章节的假名字。
+  if (file.length > MAX_CHAPTER_FILE_CHARS) return null;
   const mtimeMs = Number(raw.mtimeMs);
   const size = Number(raw.size);
   const index = Number(raw.index);
   return {
     id: typeof raw.id === 'string' ? raw.id.slice(0, 120) : '',
     name: typeof raw.name === 'string' ? raw.name.slice(0, 200) : '',
-    file: file.slice(0, 260),
+    file,
     index: Number.isFinite(index) ? Math.max(0, Math.round(index)) : 0,
     mtimeMs: Number.isFinite(mtimeMs) ? mtimeMs : 0,
     size: Number.isFinite(size) ? Math.max(0, size) : 0,
@@ -818,6 +826,10 @@ function createSearchStore(options = {}) {
   let lastRun = null;
   let savePromise = Promise.resolve();
   let lastSaveError = null;
+  // 审计修复 #46（E21）：书架根不可读的上一次结果（ROOT_UNREADABLE / 系统码）。status() / search()
+  // 都要能看见它 —— 以前只在 doEnsure 的返回值里挂一下，搜索侧拿 status() 时这一趟失败就蒸发了，
+  // 作者看到的是「没有结果」，不是「书架读不了」。
+  let rootProblem = '';
   // P-01：最近一次成功校验的时刻 / 当时的根目录签名 / 最近一次签名探测时刻。
   let lastEnsureAt = 0;
   let rootSignature = '';
@@ -929,7 +941,7 @@ function createSearchStore(options = {}) {
             const budgeted = enforceIndexBudget(index, indexMaxBytes);
             if (budgeted.dropped > 0) {
               index = budgeted.index;
-              await saveNow();
+              await saveThrough(); // 审计修复 #46（E21）：走与 flush 同一条串行链
             }
           }
         } else {
@@ -965,6 +977,8 @@ function createSearchStore(options = {}) {
       building: Boolean(ensurePromise),
       progress: lastProgress,
       problem: loadProblem,
+      // 审计修复 #46（E21）：书架根读不了时把错误码透传给搜索 / 界面（成功校验后清空）
+      error: rootProblem,
       saveError: lastSaveError,
       lastRun
     };
@@ -997,9 +1011,16 @@ function createSearchStore(options = {}) {
   // 落盘只在 flush() 里串行做（保存失败只记 lastSaveError、不影响搜索）。
   // 以前这里还有一个 scheduleSave() 做防抖延迟写，但从来没有人调用它（v0.9 B-4 死代码扫描
   // 扫出来，连它的 saveDebounceMs 选项一起删掉了）——现在写索引只有 flush() 这一条路径。
-  async function flush() {
+  // 审计修复 #46（E21）：doEnsure / load 里的「预算淘汰后重落盘」也排进这一条串行链 ——
+  // 以前它们直接 await saveNow()，绕开 savePromise，与上面这句注释矛盾，两次写还可能交错
+  // （后写的整份覆盖先写的）。saveThrough 是唯一的入队口，flush 只是等它 + 回状态。
+  function saveThrough() {
     savePromise = savePromise.then(saveNow, saveNow).catch(() => false);
-    await savePromise;
+    return savePromise;
+  }
+
+  async function flush() {
+    await saveThrough();
     return status();
   }
 
@@ -1014,21 +1035,26 @@ function createSearchStore(options = {}) {
 
     const root = normalizePath(booksRoot);
     const rootChanged = index.root !== root;
+
+    let folders;
+    try {
+      folders = await listBookFolders(booksRoot);
+    } catch (err) {
+      // 审计修复 #46（E21）：确认新根可读之前不动内存里的索引 —— 旧实现先按 rootChanged 把索引清成
+      // 空（bloomCache / lastFullValidateAt 一起清），再去 readdir，根不可读时白清一场：界面上的书
+      // 全没了、下一次回旧根还得从头重建。现在清索引放在 readdir 成功之后。
+      rootProblem = (err && err.code) || 'ROOT_UNREADABLE';
+      const result = status();
+      result.error = rootProblem;
+      return result;
+    }
     if (rootChanged) {
       index = emptyIndex(root);
       bloomCache.clear();
       bloomCacheBytes = 0;
       lastFullValidateAt = 0;
     }
-
-    let folders;
-    try {
-      folders = await listBookFolders(booksRoot);
-    } catch (err) {
-      const result = status();
-      result.error = (err && err.code) || 'ROOT_UNREADABLE';
-      return result;
-    }
+    rootProblem = '';
 
     // 本轮校验对应的根目录签名：一次 stat，之后窗口内的搜索都靠它判「书架有没有增删书」。
     const signature = await rootSignatureOf(booksRoot);
@@ -1145,7 +1171,7 @@ function createSearchStore(options = {}) {
     lastEnsureAt = nowMs();
     rootSignature = signature;
     lastSignatureCheckAt = lastEnsureAt;
-    if (run.changed || rootChanged) await saveNow();
+    if (run.changed || rootChanged) await saveThrough(); // 审计修复 #46（E21）：排进 flush 的串行链
     lastRun = run;
     const result = status();
     if (run.changed || rootChanged) {
@@ -1277,6 +1303,16 @@ function createSearchStore(options = {}) {
       problem: state.problem || '',
       bytes: state.bytes
     };
+    // 审计修复 #46（E21）：书架根读不了（ROOT_UNREADABLE / 系统码）时把错误码透传给调用方，
+    // 不再静默回一份「没有结果」的空搜索 —— 作者 / 界面至少知道是书架路径的问题。
+    if (state.error) {
+      return {
+        ...makeBase({ ...indexInfo, books: 0, chapters: 0, problem: state.error }),
+        error: state.error,
+        truncated: true,
+        elapsedMs: 0
+      };
+    }
     if (normalizePath(booksRoot) !== index.root) {
       return { ...makeBase(indexInfo), truncated: true, index: { ...indexInfo, books: 0, chapters: 0 } };
     }
