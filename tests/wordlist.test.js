@@ -196,22 +196,32 @@ test('readFile：未配置 / 不存在 / 不是文件 / 正常 / 超限 / 空文
   assert.equal((await reader.readFile(empty)).code, 'DEMO_EMPTY');
 });
 
-test('publicInfo：剥掉内容字段、补 count；坏值回注入的默认文案与 extra', () => {
+test('publicInfo：剥掉内容字段 / path、补 count；坏值回注入的默认文案与 extra（#56 / S5）', () => {
   const reader = createDemoReader({ notConfiguredExtra: { count: 0 } });
-  const info = reader.publicInfo({ ok: true, words: ['甲', '乙', '丙'], name: '词表.txt', stats: { lines: 3 } });
+  const info = reader.publicInfo({
+    ok: true,
+    words: ['甲', '乙', '丙'],
+    name: '词表.txt',
+    path: 'C:\\Users\\作者\\秘密目录\\词表.txt',
+    stats: { lines: 3 }
+  });
   assert.deepEqual(info, { ok: true, name: '词表.txt', stats: { lines: 3 }, count: 3 });
   assert.equal(info.words, undefined);
+  assert.equal(info.path, undefined, 'resolved 全路径不出主进程（与多份词表 / glossary 口径一致）');
   assert.equal(reader.publicInfo({ ok: true }).count, 0);
   assert.deepEqual(reader.publicInfo(null), {
     ok: false,
     configured: false,
     code: 'DEMO_NOT_CONFIGURED',
     message: '还没有配置演示词表（公开信息）',
-    path: '',
     name: '',
     count: 0
   });
   assert.equal(reader.publicInfo('坏值').count, 0);
+  // 真实读盘结果同样不带 path：name 是 basename，足够界面显示
+  const real = reader.publicInfo({ ok: true, words: ['甲'], name: '词表.txt', path: 'C:\\某处\\词表.txt', stats: {} });
+  assert.equal(real.path, undefined);
+  assert.equal(real.name, '词表.txt');
 });
 
 // ---------------------------------------------------------------- ① b E13（审计修复 #16）

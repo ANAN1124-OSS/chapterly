@@ -94,6 +94,39 @@ test('撤销凭证：跨书 / trashName 对不上被拒，且不烧掉作者手�
   assert.equal(store.take(token, { bookPath: BOOK, trashName: TRASH }).ok, true);
 });
 
+test('审计 #56（S4）：chapterId 绑进凭证——改 id 被拒且不烧凭证，不传 id 的旧调用方照旧放行', () => {
+  const first = makeStore();
+  const token = issueOne(first.store);
+  assert.deepEqual(
+    first.store.take(token, { bookPath: BOOK, trashName: TRASH, chapterId: 'ch_2' }),
+    { ok: false, reason: 'chapter-mismatch' },
+    '凭证是删 ch_1 发的，拿 ch_2 来换必须拒绝'
+  );
+  assert.equal(first.store.size(), 1, '对不上只拒绝，不能把作者手里的真凭证耗掉');
+  const ok = first.store.take(token, { bookPath: BOOK, trashName: TRASH, chapterId: 'ch_1' });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.record.chapterId, 'ch_1');
+
+  // 旧调用方不传 chapterId：保持原行为（不做这项比对）
+  const second = makeStore();
+  const legacyToken = issueOne(second.store);
+  assert.equal(second.store.take(legacyToken, { bookPath: BOOK, trashName: TRASH }).ok, true);
+
+  // 空字符串同样当「没传」
+  const third = makeStore();
+  const blankToken = issueOne(third.store);
+  assert.equal(third.store.take(blankToken, { bookPath: BOOK, trashName: TRASH, chapterId: '' }).ok, true);
+});
+
+test('静态闸门：chapter:restore-deleted 把清洗后的 chapter.id 传给 take（S4 接线）', () => {
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'ipc', 'book.js'), 'utf8');
+  assert.match(
+    source,
+    /restoreTokens\.take\(rawToken,\s*\{[\s\S]{0,200}?chapterId:\s*clean\.chapter\.id/,
+    '撤销入口必须显式绑定 chapter.id（不能只靠 storage 的 trashName 自证）'
+  );
+});
+
 test('C27/WP-26：同一本书换大小写 / 斜杠写法仍算同一本（pathKey 口径），别的书照旧拒绝', () => {
   const { store } = makeStore();
   const token = issueOne(store);
@@ -187,8 +220,8 @@ test('撤销凭证：脏参数不发凭证（缺书路径 / 缺备份名 / 非�
   assert.equal(store.size(), 0);
 });
 
-test('撤销凭证：错误对象带 code = RESTORE_TOKEN_INVALID 与中文文案，四种原因都有话', () => {
-  for (const reason of ['unknown', 'expired', 'book-mismatch', 'trash-mismatch', 'something-else']) {
+test('撤销凭证：错误对象带 code = RESTORE_TOKEN_INVALID 与中文文案，五种原因都有话', () => {
+  for (const reason of ['unknown', 'expired', 'book-mismatch', 'trash-mismatch', 'chapter-mismatch', 'something-else']) {
     const err = tokenLib.errorFor(reason);
     assert.equal(err.code, 'RESTORE_TOKEN_INVALID');
     assert.equal(typeof err.message, 'string');
@@ -197,6 +230,7 @@ test('撤销凭证：错误对象带 code = RESTORE_TOKEN_INVALID 与中文文�
   }
   assert.match(tokenLib.errorFor('expired').message, /过期/);
   assert.match(tokenLib.errorFor('book-mismatch').message, /不属于这本书/);
+  assert.match(tokenLib.errorFor('chapter-mismatch').message, /章节/);
   assert.equal(tokenLib.errorFor('something-else').message, tokenLib.REASON_MESSAGES.unknown);
 });
 

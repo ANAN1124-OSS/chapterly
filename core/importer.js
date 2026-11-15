@@ -179,6 +179,38 @@ async function listTxtFilesDeep(dir, prefix = '') {
   return found.sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
 }
 
+// 审计修复 #56（S7）：导入不跟随符号链接（含 Windows 目录联接）。
+// 现成书形态是 fs.cp 整目录复制：链接会被原样抄进书库 —— 链接指向的 txt 不经过 128 MB 闸门
+// （listTxtFilesDeep 只认 isFile），之后读章又跟随链接读到书库外；链接目录还能把任意大目录带进来。
+// 复制前扫一遍来源，有任何链接就整源跳过并说明原因（让作者换成真实文件 / 目录再导入）。
+// 扫描只用于提示，最多记 MAX_SOURCE_LINKS 条，坏目录树不会把扫描拖死。
+const MAX_SOURCE_LINKS = 100;
+
+async function listSourceLinks(dir, prefix = '') {
+  const links = [];
+  const queue = [{ dir, prefix: prefix || '' }];
+  while (queue.length && links.length < MAX_SOURCE_LINKS) {
+    const item = queue.shift();
+    let entries;
+    try {
+      entries = await fs.readdir(item.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name === storage.TRASH_DIR || entry.name.startsWith('.')) continue;
+      const rel = item.prefix ? path.join(item.prefix, entry.name) : entry.name;
+      if (entry.isSymbolicLink()) {
+        links.push(rel);
+        if (links.length >= MAX_SOURCE_LINKS) break;
+        continue;
+      }
+      if (entry.isDirectory()) queue.push({ dir: path.join(item.dir, entry.name), prefix: rel });
+    }
+  }
+  return links;
+}
+
 // V45（1.7.2 D3）：导入结果的「跳过」只留一套表示 —— skipped 数组，每条
 // { source(相对名), reason, code, tooLarge }。以前同一件事写三份（顶层 skipped[] /
 // 结果上的 skippedFiles / 结果上的 skippedTooLarge 计数），三处各取一份才对得上。
@@ -227,6 +259,20 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
   const target = path.join(booksRoot, folder);
 
   try {
+    // 审计修复 #56（S7）：整目录复制前先扫符号链接 / 目录联接；有链接就整源跳过（见 listSourceLinks）。
+    if (analysis.kind === 'book') {
+      const links = await listSourceLinks(sourceDir);
+      if (links.length) {
+        const sample =
+          links.slice(0, 3).join('、') + (links.length > 3 ? ` 等 ${links.length} 个` : '');
+        throw new storage.StorageError(
+          'SOURCE_LINK',
+          `《${path.basename(sourceDir)}》里含符号链接 / 目录联接（${sample}），导入不跟随链接` +
+            `（会绕过单本 ${formatImportSize(MAX_IMPORT_BYTES)} 上限、把书库外的内容带进来），已跳过；` +
+            '请把链接换成真实文件 / 目录后重试'
+        );
+      }
+    }
     // V57：现成书整目录 fs.cp 递归复制 → 闸门看递归清单；章节目录形态只复制顶层 txt → 只看顶层
     const gateFiles =
       analysis.kind === 'book' ? await listTxtFilesDeep(sourceDir) : analysis.txtFiles;
@@ -292,7 +338,8 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
     await fs.rm(target, { recursive: true, force: true }).catch(() => {});
     // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 包成 IMPORT_FAILED 会把界面文案
     // 从「…已跳过」改成「复制失败：…」并把错误码一起丢掉。这里原样放行，由 importFolders 记进 skipped。
-    if (err && err.code === 'FILE_TOO_LARGE') throw err;
+    // 审计修复 #56（S7）：含符号链接的来源同理（SOURCE_LINK 也是「跳过」，不是复制失败）。
+    if (err && (err.code === 'FILE_TOO_LARGE' || err.code === 'SOURCE_LINK')) throw err;
     throw new storage.StorageError('IMPORT_FAILED', `复制失败：${errorText.describeForUi(err).message}`);
   }
 }
@@ -579,10 +626,11 @@ async function importFolders(booksRoot, sources, options = {}) {
       } catch (err) {
         const source = relativeSourceLabel(plan.sourceDir);
         const described = errorText.describeForUi(err);
-        if (err && err.code === 'FILE_TOO_LARGE') {
+        if (err && (err.code === 'FILE_TOO_LARGE' || err.code === 'SOURCE_LINK')) {
           // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 错误码保留、文案留在「已跳过」，
           // 界面汇总显示「跳过 N 个（…）」而不是红色「N 个失败（复制失败：…）」。
-          skipped.push({ source, reason: described.message, code: err.code, tooLarge: true });
+          // 审计修复 #56（S7）：含符号链接的来源也按「跳过」记录（tooLarge 只给体量超限的 txt）。
+          skipped.push({ source, reason: described.message, code: err.code, tooLarge: err.code === 'FILE_TOO_LARGE' });
         } else {
           failed.push({ source, message: described.message });
         }
@@ -612,6 +660,8 @@ module.exports = {
   // V116（v1.8.0 WP-29）：递归清单导出给单测，钉住「并发 readdir + 排序 / 排除口径不变」。
   // 生产调用点仍只有 importNovelFile 一处（见上）。
   listTxtFilesDeep,
+  // 审计修复 #56（S7）：符号链接扫描导出给单测钉「_trash / 点开头目录不进、相对路径排序」口径。
+  listSourceLinks,
   importSizeProblem,
   isProbablyBinary,
   hasUtf16Bom,

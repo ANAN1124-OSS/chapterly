@@ -27,11 +27,11 @@
 **开发版（改代码时用）**：
 
 - Windows 11（Windows 10 1809+ 也可）
-- Node.js ≥ 22（开发机实测 v24.22.1）
-- pnpm ≥ 10（实测 12.11.2）
+- Node.js ≥ 22（开发机实测 v24.22.1；CI 用 **22 / 24 两档矩阵**各跑一遍，见下）
+- pnpm ≥ 12（实测 12.11.2；`pnpm-workspace.yaml` 的 `allowBuilds` 是 v12 字段，旧版兼容性未实测，按实测下限写）
 - Python ≥ 3.7（只有重新生成图标 `pnpm run icon` 用到；纯标准库，不需要 Pillow，不参与运行与打包）
 
-> **CI**：GitHub Actions 两套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；② `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
+> **CI**：GitHub Actions 两套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；**Node 用 22 / 24 两档矩阵**（`fail-fast: false`，与 engines 的 ≥22 对齐，v1.8.0 审计 O4 / #56）；② `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
 
 ## 安装与启动
 
@@ -415,7 +415,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 ## 开发与自检
 
 ```bash
-pnpm test          # 单元测试（node:test，2697 项）
+pnpm test          # 单元测试（node:test，2719 项）
 pnpm run e2e       # 端到端自检：真实启动 Electron 走 1902 项主流程（场景与 83 个组文件共用一份 harness；**83 个组文件（00–82）** 按组号派发）
 pnpm run demo      # 生成演示书库到 shots/demo-library（截图/演示用）
 ```
@@ -732,3 +732,5 @@ pnpm run demo      # 生成演示书库到 shots/demo-library（截图/演示用
 章回 / Chapterly 以 **Apache License 2.0** 发布，完整条款见仓库根目录 [LICENSE](LICENSE)；`package.json` 的 `license` 字段同为 `Apache-2.0`，打包后的应用内也附带该文件。
 
 Copyright 2026 章回 / Chapterly (ANAN1124-OSS)
+
+**源码文件头（审计 #56 / O7）**：Apache-2.0 不强制逐文件版权头，本版 `main.js` / `preload.js` / `core/` / `ipc/` / `renderer/` 的源码**没有**统一加 SPDX 行——许可以仓库根 `LICENSE` 与 `package.json` 的 `license` 字段为准（打包产物同样附带 LICENSE）。新增文件可选在首行写 `// SPDX-License-Identifier: Apache-2.0`；不给全仓补头是为了避免 100+ 文件的纯样板 diff（审计该项本来就是「可选」）。

@@ -211,6 +211,8 @@ function createReader(options) {
   }
 
   // 只给渲染层的词表信息：绝不把词条正文（field）带过去，界面只需要数量与状态。
+  // 审计修复 #56（S5）：path（resolved 全路径）同样不带过去 —— 多份词表出口与 glossary 的
+  // 「路径不出主进程」口径一致；界面只需要 name（basename）与数量 / 错误码。
   function publicInfo(list) {
     if (!list || typeof list !== 'object') {
       return {
@@ -218,7 +220,6 @@ function createReader(options) {
         configured: false,
         code: code('notConfigured'),
         message: message('publicEmpty'),
-        path: '',
         name: '',
         ...extra,
         count: 0
@@ -226,7 +227,7 @@ function createReader(options) {
     }
     const rest = {};
     for (const [key, value] of Object.entries(list)) {
-      if (key === field) continue;
+      if (key === field || key === 'path') continue;
       rest[key] = value;
     }
     return { ...rest, count: Array.isArray(list[field]) ? list[field].length : 0 };

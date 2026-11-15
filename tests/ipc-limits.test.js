@@ -490,8 +490,8 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
   );
   assert.match(
     restoreBody,
-    /restoreTokens\.take\(rawToken, \{ bookPath, trashName: clean\.trashName \}\)/,
-    'chapter:restore-deleted 必须验撤销凭证（存在 / 未过期 / 同书 / 同备份名）'
+    /restoreTokens\.take\(rawToken, \{[\s\S]{0,120}?bookPath,[\s\S]{0,120}?trashName: clean\.trashName,[\s\S]{0,120}?chapterId: clean\.chapter\.id[\s\S]{0,40}?\}\);/,
+    'chapter:restore-deleted 必须验撤销凭证（存在 / 未过期 / 同书 / 同备份名 / 同章节 id，审计 #56 / S4）'
   );
   assert.match(
     restoreBody,

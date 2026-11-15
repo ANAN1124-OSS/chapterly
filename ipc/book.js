@@ -200,11 +200,17 @@ function registerBookIpc(host) {
   // 交给 storage 的必须是清洗后的 payload，不是原始参数。
   // 1.5.0 P0-5（审计 V-1）：白名单之后还要验撤销凭证（存在 / 未过期 / 同一本书 / 同一个 trashName），
   // 验过立刻作废（一次性）；storage 还原失败时把凭证放回去，作者还能原地再试一次。
+  // 审计修复 #56（S4）：chapterId 也一起比对 —— 凭证发放时记的章节 id 与这次清洗后的 chapter.id
+  // 必须一致，持合法凭证改 id 换不回别的章（对不上只拒绝，不烧凭证）。
   handleBook('chapter:restore-deleted', async (bookPath, payload) => {
     const clean = ipcLimits.sanitizeRestorePayload(payload);
     const rawToken =
       payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.undoToken : '';
-    const claim = restoreTokens.take(rawToken, { bookPath, trashName: clean.trashName });
+    const claim = restoreTokens.take(rawToken, {
+      bookPath,
+      trashName: clean.trashName,
+      chapterId: clean.chapter.id
+    });
     if (!claim.ok) throw ipcRestoreToken.errorFor(claim.reason);
     try {
       return await storage.restoreDeletedChapterFromTrash(bookPath, clean);

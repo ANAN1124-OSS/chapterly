@@ -115,12 +115,12 @@ test('runs-on 固定 windows-2022（Windows 桌面工具的路径 / GBK / UNC �
   }
 });
 
-test('步骤按序齐全：checkout → setup-node 24 → pnpm 12.11.2（run_install: false）→ frozen-lockfile → node --check → npm test → eslint → a11y --static', () => {
+test('步骤按序齐全：checkout → setup-node（22/24 矩阵）→ pnpm 12.11.2（run_install: false）→ frozen-lockfile → node --check → npm test → eslint → a11y --static', () => {
   const text = readVerify();
   const order = [
     'actions/checkout@',
     'actions/setup-node@',
-    'node-version: 24',
+    'node-version: ${{ matrix.node }}',
     'pnpm/action-setup@',
     'version: 12.11.2',
     'run_install: false',
@@ -138,6 +138,14 @@ test('步骤按序齐全：checkout → setup-node 24 → pnpm 12.11.2（run_ins
     assert.ok(at > last, '步骤顺序不对：' + token + ' 出现在上一段之前');
     last = at;
   }
+});
+
+// 审计修复 #56（O4）：engines 声明 node >=22，CI 必须真跑 22（不能只测开发机的 24）。
+test('verify.yml 用 Node 22 / 24 两档矩阵，fail-fast: false', () => {
+  const text = readVerify().replace(/\r\n/g, '\n');
+  assert.match(text, /^ {4}strategy:\n {6}fail-fast: false\n {6}matrix:\n {8}node: \[22, 24\]$/m, 'verify.yml 必须声明 Node 22 / 24 矩阵（fail-fast: false）');
+  assert.match(text, /node-version: \$\{\{ matrix\.node \}\}/, 'setup-node 必须读 matrix.node');
+  assert.equal(text.includes('node-version: 24'), false, '不能再写死单档 Node 24');
 });
 
 test('全量 node --check 跑在 bash 里，且任一文件失败就让步骤失败', () => {
@@ -211,4 +219,7 @@ test('README 如实描述两套 CI（verify + 每周 E2E）与「打包冒烟仍
   assert.match(readme, /每周定时[^\n]*E2E/, 'README 要写明 E2E 每周定时跑');
   assert.match(readme, /固定到提交 SHA/, 'README 要写明 actions pin SHA');
   assert.match(readme, /打包冒烟[\s\S]{0,80}?本地执行/, 'README 仍要如实写「打包冒烟在发版前本地执行」');
+  // 审计修复 #56（O4）：Node 矩阵与 pnpm 下限要和 CI / workspace 配置一致
+  assert.match(readme, /Node 用 22 \/ 24 两档矩阵/, 'README 要写明 verify.yml 的 Node 22/24 矩阵');
+  assert.match(readme, /pnpm ≥ 12/, 'pnpm 下限按实测（12.11.2 所在大版本）写，不能留在未实测的 ≥10');
 });
