@@ -287,6 +287,16 @@ function registerBookIpc(host) {
     if (!(await storage.exists(target))) {
       throw new storage.StorageError('NOT_FOUND', '这本书的文件夹已经不存在了');
     }
+    // 审计修复 #4（S1）：是书架目录的直接子目录还不够，必须确认「目标是一本书」——
+    // `_trash`（全部删书备份）/ `_碎片`（灵感箱）也是书架根的直接子目录，注入脚本以前能把它们
+    // 整个丢进回收站。保留目录（_ / . 开头）与没有 书目.json 的普通文件夹一律拒绝。
+    const folder = path.basename(target);
+    if (folder.startsWith('_') || folder.startsWith('.')) {
+      throw new storage.StorageError('BAD_PATH', '书架保留目录不能当书删除');
+    }
+    if (!(await storage.exists(path.join(target, storage.BOOK_FILE)))) {
+      throw new storage.StorageError('NOT_A_BOOK', '这不是一本书（文件夹里没有 书目.json）');
+    }
     let result;
     // 测试环境用固定兜底路径，避免把测试数据丢进你的回收站
     if (isE2E) {

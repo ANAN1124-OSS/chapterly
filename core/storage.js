@@ -2263,13 +2263,42 @@ async function renameBook(bookPath, title) {
 }
 
 // 整本书的兜底删除：移动到书架根目录下的 _trash（回收站不可用时使用）
+// 审计修复 #4（S1、E20）：以前只信调用方给的路径、裸 fs.rename —— 拿到的只要「父目录==书架根」
+// 就搬，注入脚本能把 `_trash`（全部删书备份）/ `_碎片`（灵感箱）当「书」整个移走；同一秒删两本
+// 同名书还会覆盖已有备份。这里自己重做完整校验（不把安全托付给 IPC 层）：
+//   · 必须是书架根的直接子目录（不是根自己 / 孙目录 / 书库外路径）；
+//   · 目录名不能以 _ / . 开头（书架保留目录，listBooks 本来也跳过它们）；
+//   · 目录里必须有 书目.json —— 普通文件夹 / 被挪空的壳子不是书，不能当书删；
+//   · 写操作排进这本书的写队列（与改章 / 改书目互斥，绝不在别人写盘时把目录搬走）；
+//   · 目标名同秒撞名时改用 -2 / -3，绝不覆盖 _trash 里已有的备份。
 async function trashBook(booksRoot, bookPath) {
-  const trashDir = path.join(booksRoot, TRASH_DIR);
-  await ensureDir(trashDir);
-  const folder = path.basename(bookPath);
-  const dest = path.join(trashDir, `${timestampForFile()}-${folder}`);
-  await fs.rename(bookPath, dest);
-  return dest;
+  const rawRoot = String(booksRoot == null ? '' : booksRoot).trim();
+  if (!rawRoot) throw new StorageError('BAD_PATH', '书架目录还没有设置');
+  const root = path.resolve(rawRoot);
+  const target = path.resolve(String(bookPath == null ? '' : bookPath));
+  const folder = path.basename(target);
+  if (pathUtils.pathKey(path.dirname(target)) !== pathUtils.pathKey(root)) {
+    throw new StorageError('BAD_PATH', '只能删除书架目录下的书');
+  }
+  if (!folder || folder.startsWith('_') || folder.startsWith('.')) {
+    throw new StorageError('BAD_PATH', '书架保留目录不能当书删除');
+  }
+  if (!(await exists(path.join(target, BOOK_FILE)))) {
+    throw new StorageError('NOT_A_BOOK', `「${folder}」不是一本书（文件夹里没有 ${BOOK_FILE}）`);
+  }
+  return withBookLock(target, async () => {
+    const trashDir = path.join(root, TRASH_DIR);
+    await ensureDir(trashDir);
+    const stamp = timestampForFile();
+    let dest = path.join(trashDir, `${stamp}-${folder}`);
+    let serial = 2;
+    while (await exists(dest)) {
+      dest = path.join(trashDir, `${stamp}-${folder}-${serial}`);
+      serial += 1;
+    }
+    await fs.rename(target, dest);
+    return dest;
+  });
 }
 
 // 记住「上次打开的是哪一章」（书目里的唯一事实来源）。

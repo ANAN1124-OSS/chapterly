@@ -497,6 +497,74 @@ test('整本书兜底删除：移入书架 _trash，扫描时不再出现', asyn
   assert.equal(meta.title, '待删的书');
 });
 
+// 审计修复 #4（S1、E20）：trashBook 不再只信调用方路径 —— 自己校验「目标是书架根下的真书目录」。
+test('审计修复 #4（S1）：trashBook 拒绝保留目录 / 无书目的文件夹 / 书架根 / 孙目录 / 书库外路径', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '合法的书');
+  await fs.mkdir(path.join(root, '_trash'), { recursive: true });
+  await fs.mkdir(path.join(root, '_碎片'), { recursive: true });
+  await fs.mkdir(path.join(root, '.hidden'), { recursive: true });
+  await fs.mkdir(path.join(root, '普通文件夹'), { recursive: true });
+  const cases = [
+    ['书架根本身', root, 'BAD_PATH'],
+    ['书架级 _trash', path.join(root, '_trash'), 'BAD_PATH'],
+    ['灵感箱 _碎片', path.join(root, '_碎片'), 'BAD_PATH'],
+    ['隐藏目录', path.join(root, '.hidden'), 'BAD_PATH'],
+    ['没有书目的普通文件夹', path.join(root, '普通文件夹'), 'NOT_A_BOOK'],
+    ['书的子目录', path.join(bookPath, '子目录'), 'BAD_PATH'],
+    ['书库外路径', path.join(root, '..', '书库外'), 'BAD_PATH']
+  ];
+  for (const [label, target, code] of cases) {
+    await assert.rejects(
+      () => storage.trashBook(root, target),
+      (err) => err.code === code,
+      `${label} 应报 ${code}`
+    );
+  }
+  // 以上全部被拒且一个都没动：合法书仍能删
+  assert.equal(await storage.exists(path.join(root, '_trash')), true);
+  assert.equal(await storage.exists(path.join(root, '_碎片')), true);
+  const dest = await storage.trashBook(root, bookPath);
+  assert.ok(dest.startsWith(path.join(root, '_trash')));
+  assert.equal(await storage.exists(bookPath), false);
+});
+
+test('审计修复 #4（E20）：同一秒删同名书不覆盖已有备份（目标名 -2 起顺延）', async (t) => {
+  const root = await mkTmp();
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 10, 15, 12, 0, 0).getTime() });
+  try {
+    const first = await storage.createBook(root, '同名书');
+    const firstDest = await storage.trashBook(root, first.path);
+    // 第一本已经搬走，同名文件夹空出来 → 第二本仍叫「同名书」，同一秒删会撞名
+    const second = await storage.createBook(root, '同名书');
+    assert.equal(path.basename(second.path), '同名书');
+    const secondDest = await storage.trashBook(root, second.path);
+    assert.notEqual(secondDest, firstDest);
+    assert.match(path.basename(secondDest), /-2$/);
+    // 第一份备份没被覆盖
+    assert.equal((await storage.readBookMeta(firstDest)).title, '同名书');
+    await fs.access(path.join(firstDest, '书目.json'));
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test('审计修复 #4（S1）：trashBook 排进这本书的写队列，在飞的写操作没 settle 前不搬目录', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '排队删除');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const holder = storage.withBookLock(bookPath, async () => { await gate; });
+  const trashing = storage.trashBook(root, bookPath);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(await storage.exists(bookPath), true, '写队列还没放行，目录不许被搬走');
+  release();
+  await holder;
+  const dest = await trashing;
+  assert.equal(await storage.exists(bookPath), false);
+  assert.ok(dest.includes('_trash'));
+});
+
 test('字数缓存：旧书首次扫描会补缓存，之后书架统计不再重读全书', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '字数缓存');
