@@ -178,7 +178,9 @@ function build(options = {}) {
     api: [], toast: [], syncEditorOverlay: [], scrollCaretIntoView: [], onEditorInput: 0,
     hideHeaderMenus: 0, closeProofreadPanel: 0, renderFindBookmarks: 0, refreshFindBookmarks: 0, refreshReplaceBackups: 0,
     switchChapter: [], loadChapterAt: [], openModal: [], askUnsaved: [], saveCurrent: 0, refreshShelf: 0,
-    renderChapterList: 0, reloadAfterPartialFailure: 0, registerUndo: []
+    renderChapterList: 0, reloadAfterPartialFailure: 0, registerUndo: [],
+    // 审计残留修复 #39（V402）：兜底整串赋值后由渲染层统一记账
+    fallbackWrites: []
   };
   const api = {
     async findAll(...args) {
@@ -220,6 +222,8 @@ function build(options = {}) {
     api,
     call: async (fn, ...args) => fn(...args),
     toast(message, kind) { calls.toast.push([message, kind]); },
+    // 审计残留修复 #39（V402）：「当前章全部替换」的兜底整串赋值也要记账（渲染层统一提示 / 撤销）
+    recordFallbackWrite(info) { calls.fallbackWrites.push(info); },
     imeGuard,
     longOpLogic,
     staleGuard,
@@ -268,9 +272,9 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：11 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...findUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'find', 'imeGuard', 'longOpLogic', 'nav', 'staleGuard', 'state', 'toast']);
-  assert.equal(findUi.REQUIRED_HOST.length, 11);
+test('host 契约：12 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...findUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'collab', 'find', 'imeGuard', 'longOpLogic', 'nav', 'recordFallbackWrite', 'staleGuard', 'state', 'toast']);
+  assert.equal(findUi.REQUIRED_HOST.length, 12);
   const ctx = build();
   assert.doesNotThrow(() => findUi.create(ctx.host));
   assert.throws(() => findUi.create(null), /createFindUi 需要 host 对象/);
@@ -279,6 +283,11 @@ test('host 契约：11 个成员 + 分组内每个真实依赖；缺任何一个
     delete broken[key];
     assert.throws(() => findUi.create(broken), new RegExp('host 缺少 ' + key.replace('$', '\\$')), '缺 ' + key);
   }
+  // 审计残留修复 #39（V402）：host.recordFallbackWrite 必须是函数（不是函数当场 TypeError，不是运行时才炸）
+  assert.throws(
+    () => findUi.create({ ...ctx.host, recordFallbackWrite: 'not-a-function' }),
+    /host\.recordFallbackWrite 必须是函数/
+  );
   for (const key of ['findLogic', 'editorEl', 'syncEditorOverlay', 'scrollCaretIntoView', 'onEditorInput']) {
     const broken = { ...ctx.host, find: { ...ctx.host.find } };
     delete broken.find[key];
@@ -700,6 +709,25 @@ test('replaceEditorText：写回编辑区并触发输入处理（dirty / 字数�
   assert.equal(ctx.calls.onEditorInput, 1);
   assert.equal(ctx.editorEl._focus, 1);
   assert.equal(ctx.editorEl.selectionStart, 0);
+  // 审计残留修复 #39（V402）：兜底整串赋值清空撤销栈 → 必须记账，由渲染层统一提示 + 给「撤销」
+  assert.deepEqual(
+    ctx.calls.fallbackWrites,
+    [{ before: '旧正文', after: '新正文', start: 0, label: '全部替换' }],
+    '兜底路要记一次性快照（记账在 onEditorInput 之后，不然会被输入处理作废）'
+  );
+});
+
+test('replaceEditorText（残留 #39 / V402）：原生输入成功（execCommand 生效）不记兜底快照', () => {
+  const ctx = build({ text: '旧正文' });
+  ctx.dom.doc.execCommand = (command, _ui, text) => {
+    assert.equal(command, 'insertText');
+    ctx.editorEl.value = text;
+    return true;
+  };
+  ctx.ui.replaceEditorText('新正文');
+  assert.equal(ctx.editorEl.value, '新正文');
+  assert.equal(ctx.calls.onEditorInput, 1);
+  assert.deepEqual(ctx.calls.fallbackWrites, [], '原生路径保住了撤销链，不该报「兜底写入」');
 });
 
 test('runReplaceAll（当前章）：空查询提示 / 无命中不替换 / 成功写回编辑区并提示未保存', async () => {
@@ -1108,7 +1136,7 @@ test('静态闸门：renderer.js 不再内嵌查找 / 替换实现，只剩装�
   assert.equal(rendererSrc.split('findUiModule.create(').length - 1, 1, '装配只许一处');
   assert.ok(rendererSrc.includes('const findUiModule = window.CWFindUi;'));
   for (const line of [
-    '    $, state, api, call, toast,',
+    '    $, state, api, call, toast, recordFallbackWrite,',
     '    longOpLogic,',
     '    find: { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput },',
     '    nav: { chapterTitle, switchChapter: (index) => switchChapter(index), loadChapterAt, currentChapterLabel: () => currentChapterLabel(), hideHeaderMenus },',
@@ -1161,7 +1189,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFindUi，�
   vm.runInContext(moduleSrc, context, { filename: 'renderer/find-ui.js' });
   assert.equal(typeof win.CWFindUi, 'object');
   assert.deepEqual(Object.keys(win.CWFindUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWFindUi.REQUIRED_HOST.length, 11);
+  assert.equal(win.CWFindUi.REQUIRED_HOST.length, 12);
   assert.equal(win.CWTidyCardUi, undefined);
 });
 

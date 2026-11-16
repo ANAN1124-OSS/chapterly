@@ -2491,6 +2491,9 @@ body.theme-night .long-para-bar { background: var(--warn);
 #settings-update-field .field-row { flex-wrap: wrap; align-items: center; }
 #settings-update-status { flex: 1 1 100%; line-height: 1.6; }
 #settings-update-status.warn { color: var(--danger); }
+/* 审计修复 #37（▲V310）：日志分享提示。日志里可能有书名 / 章名（不是正文，但仍是作品信息），
+   提示放在「打开日志文件夹」下面一行，分享前先自查；遮罩阈值（连续 24 个汉字）一个字节不改。 */
+.logs-share-hint { margin: 8px 0 0; line-height: 1.6; }
 .settings-modal .modal-buttons {
   flex: 0 0 auto;
   border-top: 1px solid var(--line);
@@ -3143,6 +3146,15 @@ body.theme-night .long-para-bar { background: var(--warn);
   gap: 6px;
 }
 .history-file-actions .btn.tiny { padding: 3px 8px; font-size: 12px; }
+/* 审计修复 #21（P5）：非快照组文件行分页 —— 「展开剩余 N 个文件」排在已渲染行之后，
+ * 与文件行同一条细分隔线、整行居中；点开后这一行自己收起（.hidden），版面不留空档。 */
+.history-group .history-more-files {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 6px 12px 8px;
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
 /* 预览格（v1.0 M4）：在滚动区外、底栏上方，点「预览」立刻可见；列表再长也只压缩列表高度。 */
 .history-preview {
   flex: 0 0 auto;

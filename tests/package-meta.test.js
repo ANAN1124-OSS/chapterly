@@ -92,6 +92,27 @@ test('build.files 带上 LICENSE，安装包内也有许可全文（X1 / WP-07�
   assert.ok(files.includes('package.json'), 'build.files 仍要带 package.json');
 });
 
+test('build.files 排除 renderer/test-hooks.js（审计 #30 / O2）', () => {
+  const files = readPkg().build.files;
+  const rendererAt = files.indexOf('renderer/**/*');
+  const excludeAt = files.indexOf('!renderer/test-hooks.js');
+  assert.ok(rendererAt >= 0, 'renderer/**/* 仍整体打进包');
+  assert.ok(excludeAt > rendererAt, '排除项必须排在 renderer/**/* 之后（electron-builder 的 negate 规则按顺序生效）');
+
+  // 钩子文件仍在仓库里：开发版 ?test=1 / E2E / 截图都要用它，排除只对安装包生效。
+  const hooks = readText('renderer/test-hooks.js');
+  assert.ok(hooks.length > 50000, `renderer/test-hooks.js 必须还在仓库里（实际 ${hooks.length} 字符）`);
+  // 页面不许静态引用它：正常窗口不请求、打包版也拿不到。
+  assert.ok(
+    !/<script[^>]+test-hooks\.js/.test(readText('renderer/index.html')),
+    'index.html 不许静态加载 test-hooks.js'
+  );
+  // README 要如实记录这条出包口径（v0.9 的「保持现状」已作废）。
+  const readme = readText('README.md');
+  assert.ok(readme.includes('!renderer/test-hooks.js'), 'README 打包段要写明排除项');
+  assert.ok(!readme.includes('出包决策已定稿：保持现状'), 'README 不许再写旧的「保持现状」结论');
+});
+
 test('README 有许可说明（X1 / WP-07）', () => {
   const readme = readText('README.md');
   assert.ok(readme.includes('## 许可'), 'README 必须有「## 许可」段');

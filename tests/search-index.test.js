@@ -84,13 +84,23 @@ test('正文索引：Bloom 位图对文中出现过的双字绝不漏报，编�
     }
   }
   const encoded = search.encodeBloom(built.bloom);
-  const decoded = search.decodeBloom(encoded, built.bits);
+  const builtCrc = search.crc32(built.bloom);
+  const decoded = search.decodeBloom(encoded, built.bits, builtCrc);
   assert.ok(Buffer.isBuffer(decoded));
   assert.deepEqual(decoded, built.bloom);
-  assert.equal(search.decodeBloom('不是 base64', built.bits + 8), null);
-  assert.equal(search.decodeBloom('', built.bits), null);
+  assert.equal(search.decodeBloom('不是 base64', built.bits + 8, builtCrc), null);
+  assert.equal(search.decodeBloom('', built.bits, builtCrc), null);
   // 位数与字节数对不上（索引被截断 / 损坏）时不给位图：搜索按「本书永远是候选」处理
-  assert.equal(search.decodeBloom(encoded, built.bits * 2), null);
+  assert.equal(search.decodeBloom(encoded, built.bits * 2, builtCrc), null);
+  // E5（审计修复 #8）：CRC 对不上 / 缺 CRC / bits 不是字节数 × 8 一律不给位图。
+  assert.equal(search.decodeBloom(encoded, built.bits, (builtCrc + 1) >>> 0), null, 'CRC 不符要拒绝');
+  assert.equal(search.decodeBloom(encoded, built.bits, undefined), null, '没有 CRC 的条目当候选');
+  const flipped = Buffer.from(built.bloom);
+  flipped[0] ^= 0xff; // 同长度位翻转：旧实现查不出
+  assert.equal(search.decodeBloom(flipped.toString('base64'), built.bits, builtCrc), null);
+  const oneByte = Buffer.from([0xff]).toString('base64');
+  assert.equal(search.decodeBloom(oneByte, 0, search.crc32(Buffer.from([0xff]))), null, 'bloomBits:0 不再混过');
+  assert.equal(search.decodeBloom(oneByte, 8, search.crc32(Buffer.from([0xff]))), null, '低于最小位数也拒绝');
 });
 
 test('正文索引：空书不误报（全零位图）', () => {
@@ -99,6 +109,94 @@ test('正文索引：空书不误报（全零位图）', () => {
   for (const hash of search.queryBigrams('青柠')) {
     assert.equal(search.bloomHas(built.bloom, built.bits, hash), false);
   }
+});
+
+// E4（审计修复 #8）：旧指纹只有 mtime / size，robocopy /COPY:DAT、rsync -t、部分同步盘
+// 保留时间戳的同大小改写会漏检 → Bloom 缺新内容的双字 → 静默漏报。每章指纹补首尾 4 KB 内容哈希。
+test('正文索引（E4）：保留 mtime / size 的同大小改写也会被首尾内容指纹发现并重建', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const { bookPath, meta } = await makeBook(booksRoot, '指纹书', '指纹书', [
+    { name: '章一', text: '旧车站的雨伞是灰色的。' }
+  ]);
+  const chapterPath = path.join(bookPath, meta.chapters[0].file);
+  // 固定到整秒时间戳，稍后原样 utimes 回去（避开 Windows 文件时间精度抖动）
+  const fixedAt = new Date(Math.floor((Date.now() - 60000) / 1000) * 1000);
+  await fs.utimes(chapterPath, fixedAt, fixedAt);
+  const before = await fs.stat(chapterPath);
+  const oldHash = await search.chapterContentHashOf(chapterPath, before.size);
+  assert.match(oldHash, /^\d+:[0-9a-f]{8}:[0-9a-f]{8}$/, '首尾指纹形状：size:headHash:tailHash');
+
+  const store = makeStore(userData);
+  await store.ensure({ booksRoot });
+  const builtIndex = JSON.parse(await fs.readFile(path.join(userData, search.INDEX_FILE_NAME), 'utf8'));
+  const builtChapter = builtIndex.books.find((book) => book.folder === '指纹书').chapters[0];
+  assert.equal(builtChapter.contentHash, oldHash, '建索引时要把首尾指纹记进索引');
+
+  // 同大小改写 + 把 mtime 原样改回去（模拟 robocopy /COPY:DAT、rsync -t）
+  const nextSource = '旧车站的雨伞是青柠的。';
+  assert.equal(Buffer.byteLength(nextSource, 'utf8'), before.size, '前提：字节数完全相同');
+  await fs.writeFile(chapterPath, nextSource, 'utf8');
+  await fs.utimes(chapterPath, before.atime, before.mtime);
+  const after = await fs.stat(chapterPath);
+  assert.equal(after.size, before.size, '前提：大小没变');
+  assert.equal(after.mtimeMs, before.mtimeMs, '前提：时间戳也没变（否则测的是旧 mtime 口径）');
+
+  const status = await store.ensure({ booksRoot });
+  assert.equal(status.lastRun.rebuiltBooks, 1, '同大小同时间戳的改写必须重建位图');
+  const freshIndex = JSON.parse(await fs.readFile(path.join(userData, search.INDEX_FILE_NAME), 'utf8'));
+  const freshChapter = freshIndex.books.find((book) => book.folder === '指纹书').chapters[0];
+  assert.notEqual(freshChapter.contentHash, oldHash, '内容指纹必须跟着变');
+  const newTerm = await store.search({ booksRoot, query: '青柠' });
+  assert.equal(newTerm.results.length, 1, '新内容要能搜到（不许静默漏报）');
+  const oldTerm = await store.search({ booksRoot, query: '灰色' });
+  assert.equal(oldTerm.results.length, 0, '旧内容不许再命中');
+});
+
+// E5（审计修复 #8）：decodeBloom 以前只查 ceil(bits/8)，bloomBits:0 + 1 字节能混过，
+// 同长度位翻转也查不出。现在 bits 必须 === 字节数 × 8 且落在合法区间，另加每书 CRC32。
+test('正文索引（E5）：位图 CRC / bits 校验不过 → 当候选逐章核对（不漏报）并在下一次校验重建自愈', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '坏位图书', '坏位图书', [{ name: '章一', text: '青柠色的雨伞挂在门口。' }]);
+  const indexPath = path.join(userData, search.INDEX_FILE_NAME);
+  const warmStore = makeStore(userData);
+  await warmStore.ensure({ booksRoot });
+
+  // ① 建好的索引里有每书 CRC 与每章内容指纹；CRC 与位图对得上
+  const first = JSON.parse(await fs.readFile(indexPath, 'utf8'));
+  assert.equal(first.version, search.INDEX_VERSION);
+  const warm = first.books.find((book) => book.folder === '坏位图书');
+  assert.equal(warm.bloomCrc, search.crc32(Buffer.from(warm.bloom, 'base64')));
+  assert.ok(Buffer.isBuffer(search.decodeBloom(warm.bloom, warm.bloomBits, warm.bloomCrc)), '正常位图要能解码');
+
+  // ② 篡改位图但保持长度 / bits / CRC 字段不变（同长度位翻转）：新窗口读回这份坏索引
+  const damaged = JSON.parse(await fs.readFile(indexPath, 'utf8'));
+  const target = damaged.books.find((book) => book.folder === '坏位图书');
+  const buffer = Buffer.from(target.bloom, 'base64');
+  buffer[0] ^= 0xff;
+  target.bloom = buffer.toString('base64');
+  await fs.writeFile(indexPath, JSON.stringify(damaged), 'utf8');
+
+  const store = makeStore(userData);
+  const hit = await store.search({ booksRoot, query: '青柠色' });
+  assert.equal(hit.results.length, 1, '位图坏了不能漏报：本书必须当候选书逐章核对');
+  assert.ok(
+    store.dirtyList().some((item) => item.endsWith('坏位图书')),
+    '解码失败要登记脏书，关掉搜索窗口让下一次校验重建'
+  );
+  const rebuilt = await store.ensure({ booksRoot });
+  assert.equal(rebuilt.lastRun.rebuiltBooks, 1, '下一次校验必须重建这本（自愈）');
+  const repaired = JSON.parse(await fs.readFile(indexPath, 'utf8'));
+  const fixed = repaired.books.find((book) => book.folder === '坏位图书');
+  assert.ok(search.decodeBloom(fixed.bloom, fixed.bloomBits, fixed.bloomCrc), '重建后位图与 CRC 对得上');
+  assert.equal((await store.search({ booksRoot, query: '青柠色' })).results.length, 1);
 });
 
 test('正文索引：上下文片段保留前后各一段、换行折成空格、标明是否截断', () => {
@@ -1095,6 +1193,92 @@ test('正文索引（V93）：bloomCache 有上界 32 条（LRU），长书架�
   assert.ok(store.getBloomCacheSize() <= search.BLOOM_CACHE_MAX);
 });
 
+// P3（审计修复 #19）：整本建图时中间「不重复双字」集合也有硬上限 —— 以前只有最终位图受
+// MAX_BLOOM_BITS 限制，中间 Set 随正文无限长大（千万字级巨书可达数百 MB）。
+test('正文索引（P3）：双字集合到上限就放弃位图（bloomOmitted），不是截断位图', () => {
+  const text = '林婉儿撑着一把青柠色的雨伞，站在旧车站的月台上。';
+  const saturated = search.makeBookBloom([text], { maxItems: 8 });
+  assert.equal(saturated.omitted, true, '超限必须如实标「放弃位图」');
+  assert.equal(saturated.bloom, null, '放弃 = 不给位图（截断位图会静默漏报）');
+  assert.equal(saturated.items, 0);
+  // 上限内照旧出位图；重复双字不重复计数，不会因为「重复读同一句」被误判超限
+  const within = search.makeBookBloom([text, text], { maxItems: 40 });
+  assert.equal(within.omitted, false);
+  const normal = search.makeBookBloom([text, text]);
+  assert.deepEqual(within, normal, '上限内与默认路径逐字节一致');
+  assert.ok(Buffer.isBuffer(normal.bloom));
+  // 上限常量：1M 不重复双字 → 8M bit ≈ 1 MB 位图，远超真实中文书（25 万字约 5–8 万不重复双字）
+  assert.equal(search.MAX_BLOOM_ITEMS, 1024 * 1024);
+});
+
+test('正文索引（P3）：放弃位图的书照常可搜、下次校验不重读正文（复用放弃结论）', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const text = '青柠色的雨伞挂在门口，林婉儿站在旧车站的月台上。';
+  const { bookPath } = await makeBook(booksRoot, '巨书', '巨书', [{ name: '第一章', text }]);
+
+  const store = makeStore(userData, { bloomMaxItems: 8 });
+  await store.ensure({ booksRoot });
+  const entry = store.getIndex().books[0];
+  assert.equal(entry.bloomOmitted, true, '超限的书要在索引里记住「主动放弃位图」');
+  assert.equal(entry.bloom, '');
+  assert.equal(entry.itemCount, 0);
+
+  // 没有位图 = 本书永远进候选、逐章核对 → 搜索照样命中（只降速不漏报）
+  const found = await store.search({ booksRoot, query: '青柠色' });
+  assert.equal(found.results.length, 1);
+  assert.equal(found.candidateBooks, 1);
+
+  // 复用：下一轮校验不许重读正文（只认 bloom 不认 bloomOmitted 的话，每轮校验都会白读全书）
+  const storage = require('../core/storage');
+  const original = storage.loadChapterText;
+  let reads = 0;
+  storage.loadChapterText = async (...args) => {
+    reads += 1;
+    return original(...args);
+  };
+  try {
+    const again = await search.buildBookEntry(bookPath, '巨书', entry, { bloomMaxItems: 8 });
+    assert.equal(again.rebuilt, false);
+    assert.equal(again.entry.bloomOmitted, true);
+    assert.equal(reads, 0, '同一本书再次校验不许重读正文');
+  } finally {
+    storage.loadChapterText = original;
+  }
+});
+
+// P3（审计修复 #19）：条数上界（32）不等于字节上界 —— 32 条 × 单本最大 8 MB 位图 ≈ 256 MB。
+test('正文索引（P3）：位图缓存除条数外还有字节预算（超预算按 LRU 淘汰，结果不丢）', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const TOTAL = 6;
+  for (let i = 0; i < TOTAL; i += 1) {
+    await makeBook(booksRoot, `书${pad3(i)}`, `书${pad3(i)}`, [
+      { name: '第一章', text: `第 ${i} 本：青柠色的雨伞挂在门口。` }
+    ]);
+  }
+  // 每本的最小位图 = MIN_BLOOM_BITS / 8 = 128 字节；预算 256 字节只装得下两本
+  const store = makeStore(userData, { bloomCacheMaxBytes: 256 });
+  await store.ensure({ booksRoot });
+  const found = await store.search({ booksRoot, query: '青柠色', limit: 60 });
+  assert.equal(found.results.length, TOTAL, '前提：六本都过了一遍位图');
+  assert.equal(search.BLOOM_CACHE_MAX_BYTES, 32 * 1024 * 1024, '生产字节预算 32 MB');
+  assert.equal(store.getBloomCacheSize(), 2, '256 字节预算 + 128 字节位图 → 只留两本');
+  assert.ok(store.getBloomCacheBytes() <= 256, `字节预算必须生效：实际 ${store.getBloomCacheBytes()} 字节`);
+
+  // 淘汰只是缓存：再搜一次结果一条不少，字节数仍受预算约束
+  const again = await store.search({ booksRoot, query: '青柠色', limit: 60 });
+  assert.equal(again.results.length, TOTAL);
+  assert.equal(again.totalMatches, TOTAL);
+  assert.ok(store.getBloomCacheBytes() <= 256);
+});
+
 test('正文索引（P-01）：窗口过期 / 根目录签名变化后仍会重新校验并重建', async () => {
   const base = await mkTmp();
   const userData = path.join(base, 'userdata');
@@ -1126,4 +1310,224 @@ test('正文索引（P-01）：窗口过期 / 根目录签名变化后仍会重�
   clockMs += 40000; // 累计 70 s > 60 s
   const afterWindow = await store.search({ booksRoot, query: '铜锁扣' });
   assert.equal(afterWindow.results.length, 1, '窗口过期后必须重新校验，改过的正文要能被搜到');
+});
+
+// P1（审计修复 #9）：首建期搜索不再 await ensure —— 旧实现排在在途构建之后再跑一遍校验，
+// 1800 ms 预算从 ensure 返回后才起算，大书架首建期搜索可阻塞数分钟。同一书架根已有校验在飞时，
+// 搜索直接回 building:true + 空结果；建完后由渲染层的进度事件按原查询自动重搜。
+test('正文索引（P1）：首建期搜索立即回 building + 空结果，建完后同一查询立即可用', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
+
+  // 卡门闸：首建的根目录签名 stat 停在这里，保证搜索发生时「构建确实在飞」。
+  let released = false;
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const store = makeStore(userData, {
+    stat: (target) => {
+      const resolved = path.resolve(String(target));
+      if (!released && resolved === path.resolve(booksRoot)) return gate.then(() => fs.stat(target));
+      return fs.stat(target);
+    }
+  });
+  const buildingRun = store.ensure({ booksRoot }); // 故意不 await：首建在飞
+  const startedAt = Date.now();
+  const during = await store.search({ booksRoot, query: '青柠色' });
+  const elapsed = Date.now() - startedAt;
+  assert.equal(during.index.building, true, '构建在飞：搜索结果必须标 building');
+  assert.deepEqual(during.results, [], '首建期先回空结果，不冒充「没找到」的精确结论');
+  assert.equal(during.truncated, true, '截断标记如实（建好后会按原查询自动重搜）');
+  assert.equal(during.index.books, 0, '此时本根还没有可用索引');
+  assert.ok(elapsed < 1000, `首建期搜索必须立即返回（实际 ${elapsed} ms）`);
+
+  released = true;
+  release();
+  const done = await buildingRun;
+  assert.equal(done.books, 1);
+  const after = await store.search({ booksRoot, query: '青柠色' });
+  assert.equal(after.results.length, 1, '建完后同一查询能拿到结果（不漏结果）');
+  assert.equal((await store.status()).building, false, '这一轮校验结束后不再是 building');
+});
+
+// 审计修复 #33（▲V307）：索引是单文件，写盘前必须有总量预算 —— 超限按书目最后修改时间从旧到新
+// 丢掉整本书的位图（章节指纹保留），被丢的书搜索时永远当候选、逐章核对：只降速、不漏结果。
+test('正文索引（#33）：总量预算超限时淘汰最旧书目的位图（纯函数，字节上界 + 指纹保留）', () => {
+  // 写盘预算必须明显小于读盘上限：自己写出的索引一定读得回来
+  assert.equal(search.MAX_INDEX_BYTES, 32 * 1024 * 1024);
+  assert.ok(search.MAX_INDEX_BYTES < search.MAX_INDEX_READ_BYTES);
+  const makeEntry = (folder, lastModified) => ({
+    path: `C:\\books\\${folder}`,
+    folder,
+    id: `b_${folder}`,
+    title: folder,
+    metaMtimeMs: lastModified,
+    lastModified,
+    bloom: Buffer.alloc(2048, 7).toString('base64'),
+    bloomBits: 16384,
+    bloomCrc: 123,
+    itemCount: 99,
+    bloomOmitted: false,
+    bloomDropped: false,
+    chapters: [{ id: 'ch_001', name: '章', file: '001.txt', index: 0, mtimeMs: 1, size: 2, contentHash: 'abc', chars: 3 }]
+  });
+  const index = {
+    version: search.INDEX_VERSION,
+    root: 'C:\\books',
+    builtAt: 'x',
+    updatedAt: 'y',
+    books: [makeEntry('新书', 200), makeEntry('旧书', 100), makeEntry('中书', 150)]
+  };
+  const fullBytes = Buffer.byteLength(search.serializeIndex(index));
+  assert.equal(search.enforceIndexBudget(index, fullBytes).dropped, 0, '预算内一根手指都不动');
+  const capped = search.enforceIndexBudget(index, fullBytes - 1);
+  assert.equal(capped.dropped, 1);
+  assert.ok(Buffer.byteLength(search.serializeIndex(capped.index)) <= fullBytes - 1, '序列化字节数必须回到预算内');
+  const dropped = capped.index.books.find((book) => book.folder === '旧书');
+  assert.equal(dropped.bloom, '');
+  assert.equal(dropped.bloomDropped, true);
+  assert.deepEqual(dropped.chapters, index.books[1].chapters, '章节指纹一条不丢（下次校验仍能发现正文变化）');
+  assert.ok(capped.index.books.find((book) => book.folder === '新书').bloom, '最后修改最新的书保留位图');
+  assert.equal(index.books[1].bloom.length > 0, true, '纯函数不改入参');
+  const tiny = search.enforceIndexBudget(index, 50);
+  assert.equal(tiny.dropped, 3, '连章节指纹都放不下时，把能丢的位图全丢掉（不假装成功）');
+  assert.ok(tiny.index.books.every((book) => book.bloomDropped === true && book.bloom === ''));
+});
+
+test('正文索引（#33）：预算淘汰落盘后可读回、搜索仍命中被淘汰的书、重载后不每轮重建', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '旧书', '旧书', [{ name: '章一', text: '旧书的青柠色雨伞挂在门口。' }]);
+  await makeBook(booksRoot, '新书', '新书', [{ name: '章一', text: '新书的琥珀色路灯亮着。' }]);
+  // lastModified = 书目 mtime 与全部章节 mtime 的最大值：把两本书的时间拉开，淘汰顺序才是确定的
+  const touch = async (folder, when) => {
+    const dir = path.join(booksRoot, folder);
+    for (const name of await fs.readdir(dir)) {
+      if (name.endsWith('.txt') || name === '书目.json') await fs.utimes(path.join(dir, name), when, when);
+    }
+  };
+  await touch('旧书', new Date('2026-01-01T00:00:00Z'));
+  await touch('新书', new Date('2026-02-01T00:00:00Z'));
+
+  const filePath = path.join(userData, search.INDEX_FILE_NAME);
+  const probe = makeStore(userData);
+  await probe.ensure({ booksRoot });
+  const built = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  // 预算只比整份索引少 1 字节：淘汰掉一本的位图就够，另一本必须保留位图（不是把两本都丢光）
+  const cap = Buffer.byteLength(search.serializeIndex(built)) - 1;
+
+  const store = makeStore(userData, { indexMaxBytes: cap });
+  await store.ensure({ booksRoot });
+  const raw = await fs.readFile(filePath, 'utf8');
+  assert.ok(Buffer.byteLength(raw) <= cap, '写出的索引不超过预算');
+  const saved = JSON.parse(raw);
+  const savedOld = saved.books.find((book) => book.folder === '旧书');
+  assert.equal(savedOld.bloomDropped, true, '最久没改的书被淘汰位图');
+  assert.equal(saved.books.find((book) => book.folder === '新书').bloomDropped, false, '最新修改的书保留位图');
+  assert.equal(savedOld.chapters.length, 1, '淘汰位图 ≠ 把整本书从索引里删掉');
+  const budgetStatus = await store.status();
+  assert.ok(budgetStatus.droppedBlooms >= 1, '状态里能看出被淘汰的书数');
+
+  const found = await store.search({ booksRoot, query: '青柠色雨伞' });
+  assert.equal(found.results.length >= 1, true, '位图被淘汰 ≠ 搜不到：被淘汰的书当候选、逐章核对');
+  assert.equal(found.results[0].bookTitle, '旧书');
+
+  // 新进程读回「已淘汰」的索引：搜索一致，且第二轮校验不再为同一本书白读正文重建位图
+  const reopened = makeStore(userData, { indexMaxBytes: cap });
+  const again = await reopened.search({ booksRoot, query: '琥珀色路灯' });
+  assert.equal(again.results.length >= 1, true);
+  const rerun = await reopened.ensure({ booksRoot });
+  assert.equal(rerun.lastRun.rebuiltBooks, 0, '被淘汰且正文没变的书不许每轮重建位图');
+  assert.ok(Buffer.byteLength(await fs.readFile(filePath, 'utf8')) <= cap, '重载后仍不超过预算');
+});
+
+// S8（审计修复 #45）：索引文件「先 stat 再按路径 readFile」的 TOCTOU —— 闸门与读盘必须绑在同一个句柄上。
+test('S8（#45）：索引文件的大小闸门与读盘走同一个句柄（open → fstat → handle.readFile）', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'search-index.js'), 'utf8');
+  const start = src.indexOf('function load()');
+  assert.ok(start >= 0, '找不到 load()');
+  const body = src.slice(start, src.indexOf('function ensure()', start));
+  assert.ok(body.includes('fs.open(filePath, \'r\')'), '必须先 open 再 fstat');
+  assert.ok(body.includes('handle.stat()'), '上限要用句柄上的 fstat 结论');
+  assert.ok(body.includes("handle.readFile('utf8')"), '内容必须从同一个句柄读');
+  assert.equal(body.includes('fs.readFile(filePath'), false, '不许再按路径 readFile（TOCTOU 窗口）');
+});
+
+// ---------- 审计修复 #46（E21）：260 截断 / 错误透传 / saveNow 归一链 ----------
+test('E21（#46）：解析索引时不静默截断章节文件名 —— 真实名照原样保留，离谱长的整条丢弃', () => {
+  const longName = `${'x'.repeat(300)}.txt`; // 远超旧 slice(0,260) 的截断线，但仍是真实文件名的量级
+  const absurdName = `${'y'.repeat(5000)}.txt`; // 只可能是坏索引 / 手改 JSON
+  const raw = JSON.stringify({
+    version: search.INDEX_VERSION,
+    root: '/books',
+    books: [
+      {
+        path: '/books/书甲',
+        folder: '书甲',
+        chapters: [
+          { file: longName, index: 0, mtimeMs: 1, size: 2, contentHash: 'h' },
+          { file: absurdName, index: 1, mtimeMs: 1, size: 2, contentHash: 'h' }
+        ]
+      }
+    ]
+  });
+  const parsed = search.parseIndex(raw);
+  const files = parsed.books[0].chapters.map((chapter) => chapter.file);
+  assert.deepEqual(files, [longName], '旧实现会把长度 300 的名字切成 260，永远匹配不到真实章节');
+  assert.equal(files[0].length, longName.length);
+});
+
+test('E21（#46）：书架根读不了 → status / search 都透传错误码（不再静默空结果），且旧索引不被提前清空', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await makeBook(booksRoot, '旧书', '旧书', [{ name: '旧车站', text: '雨还在下，他在旧车站等谁。' }]);
+  const { normalizePath } = require('../core/path-utils');
+  const store = makeStore(userData);
+  const built = await store.ensure({ booksRoot, force: true });
+  assert.equal(built.books, 1);
+  assert.equal(built.error, '');
+  assert.equal((await store.status()).error, '');
+
+  // 换到一个不存在的书架根：错误码要能被看见
+  const missingRoot = path.join(base, '没有这个书架');
+  const failed = await store.ensure({ booksRoot: missingRoot });
+  assert.equal(failed.error, 'ENOENT');
+  assert.equal((await store.status()).error, 'ENOENT', 'status 也要带错误码（界面 / 排查能看出是书架路径问题）');
+  const searched = await store.search({ booksRoot: missingRoot, query: '旧车站' });
+  assert.equal(searched.error, 'ENOENT');
+  assert.equal(searched.results.length, 0);
+
+  // 确认新根可读之前不许清旧索引：内存里仍是旧根那一份（旧实现先清成空，回旧根要从头重建）
+  assert.equal((await store.status()).root, normalizePath(booksRoot));
+  assert.equal((await store.status()).books, 1);
+
+  // 根恢复后搜索照常命中，错误码被成功校验清掉
+  const back = await store.search({ booksRoot, query: '旧车站' });
+  assert.equal(back.error, undefined);
+  assert.ok(back.results.length >= 1);
+  assert.equal((await store.status()).error, '');
+});
+
+test('E21（#46）：落盘只有一条串行链 —— doEnsure / load 不再绕过 flush 直接 await saveNow()', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'search-index.js'), 'utf8');
+  // 串行链唯一入队口
+  assert.ok(src.includes('function saveThrough()'), '缺 saveThrough');
+  assert.ok(/savePromise = savePromise\.then\(saveNow, saveNow\)/.test(src));
+  // 两个曾经绕开链的调用点改为入队
+  assert.ok(src.includes('await saveThrough(); // 审计修复 #46（E21）：走与 flush 同一条串行链'));
+  assert.ok(src.includes('await saveThrough(); // 审计修复 #46（E21）：排进 flush 的串行链'));
+  // 除串行链自身以外，任何地方都不许再直调 saveNow()
+  const calls = src.match(/await saveNow\(\);/g) || [];
+  assert.equal(calls.length, 0, `仍有 ${calls.length} 处直调 saveNow()`);
 });

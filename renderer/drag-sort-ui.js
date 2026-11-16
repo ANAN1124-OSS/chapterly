@@ -61,6 +61,14 @@
   // ---------- 章节拖拽排序 ----------
   // 只改 书目.json 的顺序，章节文件永不重命名；拖拽用 pointer 事件（比 HTML5 DnD 好测、也不挑渲染层）。
   let chapterDrag = null;
+  // 审计修复 #20（P4）：拖拽行几何缓存 + 定点清标记。
+  // 旧实现每次 pointermove（跟手时约每帧一次）都对 #chapter-list 的全部子节点读一遍
+  // getBoundingClientRect —— 千章书就是每帧上千次布局读；落点标记也是每帧全表 querySelectorAll 清。
+  // 现在一次拖拽只在「进入拖拽态」那一刻量一次几何（{ listTop, items }，top 用列表内容坐标），
+  // 之后每帧只拿指针位置 + 实时 scrollTop 折算后二分查行；标记只摘掉上一次打上的那一行。
+  // 缓存整场有效的依据：保存 / 加载中不许起手、拖拽期间不重建章节列表，落点标记只用 box-shadow
+  // 与 opacity（不改布局）；边缘自动滚动只改 scrollTop，折算时读的就是实时值。
+  let dragMarkEl = null;
 
   // C38：拖到列表顶部 / 底部边缘时，以前只在 pointermove 那一拍滚 12px——指针停在边缘不动就
   // 不滚，长列表拖不到底。现在进入边缘区先滚一拍（保持原来「一进边缘立刻有反应」的手感），
@@ -103,13 +111,19 @@
     if (state.saving || state.loading || !state.bookPath) return;
     if (state.chapters.length < 2) return;
     stopEdgeScroll(); // C38：上一次拖拽若没走完收手流程，别把旧定时器带进这次
+    // 审计修复 #2（E2）：起手时把「是哪本书的哪一章」一起记下来。拖拽是异步结算的
+    // （pointerup 之后还要等 IPC 回包），在途切书 / 切章时不能再拿旧下标去套新列表。
     chapterDrag = {
       index,
+      chapterId: (state.chapters[index] || {}).id,
+      bookPath: state.bookPath,
       volumeId: chapterVolumeId(state.chapters[index]),
       startY: event.clientY,
       active: false,
       targetIndex: index,
       drop: null,
+      // 审计修复 #20（P4）：进入拖拽态时量一次的行几何（{ listTop, items }），跟手阶段只读它
+      geometry: null,
       // 委托后 event.currentTarget 是 #chapter-list 容器；由调用方显式给条目元素
       item: itemEl || event.currentTarget
     };
@@ -118,30 +132,86 @@
   function clearDragMarks() {
     const list = $('chapter-list');
     if (!list) return;
+    // 整表清扫只留在这里（收手 / 系统打断各一次）：拖拽跟手期间的清标记走 dragMarkEl 定点清理。
     list.querySelectorAll('.chapter-item.dragging, .chapter-item.drop-before, .chapter-item.drop-after, .volume-item.drop-into')
       .forEach((el) => el.classList.remove('dragging', 'drop-before', 'drop-after', 'drop-into'));
+    dragMarkEl = null;
     document.body.classList.remove('chapter-dragging');
+  }
+
+  // 审计修复 #20（P4）：量一次列表几何。top 统一折算成「列表内容坐标」（含当时的 scrollTop），
+  // 之后指针位置也按同一个坐标折算，滚动只影响折算值、不用重新量行。
+  function captureDragGeometry() {
+    const list = $('chapter-list');
+    if (!list) return null;
+    const listRect = list.getBoundingClientRect();
+    const scrollTop = Number(list.scrollTop) || 0;
+    const items = Array.from(list.children).map((el) => {
+      const rect = el.getBoundingClientRect();
+      return { el, top: rect.top - listRect.top + scrollTop, height: rect.height };
+    });
+    return { listTop: listRect.top, items };
+  }
+
+  // 审计残留修复 #20（P4）：缓存失效判据。拖拽期间窗口尺寸变化（行高 / 列表位置变了，见 resize
+  // 监听）或列表被重建（筛选 / 外部刷新）时，按旧几何算落点会把章插到错位置（或落在已 detach 的
+  // 行上）。这里用 DOM 上可观察的两件事判定：行集合是否仍与列表当前子节点一一对应、行还在不在文档里。
+  function geometryIsCurrent(geometry, list) {
+    if (!geometry || !list) return false;
+    const items = geometry.items;
+    if (items.length !== list.children.length) return false;
+    for (let i = 0; i < items.length; i += 1) {
+      const row = items[i];
+      if (row.el !== list.children[i]) return false;
+      if (typeof row.el.isConnected === 'boolean' && !row.el.isConnected) return false;
+    }
+    return true;
+  }
+
+  // 拖拽中取几何：缓存仍有效就复用（跟手零 rect 读）；列表重建 / resize 后现量一次（只多一次）。
+  // 直接调用 computeDropTarget（单测 / 测试钩子）没有拖拽活状态时现量一次，语义与搬前一致。
+  function dragGeometryFor(list) {
+    if (!chapterDrag) return captureDragGeometry();
+    if (!geometryIsCurrent(chapterDrag.geometry, list)) chapterDrag.geometry = captureDragGeometry();
+    return chapterDrag.geometry;
+  }
+
+  // 缓存行按文档流顺序 top 单调递增：二分找「top ≤ 指针内容坐标」的最后一行（O(log n)）。
+  function rowIndexAt(items, y) {
+    let lo = 0;
+    let hi = items.length - 1;
+    let hit = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (items[mid].top <= y) {
+        hit = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return hit;
   }
 
   // 拖拽落点：可以落在章节条目上（插到它前/后），也可以落在卷标题上（放进这一卷）
   function computeDropTarget(event) {
     const list = $('chapter-list');
-    const children = Array.from(list.children);
-    if (!children.length) return null;
-    const y = event.clientY;
-    let hovered = null;
-    for (const el of children) {
-      const rect = el.getBoundingClientRect();
-      if (y >= rect.top && y <= rect.bottom) {
-        hovered = el;
-        break;
-      }
-    }
+    if (!list) return null;
+    // 拖拽中复用起手时量好的几何；直接调用（单测 / 测试钩子）没有拖拽，就现量一次，语义不变。
+    // 审计残留修复 #20（P4）：拖拽期间列表被重建 / 窗口 resize 时缓存自动失效（dragGeometryFor）。
+    const geometry = dragGeometryFor(list);
+    if (!geometry) return null;
+    const items = geometry.items;
+    if (!items.length) return null;
+    const count = items.length;
+    const y = event.clientY - geometry.listTop + (Number(list.scrollTop) || 0);
+    const hit = rowIndexAt(items, y);
+    const hovered = hit >= 0 && y <= items[hit].top + items[hit].height ? items[hit].el : null;
     const chapterOf = (el) => (el && el.classList.contains('chapter-item') ? state.chapters[Number(el.dataset.index)] : null);
     if (!hovered) {
       // 指针在列表末尾之后：落到最后一组的末尾
-      for (let i = children.length - 1; i >= 0; i -= 1) {
-        const el = children[i];
+      for (let i = count - 1; i >= 0; i -= 1) {
+        const el = items[i].el;
         const chapter = chapterOf(el);
         if (chapter) return { volumeId: chapterVolumeId(chapter), beforeChapterId: null, el, mode: 'after' };
         if (el.classList.contains('volume-item')) {
@@ -152,10 +222,10 @@
     }
     if (hovered.classList.contains('volume-item')) {
       const volumeId = hovered.dataset.volumeId || null;
-      const start = children.indexOf(hovered);
+      const start = hit;
       let before = null;
-      for (let i = start + 1; i < children.length; i += 1) {
-        const el = children[i];
+      for (let i = start + 1; i < count; i += 1) {
+        const el = items[i].el;
         if (el.classList.contains('volume-item')) break;
         const chapter = chapterOf(el);
         if (chapter) {
@@ -168,14 +238,15 @@
     const chapter = chapterOf(hovered);
     if (!chapter) return null;
     const volumeId = chapterVolumeId(chapter);
-    const rect = hovered.getBoundingClientRect();
-    if (y < rect.top + rect.height / 2) {
+    const top = items[hit].top;
+    const height = items[hit].height;
+    if (y < top + height / 2) {
       return { volumeId, beforeChapterId: chapter.id, el: hovered, mode: 'before' };
     }
-    const start = children.indexOf(hovered);
+    const start = hit;
     let next = null;
-    for (let i = start + 1; i < children.length; i += 1) {
-      const el = children[i];
+    for (let i = start + 1; i < count; i += 1) {
+      const el = items[i].el;
       if (el.classList.contains('volume-item')) break;
       const candidate = chapterOf(el);
       if (candidate) {
@@ -200,8 +271,12 @@
     if (!chapterDrag) return;
     const list = $('chapter-list');
     if (!list) return;
-    list.querySelectorAll('.chapter-item.drop-before, .chapter-item.drop-after, .volume-item.drop-into')
-      .forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-into'));
+    // 审计修复 #20（P4）：定点清标记 —— 只摘掉上一帧打上的那一行，不再整表 querySelectorAll。
+    // 拖拽期间不会有人从模块外改落点标记（起手 / 收手 / cancel 各有一条完整清扫路径）。
+    if (dragMarkEl) {
+      dragMarkEl.classList.remove('drop-before', 'drop-after', 'drop-into');
+      dragMarkEl = null;
+    }
 
     const target = computeDropTarget({ clientY });
     chapterDrag.drop = target;
@@ -209,6 +284,7 @@
       if (target.mode === 'header') target.el.classList.add('drop-into');
       else if (target.mode === 'before') target.el.classList.add('drop-before');
       else target.el.classList.add('drop-after');
+      dragMarkEl = target.el;
     }
   }
 
@@ -233,6 +309,8 @@
     if (!chapterDrag.active) {
       if (Math.abs(event.clientY - chapterDrag.startY) < 5) return;
       chapterDrag.active = true;
+      // 审计修复 #20（P4）：进入拖拽态才量几何（一次拖拽只量这一次），跟手阶段全部走缓存。
+      chapterDrag.geometry = captureDragGeometry();
       chapterDrag.item.classList.add('dragging');
       document.body.classList.add('chapter-dragging');
     }
@@ -249,7 +327,13 @@
     clearDragMarks();
     if (!drag.active) return; // 普通点击，交给 click 处理
     state.suppressChapterClick = Date.now() + 300;
-    const chapter = state.chapters[drag.index];
+    // 审计修复 #2（E2）：松手时书已经换了（拖拽在途切书）→ 这次拖拽作废，绝不写盘。
+    if (state.bookPath !== drag.bookPath) return;
+    // 按起手时记下的 chapter.id 结算；原来的那一章不在了（切章 / 删章 / 列表被重建）就不动，
+    // 不用旧下标去猜现在第 N 行是谁。
+    const chapter = drag.chapterId
+      ? state.chapters.find((item) => item && item.id === drag.chapterId)
+      : null;
     const target = drag.drop;
     if (!chapter || !target) return;
     // 原地不动就不写盘：落在自己身上、或落回自己原来的位置
@@ -259,31 +343,39 @@
   }
 
   async function moveChapterByDrop(chapter, target) {
-    const currentId = (state.chapters[state.index] || {}).id;
+    // 审计修复 #2（E2）：发起前捕获身份；await 期间切书时，旧书的回包只允许丢弃，不许覆盖新书状态。
+    const bookPath = state.bookPath;
+    const movingId = chapter && chapter.id;
+    if (!bookPath || !movingId) return { ok: false, message: '章节身份已变化，未移动' };
     try {
       const data = await call(
         api.moveChapterTo,
-        state.bookPath,
-        chapter.id,
+        bookPath,
+        movingId,
         target.volumeId || null,
         target.beforeChapterId || null
       );
+      // 回包到达时已经不是发起时那本书：主进程的移动已经生效在旧书上；
+      // 这里绝不能把旧书 meta 写进新书的内存状态（也不 toast 误导当前窗口）。
+      if (state.bookPath !== bookPath) return { ok: true, stale: true };
+      // 结算时用户真正停在的那一章（await 期间可能已切章）：按 id 重新定位，不按旧下标
+      const selectedId = (state.chapters[state.index] || {}).id;
       state.meta = data.meta;
       state.chapters = data.meta.chapters;
-      if (currentId) {
-        const at = state.chapters.findIndex((c) => c.id === currentId);
+      if (selectedId) {
+        const at = state.chapters.findIndex((c) => c && c.id === selectedId);
         if (at >= 0) state.index = at;
       }
       renderChapterList();
       renderEditorHeader();
       updateStatus();
       toast(`已移动章节（${target.volumeId ? volumeDisplayName(target.volumeId) : '未分卷'}）`);
-      if (currentId) {
+      if (selectedId) {
         try {
-          const currentChapter = state.chapters.find((c) => c.id === currentId);
+          const currentChapter = state.chapters.find((c) => c && c.id === selectedId);
           // B1（审计 E6）：走统一 call()，失败才真的进这个 catch（裸 await api.* 时 preload 回
           // {ok:false} 不抛错，这里的兜底等于没写）
-          await call(api.setLastOpenChapter, state.bookPath, currentId, {
+          await call(api.setLastOpenChapter, bookPath, selectedId, {
             title: state.meta && state.meta.title,
             chapterIndex: state.index,
             chapterName: currentChapter ? currentChapter.name : ''
@@ -302,34 +394,46 @@
   async function moveChapterByDrag(fromIndex, toIndex) {
     const chapter = state.chapters[fromIndex];
     if (!chapter || fromIndex === toIndex) return;
-    const currentId = (state.chapters[state.index] || {}).id;
+    // 审计修复 #2（E2）：与 moveChapterByDrop 同一套身份捕获 / 回包复核。
+    const bookPath = state.bookPath;
+    const movingId = chapter.id;
+    if (!bookPath || !movingId) return { ok: false, message: '章节身份已变化，未移动' };
     try {
-      const data = await call(api.moveChapter, state.bookPath, chapter.id, toIndex);
+      const data = await call(api.moveChapter, bookPath, movingId, toIndex);
+      if (state.bookPath !== bookPath) return { ok: true, stale: true };
+      const selectedId = (state.chapters[state.index] || {}).id;
       state.chapters = data.meta.chapters;
       state.meta = { ...state.meta, chapters: data.meta.chapters, updatedAt: data.meta.updatedAt };
-      const newCurrent = currentId ? state.chapters.findIndex((c) => c.id === currentId) : -1;
+      const newCurrent = selectedId ? state.chapters.findIndex((c) => c && c.id === selectedId) : -1;
       if (newCurrent >= 0) state.index = newCurrent;
       renderChapterList();
       renderEditorHeader();
       updateStatus();
       toast(`已移动章节：第 ${data.from + 1} 位 → 第 ${data.to + 1} 位（章节文件没有改名）`);
-      if (currentId) {
+      if (selectedId) {
         try {
-          const currentChapter = state.chapters.find((c) => c.id === currentId);
+          const currentChapter = state.chapters.find((c) => c && c.id === selectedId);
           // B1（审计 E6）：同上，统一 call()（失败会被下面的 catch 接住，不再被悄悄丢掉）
-          await call(api.setLastOpenChapter, state.bookPath, currentId, {
+          await call(api.setLastOpenChapter, bookPath, selectedId, {
             title: state.meta && state.meta.title,
             chapterIndex: state.index,
             chapterName: currentChapter ? currentChapter.name : ''
           });
         } catch { /* 记不住也无所谓 */ }
       }
+      return { ok: true };
     } catch (err) {
       toast(`移动章节失败：${err.message}`, 'error');
+      return { ok: false, message: err.message };
     }
   }
 
   function setupChapterDrag() {
+    // 审计残留修复 #20（P4）：拖拽期间窗口尺寸变化会让缓存的行高 / 列表位置过期 —— 作废缓存，
+    // 下一次跟手现量一次（不取消拖拽，也不逐帧重量）。
+    window.addEventListener('resize', () => {
+      if (chapterDrag) chapterDrag.geometry = null;
+    });
     window.addEventListener('pointermove', (event) => {
       if (chapterDrag) updateChapterDrag(event);
     });

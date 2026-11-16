@@ -111,8 +111,11 @@ const CHAPTER_BATCH_SIZE = 32;
 // ipc/*.js，main.js 只做装配（依赖在 buildIpcHost() 里一次性注入）。模块自己不 require electron、
 // 不碰模块级状态；缺依赖在装配时直接 TypeError（与渲染层 createX(host) 同一口径，A8）。
 const ipcBook = require('./ipc/book');
+const ipcBookData = require('./ipc/book-data');
 const ipcProofread = require('./ipc/proofread');
 const ipcExport = require('./ipc/export');
+// 审计修复 #38（▲V306）：书域 mutation 走 ipc/book-mutations.js 的域内常量表（chapter:save 补标记）。
+const { MUTATION } = require('./ipc/book-mutations');
 
 // ---------- 启动参数：隔离用的 --user-data ----------
 // A2（审计 #8 / E3）：这段从文件顶部（原来的 :31-40）挪到 core 模块 require 之后、app ready 之前。
@@ -156,7 +159,7 @@ let e2eCloseBoundsDelayMs = 0;
 let configStore = null;
 let config = null;
 let statsStore = null; // 每日字数统计（userData/stats.json，绝不写书库）
-let configWarning = null; // 配置损坏被归档时的提示，界面启动后取一次
+let configWarning = null; // 配置损坏被归档时的提示：启动时只留一份给日志（界面取 store 里的当前值）
 // 配置里「指向磁盘」的三项（书架目录 / 两份词表）只认对话框选中的值：
 // 按窗口记「刚在系统对话框里选中的路径」，config:set 拿它做来源校验（v0.9 C-2b）。
 // 只在内存里，窗口关闭时清掉；不写盘、不跨窗口。
@@ -608,6 +611,10 @@ function logError(kind, err, extra = {}) {
   }
 }
 
+// 审计修复 #32（▲V305）：core/storage 的「书目重复章节 id 已按位置重新分配」要留一条诊断日志，
+// 但 core 模块不持有日志 store —— 启动时把现成的 logError 注入一次（写不进去只吞掉，绝不影响读书目）。
+storage.setDiagnostics({ logError });
+
 // 配置里「指向磁盘」的项被来源不明地改动时记一条 info 日志：
 // 只记字段名 —— 绝不记路径值，也不把任何路径回给渲染层（日志里没有本机目录）。
 function logRejectedConfigPaths(fields) {
@@ -944,7 +951,9 @@ async function getConfig() {
   if (!config) {
     configStore = createConfigStore(app.getPath('userData'));
     config = decorateConfig(await configStore.get());
-    configWarning = configStore.takeLoadWarning();
+    // 审计残留修复 R28（#52/E25）：这里只 peek 记日志、不取走 —— 提示留在 store 里由 app:warning
+    // 取「当前值」（写前重试归档成功会把它更正成「已归档」，启动就 take 走的话那份更正永远没人读）。
+    configWarning = configStore.peekLoadWarning();
     // A5（审计 E2）：配置读失败（EACCES / EIO / EBUSY…）与损坏归档都留一条本机日志，
     // 只记错误码与中文结论，不含路径、不含配置内容；界面仍走 app:warning 提示一次。
     if (configWarning) {
@@ -966,10 +975,12 @@ function getStatsStore() {
 
 // 统计摘要统一出口：今天 + 近 30 天 + 连续写作天数（保存后与 stats:get 用同一套口径）。
 // v0.8-2 起带上「写作时长」开关状态，界面据此决定要不要显示计时按钮（默认关）。
+// 审计修复 #54（P9）：stats 来自 getStatsStore() / record（已 sanitize），传 sanitized: true
+// 让 summary / streak 跳过重复清洗（stats:get 一次请求原来把同一份统计洗四遍）。
 function statsSummaryPayload(stats, cfg, now = new Date()) {
   return {
-    ...statsLib.summary(stats, { goal: cfg.dailyGoal, now }),
-    streak: statsLib.streak(stats, { now }),
+    ...statsLib.summary(stats, { goal: cfg.dailyGoal, now, sanitized: true }),
+    streak: statsLib.streak(stats, { now, sanitized: true }),
     writeDurationEnabled: cfg.writeDurationEnabled === true
   };
 }
@@ -1265,9 +1276,11 @@ function buildIpcHost() {
 
 function registerIpc() {
   // V114（v1.8.0 WP-34 / D-6）：导出 / 校对 / 书 CRUD 三个域在 ipc/*.js 里注册，这里只装配。
-  // 其余频道（窗口 / 配置 / 统计 / 捕获 / 编辑器 / 查找 / 字体 / 历史 / 排版 / 系统…）本版不动。
+  // 审计修复 #38（▲V306）：书域数据面（查找替换 / 历史 / 整理 / 快照清理 / 打开书文件夹）也下沉到
+  // ipc/book-data.js —— 与书 CRUD 同一个域、同一次装配，书域不再分居两处。
   const domainHost = buildIpcHost();
   ipcBook.register(domainHost);
+  ipcBookData.register(domainHost);
   ipcProofread.register(domainHost);
   ipcExport.register(domainHost);
   // ---------- 窗口会话（多窗口） ----------
@@ -1318,8 +1331,11 @@ function registerIpc() {
   // 界面上的版本号从 package.json 读，免得每次发版忘了改静态文字
   handle('app:version', async () => ({ version: app.getVersion() }));
   // 启动后取一次「配置损坏被归档」之类的提示（取完即清空）
+  // 审计残留修复 R28（#52/E25）：以 store 里的当前值为准 —— 写前重试归档成功会把「无法归档」
+  // 更正成「已归档」、读盘恢复会把过期提示作废；主进程启动时只 peek 记日志、不取走，否则界面
+  // 拿到的是启动那一刻的快照（store 里的自动更正成了没人读的死代码）。
   handle('app:warning', async () => {
-    const warning = configWarning;
+    const warning = configStore ? configStore.takeLoadWarning() : configWarning;
     configWarning = null;
     return warning;
   });
@@ -1357,7 +1373,9 @@ function registerIpc() {
   handle('config:set', async (patch) => {
     // WP-10（C7）：配置读过失败的话，保存设置前先重试读盘——读到真的配置再按它合并 / 算目标书架目录，
     // 仍读不到就明确失败（CONFIG_READ_FAILED），绝不拿内存里的默认值写盘，把书库根目录等设置抹掉。
-    await getConfig(); // 确保配置仓库已就绪（首次用到时才创建，见 getConfig）
+    // 审计修复 #53（R8）：这次 getConfig 的返回值直接复用（旧实现紧接着又 await getConfig() 一次，
+    // 只是从同一个内存缓存再拷一遍）；ensure 配置仓库已就绪的语义不变。
+    let current = await getConfig();
     const recovery = await configStore.retryLoad();
     if (!recovery.ok) {
       throw Object.assign(new Error(recovery.message), {
@@ -1365,7 +1383,6 @@ function registerIpc() {
         errorCode: recovery.errorCode
       });
     }
-    let current = await getConfig();
     // 读盘恢复了：主进程缓存还是启动时的默认值，先换成真配置再继续（applyConfig 会同步标题栏配色）。
     if (recovery.recovered) current = applyConfig(await configStore.get());
     // C23（整合版审计）：「换根前的生效根」也走「sanitize + 装饰层」——设置了 --books-root 时它就是
@@ -1448,10 +1465,11 @@ function registerIpc() {
     const now = new Date();
     return {
       ...statsSummaryPayload(stats, cfg, now),
-      calendar: statsLib.monthView(stats, { now, goal: cfg.dailyGoal }),
+      calendar: statsLib.monthView(stats, { now, goal: cfg.dailyGoal, sanitized: true }),
       // 1.6.0 F2：按书 / 按年汇总（只读现算，不写 stats.json；筛选由渲染层的两个下拉传进来，
       // 坏值在 core/stats 里当作「不筛」）。summary 仍是全书架口径，书架头 / 状态栏不受筛选影响。
-      aggregate: statsLib.aggregate(stats, filter)
+      // 审计修复 #54（P9）：同一份已清洗统计直接复用（sanitized: true），不再洗第四遍。
+      aggregate: statsLib.aggregate(stats, filter, { sanitized: true })
     };
   });
   handle('stats:calendar', async (request) => {
@@ -1463,9 +1481,10 @@ function registerIpc() {
         year: request && request.year,
         month: request && request.month,
         now,
-        goal: cfg.dailyGoal
+        goal: cfg.dailyGoal,
+        sanitized: true
       }),
-      streak: statsLib.streak(stats, { now })
+      streak: statsLib.streak(stats, { now, sanitized: true })
     };
   });
   // 写作时长（v0.8-2）：渲染层在计时暂停 / 保存 / 每 30 秒上报一次整秒。
@@ -1752,7 +1771,7 @@ function registerIpc() {
     return findLib.findNextMatch(text, ipcLimits.assertQuery(query), fromIndex, options);
   });
 
-  handleBook('chapter:save', async (bookPath, chapterId, text) => {
+  handleBook('chapter:save', async (bookPath, chapterId, text, expectedMtimeMs) => {
     // A2（审计 E6）：全仓唯一漏掉正文校验的写盘通道。与 text:format / text:find / replace
     // 同一口径：正文必须是字符串且不超过 500 万字（core/ipc-limits.js），超限回 TEXT_TOO_LARGE。
     // C26（v1.8.0 WP-26）：null / undefined 不再当空章写盘（旧实现刻意兼容成 ''）。渲染层拿到
@@ -1763,8 +1782,11 @@ function registerIpc() {
       const cfg = await getConfig();
       // 保存前校验（写盘安全检查）：书文件夹、书目、章节记录、章节文件都还在才允许写，
       // 且书不能正开在另一个窗口。任何一项失效都报错，绝不 mkdir 重建影子文件。
+      // 审计修复 #5（V301）：渲染层带来的 expectedMtimeMs 也在这里比对——载入之后磁盘被
+      // 应用外改过就抛 EXTERNAL_CHANGE，交给 save-rescue-ui.js 的三选，绝不静默覆盖外部版本。
       const prepared = await storage.prepareChapterSave(bookPath, chapterId, {
-        windowId: session ? session.id : null
+        windowId: session ? session.id : null,
+        expectedMtimeMs
       });
       const meta = prepared.meta;
       const chapter = prepared.chapter;
@@ -1874,13 +1896,15 @@ function registerIpc() {
         charsBaselineMissing: charsDelta.baselineMissing
       };
     });
-  });
+  }, { mutation: MUTATION.SAVE }); // 审计修复 #38（O6）：保存成功要广播 shelf:changed（跨窗口书架字数不再滞后）
 
   // 自定义正文字体：只允许字体文件，读成 base64 交给渲染层的 FontFace 加载（渲染层仍无 fs）
   // 代码审计 F1：font:pick 选中的路径只记在内存里（按窗口分开），font:read 只认「这次选的 /
   // 当前书的 bookDisplay / 全局配置」这三种主进程自己知道的路径，渲染层传进来的路径一律不看。
   // B18（WP-29）：pickedFontPaths 本身在模块级（关窗清理要在 createWindow 里做）。
   // B9（v1.8.0 WP-29）：字体文件读盘 + base64 编码缓存（最近 2 份，按 realpath + mtime + size 失效）。
+  // 审计修复 #54（P11）：另加 base64 驻留预算（core/font-cache.js 默认 40 MB）—— 两份 24 MB 字体的
+  // base64 加起来 ≈ 64 MB 常驻，超预算时只保留最近使用的那一份大字体；小字体仍可两份都命中。
   // 仍然每次都做 realpath / 扩展名 / 大小闸门 / 来源校验，只跳过「同一个没变的文件」的二次读取。
   const fontReadCache = createFontReadCache({ maxEntries: 2 });
 
@@ -2000,84 +2024,6 @@ function registerIpc() {
     });
   }
 
-  // 全书查找 / 替换：替换写盘前 storage 会把原章节备份到书内 _trash。
-  // v0.9 C-5：options 由 core/ipc-limits.js 清洗——查找词 / 替换词必须是文本且各限 1 万字，
-  // 非对象 options 按 {}（旧行为：没传选项 = 默认口径），坏类型直接回 BAD_QUERY / BAD_REPLACEMENT，
-  // 不让一个超长替换词把整本书的 txt 撑爆（替换最多 5000 处 / 章）。
-  // R4b（V9）/ 1.7.2 D4（V40）：整本操作遇到超过 128 MB 的章会跳过，core 在结果里直接带
-  // skippedTooLarge；这里原样返回 core 的结果，不再包一层恒等复制（渲染层照旧读这个字段）。
-  handleBook('book:search', async (bookPath, options) =>
-    storage.searchBook(bookPath, ipcLimits.sanitizeSearchOptions(options))
-  );
-  handleBook('book:replace', async (bookPath, options) =>
-    storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options)), {
-    mutation: 'replace'
-  });
-
-  // 整本替换的还原：列出 / 还原书内 _trash/替换备份-*/（还原前把当前内容再备份一份）
-  handleBook('book:list-replace-backups', async (bookPath) => storage.listReplaceBackups(bookPath));
-  handleBook('book:restore-replace-backup', async (bookPath, backupName) =>
-    storage.restoreReplaceBackup(bookPath, backupName), { mutation: 'replace' }
-  );
-
-  // 本书历史：统一列出 / 预览 / 还原书内 _trash 的各种备份（替换/整理/还原前/快照/删章 + 书目.json.bak）
-  handleBook('book:list-history', async (bookPath) => storage.listBookHistory(bookPath));
-  handleBook('book:preview-history-file', async (bookPath, groupId, fileName) =>
-    storage.previewHistoryFile(bookPath, groupId, fileName)
-  );
-  handleBook('book:restore-history-file', async (bookPath, groupId, fileName) =>
-    storage.restoreHistoryFile(bookPath, groupId, fileName), { mutation: 'write' }
-  );
-  handleBook('book:restore-history-dir', async (bookPath, groupId) =>
-    storage.restoreHistoryGroup(bookPath, groupId), { mutation: 'write' }
-  );
-  // B6（v1.8.0 WP-28 / D-5）：手动清理三类备份（替换 / 整理 / 还原前）—— 只有历史面板的两步确认
-  // 才会调到这里；存储层只认 `dir:<三类备份目录>`、再校验落在本书 _trash 下，并跳过仍被
-  // 10 秒撤销条引用的组（protectedGroupIds 由渲染层按 TTL 现算）。绝不自动调用、绝不碰快照 / 散文件。
-  handleBook('book:delete-history-backups', async (bookPath, groupIds, options) =>
-    storage.deleteHistoryBackups(bookPath, groupIds, options), { mutation: 'write' }
-  );
-  // 清空某一天的每日快照（P22-5）：只把这个目录**移入 Windows 回收站**，绝不硬删。
-  // 参数只认快照目录名（storage.snapshotDirForClear 严格校验「快照-YYYYMMDD」+ 日期真实存在 +
-  // 必须落在本书 _trash 下），不接受任意路径；校验不过 / 回收站不可用都只报错返回，一个文件都不动。
-  handleBook('book:clear-snapshot-day', async (bookPath, groupName) => {
-    const dir = storage.snapshotDirForClear(bookPath, groupName);
-    let stat;
-    try {
-      stat = await fs.lstat(dir);
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        throw new storage.StorageError('HISTORY_GROUP_MISSING', '这个快照目录已经不存在了');
-      }
-      throw err;
-    }
-    // 联接 / 符号链接不是普通文件夹：宁可不清，也不要把书库外面的东西卷进来
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      throw new storage.StorageError('SNAPSHOT_NOT_DIR', '这个快照不是一个普通文件夹，没有清空');
-    }
-    try {
-      await shell.trashItem(dir);
-    } catch (err) {
-      // 回收站不可用（被策略禁用 / 磁盘问题…）：报错返回，不重试、不降级成硬删
-      throw new storage.StorageError(
-        'SNAPSHOT_TRASH_FAILED',
-        `移入回收站失败，快照没有动：${errorText.describeForUi(err).message}`
-      );
-    }
-    return { ok: true, dir: path.basename(dir) };
-  }, { mutation: 'write' });
-
-  // 整本智能排版：预检查只算不写；正式整理逐章写盘（写前把原章节备份到 _trash/整理备份-*）
-  // 1.7.2 D4（V40）：同 book:search / book:replace，core 结果里的 skippedTooLarge 原样透传。
-  handleBook('book:format-preview', async (bookPath, options) =>
-    storage.previewFormatBook(bookPath, options)
-  );
-  handleBook('book:format', async (bookPath, options) =>
-    storage.formatBook(bookPath, options, (progress) => {
-      sendToFlow('format:progress', progress);
-    }), { mutation: 'format' }
-  );
-
   handle('shell:pick-folder', async () => {
     const { canceled, filePaths } = await showOpenDialog({
       title: '选择书架目录',
@@ -2087,18 +2033,6 @@ function registerIpc() {
     // v0.9 C-2b：书架目录同样只认这次对话框选中的路径（设置里的输入框是只读的）
     rememberPickedConfigPath('booksRoot', filePaths[0]);
     return filePaths[0];
-  });
-
-  handleBook('shell:open-book-folder', async (bookPath) => {
-    // C6（审计 E13）：先 stat 确认目标是目录，再交给系统默认程序打开——书架根下的直接子文件
-    // （比如作者误放的一个 exe / 快捷方式）不会被「打开书文件夹」顺带执行。
-    const stat = await fs.stat(bookPath);
-    if (!stat.isDirectory()) {
-      throw new storage.StorageError('NOT_A_DIRECTORY', '这个路径不是书文件夹，没有打开');
-    }
-    const err = await shell.openPath(bookPath);
-    if (err) throw new storage.StorageError('OPEN_FAILED', errorText.cleanText(errorText.redactPaths(err)));
-    return true;
   });
 
   // 诊断日志（提案 7.4）：目录 / 文件清单给设置弹层显示；「打开日志文件夹」由主进程调资源管理器。

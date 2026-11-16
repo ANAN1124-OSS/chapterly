@@ -1188,6 +1188,10 @@
           <button id="btn-open-logs" class="btn ghost" type="button">打开日志文件夹</button>
           <span id="settings-logs-status" class="muted small"></span>
         </div>
+        <p class="muted small logs-share-hint">
+          日志里除了错误码和文件名，也可能出现书名 / 章名（它们不是正文，但仍是作品信息）；
+          把日志发给别人（反馈问题时）之前，请先自己看一遍。
+        </p>
       </div>
       <div class="field-group" id="settings-update-group">检查更新</div>
       <div class="field" id="settings-update-field">
@@ -1302,6 +1306,7 @@
   <script src="shelf-ui.js"></script>
   <script src="statusbar-ui.js"></script>
   <script src="save-status-ui.js"></script>
+  <script src="save-rescue-ui.js"></script>
 <script src="shelf-filter-ui.js"></script>
 <script src="shelf-search-ui.js"></script>
 <script src="shelf-nav-ui.js"></script>
@@ -1329,6 +1334,8 @@
 <script src="command-registry.js"></script>
 <script src="command-palette-ui.js"></script>
 <script src="shortcuts-ui.js"></script>
+<!-- 审计修复 #55（M4）：装配清单最后加载，renderer.js 启动时据此一次报全缺模块（清单见 assembly-manifest.js） -->
+<script src="assembly-manifest.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

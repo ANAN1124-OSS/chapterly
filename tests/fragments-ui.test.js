@@ -12,8 +12,9 @@ const commonLib = require('../core/common');
 // 搬之前只有 E2E 黑盒覆盖（书架记碎片 / 写作页插入）；保存防重 / 空内容 / 插入位置按打开面板前的选区 /
 // execCommand 失败兜底 / 2 万字预览上限 / 列表空态与元信息在 Node 里几乎测不到。搬出来以后逐条钉住。
 //
-// 契约：host 8 个成员 = 基础 5（$, state, api, call, toast）+ common{chaptersLib,formatRelativeTime} +
-// editor{editorEl,onEditorInput,scrollCaretIntoView} + hideHeaderMenus。
+// 契约：host 10 个成员 = 基础 5（$, state, api, call, toast）+ common{chaptersLib,formatRelativeTime} +
+// editor{editorEl,onEditorInput,scrollCaretIntoView} + hideHeaderMenus + staleGuard + recordFallbackWrite
+// （最后一个为审计修复 #39 / V402：兜底整串赋值后由渲染层统一记快照 + 提示）。
 
 const realDocument = globalThis.document;
 test.after(() => {
@@ -183,7 +184,7 @@ function build(options = {}) {
   editorEl.selectionStart = options.selection === undefined ? 2 : options.selection;
   editorEl.selectionEnd = options.selectionEnd === undefined ? 2 : options.selectionEnd;
   const calls = {
-    api: [], toast: [], hideHeaderMenus: 0, onEditorInput: 0, scrollCaretIntoView: []
+    api: [], toast: [], hideHeaderMenus: 0, onEditorInput: 0, scrollCaretIntoView: [], fallbackWrites: []
   };
   const api = {
     async createFragment(text) {
@@ -219,6 +220,8 @@ function build(options = {}) {
       scrollCaretIntoView(pos) { calls.scrollCaretIntoView.push(pos); }
     },
     hideHeaderMenus() { calls.hideHeaderMenus += 1; },
+    // 审计修复 #39（V402）：兜底整串赋值后由渲染层统一记快照 + 提示（生产是 renderer.js 的实现）
+    recordFallbackWrite(info) { calls.fallbackWrites.push(info); },
     // WP-15（C16）：世代令牌 / 章身份快照（生产由 renderer.js 注入 window.CWStaleGuard）
     staleGuard
   };
@@ -227,12 +230,17 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...fragmentsUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'common', 'editor', 'hideHeaderMenus', 'staleGuard', 'state', 'toast']);
-  assert.equal(fragmentsUi.REQUIRED_HOST.length, 9);
+test('host 契约：10 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...fragmentsUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'common', 'editor', 'hideHeaderMenus', 'recordFallbackWrite', 'staleGuard', 'state', 'toast']);
+  assert.equal(fragmentsUi.REQUIRED_HOST.length, 10);
   const ctx = build();
   assert.doesNotThrow(() => fragmentsUi.create(ctx.host));
   assert.throws(() => fragmentsUi.create(null), /createFragmentsUi 需要 host 对象/);
+  // 审计修复 #39（V402）：成员在但不是函数也算缺（渲染层忘了接线 = 兜底写入无声清栈）
+  assert.throws(
+    () => fragmentsUi.create({ ...ctx.host, recordFallbackWrite: 'not-a-function' }),
+    /host\.recordFallbackWrite 必须是函数/
+  );
   for (const key of fragmentsUi.REQUIRED_HOST) {
     const broken = { ...ctx.host };
     delete broken[key];
@@ -565,6 +573,22 @@ test('insertSelectedFragment：没选碎片 / 没书早退；成功替换选区�
   assert.deepEqual(ctx.calls.scrollCaretIntoView, [4]);
   assert.equal(ctx.dom.map.get('fragments-backdrop').classList.contains('hidden'), true);
   assert.deepEqual(ctx.calls.toast, [['已插入碎片 a.txt（2 字）· 仍是未保存，Ctrl+S 写盘', undefined]]);
+  // 审计修复 #39（V402）：execCommand 不可用时的兜底整串赋值要报告给渲染层（一次性快照 + 提示）；
+  // 以前这条路径静默清空浏览器撤销链（连同之前整章的编辑历史）。
+  assert.deepEqual(ctx.calls.fallbackWrites, [
+    { before: 'ABCDEF', after: 'ABZZEF', start: 2, label: '插入碎片' }
+  ]);
+
+  // 原生插入成功（execCommand 报成功且长度对）时不许记兜底快照 —— 不误报「退出了撤销历史」
+  const nativeCtx = build({ editorText: 'ABCDEF' });
+  nativeCtx.state.fragmentSelected = { name: 'a.txt', text: 'ZZ', chars: 2 };
+  nativeCtx.state.insertFragmentRange = { start: 2, end: 4 };
+  nativeCtx.dom.doc.execCommand = () => {
+    nativeCtx.editorEl.value = 'ABZZEF';
+    return true;
+  };
+  nativeCtx.ui.insertSelectedFragment();
+  assert.deepEqual(nativeCtx.calls.fallbackWrites, [], '原生路径不该记兜底快照');
 
   const clamp = build({ editorText: 'XY' });
   clamp.state.fragmentSelected = { name: 'b.txt', text: 'Q', chars: 1 };
@@ -686,6 +710,73 @@ test('拖拽落点：取不到落点时退回当前光标；外部文本拖拽�
   assert.deepEqual(gone.calls.toast.at(-1), ['这条碎片已经不在列表里了', 'warn']);
 });
 
+// 审计修复 #14（E10）：落点在 await 之前算好，回来只比 bookPath 时「同一本书里切了章」会把碎片
+// 插进新章按旧下标钳制出来的落点（内容不丢、可撤销，但写错了地方很难察觉）。
+test('拖拽结算：读碎片期间在同一本书里换了章 → 插入取消，新章正文不进碎片（E10）', async () => {
+  const ctx = build({ editorText: 'ABCDEF', selection: 3, selectionEnd: 3 });
+  ctx.state.chapters = [{ id: 'ch_001' }, { id: 'ch_002' }];
+  ctx.state.index = 0;
+  ctx.dom.doc.caretPositionFromPoint = () => ({ offsetNode: ctx.editorEl, offset: 2 });
+  ctx.ui.setupFragmentsUi();
+  ctx.ui.openInsertFragmentDialog();
+  await ctx.ui.refreshFragments();
+
+  let release;
+  ctx.host.api.readFragment = (name) =>
+    new Promise((resolve) => {
+      release = () => resolve({ name, text: '这是碎片正文', chars: 6, size: 30 });
+    });
+
+  const row = rowEls(ctx.dom.map.get('fragments-list'))[0];
+  const dt = makeDataTransfer();
+  row._fire('dragstart', { dataTransfer: dt });
+  const drop = {
+    dataTransfer: dt, clientX: 10, clientY: 20, prevented: 0,
+    preventDefault() { drop.prevented += 1; }, stopPropagation() {}
+  };
+  const dropped = ctx.editorEl._fire('drop', drop);
+  // 读碎片还在途：切到同一本书的第 2 章（书没换，index / chapters 换了，编辑区换成新章正文）
+  ctx.state.index = 1;
+  ctx.editorEl.value = '新章的正文';
+  release();
+  const res = await dropped;
+  assert.equal(res.ok, false);
+  assert.equal(res.message, '已经换了章，插入取消');
+  assert.equal(ctx.editorEl.value, '新章的正文', '新章正文一个字符都不该多');
+  assert.deepEqual(ctx.calls.toast.at(-1), ['已经换了章，插入取消', 'warn']);
+  assert.equal(ctx.calls.onEditorInput, 0, '没有插入就不该走输入处理');
+  assert.equal(ctx.state.fragmentDragDropped, false, '收尾照旧复位');
+});
+
+test('拖拽结算：同书同章不受影响，照旧插在落点处（E10 不误拦）', async () => {
+  const ctx = build({ editorText: 'ABCDEF', selection: 3, selectionEnd: 3 });
+  ctx.state.chapters = [{ id: 'ch_001' }];
+  ctx.state.index = 0;
+  ctx.dom.doc.caretPositionFromPoint = () => ({ offsetNode: ctx.editorEl, offset: 2 });
+  ctx.ui.setupFragmentsUi();
+  ctx.ui.openInsertFragmentDialog();
+  await ctx.ui.refreshFragments();
+
+  // 读碎片期间只重画了列表 / 改了别的字段，章身份一点没动
+  let release;
+  ctx.host.api.readFragment = (name) =>
+    new Promise((resolve) => {
+      release = () => resolve({ name, text: '这是碎片正文', chars: 6, size: 30 });
+    });
+  const row = rowEls(ctx.dom.map.get('fragments-list'))[0];
+  const dt = makeDataTransfer();
+  row._fire('dragstart', { dataTransfer: dt });
+  const drop = {
+    dataTransfer: dt, clientX: 10, clientY: 20, prevented: 0,
+    preventDefault() {}, stopPropagation() {}
+  };
+  const dropped = ctx.editorEl._fire('drop', drop);
+  release();
+  const res = await dropped;
+  assert.equal(res.ok, true);
+  assert.equal(ctx.editorEl.value, 'AB这是碎片正文CDEF');
+});
+
 test('拖拽结束没落在正文：面板恢复可点（ghost 摘掉、面板仍开着），正文不动', async () => {
   const ctx = build({ editorText: 'ABCDEF', selection: 2, selectionEnd: 2 });
   ctx.ui.setupFragmentsUi();
@@ -802,7 +893,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFragmentsU
   vm.runInContext(moduleSrc, context, { filename: 'renderer/fragments-ui.js' });
   assert.equal(typeof win.CWFragmentsUi, 'object');
   assert.deepEqual(Object.keys(win.CWFragmentsUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWFragmentsUi.REQUIRED_HOST.length, 9);
+  assert.equal(win.CWFragmentsUi.REQUIRED_HOST.length, 10);
   assert.equal(win.CWFindBookmarkUi, undefined);
 });
 

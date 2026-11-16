@@ -104,6 +104,9 @@
   // 保存态（1.3.0 T7 = 规范 C-05 / I-01）：状态栏四态渲染 / 成功 2s 淡化 / 失败点重试
   // 在 save-status-ui.js 里；这里只接线（文案仍由 updateStatus 的调用点驱动，见下）。
   const saveStatusUiModule = window.CWSaveStatusUi;
+  // 保存失败的两个救稿出口（审计修复 #5 V301 / #6 V302）：外部改动三选 / 书章文件没了给另存 + 复制。
+  // 对话框与动作编排都在 save-rescue-ui.js 里；这里只装配（正文取编辑区现值、写盘仍走 saveCurrent）。
+  const saveRescueUiModule = window.CWSaveRescueUi;
   // 撤销层（1.4.0 P0-2：撤销优先）：单槽 + 10s TTL + Ctrl+Z 焦点保护纯逻辑在 undo-action.js，
   // 全局撤销条 DOM / 定时器在 undo-ui.js；这里只接线（删除章节等动作直接执行后登记撤销）。
   const undoActionModule = window.CWUndoAction;
@@ -166,6 +169,20 @@
   const writeTimerUiModule = window.CWWriteTimerUi;
   // 专注模式（第 4 步九刀·补刀 12）：专注 / 极简退出条 / 打字机整段在 focus-mode-ui.js 里；这里只接线
   const focusModeUiModule = window.CWFocusModeUi;
+  // 审计修复 #55（M4）：装配清单化。模块顺序 / 全局名 / 本地名清单在 renderer/assembly-manifest.js，
+  // 启动时一次报全缺失模块（以前哪个 window.CW 全局名没加载，对应 const 静默 undefined，报错点离原因很远）。
+  // 审计残留修复 #R12（#55/M4）：清单自身漏加载时也报同一种聚合错。旧实现直接
+  // window.CWRendererAssembly.assertInstalled(window) —— 清单文件没加载时抛的是原生 TypeError
+  //（Cannot read properties of undefined），既没有错误码、也看不出缺的是什么。
+  if (!window.CWRendererAssembly || typeof window.CWRendererAssembly.assertInstalled !== 'function') {
+    const missingAssembly = new TypeError(
+      '渲染层装配缺少模块：CWRendererAssembly（检查 index.html 的 <script> 顺序 / 是否漏 assembly-manifest.js）'
+    );
+    missingAssembly.code = 'RENDERER_MODULE_MISSING';
+    missingAssembly.missing = ['CWRendererAssembly'];
+    throw missingAssembly;
+  }
+  window.CWRendererAssembly.assertInstalled(window);
   // 写作计时（v0.8-2）：每 30 秒把整秒上报一次；不足 1 秒的零头留在内存里下次一起算。
   const WRITE_TIMER_FLUSH_MS = 30000;
 
@@ -1290,6 +1307,11 @@
   async function commitOpenBook(bookPath, data, target, isStale) {
     // 换书：撤销条不跨书（撤销闭包里还会再核对一次 state.bookPath）
     undoUi.clear();
+    // 审计修复 #7（V401）：大段插入的一次性快照也必须跟着换书作废 —— 以前这里只清 undoUi，
+    // bulkWriteUndo 会跨书活到「新书载章失败」的遮罩态：那时编辑区只是 readOnly（仍可聚焦），
+    // 一下 Ctrl+Z 就把上一本整章正文写进新书空编辑区 + 假脏态。快照自身也带身份核对（见 undoBulkWrite）。
+    bulkWriteUndo = null;
+    fallbackWriteUndo = null; // 审计修复 #39（V402）：兜底写入的一次性快照同样不跨书
     // 换书前先停掉上一本的写作计时：把没上报的整秒记下，新书从 0 开始
     await resetWriteTimer({ flush: true });
     if (isStale()) return false;
@@ -2605,6 +2627,11 @@
   // 保存态（1.3.0 T7）：四态文案 / 圆点 / 成功 2s 淡化 / 失败点重试整段在 save-status-ui.js 里。
   // saveCurrent 是函数声明（会提升），装配时引用没问题；重试仍然走同一条保存路径（非静默）。
   const saveStatusUi = saveStatusUiModule.create({ $, state, formatClock, saveCurrent });
+  // 保存失败的两个救稿出口（审计修复 #5 V301 / #6 V302）：对话框 / 覆盖 / 另存 / 复制 / 重载
+  // 全在 save-rescue-ui.js 里；这里只装配（saveCurrent / loadChapterAt / chapterTitle 都是函数声明，已提升）。
+  const saveRescueUi = saveRescueUiModule.create({
+    state, api, call, openModal, toast, editorEl, saveCurrent, loadChapterAt, chapterTitle
+  });
 
   // 撤销层（1.4.0 P0-2）：删除章节等「确认型」动作直接执行后登记一条撤销（10 秒窗口）。
   // 纯逻辑（单槽 / TTL / 键位判定）在 undo-action.js，条子渲染在 undo-ui.js；
@@ -2661,7 +2688,7 @@
   // ---------- 查找 / 替换核心 ----------
   // 第 4 步九刀·补刀 9a：实现在 renderer/find-ui.js（模块头有契约），这里只装配与接线；
   const findUi = findUiModule.create({
-    $, state, api, call, toast,
+    $, state, api, call, toast, recordFallbackWrite,
     longOpLogic,
     staleGuard,
     imeGuard,
@@ -2713,7 +2740,7 @@
   }
   // stats-logic 的三个调用点同样被静态闸门按字面钉在渲染层，经 host 回调交给模块（结果与时机不变）。
   const statsUi = statsUiModule.create({
-    $, api, call, state, statsLogic, statsFormat, formatChars, formatCount, formatDuration,
+    $, api, call, state, statsLogic, statsFormat, formatChars, formatCount, formatDuration, staleGuard,
     writeDurationEnabled: () => writeDurationEnabled(), renderDurationSettings: () => renderDurationSettings(), renderWriteTimer: () => renderWriteTimer(), calendarSummaryText,
     calendarCells: (view) => statsLogic.calendarCells(view, statsFormat),
     shiftCalendarCursor: (cursor, delta) => statsLogic.shiftCalendarCursor(cursor, delta),
@@ -2723,10 +2750,19 @@
   // 1.6.0 F2：统计筛选 / CSV 是设置页里那一块自己的入口（不进上面那 5 个通用入口）
   const { applyStatsFilter, buildStatsCsv, setupStatsUi } = statsUi;
 
-  // 大段插入（试用分支 B）的一次性撤销快照：{ before, after, start, end }。
+  // 大段插入（试用分支 B）的一次性撤销快照：{ before, after, start, end, bookPath, chapterId }。
   // 只有「这次插入走了 .value 整串赋值、没进原生撤销栈」时才存在；下一次真实输入 / 切换章节立刻作废，
-  // 免得点「撤销」把作者后来打的字一起退掉。
+  // 免得点「撤销」把作者后来打的字一起退掉。审计修复 #7（V401）：bookPath / chapterId 是设置快照
+  // 那一刻的身份——执行撤销时逐字核对，换书 / 换章（含载章失败后的遮罩态）一律作废，绝不跨书串台。
   let bulkWriteUndo = null;
+
+  // 审计修复 #39（V402）：兜底「整串赋值」的一次性快照，形状与 bulkWriteUndo 相同（多一个 label 用于文案）。
+  // 触发面：execCommand('insertText') 失败 / 结果不符时，各处都退回 `editorEl.value = 期望值` —— 这与
+  // bulk 分支是同一种「清空浏览器撤销栈（连带之前整章的编辑历史）」的副作用，以前却只有 bulk 有快照与
+  // 提示。现在 insertIntoBody / applyChapterTemplate / runReplaceOne 三处直接记这里；fragments-ui /
+  // tidy-card-ui 两个模块通过 host.recordFallbackWrite() 汇报，用的是同一份快照（同一套身份核对与 Ctrl+Z）。
+  // 下一次真实输入 / 换章 / 换书一律作废；执行撤销时核对 bookPath / chapterId，绝不跨书串台。
+  let fallbackWriteUndo = null;
 
   // 剪贴板面板「正文」按钮：把一条记录插到**当前打开章节**的光标处（有选区就替换选区）。
   // 为什么先把焦点交给编辑区：原生 insertText 只对真正拿到焦点的文本框生效，
@@ -2774,7 +2810,7 @@
       scrollCaretIntoView(caret);
       // 焦点还给面板（面板保持打开）；blur 不改内容，也不会触发保存。
       editorEl.blur();
-      bulkWriteUndo = { before, after: expected, start, end };
+      bulkWriteUndo = { before, after: expected, start, end, bookPath: state.bookPath, chapterId: state.loadedChapterId };
       toastActionable(
         `已插入 ${formatCount(chars)} 字（大段插入会清掉撤销历史：Ctrl+Z 或「撤销」退回到插入前）`,
         '撤销',
@@ -2792,9 +2828,13 @@
     // 原生 insertText 实现）：报成功但值没变（焦点被别的层抢走 / 输入法状态异常）时
     // 也按**结果**再核一次，不一致就手动拼接兜底（会丢原生撤销链，但绝不丢内容）。
     const inserted = replaceEditorTextNative(value);
-    if (!inserted || editorEl.value !== expected) editorEl.value = expected;
+    // 审计修复 #39（V402）：兜底路会整串赋值 —— 同样清空浏览器撤销栈，记一次性快照并提示
+    // （提示放在 onEditorInput 之后，否则这里自己的输入处理会把刚记的快照清掉）。
+    const fallbackUsed = !inserted || editorEl.value !== expected;
+    if (fallbackUsed) editorEl.value = expected;
     // 统一走 onEditorInput：标脏 / 字数 / 状态栏 / 标记层全按正常输入刷新（不写盘）。
     onEditorInput();
+    if (fallbackUsed) recordFallbackWrite({ before, after: expected, start, label: '插入正文' });
     // 光标停在插入内容末尾：连着点两次「正文」不会把第二段插到第一段前面。
     editorEl.setSelectionRange(start + value.length, start + value.length);
     // 焦点还给面板（面板保持打开）；blur 不改内容，也不会触发保存。
@@ -2809,6 +2849,15 @@
       toast('这次大段插入已经不能整段撤销了（中间又改过正文）', 'warn');
       return false;
     }
+    // 审计修复 #7（V401）：快照只对「设置它时那一本书 + 那一章」有效。同文件其余 7 处撤销闭包
+    // 一律以 state.bookPath 核对身份，这条 v1.8.0 新链路以前只信自己 —— 换书后（尤其新书载章
+    // 失败、编辑区只读遮罩时）按 Ctrl+Z 会把上一本整章正文写进眼前这个空编辑区。不符即作废，
+    // 编辑区一个字节都不动。
+    if (bulkWriteUndo.bookPath !== state.bookPath || bulkWriteUndo.chapterId !== state.loadedChapterId) {
+      bulkWriteUndo = null;
+      toast('这次大段插入已经不能整段撤销了（换过书或换过章）', 'warn');
+      return false;
+    }
     const snapshot = bulkWriteUndo;
     bulkWriteUndo = null;
     editorEl.value = snapshot.before;
@@ -2820,8 +2869,67 @@
     return true;
   }
 
-  // 剪贴板捕获（P0）：createCaptureUi(host) 一次装配，host 正好 9 个成员（契约 v1；T1 的
-  // REQUIRED_HOST 同步为这 9 个键）。insertIntoBody 用函数声明，装配时引用已提升。
+  // 审计修复 #39（V402）：兜底整串赋值统一记账。info = { before, after, start, label }：
+  // before / after 是赋值前后的正文，start 是写入起点（撤销后光标回到这里），label 进提示文案。
+  // 与 bulk 分支同一套配套（一次性快照 + 可点「撤销」+ 正文上第一下 Ctrl+Z 拦截），
+  // 差别只是这次写入来自 execCommand 的兜底而不是大段插入。值没变时不记（没有需要撤销的东西）。
+  function recordFallbackWrite(info) {
+    const source = info && typeof info === 'object' ? info : {};
+    const before = String(source.before == null ? '' : source.before);
+    const after = String(source.after == null ? '' : source.after);
+    if (after === before) return false;
+    const chapter = state.chapters[state.index];
+    const label = typeof source.label === 'string' && source.label ? source.label : '这次写入';
+    const start = Number.isFinite(source.start) ? Math.round(source.start) : 0;
+    fallbackWriteUndo = {
+      before,
+      after,
+      start: Math.max(0, Math.min(start, before.length)),
+      bookPath: state.bookPath,
+      chapterId: chapter && chapter.id ? chapter.id : null,
+      label
+    };
+    toastActionable(
+      `${label}没能走原生输入，已改为整串写入：浏览器的撤销历史已清空（之前整章的编辑记录也一起没了）；` +
+        'Ctrl+Z 或「撤销」可退回写入前',
+      '撤销',
+      undoFallbackWrite
+    );
+    return true;
+  }
+
+  // 兜底写入的「撤销」：与 undoBulkWrite 同一套身份核对（书 + 章）与内容核对（还是写入后的样子）。
+  function undoFallbackWrite() {
+    if (!fallbackWriteUndo) {
+      toast('这次兜底写入已经不能撤销了（中间又改过正文）', 'warn');
+      return false;
+    }
+    const chapter = state.chapters[state.index];
+    const chapterId = chapter && chapter.id ? chapter.id : null;
+    if (fallbackWriteUndo.bookPath !== state.bookPath || fallbackWriteUndo.chapterId !== chapterId) {
+      fallbackWriteUndo = null;
+      toast('这次兜底写入已经不能撤销了（换过书或换过章）', 'warn');
+      return false;
+    }
+    if (editorEl.value !== fallbackWriteUndo.after) {
+      fallbackWriteUndo = null;
+      toast('这次兜底写入已经不能撤销了（中间又改过正文）', 'warn');
+      return false;
+    }
+    const snapshot = fallbackWriteUndo;
+    fallbackWriteUndo = null;
+    editorEl.value = snapshot.before;
+    onEditorInput();
+    const caret = Math.max(0, Math.min(snapshot.start, editorEl.value.length));
+    editorEl.setSelectionRange(caret, caret);
+    scrollCaretIntoView(caret);
+    toast(`已撤销${snapshot.label}（仍是未保存）`);
+    return true;
+  }
+
+  // 剪贴板捕获（P0）：createCaptureUi(host) 一次装配，host 正好 10 个成员（契约 §5；T1 的
+  // REQUIRED_HOST 同步为这 10 个键，第 10 个 staleGuard 是 WP-15 的 C16 / C36 新增的）。审计修复 #41（V404）
+  // 把两处注释从漂移的「9」改成实际值。insertIntoBody 用函数声明，装配时引用已提升。
   // 装配点必须放在 statsUi 之后：renderStatsUi 是上面那一行解构出来的 const。
   // 「打开面板前收起顶栏菜单」不进 host：事件绑定 / 测试钩子走 open(text, { beforeOpen: hideHeaderMenus })。
   const captureUi = captureUiModule.create({
@@ -2868,8 +2976,9 @@
   // ---------- 编辑区事件 ----------
   function onEditorInput() {
     // 试用分支 B：真实输入 / 其它程序化写入都让「撤销这次大段插入」的快照作废，
-    // 免得点撤销把作者后来打的字一起退掉。
+    // 免得点撤销把作者后来打的字一起退掉。审计修复 #39（V402）：兜底写入的一次性快照同理。
     bulkWriteUndo = null;
+    fallbackWriteUndo = null;
     // 正文改了，查找高亮的位置就对不上了：立刻结束会话（不写盘、不提示，重新查一次即可）。
     // 如果这次高亮来自书签，书签本身不动，Ctrl+S 保存后会按新正文重新扫描定位。
     const wasBookmark = state.find.fromBookmark;
@@ -2943,6 +3052,7 @@
       editorEl.value = data.text;
       // 换章了：上一章的大段插入快照不能留着（撤销会把旧章正文写进新章）。
       bulkWriteUndo = null;
+      fallbackWriteUndo = null; // 审计修复 #39（V402）：兜底写入快照同理，换章即作废
       editorEl.scrollTop = 0;
       // 有效章节已载入：解除开书失败留下的遮罩（长操作锁 / 载章锁仍由 applyEditorEditable 管）
       setChapterMask(false);
@@ -3024,7 +3134,7 @@
     })();
   }
 
-  async function saveCurrent({ silent = false } = {}) {
+  async function saveCurrent({ silent = false, force = false } = {}) {
     if (!state.bookPath || state.index < 0) {
       return { ok: false, code: 'NO_CHAPTER', message: '当前没有可保存的章节' };
     }
@@ -3055,11 +3165,15 @@
     const bookPath = state.bookPath;
     const chapterId = chapter.id;
     const text = editorEl.value;
+    // 审计修复 #5（V301）：把「载入时那一版磁盘 mtime」带进保存请求。主进程比对不符时抛
+    // EXTERNAL_CHANGE（同步盘后台落盘 / 记事本改过 / 检测只 toast 过的场景都在这里被拦下），
+    // 绝不静默覆盖外部那一版正文。force = 作者在对话框里明确选了「仍然覆盖保存」。
+    const expectedMtimeMs = force ? 0 : state.loadedMtimeMs;
     state.saving = true;
     updateStatus();
     try {
       // WP-01 验收锚点：?test=1 下 E2E 注入保存延迟；正常启动 testSaveChapter 恒为 null
-      const data = await (testSaveChapter || call)(api.saveChapter, bookPath, chapterId, text);
+      const data = await (testSaveChapter || call)(api.saveChapter, bookPath, chapterId, text, expectedMtimeMs);
       // WP-03（C10）：保存在途时作者可能已经切章 / 换书。回执按快照章身份完成——
       // 快照那一章的字数缓存该更新，但当前章的 mtime / baseText / dirty / 状态栏一个字都不许回写。
       const sameBook = bookPath === state.bookPath;
@@ -3142,6 +3256,13 @@
       if (!sameChapter) return { ok: false, code: err.code, message: err.message };
       state.saveError = err.message;
       updateStatus();
+      // 审计修复 #5 / #6（V301 / V302）：两个「救稿出口」只在这两个码上出现——
+      //   ① EXTERNAL_CHANGE：外部改动三选（覆盖 / 先另存一份 / 放弃我的修改并重载）；
+      //   ② BOOK_MISSING / CHAPTER_MISSING：另存这一章为 txt… / 复制正文 / 留在这里。
+      // 其余失败照旧只写状态栏 + 一条 toast；救稿出口自己弹完对话框后原样上抛失败结果。
+      if (saveRescueUi.rescuePlanFor(err.code)) {
+        return await saveRescueUi.handleSaveFailure(err, { silent });
+      }
       if (!silent) toast(`保存失败：${err.message}`, 'error');
       return { ok: false, code: err.code, message: err.message };
     } finally {
@@ -3199,12 +3320,16 @@
     editorEl.focus();
     editorEl.setSelectionRange(0, before.length);
     const inserted = replaceEditorTextNative(text);
+    let fallbackUsed = false;
     if (!inserted || editorEl.value !== text) {
       // 极端兜底：execCommand 不可用时手动替换（会丢原生撤销链，但不会丢内容）
       editorEl.value = text;
+      fallbackUsed = true;
     }
     // 统一走 onEditorInput：标记未保存、刷新字数 / 状态栏 / 标记层
     onEditorInput();
+    // 审计修复 #39（V402）：兜底整串赋值会清空浏览器撤销栈 —— 记一次性快照并提示（放在输入处理之后）
+    if (fallbackUsed) recordFallbackWrite({ before, after: text, start: before.length, label: '套用章节模板' });
     const caret = editorEl.value.length;
     editorEl.setSelectionRange(caret, caret);
     scrollCaretIntoView(caret);
@@ -4558,22 +4683,33 @@
       $('find-summary').textContent = `查找失败：${err.message}`;
       return { ok: false };
     }
-    if (!picked) {
-      $('find-summary').textContent = `光标之后没有找到「${options.query}」了`;
-      return { ok: false };
+    if (!picked || !picked.match) {
+      // 审计修复 #10（E6）：命中超过单章 5000 处上限时，光标之后的位置已不在命中列表里，
+      // 要说清是「被上限截断」而不是「本章没有下一处」。
+      $('find-summary').textContent =
+        picked && picked.truncated
+          ? '本章命中超过单章上限 5000 处，光标之后的位置不再定位；换个更具体的词或先用「全部替换」'
+          : `光标之后没有找到「${options.query}」了`;
+      return { ok: false, truncated: Boolean(picked && picked.truncated) };
     }
     const match = picked.match;
     const replacement = options.replacement;
     editorEl.focus();
     editorEl.setSelectionRange(match.index, match.index + match.length);
     const inserted = replaceEditorTextNative(replacement);
+    let fallbackUsed = false;
     if (!inserted) {
       // 极端兜底：execCommand 不可用时手动拼接（会丢原生撤销链，但不会丢内容）
       const current = editorEl.value;
       editorEl.value =
         current.slice(0, match.index) + replacement + current.slice(match.index + match.length);
+      fallbackUsed = true;
     }
     onEditorInput();
+    // 审计修复 #39（V402）：兜底拼接会清空浏览器撤销栈 —— 记一次性快照并提示（放在输入处理之后）
+    if (fallbackUsed) {
+      recordFallbackWrite({ before: text, after: editorEl.value, start: match.index, label: '替换这一处' });
+    }
 
     // 选中下一处，方便连续替换
     let next = null;
@@ -4583,7 +4719,7 @@
         caseSensitive: options.caseSensitive
       });
     } catch { /* 找下一处失败不影响已经替换的内容 */ }
-    if (next) {
+    if (next && next.match) {
       editorEl.setSelectionRange(next.match.index, next.match.index + next.match.length);
       scrollCaretIntoView(next.match.index);
     } else {
@@ -4591,10 +4727,13 @@
       editorEl.setSelectionRange(caret, caret);
       scrollCaretIntoView(caret);
     }
-    const nextHint = next ? `；已选中下一处（第 ${next.index + 1} 处）` : '；本章后面没有下一处了';
+    const nextHint = next && next.match ? `；已选中下一处（第 ${next.index + 1} 处）` : '；本章后面没有下一处了';
+    const truncated = Boolean(picked.truncated);
+    const totalLabel = truncated ? `${picked.total}+` : String(picked.total);
+    const truncatedHint = truncated ? '（本章命中超过单章上限 5000 处，只统计 / 处理前 5000 处）' : '';
     $('find-summary').textContent =
-      `已替换第 ${picked.index + 1}/${picked.total} 处（未保存：Ctrl+S 写盘，Ctrl+Z 可撤销）${nextHint}`;
-    return { ok: true, index: picked.index, total: picked.total, hasNext: Boolean(next) };
+      `已替换第 ${picked.index + 1}/${totalLabel} 处（未保存：Ctrl+S 写盘，Ctrl+Z 可撤销）${nextHint}${truncatedHint}`;
+    return { ok: true, index: picked.index, total: picked.total, truncated, hasNext: Boolean(next && next.match) };
   }
 
   // 从最近的「整本替换」备份还原；还原前二次确认，并由 storage 把当前内容再备份一份。
@@ -4759,7 +4898,7 @@
   // ---------- 灵感箱（碎片速记） ----------
   // 第 4 步九刀·补刀 10：实现在 renderer/fragments-ui.js（模块头有契约），这里只装配与接线；
   const fragmentsUi = fragmentsUiModule.create({
-    $, state, api, call, toast, staleGuard,
+    $, state, api, call, toast, staleGuard, recordFallbackWrite,
     common: { chaptersLib, formatRelativeTime, formatCount },
     editor: { editorEl, onEditorInput, scrollCaretIntoView },
     hideHeaderMenus
@@ -4966,7 +5105,7 @@
   // ---------- 「整理」按钮的悬浮选择卡 + 「显示」菜单 ----------
   // 第 4 步九刀·第八刀：实现在 renderer/tidy-card-ui.js（模块头有契约），这里只装配与接线；
   const tidyCardUi = tidyCardUiModule.create({
-    $, state, api, call, toast,
+    $, state, api, call, toast, recordFallbackWrite,
     format: { formatUi, MAX_FORMAT_UNDO, readFormatOptions, writeFormatOptions, editorEl, onEditorInput, chaptersLib, caretColorLib },
     menus: { hideBookMenu, hideExportMenu, hideMenu, renderMarksMenu },
     peers: { openSettings: () => openSettings(), toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView, effectiveConfig }
@@ -5501,17 +5640,23 @@
     });
 
     editorEl.addEventListener('input', onEditorInput);
-    // 大段插入（试用分支 B）后的第一下 Ctrl+Z：程序化赋值会把浏览器的撤销栈整个清空，
+    // 大段插入（试用分支 B）/ 兜底整串赋值之后的第一下 Ctrl+Z：程序化赋值会把浏览器的撤销栈整个清空，
     // 原生撤销对这一步（连同之前的编辑历史）已经没反应；这里把它接到一次性快照上，
-    // 让「插入 → Ctrl+Z」至少能退回到插入前。只有快照还在、焦点在正文时才生效，
+    // 让「写入 → Ctrl+Z」至少能退回到写入前。只有快照还在、焦点在正文时才生效，
     // 不会抢别的输入框（书架搜索 / 查找替换 / 跳章）里的 Ctrl+Z。
     editorEl.addEventListener('keydown', (event) => {
-      if (!bulkWriteUndo) return;
+      if (!bulkWriteUndo && !fallbackWriteUndo) return;
       if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
       const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
       if (key !== 'z') return;
       event.preventDefault();
-      undoBulkWrite();
+      // 审计修复 #39（V402）：兜底整串赋值与 bulk 插入共用这一个「第一下 Ctrl+Z」拦截口。
+      const undone = bulkWriteUndo ? undoBulkWrite() : undoFallbackWrite();
+      // 审计修复 #40（V403）：命中并真的执行了就不再冒泡到 document —— 那里还有一条「整理快照优先」
+      // 的 Ctrl+Z（undoFormat）。两套通道没有互斥时，「整理本章 → 大段插入」连做后按一次 Ctrl+Z
+      // 会连退两步（bulk 快照退一步 + 整理快照再退一步），与「一次按键撤销一步」的预期相反。
+      // 只在执行成功时停止冒泡：快照已作废（换书 / 换章）时让 document 的整理通道照旧工作。
+      if (undone) event.stopPropagation();
     });
     setupEditorMarks();
 
@@ -5635,7 +5780,13 @@
         progress: info
       };
       if (state.view === 'shelf' && shelfQueryText().length >= CONTENT_SEARCH_MIN_CHARS) {
-        renderShelfContent();
+        // 审计修复 #9（P1）：首建期搜索立即回 building + 空结果（core/search-index.js 的 search 短路），
+        // 这一轮校验结束就按原查询自动重搜，兑现提示里的「建好后自动更新结果」；其他进度只刷新提示。
+        if (info.phase === 'done' && content.meta && content.meta.index && content.meta.index.building) {
+          scheduleContentSearch();
+        } else {
+          renderShelfContent();
+        }
       }
     });
 
@@ -5807,7 +5958,12 @@
       }
       if (ctrl && String(event.key).toLowerCase() === 'z') {
         // 「整理本章」留下的快照优先撤销；没有快照就让原生 Ctrl+Z 照常工作
-        if (state.view === 'editor' && state.bookPath && undoFormat()) {
+        // 审计残留修复 #40（V403）：补焦点守卫 —— 焦点在查找 / 替换 / 跳章 / 书架搜索这些输入
+        // 控件里时，Ctrl+Z 是框内自己的文本撤销，不能拿正文整理快照抢走（与相邻 undoUi 分支
+        // 同一套 isTypingTarget 口径）。编辑区自己例外：整理快照撤的就是正文，焦点在正文里仍生效。
+        const focusEl = document.activeElement;
+        const inOtherInput = focusEl !== editorEl && undoActionModule.isTypingTarget(focusEl);
+        if (!inOtherInput && state.view === 'editor' && state.bookPath && undoFormat()) {
           event.preventDefault();
           return;
         }

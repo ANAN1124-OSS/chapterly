@@ -138,10 +138,22 @@ test('静态闸门：docx / epub 从 core/xml.js 取，仓库里不许再长出�
     const source = read(rel);
     const wired = /const \{[^}]*\}\s*=\s*require\('\.\/xml'\)/.exec(source);
     assert.ok(wired, `${rel} 必须从 core/xml.js 解构取函数`);
-    for (const name of ['escapeXml', 'paragraphsFromText', 'isoTimestamp']) {
+    for (const name of ['escapeXml', 'paragraphsFromText']) {
       assert.match(wired[0], new RegExp(`\\b${name}\\b`), `${rel} 应从 core/xml.js 取 ${name}`);
     }
+    // 审计修复 #24（R1）：导出时间戳不再由两个格式各自取，统一经 core/exporter.normalizeExportInput
+    // 转一手（仍是 core/xml.js 唯一实现，只是消费者收了）；各格式直连 isoTimestamp 就是回潮。
+    assert.equal(source.includes('isoTimestamp'), false, `${rel} 的导出时间戳要经 exporter 归一，不直连 core/xml.js`);
   }
+  // 时间戳仍只有一份：core/exporter.js 从 core/xml.js 解构，且只在 normalizeExportInput 里取一次。
+  const exporterSource = read('core/exporter.js');
+  const exporterWired = /const \{ isoTimestamp \} = require\('\.\/xml'\)/.exec(exporterSource);
+  assert.ok(exporterWired, 'core/exporter.js 必须从 core/xml.js 取 isoTimestamp');
+  assert.equal(
+    (exporterSource.match(/isoTimestamp\(/g) || []).length,
+    1,
+    'core/exporter.js 只许在 normalizeExportInput 里调一次 isoTimestamp'
+  );
   const patterns = [
     { re: /function stripInvalidXmlChars\s*\(/, what: '第二份 stripInvalidXmlChars 实现' },
     { re: /function escapeXml\s*\(/, what: '第二份 escapeXml 实现' },

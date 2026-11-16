@@ -39,7 +39,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'api', 'call', 'state', 'statsLogic', 'statsFormat', 'formatChars', 'formatCount', 'formatDuration', 'writeDurationEnabled', 'renderDurationSettings', 'renderWriteTimer', 'calendarSummaryText', 'calendarCells', 'shiftCalendarCursor', 'calendarStreakLabel'];
+  const REQUIRED_HOST = ['$', 'api', 'call', 'state', 'statsLogic', 'statsFormat', 'formatChars', 'formatCount', 'formatDuration', 'writeDurationEnabled', 'renderDurationSettings', 'renderWriteTimer', 'calendarSummaryText', 'calendarCells', 'shiftCalendarCursor', 'calendarStreakLabel', 'staleGuard'];
 
   function createStatsUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
@@ -47,8 +47,14 @@
     const {
       $, api, call, state, statsLogic, statsFormat, formatChars, formatCount, formatDuration,
       writeDurationEnabled, renderDurationSettings, renderWriteTimer, calendarSummaryText,
-      calendarCells, shiftCalendarCursor, calendarStreakLabel
+      calendarCells, shiftCalendarCursor, calendarStreakLabel, staleGuard
     } = host;
+    // 审计修复 #14（E11）：翻月请求的世代令牌（与其它面板同一份 stale-guard 实现）——
+    // 快速连点翻月时可能两个请求同时在途，后到的旧回执不许覆盖 state.calendar。
+    if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
+      throw new TypeError('createStatsUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
+    const calendarSeq = staleGuard.createSeq();
   // ---------- 每日字数统计（提案 3.2） ----------
   // 只统计「保存动作」带来的新增字数：没保存的编辑不计数，删字也不会倒扣今天。
   // 日期 / 增量都在主进程算，渲染层只负责显示；统计文件在 userData，不碰书库。
@@ -59,11 +65,19 @@
   let statsFilter = { bookId: '', year: 0 };
 
   async function refreshStats() {
+    // 审计残留修复 #R13（#14/E10-E11）：刷新统计与翻月共用同一个世代令牌。旧实现只有
+    // loadStatsCalendar 上令牌，设置页筛选 / 保存后刷新触发的 stats:get 回执晚到时会用
+    // 「默认月」的 calendar 覆盖掉用户刚翻到的月份（跨路径竞态）。现在两条链路都从 calendarSeq
+    // 取号：只有最新发出的那次请求能写 state.calendar / streak；旧回执照常更新 state.stats
+    //（汇总 / 柱状图与日历无关，上一次数据比没有强），但不许动日历。
+    const token = calendarSeq.next();
     try {
       const payload = await call(api.getStats, { bookId: statsFilter.bookId, year: statsFilter.year });
       state.stats = payload;
-      state.streak = payload && payload.streak ? payload.streak : null;
-      state.calendar = payload && payload.calendar ? payload.calendar : null;
+      if (calendarSeq.isCurrent(token)) {
+        state.streak = payload && payload.streak ? payload.streak : null;
+        state.calendar = payload && payload.calendar ? payload.calendar : null;
+      }
     } catch {
       /* 统计读不到不影响写作，保留上一次显示 */
     }
@@ -298,13 +312,20 @@
   // v0.9 B-6：月份游标、翻月边界、网格计划、汇总 / 连续天数文案都搬到 renderer/stats-logic.js，
   // 这里只剩 DOM 与 IPC。calendarSummaryText 保留薄封装是因为测试钩子的 host 契约里还有这个名字。
   async function loadStatsCalendar(year, month) {
+    // 审计修复 #14（E11）：每次翻月取一个世代号，回来只认最新的那个 —— 旧回执既不写
+    // state.calendar / streak，也不重画；否则「点上一月 → 再点上一月」两次请求乱序返回时，
+    // 界面会停在先那次请求的月份（格子里还写着「本月」）。
+    const token = calendarSeq.next();
     try {
       const data = await call(api.getStatsCalendar, { year, month });
+      if (!calendarSeq.isCurrent(token)) return null; // 更晚的翻月已经发出，这次作废
       if (data && data.calendar) state.calendar = data.calendar;
       if (data && data.streak) state.streak = data.streak;
       renderStatsCalendar();
       return state.calendar;
     } catch (err) {
+      // 旧请求的失败同样不许盖掉新请求的结果（提示文案会留在汇总行上）
+      if (!calendarSeq.isCurrent(token)) return null;
       const summaryEl = $('calendar-summary');
       if (summaryEl) summaryEl.textContent = `读取码字日历失败：${err.message}`;
       return null;

@@ -249,7 +249,11 @@ test('静态闸门：查找 / 替换必须两边同源（折叠标记成对使�
   assert.ok(/caseFoldForMatch\(source\)/.test(findSrc) && /caseFoldForMatch\(needleRaw\)/.test(findSrc));
   // 索引侧建图与查询都必须是 normalizeForMatch（C20 同源不变量）
   const indexSrc = read('core/search-index.js');
-  assert.ok(/addBigramsToSet\(normalizeForMatch\(text\), set\)/.test(indexSrc), '建图必须走 normalizeForMatch');
+  // P3（审计修复 #19）：建图调用多了一个「双字集合上限」实参，归一化口径必须仍是同一个函数
+  assert.ok(
+    /addBigramsToSet\(normalizeForMatch\(text\), set, cap\)/.test(indexSrc),
+    '建图必须走 normalizeForMatch'
+  );
   assert.ok(/normalizeForMatch\(value\)\.trim\(\)/.test(indexSrc), '查询必须走同一个 normalizeForMatch');
   assert.ok(/const haystack = normalizeForMatch\(text\);/.test(indexSrc), '核对扫描必须走同一个 normalizeForMatch');
 });

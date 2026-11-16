@@ -125,7 +125,7 @@ function makeWorld(options = {}) {
   };
   globalThis.document = { body };
   const ui = dragSort.create(host);
-  ui.setupChapterDrag(); // 真实装配路径：window 上的三个监听由它一次装上
+  ui.setupChapterDrag(); // 真实装配路径：window 上的 pointermove / pointerup / pointercancel / resize 由它一次装上
   const fire = (type, ev) => {
     const fns = listeners.get(type) || [];
     const last = fns[fns.length - 1];
@@ -310,8 +310,10 @@ test('updateChapterDrag：位移不到 5px 不动，过了阈值加 dragging / b
   fire('pointermove', event(104)); // 4px：原地不动
   assert.equal(c2.classList.contains('dragging'), false);
   assert.equal(body.classList.contains('chapter-dragging'), false);
-  // 旧落点标记（模拟上一帧落在 c2 前）先被清掉：这一帧的落点是 c1 前
-  c2.classList.add('drop-before');
+  // 审计修复 #20（P4）：落点标记改成定点清 —— 先用一次真实跟手把标记打到 c2 前，
+  // 再移开看旧标记是否被摘掉（不再靠模块外的整表清扫）。
+  fire('pointermove', event(150));
+  assert.equal(c2.classList.contains('drop-before'), true, '第一帧落点应打在 c2 前');
   fire('pointermove', event(110));
   assert.equal(c2.classList.contains('dragging'), true);
   assert.equal(body.classList.contains('chapter-dragging'), true);
@@ -389,6 +391,134 @@ test('updateChapterDrag（C38）：指针停在边缘不动也持续滚动；离
     globalThis.setInterval = realSetInterval;
     globalThis.clearInterval = realClearInterval;
   }
+});
+
+// ---------- 审计修复 #20（P4）：行几何缓存 + 定点清标记 ----------
+
+test('updateChapterDrag（#20/P4）：一次拖拽只量一次行几何，滚动只按实时 scrollTop 折算', () => {
+  const { ui, list, fire } = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  const c3 = chapterEl(2, 180);
+  list.children = [c1, c2, c3];
+  let rowReads = 0;
+  for (const el of [c1, c2, c3]) {
+    const original = el.getBoundingClientRect;
+    el.getBoundingClientRect = () => {
+      rowReads += 1;
+      return original();
+    };
+  }
+  ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+  fire('pointermove', event(150)); // 过阈值 → 进入拖拽态，量一次几何
+  assert.equal(rowReads, 3, '进入拖拽态时每行只读一次 rect');
+  const afterCapture = rowReads;
+  for (const y of [160, 170, 180, 190, 200, 210]) fire('pointermove', event(y));
+  assert.equal(rowReads, afterCapture, '跟手阶段不再逐帧读行几何（旧实现每帧读 N 次）');
+  // 缓存行按内容坐标 + 实时 scrollTop 折算：滚动后同一指针位置落到更靠后的行
+  fire('pointermove', event(150));
+  assert.equal(c2.classList.contains('drop-before'), true, 'scrollTop=0 时 150 落在 c2 上半');
+  list.scrollTop = 60;
+  fire('pointermove', event(150));
+  assert.equal(c3.classList.contains('drop-after'), true, 'scrollTop=60 时同一指针落到 c3 下半（内容坐标 110）');
+  assert.equal(c2.classList.contains('drop-before'), false, '旧标记被定点清掉');
+  assert.equal(rowReads, afterCapture, '滚动不触发行几何重读');
+  fire('pointercancel');
+});
+
+// 审计残留修复 #20（P4）：拖拽期间列表被重建（筛选 / 外部刷新）时，旧几何里的行已经 detach，
+// 按它算落点会把章插到错位置；缓存必须在下一帧自动失效、按新列表现量一次。
+test('updateChapterDrag（残留 #20/P4）：拖拽中列表被重建 → 几何失效，按新列表算落点', () => {
+  const { ui, list, fire } = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  list.children = [c1, c2];
+  ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+  fire('pointermove', event(150)); // 激活 + 按 [c1, c2] 量一次
+  assert.equal(c2.classList.contains('drop-before'), true, '基线：落在 c2 上半');
+  c2.classList.remove('drop-before');
+  // 模拟筛选 / 外部刷新：整表重建（行位置相同，但都是新元素）
+  const n1 = chapterEl(0, 100);
+  const n2 = chapterEl(1, 140);
+  let reads = 0;
+  for (const el of [n1, n2]) {
+    const original = el.getBoundingClientRect;
+    el.getBoundingClientRect = () => {
+      reads += 1;
+      return original();
+    };
+  }
+  list.children = [n1, n2];
+  fire('pointermove', event(150));
+  assert.equal(reads, 2, '重建后必须按新列表现量一次（每行一次）');
+  assert.equal(n2.classList.contains('drop-before'), true, '落点按新列表结算');
+  assert.equal(c2.classList.contains('drop-before'), false, '已 detach 的旧行不再被打标');
+  const afterRebuild = reads;
+  fire('pointermove', event(160));
+  fire('pointermove', event(150));
+  assert.equal(reads, afterRebuild, '重建后仍复用缓存（不逐帧重量）');
+  fire('pointercancel');
+});
+
+// 审计残留修复 #20（P4）：拖拽期间窗口 resize 会让缓存的行高 / 列表位置过期 → 作废缓存并现量一次。
+test('updateChapterDrag（残留 #20/P4）：拖拽中 resize → 行几何现量一次，落点按新布局', () => {
+  const { ui, list, fire } = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  list.children = [c1, c2];
+  let reads = 0;
+  for (const el of [c1, c2]) {
+    const original = el.getBoundingClientRect;
+    el.getBoundingClientRect = () => {
+      reads += 1;
+      return original();
+    };
+  }
+  ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+  fire('pointermove', event(150));
+  assert.equal(reads, 2, '起手量一次');
+  fire('resize');
+  // resize 后列表行高 / 位置变化（内容不再逐帧重量，必须靠这次失效重取）
+  c1.rect = { top: 100, height: 20 };
+  c2.rect = { top: 130, height: 20 };
+  fire('pointermove', event(150));
+  assert.equal(reads, 4, 'resize 后现量一次（每行一次）');
+  assert.equal(c2.classList.contains('drop-after'), true, '按新布局：y=50 落在 c2 下半');
+  const afterResize = reads;
+  fire('pointermove', event(150));
+  assert.equal(reads, afterResize, '失效重取后又回到复用缓存');
+  fire('pointercancel');
+});
+
+test('updateDragTarget（#20/P4）：落点标记定点清，跟手期间不再整表 querySelectorAll', () => {
+  const { ui, list, fire } = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  const c3 = chapterEl(2, 180);
+  list.children = [c1, c2, c3];
+  let sweeps = 0;
+  const original = list.querySelectorAll.bind(list);
+  list.querySelectorAll = (selector) => {
+    sweeps += 1;
+    return original(selector);
+  };
+  ui.startChapterDrag(event(100, { currentTarget: c1 }), 0);
+  fire('pointermove', event(150)); // 激活 + 打在 c2 前
+  for (const y of [190, 150, 190, 210, 150]) fire('pointermove', event(y));
+  assert.equal(sweeps, 0, '跟手换落点不许整表 querySelectorAll');
+  const marked = [c1, c2, c3].filter(
+    (el) => el.classList.contains('drop-before') || el.classList.contains('drop-after') || el.classList.contains('drop-into')
+  );
+  assert.deepEqual(marked, [c2], '同一时刻只该有刚才那一行带落点标记');
+  assert.equal(c2.classList.contains('drop-before'), true);
+  fire('pointercancel');
+  assert.deepEqual(
+    [c1, c2, c3].filter(
+      (el) => el.classList.contains('drop-before') || el.classList.contains('drop-after') || el.classList.contains('drop-into')
+    ),
+    [],
+    'cancel 后整表清扫一次，标记一个不剩'
+  );
 });
 
 // ---------- 收手 ----------
@@ -508,6 +638,32 @@ test('moveChapterByDrop：IPC 抛错只报错、不刷新、返回 ok:false', as
   assert.deepEqual([w.renders.list, w.renders.header, w.renders.status], [0, 0, 0]);
 });
 
+// 审计修复 #2（E2）：拖拽 / 移动结算在 await 之后，回包必须按发起时的身份复核 ——
+// 在途切书时旧书的 meta 不许覆盖新书的内存状态（对照 saveCurrent 等处的三重校验）。
+test('moveChapterByDrop：在途切书 → 丢弃旧书回包，不覆盖新书状态、不 toast、不渲染（E2）', async () => {
+  const newChapters = [{ id: 'n1', name: '新书第一章', volumeId: null }];
+  let w = null;
+  w = makeWorld({
+    onCall: (channel) => {
+      if (channel !== 'chapters:move-to') return undefined;
+      // IPC 在途：用户切到另一本书，新书的内存状态已经接管
+      w.state.bookPath = 'C:\\books\\另一本';
+      w.state.chapters = newChapters;
+      w.state.meta = { title: '另一本', chapters: newChapters, updatedAt: 'NEW' };
+      w.state.index = 0;
+      return { meta: { chapters: [{ id: 'c1', name: '一' }], updatedAt: 'OLD' } };
+    }
+  });
+  const res = await w.ui.moveChapterByDrop({ id: 'c1', name: '一', volumeId: null }, { volumeId: null, beforeChapterId: null });
+  assert.deepEqual(res, { ok: true, stale: true }, '回包要给「已丢弃」的结果，不是假装成功');
+  assert.equal(w.state.bookPath, 'C:\\books\\另一本');
+  assert.deepEqual(w.state.chapters, newChapters, '新书的章节表不许被旧书 meta 覆盖');
+  assert.equal(w.state.meta.updatedAt, 'NEW');
+  assert.deepEqual(w.toasts, [], '不能在新书里 toast「已移动章节」');
+  assert.deepEqual([w.renders.list, w.renders.header, w.renders.status], [0, 0, 0]);
+  assert.deepEqual(w.renders.lastOpen, [], '不许把旧书的章记成新书的「上次打开」');
+});
+
 test('moveChapterByDrag：同下标不写盘；成功时改 state / toast / 记住当前章', async () => {
   const w = makeWorld();
   await w.ui.moveChapterByDrag(0, 0);
@@ -542,9 +698,56 @@ test('moveChapterByDrag：IPC 抛错只报错，state 不动', async () => {
   assert.deepEqual([w.renders.list, w.renders.header, w.renders.status], [0, 0, 0]);
 });
 
-test('setupChapterDrag：在 window 上挂 pointermove / pointerup / pointercancel 三个监听', async () => {
+test('moveChapterByDrag：在途切书 → 丢弃旧书回包（E2）', async () => {
+  const newChapters = [{ id: 'n1', name: '新书第一章', volumeId: null }];
+  let w = null;
+  w = makeWorld({
+    onCall: (channel) => {
+      if (channel !== 'chapters:move') return undefined;
+      w.state.bookPath = 'C:\\books\\另一本';
+      w.state.chapters = newChapters;
+      w.state.meta = { title: '另一本', chapters: newChapters, updatedAt: 'NEW' };
+      w.state.index = 0;
+      return { from: 2, to: 0, meta: { chapters: [{ id: 'c3' }], updatedAt: 'OLD' } };
+    }
+  });
+  const res = await w.ui.moveChapterByDrag(2, 0);
+  assert.deepEqual(res, { ok: true, stale: true });
+  assert.deepEqual(w.state.chapters, newChapters);
+  assert.equal(w.state.meta.updatedAt, 'NEW');
+  assert.deepEqual(w.toasts, []);
+  assert.deepEqual([w.renders.list, w.renders.header, w.renders.status], [0, 0, 0]);
+  assert.deepEqual(w.renders.lastOpen, []);
+});
+
+// 审计修复 #2（E2）：松手时按起手记下的 chapter.id 结算 —— 原章不在了就不写盘，不按旧下标猜。
+test('endChapterDrag：拖拽期间切书 / 原章消失 → 不写盘（按 id 结算，E2）', async () => {
   const w = makeWorld();
-  assert.deepEqual([...w.listeners.keys()].sort(), ['pointercancel', 'pointermove', 'pointerup']);
+  const e1 = chapterEl(0, 100);
+  const hood = volumeEl('v1', 380);
+  w.list.children = [e1, chapterEl(1, 140), hood];
+  w.ui.startChapterDrag(event(100, { currentTarget: e1 }), 0);
+  w.fire('pointermove', event(400)); // 落点先算好
+  // 在途切书：书换了、章节表也换了
+  w.state.bookPath = 'C:\\books\\另一本';
+  w.state.chapters = [{ id: 'n1', name: '新书第一章', volumeId: null }];
+  await w.fire('pointerup');
+  assert.deepEqual(w.calls, [], '换书后松手不许再对旧书写盘');
+
+  // 同一本书内原章消失（列表被重建 / 那一章被删）：同样不按旧下标移动别的章
+  const w2 = makeWorld();
+  const e1b = chapterEl(0, 100);
+  w2.list.children = [e1b, chapterEl(1, 140), volumeEl('v1', 380)];
+  w2.ui.startChapterDrag(event(100, { currentTarget: e1b }), 0);
+  w2.fire('pointermove', event(400));
+  w2.state.chapters = [{ id: 'other', name: '别的章', volumeId: null }];
+  await w2.fire('pointerup');
+  assert.deepEqual(w2.calls, []);
+});
+
+test('setupChapterDrag：在 window 上挂 pointermove / pointerup / pointercancel / resize 四个监听', async () => {
+  const w = makeWorld();
+  assert.deepEqual([...w.listeners.keys()].sort(), ['pointercancel', 'pointermove', 'pointerup', 'resize']);
   // pointermove 转发给 updateChapterDrag（没有拖拽时是空操作）
   const c1 = chapterEl(0, 100);
   w.list.children = [c1];
@@ -684,6 +887,30 @@ test('静态闸门：index.html 顺序 + 模块不摸 Electron / fs / require + 
   assert.equal(moduleCode.includes('setInterval(edgeScrollTick'), true, '边缘持续滚动靠定时器累加 scrollTop');
   assert.equal(moduleCode.includes('stopEdgeScroll();'), true, '停止入口要真的调 stopEdgeScroll()');
   assert.equal((moduleCode.match(/stopEdgeScroll\(\)/g) || []).length >= 4, true, '离开边缘 / 起手 / 松手 / cancel 都要停');
+});
+
+test('静态闸门（#20/P4）：几何只量一次、跟手不整表清标记', () => {
+  const captureAt = moduleCode.indexOf('function captureDragGeometry(');
+  assert.ok(captureAt > 0, '模块里要有 captureDragGeometry');
+  assert.match(moduleCode.slice(captureAt), /getBoundingClientRect/, '几何缓存仍靠一次 rect 读数');
+  const dropAt = moduleCode.indexOf('function computeDropTarget(');
+  assert.ok(dropAt > 0);
+  const dropBody = moduleCode.slice(dropAt, moduleCode.indexOf('function nextChapterIdInVolume('));
+  assert.match(dropBody, /const geometry = dragGeometryFor\(list\)/, '拖拽中必须复用缓存几何');
+  assert.equal(dropBody.includes('getBoundingClientRect'), false, 'computeDropTarget 里不许再逐行读 rect');
+  // 审计残留修复 #20（P4）：缓存要有失效判据（列表重建 / resize），失效只在下一帧多量一次
+  const helperAt = moduleCode.indexOf('function dragGeometryFor(');
+  assert.ok(helperAt > 0, '模块里要有 dragGeometryFor');
+  const helperBody = moduleCode.slice(helperAt, moduleCode.indexOf('function rowIndexAt('));
+  assert.match(helperBody, /chapterDrag\.geometry/, '拖拽中复用缓存几何');
+  assert.match(helperBody, /geometryIsCurrent\(chapterDrag\.geometry, list\)/, '重建后要判缓存是否还有效');
+  assert.match(moduleCode, /chapterDrag\.geometry = captureDragGeometry\(\);/, '进入拖拽态时量一次');
+  assert.match(moduleCode, /chapterDrag\.geometry = null/, 'resize 时作废缓存（下一次跟手现量）');
+  const updateAt = moduleCode.indexOf('function updateDragTarget(');
+  assert.ok(updateAt > 0);
+  const updateBody = moduleCode.slice(updateAt, moduleCode.indexOf('function updateEdgeScroll('));
+  assert.match(updateBody, /dragMarkEl\.classList\.remove/, '落点标记只清上一次那一行');
+  assert.equal(updateBody.includes('querySelectorAll'), false, '跟手换落点不许整表 querySelectorAll');
 });
 
 test('UMD 分支：浏览器沙箱里挂成 window.CWDragSortUi（含 create / REQUIRED_HOST）', () => {

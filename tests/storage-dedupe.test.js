@@ -38,7 +38,10 @@ test('copyHistoryEntryToBook / backupCurrentToRestoreDir：三处还原共用「
   // 1.5.0 P2-3 的两处还原预检（单文件 / 整组）也走同一个解析入口 —— 只是多一道 stat.size 闸门，
   // 不是第二份解析实现（实现仍只有 core/history.js 一份、storage 里这一处调用形式也只有一种）。
   assert.equal(countOf('historyLib.resolveHistoryPath('), 4, '备份路径解析不该再有第二份实现');
-  assert.equal(countOf('fs.copyFile(target, path.join(restoreDir'), 1, '反向备份只该在 backupCurrentToRestoreDir 里做一次');
+  // 审计修复 #3（E3）：原文备份统一走 copyReadableChapterToBackup（atomicCopyFile + 复制后尺寸校验），
+  // 替换 / 整理 / 还原前三处共用这一份实现，storage.js 里不许再有裸 fs.copyFile。
+  assert.equal(countOf('copyReadableChapterToBackup('), 4, '定义 + 3 处调用（替换 / 整理 / 还原前备份）');
+  assert.equal(countOf('fs.copyFile('), 0, '备份复制不许再退回裸 fs.copyFile（半截备份会被还原成正文）');
   assert.ok(
     /await copyHistoryEntryToBook\(bookPath, group, entry, restoreDir\);\s*\n\s*restored \+= 1;/.test(SRC),
     '整组还原的循环应直接复用 helper'

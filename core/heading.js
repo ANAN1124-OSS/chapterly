@@ -7,13 +7,14 @@
  *   · 数字：半角阿拉伯数字 + 汉字数字（0-9零〇一二三四五六七八九十百千万两）
  *   · 单位：章 / 节 / 回 / 卷 / 集 / 篇 / 部 / 话 / 幕（繁体「話」只在捕获场景多认）
  *   · 关键词：楔子 / 序章 / 序言 / 引子 / 前言 / 前传 / 外传 / 尾声 / 后记 /
- *             番外（篇）/ 终章 / 大结局 / 附录（「开篇」只在显示场景多认）
+ *             番外（篇）/ 终章 / 大结局 / 附录 / 开篇（审计修复 #50：import 也认，保证
+ *             旧版合成的「开篇」章导出 txt 再导入时往返对称）
  *
  * 三个场景的**已知差异**是有意的（tests/heading.test.js 的跨场景期望表钉住，不许顺手抹平）：
- *   · import  严格：不认繁体「話」、不认全角数字、不认「开篇」；「Chapter N」在关键词分支；
+ *   · import  严格：不认繁体「話」、不认全角数字；「Chapter N」在关键词分支；
  *              序号 1–12 位（更长的「第…章」更可能是正文句子）。
  *   · capture 宽松：多认繁体「話」与全角数字（pixiv / 全角版式）；「Chapter N」在关键词分支。
- *   · display 显示：不认「話」与全角数字，但多认「开篇」；「Chapter N」属于「已带号标题」，
+ *   · display 显示：不认「話」与全角数字；「Chapter N」属于「已带号标题」，
  *              序号不设上限（书目里的章名可能很长）。
  * 新增场景 / 修订词表只改这一份，别再往三个消费方各抄一段。
  *
@@ -48,7 +49,11 @@
     import: Object.freeze({
       numerals: HALF_NUMERALS,
       markers: MARKERS,
-      keywords: KEYWORDS,
+      // 审计修复 #50（E15）：旧版自动分章会把第一个标题之前的内容合成标题「开篇」；
+      // 导出成 txt 再按原文章节导入时（splitChaptersRaw 走 import 词表），
+      // import 不认「开篇」就会把它并进下一章正文，往返不对称。capture 的锚点词表仍不含它，
+      // 但 capture.looksLikeHeading 先走 txt.parseHeading，所以最终同样认（见 tests/heading.test.js）。
+      keywords: `${KEYWORDS}|开篇`,
       numeralRun: '{1,12}',
       englishIn: 'keyword'
     }),

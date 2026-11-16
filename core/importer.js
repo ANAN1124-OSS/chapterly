@@ -1,7 +1,7 @@
 // 导入小说：把外部文件夹 / txt 文件变成书架里的一本书或多本书。
 // 支持三种来源：
 //   1) 现成的章回书（含合法 书目.json）→ 整本复制
-//   2) 一本书的章节目录（txt 文件名形如 001-xxx.txt / 第一章 xxx.txt）→ 复制后重建书目
+//   2) 一本书的章节目录（txt 文件名形如 001-xxx.txt / 001.txt / 第一章 xxx.txt）→ 复制后重建书目
 //   3) 一堆独立小说 txt（每个 txt 是一整本小说，来自同一个收藏夹文件夹）
 //      → 每个 txt 导入成一本书
 //        mode='chapters'（默认）：按原文的章节标题切开，章名和正文都保持原文，一字不改
@@ -10,11 +10,12 @@
 // 只复制、不移动源文件；文件夹重名自动加 -2/-3。
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const heading = require('./heading');
 const chaptersLib = require('./chapters');
 const storage = require('./storage');
 const repair = require('./repair');
 const {
-  decodeBuffer,
+  decodeBufferWithEncoding,
   splitChapters,
   splitChaptersRaw,
   splitLongUntitled,
@@ -24,17 +25,16 @@ const { normalizeText, formatByteSize, MAX_TEXT_BYTES } = require('./common');
 const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
 
-const CHAPTER_FILE_RE =
-  /^\s*(?:\d+\s*[-_.、\s]|第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*[章节回卷集篇部])/;
-
-function isUtf8(buffer) {
-  try {
-    new TextDecoder('utf-8', { fatal: true }).decode(buffer);
-    return true;
-  } catch {
-    return false;
-  }
-}
+// 审计修复 #13（E9）：章节目录的「文件名像章节」判定不再手抄词表 —— 数字 / 单位 / 关键词
+// （楔子 / 序章 / 番外 / Chapter N）全部取 core/heading.js 的 import 场景，与 core/txt.js 的切分
+// 同一套。旧实现把词表写死成 [0-9零〇一二三四五六七八九十百千万两] + [章节回卷集篇部]，结果是：
+//   · 「第 1 话.txt」「第 3 幕.txt」不算章节文件（词表里没有 话 / 幕），章节目录被拆成一堆独立小说；
+//   · 纯数字名（001.txt）因为要求序号后必须跟分隔符而不匹配，同理整目录按 novels 导入。
+// 纯数字名单独一条：带前导零的任意位数（001 / 0001），或 1–3 位（1 / 12 / 123）。
+// 1984.txt 这类「年份 / 纯数字书名」按独立小说处理 —— 前导零 / 短序号才是章节序号的写法。
+const CHAPTER_TITLE_RE = heading.anchorRe('import');
+const CHAPTER_SEQ_RE = /^\s*\d+\s*[-_.、\s]/;
+const CHAPTER_PURE_NUMBER_RE = /^\s*(?:0\d+|\d{1,3})\s*$/;
 
 // C30（v1.8.0 WP-26）：判「在不在书架目录里」走 core/path-utils 的 normalizePath（resolve +
 // 小写），与 core/storage.js 的 assertInside / assertBookPath 同一口径。旧实现逐字 startsWith：
@@ -88,10 +88,12 @@ async function uniqueFolderName(booksRoot, desired, { maxSuffix = MAX_FOLDER_SUF
   );
 }
 
-// 文件名看起来像「一本书的章节文件」（001-xxx.txt / 第一章 xxx.txt），而不是一本完整小说
+// 文件名看起来像「一本书的章节文件」（001-xxx.txt / 第一章 xxx.txt / 001.txt），而不是一本完整小说
 function looksLikeChapterFile(fileName) {
   const base = String(fileName || '').replace(/\.txt$/i, '');
-  return CHAPTER_FILE_RE.test(base);
+  return (
+    CHAPTER_PURE_NUMBER_RE.test(base) || CHAPTER_SEQ_RE.test(base) || CHAPTER_TITLE_RE.test(base)
+  );
 }
 
 async function analyzeSource(sourceDir) {
@@ -177,6 +179,42 @@ async function listTxtFilesDeep(dir, prefix = '') {
   return found.sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
 }
 
+// 审计修复 #56（S7）：导入不跟随符号链接（含 Windows 目录联接）。
+// 现成书形态是 fs.cp 整目录复制：链接会被原样抄进书库 —— 链接指向的 txt 不经过 128 MB 闸门
+// （listTxtFilesDeep 只认 isFile），之后读章又跟随链接读到书库外；链接目录还能把任意大目录带进来。
+// 复制前扫一遍来源，有任何链接就整源跳过并说明原因（让作者换成真实文件 / 目录再导入）。
+// 扫描只用于提示，最多记 MAX_SOURCE_LINKS 条，坏目录树不会把扫描拖死。
+// 边界（审计残留修复 #R18 / #56-S7）：扫描 → fs.cp 是两趟，两趟之间新建的链接仍会被复制进去 ——
+// 这是「先扫后复制」方案的固有 TOCTOU。来源是作者本机选的文件夹、导入又受 automation 闸门限制，
+// 再扫一次只缩小窗口不能消除；想彻底关闭得改成逐条复制 + 复制时校验，代价与收益不成比例，
+// 故这里只如实注明，不加第二趟扫描。
+const MAX_SOURCE_LINKS = 100;
+
+async function listSourceLinks(dir, prefix = '') {
+  const links = [];
+  const queue = [{ dir, prefix: prefix || '' }];
+  while (queue.length && links.length < MAX_SOURCE_LINKS) {
+    const item = queue.shift();
+    let entries;
+    try {
+      entries = await fs.readdir(item.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name === storage.TRASH_DIR || entry.name.startsWith('.')) continue;
+      const rel = item.prefix ? path.join(item.prefix, entry.name) : entry.name;
+      if (entry.isSymbolicLink()) {
+        links.push(rel);
+        if (links.length >= MAX_SOURCE_LINKS) break;
+        continue;
+      }
+      if (entry.isDirectory()) queue.push({ dir: path.join(item.dir, entry.name), prefix: rel });
+    }
+  }
+  return links;
+}
+
 // V45（1.7.2 D3）：导入结果的「跳过」只留一套表示 —— skipped 数组，每条
 // { source(相对名), reason, code, tooLarge }。以前同一件事写三份（顶层 skipped[] /
 // 结果上的 skippedFiles / 结果上的 skippedTooLarge 计数），三处各取一份才对得上。
@@ -225,6 +263,22 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
   const target = path.join(booksRoot, folder);
 
   try {
+    // 审计修复 #56（S7）：整目录复制前先扫符号链接 / 目录联接；有链接就整源跳过（见 listSourceLinks）。
+    // 审计残留修复 #R18：扫描与下面的 copyAsBook 是两趟，两趟之间新建的链接仍会被复制 —— 固有 TOCTOU，
+    // 口径见 listSourceLinks 上方的边界说明。
+    if (analysis.kind === 'book') {
+      const links = await listSourceLinks(sourceDir);
+      if (links.length) {
+        const sample =
+          links.slice(0, 3).join('、') + (links.length > 3 ? ` 等 ${links.length} 个` : '');
+        throw new storage.StorageError(
+          'SOURCE_LINK',
+          `《${path.basename(sourceDir)}》里含符号链接 / 目录联接（${sample}），导入不跟随链接` +
+            `（会绕过单本 ${formatImportSize(MAX_IMPORT_BYTES)} 上限、把书库外的内容带进来），已跳过；` +
+            '请把链接换成真实文件 / 目录后重试'
+        );
+      }
+    }
     // V57：现成书整目录 fs.cp 递归复制 → 闸门看递归清单；章节目录形态只复制顶层 txt → 只看顶层
     const gateFiles =
       analysis.kind === 'book' ? await listTxtFilesDeep(sourceDir) : analysis.txtFiles;
@@ -290,7 +344,8 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
     await fs.rm(target, { recursive: true, force: true }).catch(() => {});
     // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 包成 IMPORT_FAILED 会把界面文案
     // 从「…已跳过」改成「复制失败：…」并把错误码一起丢掉。这里原样放行，由 importFolders 记进 skipped。
-    if (err && err.code === 'FILE_TOO_LARGE') throw err;
+    // 审计修复 #56（S7）：含符号链接的来源同理（SOURCE_LINK 也是「跳过」，不是复制失败）。
+    if (err && (err.code === 'FILE_TOO_LARGE' || err.code === 'SOURCE_LINK')) throw err;
     throw new storage.StorageError('IMPORT_FAILED', `复制失败：${errorText.describeForUi(err).message}`);
   }
 }
@@ -349,7 +404,8 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
       `《${baseName}》看起来不是纯文本文件（含 0 字节），已跳过`
     );
   }
-  const decoded = decodeBuffer(buffer);
+  const decodedInfo = decodeBufferWithEncoding(buffer);
+  const decoded = decodedInfo.text;
   if (!normalizeText(decoded).trim()) {
     throw new storage.StorageError('EMPTY_FILE', `《${baseName}》是空文件，跳过`);
   }
@@ -432,8 +488,9 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
     } else {
       // 原封不动整本模式：整篇作为一章「全文」
       const file = chaptersLib.buildFileName(1, '全文');
-      if (isUtf8(buffer)) {
-        // 源文件本来就是 UTF-8：按字节原样复制，连 BOM/换行都不动
+      // 审计修复 #54（P10）：源文件本来就是 UTF-8（含 UTF-8 BOM）时按字节原样复制，连 BOM / 换行都不动。
+      // 编码判定与上面的解码是同一趟（decodedInfo.encoding），不再整本 fatal 解码第二遍。
+      if (decodedInfo.encoding === 'utf-8') {
         await fs.writeFile(path.join(staging, file), buffer);
       } else {
         // 非 UTF-8（如 GBK）必须转成 UTF-8 应用才能读；只转编码，文字内容不变
@@ -575,10 +632,11 @@ async function importFolders(booksRoot, sources, options = {}) {
       } catch (err) {
         const source = relativeSourceLabel(plan.sourceDir);
         const described = errorText.describeForUi(err);
-        if (err && err.code === 'FILE_TOO_LARGE') {
+        if (err && (err.code === 'FILE_TOO_LARGE' || err.code === 'SOURCE_LINK')) {
           // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 错误码保留、文案留在「已跳过」，
           // 界面汇总显示「跳过 N 个（…）」而不是红色「N 个失败（复制失败：…）」。
-          skipped.push({ source, reason: described.message, code: err.code, tooLarge: true });
+          // 审计修复 #56（S7）：含符号链接的来源也按「跳过」记录（tooLarge 只给体量超限的 txt）。
+          skipped.push({ source, reason: described.message, code: err.code, tooLarge: err.code === 'FILE_TOO_LARGE' });
         } else {
           failed.push({ source, message: described.message });
         }
@@ -608,7 +666,12 @@ module.exports = {
   // V116（v1.8.0 WP-29）：递归清单导出给单测，钉住「并发 readdir + 排序 / 排除口径不变」。
   // 生产调用点仍只有 importNovelFile 一处（见上）。
   listTxtFilesDeep,
+  // 审计修复 #56（S7）：符号链接扫描导出给单测钉「_trash / 点开头目录不进、相对路径排序」口径。
+  listSourceLinks,
   importSizeProblem,
   isProbablyBinary,
-  hasUtf16Bom
+  hasUtf16Bom,
+  // 审计修复 #13（E9）：来源形态判定词表已并入 core/heading.js，导出这个判定给单测钉住
+  // 「章节目录 / 独立小说」的分界（生产调用点仍只有 analyzeSource 一处）。
+  looksLikeChapterFile
 };

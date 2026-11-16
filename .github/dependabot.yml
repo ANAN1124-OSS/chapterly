@@ -1,0 +1,9 @@
+# 审计修复 #29（O1）：GitHub Actions 固定到提交 SHA 后，用 Dependabot 每周提更新，
+# 避免 pin 死后长期不升级、也避免跟浮动的 @v4 标签被上游移动。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

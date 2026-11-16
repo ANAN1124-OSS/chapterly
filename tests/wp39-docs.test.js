@@ -5,7 +5,7 @@
 //   D9  stats 写盘失败的注释不许再承诺「下次保存补记」，实际是失败即丢弃增量；
 //   X5  blankLines:'keep' 也不保持首尾空行，注释 / 对话框说明 / README 三处口径一致；
 //   X3  README 说明字数按 UTF-16 码元计（emoji / 扩展区汉字算 2 字）；
-//   D12 README 只留当前文档，版本沿革 / 防丢稿逐轮记录 / 开发自检历史拆到 沿革.md；
+//   D12 README 只留当前文档，版本沿革 / 防丢稿逐轮记录 / 开发自检历史归档到 内部文档/（不进公开仓库）；
 //   X13 公开文档不再含开发机绝对路径；
 //   X12 index.html 统一 .hidden 类显隐，原生 hidden 只留语义场景（tabpanel / <option>）；
 //   D4  renderer.js 模块声明区注释紧贴自己的声明，不再交错；
@@ -56,18 +56,21 @@ test('X3：README 说明字数按 UTF-16 码元计（emoji / 扩展区汉字算 
   assert.ok(readme.includes('状态栏、章节列表、书架统计'), '要说明全应用同一口径（含统计与阈值）');
 });
 
-test('D12：README 只留当前文档，版本沿革 / 防丢稿逐轮记录 / 开发自检历史拆到 沿革.md', () => {
+test('D12 / M3：README 只留当前文档，版本沿革 / 防丢稿逐轮记录 / 开发自检历史归档到内部文档', () => {
   const readme = read('README.md');
-  const legacy = read('沿革.md');
-  assert.ok(readme.includes('[沿革.md](沿革.md)'), 'README 要链接沿革分册');
+  // 审计 #28（M3）：历史分册不再进公开仓库，根目录不再有 沿革.md（归档到被 .gitignore 忽略的 内部文档/）。
+  assert.equal(fs.existsSync(path.join(ROOT, '沿革.md')), false, '版本沿革分册不进公开仓库（已归档到 内部文档/）');
+  assert.ok(!readme.includes('[沿革.md](沿革.md)'), 'README 不许再链 沿革.md');
+  assert.match(
+    readme,
+    /内部文档\/归档-2026-11-15\/沿革\.md/,
+    'README 要写明沿革归档路径（内部文档，不进公开仓库）'
+  );
   for (const heading of ['## 版本沿革', '## 防丢稿设计逐轮记录', '## 开发自检历史说明']) {
-    assert.ok(legacy.includes(heading), `沿革.md 缺 ${heading}`);
+    assert.ok(!readme.includes(heading), `README 不许再放历史分册小节 ${heading}`);
   }
-  assert.ok(legacy.includes('25. **「整理」点一下就整理'), '防丢稿 25 条起要在沿革.md');
-  assert.ok(legacy.includes('82. **'), '防丢稿逐轮记录要完整移出');
   assert.ok(!readme.includes('25. **「整理」点一下就整理'), 'README 不再放防丢稿逐轮改动原文');
   assert.ok(!/node:test，\d+ 项，覆盖/.test(readme), 'README 不再放逐项测试覆盖清单');
-  assert.ok(legacy.includes('v0.9 B-5 第十刀'), '逐项测试覆盖清单原文在沿革.md');
 
   // 版本锚点必须仍各只有一处（scripts/version-sync.js 按精确命中数校验）。
   assert.equal((readme.match(/node:test，\d+ 项/g) || []).length, 1, 'README 单测计数 1 处');
@@ -76,7 +79,38 @@ test('D12：README 只留当前文档，版本沿革 / 防丢稿逐轮记录 / �
   assert.equal((readme.match(/已于 \d{4}-\d{2}-\d{2} 发布/g) || []).length, 1, 'README 发布日期锚点 1 处');
   assert.ok(readme.includes('# 章回 / Chapterly v'), 'README 标题锚点仍在');
   assert.ok(readme.includes('## 许可'), 'README 许可段仍在');
-  assert.match(readme, /公开文档[^\n]*沿革\.md/, 'README 的公开文档清单要包含 沿革.md（D6 约定同步）');
+  assert.match(
+    readme,
+    /公开文档[^\n]*README\.md[^\n]*验收清单\.md[^\n]*LICENSE/,
+    'README 的公开文档清单只列当前文档（README / 验收清单 / LICENSE）'
+  );
+});
+
+test('D12 / M3：README 的开发自检细节（目录树 / 截图命令）移出公开文档', () => {
+  const readme = read('README.md');
+  assert.ok(!readme.includes('## 目录结构'), 'README 不再放完整目录结构（已归档到内部文档）');
+  assert.ok(
+    readme.includes('内部文档/归档-2026-11-15/README-开发自检细节.md'),
+    'README 要写明开发自检细节的归档路径'
+  );
+  // version-sync 的 E2E 组数门禁仍要能从 README 找到两处描述（checkE2eGroupDocs）。
+  assert.match(readme, /场景与 \d+ 个组文件共用一份/, 'README 仍要有「场景与 N 个组文件共用一份」');
+  assert.match(readme, /\*\*\d+ 个组文件（\d+–\d+）\*\*/, 'README 仍要有「N 个组文件（0–NN）」');
+});
+
+test('D12 / M3：验收清单只留当前手工步骤，历史增量归档到内部文档', () => {
+  const checklist = read('验收清单.md');
+  for (const legacy of ['## 版本沿革', '## 1.1.0 内容增量', '## 1.6.0 内容增量', '## 1.8.0 试用分支增量']) {
+    assert.ok(!checklist.includes(legacy), `验收清单不许再放历史增量：${legacy}`);
+  }
+  assert.ok(
+    checklist.includes('内部文档/归档-2026-11-15/验收清单-历史增量.md'),
+    '验收清单要写明历史增量的归档路径'
+  );
+  assert.ok(checklist.includes('## 验收步骤'), '当前版本的手工验收步骤仍在');
+  // 计数锚点仍各有 1 处（version-sync 的 CHECKLIST_COUNT_RULES 同口径）。
+  assert.equal((checklist.match(/`pnpm test`（\d+ 项）/g) || []).length, 1, '验收清单单测计数 1 处');
+  assert.equal((checklist.match(/`pnpm run e2e`（\d+ 项）/g) || []).length, 1, '验收清单 E2E 计数 1 处');
 });
 
 test('X13：公开文档不再含开发机绝对路径（README / 验收清单）', () => {

@@ -1,6 +1,8 @@
 // 整本导出/复制的拼接逻辑。导出与复制共用，保证两处格式永远一致。
 const chaptersLib = require('./chapters');
 const formatLib = require('./format');
+// 导出时间戳与 EPUB / DOCX 共用同一份（core/xml.js 的 isoTimestamp；纯函数、无依赖）
+const { isoTimestamp } = require('./xml');
 
 const BOM = '\uFEFF';
 
@@ -123,7 +125,9 @@ function resolveExportRange(meta, range) {
       count: indexes.length,
       from: total > 0 ? from : 0,
       to: total > 0 ? to : 0,
-      label: from === to ? `第${from}章` : `第${from}-${to}章`,
+      // 审计修复 #44（E18）：空书里没有「第 0 章」这回事 —— 不给空范围编章号
+      // （以前 total=0 时标签恒为「第0章」，默认文件名会拼出「书名-第0章.epub」）。
+      label: total > 0 ? (from === to ? `第${from}章` : `第${from}-${to}章`) : '',
       volumeId: null,
       empty: indexes.length === 0
     };
@@ -141,6 +145,27 @@ function resolveExportRange(meta, range) {
   };
 }
 
+// 审计修复 #24（R1）：EPUB / DOCX 共用的导出入参归一。
+// 以前两个导出文件各抄一份（chapterList / meta·texts 守卫 / 书名缺省 / 范围解析 / 空范围检查位置
+// 还不一致：epub 拖到 buildBundle，docx 在 normalizeInput）—— 双份维护迟早漂移。这里收成一份：
+//   · 空书 → EMPTY_BOOK；空范围 → EMPTY_EXPORT_RANGE（两个构建器从同一处抛，错误码 / 文案不变）；
+//   · 只读：不改 meta，范围解析复用 resolveExportRange；modified 缺省 = 现在（isoTimestamp）；
+//   · texts 不是数组时按空串数组处理（与两处旧实现逐字一致）。
+// 返回 { meta, chapters, texts, title, plan, stamp }；各格式自己的字段（epub 的 lang / identifier、
+// docx 的 author）仍留在各自模块，不塞进公共层。
+function normalizeExportInput(input) {
+  const meta = (input && input.meta) || {};
+  const chapters = chapterList(meta);
+  if (!chapters.length) throw new Error('EMPTY_BOOK：这本书里还没有章节');
+  const texts = Array.isArray(input && input.texts) ? input.texts : [];
+  const title = String(meta.title == null ? '' : meta.title).trim() || '未命名书籍';
+  // 范围解析和 TXT / EPUB / DOCX 导出共用同一份纯逻辑：只读，不改 meta。
+  const plan = resolveExportRange(meta, input && input.range);
+  if (!plan.count) throw new Error('EMPTY_EXPORT_RANGE：所选范围里没有章节');
+  const stamp = isoTimestamp(input && input.modified);
+  return { meta, chapters, texts, title, plan, stamp };
+}
+
 // 导出对话框默认文件名（不含目录）：
 //   全书 → 书名.txt；按卷 → 书名-卷名.txt；章节范围 → 书名-第X-Y章.txt（单章 书名-第X章.txt）
 // extension 可选（默认 txt）：EPUB 导出传 'epub'，范围规则 / 非法字符清洗完全一样。
@@ -151,7 +176,7 @@ function exportFileName(meta, range, extension) {
     typeof extension === 'string' && extension.trim()
       ? extension.trim().replace(/^\./, '')
       : 'txt';
-  if (plan.mode === 'all') return `${bookName}.${ext}`;
+  if (plan.mode === 'all' || !plan.label) return `${bookName}.${ext}`;
   return `${bookName}-${chaptersLib.safeName(plan.label)}.${ext}`;
 }
 
@@ -284,14 +309,15 @@ function releaseTexts(texts) {
   if (Array.isArray(texts)) texts.length = 0;
 }
 
-// 按 chapterId（优先）/ chapterFile 找章节下标；找不到返回 -1。
-// 「复制本章」只要指定是哪一章，不用带正文；导出覆盖判断则要求必须有 text（见 chapterIndexOf）。
+// 按章节指定是哪一章（复制本章 / 导出覆盖）：chapterId 优先，没给 id 才按 chapterFile 找。
+// 返回章节下标；找不到返回 -1。
+// 审计修复 #44（E18）：给了 chapterId 就只按 id 结算。以前 id 没命中会静默回退到 chapterFile 匹配 ——
+// 清单 / 编辑区拿的是过期 id 时，碰巧同名（或改号后重名）的 file 能把正文拼进错章。
 function chapterRefIndex(meta, ref) {
   if (!ref || typeof ref !== 'object') return -1;
   const chapters = (meta && Array.isArray(meta.chapters) && meta.chapters) || [];
   if (ref.chapterId) {
-    const byId = chapters.findIndex((chapter) => chapter && chapter.id === ref.chapterId);
-    if (byId >= 0) return byId;
+    return chapters.findIndex((chapter) => chapter && chapter.id === ref.chapterId);
   }
   if (ref.chapterFile) {
     return chapters.findIndex((chapter) => chapter && chapter.file === ref.chapterFile);
@@ -338,7 +364,11 @@ function platformChapterText(text) {
 // exists 传进来是为了能在单测里替换掉真实的文件系统检查。
 function resolveExportDir(remembered, fallback, exists) {
   const dir = typeof remembered === 'string' ? remembered.trim() : '';
-  if (dir && (!exists || exists(dir))) return dir;
+  if (!dir) return fallback;
+  // 审计修复 #44（E18）：exists 谓词只认「同步返回 true」（真实调用方是 fsSync.statSync 包装）。
+  // 以前只判真值 —— 传进 async 函数时 exists(dir) 是个 Promise，Boolean(Promise) 恒真，
+  // 目录已经没了也照样选它；现在其它返回值（Promise / 1 / 'yes' / 抛错的调用方自己兜）一律退回默认目录。
+  if (typeof exists !== 'function' || exists(dir) === true) return dir;
   return fallback;
 }
 
@@ -348,6 +378,8 @@ module.exports = {
   composeSelected,
   groupByVolume,
   resolveExportRange,
+  // 审计修复 #24（R1）：EPUB / DOCX 唯一的导出入参归一
+  normalizeExportInput,
   exportFileName,
   exportBuffer,
   exportBufferFromText,

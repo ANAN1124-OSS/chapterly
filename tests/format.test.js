@@ -239,6 +239,23 @@ test('校对用：回调不会改变清理规则（数字 / 网址 / 英文里�
   assert.equal(res.text, line);
 });
 
+// 审计修复 #51（E16）：闭引号后的半角句点要转全角（旧规则只认 prev∈汉字/FULL_PUNCT，永久漏转，
+// 二次整理也不会变）。只收中文收引号，直引号（英文 "hi".）仍不转。
+test('E16/#51：闭引号后紧挨的半角句点转全角（二次整理稳定）', () => {
+  assert.equal(convertPunct('他说：“你好”.').text, '他说：“你好”。');
+  assert.equal(convertPunct('他说：‘你好’.').text, '他说：‘你好’。');
+  assert.equal(convertPunct('他说：「你好」.').text, '他说：「你好」。');
+  assert.equal(convertPunct('他说：『你好』.').text, '他说：『你好』。');
+  assert.equal(convertPunct('He said "hi".').text, 'He said "hi".', '英文直引号后面不转');
+  assert.equal(convertPunct('版本A.开端').count, 0, '英文缩写里的句点不受影响');
+
+  const once = formatText('他说：“你好”.通', { indent: 'none', blankLines: 'keep' });
+  assert.equal(once.text, '他说：“你好”。通');
+  const twice = formatText(once.text, { indent: 'none', blankLines: 'keep' });
+  assert.equal(twice.text, once.text);
+  assert.equal(twice.changed, false, '第二次整理不再有变化');
+});
+
 // C42（v1.8.0 WP-26）：汉字范围必须含 CJK 扩展 B（U+20000+，如「𠮷」）。这些字在 JS 里是
 // 代理对：旧正则只认 BMP，生僻字人名旁边的半角标点不转、中文之间空格也不删。
 test('C42/WP-26：扩展 B 汉字（代理对）参与标点 / 空格判定，BMP 行为不变', () => {
@@ -258,9 +275,12 @@ test('C42/WP-26：扩展 B 汉字（代理对）参与标点 / 空格判定，BM
 // 1.6.0 A5 / P-07：convertPunct 原来是逐字 `out += ch` 造串（长段落里是 O(n²) 的中间字符串），
 // 改成数组 push + join。行为必须逐字等价：这里把 1.5.0 的旧算法原样抄一份当参照实现，
 // 用大语料（含省略号连排 / 小数 / 时间 / 网址 / 英文缩写 / 中文标点 / 代理对）做差分对账。
+// 审计修复 #51（E16）：上面那条句点规则本身改了 —— 闭引号（” ’ 」 』）后面的半角句点也转全角。
+// 参照实现同步这条新规则，差分仍用来证明「数组拼接重构」与参照实现逐字一致（不再代表 1.5.0 的旧口径）。
 const REF_PUNCT_MAP = { ',': '，', '.': '。', ';': '；', ':': '：', '!': '！', '?': '？' };
 const REF_HAN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
 const REF_FULL_PUNCT = new Set(['，', '。', '；', '：', '！', '？']);
+const REF_CLOSE_QUOTE = new Set(['”', '’', '」', '』']);
 const REF_PUNCT_ALPHABET = [
   '中', '文', '字', '号', '，', '。', '！', '？', '；', '：', '、', '「', '」', '…', '—', '《', '》',
   ',', '.', ';', ':', '!', '?', ' ', '\n', 'A', 'z', '0', '9', '-', '"', '“', '”', '\u{1F600}'
@@ -284,7 +304,7 @@ function referenceConvertPunct(text, onConvert) {
       continue;
     }
     if (ch === '.') {
-      if (!(REF_HAN_RE.test(prev) || REF_FULL_PUNCT.has(prev))) {
+      if (!(REF_HAN_RE.test(prev) || REF_FULL_PUNCT.has(prev) || REF_CLOSE_QUOTE.has(prev))) {
         out += ch;
         continue;
       }

@@ -15,6 +15,8 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const MAIN = read('main.js');
+// 审计修复 #38（▲V306）：shell:open-book-folder 随书域数据面搬到 ipc/book-data.js —— 闸门跟着扫新位置。
+const BOOK_DATA = read('ipc/book-data.js');
 
 function between(source, from, to) {
   const start = source.indexOf(from);
@@ -35,7 +37,7 @@ test('C6：atomic 临时文件用 wx；importer 暂存目录不 recursive', () =
 });
 
 test('C6：open-book-folder 先确认目录；启动错误走 logError（脱敏，不打原始堆栈）', () => {
-  const openSrc = between(MAIN, "handleBook('shell:open-book-folder'", '\n  });');
+  const openSrc = between(BOOK_DATA, "handleBook('shell:open-book-folder'", '\n  }, READ_ONLY);');
   assert.match(openSrc, /const stat = await fs\.stat\(bookPath\);/, '先 stat');
   assert.match(openSrc, /stat\.isDirectory\(\)/, '必须是目录');
   assert.match(openSrc, /NOT_A_DIRECTORY/, '非目录要明确报错');

@@ -130,6 +130,11 @@ test('校对词表：解码 UTF-8（含 BOM）/ UTF-16LE / GBK，空 / 二进制
   assert.equal(binary.code, 'GLOSSARY_BAD_ENCODING');
   const broken = glossary.decodeGlossaryBuffer(Buffer.from([0xff, 0xff, 0x0a, 0x41]));
   assert.equal(broken.code, 'GLOSSARY_BAD_ENCODING');
+  // 审计修复 #49（E24）：原文里合法的 U+FFFD 不是坏编码；含 NUL 的提示不再武断说「二进制」
+  const literal = glossary.decodeGlossaryBuffer(Buffer.from('替换\uFFFD词\n禁词', 'utf8'));
+  assert.equal(literal.ok, true);
+  assert.equal(literal.entries[0].term, '替换\uFFFD词');
+  assert.match(binary.message, /无 BOM 的 UTF-16|二进制/);
 });
 
 test('校对词表：readGlossaryFile 未设置 / 不存在 / 是目录 / 正常文件 都给结构化结果', async () => {
@@ -273,6 +278,41 @@ test('校对词表：多份合并后条目不超过 MAX_ENTRIES，截断语义�
   assert.equal(merged.entries[glossary.MAX_ENTRIES - 1].term, '乙新一');
 });
 
+test('校对词表（审计 #49 / E24）：enabledLists 子集合并的 truncated 按「实际参与」结算', async () => {
+  const dir = await mkTmp();
+  const first = path.join(dir, '词表甲.txt');
+  const second = path.join(dir, '词表乙.txt');
+  const many = Array.from({ length: glossary.MAX_ENTRIES - 1 }, (_, index) => '甲' + index);
+  await fs.writeFile(first, many.join('\n') + '\n', 'utf8');
+  await fs.writeFile(second, '乙新一\n乙新二\n乙新三\n', 'utf8');
+  const config = { proofreadWordlists: [first, second] };
+
+  // 全部参与：合并撞到 5000 上限 → truncated true（第二份只进来 1 条）
+  const all = await glossary.readProofreadWordlistForRequest(config, {});
+  assert.equal(all.entries.length, glossary.MAX_ENTRIES);
+  assert.equal(all.wordList.truncated, true);
+
+  // 只勾第二份：3 条全部参与，未截断 —— 不能因为「第一份占满额度」把第二份误标成 truncated
+  const secondOnly = await glossary.readProofreadWordlistForRequest(config, { enabledLists: [1] });
+  assert.deepEqual(secondOnly.entries.map((entry) => entry.term), ['乙新一', '乙新二', '乙新三']);
+  assert.equal(secondOnly.wordList.truncated, false, '子集合并没有丢条目就不能报截断');
+
+  // 只勾第一份：4999 条完整，同样不该被全部合并的截断标记污染
+  const firstOnly = await glossary.readProofreadWordlistForRequest(config, { enabledLists: [0] });
+  assert.equal(firstOnly.entries.length, glossary.MAX_ENTRIES - 1);
+  assert.equal(firstOnly.wordList.truncated, false);
+
+  // 单份文件自己超过 5000 条 → ownTruncated 仍要透传
+  const huge = path.join(dir, '超长词表.txt');
+  await fs.writeFile(huge, Array.from({ length: glossary.MAX_ENTRIES + 5 }, (_v, i) => `超${i}`).join('\n') + '\n', 'utf8');
+  const truncatedOne = await glossary.readProofreadWordlistForRequest(
+    { proofreadWordlists: [huge] },
+    { enabledLists: [0] }
+  );
+  assert.equal(truncatedOne.entries.length, glossary.MAX_ENTRIES);
+  assert.equal(truncatedOne.wordList.truncated, true, '这份文件自己超限的截断标记不能丢');
+});
+
 test('校对词表：多份词表公开信息只给数量与状态，不含路径与词条正文', async () => {
   const dir = await mkTmp();
   const first = path.join(dir, '秘密词表甲.txt');
@@ -371,7 +411,15 @@ test('校对词表：wordlistPathsForRequest 缺省与坏值全开，一份都�
     { enabledLists: null },
     { enabledLists: '1' },
     { enabledLists: [9, -1, 1.5] },
-    { enabledLists: [] }
+    { enabledLists: [] },
+    // 审计修复 #12（E8）：Number() 强转族 —— null / '' / false / [] / '0' 都曾被当成索引 0，
+    // 把「坏值 = 全开」悄悄变成「只开第一份」。判型收紧后它们只剩「坏值」这一个身份。
+    { enabledLists: [null] },
+    { enabledLists: [''] },
+    { enabledLists: [false] },
+    { enabledLists: [[]] },
+    { enabledLists: ['0'] },
+    { enabledLists: [{ valueOf: () => 1 }] }
   ]) {
     assert.deepEqual(glossary.wordlistPathsForRequest(paths, options), paths, '坏值 / 缺省都当全开：' + JSON.stringify(options));
   }

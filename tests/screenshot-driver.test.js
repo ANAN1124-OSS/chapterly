@@ -463,7 +463,17 @@ test('静态闸门：焦点抢夺取只在组边界开关，组索引统一走 r
 });
 
 test('静态闸门：打包配置不含 scripts/，所以驱动不会进安装包（顶层 require 会直接崩）', () => {
-  assert.deepEqual(PKG.build.files, ['main.js', 'preload.js', 'core/**/*', 'ipc/**/*', 'renderer/**/*', 'package.json', 'LICENSE']);
+  // 审计 #30（O2）：renderer/test-hooks.js 是只给开发版 ?test=1 用的自检钩子，打包排除。
+  assert.deepEqual(PKG.build.files, [
+    'main.js',
+    'preload.js',
+    'core/**/*',
+    'ipc/**/*',
+    'renderer/**/*',
+    '!renderer/test-hooks.js',
+    'package.json',
+    'LICENSE'
+  ]);
   assert.equal(PKG.main, 'main.js');
   assert.ok(fs.existsSync(path.join(ROOT, 'scripts', 'screenshot-driver.js')));
   // 生产相对依赖必须全部进包：scripts/ 是自动化模式里懒加载、刻意不进包；其余顶层目录

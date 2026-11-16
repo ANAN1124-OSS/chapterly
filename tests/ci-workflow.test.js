@@ -1,14 +1,14 @@
 'use strict';
 // 1.7.0 G1b：GitHub Actions CI 工作流的静态锚点（先于实现写，首跑必须是 RED）。
 //
-// 只锁五件事，防止「装着装着把 CI 换了」：
-//   ① `.github/workflows/` 下**只有 verify.yml 一个** CI 文件（多一条就多占配额、多发噪音）；
-//   ② 文件能按 UTF-8 读出来、不带 BOM、没有 tab 缩进、顶层键齐全——零依赖环境下没有 YAML
-//      解析器，这里做的是「文本级可读 + 结构齐全」校验，真正的语法由 push 后 Actions 首跑判定；
-//   ③ runs-on 必须是 **windows-latest**：单测里含 Windows 路径 / GBK / UNC 语义，ubuntu 会假红；
-//   ④ 必备步骤按序齐全：`pnpm install --frozen-lockfile` → 全量 `node --check` → `npm test` →
-//      `npx eslint .` → `node scripts/a11y-gate.js --static`（npm 级命令写死，避免只改 package.json 就偷换门禁）；
-//   ⑤ E2E 与打包冒烟都不进 CI（E2E 要起 Electron 真窗口；打包冒烟按发版门禁在发版前本地执行）。
+// 审计修复 #29（O1）起，这条闸门同时锁「CI 供应链固定」与「定时 E2E」：
+//   ① `.github/workflows/` 下只有 verify.yml 与 e2e-weekly.yml 两个 CI 文件；
+//   ② 所有 actions **固定到 40 位提交 SHA**（注释标版本），不跟浮动的 @v4 标签；
+//   ③ 运行镜像固定 **windows-2022**（不用浮动的 windows-latest；Windows 路径 / GBK / UNC 语义不能靠 ubuntu 验）；
+//   ④ verify.yml 仍做原来四步（全量 node --check → npm test → eslint → a11y 静态），仍跳过 Electron 二进制；
+//   ⑤ e2e-weekly.yml 每周定时整跑一次全量 E2E，且必须装 Electron 二进制（跳过下载就起不了真窗口）；
+//   ⑥ Dependabot 每周提 github-actions 更新（pin 死后的升级通道）；
+//   ⑦ E2E 不进 verify.yml、打包冒烟仍不进 CI（按发版门禁在发版前本地执行，D-4）。
 //
 // 为什么用「文本断言」而不是解析 YAML：不新增 devDependency（红线：只加不错），Node 24 也没有
 // 内置 YAML 解析器；把结构约束写成逐条文本断言，既零依赖，坏了也能一眼看出哪条被改。
@@ -19,58 +19,109 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const WORKFLOWS_DIR = path.join(ROOT, '.github', 'workflows');
-const WORKFLOW = path.join(WORKFLOWS_DIR, 'verify.yml');
+const VERIFY_PATH = path.join(WORKFLOWS_DIR, 'verify.yml');
+const E2E_PATH = path.join(WORKFLOWS_DIR, 'e2e-weekly.yml');
+const DEPENDABOT_PATH = path.join(ROOT, '.github', 'dependabot.yml');
 
-function readWorkflow() {
-  assert.ok(fs.existsSync(WORKFLOW), '.github/workflows/verify.yml 不存在');
-  return fs.readFileSync(WORKFLOW, 'utf8');
+function readUtf8(file) {
+  assert.ok(fs.existsSync(file), file + ' 不存在');
+  return fs.readFileSync(file, 'utf8');
 }
 
-test('只有 verify.yml 一个 CI 工作流文件（不发散成多个 workflow）', () => {
+const readVerify = () => readUtf8(VERIFY_PATH);
+const readE2e = () => readUtf8(E2E_PATH);
+const readDependabot = () => readUtf8(DEPENDABOT_PATH);
+
+// 去掉注释行后的「真命令」文本：注释里说明「不进 CI」不算命令。
+function commandsOf(text) {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+}
+
+const PINNED_USES_RE = /^\s*-?\s*uses:\s*[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@([0-9a-f]{40})\s+#\s*v(\d+\.\d+\.\d+)\s*$/;
+
+function usesLines(text) {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => /^\s*-?\s*uses:\s/.test(line));
+}
+
+test('工作流文件只有 verify.yml 与 e2e-weekly.yml（不发散成多个 workflow）', () => {
   assert.ok(fs.existsSync(WORKFLOWS_DIR), '.github/workflows/ 目录不存在');
   const files = fs.readdirSync(WORKFLOWS_DIR).filter((f) => /.ya?ml$/.test(f)).sort();
-  assert.deepEqual(files, ['verify.yml'], '工作流目录里只能有 verify.yml');
+  assert.deepEqual(files, ['e2e-weekly.yml', 'verify.yml'], '工作流目录里只能是 verify.yml + e2e-weekly.yml（审计 O1）');
 });
 
 test('workflow 能按 UTF-8 读出来：不带 BOM、没有 tab 缩进、末尾有换行', () => {
-  const text = readWorkflow();
-  assert.ok(text.length > 0, 'workflow 是空文件');
-  assert.ok(!text.startsWith('\uFEFF'), 'workflow 带了 BOM，Actions 解释器会读坏第一行');
-  assert.ok(!text.includes('\t'), 'workflow 里有 tab 缩进（YAML 只认空格）');
-  assert.ok(text.endsWith('\n'), 'workflow 末尾缺换行');
-  // 「文本级可读」的最小结构：至少三行非空、每行要么是注释/空白，要么以空格或键名开头
-  const lines = text.split(/\r?\n/);
-  const bad = lines.find((line) => line.trim() && !/^(\s|#)/.test(line) && !/^[A-Za-z_][\w.-]*:/.test(line));
-  assert.equal(bad, undefined, '有行既不是缩进行、也不是顶层键、也不是注释：' + String(bad));
-});
-
-test('顶层键齐全（name / on / jobs），jobs 下只有 verify 一个 job', () => {
-  const text = readWorkflow();
-  for (const key of ['name:', 'on:', 'jobs:']) {
-    assert.match(text, new RegExp('^' + key.replace(':', '\\:'), 'm'), '缺顶层键 ' + key);
+  for (const file of [VERIFY_PATH, E2E_PATH]) {
+    const text = readUtf8(file);
+    const name = path.basename(file);
+    assert.ok(text.length > 0, name + ' 是空文件');
+    assert.ok(!text.startsWith('\uFEFF'), name + ' 带了 BOM，Actions 解释器会读坏第一行');
+    assert.ok(!text.includes('\t'), name + ' 里有 tab 缩进（YAML 只认空格）');
+    assert.ok(text.endsWith('\n'), name + ' 末尾缺换行');
+    // 「文本级可读」的最小结构：至少三行非空、每行要么是注释/空白，要么以空格或键名开头
+    const lines = text.split(/\r?\n/);
+    const bad = lines.find((line) => line.trim() && !/^(\s|#)/.test(line) && !/^[A-Za-z_][\w.-]*:/.test(line));
+    assert.equal(bad, undefined, name + ' 有行既不是缩进行、也不是顶层键、也不是注释：' + String(bad));
   }
-  const jobKeys = text
-    .split(/\r?\n/)
-    .filter((line) => /^ {2}[A-Za-z_][\w-]*:\s*$/.test(line))
-    .map((line) => line.trim().replace(':', ''));
-  const inJobs = text.slice(text.indexOf('\njobs:'));
-  const declared = jobKeys.filter((key) => inJobs.includes('  ' + key + ':'));
-  assert.deepEqual(declared, ['verify'], 'jobs 下只能有 verify 一个 job');
 });
 
-test('runs-on 是 windows-latest（Windows 桌面工具的路径 / GBK / UNC 语义不能靠 ubuntu 验）', () => {
-  const text = readWorkflow();
-  assert.match(text, /^ {4}runs-on: windows-latest$/m, 'runs-on 必须是 windows-latest');
-  assert.doesNotMatch(text, /\bubuntu-|\bmacos-/, '不允许再挂 ubuntu / macos 矩阵');
+test('顶层键齐全（name / on / jobs），jobs 下只有该工作流自己的一个 job', () => {
+  for (const [file, job] of [
+    [VERIFY_PATH, 'verify'],
+    [E2E_PATH, 'e2e']
+  ]) {
+    const text = readUtf8(file);
+    const name = path.basename(file);
+    for (const key of ['name:', 'on:', 'jobs:']) {
+      assert.match(text, new RegExp('^' + key.replace(':', '\\:'), 'm'), name + ' 缺顶层键 ' + key);
+    }
+    const inJobs = text.slice(text.indexOf('\njobs:'));
+    const declared = text
+      .split(/\r?\n/)
+      .filter((line) => /^ {2}[A-Za-z_][\w-]*:\s*$/.test(line))
+      .map((line) => line.trim().replace(':', ''))
+      .filter((key) => inJobs.includes('  ' + key + ':'));
+    assert.deepEqual(declared, [job], name + ' 的 jobs 下只能有 ' + job + ' 一个 job');
+  }
 });
 
-test('步骤按序齐全：checkout → setup-node 24 → pnpm 12.11.2（run_install: false）→ frozen-lockfile → node --check → npm test → eslint → a11y --static', () => {
-  const text = readWorkflow();
+test('全部 actions 固定到 40 位提交 SHA + 版本注释（审计 O1：不跟浮动的 @v4 标签）', () => {
+  for (const file of [VERIFY_PATH, E2E_PATH]) {
+    const name = path.basename(file);
+    const lines = usesLines(readUtf8(file));
+    assert.ok(lines.length >= 3, name + ' 应至少有 checkout / setup-node / pnpm 三个 action（实际 ' + lines.length + '）');
+    for (const line of lines) {
+      assert.match(line, PINNED_USES_RE, name + ' 的 action 没 pin 到提交 SHA + 版本注释：' + line.trim());
+    }
+  }
+  // pin 死后要有升级通道：Dependabot 每周提 github-actions 更新。
+  const dependabot = readDependabot();
+  assert.match(dependabot, /^version: 2$/m, 'dependabot.yml 用 version 2');
+  assert.match(dependabot, /package-ecosystem: github-actions/, '要覆盖 github-actions 生态');
+  assert.match(dependabot, /schedule:\s*\n\s*interval: weekly/, '每周检查一次更新');
+});
+
+test('runs-on 固定 windows-2022（Windows 桌面工具的路径 / GBK / UNC 语义不能靠 ubuntu 验）', () => {
+  for (const file of [VERIFY_PATH, E2E_PATH]) {
+    const text = readUtf8(file);
+    const name = path.basename(file);
+    assert.match(text, /^ {4}runs-on: windows-2022$/m, name + ' 的 runs-on 必须是 windows-2022（审计 O1：windows-latest 浮动）');
+    assert.doesNotMatch(text, /runs-on:\s*(ubuntu-|macos-)/, name + ' 不允许 ubuntu / macos 矩阵');
+    assert.doesNotMatch(text, /runs-on:\s*windows-latest/, name + ' 不许用浮动的 windows-latest');
+  }
+});
+
+test('步骤按序齐全：checkout → setup-node（22/24 矩阵）→ pnpm 12.11.2（run_install: false）→ frozen-lockfile → node --check → npm test → eslint → a11y --static', () => {
+  const text = readVerify();
   const order = [
-    'actions/checkout@v4',
-    'actions/setup-node@v4',
-    'node-version: 24',
-    'pnpm/action-setup@v4',
+    'actions/checkout@',
+    'actions/setup-node@',
+    'node-version: ${{ matrix.node }}',
+    'pnpm/action-setup@',
     'version: 12.11.2',
     'run_install: false',
     'pnpm install --frozen-lockfile',
@@ -89,36 +140,57 @@ test('步骤按序齐全：checkout → setup-node 24 → pnpm 12.11.2（run_ins
   }
 });
 
+// 审计修复 #56（O4）：engines 声明 node >=22，CI 必须真跑 22（不能只测开发机的 24）。
+test('verify.yml 用 Node 22 / 24 两档矩阵，fail-fast: false', () => {
+  const text = readVerify().replace(/\r\n/g, '\n');
+  assert.match(text, /^ {4}strategy:\n {6}fail-fast: false\n {6}matrix:\n {8}node: \[22, 24\]$/m, 'verify.yml 必须声明 Node 22 / 24 矩阵（fail-fast: false）');
+  assert.match(text, /node-version: \$\{\{ matrix\.node \}\}/, 'setup-node 必须读 matrix.node');
+  assert.equal(text.includes('node-version: 24'), false, '不能再写死单档 Node 24');
+});
+
 test('全量 node --check 跑在 bash 里，且任一文件失败就让步骤失败', () => {
-  const text = readWorkflow();
+  const text = readVerify();
   assert.match(text, /shell: bash/, 'node --check 的循环要用 bash（windows 默认是 pwsh）');
   assert.match(text, /node --check "\$f"/, '要逐个文件跑 node --check "$f"');
   assert.match(text, /git ls-files '\*\.js'/, '要用 git ls-files 列出全量 js');
   assert.match(text, /\|\| exit 1|exit \$fail|set -e/, '任一文件失败必须让步骤非零退出');
 });
 
-test('E2E 不进 CI：工作流里不出现 e2e 命令（注释里说明「不进 CI」不算命令）', () => {
-  const text = readWorkflow();
-  const commands = text
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*#/.test(line))
-    .join('\n');
-  assert.doesNotMatch(commands, /run-e2e|(?:pnpm|npm|npx|yarn)\s+(?:run\s+)?e2e\b/i, 'CI 里不允许出现 e2e 命令');
+test('verify.yml 仍不跑 E2E（E2E 挪到每周定时的 e2e-weekly.yml）', () => {
+  const commands = commandsOf(readVerify());
+  assert.doesNotMatch(commands, /run-e2e|(?:pnpm|npm|npx|yarn)\s+(?:run\s+)?e2e\b/i, 'verify.yml 里不允许出现 e2e 命令');
+  // 单测与静态门禁不需要 Electron 二进制，继续跳过下载（省 100 MB+ 与镜像不确定性）。
+  assert.match(readVerify(), /ELECTRON_SKIP_BINARY_DOWNLOAD: 1/, 'verify.yml 仍要跳过 Electron 二进制下载');
 });
 
-test('依赖安装以锁文件为准：pnpm-lock.yaml 入库且步骤里不出现裸 pnpm install', () => {
+test('e2e-weekly.yml 每周定时整跑 E2E，且装 Electron 二进制', () => {
+  const text = readE2e();
+  assert.match(text, /schedule:[\s\S]{0,200}?cron: '[^']+'/, '必须有 schedule.cron 定时触发');
+  assert.match(text, /cron: '\d+ \d+ \* \* \d'/, 'cron 要写成每周一次的标准五段式');
+  const commands = commandsOf(text);
+  assert.match(commands, /run: pnpm run e2e/, '定时任务要整跑全量 E2E（pnpm run e2e）');
+  assert.match(commands, /pnpm install --frozen-lockfile/, 'E2E 依赖仍以锁文件为准');
+  assert.equal(
+    text.includes('ELECTRON_SKIP_BINARY_DOWNLOAD'),
+    false,
+    'E2E 必须安装 Electron 二进制（跳过下载就起不了真窗口）'
+  );
+  assert.match(text, /timeout-minutes: ([3-9]\d|[1-9]\d{2,})/, 'E2E 是长场景，超时要给足（≥ 30 分钟）');
+  assert.match(text, /tzutil \/s "China Standard Time"/, 'E2E 要固定时区（统计 / 日期断言按 +08）');
+});
+
+test('依赖安装以锁文件为准：pnpm-lock.yaml 入库且两个工作流里不出现裸 pnpm install', () => {
   assert.ok(fs.existsSync(path.join(ROOT, 'pnpm-lock.yaml')), 'pnpm-lock.yaml 必须入库');
-  const text = readWorkflow();
-  assert.doesNotMatch(text, /pnpm install(?! --frozen-lockfile)/, '安装步骤只能带 --frozen-lockfile');
+  for (const file of [VERIFY_PATH, E2E_PATH]) {
+    const text = readUtf8(file);
+    assert.doesNotMatch(text, /pnpm install(?! --frozen-lockfile)/, path.basename(file) + ' 的安装步骤只能带 --frozen-lockfile');
+  }
 });
 
 test('eslint 进 CI 且只做检查：npx eslint . 独立步骤、不许 --fix / continue-on-error（D-4 / WP-35）', () => {
-  const text = readWorkflow();
+  const text = readVerify();
   assert.match(text, /^ {8}run: npx eslint \.$/m, 'CI 必须有一行 run: npx eslint .（no-undef 为 error）');
-  const commands = text
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*#/.test(line))
-    .join('\n');
+  const commands = commandsOf(text);
   assert.doesNotMatch(commands, /eslint[^\n]*--fix/, 'CI 里不许 --fix：检查步骤不能偷偷改工作区');
   assert.doesNotMatch(commands, /continue-on-error/, 'eslint 步骤不许 continue-on-error（失败必须红）');
   const npmTest = commands.indexOf('npm test');
@@ -129,11 +201,25 @@ test('eslint 进 CI 且只做检查：npx eslint . 独立步骤、不许 --fix /
   assert.ok(a11y > eslint, 'a11y 静态门禁必须排在 eslint 之后');
 });
 
-test('打包冒烟不进 CI：命令里不出现 electron-builder / dist 脚本（D-4）', () => {
-  const text = readWorkflow();
-  const commands = text
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*#/.test(line))
-    .join('\n');
-  assert.doesNotMatch(commands, /electron-builder|(?:pnpm|npm|npx|yarn)\s+(?:run\s+)?dist(?::dir)?\b/i, 'CI 里不允许打包命令');
+test('打包冒烟仍不进 CI：两个工作流的命令里都不出现 electron-builder / dist 脚本（D-4）', () => {
+  for (const file of [VERIFY_PATH, E2E_PATH]) {
+    const commands = commandsOf(readUtf8(file));
+    assert.doesNotMatch(
+      commands,
+      /electron-builder|(?:pnpm|npm|npx|yarn)\s+(?:run\s+)?dist(?::dir)?\b/i,
+      path.basename(file) + ' 里不允许打包命令（打包冒烟按发版门禁在本地执行）'
+    );
+  }
+});
+
+test('README 如实描述两套 CI（verify + 每周 E2E）与「打包冒烟仍在本地」', () => {
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  assert.match(readme, /\.github\/workflows\/verify\.yml/, 'README 要写明 verify 工作流');
+  assert.match(readme, /\.github\/workflows\/e2e-weekly\.yml/, 'README 要写明每周 E2E 工作流');
+  assert.match(readme, /每周定时[^\n]*E2E/, 'README 要写明 E2E 每周定时跑');
+  assert.match(readme, /固定到提交 SHA/, 'README 要写明 actions pin SHA');
+  assert.match(readme, /打包冒烟[\s\S]{0,80}?本地执行/, 'README 仍要如实写「打包冒烟在发版前本地执行」');
+  // 审计修复 #56（O4）：Node 矩阵与 pnpm 下限要和 CI / workspace 配置一致
+  assert.match(readme, /Node 用 22 \/ 24 两档矩阵/, 'README 要写明 verify.yml 的 Node 22/24 矩阵');
+  assert.match(readme, /pnpm ≥ 12/, 'pnpm 下限按实测（12.11.2 所在大版本）写，不能留在未实测的 ≥10');
 });

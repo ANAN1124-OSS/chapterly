@@ -103,9 +103,11 @@ test('导入目录：自检 / 截图模式才认显式路径，且统一 resolve
 const MAIN_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 // v1.8.0 WP-34（V114）：导出 / 校对 / 书 CRUD 三个域搬进 ipc/*.js —— 入口清单扫合并文本；
 // 「只有两处 ipcMain.handle」仍只认 main.js（两个包装函数的定义处）。
+// 审计修复 #38（▲V306）：书域数据面（查找替换 / 历史 / 整理 / 快照清理 / 打开书文件夹）搬到 ipc/book-data.js。
 const IPC_SOURCE = [
   'main.js',
   'ipc/book.js',
+  'ipc/book-data.js',
   'ipc/proofread.js',
   'ipc/export.js'
 ]

@@ -1,0 +1,49 @@
+name: e2e-weekly
+
+# 审计修复 #29（O1）：E2E 与打包冒烟过去只在发版前本地执行（D-4），漏跑就带病出包。
+# 这里补上 CI 侧的集成回归拦截：每周定时在真实 Electron 窗口里整跑一次 E2E（临时书库，
+# 不碰真实书架）。发版前的 dist:dir / NSIS 冒烟仍按发版门禁在本地执行。
+#
+# 供应链：所有 actions 固定到提交 SHA（Dependabot 每周提更新），不跟浮动的 @v4 标签；
+# 运行镜像固定 windows-2022（不用浮动的 windows-latest）。
+# 审计残留修复 R25（#29/O1）：下面三条 pin 的版本注释已按上游 tag 核对（2026-11-15）——checkout /
+# setup-node 的提交就是 v4.4.0；pnpm/action-setup 的同一提交上游也标了 v5.0.0，注释取较先发布的 v4.4.0。
+on:
+  schedule:
+    # 每周日 20:17 UTC（周一 04:17 Asia/Shanghai），避开整点拥堵
+    - cron: '17 20 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-weekly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 12.11.2
+          run_install: false
+
+      - name: 安装依赖（含 Electron 二进制：E2E 要真实窗口）
+        run: pnpm install --frozen-lockfile
+
+      - name: 固定时区（E2E 的日期 / 统计断言按 +08 口径）
+        run: tzutil /s "China Standard Time"
+
+      - name: 全量 E2E（真实 Electron + 临时书库）
+        run: pnpm run e2e
+        env:
+          TZ: Asia/Shanghai

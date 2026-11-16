@@ -251,11 +251,22 @@ module.exports = async function group55MultiWindow(t) {
   await fs.unlink(shadowChapterPath);
   const shadowFilesBefore = (await fs.readdir(mwBookC.path)).sort().join('|');
   await exec("window.__cwTest.setText('章节被外部删掉后还想保存')");
-  const shadowSave = await exec('window.__cwTest.save()');
+  // 审计修复 #6（V302）：保存被 CHAPTER_MISSING 阻断后会弹「保存被阻止」的救稿出口，先答「留在这里」。
+  // 结果写进全局、完成后置位：别让 exec 直接 await 一个等对话框的 Promise（没人答就只剩超时）。
+  await exec(
+    "window.__cwE2ESave = null; window.__cwE2ESaveDone = false; void window.__cwTest.saveVisible().then((r) => { window.__cwE2ESave = r; window.__cwE2ESaveDone = true; }); 'started'"
+  );
+  await waitFor('window.__cwTest.modalOpen()');
+  const shadowRescueDialog = await exec('window.__cwTest.dialog()');
+  await exec("window.__cwTest.answerModal('stay')");
+  const shadowSave = await waitFor('window.__cwE2ESaveDone ? window.__cwE2ESave : null', 8000);
+  await exec('delete window.__cwE2ESave; delete window.__cwE2ESaveDone');
   check(
-    '多窗口：章节文件被删后保存被阻止（CHAPTER_MISSING）',
-    Boolean(shadowSave && shadowSave.ok === false) && shadowSave.code === 'CHAPTER_MISSING',
-    shadowSave
+    '多窗口：章节文件被删后保存被阻止（CHAPTER_MISSING），并给出救稿出口',
+    Boolean(shadowSave && shadowSave.ok === false) &&
+      shadowSave.code === 'CHAPTER_MISSING' &&
+      shadowRescueDialog === '保存被阻止：这些字还没落盘',
+    { shadowSave, shadowRescueDialog }
   );
   check(
     '多窗口：没有重新长出影子 txt / 临时文件',
@@ -265,11 +276,20 @@ module.exports = async function group55MultiWindow(t) {
   await fs.writeFile(shadowChapterPath, shadowBytes);
   await fs.rm(mwBookC.path, { recursive: true, force: true });
   await exec("window.__cwTest.setText('整本书被外部删掉后还想保存')");
-  const missingBookSave = await exec('window.__cwTest.save()');
+  await exec(
+    "window.__cwE2ESave = null; window.__cwE2ESaveDone = false; void window.__cwTest.saveVisible().then((r) => { window.__cwE2ESave = r; window.__cwE2ESaveDone = true; }); 'started'"
+  );
+  await waitFor('window.__cwTest.modalOpen()');
+  const missingBookRescueDialog = await exec('window.__cwTest.dialog()');
+  await exec("window.__cwTest.answerModal('stay')");
+  const missingBookSave = await waitFor('window.__cwE2ESaveDone ? window.__cwE2ESave : null', 8000);
+  await exec('delete window.__cwE2ESave; delete window.__cwE2ESaveDone');
   check(
-    '多窗口：书文件夹被删后保存被阻止（BOOK_MISSING）',
-    Boolean(missingBookSave && missingBookSave.ok === false) && missingBookSave.code === 'BOOK_MISSING',
-    missingBookSave
+    '多窗口：书文件夹被删后保存被阻止（BOOK_MISSING），并给出救稿出口',
+    Boolean(missingBookSave && missingBookSave.ok === false) &&
+      missingBookSave.code === 'BOOK_MISSING' &&
+      missingBookRescueDialog === '保存被阻止：这些字还没落盘',
+    { missingBookSave, missingBookRescueDialog }
   );
   check('多窗口：没有 mkdir 重建书文件夹 / 影子文件', (await fileExists(mwBookC.path)) === false);
   await exec('void window.__cwTest.backToShelf()');

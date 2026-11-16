@@ -7,9 +7,11 @@
  *
  * 做法：删除成功时主进程发一张一次性凭证（随机 UUID），只在进程内存里记
  *   { bookPath, trashName, chapterId, expiresAt }
- * 撤销时必须带着这张凭证回来，四条都要对得上才放行：存在、没过期、同一本书、同一个 trashName；
- * 校验通过立刻**作废**（一次性），重复使用直接拒绝。凭证 10 分钟过期（长于撤销条的 10 秒，
- * 也长于作者「先看一眼再撤」的停顿），Map 有上限，超了丢最早过期的，防止长跑内存增长。
+ * 撤销时必须带着这张凭证回来，五条都要对得上才放行：存在、没过期、同一本书、同一个 trashName、
+ * 同一个 chapterId（审计修复 #56 / S4：record.chapterId 以前存而不用；渲染层回包本来就带 chapter.id，
+ * 主进程显式比对，伪造者改 id 也换不回那一章）。校验通过立刻**作废**（一次性），重复使用直接拒绝。
+ * 凭证 10 分钟过期（长于撤销条的 10 秒，也长于作者「先看一眼再撤」的停顿），Map 有上限，超了丢最早
+ * 过期的，防止长跑内存增长。
  *
  * 撤销失败（storage 报错）时主进程可以把凭证 `release` 回去，作者还能再点一次 ——
  * 「一次性」指的是成功用掉，不是「碰一下就没」。release 只在还没过期、且没有同 token 时生效。
@@ -17,11 +19,12 @@
  * 契约：
  *   createStore({ ttlMs, maxEntries, now, randomUUID }) → {
  *     issue({ bookPath, trashName, chapterId }) → token 字符串（参数不合法回 ''，绝不发半张凭证）
- *     take(token, { bookPath, trashName })      → { ok:true, record } | { ok:false, reason }
+ *     take(token, { bookPath, trashName, chapterId }) → { ok:true, record } | { ok:false, reason }
  *     release(record)                           → 是否放回成功
  *     size(), clear(), ttlMs, maxEntries
  *   }
- *   reason ∈ unknown / expired / book-mismatch / trash-mismatch；
+ *   reason ∈ unknown / expired / book-mismatch / trash-mismatch / chapter-mismatch；
+ *   chapterId 是可选比对：传了非空字符串就要求与发放时记的一致（旧调用方不传 = 不做这项比对）。
  *   errorFor(reason) → 带 code = RESTORE_TOKEN_INVALID 与中文文案的 Error（界面按 message 提示）。
  */
 
@@ -41,7 +44,8 @@ const REASON_MESSAGES = {
   unknown: '撤销凭证无效，已取消（只认这一次删除）',
   expired: '撤销凭证已过期，已取消（删除超过 10 分钟）',
   'book-mismatch': '撤销凭证不属于这本书，已取消',
-  'trash-mismatch': '撤销凭证与这次删除对不上，已取消'
+  'trash-mismatch': '撤销凭证与这次删除对不上，已取消',
+  'chapter-mismatch': '撤销凭证与这次删除的章节对不上，已取消'
 };
 
 class RestoreTokenError extends Error {
@@ -161,6 +165,10 @@ function createStore(options = {}) {
     }
     const trashName = typeof expected.trashName === 'string' ? expected.trashName : '';
     if (record.trashName !== trashName) return { ok: false, reason: 'trash-mismatch' };
+    // 审计修复 #56（S4）：把 chapterId 也绑进凭证。传了预期 id 就必须与发放时记的一致；
+    // 不传（旧调用方 / 老测试）保持原行为，不做这项比对。对不上同样只拒绝、不删凭证。
+    const chapterId = typeof expected.chapterId === 'string' ? expected.chapterId : '';
+    if (chapterId && record.chapterId !== chapterId) return { ok: false, reason: 'chapter-mismatch' };
     entries.delete(raw);
     prune(at);
     return { ok: true, record: { ...record } };

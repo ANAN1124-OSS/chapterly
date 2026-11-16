@@ -83,6 +83,32 @@ test('上下文片段：去掉换行、头尾省略标记', () => {
   assert.equal(tail.ellipsisEnd, false);
 });
 
+// 审计修复 #51（E16）：上下文按 UTF-16 下标截取，起点 / 终点落在代理对中间时会切出孤立代理
+// （界面上是「�」）。扩展 B 汉字 / emoji 都占两个码元，截断必须退回完整字符。
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+test('E16/#51：makeSnippet 的上下文截断不切开代理对', () => {
+  const emoji = '\u{1F600}';
+  const body = emoji.repeat(30);
+  // 命中在第 15 个 emoji（UTF-16 下标 30，正好是高代理），半径 5 会落在代理对中间
+  const cut = makeSnippet(body, 30, 2, 5);
+  assert.equal(cut.match, emoji);
+  assert.equal(LONE_SURROGATE_RE.test(cut.before), false, '前文不许带孤立代理');
+  assert.equal(LONE_SURROGATE_RE.test(cut.after), false, '后文不许带孤立代理');
+  assert.equal([...cut.before].length, 2, '前文是两个完整 emoji（不是三个半截码元）');
+  assert.equal(cut.before, emoji.repeat(2), '半径内退一个码元，完整 emoji 不受影响');
+  assert.equal(cut.after, emoji.repeat(2));
+
+  // BMP 正文与边界情况行为不变：不越过命中、起点 0 / 终点末尾不触发回退
+  const bmp = '绿'.repeat(20);
+  assert.equal(makeSnippet(bmp, 10, 1, 4).before, '绿'.repeat(4));
+  assert.equal(makeSnippet(emoji + '正文', 2, 2, 0).before, '');
+  const whole = makeSnippet(emoji.repeat(2), 0, 2, 5);
+  assert.equal(whole.ellipsisStart, false);
+  assert.equal(whole.ellipsisEnd, false);
+  assert.equal(LONE_SURROGATE_RE.test(whole.after), false);
+});
+
 test('替换这一处：从光标位置往后找下一处（光标落在命中内部时算这一处）', () => {
   const text = '阿明走了，阿明回头，阿明笑了。';
   const first = findNextMatch(text, '阿明', 0);
@@ -133,15 +159,19 @@ test('命中上限：正好到上限不算截断，再多一处就明确回 trun
 
 test('B3/WP-27：findNextMatch 增量 indexOf 与「先取全量命中再挑」口径逐案例一致', () => {
   // 参考实现 = 旧实现（findMatchesAll 的命中列表 + 两条 findIndex 判定），只用于对照。
+  // 审计修复 #10（E6）：返回形状多了 truncated，截断且光标之后没有可定位命中时回空结果哨兵。
   const reference = (text, query, fromIndex, options) => {
-    const matches = findMatchesAll(text, query, options).matches;
-    if (!matches.length) return null;
+    const found = findMatchesAll(text, query, options);
+    const matches = found.matches;
+    const truncated = found.truncated;
     const rawFrom = Number(fromIndex);
     const from = Math.max(0, Math.min(Number.isFinite(rawFrom) ? Math.floor(rawFrom) : 0, text.length));
     let index = matches.findIndex((match) => match.index <= from && from < match.index + match.length);
     if (index < 0) index = matches.findIndex((match) => match.index >= from);
-    if (index < 0) return null;
-    return { index, total: matches.length, match: matches[index] };
+    if (index < 0) {
+      return truncated ? { index: -1, total: matches.length, truncated: true, match: null } : null;
+    }
+    return { index, total: matches.length, truncated, match: matches[index] };
   };
   const texts = [
     '阿明走了，阿明回头，阿明笑了。',
@@ -178,7 +208,25 @@ test('B3/WP-27：findNextMatch 增量 indexOf 与「先取全量命中再挑」�
   const lastVisible = findNextMatch(capped, 'a', MAX_MATCHES - 1);
   assert.equal(lastVisible.index, MAX_MATCHES - 1);
   assert.equal(lastVisible.total, MAX_MATCHES, 'total 仍是列表长度（受上限约束）');
-  assert.equal(findNextMatch(capped, 'a', MAX_MATCHES), null, '第 5001 处不在命中列表里（上限语义不变）');
+  assert.equal(lastVisible.truncated, true, '命中超过上限必须如实回 truncated（E6 / 审计 #10）');
+  // 第 5001 处：返回截断哨兵（match 为 null），让界面说「超过单章上限」而不是「没有下一处了」。
+  assert.deepEqual(
+    findNextMatch(capped, 'a', MAX_MATCHES),
+    { index: -1, total: MAX_MATCHES, truncated: true, match: null }
+  );
+});
+
+test('替换这一处（E6 / 审计 #10）：命中没到上限时 truncated 恒为 false，正常返回形状不变', () => {
+  const exact = findNextMatch('a'.repeat(MAX_MATCHES), 'a', 0);
+  assert.equal(exact.truncated, false, '正好 5000 处不算截断（与 findMatchesAll 同一口径）');
+  assert.equal(exact.total, MAX_MATCHES);
+  const small = findNextMatch('阿明走了，阿明回头。', '阿明', 0);
+  assert.equal(small.truncated, false);
+  assert.equal(small.total, 2);
+  assert.deepEqual(small.match, { index: 0, length: 2 });
+  const lastOne = findNextMatch('a'.repeat(MAX_MATCHES), 'a', MAX_MATCHES - 1);
+  assert.equal(lastOne.index, MAX_MATCHES - 1);
+  assert.equal(lastOne.truncated, false, '最后一处落在上限内：没有更多命中');
 });
 
 test('B3/WP-27 静态闸门：findNextMatch 不许再物化全量命中，5000 上限仍在同一个循环里', () => {

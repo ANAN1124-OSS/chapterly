@@ -143,7 +143,7 @@ test('create() 只建表：没有 document / window 也建得出来，交出的�
   const ui = statusbarUi.create(host);
   assert.deepEqual(Object.keys(ui).sort(), ['chapterCharsOf', 'renderCharCount', 'renderSelectionStats', 'setupExternalChangeWatch']);
   for (const name of Object.keys(ui)) assert.equal(typeof ui[name], 'function', name);
-  // 内部件不导出（charCountTimer / updateCharCountText / lastBlurAt 都是模块内部状态）
+  // 内部件不导出（charCountTimer / updateCharCountText 都是模块内部状态）
   assert.equal(ui.updateCharCountText, undefined);
   assert.equal(ui.charCountTimer, undefined);
 });
@@ -338,16 +338,15 @@ test('renderSelectionStats：正常选区 → 「选中 N 字 / M 段」与 titl
   assert.equal(el.title, '选中的字数（不含空白，和「本章字数」同口径）与触及的自然段数');
 });
 
-test('setupExternalChangeWatch：只在 window 上挂 blur / focus 两个监听', () => {
+test('setupExternalChangeWatch：只在 window 上挂 focus 一个监听（审计修复 #5 起不再看失焦时长）', () => {
   const listeners = installWindow();
   const { host } = makeHost();
   statusbarUi.create(host).setupExternalChangeWatch();
-  assert.deepEqual(Object.keys(listeners).sort(), ['blur', 'focus']);
-  assert.equal(listeners.blur.length, 1);
+  assert.deepEqual(Object.keys(listeners).sort(), ['focus']);
   assert.equal(listeners.focus.length, 1);
 });
 
-test('外部修改检测：没书 / 加载中 / 保存中 / 弹层开着 / 阅读模式 / 失焦不到 500ms 都不查文件', async (t) => {
+test('外部修改检测：没书 / 加载中 / 保存中 / 弹层开着 / 阅读模式 都不查文件；失焦 0ms 回来也查', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 1000000 });
   try {
     const cases = [
@@ -365,17 +364,15 @@ test('外部修改检测：没书 / 加载中 / 保存中 / 弹层开着 / 阅�
       await listeners.focus[0]();
       assert.equal(calls.stat.length, 0, JSON.stringify(options));
     }
-    // 失焦 499ms 回来：忽略；满 500ms 才查
+    // 审计修复 #5（V301）：500ms 失焦门槛降到 0 —— 刚失焦就切回来（快速 Alt+Tab）也要查一次，
+    // 否则同步盘后台落盘 / 快速切回这两条真实路径永远检测不到（保存会静默覆盖外部版本）。
     const listeners = installWindow();
     const { host, calls } = makeHost();
     statusbarUi.create(host).setupExternalChangeWatch();
-    listeners.blur[0]();
-    t.mock.timers.tick(499);
     await listeners.focus[0]();
-    assert.equal(calls.stat.length, 0, '499ms 不许查');
-    t.mock.timers.tick(1);
+    assert.equal(calls.stat.length, 1, '失焦 0ms 回来也要查一次');
     await listeners.focus[0]();
-    assert.equal(calls.stat.length, 1, '500ms 要查一次');
+    assert.equal(calls.stat.length, 2, '再回到前台再查一次（单次检查只是一个 stat）');
   } finally {
     t.mock.timers.reset();
   }
@@ -517,13 +514,15 @@ test('静态闸门：模块只读 state / 只碰 DOM 与 window，不摸文件�
   }
   // 只读 state：一处写都没有（外部修改检测也只读 state）
   assert.equal(/state\.[A-Za-z_$][\w$]*\s*=/.test(moduleCode), false, '模块不许写 state');
-  // 事件监听只许 blur / focus 两个，且没有别的监听
+  // 事件监听只许 focus 一个（审计修复 #5 删掉了 blur / lastBlurAt：检测不再看失焦时长）
   const listens = [...moduleCode.matchAll(/addEventListener\('([^']+)'/g)].map((m) => m[1]);
-  assert.deepEqual(listens.sort(), ['blur', 'focus']);
+  assert.deepEqual(listens.sort(), ['focus']);
   assert.equal(moduleCode.includes('removeEventListener'), false);
   // 时间阈值写死在模块里（搬走前就在这一段；1.6.0 A5/P-09 把字数统计统一成输入路径 200ms 防抖）
   assert.match(moduleCode, /const CHAR_COUNT_DEBOUNCE_MS = 200;/);
-  assert.match(moduleCode, /since < 500/);
+  // 审计修复 #5（V301）：外部修改检测的 500ms 失焦门槛已经删掉（快速切回 / 同步盘后台落盘都要能查到），
+  // 门禁反向钉住它不许回来；拦下保存的是 chapter:save 的 expectedMtimeMs。
+  assert.equal(moduleCode.includes('since < 500'), false, '外部修改检测不许再有 500ms 失焦门槛');
   assert.match(moduleCode, /\}, CHAR_COUNT_DEBOUNCE_MS\);/);
 });
 

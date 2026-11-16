@@ -18,8 +18,9 @@
 const chaptersLib = require('./chapters');
 const exporter = require('./exporter');
 const { buildZip } = require('./zip');
-// XML 字符清洗 / 转义 / 切段 / 导出时间戳只有一份实现（和 EPUB 导出共用，见 core/xml.js）
-const { escapeXml, paragraphsFromText, isoTimestamp } = require('./xml');
+// XML 字符清洗 / 转义 / 切段只有一份实现（和 EPUB 导出共用，见 core/xml.js）；
+// 导出时间戳也在那里（经 core/exporter.normalizeExportInput 统一取，本文件不再直接引用）。
+const { escapeXml, paragraphsFromText } = require('./xml');
 
 const WORD_NAMESPACE = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const WORD_LANGUAGE = 'zh-CN';
@@ -30,8 +31,9 @@ const WORD_LINE_SPACING = 360; // 240 = 单倍行距，360 = 1.5 倍
 
 // ---------- XML ----------
 // 字符清洗 / 转义 / 切段在 core/xml.js（和 EPUB 导出共用同一份实现），这里只拼 WordprocessingML 标签。
-function paragraph(style, text, extraProperties) {
-  const properties = `<w:pPr><w:pStyle w:val="${escapeXml(style)}"/>${extraProperties || ''}</w:pPr>`;
+// 审计修复 #53（R8）：删掉第三个死参数 extraProperties（全仓没有调用方传过，paragraph 只产样式 + 文本）。
+function paragraph(style, text) {
+  const properties = `<w:pPr><w:pStyle w:val="${escapeXml(style)}"/></w:pPr>`;
   return `  <w:p>${properties}<w:r><w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
 }
 
@@ -187,25 +189,16 @@ function documentDocument({ title, author, metaLine, content }) {
 }
 
 // ---------- 书籍结构 ----------
-function chapterList(meta) {
-  return meta && Array.isArray(meta.chapters) ? meta.chapters : [];
-}
-
+// 审计修复 #24（R1）：chapterList / 入参归一 / 空书与空范围检查全部收进
+// core/exporter.normalizeExportInput（和 EPUB 导出共用一份），本文件不再抄第二份。
 function normalizeInput(input) {
-  const meta = (input && input.meta) || {};
-  const chapters = chapterList(meta);
-  if (!chapters.length) throw new Error('EMPTY_BOOK：这本书里还没有章节');
-  const texts = Array.isArray(input && input.texts) ? input.texts : [];
-  const title = String(meta.title == null ? '' : meta.title).trim() || '未命名书籍';
+  const { meta, chapters, texts, title, plan, stamp } = exporter.normalizeExportInput(input);
   const author = String(meta.author == null ? '' : meta.author).trim();
   // V115（WP-32 / 审计 V115）：这里原来读 input.language 并存进 bundle.lang，但 styles.xml 的
   // w:lang 是固定模板（WORD_LANGUAGE），返回值也没有任何消费者 —— 「传了但没写」的接口空洞。
   // 导出对话界面没有语言选项（简繁转换走 exporter/conversion，不是语言标记），所以删掉这个参数，
   // 而不是凭空调一个 w:lang。以后真要按书设置语言，先加导出入口与 XML 断言。
-  // 范围解析和 TXT / EPUB 导出共用同一份纯逻辑：只读，不改 meta。
-  const plan = exporter.resolveExportRange(meta, input && input.range);
-  if (!plan.count) throw new Error('EMPTY_EXPORT_RANGE：所选范围里没有章节');
-  const stamp = isoTimestamp(input && input.modified);
+  // 范围解析 / 空范围检查在 core/exporter.normalizeExportInput（只读，不改 meta）。
   return { meta, chapters, texts, title, author, stamp, plan };
 }
 

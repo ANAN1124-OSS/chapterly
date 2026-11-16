@@ -462,6 +462,38 @@ test('历史：还原删章备份只把 txt 放回书文件夹，不改章节列
   );
 });
 
+// 审计修复 #11（E7）：清单过期时点的那份散文件已不在组里。旧实现回退 group.files[0]，
+// 会把组里另一章静默还原成「点的那一章」；现在与 dir 分支同一口径，找不到就抛 HISTORY_FILE_MISSING。
+test('历史：删章散文件还原时文件名不匹配 → HISTORY_FILE_MISSING，绝不回退组内第一份', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '还原错章书');
+  const meta = await storage.readBookMeta(bookPath);
+  await storage.saveChapterText(bookPath, meta.chapters[0].file, '现稿。\n');
+  await storage.renameBook(bookPath, '还原错章书-改名');
+  const metaBefore = await fs.readFile(path.join(bookPath, '书目.json'), 'utf8');
+  await fs.mkdir(path.join(bookPath, '_trash'), { recursive: true });
+  const trashName = '2026-10-31-220000-003-丢失的章节.txt';
+  await fs.writeFile(path.join(bookPath, '_trash', trashName), '丢失章节的正文。\r\n', 'utf8');
+
+  // 点了一份「组里已经不存在」的文件名：必须拒绝，而不是把 _trash 里的那份悄悄放回去
+  await assert.rejects(
+    storage.restoreHistoryFile(bookPath, `file:${trashName}`, '003-别的章节.txt'),
+    (err) => err.code === 'HISTORY_FILE_MISSING' && err.message.includes('已经不存在'),
+    '文件名不匹配要报 HISTORY_FILE_MISSING'
+  );
+  await assert.rejects(
+    fs.access(path.join(bookPath, '003-丢失的章节.txt')),
+    (err) => err.code === 'ENOENT',
+    '回退组内第一份会把这个文件写回书里（这正是本条要堵的）'
+  );
+  assert.equal(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'), metaBefore, '书目一个字节没动');
+
+  // 文件名对得上（原名或 trashName 两种口径）才允许还原
+  const restored = await storage.restoreHistoryFile(bookPath, `file:${trashName}`, '003-丢失的章节.txt');
+  assert.equal(restored.restored, 1);
+  assert.equal(await fs.readFile(path.join(bookPath, '003-丢失的章节.txt'), 'utf8'), '丢失章节的正文。\r\n');
+});
+
 // C18（v1.8.0 WP-19）：删章散文件还原是 128 MB 闸门的漏网入口 —— 以前直读 _trash 里的备份，
 // 备份被外部换成超大文件时整份进主进程。与其它还原路径同一口径：stat + readSizeProblem 先拒绝。
 test('历史：删章散文件备份超限 → HISTORY_TOO_LARGE，不读内容、不写回书里', async () => {
@@ -960,7 +992,9 @@ test('删除备份（B6）：绝不自动删 —— 列历史 / 扫描备份不�
   const historySrc = await fs.readFile(path.join(__dirname, '..', 'core', 'history.js'), 'utf8');
   const scanBody = historySrc.slice(historySrc.indexOf('async function listHistory('), historySrc.indexOf('// 严格解析渲染层传回来的备份组 id'));
   assert.doesNotMatch(scanBody, /fs\.rm\(|fs\.unlink\(|deleteHistoryBackups/, 'listHistory 只能读');
-  const mainSrc = await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8');
+  // 审计修复 #38（▲V306）：book:delete-history-backups 已随书域数据面搬到 ipc/book-data.js —— 与 main.js 一起扫。
+  const mainSrc = (await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8')) +
+    (await fs.readFile(path.join(__dirname, '..', 'ipc', 'book-data.js'), 'utf8'));
   assert.equal(
     (mainSrc.match(/handleBook\('book:delete-history-backups'/g) || []).length,
     1,

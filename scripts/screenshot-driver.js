@@ -8,19 +8,19 @@
 
 // sleep 用 core/common.js 的同一份实现（纯逻辑、不 require electron），本文件仍能脱离主进程单独 require。
 const { sleep } = require('../core/common');
+// 审计修复 #53（R7）：等待 / 注入的实现收进 scripts/driver-poll.js（与 a11y-gate 共用同一份轮询）。
+const { pollUntil, execInRenderer } = require('./driver-poll');
 // 1.6.0 A6：剪贴板恢复 + 焦点抢夺限组（和 scripts/e2e/groups/index.js 共享同一个开关）。
 const politeness = require('./e2e-politeness');
 
 async function waitForRenderer(win, expr, timeout = 12000) {
-  const startedAt = Date.now();
-  for (;;) {
-    try {
-      const value = await win.webContents.executeJavaScript(expr, true);
-      if (value) return value;
-    } catch { /* 页面还没加载完，继续等 */ }
-    if (Date.now() - startedAt > timeout) throw new Error(`等待超时：${expr}`);
-    await sleep(120);
-  }
+  // 页面切换间隙 executeJavaScript 会抛错：pollUntil 把它当作「还没好」继续等（旧行为逐字一致）；
+  // 超时文案仍是「等待超时：<表达式>」。
+  return pollUntil(() => win.webContents.executeJavaScript(expr, true), {
+    timeout,
+    interval: 120,
+    label: expr
+  });
 }
 
 // E2E 专用：工作站锁屏 / 没有交互桌面时，Windows 会拒绝所有进程的剪贴板读写
@@ -132,6 +132,9 @@ async function run(host) {
   let focusStealTimer = null;
   try {
     const win = host.getWin();
+    // 审计修复 #53（R7）：注入统一走 driver-poll 的 execInRenderer，run 内只留一个 exec(code) 别名
+    // （以前 80+ 处逐字重复 win.webContents.executeJavaScript(..., true)）。
+    const exec = (code) => execInRenderer(win, code);
     // E2E 专用（2026-11-04）：Electron 文档写明 sendInputEvent 只在窗口**有焦点**时投递；
     // 自动化在后台跑时窗口会被别的程序抢走焦点，于是真实键盘 / 悬停断言偶发假红（组 69 / 70）。
     // 同理，窗口被别的窗口盖住时 Chromium 会把渲染层当后台页暂停，程序化 win.setSize 改的是
@@ -170,13 +173,13 @@ async function run(host) {
     await waitForRenderer(win, 'Boolean(window.__cwTest && window.__cwTest.ready)', 15000);
     if (screenshotPath) {
       if (screenshotBook) {
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.openBookPath(${JSON.stringify(screenshotBook)})`,
           true
         );
         await sleep(500);
         if (screenshotChapter != null) {
-          await win.webContents.executeJavaScript(
+          await exec(
             `window.__cwTest.switchTo(${Number(screenshotChapter)}, 'discard')`,
             true
           );
@@ -185,7 +188,7 @@ async function run(host) {
       }
       // 开发截图可临时改章节栏宽度（只影响本次截图，不写配置）
       if (argValue('sidebar-width')) {
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.setSidebarWidth(${Number(argValue('sidebar-width'))})`,
           true
         );
@@ -193,71 +196,71 @@ async function run(host) {
       }
       if (screenshotDialog === 'command') {
         // 1.4.0 P0-3：命令面板打开的样子（空查询 = 最近使用 + 命令 / 章节 / 书三组）
-        await win.webContents.executeJavaScript('void window.__cwTest.openCommandPalette()', true);
+        await exec('void window.__cwTest.openCommandPalette()', true);
         await sleep(500);
       } else if (screenshotDialog === 'command-search') {
         // 1.4.0 P0-3：命令面板里输入「保存」过滤后的样子
-        await win.webContents.executeJavaScript('void window.__cwTest.openCommandPalette()', true);
+        await exec('void window.__cwTest.openCommandPalette()', true);
         await sleep(350);
-        await win.webContents.executeJavaScript(
+        await exec(
           `(() => { const input = document.getElementById('command-input'); input.value = '保存'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`,
           true
         );
         await sleep(300);
       } else if (screenshotDialog === 'shortcuts') {
         // 1.5.0 功能-4：`?` 快捷键一览打开的样子（先把焦点移出编辑区：编辑区里 ? 是普通字符）
-        await win.webContents.executeJavaScript(
+        await exec(
           "(() => { const el = document.getElementById('editor'); if (el) el.blur(); document.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true })); })()",
           true
         );
         await sleep(450);
       } else if (screenshotDialog === 'undo') {
         // 1.4.0 P0-2：撤销条（删除章节后 10 秒内的样子）—— 删掉第 2 章，条子出现在左下角。
-        await win.webContents.executeJavaScript(
+        await exec(
           `void window.__cwTest.deleteChapterAt(1)`,
           true
         );
         await sleep(600);
       } else if (screenshotDialog === 'settings-book') {
         // 按书设置（章号编号方式 2026-11-10）：打开当前书的设置并滚到「章号」
-        await win.webContents.executeJavaScript('void window.__cwTest.openSettings()', true);
+        await exec('void window.__cwTest.openSettings()', true);
         await sleep(700);
-        await win.webContents.executeJavaScript(
+        await exec(
           `(() => { const el = document.getElementById('settings-numbering-field'); if (el) el.scrollIntoView({ block: 'center' }); })()`,
           true
         );
         await sleep(400);
       } else if (screenshotDialog === 'jump-volume') {
         // 按卷编号时 Ctrl+G 输入 1：两卷的第 1 章都列出来
-        await win.webContents.executeJavaScript('void window.__cwTest.openJumpDialog()', true);
+        await exec('void window.__cwTest.openJumpDialog()', true);
         await sleep(450);
-        await win.webContents.executeJavaScript("void window.__cwTest.setJumpQuery('1')", true);
+        await exec("void window.__cwTest.setJumpQuery('1')", true);
         await sleep(600);
       } else if (screenshotDialog === 'chapter-filter') {
         // 2026-11-10 卷章目录重设计：筛选框输入后的样子（默认筛「渡」，可用 --filter= 覆盖）
         const filterQuery = argValue('filter') || '渡';
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.setChapterFilter(${JSON.stringify(filterQuery)})`,
           true
         );
         await sleep(350);
       } else if (screenshotDialog === 'chapter-filter-focus') {
         // 筛选框的焦点环（Tab 进去的样子）
-        await win.webContents.executeJavaScript(
+        await exec(
           `(() => { const input = document.getElementById('chapter-filter'); input.focus(); return input === document.activeElement; })()`,
           true
         );
         await sleep(300);
       } else if (screenshotDialog === 'chapter-scroll') {
         // 目录滚动到第二卷：卷头吸顶 + 当前章仍高亮
-        await win.webContents.executeJavaScript(
+        await exec(
           `(() => { const list = document.getElementById('chapter-list'); list.scrollTop = 430; return list.scrollTop; })()`,
           true
         );
         await sleep(380);
       } else if (screenshotDialog === 'chapter-hover') {
         // 悬停一行看行尾「⋯」更多按钮（真鼠标事件，CSS :hover 才成立）
-        const point = await win.webContents.executeJavaScript(
+        const point = await exec(
           `(() => { const el = document.querySelector('#chapter-list .chapter-item[data-index="3"]'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width - 40), y: Math.round(r.top + r.height / 2) }; })()`,
           true
         );
@@ -268,27 +271,27 @@ async function run(host) {
       } else if (screenshotDialog === 'chapter-pill') {
         // 当前章滚出目录：先切到最后一章，再把列表滚到顶，底部「回到第 N 章」浮标出现
         const lastIndex = Number(
-          await win.webContents.executeJavaScript('window.__cwTest.state.chapters.length - 1', true)
+          await exec('window.__cwTest.state.chapters.length - 1', true)
         );
-        await win.webContents.executeJavaScript(
+        await exec(
           `void window.__cwTest.switchTo(${lastIndex}, 'discard')`,
           true
         );
         await sleep(320);
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('chapter-list').scrollTop = 0;`,
           true
         );
         await sleep(420);
       } else if (screenshotDialog === 'chapter-collapsed') {
         // 全部折叠（当前章在折叠卷里时，浮标仍给一条回去的路）
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('btn-toggle-volumes').click()`,
           true
         );
         await sleep(350);
       } else if (screenshotDialog === 'unsaved') {
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.setText('（这是一段还没有保存的正文，演示关窗拦截）'); void window.__cwTest.handleCloseRequest();`,
           true
         );
@@ -308,7 +311,7 @@ async function run(host) {
         screenshotDialog === 'settings-ia-search' ||
         screenshotDialog === 'settings-ia-empty'
       ) {
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('btn-settings').click();`,
           true
         );
@@ -328,7 +331,7 @@ async function run(host) {
         const dialogTab = SETTINGS_DIALOG_TABS[screenshotDialog];
         if (dialogTab) {
           await sleep(350);
-          await win.webContents.executeJavaScript(
+          await exec(
             `(() => { const btn = document.getElementById('settings-tab-' + ${JSON.stringify(dialogTab)}); if (btn) btn.click(); })()`,
             true
           );
@@ -337,7 +340,7 @@ async function run(host) {
         // 1.4.0 P0-1：新增两个信息架构截图状态 —— 顶部搜索命中（跨分区）/ 搜索空结果
         if (screenshotDialog === 'settings-ia-search') {
           await sleep(350);
-          await win.webContents.executeJavaScript(
+          await exec(
             `(() => {
                const input = document.getElementById('settings-search');
                input.value = '快照';
@@ -348,7 +351,7 @@ async function run(host) {
           await sleep(300);
         } else if (screenshotDialog === 'settings-ia-empty') {
           await sleep(350);
-          await win.webContents.executeJavaScript(
+          await exec(
             `(() => {
                const input = document.getElementById('settings-search');
                input.value = '不存在的设置项';
@@ -361,28 +364,28 @@ async function run(host) {
         if (screenshotDialog === 'settings-snapshot') {
           // 开发截图用：设置弹层很长，滚到底展示「数据安全 / 每日快照」
           await sleep(300);
-          await win.webContents.executeJavaScript(
+          await exec(
             `const sc = document.querySelector('.settings-scroll'); if (sc) sc.scrollTop = sc.scrollHeight;`,
             true
           );
         } else if (screenshotDialog === 'settings-stats') {
           // 开发截图用：滚到「写作统计 / 近 30 天柱状图」
           await sleep(600);
-          await win.webContents.executeJavaScript(
+          await exec(
             `const el = document.getElementById('settings-stats-group'); if (el) el.scrollIntoView({ block: 'start' });`,
             true
           );
         } else if (screenshotDialog === 'settings-calendar') {
           // 开发截图用：滚到「码字日历 / 连续写作天数 / 月度汇总」
           await sleep(700);
-          await win.webContents.executeJavaScript(
+          await exec(
             `const el = document.getElementById('settings-calendar-field'); if (el) el.scrollIntoView({ block: 'start' });`,
             true
           );
         } else if (screenshotDialog === 'settings-template') {
           // 开发截图用：填一条示例模板（只改界面、不保存），展示展开预览
           await sleep(500);
-          await win.webContents.executeJavaScript(
+          await exec(
             `window.__cwTest.setChapterTemplateField(${JSON.stringify('第{n}章：{title}\n\n')});` +
               `const el = document.getElementById('settings-template-group'); if (el) el.scrollIntoView({ block: 'start' });`,
             true
@@ -390,28 +393,28 @@ async function run(host) {
         } else if (screenshotDialog === 'settings-sensitive') {
           // 开发截图用：滚到「敏感词预检」词表设置
           await sleep(600);
-          await win.webContents.executeJavaScript(
+          await exec(
             `const el = document.getElementById('settings-sensitive-group'); if (el) el.scrollIntoView({ block: 'start' });`,
             true
           );
         } else if (screenshotDialog === 'settings-proofread') {
           // 开发截图用：滚到「校对词表」设置（只读状态，不保存）
           await sleep(700);
-          await win.webContents.executeJavaScript(
+          await exec(
             `const el = document.getElementById('settings-proofread-group'); if (el) el.scrollIntoView({ block: 'start' });`,
             true
           );
         } else if (screenshotDialog === 'settings-export') {
           // 开发截图用：滚到「导出」简繁转换设置（只改界面、不保存）
           await sleep(600);
-          await win.webContents.executeJavaScript(
+          await exec(
             `const el = document.getElementById('settings-export-group'); if (el) el.scrollIntoView({ block: 'start' });`,
             true
           );
         } else if (screenshotDialog === 'settings-caret') {
           // 开发截图用：滚到「当前段落高亮」分组，勾上开关并选一个色板色（只改界面、不保存）
           await sleep(600);
-          await win.webContents.executeJavaScript(
+          await exec(
             `window.__cwTest.setCheck('settings-caret-paragraph', true);` +
               `window.__cwTest.setSettingsCaretColor('#3f7fbf');` +
               `const el = document.getElementById('settings-caret-field'); if (el) el.scrollIntoView({ block: 'start' });`,
@@ -420,34 +423,34 @@ async function run(host) {
         } else if (screenshotDialog === 'settings-logs') {
           // 开发截图用：滚到「诊断日志」分组（打开日志文件夹按钮 / 日志份数）
           await sleep(700);
-          await win.webContents.executeJavaScript(
+          await exec(
             `const el = document.getElementById('settings-logs-group'); if (el) el.scrollIntoView({ block: 'start' });`,
             true
           );
         } else if (screenshotDialog === 'settings-update') {
           // 开发截图用：滚到「检查更新」，用假网络演示「发现新版本」+ 下载页按钮（不真连 GitHub）
           await sleep(500);
-          await win.webContents.executeJavaScript(
+          await exec(
             `window.__cwTest.setUpdateMock({ type: 'json', body: { tag_name: 'v0.7.0', name: 'v0.7.0', html_url: 'https://github.com/ANAN1124-OSS/chapterly/releases/tag/v0.7.0', published_at: '2026-11-01T00:00:00Z', prerelease: false, draft: false } })`,
             true
           );
-          await win.webContents.executeJavaScript('window.__cwTest.checkUpdateNow()', true);
+          await exec('window.__cwTest.checkUpdateNow()', true);
           await waitForRenderer(win, `window.__cwTest.updateStatus().status === 'update'`);
-          await win.webContents.executeJavaScript(
+          await exec(
             `const el = document.getElementById('settings-update-group'); if (el) el.scrollIntoView({ block: 'start' });`,
             true
           );
         }
         await sleep(500);
       } else if (screenshotDialog === 'bookmenu') {
-        await win.webContents.executeJavaScript(
+        await exec(
           `const more = document.querySelector('.book-card-more'); if (more) more.click();`,
           true
         );
         await sleep(500);
       } else if (screenshotDialog === 'bookinfo') {
         // 开发截图用：打开第一本书的「书籍信息」并填示例值（只改界面，不保存）
-        await win.webContents.executeJavaScript(
+        await exec(
           `(() => {
              const book = (window.__cwTest.state.books || []).find((item) => item.status !== 'corrupt');
              if (!book) return false;
@@ -463,14 +466,14 @@ async function run(host) {
         await sleep(500);
       } else if (screenshotDialog === 'exportmenu') {
         // 开发截图用：展开写作页「导出 ▾」菜单，展示 TXT / EPUB / 本书历史入口
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('btn-export').click();`,
           true
         );
         await sleep(500);
       } else if (screenshotDialog === 'export') {
         // 开发截图用：打开「导出 TXT」对话框，展示范围与简繁转换提示（只读，不导出）
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('btn-export').click(); document.querySelector('#export-menu button[data-action="txt"]').click();`,
           true
         );
@@ -478,35 +481,35 @@ async function run(host) {
       } else if (screenshotDialog === 'export-epub') {
         // 开发截图用：打开「导出 EPUB」范围对话框并选中「按卷导出」，展示 EPUB 也能按卷 / 按范围
         // （只读，不导出、不写盘）
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('btn-export').click(); document.querySelector('#export-menu button[data-action="epub"]').click();`,
           true
         );
         await sleep(700);
-        await win.webContents.executeJavaScript(SCREENSHOT_PICK_VOLUME_JS, true);
+        await exec(SCREENSHOT_PICK_VOLUME_JS, true);
         await sleep(900);
       } else if (screenshotDialog === 'export-docx') {
         // 开发截图用：打开「导出 DOCX」范围对话框并选中「按卷导出」（只读，不导出、不写盘）
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('btn-export').click(); document.querySelector('#export-menu button[data-action="docx"]').click();`,
           true
         );
         await sleep(700);
-        await win.webContents.executeJavaScript(SCREENSHOT_PICK_VOLUME_JS, true);
+        await exec(SCREENSHOT_PICK_VOLUME_JS, true);
         await sleep(900);
       } else if (screenshotDialog === 'fragment') {
         // 开发截图用：书架「＋ 碎片」弹层 + 示例内容（只是界面演示，不会写盘）
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.openFragmentDialog(); window.__cwTest.setFragmentText('雨还在下。旧车站的钟停在 3:17，像在等一个不会再回来的人。');`,
           true
         );
         await sleep(400);
       } else if (screenshotDialog === 'fragments') {
         // 开发截图用：写作页「插入碎片…」弹层，等列表读出来再选第一条
-        await win.webContents.executeJavaScript(`window.__cwTest.openInsertFragmentDialog();`, true);
+        await exec(`window.__cwTest.openInsertFragmentDialog();`, true);
         try {
           await waitForRenderer(win, 'window.__cwTest.fragmentRowCount() > 0', 8000);
-          await win.webContents.executeJavaScript(`window.__cwTest.clickFragmentRow(0);`, true);
+          await exec(`window.__cwTest.clickFragmentRow(0);`, true);
         } catch {
           console.log('[screenshot] 没有可展示的碎片（可在 _碎片 里先放一条）');
         }
@@ -525,52 +528,52 @@ async function run(host) {
           '',
           '教室的窗开着，风把窗帘吹得很高，像某种迟到很久的回答。'
         ].join('\n');
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.openCapture(${JSON.stringify(captureSample)});`,
           true
         );
         await sleep(700);
       } else if (screenshotDialog === 'splitter') {
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.setSidebarWidth(420);`,
           true
         );
         await sleep(400);
       } else if (screenshotDialog === 'format') {
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.openFormatDialog();`,
           true
         );
         await sleep(900);
       } else if (screenshotDialog === 'formatmenu') {
         // v0.8.5 R1：「整理」不再点开菜单，改成悬浮出「选择卡」——截图走真实的 pointerenter
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('format-dropdown').dispatchEvent(new PointerEvent('pointerenter'));`,
           true
         );
         await sleep(400);
       } else if (screenshotDialog === 'displaymenu') {
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('btn-display').click();`,
           true
         );
         await sleep(400);
       } else if (screenshotDialog === 'format-click') {
         // 点「整理」= 直接用记住的规则整理本章（截图要赶在 toast 消失前）
-        await win.webContents.executeJavaScript(
+        await exec(
           `document.getElementById('btn-format').click();`,
           true
         );
         await sleep(800);
       } else if (screenshotDialog === 'find') {
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.openFindPanel(); window.__cwTest.setFindFields({ query: '风', scope: 'book' }); window.__cwTest.findRun();`,
           true
         );
         await sleep(900);
       } else if (screenshotDialog === 'find-nav') {
         // 开发截图用：查找面板里的「当前章定位」一行（上一处 / 下一处 + 第 X / N 处）
-        await win.webContents.executeJavaScript(
+        await exec(
           `(() => {${SCREENSHOT_PICK_CHAR_JS}
              window.__cwTest.openFindPanel();
              window.__cwTest.setFindFields({ query: best || '的', scope: 'current' });
@@ -582,7 +585,7 @@ async function run(host) {
       } else if (screenshotDialog === 'find-highlight') {
         // 开发截图用：查找增强（v0.8-11，提案 N11）——当前章全部命中高亮 + 状态栏「查找 1/N」。
         // 先挑本章出现最多的一个汉字当查找词，查完把面板关掉，让正文里的高亮露出来（只读，不写盘）
-        await win.webContents.executeJavaScript(
+        await exec(
           `(() => {${SCREENSHOT_PICK_CHAR_JS}
              window.__cwTest.openFindPanel();
              window.__cwTest.setFindFields({ query: best || '的', scope: 'current' });
@@ -595,7 +598,7 @@ async function run(host) {
       } else if (screenshotDialog === 'find-bookmark') {
         // 开发截图用：查找书签（v0.8-11b，提案 N11b）——当前章查一次并存成书签，
         // 面板里的「书签」区列出这一条，正文命中同时高亮（只写临时 userData 的 config，不碰书库）
-        await win.webContents.executeJavaScript(
+        await exec(
           `(async () => {${SCREENSHOT_PICK_CHAR_JS}
              window.__cwTest.openFindPanel();
              window.__cwTest.setFindFields({ query: best || '的', scope: 'current' });
@@ -607,23 +610,23 @@ async function run(host) {
         await sleep(900);
       } else if (screenshotDialog === 'proofread') {
         // 开发截图用：打开校对面板，等当前章自动检查完，再切整本跑一遍（只读）
-        await win.webContents.executeJavaScript(`window.__cwTest.openProofreadPanel();`, true);
+        await exec(`window.__cwTest.openProofreadPanel();`, true);
         await sleep(800);
-        await win.webContents.executeJavaScript(`window.__cwTest.setProofreadScope('book');`, true);
+        await exec(`window.__cwTest.setProofreadScope('book');`, true);
         await sleep(120);
-        await win.webContents.executeJavaScript(`window.__cwTest.proofreadRun();`, true);
+        await exec(`window.__cwTest.proofreadRun();`, true);
         await sleep(800);
       } else if (screenshotDialog === 'sensitive') {
         // 开发截图用：打开敏感词预检面板（先等当前章自动预检完），再切整本跑一遍（只读）
-        await win.webContents.executeJavaScript(`window.__cwTest.openSensitivePanel();`, true);
+        await exec(`window.__cwTest.openSensitivePanel();`, true);
         await sleep(900);
-        await win.webContents.executeJavaScript(`window.__cwTest.setSensitiveScope('book');`, true);
+        await exec(`window.__cwTest.setSensitiveScope('book');`, true);
         await sleep(120);
-        await win.webContents.executeJavaScript(`window.__cwTest.sensitiveRun();`, true);
+        await exec(`window.__cwTest.sensitiveRun();`, true);
         await sleep(900);
       } else if (screenshotDialog === 'tts') {
         // 开发截图用：假语音引擎 + 朗读小条（真的出声在开发机上也会吵，这里只展示界面状态）
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.ttsInstallFakeSpeech(); document.getElementById('btn-tts').click();`,
           true
         );
@@ -633,64 +636,64 @@ async function run(host) {
             'window.__cwTest.ttsBarOpen() && window.__cwTest.ttsChunks().length > 0',
             8000
           );
-          await win.webContents.executeJavaScript('window.__cwTest.ttsFakeFinish();', true);
+          await exec('window.__cwTest.ttsFakeFinish();', true);
           await sleep(320);
-          await win.webContents.executeJavaScript('window.__cwTest.ttsPlay();', true);
+          await exec('window.__cwTest.ttsPlay();', true);
         } catch {
           console.log('[screenshot] 朗读条没能准备好');
         }
         await sleep(400);
       } else if (screenshotDialog === 'marks' || screenshotDialog === 'marks-menu') {
         // 开发截图用：编辑器小件——不可见字符 ␣ / 行尾空白 / 超长段落左侧黄线（只读显示层，不写盘）
-        await win.webContents.executeJavaScript(
+        await exec(
           "window.__cwTest.setMarksToggle('invisibles', true); window.__cwTest.setMarksToggle('longParagraphs', true);",
           true
         );
         await sleep(450);
         if (screenshotDialog === 'marks-menu') {
-          await win.webContents.executeJavaScript('window.__cwTest.openFormatMenu();', true);
+          await exec('window.__cwTest.openFormatMenu();', true);
         } else {
-          await win.webContents.executeJavaScript('window.__cwTest.selectRange(0, 42);', true);
+          await exec('window.__cwTest.selectRange(0, 42);', true);
         }
         await sleep(500);
       } else if (screenshotDialog === 'marks-caret') {
         // 开发截图用：当前段落高亮（v0.8-10，提案 N10）——打开开关，把光标放进一段较长的正文里
         // （只读显示层，不写盘、不写配置）
-        await win.webContents.executeJavaScript(
+        await exec(
           "window.__cwTest.setMarksToggle('caretParagraph', true);",
           true
         );
         await sleep(400);
-        await win.webContents.executeJavaScript(screenshotCaretLongLineScript(), true);
+        await exec(screenshotCaretLongLineScript(), true);
         await sleep(500);
       } else if (screenshotDialog === 'marks-caret-color') {
         // 开发截图用：当前段落高亮按书开 + 自定义颜色（蓝色）+ 打开「排版 ▾」露出色板。
         // 只写临时 userData 的 config.json（截图环境），不碰书库 / 正文。
-        await win.webContents.executeJavaScript(
+        await exec(
           "window.__cwTest.setCaretParagraphPersist(true); window.__cwTest.setCaretColor('#3f7fbf');",
           true
         );
         await sleep(600);
-        await win.webContents.executeJavaScript(
+        await exec(
           screenshotCaretLongLineScript('window.__cwTest.openFormatMenu();'),
           true
         );
         await sleep(600);
       } else if (screenshotDialog === 'focus') {
         // 开发截图用：专注模式 + 打字机模式（隐藏左栏 / 顶栏，只改显示，不写盘、不写配置）
-        await win.webContents.executeJavaScript(
+        await exec(
           'window.__cwTest.focusToggle(true); window.__cwTest.focusTypewriter(true);',
           true
         );
         await sleep(500);
-        await win.webContents.executeJavaScript(
+        await exec(
           'const len = window.__cwTest.text().length; window.__cwTest.focusSetCaret(Math.floor(len * 0.6)); window.__cwTest.focusAlign();',
           true
         );
         await sleep(500);
       } else if (screenshotDialog === 'reading') {
         // 开发截图用：整本只读通读（字号 / 行距 / 目录 / 上一章 / 下一章；只读，不写盘）
-        await win.webContents.executeJavaScript('window.__cwTest.openReading();', true);
+        await exec('window.__cwTest.openReading();', true);
         try {
           await waitForRenderer(win, 'window.__cwTest.readingState().blockCount > 0', 10000);
         } catch {
@@ -698,7 +701,7 @@ async function run(host) {
         }
         await sleep(500);
         if (argValue('reading-chapter') != null) {
-          await win.webContents.executeJavaScript(
+          await exec(
             `window.__cwTest.readingJump(${Number(argValue('reading-chapter'))});`,
             true
           );
@@ -707,22 +710,22 @@ async function run(host) {
       } else if (screenshotDialog === 'shelf-search') {
         // 开发截图用：书架搜正文（真实走 userData 里的索引；只读，不碰书库）
         const query = argValue('search-query') || '青柠色';
-        await win.webContents.executeJavaScript(
+        await exec(
           `window.__cwTest.setShelfQuery(${JSON.stringify(query)});`,
           true
         );
         await sleep(1800);
       } else if (screenshotDialog === 'group-manage') {
         // 开发截图用（1.6.0 F5）：书架「分组管理」弹层（改名 / 合并）；只读打开，不改任何书
-        await win.webContents.executeJavaScript('window.__cwTest.openGroupManageDialog();', true);
+        await exec('window.__cwTest.openGroupManageDialog();', true);
         await sleep(500);
       } else if (screenshotDialog === 'conflict') {
-        const folder = await win.webContents.executeJavaScript(
+        const folder = await exec(
           'window.__cwTest.firstConflictBookFolder()',
           true
         );
         if (folder) {
-          await win.webContents.executeJavaScript(
+          await exec(
             `window.__cwTest.openConflictDialogFor(${JSON.stringify(folder)})`,
             true
           );
@@ -730,11 +733,11 @@ async function run(host) {
         await sleep(500);
       } else if (screenshotDialog === 'history') {
         const opened = screenshotBook
-          ? await win.webContents.executeJavaScript(
+          ? await exec(
               `window.__cwTest.openHistoryForPath(${JSON.stringify(screenshotBook)})`,
               true
             )
-          : await win.webContents.executeJavaScript('window.__cwTest.openHistoryForFirstBook()', true);
+          : await exec('window.__cwTest.openHistoryForFirstBook()', true);
         if (!opened) console.log('[screenshot] 没有可打开历史面板的书');
         await sleep(900);
       }
@@ -760,7 +763,7 @@ async function run(host) {
         repair,
         exporter,
         sleep,
-        exec: (code) => win.webContents.executeJavaScript(code, true),
+        exec: (code) => execInRenderer(win, code),
         // ---------- 多窗口 E2E 辅助 ----------
         openWindow: async (bookPath = null) => {
           const created = await host.createWindow({ bookPath: bookPath || null, cascade: true });
@@ -782,7 +785,7 @@ async function run(host) {
         execIn: (windowId, code) => {
           const session = host.sessionById(windowId);
           if (!session) throw new Error(`窗口不存在：${windowId}`);
-          return session.win.webContents.executeJavaScript(code, true);
+          return execInRenderer(session.win, code);
         },
         focusWindow: (windowId) => host.focusSession(host.sessionById(windowId)),
         windowsInfo: () =>

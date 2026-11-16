@@ -4,7 +4,7 @@
 
 技术形态：Electron + 原生 HTML/CSS/JS（无框架），Windows 安装包 + 开发版两种用法。
 
-> **版本沿革**：本仓库从 **v1.0.0** 起（产品内容承接原「章节写作器」0.12.6 的最终构建），改名「章回 / Chapterly」时**数据目录名仍沿用旧名 `%APPDATA%\chapter-writer`**（改名不搬数据、零迁移）。**完整的版本沿革、逐轮改动记录与开发自检历史见 [沿革.md](沿革.md)**；本文件只保留当前文档。
+> **版本沿革**：本仓库从 **v1.0.0** 起（产品内容承接原「章节写作器」0.12.6 的最终构建），改名「章回 / Chapterly」时**数据目录名仍沿用旧名 `%APPDATA%\chapter-writer`**（改名不搬数据、零迁移）。**完整的版本沿革、逐轮改动记录与开发自检历史已归档到内部文档（`内部文档/归档-2026-11-15/`，不进公开仓库）**；本文件只保留当前文档。
 
 ---
 
@@ -27,11 +27,11 @@
 **开发版（改代码时用）**：
 
 - Windows 11（Windows 10 1809+ 也可）
-- Node.js ≥ 22（开发机实测 v24.22.1）
-- pnpm ≥ 10（实测 12.11.2）
+- Node.js ≥ 22（开发机实测 v24.22.1；CI 用 **22 / 24 两档矩阵**各跑一遍，见下）
+- pnpm ≥ 12（实测 12.11.2；`pnpm-workspace.yaml` 的 `allowBuilds` 是 v12 字段，旧版兼容性未实测，按实测下限写）
 - Python ≥ 3.7（只有重新生成图标 `pnpm run icon` 用到；纯标准库，不需要 Pillow，不参与运行与打包）
 
-> **CI**：GitHub Actions（`.github/workflows/verify.yml`，windows-latest）在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`。**E2E 只在本地跑**（`pnpm e2e`，要起 Electron 真窗口）；**打包冒烟也不进 CI**，按发版门禁在发版前本地执行。提交前本地仍按 `pnpm lint` + `npm test` 自查。
+> **CI**：GitHub Actions 两套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；**Node 用 22 / 24 两档矩阵**（`fail-fast: false`，与 engines 的 ≥22 对齐，v1.8.0 审计 O4 / #56）；② `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
 
 ## 安装与启动
 
@@ -86,15 +86,30 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 ```
 
 - 配置在 `package.json` 的 `build` 字段：appId、产品名、NSIS 安装器选项（可选目录、桌面/开始菜单快捷方式、中文界面）。
+- **`appId` 固定为 `local.chapter-writer`（历史身份，不随产品名 / `name` 改）**：它决定 NSIS 安装 / 卸载注册表键（`Software\<由 appId 派生的 GUID>`）、快捷方式 AppUserModelID 与「是否已安装」的识别。v1.8.0 已发布，现在换 appId 等于换一个应用身份——旧版卸载项残留、任务栏固定项分裂、新旧版还会装进同一个目录。正式反向域名（如 `com.anan1124.chapterly`）顺延到下一个大版本，随「先卸载旧版再装新版」的迁移说明一起改；它与应用数据目录 `%APPDATA%\chapter-writer` 无关（数据目录在 `main.js` 里显式指定，不随 appId / 产品名搬动）（审计残留 #31 / O3；处置口径＝保持现状 + 文档化，不改实现）。
 - 国内网络打包时如果下载 Electron/NSIS 卡住，先设镜像：
   `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`、
   `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`。
 - 镜像优先级（@electron/get）：`npm_config_electron_mirror`（`.npmrc` 或环境变量）> `ELECTRON_MIRROR` > `package.json` 的 `build.electronDownload.mirror` > 官方 GitHub；打包默认镜像仍写在 `build.electronDownload.mirror`，海外可直接用 `ELECTRON_MIRROR` 覆盖。
 - 目前**没有代码签名**（个人自用省掉证书），所以每台新机器首次安装会看到 SmartScreen 提示。
 - 安装包产物在 `dist/`（已加进 `.gitignore`，不进仓库）；`build/icon.*` 是图标源文件，会进仓库。
+- 打包时排除 `renderer/test-hooks.js`（E2E / 截图自检用的调试钩子，只在开发版地址带 `?test=1` 时动态加载）：`build.files` 里的 `"!renderer/test-hooks.js"` 保证安装包内没有这份死代码（v1.8.0 审计 O2 / #30）。
 - 产物文件名用 **ASCII**（`chapterly-<版本>-win-x64-setup.exe`）：`gh` 在 Windows 上传中文文件名会被吞成坏名，所以发布资产别用中文名；安装后的程序显示名 / 快捷方式为「章回」。
 - 发布到 GitHub：`gh release create v<版本> "dist/chapterly-<版本>-win-x64-setup.exe" --title "章回 v<版本>" --notes-file <说明.md>`（`gh` 走 HTTPS，国内需 `HTTPS_PROXY`）。
 - **版本号只有 `package.json` 一处权威（v1.8.0 / 审计 D10）**：`renderer/index.html` 不写版本串，界面由主进程 `app.getVersion()` 启动时经 `app:version` 注入；README / 验收清单的标题、下载名与单测 / E2E 计数用 `node scripts/version-sync.js --write --unit <N> --e2e <M>` 同步（`--check` 只校验漂移，`tests/version-sync.test.js` 同口径）。发版前先跑一次同步，再打包。
+
+### 构建供应链（Electron 二进制）
+
+- v1.8.0 审计 ▲V308：Electron 二进制默认走国内镜像：`.npmrc` 的 `electron_mirror` 与 `package.json` 的 `build.electronDownload.mirror` 都指向 `https://npmmirror.com/mirrors/electron/`（覆盖方式见上）。
+  **镜像只是下载加速，不是来源证明**：镜像被替换 / 构建机被投毒时，产物本身没有任何可验证锚。
+- 发布构建前建议核对一次官方校验和（**可选、离线**）：从官方 release 下载与所装版本一致的 `SHASUMS256.txt`（`https://github.com/electron/electron/releases/download/v<版本>/SHASUMS256.txt`），然后：
+
+  ```bash
+  node scripts/verify-electron-checksum.js --shasums <下载的 SHASUMS256.txt>
+  ```
+
+  脚本在 `%LOCALAPPDATA%\electron\Cache`（或 `ELECTRON_CACHE` 指向的目录）里按文件名找到 `electron-v<版本>-win32-x64.zip` 并比对 SHA-256；`--zip <文件>` 可指定压缩包，`--version <版本>` 可指定要校验的版本。不一致 / 清单里没有这一项 / 找不到缓存 zip 都直接非 0 退出，不要继续打包。这一步**不联网、不自动下载**，也**不在** `pnpm run dist` 里自动执行（离线 / CI 构建不应该多一个网络失败面）。
+- 目前**没有代码签名**（见安装说明，属成本决策）：校验和能证明「二进制来自官方发布」，证明不了「安装包是这个仓库构建出来的」——后者需要代码签名，长期看比上面两条都重要。
 
 ## 数据在哪
 
@@ -109,7 +124,6 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 │  ├─ 书目.json.bak              ← 最近一次**结构性变更**（增删章 / 改名 / 分卷 / 导入）前的版本（json 写坏时用；普通保存不再每次覆盖它）
 │  ├─ 001-未命名.txt             ← 创建序号 + 名字，文件名永不修改
 │  ├─ 002-夜雨.txt
-│  ├─ 003-未命名.txt
 │  ├─ 003-未命名.txt
 │  └─ _trash\                    ← 删除的章节、替换/整理/还原前备份、可选每日快照，不真删
 │     └─ 快照-YYYYMMDD\          ← 只有开启「可选每日快照」后才有
@@ -134,7 +148,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 
 专注模式（连同它的「打字机」开关）**同样不产生任何文件**：它只是给写作页加一个 CSS class（隐藏左栏 / 分隔条 / 顶栏）并按需要调 `textarea.scrollTop`，不碰正文、不写 `书目.json`、不写配置；开关状态只记在内存里，退出 / 回书架 / 重启都回到普通布局。
 
-诊断日志单独存放在 `%APPDATA%\chapter-writer\logs\`（每天一个 `chapter-writer-YYYY-MM-DD.log`，单份超过 256KB 自动换下一个序号，只保留最近 12 份）。**日志只记时间、错误类型、错误码、IPC 频道、文件名、应用版本和调用栈，绝不写任何正文**；本机绝对路径统一收成「`…\最后一节`」（栈里保留最后两节，`…\core\storage.js:395:11` 仍看得懂是哪一行），本机用户名 / 书库的上级目录不会落进日志（v0.9 C-4）。只在保存失败 / 主进程未捕获异常 / 未处理的 Promise / IPC 出错 / 渲染进程崩溃时才记一条，正常写作不产生日志；日志写不进去也绝不影响正文保存。设置 →「诊断日志」里有「打开日志文件夹」按钮，也可以直接在资源管理器里打开这个目录。删掉这些日志只会少一份排查记录，不动书库、不影响设置。
+诊断日志单独存放在 `%APPDATA%\chapter-writer\logs\`（每天一个 `chapter-writer-YYYY-MM-DD.log`，单份超过 256KB 自动换下一个序号，只保留最近 12 份）。**日志只记时间、错误类型、错误码、IPC 频道、文件名、应用版本和调用栈，绝不写任何正文**；本机绝对路径统一收成「`…\最后一节`」（栈里保留最后两节，`…\core\storage.js:395:11` 仍看得懂是哪一行），本机用户名 / 书库的上级目录不会落进日志（v0.9 C-4）。只在保存失败 / 主进程未捕获异常 / 未处理的 Promise / IPC 出错 / 渲染进程崩溃时才记一条，正常写作不产生日志；日志写不进去也绝不影响正文保存。设置 →「诊断日志」里有「打开日志文件夹」按钮，也可以直接在资源管理器里打开这个目录。删掉这些日志只会少一份排查记录，不动书库、不影响设置。**日志里除了错误码和文件名，也可能出现书名 / 章名**（它们不是正文，但仍是作品信息；v1.8.0 审计 ▲V310）：设置里的「诊断日志」分组已经放了提示，把日志发给别人（贴 issue / 群里反馈）之前请先自己看一遍。
 
 **正文搜索索引**单独存放在 `%APPDATA%\chapter-writer\search-index.json`（不进书库、不写 `书目.json`、不动章节 txt）。它只记「每本书的双字哈希位图 + 每章的 mtime/size 指纹 + 书名/章名」，**不保存任何正文**（位图只回答「这本书里有没有这几个双字」，有误报、没有漏报；命中后再去读真实 txt 核对）。索引是自动维护的：打开书架 / 回书架 / 搜正文时校验，只有正文变过的书才重建位图，改章名 / 调顺序只更新元数据；删书 / 删章 / 外部改 txt 都会被下一次校验发现。索引文件坏了、版本不对或书架目录换了会自动重建；删掉 `search-index.json` 只是让下次打开书架重扫一遍，不影响书库和设置。索引写失败（磁盘满 / 没权限）只影响这一次搜索结果，绝不会挡保存、不会改正文。
 
@@ -148,7 +162,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 
 - **章节显示名 = 「第N章：名字」，N 由章节顺序现算，不写死**。插入/删除后章号自动重排。章号有两种编法（按书设置，2026-11-10）：默认**全书连续**；在写作页「设置 → 显示 → 章号」可选**每卷重新编号**（未分卷单独一组，也从第 1 章起）。设置写在 `书目.json` 的 `chapterNumbering`，旧书没有这个字段 = 全书连续、零迁移；目录（含**目录筛选**里的章号）/ 顶栏 / 状态栏 / 跳章 / 模板 `{n}` / 复制 / 导出文件里的章标题用同一份口径——按卷编号时筛选「2」「第2章」命中的是**各卷各自的第 2 章**，不是全书位置。**两个已知差异（本版只写清、不改语义）**：导出范围对话框的「第 X–Y 章」与书架「正文命中」里的章号仍按**全书顺序**显示——导出范围填的是全书第几章，书架搜索不读每本书的编号设置；它们和写作页按卷编号时显示的卷内号不同，原因见「已知限制」。标题栏 / 章节列表 / 阅读目录 / 校对结果和 TXT / EPUB / DOCX 导出、复制本章用的是**同一份规则**（`core/chapters.js` 的 `formatTitle()`，v0.8.6 R3）：原文已带号标题（`第1章 …` / `Chapter N`…）原样显示；楔子 / 序章 / 前传 / 外传 / 尾声 / 后记 / 番外 / 终章 / 大结局 / 附录 / 开篇等不带号特殊标题（2026-11-10 起）补「第N章：」；空名章只显示「第N章」，书目里若有自定义 `titleTemplate` 界面也按模板显示（模板缺 `{num}` / `{name}` 时特殊标题回落默认，避免把原词或章号吞掉）。
 - **插入章节只改 `书目.json` 记录，不重命名任何文件**。所以文件名前缀是「创建序号」，不需要和显示章号一致。
-- 章节 txt 里只有正文：UTF-8 无 BOM、`\r\n` 换行，记事本直接打开不乱码。
+- 章节 txt 里只有正文：保存后是 UTF-8 无 BOM、`\r\n` 换行，记事本直接打开不乱码。**从应用外拿到的 LF 换行 / 带 BOM 的 txt，在本应用里保存一次会被统一改写成这个格式（CRLF、去 BOM）**：用 git 等外部工具跟踪章节文件时，第一次保存会看到整份 diff，之后才回到逐行 diff（审计 V303）。**单本 txt 用默认的「按原文章节导入」拆章时，解析阶段就会去掉 BOM、把 CRLF / CR 统一成 LF，拆出来的章文件从导入那一刻起是 LF 的 UTF-8（第一次保存后才是 CRLF）**；「整本一章」的 UTF-8 源文件、含 `书目.json` 的章回书整本复制、「一本书的章节目录」导入仍按字节原样复制，不改行尾 / BOM（审计残留 #34/V303）。
 - **章节状态（草稿 / 待修 / 完稿）和一句话备注只存在 `书目.json` 里**，是可选字段；标记状态、写备注**不会碰章节 txt 一个字节**，旧书目没有这两个字段也照常打开（默认草稿）。
 - **书籍信息（作者 / 简介 / 分组 / 标签）也只存在 `书目.json` 里**，都是可选字段：只在书架右键「书籍信息…」保存时写入，空值不落字段；**不分组的书、旧书完全不受影响**。分组 / 标签只是书架视图和搜索用的元数据，**不改书文件夹名、不动章节文件**，旧书目不会因为打开 / 保存就凭空多出这些字段。
 - **阅读模式不产生任何文件**：正文只通过只读的 `chapter:load` 从磁盘读，字号 / 行距 / 阅读位置只记在内存里（本次运行，重开应用回到默认）；不进 `_trash`、不写 `config.json`、不改 `书目.json`，也不会把「看完哪一章」存成书签。
@@ -327,7 +341,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 
 ## 防丢稿设计（当前保证）
 
-> 完整的逐轮改动记录（25–82 条，v0.8.5 起）在 [沿革.md](沿革.md) 的「防丢稿设计逐轮记录」；下面只列当前生效的保证。
+> 完整的逐轮改动记录（25–82 条，v0.8.5 起）已归档到内部文档（`内部文档/归档-2026-11-15/沿革.md` 的「防丢稿设计逐轮记录」）；下面只列当前生效的保证。
 
 虽然不做自动保存，但底层仍然为「不丢稿」做了这些：
 
@@ -346,7 +360,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
     `_trash` 备份的目录名 + 文件数 + 最新修改时间；10 秒窗口里这份备份被外部增删或改写，就提示
     「备份已变化，撤销取消」并早退（不拿变了的备份覆盖正文）。
     弹确认框的只剩两处：**未保存拦截**（切书 / 关窗 / 还原前先处理没写盘的字）与**删除整本书**（整本进回收站，应用内没有还原通道）。
-7. **外部修改检测**：用记事本改了当前章节后，切回应用会提示「重新加载 / 保留我的」。
+7. **外部修改检测 + 保存前置校验**：窗口重新获得前台时比对**当前章**的 mtime —— 没变不打扰；有未保存修改只 toast 警告；否则问「重新加载 / 保留我的」。其它章不主动查，打开时才核对（`renderer/statusbar-ui.js` 的 `setupExternalChangeWatch`）。保存链路另带 `expectedMtimeMs` 前置条件：载入 / 上次保存回执记下 mtime，保存前磁盘上的 mtime 已经变了就抛 `EXTERNAL_CHANGE`、**一个字节都不写**，界面给「取消 / 放弃我的修改并重载 / 仍然覆盖保存 / 先另存一份」四选（`saveCurrent({ force: true })` 才跳过校验；判定在 `core/open-books.js` 的 `verifySaveTarget`）。
 8. **损坏恢复**：`书目.json` 坏了，可以从 `.bak` 恢复，或按目录里的 txt 文件名重建书目（损坏文件改名为 `.corrupt-时间戳` 保留）。
 9. **保存失败不更新「已保存」状态**：状态栏红字显示具体错误。
 10. **整本替换前自动备份**：改动的原章节先复制到书内 `_trash\替换备份-时间戳\`，再原子写盘；应用内可「还原到替换前」一键退回，还原前还会把当前内容再备份一份到 `_trash\还原前备份-时间戳\`；这些备份不会被自动删（每日快照是唯一例外，见下一条）。备份目录名精确到秒，**同一秒内连做两次替换会自动加 `-2`**（两份备份各存各的，不会互相覆盖）。**1.5.0 起还原读盘前先验大小**：还原到替换前 / 本书历史还原读备份文件前先看 `stat.size`，单文件超过 128 MB（与导入上限同一口径）就明确拒绝 —— 不读进内存、不建还原前备份、一个字节都不写。
@@ -359,26 +373,52 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 17. **朗读只说不动**：正文只在渲染层读给系统语音听，主进程只做纯文本切分（`core/tts.js`，不读盘、不写盘）；发声全程不改编辑区、不改 `书目.json`、不生成 `_trash`。一改字、一切章、一回书架或按 `Esc` 就立刻 cancel，不会拿着旧段落继续念。语速 / 语音选择只在本次朗读小条打开期间有效，不写配置。
 18. **编辑器小件只画不写（三个开关的按书记忆、超长段落阈值与当前段落高亮颜色除外）**：超长段落黄线、全角空格 ␣、行尾空白标记、**当前段落高亮的底色与左侧细线**、选中字数、章节列表字数对比都只改显示层——标记画在 `pointer-events: none` 的影子层里，**正文不改一个字节、不写书库、不改 `书目.json`**。其中「不可见字符 / 超长段落提示」和「当前段落高亮」三个开关、**超长段落阈值**（默认 500，50–20000）**都是按书记忆的可选显示设置**，按书存在 `config.json` 的 `bookDisplay`（两个提示开关没设置过的书按默认关；阈值没设置过的书沿用全局默认；当前段落高亮的开关与颜色没设置过的书跟随顶层全局默认），保存设置时只原子写 config.json，**绝不碰正文 / 书目 / 章节文件**，旧 config 没有这些字段时照常启动（两个提示开关关；阈值 500；当前段落高亮按其全局默认；颜色跟随主题）。颜色只认 `#rgb` / `#rrggbb`，写坏了回落主题色；自定义色由 `core/caret-color.js` 换算成淡底 + 细线用的 rgba（有单测）。章节列表的字数来自 `书目.json` 的字数缓存（保存时更新），标记层的位置每次从编辑区实测字体 / 行高 / 宽度算，不写死也不会错位到正文之外。当前段落只按「光标落在哪一行（一个非空行 = 一段）」现算，不缓存、不写盘。正文超过 **30 万字**时整层标记直接不建（`renderer/editor-logic.js` 的 `marksTooLarge` 门控，正好 300000 字仍然画），只提示一次——不会为了几个标记去重建整章 DOM 镜像；正文 / 保存不受影响。
 19. **专注模式只收起面板、不碰内容**：它只给写作页加一个 CSS class（隐藏左栏 / 分隔条 / 顶栏）并调 `textarea.scrollTop`，不改正文、不写 `书目.json`、不写配置；「打字机」开关只记内存。进入时只把焦点交回编辑区，不改变窗口大小、不进 Windows 全屏；退出时按「光标行顶端 - 滚动位置」还原视线，正文变宽导致换行变化也不会跳错位置。
-20. **错误日志不含正文、也不挡写作**：日志只记元数据（时间、错误类型、错误码、IPC 频道、文件名、应用版本、栈），`core/logs.js` 只接受这些字段，还会把连续 24 个以上汉字当正文隐去、把本机绝对路径收成「`…\最后一节`」（见 [沿革.md](沿革.md) 第 37 条）；保存失败 / 主进程异常不会让应用退出（先让你 `Ctrl+S` 保存），写日志本身失败（目录被占用、磁盘满、没权限）只吞掉，绝不阻塞保存正文或弹出错误。日志文件按天 + 按大小滚动、只留 12 份，只删本应用命名的 `chapter-writer-*.log`，不碰日志目录里别的东西。
+20. **错误日志不含正文、也不挡写作**：日志只记元数据（时间、错误类型、错误码、IPC 频道、文件名、应用版本、栈），`core/logs.js` 只接受这些字段，还会把连续 24 个以上汉字当正文隐去、把本机绝对路径收成「`…\最后一节`」（见内部归档沿革第 37 条）；保存失败 / 主进程异常不会让应用退出（先让你 `Ctrl+S` 保存），写日志本身失败（目录被占用、磁盘满、没权限）只吞掉，绝不阻塞保存正文或弹出错误。日志文件按天 + 按大小滚动、只留 12 份，只删本应用命名的 `chapter-writer-*.log`，不碰日志目录里别的东西。
 21. **正文搜索索引只读、不含正文**：索引存在 `%APPDATA%\chapter-writer\search-index.json`，不写书库、不写 `书目.json`、不动章节 txt；文件里只有「双字哈希位图 + 每章 mtime/size 指纹 + 书名章名」，**没有任何正文句子**。搜正文时只读章节 txt 来核对命中并截上下文，不改一个字；索引读写失败只让这一次搜索降级（显示为空 / 提示），绝不挡保存、不挡书架。删掉索引文件只损失「下次搜索要重建」这点时间。
 22. **多窗口不会互相覆盖、也不会重建影子文件**：主进程用「窗口 → 打开中的书」登记（**只在内存**）做唯一事实来源：同一本书**只允许一个窗口打开**（再点只聚焦已有窗口），别的窗口正开着的书**禁止删除 / 改名 / 整理 / 整本替换 / 导入覆盖**（明确提示先关 / 先切窗口）。每次保存正文前都要校验「书文件夹、书目、章节记录、章节文件」都还在（且书不在别的窗口），任何一项失效就**报错阻止写盘**；保存用的原子写关掉了 `mkdir` 兜底，**绝不重建目录 / txt**，不会出现「另一个窗口删了章，这边一保存又长出一个不在书目里的影子 txt」。窗口之间有独立的编辑区 / 脏状态 / 关闭询问，关一个只关一个，最后一个关掉才退出。
 23. **查找高亮只画不写**：当前章查找后，全部命中画在 `#editor-find-marks` 只读影子层上（和编辑器小件共用同一套「按编辑区实测字体 / 宽高对齐、跟着滚动」的逻辑），当前那处只切一个 class，**不重画正文、不改正文**；「上一处 / 下一处」只移动选区与滚动。命中超过 **500 处**时只画当前附近一屏，导航仍覆盖全部命中（单章上限 5000 处，`findMatchesAll` 会明确回报是否被上限截断）；绕回 / 窗口 / 正文切片 / 行号都在 `renderer/find-logic.js` 里，有单测。会话只记内存：改正文、切章、换书、离开写作页就结束，`Esc` 也能清除，不写配置、不写书库。
 24. **查找书签只记查询条件、不记正文**：书签按「书 + 章」存 `config.json` 的 `findBookmarks`（`core/bookmarks.js` 负责清洗 / 按「书 + 章」去重 / 增删，有单测），每条只有 `bookId` / `chapterId` / `query` / `caseSensitive` 与几个显示字段（书名 / 章名 / 章号 / 书路径）+ 时间戳，**没有正文、没有命中位置**。打开这一章时由渲染层按**当前编辑区正文**重新扫描并高亮（正文改过也能重新定位；改到没有命中时高亮收起、书签保留）；面板里可以列出本机书签、跨书跳转、删除。存 / 跳 / 删全部走主进程的只读 IPC + 原子写配置：**绝不写书库 / 书目 / 章节文件**，渲染层仍然没有 fs 权限；旧 config 没有这个字段 = 没有书签，照常启动。最多 200 条，同一「书 + 章」只保留一条（再存 = 更新查询词 / 大小写）。
 
-> **历史记录**：25–82 条是 v0.8.5 起的逐轮改动沿革（整理交互 / 视觉打磨 / 安全加固 / 测试有效性治理等），原文已移到 [沿革.md](沿革.md) 的「防丢稿设计逐轮记录」；当前生效的保证只有上面 1–24 条（含 6b）。
+### 保证清单的代码锚点（version-sync 门禁）
+
+> 上面 24 条保证（含 6b）每条都要有一个可检查的落点。`node scripts/version-sync.js --check` 会逐条核对「文件存在 + 文件里确实有这个实现符号」，并核对本表编号与上面的保证条目一一对应；改实现或增删保证时同步改本表，漏改会直接拦在发版前（审计 M1 / M5 / ▲V309）。符号校验按源码文本做 substring 匹配（不是 AST）：符号只出现在注释 / 字符串里也算命中，它用来防「删实现、改函数名后旧名从源码里消失」这类漂移，不是语义级实现证明（审计残留 #R16）。
+
+| 编号 | 代码位置（文件 → 实现符号） |
+|---|---|
+| 1 | `core/atomic.js` → `function atomicWriteFile` |
+| 2 | `core/storage.js` → `function writeBookMeta` |
+| 3 | `core/storage.js` → `function moveToTrash` |
+| 4 | `renderer/renderer.js` → `function updateWindowTitle` |
+| 5 | `renderer/renderer.js` → `function askUnsaved` |
+| 6 | `renderer/renderer.js` → `async function handleCloseRequest` |
+| 6b | `renderer/undo-ui.js` → `function createUndoUi` |
+| 7 | `renderer/statusbar-ui.js` → `function setupExternalChangeWatch`；`core/open-books.js` → `function verifySaveTarget` |
+| 8 | `core/repair.js` → `function restoreFromBak` |
+| 9 | `renderer/save-status-ui.js` → `function saveStateModel` |
+| 10 | `core/storage.js` → `function copyReadableChapterToBackup` |
+| 11 | `core/config.js` → `CONFIG_CORRUPT` |
+| 12 | `core/storage.js` → `async function takeDailySnapshot` |
+| 13 | `core/stats.js` → `function recordSaveChars` |
+| 14 | `core/proofread.js` → `function proofreadText` |
+| 15 | `core/fragments.js` → `function createFragmentStore` |
+| 16 | `core/sensitive.js` → `function scanText` |
+| 17 | `renderer/tts-ui.js` → `function createTtsUi` |
+| 18 | `renderer/editor-marks-ui.js` → `function createEditorMarksUi` |
+| 19 | `renderer/focus-mode-ui.js` → `function createFocusModeUi` |
+| 20 | `core/logs.js` → `function createLogStore` |
+| 21 | `core/search-index.js` → `function createSearchStore` |
+| 22 | `core/storage.js` → `function registerOpenBook`；`core/open-books.js` → `function verifySaveTarget` |
+| 23 | `renderer/find-ui.js` → `function createFindUi` |
+| 24 | `core/bookmarks.js` → `function sanitizeBookmarks` |
+
+> **历史记录**：25–82 条是 v0.8.5 起的逐轮改动沿革（整理交互 / 视觉打磨 / 安全加固 / 测试有效性治理等），原文已归档到内部文档（`内部文档/归档-2026-11-15/沿革.md` 的「防丢稿设计逐轮记录」）；当前生效的保证只有上面 1–24 条（含 6b）。
 
 ## 开发与自检
 
-
 ```bash
-pnpm test          # 单元测试（node:test，2535 项；逐项覆盖说明见 沿革.md「开发自检历史说明」）
-pnpm run e2e       # 端到端自检：真实启动 Electron 走 1885 项主流程（逐组覆盖说明见 沿革.md「开发自检历史说明」）
+pnpm test          # 单元测试（node:test，2738 项）
+pnpm run e2e       # 端到端自检：真实启动 Electron 走 1902 项主流程（场景与 83 个组文件共用一份 harness；**83 个组文件（00–82）** 按组号派发）
 pnpm run demo      # 生成演示书库到 shots/demo-library（截图/演示用）
-node scripts/bench.js          # 前端基准（只读，v0.9 A-1）：临时书库 + 真实 Electron 量「书架刷新 / 书架搜索 / 打开书 / 切章 / 章节栏渲染 / 10 万字大章的输入延迟 · 输入处理 · 标记层重画 · 标记层滚动同步」耗时（--books / --chapters / --runs / --out，跑完打表并落 JSON，不碰真实书架）
-node scripts/contrast.js       # 对比度审计（只读，v0.9 A-4 起，v1.0 V-3 扩到 86 条规格）：系统临时目录里造演练书库（含一份书内历史备份）+ 真实 Electron，把 6 套纸色主题挨个切一遍读实际颜色，按 WCAG 2.1 算对比度（普通文字 4.5:1 / 大字号与界面图形 3:1）。除书架 / 写作页默认态外，还真实打开设置 / 导出范围 / 排版 / 查找 / 校对 / 历史六个弹层逐主题采样，并用 CDP 强制 `:hover` / `:active` 采真实交互态颜色；禁用态按 WCAG 1.4.3 豁免（只记录比值、报告里用 `·` 标出，不计失败）。打「规格 × 主题」的表并落 shots/contrast-<时间>.json（--themes / --out / --timeout / --no-fail；有低于阈值时返回码 1）。v1.0 实测 **504/504 达标 + 12 条禁用态豁免**
-node scripts/sweep-unused.js   # 只读扫描：没人用的 CSS 类 / HTML id / JS 顶层函数 / 模块导出 / 只给模块内用却还导出的成员 / 真重复声明（--verbose 连「动态拼出」「只被测试用」也列出来，--json 给脚本用）
-node scripts/lint-gate.js      # 零依赖 lint 门禁（只读，1.6.0 G1，也可 `pnpm lint`）：同文件能证明是 async 的函数被语句级裸调、函数内声明却零引用的变量、没声明也不在已知全局 / 仓库全局白名单里的标识符；字符串 / 注释 / 正则里的文字不算；ERROR > 0 返回码 1，WARN 只记录（--json 给脚本用）
-node scripts/a11y-gate.js      # 无障碍门禁二期（只读，1.3.0 T8 / 规范 A-03·A-04）：系统临时目录里造书库 + 真实 Electron，量 2.5.8 目标尺寸（≥24×24，小目标按 WCAG 间距例外或允许清单）与 2.4.11 焦点不被遮挡（弹层里逐个聚焦，查视口 / 滚动容器裁切 / 上层遮挡），静态校验 2.5.7 拖动替代（章节 Alt+↑/↓）与 6 套主题令牌键齐全，另打印 APCA 影子参考（只算不判，不进产品）。--static 只跑静态、--report 只报告、报告 JSON 落 shots/a11y-gate/
 ```
 
 ### 测试与静态闸门策略（X14，不强制削减）
@@ -386,178 +426,23 @@ node scripts/a11y-gate.js      # 无障碍门禁二期（只读，1.3.0 T8 / 规
 - **静态闸门是有意的防漂移锚点，不强制削减**：`tests/` 里约 289 处「读源码 / 读 index.html 再断言字符串」的用例钉的是接线与口径（脚本加载顺序、唯一实现、IPC 频道清单、文案逐字、状态字段声明、UI 与 core 同源等）。它们防的是「改一处忘了另一处」这类行为测试覆盖不到的漂移；本版只要求新增静态闸门有明确事实源，不为了数量好看去删或批量替换。
 - **新增功能优先写行为断言**（真实调用入口、比对结果）；只有「跨文件接线 / 唯一实现 / 顺序 / 逐字文案」这类行为上无法稳定观察的东西才用静态闸门。
 - **闸门变红先分辨原因**：是回潮就修代码；结构确实变了就同步改闸门、注释与事实源，**不许批量删除或用正则放宽到永远通过**；同一事实只留一条闸门（单测与 E2E 不重复钉同一句）。
+- **静态闸门分两类，新增的必须标类（2026-11-16 定口径 / 审计 #27-M2）**：**政策类**＝钉产品与工程决策的接线事实（打包配置与 fuse、开关默认值、IPC 白名单与频道清单、脚本加载顺序、唯一实现、逐字文案、主题令牌与允许清单）——这些事实要打包后或真实 Electron 里才观察得到，本地 `node --test` 看不到，所以用静态闸门；**行为类**＝能用真实调用稳定观察的行为（输入→输出、错误码、状态迁移），必须写 `node --test` 行为用例。新增闸门请在测试名或紧邻注释里标「政策类 / 行为类 + 事实源」，以后按类评估，不再逐个文件争论。
+- **现有读源码闸门的逐文件分类与「行为迁」分批迁移暂不做**（审计 M2 建议的瘦身）：它需要先由作者确认「政策类」边界，且与上面两条（不强制削减、不许批量删除 / 放宽）一致；本轮只落分类定义与新增规则 —— 既有闸门**一条不删、一条不放宽**。
 
-> 单测逐项 / E2E 逐组的历史覆盖说明（v0.8.5 起）已移到 [沿革.md](沿革.md) 的「开发自检历史说明」；本文件只留当前命令与策略。
+> 其余开发自检细节（bench / contrast / sweep-unused / lint-gate / a11y-gate 的完整参数说明、截图命令）与完整目录结构已归档到内部文档（`内部文档/归档-2026-11-15/README-开发自检细节.md`，`.gitignore` 整目录忽略、不进公开仓库）；本文件只保留当前命令与策略。截图 / E2E 驱动只在开发版（`pnpm start` / `pnpm e2e`）可用，安装包里没有 `scripts/`。
 
-> 工作站锁屏 / 没有交互桌面时，Windows 会拒绝所有进程访问系统剪贴板。E2E 会明确提示并改用**进程内剪贴板**继续校验「复制整本 / 复制本章」拼出来的文本（其余检查照常真机跑）；解锁后重跑会自动走真实系统剪贴板。
-
-截图（开发自检用）：应用支持在测试模式下截取窗口画面：
-
-```bash
-# 书架
-pnpm start -- --user-data=shots/ud-1 --books-root=shots/demo-library --screenshot=shots/shelf.png
-# 编辑视图（打开指定书、指定章节）
-pnpm start -- --user-data=shots/ud-2 --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --screenshot=shots/editor.png
-# 弹层（--dialog 可选：unsaved / settings / settings-snapshot / settings-stats / settings-calendar / settings-template / settings-sensitive / settings-proofread / settings-export / settings-caret / settings-logs / settings-update / bookmenu / bookinfo / exportmenu / export / export-epub / export-docx / splitter / format / formatmenu / format-click / displaymenu / find / find-nav / find-highlight / find-bookmark / proofread / sensitive / tts / marks / marks-menu / marks-caret / marks-caret-color / focus / reading / shelf-search / conflict / history / fragment / fragments）
-pnpm start -- --user-data=shots/ud-3 --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=format --screenshot=shots/fmt-dialog.png
-# 「整理」的悬浮选择卡（截图用：对「整理」派发真实的 pointerenter；只读，不写盘）
-pnpm start -- --user-data=shots/ud-3 --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=formatmenu --screenshot=shots/format-card.png
-# 点「整理」直接整理本章（截图用：点完立刻截，露出「已整理本章（规则…）：改动统计」提示；只改编辑区、不写盘）
-pnpm start -- --user-data=shots/ud-3 --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=format-click --screenshot=shots/format-click.png
-# 「显示 ▾」菜单（截图用：预设 / 三个只读标记开关 / 高亮色板 / 正文显示设置）
-pnpm start -- --user-data=shots/ud-marks --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=displaymenu --screenshot=shots/display-menu.png
-# 当前段落高亮（截图用：打开开关并把光标放进正文一段里；只读显示层，不写盘）
-pnpm start -- --user-data=shots/ud-marks --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=marks-caret --screenshot=shots/marks-caret.png
-# 当前段落高亮按书记忆 + 自定义颜色（截图用：开关 / 颜色写进临时 userData 的 config，打开「显示 ▾」露出色板）
-pnpm start -- --user-data=shots/ud-marks --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=marks-caret-color --screenshot=shots/marks-caret-color.png
-# 设置 →「当前段落高亮」分组（勾选 + 色板 + 取色器；只改界面，不保存）
-pnpm start -- --user-data=shots/ud-marks --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=settings-caret --screenshot=shots/settings-caret.png
-# 查找面板的「当前章定位」一行（上一处 / 下一处 + 第 X / N 处；只读，不写盘）
-pnpm start -- --user-data=shots/ud-find --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=find-nav --screenshot=shots/find-nav.png
-# 查找结果持续高亮（截图用：查完把面板关掉，让正文里的全部命中和状态栏「查找 1/N」露出来；只读）
-pnpm start -- --user-data=shots/ud-find --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=find-highlight --screenshot=shots/find-highlight.png
-# 查找书签（截图用：查一次并存成书签，露出面板里的「书签」列表 + 正文命中高亮；只写临时 userData 的 config）
-pnpm start -- --user-data=shots/ud-find --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --chapter=0 --dialog=find-bookmark --screenshot=shots/find-bookmark.png
-# 阅读模式（--reading-chapter 是 0 基章下标，可选；不传就从书里上次打开的章开始）
-pnpm start -- --user-data=shots/ud-6 --books-root=shots/demo-library --book=shots/demo-library/星海旅人 --dialog=reading --reading-chapter=1 --screenshot=shots/reading.png
-# 书架搜正文（截图用；--search-query 不传时用「青柠色」）
-pnpm start -- --user-data=shots/ud-4 --books-root=shots/demo-library --dialog=shelf-search --search-query=青柠色 --screenshot=shots/shelf-search.png
-# 设置 →「检查更新」（截图用假网络演示「发现新版本」，不会真连 GitHub）
-pnpm start -- --user-data=shots/ud-5 --books-root=shots/demo-library --dialog=settings-update --screenshot=shots/update.png
-```
-
-> `--user-data=...` / `--books-root=...` 用**绝对路径**（相对路径会让主进程 `app.setPath` 抛「Path must be absolute」）。
-> 这些参数用来隔离配置，避免动到你正在用的书架；不带这些参数就是正常使用。
->
-> 截图 / E2E 驱动在 `scripts/screenshot-driver.js`（`v0.9 B-1`）：正常启动不会加载它，安装包里也没有 `scripts/`——所以下面这些截图命令只在**开发版**（`pnpm start`）可用。
-
-## 目录结构
-
-> 公开仓库只放公开文档（`README.md` / `验收清单.md` / `沿革.md` / `LICENSE`）。工作清单、审计报告、执行台账、提案与开发日志这类内部文档统一放 `内部文档/`，`.gitignore` 整目录忽略（审计 D6 / D12）——别再按精确文件名维护忽略清单。
-
-```
-chapterly/
-├─ package.json / pnpm-workspace.yaml / .npmrc   # package.json 里含 electron-builder 打包配置
-├─ main.js                  # Electron 主进程：窗口、生命周期、关闭拦截、全部文件 IO
-├─ preload.js               # contextBridge 白名单 IPC
-├─ core/                    # 纯 Node 逻辑，不依赖 Electron，可单测
-│  ├─ atomic.js             # 原子写（临时文件 + fsync + rename + 重试）
-│  ├─ common.js             # 跨模块公共小工具（v0.9 B-3 + 2026-11-04 B6）：pad2（两位补零）/ clampInt / sleep / formatCount（千分位）/ stripBom / normalizeText / lineStartsOf + positionOf（字符位置 → 1 基行列）/ mapLimit（限并发）/ nowIso / parseDayKey + isValidDayKey + dayKeyOf / createWriteQueue（纯逻辑、UMD，主进程与渲染层共用同一份；index.html 里排第一个）
-│  ├─ path-utils.js         # 路径归一（2026-11-04 C4）：trim → path.resolve → toLowerCase 的唯一实现（open-books 判「同一本书」与 search-index 判「同一书架目录」共用；纯函数，只依赖 node:path）
-│  ├─ xml.js                # XML 纯函数（2026-11-04 C1）：剔除 XML 1.0 非法控制字符 / 五字符转义 / 正文切段 / 导出时间戳（DOCX 与 EPUB 共用同一份，纯函数，不 require 任何模块）
-│  ├─ paragraphs.js         # 段落切分规则（v0.9 B-3，审计 F3）：自然段（一个非空行 = 一段，首尾空白含全角空格不算）/ 行区间与空行判定 / 去首尾空白（纯逻辑、UMD，朗读 core/tts.js 与渲染层 editor-logic.js 共用同一份；index.html 里排在 editor-logic.js 之前）
-│  ├─ chapters.js           # 编号、标题、文件名净化、顺序增删、章节状态/备注清洗、分卷（UMD，渲染层与 Node 共用同一份 formatTitle / titleTemplate 规则）
-│  ├─ bookinfo.js           # 书籍信息纯逻辑：作者 / 简介 / 分组 / 标签清洗、patch 白名单、同值判定、书架搜索匹配（UMD，渲染层也加载）
-│  ├─ template.js           # 章节模板纯逻辑：模板清洗与长度上限、{n}/{title}/{date} 占位符展开、未知占位符保留、空章判定（UMD，渲染层也加载）
-│  ├─ s2t.js                # 导出简繁转换纯逻辑：内置常用字表 + 常见歧义词（发/髮、干/乾/幹、后/後…）、简↔繁映射与书目显示字段转换（UMD，渲染层也加载档位文案；不读写文件）
-│  ├─ storage.js            # 书架扫描、书目读写、章节读写、_trash、写锁、排序/查找/整本替换/替换备份还原/本书历史还原/每日快照（书架搜索用的章节名列表、完稿章数、同步冲突副本列表）；多窗口的「打开中的书」登记 / 保存前存在性校验 / 跨窗口拦截判断
-│  ├─ open-books.js         # 多窗口纯逻辑：windowId → bookPath 打开登记、重复打开拒绝、最近窗口选择、保存前校验、跨窗口删改判定（不读写磁盘、可单测）
-│  ├─ snapshot.js           # 每日快照纯逻辑（目录命名、保留天数、只认自己的「快照-YYYYMMDD」，不读写文件）
-│  ├─ stats.js              # 每日字数统计 + 目标 + 码字日历 / 连续写作天数 / 月度汇总 + 可选写作时长（本地日期、正增量、近 30 天补零、整份统计只清洗一次、stats.json 原子存储与清洗）
-│  ├─ history.js            # 本书历史：只读扫描书内 _trash 与 书目.json.bak、归类、预览（路径严格校验，不写盘）
-│  ├─ schema.js             # 书目.json 的 schemaVersion 与读取迁移（旧书兼容，未来版本不降级）
-│  ├─ conflict.js           # 同步盘冲突副本识别（*conflicted* / *-冲突副本*，只判断文件名）
-│  ├─ config.js             # 配置读写（全局显示设置 + 每本书的显示覆盖 bookDisplay + 排版规则 + 上次写作位置 lastBook + 查找书签 findBookmarks + 每日快照开关 + 每日写作目标 dailyGoal + 写作时长开关 writeDurationEnabled + 章节模板 chapterTemplate + 敏感词表路径 sensitiveWordsPath + 校对词表路径 proofreadWordsPath + 导出简繁转换 exportConversion）
-│  ├─ format.js             # 智能排版（缩进/空行/行尾空白/标点/可选引号与省略号，纯文本变换、幂等）
-│  ├─ find.js               # 全书查找/替换纯逻辑（字面量、上下文片段、下一处定位、全部命中与 5000 上限截断标记）
-│  ├─ proofread.js          # 校对纯逻辑（只报告不改动：半角标点 / 超长段落 / 重复用词 / 连续标点 / 多余空行 + 可选的自定义校对词表）
-│  ├─ glossary.js           # 校对词表：每行一个词 / 可选「错词 → 建议」/ # 注释、编码识别、字面匹配与重叠取最长（只读，纯逻辑）
-│  ├─ sensitive.js          # 敏感词预检：词表读取与编码识别、字面匹配、重叠取最长、行号列号与上下文（只读，纯逻辑）
-│  ├─ tts.js                # 朗读切分：自然段（段落 / 行 / 去空白规则取 core/paragraphs.js 那一份）/ 句末标点 / 超长硬切、代理对保护、光标所在段落（纯逻辑，只算文本）
-│  ├─ logs.js               # 崩溃 / 错误日志：只记元数据、长串汉字隐去、本机绝对路径收成「…\最后一节」（栈留最后两节）、按天 + 按大小滚动、份数上限、写失败只吞掉（纯 Node，可单测）
-│  ├─ search-index.js       # 正文全文搜索索引：每本书的双字哈希 Bloom 位图 + 每章 mtime/size 指纹、增量校验与重建（只有新章 / mtime / size 变化才重算）、每章真命中计数（单章上限 10000）/ 默认每章前 3 条片段与聚焦一章（`opts.focus`：只认索引里存在的书 + 该书章名，只读那一章、单章最多 200 条，越权或不存在回空 + `focusError`）、结果限量与上下文（纯 Node，可单测；索引在 userData，不进书库、不含正文）
-│  ├─ update.js             # 检查更新轻量版：版本号解析（含预发布）/ 只认本仓库 Release 链接 / GitHub JSON 清洗 / 网络错误转提示（纯 Node，可单测；不联网、不写盘）
-│  ├─ fragments.js          # 灵感箱：_碎片 目录扫描 / 日期序号文件名 / 内容清洗 / 原子写与读取（纯 Node，可单测）
-│  ├─ jump.js               # Ctrl+G 跳章纯逻辑（章号解析、章名关键词匹配与排序）
-│  ├─ caret-color.js        # 当前段落高亮的自定义颜色：#rgb/#rrggbb 清洗、色板、颜色转淡底 / 左边线 rgba（UMD，渲染层与配置清洗共用，可单测）
-│  ├─ bookmarks.js          # 查找书签纯逻辑：按「书 + 章」清洗 / 查找 / 增删、最多 200 条、去重与位置文案（UMD，渲染层与配置清洗共用；只存查询条件，不存正文）
-│  ├─ capture.js            # 剪贴板捕获纯逻辑（2026-11-04 长跑新增；2026-11-07 改单列表）：纯文本归一化（BOM / CRLF / NUL / 行尾空白 / 首尾空行）、标题识别（core/txt.parseHeading + 繁体「話」与全角数字锚点；标题和正文挤在同一行时按句末标点 / 全角空格拆开）、`splitRecordTitle` 三条章名规则（标题行 / 整条 <100 字当章名 / 否则全文正文）、`recordPreview` 列表截断预览（300 字 / 6 行）、提交前上限校验（单章 30 万字；旧逐行三态表单相关导出已删除）（UMD，渲染层与主进程共用，可单测）
-│  ├─ font-policy.js        # 自定义字体「读哪个文件」的策略：本次 pick / 当前书的 bookDisplay / 全局配置的优先级与合并规则（与 effectiveConfig 一致）、扩展名与 24MB 上限判定（纯逻辑，不读写磁盘）
-│  ├─ security-policy.js    # Electron 安全开关的唯一来源：窗口 webPreferences 期望值、与 getLastWebPreferences 回读值的对账口径、浏览器权限一律拒绝、被拒权限日志的权限名 / 来源清洗（纯逻辑，不 require electron）
-│  ├─ ipc-paths.js          # 渲染层路径参数的统一校验：assertBookPath（书只能是书架目录的直接子目录，空书架目录直接报错）、importSourceDirs（导入目录只认对话框，显式路径只在自检 / 截图模式生效）（纯逻辑，不 require electron、不读盘）
-│  ├─ config-gate.js        # 配置里「指向磁盘」的三项（书架目录 / 两份词表）的来源校验：filterPathPatch（只放行「对话框刚选中的 / 与原值相同 / 清空」）、createPickedPathStore（按窗口记对话框选中的路径）（纯逻辑，不 require electron、不读盘）
-│  ├─ error-text.js         # 错误文案脱敏（v0.9 C-4）：redactPaths（本机绝对路径只留最后一节，UNC / 设备前缀 / file:// / POSIX 都认，http(s) 网址不动）、describeForUi（常见文件系统错误码换中文 + 控制字符 / 超长收尾，错误码原样保留）（纯逻辑，不 require electron、不读盘、不抛错）
-│  ├─ ipc-limits.js         # 文本类 IPC 的输入上限（v0.9 C-5）：正文 500 万字 / 查找词与替换词各 1 万字 / 替换结果 2000 万字估算 / 跳章章节列表 2 万条与章名限长 / override 与导出 range 归一 / 撤销删除 payload 白名单与文件名上限（1.5.0 P0-3）（纯逻辑，不 require electron、不读盘、不联网）
-│  ├─ repair.js             # 从 .bak 恢复 / 从目录 txt 重建
-│  ├─ importer.js           # 导入小说（整本书复制 / 从 txt 重建书目；单本 txt 先看大小再读、文件夹形态复制前逐 txt 过 128 MB 闸门（超限文件跳过并汇总）+ 含 NUL 的非纯文本拒绝，纯逻辑可单测）
-│  ├─ exporter.js           # 整本 / 按卷 / 按章范围拼接 + 单章「平台格式」（导出 / 复制共用）+ 导出预览的字数缓存判定
-│  ├─ zip.js                # 手拼 zip（store / deflate、CRC32、DOS 时间戳），EPUB / DOCX 共用（纯函数，零依赖）；条目名闸门 assertEntryName（ASCII 白名单、拒绝 .. / 反斜杠 / 盘符 / 控制字符 / 超长，条目数与 4 GB 上限也在这里拦）
-│  ├─ epub.js               # 导出 EPUB 3（书 → zip + XHTML + OPF + NCX，纯函数）
-│  └─ docx.js               # 导出 DOCX（书 → zip + WordprocessingML：标题页 / 卷 / 章 / 段落，纯函数）
-├─ renderer/                # 界面（HTML/CSS/JS，无框架；index.html 还会加载 core/common.js、core/bookinfo.js、core/template.js、core/s2t.js、core/caret-color.js、core/bookmarks.js、core/paragraphs.js、core/capture.js）
-│  ├─ editor-logic.js       # 编辑器小件纯逻辑：选中字数/段落导航/超长段落/不可见字符与行尾空白/当前段落（光标所在段）与行号/章节字数对比/标记层超长门控（正好 30 万字仍然画）/写作时长格式与秒表（段落 / 行 / 去空白规则取 core/paragraphs.js 那一份，可单测）
-│  ├─ find-logic.js         # 查找增强纯逻辑：上一处/下一处与绕回、只画一屏的高亮窗口、正文按命中切片、命中行号与「第 X / N 处」（可单测）
-│  ├─ format-ui.js          # 「整理」交互文案纯逻辑：规则摘要、改动统计、成功 / 无改动提示、撤销步数文案（可单测）
-│  ├─ focus-logic.js        # 专注模式纯逻辑：打字机模式的目标比例、滚动位置钳制、死区与章首章尾边界（可单测）
-│  ├─ reading-logic.js      # 阅读模式纯逻辑：字号 / 行距档位、**字号 / 行距的按书记忆（Map，只记本次运行）**、**阅读位置的按书记忆（章号 + 章内比例 + 编辑器章，只记本次运行）**、`Ctrl+=` / `Ctrl+-` 的档位步进、阅读进度与**窗口标题后缀（带当前章号）**、**目录按卷分段**、按区块位置判断当前章、接近底部与自动续章、上一章 / 下一章边界（可单测）
-│  ├─ save-logic.js         # 保存热路径纯逻辑：保存成功提示的文案（章数 / 本章字数 / 今日快照）、后台全书校验只在真缺章时给 warn（文案与改动前一致，可单测）
-│  ├─ font-logic.js         # 自定义字体的 base64 解码纯逻辑：优先 fetch(data:font/ttf;base64,…) → arrayBuffer，失败回退 atob 循环（返回 { bytes, mode }，可单测）
-│  ├─ stats-logic.js        # 码字日历纯逻辑：月份游标与跨年翻月、翻月边界（不翻到未来 / 1970 下限）、按钮禁用、星期表头、网格计划（月首月尾空格、每日 class / 悬停提示 / dataset）、连续天数与月度汇总 / 今天字数文案（格式化由调用方传入，可单测）
-│  ├─ dialog-focus.js       # 弹层焦点管理（v0.9 A-5，浏览器侧）：盯所有 .backdrop 的可见状态（1.5.0 时 16 个），按 z-index 取最上层弹层，打开把焦点带进来、Tab / Shift+Tab 首尾绕回、关闭后把焦点还给打开前的元素；纯决策函数（pickTopIndex / tabTarget / shouldRestoreFocus）可在 Node 单测
-│  ├─ list-keyboard.js      # 键盘可达（v0.9 A-5b / A-5c，浏览器侧）：章节列表与书架书卡的 roving tabindex + 容器 keydown 委托（Enter / 空格激活、方向键 / Home / End 移焦点），外加分卷标题行的「Tab 可达 + Enter / 空格折叠展开 + 重建后焦点归位」（installVolumeHeaders）；只补键盘通道、不碰鼠标与拖拽；纯逻辑（isActivateKey / nextIndex / keyAction / applyTabStops / ensureTabStop）可在 Node 单测；U-D9 起章节列表焦点里按 Delete 删除焦点章（复用右键同一条 deleteChapterAt，删完焦点回列表）；U-D12 起写作页 Ctrl+PageUp / PageDown 切相邻章（chapterSwitchTarget 只算下标，切章仍走 shelf-ui 的 switchChapter）
-│  ├─ menu-keyboard.js      # 菜单键盘可达（v0.9 A-5c，浏览器侧）：右键菜单（章节 / 卷 / 书卡）打开时把焦点带进第一条可用条目、方向键 / Home / End 在菜单里走、Esc（右键菜单里 Tab 也算）收起并把焦点还给打开它的元素；顶栏下拉（整理 / 显示 / 导出）只管焦点已在菜单里时的 Esc / Tab，并拦掉「整理」卡 Esc 后 focusin 又弹开那一拍；纯决策（stepIndex / menuKeyAction / shouldReturnFocus / isUsableItem）可在 Node 单测
-│  ├─ tts-ui.js             # 朗读（v0.9 B-6 第二刀）：createTtsUi(host) 交出播放状态机与朗读条——真实 speechSynthesis 适配、从光标处开始念（光标在全文末尾 = 从头念）、一段念完自动接下一段、换语速重念当前段、12 秒无响应 watchdog、步进 / 暂停 / 继续 / 停止 / 切章自动停、跟随高亮只改选区、语速夹紧 0.5–2、朗读条禁用态与状态文案；host 只给它真正用到的 api / $ / call / state / toast / editorEl / scrollCaretIntoView（缺了直接抛 TypeError），可在 Node 里用假 host + 假引擎单测；「只说不动」，不写盘、不改正文
-│  ├─ esc-registry.js       # 全局 Esc 链与关窗清理的**有序注册表**（v0.9 B-4，审计 F6）：LAYERS 20 层的顺序就是优先级（通用询问框 → 锁键弹层 8 个 → 查找面板 → 顶栏菜单 → 查找高亮 → 只接 Esc 的 5 个弹层 → 朗读 → 阅读 → 专注 → 兜底），CLEANUP 关窗清理的有序 6 项（子集语义照原样保留）；渲染层只做「探针 + 动作表」，纯逻辑可在 Node 单测
-│  ├─ export-ui.js          # 导出 / 复制（v0.9 B-5 第一刀，审计 F7）：createExportUi(host) 交出导出范围对话框（全书 / 某一卷 / 第 X–Y 章，章数与默认文件名由主进程只读算）+ TXT / EPUB / DOCX 三种导出流程 + 复制整本 / 复制本章（平台格式：只复制正文、套段首缩进 + 段间空行）；都带上当前章未保存的内容，但只参与这一次导出、绝不写盘；「当前导出格式」这个活绑定留在渲染层（testHooksScope / E2E 口径不变）
-│  ├─ jump-ui.js            # Ctrl+G 跳章（v0.9 B-5 第二刀，审计 F7）：createJumpUi(host) 交出跳章对话框（打开 / 关闭 / 回车确认）+ 结果列表（章号命中 / 章名关键词 / 超出章数三种汇总文案 + 每行「章名 + 状态」）+ 「跳过去」（先收对话框再走 switchChapter，未保存拦截照常）；匹配规则在主进程 core/jump.js，防抖与旧响应令牌仍用 state 上的 jumpTimer / jumpToken；host 只给它真正用到的 8 个成员（缺了直接抛 TypeError）
-│  ├─ stats-ui.js           # 每日字数统计 + 码字日历（v0.9 B-5 第三刀，审计 F7）：createStatsUi(host) 交出今日字数 / 每日目标 / 进度条 / 连续写作天数（书架头 + 状态栏两份显示）、设置里的近 30 天柱状图与汇总（含写作时长那一句）、码字日历（月视图格子 / 翻月边界 / 连续天数 / 月度汇总 / 失败提示）；**状态栏「今日 N 字」是码字日历入口（打开 / 回填 / 定位在设置域，点击绑定在渲染层）**；日历的纯逻辑在 stats-logic.js，统计数字由主进程从 userData/stats.json 现算；host 只给它真正用到的 15 个成员（缺了直接抛 TypeError），不写盘、不改正文
-│  ├─ import-ui.js          # 导入 / 删除小说（v0.9 B-5 第四刀，审计 F7）：createImportUi(host) 交出导入方式询问（按原文章节 / 整本一章）、导入进度 toast、导入结果汇总（已导入 / 跳过 / 失败各取前几条原因）、删除单本书（回收站优先、不可用才书架 _trash）与两条成功提示；分析 / 复制 / 拆章 / 移动都在主进程 core/importer.js，模块只发 IPC、显示进度、弹确认框、刷新书架；host 只给它真正用到的 7 个成员（缺了直接抛 TypeError），不写盘、不改正文
-│  ├─ drag-sort-ui.js       # 章节拖拽排序（v0.9 B-5 第五刀，审计 F7）：createDragSortUi(host) 交出 pointer 拖拽（起手 / 跟手 / 落点前半后半与卷标题 / 顶部·底部 12px 自动滚动）+ 两条写盘路径（moveChapterTo 带卷与落点前的章节 id、moveChapter 按目标下标）；只改 书目.json 顺序，章节文件永不改名 / 移动，正文不动；拖拽活状态 chapterDrag 归模块独占，updateChapterDrag / endChapterDrag 不外露、仍由 setupChapterDrag 注册的 window 监听驱动；host 只给它真正用到的 10 个成员（缺了直接抛 TypeError）
-│  ├─ shelf-ui.js          # 书架交互（v0.9 B-5 第六刀，审计 F7）：createShelfUi(host) 交出「继续上次写作」卡（按 config.lastBook 找书 · 书被删 / corrupt 直接藏卡 · 标题与「最后写作 … · 共 N 章」元信息 · 章节下标夹取）+ 同步冲突副本提示（只提示不合并：state.conflictBook + 逐行清单 + backdrop 开关）+ 切章（同章短路 / 越界提示 / 未保存时 askUnsaved 拦截 / 加载）；**不注册任何事件、不进 Esc 动作表、不碰测试钩子宿主契约**，那三段仍留在 renderer.js 按原名取这 6 个 const；host 只给它真正用到的 8 个成员（缺了直接抛 TypeError），不写盘、不改正文
-│  ├─ statusbar-ui.js      # 状态栏 + 外部修改检测（v0.9 B-5 第七刀，审计 F7）：createStatusbarUi(host) 交出本章字数（正常章节即时算；超过 20 万字符的超大单章改 400ms 防抖，只算最后一次）+「比上章短 ≥40%」软提示（上一章没缓存 / 少于 500 字不比较）+ 选中字数 / 段数（只读，和本章字数同口径）+ setupExternalChangeWatch（窗口失焦再回前台时比对本章 mtime：没变不打扰 / 有未保存修改只 toast 警告 / 否则问要不要重新加载磁盘内容）；两个 window 监听由渲染层在**原位置**调 setupExternalChangeWatch() 装配（顺序不变），create() 本身不注册监听；host 只给它真正用到的 11 个成员（缺了直接抛 TypeError），不写盘、不改正文、不改 dirty
-│  ├─ shelf-filter-ui.js    # 书架搜索（v0.9 B-5 第九刀，审计 F7；1.1.0 内容：正文命中按章聚合）：createShelfFilterUi(host) 交出查询词 trim + 分组筛选（bookGroupOf / shelfGroupList / shelfGroupMatches，v0.8-3 只影响书架视图、不写配置）+ 书名 / 文件夹 / 作者简介 / 章节名的内存字面量匹配（章名命中最多 3 条）+ shelfSearchResults + shelfContentActive（书架视图且查询词 ≥ 2 字）+ 正文结果区渲染（按「书 + 章」聚合的组头「本章 N 处（N+ = 计数上限）」/ 结果行 / 高亮片段 / 展开本章全部与收起 / 显示更多 / 空态 / 索引进度）+ 搜索摘要文案；全是内存过滤与 DOM 渲染，不读正文、不写盘、不碰 IPC 白名单；事件绑定与测试钩子宿主契约段刻意留在 renderer.js，按原名取这 7 个入口；host 只给它真正用到的 6 个成员（缺了直接抛 TypeError），openContentResult 与可选的 expandContentChapter 由正文搜索模块晚一步交出、渲染层用惰性转发保持原装配顺序
-│  ├─ shelf-search-ui.js    # 书架正文搜索（v0.9 B-5 第八刀，审计 F7；1.1.0 内容：展开本章全部命中）：createShelfSearchUi(host) 交出查询重置（清结果 / 清防抖定时器 / 令牌 +1，可选保留查询词）+ 320ms 防抖调度（正文搜索不活跃就只重置）+ 主进程 search:content 查询（单次上限 40 条，旧响应按令牌丢弃，只在书架视图渲染）+ 展开一章全部命中（只带 bookPath / chapterFile 走 options.focus，主进程只读该章；旧响应 / 换查询 / 离开书架 / 已收起一律丢弃）+ 索引状态刷新（index:ensure，force / deep 只读选项，失败静默 null）+ 打开正文命中（透传 chapterId / matchIndex / matchLength）；索引在主进程、界面只收结果，模块不读正文、不写盘、不碰 IPC 白名单；事件绑定与测试钩子宿主契约段刻意留在 renderer.js，按原名取这 5 个 const；host 只给它真正用到的 11 个成员（缺了直接抛 TypeError）
-│  ├─ shelf-nav-ui.js       # 返回书架 + 书名（v0.9 B-5 第十刀，审计 F7；本轮最后一刀）：createShelfNavUi(host) 交出 backToShelf（未保存三选一 → 释放「打开中的书」登记（失败静默）→ 清空当前书 11 个 state 字段 + 清编辑区 + 结束查找会话 + 切回全局显示设置 → showView('shelf') → await refreshShelf()）与 renameBookFlow（问书名 → api.renameBook 只改 书目.json 里的 title、文件夹名不动 → 顶栏书名 / 窗口标题 / toast）；只走既有 IPC 白名单，不读正文、不写盘、不改数据格式；顶栏「返回」「改名」两行 click 绑定与测试钩子宿主契约段刻意留在 renderer.js，按原名取这 2 个入口；host 只给它真正用到的 18 个成员（缺了直接抛 TypeError）
-│  ├─ capture-ui.js         # 剪贴板面板（2026-11-04 长跑新增，2026-11-07 改单列表视图）：createCaptureUi(host) 交出「列表视图」——每条复制记录整块展示（截断预览 / 字数 / 时间 / 当前剪贴板标签）+ 两个动作「正文」（host.insertIntoBody：插当前章光标处、保撤销链、只标脏，成功后 capture:queue-remove 消费该条）「章节」（capture:commit-record：三条章名规则 + 插入位置 + 统计 + 成功后消费队列条目）；面板动作后保持打开、处理中禁用防重、>10 万字引导「去导入小说…」；host 9 成员（基础 8 + insertIntoBody），纯逻辑 `computeInsertTarget` 可单测
-│  ├─ history-ui.js         # 本书历史（2026-11-04 长跑「第 4 步九刀」第一刀；1.1.0 内容：快照按天折叠 + 清空某天）：createHistoryUi(host) 交出历史面板——只读扫描 + 按时间新→旧分组列表 + 预览单章 + 还原单章 / 整组 + 删除章节放回文件夹；**每日快照组默认折叠**（组头是带 aria-expanded 的原生按钮，折叠时只显示来源 / 时间 / 文件数 / 大小，其它来源的组仍默认展开）+ **「清空这天的快照」**（二次确认写清「移入 Windows 回收站、可从回收站恢复、不影响其它备份」，成功后刷新清单 / 书架，失败只提示、清单不动；只认严格合法的 `快照-YYYYMMDD` 目录，绝不硬删）；写盘动作全部走主进程既有 IPC（还原前先备份到 `_trash\还原前备份-时间戳\`），模块不读盘、不改正文；折叠状态只活在面板里（关掉即失效，不写盘、不进 config）；host 8（基础 5 + collab / menus / fmt 分组），面板 4 个按钮绑定随域 setupHistoryUi
-│  ├─ reading-ui.js         # 阅读模式（第二刀）：createReadingUi(host) 交出只读通读视图——字号四档 / 行距三档（**按书各记一份，只记本次运行**）/ **阅读位置记忆（退出再进回到上次读到的章与章内位置；只记内存）** / 目录跳章（**有分卷时按卷分段显示**）/ 从头 / 上一章 / 下一章 / **键盘 ← / → 翻章** / **`Ctrl+滚轮` / `Ctrl+=` / `Ctrl+-` 调字号** / 滚到底自动接下一章 / 进度与当前章 / **窗口标题带当前章号（刷新时请渲染层重算）** / 未保存提示；只改阅读视图，不写正文、不改 `书目.json`、不写配置；host 8（基础 5 + reading / view 分组 + chapterTitle），11 个监听随域 setupReadingUi
-│  ├─ editor-marks-ui.js    # 编辑器小件（第三刀）：createEditorMarksUi(host) 交出正文标记层——不可见字符 / 超长段落黄线 / 当前段落高亮 / 选中字数与段数 / 段落导航 / 高亮色板；标记只画在影子层、正文一个字节不动；**超长段落阈值从 host.editor.getLongParagraphThreshold() 每次现取（全局默认 + 按书覆盖），菜单文案 / 状态栏标签 / 气泡 / 黄线判定共用同一个生效值**；host 9（基础 3 + persistMarks + editor / find / focus / stats / scroll 分组），ResizeObserver / passive / IME 行为原样，6 处绑定随域 setupEditorMarks
-│  ├─ proofread-ui.js       # 校对面板（第四刀）：createProofreadUi(host) 交出「只报告不改动」的校对面板（范围 / 自定义词表 / 结果列表 / 点一条跳过去）；规则在主进程 core/proofread.js，模块只建 DOM 与调 IPC；host 8（基础 5 + peers / nav / view 分组），3 按钮 + 范围 change 随域 setupProofreadUi
-│  ├─ sensitive-ui.js       # 敏感词预检（第五刀）：createSensitiveUi(host) 交出词表选择 + 按词表字面匹配的结果面板（只报告、不改正文、不写盘）；词表读取与匹配在主进程 core/sensitive.js；host 8（基础 5 + peers / nav / view 分组），3 按钮 + 范围 change 随域 setupSensitiveUi
-│  ├─ bookinfo-ui.js        # 书籍信息 + 书架渲染（第六刀）：createBookinfoUi(host) 交出书籍信息弹层（作者 / 简介 / 分组 / 标签）+ 书架书卡渲染（5 列扉页卡 / 分组筛选 / 书目损坏卡 / 新建卡）；只写这本书 `书目.json` 的可选字段，不改文件夹名、不动章节 txt；host 8（基础 5 + render / shelf / actions 分组），弹层与分组筛选绑定随域 setupBookinfoUi
-│  ├─ settings-ui.js        # 设置弹层（第七刀）：createSettingsUi(host) 交出全局 / 按书两套作用域的表单回填、实时预览与保存（书架目录 / 字体 / 排版 / 超长段落阈值 50–20000 / 写作统计 / 每日快照 / 两份词表 / 导出简繁 / 日志与检查更新入口）；**另交出 openStatsCalendar：写作页状态栏「今日 N 字」→ 全局设置 + 滚动定位到码字日历，回填按作用域取 globalConfig（不把本书覆盖值当全局），取消不写盘**；host 8（基础 5 + display / peers / texts 分组），6 组绑定随域 setupSettingsUi
-│  ├─ tidy-card-ui.js       # 「整理」悬浮选择卡 + 「显示」菜单（第八刀）：createTidyCardUi(host) 交出整理本章（点击即用上次规则）/ 排版设置… / 一键整理本书… / 撤销上次整理，以及显示预设 / 不可见字符 / 超长段落提示 / 当前段落高亮 / 显示设置入口；打开排版与设置弹层走惰性转发（装配顺序不变）；host 8（基础 4 + tidy / openers / marks 分组），6 组绑定随域 setupTidyCardUi
-│  ├─ find-ui.js            # 查找替换（补刀 9a）：createFindUi(host) 交出查找会话（面板 / 当前章与全书范围 / 上一处下一处 / 命中高亮 / 状态栏小标签 / 收尾回车）+ 替换这一处 / 全部替换（整本替换前先备份到 `_trash\替换备份-时间戳\`）；匹配与替换规则在 core/find.js，模块只建 DOM / 调 IPC；host 8（基础 5 + find / nav / collab 分组），查找绑定随域 setupFindUi
-│  ├─ find-bookmark-ui.js   # 查找书签（补刀 9b）：createFindBookmarkUi(host) 交出「存成书签」+ 打开章节时按「书 + 章」自动高亮 + 书签列表跳转 / 删除；只写 config.json 的 findBookmarks（不存正文），host 7（基础 5 + find / nav 分组），按钮绑定随域 setupFindBookmarkUi
-│  ├─ fragments-ui.js       # 灵感箱 / 碎片速记（补刀 10）：createFragmentsUi(host) 交出「＋ 碎片」记录弹层与「插入碎片…」面板（列表 / 预览 / 插入到打开面板前的光标处）；只改编辑区、仍是未保存，原碎片保留不删；host 8（基础 5 + common / editor / menus 分组），8 个绑定随域 setupFragmentsUi
-│  ├─ write-timer-ui.js     # 写作时长（补刀 11）：createWriteTimerUi(host) 交出状态栏写作计时按钮（开始 / 暂停 / 秒表 / 每 30 秒整秒上报 / 换书与回书架自动停表）；只记整秒、不读正文不记按键，时长与字数同存 userData/stats.json；host 6（基础 4 + common / statsUi 分组），按钮绑定随域 setupWriteTimerUi
-│  ├─ focus-mode-ui.js      # 专注模式（补刀 12）：createFocusModeUi(host) 交出 F11 / 「专注」进出、打字机对齐、右上角半透明小条与退出时的布局还原；只改布局与滚动位置、不写配置不写盘；host 5（基础 2 + focus / marks / menus 分组），3 个绑定随域 setupFocusModeUi
-│  └─ renderer.js / index.html / styles.css   # 界面与事件（2026-11-04 长跑后：renderer.js 3456 行 = 胶水层；26 个域模块各管一块，标记只画在影子层，不碰正文）
-├─ build/                   # 打包资源
-│  ├─ icon.ico              # 安装包/exe 图标（多尺寸）
-│  └─ icon.png              # 图标预览/源图
-├─ scripts/
-│  ├─ start.js              # 启动器（清理 ELECTRON_RUN_AS_NODE）
-│  ├─ screenshot-driver.js  # 开发自检专用：截图注入脚本 + waitForRenderer + runAutomation（--screenshot 的 --dialog 分支 / --e2e 场景入口 / 多窗口与安全辅助）；只在自动化模式下懒加载，不进安装包（build.files 不含 scripts/）
-│  ├─ run-e2e.js            # pnpm run e2e
-│  ├─ bench.js              # 前端基准（v0.9 A-1）：在临时书库里造「书架 N 本 + 千章大书」，真实 Electron 量「书架刷新 / 书架搜索 / 打开书 / 切章 / 章节栏渲染」耗时；零依赖、只读、不删文件，结果落 shots/bench-<时间>.json
-│  ├─ bench-driver.js       # 基准驱动（v0.9 A-1）：只在 --bench 时由 main.js 懒加载，把测量脚本注入渲染层；不进安装包
-│  ├─ e2e-scenario.js       # 端到端自检场景（2026-11-04 长跑第 2 步拆组收官：**9996 → 374 行**）——只剩文件头 require、ctx 解构、harness 装配 + 前缀工具、导出对话框 6 件套、`state` 袋子 + `groupContext()`、组调用序列（第 0–51 组一组一次原位调用、52–72 组调用点原样位移）、`return`；断言一条没改
-│  ├─ e2e/harness.js        # E2E 公共工具（v0.9 B-7；2026-11-04 长跑第 2 步下沉 7 个前导工具）：check / waitFor / 删书重试 / 读日志 / 文件存在 / ensureWindowFocus / diskText / waitForFile / waitForSummary / waitCloseReady / readClipboard / waitForClipboard，场景与 73 个组文件共用一份
-│  ├─ e2e/groups/           # 按组拆开的 E2E 场景（v0.9 B-7 起，2026-11-04 长跑第 2 步补齐）：index.js 按组号派发（runGroups / idsFrom），**73 个组文件（0–72）**——第 0–51 组在 2026-11-04 长跑从 `scripts/e2e-scenario.js` 原样搬入（组体逐行一致、断言一条未改、组间共享值走 `t.state`），第 52–72 组是 v0.9 / v0.10 阶段已拆的组（调用点与文件保持原位）。组文件只 `require('node:…')` 内建，不碰产品代码 / electron
-│  ├─ contrast.js           # 对比度审计（v0.9 A-4 起，v1.0 V-3 扩展到 86 条规格 / 504 条通过 + 12 条禁用态豁免）：系统临时目录里造演练书库 + 真实 Electron，6 套主题逐一切换后读实际颜色、按 WCAG 2.1 打表并落 shots/contrast-<时间>.json
-│  ├─ contrast-driver.js    # 对比度采样驱动（v0.9 A-4，v1.0 V-3 扩到弹层内部 + 交互态）：只在 --contrast 时由 main.js 懒加载，把采样脚本注入渲染层（切主题 / 读计算色 / 关过渡 / 真实打开六个弹层），交互态由主进程用 CDP `CSS.forcePseudoState` 强制 :hover / :active 后逐主题采样；不进安装包
-│  ├─ contrast-color.js     # 颜色与 WCAG 公式（v0.9 A-4，纯逻辑）：解析浏览器计算值（含 color(srgb …)）、半透明叠加、相对亮度与对比度
-│  ├─ table.js              # 终端表格补位（v0.9 A-4 从 bench.js 抽出）：中文按 2 列宽算，bench / contrast 共用一份
-│  ├─ export-check.js       # 自检工具：读回导出的 zip / epub、检查 XML 是否合法（单测 + E2E 共用）
-│  ├─ demo-data.js          # 生成演示书库
-│  ├─ sweep-unused.js       # 只读扫描（v0.9 B-4 / B-1）：没人用的 CSS 类 / HTML id / JS 顶层函数 / 模块导出 / 只给模块内用却还导出的成员、真重复声明（--verbose / --json）；不写任何文件，报告只打 stdout
-│  └─ make-icon.py          # 生成 build/icon.*（纯标准库 Python 绘制，不需 Pillow）
-├─ tests/                   # node:test 单元测试
-├─ dist/                    # 打包产物（.gitignore，不进仓库）
-├─ README.md
-└─ 验收清单.md
-```
+> 公开仓库只放公开文档（`README.md` / `验收清单.md` / `LICENSE`）。版本沿革、开发自检历史、各版本验收增量都已归档到 `内部文档/`（`.gitignore` 整目录忽略，不进公开仓库）；工作清单、审计报告、执行台账、提案与开发日志这类内部文档也统一放这里（审计 D6 / D12 / M3 / #28）——别再按精确文件名维护忽略清单。
 
 ## 已知限制（仍有意不做）
 
 - 安装包**未签名**：首次安装 Windows SmartScreen 会提示「已保护你的电脑」，点「更多信息 → 仍要运行」即可；自动更新只做了**轻量版**（手动检查 → 打开 GitHub 下载页），**没有自动下载、自动安装、后台静默升级，也没有代码签名**，升级仍需你自己下载安装包覆盖安装
-- **Electron 安全开关之外的残余风险（v0.9 C-1 审计结论，本阶段只记录不修改）**：页面仍用 `file://` 加载（没有换成自定义协议），打包配置里也**没有**开 `grantFileProtocolExtraPrivileges: false` 与 `enableEmbeddedAsarIntegrityValidation` 这两个 fuse——它们只有打包后才验证得出来，而本阶段按约定不打包，留到下次发版时评估；`Ctrl+Shift+I` 只在**开发 / 自检构建**里能打开开发者工具（**打包后的正式版已不绑定**，见 2026-11-05 审计整改；窗口开着 `sandbox` + `contextIsolation`，里面同样没有 Node 能力）。这些都不改变「渲染层没有文件系统权限、正文只能由主进程按既有校验读写」这条主线
+- **Electron 安全开关之外的残余风险（v0.9 C-1 审计结论，本阶段只记录不修改）**：页面仍用 `file://` 加载（没有换成自定义协议），打包配置**已开** `enableEmbeddedAsarIntegrityValidation` 与 `onlyLoadAppFromAsar` 这两个 fuse（`grantFileProtocolExtraPrivileges` 未显式关，仍是 Electron 默认）——它们只有打包后才验证得出来，本阶段按约定不打包，发版时由打包后的冒烟检查覆盖；`Ctrl+Shift+I` 只在**开发 / 自检构建**里能打开开发者工具（**打包后的正式版已不绑定**，见 2026-11-05 审计整改；窗口开着 `sandbox` + `contextIsolation`，里面同样没有 Node 能力）。这些都不改变「渲染层没有文件系统权限、正文只能由主进程按既有校验读写」这条主线
 - **路径校验的剩余边界（v0.9 C-2 / C-2b 审计结论）**：①书文件夹如果本身是**符号链接 / 目录联接**并指向书架外，文本路径判定拦不住（要先有人在你自己的书架上造出这种链接）；②`config:set` 里的 `booksRoot` 与两份词表路径现在只认**主进程自己弹出的对话框刚选中的那个**（来源校验见第 35 条），所以设置里的「书架目录」输入框改成只读——改目录请点右侧「选择…」，行为与提示跟以前一致；③来源校验按**字符串等价**判断：如果你先在对话框里选了 `D:\书架`，再手动写出它的子目录 `D:\书架\子目录` 当书架，会被当成「来源不明」忽略（重新点「选择…」选一次即可）；④改坏了也只是读不到，不会写坏书库
 - **目录联接书库（2026-11-06 拍板）**：书架根目录可以是指向别的盘 / 别的目录的**目录联接**（Windows junction）——列书、打开、读章、保存都照常走真实目录，「整个书库放在别的盘、用联接挂进来」这种用法**受支持**，并由回归用例 `tests/junction-library.test.js` 钉住（防止以后的路径规范化改动把它弄坏）。代价是应用**不做 realpath、也不校验符号链接指向**：安全边界依赖本机文件系统权限（只有你自己能在这台机器上造链接）；同一个物理书库用两个不同路径名打开时会被当成两本（正常从书架入口打开不会发生——书架永远只用配置里那一个书库路径）。另一条现有边界：**书文件夹本身**若是联接，书架列举只认直接子目录，它不会自动出现在书架（路径已知时仍能读章 / 保存）；要让它自动出现属于行为变更，本版未做（见 `下一阶段提案.md` §6）。
 - **2026-11-05 审计整改后的四条边界**：①`config.json` 只认已知字段——手动往配置里塞的未知键在加载 / 保存时会被丢弃（旧配置缺新键照常打开、自动补默认值）；路径字段（书架目录 / 两份词表 / 编辑器自定义字体）只认「原值 / 设置里刚用「选择…」选中的那个」，其它来源一律忽略并留一条日志。②`font:read` 先 `realpath` 再按真实路径校验 `.ttf` / `.otf` / `.ttc` 与 24MB 上限；按书 / 全局配置解析出的本机绝对路径**不再回传给渲染层**。③打包后的正式版**不认** `--e2e` / `--bench` / `--contrast` / `--screenshot` 这些自动化开关（自检频道不注册、窗口与关闭流程都走正常路径）；安装版冒烟用的 `--user-data` / `--books-root` 与 Chromium 自己的 `--remote-debugging-port` 保留。④关窗放行由主进程按「自己掌握的未保存状态 + 最近一次保存成功回执」交叉判定，界面单方说「可以关」不再足够；「不保存退出」会在界面侧先如实清掉脏状态再放行
 - **错误文案 / 日志脱敏的两条边界（v0.9 C-4 审计结论）**：①界面与日志里的本机绝对路径只留最后一节（`…\001-第1章.txt`）——**文件名仍在**（书里的章节文件名本来就带章号，看得出是哪一章；书名只在文件夹名里，已经不会出现）。分享日志 / 截图前扫一眼仍然是好习惯。②「设置」里看到的书架目录、词表路径是你自己选的那几个配置值（设置界面需要显示），它们**不会**被脱敏；脱敏只作用于错误提示、状态行与诊断日志。原始英文错误信息（`EPERM: operation not permitted, open '…'`）只留在本机日志里，界面上看到的是中文结论 + 文件名
 - **导入 / 导出的两条边界（v0.9 C-3 审计结论）**：①「导入小说」的单本 txt 上限是 **128 MB**（纯文本小说远到不了：1000 万字中文约 30 MB）；超过会提示体量并跳过，**不会先读进内存**。把图片 / 程序改名成 `.txt`（含 NUL 字节）或没有 BOM 的 UTF-16 会被当成「不是纯文本」拒绝；UTF-8（含 BOM）/ 带 BOM 的 UTF-16 / GBK 照常识别。整本书文件夹导入与「一本书的章节目录」导入也是**原样复制、不读正文**，但从 1.6.1 起复制前逐 txt 过同一条 128 MB 闸门（V25）：超限的单个文件不复制、记进导入结果的「跳过 N 个」汇总，其余文件照常导入，整批不中断；现成书形态里被跳过的那一章会从复制出的书目里去掉，不留打不开的悬挂章节（单章特别大时，打开那一章的编辑体验仍受 30 万字标记层上限保护）。②EPUB / DOCX 的 zip 条目名**只用本应用生成的 ASCII 名字**（`OEBPS/text/chapter-0001.xhtml` / `word/document.xml` 这种），书名 / 卷名 / 章名只进正文——所以包里的文件名与书名无关（用阅读器 / Word 打开看到的内容才是书名），这是长期设计，现在由 `core/zip.js` 的条目名闸门强制保证：以后谁把作者输入拼进条目名，会直接在导出时报错，而不是产出解压时能把文件写到包外面的包
+- **默认拆章导入对「部 / 集 / 篇 + 无分隔符 + 直接接字」按正文处理（审计残留 #50/E15）**：为了不把「第一部电影…」「第三集播出后…」「第一篇论文…」误切成章，这类行不会当标题；代价是「第一部风起」这类无分隔符短标题会被并进上一章正文 —— 真标题请用空格 / 冒号分隔（「第一部 风起」「第一部：风起」），或把「第一部」单独写成一行
 - **单章 128 MB 读取闸门的三条边界（1.5.1 H6 起，1.6.1 R3 补齐）**：① 编辑区打开超限章一律 `CHAPTER_TOO_LARGE`，不整份读进内存；② **书架扫描的字数回填**（含「从目录重建」后缺 `chars` 的章、老版本书目）先 `stat` 再读，超限章跳过、字数保持未缓存、书照常列出且**不标「书目损坏」**，下次扫描再试；③ **「还原到替换前」刷字数**只重算本次真正还原的章（不再整本重读），超限章同样跳过。三者共用 `MAX_CHAPTER_READ_BYTES = 134217728` 与同一套 `readSizeProblem` 文案；扫描的全局并发上限 **≤ 8**（外层 4 × 内层 2），1000 章的书不再 96 路同时读盘。④ **整本查找 / 替换 / 排版预览 / 整理**（1.6.1 R4 起）遇到超过 128 MB 的章**跳过并汇总**：超限章不读盘、不写盘，结果里多一个可选 `skippedTooLarge`（跳过章数），界面提示「有 N 章超过 128 MB，本次已跳过（文件没动）」，**不整批失败**；导出与校对仍按章读正文，碰到超限章会照旧明确报错（这两条路径本轮没动）。
 - **IPC 参数上限（v0.9 C-5 审计结论）**：渲染层交给主进程「一次算完」的数据有硬上限——**正文 500 万字**、**查找词 / 替换词各 1 万字**、**替换结果约 2000 万字**（按「原文 + 命中 × 增长」估算，不先生成字符串）、**Ctrl+G 章节列表 2 万条**（超出只取前 2 万条）、编辑区未保存内容（override）同样 500 万字；超过时回固定错误码 + 中文提示（如「正文太长（5,000,001 字，最多 5,000,000 字）」）。这些值远高于正常写作（一章通常几千到几万字），碰到只可能是手误或注入脚本；被拒的调用**不写盘、不改书目、不留 `_trash`**。**单章正文超过 500 万字时**排版 / 查找 / 替换 / 校对 / 朗读会提示太长（`Ctrl+S` 保存与编辑本身不受影响，作者自己的正文永远原样写盘）；**`chapter:save` 同样受这条 500 万字上限约束**（2026-11-05 审计 E6 补齐；正常一章远到不了），导入（写作者自己的整本文件）不在这一层的限制里。导出范围 / 覆盖内容沿用「坏形状降级」的旧口径（非对象 range 当全书、越界收紧到 1–总章数；override 形状不对当没传），只有非文本 / 超长正文会报错。另有一条边界：整本替换入口限制替换词 1 万字、单章命中上限 5000 处，极端输入下单章最多多出 5000 万字——正常换词 / 换句远到不了，且整本替换必须先确认、写前备份到 `_trash`
 - **对比度审计覆盖到扩展态后的边界（v0.9 A-4 起，v1.0 V-3 扩展）**：`node scripts/contrast.js` 现在覆盖 ① 书架 / 写作页默认态；② **六个弹层内部**（设置 / 导出范围 / 排版 / 查找 / 校对 / 历史）；③ **`:hover` / `:active`**（书卡、顶栏按钮、章节条目、下拉菜单、查找 / 校对 / 历史结果行；顶栏按钮、主按钮、菜单条目）。交互态由主进程用 CDP `CSS.forcePseudoState` 在**真实元素**上强制伪类（与真实指针 / 按键走同一套样式解析，不是往产品 DOM 里加测试类），采样前用 CSSOM 关掉颜色过渡、采完删除；**禁用态按 WCAG 1.4.3 豁免**（inactive controls 不适用对比度要求），只记录实测比值、不计失败。仍有的边界：①**表单描边**（`--line-strong`）在纸色上只有 1.5–1.9:1，低于 WCAG 1.4.11 要求的 3:1——有意保留纸感，输入框的边界同时靠白底 / 深色底与「点进去后的光标」提示，要提到 3:1 会让整个界面变成硬边框风格；②牛皮纸 / 网格纸的纹理（alpha ≤ .10）与正文编辑区的纹理**没有计入底色**（影响远小于 0.1 的比值）；③主题仍是作者手选（`editorPaper`），**没有**跟随系统深色自动切换（作者没要求，且会让「按书显示设置」的优先级变复杂）；④交互态覆盖的是**代表性元素**（书卡 / 按钮 / 章节 / 菜单 / 三种结果行），不是每一个可交互元素；⑤弹层内部覆盖上述六个，灵感箱 / 书籍信息 / 跳章 / 同步冲突等沿用同一套令牌与弹层通用外观，由 6 主题截图抽查。审计脚本只读、书库全在系统临时目录，跑一次会在临时目录留一套演练书库（可留可手动清）
@@ -569,12 +454,13 @@ chapterly/
 - **破坏性操作中途失败的边界（v0.9 C-8 审计结论）**：删章失败会**自动回滚**（把刚移走的章节文件 rename 回原处，书还是删除前的样子；只有连回滚都失败时才提示「文件在 `_trash/…`，可用本书历史的删除备份放回」）。但**整本整理 / 整本替换 / 还原到替换前是逐章写盘**，中途失败（磁盘满 / 杀软占住 / 某个章节文件只读）时前面几章已经改好，**不会自动退回**——错误提示会告诉你已经改了几章、原件备份在 `_trash/整理备份-…` 这类相对位置，需要的话按提示把原件拷回去；替换 / 还原类还可以直接重试（已经改过的章不会再变，剩下没改的会补上；还原本身是幂等的）。整本整理仍然**没有「一键撤销上次整理」**，要用就去「本书历史 → 整理备份-时间戳 → 还原整组 / 还原单章」（还原前会再把当前内容备份一份）。另外，删除当前章时如果还有未保存的修改，现在会先问一句（保存后删除 / 不保存直接删除 / 取消）——没写盘的字不在 `_trash` 里，选中「不保存直接删除」就是真的放弃它们。
 - **前端基准只在同一台机器上有可比性（v0.9 A-1）**：`node scripts/bench.js` 是开发自检脚本，数字受机器、杀软、盘、窗口大小与设备像素比影响（本机基线见第 46 条），**只用于同一台机器上改前 / 改后的对比**，别拿它跨机器比快慢。它不打包、不影响正常启动，跑一次会在系统临时目录留一套临时书库（路径会打印出来，可留可手动清）；脚本本身不删任何文件，也绝不读写真实书架。对作者来说这一条不需要任何操作——正常双击启动完全不经过这些脚本。
 - **章节栏的「屏幕外条目不渲染」依赖 Chromium 的 `content-visibility`（v0.9 A-2）**：`.chapter-item` 用 `content-visibility: auto` + `contain-intrinsic-size: auto 38px` 让千章列表只真正排版屏幕内的十几条，条目本身仍在 DOM 里（选择器 / 文本 / 键盘 / 当前章高亮都照常）。Electron 45 内置的 Chromium 支持这两个属性；万一以后换渲染内核而不支持，最坏结果是退回整表排版（只是慢一点），**不影响数据与功能**。`38px` 是实测行高，若以后调整章节条目的字号 / 内边距，请同步改这个值（单测会在 20–80px 之外报错）。
-- **测试钩子文件会进安装包但永不加载（v0.9 B-2；**出包决策已定稿：保持现状**）**：`renderer/test-hooks.js`（给 E2E / 截图自检用的 472 个调试钩子，**80,259 B**）因为打包配置 `files` 含 `renderer/**/*` 而躺在安装包里，但页面只在地址带 `?test=1` 时才会动态加载它——正常双击启动既不请求也不执行（`window.__cwTest` 在正常窗口里是 `undefined`）。**结论（2026-11-04 长跑第 5 步）：不把它排除出安装包，就以「保持现状」为最终口径，不再作为待办**——80 KB 对 121.5 MB 的安装包只有 **0.066%**，而排除出去（`build.files` 加 `"!renderer/test-hooks.js"`）后自检版必须另带一份开发目录、还要额外维护「asar 里没有它时 `?test=1` 的清晰失败提示」，收益远小于维护成本。这条现在只作为事实记录，不是待评估项。
+- **测试钩子文件不进安装包（v0.9 B-2 曾定「保持现状」；v1.8.0 审计 O2 / #30 改为排除）**：`renderer/test-hooks.js`（给 E2E / 截图自检用的调试钩子，只在开发版地址带 `?test=1` 时动态加载）已由 `build.files` 的 `"!renderer/test-hooks.js"` 排除出安装包——打包版既不加载它、也没有 `window.__cwTest`；E2E / 截图照旧只在开发版（`pnpm start` / `pnpm e2e`）跑，`pnpm dist*` 产物里少一份约 92 KB 的死代码与钩子名单。`tests/package-meta.test.js` 与 `tests/test-hooks.test.js` 钉住「排除项存在 + `index.html` 无静态引用 + 钩子文件仍在仓库」。
 - 无自动保存、**默认无每日备份**、无云同步、无多端（按作者要求；自动保存只有「新建 / 插入章节前自动保存当前章」这一处例外；每日备份是手动打开的「可选每日快照」，默认关）
 - 无富文本、无大纲、无设定库、无 AI 辅助（需求砍掉）
 - 「智能排版」默认只处理当前章（点「整理」就是整理这一章）；整本要排得显式点选择卡里的「一键整理本书…」（会直接写盘，写前备份）
 - 整本整理**没有「撤销上次整理」**：它是直接写盘的显式动作，要退回请打开「本书历史」→ 选 `整理备份-时间戳` →「还原整组 / 还原单章」（还原前会把当前内容再备份一份）
 - 标点整理覆盖 `, . ; : ! ?` 六种，**直引号和省略号要在对话框里单独勾**（默认关）；不做「智能引号配对」这类不可控转换，避免误伤对话
+- **`U+2019`（右单引号 / 英文撇号）的固有边界（审计残留 #51/E16）**：闭引号后紧挨的句点会转全角（`他说：“你好”.` → `他说：“你好”。`）；`U+2019` 同时是英文撇号，所以以 `’` 收尾的英文写法后紧跟的句点也会被转（`‘hi’.` → `‘hi’。`、`dogs’.` → `dogs’。`）；撇号夹在词中的 `don’t.` 不受影响。这是审计指定字符集（中文收引号集合）的固有边界，不做引号配对；整理只改编辑区、保存前可 `Ctrl+Z` 或「撤销上次整理」退回
 - 撤销整理只有内存快照（最多 50 步）：**关掉应用后不可撤销**，所以整理后建议扫一眼再 `Ctrl+S`
 - 「替换这一处」只支持当前章；整本范围仍是「全部替换」（写盘前自动备份），不支持「整本只替换某几处」
 - 查找面板的「还原到替换前」只针对**最近一次**替换；更早的替换备份请用「本书历史」还原单章 / 整组（只还原现在仍在书里的章节），除每日快照外备份目录不会自动清理
@@ -591,7 +477,7 @@ chapterly/
 - 自定义字体只记路径、不复制字体文件：换电脑、挪走/删掉字体文件后会自动退回宋体；字体文件只由主进程按「刚在对话框里选的 / 当前书的显示设置 / 全局设置」这三种路径读取，**渲染层不能指定任意路径**（v0.8.6 R4，代码审计 F1）
 - 查找是**字面量**查找，不支持正则/通配符（`.*` 只是三个字符）
 - 书架搜索的**正文部分**是**字面量、不区分大小写**：不做正则 / 通配符 / 繁简转换 / 同音字 / 拼音；正文至少 **2 个字**才搜（一个字不搜）。结果按「书 + 章」分组，组头显示本章真命中数（单章计数上限 10000，超过显示 `N+`）；默认每章最多列 3 处，「展开本章全部」只读目标那一章、单章最多返回 200 条（更多时明确提示只列出前 N 处），一次整搜最多 40 条；常见两字词可能命中很多书，这时只查**最近修改的 60 本**并标「只查了最近的一部分书」，单次搜索约 1.8 秒预算（超出先返回已有结果；展开一章同样受时间预算保护，但不受整次 40 条限制）。书名 / 章名过滤仍然是输入即出的内存过滤。**结果里的章号按全书顺序显示**——书架不读每本书的编号设置，所以按卷编号的书在这里显示的是全书第几章，与写作页目录里的卷内号不同（本版只写清这个已知差异，不改显示语义）
-- 正文索引是**每本书一份双字 Bloom 位图 + 每章 mtime/size 指纹**（存在 `%APPDATA%\chapter-writer\search-index.json`，280 本约 20MB），只用来「筛掉肯定没命中的书、再读真实 txt 核对」：位图有误报、**不会漏报**。索引里**没有正文句子**，所以不能当全文预览或离线备份用；索引里会存书名 / 章名 / 章节文件名 / mtime/size（分享索引文件前留意一下书名章名）
+- 正文索引是**每本书一份双字 Bloom 位图 + 每章 mtime/size 指纹**（存在 `%APPDATA%\chapter-writer\search-index.json`，280 本约 20MB），只用来「筛掉肯定没命中的书、再读真实 txt 核对」：位图有误报、**不会漏报**。索引里**没有正文句子**，所以不能当全文预览或离线备份用；索引里会存书名 / 章名 / 章节文件名 / mtime/size（分享索引文件前留意一下书名章名）。索引总量有 **32 MB** 预算（审计修复 #33）：超过时按书目最后修改时间从旧到新丢掉整本书的位图（**章节指纹保留**，不是把书从索引里删掉），被丢掉位图的书以后每次搜索都逐章核对——**只慢一点，结果不会少**；正文变过 / 换书架根时位图会重新建；预算是**尽力而为**：若超限时所有书都已没有可丢的位图（只剩章节指纹），索引仍照常写出（不为了凑预算删指纹），读侧另有 64 MB 兜底、超限按空索引重建；每章指纹是 mtime/size + 首尾各 4 KB 内容采样，只改文件中段且保留大小 / 修改时间的改写不会被指纹发现（要等大小 / mtime 变化或重建索引，审计残留 #R20）
 - **首次打开书架会在后台建索引**（280 本 / 3256 章约几十秒），界面上有「正在为书架建正文索引 N/M 本」；建好前书名 / 章名搜索照常可用，正文结果建好后自动补上，**不需要作者手动点任何东西**
 - 索引校验分两档：**回书架 / 启动时**逐章 stat 校验（约 10 秒节流，用来发现外部改过的 txt），**每次搜索**只做轻量的书目校验（约几十毫秒，不拖慢输入），距上次逐章校验超过 1 分钟时顺带做一次兜底。在别的编辑器里改过 txt：回一次书架或等约一分钟再搜就能看到；应用里按 `Ctrl+S` 保存会**立即**标记这本书重建索引。改章名 / 删章 / 删书同样由下一次校验发现。索引文件损坏、版本不对或书架目录换了会自动重建；删掉 `search-index.json` 只会让下次多扫一遍
 - 搜索结果点一条只是**打开那一章并选中命中位置**（只移动光标 / 选区 + 滚动，不改正文、不会替你保存；当前章有未保存修改时照常询问）。「展开本章全部」也只在主进程读目标那一章、把命中片段交给界面，界面不读整章正文、不写盘。搜索全程只读：不写 `书目.json`、不改章节 txt、不生成 `_trash`
@@ -607,6 +493,7 @@ chapterly/
 - 章节状态只有**草稿 / 待修 / 完稿**三档（不做自定义状态、不按状态筛选/排序）；备注是一条 ≤200 字的一句话，不做多行便签、不进正文、也不参与搜索
 - 复制本章（平台格式）**只复制正文、不含章名**，排版固定按「段首缩进两格 + 空一行（含缩进）」，不跟随「排版设置…」对话框里记住的规则（不改标点 / 引号 / 文字）；空章不覆盖剪贴板
 - 范围导出（全书 / 按卷 / 第 X–Y 章）**TXT / EPUB / DOCX 都支持**，但「复制整本到剪贴板」始终是整本。按卷导出只列书里已有的卷（没分卷的书不显示这一项）；第 X–Y 章按**全书连续章号**算（按卷编号的书也一样：范围输入填的是全书第几章，不是写作页的卷内号；导出文件里的章标题才按卷内号），导入的原文标题章节也按序号排，不按标题里的数字。一次只能选一种范围（全书 / 某一卷 / 章节区间），不能「未分卷 + 某卷」拼着导
+- **导出 / 复制里的「当前章未保存内容」（override）按章节 id 认章**：编辑区那一章还在书目里时，用它现取的内容替掉磁盘正文（返回 `includedUnsaved: true`）；如果那一章刚被删除、或编辑区已经换了书（传给主进程的 chapterId 在书目里找不到），TXT / EPUB / DOCX 导出与「复制整本」**不报错，直接按磁盘内容导出**（`includedUnsaved: false`；也不会拼进同名 / 同文件名的别的章）。只有单章动作「复制本章（平台格式）」找不到这一章时明确报「找不到这一章（可能刚被删除）」——它本来就是「复制这一章」，章不在就不能拿别的章冒充
 - EPUB 按卷 / 按范围导出**只打选中的章节**：卷名页只生成选中章所在的卷，封面章数 = 本次导出的章数，按卷 / 按范围的副本使用**独立的 identifier**（阅读器不会把它当成整本书的另一个版本）；章标题按这本书的编号方式（默认全书连续；按卷编号时卷内从第 1 章起）。本书没有封面图，固定生成一页纯文字封面；不含插图、脚注等富内容，也**不跟随**「排版」对话框里记住的规则（固定「段首缩进 2 字 + 段间空一行」）。正文里的空行会合并成段间留白（不再单独输出空段落），所以习惯用空行分段的书，导出后段距是统一的
 - **DOCX 导出是固定版式**：标题页（书名 / 作者 / 范围与章数）+ 卷标题 + 章标题 + 正文，正文段首缩进 2 字、1.5 倍行距、宋体；**不跟随**「排版」对话框里记住的规则，不含页码 / 页眉 / 目录域 / 封面图；正文里的空行会合并成段间留白，一章不拆文件，章标题按这本书的编号方式（默认全书连续；按卷编号时卷内从第 1 章起）。按卷 / 按范围只写选中的章（卷标题只生成选中章所在的卷）。导出全程只读；当前章未保存内容参与但不写盘；简繁转换只作用于副本（书名 / 作者 / 卷名 / 章名 / 正文一起转）
 - 「继续上次写作」只记**最近一本书**（不提供历史列表 / 最近打开的书单）；入口显示的是记录时的章号，若之后在别处删过章，点进去仍以书内 `lastOpenChapterId` 为准（失效时回退第 1 章）。上次那本书被删掉或移出书架后入口自动隐藏，不会提示「书不见了」
@@ -670,6 +557,7 @@ chapterly/
 - `书目.json` 的 `schemaVersion` 目前是 1，迁移函数是空的（为将来加字段留口子）；旧版应用读新版本书目时只会保留版本号、按已知字段尽力读，不保证能理解将来版本新增的字段
 - 「Windows 关机拦截」是尽力而为：系统关机不强等应用，可能来不及弹提示
 - **原子写会重试 3 次（间隔 80ms）后就报错**：正常写作里碰不到（同一个文件本来就被串行化：书锁 + 同一本书只开一个窗口 + 一次只保存一章），只有杀掉软 / 同步盘 / 备份软件长时间霸占目标文件时才会走到「保存失败」——这时磁盘上仍是完整的上一个版本，等占用结束后再 `Ctrl+S` 即可。极端情况下（同一路径十余路并发写同一个文件）重试会被争用耗尽，同样只报错、不写半截；这一条由 `tests/atomic.test.js` 钉住
+- **每次保存都会重建章节文件（原子写）**：临时文件 → rename 覆盖目标，所以 Windows 上文件的**创建时间会被重置**，文件上的**自定义 ACL / 备用数据流（ADS）不保留**（权限通常继承父目录，书库放在自己的目录时感觉不到；书库放在共享 / 受控目录，或用「按创建时间归档」的备份工具时才可能注意到）。磁盘上永远不出现半截文件比保住这些元数据重要，这是有意取舍（审计 V304）
 - **剪贴板捕获的边界（2026-11-07 单列表改造 + 漏记修复后）**：只取**纯文本**（剪贴板里的图片 / 富文本格式不会带进来）；面板一条复制记录只新建一章，不做批量拆章 / 自动分卷（要整本拆章请走「导入小说」）；单章正文上限 30 万字（按去空白字数，与界面「N 字」/ 队列同一口径），标题行（≤40 字）后正文 ≥50 字才把首行认成标题；整条不足 100 字时整条当章名（这种短标题允许超过 40 字，文件名仍按 40 字截断）；**记录口径：后台监听开着时，每次复制（非空白）都记一条，20 字门槛只控制「要不要弹轻提示」**；**点「正文」插入成功后该条也立即从队列删除**（2026-11-08 起与「章节」一致，失败保留）；轮询间隔 300ms，打开面板前会主动补读一次；全局快捷键 `Ctrl+Alt+V` 被其它程序占用时注册失败只写日志、不挡启动，界面上的「捕获」按钮照常可用；**队列只驻本次运行内存**（最多 50 条 / 单条 30 万字按字数 / 总量 300 万字按原文长度，超了淘汰最旧），**不落盘、不写日志、不做磁盘历史**，关闭监听或退出应用即清空；单条超上限（字数 > 30 万）会给一条明示提示，不再静默丢弃；捕获面板「正文」插入 > 2 万字时走整串赋值（快通道），代价是会清空浏览器撤销栈——可用提示条「撤销」或正文上第一下 `Ctrl+Z` 退回插入前；默认**不做后台全量记录**（剪贴板里可能有密码 / 验证码，后台监听必须由你在设置里主动打开）
 
 ## 无障碍（键盘 / 焦点 / 目标尺寸）
@@ -850,3 +738,5 @@ chapterly/
 章回 / Chapterly 以 **Apache License 2.0** 发布，完整条款见仓库根目录 [LICENSE](LICENSE)；`package.json` 的 `license` 字段同为 `Apache-2.0`，打包后的应用内也附带该文件。
 
 Copyright 2026 章回 / Chapterly (ANAN1124-OSS)
+
+**源码文件头（审计 #56 / O7）**：Apache-2.0 不强制逐文件版权头，本版 `main.js` / `preload.js` / `core/` / `ipc/` / `renderer/` 的源码**没有**统一加 SPDX 行——许可以仓库根 `LICENSE` 与 `package.json` 的 `license` 字段为准（打包产物同样附带 LICENSE）。新增文件可选在首行写 `// SPDX-License-Identifier: Apache-2.0`；不给全仓补头是为了避免 100+ 文件的纯样板 diff（审计该项本来就是「可选」）。

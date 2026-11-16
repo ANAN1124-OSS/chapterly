@@ -37,6 +37,9 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+// 审计修复 #53（R7）：sleep / 轮询与其它驱动共用同一份实现（core/common + scripts/driver-poll）。
+const { sleep } = require('../core/common');
+const { pollUntil } = require('./driver-poll');
 
 const ROOT = path.resolve(__dirname, '..');
 const REPORT_DIR = path.join(ROOT, 'shots', 'a11y-gate');
@@ -836,8 +839,6 @@ function stamp(when = new Date()) {
   return when.toISOString().replace(/[-:T]/g, '').slice(0, 14);
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 async function createFixtures(base) {
   const storage = require('../core/storage');
   const booksRoot = assertTempDir(path.join(base, 'books'));
@@ -881,20 +882,18 @@ function httpJson(url) {
 }
 
 async function waitTarget(port, timeout = 25000) {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    try {
+  // 审计修复 #53（R7）：轮询骨架收进 scripts/driver-poll.js；httpJson 抛错（端口还没起来）继续等，
+  // 拿到 webSocketDebuggerUrl 才算目标就绪，超时文案保持原文。
+  return pollUntil(
+    async () => {
       const list = await httpJson(`http://127.0.0.1:${port}/json/list`);
       const page = (list || []).find(
         (item) => item.type === 'page' && /index\.html/.test(String(item.url || ''))
       );
-      if (page && page.webSocketDebuggerUrl) return page;
-    } catch {
-      /* 还没起来 */
-    }
-    if (Date.now() > deadline) throw new Error('等待 Electron 远程调试端口超时');
-    await sleep(150);
-  }
+      return page && page.webSocketDebuggerUrl ? page : null;
+    },
+    { timeout, interval: 150, timeoutMessage: '等待 Electron 远程调试端口超时' }
+  );
 }
 
 class CdpClient {
@@ -964,18 +963,8 @@ async function evaluate(cdp, expression) {
 }
 
 async function waitEval(cdp, expression, timeout = 15000, label = expression) {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    let value;
-    try {
-      value = await evaluate(cdp, expression);
-    } catch {
-      /* 页面切换间隙 */
-    }
-    if (value) return value;
-    if (Date.now() > deadline) throw new Error(`等待超时：${label}`);
-    await sleep(100);
-  }
+  // 审计修复 #53（R7）：页面切换间隙 evaluate 抛错也算「还没好」，继续等；超时文案「等待超时：<label>」。
+  return pollUntil(() => evaluate(cdp, expression), { timeout, interval: 100, label });
 }
 
 async function setViewport(cdp, width, height) {

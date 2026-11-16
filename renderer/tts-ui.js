@@ -406,17 +406,19 @@
   }
 
   // 语速 / 语音只对「之后发声」的 utterance 生效：正在读的这一段重念一遍
+  // 审计修复 #43（E17）：只重念「正在读」的那一段。暂停时 speakTtsChunk() 会把状态改回 playing
+  // 并真的发声（等于偷偷恢复播放）——暂停期间改语速 / 语音只更新设置，下一次发声才生效。
   function setTtsRate(rate) {
     state.tts.rate = ttsClampRate(rate);
     renderTtsBar();
-    if (state.tts.status === 'playing' || state.tts.status === 'paused') speakTtsChunk();
+    if (state.tts.status === 'playing') speakTtsChunk();
     return state.tts.rate;
   }
 
   function setTtsVoice(voiceURI) {
     state.tts.voiceURI = String(voiceURI || '');
     renderTtsBar();
-    if (state.tts.status === 'playing' || state.tts.status === 'paused') speakTtsChunk();
+    if (state.tts.status === 'playing') speakTtsChunk();
     return state.tts.voiceURI;
   }
 

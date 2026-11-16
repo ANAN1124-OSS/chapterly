@@ -8,7 +8,7 @@ const path = require('node:path');
 module.exports = async function group3SaveBook(t) {
   const {
     chaptersLib, storage, sleep, exec, booksRoot, bookDir, check, waitFor, diskText, win, setWindowSize,
-    resetCloseReady, waitCloseReady
+    resetCloseReady, waitCloseReady, fileExists
   } = t;
 
   // 3. 手动保存整本：写当前章 + 校验全书
@@ -291,6 +291,63 @@ module.exports = async function group3SaveBook(t) {
       chars: [metaRawBefore.chapters[0].chars, metaRawAfter.chapters[0].chars],
       updatedAt: [metaRawBefore.updatedAt, metaRawAfter.updatedAt]
     }
+  );
+
+  // ④b. 审计修复 #6（V302）：当前章文件在应用外被挪走 → 保存被阻断，但必须给救稿出口。
+  //    另存走主进程 showSaveDialog（E2E 用 withSavePath 把落点定死）+ 原子写，不碰书库；
+  //    「留在这里」与「复制正文」的按钮行为在 tests/save-rescue-ui.test.js 里逐条钉住。
+  const rescueHoldDir = path.join(path.dirname(booksRoot), 'e2e-save-rescue-hold');
+  const rescueChapterPath = path.join(bookDir, '001-未命名.txt');
+  const rescueMovedPath = path.join(rescueHoldDir, '001-未命名.txt');
+  const rescueOutPath = path.join(rescueHoldDir, '救稿-第1章.txt');
+  const rescueBody = '救稿正文：章节文件被挪走了，这两千字也不能丢。';
+  await fs.rm(rescueHoldDir, { recursive: true, force: true });
+  await fs.mkdir(rescueHoldDir, { recursive: true });
+  try {
+    await exec(`window.__cwTest.setText(${JSON.stringify(rescueBody)})`);
+    await fs.rename(rescueChapterPath, rescueMovedPath);
+    await t.withSavePath(rescueOutPath);
+    // 保存会在救稿对话框上等回执：用「结果写进全局、完成后置位」的形态，别让 exec 直接 await 一个
+    // 悬着的 Promise（对话框没人答时会一直挂着，整轮 E2E 只能等超时）。
+    await exec(
+      "window.__cwE2ESave = null; window.__cwE2ESaveDone = false; void window.__cwTest.saveVisible().then((r) => { window.__cwE2ESave = r; window.__cwE2ESaveDone = true; }); 'started'"
+    );
+    await waitFor('window.__cwTest.modalOpen()');
+    const rescueDialog = await exec('window.__cwTest.dialog()');
+    check(
+      '保存阻断救稿（V302）：当前章文件被应用外挪走 → 保存失败并弹「保存被阻止：这些字还没落盘」',
+      rescueDialog === '保存被阻止：这些字还没落盘' &&
+        (await fileExists(rescueChapterPath)) === false,
+      { rescueDialog }
+    );
+    await exec("window.__cwTest.answerModal('save')");
+    const rescued = await waitFor(
+      "window.__cwTest.toasts().some((item) => item.message.startsWith('已另存：')) ? window.__cwTest.toasts() : null",
+      8000
+    );
+    const rescueSave = await waitFor('window.__cwE2ESaveDone ? window.__cwE2ESave : null', 8000);
+    await exec('delete window.__cwE2ESave; delete window.__cwE2ESaveDone');
+    const rescuedBytes = await fs.readFile(rescueOutPath, 'utf8');
+    check(
+      '保存阻断救稿（V302）：点「另存这一章为 txt…」→ 正文落盘（CRLF）、提示给出路径，书库仍然不重建影子文件',
+      Array.isArray(rescued) &&
+        rescued.some((item) => item.message.startsWith('已另存：') && item.message.includes('救稿-第1章.txt')) &&
+        rescuedBytes === rescueBody &&
+        Boolean(rescueSave && rescueSave.ok === false && rescueSave.code === 'CHAPTER_MISSING') &&
+        (await fileExists(rescueChapterPath)) === false,
+      { rescued, rescuedBytes, rescueSave }
+    );
+  } finally {
+    await t.restoreSaveDialog();
+    await fs.rename(rescueMovedPath, rescueChapterPath);
+    await fs.rm(rescueHoldDir, { recursive: true, force: true });
+  }
+  // 文件放回后照常能保存（mtime 没变：rename 在同一盘内保留时间戳），失败态清干净。
+  await exec('window.__cwTest.save()');
+  check(
+    '保存阻断救稿（V302）：章文件放回后照常保存成功（救稿没有把书库写坏）',
+    (await exec('window.__cwTest.dirty()')) === false &&
+      (await diskText('001-未命名.txt')) === rescueBody
   );
 
   // 收尾：把第 1 章恢复成第 3 组断言时的正文（后面的组还要接着用这本书）

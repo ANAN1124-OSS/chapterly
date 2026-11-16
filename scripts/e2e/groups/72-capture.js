@@ -672,6 +672,116 @@ module.exports = async function group72Capture(t) {
       (await exec('window.__cwTest.caret()')) === caretBulk
   );
 
+  // 72i3. 审计修复 #40（V403）：整理快照与 bulk 一次性快照互斥 —— 一次 Ctrl+Z 只撤销一步。
+  // 以前正文拦截器 preventDefault 后事件继续冒泡到 document 的「整理快照优先」分支：
+  // 「整理本章 → 大段插入」连做后按一次 Ctrl+Z 会连退两步（插入 + 整理），与作者预期相反。
+  // 下面的 V403 / V402 两小节都会改正文并留下脏标记：先记下 72i2 收尾时的干净正文，两节跑完恢复，
+  // 否则 72j 的「返回书架」会正常弹出未保存三选一（E2E 没人回答，整轮会卡住）。
+  const cleanTextBeforeV40x = await exec('window.__cwTest.text()');
+  const formatBefore = '整理前：段落一。  \n\n\n\n段落二。   ';
+  await exec(`window.__cwTest.setText(${JSON.stringify(formatBefore)})`);
+  await exec("window.__cwTest.writeFormatOptions({ indent: '2', blankLines: 'single', trimTrailing: true, normalizePunct: true })");
+  await exec('window.__cwTest.applyFormat()');
+  const formatted = await exec('window.__cwTest.text()');
+  const stepsAfterFormat = await exec('window.__cwTest.formatUndoSteps()');
+  check(
+    '剪贴板面板（V403 前导）：整理本章 → 正文变了、留下 1 步整理快照',
+    formatted !== formatBefore && stepsAfterFormat === 1,
+    { formatted, stepsAfterFormat }
+  );
+  const caretFormatted = await exec('window.__cwTest.caret()');
+  await exec(`window.__cwTest.openCapture(${JSON.stringify(bulkText)})`);
+  await waitFor('window.__cwTest.captureOpen() === true');
+  const bulkAfterFormat = JSON.parse(
+    await exec('window.__cwTest.captureApplyBody({ pending: true }).then((r) => JSON.stringify(r || null))')
+  );
+  await exec('window.__cwTest.closeCapture()');
+  check(
+    '剪贴板面板（V403 前导）：整理后再大段插入（正文 = 整理后 + 2 万字，bulk 快照建立）',
+    Boolean(bulkAfterFormat && bulkAfterFormat.ok === true) &&
+      (await exec('window.__cwTest.text()')) === formatted.slice(0, caretFormatted) + bulkText + formatted.slice(caretFormatted)
+  );
+  const v403One = await exec(`(() => {
+    const el = document.getElementById('editor');
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+    return { text: el.value, steps: window.__cwTest.formatUndoSteps(), dirty: window.__cwTest.dirty() };
+  })()`);
+  check(
+    '剪贴板面板（V403）：一次 Ctrl+Z 只退大段插入（回到整理后，整理快照仍留着）',
+    v403One.text === formatted && v403One.steps === 1 && v403One.dirty === true,
+    { ...v403One, formatted }
+  );
+  const v403Two = await exec(`(() => {
+    const el = document.getElementById('editor');
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+    return { text: el.value, steps: window.__cwTest.formatUndoSteps() };
+  })()`);
+  check(
+    '剪贴板面板（V403）：第二下 Ctrl+Z 才退掉整理（两套撤销通道各走一步、都还能用）',
+    v403Two.text === formatBefore && v403Two.steps === 0,
+    v403Two
+  );
+
+  // 72i4. 审计修复 #39（V402）：execCommand 失败时的兜底整串赋值也要一次性快照 + 提示（以前静默清栈）。
+  // 把 document.execCommand 换成恒 false（模拟 Chromium 拒绝 / 焦点被抢），让 ≤2 万字的插入走兜底路。
+  const beforeFallback = await exec('window.__cwTest.text()');
+  const caretFallback = await exec('window.__cwTest.caret()');
+  const fallbackInsert = '兜底写入验证段';
+  await exec("window.__cwE2EExec = document.execCommand; document.execCommand = () => false; 'stubbed'");
+  try {
+    await exec('window.__cwTest.clearToasts()');
+    await exec(`window.__cwTest.openCapture(${JSON.stringify(fallbackInsert)})`);
+    await waitFor('window.__cwTest.captureOpen() === true');
+    const fbApplied = JSON.parse(
+      await exec('window.__cwTest.captureApplyBody({ pending: true }).then((r) => JSON.stringify(r || null))')
+    );
+    await exec('window.__cwTest.closeCapture()');
+    const expectedFallback = beforeFallback.slice(0, caretFallback) + fallbackInsert + beforeFallback.slice(caretFallback);
+    const fb = await exec(`(() => ({
+      text: window.__cwTest.text(),
+      dirty: window.__cwTest.dirty(),
+      toasts: window.__cwTest.toasts(),
+      lastAction: (() => {
+        const list = document.querySelectorAll('#toast-area .toast.actionable .toast-action');
+        return list.length ? list[list.length - 1].textContent : '';
+      })()
+    }))()`);
+    check(
+      '剪贴板面板（V402）：execCommand 失败 → 兜底整串赋值仍然插对（内容不丢）',
+      Boolean(fbApplied && fbApplied.ok === true) && fb.text === expectedFallback && fb.dirty === true,
+      { fbApplied, ...fb }
+    );
+    check(
+      '剪贴板面板（V402）：兜底写入明说「没能走原生输入 / 撤销历史已清空」，并带「撤销」动作',
+      fb.toasts.some((item) => String(item.message).includes('没能走原生输入')) &&
+        fb.toasts.some((item) => String(item.message).includes('撤销历史')) &&
+        fb.lastAction === '撤销',
+      { toasts: fb.toasts, lastAction: fb.lastAction }
+    );
+    const fbUndo = await exec(`(() => {
+      const el = document.getElementById('editor');
+      el.focus();
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+      return { text: el.value };
+    })()`);
+    check(
+      '剪贴板面板（V402）：兜底写入的第一下 Ctrl+Z 能退回插入前（不静默丢撤销历史）',
+      fbUndo.text === beforeFallback,
+      { got: fbUndo.text, want: beforeFallback }
+    );
+  } finally {
+    await exec("document.execCommand = window.__cwE2EExec; delete window.__cwE2EExec; 'restored'");
+  }
+  // 恢复 72i2 收尾时的干净正文（V403 / V402 两节只验证撤销通道，不该把脏状态留给 72j / 72k）。
+  await exec(`window.__cwTest.setText(${JSON.stringify(cleanTextBeforeV40x)})`);
+  check(
+    '剪贴板面板（V403/V402 收尾）：正文与脏标记恢复到 72i2 收尾状态（后续返回书架不被未保存框卡住）',
+    (await exec('window.__cwTest.text()')) === cleanTextBeforeV40x &&
+      (await exec('window.__cwTest.dirty()')) === false
+  );
+
   // 72j. 关掉后台监听：队列立刻清空（隐私口径），之后再复制也不入队
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");

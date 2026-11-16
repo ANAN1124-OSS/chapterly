@@ -2,6 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   decodeBuffer,
+  decodeBufferWithEncoding,
+  decodeBufferStrict,
   splitChapters,
   splitChaptersRaw,
   parseHeading,
@@ -27,6 +29,92 @@ test('解码：GBK 中文', () => {
   // “第一章 中文”的 GBK 字节
   const gbk = Buffer.from([0xb5, 0xda, 0xd2, 0xbb, 0xd5, 0xc2, 0x20, 0xd6, 0xd0, 0xce, 0xc4]);
   assert.equal(decodeBuffer(gbk), '第一章 中文');
+});
+
+test('解码（审计 #50 / E15）：UTF-32LE BOM 先于 UTF-16LE 判定，不再解出乱码', () => {
+  const text = '第一章 雪夜';
+  const utf32le = Buffer.alloc(4 + Array.from(text).length * 4);
+  Buffer.from([0xff, 0xfe, 0x00, 0x00]).copy(utf32le, 0);
+  Array.from(text).forEach((ch, index) => {
+    utf32le.writeUInt32LE(ch.codePointAt(0), 4 + index * 4);
+  });
+  assert.equal(decodeBuffer(utf32le), text, 'UTF-32LE 必须解成原文，而不是带 NUL 的 UTF-16 乱码');
+  assert.equal(decodeBuffer(utf32le).includes('\u0000'), false);
+  assert.equal(decodeBufferStrict(utf32le), text);
+  // 坏码点（代理区 / 超过 U+10FFFF / 缺字节）严格解码返回 null
+  const loneSurrogate = Buffer.concat([Buffer.from([0xff, 0xfe, 0x00, 0x00]), Buffer.alloc(4)]);
+  loneSurrogate.writeUInt32LE(0xd800, 4);
+  assert.equal(decodeBufferStrict(loneSurrogate), null);
+  const tooBig = Buffer.concat([Buffer.from([0xff, 0xfe, 0x00, 0x00]), Buffer.alloc(4)]);
+  tooBig.writeUInt32LE(0x110000, 4);
+  assert.equal(decodeBufferStrict(tooBig), null);
+  const partial = Buffer.concat([Buffer.from([0xff, 0xfe, 0x00, 0x00]), Buffer.alloc(2)]);
+  assert.equal(decodeBufferStrict(partial), null);
+});
+
+test('解码（审计 #50 / E15）：删掉不可达的 latin1 兜底；严格解码不产出替换符，U+FFFD 只能是原文', () => {
+  // 单字节 0xFF：既不是合法 UTF-8，也不是合法 GB18030 → 严格解码 null；宽容解码用 U+FFFD
+  assert.equal(decodeBufferStrict(Buffer.from([0xff])), null);
+  assert.equal(decodeBuffer(Buffer.from([0xff])), '\uFFFD');
+  // 死代码闸门：源码里不该再有 buffer.toString('latin1') 这条永远走不到的分支
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'core', 'txt.js'), 'utf8');
+  assert.equal(/toString\(['"]latin1['"]\)/.test(source), false, 'latin1 死兜底必须删除');
+  // 原文里本来就有的 U+FFFD（UTF-8 字节 EF BF BD）是合法文本，严格解码必须原样返回
+  const literal = Buffer.from('替换\uFFFD字符', 'utf8');
+  assert.equal(decodeBufferStrict(literal), '替换\uFFFD字符');
+  assert.equal(decodeBuffer(literal), '替换\uFFFD字符');
+  // 真正坏掉的 UTF-8 不会在严格解码里被替换成 U+FFFD
+  assert.equal(decodeBufferStrict(Buffer.from([0xff, 0xff, 0x0a, 0x41])), null);
+});
+
+// 审计残留修复 #50（E15，中危回归）：BOM 已识别但载荷坏了（如 UTF-8 BOM 里混一个坏字节），
+// 严格解码回 null 后旧兜底把「含 BOM 的整包」按非 fatal GB18030 重解 → 全书乱码 + 乱码前缀。
+// 现在 BOM 锁定编码：剥掉 BOM、按 BOM 对应编码宽容解，只有坏字节变 U+FFFD，正文照常可读；
+// 严格入口（词表读取用）仍如实回 null，不被宽容解掩盖。
+test('解码（残留 #50 / E15）：BOM 锁定编码 —— 载荷坏也不整包落 GB18030', () => {
+  const head = '第一章 雪夜';
+  const tail = '他推开门，屋里没有人。';
+
+  // UTF-8 BOM + 合法正文 + 孤立 0xFF（非法 UTF-8）
+  const utf8Bad = Buffer.concat([
+    Buffer.from([0xef, 0xbb, 0xbf]),
+    Buffer.from(head, 'utf8'),
+    Buffer.from([0xff]),
+    Buffer.from(tail, 'utf8')
+  ]);
+  assert.equal(decodeBufferStrict(utf8Bad), null, '严格解码仍如实判坏编码（词表读取靠它）');
+  assert.deepEqual(decodeBufferWithEncoding(utf8Bad), {
+    text: `${head}\uFFFD${tail}`,
+    encoding: 'utf-8'
+  });
+  // 关键回归：旧行为在这里会把整本书解成 GB18030 乱码；现在正文逐字可读，只有坏字节是替换符
+  assert.equal(decodeBuffer(utf8Bad), `${head}\uFFFD${tail}`);
+
+  // UTF-16LE BOM + 合法正文 + 孤立高位代理（UTF-16 里非法的半对）
+  const utf16Bad = Buffer.concat([
+    Buffer.from([0xff, 0xfe]),
+    Buffer.from(head, 'utf16le'),
+    Buffer.from([0x00, 0xd8]), // 只有高位代理、没有低位
+    Buffer.from(tail, 'utf16le')
+  ]);
+  assert.equal(decodeBufferStrict(utf16Bad), null);
+  assert.deepEqual(decodeBufferWithEncoding(utf16Bad), {
+    text: `${head}\uFFFD${tail}`,
+    encoding: 'utf-16le'
+  });
+  assert.equal(decodeBuffer(utf16Bad).includes('\u0000'), false, '不许解出带 NUL 的 UTF-16 / GB18030 乱码');
+
+  // UTF-32LE BOM + 合法码点 + 坏码点（代理区）+ 合法码点：同样锁在 UTF-32LE，不落 GB18030
+  const utf32Bad = Buffer.alloc(4 + 3 * 4);
+  Buffer.from([0xff, 0xfe, 0x00, 0x00]).copy(utf32Bad, 0);
+  utf32Bad.writeUInt32LE('中'.codePointAt(0), 4);
+  utf32Bad.writeUInt32LE(0xd800, 8); // 孤立代理码点
+  utf32Bad.writeUInt32LE('文'.codePointAt(0), 12);
+  assert.equal(decodeBufferStrict(utf32Bad), null);
+  assert.deepEqual(decodeBufferWithEncoding(utf32Bad), { text: '中\uFFFD文', encoding: 'utf-32le' });
+
+  // 没有 BOM 的坏文件仍走 GB18030 兜底（老口径不变：坏字节变 U+FFFD）
+  assert.deepEqual(decodeBufferWithEncoding(Buffer.from([0xff])), { text: '\uFFFD', encoding: 'gb18030' });
 });
 
 test('标题识别：各种常见写法', () => {
@@ -57,6 +145,31 @@ test('切章：标准多章结构', () => {
   assert.equal(parts[0].text, '正文一');
   assert.equal(parts[1].title, '转折');
   assert.equal(parts[1].text, '正文二');
+});
+
+test('标题识别（审计 #50 / E15）：部 / 集 / 篇 无分隔符守卫，正文不再误切', () => {
+  for (const line of ['第一部电影很好看', '第三集播出后反响不错', '第一篇论文终于写完了']) {
+    assert.equal(parseHeading(line), null, `应拒绝正文行：${line}`);
+  }
+  // 真标题：空序号（「第一部」）或有分隔符（空格 / 冒号）照常认
+  assert.ok(parseHeading('第一部'));
+  assert.ok(parseHeading('第一部 风起'));
+  assert.ok(parseHeading('第三集：重逢'));
+  assert.ok(parseHeading('第一篇、序'));
+  // 节 + 课的守卫不变
+  assert.equal(parseHeading('第三节课结束时，教室里安静下来。'), null);
+});
+
+test('切章（审计 #50 / E15）：「开篇」往返对称——splitChapters 合成章再按原文切章仍认', () => {
+  const original = '书名：测试\n作者：某人\n\n第1章 开端\n\n正文一';
+  const parts = splitChapters(original);
+  assert.equal(parts[0].title, '开篇');
+  // 旧版自动分章把首个标题之前的内容合成标题「开篇」；若把这一章按标题行写回 txt
+  // 再按原文章节导入，splitChaptersRaw 必须能认出「开篇」（旧 import 词表不认，会并进下一章）。
+  const exported = '开篇\n\n书名：测试\n作者：某人\n\n第1章 开端\n\n正文一';
+  const roundtrip = splitChaptersRaw(exported);
+  assert.deepEqual(roundtrip.map((part) => part.title), ['开篇', '第1章 开端']);
+  assert.ok(roundtrip[0].body.includes('书名：测试'));
 });
 
 test('切章：没有标题行 → 一章「全文」', () => {
@@ -133,6 +246,20 @@ test('正文长句不会被当成标题', () => {
   assert.equal(isChapterHeading('第二节课后，紫萱又靠了过来，身上那股浓郁的雌性荷尔蒙媚香立刻把我包围了。'), false);
   // 没有分隔符但很短：仍可能是标题
   assert.ok(parseHeading('第一章男朋友（无色）'));
+});
+
+// 审计修复 #1（E1）：NUM_SEPARATORS 原来含 `，,;；`，与注释「不带逗号句号」矛盾 ——
+// 「第三章，夜色渐深」hasSeparator=true 绕过长度守卫被当成标题，按原文章节导入时静默错划结构。
+test('标题识别：「第X章，」的逗号句式是正文，不是标题（审计修复 #1 / E1）', () => {
+  assert.equal(isChapterHeading('第三章，夜色渐深'), false, '短正文行也不能因为逗号被当成标题');
+  assert.equal(isChapterHeading('第三章,夜色渐深'), false, '半角逗号同样不算分隔符');
+  assert.equal(isChapterHeading('第一章，他推开门，走廊尽头的窗没关。'), false);
+  // 真分隔符照旧：冒号后面的短标题仍认
+  assert.deepEqual(parseHeading('第三章：夜色渐深'), { kind: 'num', raw: '第三章：夜色渐深', name: '夜色渐深' });
+  // 分号也移出了分隔符表：短的真实标题仍走「无分隔符短标题」长度守卫，
+  // 但长正文行不再靠分号绕过长度守卫
+  assert.ok(parseHeading('第四章;转生成铃兰小姐后，为了还债只能被迫在浴馆中打工'), '真实短标题仍认');
+  assert.equal(isChapterHeading(`第五章;${'他'.repeat(80)}`), false, '超过 80 字的分号正文行不能当标题');
 });
 
 test('原样切章：没有标题行时整本一章、正文原样', () => {

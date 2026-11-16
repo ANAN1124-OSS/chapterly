@@ -106,7 +106,34 @@ module.exports = async function group82OpenBookState(t) {
       '开书状态机（V101 前导）：先打开 A 书第 1 章，编辑区是 A 的正文',
       (await exec('window.__cwTest.text()')) === A_TEXT_1 && (await exec('window.__cwTest.bookPathValue()')) === bookA
     );
-    await exec(`window.__cwTest.openBookPath(${JSON.stringify(bookB)})`);
+
+    // ---------- V401（审计修复 #7 的 E2E 锚点）：大段插入快照不能跨书活到「载章失败」的遮罩态 ----------
+    // 在 A 里 bulk 插入 >2 万字（整串赋值通道会建一次性快照 bulkWriteUndo），**不输入任何字**，
+    // 直接换到「目标章缺文件」的 B。以前 commitOpenBook 只清 undoUi、不清快照：遮罩态只是 readOnly
+    // （仍可点击聚焦、keydown 照常触发），一下 Ctrl+Z 就把 A 的整章正文写进 B 的空编辑区 + 假脏态。
+    const bulkText = '大'.repeat(20001);
+    await exec(`window.__cwTest.openCapture(${JSON.stringify(bulkText)})`);
+    await waitFor('window.__cwTest.captureOpen() === true');
+    const bulkApplied = JSON.parse(
+      await exec('window.__cwTest.captureApplyBody({ pending: true }).then((r) => JSON.stringify(r || null))')
+    );
+    await exec('window.__cwTest.closeCapture()');
+    check(
+      '开书状态机（V401 前导）：A 书里大段插入 >2 万字（一次性撤销快照建立、正文标脏）',
+      Boolean(bulkApplied && bulkApplied.ok === true && bulkApplied.consumed === true && bulkApplied.chars === bulkText.length) &&
+        (await exec('window.__cwTest.dirty()')) === true,
+      bulkApplied
+    );
+    // 换书：dirty 时照常先问未保存（V401 触发链就是「不输入、直接换书」→ 选不保存）。
+    // 这里刻意不 await：询问框要等 E2E 拿到回执再点。
+    await exec(`void window.__cwTest.openBookPath(${JSON.stringify(bookB)}); 'started'`);
+    await waitFor('window.__cwTest.modalOpen()');
+    check(
+      '开书状态机（V401 前导）：换书前照常拦截未保存修改（选「不保存」继续）',
+      (await exec('window.__cwTest.dialog()')) === '换书前先处理未保存的修改'
+    );
+    await exec("window.__cwTest.answerModal('discard')");
+    await waitFor(`window.__cwTest.bookPathValue() === ${JSON.stringify(bookB)} ? 'ok' : null`, 8000);
     const v101 = await exec(`(() => {
       const el = document.getElementById('editor');
       return {
@@ -132,6 +159,20 @@ module.exports = async function group82OpenBookState(t) {
         v101.busy === true &&
         v101.dirty === false,
       v101
+    );
+
+    // V401：载章失败的遮罩态里点一下编辑区、按 Ctrl+Z —— 快照必须已经随换书作废，正文仍为空、
+    // 也不许出现「假脏态」（以前这里会把 A 书整章正文写进 B 的空编辑区并置 dirty）。
+    const bulkUndoProbe = await exec(`(() => {
+      const el = document.getElementById('editor');
+      el.focus();
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+      return { text: el.value, dirty: window.__cwTest.dirty(), readOnly: el.readOnly };
+    })()`);
+    check(
+      '开书状态机（V401）：换书 + 载章失败后 Ctrl+Z 不会把上一本正文写进新书（编辑区仍空、不假脏）',
+      bulkUndoProbe.text === '' && bulkUndoProbe.dirty === false && bulkUndoProbe.readOnly === true,
+      bulkUndoProbe
     );
 
     // 模拟作者在新书界面里输入后按 Ctrl+S：没有已载章节 → 必须拒绝，新书目标章字节不变。

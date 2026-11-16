@@ -126,8 +126,11 @@ test('行为：双表（坏份 / 超上限 / 重复词）合并与校对结果�
         { ok: true, count: 5000, error: '', truncated: true }
       ],
       count: 5000,
-      name: '2 份词表'
-    }, '公开信息与改前逐字一致（坏份只影响自己那一条）');
+      name: '2 份词表',
+      // 审计修复 #49（E24）：多份信息补顶层 truncated（任一参与文件被截断即 true）；
+      // 其余字段与改前逐字一致。
+      truncated: true
+    }, '公开信息其余字段与改前逐字一致（坏份只影响自己那一条）');
 
     const text = '重复在乙词3与乙词4997。';
     const result = proofread.proofreadText(text, { maxIssues: 20 }, words.entries);
@@ -228,6 +231,14 @@ test('行为：text:proofread 处理器把读取出口的 entries 交给 proofre
       }
     },
     {
+      // 审计修复 #47（E22）：单章校对改用与整本版同一套 core 清洗；这里给最小实现，断言接线。
+      sanitizeOptions: (raw) => ({
+        longParagraph: 500,
+        repeatWindow: 300,
+        repeatCount: 3,
+        maxIssues: raw && raw.maxIssues === 99 ? 99 : 400
+      }),
+      sanitizeRules: (raw) => ({ 'custom-word': Boolean(raw && raw['custom-word']), 'halfwidth-punct': true }),
       proofreadText: (text, options, entries) => {
         seen.text = text;
         seen.proofOptions = options;
@@ -236,11 +247,13 @@ test('行为：text:proofread 处理器把读取出口的 entries 交给 proofre
       }
     }
   );
-  const res = await handler('他做为见证人。', { rules: { 'custom-word': true } });
+  const res = await handler('他做为见证人。', { rules: { 'custom-word': true }, maxIssues: 99, evil: 'x' });
   assert.equal(seen.text, '他做为见证人。');
   assert.deepEqual(seen.entries, [{ term: '做为', suggestion: '作为' }], '词条来自一次读取的出口');
   assert.equal(seen.proofOptions.entriesSanitized, true, '主进程传入已清洗标记，proofreadText 不再二次 sanitize');
-  assert.deepEqual(seen.proofOptions.rules, { 'custom-word': true }, '用户选项原样保留');
+  assert.deepEqual(seen.proofOptions.rules, { 'custom-word': true, 'halfwidth-punct': true }, '规则开关走 core 清洗结果');
+  assert.equal(seen.proofOptions.maxIssues, 99);
+  assert.equal(seen.proofOptions.evil, undefined, '多余的键不再原样透传');
   assert.deepEqual(res.wordList, fakeWordList, '回包仍带 wordList（渲染层据此重画词表状态）');
 });
 
@@ -369,4 +382,42 @@ test('行为：添加词表先 stat / 判重 / 判上限，再读词表；被拒
   } finally {
     await fsPromises.rm(dir, { recursive: true, force: true });
   }
+});
+const REMOVE_ANCHOR = "  handle('proofread:wordlists-remove', async (index) => {";
+
+// 把 remove 处理器装进假作用域：配置读写与公开信息都是替身，断言的是「改没改配置」。
+function loadRemoveWordlistHandler({ config }) {
+  const writes = [];
+  const arrow = extractAsyncArrow(proofreadIpcSource, REMOVE_ANCHOR);
+  const handler = new Function(
+    'getConfig',
+    'getConfigStore',
+    'applyConfig',
+    'proofreadWordlistInfoNow',
+    `return (${arrow});`
+  )(
+    async () => config,
+    () => ({ set: async (patch) => { writes.push(patch); return { ...config, ...patch }; } }),
+    () => {},
+    async () => ({ lists: [], total: 0 })
+  );
+  return { handler, writes };
+}
+
+// 审计修复 #12（E8）：Number(null / '' / false / []) === 0，旧实现会把「没带索引」的调用当成
+// 「删第 0 份」，静默删掉作者的第一份词表。判型收紧后这些坏值一律走 WORDLIST_NOT_FOUND、配置不动。
+test('行为：wordlists-remove 先判型再动弹，null / \"\" / false / [] / \"0\" 不许当成「删第 0 份」（E8）', async () => {
+  const config = { proofreadWordlists: ['甲.txt', '乙.txt'] };
+  for (const bad of [null, '', false, [], '0', 0.5, undefined, true, {}]) {
+    const { handler, writes } = loadRemoveWordlistHandler({ config });
+    const res = await handler(bad);
+    assert.equal(res.removed, false, '坏索引不许移除：' + String(bad));
+    assert.equal(res.code, 'WORDLIST_NOT_FOUND', '坏索引走同一条错误码：' + String(bad));
+    assert.deepEqual(writes, [], '坏索引一个字节都不写配置：' + String(bad));
+  }
+  // 真索引照旧：删第 1 份（乙）→ 落盘后替换列表 → 回 removed:true
+  const { handler, writes } = loadRemoveWordlistHandler({ config });
+  const ok = await handler(1);
+  assert.equal(ok.removed, true);
+  assert.deepEqual(writes, [{ proofreadWordlists: ['甲.txt'] }], '只 splice 掉那一份，顺序不变');
 });

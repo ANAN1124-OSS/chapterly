@@ -46,6 +46,7 @@
       "core/**/*",
       "ipc/**/*",
       "renderer/**/*",
+      "!renderer/test-hooks.js",
       "package.json",
       "LICENSE"
     ],

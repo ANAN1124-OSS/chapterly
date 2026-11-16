@@ -21,8 +21,9 @@ const crypto = require('node:crypto');
 const chaptersLib = require('./chapters');
 const exporter = require('./exporter');
 const { buildZip, crc32 } = require('./zip');
-// XML 字符清洗 / 转义 / 切段 / 导出时间戳只有一份实现（和 DOCX 导出共用，见 core/xml.js）
-const { escapeXml, paragraphsFromText, isoTimestamp } = require('./xml');
+// XML 字符清洗 / 转义 / 切段只有一份实现（和 DOCX 导出共用，见 core/xml.js）；
+// 导出时间戳也在那里（经 core/exporter.normalizeExportInput 统一取，本文件不再直接引用）。
+const { escapeXml, paragraphsFromText } = require('./xml');
 
 const EPUB_MIMETYPE = 'application/epub+zip';
 const EPUB_DIR = 'OEBPS';
@@ -248,10 +249,8 @@ function opfDocument({ title, identifier, modified, lang, manifest, spine }) {
 }
 
 // ---------- 书籍结构 ----------
-function chapterList(meta) {
-  return meta && Array.isArray(meta.chapters) ? meta.chapters : [];
-}
-
+// 审计修复 #24（R1）：chapterList / 入参归一 / 空书与空范围检查全部收进
+// core/exporter.normalizeExportInput（和 DOCX 导出共用一份），本文件不再抄第二份。
 function pad4(n) {
   return String(n).padStart(4, '0');
 }
@@ -268,17 +267,11 @@ function bookIdentifier(seed) {
 }
 
 function normalizeInput(input) {
-  const meta = (input && input.meta) || {};
-  const chapters = chapterList(meta);
-  if (!chapters.length) throw new Error('EMPTY_BOOK：这本书里还没有章节');
-  const texts = Array.isArray(input && input.texts) ? input.texts : [];
-  const title = String(meta.title == null ? '' : meta.title).trim() || '未命名书籍';
+  const { meta, chapters, texts, title, plan, stamp } = exporter.normalizeExportInput(input);
   const lang =
     typeof (input && input.language) === 'string' && input.language.trim()
       ? input.language.trim()
       : EPUB_LANGUAGE;
-  // 范围解析和 TXT 导出共用同一份纯逻辑：只读，不改 meta。
-  const plan = exporter.resolveExportRange(meta, input && input.range);
   // 全书导出的 identifier 和以前完全一样（同一本书每次导出不变）；
   // 按卷 / 按范围导出加上范围种子，免得阅读器把「一卷」当成整本书的另一个版本。
   const rangeSeed =
@@ -291,13 +284,12 @@ function normalizeInput(input) {
     typeof (input && input.identifier) === 'string' && input.identifier.trim()
       ? input.identifier.trim()
       : bookIdentifier(`${meta.id || title}${rangeSeed}`);
-  const stamp = isoTimestamp(input && input.modified);
   return { meta, chapters, texts, title, lang, identifier, stamp, plan };
 }
 
 function buildBundle(input) {
   const { meta, chapters, texts, title, lang, identifier, stamp, plan } = normalizeInput(input);
-  if (!plan.count) throw new Error('EMPTY_EXPORT_RANGE：所选范围里没有章节');
+  // 空范围检查已在 normalizeInput（core/exporter.normalizeExportInput）里统一做，这里不重复。
   // 1.7.0 P4-1：分组收编到 core/exporter.groupByVolume（txt / docx / epub 共用一份）
   const groups = exporter.groupByVolume(meta, plan.indexes);
   const files = [];

@@ -280,3 +280,47 @@ test('多窗口规模：登记 / 释放与最近窗口在多个窗口下保持�
   assert.strictEqual(registry.findWindow(path.join('D:\\Books', '书5')), null);
   assert.strictEqual(registry.findWindow(path.join('D:\\Books', '书4')), '4');
 });
+
+// ---------- 审计修复 #5（V301）：保存前校验的眼 → expectedMtimeMs 比对 ----------
+test('保存前校验（V301）：载入后磁盘 mtime 变了 → EXTERNAL_CHANGE，拦下这次保存', () => {
+  const chapter = { id: 'ch_001', file: '001-未命名.txt' };
+  const result = openBooks.verifySaveTarget({
+    bookPath: BOOK_A,
+    bookExists: true,
+    meta: { chapters: [chapter] },
+    chapterId: 'ch_001',
+    file: '001-未命名.txt',
+    chapterExists: true,
+    chapterMtimeMs: 222,
+    expectedMtimeMs: 111
+  });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.code, openBooks.CODE.EXTERNAL_CHANGE);
+  assert.match(result.message, /应用外/);
+  assert.match(result.message, /已阻止这次保存/);
+});
+
+test('保存前校验（V301）：mtime 一致 / 没带 expectedMtimeMs / 传 0 覆盖 → 放行', () => {
+  const chapter = { id: 'ch_001', file: '001-未命名.txt' };
+  const base = {
+    bookPath: BOOK_A,
+    bookExists: true,
+    meta: { chapters: [chapter] },
+    chapterId: 'ch_001',
+    file: '001-未命名.txt',
+    chapterExists: true,
+    chapterMtimeMs: 111
+  };
+  // 一致：正常保存
+  assert.strictEqual(openBooks.verifySaveTarget({ ...base, expectedMtimeMs: 111 }).ok, true);
+  // 不带 / 0 / 坏值：老调用方与「覆盖保存」都不拦
+  assert.strictEqual(openBooks.verifySaveTarget(base).ok, true);
+  assert.strictEqual(openBooks.verifySaveTarget({ ...base, expectedMtimeMs: 0 }).ok, true);
+  assert.strictEqual(openBooks.verifySaveTarget({ ...base, expectedMtimeMs: null }).ok, true);
+  assert.strictEqual(openBooks.verifySaveTarget({ ...base, expectedMtimeMs: 'x' }).ok, true);
+  // 不看 mtime 的旧语义不能变：书 / 章没了仍是各自的错误码（mtime 检查排在 chapterExists 之后）
+  assert.strictEqual(
+    openBooks.verifySaveTarget({ ...base, chapterExists: false, expectedMtimeMs: 111 }).code,
+    openBooks.CODE.CHAPTER_MISSING
+  );
+});

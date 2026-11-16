@@ -12,9 +12,10 @@
  * 事件绑定随域搬进 setupFindUi()（打开面板 / 上一处下一处 / 状态栏小标签 / 词与选项变化 / 替换两个按钮 / 关闭 /
  * 输入框回车三处）。查找书签的按钮绑定不在本域（等补刀 9b）。
  *
- * 契约：createFindUi(host) 由渲染层调用一次。host 10 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createFindUi(host) 由渲染层调用一次。host 12 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（state.find）/ IPC 白名单 / IPC 包装 / 提示
+ *     recordFallbackWrite,                 // 审计残留修复 #39（V402）：兜底整串赋值后由渲染层统一记账 + 提示
  *     imeGuard,                            // 输入法组字守卫（ime-guard.js）：查找 / 替换两条 Enter 提交键的判据
  *     longOpLogic,                         // 长操作收尾判定（long-op-logic.js，WP-02/C2）：整本替换回执到达时书换没换
  *     find: {                               // 查找纯逻辑与编辑区
@@ -54,14 +55,19 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'longOpLogic', 'staleGuard', 'find', 'nav', 'collab'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'recordFallbackWrite', 'imeGuard', 'longOpLogic', 'staleGuard', 'find', 'nav', 'collab'];
 
   function createFindUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
     assertHost('createFindUi', host, REQUIRED_HOST);
-    const { $, state, api, call, toast, imeGuard, longOpLogic, staleGuard, find, nav, collab } = host;
+    const { $, state, api, call, toast, recordFallbackWrite, imeGuard, longOpLogic, staleGuard, find, nav, collab } = host;
     if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
       throw new TypeError('createFindUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
+    }
+    // 审计残留修复 #39（V402）：「当前章全部替换」的兜底整串赋值会和 renderer.js 三处兜底一样
+    // 清空浏览器撤销栈 —— 必须由渲染层统一记账 + 提示，不能静默清。
+    if (typeof recordFallbackWrite !== 'function') {
+      throw new TypeError('createFindUi 的 host.recordFallbackWrite 必须是函数');
     }
     // WP-15（C36）：查找回执的世代令牌——连按回车只有最后一次算数，旧响应不许覆盖新结果。
     const findSeq = staleGuard.createSeq();
@@ -518,15 +524,22 @@
   function replaceEditorText(text) {
     editorEl.focus();
     editorEl.setSelectionRange(0, editorEl.value.length);
+    const before = editorEl.value;
     let inserted = false;
     try {
       inserted = document.execCommand('insertText', false, text);
     } catch {
       inserted = false;
     }
-    if (!inserted || editorEl.value !== text) editorEl.value = text;
+    // 审计残留修复 #39（V402）：execCommand 不可用 / 没生效时仍是整串赋值 —— 会清空浏览器撤销栈。
+    // 与 renderer.js 的三处兜底统一口径：记一次性快照（渲染层提示条「撤销」+ 正文 Ctrl+Z），
+    // 不再静默清栈。按结果判断，原生输入成功（值就是 text）不记账。
+    const fallbackUsed = !inserted || editorEl.value !== text;
+    if (fallbackUsed) editorEl.value = text;
     editorEl.setSelectionRange(0, 0);
     onEditorInput();
+    // 记账必须在 onEditorInput() 之后（输入处理会作废旧快照）；值没变时 recordFallbackWrite 自己跳过。
+    if (fallbackUsed) recordFallbackWrite({ before, after: text, start: 0, label: '全部替换' });
   }
 
   // WP-13（审计 C12）：整本替换防重入。连按替换 Enter / 连点按钮以前会并发跑两遍（替换串含查询串

@@ -2,7 +2,8 @@
 // 不 require('electron')，可直接在 node:test 里用临时目录测试。
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { atomicWriteFile, atomicCopyFile, writeJsonAtomic, stripBom, cleanupOrphanTmpFiles } = require('./atomic');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const { atomicWriteFile, atomicCopyFile, stripBom, cleanupOrphanTmpFiles } = require('./atomic');
 const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, MAX_TEXT_BYTES } = require('./common');
 const chaptersLib = require('./chapters');
 const findLib = require('./find');
@@ -41,6 +42,22 @@ const TRASH_STAT_CONCURRENCY = 8;
 // 预览（整本查找 / 整理预检查）把读到的正文连同当时的 mtime / size 记进快照；执行（整本替换 /
 // 整本整理）命中且文件没变就直接复用，不再读第二遍。有 TTL 与容量上界，超了照旧读盘。
 const chapterPreviewCache = previewCacheLib.createPreviewCache();
+// 审计修复 #54（P8）：readBookMeta 读盘时顺手记下 书目.json 的文件身份（size + mtimeMs），
+// 挂在返回对象的一个不可枚举 Symbol 上（JSON.stringify / {...meta} / 写盘都不会带出去）。
+// 书架扫描补字数缓存要「锁内重读」防覆盖并发写入；这份身份能证明「从我读到锁内这段没人写过」，
+// 没变就不必把整份书目再 JSON.parse + 迁移 + 归一一遍（大书 CPU 翻倍的那一趟）。
+const BOOK_META_STAMP = Symbol('bookMetaStamp');
+
+function stampOfMeta(meta) {
+  const stamp = meta && meta[BOOK_META_STAMP];
+  return stamp && typeof stamp === 'object' ? stamp : null;
+}
+
+function metaStampMatches(meta, stat) {
+  const stamp = stampOfMeta(meta);
+  if (!stamp || !stat) return false;
+  return stat.size === stamp.size && stat.mtimeMs === stamp.mtimeMs;
+}
 
 class StorageError extends Error {
   constructor(code, message) {
@@ -130,6 +147,26 @@ function trashDirLabel(dir) {
   return dir ? `${TRASH_DIR}/${path.basename(dir)}` : '';
 }
 
+// 审计修复 #3（E3）：整本替换 / 整理 / 还原前备份的原文复制也必须走原子写。
+// 以前三处都用裸 fs.copyFile：磁盘满 / 被杀软打断时会在 _trash 里留下半截文件，
+// 而失败提示还让作者「可以从那里把原文拷回来」—— 还原侧只 stat 尺寸，识破不了截断，
+// 等于用半截备份再覆盖一次正文（二次丢稿）。
+// 现在统一：atomicCopyFile（临时文件 → fsync → rename，失败删临时文件）→ 复制后比对
+// 「源 stat.size」与「实际写出字节数」，不一致（源在复制期间被外部改写 / 写短）就删掉
+// 这份不可信备份并报错：宁可这次不动手，也不留一份看起来能用的坏备份。
+async function copyReadableChapterToBackup(source, target) {
+  const stat = await fs.stat(source);
+  const written = await atomicCopyFile(source, target);
+  if (written !== stat.size) {
+    try { await fs.unlink(target); } catch { /* 临时文件已被清理 / 目标不存在：忽略 */ }
+    throw new StorageError(
+      'BACKUP_COPY_SHORT',
+      `备份原文时复制的字节数与源文件不一致（源 ${stat.size} B / 备份 ${written} B），已删除这份备份`
+    );
+  }
+  return written;
+}
+
 // nowIso / mapLimit 从 core/common.js 来（B6）：和 search-index 建索引时同一份实现
 // （限并发、ISO 时间戳），这里只保留 nowIso 的对外导出（旧调用方按名字取）。
 
@@ -190,6 +227,96 @@ function chapterIndexOrThrow(meta, chapterId) {
   const index = chaptersLib.findChapterIndex(meta, chapterId);
   if (index < 0) throw new StorageError('CHAPTER_NOT_FOUND', '章节不存在（可能已被删除）');
   return index;
+}
+
+// 审计修复 #22（P6）：缺 id 回填的「单调空闲游标」。
+// 旧实现对每个缺 id 的章都从 i+1 重新探测（do/while 逐个试 ch_NNN），「低位号全被占 + 大量缺 id」
+// 时 20000 章最坏约 4×10^8 次探测，而 readBookMeta 每次操作都会跑一遍。
+// 游标只前进：扫过的号要么已被 used 占住（越过它），要么小于下一个位置的起点 i+1（以后也不会
+// 用到），所以不用回头重扫；补出来的编号与旧算法逐项一致（见 tests/storage.test.js 的等价性用例）。
+// 审计修复 #32（▲V305）：书目里「本来就有」的重复章节 id 自愈。
+// C32 只修「补 id 时撞车」，没覆盖外部工具（同步盘冲突合并 / 脚本批量改 / 手改 JSON）写出的
+// 「两条记录同 id」：findChapterIndex 只认第一个，第二个永远命中不到 —— 改名 / 删除 / 保存会改错章。
+// 口径：第一个保留原 id（既有事实不动），第二个及以后按「缺 id」同一套规则重新分配（`used` 里已有
+// 全部 id，补出来的号也进 `used`），并把「修过哪几条」返回给调用方落诊断日志。
+// 返回 [{ index, from, to }]；没有重复时是空数组。纯函数，单测直接对着它核规则。
+function reassignDuplicateChapterIds(ids) {
+  const used = new Set(ids);
+  const seen = new Set();
+  const repairs = [];
+  let cursor = 1;
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    if (!seen.has(id)) {
+      seen.add(id);
+      continue;
+    }
+    let n = Math.max(cursor, i + 1);
+    let next = '';
+    do {
+      next = `ch_${chaptersLib.pad3(n)}`;
+      n += 1;
+    } while (used.has(next));
+    used.add(next);
+    cursor = n;
+    ids[i] = next;
+    repairs.push({ index: i, from: id, to: next });
+  }
+  return repairs;
+}
+
+// 审计修复 #32（▲V305）：诊断日志钩子。core 模块不持有日志 store（在 main.js 里），
+// 启动时由 main 注入现成的 logError 一次；没注入 / 写失败都静默 —— 日志绝不能影响读书目。
+// 同一本书在一个进程里只记一条（readBookMeta 会被书架扫描 / 打开 / 保存反复调用）。
+let diagnosticLogError = null;
+const reportedDuplicateIdBooks = new Set();
+
+function setDiagnostics(io = {}) {
+  diagnosticLogError = io && typeof io.logError === 'function' ? io.logError : null;
+}
+
+function reportDuplicateChapterIds(bookPath, repairs) {
+  if (!diagnosticLogError || !repairs.length) return;
+  try {
+    const key = pathUtils.normalizePath(bookPath);
+    if (reportedDuplicateIdBooks.has(key)) return;
+    if (reportedDuplicateIdBooks.size >= 500) reportedDuplicateIdBooks.clear();
+    reportedDuplicateIdBooks.add(key);
+    const detail = repairs.map((item) => `第 ${item.index + 1} 条 ${item.from}→${item.to}`).join('；');
+    diagnosticLogError('meta-dup-id', {
+      code: 'META_DUP_CHAPTER_ID',
+      message: `书目里有 ${repairs.length} 个重复章节 id，已按位置重新分配（${detail}）；书：${path.basename(bookPath)}`
+    });
+  } catch {
+    /* 日志失败不影响读书目 */
+  }
+}
+
+function backfillMissingChapterIds(chapters) {
+  const used = new Set();
+  for (const chapter of chapters) {
+    if (chapter && typeof chapter.id === 'string' && chapter.id) used.add(chapter.id);
+  }
+  let cursor = 1;
+  const ids = new Array(chapters.length);
+  for (let i = 0; i < chapters.length; i += 1) {
+    const chapter = chapters[i];
+    const existing = chapter && typeof chapter.id === 'string' && chapter.id ? chapter.id : '';
+    if (existing) {
+      ids[i] = existing;
+      continue;
+    }
+    let n = Math.max(cursor, i + 1);
+    let id = '';
+    do {
+      id = `ch_${chaptersLib.pad3(n)}`;
+      n += 1;
+    } while (used.has(id));
+    used.add(id);
+    cursor = n;
+    ids[i] = id;
+  }
+  return ids;
 }
 
 function validateMeta(meta) {
@@ -267,27 +394,20 @@ async function readBookMeta(bookPath) {
   // 与既有 id 撞车时改名 / 删除 / 保存会作用到错误的章（findChapterIndex 只认第一个同名 id）。
   // 先收齐已有 id，缺失的从「位置号」开始往后找到第一个没被占用的；只补缺失项，
   // 已有 id（哪怕是坏值）一个都不改写 —— 那是书目的既有事实。
-  const usedChapterIds = new Set();
-  for (const chapter of meta.chapters) {
-    if (chapter && typeof chapter.id === 'string' && chapter.id) usedChapterIds.add(chapter.id);
-  }
-  meta.chapters = meta.chapters.map((c, i) => {
-    let id = typeof c.id === 'string' && c.id ? c.id : '';
-    if (!id) {
-      let n = i + 1;
-      do {
-        id = `ch_${chaptersLib.pad3(n)}`;
-        n += 1;
-      } while (usedChapterIds.has(id));
-      usedChapterIds.add(id);
-    }
-    return chaptersLib.cleanChapterMeta({
+  // 审计修复 #22（P6）：探测改成单调游标（O(n²) → O(n)），编号口径与上面一致。
+  const backfilledIds = backfillMissingChapterIds(meta.chapters);
+  // 审计修复 #32（▲V305）：补完缺 id 之后再修「本来就有」的重复 id（第二个及以后重分配）。
+  // 修过的书目按「书」只记一条诊断日志（meta-dup-id）；正常书目这条分支什么都不做。
+  const duplicateRepairs = reassignDuplicateChapterIds(backfilledIds);
+  if (duplicateRepairs.length) reportDuplicateChapterIds(bookPath, duplicateRepairs);
+  meta.chapters = meta.chapters.map((c, i) =>
+    chaptersLib.cleanChapterMeta({
       ...c,
-      id,
+      id: backfilledIds[i],
       name: typeof c.name === 'string' ? c.name : '',
       createdAt: typeof c.createdAt === 'string' ? c.createdAt : nowIso()
-    });
-  });
+    })
+  );
   if (typeof meta.titleTemplate !== 'string' || !meta.titleTemplate.trim()) {
     meta.titleTemplate = chaptersLib.TITLE_TEMPLATE;
   }
@@ -305,7 +425,18 @@ async function readBookMeta(bookPath) {
   });
   // 书籍信息（v0.8-3）：作者 / 简介 / 分组 / 标签都是可选的，读取时清洗但不补字段；
   // 旧书目没有它们照常打开（下次正常写盘也不会凭空多出来）。
-  return bookInfoLib.cleanBookInfo(normalized);
+  const cleanMeta = bookInfoLib.cleanBookInfo(normalized);
+  // 审计修复 #54（P8）：记下这份 meta 对应的文件身份（stat 在函数开头已取过），供补字数缓存时
+  // 判断「锁内还用不用重读」。stat 读不到（ENOENT / EACCES）时 readFile 会按原错误路径抛出，
+  // 这里只在 stat 有效时挂。
+  if (stat && stat.isFile && stat.isFile()) {
+    Object.defineProperty(cleanMeta, BOOK_META_STAMP, {
+      value: { size: stat.size, mtimeMs: stat.mtimeMs },
+      enumerable: false,
+      configurable: true
+    });
+  }
+  return cleanMeta;
 }
 
 // 写盘前把书目归一（版本号 + updatedAt）——writeBookMeta 与「修复 / 从 .bak 恢复」的
@@ -326,6 +457,18 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
   if (ensureDirectory) await ensureDir(bookPath);
   const metaPath = path.join(bookPath, BOOK_FILE);
   const bakPath = path.join(bookPath, BOOK_BAK);
+  const next = prepareBookMeta(meta, { touchUpdatedAt });
+  // 审计修复 #45（E19）：写侧也过和读侧同一道 32 MB 闸门（纵深防御）。IPC 的 500 万字限 ≈15 MB
+  // 够不着这条线，但内部构造 / 手改后的书目不该把一份超过单文件上限的 书目.json 写出去 ——
+  // 下一次读它会直接 META_TOO_LARGE，书就打不开了。超限一个字节都不写（.bak 也不轮换）。
+  const serialized = `${JSON.stringify(next, null, 2)}\n`;
+  const writtenBytes = Buffer.byteLength(serialized, 'utf8');
+  if (writtenBytes > MAX_META_READ_BYTES) {
+    throw new StorageError(
+      'META_TOO_LARGE',
+      `${BOOK_FILE}内容有 ${formatByteSize(writtenBytes)}，超过单文件写入上限 ${formatByteSize(MAX_META_READ_BYTES)}，没有写盘`
+    );
+  }
   // B2（审计 P2）：.bak 只在「结构性变更」时轮换（增删章 / 改名 / 分卷 / 导入 / 改书名…），
   // 普通保存（章节正文、字数缓存、上次打开章节）跳过第二次 fsync。
   // 备份语义刻意保守：调用方要显式传 { structural: true } 才轮换；不传 = 只写主文件。
@@ -333,14 +476,33 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
   // 不会用坏文件覆盖掉唯一可用的 .bak。
   if (structural) {
     try {
-      const old = await fs.readFile(metaPath);
-      await atomicWriteFile(bakPath, old, 'utf8', { ensureDir: ensureDirectory });
+      // 审计修复 #45（E19）：轮换前先过尺寸闸门（C17 的读闸门漏了这一处）—— 旧实现直接 fs.readFile，
+      // 主文件被外部换成超大文件时，一次结构性保存会把它整份读进内存再写 .bak。
+      // 超限时按「没有上一版」跳过轮换（这种情况 readBookMeta 本来就会报 META_TOO_LARGE）。
+      // 审计残留修复 #45（S8）：闸门与读盘绑在同一个句柄上（open → fstat → 同一句柄读）——
+      // 旧实现是 stat 之后按路径 readFile，间隙里文件被换成大文件就绕过上限、整份进内存。
+      let old = null;
+      const handle = await fs.open(metaPath, 'r');
+      try {
+        const oldStat = await handle.stat();
+        const tooLarge = readSizeProblem(oldStat.size, {
+          code: 'META_TOO_LARGE',
+          label: BOOK_FILE,
+          limit: MAX_META_READ_BYTES,
+          tail: '没有轮换成 .bak'
+        });
+        if (!tooLarge) old = await handle.readFile();
+      } finally {
+        try {
+          await handle.close();
+        } catch { /* 关不掉不影响已经读到的内容 */ }
+      }
+      if (old) await atomicWriteFile(bakPath, old, 'utf8', { ensureDir: ensureDirectory });
     } catch (err) {
       if (err.code !== 'ENOENT') throw err;
     }
   }
-  const next = prepareBookMeta(meta, { touchUpdatedAt });
-  await writeJsonAtomic(metaPath, next, { ensureDir: ensureDirectory });
+  await atomicWriteFile(metaPath, serialized, 'utf8', { ensureDir: ensureDirectory });
   return next;
 }
 
@@ -413,26 +575,57 @@ async function readChapterTextForCount(bookPath, chapter) {
   return fs.readFile(p, 'utf8');
 }
 
-// 把「缺 chars 缓存」的章节正文并发读出来算字数，就地写回 chapter.chars。
-// readText 可注入（单测用它数并发峰值，不测墙钟）；ENOENT（章节记录还在、文件被删）跳过不抛。
-async function backfillChapterChars(bookPath, chapters, options = {}) {
+// 审计修复 #25（R4）：字数回填 / 刷新共用的「逐章读盘算字数」内核。
+// 两条链路的差别只在「挑哪些章」与「算完怎么用」；读盘口径必须只有一份 —— reader 默认先过
+// 128 MB 闸门、ENOENT（记录还在、文件被删）跳过、超限章返回 null、字数按去 BOM 口径。
+// 以前 backfillChapterChars 与 refreshChapterChars 各抄一遍 mapLimit + 闸门 + ENOENT + countChars。
+// 返回与入参等长的数组：算出的字数 / null（跳过，调用方不写缓存）。
+async function countChapterChars(bookPath, chapters, options = {}) {
   const settings = options && typeof options === 'object' ? options : {};
   const readText = settings.readText || readChapterTextForCount;
   const concurrency = settings.concurrency === undefined ? CHAPTER_BACKFILL_CONCURRENCY : settings.concurrency;
-  let changed = false;
-  await mapLimit(Array.isArray(chapters) ? chapters : [], concurrency, async (chapter) => {
-    if (!chapter || Number.isFinite(chapter.chars)) return;
+  return mapLimit(Array.isArray(chapters) ? chapters : [], concurrency, async (chapter) => {
     try {
       const text = await readText(bookPath, chapter);
-      if (text === null) return; // 超限章：不读、不算、不写缓存（有其它章成功仍会写）
-      chapter.chars = chaptersLib.countChars(stripBom(text));
-      changed = true;
+      if (text === null) return null; // 超限章：不读、不算、不写缓存
+      return chaptersLib.countChars(stripBom(text));
     } catch (err) {
-      if (err && err.code === 'ENOENT') return;
+      if (err && err.code === 'ENOENT') return null;
       throw err;
     }
   });
+}
+
+// 把「缺 chars 缓存」的章节正文并发读出来算字数，就地写回 chapter.chars。
+// readText / concurrency 可注入（单测用它数并发峰值，不测墙钟）。
+async function backfillChapterChars(bookPath, chapters, options = {}) {
+  const pending = (Array.isArray(chapters) ? chapters : []).filter(
+    (chapter) => chapter && !Number.isFinite(chapter.chars)
+  );
+  if (!pending.length) return false;
+  const counts = await countChapterChars(bookPath, pending, options);
+  let changed = false;
+  for (let index = 0; index < pending.length; index += 1) {
+    if (counts[index] == null) continue;
+    pending[index].chars = counts[index];
+    changed = true;
+  }
   return changed;
+}
+
+// 审计修复 #54（P8）：锁内重读的轻量路径。锁外已有一份 readBookMeta 的结果（带文件身份），
+// 锁内先 stat 一次：size + mtimeMs 都没变 = 这段时间没人写过书目，直接复用那份已解析 / 已迁移 /
+// 已归一的对象；变了才整份重读（并发写入的合并语义与以前完全一样，绝不拿旧对象覆盖）。
+async function readFreshBookMetaForCache(bookPath, knownMeta) {
+  if (stampOfMeta(knownMeta)) {
+    try {
+      const stat = await fs.stat(path.join(bookPath, BOOK_FILE));
+      if (metaStampMatches(knownMeta, stat)) return knownMeta;
+    } catch {
+      /* 读不到 / 刚被删：照旧整份重读，让既有错误路径处理 */
+    }
+  }
+  return readBookMeta(bookPath);
 }
 
 async function bookStats(bookPath, meta, { writeCache = true, readText, backfillConcurrency } = {}) {
@@ -452,8 +645,13 @@ async function bookStats(bookPath, meta, { writeCache = true, readText, backfill
       // 否则「扫描读到的旧 meta + 补字数」会覆盖掉同时发生的建章/改名/删除（真实丢操作路径）。
       try {
         await withBookLock(bookPath, async () => {
-          const fresh = await readBookMeta(bookPath);
-          const merged = mergeCharsCache(fresh, needRead);
+          // 审计修复 #54（P8）：书目没被并发写过就直接复用扫描时已解析的对象（不重复 parse / 迁移）。
+          const fresh = await readFreshBookMetaForCache(bookPath, meta);
+          // 复用同一份对象时，backfillChapterChars 已经把字数写进它的 chapters；mergeCharsCache 会
+          // 因为「目标章已有 chars」而判成无需写盘 —— 走过回填且文件没变，这份缓存就必须落盘。
+          const merged = fresh === meta
+            ? { meta: fresh, changed: true }
+            : mergeCharsCache(fresh, needRead);
           // 只补字数缓存：这不是用户操作，updatedAt 保持原值（审计 E-06）
           if (merged.changed) await writeBookMeta(bookPath, merged.meta, { touchUpdatedAt: false });
         });
@@ -732,9 +930,11 @@ function assertBookNotBusy(bookPath, windowId, action = 'write') {
   return true;
 }
 
-// 保存前校验：书文件夹在 → 书目能读 → 章节还在书目里 → 章节文件也在。
+// 保存前校验：书文件夹在 → 书目能读 → 章节还在书目里 → 章节文件也在 → 磁盘那一版还是载入时那一版。
 // 任一失效都抛错阻止写盘（saveChapterText 会带 ensureDir:false，atomic 不会重建目录）。
-async function prepareChapterSave(bookPath, chapterId, { windowId = null, file = null } = {}) {
+// 审计修复 #5（V301）：expectedMtimeMs 是渲染层载入 / 上次保存拿到的 mtime；文件被应用外改过时
+// 抛 EXTERNAL_CHANGE（「磁盘上这一版不是载入时那一版」），由渲染层弹覆盖 / 另存 / 重载三选。
+async function prepareChapterSave(bookPath, chapterId, { windowId = null, file = null, expectedMtimeMs = null } = {}) {
   assertBookNotBusy(bookPath, windowId, 'save');
   let bookStat = null;
   try {
@@ -757,10 +957,13 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
       ? meta.chapters.find((item) => item && item.id === chapterId)
       : null;
   let chapterExists = false;
+  let chapterMtimeMs = null;
   if (chapter) {
     try {
       const stat = await fs.stat(assertChapterFile(bookPath, chapter.file));
       chapterExists = stat.isFile();
+      // 审计修复 #5（V301）：交给 verifySaveTarget 与 expectedMtimeMs 比对（只在文件确实在时才有意义）
+      chapterMtimeMs = stat.mtimeMs;
     } catch {
       chapterExists = false;
     }
@@ -772,7 +975,9 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
     metaCode,
     chapterId,
     file: file || (chapter ? chapter.file : null),
-    chapterExists
+    chapterExists,
+    chapterMtimeMs,
+    expectedMtimeMs
   });
   if (!checked.ok) throw new StorageError(checked.code, checked.message);
   return { meta, chapter: checked.chapter, index: checked.index };
@@ -817,7 +1022,7 @@ async function createChapter(bookPath, insertIndex, name, volumeId = null) {
   return createChapterWithText(bookPath, { insertIndex, name, text: '', volumeId });
 }
 
-// ---------- 分卷操作（同一本书的写操作都要持锁，走 locked()） ----------
+// ---------- 分卷操作（同一本书的写操作都要持锁，走 lockedWriteEntry()） ----------
 async function createVolume(bookPath, name) {
   const meta = await readBookMeta(bookPath);
   const volume = { id: chaptersLib.nextVolumeId(meta), name: String(name == null ? '' : name).trim() };
@@ -967,6 +1172,34 @@ function timestampForFile(date = new Date()) {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}-${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}`;
 }
 
+// 进程内「正在落位的 _trash 目标名」：审计修复 #45（E20）补上 exists→rename 之间的空档。
+// 单实例锁保证只有一个进程在写书库；同一个进程里两次删章 / 回滚在同一秒并发时，两边可能同时
+// 看到空位、后一次 rename 把先一次的备份覆盖掉（Windows 的 rename 是替换语义）。
+// 名字在真正落位期间占住，另一路会自动顺延到下一个序号。
+const inflightTrashTargets = new Set();
+
+// 审计残留修复 #45（E20）：试占一个 _trash 目标名。返回 true = 这个名字现在归调用方，
+// rename 结束后必须 release（delete）。
+// 不变量：登记发生在查 exists 之前 —— 旧实现是 `has || await exists` 通过之后才 add，
+// 「检查空闲」与「登记占用」之间跨了一次 await，并发路径可以同时判定同一个名字空闲，
+// 后一次 rename 直接覆盖前一次的备份。这里名字一进 Set 就不再放开（除磁盘已被占用 / 读盘出错）。
+async function claimTrashTarget(dest) {
+  if (inflightTrashTargets.has(dest)) return false;
+  inflightTrashTargets.add(dest);
+  let free;
+  try {
+    free = !(await exists(dest));
+  } catch (err) {
+    inflightTrashTargets.delete(dest);
+    throw err;
+  }
+  if (!free) {
+    inflightTrashTargets.delete(dest); // 磁盘上已有同名文件：让位，换下一个序号
+    return false;
+  }
+  return true;
+}
+
 async function moveToTrash(bookPath, file) {
   // WP-06（审计 C5）：本函数是「删章 / 撤销删空补章」唯一的移文件入口，必须自己再校验一次 ——
   // 坏书目（file 含 ..\ / 绝对路径 / 非 txt / 保留名）在这里就 BAD_PATH，绝不 rename 书外文件；
@@ -977,12 +1210,18 @@ async function moveToTrash(bookPath, file) {
   const stamp = timestampForFile();
   let destName = `${stamp}-${file}`;
   let i = 2;
-  while (await exists(path.join(trashDir, destName))) {
+  let dest = path.join(trashDir, destName);
+  // 审计残留修复 #45（E20）：先登记占用、再查磁盘（见 claimTrashTarget）
+  while (!(await claimTrashTarget(dest))) {
     destName = `${stamp}-${i}-${file}`;
     i += 1;
+    dest = path.join(trashDir, destName);
   }
-  const dest = path.join(trashDir, destName);
-  await fs.rename(source, dest);
+  try {
+    await fs.rename(source, dest);
+  } finally {
+    inflightTrashTargets.delete(dest);
+  }
   return dest;
 }
 
@@ -1228,7 +1467,7 @@ async function moveChapter(bookPath, chapterId, toIndex) {
 // 就直接用预览读到的正文（只多一次 stat），否则照旧读盘。
 // 上下文按书路径登记，只影响下面这个 loadTextOrSkip（整本操作的唯一读取点）：
 // chapter:load / 导出 / 搜索索引 / 校对都走别的读取路径，完全不受影响。
-// 同一本书的写操作由 bookQueue 串行（replaceInBook / formatBook 都过 locked）；两本书各用各的键，
+// 同一本书的写操作由 bookQueue 串行（replaceInBook / formatBook 都过 lockedWriteEntry）；两本书各用各的键，
 // 并发互不串。预览 / 执行之间作者改过某一章 → mtime 或 size 变了 → 该章回退读盘。
 const chapterReadContexts = new Map();
 
@@ -1418,7 +1657,8 @@ async function replaceInBook(bookPath, options = {}) {
             await ensureDir(backupDir);
             backupCreated = true;
           }
-          await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
+          // 审计修复 #3（E3）：备份也走原子复制 + 复制后尺寸校验（半截备份不得留在 _trash）
+          await copyReadableChapterToBackup(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
           await saveChapterText(bookPath, chapter.file, res.text);
           chapter.chars = chaptersLib.countChars(res.text);
           chaptersChanged += 1;
@@ -1542,7 +1782,8 @@ async function formatBook(bookPath, options = {}, onProgress) {
             backupCreated = true;
           }
           // 先备份原文再写盘：整理也是「改正文」的显式动作，必须留退路
-          await fs.copyFile(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
+          // 审计修复 #3（E3）：备份走原子复制 + 复制后尺寸校验（与整本替换同一份实现）
+          await copyReadableChapterToBackup(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
           await saveChapterText(bookPath, chapter.file, res.text);
           chapter.chars = chaptersLib.countChars(res.text);
           addFormatStats(stats, res.stats);
@@ -1789,8 +2030,11 @@ async function cleanupSnapshots(bookPath, { keepDays = snapshotLib.DEFAULT_KEEP_
   const dirNames = entries
     .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
     .map((entry) => entry.name);
+  // 审计修复 #45（E20）：kept 只数「快照目录」，以前数的是 _trash 下的全部目录
+  // （替换备份-* / 整理备份-* / 还原前备份-* 全被算成快照，界面上的「保留 N 天」就虚高了）。
+  const snapshotNames = dirNames.filter((name) => snapshotLib.parseSnapshotDirName(name));
   const expired = new Set(snapshotLib.selectExpiredSnapshotDirs(dirNames, now, keepDays));
-  if (!expired.size) return { removed: [], failed: [], kept: dirNames.length };
+  if (!expired.size) return { removed: [], failed: [], kept: snapshotNames.length };
   const removed = [];
   const failed = [];
   for (const name of dirNames) {
@@ -1805,7 +2049,7 @@ async function cleanupSnapshots(bookPath, { keepDays = snapshotLib.DEFAULT_KEEP_
       failed.push(name); // 被占用 / 权限问题：下次保存再试，不影响这次保存
     }
   }
-  return { removed, failed, kept: dirNames.length - removed.length };
+  return { removed, failed, kept: snapshotNames.length - removed.length };
 }
 
 // 保存前留一份当天快照。返回 { taken, reason, dir, file, bytes, cleanup }：
@@ -1822,10 +2066,9 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
     throw new StorageError('BAD_SNAPSHOT_FILE', '只能给章节 txt 做快照');
   }
   const source = assertInside(bookPath, raw);
-  let sourceStat;
   try {
     // P2-3：先看大小再读 —— 这一章被外部换成超大文件时，不能把主进程内存打爆
-    sourceStat = await assertSourceSize(source, {
+    await assertSourceSize(source, {
       code: 'SNAPSHOT_TOO_LARGE',
       label: `这一章正文（${raw}）`,
       tail: '这次没有留快照（保存继续）'
@@ -1842,8 +2085,16 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
   const snapshotDir = path.join(trashDir, dir);
   const target = path.join(snapshotDir, raw);
   let taken = false;
-  let bytes = sourceStat.size;
-  if (!(await exists(target))) {
+  let bytes = 0;
+  if (await exists(target)) {
+    // 审计修复 #45（E20）：ALREADY_TODAY 回报的是「已有的那份快照」的大小 —— 旧实现回源文件当前的
+    // size，源在两次保存之间又改过时，界面 / 日志会把「快照多少字节」说错。
+    try {
+      bytes = (await fs.stat(target)).size;
+    } catch {
+      bytes = 0; // 快照刚被外部删 / 读不到：如实报 0，不冒充源文件的尺寸
+    }
+  } else {
     await ensureDir(snapshotDir);
     // B19（v1.8.0 WP-29）：改成流式复制 —— 不再把 ≤128 MB 的整章读进内存再原子写。
     // 目标不存在才复制（当天已经有一份就跳过，与旧行为一致）；读源失败的 ENOENT 仍按 MISSING 处理。
@@ -1851,6 +2102,11 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
       bytes = await atomicCopyFile(source, target); // 原样复制字节（CRLF / BOM 都不动）
     } catch (err) {
       if (err.code === 'ENOENT') {
+        // 审计修复 #45（E20）：源在 stat 与复制之间被删 / 移走时，刚建出来的空快照目录要收掉 ——
+        // 否则它会像一份「什么都没有的备份」留在历史面板里，也被清理逻辑当快照计数。
+        try {
+          await fs.rmdir(snapshotDir); // 只在目录为空时成功；已有别的快照就保持原样
+        } catch { /* 删不掉（非空 / 被占用）：保持原样，不影响 MISSING 的结论 */ }
         return { taken: false, reason: 'MISSING', dir: null, file: raw, bytes: 0, cleanup: { removed: [], failed: [], kept: 0 } };
       }
       throw err;
@@ -1878,7 +2134,9 @@ async function takeDailySnapshot(bookPath, file, { keepDays, now = new Date() } 
 async function findHistoryGroup(bookPath, groupId, chapterFiles) {
   // 先做 id / 路径校验：非法 id（目录穿越等）直接拒绝，不去扫描
   historyLib.resolveGroup(bookPath, groupId);
-  const data = await historyLib.listHistory(bookPath, { chapterFiles });
+  // 审计修复 #54（P8）：只扫要还原的那一个组（旧实现为一个组把全部备份目录 / 文件的 readdir + stat
+  // 都跑一遍）；only 会在 listHistory 里再过一次同一套 resolveGroup 校验。
+  const data = await historyLib.listHistory(bookPath, { chapterFiles, only: groupId });
   const group = data.groups.find((item) => item.id === groupId);
   if (!group) throw new StorageError('HISTORY_GROUP_MISSING', '这个备份已经不存在了');
   return group;
@@ -1886,21 +2144,14 @@ async function findHistoryGroup(bookPath, groupId, chapterFiles) {
 
 async function refreshChapterChars(bookPath, meta, files, options = {}) {
   const settings = options && typeof options === 'object' ? options : {};
-  // 读盘和扫描回填同一口径：先过 128 MB 闸门；超限章（reader 返回 null）字数缓存保持原值，不按 0 写
-  const readText = settings.readText || readChapterTextForCount;
   const touched = new Set(files);
   const targets = meta.chapters.filter((chapter) => touched.has(chapter.file));
   if (!targets.length) return;
-  // B4（审计 P4）：还原后刷字数也是整本批量读，并行读、按原顺序写回缓存
-  const charCounts = await mapLimit(targets, CHAPTER_READ_CONCURRENCY, async (chapter) => {
-    try {
-      const text = await readText(bookPath, chapter);
-      if (text === null) return null;
-      return chaptersLib.countChars(stripBom(text));
-    } catch (err) {
-      if (err.code === 'ENOENT') return null;
-      throw err;
-    }
+  // 审计修复 #25（R4）：读盘 / 闸门 / ENOENT / 计数口径与扫描回填共用 countChapterChars；
+  // 这里只负责「挑被还原的章 + 按原顺序写回缓存」（B4：并行读、结果按原下标落）。
+  const charCounts = await countChapterChars(bookPath, targets, {
+    readText: settings.readText,
+    concurrency: CHAPTER_READ_CONCURRENCY
   });
   for (let i = 0; i < targets.length; i += 1) {
     if (charCounts[i] != null) targets[i].chars = charCounts[i];
@@ -1911,7 +2162,8 @@ async function restoreDeletedChapter(bookPath, group, entry) {
   if (!entry || !/\.txt$/i.test(entry.name)) {
     throw new StorageError('HISTORY_NOT_CHAPTER', '这个备份不是章节 txt，不能放回书里');
   }
-  const target = assertInside(bookPath, entry.name);
+  // 审计修复 #45（E19）：放回书文件夹的目标也要过 assertChapterFile（与其余写入口同一道闸门）
+  const target = assertChapterFile(bookPath, entry.name);
   if (await exists(target)) {
     throw new StorageError('HISTORY_TARGET_EXISTS', `书文件夹里已经有 ${entry.name}，没有覆盖`);
   }
@@ -1959,10 +2211,14 @@ async function loadRestorableHistoryGroup(bookPath, groupId) {
 // 返回是否真的备份了（失败提示里据此写「还原前的正文备份在 …」）。三处还原共用：
 // 整本替换备份还原、历史单文件还原、历史整组还原。
 async function backupCurrentToRestoreDir(bookPath, fileName, restoreDir) {
-  const target = assertInside(bookPath, fileName);
+  // 审计修复 #45（E19）：还原 / 反向备份也要过和写盘同一道 assertChapterFile（C19 自述的「闸门单口径」）。
+  // 旧实现只 assertInside —— 空串 / 子目录 / 非 txt / 保留名能通过前缀检查，把文件写到奇怪的位置。
+  // entry.name 来自扫描、外部不可直接注入，但那条「还原路径不拦退化名」的口子不该留着。
+  const target = assertChapterFile(bookPath, fileName);
   if (!(await exists(target))) return false;
   await ensureDir(restoreDir);
-  await fs.copyFile(target, path.join(restoreDir, fileName));
+  // 审计修复 #3（E3）：还原前备份同样是「退路」，必须原子写完并核对字节数
+  await copyReadableChapterToBackup(target, path.join(restoreDir, fileName));
   return true;
 }
 
@@ -1972,7 +2228,8 @@ async function backupCurrentToRestoreDir(bookPath, fileName, restoreDir) {
 // 整组还原只在真要备份时才建，不留下空目录）。
 async function copyHistoryEntryToBook(bookPath, group, entry, restoreDir) {
   await backupCurrentToRestoreDir(bookPath, entry.name, restoreDir);
-  const target = assertInside(bookPath, entry.name);
+  // 审计修复 #45（E19）：写回目标同样过 assertChapterFile（理由见 backupCurrentToRestoreDir）
+  const target = assertChapterFile(bookPath, entry.name);
   const source = historyLib.resolveHistoryPath(bookPath, group.id, entry.name);
   // P2-3：备份文件被外部换成超大文件时，先 stat 再读，绝不把整份读进内存
   const buffer = await loadChapterSource(source, {
@@ -1986,8 +2243,11 @@ async function copyHistoryEntryToBook(bookPath, group, entry, restoreDir) {
 async function restoreHistoryFile(bookPath, groupId, fileName) {
   const { meta, group } = await loadRestorableHistoryGroup(bookPath, groupId);
   if (group.kind === 'file') {
-    const entry =
-      group.files.find((file) => file.name === fileName || file.trashName === fileName) || group.files[0];
+    // 审计修复 #11（E7）：清单过期（点的那份散文件已不在组里）时必须报错 —— 旧实现回退
+    // group.files[0]，会把备份组里另一章静默还原成「点的那一章」，正文放错文件。
+    // 与 dir 分支同一口径：找不到就抛 HISTORY_FILE_MISSING，一个字节都不写。
+    const entry = group.files.find((file) => file.name === fileName || file.trashName === fileName);
+    if (!entry) throw new StorageError('HISTORY_FILE_MISSING', '这个备份文件已经不存在了');
     return restoreDeletedChapter(bookPath, group, entry);
   }
   const entry = group.files.find((file) => file.name === fileName);
@@ -2240,13 +2500,42 @@ async function renameBook(bookPath, title) {
 }
 
 // 整本书的兜底删除：移动到书架根目录下的 _trash（回收站不可用时使用）
+// 审计修复 #4（S1、E20）：以前只信调用方给的路径、裸 fs.rename —— 拿到的只要「父目录==书架根」
+// 就搬，注入脚本能把 `_trash`（全部删书备份）/ `_碎片`（灵感箱）当「书」整个移走；同一秒删两本
+// 同名书还会覆盖已有备份。这里自己重做完整校验（不把安全托付给 IPC 层）：
+//   · 必须是书架根的直接子目录（不是根自己 / 孙目录 / 书库外路径）；
+//   · 目录名不能以 _ / . 开头（书架保留目录，listBooks 本来也跳过它们）；
+//   · 目录里必须有 书目.json —— 普通文件夹 / 被挪空的壳子不是书，不能当书删；
+//   · 写操作排进这本书的写队列（与改章 / 改书目互斥，绝不在别人写盘时把目录搬走）；
+//   · 目标名同秒撞名时改用 -2 / -3，绝不覆盖 _trash 里已有的备份。
 async function trashBook(booksRoot, bookPath) {
-  const trashDir = path.join(booksRoot, TRASH_DIR);
-  await ensureDir(trashDir);
-  const folder = path.basename(bookPath);
-  const dest = path.join(trashDir, `${timestampForFile()}-${folder}`);
-  await fs.rename(bookPath, dest);
-  return dest;
+  const rawRoot = String(booksRoot == null ? '' : booksRoot).trim();
+  if (!rawRoot) throw new StorageError('BAD_PATH', '书架目录还没有设置');
+  const root = path.resolve(rawRoot);
+  const target = path.resolve(String(bookPath == null ? '' : bookPath));
+  const folder = path.basename(target);
+  if (pathUtils.pathKey(path.dirname(target)) !== pathUtils.pathKey(root)) {
+    throw new StorageError('BAD_PATH', '只能删除书架目录下的书');
+  }
+  if (!folder || folder.startsWith('_') || folder.startsWith('.')) {
+    throw new StorageError('BAD_PATH', '书架保留目录不能当书删除');
+  }
+  if (!(await exists(path.join(target, BOOK_FILE)))) {
+    throw new StorageError('NOT_A_BOOK', `「${folder}」不是一本书（文件夹里没有 ${BOOK_FILE}）`);
+  }
+  return withBookLock(target, async () => {
+    const trashDir = path.join(root, TRASH_DIR);
+    await ensureDir(trashDir);
+    const stamp = timestampForFile();
+    let dest = path.join(trashDir, `${stamp}-${folder}`);
+    let serial = 2;
+    while (await exists(dest)) {
+      dest = path.join(trashDir, `${stamp}-${folder}-${serial}`);
+      serial += 1;
+    }
+    await fs.rename(target, dest);
+    return dest;
+  });
 }
 
 // 记住「上次打开的是哪一章」（书目里的唯一事实来源）。
@@ -2269,8 +2558,11 @@ async function setLastOpenChapter(bookPath, chapterId) {
       chapterIndex: index,
       chapterName: String(chapter.name == null ? '' : chapter.name)
     };
-  } catch {
-    return { ok: false };
+  } catch (err) {
+    // 审计修复 #45（E20）：外层 catch 不再只给一个光秃秃的 { ok: false } —— 读 / 写书目失败的错误码
+    // 原样带回（NO_BOOK / META_TOO_LARGE / BAD_PATH…），主进程日志与界面能分清是哪一步坏了。
+    const described = errorText.describeForUi(err);
+    return { ok: false, code: described.code, message: described.message };
   }
 }
 
@@ -2288,8 +2580,31 @@ function bookLockKey(bookPath) {
   return pathUtils.pathKey(bookPath);
 }
 
+// 审计修复 #55（M6）：书锁重入。三个底层写入口（writeBookMeta / saveChapterText /
+// prepareChapterSave）现在出口处内置 withBookLock；主进程 chapter:save 与既有单测又已经在
+// withBookLock 里按「读-改-写」整段调用它们 —— 队列不可重入，再排一次就会自己等自己（死锁）。
+// 用 AsyncLocalStorage 记住当前异步上下文已经持有的书锁 key：同一本书在已持锁上下文里直接执行，
+// 不重新排队（语义等价于把内层调用并进外层那一把锁）；不同书仍各排各的链。
+const heldBookLocks = new AsyncLocalStorage();
+
 function withBookLock(bookPath, task) {
-  return bookQueue.enqueue(bookLockKey(bookPath), task);
+  const key = bookLockKey(bookPath);
+  const held = heldBookLocks.getStore();
+  // 同一把锁已在当前上下文里：直接跑（仍返回 Promise，保持 withBookLock 恒返回 Promise 的契约）
+  if (held && held.has(key)) return Promise.resolve().then(task);
+  return bookQueue.enqueue(key, () => {
+    // 每层锁带一份新的 Set：外层跑完不会把「已持有」泄漏给之后排队的任务
+    const next = new Set(held || []);
+    next.add(key);
+    return heldBookLocks.run(next, task);
+  });
+}
+
+// 审计残留修复 #R11（#55/M6）：书锁包装器只留这一份。旧实现里 `lockedWriteEntry` 与 `locked`
+// 是两段逐字相同的函数（都只是 withBookLock(args[0], …) 的包装），导出面一半用这个名、一半用那个名；
+// 现在统一叫 lockedWriteEntry（它本来就是「写入口内置书锁」的意思），下面导出面全部走它。
+function lockedWriteEntry(fn) {
+  return (...args) => withBookLock(args[0], () => fn(...args));
 }
 
 // 删书后的主动回收：只清这一本书的空闲条目；正在跑 / 正在排队的链绝不拆（settle 后自己回收）。
@@ -2306,10 +2621,6 @@ function clearBookLocks() {
 // 单测观察用：当前 Map 里还有几条锁（产品逻辑不读它）。
 function bookLockCount() {
   return bookQueue.pendingCount();
-}
-
-function locked(fn) {
-  return (...args) => withBookLock(args[0], () => fn(...args));
 }
 
 const safeCreateBook = (booksRoot, title, options) => withBookLock(booksRoot, () => createBook(booksRoot, title, options));
@@ -2337,55 +2648,63 @@ module.exports = {
   backfillChapterChars,
   listTxtFiles,
   readBookMeta,
+  // 审计修复 #22（P6）：缺 id 回填的编号规则（单调游标 O(n)），单测直接对着它做新旧等价性核对
+  backfillMissingChapterIds,
+  // 审计修复 #32（▲V305）：重复章节 id 的「第二个及以后重分配」规则（纯函数，单测直接核）
+  reassignDuplicateChapterIds,
+  // 审计修复 #32（▲V305）：main.js 启动时注入诊断日志钩子（core 不持有 log store）
+  setDiagnostics,
   // 1.6.0 A3：修复流程先写临时文件再换名，归一逻辑与 writeBookMeta 共用这一份
   prepareBookMeta,
-  writeBookMeta,
+  // 审计修复 #55（M6）：三个底层写入口内置书锁 —— 新增写入口直接从 exports 取用时不会再漏锁。
+  // withBookLock 已支持同书重入（见 heldBookLocks），所以 chapter:save 在锁内调用这几个入口不会死锁。
+  writeBookMeta: lockedWriteEntry(writeBookMeta),
   listBooks,
   createBook: safeCreateBook,
   openBook,
   verifyBook,
   loadChapterText,
   statChapter,
-  saveChapterText,
-  prepareChapterSave,
+  saveChapterText: lockedWriteEntry(saveChapterText),
+  prepareChapterSave: lockedWriteEntry(prepareChapterSave),
   openBookRegistry,
   registerOpenBook,
   releaseOpenBook,
   releaseOpenBookPath,
   findOpenBookWindow,
   assertBookNotBusy,
-  createChapter: locked(createChapter),
-  createChapterWithText: locked(createChapterWithText),
-  createVolume: locked(createVolume),
-  renameVolume: locked(renameVolume),
-  deleteVolume: locked(deleteVolume),
-  moveChapterToVolume: locked(moveChapterToVolume),
-  moveChapterTo: locked(moveChapterTo),
-  moveVolume: locked(moveVolume),
-  renameChapter: locked(renameChapter),
-  updateChapterMeta: locked(updateChapterMeta),
-  updateBookInfo: locked(updateBookInfo),
-  setChapterNumbering: locked(setChapterNumbering),
-  deleteChapter: locked(deleteChapter),
-  restoreDeletedChapterFromTrash: locked(restoreDeletedChapterFromTrash),
-  moveChapter: locked(moveChapter),
+  createChapter: lockedWriteEntry(createChapter),
+  createChapterWithText: lockedWriteEntry(createChapterWithText),
+  createVolume: lockedWriteEntry(createVolume),
+  renameVolume: lockedWriteEntry(renameVolume),
+  deleteVolume: lockedWriteEntry(deleteVolume),
+  moveChapterToVolume: lockedWriteEntry(moveChapterToVolume),
+  moveChapterTo: lockedWriteEntry(moveChapterTo),
+  moveVolume: lockedWriteEntry(moveVolume),
+  renameChapter: lockedWriteEntry(renameChapter),
+  updateChapterMeta: lockedWriteEntry(updateChapterMeta),
+  updateBookInfo: lockedWriteEntry(updateBookInfo),
+  setChapterNumbering: lockedWriteEntry(setChapterNumbering),
+  deleteChapter: lockedWriteEntry(deleteChapter),
+  restoreDeletedChapterFromTrash: lockedWriteEntry(restoreDeletedChapterFromTrash),
+  moveChapter: lockedWriteEntry(moveChapter),
   searchBook,
-  replaceInBook: locked(replaceInBook),
+  replaceInBook: lockedWriteEntry(replaceInBook),
   previewFormatBook,
-  formatBook: locked(formatBook),
+  formatBook: lockedWriteEntry(formatBook),
   listReplaceBackups,
-  restoreReplaceBackup: locked(restoreReplaceBackup),
+  restoreReplaceBackup: lockedWriteEntry(restoreReplaceBackup),
   cleanupSnapshots,
   takeDailySnapshot,
   listBookHistory,
   previewHistoryFile,
-  deleteHistoryBackups: locked(deleteHistoryBackups),
+  deleteHistoryBackups: lockedWriteEntry(deleteHistoryBackups),
   snapshotDirForClear,
-  restoreHistoryFile: locked(restoreHistoryFile),
-  restoreHistoryGroup: locked(restoreHistoryGroup),
-  renameBook: locked(renameBook),
+  restoreHistoryFile: lockedWriteEntry(restoreHistoryFile),
+  restoreHistoryGroup: lockedWriteEntry(restoreHistoryGroup),
+  renameBook: lockedWriteEntry(renameBook),
   trashBook,
-  setLastOpenChapter: locked(setLastOpenChapter),
+  setLastOpenChapter: lockedWriteEntry(setLastOpenChapter),
   moveToTrash,
   withBookLock,
   clearBookLock,

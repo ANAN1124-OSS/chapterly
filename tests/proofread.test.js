@@ -195,6 +195,55 @@ test('C42/WP-26：扩展 B 汉字参与重复用词 / 中英间距 / 破折号�
   assert.equal(only(proofread.proofreadText('A--', { rules: { dash: true } }), 'dash').length, 0);
 });
 
+// E14（审计修复 #17）：repeat-word 的重叠去重距离与 repeatWindow 都按「字（码点）」算。
+// 旧实现拿 UTF-16 长度当字数，代理对文本上：①「起点只差 1–2 字」的门槛被放大成 6 个码元
+// （同一短语的第 3 个二字词漏去重，一条短语报两条）②300 字窗口实际只装得下 150 字。
+test('E14：扩展 B 短语的重叠去重按码点算（同一短语只报一条）', () => {
+  const A = '\u{20000}';
+  const B = '\u{20001}';
+  const C = '\u{20002}';
+  const D = '\u{20003}';
+  // 「ABCD」×3：AB / BC / CD 三个二字词起点只差 1 个字（BMP 等价物「甲乙丙丁」×3 只报 AB）。
+  // 旧实现按码元算：AB=0、BC=2、CD=4，CD 不满足 < 3 的门槛 → AB 与 CD 各报一条。
+  const text = `${A}${B}${C}${D}，${A}${B}${C}${D}，${A}${B}${C}${D}。`;
+  const result = proofread.proofreadText(text);
+  const hits = result.issues.filter((issue) => issue.rule === 'repeat-word');
+  assert.equal(hits.length, 1, '同一短语只留最靠前的一条（旧实现会把第 3 个二字词也报出来）');
+  assert.equal(hits[0].match, `${A}${B}`);
+  assert.equal(hits[0].count, 3);
+  assert.equal(hits[0].index, 0);
+  assert.equal(hits[0].length, 4, 'issue.length 按 UTF-16 单元算（2 个代理对 = 4），高亮不切代理对');
+  // BMP 等价物口径不变
+  const bmp = proofread.proofreadText('甲乙丙丁，甲乙丙丁，甲乙丙丁。');
+  const bmpHits = bmp.issues.filter((issue) => issue.rule === 'repeat-word');
+  assert.equal(bmpHits.length, 1);
+  assert.equal(bmpHits[0].match, '甲乙');
+  assert.equal(bmpHits[0].length, 2);
+});
+
+test('E14：repeatWindow 按码点算（代理对正文的 300 字窗口不再减半）', () => {
+  const A = '\u{20000}';
+  const B = '\u{20001}';
+  const FILL = '😀'; // 非汉字代理对：只用来拉开距离，不参与重复用词
+  // 三次「AB」的起点（码点）：0 / 150 / 298 → 第三次命中结束于 300，正好落在 300 字窗口内。
+  // 旧实现按码元：起点 0 / 300 / 596，`594 + 2 - 0 > 300` → 一条都不报。
+  const text = `${A}${B}${FILL.repeat(148)}${A}${B}${FILL.repeat(146)}${A}${B}`;
+  const hits = proofread.proofreadText(text, { repeatWindow: 300 }).issues.filter(
+    (issue) => issue.rule === 'repeat-word' && issue.match === `${A}${B}`
+  );
+  assert.equal(hits.length, 1, '按码点折算后三次命中都在 300 字窗口内');
+  assert.equal(hits[0].count, 3);
+  assert.equal(hits[0].index, 0);
+  // 窗口外照旧不报：把第三次推远 2 个字就到 302
+  const wider = `${A}${B}${FILL.repeat(148)}${A}${B}${FILL.repeat(148)}${A}${B}`;
+  assert.equal(
+    proofread.proofreadText(wider, { repeatWindow: 300 }).issues.filter(
+      (issue) => issue.rule === 'repeat-word' && issue.match === `${A}${B}`
+    ).length,
+    0
+  );
+});
+
 test('校对：连续标点——3 个及以上才报，「！？」「……」「——」不误报', () => {
   const three = proofread.proofreadText('他喊：「？！？」');
   const issues = only(three, 'punct-run');
@@ -211,6 +260,21 @@ test('校对：连续标点——3 个及以上才报，「！？」「……」
   assert.equal(only(proofread.proofreadText('「……？！」'), 'punct-run').length, 1);
   // 不跨行
   assert.equal(only(proofread.proofreadText('？\n？\n？'), 'punct-run').length, 0);
+  // 审计修复 #49（E24）：全角 + 半角混排的 3 个标点也要报（旧集合在半角处断开，只数到 2）
+  for (const [line, match] of [
+    ['他说完了。。.', '。。.'],
+    ['他转身就走-——', '-——'],
+    ['真的吗?!。', '?!。']
+  ]) {
+    const mixed = only(proofread.proofreadText(line), 'punct-run');
+    assert.equal(mixed.length, 1, `混排连排应报一次：${line}`);
+    assert.equal(mixed[0].match, match);
+    assert.match(mixed[0].message, /连续 3 个标点/);
+  }
+  // 纯 ASCII 连排不归「连续标点」管：省略号 / 破折号各有自己的规则（与旧行为一致）
+  assert.equal(only(proofread.proofreadText('他说...'), 'punct-run').length, 0);
+  assert.equal(only(proofread.proofreadText('他说---好'), 'punct-run').length, 0);
+  assert.equal(only(proofread.proofreadText('什么?!'), 'punct-run').length, 0);
 });
 
 test('校对：多余空行——2 个及以上连续空行才报，单个空行不报', () => {
@@ -296,6 +360,49 @@ test('校对：超量时只保留前 maxIssues 条，但总数与各规则条数
     result.issues.map((issue) => issue.index),
     Array.from({ length: 20 }, (_v, i) => i * 2 + 1)
   );
+});
+
+// 审计修复 #15（E12）：明细额度按规则顺序填充时，半角标点就能把 keepLimit 占满，
+// 后序规则（尤其最后统一结算的自定义词表）只剩 byRule 计数、一条明细都留不下。
+test('E12：半角标点占满预算时，自定义词表仍要在明细里出现（按规则配额）', () => {
+  const entries = [{ term: '做为', suggestion: '作为' }];
+  // 300 条半角标点在先，词表命中只有 1 条且在末尾：旧实现 20 条明细全是标点
+  const text = '他,'.repeat(300) + '他做为见证人。';
+  const result = proofread.proofreadText(text, { maxIssues: 20, longParagraph: 20000 }, entries);
+  assert.equal(result.byRule['halfwidth-punct'], 300);
+  assert.equal(result.byRule['custom-word'], 1);
+  assert.equal(result.total, 301);
+  assert.equal(result.issues.length, 20, '明细预算照旧用满（空出来的额度按规则轮转补回）');
+  const custom = result.issues.filter((issue) => issue.rule === 'custom-word');
+  assert.equal(custom.length, 1, '词表命中必须有明细（旧实现是 0 条）');
+  assert.equal(custom[0].match, '做为');
+  assert.equal(result.issues.filter((issue) => issue.rule === 'halfwidth-punct').length, 19);
+  assert.equal(result.truncated, true);
+  // 明细仍按位置排序（配额只决定「选谁」，不改变顺序）
+  const indexes = result.issues.map((issue) => issue.index);
+  assert.deepEqual(indexes, [...indexes].sort((a, b) => a - b));
+
+  // 默认预算（400）：5000 条标点 + 3 条词表 → 词表 3 条一条不少，标点补满其余位置
+  const many = '他,'.repeat(5000) + '做为做为做为';
+  const big = proofread.proofreadText(many, {}, entries);
+  assert.equal(big.byRule['halfwidth-punct'], 5000);
+  assert.equal(big.byRule['custom-word'], 3);
+  assert.equal(big.issues.length, 400, '预算 400 照旧用满');
+  assert.equal(big.issues.filter((issue) => issue.rule === 'custom-word').length, 3);
+});
+
+test('E12：两条规则都超预算时按配额分（谁也不被整段挤掉），条数仍如实统计', () => {
+  // 300 条破折号（--）+ 300 条半角标点：两条规则都超过 20 的预算
+  const text = '甲--乙,丙--丁,'.repeat(150);
+  const result = proofread.proofreadText(text, { maxIssues: 20, longParagraph: 20000 });
+  assert.equal(result.byRule.dash, 300);
+  assert.equal(result.byRule['halfwidth-punct'], 300);
+  const dash = result.issues.filter((issue) => issue.rule === 'dash');
+  const punct = result.issues.filter((issue) => issue.rule === 'halfwidth-punct');
+  assert.equal(dash.length, 10, '配额均分：20 / 2 条规则各 10');
+  assert.equal(punct.length, 10);
+  assert.equal(result.issues.length, 20);
+  assert.equal(result.truncated, true);
 });
 
 test('校对：选项清洗——脏值回落默认、越界夹紧、字符串数字可用', () => {

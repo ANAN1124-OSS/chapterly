@@ -13,24 +13,26 @@ const { caseFoldForMatch } = require('./common');
 // 必须如实提示「只统计 / 只替换了前 N 处」，绝不能把截断值当成「全部处理完成」。
 const MAX_MATCHES = 5000;
 
+// 审计修复 #53（R5）：查找 / 替换 / findNextMatch 共用的「干草堆 + 针」折叠口径。
+// 两边同源：任一边含「小写化会变长」的字符（如 'İ' U+0130）时两边都退回原文扫描，不许出现
+// 「干草堆折叠、针不折叠」的混合匹配（X7 的退化语义，common 里带 folded 标记）。
+function resolveScanText(source, needleRaw, caseSensitive) {
+  if (caseSensitive) return { haystack: source, needle: needleRaw };
+  const foldedHay = caseFoldForMatch(source);
+  const foldedNeedle = caseFoldForMatch(needleRaw);
+  if (foldedHay.folded && foldedNeedle.folded) {
+    return { haystack: foldedHay.text, needle: foldedNeedle.text };
+  }
+  return { haystack: source, needle: needleRaw };
+}
+
 function scanMatches(text, query, options = {}, limit = MAX_MATCHES) {
   const source = String(text == null ? '' : text);
   const needleRaw = String(query == null ? '' : query);
   const cap = Math.max(1, Math.floor(Number(limit) || MAX_MATCHES));
   if (!needleRaw) return { matches: [], truncated: false, limit: cap };
   const caseSensitive = Boolean(options.caseSensitive);
-  let haystack = source;
-  let needle = needleRaw;
-  if (!caseSensitive) {
-    // 查找 / 替换必须**两边同源**：任一边含「小写化会变长」的字符（如 'İ' U+0130）时两边都退回
-    // 原文扫描，不许出现「干草堆折叠、针不折叠」的混合匹配（X7 的退化语义，common 里带 folded 标记）。
-    const foldedHay = caseFoldForMatch(source);
-    const foldedNeedle = caseFoldForMatch(needleRaw);
-    if (foldedHay.folded && foldedNeedle.folded) {
-      haystack = foldedHay.text;
-      needle = foldedNeedle.text;
-    }
-  }
+  const { haystack, needle } = resolveScanText(source, needleRaw, caseSensitive);
   const matches = [];
   let from = 0;
   for (;;) {
@@ -77,10 +79,25 @@ function replaceAllLiteral(text, query, replacement, options = {}) {
 }
 
 // 结果列表里显示的一小段上下文（去掉换行，避免列表被撑开）
+// 审计修复 #51（E16）：上下文按 UTF-16 下标截取，起点 / 终点可能落在代理对中间（如 emoji 占两个码元），
+// 截出来的片段带孤立代理，界面显示成「�」。起点落在「高代理 + 低代理」这对的后半时往右退一个码元；
+// 终点前一个码元是高代理时往左退一个；两者都不越过命中本身（命中下标来自 indexOf，永远是绝对边界）。
 function makeSnippet(text, index, length, radius = 18) {
   const source = String(text == null ? '' : text);
-  const start = Math.max(0, index - radius);
-  const end = Math.min(source.length, index + length + radius);
+  const rawStart = Math.max(0, index - radius);
+  let start = rawStart;
+  if (start > 0 && start < index) {
+    const low = source.charCodeAt(start);
+    const high = source.charCodeAt(start - 1);
+    if (low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff) start += 1;
+  }
+  const rawEnd = Math.min(source.length, index + length + radius);
+  let end = rawEnd;
+  if (end > index + length && end < source.length) {
+    const high = source.charCodeAt(end - 1);
+    const low = source.charCodeAt(end);
+    if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) end -= 1;
+  }
   const clean = (part) => part.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ');
   return {
     before: clean(source.slice(start, index)),
@@ -103,17 +120,7 @@ function findNextMatch(text, query, fromIndex = 0, options = {}) {
   const needleRaw = String(query == null ? '' : query);
   if (!needleRaw) return null;
   const caseSensitive = Boolean(options.caseSensitive);
-  let haystack = source;
-  let needle = needleRaw;
-  if (!caseSensitive) {
-    // 与 scanMatches 同一口径：两边都折叠才折叠，任一边退化就两边都用原文（X7 退化语义）。
-    const foldedHay = caseFoldForMatch(source);
-    const foldedNeedle = caseFoldForMatch(needleRaw);
-    if (foldedHay.folded && foldedNeedle.folded) {
-      haystack = foldedHay.text;
-      needle = foldedNeedle.text;
-    }
-  }
+  const { haystack, needle } = resolveScanText(source, needleRaw, caseSensitive);
   const rawFrom = Number(fromIndex);
   const from = Math.max(0, Math.min(Number.isFinite(rawFrom) ? Math.floor(rawFrom) : 0, source.length));
   const step = Math.max(1, needle.length);
@@ -131,8 +138,16 @@ function findNextMatch(text, query, fromIndex = 0, options = {}) {
     }
     from2 = at + step;
   }
-  if (pickedAt < 0) return null;
-  return { index: pickedIndex, total, match: { index: pickedAt, length: needleRaw.length } };
+  // 审计修复 #10（E6）：到了单章上限要再确认一次「后面还有没有」，与 findMatchesAll /
+  // replaceAllLiteral 的 C4 契约同一口径如实回 truncated（旧实现静默停在 5000 处，
+  // 界面把截断值当精确总数）。判定仍在同一个 indexOf 增量循环里，不物化命中列表。
+  const truncated = total >= MAX_MATCHES && haystack.indexOf(needle, from2) >= 0;
+  if (pickedAt < 0) {
+    // 命中全在 5000 处之后（或 fromIndex 落在被截断的部分）：回一个只有 truncated 的空结果，
+    // 让调用方能说「超过单章上限」而不是误报「没有下一处」。
+    return truncated ? { index: -1, total: MAX_MATCHES, truncated: true, match: null } : null;
+  }
+  return { index: pickedIndex, total, truncated, match: { index: pickedAt, length: needleRaw.length } };
 }
 
 module.exports = {

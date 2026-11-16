@@ -19,9 +19,13 @@ const MAX_TAG_CHARS = 64;
 const MAX_NAME_CHARS = 160;
 const MAX_VERSION_TEXT_CHARS = 64;
 
-const NUMERIC_PART_RE = /^\d{1,9}$/;
+const { truncateSafe } = require('./common');
+// semver：主版本号 / 次版本号 / 修订号不允许前导零（「01」不是合法版本号，旧实现按 1 接受了）。
+const NUMERIC_PART_RE = /^(?:0|[1-9]\d{0,8})$/;
 const PRERELEASE_ID_RE = /^[0-9A-Za-z-]{1,20}$/;
 const TAG_RE = /^[0-9A-Za-z][0-9A-Za-z._-]*$/;
+// GitHub 的 release.name 是外部输入：去掉控制字符 / 行分隔符，压成一行、限长后再显示。
+const CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u2028\u2029]/g;
 
 const MESSAGES = {
   NETWORK: '连不上 GitHub（可能没联网，或被代理 / 防火墙拦住），不影响写作，稍后再试',
@@ -73,6 +77,8 @@ function parseVersion(raw) {
     if (ids.length > 8) return null;
     for (const id of ids) {
       if (!PRERELEASE_ID_RE.test(id)) return null;
+      // 审计修复 #48（E23）：数字标识按 semver 不允许前导零（「01」不是合法标识）。
+      if (/^\d+$/.test(id) && id.length > 1 && id[0] === '0') return null;
       prerelease.push(id);
     }
   }
@@ -118,9 +124,10 @@ function comparePrerelease(left, right) {
     const xNumeric = /^\d+$/.test(x);
     const yNumeric = /^\d+$/.test(y);
     if (xNumeric && yNumeric) {
-      const nx = Number(x);
-      const ny = Number(y);
-      if (nx !== ny) return nx < ny ? -1 : 1;
+      // 审计修复 #48（E23）：数字标识按字符串长度 + 字典序比较，不经过 Number ——
+      // 超过 2^53 的标识（如 9007199254740993）以前会被舍入成同一个数，漏报更新。
+      if (x.length !== y.length) return x.length < y.length ? -1 : 1;
+      if (x !== y) return x < y ? -1 : 1;
     } else if (xNumeric !== yNumeric) {
       // 数字标识的优先级低于字母标识
       return xNumeric ? -1 : 1;
@@ -172,6 +179,21 @@ function safeIsoDate(raw) {
   return Number.isFinite(date.getTime()) ? date.toISOString() : '';
 }
 
+// 审计修复 #48（E23 / S6）：release.name 只做 trim + 截断是不够的 —— GitHub 返回的 name
+// 可能带换行 / 控制字符 / Unicode 行分隔符，会被界面或日志当成多行。这里压成一行并限长
+// （truncateSafe 不切开代理对）；空名由调用方回落 tag。
+function cleanReleaseName(raw) {
+  if (typeof raw !== 'string') return '';
+  const text = raw
+    .replace(/\r\n?/g, ' ')
+    .replace(/[\u2028\u2029]/g, ' ')
+    .replace(/\t/g, ' ')
+    .replace(CONTROL_RE, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return truncateSafe(text, MAX_NAME_CHARS);
+}
+
 // GitHub /releases/latest 的 JSON → 干净的内部结构；任何缺字段 / 坏草稿都返回错误。
 function parseReleasePayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -185,7 +207,7 @@ function parseReleasePayload(payload) {
   if (!tag || !version) {
     return { ok: false, code: 'BAD_RELEASE', message: MESSAGES.BAD_RELEASE };
   }
-  const name = typeof payload.name === 'string' ? payload.name.trim().slice(0, MAX_NAME_CHARS) : '';
+  const name = cleanReleaseName(payload.name);
   const url = safeReleaseUrl(payload.html_url) || releasePageUrl(tag);
   return {
     ok: true,
@@ -300,6 +322,18 @@ async function checkForUpdates(options = {}) {
     releaseUrl: release.url,
     publishedAt: release.publishedAt
   };
+  // 审计修复 #48（S6）：GitHub 的 make_latest 可以把 prerelease 设为 latest。应用只追正式版，
+  // 预发布一律不提示更新（仍如实回传 latestVersion / prerelease，界面不显示下载按钮）。
+  if (release.prerelease === true) {
+    return {
+      ...common,
+      status: 'latest',
+      tag: release.tag,
+      prerelease: true,
+      prereleaseIgnored: true,
+      message: `GitHub 上最新的发布是预发布版 v${release.version}（已忽略，当前 v${current.text}）`
+    };
+  }
   if (isNewerVersion(release.version, current)) {
     return {
       ...common,

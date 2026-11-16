@@ -350,7 +350,40 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // 拦截（只有快照还在时接管，不能搬去全局键盘表，否则会抢别的输入框）；③ 捕获超限的提示分支
   // （onClipboardChanged 订阅在渲染层的同一处）。纯判定（shouldBulkWrite / 阈值夹紧）已经进了
   // renderer/editor-logic.js 并有单测；搬走这三块要把插入链路与编辑器状态整体反向注入，反而更绕。
-  const RENDERER_LINE_BUDGET = 6256;
+  // 审计修复 #5 / #6 / #7（V301 / V302 / V401）：6256 → 6289（+33）。三条都必须在渲染层闭包里接线：
+//   ① V401：commitOpenBook 清 bulkWriteUndo（+1 行代码 + 4 行说明）、快照带 bookPath / chapterId、
+//      undoBulkWrite 执行前核对身份（约 +12 行，读写的是编辑器状态与 toast，搬走要反向注入整条链路）；
+//   ② V301 / V302：saveCurrent 的失败分支接救稿出口（+7 行）与 expectedMtimeMs 参数（+4 行）——
+//      saveCurrent 是函数声明、被 8 个入口与本文件闭包共享，只能在原地改；
+//      对话框 / 覆盖 / 另存 / 复制 / 重载的行为全部在 renderer/save-rescue-ui.js（新模块，约 170 行）。
+//   renderer.js 其余零新增；以后再加功能仍按「搬进独立模块」办，别把行数当预算花。
+  // 审计修复 #10（E6）：6289 → 6297（+8）：runReplaceOne 的返回形状多带 truncated，且命中被
+  //   单章上限截断时要说清「光标之后不再定位」（+5 行说明与哨兵分支）、「第 N/M+ 处」的合计标签
+  //   （+3 行）。判定与哨兵形状全在 core/find.js（单测覆盖），renderer.js 只负责如实转述。
+  // 审计修复 #9（P1）：6297 → 6303（+6）：首建期搜索现在立即回 building + 空结果，
+  //   onSearchProgress 的 done 分支要多判一次「当前结果还挂着建索引中」并按原查询自动重搜
+  //   （+4 行说明与分支），否则界面「建好后自动更新结果」无法兑现。判定与短路在
+  //   core/search-index.js，空态文案在 renderer/shelf-filter-ui.js。
+  // 审计修复 #41（V404）：6303 → 6304（+1）：createCaptureUi 装配注释从漂移的「9 个成员」改成实际的
+  //   10 个，顺带写明第 10 个 staleGuard 的来历（注释换行多出一行）；代码零新增。
+  // 审计修复 #40（V403）：6304 → 6309（+5）：正文 Ctrl+Z 拦截器执行成功后 stopPropagation（+1 行代码
+  //   `const undone` / `if (undone)` 两处 + 4 行说明），让一次按键只撤销一步；判定仍全在渲染层闭包里。
+  // 审计修复 #39（V402）：6309 → 6393（+84）：兜底整串赋值的一次性快照与 bulkWriteUndo 是同一套生命周期
+  //   （记录 / 身份核对 / 撤销 / 输入即作废 / 换书换章作废），而 toastActionable、scrollCaretIntoView、
+  //   editorEl、state 身份都在渲染层闭包里；拆一半出去只会把同一条纪律分叉成两份。三处兜底调用点
+  //   （插入正文 / 套模板 / 替换这一处）+ 两个 UI 模块的 host.recordFallbackWrite 接的是同一份实现。
+  // 审计修复 #55（M4，装配清单化）：6393 → 6396（+3，当前 6396 行）：renderer.js 只多一行
+  //   `window.CWRendererAssembly.assertInstalled(window)` 与 2 行说明；清单本身（68 个模块的顺序 /
+  //   window 全局名 / renderer 本地名）在 renderer/assembly-manifest.js，缺模块时启动即报全，
+  //   不再让某个 const 静默 undefined。这是审计 M4 要求的「装配清单」，没有往回搬业务代码。
+  // 审计残留修复 #40（V403，第二阶段 R7）：6396 → 6401（+5）：document 级「整理快照优先」分支补
+  //   焦点守卫（focusEl / inOtherInput 两行代码 + 3 行说明）—— 焦点在查找 / 替换等输入框里时不抢
+  //   Ctrl+Z；编辑区自己例外（整理快照撤的就是正文）。判定只读 document.activeElement 与共享的
+  //   undo-action.isTypingTarget，没有新增模块依赖。
+  // 审计残留修复 #R12（#55/M4，第二阶段）：6401 → 6412（+11）：装配清单自身漏加载时走同一种聚合报错
+  //   （8 行守卫：判 assertInstalled 是不是函数、造带 code / missing 的 TypeError 再抛）+ 3 行说明；
+  //   清单文件没加载时不再抛「Cannot read properties of undefined」，报错点名的就是缺的那个脚本。
+  const RENDERER_LINE_BUDGET = 6412;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

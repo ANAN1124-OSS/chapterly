@@ -133,6 +133,16 @@ test('decodeBuffer：编码（UTF-8 BOM / UTF-16LE / GBK）与空 / 超限 / 二
   });
   // 坏字节解出 U+FFFD
   assert.equal(reader.decodeBuffer(Buffer.from([0xff, 0xff, 0x0a, 0x41])).message, '演示词表编码坏了');
+  // 审计修复 #49（E24）：原文里合法的 U+FFFD（UTF-8 EF BF BD）不能被当成坏编码
+  const literal = reader.decodeBuffer(Buffer.from('替换\uFFFD词', 'utf8'));
+  assert.equal(literal.ok, true);
+  assert.deepEqual(literal.words, ['替换\uFFFD词']);
+  // UTF-32LE BOM 也走严格解码（#50 的解码器 + #49 的严格判定）
+  const utf32 = Buffer.alloc(4 + Array.from('甲词').length * 4);
+  Buffer.from([0xff, 0xfe, 0x00, 0x00]).copy(utf32, 0);
+  Array.from('甲词').forEach((ch, index) => utf32.writeUInt32LE(ch.codePointAt(0), 4 + index * 4));
+  assert.equal(reader.decodeBuffer(utf32).ok, true);
+  assert.deepEqual(reader.decodeBuffer(utf32).words, ['甲词']);
   // 超过 4MB（共享上限）
   const tooBig = reader.decodeBuffer(Buffer.alloc(wordlist.MAX_FILE_BYTES + 1, 0x41));
   assert.deepEqual(tooBig, { ok: false, code: 'DEMO_TOO_BIG', message: '演示词表太大' });
@@ -186,22 +196,182 @@ test('readFile：未配置 / 不存在 / 不是文件 / 正常 / 超限 / 空文
   assert.equal((await reader.readFile(empty)).code, 'DEMO_EMPTY');
 });
 
-test('publicInfo：剥掉内容字段、补 count；坏值回注入的默认文案与 extra', () => {
+test('publicInfo：剥掉内容字段 / path、补 count；坏值回注入的默认文案与 extra（#56 / S5）', () => {
   const reader = createDemoReader({ notConfiguredExtra: { count: 0 } });
-  const info = reader.publicInfo({ ok: true, words: ['甲', '乙', '丙'], name: '词表.txt', stats: { lines: 3 } });
+  const info = reader.publicInfo({
+    ok: true,
+    words: ['甲', '乙', '丙'],
+    name: '词表.txt',
+    path: 'C:\\Users\\作者\\秘密目录\\词表.txt',
+    stats: { lines: 3 }
+  });
   assert.deepEqual(info, { ok: true, name: '词表.txt', stats: { lines: 3 }, count: 3 });
   assert.equal(info.words, undefined);
+  assert.equal(info.path, undefined, 'resolved 全路径不出主进程（与多份词表 / glossary 口径一致）');
   assert.equal(reader.publicInfo({ ok: true }).count, 0);
   assert.deepEqual(reader.publicInfo(null), {
     ok: false,
     configured: false,
     code: 'DEMO_NOT_CONFIGURED',
     message: '还没有配置演示词表（公开信息）',
-    path: '',
     name: '',
     count: 0
   });
   assert.equal(reader.publicInfo('坏值').count, 0);
+  // 真实读盘结果同样不带 path：name 是 basename，足够界面显示
+  const real = reader.publicInfo({ ok: true, words: ['甲'], name: '词表.txt', path: 'C:\\某处\\词表.txt', stats: {} });
+  assert.equal(real.path, undefined);
+  assert.equal(real.name, '词表.txt');
+});
+
+// ---------------------------------------------------------------- ① b E13（审计修复 #16）
+
+test('E13：decode / parse 抛错都兜成结构化失败（绝不把异常冒泡到 IPC）', () => {
+  const txt = require('../core/txt');
+  // 审计残留修复 #R10（#49/E24）：词表现在只走严格解码那一次（decodeBufferStrictInfo），
+  // 注入点从宽容解（decodeBuffer）换成严格解 —— 契约（抛错 = 结构化失败）逐条不变。
+  const original = txt.decodeBufferStrictInfo;
+  const failOptions = (parse) => ({
+    field: 'words',
+    parse,
+    codes: { ...demoOptions().codes, parseFailed: 'DEMO_PARSE_FAILED' },
+    messages: { ...demoOptions().messages, parseFailed: '演示词表解析失败（兜底）' }
+  });
+
+  // ① 解码层抛错（parseFailed 显式注入 → 用注入的码与文案）
+  const reader = wordlist.createReader(failOptions((text) => ({ words: text.split(/\r?\n/).filter(Boolean), stats: {} })));
+  txt.decodeBufferStrictInfo = () => {
+    throw new Error('TextDecoder 炸了');
+  };
+  try {
+    assert.deepEqual(reader.decodeBuffer(Buffer.from('色情', 'utf8')), {
+      ok: false,
+      code: 'DEMO_PARSE_FAILED',
+      message: '演示词表解析失败（兜底）'
+    });
+  } finally {
+    txt.decodeBufferStrictInfo = original;
+  }
+  // 解码回包形状坏（文本不是字符串）也按「解析不了」处理，不再在后续字符串操作上抛 TypeError
+  txt.decodeBufferStrictInfo = () => ({ text: 42 });
+  try {
+    assert.equal(reader.decodeBuffer(Buffer.from('色情', 'utf8')).code, 'DEMO_PARSE_FAILED');
+  } finally {
+    txt.decodeBufferStrictInfo = original;
+  }
+  // 严格解码回 null 是真坏编码（#49 / E24 口径），不是「解析失败」
+  txt.decodeBufferStrictInfo = () => null;
+  try {
+    assert.deepEqual(reader.decodeBuffer(Buffer.from('色情', 'utf8')), {
+      ok: false,
+      code: 'DEMO_BAD_ENCODING',
+      message: '演示词表编码坏了'
+    });
+  } finally {
+    txt.decodeBufferStrictInfo = original;
+  }
+
+  // ② 行解析抛错
+  const broken = wordlist.createReader(
+    failOptions(() => {
+      throw new Error('parse 炸了');
+    })
+  );
+  assert.deepEqual(broken.decodeBuffer(Buffer.from('色情\n暴力', 'utf8')), {
+    ok: false,
+    code: 'DEMO_PARSE_FAILED',
+    message: '演示词表解析失败（兜底）'
+  });
+
+  // ③ 两个可选键都不传 → 共享默认码 / 默认文案（老调用方 / 演示读取器零改动）
+  const plain = createDemoReader({
+    parse: () => {
+      throw new Error('parse 炸了');
+    }
+  });
+  const fallback = plain.decodeBuffer(Buffer.from('色情', 'utf8'));
+  assert.equal(fallback.ok, false);
+  assert.equal(fallback.code, 'WORDLIST_PARSE_FAILED');
+  assert.match(fallback.message, /解析失败/);
+});
+
+test('E13：真实消费者（校对 / 敏感词）的兜底用各自错误码，读盘路径同样不抛', async () => {
+  const txt = require('../core/txt');
+  const original = txt.decodeBufferStrictInfo;
+  const dir = await mkTmp();
+  const file = path.join(dir, '词表.txt');
+  await fsp.writeFile(file, '色情\r\n暴力\r\n', 'utf8');
+  txt.decodeBufferStrictInfo = () => {
+    throw new Error('boom');
+  };
+  try {
+    const glossaryFail = await glossary.readGlossaryFile(file);
+    assert.equal(glossaryFail.ok, false);
+    assert.equal(glossaryFail.code, 'GLOSSARY_PARSE_FAILED');
+    assert.equal(glossaryFail.configured, true, '读盘路径的 configured / name / size 仍要如实回');
+    assert.equal(glossaryFail.name, '词表.txt');
+    assert.equal(glossaryFail.size, Buffer.byteLength('色情\r\n暴力\r\n', 'utf8'));
+    // 多份合并路径的 per-list 提示走 glossaryErrorText 的新分支（不是落到「读不了这份词表」）
+    const bundle = await glossary.readGlossaryFiles([file]);
+    assert.equal(bundle.ok, false);
+    assert.equal(bundle.lists[0].error, '词表内容解析失败（文件可能不是纯文本），请检查后重试');
+
+    const sensitiveFail = await sensitive.readWordListFile(file);
+    assert.equal(sensitiveFail.ok, false);
+    assert.equal(sensitiveFail.code, 'WORD_LIST_PARSE_FAILED');
+    assert.match(sensitiveFail.message, /解析失败/);
+
+    // 单文件解码入口同样兜住（不是只有读盘路径）
+    assert.equal(glossary.decodeGlossaryBuffer(Buffer.from('色情\n', 'utf8')).code, 'GLOSSARY_PARSE_FAILED');
+    assert.equal(sensitive.decodeWordListBuffer(Buffer.from('色情\n', 'utf8')).code, 'WORD_LIST_PARSE_FAILED');
+  } finally {
+    txt.decodeBufferStrictInfo = original;
+  }
+  // 恢复后同一份文件照常读出来（兜底没有把读取器带坏）
+  const recovered = await glossary.readGlossaryFile(file);
+  assert.equal(recovered.ok, true);
+  assert.deepEqual(recovered.entries.map((entry) => entry.term), ['色情', '暴力']);
+});
+
+// 审计残留修复 #R10（#49/E24）：旧实现先用 txt.decodeBuffer 宽容解一遍（只为兜 E13 的抛错），
+// 再用 txt.decodeBufferStrict 整包重解一遍做严格判定 —— ≤ 4 MB 的词表全量解码 2 次。
+// 词表最终只认严格结果，现在只取 decodeBufferStrictInfo 那一次。
+test('E24/#R10：一份词表只解码一次（宽容解不再先跑一遍）', () => {
+  const txt = require('../core/txt');
+  const originalLoose = txt.decodeBuffer;
+  const originalStrictInfo = txt.decodeBufferStrictInfo;
+  let looseCalls = 0;
+  let strictCalls = 0;
+  txt.decodeBuffer = (...args) => {
+    looseCalls += 1;
+    return originalLoose(...args);
+  };
+  txt.decodeBufferStrictInfo = (...args) => {
+    strictCalls += 1;
+    return originalStrictInfo(...args);
+  };
+  try {
+    const reader = createDemoReader();
+    const utf8 = reader.decodeBuffer(Buffer.from('色情\n暴力', 'utf8'));
+    assert.deepEqual(utf8.words, ['色情', '暴力']);
+    assert.equal(looseCalls, 0, '不许再跑宽容解码（旧实现先解一遍，只为兜抛错）');
+    assert.equal(strictCalls, 1, '严格解码只跑一次');
+
+    // 严格解出的文本才是词表用的文本：原文里的合法 U+FFFD 照样保留（#49 口径不变）
+    const literal = reader.decodeBuffer(Buffer.from('替换\uFFFD词', 'utf8'));
+    assert.deepEqual(literal.words, ['替换\uFFFD词']);
+    assert.equal(looseCalls, 0, '第二份词表也不走宽容解码');
+    assert.equal(strictCalls, 2);
+
+    // GBK 字节同样只解码一次（严格管线内部按编码试解，不再是「先宽容 GB18030 再严格」）
+    const gbk = reader.decodeBuffer(Buffer.from([0xc9, 0xab, 0xc7, 0xe9]));
+    assert.deepEqual(gbk.words, ['色情']);
+    assert.equal(looseCalls, 0);
+    assert.equal(strictCalls, 3);
+  } finally {
+    txt.decodeBuffer = originalLoose;
+    txt.decodeBufferStrictInfo = originalStrictInfo;
+  }
 });
 
 // ---------------------------------------------------------------- ② 真实消费者
@@ -221,7 +391,7 @@ test('敏感词 / 校对词表：同一份字节在两边得到各自的错误�
   assert.equal(glossary.decodeGlossaryBuffer(binary).code, 'GLOSSARY_BAD_ENCODING');
 
   // 有内容但没有有效词：错误码同 EMPTY，文案各用各的（行解析的差异留在模块里）
-  assert.equal(sensitive.decodeWordListBuffer(Buffer.from(' \r\n\t', 'utf8')).message, '词表里没有有效的词（每行一个词，空行会被忽略）');
+  assert.equal(sensitive.decodeWordListBuffer(Buffer.from(' \r\n\t', 'utf8')).message, '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）');
   assert.equal(
     glossary.decodeGlossaryBuffer(Buffer.from(' \r\n# 只有注释\n', 'utf8')).message,
     '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）'
@@ -267,4 +437,17 @@ test('静态闸门：读词表流水线只有 core/wordlist.js 一份，两模�
   assert.deepEqual(callers.sort(), ['core/glossary.js', 'core/sensitive.js']);
   const implementations = coreFiles.filter((rel) => read(rel).includes('MAX_FILE_BYTES = 4 * 1024 * 1024'));
   assert.deepEqual(implementations, ['core/wordlist.js']);
+});
+
+// S8（审计修复 #45）：先 stat 后按路径 readFile 的 TOCTOU —— 同一份词表在上限检查之后被换成大文件，
+  // 旧实现会把整份读进内存（4 MB 上限形同虚设）。现在闸门与读盘绑在同一个句柄上。
+test('S8（#45）：词表的大小闸门与读盘走同一个句柄（open → fstat → handle.readFile）', () => {
+  const src = read('core/wordlist.js');
+  const start = src.indexOf('async function readFile(filePath)');
+  assert.ok(start >= 0, '找不到 readFile');
+  const body = src.slice(start, src.indexOf('\n  // 只给渲染层的词表信息', start));
+  assert.ok(body.includes('fs.open(resolved, \'r\')'), '必须先 open 再 fstat');
+  assert.ok(body.includes('handle.stat()'), '上限要用句柄上的 fstat 结论');
+  assert.ok(body.includes('handle.readFile()'), '内容必须从同一个句柄读');
+  assert.equal(body.includes('fs.readFile(resolved'), false, '不许再按路径 readFile（TOCTOU 窗口）');
 });

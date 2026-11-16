@@ -18,8 +18,8 @@
  * 事件绑定（列表点击委托 / 插入位置 change / Esc）留在 renderer.js（与其它已拆模块同一惯例）；
  * 测试钩子在 renderer/test-hooks.js，按名字调用这里交出的入口。
  *
- * 契约：createCaptureUi(host) 由渲染层调用一次，host 正好 9 个成员（契约 §5）：
- *   { $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody }
+ * 契约：createCaptureUi(host) 由渲染层调用一次，host 正好 10 个成员（契约 §5）：
+ *   { $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody, staleGuard }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到点捕获时 ReferenceError）。
  * insertIntoBody(text) → { ok, chars?, message? }：T3 在 renderer.js 实现（原生 execCommand 保 Ctrl+Z，
  * 失败手动拼接兜底）；本模块只负责「什么时候调、成功 / 失败怎么反馈」。
@@ -67,7 +67,8 @@
   }
   const { formatCount, pad2 } = commonLib;
 
-  // 契约 §5：host 正好 9 个成员。insertIntoBody 是 2026-11-07 新增的（正文按钮把内容插进当前章）。
+  // 契约 §5：host 正好 10 个成员。insertIntoBody 是 2026-11-07 新增的（正文按钮把内容插进当前章），
+  // 第 10 个 staleGuard 是 WP-15（C16 / C36）新增的（连点 / 在途回执世代令牌）；审计修复 #41（V404）同步计数。
   const REQUIRED_HOST = [
     '$',
     'state',
@@ -121,8 +122,32 @@
       position: 'end', // b11：'end'（全书末尾，默认）/ 'after-current'（当前章之后）
       queue: [], // [{ id, chars, at, previewText }] 主进程队列元数据，不含正文
       pendingText: null, // 直捕：当前剪贴板原文（未入队，只有这一条在渲染层内存里）
-      tooLarge: false // 直捕正文 >30 万字点「章节」后置位：显示「去导入小说…」
+      tooLarge: false, // 直捕正文 >30 万字点「章节」后置位：显示「去导入小说…」
+      consumedIds: new Set() // 审计修复 #42（V405）：正文已插入、但 queue-remove 失败的 id
     };
+
+    // 审计修复 #42（V405）：正文插入成功但 capture:queue-remove 失败（主进程忙 / 这条已被别处消费）时，
+    // 主进程队列里它还在。以前只在失败分支把本地列表摘掉，下一次 refreshQueue 全量重拉又会把它画回来——
+    // 作者再点「正文」就重复插入同一段。这里登记「本窗口已消费」的 id，fetchQueue 一律过滤；
+    // 正常删除不需要登记（主进程已删，拉回来本来就没有）。上限 200 条：失败是罕见路径，防止长期运行无限涨。
+    // 边界（审计残留修复 #R19 / #42-V405）：登记只在**本窗口内存**里 —— 别的窗口仍会看到这条并可能
+    // 再插入（失败提示已写明「其它窗口若仍出现请勿重复插入」；跨窗登记要主进程配合，超出本条范围）；
+    // 超过 200 条按插入顺序逐出最旧登记，被逐出的极旧 id 若又出现在队列里，理论上可以再画回 / 重复插入，
+    // 但要连着失败 200 次以上才触发、失败路径本身罕见，故只注明不改实现（主进程登记会动 IPC 契约）。
+    const MAX_CONSUMED_IDS = 200;
+
+    function markConsumed(id) {
+      if (id == null) return;
+      panel.consumedIds.add(id);
+      while (panel.consumedIds.size > MAX_CONSUMED_IDS) {
+        panel.consumedIds.delete(panel.consumedIds.values().next().value);
+      }
+    }
+
+    function dropConsumed(list) {
+      if (!panel.consumedIds.size) return list;
+      return list.filter((item) => !panel.consumedIds.has(item.id));
+    }
 
     // 时间只显示「时:分」：队列只记本次运行，日期没有信息量。
     function clockText(at) {
@@ -137,24 +162,24 @@
       if (!api || typeof api.captureQueueList !== 'function') return [];
       const data = await call(api.captureQueueList);
       const entries = data && Array.isArray(data.entries) ? data.entries : [];
-      return entries
-        .map((item) => {
-          // previewText 是契约 §3 的新字段（300 字 / 6 行）；T2 未升级的主进程只给首行 preview，
-          // 这里兼容一下，面板不至于空白。
-          const previewText =
-            typeof (item && item.previewText) === 'string'
-              ? item.previewText
-              : typeof (item && item.preview) === 'string'
-                ? item.preview
-                : '';
-          return {
-            id: Number(item && item.id),
-            chars: Number(item && item.chars) || 0,
-            at: Number(item && item.at) || 0,
-            previewText
-          };
-        })
-        .filter((item) => Number.isFinite(item.id));
+      const mapped = entries.map((item) => {
+        // previewText 是契约 §3 的新字段（300 字 / 6 行）；T2 未升级的主进程只给首行 preview，
+        // 这里兼容一下，面板不至于空白。
+        const previewText =
+          typeof (item && item.previewText) === 'string'
+            ? item.previewText
+            : typeof (item && item.preview) === 'string'
+              ? item.preview
+              : '';
+        return {
+          id: Number(item && item.id),
+          chars: Number(item && item.chars) || 0,
+          at: Number(item && item.at) || 0,
+          previewText
+        };
+      }).filter((item) => Number.isFinite(item.id));
+      // 审计修复 #42（V405）：本窗口已经消费、但主进程没删掉的条目不许再画回来（防止重复插入）。
+      return dropConsumed(mapped);
     }
 
     function queueSupported() {
@@ -489,6 +514,8 @@
         panel.queue = [];
         panel.pendingText = null;
         panel.tooLarge = false;
+        // 审计修复 #42（V405）：主进程队列已经真空，消费登记随之作废（id 不复用，留着只会白过滤）
+        panel.consumedIds.clear();
       } catch (err) {
         toast(`清空捕获队列失败：${err.message}`, 'error');
         return { ok: false, code: err.code, message: err.message };
@@ -572,7 +599,14 @@
             /* 插入已经成功：删队列失败不打断，下面兜底把本地列表里这条去掉 */
           }
           if (removed) await reloadQueue(resolved.id);
-          else panel.queue = panel.queue.filter((item) => item.id !== resolved.id);
+          else {
+            // 审计修复 #42（V405）：删队列失败（主进程忙 / 这条已被别处消费）不能只静默摘本地列表——
+            // 主进程队列里它还在，下一次 clipboard:recorded 触发的 refreshQueue 会把它画回来，
+            // 作者再点「正文」就重复插入同一段。这里登记消费，并明确告诉作者为什么它「没删掉」。
+            markConsumed(resolved.id);
+            panel.queue = panel.queue.filter((item) => item.id !== resolved.id);
+            toast('这条记录没能从队列移除（本窗口已隐藏它，刷新不会再画回来；其它窗口若仍出现请勿重复插入）', 'warn');
+          }
         }
         toast(`已插入正文（${formatCount(chars)} 字），这条记录已从列表移除`);
         // 键盘连续处理：焦点交给下一条的「正文」（列表空了就落到「取消」），不用每次重新 Tab。

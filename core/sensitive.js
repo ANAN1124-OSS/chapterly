@@ -4,7 +4,8 @@
 // 作者在设置里指定一个自己的 txt（每行一个词），预检只按这个词表做字面匹配：
 //   · 只报告命中的词、章名、行号列号与上下文，绝不改正文、绝不写盘
 //   · 词表只读，不复制、不改写；文件缺失 / 编码异常 / 空词表都有明确提示
-//   · 空行忽略；同一个词重复出现只算一次；单行超过 100 字视为坏行跳过
+//   · 空行与 # 开头的注释行忽略（审计修复 #49 / E24，与校对词表同一口径；同一份 txt 复用时
+//     「# 说明」不会再变成词「#」命中正文所有 #）；同一个词重复出现只算一次；单行超过 100 字视为坏行跳过
 //   · 同一处有多个词重叠（例如词表里既有「色情」又有「色情小说」）只报最长的那个
 //   · 字面匹配、区分大小写（不做正则、不做大小写折叠，避免作者以为「没命中」）
 //
@@ -69,17 +70,21 @@ function sanitizeWords(raw) {
 }
 
 // 词表文本 → { words, stats }。只做「每行一个词」这一件事：
-// 空行忽略、重复只留一次、超长行跳过；超过 MAX_WORDS 后不再读（truncated）。
+// 空行与 # 注释忽略、重复只留一次、超长行跳过；超过 MAX_WORDS 后不再读（truncated）。
 function parseWordList(text) {
   const source = normalizeText(text);
   const lines = source.split('\n');
   const words = [];
   const seen = new Set();
-  const stats = { lines: lines.length, emptyLines: 0, duplicates: 0, tooLong: 0, truncated: false };
+  const stats = { lines: lines.length, emptyLines: 0, comments: 0, duplicates: 0, tooLong: 0, truncated: false };
   for (const line of lines) {
     const word = line.trim();
     if (!word) {
       stats.emptyLines += 1;
+      continue;
+    }
+    if (word.startsWith('#')) {
+      stats.comments += 1;
       continue;
     }
     if (word.length > MAX_WORD_LENGTH) {
@@ -114,17 +119,21 @@ const READER = wordlist.createReader({
     notConfigured: 'WORD_LIST_NOT_CONFIGURED',
     missing: 'WORD_LIST_MISSING',
     unreadable: 'WORD_LIST_UNREADABLE',
-    notFile: 'WORD_LIST_NOT_FILE'
+    notFile: 'WORD_LIST_NOT_FILE',
+    // E13（审计修复 #16）：decode / parse 抛错时的独立错误码（共享核心的兜底用）
+    parseFailed: 'WORD_LIST_PARSE_FAILED'
   },
   messages: {
     emptyFile: '词表是空文件（每行一个词）',
-    emptyList: '词表里没有有效的词（每行一个词，空行会被忽略）',
+    emptyList: '词表里没有有效的词（每行一个词，空行和 # 注释会被忽略）',
     tooBig: '词表文件太大（上限 4MB），请换一个小一点的 txt',
-    binary: '词表不像是纯文本（检测到二进制内容），请用 UTF-8 / UTF-16 / GBK 编码的 txt',
+    // 审计修复 #49（E24）：含 NUL 不一定是二进制 —— 无 BOM 的 UTF-16 也长这样，提示不要误导。
+    binary: '词表不像是纯文本（检测到 NUL 空字节，可能是无 BOM 的 UTF-16，也可能是二进制文件），请用 UTF-8 / UTF-16（带 BOM）/ GBK 编码的 txt',
     badEncoding: '词表编码无法识别（不是 UTF-8 / UTF-16 / GBK 文本），请另存为 UTF-8 的 txt',
     notConfigured: '还没有指定敏感词表（应用不内置词表，请先选一个自己的 txt）',
     publicEmpty: '还没有指定敏感词表',
-    notFile: '选中的不是一个文件，请选词表 txt'
+    notFile: '选中的不是一个文件，请选词表 txt',
+    parseFailed: '词表内容解析失败（文件可能不是「每行一个词」的纯文本），请检查后重试'
   }
 });
 

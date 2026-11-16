@@ -9,7 +9,8 @@
 // 导出：stripInvalidXmlChars / escapeXml / paragraphsFromText / isoTimestamp。
 
 // XML 1.0 不允许的控制字符与非字符（保留 \t \n \r）：正文里混进去会让整份文档解析失败。
-// XML 1.0 的 Char 上限是 U+FFFD，U+FFFE / U+FFFF 是非字符，保留会让严格解析器整份拒绝。
+// XML 1.0 的 Char 上限是 U+10FFFF；BMP 内允许到 U+FFFD，U+FFFE / U+FFFF 是非字符，
+// 保留会让严格解析器整份拒绝。
 const XML_INVALID_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g;
 
 // C33（v1.8.0 WP-26）：孤立代理（半个 UTF-16 代理对）同样是 XML 1.0 非法字符 —— 章名被

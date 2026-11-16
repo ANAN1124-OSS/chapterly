@@ -2,12 +2,15 @@
 // 给「导入小说」用：一个 txt 就是一本书时，按「第X章 / 第X幕 / 楔子 / 番外 / Chapter N」等标题行切章。
 // 注意：标题识别只决定「在哪里切」，章节名一律保留原文标题行，不改写作者的字。
 // stripBom / normalizeText 从 core/common.js 来（B6）：导入、捕获、查找、校对、朗读共用同一份
-// 「去开头 BOM + CRLF/CR 归一成 \n」的实现，这里只保留导出（旧调用方按名字取）。
+// 「去开头 BOM + CRLF/CR 归一成 \n」的实现。审计修复 #53（R5）：本文件不再手写这两步，
+// splitChaptersRaw / splitLongUntitled 与 splitChapters 都直接走 normalizeText（第三种写法收掉）。
 //
 // A1 / V113（v1.8.0 WP-30）：标题词表统一在 core/heading.js 的 import 场景（最严格——
-// 不认繁体「話」、不认全角数字、不认「开篇」关键词；「Chapter N」算关键词标题）。
+// 不认繁体「話」、不认全角数字；「Chapter N」算关键词标题）。审计残留 #50（E15）起 import 也认
+// 「开篇」（旧版自动分章把首个标题前内容合成「开篇」，导出再按原文导入要能原样往返）；
+// capture 锚点词表仍不含它，但 capture.looksLikeHeading 先走本文件的 parseHeading，最终同样认。
 // 本文件只保留自己的切分逻辑与分隔符 / 长度严格度，别再往这里抄词表。
-const { stripBom, normalizeText } = require('./common');
+const { normalizeText } = require('./common');
 const heading = require('./heading');
 const CHAPTER_NUM_RE = new RegExp(
   `^\\s*第\\s*([${heading.numeralClass('import')}]${heading.numeralRun('import')})\\s*` +
@@ -23,7 +26,13 @@ const MAX_NO_SEPARATOR_TITLE = 80;
 const MAX_KEYWORD_HEADING = 40;
 
 // 「第X章」后面的分隔符（不带逗号句号，避免把「第一章，他……」这种正文当标题）
-const NUM_SEPARATORS = /^[：:、.．\-—–”"'‘’】）》」』（(【《「『，,;；\s]/;
+// 审计修复 #1（E1）：字符类里原来还留着 `，,;；`，和这行注释自相矛盾 —— 正文行「第三章，夜色渐深」
+// 因此 hasSeparator=true、绕过下面的长度守卫被直接当成标题，默认「按原文章节」导入会静默错划结构。
+// 逗号 / 分号都不是标题分隔符：这里按注释意图删掉；逗号另有语境守卫（见 parseHeading），
+// 分号只由「无分隔符短标题」的长度守卫兜底（「第四章;转生成铃兰小姐后…」这类真实短标题仍认）。
+const NUM_SEPARATORS = /^[：:、.．\-—–”"'‘’】）》」』（(【《「『\s]/;
+// 紧跟「第X章」的逗号是正文句读（「第三章，夜色渐深」），不是标题分隔符
+const PROSE_AFTER_NUM_MARKER = /^[，,]/;
 // 关键词标题（楔子/番外/后记…）后面的分隔符可以更宽，因为关键词本身已经很明确
 const KEY_SEPARATORS = /^[：:、.．\-—–”"'‘’】）》」』（(【《「『，,;；。!！?？·…\s]/;
 // 关键词标题后面没有分隔符时，只有这些开头才像标题；
@@ -34,26 +43,137 @@ const KEYWORD_NO_SEPARATOR_OK =
 const BOM_UTF8 = Buffer.from([0xef, 0xbb, 0xbf]);
 const BOM_UTF16LE = Buffer.from([0xff, 0xfe]);
 const BOM_UTF16BE = Buffer.from([0xfe, 0xff]);
+// 审计修复 #50（E15）：UTF-32LE BOM（FF FE 00 00）的前两字节与 UTF-16LE 相同，旧实现先命中
+// UTF-16LE 分支 → 解出带 NUL 的乱码，且 hasUtf16Bom 放行二进制闸门。必须先判 4 字节 BOM。
+const BOM_UTF32LE = Buffer.from([0xff, 0xfe, 0x00, 0x00]);
+const UTF32_CHUNK = 8192;
 
-// 把任意编码的文本文件解码成字符串：UTF-8（含 BOM）→ UTF-16 BOM → 严格 UTF-8 → GB18030 → latin1 兜底
-function decodeBuffer(buffer) {
-  if (!buffer || !buffer.length) return '';
+// UTF-32LE 没有内置 TextDecoder（Node 只支持 UTF-8 / UTF-16 / GB18030），这里手写一份：
+// 每 4 字节按小端读码点，拒绝代理区与超出 U+10FFFF 的坏值；长度不是 4 的倍数也返回 null。
+// 按块拼接，避免逐字符 `out +=` 在长篇上退化成 O(n²)。
+function decodeUtf32Le(buffer, offset) {
+  const bytes = buffer.length - offset;
+  if (bytes < 0 || bytes % 4 !== 0) return null;
+  let out = '';
+  let chunk = '';
+  for (let at = offset; at < buffer.length; at += 4) {
+    const cp = buffer.readUInt32LE(at);
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+    chunk += String.fromCodePoint(cp);
+    if (chunk.length >= UTF32_CHUNK) {
+      out += chunk;
+      chunk = '';
+    }
+  }
+  return out + chunk;
+}
+
+// 严格解码：只认「能完整识别」的编码，识别不了返回 null（不产出 U+FFFD）。
+// 词表读取用它区分「解码器替换出来的坏字符」与「原文里本来就有的 U+FFFD」。
+//   UTF-8 BOM → UTF-32LE BOM（先于 UTF-16LE）→ UTF-16 BOM → 严格 UTF-8 → 严格 GB18030
+// 审计修复 #54（P10）：判定结果同时带 encoding（utf-8 / utf-16le / utf-16be / utf-32le / gb18030 /
+// empty）。导入 raw 模式要在「同一份解码结果」上判断源文件是不是 UTF-8（旧实现 decodeBuffer 解一遍、
+// isUtf8 再整本 fatal 解一遍 —— 128 MB 文件双倍解码），有了 encoding 就不必再解第二次。
+function decodeBufferStrictInfo(buffer) {
+  if (!buffer || !buffer.length) return { text: '', encoding: 'empty' };
   if (buffer.length >= 3 && buffer.subarray(0, 3).equals(BOM_UTF8)) {
-    return new TextDecoder('utf-8').decode(buffer.subarray(3));
+    try {
+      return { text: new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(3)), encoding: 'utf-8' };
+    } catch {
+      return null;
+    }
+  }
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) {
+    const text = decodeUtf32Le(buffer, 4);
+    return text === null ? null : { text, encoding: 'utf-32le' };
   }
   if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16LE)) {
-    return new TextDecoder('utf-16le').decode(buffer.subarray(2));
+    try {
+      return { text: new TextDecoder('utf-16le', { fatal: true }).decode(buffer.subarray(2)), encoding: 'utf-16le' };
+    } catch {
+      return null;
+    }
   }
   if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16BE)) {
-    return new TextDecoder('utf-16be').decode(buffer.subarray(2));
+    try {
+      return { text: new TextDecoder('utf-16be', { fatal: true }).decode(buffer.subarray(2)), encoding: 'utf-16be' };
+    } catch {
+      return null;
+    }
   }
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(buffer), encoding: 'utf-8' };
   } catch { /* 不是合法 UTF-8，继续试中文编码 */ }
   try {
-    return new TextDecoder('gb18030').decode(buffer);
-  } catch { /* 忽略 */ }
-  return buffer.toString('latin1');
+    return { text: new TextDecoder('gb18030', { fatal: true }).decode(buffer), encoding: 'gb18030' };
+  } catch { /* 识别不了 */ }
+  return null;
+}
+
+function decodeBufferStrict(buffer) {
+  const info = decodeBufferStrictInfo(buffer);
+  return info ? info.text : null;
+}
+
+// 非 fatal 的 UTF-32LE 解码：坏码点（代理区 / 超 U+10FFFF）与不足 4 字节的尾巴都换成 U+FFFD，
+// 不返回 null。只给下面的 BOM 锁定宽容兜底用（严格版 decodeUtf32Le 仍回 null，词表读取靠它）。
+function decodeUtf32LeLoose(buffer, offset) {
+  let out = '';
+  let chunk = '';
+  let at = offset;
+  for (; at + 4 <= buffer.length; at += 4) {
+    const cp = buffer.readUInt32LE(at);
+    chunk += cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? '\uFFFD' : String.fromCodePoint(cp);
+    if (chunk.length >= UTF32_CHUNK) {
+      out += chunk;
+      chunk = '';
+    }
+  }
+  if ((buffer.length - offset) % 4 !== 0) chunk += '\uFFFD'; // 缺字节
+  return out + chunk;
+}
+
+// 审计残留修复 #50（E15，中危回归）：BOM 锁定编码（宽容版）。
+// 严格解码在「BOM 已识别但载荷坏了」时回 null（如 UTF-8 BOM 里混一个坏字节），旧兜底会把这
+// 整包（连 BOM 字节一起）按非 fatal GB18030 重解 —— 整本书变乱码 + 开头一串乱码前缀。
+// BOM 一旦认出来编码就已经定了：这里按 BOM 对应编码非 fatal 解（剥掉 BOM），坏字节只变 U+FFFD。
+// 返回 null = 没有 BOM（交给 GB18030 兜底）；严格判定仍只认 decodeBufferStrictInfo。
+function decodeBufferWithBomLocked(buffer) {
+  if (!buffer || !buffer.length) return null;
+  if (buffer.length >= 3 && buffer.subarray(0, 3).equals(BOM_UTF8)) {
+    return { text: new TextDecoder('utf-8').decode(buffer.subarray(3)), encoding: 'utf-8' };
+  }
+  // UTF-32LE BOM 的前两字节与 UTF-16LE 相同：必须先判 4 字节（与严格判定同一顺序）
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) {
+    return { text: decodeUtf32LeLoose(buffer, 4), encoding: 'utf-32le' };
+  }
+  if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16LE)) {
+    return { text: new TextDecoder('utf-16le').decode(buffer.subarray(2)), encoding: 'utf-16le' };
+  }
+  if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16BE)) {
+    return { text: new TextDecoder('utf-16be').decode(buffer.subarray(2)), encoding: 'utf-16be' };
+  }
+  return null;
+}
+
+// 把任意编码的文本文件解码成字符串：UTF-8（含 BOM）→ UTF-32LE BOM → UTF-16 BOM →
+// 严格 UTF-8 → 严格 GB18030 → BOM 锁定宽容解（只有带 BOM 的文件）→ 非 fatal GB18030 总兜底。
+// 审计修复 #50（E15）：旧实现的最后一行是 latin1 兜底，但前面的 GB18030 用了非 fatal 解码器
+// （几乎不抛），那一行永远走不到 —— 是死代码。这里删掉死分支：能完整识别就按严格结果返回，
+// 识别不了就用 GB18030 非 fatal 把坏字节替成 U+FFFD（导入老文件不中断），词表读取侧再据
+// decodeBufferStrict 做严格判断（见 core/wordlist.js）。
+// 审计修复 #54（P10）：带编码信息的同一份解码入口（见 decodeBufferStrictInfo 的注释）。
+// 审计残留修复 #50（E15）：BOM 锁定 —— 带 BOM 的文件绝不落到 GB18030 兜底（见 decodeBufferWithBomLocked）。
+function decodeBufferWithEncoding(buffer) {
+  const info = decodeBufferStrictInfo(buffer);
+  if (info) return info;
+  const bomLocked = decodeBufferWithBomLocked(buffer);
+  if (bomLocked) return bomLocked;
+  return { text: new TextDecoder('gb18030').decode(buffer), encoding: 'gb18030' };
+}
+
+function decodeBuffer(buffer) {
+  return decodeBufferWithEncoding(buffer).text;
 }
 
 
@@ -73,10 +193,20 @@ function parseHeading(line) {
   if (numMatch) {
     const restRaw = numMatch[3] || '';
     const marker = numMatch[2];
+    // 审计修复 #1（E1）：「第三章，夜色渐深」这类正文句式一律按正文处理。
+    // 光把逗号从 NUM_SEPARATORS 删掉还不够 —— 短行会落到下面的「无分隔符短标题」分支；
+    // 这里在两种分支之前先挡掉，长句和短句都不会再被误切。
+    if (PROSE_AFTER_NUM_MARKER.test(restRaw)) return null;
     const hasSeparator = restRaw === '' || NUM_SEPARATORS.test(restRaw);
     if (!hasSeparator) {
       // 「第三节课…」「第二节课后…」是正文常用说法，不是章节标题
       if (marker === '节' && restRaw.startsWith('课')) return null;
+      // 审计修复 #50（E15）：部 / 集 / 篇 后面没有分隔符又直接接字时，几乎都是正文
+      //（「第一部电影…」「第三集播出后…」「第一篇论文…」）；真标题请用空格 / 冒号分隔，
+      // 或把标题写成「第一部」后直接换行（restRaw 为空仍走上面的 hasSeparator 分支）。
+      // 审计残留 #50（E15）：取「宁可少切、不误切正文」的取舍 —— 代价是「第一部风起」这类
+      // 无分隔符短标题会被并进上一章正文；放宽守卫无法区分它与「第一部电影……」，不细化。
+      if (marker === '部' || marker === '集' || marker === '篇') return null;
       // 没有分隔符又很长：基本是正文句子
       if (trimmed.length > MAX_NO_SEPARATOR_TITLE) return null;
     }
@@ -136,7 +266,7 @@ function splitChapters(text) {
 // 用于「按原文章节导入」：章名和正文都保持原样。
 // 第一个标题之前的书名/作者/简介等，会并入第一章正文，避免多出一个原文没有的「开篇」章。
 function splitChaptersRaw(text) {
-  const normalized = stripBom(String(text == null ? '' : text)).replace(/\r\n?/g, '\n');
+  const normalized = normalizeText(text);
   const lines = normalized.split('\n');
   const marks = [];
   lines.forEach((line, index) => {
@@ -169,7 +299,7 @@ const LONG_UNTITLED_CHUNK = 50000;
 const LONG_UNTITLED_MIN_RATIO = 0.6;
 
 function splitLongUntitled(text, options = {}) {
-  const normalized = stripBom(String(text == null ? '' : text)).replace(/\r\n?/g, '\n');
+  const normalized = normalizeText(text);
   const rawChunk = Number(options.chunkChars);
   const chunkChars = Number.isFinite(rawChunk) && rawChunk > 0 ? Math.max(1000, Math.round(rawChunk)) : LONG_UNTITLED_CHUNK;
   const rawThreshold = Number(options.threshold);
@@ -216,6 +346,11 @@ function splitLongUntitled(text, options = {}) {
 
 module.exports = {
   decodeBuffer,
+  decodeBufferWithEncoding,
+  // 审计残留修复 #R10（#49/E24）：词表读取只解码一次 —— 它要的是「严格解出来的文本」，
+  // 导出带 encoding 的那一份结果，调用方就不必再整包重解一遍。
+  decodeBufferStrictInfo,
+  decodeBufferStrict,
   parseHeading,
   isChapterHeading,
   splitChapters,

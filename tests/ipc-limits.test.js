@@ -15,10 +15,12 @@ const exporter = require('../core/exporter');
 
 const MAIN_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 // v1.8.0 WP-34（V114）：导出 / 校对 / 书 CRUD 三个域搬进 ipc/*.js。频道清单与接线闸门扫
-// 「main.js + 三个域模块」的合并文本（语义不变：入口仍然只有一份）；ipcMain 包装器数量仍只认 main.js。
+// 「main.js + 域模块」的合并文本（语义不变：入口仍然只有一份）；ipcMain 包装器数量仍只认 main.js。
+// 审计修复 #38（▲V306）：书域数据面（查找替换 / 历史 / 整理 / 快照清理 / 打开书文件夹）搬到 ipc/book-data.js。
 const IPC_SOURCE = [
   'main.js',
   'ipc/book.js',
+  'ipc/book-data.js',
   'ipc/proofread.js',
   'ipc/export.js'
 ]
@@ -164,6 +166,12 @@ test('导出范围：坏形状 / 未知模式降级成全书，越界仍按 expo
   // 卷 id 超长 / 非字符串：当没指定（未分卷），不抛错
   assert.equal(ipcLimits.sanitizeRange({ mode: 'volume', volumeId: 'v'.repeat(201) }).volumeId, null);
   assert.equal(ipcLimits.sanitizeRange({ mode: 'volume', volumeId: 42 }).volumeId, null);
+  // 审计修复 #47（E22）：from/to 先夹到书目章节数硬上限，天文数字不再原样进核心
+  assert.deepEqual(ipcLimits.sanitizeRange({ mode: 'range', from: 1e12, to: Number.MAX_SAFE_INTEGER }), {
+    mode: 'range', from: ipcLimits.MAX_CHAPTER_ITEMS, to: ipcLimits.MAX_CHAPTER_ITEMS, volumeId: null
+  });
+  // 负数仍保留给 exporter 按 1 起算的旧口径收紧
+  assert.equal(ipcLimits.sanitizeRange({ mode: 'range', from: -5 }).from, -5);
   // 和真实 exporter 拼起来：越界收紧到 [1, 总章数]，from > to 时 count = 0
   const meta = { chapters: Array.from({ length: 10 }, (_, i) => ({ id: `ch_${i}`, file: `000${i}.txt` })) };
   const clamped = exporter.resolveExportRange(meta, ipcLimits.sanitizeRange({ mode: 'range', from: -5, to: 999999 }));
@@ -220,6 +228,34 @@ test('跳章章节列表：超过 2 万条只看前 2 万条，章名限长，�
   // id 限长；章号跳转仍按原始下标
   const longId = ipcLimits.sanitizeChapterList([{ id: 'i'.repeat(500), name: '第一章' }]);
   assert.equal(longId[0].id.length, ipcLimits.MAX_ID_CHARS);
+});
+
+test('book:set-last 的展示信息：入口判型限长，坏 index 夹到 0–1000000（审计 #47 / E22）', () => {
+  assert.equal(ipcLimits.sanitizeRecentBookInfo(null), null);
+  assert.equal(ipcLimits.sanitizeRecentBookInfo('不是对象'), null);
+  assert.equal(ipcLimits.sanitizeRecentBookInfo([]), null);
+  assert.deepEqual(ipcLimits.sanitizeRecentBookInfo({}), { title: '', chapterIndex: 0, chapterName: '' });
+  // 数字 / 对象格式的 title / chapterName 不再靠 String() 硬转
+  assert.deepEqual(
+    ipcLimits.sanitizeRecentBookInfo({ title: 42, chapterName: { text: '甲' }, chapterIndex: '7' }),
+    { title: '', chapterIndex: 0, chapterName: '' }
+  );
+  // 超长字符串限长，且不切开代理对（emoji 在边界上时整体退一格）
+  const longTitle = '书'.repeat(ipcLimits.MAX_RECENT_TITLE_CHARS - 1) + '😀' + '尾';
+  const clean = ipcLimits.sanitizeRecentBookInfo({
+    title: longTitle,
+    chapterName: '章'.repeat(ipcLimits.MAX_RECENT_TITLE_CHARS + 20),
+    chapterIndex: 123.6
+  });
+  assert.ok(clean.title.length <= ipcLimits.MAX_RECENT_TITLE_CHARS);
+  assert.equal(clean.title.includes('\ud83d'), false, '不能留下孤立的高位代理');
+  assert.equal(clean.chapterName.length, ipcLimits.MAX_RECENT_TITLE_CHARS);
+  assert.equal(clean.chapterIndex, 124);
+  // 负值 / 超上限 / 非有限数都夹到配置层的合法区间
+  assert.equal(ipcLimits.sanitizeRecentBookInfo({ chapterIndex: -9 }).chapterIndex, 0);
+  assert.equal(ipcLimits.sanitizeRecentBookInfo({ chapterIndex: 1e12 }).chapterIndex, ipcLimits.MAX_RECENT_CHAPTER_INDEX);
+  assert.equal(ipcLimits.sanitizeRecentBookInfo({ chapterIndex: Infinity }).chapterIndex, 0);
+  assert.equal(ipcLimits.sanitizeRecentBookInfo({ chapterIndex: NaN }).chapterIndex, 0);
 });
 
 test('撤销删除的 payload：白名单收口（多余字段丢弃 / 超长夹取 / 可选字段降级）', () => {
@@ -312,12 +348,21 @@ test('撤销删除的 payload：坏参数一律 BAD_RESTORE（文件名 / index 
     '2026-11-10-002-第二章.md', // 不是 txt
     '  ', // 空
     `a\u0000b.txt`, // 控制字符
-    `x-${'长'.repeat(ipcLimits.MAX_FILE_NAME_CHARS)}.txt` // 超过文件名上限
+    `x-${'长'.repeat(ipcLimits.MAX_FILE_NAME_CHARS)}.txt`, // 超过文件名上限
+    'CON.txt', // 审计修复 #47（E22）：Windows 保留设备名
+    '2026-11-10-002-第二章.txt:secret' // Windows 备用数据流分隔符
   ]) {
     badRestore({ ...good, trashName });
   }
-  // 6) chapter.file：只收书文件夹里的单个 txt（绝对路径 / 无 .txt / 控制字符一律拒绝）
-  for (const file of ['C:\\书\\002-第二章.txt', '..\\002-第二章.txt', '002-第二章.md', '002-\u0001.txt']) {
+  // 6) chapter.file：只收书文件夹里的单个 txt（绝对路径 / 无 .txt / 控制字符 / 保留名 / ':' 一律拒绝）
+  for (const file of [
+    'C:\\书\\002-第二章.txt',
+    '..\\002-第二章.txt',
+    '002-第二章.md',
+    '002-\u0001.txt',
+    'COM1.txt',
+    '002-第二章.txt:evil'
+  ]) {
     badRestore({ ...good, chapter: { ...chapter, file } });
   }
   // 7) 缺字段：没有 payload / 没有 chapter / 没有 id / id 超长
@@ -402,6 +447,10 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
   }
   assert.ok(bodyOf('text:replace').includes('assertReplacement('), 'text:replace 必须校验替换词');
   assert.ok(bodyOf('text:replace').includes('assertReplaceOutput('), 'text:replace 必须估替换结果大小');
+  // 审计修复 #47（E22）：次级入口也要清洗 —— set-last 的展示信息、单章校对 / 预检的 options
+  assert.ok(bodyOf('book:set-last').includes('sanitizeRecentBookInfo('), 'book:set-last 必须清洗 info');
+  assert.ok(bodyOf('text:proofread').includes('sanitizeOptions('), 'text:proofread 的 options 必须清洗');
+  assert.ok(bodyOf('text:sensitive-check').includes('sanitizeOptions('), 'text:sensitive-check 的 options 必须清洗');
   // 跳章：不再是裸的 chapters.slice(0, 20000)，统一走 sanitizeChapterList
   assert.ok(bodyOf('jump:match').includes('sanitizeChapterList('), 'jump:match 必须清洗章节列表');
   assert.equal(/chapters\.slice\(0,\s*20000\)/.test(IPC_SOURCE), false, '主进程 IPC 源码里不该再有裸截断');
@@ -441,8 +490,8 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
   );
   assert.match(
     restoreBody,
-    /restoreTokens\.take\(rawToken, \{ bookPath, trashName: clean\.trashName \}\)/,
-    'chapter:restore-deleted 必须验撤销凭证（存在 / 未过期 / 同书 / 同备份名）'
+    /restoreTokens\.take\(rawToken, \{[\s\S]{0,120}?bookPath,[\s\S]{0,120}?trashName: clean\.trashName,[\s\S]{0,120}?chapterId: clean\.chapter\.id[\s\S]{0,40}?\}\);/,
+    'chapter:restore-deleted 必须验撤销凭证（存在 / 未过期 / 同书 / 同备份名 / 同章节 id，审计 #56 / S4）'
   );
   assert.match(
     restoreBody,

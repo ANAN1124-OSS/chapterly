@@ -398,6 +398,21 @@ test('renderShelfContent：正文索引在建时摘要带进度（有 total / �
   assert.match(noTotal.dom.$('shelf-content-summary').textContent, /正在为书架建正文索引，建好后自动更新结果$/);
 });
 
+test('renderShelfContent（审计 #9 / P1）：首建期 building + 空结果不冒充「没有找到」，也不画空态块', () => {
+  const ctx = build({
+    shelfQuery: '张三',
+    meta: { results: [], truncated: true, index: { building: true, books: 0, chapters: 0 } },
+    indexStatus: { building: true }
+  });
+  withDom(ctx.dom, () => ctx.ui.renderShelfContent());
+  assert.equal(
+    ctx.dom.$('shelf-content-summary').textContent,
+    '正在为书架建正文索引，建好后自动更新结果',
+    '首建期只显示建索引提示，不说「正文没有找到」'
+  );
+  assert.equal(ctx.dom.$('shelf-content-list').children.length, 0, '不画「没找到」空态：空结果不是搜索结论');
+});
+
 // ---------- P22-4：正文命中按「书 + 章」聚合 + 展开本章全部 ----------
 function groupKey(row) {
   return String(row.bookPath) + '\u0000' + String(row.chapterFile);

@@ -113,6 +113,19 @@ function sanitizeStats(raw) {
   return out;
 }
 
+// 审计修复 #54（P9）：createStatsStore().get() 返回的对象已经 sanitize 过；stats:get 一次要读
+// summary / streak / monthView / aggregate 四份视图，默认各自再清洗一遍 = 同一份统计洗四次。
+// 调用方确认「这份数据来自 store / record（已清洗）」时传 { sanitized: true } 跳过重复清洗；
+// 不传 / 传坏值仍走原来的 sanitizeStats（对外纯函数的行为不变）。
+function statsFor(rawStats, options) {
+  if (options && typeof options === 'object' && options.sanitized === true) {
+    if (rawStats && typeof rawStats === 'object' && !Array.isArray(rawStats) && rawStats.days && typeof rawStats.days === 'object') {
+      return rawStats;
+    }
+  }
+  return sanitizeStats(rawStats);
+}
+
 function dayTotal(rawStats, day) {
   const stats = sanitizeStats(rawStats);
   const key = isValidDayKey(day) ? day : localDayKey();
@@ -184,8 +197,8 @@ function calendarLevel(chars, { goal = 0, maxChars = 0 } = {}) {
 
 // 某个月的码字日历视图：每天的字数 / 是否达标 / 色阶 + 月度汇总。
 // 只读；日期一律按本机本地日期，未来日期标 future（界面淡显，不参与「今天」）。
-function monthView(rawStats, { year, month, now = new Date(), goal = DEFAULT_GOAL } = {}) {
-  const stats = sanitizeStats(rawStats);
+function monthView(rawStats, { year, month, now = new Date(), goal = DEFAULT_GOAL, sanitized = false } = {}) {
+  const stats = statsFor(rawStats, { sanitized });
   const anchor = localDayKey(now);
   const normalized = normalizeMonth(year, month, now);
   const targetYear = normalized.year;
@@ -254,8 +267,8 @@ function monthView(rawStats, { year, month, now = new Date(), goal = DEFAULT_GOA
 
 // 连续写作天数：current = 从今天（今天还没写就从昨天）往前数的连续写字天数，
 // best = 有记录以来的最长连续天数。只算「当天有正字数」的日期，未来日期忽略。
-function streak(rawStats, { now = new Date() } = {}) {
-  const stats = sanitizeStats(rawStats);
+function streak(rawStats, { now = new Date(), sanitized = false } = {}) {
+  const stats = statsFor(rawStats, { sanitized });
   const anchor = localDayKey(now);
   const written = new Set();
   for (const [key, entry] of Object.entries(stats.days)) {
@@ -375,8 +388,8 @@ function recentDays(rawStats, now = new Date(), count = DEFAULT_RECENT_DAYS) {
 
 // 给渲染层的最小摘要：今天多少字、目标多少、完成百分比、近 N 天（含今天）。
 // v0.8-2 追加写作时长：今天 / 近 N 天各多少秒（关掉记录时一直是 0，旧数据读出来也是 0）。
-function summary(rawStats, { now = new Date(), goal = DEFAULT_GOAL, days = DEFAULT_RECENT_DAYS } = {}) {
-  const stats = sanitizeStats(rawStats);
+function summary(rawStats, { now = new Date(), goal = DEFAULT_GOAL, days = DEFAULT_RECENT_DAYS, sanitized = false } = {}) {
+  const stats = statsFor(rawStats, { sanitized });
   const anchor = localDayKey(now);
   const recent = recentDaysFromSanitized(stats, anchor, clampRecentDays(days));
   const todayEntry = stats.days[anchor];
@@ -420,8 +433,8 @@ function sanitizeStatsFilter(raw) {
 }
 
 // 汇总一天的字数（已经 sanitize 过，直接加 books 里的正数）
-function aggregate(rawStats, filter) {
-  const stats = sanitizeStats(rawStats);
+function aggregate(rawStats, filter, options) {
+  const stats = statsFor(rawStats, options);
   const safe = sanitizeStatsFilter(filter);
   const days = [];
   const monthIndex = new Map();

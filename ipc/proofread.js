@@ -73,10 +73,13 @@ function registerProofreadIpc(host) {
     // 1.7.2 D2（V44/V46）：词表一次读完（勾选子集在 core 里内存过滤），读取出口的词条已清洗，
     // 给 proofreadText 带上「已清洗」标记，同一份词表不再 sanitize 第二遍；旧调用方不受影响。
     const words = await glossaryLib.readProofreadWordlistForRequest(cfg, options);
-    const proofOptions =
-      options && typeof options === 'object' && !Array.isArray(options)
-        ? { ...options, entriesSanitized: true }
-        : { entriesSanitized: true };
+    // 审计修复 #47（E22）：单章校对的 options 与整本版走同一套 core 清洗（阈值夹紧 + 规则开关
+    // 补齐默认值），不再把渲染层传来的任意键 / 任意类型原样透传给 proofreadText。
+    const proofOptions = {
+      ...proofreadLib.sanitizeOptions(options),
+      rules: proofreadLib.sanitizeRules(options && options.rules),
+      entriesSanitized: true
+    };
     const result = proofreadLib.proofreadText(text, proofOptions, words.entries);
     return { ...result, wordList: words.wordList };
   });
@@ -157,8 +160,11 @@ function registerProofreadIpc(host) {
   handle('proofread:wordlists-remove', async (index) => {
     const cfg = await getConfig();
     const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
-    const at = Number(index);
-    if (!Number.isInteger(at) || at < 0 || at >= current.length) {
+    // 审计修复 #12（E8）：判型先要求 number —— Number(null / '' / false / []) 全是 0，会通过下面的
+    // 整数与边界检查，把「没带索引」的坏调用当成「删第 0 份」，静默删掉作者的第一份词表。
+    // 非 number 一律记 -1（走同一条 WORDLIST_NOT_FOUND，不新增错误码，界面文案不变）。
+    const at = typeof index === 'number' && Number.isInteger(index) ? index : -1;
+    if (at < 0 || at >= current.length) {
       return { canceled: false, removed: false, code: 'WORDLIST_NOT_FOUND', message: '这一份词表不在列表里，可能已经被移除了', ...(await proofreadWordlistInfoNow()) };
     }
     current.splice(at, 1);
@@ -190,7 +196,9 @@ function registerProofreadIpc(host) {
     const list = await sensitiveLib.readWordListFile(cfg.sensitiveWordsPath);
     const wordList = sensitiveLib.publicWordListInfo(list);
     if (!list.ok) return { ok: false, code: list.code, message: list.message, wordList };
-    const result = sensitiveLib.scanText(text, list.words, options);
+    // 审计修复 #47（E22）：单章预检也先过 core/sensitive.sanitizeOptions（maxIssues 夹紧），
+    // 与整本版同一入口口径；scanText 内部还会再兜一次，不依赖调用方。
+    const result = sensitiveLib.scanText(text, list.words, sensitiveLib.sanitizeOptions(options));
     return { ok: true, ...result, wordList };
   });
 

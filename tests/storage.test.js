@@ -1,9 +1,21 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
+
+const STORAGE_SOURCE = fsSync
+  .readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8')
+  .replace(/\r\n/g, '\n');
+// 取一个顶层函数的函数体：从 `async function X(` / `function X(` 到下一个顶格 `}\n`。
+function topLevelBody(name) {
+  const start = STORAGE_SOURCE.search(new RegExp(`(?:async )?function ${name}\\(`));
+  assert.notEqual(start, -1, `storage.js 找不到 ${name}`);
+  const end = STORAGE_SOURCE.indexOf('\n}\n', start);
+  return end < 0 ? STORAGE_SOURCE.slice(start) : STORAGE_SOURCE.slice(start, end);
+}
 const { MAX_MATCHES } = require('../core/find');
 const { atomicWriteFile } = require('../core/atomic');
 
@@ -282,6 +294,88 @@ test('C32/WP-26：缺 id 的章补号避撞（位置号被占时顺延，不产�
   assert.equal(after.chapters.find((c) => c.id === 'ch_001').name, '已有 id 的章');
 });
 
+// 审计修复 #22（P6）：缺 id 回填的编号规则必须与旧实现逐项等价 —— 旧实现每个缺 id 的章都从
+// i+1 重新探测（低位号全被占 + 大量缺 id 时 20000 章约 4×10^8 次探测）；新技术只把探测换成
+// 单调空闲游标（O(n)），编号口径一个都不变。这里同时钉住「等价」与「大样本能跑完」。
+function referenceBackfillChapterIds(chapters) {
+  const used = new Set();
+  for (const chapter of chapters) {
+    if (chapter && typeof chapter.id === 'string' && chapter.id) used.add(chapter.id);
+  }
+  return chapters.map((chapter, i) => {
+    let id = chapter && typeof chapter.id === 'string' && chapter.id ? chapter.id : '';
+    if (!id) {
+      let n = i + 1;
+      do {
+        id = `ch_${String(n).padStart(3, '0')}`;
+        n += 1;
+      } while (used.has(id));
+      used.add(id);
+    }
+    return id;
+  });
+}
+
+test('审计 #22（P6）：缺 id 回填与旧算法逐项等价（含空洞 / 高号占用 / 连续缺号）', () => {
+  const cases = [
+    [{ file: 'a.txt' }, { file: 'b.txt' }],
+    [{ file: 'a.txt' }, { id: 'ch_001', file: 'b.txt' }],
+    [{ id: 'ch_005', file: 'a.txt' }, { file: 'b.txt' }],
+    [{ file: 'a.txt' }, { id: 'ch_002', file: 'b.txt' }, { file: 'c.txt' }],
+    // 「指针会跳」的形状：前 9 章已占 ch_001..ch_009，位置号被占时旧算法逐个顺延
+    [
+      { file: 'a.txt' },
+      { id: 'ch_001', file: 'b.txt' },
+      { id: 'ch_002', file: 'c.txt' },
+      { id: 'ch_003', file: 'd.txt' },
+      { id: 'ch_004', file: 'e.txt' },
+      { id: 'ch_005', file: 'f.txt' },
+      { id: 'ch_006', file: 'g.txt' },
+      { id: 'ch_007', file: 'h.txt' },
+      { id: 'ch_008', file: 'i.txt' },
+      { id: 'ch_009', file: 'j.txt' }
+    ],
+    // 乱序 / 坏 id（非字符串 / 空串照旧当缺失）
+    [{ id: 7, file: 'a.txt' }, { id: '', file: 'b.txt' }, { id: 'ch_003', file: 'c.txt' }, { file: 'd.txt' }]
+  ];
+  for (const chapters of cases) {
+    assert.deepEqual(
+      storage.backfillMissingChapterIds(chapters),
+      referenceBackfillChapterIds(chapters),
+      '编号要与旧算法逐项一致：' + JSON.stringify(chapters.map((c) => c.id))
+    );
+  }
+  // 只补缺失项：已有 id（哪怕不是 ch_NNN）一个都不改写；补号仍按「位置号起步」
+  const kept = storage.backfillMissingChapterIds([{ id: 'custom-id', file: 'a.txt' }, { file: 'b.txt' }]);
+  assert.deepEqual(kept, ['custom-id', 'ch_002']);
+});
+
+test('审计 #22（P6）：20000 章「前一半缺 id + 后一半占满低位号」一次扫完且编号不撞', () => {
+  const chapters = [];
+  for (let i = 0; i < 20000; i += 1) {
+    const file = `${String(i + 1).padStart(4, '0')}-章.txt`;
+    // 前 10000 章缺 id（i+1 = 1..10000 全被后一半占住），后 10000 章占着 ch_001..ch_10000
+    chapters.push(i < 10000 ? { file } : { id: `ch_${String(i - 9999).padStart(3, '0')}`, file });
+  }
+  const ids = storage.backfillMissingChapterIds(chapters);
+  assert.equal(ids.length, 20000);
+  assert.equal(new Set(ids).size, 20000, '补出来的 id 不许重复');
+  assert.equal(ids[0], 'ch_10001', '低位号全被占 → 从第 10001 个起顺延');
+  assert.equal(ids[9999], 'ch_20000');
+  assert.deepEqual(ids.slice(10000, 10003), ['ch_001', 'ch_002', 'ch_003'], '已有 id 一个都不改写');
+});
+
+test('审计 #22（P6）：静态闸门 —— 回填不再从 i+1 逐章重扫', async () => {
+  const src = await fs.readFile(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  assert.match(src, /function backfillMissingChapterIds\(chapters\)/);
+  assert.match(src, /const backfilledIds = backfillMissingChapterIds\(meta\.chapters\)/, 'readBookMeta 必须走这一份');
+  const start = src.indexOf('function backfillMissingChapterIds(chapters)');
+  const body = src.slice(start, src.indexOf('\nfunction validateMeta(', start));
+  assert.match(body, /let cursor = 1/, '必须有单调游标');
+  assert.match(body, /Math\.max\(cursor, i \+ 1\)/, '每个缺 id 的章从游标与位置号的较大者起步');
+  assert.match(body, /cursor = n/, '探测过后游标只前进');
+});
+
 test('书架扫描：完稿章数按 status=done 统计', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '完稿统计');
@@ -495,6 +589,74 @@ test('整本书兜底删除：移入书架 _trash，扫描时不再出现', asyn
   // 留在 _trash 里的书还能被人工读出来
   const meta = await storage.readBookMeta(dest);
   assert.equal(meta.title, '待删的书');
+});
+
+// 审计修复 #4（S1、E20）：trashBook 不再只信调用方路径 —— 自己校验「目标是书架根下的真书目录」。
+test('审计修复 #4（S1）：trashBook 拒绝保留目录 / 无书目的文件夹 / 书架根 / 孙目录 / 书库外路径', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '合法的书');
+  await fs.mkdir(path.join(root, '_trash'), { recursive: true });
+  await fs.mkdir(path.join(root, '_碎片'), { recursive: true });
+  await fs.mkdir(path.join(root, '.hidden'), { recursive: true });
+  await fs.mkdir(path.join(root, '普通文件夹'), { recursive: true });
+  const cases = [
+    ['书架根本身', root, 'BAD_PATH'],
+    ['书架级 _trash', path.join(root, '_trash'), 'BAD_PATH'],
+    ['灵感箱 _碎片', path.join(root, '_碎片'), 'BAD_PATH'],
+    ['隐藏目录', path.join(root, '.hidden'), 'BAD_PATH'],
+    ['没有书目的普通文件夹', path.join(root, '普通文件夹'), 'NOT_A_BOOK'],
+    ['书的子目录', path.join(bookPath, '子目录'), 'BAD_PATH'],
+    ['书库外路径', path.join(root, '..', '书库外'), 'BAD_PATH']
+  ];
+  for (const [label, target, code] of cases) {
+    await assert.rejects(
+      () => storage.trashBook(root, target),
+      (err) => err.code === code,
+      `${label} 应报 ${code}`
+    );
+  }
+  // 以上全部被拒且一个都没动：合法书仍能删
+  assert.equal(await storage.exists(path.join(root, '_trash')), true);
+  assert.equal(await storage.exists(path.join(root, '_碎片')), true);
+  const dest = await storage.trashBook(root, bookPath);
+  assert.ok(dest.startsWith(path.join(root, '_trash')));
+  assert.equal(await storage.exists(bookPath), false);
+});
+
+test('审计修复 #4（E20）：同一秒删同名书不覆盖已有备份（目标名 -2 起顺延）', async (t) => {
+  const root = await mkTmp();
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 10, 15, 12, 0, 0).getTime() });
+  try {
+    const first = await storage.createBook(root, '同名书');
+    const firstDest = await storage.trashBook(root, first.path);
+    // 第一本已经搬走，同名文件夹空出来 → 第二本仍叫「同名书」，同一秒删会撞名
+    const second = await storage.createBook(root, '同名书');
+    assert.equal(path.basename(second.path), '同名书');
+    const secondDest = await storage.trashBook(root, second.path);
+    assert.notEqual(secondDest, firstDest);
+    assert.match(path.basename(secondDest), /-2$/);
+    // 第一份备份没被覆盖
+    assert.equal((await storage.readBookMeta(firstDest)).title, '同名书');
+    await fs.access(path.join(firstDest, '书目.json'));
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test('审计修复 #4（S1）：trashBook 排进这本书的写队列，在飞的写操作没 settle 前不搬目录', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '排队删除');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const holder = storage.withBookLock(bookPath, async () => { await gate; });
+  const trashing = storage.trashBook(root, bookPath);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(await storage.exists(bookPath), true, '写队列还没放行，目录不许被搬走');
+  release();
+  await holder;
+  const dest = await trashing;
+  assert.equal(await storage.exists(bookPath), false);
+  assert.ok(dest.includes('_trash'));
 });
 
 test('字数缓存：旧书首次扫描会补缓存，之后书架统计不再重读全书', async () => {
@@ -1480,6 +1642,30 @@ test('书架扫描：缺字数按 8 路并发回填（注入 reader 计数，不
   assert.equal(untouched, 0);
 });
 
+// 审计修复 #25（R4）：backfill / refresh 两条链路的「逐章读盘算字数」收成一个内核。
+// 这两条以前各抄一份 mapLimit + 128 MB 闸门 + ENOENT 跳过 + countChars(stripBom())，闸门口径
+// 改一处漏一处；这里钉住「只有一份实现，两条链路都必须走它」，防回潮写成两份。
+test('审计 #25（R4）：字数回填 / 刷新共用同一个读盘计数内核', () => {
+  assert.equal(
+    (STORAGE_SOURCE.match(/function countChapterChars\(/g) || []).length,
+    1,
+    'countChapterChars 只许有一份实现'
+  );
+  const kernel = topLevelBody('countChapterChars');
+  for (const token of ['readChapterTextForCount', 'stripBom', 'countChars', "err.code === 'ENOENT'", 'return null']) {
+    assert.ok(kernel.includes(token), `内核必须包含 ${token}`);
+  }
+  const backfill = topLevelBody('backfillChapterChars');
+  assert.ok(backfill.includes('countChapterChars(bookPath, pending, options)'), 'backfill 必须走内核');
+  assert.equal(backfill.includes('mapLimit('), false, 'backfill 不许再自己 mapLimit');
+  assert.equal(backfill.includes('countChars('), false, 'backfill 不许再自己算字数');
+
+  const refresh = topLevelBody('refreshChapterChars');
+  assert.ok(refresh.includes('countChapterChars(bookPath, targets'), 'refresh 必须走同一个内核');
+  assert.equal(refresh.includes('mapLimit('), false, 'refresh 不许再自己 mapLimit');
+  assert.equal(refresh.includes('stripBom'), false, 'refresh 不许再自己处理 BOM / 计数');
+});
+
 // ---------- 1.6.1 R3a：字数回填 128 MB 闸门 ----------
 // 书架扫描回填以前是裸 fs.readFile：书目里缺 chars 缓存的章被外部程序换成 129 MB 文件
 // （误放的视频 / 日志 / 数据库导出）时会整份读进主进程内存，异常还会把整本书标成 corrupt。
@@ -1917,3 +2103,97 @@ test('读盘失败脱敏：readBookMeta / listBooks 不回完整本机路径（E
   }
 });
 
+
+// ---------- 审计修复 #5（V301）：保存前校验带 expectedMtimeMs ----------
+test('保存前校验（V301）：expectedMtimeMs 与磁盘一致 → 放行；被外部改过 → EXTERNAL_CHANGE 且一个字节都不写', async () => {
+  resetRegistry();
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '外部改动');
+  const meta = await storage.readBookMeta(bookPath);
+  const chapter = meta.chapters[0];
+  const filePath = path.join(bookPath, chapter.file);
+  const loaded = await storage.statChapter(bookPath, chapter.file);
+
+  // 载入后没变：带着载入 mtime 保存 → 允许
+  const same = await storage.prepareChapterSave(bookPath, chapter.id, { expectedMtimeMs: loaded.mtimeMs });
+  assert.equal(same.chapter.id, chapter.id);
+
+  // 外部把 mtime 推后（记事本 / 同步盘落盘）：旧 expectedMtimeMs 必须被拦下
+  const before = await fs.readFile(filePath, 'utf8');
+  const future = new Date(Date.now() + 5000);
+  await fs.utimes(filePath, future, future);
+  await assert.rejects(
+    () => storage.prepareChapterSave(bookPath, chapter.id, { expectedMtimeMs: loaded.mtimeMs }),
+    (err) => err.code === 'EXTERNAL_CHANGE' && /应用外/.test(err.message) && /已阻止这次保存/.test(err.message)
+  );
+  assert.equal(await fs.readFile(filePath, 'utf8'), before, '被拦下的保存绝不写盘');
+
+  // 重新 stat 拿到新 mtime → 又能保存（作者在对话框里选「仍然覆盖保存」后走的就是这条）
+  const fresh = await storage.statChapter(bookPath, chapter.file);
+  assert.notEqual(fresh.mtimeMs, loaded.mtimeMs);
+  await storage.prepareChapterSave(bookPath, chapter.id, { expectedMtimeMs: fresh.mtimeMs });
+
+  // 不带 expectedMtimeMs（老调用方 / 覆盖保存传 0）仍然放行
+  await storage.prepareChapterSave(bookPath, chapter.id);
+  await storage.prepareChapterSave(bookPath, chapter.id, { expectedMtimeMs: 0 });
+});
+
+// 审计修复 #32（▲V305）：书目已有重复章节 id 时，第一个保留、第二个及以后按「缺 id」同一套规则
+// 重新分配 —— findChapterIndex 只认第一个，不修就会改名 / 删除 / 保存到错误的章。
+test('审计 #32（▲V305）：重复章节 id 的第二个及以后重分配（第一个保留、编号不撞车）', () => {
+  const ids = ['ch_002', 'ch_002', 'ch_002', 'ch_001'];
+  const repairs = storage.reassignDuplicateChapterIds(ids);
+  assert.deepEqual(
+    repairs.map((item) => [item.index, item.from, item.to]),
+    [
+      [1, 'ch_002', 'ch_003'],
+      [2, 'ch_002', 'ch_004']
+    ]
+  );
+  assert.equal(ids[0], 'ch_002', '第一个保留原 id（既有事实不动）');
+  assert.equal(new Set(ids).size, ids.length, '修完必须唯一');
+  assert.deepEqual(storage.reassignDuplicateChapterIds(['ch_001', 'ch_005']), [], '没有重复时什么都不做');
+});
+
+test('审计 #32（▲V305）：读书目时自愈重复 id、按新 id 操作只作用到那一章、同一本书只记一条日志', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '重复 id 书');
+  await storage.createChapter(bookPath, 1, '第二章');
+  const metaPath = path.join(bookPath, '书目.json');
+  const disk = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+  const firstFile = disk.chapters[0].file;
+  const secondFile = disk.chapters[1].file;
+  disk.chapters = [
+    { id: 'ch_007', file: firstFile, name: '第一章' },
+    { id: 'ch_007', file: secondFile, name: '第二章' }
+  ];
+  disk.fileSeq = 2;
+  await fs.writeFile(metaPath, JSON.stringify(disk, null, 2), 'utf8');
+
+  const logged = [];
+  storage.setDiagnostics({ logError: (kind, err) => logged.push({ kind, ...err }) });
+  try {
+    const meta = await storage.readBookMeta(bookPath);
+    const ids = meta.chapters.map((chapter) => chapter.id);
+    assert.equal(ids[0], 'ch_007', '第一个保留原 id');
+    assert.notEqual(ids[1], 'ch_007', '第二个必须重分配');
+    assert.equal(new Set(ids).size, 2, '修完必须唯一');
+    assert.equal(logged.length, 1, '修过的书目要留一条诊断日志');
+    assert.equal(logged[0].kind, 'meta-dup-id');
+    assert.equal(logged[0].code, 'META_DUP_CHAPTER_ID');
+    assert.match(logged[0].message, /重复章节 id/);
+
+    // 书架扫描 / 打开会反复读同一本书：结果稳定、日志不重复写
+    const again = await storage.readBookMeta(bookPath);
+    assert.deepEqual(again.chapters.map((chapter) => chapter.id), ids);
+    assert.equal(logged.length, 1, '同一本书一个进程只记一条');
+
+    // 按第一个 id 改名只作用到第一章（第二个章现在有自己的 id）
+    await storage.renameChapter(bookPath, ids[0], '只改第一章');
+    const after = await storage.readBookMeta(bookPath);
+    assert.equal(after.chapters.find((chapter) => chapter.file === firstFile).name, '只改第一章');
+    assert.equal(after.chapters.find((chapter) => chapter.file === secondFile).name, '第二章');
+  } finally {
+    storage.setDiagnostics({});
+  }
+});

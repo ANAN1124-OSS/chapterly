@@ -709,6 +709,38 @@ test('confirmHistoryRestore：登记时清单读不到（指纹 null）→ 撤�
   ]);
 });
 
+test('confirmHistoryRestore（#43 / E17）：撤销时的「还是不是这本书」与全文件同口径（sameBookPath），大小写不同不算换书', async () => {
+  const groups = [backupGroupFixture()];
+  const ctx = build({
+    bookPath: '/books/novel',
+    restoreResult: { restored: 1, skipped: 0, total: 1, restoreBackupDir: `/books/novel/_trash/${UNDO_DIR}` },
+    listHistory: () => ({ title: 'novel', groups })
+  });
+  ctx.state.history = { ...historyState(), path: '/Books/Novel', title: 'novel' };
+  assert.equal((await ctx.ui.confirmHistoryRestore(groupFixture(), null, true)).ok, true);
+  assert.equal(ctx.calls.registerUndo.length, 1);
+  // 备份清单里的路径与 state.bookPath 只差大小写：Windows 上是同一本书，撤销不许被「已经换了书」拒绝
+  await ctx.calls.registerUndo[0].run();
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [
+    ['/Books/Novel', 'g1'],
+    ['/Books/Novel', `dir:${UNDO_DIR}`]
+  ]);
+  assert.equal(ctx.calls.reloadOpenBookFromDisk, 2, '还原一次、撤销一次都按同一本书重载');
+});
+
+test('confirmHistoryRestore（#43 / E17）：真换了书仍然拒绝撤销', async () => {
+  const groups = [backupGroupFixture()];
+  const ctx = build({
+    restoreResult: { restored: 1, skipped: 0, total: 1, restoreBackupDir: `/书库/书甲/_trash/${UNDO_DIR}` },
+    listHistory: () => ({ title: '书甲', groups })
+  });
+  ctx.state.history = historyState();
+  assert.equal((await ctx.ui.confirmHistoryRestore(groupFixture(), null, true)).ok, true);
+  ctx.state.bookPath = '/书库/书乙';
+  await assert.rejects(() => ctx.calls.registerUndo[0].run(), /已经换了书，不能撤销/);
+  assert.deepEqual(ctx.calls.restoreHistoryDir, [['/书库/书甲', 'g1']], '换了书就不许再调还原');
+});
+
 test('confirmHistoryRestore：单文件还原成功 → 调 api.restoreHistoryFile、当前书开着就重载、刷新书架与清单', async () => {
   const ctx = build({ modalAction: { action: 'ok' }, restoreResult: { restored: 2, skipped: 0, file: '第一章.txt' } });
   ctx.state.history = { path: '/书库/书甲', title: '书甲', groups: [], fileCount: 0, totalBytes: 0, loading: false, error: '', preview: null, token: 0 };
@@ -947,6 +979,80 @@ test('快照来源但名字不是严格格式的组：不折叠、不给清空�
   assert.equal(card.children.length, 4, '默认展开：head + note + 2 个文件行');
   assert.equal(findButtonByClass(card, 'history-clear-snapshot'), null, '不给清空入口');
   assert.equal(head.children[3].className, 'btn ghost tiny history-restore-group');
+});
+
+// ---------- 审计修复 #21（P5）：文件行分页 ----------
+function manyFiles(count) {
+  return Array.from({ length: count }, (_, i) => ({
+    name: `${String(i + 1).padStart(3, '0')}-第${i + 1}章.txt`,
+    inBook: true,
+    restorable: true,
+    previewable: true,
+    reason: ''
+  }));
+}
+
+function fileRowsOf(card) {
+  return card.children.filter((child) => child.className === 'history-file');
+}
+
+test('历史面板分页（#21/P5）：非快照组先只渲染 20 行，余下点一次补全', async () => {
+  const dom = makeDom(BASE_IDS);
+  const files = manyFiles(25);
+  const big = groupFixture({ id: 'dir:整理-20261110', files, fileCount: files.length, restorableCount: files.length });
+  const ctx = build({ dom, listHistory: () => ({ title: '书甲', groups: [big], fileCount: files.length, totalBytes: 4096 }) });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  let card = dom.map.get('history-list').children[0];
+  assert.equal(card.children.length, 23, 'head + note + 20 行 + 「展开剩余」按钮');
+  assert.equal(fileRowsOf(card).length, 20, '第一屏只渲染 20 行（旧实现 25 行全量重建）');
+  assert.equal(fileRowsOf(card)[0].dataset.fileName, '001-第1章.txt');
+  // 非快照组仍然没有折叠开关（与「每日快照」的折叠是两件事）
+  assert.equal(findButtonByClass(card, 'history-group-toggle'), null, '非快照组不加折叠开关');
+  const more = findButtonByClass(card, 'history-more-files');
+  assert.ok(more, '超过了就要有「展开剩余」入口');
+  assert.equal(more.tagName, 'button');
+  assert.equal(more.type, 'button');
+  assert.equal(more.textContent, '展开剩余 5 个文件');
+  // 点一次补全：只补行、不重建已有行与组头
+  const headBefore = card.children[0];
+  const firstRowBefore = fileRowsOf(card)[0];
+  more._fire('click');
+  card = dom.map.get('history-list').children[0];
+  assert.equal(fileRowsOf(card).length, 25, '剩余 5 行一次补上');
+  assert.equal(card.children[0], headBefore, '组头不重建');
+  assert.equal(fileRowsOf(card)[0], firstRowBefore, '已渲染的行不重建（监听器不重复挂）');
+  assert.equal(fileRowsOf(card)[24].dataset.fileName, '025-第25章.txt');
+  assert.equal(more.disabled, true);
+  assert.equal(more.classList.contains('hidden'), true, '补全后按钮自己收起');
+  more._fire('click'); // 再点不会重复补行
+  assert.equal(fileRowsOf(card).length, 25);
+});
+
+test('历史面板分页（#21/P5）：20 行以内不出「展开剩余」；快照组展开后同样分页', async () => {
+  const dom = makeDom(BASE_IDS);
+  const small = groupFixture({ files: manyFiles(20), fileCount: 20, restorableCount: 20 });
+  const ctx = build({ dom, listHistory: () => ({ title: '书甲', groups: [small], fileCount: 20, totalBytes: 2048 }) });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  const card = dom.map.get('history-list').children[0];
+  assert.equal(fileRowsOf(card).length, 20);
+  assert.equal(findButtonByClass(card, 'history-more-files'), null, '刚好一页不出现展开入口');
+
+  // 快照组展开后同样按 20 行分页（折叠时 0 行的既有口径不变）
+  const dom2 = makeDom(BASE_IDS);
+  const snap = snapshotGroupFixture({ files: manyFiles(24), fileCount: 24, restorableCount: 24 });
+  const ctx2 = build({ dom: dom2, listHistory: () => ({ title: '书甲', groups: [snap], fileCount: 24, totalBytes: 4096 }) });
+  ctx2.state.history = historyPanelState();
+  await ctx2.ui.refreshHistory();
+  assert.equal(fileRowsOf(dom2.map.get('history-list').children[0]).length, 0, '快照组默认折叠');
+  dom2.map.get('history-list').children[0].children[0].children[0]._fire('click');
+  const opened = dom2.map.get('history-list').children[0];
+  assert.equal(fileRowsOf(opened).length, 20, '展开后也只先渲染 20 行');
+  const moreSnap = findButtonByClass(opened, 'history-more-files');
+  assert.equal(moreSnap.textContent, '展开剩余 4 个文件');
+  moreSnap._fire('click');
+  assert.equal(fileRowsOf(opened).length, 24);
 });
 
 // ---------- 事件绑定 ----------

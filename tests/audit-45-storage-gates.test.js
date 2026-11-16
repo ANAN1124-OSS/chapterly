@@ -1,0 +1,236 @@
+// 审计修复 #45（E19、E20、S8）：存储闸门一致性批修。
+//   · E19：.bak 轮换的读盘闸门、写侧字节闸门、还原 / 反向备份目标过 assertChapterFile；
+//   · E20：_trash 撞名不覆盖先备份、kept 只数快照目录、ALREADY_TODAY 的 bytes 口径、错误码透传；
+//   · S8：词表 / 索引「先 stat 后按路径 readFile」的 TOCTOU（在各自的测试文件里钉）。
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const storage = require('../core/storage');
+const tmpCleanup = require('./tmp-cleanup');
+
+async function mkTmp() {
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-audit45-')));
+}
+
+function day(y, m, d) {
+  return new Date(y, m - 1, d, 12, 0, 0);
+}
+
+// ---------- E19：.bak 轮换与写侧的字节闸门 ----------
+test('E19（#45）：书目 .bak 轮换前也过 32 MB 闸门 —— 主文件被换成超大文件时不做「整份读进内存再备份」', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '轮换闸门');
+  const metaPath = path.join(bookPath, '书目.json');
+  const bakPath = path.join(bookPath, '书目.json.bak');
+  const good = await storage.readBookMeta(bookPath);
+
+  // 把主文件撑到上限之上（稀疏文件，不真占盘）：再过一次结构性写盘
+  await fs.truncate(metaPath, storage.MAX_META_READ_BYTES + 1);
+  const saved = await storage.writeBookMeta(bookPath, good, { structural: true });
+
+  // 主文件照常写回（这次写的是合法书目），但没有把超大文件复制成 .bak
+  assert.equal(saved.title, '轮换闸门');
+  assert.equal(await storage.exists(bakPath), false, '超大的上一版不许被轮换成 .bak');
+  assert.equal((await storage.readBookMeta(bookPath)).title, '轮换闸门', '写回的书目仍可读');
+
+  // 正常大小的上一版照旧轮换（没有被这条闸门误伤）
+  await storage.writeBookMeta(bookPath, saved, { structural: true });
+  assert.equal(await storage.exists(bakPath), true, '正常大小照旧留上一版');
+});
+
+test('E19（#45）：写侧字节闸门 —— 超过 32 MB 的书目明确报 META_TOO_LARGE，一个字节都不写', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '写侧闸门');
+  const metaPath = path.join(bookPath, '书目.json');
+  const before = await fs.readFile(metaPath);
+  const meta = await storage.readBookMeta(bookPath);
+  const huge = {
+    ...meta,
+    // 一条超长章名：JSON 序列化后必然越过 32 MB 上限（这条路径不经过 IPC 的字段清洗）
+    chapters: [{ ...meta.chapters[0], name: 'x'.repeat(storage.MAX_META_READ_BYTES + 1024) }]
+  };
+  await assert.rejects(
+    () => storage.writeBookMeta(bookPath, huge, { structural: true }),
+    (err) => err && err.code === 'META_TOO_LARGE' && /没有写盘/.test(err.message)
+  );
+  assert.deepEqual(await fs.readFile(metaPath), before, '主文件一个字节没变');
+  assert.equal(await storage.exists(path.join(bookPath, '书目.json.bak')), false, '超限时也不轮换 .bak');
+});
+
+// ---------- E19：还原 / 反向备份的目标过 assertChapterFile（静态闸门） ----------
+test('E19（#45）：还原 / 反向备份三处目标都过 assertChapterFile（不再只 assertInside）', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  for (const name of ['backupCurrentToRestoreDir', 'copyHistoryEntryToBook', 'restoreDeletedChapter']) {
+    const start = src.indexOf(`async function ${name}(`);
+    assert.ok(start >= 0, `找不到 ${name}`);
+    const next = src.indexOf('\nasync function ', start + 1);
+    const body = src.slice(start, next < 0 ? src.length : next);
+    assert.ok(body.includes('assertChapterFile(bookPath'), `${name} 的目标必须过 assertChapterFile`);
+    assert.equal(body.includes('assertInside(bookPath'), false, `${name} 不许退回只做前缀检查`);
+  }
+});
+
+// ---------- E20：kept 只数快照目录 ----------
+test('E20（#45）：cleanupSnapshots 的 kept 只数「快照-YYYYMMDD」，替换 / 整理 / 还原前备份不算', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '快照计数');
+  const trash = path.join(bookPath, '_trash');
+  const dirs = [
+    '快照-20261031',
+    '替换备份-2026-10-31-120000',
+    '整理备份-2026-10-31-120000',
+    '还原前备份-2026-10-31-120000'
+  ];
+  for (const dir of dirs) {
+    await fs.mkdir(path.join(trash, dir), { recursive: true });
+    await fs.writeFile(path.join(trash, dir, 'x.txt'), 'x', 'utf8');
+  }
+  const result = await storage.cleanupSnapshots(bookPath, { keepDays: 7, now: day(2026, 10, 31) });
+  assert.deepEqual(result.removed, []);
+  assert.equal(result.kept, 1, '只有快照-20261031 算一份快照（以前四个目录全被算成 4）');
+  // 三种备份目录原样留着
+  for (const dir of dirs.slice(1)) {
+    assert.equal(await storage.exists(path.join(trash, dir, 'x.txt')), true, `不应碰 ${dir}`);
+  }
+});
+
+test('E20（#45）：清理过期快照后 kept 按「快照目录 - 移除」算', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '快照计数二');
+  const trash = path.join(bookPath, '_trash');
+  for (const dir of ['快照-20261020', '快照-20261031', '我的备份-20200101']) {
+    await fs.mkdir(path.join(trash, dir), { recursive: true });
+    await fs.writeFile(path.join(trash, dir, 'x.txt'), 'x', 'utf8');
+  }
+  const result = await storage.cleanupSnapshots(bookPath, { keepDays: 7, now: day(2026, 10, 31) });
+  assert.deepEqual(result.removed, ['快照-20261020']);
+  assert.equal(result.kept, 1, '留下的快照只有今天那一份');
+  assert.equal(await storage.exists(path.join(trash, '我的备份-20200101')), true, '别人的目录不碰也不计数');
+});
+
+// ---------- E20：ALREADY_TODAY 的 bytes 口径 ----------
+test('E20（#45）：ALREADY_TODAY 回的是已有快照的大小，不是源文件现在的尺寸', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '快照字节口径');
+  const meta = await storage.readBookMeta(bookPath);
+  const file = meta.chapters[0].file;
+  const now = day(2026, 10, 31);
+  await storage.saveChapterText(bookPath, file, '短\n');
+  const first = await storage.takeDailySnapshot(bookPath, file, { keepDays: 7, now });
+  assert.equal(first.taken, true);
+  const snapshotPath = path.join(bookPath, '_trash', '快照-20261031', file);
+  const snapshotBytes = (await fs.stat(snapshotPath)).size;
+
+  // 同一天又保存了一次，源文件明显变长：快照不覆盖，bytes 必须还是快照自己的大小
+  await storage.saveChapterText(bookPath, file, '第二版长了很多很多字的正文\n');
+  const sourceBytes = (await fs.stat(path.join(bookPath, file))).size;
+  assert.notEqual(sourceBytes, snapshotBytes, '用例前提：源与快照大小不同');
+  const second = await storage.takeDailySnapshot(bookPath, file, { keepDays: 7, now });
+  assert.equal(second.taken, false);
+  assert.equal(second.reason, 'ALREADY_TODAY');
+  assert.equal(second.bytes, snapshotBytes);
+});
+
+// ---------- E20：setLastOpenChapter 不再吞错误码 ----------
+test('E20（#45）：setLastOpenChapter 的兜底回包保留错误码与脱敏文案', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '错误码透传');
+  await fs.writeFile(path.join(bookPath, '书目.json'), '{ 这不是 JSON', 'utf8');
+  const res = await storage.setLastOpenChapter(bookPath, 'ch_001');
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'PARSE_ERROR', '以前只回 { ok: false }，错误码被吞掉');
+  assert.match(res.message, /解析失败/);
+
+  // 真正不存在的章节 id 仍然给 CHAPTER_NOT_FOUND（这条路上原有的错误码没被换掉）
+  const root2 = await mkTmp();
+  const second = await storage.createBook(root2, '错误码透传二');
+  const bad = await storage.setLastOpenChapter(second.path, 'ch_999');
+  assert.equal(bad.ok, false);
+  assert.equal(bad.code, 'CHAPTER_NOT_FOUND');
+});
+
+// ---------- E20：_trash 撞名不覆盖 ----------
+test('E20（#45）：_trash 里已有同秒同名备份时，moveToTrash 顺延序号、不覆盖先前的备份', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '撞名不覆盖');
+  const meta = await storage.readBookMeta(bookPath);
+  const file = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file, '要被删掉的正文\n');
+  await storage.createChapterWithText(bookPath, { insertIndex: 1, name: '留下', text: '留着\n' });
+  const target = (await storage.readBookMeta(bookPath)).chapters[0];
+
+  // 按「现在这一秒」预置一份同名备份（模拟外部 / 上一次操作留下的同秒文件）
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const date = new Date();
+  const stamp =
+    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}-` +
+    `${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}`;
+  const trash = path.join(bookPath, '_trash');
+  await fs.mkdir(trash, { recursive: true });
+  const planted = path.join(trash, `${stamp}-${target.file}`);
+  await fs.writeFile(planted, '预置的旧备份', 'utf8');
+
+  const deleted = await storage.deleteChapter(bookPath, target.id);
+  assert.ok(path.basename(deleted.trashPath).startsWith(`${stamp}-2-`), `撞名要顺延：${path.basename(deleted.trashPath)}`);
+  assert.equal(await fs.readFile(planted, 'utf8'), '预置的旧备份', '先备份的字节一个都没被覆盖');
+  assert.equal(await fs.readFile(deleted.trashPath, 'utf8'), '要被删掉的正文\r\n', '这次删章的内容完整落在新名字上');
+});
+
+// 审计残留修复 #45（E20）：占用表必须「先登记、再查 exists」。旧实现是
+// `while (has(dest) || await exists(dest))` 通过之后才 add —— 两次检查之间跨了一次 await，
+// 同秒并发（直接调 moveToTrash 绕过书锁，模拟防御性路径）时两边都在 add 之前判成空闲，
+// 后一次 rename 直接把前一次的备份覆盖掉（Windows rename 是替换语义）。
+test('残留 E20（#45）：同秒并发 moveToTrash 两份备份 —— 名字不撞、谁也没覆盖谁', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '并发撞名');
+  const first = await storage.readBookMeta(bookPath);
+  const fileA = first.chapters[0].file;
+  await storage.saveChapterText(bookPath, fileA, '甲的正文\n');
+  await storage.createChapterWithText(bookPath, { insertIndex: 1, name: '乙', text: '乙的正文\n' });
+  const second = await storage.readBookMeta(bookPath);
+  const fileB = second.chapters[1].file;
+
+  const [destA, destB] = await Promise.all([
+    storage.moveToTrash(bookPath, fileA),
+    storage.moveToTrash(bookPath, fileB)
+  ]);
+  assert.notEqual(destA, destB, '两个目的名必须不同（占用表先登记再查）');
+  const trash = path.join(bookPath, '_trash');
+  assert.deepEqual(
+    (await fs.readdir(trash)).sort(),
+    [path.basename(destA), path.basename(destB)].sort(),
+    '_trash 里正好两份备份（旧实现会在同一个名字上互相覆盖，只剩一份）'
+  );
+  assert.equal(await fs.readFile(destA, 'utf8'), '甲的正文\r\n');
+  assert.equal(await fs.readFile(destB, 'utf8'), '乙的正文\r\n');
+});
+
+// 静态闸门：claimTrashTarget 里「登记」必须早于「查磁盘」——顺序反过来就又会跨 await 暴露窗口。
+test('残留 E20（#45）静态闸门：_trash 目标名先登记占用再查 exists', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  const claimAt = src.indexOf('async function claimTrashTarget(');
+  assert.ok(claimAt > 0, '找不到 claimTrashTarget');
+  const body = src.slice(claimAt, claimAt + 900);
+  const addAt = body.indexOf('inflightTrashTargets.add(dest)');
+  const existsAt = body.indexOf('await exists(dest)');
+  assert.ok(addAt > 0 && existsAt > 0, 'claim 里必须有 add 与 exists');
+  assert.ok(addAt < existsAt, '必须先 inflightTrashTargets.add(dest) 再 await exists(dest)');
+  assert.match(body, /inflightTrashTargets\.delete\(dest\)/, '让位 / 出错时要释放登记');
+});
+
+// 审计残留修复 #45（S8）：.bak 轮换的尺寸闸门与读盘必须绑在同一个句柄上 ——
+// 旧实现 stat 之后按路径 readFile，间隙里主文件被换成大文件就绕过 32 MB 上限、整份读进内存。
+test('残留 S8（#45）：.bak 轮换的尺寸闸门与读盘走同一个句柄（open → fstat → handle.readFile）', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  const start = src.indexOf('async function writeBookMeta(');
+  const end = src.indexOf('async function listTxtFiles(', start);
+  assert.ok(start >= 0 && end > start, '找不到 writeBookMeta');
+  const body = src.slice(start, end);
+  assert.ok(body.includes("fs.open(metaPath, 'r')"), '必须先 open 主文件');
+  assert.ok(body.includes('handle.stat()'), '.bak 上限要用句柄上的 fstat 结论');
+  assert.ok(body.includes('handle.readFile()'), '内容必须从同一个句柄读');
+  assert.equal(body.includes('fs.readFile(metaPath)'), false, '不许再按路径读主文件（TOCTOU 窗口）');
+  assert.equal(body.includes('fs.stat(metaPath)'), false, '不许再按路径 stat 主文件（闸门与读盘脱节）');
+});

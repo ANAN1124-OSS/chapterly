@@ -364,7 +364,11 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   assert.match(rendererCode, /function activateDeleteUndo\(info\)/);
   assert.match(rendererCode, /api\.restoreDeletedChapter/);
   assert.match(rendererCode, /if \(view !== 'editor'\) undoUi\.clear\(\)/);
-  assert.match(rendererCode, /undoUi\.clear\(\);\n    \/\/ 换书前先停掉上一本的写作计时/);
+  // 审计修复 #7（V401）：换书时撤销条与大段插入快照必须一起作废（快照跨书会串台）
+  assert.match(
+    rendererCode,
+    /undoUi\.clear\(\);\n    \/\/ 审计修复 #7（V401）：[\s\S]{0,260}?bulkWriteUndo = null;\n    fallbackWriteUndo = null; \/\/ 审计修复 #39（V402）[^\n]*\n    \/\/ 换书前先停掉上一本的写作计时/
+  );
   // 1.5.0 P0-4（E4 / H-1 / H-2 / H-5 / H-9）的接线不许丢：手动关闭、长按不抖、撤销按 id / 邻居重算落点
   assert.match(rendererCode, /'close-undo-bar': \(\) => undoUi\.dismiss\(\)/);
   assert.match(rendererCode, /!event\.repeat/, 'Ctrl+K 要判 event.repeat（长按不许开-关抖动）');
@@ -376,6 +380,90 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   assert.match(rendererCode, /neighborBeforeId/);
   assert.match(rendererCode, /neighborAfterId/);
   assert.match(rendererCode, /Math\.min\(info\.index, state\.chapters\.length\)/, '找不到邻居才退回捕获下标');
+});
+
+test('静态闸门（V403）：正文 Ctrl+Z 拦截器执行成功后停止冒泡，不再叠上 document 级「撤销整理」', () => {
+  // 背景：正文上的拦截器处理 bulk 一次性快照（preventDefault 不会阻止冒泡）；document 级还有
+  // 「整理快照优先」的 Ctrl+Z。两套通道没有互斥时，「整理本章 → 大段插入」后按一次 Ctrl+Z
+  // 会连退两步。这里把「执行成功才 stopPropagation」钉住（快照作废时仍让整理通道照旧工作）。
+  assert.match(
+    rendererCode,
+    /if \(key !== 'z'\) return;\n\s+event\.preventDefault\(\);\n\s+(?:\/\/[^\n]*\n\s+)*const undone = [^\n]*undo(?:BulkWrite|FallbackWrite)\(\);[^\n]*\n(?:\s+\/\/[^\n]*\n)*\s+if \(undone\) event\.stopPropagation\(\);/,
+    '正文拦截器要在撤销执行成功后 stopPropagation（preventDefault 不等于阻止冒泡）'
+  );
+  // document 级那条「整理快照优先」的分支必须还在（只让位，不删除）
+  // 审计残留修复 #40（V403）：补了焦点守卫以后条件多一个 !inOtherInput（见下一条静态闸门）
+  assert.match(rendererCode, /if \(!inOtherInput && state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/);
+});
+
+// 审计残留修复 #40（V403）：document 级「整理快照优先」的 Ctrl+Z 以前没有焦点守卫 ——
+// 整理链有效时，焦点在查找 / 替换框里按 Ctrl+Z 会撤销正文整理而不是框内文本。现在按相邻
+// undoUi 分支同一套 isTypingTarget 判据让位；编辑区自己例外（整理快照撤的就是正文）。
+test('静态闸门（V403 / 残留 #40）：整理快照的 Ctrl+Z 有焦点守卫，编辑区里仍生效', () => {
+  assert.match(
+    rendererCode,
+    /const focusEl = document\.activeElement;\r?\n\s+const inOtherInput = focusEl !== editorEl && undoActionModule\.isTypingTarget\(focusEl\);/,
+    '先算「焦点在别的输入控件里」（编辑区例外）'
+  );
+  assert.match(
+    rendererCode,
+    /if \(!inOtherInput && state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/,
+    '守卫通过才允许整理快照抢 Ctrl+Z'
+  );
+  // 共享判据来自 undo-action.js（与相邻 undoUi 分支同一份实现，不许各写一套 tag 判定）
+  assert.match(rendererCode, /undoActionModule\.isTypingTarget\(focusEl\)/);
+  assert.equal(/function isTypingTarget\(/.test(rendererCode), false, 'renderer.js 里不该再有第二份 isTypingTarget');
+});
+
+test('静态闸门（V402）：兜底整串赋值统一配一次性快照 + 提示 + Ctrl+Z，换书 / 换章即作废', () => {
+  // 快照声明 + 记账 / 撤销两个函数（提示与撤销按钮都走已有的 toastActionable，与 bulk 分支同一套）
+  assert.match(rendererCode, /let fallbackWriteUndo = null;/);
+  assert.match(rendererCode, /function recordFallbackWrite\(info\) \{/);
+  assert.match(rendererCode, /function undoFallbackWrite\(\) \{/);
+  assert.match(rendererCode, /toastActionable\(\n\s+`\$\{label\}没能走原生输入[\s\S]{0,200}?'撤销',\n\s+undoFallbackWrite\n\s+\);/);
+  // renderer.js 的三处兜底（剪贴板正文 / 章节模板 / 替换这一处）都要记账，且禁掉「整串赋值」静默清栈
+  const rendererCalls = rendererCode.match(/recordFallbackWrite\(\{/g) || [];
+  assert.equal(rendererCalls.length, 3, 'renderer.js 的三处兜底赋值都要记账');
+  for (const label of ['插入正文', '套用章节模板', '替换这一处']) {
+    assert.ok(rendererCode.includes(`label: '${label}'`), '兜底调用点少了一条：' + label);
+  }
+  // 正文上的第一下 Ctrl+Z 与 bulk 共用拦截口；兜底快照也要能被它接住
+  assert.match(rendererCode, /if \(!bulkWriteUndo && !fallbackWriteUndo\) return;/);
+  assert.match(rendererCode, /const undone = bulkWriteUndo \? undoBulkWrite\(\) : undoFallbackWrite\(\);/);
+  // 三个作废点：输入处理 / 换章成功 / 换书提交
+  assert.match(rendererCode, /function onEditorInput\(\) \{[\s\S]{0,300}bulkWriteUndo = null;\n    fallbackWriteUndo = null;/);
+  assert.match(rendererCode, /bulkWriteUndo = null;\n      fallbackWriteUndo = null; \/\/ 审计修复 #39（V402）：兜底写入快照同理/);
+  // 两个模块的兜底路径都接到同一份记账（host 注入），装配点必须真的传进去
+  assert.match(rendererCode, /\$, state, api, call, toast, staleGuard, recordFallbackWrite,/);
+  assert.match(rendererCode, /\$, state, api, call, toast, recordFallbackWrite,/);
+});
+
+// 审计修复 #39（V402）：两个 UI 模块的兜底赋值路径也必须报告给渲染层（否则它们仍静默清空撤销栈）
+// 审计残留修复 #39（V402）：find-ui 的「当前章全部替换」是第三处漏覆盖的兜底整串赋值。
+test('静态闸门（V402）：fragments / tidy / find 的兜底赋值都走 host.recordFallbackWrite', () => {
+  for (const rel of ['renderer/fragments-ui.js', 'renderer/tidy-card-ui.js', 'renderer/find-ui.js']) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    assert.match(src, /'recordFallbackWrite'/, rel + '：host 契约必须列 recordFallbackWrite');
+    assert.match(src, /recordFallbackWrite\(\{/, rel + '：兜底赋值后必须记账');
+    assert.match(src, /recordFallbackWrite 必须是函数/, rel + '：成员不是函数要当场抛 TypeError');
+  }
+  // 两个模块里兜底赋值与记账的先后：必须先 onEditorInput()（会作废旧快照）再记账
+  const fragments = fs.readFileSync(path.join(ROOT, 'renderer', 'fragments-ui.js'), 'utf8');
+  assert.match(fragments, /onEditorInput\(\);\r?\n    if \(fallbackUsed\) \{[\s\S]{0,300}?recordFallbackWrite\(\{/);
+  const tidy = fs.readFileSync(path.join(ROOT, 'renderer', 'tidy-card-ui.js'), 'utf8');
+  assert.match(
+    tidy,
+    /if \(!inserted \|\| editorEl\.value !== text\) \{[\s\S]{0,200}?fallbackUsed = true;[\s\S]{0,400}?recordFallbackWrite\(\{[\s\S]{0,100}?before: beforeText/
+  );
+  // find-ui：「当前章全部替换」的兜底整串赋值同样先 onEditorInput() 再记账，快照带写入前的整章正文
+  const findUi = fs.readFileSync(path.join(ROOT, 'renderer', 'find-ui.js'), 'utf8');
+  assert.match(
+    findUi,
+    /const fallbackUsed = !inserted \|\| editorEl\.value !== text;[\s\S]{0,260}?onEditorInput\(\);[\s\S]{0,260}?recordFallbackWrite\(\{ before, after: text, start: 0/,
+    'find-ui 兜底赋值必须先 onEditorInput 再记账（否则刚记的快照会被输入处理作废）'
+  );
+  // 装配点必须真的传进去（renderer.js 的 findUiModule.create 那一段）
+  assert.match(rendererCode, /\$, state, api, call, toast, recordFallbackWrite,/);
 });
 
 test('静态闸门：删除章节不再弹「删除章节」确认框（P0-2 只留两处确认）', () => {
@@ -408,7 +496,8 @@ test('静态闸门：storage 撤销只认 _trash 下的 basename，不接收绝�
   // A9（v1.8.0 WP-31）：「同一目录」判定统一走 core/path-utils.js 的 pathKey（不再手写小写比较）
   assert.match(storageSrc, /pathUtils\.pathKey\(path\.dirname\(source\)\) !== pathUtils\.pathKey\(trashDir\)/);
   assert.match(storageSrc, /pathUtils\.pathKey\(bookPath\)/, '同一本书的写锁 key 也走 pathKey');
-  assert.match(storageSrc, /restoreDeletedChapterFromTrash: locked\(restoreDeletedChapterFromTrash\)/);
+  // 审计残留修复 #R11（#55/M6）：书锁包装器合一后统一叫 lockedWriteEntry（原来这里写的是 locked）
+  assert.match(storageSrc, /restoreDeletedChapterFromTrash: lockedWriteEntry\(restoreDeletedChapterFromTrash\)/);
 });
 
 // ---------- B6（v1.8.0 WP-28）：撤销引用的备份组（10 秒内清理备份要跳过） ----------

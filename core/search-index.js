@@ -13,6 +13,15 @@
 //
 // 一致性：每章存 mtime + size，搜索 / 回书架时校验。只有正文变过的书才重建位图，
 // 改章名 / 调顺序只更新元数据；删书 / 删章 / 外部改 txt 都会被校验发现。
+//
+// E4（审计修复 #8）：只比 mtime / size 会漏掉「保留时间戳的同大小改写」（robocopy /COPY:DAT、
+// rsync -t、部分同步盘后台落盘）：位图缺新内容的双字 → Bloom 把这本书滤掉 → 静默漏报。
+// 每章指纹再加一条「首尾各 4 KB 内容哈希」（contentHash，含文件大小与两段采样），
+// 深度校验时重算比对；正文没变就不重建位图。索引仍是派生数据，不含正文。
+//
+// E5（审计修复 #8）：位图解码强制 bits === 字节数 × 8（且落在 [MIN_BLOOM_BITS, MAX_BLOOM_BITS]），
+// 每本书另存一条 CRC32。校验不过就当「没有位图」——这本书永远是候选、逐章核对（只降速不漏报），
+// 并顺手登记脏书，让下一次校验重建位图自愈（旧索引没有这两项，靠 INDEX_VERSION 升版本一次性重建）。
 // 索引坏了 / 版本不对 / 书架目录换了 → 当作没有索引自动重建，作者不用手动操作。
 // 写盘走 core/atomic；索引读写失败只让本次搜索降级，绝不影响正文保存与界面。
 const fs = require('node:fs/promises');
@@ -25,19 +34,33 @@ const storage = require('./storage');
 const chaptersLib = require('./chapters');
 
 const INDEX_FILE_NAME = 'search-index.json';
-const INDEX_VERSION = 1;
+// E5（审计修复 #8）：索引形状升级为 2 = 每章多 contentHash、每书多 bloomCrc。
+// 老版本索引按「版本不对 → 空索引自动重建」的既有口径一次性重建（派生数据，不碰正文）。
+const INDEX_VERSION = 2;
 // C17（v1.8.0 WP-19）：索引是「整份读进内存 → JSON.parse」的小文件，以前没有 stat 闸门 ——
 // 被外部程序换成超大文件（误放的视频 / 坏同步盘）时先读后 parse，2 GB 直接顶爆主进程。
 // 独立上限：每本书一份 Bloom 位图（25 万字的书约 100 KB）+ 每章指纹，280 本 ≈ 22 MB，
 // 64 MB 够约 500 本以上的架子；超限记 INDEX_TOO_LARGE（与索引内容坏的 CORRUPT 区分），
 // 按空索引重建 —— 重建会把超限文件覆盖成正常大小，不影响正文。
 const MAX_INDEX_READ_BYTES = 64 * 1024 * 1024;
+// 审计修复 #33（▲V307）：索引是单文件，读侧 64 MB 只管「外部换来的大文件别顶爆进程」，
+// 写侧还要有总量预算 —— 200 本 × 数 MB 位图 = 数百 MB 的单文件，每次 flush 整份重写（写放大 =
+// 文件大小），启动首载还要整份 parse。32 MB 仍远高于真实书架（280 本 × 25 万字 ≈ 22 MB）：
+// 正常书架一本都不会被淘汰；超限时按「书目最后修改时间从旧到新」丢掉整本书的位图（章节指纹保留），
+// 被丢的书以后永远当候选、逐章核对 —— 只降速、不漏结果。
+// 只在写盘时压缩：下一次有书变脏 / 换书架根时新人选会被重新评估。
+const MAX_INDEX_BYTES = 32 * 1024 * 1024;
 
 // Bloom 参数：每项 8 bit、3 个哈希。一本书 8 万个双字 ≈ 80KB，单项误报率约 3%。
 const BITS_PER_ITEM = 8;
 const HASH_COUNT = 3;
 const MIN_BLOOM_BITS = 1024;
 const MAX_BLOOM_BITS = 64 * 1024 * 1024; // 单本 8MB 位图上限（异常输入兜底）
+// E4（审计修复 #8）：章文件指纹的首 / 尾采样大小。只读 4 KB × 2，够发现同大小改写又不拖慢校验。
+// 边界（审计残留修复 #R20 / #8-E4-E5）：首尾采样是设计取舍 —— 只改文件中段、又保留 size+mtime 的
+// 改写算出的指纹与旧值一致，不会被发现（要等大小 / mtime 变化或重建索引）；全量哈希会把每次校验的
+// 读盘量放大到整本，不取。这里只如实注明这种采样口径的已知盲区。
+const FINGERPRINT_SAMPLE_BYTES = 4096;
 
 const MIN_QUERY_CHARS = 2; // 正文搜索至少两个字（单字几乎没有筛选意义）
 const DEFAULT_RESULT_LIMIT = 40;
@@ -53,6 +76,11 @@ const MAX_FOCUS_SNIPPETS = 200;
 // focus.bookPath / focus.chapterFile 的长度上限（与 main.js 的入口校验同一口径）。
 // 真实书路径 / 章节文件名远小于这个值，超长一律当作无效聚焦，不读任何路径。
 const MAX_FOCUS_FIELD_CHARS = 260;
+// 审计修复 #46（E21）：章节文件名是索引的身份键，不许静默截断。
+// sanitizeChapter 旧实现 `file.slice(0, 260)`：名字被切短后既匹配不到真实章节（这一章「静默不可搜」），
+// 又每轮校验都被当成新章 / 缺章反复重建。真实章节名受文件系统 255 字符上限约束；这里只挡离谱长度
+// （坏索引 / 手改 JSON），超限整条丢弃，由下一次构建按真实书目补回。
+const MAX_CHAPTER_FILE_CHARS = 4096;
 const SNIPPET_RADIUS = 16;
 const MAX_CANDIDATE_BOOKS = 60; // 两字常用词可能命中一大半书：最多读这么多本
 const SEARCH_TIME_BUDGET_MS = 1800; // 超过就带着已有结果返回（结果标 truncated）
@@ -82,6 +110,15 @@ const BLOOM_BUILD_BATCH = 32;
 // 长书架上「搜过一遍」就等于把整架书的位图全留在主进程里（位图按字数增长，几十 KB / 本）。
 // 32 条足够覆盖一次搜索最多读的 60 本候选里的热区，冷书下次搜索重新解码，结果一条都不会少。
 const BLOOM_CACHE_MAX = 32;
+// P3（审计修复 #19）：条数上界不等于字节上界 —— 32 条 × 单本最大 8 MB 位图 ≈ 256 MB 常驻。
+// 再加一道字节预算（只给单测用 options.bloomCacheMaxBytes 覆盖）：超预算时按 LRU 继续淘汰，
+// 「最近用过的那一本」始终留着（否则每次搜索都要重解码一份超预算的大位图，白费 CPU）。
+const BLOOM_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+// P3（审计修复 #19）：整本建图时「不重复双字」集合也有硬上限。以前只有最终位图受
+// MAX_BLOOM_BITS 限制，中间 Set 随正文无限长大（千万字级巨书可达数百 MB）。
+// 1M 个不重复双字 → 位图 8M bit ≈ 1 MB，已远超真实中文书（25 万字约 5–8 万）；超过就放弃这本的
+// 位图（entry.bloomOmitted）：搜索永远把它当候选、逐章核对 —— 只降速不漏报。
+const MAX_BLOOM_ITEMS = 1024 * 1024;
 
 // nowIso / mapLimit 从 core/common.js 来（B6）：和 storage 导入时同一份实现
 // （限并发、ISO 时间戳）；这里不再各抄一份。
@@ -109,12 +146,17 @@ function bigramHash(c1, c2) {
   return h >>> 0;
 }
 
-function addBigramsToSet(text, set) {
+function addBigramsToSet(text, set, limit) {
   const source = String(text == null ? '' : text);
+  const cap = typeof limit === 'number' && Number.isFinite(limit) ? limit : Infinity;
   for (let i = 0; i < source.length - 1; i += 1) {
-    set.add(bigramHash(source.charCodeAt(i), source.charCodeAt(i + 1)));
+    const hash = bigramHash(source.charCodeAt(i), source.charCodeAt(i + 1));
+    // P3（审计修复 #19）：到上限就停下并如实告诉调用方「没装完」（集合不再长大）；
+    // 已在集合里的重复双字不算超限，一次上限判定不会让位图少掉真实存在的项。
+    if (set.size >= cap && !set.has(hash)) return false;
+    set.add(hash);
   }
-  return set;
+  return true;
 }
 
 // 查询串 → 不重复的双字哈希（查询本身也先归一化成小写）
@@ -122,6 +164,77 @@ function queryBigrams(query) {
   const set = new Set();
   addBigramsToSet(normalizeQuery(query), set);
   return Array.from(set);
+}
+
+// CRC32（IEEE 802.3，多项式 0xEDB88320）：每本书 Bloom 位图的校验和（E5 / 审计修复 #8）。
+// 零依赖表驱动实现：core 层不引第三方包，zlib.crc32 在项目支持的各 Electron 版本上不保证有。
+const CRC32_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let value = i;
+    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    table[i] = value;
+  }
+  return table;
+})();
+
+function crc32(buffer) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) return 0;
+  let crc = -1;
+  for (let i = 0; i < buffer.length; i += 1) crc = CRC32_TABLE[(crc ^ buffer[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ -1) >>> 0;
+}
+
+// 首尾内容指纹用 FNV-1a 32 位（与 core/clipboard-watch.js 同一套思路）：不是加密哈希，
+// 只回答「这一段字节还是不是原来那一段」。检出「同大小、同时间戳的改写」即可，不做安全判定。
+function sampleHashOf(buffer, seed) {
+  let hash = seed >>> 0;
+  for (let i = 0; i < buffer.length; i += 1) {
+    hash ^= buffer[i];
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+// 从文件指定位置读一小段（本地文件偶发短读时循环补齐；读不满就按实际字节算哈希）。
+async function readSampleAt(handle, length, position) {
+  if (length <= 0) return Buffer.alloc(0);
+  const buffer = Buffer.alloc(length);
+  let done = 0;
+  while (done < length) {
+    const result = await handle.read(buffer, done, length - done, position + done);
+    if (!result || !result.bytesRead) break;
+    done += result.bytesRead;
+  }
+  return done === length ? buffer : buffer.subarray(0, done);
+}
+
+// E4：一章文件的内容指纹 = 字节数 + 首 4 KB 哈希 + 尾 4 KB 哈希。
+// 审计残留修复 #R20（#8/E4-E5）：采样口径的盲区是「只改中段、保留 size+mtime」的改写（见
+// FINGERPRINT_SAMPLE_BYTES 上方的取舍说明）；读不到（被占用 / 权限）时返回空串：下一次校验会把它
+// 当「变化」重算，宁可重建也不漏报。
+async function chapterContentHashOf(filePath, size) {
+  let handle = null;
+  try {
+    handle = await fs.open(filePath, 'r');
+    const total = Math.max(0, Math.floor(Number(size) || 0));
+    const head = await readSampleAt(handle, Math.min(FINGERPRINT_SAMPLE_BYTES, total), 0);
+    const tailLength = Math.min(FINGERPRINT_SAMPLE_BYTES, total - head.length);
+    const tail = tailLength > 0 ? await readSampleAt(handle, tailLength, total - tailLength) : Buffer.alloc(0);
+    const headHash = sampleHashOf(head, 0x811c9dc5).toString(16).padStart(8, '0');
+    const tailHash = sampleHashOf(tail, 0x7f4a7c15).toString(16).padStart(8, '0');
+    return `${total}:${headHash}:${tailHash}`;
+  } catch {
+    return '';
+  } finally {
+    if (handle) {
+      try {
+        await handle.close();
+      } catch {
+        /* 关不掉也不影响指纹 */
+      }
+    }
+  }
 }
 
 function bloomParams(itemCount) {
@@ -163,26 +276,35 @@ function bloomHas(bloom, bits, hash) {
 // 批与批之间只留 Set、不留正文数组（1000 章 × 1 MB 的书以前是约 1 GB 常驻）。
 // 位图位数要等全书项数知道后才定，所以 Set 必须留到 finish()；
 // 「有没有」的判定不受影响：插入顺序与逐章顺序一致，位图字节与旧实现完全相同。
-function createBookBloom() {
+// P3（审计修复 #19）：Set 有 MAX_BLOOM_ITEMS 硬上限 —— 超过就放弃位图（finish 回 omitted），
+// 调用方把这本书标成「永远候选」，不再让中间集合随正文无限长大。
+// options.maxItems 只给单测注入（验证「超限 → 放弃位图」分支，生产不传）。
+function createBookBloom(options) {
+  const source = options && typeof options === 'object' ? options : {};
+  const cap = Number.isFinite(source.maxItems) && source.maxItems > 0 ? Math.floor(source.maxItems) : MAX_BLOOM_ITEMS;
   const set = new Set();
+  let saturated = false;
   return {
     addText(text) {
-      addBigramsToSet(normalizeForMatch(text), set);
+      if (saturated) return set.size;
+      saturated = !addBigramsToSet(normalizeForMatch(text), set, cap);
       return set.size;
     },
     finish() {
+      if (saturated) return { bloom: null, bits: 0, items: 0, omitted: true };
       const params = bloomParams(set.size);
       const bloom = Buffer.alloc(Math.ceil(params.bits / 8));
       for (const hash of set) bloomAdd(bloom, params.bits, hash);
-      return { bloom, bits: params.bits, items: set.size };
+      return { bloom, bits: params.bits, items: set.size, omitted: false };
     }
   };
 }
 
 // 一本书的所有章节文本 → Bloom 位图。位图只回答「有没有」，不保存任何正文。
 // 兼容入口（单测 / 旧调用用）：内部走同一个累积器，结果与逐批累积逐字节相同。
-function makeBookBloom(texts) {
-  const builder = createBookBloom();
+// options.maxItems 只给单测注入（见 createBookBloom）。
+function makeBookBloom(texts, options) {
+  const builder = createBookBloom(options);
   for (const text of texts) builder.addText(text);
   return builder.finish();
 }
@@ -191,13 +313,24 @@ function encodeBloom(bloom) {
   return Buffer.isBuffer(bloom) ? bloom.toString('base64') : '';
 }
 
-function decodeBloom(text, bits) {
+// E5（审计修复 #8）：位图解码同时做三项硬校验，任何一项不过都回 null（= 本书当候选、逐章核对）：
+//   ① bits 是 [MIN_BLOOM_BITS, MAX_BLOOM_BITS] 内的整数；
+//   ② bits === 字节数 × 8 —— 旧实现只比 ceil(bits/8)，`bloomBits:0` + 1 字节能混过，
+//      同长度位翻转也查不出；
+//   ③ 每本书存一条 CRC32，与位图一起比对（指纹复用期位图被改坏也能当场发现）。
+// 调用方在拿到 null 时还会登记脏书，让下一次校验重建位图自愈（见 bloomFor / createSearchStore）。
+function decodeBloom(text, bits, crc) {
   if (typeof text !== 'string' || !text) return null;
+  const bitCount = Number(bits);
+  const expectedCrc = Number(crc);
+  if (!Number.isFinite(bitCount) || !Number.isFinite(expectedCrc)) return null;
   try {
     const buffer = Buffer.from(text, 'base64');
     if (!buffer.length) return null;
-    const wanted = Math.ceil(Math.max(1, Number(bits) || 0) / 8);
-    if (buffer.length !== wanted) return null;
+    const wanted = Math.floor(bitCount);
+    if (wanted !== bitCount || wanted < MIN_BLOOM_BITS || wanted > MAX_BLOOM_BITS) return null;
+    if (wanted !== buffer.length * 8) return null;
+    if (crc32(buffer) !== Math.floor(expectedCrc) >>> 0) return null;
     return buffer;
   } catch {
     return null;
@@ -279,16 +412,21 @@ function sanitizeChapter(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const file = typeof raw.file === 'string' ? raw.file : '';
   if (!file || file.includes('\u0000')) return null;
+  // 审计修复 #46（E21）：超过「真实文件名上限」的只可能是坏索引，整条丢弃 —— 不再截断成
+  // 一个永远匹配不到任何章节的假名字。
+  if (file.length > MAX_CHAPTER_FILE_CHARS) return null;
   const mtimeMs = Number(raw.mtimeMs);
   const size = Number(raw.size);
   const index = Number(raw.index);
   return {
     id: typeof raw.id === 'string' ? raw.id.slice(0, 120) : '',
     name: typeof raw.name === 'string' ? raw.name.slice(0, 200) : '',
-    file: file.slice(0, 260),
+    file,
     index: Number.isFinite(index) ? Math.max(0, Math.round(index)) : 0,
     mtimeMs: Number.isFinite(mtimeMs) ? mtimeMs : 0,
     size: Number.isFinite(size) ? Math.max(0, size) : 0,
+    // E4（审计修复 #8）：首尾内容指纹。老 / 缺字段的条目记空串 —— 下一次深度校验会当「变化」重建。
+    contentHash: typeof raw.contentHash === 'string' ? raw.contentHash.slice(0, 80) : '',
     chars: Number.isFinite(Number(raw.chars)) ? Math.max(0, Math.round(Number(raw.chars))) : null
   };
 }
@@ -300,9 +438,15 @@ function sanitizeBook(raw) {
   const chapters = Array.isArray(raw.chapters)
     ? raw.chapters.map(sanitizeChapter).filter(Boolean)
     : [];
-  const bloom = typeof raw.bloom === 'string' ? raw.bloom : '';
+  // 审计修复 #33（▲V307）：总量预算淘汰过的书（bloomDropped）一律按「没有位图」读回，
+  // 防止手改 / 坏索引里同时留着 bloom 与 bloomDropped 两个矛盾的字段。
+  const bloomDropped = raw.bloomDropped === true;
+  const bloom = bloomDropped ? '' : typeof raw.bloom === 'string' ? raw.bloom : '';
   const bloomBits = Number(raw.bloomBits);
-  const bits = Number.isFinite(bloomBits) ? Math.max(0, Math.round(bloomBits)) : 0;
+  const bits = bloomDropped ? 0 : Number.isFinite(bloomBits) ? Math.max(0, Math.round(bloomBits)) : 0;
+  // E5（审计修复 #8）：位图 CRC32；缺失记 -1（解码一定失败 → 当候选，不影响正确性）。
+  const rawCrc = Number(raw.bloomCrc);
+  const bloomCrc = bloomDropped ? 0 : Number.isFinite(rawCrc) ? Math.floor(rawCrc) >>> 0 : -1;
   const metaMtimeMs = Number(raw.metaMtimeMs);
   const lastModified = Number(raw.lastModified);
   return {
@@ -314,7 +458,16 @@ function sanitizeBook(raw) {
     lastModified: Number.isFinite(lastModified) ? lastModified : 0,
     bloom: bloom.slice(0, MAX_BLOOM_BITS), // base64 字符数上限（异常输入兜底）
     bloomBits: bits,
-    itemCount: Number.isFinite(Number(raw.itemCount)) ? Math.max(0, Math.round(Number(raw.itemCount))) : 0,
+    bloomCrc,
+    itemCount:
+      bloomDropped || !Number.isFinite(Number(raw.itemCount))
+        ? 0
+        : Math.max(0, Math.round(Number(raw.itemCount))),
+    // P3（审计修复 #19）：这本书的双字集合超过 MAX_BLOOM_ITEMS，主动放弃位图（永远当候选）。
+    // 老索引没有这个字段 → false，照旧按 bloom 字不空就走位图。
+    bloomOmitted: raw.bloomOmitted === true,
+    // 审计修复 #33（▲V307）：索引总量超预算时被丢掉位图（章节指纹保留，永远当候选、逐章核对）。
+    bloomDropped,
     chapters
   };
 }
@@ -345,6 +498,53 @@ function serializeIndex(index) {
   return JSON.stringify(index);
 }
 
+// 审计修复 #33（▲V307）：把整份索引压进总量预算。
+// 淘汰顺序 = 书目最后修改时间（lastModified：书目 mtime 与全部章节 mtime 的最大值）从旧到新。
+// 不用「搜索 LRU」：每次搜索都会把每本书的位图查一遍，按搜索次数算没有区分度；lastModified
+// 才是「最近有没有在写这本书」的信号，也跨进程可比。
+// 只清 bloom 字段（base64 位图就是体积大头），章节指纹 / 书名 / 章名全部保留：下次校验仍能
+// 发现正文变化，正常增量更新不受影响；被清空的书 = 永远当候选、逐章核对（只降速不漏报）。
+// 纯函数，不修改入参；返回 { index, dropped }，cap 非正数时视为不设预算。
+function dropBookBloom(book) {
+  return { ...book, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0, bloomDropped: true };
+}
+
+// 审计残留修复 #R17（#33-V307）：预算尽力而为 —— 所有书都没有可丢的位图（纯章节指纹），或丢完
+// 所有位图仍超预算时，原样返回（dropped=0），调用方照常写出。不为了凑预算删章节指纹：指纹是
+// 增量校验的依据，删掉就得每次启动全量重扫。读侧另有 MAX_INDEX_READ_BYTES（64 MB）闸门兜底，
+// 超限按空索引重建 —— 所以「写出的索引 ≤ 32 MB」是正常书架的保证，不是任何输入下的硬上界。
+function enforceIndexBudget(index, maxBytes) {
+  const cap = Number(maxBytes);
+  if (!Number.isFinite(cap) || cap <= 0) return { index, dropped: 0 };
+  const books = Array.isArray(index.books) ? index.books : [];
+  // 一次算准字节数：数组序列化 = 逐项 JSON.stringify 用逗号连接，正好等于拼接结果；
+  // 用 Buffer.byteLength 按 UTF-8 计（书名 / 路径里的中文按实际写盘字节算）。
+  const baseBytes = Buffer.byteLength(serializeIndex({ ...index, books: [] }));
+  const sizes = books.map((book) => ({
+    withBloom: Buffer.byteLength(JSON.stringify(book)),
+    withoutBloom: book.bloom ? Buffer.byteLength(JSON.stringify(dropBookBloom(book))) : null
+  }));
+  let total = baseBytes + Math.max(0, books.length - 1);
+  for (const size of sizes) total += size.withBloom;
+  if (total <= cap) return { index, dropped: 0 };
+  const victims = sizes
+    .map((size, i) => ({ i, size, lastModified: Number.isFinite(books[i].lastModified) ? books[i].lastModified : 0 }))
+    .filter((item) => item.size.withoutBloom !== null)
+    .sort((a, b) => a.lastModified - b.lastModified || b.i - a.i);
+  const next = books.slice();
+  let dropped = 0;
+  for (const victim of victims) {
+    if (total <= cap) break;
+    next[victim.i] = dropBookBloom(books[victim.i]);
+    total -= victim.size.withBloom - victim.size.withoutBloom;
+    dropped += 1;
+  }
+  // 审计残留修复 #R17（#33-V307）：没有可淘汰的位图 / 淘汰后仍超预算 → 原样返回，调用方照常
+  // 写盘（尽力而为；不删章节指纹，见函数头口径）。
+  if (!dropped) return { index, dropped: 0 };
+  return { index: { ...index, books: next }, dropped };
+}
+
 function totalChapters(index) {
   return (index && Array.isArray(index.books) ? index.books : []).reduce(
     (sum, book) => sum + (Array.isArray(book.chapters) ? book.chapters.length : 0),
@@ -361,6 +561,7 @@ function sameChapter(a, b) {
     a.index === b.index &&
     a.mtimeMs === b.mtimeMs &&
     a.size === b.size &&
+    a.contentHash === b.contentHash &&
     a.chars === b.chars
   );
 }
@@ -376,7 +577,11 @@ function sameBook(a, b) {
     a.lastModified !== b.lastModified ||
     a.bloom !== b.bloom ||
     a.bloomBits !== b.bloomBits ||
-    a.itemCount !== b.itemCount
+    a.bloomCrc !== b.bloomCrc ||
+    a.itemCount !== b.itemCount ||
+    a.bloomOmitted !== b.bloomOmitted ||
+    // 审计修复 #33（▲V307）：被总量预算丢过位图的书也计入「变了」
+    a.bloomDropped !== b.bloomDropped
   ) {
     return false;
   }
@@ -430,20 +635,26 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     metaMtimeMs = 0;
   }
   const rawChapters = Array.isArray(meta.chapters) ? meta.chapters : [];
-  // 章节文件指纹：并发 stat（大书架一次要 3000+ 次，串行会明显拖慢校验）
+  const oldChapters = new Map(
+    (old && Array.isArray(old.chapters) ? old.chapters : []).map((chapter) => [chapter.file, chapter])
+  );
+  // 章节文件指纹：并发 stat + 首尾各 4 KB 内容采样（E4：同 mtime / size 的改写也要能发现）。
+  // 采样读不到时 contentHash 为空串：下次校验会当「变化」重算（宁可重建，不可漏报）。
   const stats = await mapLimit(rawChapters, 24, async (chapter) => {
     try {
-      const stat = await fs.stat(storage.assertChapterFile(bookPath, chapter.file));
+      const filePath = storage.assertChapterFile(bookPath, chapter.file);
+      const stat = await fs.stat(filePath);
       if (!stat.isFile()) return null;
-      return { mtimeMs: stat.mtimeMs, size: stat.size };
+      return {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        contentHash: await chapterContentHashOf(filePath, stat.size)
+      };
     } catch {
       return null; // 缺文件的章节不参与搜索（书目里还在，历史面板能找回）
     }
   });
 
-  const oldChapters = new Map(
-    (old && Array.isArray(old.chapters) ? old.chapters : []).map((chapter) => [chapter.file, chapter])
-  );
   const chapters = [];
   let textChanged = force || dirty;
   for (let i = 0; i < rawChapters.length; i += 1) {
@@ -455,7 +666,13 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     }
     const previous = oldChapters.get(chapter.file);
     // 只有「新章 / 正文指纹变了」才需要重算位图；章节序号 / 章名变化由下面的元数据更新覆盖。
-    if (!previous || previous.mtimeMs !== stat.mtimeMs || previous.size !== stat.size) {
+    // E4：指纹 = mtime + size + 首尾内容哈希（同大小、保留时间戳的改写靠第三项发现）。
+    if (
+      !previous ||
+      previous.mtimeMs !== stat.mtimeMs ||
+      previous.size !== stat.size ||
+      previous.contentHash !== stat.contentHash
+    ) {
       textChanged = true;
     }
     chapters.push({
@@ -465,6 +682,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
       index: i,
       mtimeMs: stat.mtimeMs,
       size: stat.size,
+      contentHash: stat.contentHash,
       chars: Number.isFinite(Number(chapter.chars))
         ? Math.max(0, Math.round(Number(chapter.chars)))
         : previous && Number.isFinite(previous.chars)
@@ -493,18 +711,28 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     lastModified,
     bloom: '',
     bloomBits: 0,
+    bloomCrc: 0,
     itemCount: 0,
+    bloomOmitted: false,
+    // 审计修复 #33（▲V307）：默认有位图；被总量预算淘汰后才为 true
+    bloomDropped: false,
     chapters
   };
 
-  if (old && !textChanged && old.bloom) {
+  if (old && !textChanged && (old.bloom || old.bloomOmitted === true || old.bloomDropped === true)) {
     // 只改了章名 / 顺序 / 状态：复用位图，不重读正文
+    // （P3：上轮「双字太多、主动放弃位图」的书也复用这个结论，不必每轮校验都白读一遍全书）
+    // （#33：上轮被索引总量预算丢掉位图的书同理 —— 正文没变就不为它白读一遍全书）
     return {
       entry: {
         ...base,
         bloom: old.bloom,
         bloomBits: old.bloomBits,
+        bloomCrc: old.bloomCrc,
         itemCount: old.itemCount,
+        bloomOmitted: old.bloomOmitted === true,
+        // 审计修复 #33（▲V307）：沿用「没有位图」的结论（旧索引没有这个字段 → false）
+        bloomDropped: old.bloomDropped === true,
         chapters: base.chapters.map((chapter) => {
           const previous = oldChapters.get(chapter.file);
           return previous && chapter.chars == null ? { ...chapter, chars: previous.chars } : chapter;
@@ -517,7 +745,7 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
   if (onProgress) onProgress({ phase: 'book', book: base.title, chapters: chapters.length });
   // P2-1：逐批读正文 → 并进位图 Set → 丢引用。批内仍限并发 6、批间串行，章的先后顺序不变
   //（Set 插入顺序不变 ⇒ 位图字节与「整本 texts 一次建」完全相同）。
-  const builder = createBookBloom();
+  const builder = createBookBloom({ maxItems: options.bloomMaxItems });
   const counts = new Array(chapters.length).fill(null);
   let missingText = false;
   for (let start = 0; start < chapters.length && !missingText; start += BLOOM_BUILD_BATCH) {
@@ -541,17 +769,30 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
   }
   if (missingText) {
     // 有章节读不了：不给位图，搜索时这本书永远进候选、逐章核对（字数也不补，与旧实现一致）
-    return { entry: { ...base, bloom: '', bloomBits: 0, itemCount: 0 }, rebuilt: true };
+    return {
+      entry: { ...base, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0, bloomOmitted: false },
+      rebuilt: true
+    };
   }
   const built = builder.finish();
   for (let i = 0; i < chapters.length; i += 1) {
     if (chapters[i].chars == null && counts[i] != null) chapters[i].chars = counts[i];
+  }
+  if (built.omitted) {
+    // P3（审计修复 #19）：不重复双字超过 MAX_BLOOM_ITEMS（巨书极端形态）→ 主动放弃位图。
+    // 与「章读不了」同一口径：搜索永远把这本书当候选、逐章核对（只降速不漏报）；
+    // bloomOmitted 记住这个取舍，下次深度校验不再为同一本书白读一遍正文。
+    return {
+      entry: { ...base, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0, bloomOmitted: true },
+      rebuilt: true
+    };
   }
   return {
     entry: {
       ...base,
       bloom: encodeBloom(built.bloom),
       bloomBits: built.bits,
+      bloomCrc: crc32(built.bloom),
       itemCount: built.items
     },
     rebuilt: true
@@ -567,6 +808,10 @@ function createSearchStore(options = {}) {
     : FULL_VALIDATE_INTERVAL_MS;
   // stat 可注入：单测用它数「一次搜索到底 stat 了几次」（P-01 的锚点），产品里就是 fs.stat。
   const statFile = typeof options.stat === 'function' ? options.stat : (target) => fs.stat(target);
+  // P3（审计修复 #19）：单测用 —— 把建图双字上限压小，验证「超限 → 放弃位图」的整条链路
+  const bloomMaxItems = Number.isFinite(options.bloomMaxItems)
+    ? Math.max(1, Math.floor(options.bloomMaxItems))
+    : undefined;
   // 搜索侧窗口：validateIntervalMs=0（单测里「每次都要看到外部改动」的口径）时退回旧行为。
   const searchEnsureIntervalMs = validateIntervalMs === 0 ? 0 : SEARCH_ENSURE_INTERVAL_MS;
   const nowMs = () => {
@@ -584,36 +829,73 @@ function createSearchStore(options = {}) {
   let loadProblem = null;
   let indexBytes = 0;
   let ensurePromise = null;
+  // P1（审计修复 #9）：当前在途 / 排队校验对应的书架根（归一化后）。搜索靠它判断
+  // 「同一个根已经有校验在飞」，避免首建期再排到它后面等一遍完整校验。
+  let ensureRoot = '';
   let lastFullValidateAt = 0;
   let lastProgress = null;
   let lastRun = null;
   let savePromise = Promise.resolve();
   let lastSaveError = null;
+  // 审计修复 #46（E21）：书架根不可读的上一次结果（ROOT_UNREADABLE / 系统码）。status() / search()
+  // 都要能看见它 —— 以前只在 doEnsure 的返回值里挂一下，搜索侧拿 status() 时这一趟失败就蒸发了，
+  // 作者看到的是「没有结果」，不是「书架读不了」。
+  let rootProblem = '';
   // P-01：最近一次成功校验的时刻 / 当时的根目录签名 / 最近一次签名探测时刻。
   let lastEnsureAt = 0;
   let rootSignature = '';
   let lastSignatureCheckAt = 0;
   const dirtyBooks = new Set();
   // V93：path -> { bloom(base64), bits, buffer }，按 LRU 只留最近用过的 BLOOM_CACHE_MAX 本。
+  // P3（审计修复 #19）：条数之外再加字节预算（BLOOM_CACHE_MAX_BYTES，单测可注入
+  // options.bloomCacheMaxBytes）—— 32 条 × 单本最大 8 MB 位图 ≈ 256 MB 的老口径在这里被压住。
   const bloomCache = new Map();
+  let bloomCacheBytes = 0;
+  const bloomCacheMaxBytes = Number.isFinite(options.bloomCacheMaxBytes)
+    ? Math.max(0, Math.floor(options.bloomCacheMaxBytes))
+    : BLOOM_CACHE_MAX_BYTES;
+  // 审计修复 #33（▲V307）：单文件索引的总量预算（单测注入小值验证淘汰路径；0 = 不设预算）。
+  const indexMaxBytes = Number.isFinite(options.indexMaxBytes)
+    ? Math.max(0, Math.floor(options.indexMaxBytes))
+    : MAX_INDEX_BYTES;
+
+  function forgetBloom(bookPath) {
+    const cached = bloomCache.get(bookPath);
+    if (!cached) return;
+    bloomCache.delete(bookPath);
+    bloomCacheBytes -= cached.buffer ? cached.buffer.length : 0;
+  }
+
+  function rememberBloom(bookPath, entry) {
+    forgetBloom(bookPath);
+    bloomCache.set(bookPath, entry);
+    bloomCacheBytes += entry.buffer ? entry.buffer.length : 0;
+    while (
+      bloomCache.size > BLOOM_CACHE_MAX ||
+      // 单个超预算的大位图仍留一份（否则每次搜索都重解码，白费 CPU）；其余按 LRU 让位
+      (bloomCacheBytes > bloomCacheMaxBytes && bloomCache.size > 1)
+    ) {
+      const oldest = bloomCache.keys().next().value;
+      forgetBloom(oldest);
+    }
+  }
 
   function bloomFor(book) {
     if (!book.bloom) return null;
     const cached = bloomCache.get(book.path);
-    if (cached && cached.bloom === book.bloom && cached.bits === book.bloomBits) {
+    if (cached && cached.bloom === book.bloom && cached.bits === book.bloomBits && cached.crc === book.bloomCrc) {
       // 命中：挪到队尾（Map 的插入顺序就是 LRU 顺序）。位图变了（重建过）算未命中。
-      bloomCache.delete(book.path);
-      bloomCache.set(book.path, cached);
+      rememberBloom(book.path, cached);
       return cached.buffer;
     }
-    const buffer = decodeBloom(book.bloom, book.bloomBits);
-    if (!buffer) return null;
-    bloomCache.delete(book.path); // 旧位置 / 旧位图先摘掉，重新插到队尾
-    bloomCache.set(book.path, { bloom: book.bloom, bits: book.bloomBits, buffer });
-    while (bloomCache.size > BLOOM_CACHE_MAX) {
-      const oldest = bloomCache.keys().next().value;
-      bloomCache.delete(oldest);
+    const buffer = decodeBloom(book.bloom, book.bloomBits, book.bloomCrc);
+    if (!buffer) {
+      // E5（审计修复 #8）：位图 / CRC 校验不过 → 搜这本书时永远当候选、逐章核对（只降速不漏报），
+      // 并登记脏书把搜索窗口关掉，让下一次校验重建它（自愈）。旧实现会静默用坏位图漏报。
+      markDirty(book.path);
+      return null;
     }
+    rememberBloom(book.path, { bloom: book.bloom, bits: book.bloomBits, crc: book.bloomCrc, buffer });
     return buffer;
   }
 
@@ -636,23 +918,43 @@ function createSearchStore(options = {}) {
       try {
         // C17（v1.8.0 WP-19）：先 stat + 独立上限再读。超限与「内容坏了」分开记（INDEX_TOO_LARGE /
         // CORRUPT），都按空索引重建；区别是界面 / 排查时能看出「是被换成了大文件」而不是索引写坏。
-        const info = await fs.stat(filePath);
-        const tooLarge = storage.readSizeProblem(info.size, {
-          code: 'INDEX_TOO_LARGE',
-          label: '搜索索引文件',
-          limit: MAX_INDEX_READ_BYTES,
-          tail: '没有读进内存'
-        });
-        if (tooLarge) {
-          loadProblem = tooLarge.code;
-          index = emptyIndex('');
-          return index;
+        // 审计修复 #45（S8）：闸门与读盘绑在同一个句柄上（open → fstat → 从同一句柄读）——
+        // 旧实现 stat 之后按路径 readFile，间隙里索引文件被换成大文件就整份读进内存。
+        const handle = await fs.open(filePath, 'r');
+        let text;
+        try {
+          const info = await handle.stat();
+          const tooLarge = storage.readSizeProblem(info.size, {
+            code: 'INDEX_TOO_LARGE',
+            label: '搜索索引文件',
+            limit: MAX_INDEX_READ_BYTES,
+            tail: '没有读进内存'
+          });
+          if (tooLarge) {
+            loadProblem = tooLarge.code;
+            index = emptyIndex('');
+            return index;
+          }
+          text = await handle.readFile('utf8');
+        } finally {
+          try {
+            await handle.close();
+          } catch { /* 关不掉不影响已读到的内容 */ }
         }
-        const text = await fs.readFile(filePath, 'utf8');
         indexBytes = Buffer.byteLength(text);
         const parsed = parseIndex(text);
         if (parsed) {
           index = parsed;
+          // 审计修复 #33（▲V307）：旧版本写出的索引可能超过新的总量预算 —— 读回时先淘汰（内存立即
+          // 生效，搜索从这次起就不再用被淘汰的位图），并把结果落盘一次；写失败只记 lastSaveError，
+          // 不影响本次搜索。预算内（绝大多数情况）不做任何多余序列化。
+          if (indexBytes > indexMaxBytes) {
+            const budgeted = enforceIndexBudget(index, indexMaxBytes);
+            if (budgeted.dropped > 0) {
+              index = budgeted.index;
+              await saveThrough(); // 审计修复 #46（E21）：走与 flush 同一条串行链
+            }
+          }
         } else {
           loadProblem = 'CORRUPT';
           index = emptyIndex('');
@@ -678,12 +980,16 @@ function createSearchStore(options = {}) {
       books: index.books.length,
       chapters: totalChapters(index),
       bytes: indexBytes,
+      // 审计修复 #33（▲V307）：被总量预算丢掉位图的书数（>0 时这些书搜索时逐章核对，只降速不漏报）
+      droppedBlooms: index.books.reduce((count, book) => count + (book.bloomDropped === true ? 1 : 0), 0),
       builtAt: index.builtAt || '',
       updatedAt: index.updatedAt || '',
       root: index.root,
       building: Boolean(ensurePromise),
       progress: lastProgress,
       problem: loadProblem,
+      // 审计修复 #46（E21）：书架根读不了时把错误码透传给搜索 / 界面（成功校验后清空）
+      error: rootProblem,
       saveError: lastSaveError,
       lastRun
     };
@@ -691,7 +997,18 @@ function createSearchStore(options = {}) {
 
   async function saveNow() {
     try {
-      const text = serializeIndex(index);
+      // 审计修复 #33（▲V307）：先整份序列化，超出总量预算才做淘汰（正常书架一次 stringify 的
+      // 成本不变）；淘汰后重序列化一次，正常书架写出的文件大小 / 每次 flush 的写放大都有上界。
+      // 审计残留修复 #R17（#33-V307）：没有可丢位图时仍照常写出（预算尽力而为，读侧 64 MB 兜底），
+      // 章节指纹一条不丢 —— 不为了凑预算删指纹、把每次启动变成全量重扫。
+      let text = serializeIndex(index);
+      if (Buffer.byteLength(text) > indexMaxBytes) {
+        const budgeted = enforceIndexBudget(index, indexMaxBytes);
+        if (budgeted.dropped > 0) {
+          index = budgeted.index;
+          text = serializeIndex(index);
+        }
+      }
       await atomicWriteFile(filePath, text);
       indexBytes = Buffer.byteLength(text);
       lastSaveError = null;
@@ -706,9 +1023,16 @@ function createSearchStore(options = {}) {
   // 落盘只在 flush() 里串行做（保存失败只记 lastSaveError、不影响搜索）。
   // 以前这里还有一个 scheduleSave() 做防抖延迟写，但从来没有人调用它（v0.9 B-4 死代码扫描
   // 扫出来，连它的 saveDebounceMs 选项一起删掉了）——现在写索引只有 flush() 这一条路径。
-  async function flush() {
+  // 审计修复 #46（E21）：doEnsure / load 里的「预算淘汰后重落盘」也排进这一条串行链 ——
+  // 以前它们直接 await saveNow()，绕开 savePromise，与上面这句注释矛盾，两次写还可能交错
+  // （后写的整份覆盖先写的）。saveThrough 是唯一的入队口，flush 只是等它 + 回状态。
+  function saveThrough() {
     savePromise = savePromise.then(saveNow, saveNow).catch(() => false);
-    await savePromise;
+    return savePromise;
+  }
+
+  async function flush() {
+    await saveThrough();
     return status();
   }
 
@@ -723,20 +1047,26 @@ function createSearchStore(options = {}) {
 
     const root = normalizePath(booksRoot);
     const rootChanged = index.root !== root;
-    if (rootChanged) {
-      index = emptyIndex(root);
-      bloomCache.clear();
-      lastFullValidateAt = 0;
-    }
 
     let folders;
     try {
       folders = await listBookFolders(booksRoot);
     } catch (err) {
+      // 审计修复 #46（E21）：确认新根可读之前不动内存里的索引 —— 旧实现先按 rootChanged 把索引清成
+      // 空（bloomCache / lastFullValidateAt 一起清），再去 readdir，根不可读时白清一场：界面上的书
+      // 全没了、下一次回旧根还得从头重建。现在清索引放在 readdir 成功之后。
+      rootProblem = (err && err.code) || 'ROOT_UNREADABLE';
       const result = status();
-      result.error = (err && err.code) || 'ROOT_UNREADABLE';
+      result.error = rootProblem;
       return result;
     }
+    if (rootChanged) {
+      index = emptyIndex(root);
+      bloomCache.clear();
+      bloomCacheBytes = 0;
+      lastFullValidateAt = 0;
+    }
+    rootProblem = '';
 
     // 本轮校验对应的根目录签名：一次 stat，之后窗口内的搜索都靠它判「书架有没有增删书」。
     const signature = await rootSignatureOf(booksRoot);
@@ -812,7 +1142,7 @@ function createSearchStore(options = {}) {
           bookPath,
           folder,
           old,
-          { force, dirty },
+          { force, dirty, bloomMaxItems },
           (info) => report({ ...info, done: doneBooks, total: folders.length })
         );
       } catch {
@@ -853,7 +1183,7 @@ function createSearchStore(options = {}) {
     lastEnsureAt = nowMs();
     rootSignature = signature;
     lastSignatureCheckAt = lastEnsureAt;
-    if (run.changed || rootChanged) await saveNow();
+    if (run.changed || rootChanged) await saveThrough(); // 审计修复 #46（E21）：排进 flush 的串行链
     lastRun = run;
     const result = status();
     if (run.changed || rootChanged) {
@@ -875,6 +1205,7 @@ function createSearchStore(options = {}) {
 
   // 同一时间只跑一次校验 / 建索引；后来的调用排在后面（force 仍会执行）。
   function ensure(opts = {}) {
+    ensureRoot = normalizePath(String(opts.booksRoot == null ? '' : opts.booksRoot));
     const previous = ensurePromise || Promise.resolve();
     const run = previous.catch(() => {}).then(() => doEnsure(opts));
     ensurePromise = run;
@@ -936,13 +1267,31 @@ function createSearchStore(options = {}) {
     // 窗口外 / 根目录签名变了 / force 才走原来的校验路径。
     const searchRoot = normalizePath(booksRoot);
     const now = nowMs();
+    const forceEnsure = Boolean(opts.ensureOptions && opts.ensureOptions.force);
+    // P1（审计修复 #9）：首建期（本根还没有可用的内存索引）同一个根已有校验在飞时，
+    // 搜索**不再排到它后面**等一遍完整校验（旧实现大书架要阻塞数分钟，1800ms 预算在
+    // ensure 返回后才起算）。这里直接回 building:true + 空结果，界面据此显示「正在建索引」；
+    // 建完后按进度事件自动重搜（renderer.js 的 onSearchProgress）—— 结果不会丢，只是晚一步。
+    // 已经有本根可用索引时（改名 / 脏书触发的后台校验）仍走原路径：旧结果比空结果有用。
+    const hasUsableIndex = index.root === searchRoot && index.books.length > 0;
+    if (ensurePromise && ensureRoot === searchRoot && !forceEnsure && !hasUsableIndex) {
+      const state = status();
+      const buildingInfo = {
+        books: state.books,
+        chapters: state.chapters,
+        building: true,
+        problem: state.problem || '',
+        bytes: state.bytes
+      };
+      return { ...makeBase(buildingInfo), truncated: true, elapsedMs: 0 };
+    }
     const reuseIndex =
       loaded &&
       index.root === searchRoot &&
       index.version === INDEX_VERSION &&
       lastEnsureAt > 0 &&
       now - lastEnsureAt < searchEnsureIntervalMs &&
-      !(opts.ensureOptions && opts.ensureOptions.force);
+      !forceEnsure;
     let signatureChanged = false;
     if (reuseIndex && now - lastSignatureCheckAt >= SEARCH_SIGNATURE_INTERVAL_MS) {
       // 2 s 节流：连续两次 search 合计只发生这一次 stat。
@@ -966,6 +1315,16 @@ function createSearchStore(options = {}) {
       problem: state.problem || '',
       bytes: state.bytes
     };
+    // 审计修复 #46（E21）：书架根读不了（ROOT_UNREADABLE / 系统码）时把错误码透传给调用方，
+    // 不再静默回一份「没有结果」的空搜索 —— 作者 / 界面至少知道是书架路径的问题。
+    if (state.error) {
+      return {
+        ...makeBase({ ...indexInfo, books: 0, chapters: 0, problem: state.error }),
+        error: state.error,
+        truncated: true,
+        elapsedMs: 0
+      };
+    }
     if (normalizePath(booksRoot) !== index.root) {
       return { ...makeBase(indexInfo), truncated: true, index: { ...indexInfo, books: 0, chapters: 0 } };
     }
@@ -1242,7 +1601,9 @@ function createSearchStore(options = {}) {
     getBytes: () => indexBytes,
     getProblem: () => loadProblem,
     // V93：当前位图缓存条数（锚点用；也方便以后排查「内存里留了几本位图」）
-    getBloomCacheSize: () => bloomCache.size
+    getBloomCacheSize: () => bloomCache.size,
+    // P3（审计修复 #19）：当前位图缓存的字节数（锚点用：条数上界之外还有字节预算）
+    getBloomCacheBytes: () => bloomCacheBytes
   };
 }
 
@@ -1251,12 +1612,20 @@ module.exports = {
   INDEX_VERSION,
   // C17（WP-19）：索引读盘的独立上限（测试用稀疏文件验证超限路径）
   MAX_INDEX_READ_BYTES,
+  // 审计修复 #33（▲V307）：写盘总量预算 + 超限淘汰纯函数（单测直接核淘汰顺序 / 字节上界）
+  MAX_INDEX_BYTES,
+  enforceIndexBudget,
   MIN_BLOOM_BITS,
   BLOOM_CACHE_MAX,
+  BLOOM_CACHE_MAX_BYTES,
+  MAX_BLOOM_ITEMS,
   MAX_SNIPPETS_PER_CHAPTER,
   MAX_CHAPTER_MATCH_COUNT,
   MAX_FOCUS_SNIPPETS,
   MAX_FOCUS_FIELD_CHARS,
+  // E4 / E5（审计修复 #8）：章文件首尾采样指纹与每书位图 CRC32（单测直接钉住形状与校验）
+  crc32,
+  chapterContentHashOf,
   normalizeQuery,
   bigramHash,
   queryBigrams,

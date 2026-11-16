@@ -6,6 +6,7 @@
 // 这里不再切源码找函数名，而是把四个 handler 的注册语句放进假作用域真跑一遍：
 // core 替身返回什么对象，handler 就必须原样（同一个引用）返回什么对象 —— 中间多包一层、
 // 少带一个字段、拼一个新对象都会被抓到。
+// 审计修复 #38（▲V306）：四个频道已随书域数据面搬到 ipc/book-data.js，闸门跟着扫新位置。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -13,7 +14,7 @@ const path = require('node:path');
 const readSource = (rel) =>
   require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
 
-const mainSource = readSource('main.js');
+const bookDataSource = readSource('ipc/book-data.js');
 
 // 从 `handleBook('频道', ...)` 的锚点切到这一条注册语句的右括号（括号按嵌套层级配平）。
 function extractCall(source, marker) {
@@ -38,7 +39,7 @@ function extractCall(source, marker) {
   return source.slice(start, end) + ';';
 }
 
-// 频道 → main.js 里的注册锚点 ／ core 替身要走的 storage 方法 ／ 这轮要透传的跳过章数。
+// 频道 → ipc/book-data.js 里的注册锚点 ／ core 替身要走的 storage 方法 ／ 这轮要透传的跳过章数。
 const SITES = [
   ['book:search', "handleBook('book:search',", 'searchBook', 3],
   ['book:replace', "handleBook('book:replace',", 'replaceInBook', 0],
@@ -61,12 +62,17 @@ function loadIpcHandler([channel, marker, method, skippedTooLarge]) {
   const fakeHandleBook = (name, fn) => {
     captured = { name, fn };
   };
-  const statement = extractCall(mainSource, marker);
-  new Function('handleBook', 'storage', 'ipcLimits', 'sendToFlow', statement)(
+  const statement = extractCall(bookDataSource, marker);
+  // 审计修复 #38（▲V306）：注册语句的第三个参数用 ipc/book-mutations.js 的常量（写操作 / READ_ONLY），
+  // 假作用域要把这两个名字一起交进去（只是取值，不改变 handler 的行为）。
+  const { MUTATION, READ_ONLY } = require('../ipc/book-mutations');
+  new Function('handleBook', 'storage', 'ipcLimits', 'sendToFlow', 'MUTATION', 'READ_ONLY', statement)(
     fakeHandleBook,
     storage,
     { sanitizeSearchOptions: (value) => value, sanitizeReplaceOptions: (value) => value },
-    () => {}
+    () => {},
+    MUTATION,
+    READ_ONLY
   );
   assert.equal(captured && captured.name, channel, `${channel} 的注册语句没有注册出回调`);
   assert.equal(typeof captured.fn, 'function', `${channel} 的回调必须是函数`);
