@@ -86,6 +86,7 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 ```
 
 - 配置在 `package.json` 的 `build` 字段：appId、产品名、NSIS 安装器选项（可选目录、桌面/开始菜单快捷方式、中文界面）。
+- **`appId` 固定为 `local.chapter-writer`（历史身份，不随产品名 / `name` 改）**：它决定 NSIS 安装 / 卸载注册表键（`Software\<由 appId 派生的 GUID>`）、快捷方式 AppUserModelID 与「是否已安装」的识别。v1.8.0 已发布，现在换 appId 等于换一个应用身份——旧版卸载项残留、任务栏固定项分裂、新旧版还会装进同一个目录。正式反向域名（如 `com.anan1124.chapterly`）顺延到下一个大版本，随「先卸载旧版再装新版」的迁移说明一起改；它与应用数据目录 `%APPDATA%\chapter-writer` 无关（数据目录在 `main.js` 里显式指定，不随 appId / 产品名搬动）（审计残留 #31 / O3；处置口径＝保持现状 + 文档化，不改实现）。
 - 国内网络打包时如果下载 Electron/NSIS 卡住，先设镜像：
   `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`、
   `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`。
