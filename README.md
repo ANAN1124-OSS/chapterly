@@ -1,4 +1,4 @@
-# 章回 / Chapterly v1.8.0
+# 章回 / Chapterly v1.8.1
 
 给写个人自用的 Windows 桌面写作工具：**整本书一键保存、绝不丢稿**；新建章节自动生成「第12章：」这样的标题，你只填名字。
 
@@ -37,7 +37,7 @@
 
 ### 方式一：安装包（推荐，不用命令行）
 
-**下载**：从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-1.8.0-win-x64-setup.exe`（已于 2026-11-15 发布，见 [v1.8.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.8.0)），或者直接用本机打包产物 `dist\chapterly-1.8.0-win-x64-setup.exe`；开发时也可以先用开发版（`pnpm start`）。
+**下载**：从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-1.8.1-win-x64-setup.exe`（已于 2026-11-16 发布，见 [v1.8.1](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.8.1)），或者直接用本机打包产物 `dist\chapterly-1.8.1-win-x64-setup.exe`；开发时也可以先用开发版（`pnpm start`）。
 
 安装：
 
