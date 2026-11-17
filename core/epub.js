@@ -30,6 +30,20 @@ const EPUB_DIR = 'OEBPS';
 const EPUB_LANGUAGE = 'zh-CN';
 const EPUB_VERSION = '3.0';
 
+// X-N11（WP18）：封面 / 目录这些固定文案以前硬编码简体，繁体导出会出现「书名 / 目录条目 /
+// 正文都转繁，唯目录页大标题仍『目录』」。这里只收调用方算好的三份文案（core/epub.js 不引 s2t，
+// 由 ipc/export.js 按导出档位过 convertText）；缺省 / 空串 / 非字符串回默认，默认产物不变。
+const DEFAULT_EPUB_LABELS = Object.freeze({ nav: '目录', cover: '封面', toc: '目录' });
+
+function normalizeLabels(input) {
+  const raw = input && input.labels && typeof input.labels === 'object' ? input.labels : null;
+  const pick = (key) => {
+    const value = raw && typeof raw[key] === 'string' ? raw[key].trim() : '';
+    return value || DEFAULT_EPUB_LABELS[key];
+  };
+  return { nav: pick('nav'), cover: pick('cover'), toc: pick('toc') };
+}
+
 // 段首缩进 2 字 + 段间留出一整行（line-height 1.75 ⇒ 空行也是 1.75em）。
 // 正文里的空行在拼 HTML 时已经被丢掉，段间留白统一由这里负责，避免「双倍行距」。
 const STYLE_CSS = `/* 章回导出的 EPUB：段首缩进 2 字、段间空一行 */
@@ -150,10 +164,10 @@ function renderNavList(items, depth) {
   return lines;
 }
 
-function navDocument({ title, lang, items, cssHref }) {
+function navDocument({ title, lang, items, cssHref, heading = DEFAULT_EPUB_LABELS.nav }) {
   const body = [
     '<nav epub:type="toc" id="toc">',
-    '  <h1>目录</h1>',
+    `  <h1>${escapeXml(heading)}</h1>`,
     ...renderNavList(items, 1),
     '</nav>'
   ].join('\n');
@@ -217,7 +231,7 @@ function containerDocument() {
   ].join('\n');
 }
 
-function opfDocument({ title, identifier, modified, lang, manifest, spine }) {
+function opfDocument({ title, identifier, modified, lang, manifest, spine, labels = DEFAULT_EPUB_LABELS }) {
   const manifestLines = manifest.map((item) => {
     const properties = item.properties ? ` properties="${escapeXml(item.properties)}"` : '';
     return `    <item id="${escapeXml(item.id)}" href="${escapeXml(item.href)}" media-type="${escapeXml(item.mediaType)}"${properties}/>`;
@@ -231,7 +245,6 @@ function opfDocument({ title, identifier, modified, lang, manifest, spine }) {
     `    <dc:title>${escapeXml(title)}</dc:title>`,
     `    <dc:language>${escapeXml(lang)}</dc:language>`,
     `    <meta property="dcterms:modified">${escapeXml(modified)}</meta>`,
-    '    <meta name="cover" content="cover"/>',
     '  </metadata>',
     '  <manifest>',
     ...manifestLines,
@@ -240,8 +253,8 @@ function opfDocument({ title, identifier, modified, lang, manifest, spine }) {
     ...spineLines,
     '  </spine>',
     '  <guide>',
-    '    <reference type="cover" title="封面" href="cover.xhtml"/>',
-    '    <reference type="toc" title="目录" href="nav.xhtml"/>',
+    `    <reference type="cover" title="${escapeXml(labels.cover)}" href="cover.xhtml"/>`,
+    `    <reference type="toc" title="${escapeXml(labels.toc)}" href="nav.xhtml"/>`,
     '  </guide>',
     '</package>',
     ''
@@ -284,7 +297,7 @@ function normalizeInput(input) {
     typeof (input && input.identifier) === 'string' && input.identifier.trim()
       ? input.identifier.trim()
       : bookIdentifier(`${meta.id || title}${rangeSeed}`);
-  return { meta, chapters, texts, title, lang, identifier, stamp, plan };
+  return { meta, chapters, texts, title, lang, identifier, stamp, plan, labels: normalizeLabels(input) };
 }
 
 // B1（审计 #17 / WP13）：文件清单与元数据只有这一份顺序。
@@ -292,7 +305,7 @@ function normalizeInput(input) {
 // 章节文件给 { index, title } 描述符 —— buildBundle 用整本 texts 同步填，
 // streamEpub 用 readText 逐章读，两边顺序 / 内容由 R3 的逐字节对拍锁住。
 function bundlePlan(input) {
-  const { meta, chapters, texts, title, lang, identifier, stamp, plan } = normalizeInput(input);
+  const { meta, chapters, texts, title, lang, identifier, stamp, plan, labels } = normalizeInput(input);
   // 1.7.0 P4-1：分组收编到 core/exporter.groupByVolume（txt / docx / epub 共用一份）
   const groups = exporter.groupByVolume(meta, plan.indexes);
   const items = [];
@@ -345,7 +358,7 @@ function bundlePlan(input) {
 
   items.push({
     name: `${EPUB_DIR}/nav.xhtml`,
-    data: navDocument({ title, lang, items: navItems, cssHref: 'style.css' })
+    data: navDocument({ title, lang, items: navItems, cssHref: 'style.css', heading: labels.nav })
   });
   items.push({
     name: `${EPUB_DIR}/toc.ncx`,
@@ -371,7 +384,8 @@ function bundlePlan(input) {
       modified: stamp.iso,
       lang,
       manifest,
-      spine
+      spine,
+      labels
     })
   });
 

@@ -491,7 +491,7 @@ test('V116：listTxtFilesDeep 迭代队列 + 有限并发，清单排序 / 排�
   assert.ok(peak <= 6, `并发不超过 6 路（峰值 ${peak}）`);
 
   const source = read('core/importer.js');
-  const body = between(source, 'async function listTxtFilesDeep(dir, prefix = \'\') {', '\n}');
+  const body = between(source, 'async function listTxtFilesDeep(dir, prefix = \'\', keepFiles = null) {', '\n}');
   assert.match(body, /const batch = queue\.splice\(0, LIST_DIR_CONCURRENCY\);/);
   assert.equal(/await listTxtFilesDeep\(path\.join\(dir, entry\.name\), rel\)/.test(source), false, '不再递归串行 await');
 });

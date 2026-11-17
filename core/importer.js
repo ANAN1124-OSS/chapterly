@@ -14,6 +14,7 @@ const chapterFilename = require('./chapter-filename');
 const chaptersLib = require('./chapters');
 const storage = require('./storage');
 const repair = require('./repair');
+const conflictLib = require('./conflict');
 const {
   decodeBufferWithEncoding,
   detectBomlessUtf16,
@@ -208,16 +209,33 @@ async function collectOversizedTxt(sourceDir, txtFiles) {
   return oversized;
 }
 
+// X-N6（WP18）：导入复制过滤与重建侧对齐 —— 同步盘冲突副本（`*conflicted*` / `*-冲突副本*`）
+// 不是章节，重建侧（core/repair.js rebuildFromFiles）本来就不收；损坏书目归档
+// （`书目.json.corrupt-*`）是历史垃圾。两者都不许抄进新书，否则新书里多出永远打不开的孤儿文件。
+// `.bak` 是正常恢复副本，照旧保留；`_trash` / `.` 前缀仍由各自调用点的既有规则排除。
+// 例外：源书目的 chapters[].file 真的引用了这种名字时（作者手动改过文件名），调用方传 keepFiles，
+// 该文件照旧复制 —— 绝不让导入后的书目出现悬挂章节。
+function isCopyExcludedName(name) {
+  if (typeof name !== 'string' || !name) return false;
+  if (conflictLib.isConflictCopyName(name)) return true;
+  return name.startsWith(storage.CORRUPT_PREFIX);
+}
+
 // V57（1.7.2 D3）：现成书形态是 fs.cp 递归整目录复制，子目录里的 .txt 也在复制范围内，
 // 所以大小闸门必须递归看一遍（否则子目录里的 129 MB txt 绕过闸门被整个抄进书库）。
-// 排除口径与 copyAsBook 的 filter 一致（`_trash` / `.` 前缀不进），只认 .txt（与
+// 排除口径与 copyAsBook 的 filter 一致（`_trash` / `.` 前缀 / 冲突副本 / 损坏归档不进），只认 .txt（与
 // storage.listTxtFiles 同一条规则），不跟符号链接目录（避免环形链接把扫描拖死）。
+// 引用例外：keepFiles 是源书目 chapters[].file 的清单，被书目引用的「名字像冲突副本」的真章节
+// 仍要进清单（X-N6 保护，见 isCopyExcludedName）。
 // V116（v1.8.0 WP-29）：递归改「迭代队列 + 每批 6 个目录并发 readdir」——深目录树不再一层层
 // 串行等盘；排除规则、连通性（读不出的子树直接跳过）与最终排序（zh-Hans-CN 升序）逐项不变。
 const LIST_DIR_CONCURRENCY = 6;
 
-async function listTxtFilesDeep(dir, prefix = '') {
+async function listTxtFilesDeep(dir, prefix = '', keepFiles = null) {
   const found = [];
+  const keep = Array.isArray(keepFiles) && keepFiles.length
+    ? new Set(keepFiles.map((file) => path.resolve(dir, String(file))))
+    : null;
   const queue = [{ dir, prefix: prefix || '' }];
   while (queue.length) {
     const batch = queue.splice(0, LIST_DIR_CONCURRENCY);
@@ -233,9 +251,11 @@ async function listTxtFilesDeep(dir, prefix = '') {
         const files = [];
         for (const entry of entries) {
           if (entry.name === storage.TRASH_DIR || entry.name.startsWith('.')) continue;
+          const full = path.join(item.dir, entry.name);
+          if (isCopyExcludedName(entry.name) && !(keep && keep.has(path.resolve(full)))) continue;
           const rel = item.prefix ? path.join(item.prefix, entry.name) : entry.name;
           if (entry.isDirectory()) {
-            nextDirs.push({ dir: path.join(item.dir, entry.name), prefix: rel });
+            nextDirs.push({ dir: full, prefix: rel });
           } else if (entry.isFile() && /\.txt$/i.test(entry.name)) {
             files.push(rel);
           }
@@ -305,14 +325,25 @@ function withSkippedEntries(result, oversized) {
   };
 }
 
-async function copyAsBook(sourceDir, target, oversized) {
+async function copyAsBook(sourceDir, target, oversized, keepFiles = null) {
   const skip = new Set((oversized || []).map((entry) => path.resolve(sourceDir, entry.file)));
+  const keep = Array.isArray(keepFiles) && keepFiles.length
+    ? new Set(keepFiles.map((file) => path.resolve(sourceDir, String(file))))
+    : null;
+  const root = path.resolve(sourceDir);
   await fs.cp(sourceDir, target, {
     recursive: true,
     filter: (src) => {
-      const base = path.basename(src);
-      if (base === storage.TRASH_DIR || base.startsWith('.')) return false;
-      return !skip.has(path.resolve(src));
+      const resolved = path.resolve(src);
+      // 源目录本身不做名字过滤：作者明确选了「我的书 (conflicted copy)」这种整本冲突副本
+      // 文件夹来导入时，不能因为根目录名撞上识别规则就一个文件都不复制。
+      if (resolved !== root) {
+        const base = path.basename(src);
+        if (base === storage.TRASH_DIR || base.startsWith('.')) return false;
+        // X-N6：冲突副本 / 损坏归档不进新书；被源书目引用的同名真章节（keep）例外
+        if (isCopyExcludedName(base) && !(keep && keep.has(resolved))) return false;
+      }
+      return !skip.has(resolved);
     }
   });
 }
@@ -322,6 +353,8 @@ async function copyAsTexts(sourceDir, target, txtFiles, oversized) {
   const skip = new Set((oversized || []).map((entry) => entry.file));
   for (const file of txtFiles) {
     if (skip.has(file)) continue;
+    // X-N6：章节目录形态没有书目可引用，冲突副本一律不进新书（与 rebuildFromFiles 同口径）
+    if (isCopyExcludedName(path.basename(file))) continue;
     await fs.copyFile(path.join(sourceDir, file), path.join(target, file));
   }
 }
@@ -347,8 +380,17 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
       );
     }
   }
+  // X-N6（WP18）：被复制过滤排除的冲突副本既不复制、也不进大小闸门（否则会被报成「超限跳过」）。
+  // 现成书形态还要保护「源书目真的引用的同名章节」，keep 清单跟着 listTxtFilesDeep / copyAsBook 走。
+  const keepFiles =
+    analysis.kind === 'book' ? (analysis.meta.chapters || []).map((chapter) => chapter.file) : null;
+  const copyFiles =
+    analysis.kind === 'book'
+      ? null
+      : analysis.txtFiles.filter((file) => !isCopyExcludedName(path.basename(file)));
   // V57：现成书整目录 fs.cp 递归复制 → 闸门看递归清单；章节目录形态只复制顶层 txt → 只看顶层
-  const gateFiles = analysis.kind === 'book' ? await listTxtFilesDeep(sourceDir) : analysis.txtFiles;
+  const gateFiles =
+    analysis.kind === 'book' ? await listTxtFilesDeep(sourceDir, '', keepFiles) : copyFiles;
   const oversized = await collectOversizedTxt(sourceDir, gateFiles);
   // V57：按相对路径（不是 basename）判「哪一章会丢」，同名的其它目录章不被连坐
   const oversizedKeys = new Set(oversized.map((entry) => relativeKey(entry.file)));
@@ -356,7 +398,12 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
     analysis.kind === 'book'
       ? analysis.meta.chapters.filter((chapter) => oversizedKeys.has(relativeKey(chapter.file))).length
       : oversized.length;
-  const totalTxt = analysis.kind === 'book' ? analysis.meta.chapters.length : analysis.txtFiles.length;
+  const totalTxt = analysis.kind === 'book' ? analysis.meta.chapters.length : copyFiles.length;
+  // X-N6：整源只有冲突副本（复制前就被过滤干净）时，别让后面的 rebuild 报成
+  // 「没有找到章节 txt」—— 保留「只有同步冲突副本」这条可操作线索（与 rebuildFromFiles 同一句）。
+  if (analysis.kind !== 'book' && analysis.txtFiles.length > 0 && copyFiles.length === 0) {
+    throw new storage.StorageError('NO_FILES', '这个文件夹里只有同步冲突副本，没有可用的章节 txt，无法重建');
+  }
   if (totalTxt > 0 && willLose >= totalTxt) {
     // 一个能导入的文件都不剩：当成这次来源失败（整批照常继续），不留一本空书
     throw new storage.StorageError(
@@ -375,7 +422,7 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
     const staging = path.join(stagingRoot, safeFolderName(desiredFolder));
 
     if (analysis.kind === 'book') {
-      await copyAsBook(sourceDir, staging, oversized);
+      await copyAsBook(sourceDir, staging, oversized, keepFiles);
       let meta = await storage.readBookMeta(staging);
       if (oversized.length) {
         // 超限章节根本没复制进来：书目只保留真实存在的章节，不留下打不开的悬挂章节
@@ -406,7 +453,7 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
       );
     }
 
-    await copyAsTexts(sourceDir, staging, analysis.txtFiles, oversized);
+    await copyAsTexts(sourceDir, staging, copyFiles, oversized);
     const rebuilt = await repair.rebuildFromFiles(staging);
     const committed = await commitStagedFolder(booksRoot, staging, desiredFolder);
     let title = rebuilt.meta.title;

@@ -322,9 +322,9 @@ function registerBookIpc(host) {
       throw new storage.StorageError('BAD_PATH', '只能删除书架目录下的书');
     }
     // 别的窗口正开着这本书：拒绝，绝不让它在另一个窗口里继续盯着被删的文件夹
-    if (!(await storage.exists(target))) {
-      throw new storage.StorageError('NOT_FOUND', '这本书的文件夹已经不存在了');
-    }
+    // 台账 #1（E-N7，WP18）：删除是写 mutation —— 「还在不在 / 是不是书 / 搬目录」必须在同一把
+    // 书锁里，与同书的保存 / 改书目 / 改章互斥。旧实现只有 E2E 分支经 storage.trashBook 间接入锁，
+    // 生产分支的 shell.trashItem 在锁外：保存写盘途中目录可能被搬走。
     // 审计修复 #4（S1）：是书架目录的直接子目录还不够，必须确认「目标是一本书」——
     // `_trash`（全部删书备份）/ `_碎片`（灵感箱）也是书架根的直接子目录，注入脚本以前能把它们
     // 整个丢进回收站。保留目录（_ / . 开头）与没有 书目.json 的普通文件夹一律拒绝。
@@ -332,33 +332,39 @@ function registerBookIpc(host) {
     if (folder.startsWith('_') || folder.startsWith('.')) {
       throw new storage.StorageError('BAD_PATH', '书架保留目录不能当书删除');
     }
-    if (!(await storage.exists(path.join(target, storage.BOOK_FILE)))) {
-      throw new storage.StorageError('NOT_A_BOOK', '这不是一本书（文件夹里没有 书目.json）');
-    }
-    let result;
-    // 测试环境用固定兜底路径，避免把测试数据丢进你的回收站
-    if (isE2E) {
-      const trashPath = await storage.trashBook(cfg.booksRoot, target);
-      result = { method: 'move', folder: path.basename(target), trashPath };
-    } else {
-      try {
-        await shell.trashItem(target);
-        result = { method: 'recycle', folder: path.basename(target) };
-      } catch (err) {
-        const trashPath = await storage.trashBook(cfg.booksRoot, target);
-        result = {
-          method: 'move',
-          folder: path.basename(target),
-          trashPath,
-          note: `回收站不可用（${errorText.describeForUi(err).message}），已移到书架的 _trash`
-        };
+    return storage.withBookLock(target, async () => {
+      if (!(await storage.exists(target))) {
+        throw new storage.StorageError('NOT_FOUND', '这本书的文件夹已经不存在了');
       }
-    }
-    // 删除成功：清掉可能存在的登记（自己的 / 残留的）；书架变动的广播由 handleBook 统一发
-    storage.releaseOpenBookPath(target);
-    // A4（审计 #11 / O3、P6）：这本书的锁条目（若有）也一并回收；在飞的链留到 settle 后自己回收。
-    storage.clearBookLock(target);
-    return result;
+      if (!(await storage.exists(path.join(target, storage.BOOK_FILE)))) {
+        throw new storage.StorageError('NOT_A_BOOK', '这不是一本书（文件夹里没有 书目.json）');
+      }
+      let result;
+      // 测试环境用固定兜底路径，避免把测试数据丢进你的回收站
+      if (isE2E) {
+        const trashPath = await storage.trashBook(cfg.booksRoot, target);
+        result = { method: 'move', folder: path.basename(target), trashPath };
+      } else {
+        try {
+          await shell.trashItem(target);
+          result = { method: 'recycle', folder: path.basename(target) };
+        } catch (err) {
+          const trashPath = await storage.trashBook(cfg.booksRoot, target);
+          result = {
+            method: 'move',
+            folder: path.basename(target),
+            trashPath,
+            note: `回收站不可用（${errorText.describeForUi(err).message}），已移到书架的 _trash`
+          };
+        }
+      }
+      // 删除成功：清掉可能存在的登记（自己的 / 残留的）；书架变动的广播由 handleBook 统一发
+      storage.releaseOpenBookPath(target);
+      // A4（审计 #11 / O3、P6）：这本书的锁条目（若有）也一并回收；在飞的链留到 settle 后自己回收。
+      // 当前这条删除链正在跑（pending > 0），clearIdle 只清空闲条目，不会把正在跑的锁拆掉。
+      storage.clearBookLock(target);
+      return result;
+    });
   }, { mutation: MUTATION.DELETE });
 }
 

@@ -37,8 +37,8 @@
    "docxBytes": 3187,
    "docxVolumeCount": 0,
    "docxChapterCount": 3,
-   "epubSha256": "cb24ee5e044f83108377327cdf25322b8fc19ee2e134b38a92696a3730f3706d",
-   "epubBytes": 4143,
+   "epubSha256": "198963687795852af19761be22915e4a1a5fe2fa519aa95444d87883731cfcdd",
+   "epubBytes": 4127,
    "epubVolumeCount": 0,
    "epubChapterCount": 3
   },
@@ -81,8 +81,8 @@
    "docxBytes": 3212,
    "docxVolumeCount": 1,
    "docxChapterCount": 3,
-   "epubSha256": "932e05a21cc2502909243e0d9358aafb193f922e0bd5bd926d5641929ca9cbec",
-   "epubBytes": 4646,
+   "epubSha256": "1100cf30bb944fcf313aec732dd9f34774c01aa3df22c97f63b1c683c837b5ba",
+   "epubBytes": 4629,
    "epubVolumeCount": 1,
    "epubChapterCount": 3
   },
@@ -135,8 +135,8 @@
    "docxBytes": 3222,
    "docxVolumeCount": 2,
    "docxChapterCount": 4,
-   "epubSha256": "df962ce374a0c4addd157ee4291e0050c4ec2e865c11498f84e352cdd4b70da0",
-   "epubBytes": 5520,
+   "epubSha256": "99d4720c557bafad89df3ab2cfcf602747cfc527d22c3f26b3a0523011223b17",
+   "epubBytes": 5503,
    "epubVolumeCount": 2,
    "epubChapterCount": 4
   },
@@ -189,8 +189,8 @@
    "docxBytes": 3229,
    "docxVolumeCount": 2,
    "docxChapterCount": 4,
-   "epubSha256": "61742e6f1cfe0825e1392a29dfb447a6b0a7eb8769f12ab893adb3981be38c30",
-   "epubBytes": 5543,
+   "epubSha256": "19bc1dfb36b3ec29805c9a0c4e29cff98278c7dcde745bd64182d96daf419ee6",
+   "epubBytes": 5526,
    "epubVolumeCount": 2,
    "epubChapterCount": 4
   },
@@ -237,8 +237,8 @@
    "docxBytes": 3208,
    "docxVolumeCount": 1,
    "docxChapterCount": 3,
-   "epubSha256": "ea2afb362602f9ab711ce551440115d2b216c83f23ca56aa28163beb52bacda3",
-   "epubBytes": 4625,
+   "epubSha256": "34c74ce4622dc774feddf3433c1a2681a3586df8e3ec5d5ac19f817c6592ad11",
+   "epubBytes": 4609,
    "epubVolumeCount": 1,
    "epubChapterCount": 3
   },
@@ -270,8 +270,8 @@
    "docxBytes": 3176,
    "docxVolumeCount": 0,
    "docxChapterCount": 2,
-   "epubSha256": "7ecd61f57087ce46403a814aab8862dc735c86fe269e11ee14762c47186e6844",
-   "epubBytes": 3689,
+   "epubSha256": "525c945d988cd58320c5aabbed01b6799fa645400d04a3da924ac68e0f00401e",
+   "epubBytes": 3673,
    "epubVolumeCount": 0,
    "epubChapterCount": 2
   },
@@ -302,8 +302,8 @@
    "docxBytes": 3183,
    "docxVolumeCount": 1,
    "docxChapterCount": 1,
-   "epubSha256": "540aa4a791761d35caaf25e5aa9fa1f174981b7917b8b2bf30639c211d4c5d5c",
-   "epubBytes": 3714,
+   "epubSha256": "6f2a0838684a204b794e90cf8b1c137458722ba0cb0b5342911d4fb94e3589fd",
+   "epubBytes": 3697,
    "epubVolumeCount": 1,
    "epubChapterCount": 1
   }
