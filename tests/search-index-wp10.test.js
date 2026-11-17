@@ -204,7 +204,10 @@ test('P-N1/§R4：低频复核到期仍能抓住「同大小 + 保留 mtime」�
   assert.equal(throttled.lastRun.rebuiltBooks, 0);
 
   // ② 到期（> 5 分钟 + 抖动上限）：必须复核并发现改写 → 重建、新词可搜、旧词消失
-  clockMs += 400000;
+  // 抖动 = hashJitterMs(书路径, 300 s) ∈ [0, min(300 s×0.4, 120 s)) = [0, 120 s)（core/search-index.js），
+  // 且随临时书路径变化；这里推进 430 s（> 300 s + 120 s 上限）保证「必到期」，
+  // 否则 400 s 在抖动 > 100 s 的路径上会假红（flaky，2026-11-18 终检发现）。
+  clockMs += 430000;
   hashCalls.length = 0;
   const due = await store.ensure({ booksRoot });
   assert.equal(hashCalls.length, 1, '到期要真算一次内容指纹');
