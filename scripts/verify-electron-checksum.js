@@ -145,7 +145,7 @@ async function run(argv, io = {}) {
   const sources = await readMirrorSources(root, readText);
   out(`[构建校验] Electron v${version}（${artifactName}）`);
   for (const source of sources) out(`[构建校验] 下载镜像：${source.where} → ${source.url}（镜像只加速，不是来源证明）`);
-  out('[构建校验] 只核对你手工提供的官方 SHASUMS256.txt：不联网、不下载。');
+  out('[构建校验] 只核对给定的官方 SHASUMS256.txt：不联网、不下载。');
 
   let zipPath = opts.zip;
   if (!zipPath) {
@@ -182,4 +182,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { parseArgs, run, USAGE };
+module.exports = { parseArgs, run, readLocalVersion, USAGE };

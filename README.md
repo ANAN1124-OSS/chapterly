@@ -31,7 +31,7 @@
 - pnpm ≥ 12（实测 12.11.2；`pnpm-workspace.yaml` 的 `allowBuilds` 是 v12 字段，旧版兼容性未实测，按实测下限写）
 - Python ≥ 3.7（只有重新生成图标 `pnpm run icon` 用到；纯标准库，不需要 Pillow，不参与运行与打包）
 
-> **CI**：GitHub Actions 两套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；**Node 用 22 / 24 两档矩阵**（`fail-fast: false`，与 engines 的 ≥22 对齐，v1.8.0 审计 O4 / #56）；② `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
+> **CI**：GitHub Actions 两套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；**Node 用 22 / 24 两档矩阵**（`fail-fast: false`，与 engines 的 ≥22 对齐，v1.8.0 审计 O4 / #56）；② `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29），并在装完依赖后先跑 `node scripts/supply-chain-check.js` 核对 Electron 二进制（WP15 / 审计 E1=O-N2）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
 
 ## 安装与启动
 
@@ -97,18 +97,22 @@ pnpm run dist:dir   # 只打免安装目录 → dist\win-unpacked\章回.exe（�
 - 产物文件名用 **ASCII**（`chapterly-<版本>-win-x64-setup.exe`）：`gh` 在 Windows 上传中文文件名会被吞成坏名，所以发布资产别用中文名；安装后的程序显示名 / 快捷方式为「章回」。
 - 发布到 GitHub：`gh release create v<版本> "dist/chapterly-<版本>-win-x64-setup.exe" --title "章回 v<版本>" --notes-file <说明.md>`（`gh` 走 HTTPS，国内需 `HTTPS_PROXY`）。
 - **版本号只有 `package.json` 一处权威（v1.8.0 / 审计 D10）**：`renderer/index.html` 不写版本串，界面由主进程 `app.getVersion()` 启动时经 `app:version` 注入；README / 验收清单的标题、下载名与单测 / E2E 计数用 `node scripts/version-sync.js --write --unit <N> --e2e <M>` 同步（`--check` 只校验漂移，`tests/version-sync.test.js` 同口径）。发版前先跑一次同步，再打包。
+- **发版门禁（WP15 / 审计 E1=O-N2）**：打包前必须跑 `node scripts/supply-chain-check.js`，用仓库内置的官方 `SHASUMS256.txt` 核对 Electron 二进制；非 0 退出不得继续（详见下文「构建供应链」）。
 
 ### 构建供应链（Electron 二进制）
 
 - v1.8.0 审计 ▲V308：Electron 二进制默认走国内镜像：`.npmrc` 的 `electron_mirror` 与 `package.json` 的 `build.electronDownload.mirror` 都指向 `https://npmmirror.com/mirrors/electron/`（覆盖方式见上）。
   **镜像只是下载加速，不是来源证明**：镜像被替换 / 构建机被投毒时，产物本身没有任何可验证锚。
-- 发布构建前建议核对一次官方校验和（**可选、离线**）：从官方 release 下载与所装版本一致的 `SHASUMS256.txt`（`https://github.com/electron/electron/releases/download/v<版本>/SHASUMS256.txt`），然后：
+- **官方校验清单已随仓库入库（WP15 / 审计 E1=O-N2）**：`build/electron/SHASUMS256.txt` 是 Electron v45.1.0 官方 release 的原始 `SHASUMS256.txt`（逐字节入库；来源 URL、取回时间与文件 SHA-256 见同目录 `SHASUMS256.provenance.json`）。
+- **发版门禁必做（打包前）**：
 
   ```bash
-  node scripts/verify-electron-checksum.js --shasums <下载的 SHASUMS256.txt>
+  node scripts/supply-chain-check.js
   ```
 
-  脚本在 `%LOCALAPPDATA%\electron\Cache`（或 `ELECTRON_CACHE` 指向的目录）里按文件名找到 `electron-v<版本>-win32-x64.zip` 并比对 SHA-256；`--zip <文件>` 可指定压缩包，`--version <版本>` 可指定要校验的版本。不一致 / 清单里没有这一项 / 找不到缓存 zip 都直接非 0 退出，不要继续打包。这一步**不联网、不自动下载**，也**不在** `pnpm run dist` 里自动执行（离线 / CI 构建不应该多一个网络失败面）。
+  它用内置清单核对 `%LOCALAPPDATA%\electron\Cache`（或 `ELECTRON_CACHE` 指向的目录）里的 `electron-v<版本>-win32-x64.zip`。清单缺失、清单与本地 Electron 版本对不上、缓存里找不到 zip、zip 与官方清单不一致、zip 读不了，都直接非 0 退出，**不得继续打包 / 发版**。`--zip <文件>` / `--cache <目录>` / `--version <版本>` 可定位问题。也可以直接跑底层命令 `node scripts/verify-electron-checksum.js --shasums build/electron/SHASUMS256.txt`。这一步**不联网、不自动下载**，也**不在** `pnpm run dist` 里自动执行（离线 / CI 构建不应该多一个网络失败面），但它是**发版门禁的一步，必须显式跑**。
+- **CI 同口径**：`.github/workflows/e2e-weekly.yml` 在 `pnpm install` 之后、跑 E2E 之前执行同一条 `node scripts/supply-chain-check.js`；校验红就不跑 E2E（`verify.yml` 跳过二进制下载，没有 zip 可核对，不挂这一步）。
+- **升级 Electron 时**：从官方 release 重新取对应版本的 `SHASUMS256.txt` 覆盖入库，并同步 `SHASUMS256.provenance.json` 的 `version / sourceUrl / fetchedAt / sha256 / bytes / entries`；`tests/wp15-supply-chain.test.js` 会把「清单版本 ≠ 本地 Electron 版本」拦在门禁里。
 - 目前**没有代码签名**（见安装说明，属成本决策）：校验和能证明「二进制来自官方发布」，证明不了「安装包是这个仓库构建出来的」——后者需要代码签名，长期看比上面两条都重要。
 
 ## 数据在哪

@@ -1,0 +1,10 @@
+{
+  "version": "45.1.0",
+  "artifact": "electron-v45.1.0-win32-x64.zip",
+  "sourceUrl": "https://github.com/electron/electron/releases/download/v45.1.0/SHASUMS256.txt",
+  "fetchedAt": "2026-11-18T00:32:22+08:00",
+  "sha256": "af5e45cd87fb17b9eafafd74feab5a74fbfddeb5f150e3e25ae8cd6107bb6a99",
+  "bytes": 6740,
+  "entries": 67,
+  "note": "官方 release 原文件逐字节入库，勿手改；升级 Electron 时必须重新从官方 release 取对应版本的 SHASUMS256.txt 覆盖本目录，并同步更新 version / sourceUrl / fetchedAt / sha256 / bytes / entries；tests/wp15-supply-chain.test.js 会把版本漂移和清单手改拦在门禁里。"
+}
