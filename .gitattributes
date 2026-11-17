@@ -1,0 +1,5 @@
+# 官方供应链清单必须逐字节保留 LF：provenance 的 SHA-256 与 tests/wp15-supply-chain.test.js › R1
+# 都按文件字节核对。Windows 的 core.autocrlf=true 会在检出 / 克隆时把 LF 换成 CRLF，清单就和官方
+# 原文件 / provenance 哈希对不上了（WP15 / 审计 E1=O-N2）。这两个文件只许原样搬运、不许改行尾。
+build/electron/SHASUMS256.txt -text
+build/electron/SHASUMS256.provenance.json -text
