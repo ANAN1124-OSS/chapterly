@@ -32,7 +32,8 @@ function readUtf8(file) {
 
 const readVerify = () => readUtf8(VERIFY_PATH);
 const readE2e = () => readUtf8(E2E_PATH);
-const readE2ePr = () => readUtf8(E2E_PR_PATH);
+// 新 checkout 上工作区是 CRLF；Policy 断言里用 ^…$ 跨行匹配，先归一成 LF（与 wp16-regression 同口径）。
+const readE2ePr = () => readUtf8(E2E_PR_PATH).replace(/\r\n/g, '\n');
 const readDependabot = () => readUtf8(DEPENDABOT_PATH);
 
 // 去掉注释行后的「真命令」文本：注释里说明「不进 CI」不算命令。
