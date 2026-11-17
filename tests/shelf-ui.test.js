@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const shelfUi = require('../renderer/shelf-ui');
-const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, makeEl: makeBaseEl } = require('./ui-test-preambles');
 
 // v0.9 B-5 第六刀：三个小分区（「继续上次写作」42 行 +「同步冲突副本提示」27 行 +
 // 「切换 / 新建 / 重命名 / 删除」27 行，合计 96 行）从 renderer.js 搬到 renderer/shelf-ui.js。
@@ -15,41 +15,8 @@ restoreGlobalsAfter(test, ['document']);
 
 const { rendererSrc, indexSrc, moduleSrc, moduleCode } = loadSourceGate('shelf-ui.js');
 
-function makeEl(id) {
-  const classes = new Set();
-  const el = {
-    id,
-    tagName: '',
-    className: '',
-    textContent: '',
-    title: '',
-    dataset: {},
-    children: [],
-    classList: {
-      add(name) { classes.add(name); },
-      remove(name) { classes.delete(name); },
-      toggle(name, on) {
-        const next = on === undefined ? !classes.has(name) : Boolean(on);
-        if (next) classes.add(name);
-        else classes.delete(name);
-      },
-      contains: (name) => classes.has(name)
-    },
-    appendChild(child) { this.children.push(child); return child; },
-    _classes: classes
-  };
-  // 代码里靠 `list.innerHTML = ''` 清清单；假 DOM 也要真的清，否则第二次渲染会数错行
-  let innerHTML = '';
-  Object.defineProperty(el, 'innerHTML', {
-    get() { return innerHTML; },
-    set(value) {
-      innerHTML = value;
-      if (value === '') el.children = [];
-    },
-    enumerable: true
-  });
-  return el;
-}
+// 共享最小假 DOM 基线（A5）：本体行为统一，$ / createElement 的历史调用口径留在本文件。
+const makeEl = (value) => makeBaseEl('div', value);
 
 // 模块运行时摸 document（createElement），Node 里给一个最小替身。
 function installDocument() {

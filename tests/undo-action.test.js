@@ -12,42 +12,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const undoAction = require('../renderer/undo-action');
 const undoUiModule = require('../renderer/undo-ui');
-const { loadSourceGate } = require('./ui-test-preambles');
+const { loadSourceGate, makeIdEl } = require('./ui-test-preambles');
 
 const ROOT = path.join(__dirname, '..');
 const { rendererCode, indexSrc } = loadSourceGate('undo-action.js');
 const storageSrc = fs.readFileSync(path.join(ROOT, 'core', 'storage.js'), 'utf8');
 const stylesSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
-
-function makeEl(id) {
-  const classes = new Set();
-  const attrs = new Map();
-  const listeners = {};
-  return {
-    id,
-    textContent: '',
-    _classes: classes,
-    _attrs: attrs,
-    classList: {
-      add: (name) => classes.add(name),
-      remove: (name) => classes.delete(name),
-      contains: (name) => classes.has(name)
-    },
-    setAttribute(name, value) {
-      attrs.set(name, String(value));
-    },
-    getAttribute(name) {
-      return attrs.has(name) ? attrs.get(name) : null;
-    },
-    addEventListener(type, fn) {
-      if (!listeners[type]) listeners[type] = [];
-      listeners[type].push(fn);
-    },
-    fire(type, event) {
-      for (const fn of listeners[type] || []) fn(event || {});
-    }
-  };
-}
 
 function makeHost(options = {}) {
   const els = new Map();
@@ -55,7 +25,7 @@ function makeHost(options = {}) {
   const slot = options.slot || undoAction.createUndoSlot({ ttlMs: options.ttlMs || 10000 });
   const host = {
     $: (id) => {
-      if (!els.has(id)) els.set(id, makeEl(id));
+      if (!els.has(id)) els.set(id, makeIdEl(id));
       return els.get(id);
     },
     slot,

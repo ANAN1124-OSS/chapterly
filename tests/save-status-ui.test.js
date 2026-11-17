@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const saveStatusUi = require('../renderer/save-status-ui');
-const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, makeIdEl } = require('./ui-test-preambles');
 
 restoreGlobalsAfter(test, ['document', 'window']);
 
@@ -18,31 +18,6 @@ function formatClock(date) {
   if (!date) return '';
   const pad2 = (n) => String(n).padStart(2, '0');
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
-}
-
-function makeEl(id) {
-  const classes = new Set();
-  const listeners = {};
-  return {
-    id,
-    textContent: '',
-    title: '',
-    disabled: false,
-    _classes: classes,
-    _listeners: listeners,
-    classList: {
-      add(name) { classes.add(name); },
-      remove(name) { classes.delete(name); },
-      contains: (name) => classes.has(name)
-    },
-    addEventListener(type, fn) {
-      if (!listeners[type]) listeners[type] = [];
-      listeners[type].push(fn);
-    },
-    fire(type, event) {
-      for (const fn of listeners[type] || []) fn(event || {});
-    }
-  };
 }
 
 function makeHost(options = {}) {
@@ -58,7 +33,7 @@ function makeHost(options = {}) {
   const host = {
     $: (id) => {
       if (options.missing && options.missing.includes(id)) return null;
-      if (!els.has(id)) els.set(id, makeEl(id));
+      if (!els.has(id)) els.set(id, makeIdEl(id));
       return els.get(id);
     },
     state,

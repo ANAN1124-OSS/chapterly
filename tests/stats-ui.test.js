@@ -6,7 +6,7 @@ const statsLogic = require('../renderer/stats-logic');
 const staleGuard = require('../renderer/stale-guard');
 const editorLogic = require('../renderer/editor-logic');
 const commonLib = require('../core/common');
-const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, makeEl: makeBaseEl } = require('./ui-test-preambles');
 
 // v0.9 B-5 第三刀：「每日字数统计」+「码字日历 / 连续写作天数 / 月度汇总」两个相邻分区
 // （原 renderer.js 3609–3715 + 3717–3720 + 3725–3817 行，205 行）搬到 renderer/stats-ui.js。
@@ -31,46 +31,8 @@ function formatChars(n) {
 const formatDuration = editorLogic.formatDuration;
 const statsFormat = { formatChars, formatDuration };
 
-function makeEl(id) {
-  const classes = new Set();
-  const el = {
-    id,
-    tagName: '',
-    className: '',
-    textContent: '',
-    title: '',
-    value: '',
-    hidden: false,
-    disabled: false,
-    dataset: {},
-    style: {},
-    children: [],
-    classList: {
-      add(name) { classes.add(name); },
-      remove(name) { classes.delete(name); },
-      toggle(name, on) {
-        const next = on === undefined ? !classes.has(name) : Boolean(on);
-        if (next) classes.add(name);
-        else classes.delete(name);
-      },
-      contains: (name) => classes.has(name)
-    },
-    appendChild(child) { this.children.push(child); return child; },
-    _classes: classes
-  };
-  Object.defineProperty(el, 'childElementCount', { get() { return this.children.length; } });
-  // 代码里靠 `list.innerHTML = ''` 清列表；假 DOM 也要真的清，否则第二次渲染会数错行
-  let innerHTML = '';
-  Object.defineProperty(el, 'innerHTML', {
-    get() { return innerHTML; },
-    set(value) {
-      innerHTML = value;
-      if (value === '') el.children = [];
-    },
-    enumerable: true
-  });
-  return el;
-}
+// 共享最小假 DOM 基线（A5）：本体行为统一，$ / createElement 的历史调用口径留在本文件。
+const makeEl = (value) => makeBaseEl('div', value);
 
 // 模块运行时摸 document（createElement），Node 里给一个最小替身。
 function installDocument() {

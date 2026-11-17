@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const importUi = require('../renderer/import-ui');
-const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, makeEl: makeBaseEl } = require('./ui-test-preambles');
 
 // v0.9 B-5 第四刀：「导入 / 删除小说（书架级操作）」一段
 // （原 renderer.js 4461–4572 行，112 行）搬到 renderer/import-ui.js。
@@ -18,36 +18,8 @@ const { rendererSrc, rendererCode, indexSrc, moduleSrc, moduleCode } = loadSourc
 
 const HOST_KEYS = ['$', 'api', 'call', 'openModal', 'refreshShelf', 'state', 'toast'];
 
-function makeEl(id) {
-  const classes = new Set();
-  const el = {
-    id,
-    tagName: '',
-    className: '',
-    textContent: '',
-    disabled: false,
-    parentNode: null,
-    children: [],
-    classList: {
-      add(name) { classes.add(name); },
-      remove(name) { classes.delete(name); },
-      contains: (name) => classes.has(name)
-    },
-    appendChild(child) {
-      child.parentNode = el;
-      el.children.push(child);
-      return child;
-    },
-    remove() {
-      if (el.parentNode) {
-        const at = el.parentNode.children.indexOf(el);
-        if (at >= 0) el.parentNode.children.splice(at, 1);
-        el.parentNode = null;
-      }
-    }
-  };
-  return el;
-}
+// 共享最小假 DOM 基线（A5）：本体行为统一，$ / createElement 的历史调用口径留在本文件。
+const makeEl = (value) => makeBaseEl('div', value);
 
 // 模块运行时摸 document（createElement 建进度 toast），Node 里给一个最小替身。
 function installDocument() {

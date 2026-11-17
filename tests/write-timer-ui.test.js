@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const writeTimerUi = require('../renderer/write-timer-ui');
 const editorLogic = require('../renderer/editor-logic');
+const { makeEl } = require('./ui-test-preambles');
 
 // 第 4 步 renderer 九刀·补刀 11：写作时长（原 renderer.js 1490–1672，183 行）搬到 renderer/write-timer-ui.js。
 // 搬之前只有 E2E 黑盒覆盖（状态栏点开始 / 暂停、设置里看今天与近 30 天）；串行化上报 / 失败回填 /
@@ -41,33 +42,6 @@ const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'write-timer-ui.js
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 // ---------- 假 DOM ----------
-function makeEl(tag = 'div', id = '') {
-  const classes = new Set();
-  const listeners = [];
-  const el = {
-    tagName: tag, id, className: '', textContent: '', title: '', disabled: false, children: [], dataset: {},
-    _classes: classes, _listeners: listeners,
-    classList: {
-      add: (...n) => n.forEach((x) => classes.add(x)),
-      remove: (...n) => n.forEach((x) => classes.delete(x)),
-      contains: (n) => classes.has(n),
-      toggle(n, on) {
-        const next = on === undefined ? !classes.has(n) : Boolean(on);
-        if (next) classes.add(n);
-        else classes.delete(n);
-      }
-    },
-    get className() { return [...classes].join(' '); },
-    set className(v) { classes.clear(); String(v || '').split(/\s+/).filter(Boolean).forEach((x) => classes.add(x)); },
-    addEventListener(type, fn) { listeners.push({ type, fn }); },
-    _fire(type, event) {
-      let result;
-      for (const l of listeners) if (l.type === type) result = l.fn(event);
-      return result;
-    }
-  };
-  return el;
-}
 function makeDocument() {
   const map = new Map();
   let lookups = 0;

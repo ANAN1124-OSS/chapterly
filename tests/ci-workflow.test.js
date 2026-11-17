@@ -2,11 +2,12 @@
 // 1.7.0 G1b：GitHub Actions CI 工作流的静态锚点（先于实现写，首跑必须是 RED）。
 //
 // 审计修复 #29（O1）起，这条闸门同时锁「CI 供应链固定」与「定时 E2E」：
-//   ① `.github/workflows/` 下只有 verify.yml 与 e2e-weekly.yml 两个 CI 文件；
+//   ① `.github/workflows/` 下只有 verify.yml / e2e-weekly.yml / e2e-pr.yml 三个 CI 文件（WP16 新增 PR 级 E2E）；
 //   ② 所有 actions **固定到 40 位提交 SHA**（注释标版本），不跟浮动的 @v4 标签；
 //   ③ 运行镜像固定 **windows-2022**（不用浮动的 windows-latest；Windows 路径 / GBK / UNC 语义不能靠 ubuntu 验）；
 //   ④ verify.yml 仍做原来四步（全量 node --check → npm test → eslint → a11y 静态），仍跳过 Electron 二进制；
-//   ⑤ e2e-weekly.yml 每周定时整跑一次全量 E2E，且必须装 Electron 二进制（跳过下载就起不了真窗口）；
+//   ⑤ e2e-weekly.yml 每周定时整跑一次全量 E2E，e2e-pr.yml 在 PR 改动 renderer/core/ipc 等路径时也整跑全量；
+//      两者都必须装 Electron 二进制（跳过下载就起不了真窗口）；
 //   ⑥ Dependabot 每周提 github-actions 更新（pin 死后的升级通道）；
 //   ⑦ E2E 不进 verify.yml、打包冒烟仍不进 CI（按发版门禁在发版前本地执行，D-4）。
 //
@@ -21,6 +22,7 @@ const ROOT = path.join(__dirname, '..');
 const WORKFLOWS_DIR = path.join(ROOT, '.github', 'workflows');
 const VERIFY_PATH = path.join(WORKFLOWS_DIR, 'verify.yml');
 const E2E_PATH = path.join(WORKFLOWS_DIR, 'e2e-weekly.yml');
+const E2E_PR_PATH = path.join(WORKFLOWS_DIR, 'e2e-pr.yml');
 const DEPENDABOT_PATH = path.join(ROOT, '.github', 'dependabot.yml');
 
 function readUtf8(file) {
@@ -30,6 +32,7 @@ function readUtf8(file) {
 
 const readVerify = () => readUtf8(VERIFY_PATH);
 const readE2e = () => readUtf8(E2E_PATH);
+const readE2ePr = () => readUtf8(E2E_PR_PATH);
 const readDependabot = () => readUtf8(DEPENDABOT_PATH);
 
 // 去掉注释行后的「真命令」文本：注释里说明「不进 CI」不算命令。
@@ -48,14 +51,15 @@ function usesLines(text) {
     .filter((line) => /^\s*-?\s*uses:\s/.test(line));
 }
 
-test('工作流文件只有 verify.yml 与 e2e-weekly.yml（不发散成多个 workflow）', () => {
+test('工作流文件只有 verify.yml / e2e-weekly.yml / e2e-pr.yml（不发散成多个 workflow）', () => {
   assert.ok(fs.existsSync(WORKFLOWS_DIR), '.github/workflows/ 目录不存在');
   const files = fs.readdirSync(WORKFLOWS_DIR).filter((f) => /.ya?ml$/.test(f)).sort();
-  assert.deepEqual(files, ['e2e-weekly.yml', 'verify.yml'], '工作流目录里只能是 verify.yml + e2e-weekly.yml（审计 O1）');
+  // WP16（审计中 #19 / F1）：新增 e2e-pr.yml 承担 PR 级路径过滤 E2E；不允许再发散出第四套。
+  assert.deepEqual(files, ['e2e-pr.yml', 'e2e-weekly.yml', 'verify.yml'], '工作流目录只能是 verify / e2e-weekly / e2e-pr（审计 O1 + F1）');
 });
 
 test('workflow 能按 UTF-8 读出来：不带 BOM、没有 tab 缩进、末尾有换行', () => {
-  for (const file of [VERIFY_PATH, E2E_PATH]) {
+  for (const file of [VERIFY_PATH, E2E_PATH, E2E_PR_PATH]) {
     const text = readUtf8(file);
     const name = path.basename(file);
     assert.ok(text.length > 0, name + ' 是空文件');
@@ -72,7 +76,8 @@ test('workflow 能按 UTF-8 读出来：不带 BOM、没有 tab 缩进、末尾�
 test('顶层键齐全（name / on / jobs），jobs 下只有该工作流自己的一个 job', () => {
   for (const [file, job] of [
     [VERIFY_PATH, 'verify'],
-    [E2E_PATH, 'e2e']
+    [E2E_PATH, 'e2e'],
+    [E2E_PR_PATH, 'e2e']
   ]) {
     const text = readUtf8(file);
     const name = path.basename(file);
@@ -90,7 +95,7 @@ test('顶层键齐全（name / on / jobs），jobs 下只有该工作流自己�
 });
 
 test('全部 actions 固定到 40 位提交 SHA + 版本注释（审计 O1：不跟浮动的 @v4 标签）', () => {
-  for (const file of [VERIFY_PATH, E2E_PATH]) {
+  for (const file of [VERIFY_PATH, E2E_PATH, E2E_PR_PATH]) {
     const name = path.basename(file);
     const lines = usesLines(readUtf8(file));
     assert.ok(lines.length >= 3, name + ' 应至少有 checkout / setup-node / pnpm 三个 action（实际 ' + lines.length + '）');
@@ -106,7 +111,7 @@ test('全部 actions 固定到 40 位提交 SHA + 版本注释（审计 O1：不
 });
 
 test('runs-on 固定 windows-2022（Windows 桌面工具的路径 / GBK / UNC 语义不能靠 ubuntu 验）', () => {
-  for (const file of [VERIFY_PATH, E2E_PATH]) {
+  for (const file of [VERIFY_PATH, E2E_PATH, E2E_PR_PATH]) {
     const text = readUtf8(file);
     const name = path.basename(file);
     assert.match(text, /^ {4}runs-on: windows-2022$/m, name + ' 的 runs-on 必须是 windows-2022（审计 O1：windows-latest 浮动）');
@@ -179,9 +184,9 @@ test('e2e-weekly.yml 每周定时整跑 E2E，且装 Electron 二进制', () => 
   assert.match(text, /tzutil \/s "China Standard Time"/, 'E2E 要固定时区（统计 / 日期断言按 +08）');
 });
 
-test('依赖安装以锁文件为准：pnpm-lock.yaml 入库且两个工作流里不出现裸 pnpm install', () => {
+test('依赖安装以锁文件为准：pnpm-lock.yaml 入库且三个工作流里不出现裸 pnpm install', () => {
   assert.ok(fs.existsSync(path.join(ROOT, 'pnpm-lock.yaml')), 'pnpm-lock.yaml 必须入库');
-  for (const file of [VERIFY_PATH, E2E_PATH]) {
+  for (const file of [VERIFY_PATH, E2E_PATH, E2E_PR_PATH]) {
     const text = readUtf8(file);
     assert.doesNotMatch(text, /pnpm install(?! --frozen-lockfile)/, path.basename(file) + ' 的安装步骤只能带 --frozen-lockfile');
   }
@@ -201,8 +206,8 @@ test('eslint 进 CI 且只做检查：npx eslint . 独立步骤、不许 --fix /
   assert.ok(a11y > eslint, 'a11y 静态门禁必须排在 eslint 之后');
 });
 
-test('打包冒烟仍不进 CI：两个工作流的命令里都不出现 electron-builder / dist 脚本（D-4）', () => {
-  for (const file of [VERIFY_PATH, E2E_PATH]) {
+test('打包冒烟仍不进 CI：三个工作流的命令里都不出现 electron-builder / dist 脚本（D-4）', () => {
+  for (const file of [VERIFY_PATH, E2E_PATH, E2E_PR_PATH]) {
     const commands = commandsOf(readUtf8(file));
     assert.doesNotMatch(
       commands,
@@ -212,10 +217,30 @@ test('打包冒烟仍不进 CI：两个工作流的命令里都不出现 electro
   }
 });
 
-test('README 如实描述两套 CI（verify + 每周 E2E）与「打包冒烟仍在本地」', () => {
+// WP16（审计中 #19 / F1）：PR 改动 renderer/core 等路径时整跑全量 E2E；每周全量仍保留。
+test('e2e-pr.yml：PR 路径过滤触发全量 E2E，且装配真实 Electron + 供应链校验（F1）', () => {
+  const text = readE2ePr();
+  assert.match(text, /^on:\n {2}pull_request:\n {4}paths:$/m, '必须由 pull_request.paths 触发（PR 级拦截）');
+  assert.match(text, /^ {6}- 'renderer\/\*\*'$/m, 'renderer/** 必须触发');
+  assert.match(text, /^ {6}- 'core\/\*\*'$/m, 'core/** 必须触发');
+  const commands = commandsOf(text);
+  assert.match(commands, /pnpm install --frozen-lockfile/);
+  assert.match(commands, /node scripts\/supply-chain-check\.js/, '与 weekly 同口径：先核对 Electron 二进制');
+  assert.match(commands, /tzutil \/s "China Standard Time"/);
+  assert.match(commands, /run: pnpm run e2e\b/, 'PR 触发时必须整跑全量 E2E');
+  assert.doesNotMatch(commands, /ELECTRON_SKIP_BINARY_DOWNLOAD/, '真窗口 E2E 必须装 Electron 二进制');
+  assert.match(text, /^ {4}runs-on: windows-2022$/m);
+  assert.match(text, /timeout-minutes: ([3-9]\d|[1-9]\d{2,})/, 'E2E 长场景超时要给足（≥ 30 分钟）');
+  // 每周全量不因新增 PR 工作流被替代
+  assert.match(commandsOf(readE2e()), /run: pnpm run e2e/, 'e2e-weekly 仍保留每周全量');
+});
+
+test('README 如实描述三套 CI（verify + PR 级 E2E + 每周 E2E）与「打包冒烟仍在本地」', () => {
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   assert.match(readme, /\.github\/workflows\/verify\.yml/, 'README 要写明 verify 工作流');
   assert.match(readme, /\.github\/workflows\/e2e-weekly\.yml/, 'README 要写明每周 E2E 工作流');
+  assert.match(readme, /\.github\/workflows\/e2e-pr\.yml/, 'README 要写明 PR 级 E2E 工作流');
+  assert.match(readme, /PR[^\n]*E2E/, 'README 要写明「PR 改动 renderer/core 就整跑 E2E」');
   assert.match(readme, /每周定时[^\n]*E2E/, 'README 要写明 E2E 每周定时跑');
   assert.match(readme, /固定到提交 SHA/, 'README 要写明 actions pin SHA');
   assert.match(readme, /打包冒烟[\s\S]{0,80}?本地执行/, 'README 仍要如实写「打包冒烟在发版前本地执行」');

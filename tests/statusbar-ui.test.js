@@ -6,7 +6,7 @@ const staleGuard = require('../renderer/stale-guard');
 const editorLogic = require('../renderer/editor-logic');
 const chaptersLib = require('../core/chapters');
 const commonLib = require('../core/common');
-const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, makeIdEl } = require('./ui-test-preambles');
 
 // v0.9 B-5 第七刀：两个小分区（「状态栏」79 行 +「外部修改检测」32 行，合计 111 行）从
 // renderer.js 搬到 renderer/statusbar-ui.js。搬之前这两块只有 E2E 黑盒覆盖（打字看本章字数 /
@@ -26,21 +26,6 @@ function formatChars(n) {
   if (value < 10000) return `${value} 字`;
   if (value < 100000000) return `${(value / 10000).toFixed(2)} 万字`;
   return `${(value / 100000000).toFixed(2)} 亿字`;
-}
-
-function makeEl(id) {
-  const classes = new Set();
-  return {
-    id,
-    textContent: '',
-    title: '',
-    classList: {
-      add(name) { classes.add(name); },
-      remove(name) { classes.delete(name); },
-      contains: (name) => classes.has(name)
-    },
-    _classes: classes
-  };
 }
 
 function makeHost(options = {}) {
@@ -69,7 +54,7 @@ function makeHost(options = {}) {
   const host = {
     $: (id) => {
       if (options.missing && options.missing.includes(id)) return null;
-      if (!els.has(id)) els.set(id, makeEl(id));
+      if (!els.has(id)) els.set(id, makeIdEl(id));
       return els.get(id);
     },
     state,
