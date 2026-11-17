@@ -8,6 +8,7 @@ const chaptersLib = require('./chapters');
 const schemaLib = require('./schema');
 const conflictLib = require('./conflict');
 const storage = require('./storage');
+const errorText = require('./error-text');
 
 // 换书目的临时文件名（锁内串行、失败即删，固定名便于失败排查；不是章节、也不会被当成书目）
 const REPAIR_TEMP_NAME = '.repair-meta.json';
@@ -186,7 +187,13 @@ async function restoreFromBak(bookPath, io = {}) {
     checked = storage.validateRestorableMeta(meta);
   } catch (err) {
     if (err instanceof storage.StorageError) {
-      throw new storage.StorageError('BAK_INVALID', '备份的 书目.json.bak 结构不完整，只能从目录重建');
+      // 复核补漏（WP8）：保留读取侧的具体原因（缺 chapters / 第 N 条缺 file / 超过 20000 章），
+      // 别让作者只看到一句「结构不完整」——具体到哪一条才知道 .bak 被谁改坏、要不要从目录重建。
+      // 错误码 BAK_INVALID 不变（界面按 code 分支），文案仍以「只能从目录重建」收尾。
+      throw new storage.StorageError(
+        'BAK_INVALID',
+        `备份的 书目.json.bak 结构不完整：${errorText.describeForUi(err).message}；只能从目录重建`
+      );
     }
     throw err;
   }

@@ -272,3 +272,38 @@ test('X-N2 C8：静态接线（暂存 + rename / 失败只清暂存 / ipc 预检
   assert.match(bookSrc, /guardTarget/, 'book:import 必须把 guardTarget 传给 importFolders');
   assert.match(bookSrc, /findOpenBookWindow/, '预检要查跨窗口打开登记');
 });
+
+// C9（复核缺口 / WP7 补漏）：暂存书目录 mkdir 失败 → 只清自己刚建的暂存根，不留 .import- 残留。
+// 旧写法 createStagingRoot / mkdir(staging) 在 try 外，mkdir 一失败暂存根就没人清（崩溃残留要等 1 小时）。
+test('C9（WP7 补漏）：暂存书目录 mkdir 失败 → finally 清掉暂存根（不留 .import- 残留）', async () => {
+  const root = await mkTmp();
+  const booksRoot = path.join(root, '书架 根');
+  const src = path.join(root, '暂存失败演练.txt');
+  await fs.writeFile(src, '第1章 起风\n正文。\n', 'utf8');
+
+  const originalMkdir = fs.mkdir;
+  let stagingMkdirs = 0;
+  fs.mkdir = async (target, options) => {
+    if (String(target).includes('.import-')) {
+      stagingMkdirs += 1;
+      // 第 1 次是暂存根（要成功），第 2 次是暂存书目录（注入失败）
+      if (stagingMkdirs >= 2) {
+        throw Object.assign(new Error('injected: 暂存书目录 mkdir 失败'), { code: 'EACCES' });
+      }
+    }
+    return originalMkdir(target, options);
+  };
+  let failure = null;
+  try {
+    await importer.importNovelFile(booksRoot, src, { mode: 'chapters' });
+  } catch (err) {
+    failure = err;
+  } finally {
+    fs.mkdir = originalMkdir;
+  }
+  assert.ok(failure, '用例前提：注入的 mkdir 失败必须让导入失败（否则这个注入没有意义）');
+  assert.equal(failure.code, 'EACCES');
+  assert.ok(stagingMkdirs >= 2, '用例前提：暂存根建成功后才轮到暂存书目录失败');
+  const leftovers = (await fs.readdir(booksRoot).catch(() => [])).filter((name) => name.startsWith('.import-'));
+  assert.deepEqual(leftovers, [], '失败只清自己的暂存根：书架根下不许留 .import- 残留');
+});

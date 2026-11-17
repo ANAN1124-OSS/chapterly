@@ -555,11 +555,13 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
   // 审计 WP7（X-N2）：与文件夹形态统一 —— 先写隐藏暂存根里的「书目录」，写完再由
   // commitStagedFolder 原子 rename；并发导入同一个 txt 时后到者自动拿 -2（不再白丢一次导入），
   // 失败也只清自己的暂存。书架目录本身允许首次导入时不存在（createStagingRoot 用 recursive 建）。
-  const stagingRoot = await createStagingRoot(booksRoot);
-  const staging = path.join(stagingRoot, safeFolderName(baseName));
-  await fs.mkdir(staging);
-
+  // WP7 补漏（复核）：暂存根与暂存书目录都建在 try 里 —— createStagingRoot 成功、随后
+  // mkdir(staging) 失败时 finally 仍会清掉刚建的暂存根，不留 .import- 残留。
+  let stagingRoot = null;
   try {
+    stagingRoot = await createStagingRoot(booksRoot);
+    const staging = path.join(stagingRoot, safeFolderName(baseName));
+    await fs.mkdir(staging);
     const now = new Date().toISOString();
     let chapterList = [];
 
@@ -676,7 +678,7 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
     return result;
   } finally {
     // 只清自己的暂存根：成功时里面已空（书目录被 rename 走），失败时连半成品一起清。
-    await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+    if (stagingRoot) await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
 

@@ -169,6 +169,41 @@ test('R4（X-N4）：坏 .bak（[null] / 缺 file / chapters 非数组 / 超 200
   }
 });
 
+test('R8（复核缺口 / WP8 补漏）：BAK_INVALID 保留具体原因（形状 / 章数上限 / 解析），错误码不变', async () => {
+  const root = await mkTmp();
+  const cases = [
+    {
+      label: 'chapters 不是数组',
+      meta: { title: '坏备份', chapters: '坏值' },
+      expect: /缺少 chapters 数组/
+    },
+    {
+      label: '章节超过 20000 条',
+      meta: {
+        title: '坏备份',
+        chapters: Array.from({ length: 20001 }, (_, i) => ({ id: `ch_${i}`, file: `${i}.txt` }))
+      },
+      expect: /20001.*20000|超过单本上限/
+    },
+    { label: '无法解析', raw: '{ 坏', expect: /无法解析/ }
+  ];
+  for (const item of cases) {
+    const bookPath = await mkBook(root, `原因-${item.label.replace(/[\\/:*?"<>|]/g, '_')}`);
+    await fs.writeFile(path.join(bookPath, storage.BOOK_FILE), '{ 主文件也坏', 'utf8');
+    const bakText = item.raw !== undefined ? item.raw : JSON.stringify(item.meta);
+    await fs.writeFile(path.join(bookPath, storage.BOOK_BAK), bakText, 'utf8');
+    await assert.rejects(
+      () => repair.restoreFromBak(bookPath),
+      (err) => {
+        assert.equal(err.code, 'BAK_INVALID', '错误码不变（界面按 code 分支）');
+        assert.match(err.message, /只能从目录重建/, '保留现有可照做的收尾文案');
+        assert.match(err.message, item.expect, `${item.label}：要保留具体原因，别只剩一句「结构不完整」`);
+        return true;
+      }
+    );
+  }
+});
+
 test('R5（X-N4）：.bak 章条缺 id / 重复 id → 恢复成功，落盘书目 id 已清洗且可直接读取', async () => {
   const root = await mkTmp();
   const bookPath = await mkBook(root, '恢复要清洗 id');
