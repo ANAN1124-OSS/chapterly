@@ -269,22 +269,58 @@ function isCjkNeighbor(ch) {
 // 折算回 UTF-16 下标（source / 片段 / 高亮都用这一套坐标）。旧实现把代理对文本的 UTF-16 长度当
 // 字数：重叠去重的「起点差 < 3 字」被放大成 6 个码元（同一短语刷两条），repeatWindow 也减半。
 // 审计修复 #54（P7）：旧实现先建 chars[] + starts[] 两个按码点的数组（百万字单段 = 瞬时百万个
-// 字符串对象 + 百万个数字），再把每个二字词的码点起点塞进 Map。现在单遍扫描直接看相邻两个整字，
+// 字符串对象 + 百万个数字），再把每个二字词的码点起点塞进 Map。P7 改成单遍扫描直接看相邻两个整字，
 // 只记「二字词 → 码点起点」；UTF-16 下标等最终保留的命中确定后，再顺序扫一遍折算（命中数量很小）。
+// 审计 B8 / #17（低）：单遍仍给**每个**二字词建一个起点数组 —— 常见文本里绝大多数二元组只出现
+// 一两次，这些数组纯属浪费。改成两遍：
+//   · 第一遍只计数（Map<码点对数值键, 次数>，不建数组、不拼二字词字符串）；
+//   · 只给「原始出现数 ≥ repeatCount」的候选词建位置表（非重叠出现数 ≤ 原始出现数，过滤安全）；
+//     第一遍的计数表在此之前 clear 掉，峰值不再是一整张位置表。
+//   判定结果（命中词 / 起点 / 次数 / 去重窗口）逐项不变；数值键见 bigramKey。
+function bigramKey(prevCode, code) {
+  // 两个码点各 ≤ 0x10FFFF：0x110000 进制编码无碰撞且 < 2^53（安全整数）。
+  return prevCode * 0x110000 + code;
+}
+
 function repeatWordIssues(line, options) {
-  const positions = new Map();
+  const counts = new Map();
   let prevCh = '';
-  let prevCp = -1;
+  let prevCode = -1;
   let cp = 0;
   for (let i = 0; i < line.length; cp += 1) {
     const ch = charAt(line, i);
+    const code = ch.codePointAt(0);
     if (prevCh && isHanChar(prevCh) && isHanChar(ch)) {
-      const word = prevCh + ch;
-      const list = positions.get(word);
-      if (list) list.push(prevCp);
-      else positions.set(word, [prevCp]);
+      const wordKey = bigramKey(prevCode, code);
+      counts.set(wordKey, (counts.get(wordKey) || 0) + 1);
     }
     prevCh = ch;
+    prevCode = code;
+    i += ch.length;
+  }
+  const candidates = new Set();
+  for (const [wordKey, count] of counts) if (count >= options.repeatCount) candidates.add(wordKey);
+  counts.clear();
+  if (!candidates.size) return [];
+  const positions = new Map();
+  prevCh = '';
+  prevCode = -1;
+  let prevCp = -1;
+  cp = 0;
+  for (let i = 0; i < line.length; cp += 1) {
+    const ch = charAt(line, i);
+    const code = ch.codePointAt(0);
+    if (prevCh && isHanChar(prevCh) && isHanChar(ch)) {
+      const wordKey = bigramKey(prevCode, code);
+      if (candidates.has(wordKey)) {
+        const word = prevCh + ch;
+        const list = positions.get(word);
+        if (list) list.push(prevCp);
+        else positions.set(word, [prevCp]);
+      }
+    }
+    prevCh = ch;
+    prevCode = code;
     prevCp = cp;
     i += ch.length;
   }
@@ -393,6 +429,8 @@ function proofreadText(text, rawOptions, rawGlossary) {
   }
 
   // ① 半角标点：位置直接取自 format.js 的判定（同一个函数，不会和排版结果打架）
+  // B7（审计 #16）：校对只要回调报告、完全丢弃返回的正文 —— reportOnly 分支跳过逐字 parts
+  // 与整段 join 副本（长段落里省掉百万级临时字符串），判定与回调序列仍是同一份实现。
   if (rules['halfwidth-punct']) {
     for (const paragraph of paragraphs) {
       formatLib.convertPunct(paragraph.text, (offsetInLine, from, to) => {
@@ -403,7 +441,7 @@ function proofreadText(text, rawOptions, rawGlossary) {
           from,
           `半角标点「${from}」建议改成「${to}」`
         );
-      });
+      }, { reportOnly: true });
     }
   }
 
@@ -515,10 +553,12 @@ function proofreadText(text, rawOptions, rawGlossary) {
 
   // ⑦⑧⑨ 合并成一趟逐字符扫描（B4 / WP-27）：省略号（半角点 / 「。」）、破折号（- / —）、
   // 全角数字三组字符互不重叠，按当前字符分派即可；省掉两趟整章扫描。
-  // 命中先按规则分桶存着，扫完再按 ⑦→⑧→⑨ 的顺序交给 addIssue —— 插入顺序与拆开实现完全一致，
-  // 明细额度（maxIssues）被用满时保留哪几条也不会变（截图/回归口径逐字不变）。
+  // B6（审计 #15）：命中**先问 collector.wants(rule)** —— 额度已满时只 collector.countOnly
+  //（扫描继续、计数照旧准确），不再物化 { index, length, run }、不再 source.slice 整段。
+  // 旧实现把三组命中先分桶存着、扫完才交给 addIssue：addIssue 的额度预检（#54/P7）挡得到
+  // issue 对象，挡不到桶里的命中 —— 病态输入（「１a」×50 万）会先建 50 万个桶对象再丢掉。
+  // 同规则内命中仍按扫描顺序进入收集器，最终明细按位置统一排序：保留哪几条与旧实现一致。
   if (rules.ellipsis || rules.dash || rules['fullwidth-digit']) {
-    const hits = { ellipsis: [], dash: [], 'fullwidth-digit': [] };
     for (let i = 0; i < source.length; ) {
       const ch = source[i];
       // ⑦ 省略号：3 个及以上半角点，或 3 个及以上「。」→ 建议「……」。
@@ -526,7 +566,16 @@ function proofreadText(text, rawOptions, rawGlossary) {
       if (ch === '.' || ch === '。') {
         let j = i + 1;
         while (j < source.length && source[j] === ch) j += 1;
-        if (rules.ellipsis && j - i >= 3) hits.ellipsis.push({ index: i, length: j - i, run: source.slice(i, j) });
+        if (rules.ellipsis && j - i >= 3) {
+          if (collector.wants('ellipsis')) {
+            const run = source.slice(i, j);
+            addIssue('ellipsis', i, j - i, run, `省略号「${run}」建议改成「……」`, {
+              suggestion: '……'
+            });
+          } else {
+            collector.countOnly('ellipsis');
+          }
+        }
         i = j;
         continue;
       }
@@ -542,7 +591,14 @@ function proofreadText(text, rawOptions, rawGlossary) {
           const next = charAt(source, j);
           const bad = ch === '-' ? count >= 2 : count !== 2;
           if (bad && (isCjkNeighbor(prev) || isCjkNeighbor(next))) {
-            hits.dash.push({ index: i, length: count, run: source.slice(i, j) });
+            if (collector.wants('dash')) {
+              const run = source.slice(i, j);
+              addIssue('dash', i, count, run, `破折号「${run}」建议用两个「——」`, {
+                suggestion: '——'
+              });
+            } else {
+              collector.countOnly('dash');
+            }
           }
         }
         i = j;
@@ -553,34 +609,25 @@ function proofreadText(text, rawOptions, rawGlossary) {
         let j = i + 1;
         while (j < source.length && FULLWIDTH_DIGIT_RE.test(source[j])) j += 1;
         if (rules['fullwidth-digit']) {
-          const run = source.slice(i, j);
-          hits['fullwidth-digit'].push({ index: i, length: run.length, run });
+          if (collector.wants('fullwidth-digit')) {
+            const run = source.slice(i, j);
+            const ascii = toHalfWidth(run, { digitsOnly: true });
+            addIssue(
+              'fullwidth-digit',
+              i,
+              run.length,
+              run,
+              `全角数字「${run}」建议改成半角「${ascii}」`,
+              { suggestion: ascii }
+            );
+          } else {
+            collector.countOnly('fullwidth-digit');
+          }
         }
         i = j;
         continue;
       }
       i += 1;
-    }
-    for (const hit of hits.ellipsis) {
-      addIssue('ellipsis', hit.index, hit.length, hit.run, `省略号「${hit.run}」建议改成「……」`, {
-        suggestion: '……'
-      });
-    }
-    for (const hit of hits.dash) {
-      addIssue('dash', hit.index, hit.length, hit.run, `破折号「${hit.run}」建议用两个「——」`, {
-        suggestion: '——'
-      });
-    }
-    for (const hit of hits['fullwidth-digit']) {
-      const ascii = toHalfWidth(hit.run, { digitsOnly: true });
-      addIssue(
-        'fullwidth-digit',
-        hit.index,
-        hit.length,
-        hit.run,
-        `全角数字「${hit.run}」建议改成半角「${ascii}」`,
-        { suggestion: ascii }
-      );
     }
   }
 
@@ -658,6 +705,8 @@ module.exports = {
   RULE_LABELS,
   DEFAULT_RULES,
   DEFAULT_OPTIONS,
+  // B5（#14）：整本校对在明细预算用尽后把单章 maxIssues 降到下限 —— 下限的唯一事实源。
+  OPTION_LIMITS,
   sanitizeOptions,
   sanitizeRules,
   proofreadText

@@ -270,10 +270,14 @@ function registerProofreadIpc(host) {
     // P-08（1.6.0 A5）：明细预算（1500 条）用完后，后面的章只需要条数 / 各规则计数——
     // 传 snippets:false 就不再为每条命中拼上下文片段（那些明细反正会被丢掉）。
     let snippetsWanted = true;
+    // B5（审计 #14）：预算用尽后每章的单章明细额度也降到下限（core 的唯一事实源）——
+    // snippets:false 只省了片段，旧实现仍按默认 maxIssues 为每条规则建 issue 对象再整批丢弃；
+    // 降到下限后每章只建「规则数 × 下限」个对象（多出来的只计数）。
+    const chapterIssueFloor = proofreadLib.OPTION_LIMITS.maxIssues[0];
     const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
       const result = proofreadLib.proofreadText(
         text,
-        snippetsWanted ? chapterOptions : { ...chapterOptions, snippets: false },
+        snippetsWanted ? chapterOptions : { ...chapterOptions, snippets: false, maxIssues: chapterIssueFloor },
         customEntries
       );
       total += result.total;
@@ -340,8 +344,11 @@ function registerProofreadIpc(host) {
     const byWordMap = new Map();
     let total = 0;
     let truncated = false;
+    // B5（审计 #14）：整本明细预算（1500 条）用完后，后面的章只需要 total / byWord ——
+    // scanText 走 details:false（不建明细 / 不算行号 / 不拼片段），计数口径完全不变。
+    let detailsWanted = true;
     const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
-      const result = sensitiveLib.scanText(text, list.words, limits);
+      const result = sensitiveLib.scanText(text, list.words, detailsWanted ? limits : { ...limits, details: false });
       total += result.total;
       for (const item of result.byWord) {
         byWordMap.set(item.word, (byWordMap.get(item.word) || 0) + item.count);
@@ -368,6 +375,7 @@ function registerProofreadIpc(host) {
           chapterName: chapter.name
         });
       }
+      if (matches.length >= sensitiveLib.BOOK_ISSUE_LIMIT) detailsWanted = false;
     });
     const byWord = Array.from(byWordMap, ([word, count]) => ({ word, count }))
       .sort((a, b) => b.count - a.count || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0))

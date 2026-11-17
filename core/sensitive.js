@@ -161,6 +161,11 @@ function publicWordListInfo(list) {
 function scanText(text, rawWords, rawOptions) {
   const options = sanitizeOptions(rawOptions);
   const words = sanitizeWords(rawWords);
+  // B5（审计 #14）：整本预检的明细预算（1500 条）用尽后，后面的章只需要 total / byWord ——
+  // details:false 时一条明细都不建（行号列号 / 上下文片段 / issues 对象全部跳过），
+  // 扫描本身照跑，命中数一条不少。只从入口 raw options 读，不进 sanitizeOptions：
+  // 单章频道（text:sensitive-check）的公开 options 口径因此不变。
+  const detailsWanted = !(rawOptions && typeof rawOptions === 'object' && rawOptions.details === false);
   const source = normalizeText(text);
   const scan = wordscan.scanTerms(source, words, { rawMatchLimit: RAW_MATCH_LIMIT });
   // A4 / P-03：一边遍历命中一边聚合，不再先物化一份「全部命中」的中间数组；
@@ -174,6 +179,7 @@ function scanText(text, rawWords, rawOptions) {
     const word = words[hit.patternIndex];
     total += 1;
     byWordMap.set(word, (byWordMap.get(word) || 0) + 1);
+    if (!detailsWanted) continue;
     if (issues.length >= options.maxIssues) continue;
     if (!lineStarts) lineStarts = lineStartsOf(source);
     const pos = positionOf(lineStarts, hit.index);
@@ -198,7 +204,8 @@ function scanText(text, rawWords, rawOptions) {
     byWord,
     wordHitCount: byWordMap.size,
     wordCount: words.length,
-    truncated: scan.truncated || total > issues.length,
+    // details:false 时「明细不全」是调用方自己要求的，不是截断信号 —— truncated 只反映原始命中上限
+    truncated: scan.truncated || (detailsWanted && total > issues.length),
     // X4（v1.8.0 WP-24）：chars = 正文字数（去空白），与校对 / 捕获队列 / 状态栏同一口径
     // （core/chapters.js 的 countChars）；需要「含空白的原文长度」看 rawLength。
     chars: chaptersLib.countChars(source),

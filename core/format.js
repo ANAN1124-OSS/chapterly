@@ -74,10 +74,14 @@ const stripTrailing = (line) => line.replace(/[ \t\u3000\u00a0]+$/, '');
 // 不传时行为与以前完全一致。
 // P-07（1.6.0 A5）：逐字 out += ch 造串在长段落里是 O(n²) 的中间字符串，改成数组 push + join；
 // prev 跟着「已经产出的最后一个字符」走（转换后是全角那个），判定口径与旧实现逐字一致。
-function convertPunct(text, onConvert) {
+// B7（审计 #16）：第三个参数 { reportOnly: true } 只在「有回调」时生效 —— 调用方（校对规则①）
+// 只要报告、完全丢弃返回正文时跳过逐字 parts 与最终 join，不产整段转换副本；判定 / 回调序列
+// 与默认分支仍是同一份实现。默认分支（不传或 false）逐字节不变。
+function convertPunct(text, onConvert, rawOptions) {
   let count = 0;
-  const parts = [];
   const report = typeof onConvert === 'function' ? onConvert : null;
+  const reportOnly = Boolean(report && rawOptions && rawOptions.reportOnly === true);
+  const parts = reportOnly ? null : [];
   let prev = '';
   for (let i = 0; i < text.length; i += 1) {
     const code = text.codePointAt(i);
@@ -85,7 +89,7 @@ function convertPunct(text, onConvert) {
     // 认出「旁边是汉字」；标点本身永远是 BMP，不受影响。
     if (code > 0xffff) {
       const wide = text.slice(i, i + 2);
-      parts.push(wide);
+      if (parts) parts.push(wide);
       prev = wide;
       i += 1;
       continue;
@@ -93,25 +97,25 @@ function convertPunct(text, onConvert) {
     const ch = text[i];
     const full = PUNCT_MAP[ch];
     if (!full) {
-      parts.push(ch);
+      if (parts) parts.push(ch);
       prev = ch;
       continue;
     }
     const next = charAt(text, i + 1);
     // 「...」「。。。」这类省略号连排保持原样，不逐个转换
     if (ch === '.' && (text[i - 1] === '.' || text[i + 1] === '.')) {
-      parts.push(ch);
+      if (parts) parts.push(ch);
       prev = ch;
       continue;
     }
     // 句点单独收紧：只认「中文 + .」（或全角标点 / 闭引号之后），避免把 A. / 3.14 / www.a.com 里的点转成句号
     if (ch === '.') {
       if (!(HAN_RE.test(prev) || FULL_PUNCT.has(prev) || CLOSE_QUOTE.has(prev))) {
-        parts.push(ch);
+        if (parts) parts.push(ch);
         prev = ch;
         continue;
       }
-      parts.push(full);
+      if (parts) parts.push(full);
       prev = full;
       count += 1;
       if (report) report(i, ch, full);
@@ -119,15 +123,16 @@ function convertPunct(text, onConvert) {
     }
     const nearHan = HAN_RE.test(prev) || HAN_RE.test(next) || FULL_PUNCT.has(prev) || FULL_PUNCT.has(next);
     if (!nearHan) {
-      parts.push(ch);
+      if (parts) parts.push(ch);
       prev = ch;
       continue;
     }
-    parts.push(full);
+    if (parts) parts.push(full);
     prev = full;
     count += 1;
     if (report) report(i, ch, full);
   }
+  if (reportOnly) return { text: null, count, reportOnly: true };
   return { text: parts.join(''), count };
 }
 
