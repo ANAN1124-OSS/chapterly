@@ -416,7 +416,7 @@ test('接线：renderer.js 与模块按全局名装配，只 create 一次，缺
   }
   assert.ok(moduleCode.includes("assertHost('createSaveRescueUi', host, REQUIRED_HOST);"), 'host 校验走共享实现');
   // UMD 的 Node 分支只取 assert-host，运行时代码不 await 文件系统 / IPC
-  const runtimeCode = moduleCode.split("module.exports = factory(require('./assert-host').assertHost);").join('');
+  const runtimeCode = moduleCode.split("module.exports = factory(require('../core/assert-host').assertHost);").join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'fetch(', 'document.']) {
     assert.equal(runtimeCode.includes(forbidden), false, forbidden);
   }

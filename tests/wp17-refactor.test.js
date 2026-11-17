@@ -6,18 +6,48 @@
 //      enabledLists 子集「按实际参与结算」（#49/E24）不回退
 //   R3 极值 × IO 失败注入：3 × 6000 条 + 目录 / 不存在文件同批，不抛错、封顶、坏份只标记
 //   R4 对外形状：lists 仍带 entries/ownTruncated/truncated；公开信息剥掉正文；total = entries.length
+// 第 22 轮追加 A2 锚点（R5–R7，2026-11-18，HEAD 411695f）：
+//   R5 renderer/assert-host.js 移入 core/assert-host.js：core 里有一份实现、renderer 侧不留 shim、
+//      ipc 不再反向依赖 renderer/（4 个 ipc 都从 ../core/assert-host 取）
+//   R6 UMD 双分支与浏览器全局名不变：Node 仍导出 { assertHost }，浏览器仍挂 CWAssertHost，
+//      文案 / 返回值逐字不变
+//   R7 index.html 的 <script> 仍是 ../core/assert-host.js、只加载一次、仍排在全部 host 消费者之前；
+//      装配清单同一条目 / 全局名 / 本地名不变（顺序与条数不改）
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const glossary = require('../core/glossary');
 const tmpCleanup = require('./tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'core', 'glossary.js'), 'utf8');
+const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+
+// 静态闸门只看代码：注释里回忆「以前怎么写」不算回潮。
+function stripComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join('\n');
+}
+
+// renderer 下带 `const REQUIRED_HOST =` 的模块 = assert-host 的全部 host 消费者（名单与
+// tests/assert-host.test.js 同一口径：renderer.js 只在注释里提过 REQUIRED_HOST，不算）。
+function hostConsumers() {
+  return fs
+    .readdirSync(path.join(ROOT, 'renderer'))
+    .filter((name) => name.endsWith('.js'))
+    .filter((name) => read(`renderer/${name}`).includes('const REQUIRED_HOST ='))
+    .sort();
+}
+
+const IPC_HOST_FILES = ['ipc/book-data.js', 'ipc/book.js', 'ipc/export.js', 'ipc/proofread.js'];
 
 function functionBody(name) {
   const start = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(SOURCE);
@@ -142,4 +172,121 @@ test('R4 D3：对外形状不变（lists 内部带 entries，公开信息剥掉�
   assert.equal(info.lists[0].entries, undefined);
   assert.equal(info.lists[0].ownTruncated, undefined);
   assert.equal(info.total, 2);
+});
+
+test('R5 A2：共享 host 校验器归 core/assert-host.js，renderer 不留 shim，ipc 不再反向依赖', () => {
+  // ① 文件归位：core 有一份、renderer 侧一个不剩（留 shim 会把「一份实现」重新拆成两条依赖路径）
+  assert.equal(fs.existsSync(path.join(ROOT, 'core', 'assert-host.js')), true, 'core/assert-host.js 必须存在');
+  assert.equal(
+    fs.existsSync(path.join(ROOT, 'renderer', 'assert-host.js')),
+    false,
+    'renderer/assert-host.js 必须已移走（不许留 re-export shim）'
+  );
+
+  // ② ipc 反向依赖消失：4 个消费者一律 require('../core/assert-host')，全仓 ipc 不许出现 renderer/assert-host
+  const ipcFiles = fs.readdirSync(path.join(ROOT, 'ipc')).filter((name) => name.endsWith('.js')).sort();
+  assert.ok(ipcFiles.length >= IPC_HOST_FILES.length, 'ipc 目录读空了 = 闸门等于没开');
+  for (const file of ipcFiles) {
+    const src = stripComments(read(`ipc/${file}`));
+    assert.equal(src.includes('renderer/assert-host'), false, `ipc/${file} 不许再 require renderer/assert-host（反向依赖）`);
+  }
+  for (const file of IPC_HOST_FILES) {
+    assert.match(
+      stripComments(read(file)),
+      /require\('\.\.\/core\/assert-host'\)/,
+      `${file} 的 host 校验必须从 ../core/assert-host 取`
+    );
+  }
+
+  // ③ renderer 侧 33 个消费者统一 Node 分支；条件分支（crash-recovery / shelf-filter）也走同一份
+  const consumers = hostConsumers();
+  assert.equal(consumers.length, 33, `host 消费者数量变了：${consumers.length}`);
+  for (const file of consumers) {
+    const src = stripComments(read(`renderer/${file}`));
+    assert.equal(src.includes("require('./assert-host')"), false, `${file} 不许再 require('./assert-host')`);
+    assert.ok(
+      src.includes("require('../core/assert-host').assertHost"),
+      `${file} 的 UMD Node 分支必须 require('../core/assert-host').assertHost`
+    );
+    assert.ok(src.includes('root.CWAssertHost'), `${file} 的浏览器分支仍必须取 root.CWAssertHost`);
+  }
+
+  // ④ 全仓唯一实现：两条错误文案的实现只许在一处（core/assert-host.js）
+  const implementers = [];
+  for (const dir of ['core', 'renderer']) {
+    for (const file of fs.readdirSync(path.join(ROOT, dir)).filter((name) => name.endsWith('.js')).sort()) {
+      const src = stripComments(read(`${dir}/${file}`));
+      if (src.includes("的 host 缺少 ' + key") || src.includes('需要 host 对象')) implementers.push(`${dir}/${file}`);
+    }
+  }
+  assert.deepEqual(implementers, ['core/assert-host.js'], '「逐成员判定 + 两条文案」只许在 core/assert-host.js 实现');
+});
+
+test('R6 A2：UMD 双分支与浏览器全局名不变（Node 导出同名 / 浏览器仍挂 CWAssertHost）', () => {
+  const source = read('core/assert-host.js');
+  assert.match(source, /module\.exports = factory\(\);/, 'Node 分支必须 module.exports = factory()');
+  assert.match(source, /root\.CWAssertHost = factory\(\);/, '浏览器分支必须仍挂 root.CWAssertHost（全局名不变）');
+
+  const mod = require('../core/assert-host');
+  assert.deepEqual(Object.keys(mod), ['assertHost'], '对外导出面不变');
+  const host = { $: () => {}, state: {}, api: {}, call: () => {} };
+  assert.equal(mod.assertHost('createDemoUi', host, ['$', 'state', 'api', 'call']), host);
+  assert.equal(mod.assertHost('createDemoUi', { extra: 1 }, []).extra, 1, '允许多余成员 / 空清单');
+  for (const bad of [null, undefined, 'host', 42, true]) {
+    assert.throws(
+      () => mod.assertHost('createDemoUi', bad, ['$']),
+      new TypeError('createDemoUi 需要 host 对象'),
+      'host = ' + String(bad)
+    );
+  }
+  assert.throws(
+    () => mod.assertHost('createDemoUi', { $: () => {}, state: null }, ['$', 'state']),
+    new TypeError('createDemoUi 的 host 缺少 state'),
+    '缺成员（null）文案与顺序不变'
+  );
+
+  // 浏览器链：没有 module 的环境里跑同一份源码，仍只挂全局、不污染 window 其它名字
+  const win = {};
+  vm.runInContext(source, vm.createContext(win), { filename: 'core/assert-host.js' });
+  assert.equal(typeof win.CWAssertHost.assertHost, 'function', '浏览器里 CWAssertHost.assertHost 必须是函数');
+  assert.deepEqual(Object.keys(win), ['CWAssertHost'], '浏览器分支只挂 CWAssertHost 一个全局名');
+  assert.throws(
+    () => win.CWAssertHost.assertHost('createUndoUi', { slot: {} }, ['$']),
+    /createUndoUi 的 host 缺少 \$/,
+    '浏览器分支的缺成员文案逐字不变'
+  );
+});
+
+test('R7 A2：index.html / 装配清单的 assert-host 入口换成 ../core/，顺序与条数不变', () => {
+  const html = read('renderer/index.html');
+  const tag = '<script src="../core/assert-host.js"></script>';
+  const at = html.indexOf(tag);
+  assert.ok(at > 0, 'index.html 必须以 ../core/assert-host.js 加载共享校验器');
+  assert.equal(html.split(tag).length - 1, 1, 'assert-host 只许加载一次');
+  assert.equal(
+    html.split('<script src="assert-host.js"></script>').length - 1,
+    0,
+    'index.html 不许再按 renderer/assert-host.js 的旧路径加载'
+  );
+  for (const file of hostConsumers()) {
+    const tagAt = html.indexOf(`<script src="${file}"></script>`);
+    assert.ok(tagAt > 0, `index.html 必须加载 ${file}`);
+    assert.ok(at < tagAt, `assert-host 必须排在 ${file} 之前（先校验后建模块）`);
+  }
+
+  const manifest = require('../renderer/assembly-manifest');
+  const entry = manifest.MODULES.find(([file]) => file === '../core/assert-host.js');
+  assert.ok(entry, '装配清单必须有 ../core/assert-host.js 条目');
+  assert.equal(entry[1], 'CWAssertHost', '清单里的全局名不变');
+  assert.equal(entry[2], '', '清单里的本地名不变（renderer.js 不取顶部常量）');
+  assert.equal(
+    manifest.MODULES.filter(([file]) => /(?:^|\/)assert-host\.js$/.test(file)).length,
+    1,
+    '清单里 assert-host 只许一条（旧 renderer 条目必须删掉）'
+  );
+  // 与 index.html 的契约仍由 wiring-check / assembly 闸门核对，这里只钉「文件路径迁移不改顺序」：
+  // assert-host 在清单里的位置仍在 ime-guard.js 之后、font-logic.js 之前。
+  const files = manifest.MODULES.map(([file]) => file);
+  assert.equal(files.indexOf('../core/assert-host.js'), files.indexOf('ime-guard.js') + 1, '清单顺序被改了');
+  assert.equal(files[files.indexOf('../core/assert-host.js') + 1], 'font-logic.js', '清单顺序被改了');
 });

@@ -38,7 +38,7 @@
       require('../core/capture'),
       require('../core/common'),
       require('./backdrop-registry'),
-      require('./assert-host').assertHost
+      require('../core/assert-host').assertHost
     );
   } else if (root) {
     root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon, root.CWBackdropRegistry, root.CWAssertHost && root.CWAssertHost.assertHost);

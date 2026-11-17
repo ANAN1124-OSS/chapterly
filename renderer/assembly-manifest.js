@@ -53,7 +53,7 @@
     ['modal-queue.js', 'CWModalQueue', 'modalQueueModule', '询问框排队与防重入'],
     ['stale-guard.js', 'CWStaleGuard', 'staleGuard', '长 IPC 回执的世代令牌 / 身份快照'],
     ['ime-guard.js', 'CWImeGuard', 'imeGuard', '输入法组字守卫'],
-    ['assert-host.js', 'CWAssertHost', '', 'host 契约缺成员时显式报错'],
+    ['../core/assert-host.js', 'CWAssertHost', '', 'host 契约缺成员时显式报错'],
     ['font-logic.js', 'CWFontLogic', 'fontLogic', '自定义字体 base64 解码'],
     ['stats-logic.js', 'CWStatsLogic', 'statsLogic', '码字日历 / 统计数据换算'],
     ['list-keyboard.js', 'CWListKeyboard', 'listKeyboard', '章节列表 / 书卡的键盘可达'],

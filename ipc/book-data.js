@@ -20,7 +20,7 @@
  * 契约：register(host) —— host 成员逐条列在 REQUIRED_HOST 里；缺任何一个在 registerIpc() 装配时
  * 直接抛 TypeError。模块自己不 require electron、不缓存状态快照。
  */
-const { assertHost } = require('../renderer/assert-host');
+const { assertHost } = require('../core/assert-host');
 const deletePlanToken = require('../core/delete-plan-token');
 const { MUTATION, READ_ONLY } = require('./book-mutations');
 

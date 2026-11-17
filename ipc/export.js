@@ -24,7 +24,7 @@
  * 与搬运前逐字一致；依赖取值处只有两处被改成 getter —— 剪贴板句柄与配置仓库句柄都是可变绑定
  * （activeClipboard 由自检宿主替换、configStore 在 getConfig 里懒建），快照会过期。
  */
-const { assertHost } = require('../renderer/assert-host');
+const { assertHost } = require('../core/assert-host');
 
 const REQUIRED_HOST = [
   'handle',

@@ -17,7 +17,7 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../core/common'), require('./assert-host').assertHost);
+    module.exports = factory(require('../core/common'), require('../core/assert-host').assertHost);
   } else if (root) {
     root.CWCrashRecoveryUi = factory(root.CWCommon, root.CWAssertHost && root.CWAssertHost.assertHost);
   }

@@ -23,7 +23,7 @@
  * READ_ONLY（以前靠省略第三个参数）。新增书域频道必须在 MUTATION.X / READ_ONLY 里二选一，
  * tests/book-data-ipc.test.js 会逐条核对（漏选 / 只读漏标都会红）。
  */
-const { assertHost } = require('../renderer/assert-host');
+const { assertHost } = require('../core/assert-host');
 const { MUTATION, READ_ONLY } = require('./book-mutations');
 
 const REQUIRED_HOST = [

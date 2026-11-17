@@ -674,9 +674,9 @@ test('静态闸门：index.html 在 renderer.js 之前加载 export-ui.js，模�
   assert.ok(moduleIdx < rendererIdx, 'export-ui.js 必须排在 renderer.js 之前');
   // 排在 esc-registry.js 之后（两者互不依赖，位置跟在它后面便于阅读）
   assert.ok(indexSrc.indexOf('src="esc-registry.js"') < moduleIdx);
-  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js；
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
   assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
   const runtimeCode = moduleCode.split(assertHostBranch).join('');
   assert.equal(/\brequire\s*\(/.test(runtimeCode), false, 'export-ui.js 不许 require');

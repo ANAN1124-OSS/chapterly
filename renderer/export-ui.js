@@ -28,7 +28,7 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./assert-host').assertHost);
+    module.exports = factory(require('../core/assert-host').assertHost);
   } else if (root) {
     root.CWExportUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
   }

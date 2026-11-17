@@ -1,6 +1,6 @@
-/* 渲染层 host 契约的共享校验器（v1.8.0 WP-32 / 审计 A8）。
+/* ipc 与渲染层共用的 host 契约校验器（v1.8.0 WP-32 / 审计 A8；WP17 A2 从 renderer/assert-host.js 上移）。
  *
- * 29 个模块的 createX(host) 以前各自写一遍同样的样板：
+ * 33 个渲染层模块的 createX(host) 与 4 个 ipc 模块以前各自写一遍同样的样板：
  *   if (!host || typeof host !== 'object') throw new TypeError('createX 需要 host 对象');
  *   for (const key of REQUIRED_HOST) {
  *     if (host[key] === undefined || host[key] === null) throw new TypeError('createX 的 host 缺少 ' + key);
@@ -16,6 +16,8 @@
  * 通过时原样返回 host；非对象 / 缺成员直接抛 TypeError。
  *
  * 浏览器里挂成全局 CWAssertHost（index.html 排在所有消费者之前），Node 里可以直接 require。
+ * 位置在 core/：ipc/*（主进程域）与 renderer/*（页面域）共用同一份实现——渲染层目录不再保留副本或
+ * re-export shim，否则「一份实现」又会被拆成两条依赖路径（审计 A2）。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {

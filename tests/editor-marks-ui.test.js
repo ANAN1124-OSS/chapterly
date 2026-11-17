@@ -906,9 +906,9 @@ test('静态闸门：index.html 在 renderer.js 之前加载 editor-marks-ui.js�
 });
 
 test('静态闸门：模块不 require / 不摸 Electron·fs·网络；事件与定时器位置可控', () => {
-  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 renderer/assert-host.js（浏览器走 window.CWAssertHost）；
+  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('./assert-host').assertHost);";
+  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
   assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
   const runtimeCode = moduleCode.split(assertHostBranch).join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'process.']) {

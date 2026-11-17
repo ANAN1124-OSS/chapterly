@@ -223,7 +223,7 @@ test('WP-34：模块自己不 require electron；依赖由 main.js 的 buildIpcH
   for (const rel of IPC_FILES) {
     const source = read(rel);
     assert.equal(source.includes("require('electron')"), false, `${rel} 不该 require electron（装配面只在 main.js）`);
-    assert.match(source, /require\('\.\.\/renderer\/assert-host'\)/, `${rel} 的 host 校验要走 A8 的共享实现`);
+    assert.match(source, /require\('\.\.\/core\/assert-host'\)/, `${rel} 的 host 校验要走 A8 的共享实现`);
     assert.match(source, /module\.exports = \{ register: /, `${rel} 只导出 register 一个入口`);
     assert.match(source, /(V114|▲V306)/, `${rel} 的模块头要写明搬移来源（V114 / 审计修复 #38）`);
     assert.match(source, /只搬不改行为/, `${rel} 的模块头要写明「只搬不改行为」的纪律`);
@@ -284,7 +284,7 @@ test('WP-34：渲染层快捷键一览搬进 renderer/shortcuts-ui.js，renderer
   const HTML = read('renderer/index.html');
   // 模块：UMD + A8 共享 host 校验 + 唯一入口 create
   assert.match(MODULE, /root\.CWShortcutsUi = factory\(/, '浏览器里要挂成 CWShortcutsUi');
-  assert.match(MODULE, /require\('\.\/assert-host'\)/, 'host 校验要走 A8 的共享实现');
+  assert.match(MODULE, /require\('\.\.\/core\/assert-host'\)/, 'host 校验要走 A8 的共享实现');
   assert.match(MODULE, /const REQUIRED_HOST = \['\$', 'state', 'editorEl', 'commandCatalog', 'groupLabels'\]/);
   // renderer.js：不许再有第二份一览页实现，只装配模块并按原名取入口
   for (const fn of ['function renderShortcutRows(', 'function openShortcutsPage(', 'function closeShortcutsPage(', 'function shortcutRows(']) {
@@ -298,7 +298,7 @@ test('WP-34：渲染层快捷键一览搬进 renderer/shortcuts-ui.js，renderer
   const at = HTML.indexOf(tag);
   assert.ok(at > 0, 'index.html 必须加载 shortcuts-ui.js');
   assert.equal(HTML.split(tag).length - 1, 1, 'shortcuts-ui.js 只许加载一次');
-  assert.ok(HTML.indexOf('<script src="assert-host.js"></script>') < at, 'assert-host.js 必须排在 shortcuts-ui.js 之前');
+  assert.ok(HTML.indexOf('<script src="../core/assert-host.js"></script>') < at, 'assert-host.js 必须排在 shortcuts-ui.js 之前');
   assert.ok(at < HTML.indexOf('<script src="renderer.js"></script>'), 'shortcuts-ui.js 必须排在 renderer.js 之前');
   // 不维护第二份快捷键表（系统键表只在 command-catalog.js）
   assert.equal(MODULE.includes('SYSTEM_KEYS'), false, '系统键表只许在 command-catalog.js');

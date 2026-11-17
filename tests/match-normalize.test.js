@@ -188,7 +188,7 @@ test('静态闸门：五个消费方都引用 core/common.js 的共享实现，�
     'core/find.js': /const \{ caseFoldForMatch \} = require\('\.\/common'\);/,
     'core/search-index.js': /const \{ nowIso, mapLimit, normalizeForMatch \} = require\('\.\/common'\);/,
     'core/bookinfo.js': /const \{ truncateSafe, normalizeForMatch \} = common;/,
-    'renderer/shelf-filter-ui.js': /module\.exports = factory\(require\('\.\.\/core\/common'\), require\('\.\/assert-host'\)\.assertHost\);/,
+    'renderer/shelf-filter-ui.js': /module\.exports = factory\(require\('\.\.\/core\/common'\), require\('\.\.\/core\/assert-host'\)\.assertHost\);/,
     'renderer/command-registry.js': /module\.exports = factory\(require\('\.\.\/core\/common'\)\);/
   };
   for (const [rel, pattern] of Object.entries(wired)) {
