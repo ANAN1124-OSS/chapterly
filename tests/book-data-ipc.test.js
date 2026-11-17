@@ -11,6 +11,7 @@
 //      清快照仍只认快照目录并拒绝联接 / 回收站失败如实报错；
 //   ④ 接线：13 个频道不许回潮 main.js；chapter:save 带上 MUTATION.SAVE；handleBook 的广播语义
 //      （有 mutation 才广播、book:set-last 是唯一例外）由运行真实包装函数验证。
+//   WP4（审计 S-N1）新增 1 个频道（清理计划），数据面变 14 个 —— 下面清单 / 计数同步。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -34,6 +35,7 @@ const DATA_CHANNELS = [
   'book:preview-history-file',
   'book:restore-history-file',
   'book:restore-history-dir',
+  'book:plan-delete-history-backups',
   'book:delete-history-backups',
   'book:clear-snapshot-day',
   'book:format-preview',
@@ -56,6 +58,8 @@ function makeBookDataHost(overrides = {}) {
       previewHistoryFile: async () => ({ text: '' }),
       restoreHistoryFile: async () => ({ ok: true }),
       restoreHistoryGroup: async () => ({ ok: true }),
+      // WP4（S-N1）：清理分两步 —— 计划（只读解析）+ 执行（带令牌、只进回收站）。
+      planHistoryBackupDeletion: async () => ({ cleanable: [], skipped: [], groupCount: 0, totalBytes: 0 }),
       deleteHistoryBackups: async () => ({ ok: true }),
       snapshotDirForClear: () => path.join('D:\\书库\\书', '_trash', '快照-20260101'),
       StorageError: class StorageError extends Error {
@@ -126,9 +130,9 @@ test('mutation 常量表：六个写值 + READ_ONLY（null），全部冻结', (
   assert.equal(READ_ONLY.mutation, null, 'READ_ONLY 的语义仍是「不写、不广播」');
 });
 
-test('ipc/book-data.js：13 个频道的清单 / 顺序 / 注册器 / mutation 与搬前一致', () => {
+test('ipc/book-data.js：14 个频道的清单 / 顺序 / 注册器 / mutation 与搬前一致（WP4 增清理计划频道）', () => {
   const { channels } = makeBookDataHost();
-  assert.deepEqual(Array.from(channels.keys()), DATA_CHANNELS, '频道清单 / 顺序变了（与 main.js:2010-2110 搬前一致）');
+  assert.deepEqual(Array.from(channels.keys()), DATA_CHANNELS, '频道清单 / 顺序变了（与 main.js:2010-2110 搬前一致；WP4 在删除前插入计划频道）');
   const expected = {
     'book:search': null,
     'book:replace': MUTATION.REPLACE,
@@ -138,6 +142,7 @@ test('ipc/book-data.js：13 个频道的清单 / 顺序 / 注册器 / mutation �
     'book:preview-history-file': null,
     'book:restore-history-file': MUTATION.WRITE,
     'book:restore-history-dir': MUTATION.WRITE,
+    'book:plan-delete-history-backups': null,
     'book:delete-history-backups': MUTATION.WRITE,
     'book:clear-snapshot-day': MUTATION.WRITE,
     'book:format-preview': null,
@@ -156,7 +161,7 @@ test('书域两个模块：每条 handleBook 都显式选 MUTATION.X 或 READ_ON
     ...Array.from(crudChannels.entries()).map(([name, options]) => ({ module: 'ipc/book.js', name, options })),
     ...Array.from(dataChannels.entries()).map(([name, entry]) => ({ module: 'ipc/book-data.js', name, options: entry.options }))
   ];
-  assert.ok(all.length === 35, `书域频道数异常：${all.length}（22 个 CRUD + 13 个数据面）`);
+  assert.ok(all.length === 36, `书域频道数异常：${all.length}（22 个 CRUD + 14 个数据面）`);
   for (const item of all) {
     assert.ok(
       item.options && Object.prototype.hasOwnProperty.call(item.options, 'mutation'),
@@ -307,6 +312,50 @@ test('行为：清空某日快照只认快照目录、拒绝联接、回收站�
   });
 });
 
+// WP4（审计 S-N1）：清理备份拆两步 —— 计划频道只读解析 + 发一次性令牌；删除频道不带令牌一律拒绝。
+test('行为：清理计划只读 / 发令牌；执行必须带令牌，且删除动作只走主进程注入的 shell.trashItem', async () => {
+  const trashed = [];
+  const { channels } = makeBookDataHost({
+    storage: {
+      planHistoryBackupDeletion: async () => ({
+        cleanable: [{ id: 'dir:替换备份-1', name: '替换备份-1', fileCount: 1, bytes: 9 }],
+        skipped: [],
+        groupCount: 1,
+        totalBytes: 9,
+        recoverable: true
+      }),
+      deleteHistoryBackups: async (bookPath, groupIds, options) => {
+        await options.trash('D:\\书库\\书\\_trash\\替换备份-1');
+        return { deletedGroups: 1, deletedBytes: 9, deleted: [], skipped: [] };
+      },
+      StorageError: class StorageError extends Error {
+        constructor(code, message) {
+          super(message);
+          this.code = code;
+        }
+      }
+    },
+    shell: { trashItem: async (dir) => { trashed.push(dir); }, openPath: async () => '' }
+  });
+  const plan = await channels.get('book:plan-delete-history-backups').fn('D:\\书库\\书', ['dir:替换备份-1'], {});
+  assert.equal(plan.groupCount, 1);
+  assert.equal(plan.recoverable, true);
+  assert.ok(plan.planToken, '计划频道必须回一次性令牌');
+  assert.deepEqual(trashed, [], '计划只读：一个文件都不许动');
+
+  await assert.rejects(
+    () => channels.get('book:delete-history-backups').fn('D:\\书库\\书', ['dir:替换备份-1'], {}),
+    (err) => err.code === 'DELETE_PLAN_INVALID'
+  );
+  assert.deepEqual(trashed, [], '没有令牌时一个文件都不动');
+
+  const done = await channels.get('book:delete-history-backups').fn('D:\\书库\\书', ['dir:替换备份-1'], {
+    planToken: plan.planToken
+  });
+  assert.equal(done.deletedGroups, 1);
+  assert.deepEqual(trashed, ['D:\\书库\\书\\_trash\\替换备份-1'], '删除动作只走主进程注入的 shell.trashItem');
+});
+
 // 从 main.js 切出真实的 handleBook 包装函数（括号 / 函数体按层级配平），放进假作用域执行。
 function loadHandleBookWrapper() {
   const start = MAIN.indexOf('function handleBook(');
@@ -365,7 +414,7 @@ function loadHandleBookWrapper() {
   throw new Error('handleBook 函数体没有按预期闭合');
 }
 
-test('O6：chapter:save 带 MUTATION.SAVE（保存成功要广播 shelf:changed），13 个频道不回潮 main.js', () => {
+test('O6：chapter:save 带 MUTATION.SAVE（保存成功要广播 shelf:changed），14 个频道不回潮 main.js', () => {
   const saveStart = MAIN.indexOf("handleBook('chapter:save'");
   assert.ok(saveStart > 0, 'main.js 里找不到 chapter:save');
   const saveEnd = MAIN.indexOf('\n  }, { mutation: MUTATION.SAVE });', saveStart);

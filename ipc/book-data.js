@@ -4,7 +4,8 @@
  *   · 全书查找 / 替换：book:search / book:replace；
  *   · 整本替换的还原：book:list-replace-backups / book:restore-replace-backup；
  *   · 本书历史：book:list-history / book:preview-history-file / book:restore-history-file /
- *     book:restore-history-dir / book:delete-history-backups / book:clear-snapshot-day；
+ *     book:restore-history-dir / book:plan-delete-history-backups / book:delete-history-backups /
+ *     book:clear-snapshot-day；
  *   · 整本智能排版：book:format-preview / book:format；
  *   · 打开书文件夹：shell:open-book-folder。
  *
@@ -20,6 +21,7 @@
  * 直接抛 TypeError。模块自己不 require electron、不缓存状态快照。
  */
 const { assertHost } = require('../renderer/assert-host');
+const deletePlanToken = require('../core/delete-plan-token');
 const { MUTATION, READ_ONLY } = require('./book-mutations');
 
 const REQUIRED_HOST = [
@@ -36,6 +38,9 @@ const REQUIRED_HOST = [
 function registerBookDataIpc(host) {
   assertHost('ipc/book-data.registerBookDataIpc', host, REQUIRED_HOST);
   const { handleBook, storage, ipcLimits, fs, path, shell, errorText, sendToFlow } = host;
+  // WP4（审计 S-N1）：清理备份的一次性计划令牌（进程内、只在主进程）。每次 register 一份 ——
+  // 模块本身不缓存全局状态（单测各自装配，互不串令牌）。
+  const deletePlanTokens = deletePlanToken.createStore();
 
   // 全书查找 / 替换：替换写盘前 storage 会把原章节备份到书内 _trash。
   // v0.9 C-5：options 由 core/ipc-limits.js 清洗——查找词 / 替换词必须是文本且各限 1 万字，
@@ -73,9 +78,39 @@ function registerBookDataIpc(host) {
   // B6（v1.8.0 WP-28 / D-5）：手动清理三类备份（替换 / 整理 / 还原前）—— 只有历史面板的两步确认
   // 才会调到这里；存储层只认 `dir:<三类备份目录>`、再校验落在本书 _trash 下，并跳过仍被
   // 10 秒撤销条引用的组（protectedGroupIds 由渲染层按 TTL 现算）。绝不自动调用、绝不碰快照 / 散文件。
-  handleBook('book:delete-history-backups', async (bookPath, groupIds, options) =>
-    storage.deleteHistoryBackups(bookPath, groupIds, options), { mutation: MUTATION.WRITE }
-  );
+  //
+  // WP4（审计 S-N1）：清理拆成「计划 → 执行」两步，堵住「渲染层传什么、主进程删什么」的信任缺口：
+  //   ① 计划（只读、不广播）：主进程用 storage 自己的解析判断哪些组真的可清理，并发一张一次性令牌
+  //      （绑本书 + 组清单摘要 + 2 分钟过期；随机 UUID 只存内存）；
+  //   ② 执行：必须带 planToken 回来，四条全过才放行（存在 / 没过期 / 同一本书 / 组清单一致），
+  //      成功后令牌立刻作废。删除动作只认主进程注入的 shell.trashItem（可恢复），渲染层传的
+  //      options.trash 一律被覆盖掉。
+  handleBook('book:plan-delete-history-backups', async (bookPath, groupIds, options) => {
+    const settings = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+    const plan = await storage.planHistoryBackupDeletion(bookPath, groupIds, settings);
+    const planToken = deletePlanTokens.issue({ bookPath, groupIds });
+    if (!planToken) {
+      throw new storage.StorageError('DELETE_PLAN_INVALID', '这次清理没有拿到确认凭证，一个文件都没有动');
+    }
+    return { ...plan, planToken, ttlMs: deletePlanTokens.ttlMs };
+  }, READ_ONLY);
+  handleBook('book:delete-history-backups', async (bookPath, groupIds, options) => {
+    const settings = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+    const claim = deletePlanTokens.take(settings.planToken, { bookPath, groupIds });
+    if (!claim.ok) throw deletePlanToken.errorFor(claim.reason);
+    try {
+      return await storage.deleteHistoryBackups(bookPath, groupIds, {
+        // 渲染层能给的只有保护列表 / stat 注入这类补充信息；删除动作由主进程现填。
+        ...settings,
+        // 主进程唯一可用的删除动作：移入 Windows 回收站。失败就逐组如实报错，绝不降级成硬删。
+        trash: (dir) => shell.trashItem(dir)
+      });
+    } catch (err) {
+      // 执行阶段整体失败（回收站暂时不可用 / 书被别的窗口占住）：令牌放回去，作者可以原地再试一次。
+      deletePlanTokens.release(claim.record);
+      throw err;
+    }
+  }, { mutation: MUTATION.WRITE });
   // 清空某一天的每日快照（P22-5）：只把这个目录**移入 Windows 回收站**，绝不硬删。
   // 参数只认快照目录名（storage.snapshotDirForClear 严格校验「快照-YYYYMMDD」+ 日期真实存在 +
   // 必须落在本书 _trash 下），不接受任意路径；校验不过 / 回收站不可用都只报错返回，一个文件都不动。

@@ -127,6 +127,10 @@ const api = {
   restoreHistoryDir: (bookPath, groupId) =>
     invoke('book:restore-history-dir', bookPath, groupId),
   // B6（v1.8.0 WP-28）：手动清理三类备份；第三个参数 = { protectedGroupIds }（仍在 10 秒撤销窗口里的组）
+  // WP4（审计 S-N1）：清理分两步 —— 先取主进程发的一次性计划令牌（主进程自己解析可清理组），
+  // 再带 planToken 执行；执行只会把备份移入 Windows 回收站（可恢复）。
+  planDeleteHistoryBackups: (bookPath, groupIds, options) =>
+    invoke('book:plan-delete-history-backups', bookPath, groupIds, options),
   deleteHistoryBackups: (bookPath, groupIds, options) =>
     invoke('book:delete-history-backups', bookPath, groupIds, options),
   // 清空某一天的每日快照：第二个参数只传快照目录名（快照-YYYYMMDD），主进程严格校验后移入回收站

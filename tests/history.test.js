@@ -25,6 +25,20 @@ async function writeBackupDir(bookPath, name, files) {
   return dir;
 }
 
+// WP4（审计 S-N1）：清理只把目录移入 Windows 回收站，绝不再 fs.rm。单测用「同盘 rename 到临时
+// 回收站目录」的假实现（可原样读回），验证的是「可恢复」而不是「永久消失」。
+async function makeFakeTrash(root) {
+  const bin = path.join(root, '_fake-recycle-bin');
+  const moved = [];
+  const trash = async (target) => {
+    await fs.mkdir(bin, { recursive: true });
+    const dest = path.join(bin, `${String(moved.length).padStart(3, '0')}-${path.basename(target)}`);
+    await fs.rename(target, dest);
+    moved.push({ target, dest });
+  };
+  return { bin, moved, trash };
+}
+
 
 test('历史：解析备份目录名里的时间戳', () => {
   const at = new Date(2026, 9, 31, 21, 30, 0).getTime();
@@ -860,7 +874,7 @@ test('备份清理摘要（B6）：只算替换 / 整理 / 还原前三类，≥
   assert.equal(history.backupCleanupSummary(null).groupCount, 0);
 });
 
-test('删除备份（B6）：只永久删除三类备份目录，快照 / 删章散文件 / 书目备份一个都不碰', async () => {
+test('删除备份（B6/WP4）：只把三类备份目录移入回收站（可恢复），快照 / 删章散文件 / 书目备份一个都不碰', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await makeBook(root, '备份清理书');
   const replaceDir = await writeBackupDir(bookPath, '替换备份-2026-10-31-210000', {
@@ -892,9 +906,12 @@ test('删除备份（B6）：只永久删除三类备份目录，快照 / 删章
   assert.equal(listed.groups.find((group) => group.source === 'delete').cleanable, false);
   assert.equal(listed.groups.find((group) => group.source === 'bookmeta').cleanable, false);
 
-  const result = await storage.deleteHistoryBackups(bookPath, cleanableIds);
+  const bin = await makeFakeTrash(root);
+
+  const result = await storage.deleteHistoryBackups(bookPath, cleanableIds, { trash: bin.trash });
   assert.equal(result.deletedGroups, 3);
   assert.equal(result.skipped.length, 0);
+  assert.equal(bin.moved.length, 3, '三组都必须经回收站（不是直接消失）');
   assert.equal(
     result.deletedBytes,
     Buffer.byteLength('替换前甲') + Buffer.byteLength('替换前乙') + Buffer.byteLength('整理前甲') + Buffer.byteLength('还原前')
@@ -904,15 +921,21 @@ test('删除备份（B6）：只永久删除三类备份目录，快照 / 删章
     [1, 1, 2]
   );
   for (const dir of [replaceDir, formatDir, restoreDir]) {
-    await assert.rejects(() => fs.access(dir), (err) => err.code === 'ENOENT', `${path.basename(dir)} 应已删除`);
+    await assert.rejects(() => fs.access(dir), (err) => err.code === 'ENOENT', `${path.basename(dir)} 应已移出 _trash`);
   }
+  // WP4（S-N1）：回收站里能原样读回（备份没被销毁，只是换了位置）
+  const recovered = await fs.readdir(bin.bin);
+  assert.equal(recovered.length, 3, '回收站里应有 3 个目录');
+  const recoveredReplace = recovered.find((name) => name.endsWith('替换备份-2026-10-31-210000'));
+  assert.deepEqual((await fs.readdir(path.join(bin.bin, recoveredReplace))).sort(), ['001-a.txt', '002-b.txt']);
+  assert.equal(await fs.readFile(path.join(bin.bin, recoveredReplace, '001-a.txt'), 'utf8'), '替换前甲');
   // 非三类备份原样保留（绝不「顺手」删掉快照 / 散文件 / 书目备份）
   assert.deepEqual(await fs.readdir(snapshotDir), ['001-a.txt']);
   assert.equal(await fs.readFile(looseDelete, 'utf8'), '删章正文');
   assert.equal(await fs.readFile(bakPath, 'utf8'), '{}');
 
   // 再删一次：目录已经不在，按 missing 跳过，不抛
-  const again = await storage.deleteHistoryBackups(bookPath, cleanableIds);
+  const again = await storage.deleteHistoryBackups(bookPath, cleanableIds, { trash: bin.trash });
   assert.equal(again.deletedGroups, 0);
   assert.equal(again.skipped.filter((item) => item.reason === 'missing').length, 3);
   // 列表里只剩快照 / 删章 / 书目备份
@@ -921,16 +944,17 @@ test('删除备份（B6）：只永久删除三类备份目录，快照 / 删章
   assert.equal(after.groups.some((group) => group.cleanable), false);
 });
 
-test('删除备份（B6）：跳过 10 秒撤销引用的组并说明，其它组照常删除', async () => {
+test('删除备份（B6/WP4）：跳过 10 秒撤销引用的组并说明，其它组照常移入回收站', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await makeBook(root, '撤销保护书');
   await writeBackupDir(bookPath, '替换备份-2026-10-31-210000', { '001-a.txt': '替换前' });
   const restoreDir = await writeBackupDir(bookPath, '还原前备份-2026-10-31-190000', { '001-a.txt': '还原前' });
   const protectedId = 'dir:还原前备份-2026-10-31-190000';
+  const bin = await makeFakeTrash(root);
   const result = await storage.deleteHistoryBackups(
     bookPath,
     ['dir:替换备份-2026-10-31-210000', protectedId],
-    { protectedGroupIds: [protectedId] }
+    { protectedGroupIds: [protectedId], trash: bin.trash }
   );
   assert.equal(result.deletedGroups, 1);
   assert.deepEqual(result.skipped, [{ id: protectedId, name: '还原前备份-2026-10-31-190000', reason: 'active-undo' }]);
@@ -941,7 +965,7 @@ test('删除备份（B6）：跳过 10 秒撤销引用的组并说明，其它�
   );
 });
 
-test('删除备份（B6）：非法 id / 不可清理组一律拒绝，绝不越界删任何文件', async () => {
+test('删除备份（B6/WP4）：非法 id / 不可清理组一律拒绝，绝不越界删任何文件', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await makeBook(root, '清理守卫书');
   const snapshotDir = await writeBackupDir(bookPath, '快照-20261031', { '001-a.txt': '快照' });
@@ -961,7 +985,14 @@ test('删除备份（B6）：非法 id / 不可清理组一律拒绝，绝不越
     null,
     '替换备份-2026-10-31-180000'
   ];
-  const result = await storage.deleteHistoryBackups(bookPath, payload);
+  const trashCalls = [];
+  const result = await storage.deleteHistoryBackups(bookPath, payload, {
+    // WP4（S-N1）：回收站动作一次都不许被调到（清单里没有任何合法可清理组）
+    trash: async (target) => {
+      trashCalls.push(target);
+    }
+  });
+  assert.equal(trashCalls.length, 0, '没有任何合法组时，回收站动作一次都不该调');
   assert.equal(result.deletedGroups, 0);
   assert.equal(result.skipped.length, payload.length);
   for (const item of result.skipped) {

@@ -77,6 +77,7 @@ const DOMAIN_CHANNELS = {
     'book:delete'
   ],
   // 审计修复 #38（▲V306）：书域数据面从 main.js:2010-2110 整段下沉（13 个频道，顺序与搬前一致）。
+  // WP4（审计 S-N1）在删除前插入「清理计划」频道，数据面变 14 个。
   'book-data': [
     'book:search',
     'book:replace',
@@ -86,6 +87,7 @@ const DOMAIN_CHANNELS = {
     'book:preview-history-file',
     'book:restore-history-file',
     'book:restore-history-dir',
+    'book:plan-delete-history-backups',
     'book:delete-history-backups',
     'book:clear-snapshot-day',
     'book:format-preview',
@@ -161,9 +163,9 @@ test('WP-34：四个域模块的频道清单 / 顺序 / 注册器种类与搬前
     total += registered.length;
   }
   assert.equal(total, ALL_DOMAIN_CHANNELS.length);
-  // 55 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）+ 审计修复 #6 新增的
-  // chapter:rescue + 审计修复 #38 下沉的书域数据面 13 个频道。
-  assert.equal(total, 55, '四个域的频道总数变了（多一个少一个都要同步本闸门）');
+  // 56 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）+ 审计修复 #6 新增的
+  // chapter:rescue + 审计修复 #38 下沉的书域数据面 13 个频道 + WP4 新增的清理计划频道。
+  assert.equal(total, 56, '四个域的频道总数变了（多一个少一个都要同步本闸门）');
 });
 
 test('WP-34：host 契约缺成员在 register() 装配时直接 TypeError（与渲染层 A8 同一口径）', () => {
@@ -185,7 +187,7 @@ test('WP-34：host 契约缺成员在 register() 装配时直接 TypeError（与
 });
 
 test('WP-34：registerIpc() 只装配 —— 被搬走的频道不许回潮，行数降到可导航规模', () => {
-  // ① 55 个频道在 main.js 里一个都不许再注册
+  // ① 56 个频道在 main.js 里一个都不许再注册
   for (const channel of ALL_DOMAIN_CHANNELS) {
     const patterns = [`handle('${channel}'`, `handleBook('${channel}'`];
     for (const pattern of patterns) {
@@ -233,11 +235,11 @@ test('WP-34：模块自己不 require electron；依赖由 main.js 的 buildIpcH
   assert.equal(IPC_SOURCE.includes('activeClipboard.writeText('), false, 'ipc 模块里不许直呼 activeClipboard');
 });
 
-test('WP-34：频道总数不丢（main + ipc = 105），preload 的 invoke 全在注册点里', () => {
+test('WP-34：频道总数不丢（main + ipc = 106），preload 的 invoke 全在注册点里', () => {
   const registered = registrationsOf(MAIN + '\n' + IPC_SOURCE);
-  // 105 = 搬前 104 + 审计修复 #6（V302）新增的 chapter:rescue（导出域尾部）
-  assert.equal(registered.length, 105, '主进程 IPC 注册点数量与「搬前 104 + V302 的 chapter:rescue」不一致');
-  assert.equal(new Set(registered.map((item) => item.channel)).size, 105, '有频道被重复注册');
+  // 106 = 搬前 104 + 审计修复 #6（V302）新增的 chapter:rescue（导出域尾部）+ WP4 清理计划频道
+  assert.equal(registered.length, 106, '主进程 IPC 注册点数量与「搬前 104 + V302 的 chapter:rescue + WP4 计划频道」不一致');
+  assert.equal(new Set(registered.map((item) => item.channel)).size, 106, '有频道被重复注册');
   const all = new Set(registered.map((item) => item.channel));
   for (const channel of ALL_DOMAIN_CHANNELS) assert.ok(all.has(channel), `频道总数里找不到 ${channel}`);
   const preload = read('preload.js');

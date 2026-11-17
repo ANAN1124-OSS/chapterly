@@ -121,7 +121,7 @@ function build(options = {}) {
   };
   const calls = {
     listHistory: [], previewHistoryFile: [], restoreHistoryDir: [], restoreHistoryFile: [],
-    clearSnapshotDay: [], deleteHistoryBackups: [], registerUndo: [], protectedUndoGroups: [],
+    clearSnapshotDay: [], deleteHistoryBackups: [], planDeleteHistoryBackups: [], registerUndo: [], protectedUndoGroups: [],
     openBookFolder: [], refreshShelf: 0, reloadOpenBookFromDisk: 0, reloadAfterPartialFailure: [],
     confirmRestoreWithUnsaved: [], openModal: [], toast: []
   };
@@ -156,6 +156,13 @@ function build(options = {}) {
       calls.deleteHistoryBackups.push(args);
       if (options.deleteError) throw new Error(options.deleteError);
       return options.deleteResult || { ok: true, deletedGroups: 1, deletedBytes: 1024, deleted: [], skipped: [] };
+    },
+    // WP4（审计 S-N1）：清理分两步 —— 先取主进程的清理计划（组数 / 占用以主进程解析为准）+ 一次性令牌。
+    planDeleteHistoryBackups(...args) {
+      calls.planDeleteHistoryBackups.push(args);
+      if (options.planDeleteError) throw new Error(options.planDeleteError);
+      if (options.planDeleteResult) return options.planDeleteResult;
+      return { planToken: 'plan-token-1', groupCount: args[1].length, totalBytes: 0, cleanable: [], skipped: [] };
     },
     openBookFolder(...args) {
       calls.openBookFolder.push(args);
@@ -1308,7 +1315,7 @@ test('备份清理条（B6）：有可清理组才出现；软提醒只在 ≥20
   assert.ok(findButtonByClass(quiet.dom.map.get('history-list').children[0], 'history-cleanup-all'));
 });
 
-test('清理本书全部备份（B6）：两步确认列出组数 / 占用 → 只传可清理组 → 刷新 + 如实 toast', async () => {
+test('清理本书全部备份（B6/WP4）：先取主进程计划 → 两步确认列出组数 / 占用 → 带令牌执行 → 刷新 + 如实 toast', async () => {
   const dom = makeDom(BASE_IDS);
   const replace = cleanableGroup({ id: 'dir:替换备份-2026-10-31-210000', source: 'replace', totalBytes: 2048 });
   const format = cleanableGroup({ id: 'dir:整理备份-2026-10-31-200000', totalBytes: 1024 });
@@ -1317,30 +1324,40 @@ test('清理本书全部备份（B6）：两步确认列出组数 / 占用 → �
     dom,
     listHistory: () => ({ title: '书甲', groups, fileCount: 3, totalBytes: 3072, cleanup: cleanupFixture(groups) }),
     modalAction: { action: 'delete' },
+    planDeleteResult: { planToken: 'plan-token-1', groupCount: 2, totalBytes: 3072, cleanable: [], skipped: [] },
     deleteResult: { deletedGroups: 2, deletedBytes: 3072, deleted: [], skipped: [] }
   });
   await ctx.ui.openHistoryForPath('/书库/书甲', '书甲');
   const barButton = findButtonByClass(dom.map.get('history-list').children[0], 'history-cleanup-all');
   await barButton._fire('click');
-  assert.equal(ctx.calls.openModal.length, 1, '必须先弹确认框（两步确认的第二步）');
-  const modal = ctx.calls.openModal[0];
-  assert.equal(modal.title, '永久删除备份');
-  assert.ok(modal.message.includes('2 组备份'), modal.message);
-  assert.ok(modal.message.includes('3.0 KB'), modal.message);
-  assert.ok(modal.message.includes('永久删除'), modal.message);
   assert.deepEqual(
-    ctx.calls.deleteHistoryBackups,
+    ctx.calls.planDeleteHistoryBackups,
     [[
       '/书库/书甲',
       ['dir:替换备份-2026-10-31-210000', 'dir:整理备份-2026-10-31-200000'],
       { protectedGroupIds: [] }
     ]],
-    '只传三类备份组 id + 受保护组快照'
+    '先向主进程要清理计划（组数 / 占用以主进程解析为准）'
   );
-  assert.equal(ctx.calls.listHistory.length, 2, '删除成功后刷新清单');
+  assert.equal(ctx.calls.openModal.length, 1, '必须先弹确认框（两步确认的第二步）');
+  const modal = ctx.calls.openModal[0];
+  assert.equal(modal.title, '把备份移入回收站');
+  assert.ok(modal.message.includes('2 组备份'), modal.message);
+  assert.ok(modal.message.includes('3.0 KB'), modal.message);
+  assert.ok(modal.message.includes('回收站'), modal.message);
+  assert.deepEqual(
+    ctx.calls.deleteHistoryBackups,
+    [[
+      '/书库/书甲',
+      ['dir:替换备份-2026-10-31-210000', 'dir:整理备份-2026-10-31-200000'],
+      { protectedGroupIds: [], planToken: 'plan-token-1' }
+    ]],
+    '执行必须带一次性令牌（只传三类备份组 id + 受保护组快照）'
+  );
+  assert.equal(ctx.calls.listHistory.length, 2, '清理成功后刷新清单');
   assert.ok(ctx.calls.refreshShelf >= 1);
   const toasts = ctx.calls.toast.map((item) => item[0]);
-  assert.ok(toasts.some((text) => text.includes('已永久删除 2 组备份') && text.includes('3.0 KB')), toasts.join(' / '));
+  assert.ok(toasts.some((text) => text.includes('已把 2 组备份移入回收站') && text.includes('3.0 KB')), toasts.join(' / '));
 });
 
 test('清理备份（B6）：跳过 10 秒撤销窗口内的组并在确认框 / toast 里说明', async () => {
@@ -1353,6 +1370,7 @@ test('清理备份（B6）：跳过 10 秒撤销窗口内的组并在确认框 /
     listHistory: () => ({ title: '书甲', groups, fileCount: 4, totalBytes: 4096, cleanup: cleanupFixture(groups) }),
     modalAction: { action: 'delete' },
     protectedUndoGroupIds: ['dir:还原前备份-2026-10-31-190000'],
+    planDeleteResult: { planToken: 'plan-token-1', groupCount: 1, totalBytes: 2048, cleanable: [], skipped: [] },
     deleteResult: {
       deletedGroups: 1,
       deletedBytes: 2048,
@@ -1365,17 +1383,25 @@ test('清理备份（B6）：跳过 10 秒撤销窗口内的组并在确认框 /
   assert.equal(ctx.calls.openModal.length, 1);
   assert.ok(ctx.calls.openModal[0].message.includes('另有 1 组还在 10 秒撤销窗口里'), ctx.calls.openModal[0].message);
   assert.deepEqual(
+    ctx.calls.planDeleteHistoryBackups[0][1],
+    ['dir:替换备份-2026-10-31-210000'],
+    '受保护组不进计划请求'
+  );
+  assert.deepEqual(
     ctx.calls.deleteHistoryBackups[0][1],
     ['dir:替换备份-2026-10-31-210000'],
     '受保护组不进删除列表'
   );
-  assert.deepEqual(ctx.calls.deleteHistoryBackups[0][2], { protectedGroupIds: ['dir:还原前备份-2026-10-31-190000'] });
+  assert.deepEqual(ctx.calls.deleteHistoryBackups[0][2], {
+    protectedGroupIds: ['dir:还原前备份-2026-10-31-190000'],
+    planToken: 'plan-token-1'
+  });
   assert.deepEqual(ctx.calls.protectedUndoGroups, ['/书库/书甲'], '按当前这本书过滤受保护组');
   const toasts = ctx.calls.toast.map((item) => item[0]);
   assert.ok(toasts.some((text) => text.includes('仍在 10 秒撤销窗口里，已跳过')), toasts.join(' / '));
 });
 
-test('清理备份（B6）：全部组都被撤销引用 → 不弹确认框、不调删除，只提示', async () => {
+test('清理备份（B6/WP4）：全部组都被撤销引用 → 不弹确认框、不取计划、不调删除，只提示', async () => {
   const dom = makeDom(BASE_IDS);
   const restore = cleanableGroup({ id: 'dir:还原前备份-2026-10-31-190000', source: 'restore' });
   const ctx = build({
@@ -1388,11 +1414,12 @@ test('清理备份（B6）：全部组都被撤销引用 → 不弹确认框、�
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'protected');
   assert.deepEqual(ctx.calls.openModal, []);
+  assert.deepEqual(ctx.calls.planDeleteHistoryBackups, []);
   assert.deepEqual(ctx.calls.deleteHistoryBackups, []);
   assert.ok(ctx.calls.toast.some((item) => item[1] === 'warn' && item[0].includes('撤销窗口')));
 });
 
-test('清理备份（B6）：取消 / 单组删除 / API 失败 / 读不到撤销状态 四条路径', async () => {
+test('清理备份（B6/WP4）：取消 / 单组清理 / 执行失败 / 计划失败 / 读不到撤销状态 五条路径', async () => {
   // ① 取消：一个 api 都不调
   const cancelCtx = build({
     dom: makeDom(BASE_IDS),
@@ -1403,7 +1430,8 @@ test('清理备份（B6）：取消 / 单组删除 / API 失败 / 读不到撤�
   const cancelResult = await findButtonByClass(cancelCtx.dom.map.get('history-list').children[0], 'history-cleanup-all')._fire('click');
   assert.equal(cancelResult.ok, false);
   assert.equal(cancelResult.canceled, true);
-  assert.deepEqual(cancelCtx.calls.deleteHistoryBackups, []);
+  assert.equal(cancelCtx.calls.planDeleteHistoryBackups.length, 1, '取消前已经取了计划（组数 / 占用由主进程算）');
+  assert.deepEqual(cancelCtx.calls.deleteHistoryBackups, [], '取消后一个执行调用都没有');
 
   // ② 单组删除：只传这一组的 id
   const oneCtx = build({
@@ -1415,9 +1443,11 @@ test('清理备份（B6）：取消 / 单组删除 / API 失败 / 读不到撤�
   await oneCtx.ui.openHistoryForPath('/书库/书甲', '书甲');
   const row = oneCtx.dom.map.get('history-list').children[1]; // 清理条之后是组卡
   await findButtonByClass(row, 'history-delete-group')._fire('click');
+  assert.deepEqual(oneCtx.calls.planDeleteHistoryBackups[0][1], ['dir:整理备份-1']);
   assert.deepEqual(oneCtx.calls.deleteHistoryBackups[0][1], ['dir:整理备份-1']);
+  assert.equal(oneCtx.calls.deleteHistoryBackups[0][2].planToken, 'plan-token-1');
 
-  // ③ API 失败：toast error，不刷新清单
+  // ③ 执行失败（回收站不可用）：toast error，不刷新清单
   const failCtx = build({
     dom: makeDom(BASE_IDS),
     listHistory: () => ({ title: '书甲', groups: [cleanableGroup({ id: 'g1' })], fileCount: 1, totalBytes: 2048, cleanup: null }),
@@ -1427,8 +1457,22 @@ test('清理备份（B6）：取消 / 单组删除 / API 失败 / 读不到撤�
   await failCtx.ui.openHistoryForPath('/书库/书甲', '书甲');
   const failResult = await findButtonByClass(failCtx.dom.map.get('history-list').children[0], 'history-cleanup-all')._fire('click');
   assert.equal(failResult.ok, false);
-  assert.ok(failCtx.calls.toast.some((item) => item[1] === 'error' && item[0].includes('删除备份失败')));
+  assert.ok(failCtx.calls.toast.some((item) => item[1] === 'error' && item[0].includes('移入回收站失败')));
   assert.equal(failCtx.calls.listHistory.length, 1, '失败不刷新（清单保持原样）');
+
+  // ③b 计划失败（主进程解析 / 发令牌失败）：不弹确认框、不调删除
+  const planFailCtx = build({
+    dom: makeDom(BASE_IDS),
+    listHistory: () => ({ title: '书甲', groups: [cleanableGroup({ id: 'g1' })], fileCount: 1, totalBytes: 2048, cleanup: null }),
+    modalAction: { action: 'delete' },
+    planDeleteError: '主进程拒绝发令牌'
+  });
+  await planFailCtx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  const planFailResult = await findButtonByClass(planFailCtx.dom.map.get('history-list').children[0], 'history-cleanup-all')._fire('click');
+  assert.equal(planFailResult.ok, false);
+  assert.deepEqual(planFailCtx.calls.openModal, []);
+  assert.deepEqual(planFailCtx.calls.deleteHistoryBackups, []);
+  assert.ok(planFailCtx.calls.toast.some((item) => item[1] === 'error' && item[0].includes('清理备份失败')));
 
   // ④ 读不到撤销状态：宁可不删，也不拿「读不到」当「没有保护」
   const guardCtx = build({
@@ -1440,6 +1484,7 @@ test('清理备份（B6）：取消 / 单组删除 / API 失败 / 读不到撤�
   const guardResult = await findButtonByClass(guardCtx.dom.map.get('history-list').children[0], 'history-cleanup-all')._fire('click');
   assert.equal(guardResult.ok, false);
   assert.deepEqual(guardCtx.calls.openModal, []);
+  assert.deepEqual(guardCtx.calls.planDeleteHistoryBackups, []);
   assert.deepEqual(guardCtx.calls.deleteHistoryBackups, []);
   assert.ok(guardCtx.calls.toast.some((item) => item[1] === 'error' && item[0].includes('暂时读不到撤销状态')));
 });

@@ -249,24 +249,24 @@
     return button;
   }
 
-  // ---------- 三类备份的手动清理（B6 / D-5，参数已定，不重开） ----------
+  // ---------- 三类备份的手动清理（B6 / D-5；WP4 起改为回收站可恢复） ----------
   // 只清理「替换 / 整理 / 还原前」三种目录备份，且只由作者点按钮触发：
   //   · 软提醒：单书 ≥20 组 或 合计 ≥500MB（先到为准）→ 汇总行只提示，绝不自动删；
   //   · 入口：每组的「删除这组备份」+ 面板顶部「清理本书全部备份」；
-  //   · 两步确认：先点按钮，再在询问框里看到组数 / 占用后点「永久删除」；
-  //   · 跳过活跃撤销：10 秒撤销条引用的组即使被选中也不删，并在提示里说明；
-  //   · 永久删除：备份是副本，书里的正文仍在（与「清空这天的快照」移入回收站不同）。
+  //   · 两步确认：先点按钮，再在询问框里看到组数 / 占用后点「移入回收站」；
+  //   · 跳过活跃撤销：10 秒撤销条引用的组即使被选中也不清，并在提示里说明；
+  //   · 只进回收站：WP4（S-N1）起主进程只调 shell.trashItem（可恢复），绝不再永久删除。
   function makeDeleteGroupButton(group) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'btn ghost tiny history-delete-group';
     button.textContent = '删除这组备份';
-    button.title = '永久删除这一组备份（备份是副本，书里的正文不受影响）；10 秒撤销窗口内的组会跳过';
+    button.title = '把这一组备份移入 Windows 回收站（备份是副本，书里的正文不受影响；需要时可还原）；10 秒撤销窗口内的组会跳过';
     button.addEventListener('click', () => deleteBackupGroup(group));
     return button;
   }
 
-  // 面板顶部的清理条：只在有可清理备份时出现；按钮文案 / 提示写清「永久删除 + 跳过可撤销组」。
+  // 面板顶部的清理条：只在有可清理备份时出现；按钮文案 / 提示写清「移入回收站 + 跳过可撤销组」。
   function buildCleanupBar(cleanable) {
     const bar = document.createElement('div');
     bar.className = 'history-cleanup';
@@ -278,7 +278,7 @@
     button.type = 'button';
     button.className = 'btn ghost tiny history-cleanup-all';
     button.textContent = '清理本书全部备份';
-    button.title = '永久删除替换 / 整理 / 还原前三类备份（备份是副本，书里的正文不受影响）；可撤销的组会跳过';
+    button.title = '把替换 / 整理 / 还原前三类备份移入 Windows 回收站（备份是副本，书里的正文不受影响；需要时可还原）；可撤销的组会跳过';
     button.addEventListener('click', () => deleteAllBackups());
     bar.append(text, button);
     return bar;
@@ -290,7 +290,9 @@
     return current.groups.filter((group) => group && group.cleanable === true);
   }
 
-  // 两步确认里的第二步：列出这次会删的组数 / 占用，并说明被跳过的「10 秒撤销引用组」。
+  // 两步确认里的第二步：列出这次会清的组数 / 占用，并说明被跳过的「10 秒撤销引用组」。
+  // WP4（审计 S-N1）：清理不再永久删除 —— 主进程把备份目录移入 Windows 回收站（可恢复）。
+  // 计划由主进程独立解析（不再只信渲染层给的 id 清单），返回一次性令牌；执行必须带令牌。
   async function confirmDeleteBackupGroups(groups) {
     const current = state.history;
     if (!current) return { ok: false };
@@ -314,37 +316,57 @@
       toast('这些备份还在 10 秒撤销窗口里，等撤销条收起后再清理', 'warn');
       return { ok: false, reason: 'protected' };
     }
-    const totalBytes = removable.reduce((sum, group) => sum + Math.max(0, Number(group.totalBytes) || 0), 0);
+    const ids = removable.map((group) => group.id);
+    // 先向主进程要「这次到底能清哪几组」+ 一次性令牌：组数 / 占用以主进程解析为准，
+    // 渲染层只负责把受保护组排除在这次请求之外。
+    let plan;
+    try {
+      plan = await call(api.planDeleteHistoryBackups, current.path, ids, {
+        protectedGroupIds: Array.from(protectedSet)
+      });
+    } catch (err) {
+      toast(`清理备份失败：${err.message}`, 'error');
+      return { ok: false, message: err.message };
+    }
+    const planCount = Math.max(0, Number(plan && plan.groupCount) || 0);
+    const planBytes = Math.max(0, Number(plan && plan.totalBytes) || 0);
+    if (!planCount) {
+      toast('这些备份已经不在书内 _trash 里了，没有可清理的', 'warn');
+      return { ok: false, reason: 'empty' };
+    }
     const answer = await openModal({
-      title: '永久删除备份',
+      title: '把备份移入回收站',
       message:
-        `这会永久删除 ${removable.length} 组备份（共 ${formatBytes(totalBytes)}），删除后无法恢复。` +
+        `会把 ${planCount} 组备份（共 ${formatBytes(planBytes)}）移入 Windows 回收站，需要时可以还原回来。` +
         '备份只是副本，书里的正文不受影响。' +
         (protectedCount ? ` 另有 ${protectedCount} 组还在 10 秒撤销窗口里，这次会跳过。` : ''),
       buttons: [
         { label: '取消', value: 'cancel' },
-        { label: '永久删除', value: 'delete', kind: 'danger' }
+        { label: '移入回收站', value: 'delete', kind: 'danger' }
       ],
       cancelValue: 'cancel'
     });
     if (!answer || answer.action !== 'delete') return { ok: false, canceled: true };
     try {
-      const data = await call(api.deleteHistoryBackups, current.path, removable.map((group) => group.id), {
-        protectedGroupIds: Array.from(protectedSet)
+      const data = await call(api.deleteHistoryBackups, current.path, ids, {
+        protectedGroupIds: Array.from(protectedSet),
+        planToken: plan && plan.planToken
       });
       if (state.history === current) await refreshHistory();
       await refreshShelf();
       const deletedGroups = Number(data && data.deletedGroups) || 0;
       const skipped = Array.isArray(data && data.skipped) ? data.skipped : [];
       const activeSkipped = skipped.filter((item) => item && item.reason === 'active-undo').length;
-      const failed = skipped.filter((item) => item && (item.reason === 'failed' || item.reason === 'missing')).length;
-      let message = `已永久删除 ${deletedGroups} 组备份（${formatBytes(Number(data && data.deletedBytes) || 0)}）`;
+      const failed = skipped.filter((item) => item && item.reason === 'trash-failed').length;
+      const missing = skipped.filter((item) => item && item.reason === 'missing').length;
+      let message = `已把 ${deletedGroups} 组备份移入回收站（${formatBytes(Number(data && data.deletedBytes) || 0)}）`;
       if (activeSkipped) message += `；${activeSkipped} 组仍在 10 秒撤销窗口里，已跳过`;
-      if (failed) message += `；${failed} 组没能删除（文件可能被占用或已经不存在）`;
+      if (failed) message += `；${failed} 组没能移入回收站（文件可能被占用或回收站不可用）`;
+      if (missing) message += `；${missing} 组已经不在书内 _trash 里`;
       toast(message);
       return { ok: true, data };
     } catch (err) {
-      toast(`删除备份失败：${err.message}`, 'error');
+      toast(`移入回收站失败：${err.message}`, 'error');
       return { ok: false, message: err.message };
     }
   }

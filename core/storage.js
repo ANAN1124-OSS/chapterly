@@ -2500,26 +2500,32 @@ async function backupDirUsage(dirPath, statFile) {
   return { fileCount, bytes };
 }
 
-// B6（v1.8.0 WP-28 / D-5）：手动清理三类备份（替换 / 整理 / 还原前）。**永久删除**（备份是副本，
-// 书里的正文仍在），但只接受 `dir:<备份目录名>`，且目录必须正好是本书 _trash 的直接子目录、
-// 名字是可识别的三类备份前缀；快照 / 删章散文件 / 书目备份 / 未识别目录一律跳过（not-cleanable）。
+// B6（v1.8.0 WP-28 / D-5）：手动清理三类备份（替换 / 整理 / 还原前）的**解析层**。
+// WP4（审计 S-N1）：解析与删除拆开 —— 解析只读（计划用），删除只走主进程注入的回收站动作。
+// 只接受 `dir:<备份目录名>`，且目录必须正好是本书 _trash 的直接子目录、名字是可识别的三类备份
+// 前缀；快照 / 删章散文件 / 书目备份 / 未识别目录一律跳过（not-cleanable）。
 // 绝不自动调用：只有历史面板用户点「删除这组备份 / 清理本书全部备份」并两步确认后才走到这里。
 // options.protectedGroupIds = 仍被 10 秒撤销条引用的组（TTL 在渲染层，过期即自动不在列表里）；
-// 命中的组一律跳过（active-undo）并在回包说明，绝不为了「清干净」把撤销退路删掉。
-async function deleteHistoryBackups(bookPath, groupIds, options = {}) {
-  const settings = options && typeof options === 'object' ? options : {};
+// 命中的组一律跳过（active-undo）。注意它是**补充**而不是唯一保护：即使清单为空 / 被伪造，
+// 执行阶段也只是把备份移入回收站（可恢复），不会永久销毁。
+function cleanupSettings(options) {
+  const settings = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
   const protectedIds = new Set(
     (Array.isArray(settings.protectedGroupIds) ? settings.protectedGroupIds : [])
       .filter((id) => typeof id === 'string')
       .slice(0, 5000)
   );
   const statFile = typeof settings.stat === 'function' ? settings.stat : (target) => fs.stat(target);
+  return { protectedIds, statFile };
+}
+
+async function resolveCleanupTargets(bookPath, groupIds, settings) {
+  const { protectedIds, statFile } = settings;
   const rawIds = (Array.isArray(groupIds) ? groupIds : []).slice(0, 5000);
   const trashDir = path.resolve(bookPath, TRASH_DIR);
   const seen = new Set();
-  const deleted = [];
+  const targets = [];
   const skipped = [];
-  let deletedBytes = 0;
   for (const raw of rawIds) {
     const id = typeof raw === 'string' ? raw.trim() : '';
     if (!id.startsWith('dir:')) {
@@ -2566,20 +2572,62 @@ async function deleteHistoryBackups(bookPath, groupIds, options = {}) {
       skipped.push({ id, name, reason: 'missing' });
       continue;
     }
+    targets.push({ id, name, dirPath: info.dirPath, fileCount: usage.fileCount, bytes: usage.bytes });
+  }
+  return { targets, skipped };
+}
+
+// WP4（审计 S-N1）：只读的「清理计划」—— 主进程自己解析哪些组真的可清理（IPC 层据此发一次性
+// 令牌）。与 deleteHistoryBackups 共用同一份解析，绝不删任何东西（单测钉住目录 / mtime 不变）。
+async function planHistoryBackupDeletion(bookPath, groupIds, options = {}) {
+  const { targets, skipped } = await resolveCleanupTargets(bookPath, groupIds, cleanupSettings(options));
+  let totalBytes = 0;
+  for (const target of targets) totalBytes += target.bytes;
+  return {
+    cleanable: targets.map((target) => ({
+      id: target.id,
+      name: target.name,
+      fileCount: target.fileCount,
+      bytes: target.bytes
+    })),
+    skipped,
+    groupCount: targets.length,
+    totalBytes,
+    recoverable: true
+  };
+}
+
+// WP4（审计 S-N1 / 手册 §2 已拍板项 2=A）：清理备份**只移入 Windows 回收站**，绝不再永久删除。
+// 回收站接口由主进程注入（options.trash = (dir) => shell.trashItem(dir)）；没注入 / 不可用一律
+// 报错不动，绝不降级成硬删（与 book:clear-snapshot-day 同一口径）。备份是副本（书里的正文仍在），
+// 但它是「毁恢复退路」的那一层：宁可多一步回收站，也不可逆。
+async function deleteHistoryBackups(bookPath, groupIds, options = {}) {
+  const rawSettings = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+  const trash = typeof rawSettings.trash === 'function' ? rawSettings.trash : null;
+  if (!trash) {
+    throw new StorageError(
+      'TRASH_UNAVAILABLE',
+      '清理备份需要系统回收站，这次没有可用的回收站接口；一个文件都没有动'
+    );
+  }
+  const { targets, skipped } = await resolveCleanupTargets(bookPath, groupIds, cleanupSettings(rawSettings));
+  const deleted = [];
+  let deletedBytes = 0;
+  for (const target of targets) {
     try {
-      // 只删这一层备份目录本身（内部只有本应用复制进去的章节副本；不递归跟随联接）
-      await fs.rm(info.dirPath, { recursive: true, force: false });
+      // 唯一的删除动作：移入回收站（整目录 move 是原子的：失败时这一组一个字节都没动）
+      await trash(target.dirPath);
     } catch (err) {
       skipped.push({
-        id,
-        name,
-        reason: err.code === 'ENOENT' ? 'missing' : 'failed',
-        message: err.code === 'ENOENT' ? '' : errorText.describeForUi(err).message
+        id: target.id,
+        name: target.name,
+        reason: 'trash-failed',
+        message: errorText.describeForUi(err).message
       });
       continue;
     }
-    deleted.push({ id, name, fileCount: usage.fileCount, bytes: usage.bytes });
-    deletedBytes += usage.bytes;
+    deleted.push({ id: target.id, name: target.name, fileCount: target.fileCount, bytes: target.bytes });
+    deletedBytes += target.bytes;
   }
   return { deletedGroups: deleted.length, deletedBytes, deleted, skipped };
 }
@@ -2816,6 +2864,8 @@ module.exports = {
   takeDailySnapshot,
   listBookHistory,
   previewHistoryFile,
+  // WP4（S-N1）：清理计划（只读解析）+ 清理执行（只进回收站，回收站动作由主进程注入）。
+  planHistoryBackupDeletion,
   deleteHistoryBackups: lockedWriteEntry(deleteHistoryBackups),
   snapshotDirForClear,
   restoreHistoryFile: lockedWriteEntry(restoreHistoryFile),
