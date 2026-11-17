@@ -161,7 +161,8 @@ test('书域两个模块：每条 handleBook 都显式选 MUTATION.X 或 READ_ON
     ...Array.from(crudChannels.entries()).map(([name, options]) => ({ module: 'ipc/book.js', name, options })),
     ...Array.from(dataChannels.entries()).map(([name, entry]) => ({ module: 'ipc/book-data.js', name, options: entry.options }))
   ];
-  assert.ok(all.length === 36, `书域频道数异常：${all.length}（22 个 CRUD + 14 个数据面）`);
+  // WP18（B2）：CRUD 侧新增 books:card（单本书卡，只读）→ 23 个 CRUD + 14 个数据面 = 37。
+  assert.ok(all.length === 37, `书域频道数异常：${all.length}（23 个 CRUD + 14 个数据面）`);
   for (const item of all) {
     assert.ok(
       item.options && Object.prototype.hasOwnProperty.call(item.options, 'mutation'),

@@ -799,6 +799,47 @@ async function scanConflictCopies(bookPath) {
   }
 }
 
+// B2（WP18 / 审计中 #18）：单本书的「书卡」数据 —— 整表扫描（listBooks）与增量刷新
+// （books:card）共用这一份实现。跨窗口保存只广播变更的那本书，书架据此只重读这一张卡，
+// 不再为一次 Ctrl+S 逐书 readBookMeta（几百本书 + 多窗口时是 O(全书架) 的盘）。
+// 返回字段 / 顺序 / 失败口径与 listBooks 完全一致；坏书目直接抛错（调用方决定是 corrupt 卡
+// 还是整表兜底），NO_BOOK 表示「这不是一本书」。
+async function readBookCard(bookPath, options = {}) {
+  const settings = options && typeof options === 'object' ? options : {};
+  const folder = path.basename(bookPath);
+  const meta = await readBookMeta(bookPath);
+  const [stats, conflicts] = await Promise.all([
+    bookStats(bookPath, meta, { readText: settings.readText, backfillConcurrency: SCAN_BACKFILL_CONCURRENCY }),
+    scanConflictCopies(bookPath)
+  ]);
+  const info = bookInfoLib.readBookInfo(meta);
+  return {
+    path: bookPath,
+    folder,
+    // 1.6.0 F2：书 id 给「统计按书筛选」用（stats.json 的 days.books 按 meta.id 分桶）；
+    // 只多回一个字段，不改 书目.json 结构，也不影响排序。
+    id: typeof meta.id === 'string' ? meta.id : '',
+    status: 'ok',
+    title: meta.title || folder,
+    schemaVersion: meta.schemaVersion,
+    // 书籍信息（v0.8-3）：作者 / 简介 / 分组 / 标签，旧书一律是空值
+    author: info.author,
+    brief: info.brief,
+    group: info.group,
+    tags: info.tags,
+    chapterCount: meta.chapters.length,
+    // 章节名给书架搜索用（书名 / 作者 / 分组 / 标签 / 章节名都是内存过滤，正文另走索引）
+    chapterNames: meta.chapters.map((chapter) => chapter.name || ''),
+    // 书卡上的「完稿 X/Y 章」（只统计 status === 'done' 的章）
+    doneChapters: chaptersLib.countChapterStatuses(meta).done,
+    // 同步盘冲突副本的文件名（只提示；不是章节，也不会被自动合并）
+    conflicts,
+    totalChars: stats.totalChars,
+    lastModified: stats.latestMtime,
+    missing: []
+  };
+}
+
 async function listBooks(booksRoot, options = {}) {
   // readText 可注入（单测用它数并发峰值，不测墙钟）；这条嵌套链路把回填并发收窄到 SCAN_BACKFILL_CONCURRENCY
   const settings = options && typeof options === 'object' ? options : {};
@@ -814,49 +855,19 @@ async function listBooks(booksRoot, options = {}) {
 
   const candidates = entries
     .filter((ent) => ent.isDirectory() && !ent.name.startsWith('_') && !ent.name.startsWith('.'))
-    .map((ent) => ({ folder: ent.name, bookPath: path.join(booksRoot, ent.name) }));
+    .map((ent) => path.join(booksRoot, ent.name));
 
-  const scanned = await mapLimit(candidates, SCAN_BOOK_CONCURRENCY, async ({ folder, bookPath }) => {
+  const scanned = await mapLimit(candidates, SCAN_BOOK_CONCURRENCY, async (bookPath) => {
     try {
-      const meta = await readBookMeta(bookPath);
-      const [stats, conflicts] = await Promise.all([
-        bookStats(bookPath, meta, { readText: settings.readText, backfillConcurrency: SCAN_BACKFILL_CONCURRENCY }),
-        scanConflictCopies(bookPath)
-      ]);
-      const info = bookInfoLib.readBookInfo(meta);
-      return {
-        path: bookPath,
-        folder,
-        // 1.6.0 F2：书 id 给「统计按书筛选」用（stats.json 的 days.books 按 meta.id 分桶）；
-        // 只多回一个字段，不改 书目.json 结构，也不影响排序。
-        id: typeof meta.id === 'string' ? meta.id : '',
-        status: 'ok',
-        title: meta.title || folder,
-        schemaVersion: meta.schemaVersion,
-        // 书籍信息（v0.8-3）：作者 / 简介 / 分组 / 标签，旧书一律是空值
-        author: info.author,
-        brief: info.brief,
-        group: info.group,
-        tags: info.tags,
-        chapterCount: meta.chapters.length,
-        // 章节名给书架搜索用（书名 / 作者 / 分组 / 标签 / 章节名都是内存过滤，正文另走索引）
-        chapterNames: meta.chapters.map((chapter) => chapter.name || ''),
-        // 书卡上的「完稿 X/Y 章」（只统计 status === 'done' 的章）
-        doneChapters: chaptersLib.countChapterStatuses(meta).done,
-        // 同步盘冲突副本的文件名（只提示；不是章节，也不会被自动合并）
-        conflicts,
-        totalChars: stats.totalChars,
-        lastModified: stats.latestMtime,
-        missing: []
-      };
+      return await readBookCard(bookPath, settings);
     } catch (err) {
       if (err && err.code === 'NO_BOOK') return null; // 没有书目的普通文件夹，跳过
       return {
         path: bookPath,
-        folder,
+        folder: path.basename(bookPath),
         id: '',
         status: 'corrupt',
-        title: folder,
+        title: path.basename(bookPath),
         author: '',
         brief: '',
         group: '',
@@ -2847,6 +2858,8 @@ module.exports = {
   // withBookLock 已支持同书重入（见 heldBookLocks），所以 chapter:save 在锁内调用这几个入口不会死锁。
   writeBookMeta: lockedWriteEntry(writeBookMeta),
   listBooks,
+  // B2（WP18）：单本书卡片（与 listBooks 同一份实现）—— 书架增量刷新只读变更的那一本。
+  readBookCard,
   createBook: safeCreateBook,
   openBook,
   verifyBook,

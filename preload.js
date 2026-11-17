@@ -1,11 +1,45 @@
 // 渲染层唯一可用的主进程能力：白名单 IPC，不暴露 Node。
 const { contextBridge, ipcRenderer } = require('electron');
 
+// C4（WP18 / 审计中 #23）：传输层异常（通道没注册 / 参数序列化失败）以前把原始 err.message
+// 直接回渲染层，是「错误文案全脱敏」口径里唯一没走过的口子。业务错误仍由主进程 fail() 用
+// core/error-text 脱敏；这里只兜传输层，口径对齐：本机绝对路径只留最后一节、去控制字符、限长。
+// 为什么不在 core/error-text 里复用：sandbox preload 只能 require electron（拿不到本地模块），
+// 这层实现刻意保持小而有界；行为由 tests/wp18-low-batch.test.js › R13 逐条钉住。
+// （函数刻意自包含：R13 的锚点从 preload.js 里抽出这一只函数直接跑行为，不希望它依赖模块级常量。）
+function sanitizeTransportMessage(value) {
+  const MAX_CHARS = 400;
+  // 控制字符（含 DEL）；保留 \t \n 之外的一律清掉，和 core/error-text 同口径。
+  const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+  // 路径尾遇到这些字符就停（空白 + 界面文案常用的标点 / 括号）；ASCII 冒号保留给 `file:///D:/…`。
+  const PATH_STOP = String.raw`\u0000-\u001f<>|*?'"\[\]{}「」『』（）【】《》，。；：、！？,;=\s`;
+  // 三类绝对路径起点：盘符 / UNC / file://；POSIX 单列（要保留前缀空白 / 括号）。
+  const PATH_START_RE = new RegExp(
+    String.raw`(?:[A-Za-z]:[\\/]|\\\\[^\s\\]+\\|file:/{1,3})[^${PATH_STOP}]*`,
+    'g'
+  );
+  const POSIX_START_RE = new RegExp(String.raw`(^|[\s(（「【])(\/[^\s\/]+\/[^${PATH_STOP}]*)`, 'g');
+  const tailOf = (pathText) => {
+    const parts = String(pathText)
+      .replace(/^file:\/{0,3}/i, '')
+      .split(/[\\/]+/)
+      .filter(Boolean);
+    return parts.length ? `…\\${parts[parts.length - 1]}` : '…';
+  };
+  const text = typeof value === 'string' ? value : value == null ? '' : String(value);
+  if (!text) return '';
+  let out = text.replace(CONTROL_RE, '');
+  out = out.replace(PATH_START_RE, (matched) => tailOf(matched));
+  out = out.replace(POSIX_START_RE, (_matched, prefix, pathText) => prefix + tailOf(pathText));
+  if (out.length > MAX_CHARS) out = `${out.slice(0, MAX_CHARS - 1)}…`;
+  return out;
+}
+
 async function invoke(channel, ...args) {
   try {
     return await ipcRenderer.invoke(channel, ...args);
   } catch (err) {
-    return { ok: false, code: 'IPC_ERROR', message: (err && err.message) || String(err) };
+    return { ok: false, code: 'IPC_ERROR', message: sanitizeTransportMessage((err && err.message) || String(err)) };
   }
 }
 
@@ -50,6 +84,9 @@ const api = {
   openBookInNewWindow: (bookPath) => invoke('window:open-book', bookPath),
   releaseBook: () => invoke('window:release-book'),
   listBooks: () => invoke('books:list'),
+  // B2（WP18）：单本书卡片 —— 别的窗口保存 / 改名后，书架只重读这一张卡（增量刷新），
+  // 不再整表 books:list 逐书扫书目。只读：不写盘、不拿书锁。
+  readBookCard: (bookPath) => invoke('books:card', bookPath),
   createBook: (title) => invoke('book:create', title),
   openBook: (bookPath) => invoke('book:open', bookPath),
   verifyBook: (bookPath) => invoke('book:verify', bookPath),

@@ -80,8 +80,11 @@ test('R3 真实树：接线清单零违规，事实计数覆盖 invoke / api / �
   );
   assert.ok(facts.sendChannels >= 2, `ipcRenderer.send 频道应 ≥ 2（实际 ${facts.sendChannels}）`);
   assert.ok(facts.notifySent > 0 && facts.notifyListened > 0, '通知链路必须有发送与监听两侧');
-  // 已知死监听只允许这一条（历史遗留，WP16 不顺手改产品代码）；新死监听 / 白名单过期都要红。
-  assert.deepEqual(facts.deadListeners, ['app:force-close'], '死监听白名单与仓库现状不一致');
+  // WP18（台账 #3）：app:force-close 的发送改成字面量后已是活监听，死监听白名单清空；
+  // 新死监听 / 白名单条目过期都要红（见 R4c ③ 与 wiring-check 的 staleAllowlist 分支）。
+  assert.deepEqual(facts.deadListeners, [], '真实树不该再有死监听（app:force-close 已有发送方）');
+  // 暴露未用的 bridge api 只登记 E2E 自检专用那三条（台账 #3 / WP18），真实树不再有「清理项」提示。
+  assert.deepEqual(result.warnings, [], '真实树接线提示要清空：' + JSON.stringify(result.warnings));
 });
 
 test('R4a 变异负控：删一个 renderer 模块的 <script> → renderer-assembly-order', () => {
@@ -129,6 +132,26 @@ test('R4c 变异负控：删 preload 通知监听 / 删主进程发送方 → ip
   const sendHit = violation(sendResult, 'ipc-notify-listened');
   assert.ok(sendHit, '删发送方必须命中 ipc-notify-listened，实际：' + ids(sendResult).join(','));
   assert.match(sendHit.detail, /shelf:changed/);
+
+  // ③ WP18（台账 #3）：白名单清空后，删掉 app:force-close 的**字面量**发送行 → 必须重新判死监听。
+  // 这条负控保证「清空白名单」不是把一条真回归也一起放过（close-guard 的常量发送已改字面量）。
+  const forceDir = makeFixture();
+  mutate(forceDir, 'main.js', (text) => removeLine(text, "webContents.send('app:force-close')"));
+  const forceResult = wiring.auditWiring(forceDir);
+  const forceHit = violation(forceResult, 'ipc-notify-listened');
+  assert.ok(forceHit, '删掉 force-close 的发送行必须命中 ipc-notify-listened，实际：' + ids(forceResult).join(','));
+  assert.match(forceHit.detail, /app:force-close/);
+});
+
+test('R4e 变异负控：新暴露但没人用的 api 仍要提示（E2E_ONLY_APIS 只登记三条，不当万能豁免）', () => {
+  const dir = makeFixture();
+  mutate(dir, 'preload.js', (text) =>
+    text.replace('const api = {', "const api = {\n  __fakeUnusedForTest: () => invoke('app:version'),")
+  );
+  const result = wiring.auditWiring(dir);
+  assert.deepEqual(result.violations, [], '只多一个未用 key 不该判违规：' + JSON.stringify(result.violations));
+  assert.equal(result.warnings.length, 1, '应有一条「暴露未用」提示：' + JSON.stringify(result.warnings));
+  assert.match(result.warnings[0], /__fakeUnusedForTest/, '新未用 api 必须被点名，不许被 E2E 名单吞掉');
 });
 
 test('R4d 等价重构不假红：CRLF + 注释 + script 标签单引号 / 多余空白仍零违规', () => {

@@ -144,8 +144,14 @@ test('A1 静态闸门：主进程改走 8 秒 + plan / 执行器；提示文案�
   assert.match(closeFlow, /closeGuard\.timeoutPrompt\(\)/, '提示文案由纯函数给（单测能钉住）');
   const forceAt = closeFlow.indexOf('closeGuard.runForceCloseSteps(');
   assert.ok(forceAt > 0, '强制退出必须走执行器（顺序可测）');
-  const forceSeg = closeFlow.slice(forceAt, forceAt + 900);
-  assert.match(forceSeg, /send:[\s\S]*webContents\.send\(plan\.channel\)/, '先 send app:force-close');
+  // WP18（台账 #3）：send 分支里多了「字面量 / close-guard 常量互钉」的注释与漂移守卫，
+// 片段窗口相应放宽（只截取源码片段，断言本身不变）。
+  const forceSeg = closeFlow.slice(forceAt, forceAt + 1600);
+  // 台账 #3（WP18）：发送改成字面量（接线清单才看得见 app:force-close 有发送方）；
+  // 动态 plan.channel 必须下线，否则静态清单会把它误判成死监听（见 tests/wp18-low-batch.test.js › R14）。
+  assert.match(forceSeg, /send:[\s\S]*webContents\.send\('app:force-close'\)/, '先 send app:force-close（字面量）');
+  assert.equal(/webContents\.send\(plan\.channel\)/.test(forceSeg), false, '不许再用动态 plan.channel 发送');
+  assert.match(forceSeg, /closeGuard\.FORCE_CLOSE_CHANNEL !== 'app:force-close'/, '字面量要与 close-guard 常量互钉');
   assert.match(forceSeg, /destroy:[\s\S]*destroy\(\)/, '最后才 destroy');
   assert.equal(forceSeg.indexOf('webContents.send') < forceSeg.indexOf('destroy:'), true, '源码顺序也必须是先通知');
 });
@@ -156,8 +162,9 @@ test('A1 静态闸门：主进程改走 8 秒 + plan / 执行器；提示文案�
 // 而且原来的奇偶校验（tests/security-regression.test.js）正则只抓 `webContents.send('字面量'`，
 // 恰好漏掉 `send(plan.channel)` 这个动态频道。下面三条把「发 → 收 → 处理」三头都钉住。
 
-// 主进程实发的通知频道。`webContents.send(plan.channel)` 是动态的：字面量登记在
-// core/close-guard.js 的 FORCE_CLOSE_CHANNEL，这里按那个常量核（改频道名 / 忘了同步 preload 都会红）。
+// 主进程实发的通知频道。WP18（台账 #3）把强制退出的发送从动态 `send(plan.channel)` 改成字面量
+// `send('app:force-close')`（接线清单只认静态字符串），所以这里不再需要「动态频道」特判 ——
+// 字面量会被下面 webContents.send 的正则直接抓到；与 core/close-guard.js 常量的互钉见 A1 静态闸门。
 function mainSentChannels() {
   const sent = new Set();
   for (const re of [
@@ -168,7 +175,6 @@ function mainSentChannels() {
   ]) {
     for (const match of MAIN.matchAll(re)) sent.add(match[1]);
   }
-  if (/webContents\.send\(plan\.channel\)/.test(MAIN)) sent.add(closeGuardLib.FORCE_CLOSE_CHANNEL);
   return [...sent];
 }
 
@@ -218,12 +224,12 @@ test('P-01：preload 暴露 onForceClose 并订阅 app:force-close（否则 500 
   );
 });
 
-test('P-01：main 实发频道 ⊆ preload 订阅频道（含 plan.channel 这个动态频道）', () => {
+test('P-01：main 实发频道 ⊆ preload 订阅频道（force-close 字面量也在核）', () => {
   const subscribed = new Set(preloadSubscribedChannels());
   const sent = mainSentChannels();
   assert.ok(
     sent.includes(closeGuardLib.FORCE_CLOSE_CHANNEL),
-    '动态频道 webContents.send(plan.channel) 必须被这条闸门核到（不能只抓字面量）'
+    'webContents.send 字面量必须被这条闸门抓到（WP18 后台账 #3 的发送已是字面量）'
   );
   const orphan = sent.filter((channel) => !subscribed.has(channel));
   assert.deepEqual(orphan, [], `这些频道主进程发了但没人收：${orphan.join(' / ')}`);

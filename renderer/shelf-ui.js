@@ -14,7 +14,9 @@
  *   host = {
  *     $, state, chapterTitle, formatRelativeTime,
  *     openBookByPath, askUnsaved, saveCurrent, loadChapterAt,
- *     waitForSavingIdle, waitForLoadingIdle   // 可选：切章前等「保存在途 / 载章在途」落定（WP-03）
+ *     waitForSavingIdle, waitForLoadingIdle,  // 可选：切章前等「保存在途 / 载章在途」落定（WP-03）
+ *     // 可选（B2 / WP18）：shelf:changed 增量刷新。缺任何一个 → handleShelfChanged 退回整表刷新。
+ *     api, call, renderShelf, refreshShelf, refreshStats, markCommandsDirty
  *   }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到点书架 / 切章时 ReferenceError）。
  * host 成员全是一次性解构的稳定引用；它们在渲染层都是函数声明（会提升）或先于装配点的
@@ -33,7 +35,11 @@
  *     （取消 → { ok: false, canceled: true }；保存失败原样透传）、最后 loadChapterAt。
  *     轮询在途时先等载章 / 保存在途落定（C9 / C10），等完重新核对目标章与 dirty。
  *
- * 红线不变：只读 state（冲突对话框写 state.conflictBook，与搬之前同一行）、只改 DOM；
+ * B2（WP18 / 审计中 #18）追加一段：handleShelfChanged —— 主进程广播 shelf:changed 时，
+* bookPath 非空只重读那一张书卡（O(1)），result 为空 / 删除时按语义删卡，无路径才整表刷新。
+* 这一段只读 state.books 并写回新数组 + 调宿主给的 renderShelf，不碰 IPC 白名单。
+*
+* 红线不变：只读 state（冲突对话框写 state.conflictBook，与搬之前同一行）、只改 DOM；
  * 本模块不注册任何事件监听、不进 Esc 动作表、不改测试钩子的宿主契约——
  * 事件绑定 / Esc 动作表 / 测试钩子仍在 renderer.js 里按名字取这几个 const。
  *
@@ -54,6 +60,13 @@
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
     assertHost('createShelfUi', host, REQUIRED_HOST);
     const { $, state, chapterTitle, formatRelativeTime, openBookByPath, askUnsaved, saveCurrent, loadChapterAt, waitForSavingIdle, waitForLoadingIdle } = host;
+    // B2（WP18）：书架增量刷新的**可选**宿主成员 —— 缺任何一个就退回整表刷新（旧宿主 / 单测不受影响）。
+    const api = host.api || null;
+    const callApi = typeof host.call === 'function' ? host.call : null;
+    const renderShelfNow = typeof host.renderShelf === 'function' ? host.renderShelf : null;
+    const refreshShelfAll = typeof host.refreshShelf === 'function' ? host.refreshShelf : null;
+    const refreshShelfStats = typeof host.refreshStats === 'function' ? host.refreshStats : null;
+    const markCommandsDirty = typeof host.markCommandsDirty === 'function' ? host.markCommandsDirty : null;
   // ---------- 继续上次写作 ----------
   // 主进程在打开书 / 切章 / 保存时记 config.lastBook；这里只负责把它显示出来。
   // 书架里已经找不到那本书（被删/改名）或是损坏书时，入口直接隐藏，不做任何猜测。
@@ -123,6 +136,62 @@
     $('conflict-backdrop').classList.add('hidden');
   }
 
+  // ---------- 书架增量刷新（B2 / WP18 / 审计中 #18） ----------
+  // 主进程每次写 mutation 成功都会广播 shelf:changed = { reason, bookPath }：
+  //   · bookPath 非空 → 只重读这一张书卡（books:card，O(1)），替换 / 插入 + 按 lastModified 重排；
+  //   · reason === 'book:delete' → 直接从书架删卡（目录已搬走，读盘必然失败，不白试一次）；
+  //   · bookPath 为空（多本导入等结构性变更）→ 整表刷新，与改动前完全一致。
+  // 任何一步不可用 / 读失败都退回整表刷新：宁可多读一遍，也不能把书卡从书架上弄丢。
+  const sameBookPath = (left, right) =>
+    String(left == null ? '' : left).toLowerCase() === String(right == null ? '' : right).toLowerCase();
+
+  function applyShelfCard(card, bookPath) {
+    const books = Array.isArray(state.books) ? state.books.slice() : [];
+    const at = books.findIndex((book) => sameBookPath(book && book.path, bookPath));
+    if (at >= 0) books[at] = card;
+    else books.push(card);
+    books.sort((a, b) => (Number(b && b.lastModified) || 0) - (Number(a && a.lastModified) || 0));
+    state.books = books;
+  }
+
+  async function handleShelfChanged(payload) {
+    // 写作页不打断作者（回书架时会整表刷新）；导入 / 整本整理期间的广播也不插手。
+    if (state.view !== 'shelf' || state.importing || state.formatBookRunning) return { mode: 'skipped' };
+    const reason = payload && typeof payload.reason === 'string' ? payload.reason : '';
+    const bookPath = payload && typeof payload.bookPath === 'string' ? payload.bookPath : '';
+    const canIncrement = Boolean(
+      bookPath && api && typeof api.readBookCard === 'function' && callApi && renderShelfNow
+    );
+    if (!canIncrement || !refreshShelfAll) {
+      if (typeof refreshShelfAll === 'function') await refreshShelfAll();
+      return { mode: 'full' };
+    }
+    if (reason === 'book:delete') {
+      const before = Array.isArray(state.books) ? state.books.length : 0;
+      state.books = (state.books || []).filter((book) => !sameBookPath(book && book.path, bookPath));
+      if (state.books.length === before) return { mode: 'remove', removed: false };
+      renderShelfNow();
+      if (typeof refreshShelfStats === 'function') Promise.resolve(refreshShelfStats()).catch(() => {});
+      return { mode: 'remove', removed: true };
+    }
+    let card = null;
+    try {
+      card = await callApi(api.readBookCard, bookPath);
+    } catch {
+      card = null; // 坏书 / 路径失效：下面的整表兜底
+    }
+    if (!card || typeof card !== 'object' || Array.isArray(card) || typeof card.path !== 'string') {
+      await refreshShelfAll();
+      return { mode: 'full' };
+    }
+    applyShelfCard(card, bookPath);
+    if (typeof markCommandsDirty === 'function') markCommandsDirty(); // 书名可能变，命令面板「书」条目要重建
+    renderShelfNow();
+    // 字数 / 今日统计：只读 stats.json，不重扫全书架（与 refreshShelf 的统计刷新同口径）
+    if (typeof refreshShelfStats === 'function') Promise.resolve(refreshShelfStats()).catch(() => {});
+    return { mode: 'card' };
+  }
+
   // ---------- 切换 / 新建 / 重命名 / 删除 ----------
   function currentChapterLabel() {
     if (state.index < 0 || !state.chapters[state.index]) return '当前章节';
@@ -164,7 +233,9 @@
       openConflictDialog,
       closeConflictDialog,
       currentChapterLabel,
-      switchChapter
+      switchChapter,
+      // B2（WP18）：shelf:changed 的增量处理器（宿主没给增量成员时自动退回整表刷新）
+      handleShelfChanged
     };
   }
 

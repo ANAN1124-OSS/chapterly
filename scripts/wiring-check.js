@@ -33,9 +33,19 @@ const CHECK_IDS = [
   'source-missing'
 ];
 
-// 已知「只有监听、没有发送方」的历史遗留。WP16 只登记、不顺手改产品代码；
-// 修掉它时要把这条白名单一起删（白名单过期同样会红，避免越留越多）。
-const KNOWN_DEAD_LISTENERS = ['app:force-close'];
+// 已知「只有监听、没有发送方」的历史遗留。这里**刻意留空**：
+//   · WP16 曾登记 app:force-close（当时 main.js 用 plan.channel 动态发送，静态解析看不见）；
+//   · WP18（台账 #3）把发送改成字面量 `webContents.send('app:force-close')` 并加了与
+//     core/close-guard.js 常量的漂移断言 → 它已是有发送方的活监听，白名单随之清空。
+// 新死监听照样算违规；白名单条目「过期」（已有发送方 / 频道已删）同样会红，避免越留越多。
+const KNOWN_DEAD_LISTENERS = [];
+
+// E2E 自检专用、产品界面不用的 bridge api（台账 #3，WP18）：它们是给真实 Electron 自检直接调用的，
+// renderer/ 里没有调用方是**设计如此**，不算「暴露未用」提示。名单只登记这三条（新增未用 api 仍提示）：
+//   findInText                → scripts/e2e/groups/61-ipc-limits.js（text:find 的超长正文被拒不变量）
+//   testPickFont              → scripts/e2e/groups/26-display-options.js（自定义字体来源闸门）
+//   setClipboardWatchTestText → scripts/e2e/groups/72-capture.js（锁屏 / 无交互桌面时的剪贴板注入）
+const E2E_ONLY_APIS = ['findInText', 'testPickFont', 'setClipboardWatchTestText'];
 
 const SELF_GLOBALS = new Set(['CWTestHooks', 'CWRendererAssembly']);
 
@@ -367,7 +377,7 @@ function auditWiring(root) {
     });
   }
 
-  const unusedExposed = [...exposed].filter((key) => !usedOpen.has(key)).sort();
+  const unusedExposed = [...exposed].filter((key) => !usedOpen.has(key) && !E2E_ONLY_APIS.includes(key)).sort();
   if (unusedExposed.length) {
     warnings.push(`preload 暴露但 renderer 未使用：api.${unusedExposed.join(', api.')}（清理项，不算违规）`);
   }

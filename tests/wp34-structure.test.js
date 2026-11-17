@@ -51,6 +51,8 @@ const DOMAIN_CHANNELS = {
   ],
   book: [
     'books:list',
+    // WP18（B2）：书架增量刷新的单本书卡（只读，紧跟在 books:list 之后注册）
+    'books:card',
     'book:create',
     'book:open',
     'book:verify',
@@ -163,9 +165,10 @@ test('WP-34：四个域模块的频道清单 / 顺序 / 注册器种类与搬前
     total += registered.length;
   }
   assert.equal(total, ALL_DOMAIN_CHANNELS.length);
-  // 56 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）+ 审计修复 #6 新增的
-  // chapter:rescue + 审计修复 #38 下沉的书域数据面 13 个频道 + WP4 新增的清理计划频道。
-  assert.equal(total, 56, '四个域的频道总数变了（多一个少一个都要同步本闸门）');
+  // 57 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）+ 审计修复 #6 新增的
+  // chapter:rescue + 审计修复 #38 下沉的书域数据面 13 个频道 + WP4 新增的清理计划频道
+  // + WP18（B2）新增的 books:card。
+  assert.equal(total, 57, '四个域的频道总数变了（多一个少一个都要同步本闸门）');
 });
 
 test('WP-34：host 契约缺成员在 register() 装配时直接 TypeError（与渲染层 A8 同一口径）', () => {
@@ -235,12 +238,13 @@ test('WP-34：模块自己不 require electron；依赖由 main.js 的 buildIpcH
   assert.equal(IPC_SOURCE.includes('activeClipboard.writeText('), false, 'ipc 模块里不许直呼 activeClipboard');
 });
 
-test('WP-34：频道总数不丢（main + ipc = 110），preload 的 invoke 全在注册点里', () => {
+test('WP-34：频道总数不丢（main + ipc = 111），preload 的 invoke 全在注册点里', () => {
   const registered = registrationsOf(MAIN + '\n' + IPC_SOURCE);
-  // 110 = 搬前 104 + 审计修复 #6（V302）新增的 chapter:rescue（导出域尾部）+ WP4 清理计划频道
+  // 111 = 搬前 104 + 审计修复 #6（V302）新增的 chapter:rescue（导出域尾部）+ WP4 清理计划频道
   //       + WP5 崩溃草稿的 crash:draft / crash:recovery / crash:read-draft / crash:discard-draft
-  assert.equal(registered.length, 110, '主进程 IPC 注册点数量与「搬前 104 + V302 的 chapter:rescue + WP4 计划频道 + WP5 崩溃草稿 4 频道」不一致');
-  assert.equal(new Set(registered.map((item) => item.channel)).size, 110, '有频道被重复注册');
+  //       + WP18（B2）的 books:card（书架增量刷新，只读）
+  assert.equal(registered.length, 111, '主进程 IPC 注册点数量与「搬前 104 + V302 的 chapter:rescue + WP4 计划频道 + WP5 崩溃草稿 4 频道 + WP18 的 books:card」不一致');
+  assert.equal(new Set(registered.map((item) => item.channel)).size, 111, '有频道被重复注册');
   const all = new Set(registered.map((item) => item.channel));
   for (const channel of ALL_DOMAIN_CHANNELS) assert.ok(all.has(channel), `频道总数里找不到 ${channel}`);
   const preload = read('preload.js');

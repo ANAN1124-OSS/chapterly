@@ -513,9 +513,13 @@ function showMessageBox(options, parent = dialogParent()) {
     : dialog.showMessageBox(options);
 }
 
-// 书架数据变了：其它窗口若正停在书架就刷新；在写作页的窗口回书架时会自己刷新
-function notifyShelfChanged(session, reason = '') {
-  broadcast('shelf:changed', { reason }, { except: session ? session.id : null });
+// 书架数据变了：其它窗口若正停在书架就刷新；在写作页的窗口回书架时会自己刷新。
+// B2（WP18 / 审计中 #18）：带上这次变更的 bookPath —— 停在书架的窗口只按这一张书卡增量刷新
+// （books:card，O(1)），不再为一次 Ctrl+S 整表 books:list 逐书 readBookMeta。
+// bookPath 为 null = 结构性变更（多本导入等）：渲染层照旧整表刷新。
+function notifyShelfChanged(session, reason = '', bookPath = null) {
+  const changed = typeof bookPath === 'string' && bookPath ? bookPath : null;
+  broadcast('shelf:changed', { reason, bookPath: changed }, { except: session ? session.id : null });
 }
 
 // 只保存「最近使用的窗口」的位置 / 大小（下次启动按它恢复）
@@ -937,8 +941,9 @@ function handleBook(channel, fn, { mutation = null } = {}) {
         const target = assertBookPath(bookPath, cfg.booksRoot);
         if (mutation) storage.assertBookNotBusy(target, session.id, mutation);
         const result = await fn(target, ...args);
-        // 书架数据可能变了（字数 / 章节 / 书名）：其它窗口的书架跟着刷新
-        if (mutation && channel !== 'book:set-last') notifyShelfChanged(session, channel);
+        // 书架数据可能变了（字数 / 章节 / 书名）：其它窗口的书架跟着刷新。
+        // B2（WP18）：带上 target —— 单本书的变更只让书架重读那一张卡；删除（target 已不在）由渲染层删卡。
+        if (mutation && channel !== 'book:set-last') notifyShelfChanged(session, channel, target);
         return ok(result);
       } catch (err) {
         return fail(err, channel);
@@ -1189,7 +1194,19 @@ function setupCloseFlow(session) {
         await closeGuard.runForceCloseSteps(plan, {
           send: () => {
             try {
-              if (!browserWin.isDestroyed()) browserWin.webContents.send(plan.channel);
+              if (browserWin.isDestroyed()) return;
+              // 台账 #3（WP18 / 审计 R-N4）：这里必须用**字面量**发送 —— 接线清单（scripts/wiring-check.js）
+              // 只看得见 webContents.send 后面跟静态字符串的写法，以前发 plan.channel，app:force-close 被
+              // 误判成「preload 有监听、主进程没发送」的死监听。字面量与 core/close-guard.js 的
+              // FORCE_CLOSE_CHANNEL 同源；两边漂移时宁可这一拍不发（wait/destroy 照旧），也要留下日志。
+              if (closeGuard.FORCE_CLOSE_CHANNEL !== 'app:force-close') {
+                logError('force-close-channel-drift', {
+                  code: 'CHANNEL_DRIFT',
+                  message: '强制退出通知频道与 core/close-guard.js 不一致，本次不发送'
+                });
+                return;
+              }
+              browserWin.webContents.send('app:force-close');
             } catch {
               /* 窗口刚好在这一下销毁：没有渲染层可通知，继续走 destroy */
             }
@@ -2722,6 +2739,11 @@ if (!gotLock) {
     // X8（v1.8.0 WP-40）：启动时回收上次崩溃留在 userData 的孤儿临时文件（索引 / 配置等）。
     // 只认本应用命名、非本进程 pid、且 mtime 超过 1 小时的临时文件；失败不影响启动。
     await cleanupOrphanTmpFiles(app.getPath('userData')).catch(() => {});
+    // C3（WP18 / 审计中 #22）：导出目标目录（桌面 / 文档等，上次导出记在 lastExportDir）也会在
+    // 崩溃 / 断电时留下同一个 `.名.tmp-pid-时间-随机` 隐藏孤儿 —— 那是用户看得见的目录，顺手
+    // 按同一口径回收一次。只清本应用命名 + 非本进程 pid + 超 1 小时；目录不在 / 无权限都只跳过。
+    const exportDir = config && typeof config.lastExportDir === 'string' ? config.lastExportDir.trim() : '';
+    if (exportDir) await cleanupOrphanTmpFiles(exportDir).catch(() => {});
     // b8：按配置决定要不要开始后台监听剪贴板（默认关）
     syncClipboardWatch();
     // 每次启动记一条 info（版本 / 平台 / Electron 版本），排查反馈时先看这里

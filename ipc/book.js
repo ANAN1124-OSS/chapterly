@@ -78,11 +78,17 @@ function registerBookIpc(host) {
     return storage.listBooks(cfg.booksRoot);
   });
 
+  // B2（WP18 / 审计中 #18）：书架增量刷新 —— 别的窗口保存 / 改书目 / 改名后，`shelf:changed`
+  // 会带上变更的 bookPath，停在书架的窗口只重读这一张卡（O(1)），不再整表逐书扫书目。
+  // 只读频道：不写盘、不拿书锁、不广播（handleBook 的书名参数已经过 assertBookPath）。
+  handleBook('books:card', async (bookPath) => storage.readBookCard(bookPath), READ_ONLY);
+
   handle('book:create', async (title) => {
     const cfg = await getConfig();
     await fs.mkdir(cfg.booksRoot, { recursive: true });
     const created = await storage.createBook(cfg.booksRoot, title);
-    notifyShelfChanged(flowSession(), 'book:create');
+    // B2（WP18）：带上新书路径 —— 其它窗口的书架只插这一张卡（多本导入才走整表）
+    notifyShelfChanged(flowSession(), 'book:create', created.path);
     return created;
   });
 

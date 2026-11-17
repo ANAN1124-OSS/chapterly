@@ -1125,7 +1125,9 @@
   const shelfUi = shelfUiModule.create({
     $, state, chapterTitle, formatRelativeTime, openBookByPath, askUnsaved, saveCurrent, loadChapterAt,
     // WP-03（C9 / C10）：切章前等「载章 / 保存在途」落定（可选成员，旧宿主 / 单测没有也能跑）
-    waitForSavingIdle, waitForLoadingIdle
+    waitForSavingIdle, waitForLoadingIdle,
+    // B2（WP18）：书架增量刷新（可选；renderShelf / refreshStats 装配点后才落定，惰性转发）
+    api, call, renderShelf: () => renderShelf(), refreshShelf: () => refreshShelf(), refreshStats: () => refreshStats(), markCommandsDirty
   });
   const { renderContinueWriting, openContinueBook, openConflictDialog, closeConflictDialog } = shelfUi;
 
@@ -5800,11 +5802,8 @@
     api.onCommandPalette(() => openCommandPalette());
   // 别的窗口改了书架数据（新建 / 删除 / 保存 / 导入 / 整理）：停在书架就刷新；
   // 写作页里的窗口不打断作者，回书架时会统一刷新（backToShelf 里本来就会刷新）。
-  api.onShelfChanged(() => {
-    if (state.view === 'shelf' && !state.importing && !state.formatBookRunning) {
-      refreshShelf().catch(() => {});
-    }
-  });
+  // B2（WP18）：载荷带 bookPath 只增量换那张书卡；book:delete 删卡；无路径 / 读卡失败才整表（守卫与兜底在 shelf-ui）。
+  api.onShelfChanged((payload) => shelfUi.handleShelfChanged(payload).catch(() => {}));
   // WP6（N2）：别的窗口换了书架根 → 本窗口刷新成新目录的书架；开着旧根的书则一次性提示 +
   // 救稿出口（同一个根只提示一次，去重在模块闭包里；救稿 / 回书架都复用既有入口）。
   const configChangeUi = configChangeUiModule.create({

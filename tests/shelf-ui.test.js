@@ -103,12 +103,13 @@ test('host 契约：8 个成员缺任何一个都抛 TypeError，空 host / null
   assert.throws(() => shelfUi.create({ ...host, state: null }), /createShelfUi 的 host 缺少 state/);
 });
 
-test('create() 只建表：没有 document 也能创建，6 个入口都在且都是函数', () => {
+test('create() 只建表：没有 document 也能创建，7 个入口都在且都是函数', () => {
   const { host } = makeHost();
   delete globalThis.document;
   const ui = shelfUi.create(host);
   assert.deepEqual(Object.keys(ui).sort(), [
-    'closeConflictDialog', 'currentChapterLabel', 'openConflictDialog',
+    // WP18（B2）：shelf:changed 增量处理器（宿主没给增量成员时自动退回整表刷新）
+    'closeConflictDialog', 'currentChapterLabel', 'handleShelfChanged', 'openConflictDialog',
     'openContinueBook', 'renderContinueWriting', 'switchChapter'
   ].sort());
   for (const name of Object.keys(ui)) assert.equal(typeof ui[name], 'function', name);
