@@ -204,8 +204,13 @@ test('窗口位置记忆带最大化：保存记 isMaximized()、启动恢复补
   );
   assert.match(
     MAIN.slice(saveAt, saveAt + 2000),
-    /windowBounds: \{ \.\.\.normal, maximized: session\.win\.isMaximized\(\) \}/,
-    '保存窗口位置时必须带上 maximized: session.win.isMaximized()'
+    /const nextBounds = \{ \.\.\.normal, maximized: session\.win\.isMaximized\(\) \};/,
+    '保存窗口位置时必须带上 maximized: session.win.isMaximized()（且只构造一次 nextBounds）'
+  );
+  assert.match(
+    MAIN.slice(saveAt, saveAt + 2000),
+    /await configStore\.set\(\{ windowBounds: nextBounds \}, \{ auto: true \}\);/,
+    '写盘复用同一份 nextBounds（A4：不再写盘处第二次展开对象）'
   );
 
   // 恢复端：只认 cfg.windowBounds.maximized === true，且在 ready-to-show 里 show() 之前补 maximize()

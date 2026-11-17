@@ -81,8 +81,8 @@ test('D12 / M3：README 只留当前文档，版本沿革 / 防丢稿逐轮记�
   assert.ok(readme.includes('## 许可'), 'README 许可段仍在');
   assert.match(
     readme,
-    /公开文档[^\n]*README\.md[^\n]*验收清单\.md[^\n]*LICENSE/,
-    'README 的公开文档清单只列当前文档（README / 验收清单 / LICENSE）'
+    /公开文档[^\n]*README\.md[^\n]*验收清单\.md[^\n]*LICENSE[^\n]*docs\//,
+    'README 的公开文档清单要列当前公开文档（README / 验收清单 / LICENSE / docs/；M-N3 拆出 docs/）'
   );
 });
 
@@ -184,10 +184,11 @@ test('D4：renderer.js 模块声明区注释紧贴自己的声明，不再交错
   );
 });
 
-test('X14：README 记录静态闸门策略（不强制削减）', () => {
-  const readme = read('README.md');
-  assert.ok(readme.includes('### 测试与静态闸门策略（X14，不强制削减）'), '要有独立的策略小节');
-  assert.ok(readme.includes('静态闸门是有意的防漂移锚点，不强制削减'), '要写明不强制削减');
-  assert.ok(readme.includes('新增功能优先写行为断言'), '要写明优先写行为断言');
-  assert.ok(readme.includes('不许批量删除或用正则放宽到永远通过'), '要写明重构时的处理口径');
+test('X14：维护者文档记录静态闸门策略（不强制削减；M-N3 从 README 拆出）', () => {
+  const maintain = read('docs/维护与自检.md');
+  assert.ok(maintain.includes('### 测试与静态闸门策略（X14，不强制削减）'), '要有独立的策略小节');
+  assert.ok(maintain.includes('静态闸门是有意的防漂移锚点，不强制削减'), '要写明不强制削减');
+  assert.ok(maintain.includes('新增功能优先写行为断言'), '要写明优先写行为断言');
+  assert.ok(maintain.includes('不许批量删除或用正则放宽到永远通过'), '要写明重构时的处理口径');
+  assert.equal(read('README.md').includes('### 测试与静态闸门策略'), false, 'README 不再混维护者策略');
 });

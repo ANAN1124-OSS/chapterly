@@ -213,10 +213,10 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.match(main, /const CLIPBOARD_WATCH_INTERVAL_MS = 300;/, '轮询间隔 300ms');
   // 2026-11-06 捕获队列：自动通知仍然只发「字数 + 已记条数」，绝不发正文
   assert.match(main, /const payload = \{ chars: decision\.chars, queued: captureQueue\.size\(\) \}/, '通知只带字数与队列条数');
-  assert.match(main, /send\('clipboard:changed', payload\)/, '用不含正文的 payload 发通知');
+  assert.match(main, /broadcast\('clipboard:changed', payload\)/, '用不含正文的 payload 经 broadcast 发通知（A1 单点发送）');
   assert.equal(/send\('clipboard:changed'[^)]*text/i.test(main), false, '不许把剪贴板正文发给渲染层');
   // 2026-11-07：每次「记录」都发一个只带条数的轻量事件（短复制没有轻提示，靠它刷新面板列表）
-  assert.match(main, /send\('clipboard:recorded', recordedPayload\)/, '每次入队都通知渲染层（只带条数）');
+  assert.match(main, /broadcast\('clipboard:recorded', recordedPayload\)/, '每次入队都经 broadcast 通知渲染层（只带条数）');
   assert.equal(/send\('clipboard:recorded'[^)]*text/i.test(main), false, '记录事件同样不许带正文');
   assert.match(main, /async function flushClipboardWatchOnce\(\)/, '打开面板前补一拍监听');
   assert.match(main, /handle\('capture:flush'/, '补拍 IPC');

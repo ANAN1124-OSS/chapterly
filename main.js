@@ -279,43 +279,19 @@ async function pollClipboardWatch() {
       if (!added.added && added.reason === 'too-large') {
         if (decision.notify) {
           const tooLargePayload = { tooLarge: true, chars: added.chars, queued: captureQueue.size() };
-          for (const session of windowSessions.values()) {
-            try {
-              if (session.win && !session.win.isDestroyed()) {
-                session.win.webContents.send('clipboard:changed', tooLargePayload);
-              }
-            } catch {
-              /* 单个窗口发不出去不影响其它窗口 */
-            }
-          }
+          broadcast('clipboard:changed', tooLargePayload);
         }
         return;
       }
       // 面板开着时「新复制立刻出现在列表里」：每次记录都发一个不含正文的轻量事件。
       // 短复制（<20 字）不走下面的 notify，靠这个事件刷新列表，否则复制了也看不见。
       const recordedPayload = { queued: captureQueue.size() };
-      for (const session of windowSessions.values()) {
-        try {
-          if (session.win && !session.win.isDestroyed()) {
-            session.win.webContents.send('clipboard:recorded', recordedPayload);
-          }
-        } catch {
-          /* 单个窗口发不出去不影响其它窗口 */
-        }
-      }
+      broadcast('clipboard:recorded', recordedPayload);
     }
     if (!decision.notify) return;
     // 只发字数字段（不发正文）；queued 是「本次运行已记几条」的计数，也不含正文。
     const payload = { chars: decision.chars, queued: captureQueue.size() };
-    for (const session of windowSessions.values()) {
-      try {
-        if (session.win && !session.win.isDestroyed()) {
-          session.win.webContents.send('clipboard:changed', payload);
-        }
-      } catch {
-        /* 单个窗口发不出去不影响其它窗口 */
-      }
-    }
+    broadcast('clipboard:changed', payload);
   } finally {
     // 旧拍子不许把新一拍的「在飞」标记放掉（token 变了说明这拍已作废）。
     if (watchToken === clipboardWatcher.token()) clipboardWatchBusy = false;
@@ -470,6 +446,8 @@ function sendToFlow(channel, payload) {
   return false;
 }
 
+// 逐窗口单发通知的唯一实现（try/catch 单发互不影响）。剪贴板监听三处提示 / 记录事件也走这里
+// （审计 A1：原先各写一遍「遍历 windowSessions + try/catch」，发送策略改动要同步三处、易漂移）。
 function broadcast(channel, payload, { except = null } = {}) {
   const skip = except == null ? null : String(except);
   for (const session of windowSessions.values()) {
@@ -551,7 +529,9 @@ async function saveRecentWindowBounds(session) {
     // 多窗口下另一个窗口可能刚写过同一份字段，按磁盘现状比才不会被上一手的旧值误导。
     const current = await configStore.get();
     if (sameWindowBounds(current.windowBounds, nextBounds)) return true;
-    await configStore.set({ windowBounds: { ...normal, maximized: session.win.isMaximized() } }, { auto: true });
+    // A4（审计）：普通态几何 + 最大化标志只构造一次；比对与写盘复用同一份 nextBounds，
+    // 避免写盘处再展开一次对象（发送策略 / 字段增删都只改一处）。
+    await configStore.set({ windowBounds: nextBounds }, { auto: true });
     return true;
   } catch {
     return false;

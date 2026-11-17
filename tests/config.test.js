@@ -123,8 +123,13 @@ test('V103/WP-26：窗口尺寸上限放宽、main.js 存普通态几何并按�
   );
   assert.match(
     main,
-    /windowBounds: \{ \.\.\.normal, maximized: session\.win\.isMaximized\(\) \}/,
-    '存的是普通态几何 + maximized 标志'
+    /const nextBounds = \{ \.\.\.normal, maximized: session\.win\.isMaximized\(\) \};/,
+    '存的是普通态几何 + maximized 标志（只构造一次 nextBounds，A4）'
+  );
+  assert.match(
+    main,
+    /await configStore\.set\(\{ windowBounds: nextBounds \}, \{ auto: true \}\);/,
+    '写盘复用同一份 nextBounds（A4：不在写盘处再展开一次对象）'
   );
   assert.equal(
     /windowBounds: \{ \.\.\.session\.win\.getBounds\(\)/.test(main),

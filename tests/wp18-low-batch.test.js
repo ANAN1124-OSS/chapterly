@@ -17,6 +17,11 @@
 //   R14 台账 #3：app:force-close 是活监听（close-guard 常量 = main 字面量、真实树无死监听）
 //   R15 台账 #3：E2E-only api 登记（真实树 0 提示；新未用 api 仍提示见 wiring-manifest 负控）
 //   R16 C3：启动回收 lastExportDir 的孤儿 tmp（口径与 userData / 书目录一致）
+// WP18 第 4 轮（2026-11-18，HEAD c633604）追加：
+//   R21 A1：剪贴板监听三处通知复用 broadcast（发送策略单点，不再手写逐窗口循环）
+//   R22 A4：saveRecentWindowBounds 只构造一次 nextBounds（写盘复用它，不重复 {...normal, maximized}）
+//   R23 appId：永久保留 local.chapter-writer 并文档化（拍板 ④；不再承诺「下个大版本迁移」）
+//   R24 M-N3：维护者内容迁出 README（打包 / 供应链 / 静态闸门策略 / 完整已知限制）到 docs/
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
@@ -1163,4 +1168,123 @@ test('R20 E2：font:read 同句柄 open→fstat→read（TOCTOU 窗口归零）'
     fontBody.indexOf('fontReadCache.get(cacheKey)') < fontBody.indexOf('loaded.read()'),
     '缓存命中时仍零读盘（get 在 read 之前）'
   );
+});
+
+test('R21 A1：剪贴板监听三处通知复用 broadcast（发送策略单点）', () => {
+  const mainSrc = readSource('main.js');
+  const start = mainSrc.indexOf('async function pollClipboardWatch() {');
+  const end = mainSrc.indexOf('// 打开面板前补一拍');
+  assert.ok(start > 0 && end > start, 'main.js 里要能找到 pollClipboardWatch 与下一段注释');
+  const body = mainSrc.slice(start, end);
+
+  // 三处载荷（超限 / 入队 / 轻提示）都改走同一份 broadcast；不再各写一遍逐窗口 try/catch。
+  assert.match(body, /broadcast\('clipboard:changed', tooLargePayload\)/, '超限提示必须复用 broadcast');
+  assert.match(body, /broadcast\('clipboard:recorded', recordedPayload\)/, '入队通知必须复用 broadcast');
+  assert.match(body, /broadcast\('clipboard:changed', payload\)/, '轻提示必须复用 broadcast');
+  assert.equal(
+    /for \(const session of windowSessions\.values\(\)\)/.test(body),
+    false,
+    '三处手写逐窗口循环要删掉（发送策略只留 broadcast 单点）'
+  );
+  assert.equal(/webContents\.send\(/.test(body), false, '轮询体内不许再直接 webContents.send');
+  // 载荷形状不变：只带字数 / 条数（和审计 A1 的安全口径一起钉住）。
+  assert.match(body, /const tooLargePayload = \{ tooLarge: true, chars: added\.chars, queued: captureQueue\.size\(\) \}/);
+  assert.match(body, /const recordedPayload = \{ queued: captureQueue\.size\(\) \}/);
+  assert.match(body, /const payload = \{ chars: decision\.chars, queued: captureQueue\.size\(\) \}/);
+  assert.equal(/clipboard:(changed|recorded)'[^)]*\btext\b/i.test(body), false, '通知载荷绝不许带正文');
+
+  // broadcast 本体仍是逐窗口 try/catch 单发，并保留 except（书架广播仍在用）。
+  const broadcastStart = mainSrc.indexOf('function broadcast(channel, payload, { except = null } = {}) {');
+  assert.ok(broadcastStart > 0, 'broadcast 的签名 / except 参数不许改');
+  const broadcastBody = mainSrc.slice(broadcastStart, mainSrc.indexOf('function focusSession('));
+  assert.match(broadcastBody, /sendToSession\(session, channel, payload\)/, 'broadcast 必须复用 sendToSession');
+  assert.match(mainSrc, /broadcast\('shelf:changed', \{ reason, bookPath: changed \}, \{ except: session \? session\.id : null \}\)/);
+});
+
+test('R22 A4：saveRecentWindowBounds 只构造一次 nextBounds 并复用到写盘', () => {
+  const mainSrc = readSource('main.js');
+  const start = mainSrc.indexOf('async function saveRecentWindowBounds(session) {');
+  assert.ok(start > 0, 'main.js 里要有 saveRecentWindowBounds');
+  const end = mainSrc.indexOf('// A2（审计 #8 / E3）', start);
+  assert.ok(end > start, '要能截到 saveRecentWindowBounds 的函数尾');
+  const body = mainSrc.slice(start, end);
+
+  assert.match(body, /const normal = session\.win\.getNormalBounds\(\);/, '仍用 getNormalBounds 取普通态几何（V103）');
+  assert.match(
+    body,
+    /const nextBounds = \{ \.\.\.normal, maximized: session\.win\.isMaximized\(\) \};/,
+    '普通态几何 + 最大化标志只算一次，命名 nextBounds'
+  );
+  assert.equal(
+    (body.match(/\{ \.\.\.normal, maximized: session\.win\.isMaximized\(\) \}/g) || []).length,
+    1,
+    '同一对象不许在写盘处再构造第二次（A4）'
+  );
+  assert.match(
+    body,
+    /await configStore\.set\(\{ windowBounds: nextBounds \}, \{ auto: true \}\);\s*return true;/,
+    '写盘必须复用同一份 nextBounds'
+  );
+  assert.match(body, /catch \{\s*return false;/, '写盘失败仍被吞掉返回 false（自动写不阻塞关窗；注入锚点见 config.test.js 的 EPERM 队列用例）');
+  const checkAt = body.indexOf('sameWindowBounds(current.windowBounds, nextBounds)');
+  const writeAt = body.indexOf('await configStore.set({ windowBounds: nextBounds }');
+  assert.ok(checkAt > 0 && writeAt > checkAt, '先比对磁盘现状、再写盘（B10 口径不变）');
+});
+
+test('R23 appId：永久保留 local.chapter-writer 并文档化（拍板 ④）', () => {
+  const pkg = JSON.parse(readSource('package.json'));
+  assert.equal(pkg.build.appId, 'local.chapter-writer', 'appId 必须保持历史身份（永久保留，不做不可逆迁移）');
+
+  const readme = readSource('README.md');
+  assert.match(readme, /appId[^\n]*永久保留/, 'README 要写明 appId 永久保留');
+  assert.ok(readme.includes('local.chapter-writer'), 'README 要点名 appId 字面量');
+  assert.ok(readme.includes('历史身份'), 'README 要说明它是历史身份');
+  assert.match(readme, /(不迁移|永不迁移|不再迁移)/, 'README 要写明不做迁移');
+  assert.equal(
+    /正式反向域名[^\n]*顺延到下一个大版本/.test(readme),
+    false,
+    '拍板 ④ 已改为永久保留：不许再承诺下个大版本迁移 appId'
+  );
+  // 与数据目录彻底解耦这条口径保留（数据目录在 main.js 显式指定）。
+  assert.match(readme, /%APPDATA%\\chapter-writer/, '仍要写明应用数据目录名');
+});
+
+test('R24 M-N3：维护者内容迁出 README（打包 / 供应链 / 静态闸门策略 / 完整已知限制）', () => {
+  const exists = (rel) => require('node:fs').existsSync(path.join(__dirname, '..', rel));
+  assert.ok(exists('docs/维护与自检.md'), '维护者文档 docs/维护与自检.md 必须存在（M-N3 拆分落点）');
+  assert.ok(exists('docs/已知限制.md'), '完整已知限制 docs/已知限制.md 必须存在（M-N3 拆分落点）');
+
+  const readme = readSource('README.md');
+  const maintain = readSource('docs/维护与自检.md');
+  const limits = readSource('docs/已知限制.md');
+  const checklist = readSource('验收清单.md');
+
+  // 1) 打包 / 构建供应链 / 静态闸门策略整体迁到维护者文档（内容不丢，只是换文件）。
+  assert.match(maintain, /## 打包（开发者\/维护用）/, '维护者文档要收打包手册');
+  assert.match(maintain, /### 构建供应链（Electron 二进制）/, '维护者文档要收构建供应链');
+  assert.match(maintain, /node scripts\/supply-chain-check\.js/, '发版门禁命令要跟着迁走');
+  assert.match(maintain, /### 测试与静态闸门策略（X14，不强制削减）/, '维护者文档要收静态闸门策略');
+  assert.match(maintain, /## 验收自检纪律（2026-11-11 起）/, '验收自检纪律迁到维护者文档');
+  assert.equal(readme.includes('## 打包（开发者/维护用）'), false, 'README 不再承载详细打包手册');
+  assert.equal(readme.includes('### 构建供应链（Electron 二进制）'), false, 'README 不再承载供应链细节');
+  assert.equal(readme.includes('### 测试与静态闸门策略'), false, 'README 不再承载静态闸门策略');
+  assert.equal(checklist.includes('## 自检纪律（2026-11-11 起 · 硬要求）'), false, '验收清单不再混维护者纪律');
+  assert.match(readme, /docs\/维护与自检\.md/, 'README 要有维护者文档指针');
+  assert.match(checklist, /docs\/维护与自检\.md/, '验收清单要有维护者文档指针');
+
+  // 2) 完整已知限制迁出：README 只留要点 + fuse 声明（version-sync 的 checkFuseDocs 仍从 README 读）。
+  assert.match(readme, /## 已知限制（要点/, 'README 保留「已知限制（要点）」摘要');
+  assert.match(readme, /docs\/已知限制\.md/, 'README 要链到完整已知限制');
+  assert.match(limits, /## 已知限制（仍有意不做）/, '完整已知限制文档保留原标题');
+  assert.match(limits, /Electron 安全开关之外的残余风险/, '完整已知限制内容不丢');
+  assert.match(
+    readme,
+    /已开[^\n]*enableEmbeddedAsarIntegrityValidation[^\n]*onlyLoadAppFromAsar/,
+    'README 摘要仍要如实写明两个 fuse 已开（version-sync M1 门禁）'
+  );
+
+  // 3) 拆分要有可验收的「变短」：README 回落到使用者文档体量，且公开文档清单包含 docs/。
+  assert.ok(readme.length < 90000, `README 要明显变短（现在 ${readme.length} 字符，拆分前 106496）`);
+  assert.ok(readme.split('\n').length < 620, `README 行数要降到 620 以内（现在 ${readme.split('\n').length}）`);
+  assert.match(readme, /公开文档[^\n]*README\.md[^\n]*验收清单\.md[^\n]*LICENSE[^\n]*docs\//, '公开文档清单要包含 docs/');
 });

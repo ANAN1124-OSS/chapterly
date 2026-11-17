@@ -194,14 +194,16 @@ test('CLI：找到缓存 zip 且清单一致 → 0；哈希不一致 → 1；用
   assert.equal(noZipCode, 1);
 });
 
-test('静态锚点：README 构建供应链一节 + 脚本不进 dist + 脚本不联网', () => {
-  const readme = read('README.md');
-  assert.ok(readme.includes('### 构建供应链（Electron 二进制）'), 'README 要有构建供应链小节（▲V308）');
-  assert.ok(readme.includes('SHASUMS256.txt'), '要写明官方校验和清单');
-  assert.ok(readme.includes('node scripts/verify-electron-checksum.js --shasums'), '要给可直接照抄的命令');
-  assert.ok(readme.includes('npmmirror'), '要写明默认镜像来源');
-  assert.ok(readme.includes('镜像') && readme.includes('不是来源证明'), '要说明镜像只是加速、不是来源证明');
-  assert.ok(readme.includes('代码签名'), '要说明长期锚是代码签名（本条不做签名）');
+test('静态锚点：维护者文档的构建供应链一节 + 脚本不进 dist + 脚本不联网', () => {
+  // M-N3（WP18）：供应链说明从 README 拆到 docs/维护与自检.md，事实与命令不变。
+  const docs = read('docs/维护与自检.md');
+  assert.ok(docs.includes('### 构建供应链（Electron 二进制）'), '维护者文档要有构建供应链小节（▲V308）');
+  assert.ok(docs.includes('SHASUMS256.txt'), '要写明官方校验和清单');
+  assert.ok(docs.includes('node scripts/verify-electron-checksum.js --shasums'), '要给可直接照抄的命令');
+  assert.ok(docs.includes('npmmirror'), '要写明默认镜像来源');
+  assert.ok(docs.includes('镜像') && docs.includes('不是来源证明'), '要说明镜像只是加速、不是来源证明');
+  assert.ok(docs.includes('代码签名'), '要说明长期锚是代码签名（本条不做签名）');
+  assert.ok(read('README.md').includes('docs/维护与自检.md'), 'README 要指向维护者文档');
 
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.build.electronDownload.mirror, 'https://npmmirror.com/mirrors/electron/', '默认镜像不变');

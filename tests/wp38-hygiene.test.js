@@ -106,12 +106,15 @@ test('D11：Electron 镜像保留国内默认，但写明可覆盖（.npmrc / RE
   );
   const readme = read('README.md');
   assert.ok(readme.includes('npm_config_electron_mirror'), 'README 安装段要写明 npm_config_electron_mirror 覆盖方式');
-  assert.ok(readme.includes('ELECTRON_MIRROR'), 'README 打包段要写明 ELECTRON_MIRROR');
+  // M-N3（WP18）：打包段（ELECTRON_MIRROR 优先级）拆到维护者文档，口径不变。
+  const maintain = read('docs/维护与自检.md');
+  assert.ok(maintain.includes('ELECTRON_MIRROR'), '维护者文档打包段要写明 ELECTRON_MIRROR');
   assert.match(
-    readme,
+    maintain,
     /ELECTRON_MIRROR[^\n]{0,200}?build\.electronDownload\.mirror/,
-    'README 要写清优先级：ELECTRON_MIRROR 覆盖 package.json 的 build.electronDownload.mirror'
+    '维护者文档要写清优先级：ELECTRON_MIRROR 覆盖 package.json 的 build.electronDownload.mirror'
   );
+  assert.ok(readme.includes('docs/维护与自检.md'), 'README 要指向维护者文档');
   assert.equal(
     readPkg().build.electronDownload.mirror,
     'https://npmmirror.com/mirrors/electron/',

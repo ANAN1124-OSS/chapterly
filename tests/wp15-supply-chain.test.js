@@ -243,11 +243,12 @@ test('R5 CI 接线：e2e-weekly 在安装后、E2E 前跑供应链检查，且�
   );
 });
 
-test('R6 发版门禁接线 + 闸门不打包：README / package.json / 源码（政策类）', () => {
-  const readme = read('README.md');
-  const sectionStart = readme.indexOf('### 构建供应链（Electron 二进制）');
-  assert.ok(sectionStart > 0, 'README 要有「构建供应链」小节');
-  const after = readme.slice(sectionStart + 1);
+test('R6 发版门禁接线 + 闸门不打包：维护者文档 / package.json / 源码（政策类）', () => {
+  // M-N3（WP18）：打包 / 供应链细节从 README 拆到 docs/维护与自检.md（读者文档只留指针）。
+  const docs = read('docs/维护与自检.md');
+  const sectionStart = docs.indexOf('### 构建供应链（Electron 二进制）');
+  assert.ok(sectionStart > 0, '维护者文档要有「构建供应链」小节');
+  const after = docs.slice(sectionStart + 1);
   const nextH2 = after.indexOf('\n## ');
   const section = nextH2 >= 0 ? after.slice(0, nextH2) : after;
   assert.ok(section.includes('build/electron/SHASUMS256.txt'), '要写明官方清单的入库路径');
@@ -257,12 +258,16 @@ test('R6 发版门禁接线 + 闸门不打包：README / package.json / 源码�
   assert.ok(section.includes('不联网'), '仍要说明不联网、不下载');
   assert.ok(section.includes('代码签名'), '仍要说明长期锚是代码签名（不在本 WP 扩范围）');
 
-  const packStart = readme.indexOf('## 打包（开发者/维护用）');
-  const dataStart = readme.indexOf('\n## 数据在哪');
-  assert.ok(packStart > 0 && dataStart > packStart, 'README 打包节结构不变');
-  const packSection = readme.slice(packStart, dataStart);
+  const packStart = docs.indexOf('## 打包（开发者/维护用）');
+  const strategyStart = docs.indexOf('\n## 开发与自检策略');
+  assert.ok(packStart > 0 && strategyStart > packStart, '维护者文档的打包节结构不变');
+  const packSection = docs.slice(packStart, strategyStart);
   assert.ok(packSection.includes('发版门禁'), '打包节要写发版门禁');
   assert.ok(packSection.includes('node scripts/supply-chain-check.js'), '打包前要给同一条命令');
+
+  const readme = read('README.md');
+  assert.ok(readme.includes('docs/维护与自检.md'), 'README 要指向维护者文档（M-N3）');
+  assert.equal(readme.includes('### 构建供应链（Electron 二进制）'), false, 'README 不再承载供应链详情');
 
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.scripts.dist, 'electron-builder --win nsis', 'dist 保持原样（校验不自动挂钩）');

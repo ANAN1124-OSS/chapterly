@@ -107,10 +107,11 @@ test('build.files 排除 renderer/test-hooks.js（审计 #30 / O2）', () => {
     !/<script[^>]+test-hooks\.js/.test(readText('renderer/index.html')),
     'index.html 不许静态加载 test-hooks.js'
   );
-  // README 要如实记录这条出包口径（v0.9 的「保持现状」已作废）。
-  const readme = readText('README.md');
-  assert.ok(readme.includes('!renderer/test-hooks.js'), 'README 打包段要写明排除项');
-  assert.ok(!readme.includes('出包决策已定稿：保持现状'), 'README 不许再写旧的「保持现状」结论');
+  // 维护者文档要如实记录这条出包口径（v0.9 的「保持现状」已作废；M-N3 拆到 docs/）。
+  const maintain = readText('docs/维护与自检.md');
+  assert.ok(maintain.includes('!renderer/test-hooks.js'), '维护者文档打包段要写明排除项');
+  assert.ok(!maintain.includes('出包决策已定稿：保持现状'), '维护者文档不许再写旧的「保持现状」结论');
+  assert.ok(readText('README.md').includes('docs/维护与自检.md'), 'README 要指向维护者文档');
 });
 
 test('README 有许可说明（X1 / WP-07）', () => {
