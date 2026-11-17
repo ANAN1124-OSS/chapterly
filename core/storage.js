@@ -377,6 +377,50 @@ function validateMeta(meta) {
   return true;
 }
 
+// 读取侧的章节 id 清洗（C32 / 审计修复 #22、#32 的唯一实现）：缺 id 按位置回填并避开已占用的
+// 编号，本来就有但重复的 id 第二个及以后重新分配，最后逐条 cleanChapterMeta（status / note 清洗）。
+// 返回 duplicateRepairs 给 readBookMeta 记诊断日志；纯内存操作，不写盘。
+function cleanChapterIds(meta) {
+  // C32（v1.8.0 WP-26）：缺 id 的章按位置补 `ch_NNN` 时必须查唯一性。旧实现直接按位置拼，
+  // 与既有 id 撞车时改名 / 删除 / 保存会作用到错误的章（findChapterIndex 只认第一个同名 id）。
+  // 先收齐已有 id，缺失的从「位置号」开始往后找到第一个没被占用的；只补缺失项，
+  // 已有 id（哪怕是坏值）一个都不改写 —— 那是书目的既有事实。
+  // 审计修复 #22（P6）：探测改成单调游标（O(n²) → O(n)），编号口径与上面一致。
+  const backfilledIds = backfillMissingChapterIds(meta.chapters);
+  // 审计修复 #32（▲V305）：补完缺 id 之后再修「本来就有」的重复 id（第二个及以后重分配）。
+  const duplicateRepairs = reassignDuplicateChapterIds(backfilledIds);
+  meta.chapters = meta.chapters.map((c, i) =>
+    chaptersLib.cleanChapterMeta({
+      ...c,
+      id: backfilledIds[i],
+      name: typeof c.name === 'string' ? c.name : '',
+      createdAt: typeof c.createdAt === 'string' ? c.createdAt : nowIso()
+    })
+  );
+  return duplicateRepairs;
+}
+
+// 读取侧与「从 .bak 恢复」共用的形状闸门（WP8 / X-N4）：validateMeta（逐章对象 + file 非空串）
+// → 20000 章上限 → 版本迁移 → 缺 / 重 id 清洗。readBookMeta 走这一份（读出来的书必定过闸），
+// repair.restoreFromBak 在交换书目之前也走这一份 —— 见下方 V107 / C32 的原注释。
+function validateRestorableMeta(meta) {
+  validateMeta(meta);
+  // V107（v1.8.0 WP-21）：章节条数硬上限。放在形状校验之后、迁移 / 清洗 / 排序之前 —— 坏书目
+  // 一条都不向下跑（不逐条 cleanChapterMeta / normalizeChapterOrder，也不让章节数组流进
+  // listBooks 的 bookStats 逐章 stat）；上限取与 IPC 写入侧 MAX_CHAPTER_ITEMS 同数的 20000。
+  if (meta.chapters.length > MAX_META_CHAPTERS) {
+    throw new StorageError(
+      'META_TOO_MANY_CHAPTERS',
+      `${BOOK_FILE} 的章节记录有 ${meta.chapters.length} 条，超过单本上限 ${MAX_META_CHAPTERS}，按损坏处理`
+    );
+  }
+  // 版本迁移：v0.4.x 的书没有 schemaVersion，按版本 0 走一遍迁移（目前是空迁移），
+  // 只在内存里补成 1；下次正常写盘才会落进 书目.json。未来版本号原样保留。
+  const migrated = schemaLib.migrateMeta(meta);
+  const duplicateRepairs = cleanChapterIds(migrated);
+  return { meta: migrated, duplicateRepairs };
+}
+
 async function readBookMeta(bookPath) {
   const metaPath = path.join(bookPath, BOOK_FILE);
   // C17（v1.8.0 WP-19）：先 stat + 独立小上限再读 —— 这一份要 JSON.parse，被外部换成超大文件时
@@ -417,37 +461,12 @@ async function readBookMeta(bookPath) {
   } catch {
     throw new StorageError('PARSE_ERROR', `${BOOK_FILE} 解析失败（内容不是合法 JSON）`);
   }
-  validateMeta(meta);
-  // V107（v1.8.0 WP-21）：章节条数硬上限。放在形状校验之后、迁移 / 清洗 / 排序之前 —— 坏书目
-  // 一条都不向下跑（不逐条 cleanChapterMeta / normalizeChapterOrder，也不让章节数组流进
-  // listBooks 的 bookStats 逐章 stat）；上限取与 IPC 写入侧 MAX_CHAPTER_ITEMS 同数的 20000。
-  if (meta.chapters.length > MAX_META_CHAPTERS) {
-    throw new StorageError(
-      'META_TOO_MANY_CHAPTERS',
-      `${BOOK_FILE} 的章节记录有 ${meta.chapters.length} 条，超过单本上限 ${MAX_META_CHAPTERS}，按损坏处理`
-    );
-  }
-  // 版本迁移：v0.4.x 的书没有 schemaVersion，按版本 0 走一遍迁移（目前是空迁移），
-  // 只在内存里补成 1；下次正常写盘才会落进 书目.json。未来版本号原样保留。
-  meta = schemaLib.migrateMeta(meta);
-  // C32（v1.8.0 WP-26）：缺 id 的章按位置补 `ch_NNN` 时必须查唯一性。旧实现直接按位置拼，
-  // 与既有 id 撞车时改名 / 删除 / 保存会作用到错误的章（findChapterIndex 只认第一个同名 id）。
-  // 先收齐已有 id，缺失的从「位置号」开始往后找到第一个没被占用的；只补缺失项，
-  // 已有 id（哪怕是坏值）一个都不改写 —— 那是书目的既有事实。
-  // 审计修复 #22（P6）：探测改成单调游标（O(n²) → O(n)），编号口径与上面一致。
-  const backfilledIds = backfillMissingChapterIds(meta.chapters);
-  // 审计修复 #32（▲V305）：补完缺 id 之后再修「本来就有」的重复 id（第二个及以后重分配）。
+  // WP8（X-N4）：形状校验 / 20000 章上限 / 版本迁移 / 缺重 id 清洗收进 validateRestorableMeta
+  // 一份，readBookMeta 与「从 .bak 恢复」共用（恢复流程在交换书目前跑同一闸门）。
+  const checked = validateRestorableMeta(meta);
+  meta = checked.meta;
   // 修过的书目按「书」只记一条诊断日志（meta-dup-id）；正常书目这条分支什么都不做。
-  const duplicateRepairs = reassignDuplicateChapterIds(backfilledIds);
-  if (duplicateRepairs.length) reportDuplicateChapterIds(bookPath, duplicateRepairs);
-  meta.chapters = meta.chapters.map((c, i) =>
-    chaptersLib.cleanChapterMeta({
-      ...c,
-      id: backfilledIds[i],
-      name: typeof c.name === 'string' ? c.name : '',
-      createdAt: typeof c.createdAt === 'string' ? c.createdAt : nowIso()
-    })
-  );
+  if (checked.duplicateRepairs.length) reportDuplicateChapterIds(bookPath, checked.duplicateRepairs);
   if (typeof meta.titleTemplate !== 'string' || !meta.titleTemplate.trim()) {
     meta.titleTemplate = chaptersLib.TITLE_TEMPLATE;
   }
@@ -2822,6 +2841,8 @@ module.exports = {
   setDiagnostics,
   // 1.6.0 A3：修复流程先写临时文件再换名，归一逻辑与 writeBookMeta 共用这一份
   prepareBookMeta,
+  // WP8（X-N4）：读取侧的「形状 + 条数上限 + 缺重 id 清洗」闸门，修复流程在交换 .bak 前共用
+  validateRestorableMeta,
   // 审计修复 #55（M6）：三个底层写入口内置书锁 —— 新增写入口直接从 exports 取用时不会再漏锁。
   // withBookLock 已支持同书重入（见 heldBookLocks），所以 chapter:save 在锁内调用这几个入口不会死锁。
   writeBookMeta: lockedWriteEntry(writeBookMeta),

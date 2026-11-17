@@ -189,7 +189,10 @@ test('修复重建：归档后改名失败，要把坏书目改回原名（失�
   await assert.rejects(
     repair.rebuildFromFiles(bookPath, {
       rename: async (from, to) => {
-        if (to === metaPath) {
+        // 只让正向 temp → 书目 失败（模拟改名被拒）；回退（归档 → 原名）走真实 rename，
+        // 验「坏书目回到原名」这条安全属性。WP8 / X-N5 起回退也走同一注入点与重试，
+        // 若这里连回退也挡掉，验的就会变成另一条路径（回退失败日志见下方 V78 用例）。
+        if (to === metaPath && path.basename(from).startsWith('.repair-meta')) {
           const err = new Error('操作被系统拒绝');
           err.code = 'EPERM';
           throw err;

@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { stripBom, writeJsonAtomic, renameWithRetry } = require('./atomic');
 const { pad2 } = require('./common');
+const chapterFilename = require('./chapter-filename');
 const chaptersLib = require('./chapters');
 const schemaLib = require('./schema');
 const conflictLib = require('./conflict');
@@ -59,7 +60,10 @@ async function swapMetaFile(bookPath, nextMeta, io = {}) {
     try { await fs.rm(tempPath, { force: true }); } catch { /* 清不掉也不影响旧文件 */ }
     if (archived) {
       try {
-        await fs.rename(archived, metaPath);
+        // X-N5（WP8）：回退（归档 → 原名）也走 atomic.renameWithRetry，与正向 temp → 书目
+        // 同一重试口径 —— 旧实现是裸 fs.rename，同一类杀毒 / 同步盘占用挡回退，归档的坏书目
+        // 回不到原名、书架上看不见这本书。重试仍失败才留 logError（V78 口径不变）。
+        await renameWithRetry(archived, metaPath, rename ? { rename } : undefined);
       } catch (rollbackErr) {
         // 回退也失败 = 归档的坏书目没回到原名，书架上看不见这本书。绝不静默吞掉（V78）：
         // 走 main.js 现有的 logError 留一条，原始错误照旧抛给调用方（界面提示口径不变）。
@@ -89,16 +93,32 @@ async function rebuildFromFiles(bookPath, io = {}) {
         : '这个文件夹里没有找到章节 txt，无法重建'
     );
   }
-  const parsed = files.map((file, index) => {
-    const match = /^(\d+)-(.+)\.txt$/i.exec(file);
-    // 序号夹在 9999（V80）：没有上限时，作者手改的 999999999999-xxx.txt 会让 fileSeq 跟着放大，
-    // 下一章按 fileSeq+1 起名就成了超长路径（创建失败、修完还是不能写）。
-    const seq = Math.min(MAX_REBUILD_SEQ, match ? Number(match[1]) : index + 1);
-    let name = match ? match[2] : file.replace(/\.txt$/i, '');
-    if (name === '未命名') name = '';
+  // X-N3（WP8）：序号解析改走 core/chapter-filename.js 的导入侧同一套形态 ——
+  // 旧实现只认 NNN-名称.txt，其余按 listTxtFiles 的 localeCompare 顺序拿 index+1 当序号，
+  // 「1.txt…12.txt」排成 1,10,11,12,2…、「第一章…第十章」按拼音排，纯数字文件的章名
+  // 还是裸数字串。现在纯数字 / 序号+分隔符 / 第X章（含中文数序）/ Chapter N 都拿到真实序号，
+  // 解析不出序号的标题（楔子 / 番外 / 1984 这类）稳定排在全部带号章之后。
+  const parsed = files.map((file) => {
+    const found = chapterFilename.parseChapterFileName(file) || { seq: null, name: '' };
+    const seq =
+      Number.isFinite(found.seq) && found.seq > 0 ? Math.min(MAX_REBUILD_SEQ, Math.floor(found.seq)) : null;
+    // 老口径：文件主干就叫「未命名」的章名归一成空串（界面显示「第N章」）。
+    const name = found.name === '未命名' ? '' : found.name;
     return { file, seq, name };
   });
-  parsed.sort((a, b) => a.seq - b.seq || a.file.localeCompare(b.file, 'zh-Hans-CN'));
+  parsed.sort((a, b) => {
+    // 无号章统一排在带号章之后（审计给的重建口径：中文数序解析不了的标题稳定靠后），
+    // 同段内按文件名 localeCompare 稳定排序，保证同一个目录每次重建结果一致。
+    if (a.seq === null && b.seq === null) return a.file.localeCompare(b.file, 'zh-Hans-CN');
+    if (a.seq === null) return 1;
+    if (b.seq === null) return -1;
+    return a.seq - b.seq || a.file.localeCompare(b.file, 'zh-Hans-CN');
+  });
+  // fileSeq 仍是「下一章序号大于所有既有号」：取最大带号序号与章节总数的较大者。
+  // 序号夹在 9999（V80）：没有上限时，作者手改的 999999999999-xxx.txt 会让 fileSeq 跟着放大，
+  // 下一章按 fileSeq+1 起名就成了超长路径（创建失败、修完还是不能写）。
+  const maxNumberedSeq = parsed.reduce((max, p) => (p.seq === null ? max : Math.max(max, p.seq)), 0);
+  const fileSeq = Math.min(MAX_REBUILD_SEQ, Math.max(maxNumberedSeq, parsed.length));
 
   const now = new Date().toISOString();
   const meta = {
@@ -107,7 +127,7 @@ async function rebuildFromFiles(bookPath, io = {}) {
     id: `b_${Date.now().toString(36)}`,
     title: path.basename(bookPath),
     titleTemplate: chaptersLib.TITLE_TEMPLATE,
-    fileSeq: parsed.reduce((max, p) => Math.max(max, p.seq), 0),
+    fileSeq,
     chapters: parsed.map((p, i) => ({
       id: `ch_${chaptersLib.pad3(i + 1)}`,
       file: p.file,
@@ -157,16 +177,25 @@ async function restoreFromBak(bookPath, io = {}) {
   } catch {
     throw new storage.StorageError('BAK_INVALID', '备份的 书目.json.bak 也无法解析，只能从目录重建');
   }
-  // 校验结构，不合法就直接抛错
-  if (!meta || !Array.isArray(meta.chapters)) {
-    throw new storage.StorageError('BAK_INVALID', '备份的 书目.json.bak 结构不完整，只能从目录重建');
+  // X-N4（WP8）：交换前跑读取侧同一套形状校验（逐章对象 + file 非空串）、20000 章上限与
+  // 缺 / 重 id 清洗 —— 旧实现只判「chapters 是数组」就写盘报成功，.bak 条目坏（[null] / 缺 file /
+  // 超 20000）时「恢复成功」的书下次照样打不开，坏书目却已经归档。读侧会判坏的书目一律不写盘、
+  // 不归档，报 BAK_INVALID 让作者走「从目录重建」；凡「恢复成功」的书必然能被 readBookMeta 打开。
+  let checked;
+  try {
+    checked = storage.validateRestorableMeta(meta);
+  } catch (err) {
+    if (err instanceof storage.StorageError) {
+      throw new storage.StorageError('BAK_INVALID', '备份的 书目.json.bak 结构不完整，只能从目录重建');
+    }
+    throw err;
   }
   // 与重建同一顺序：先写新书目（临时文件）→ 成功后才归档旧文件；.bak 一个字节都不动
   const saved = await swapMetaFile(
     bookPath,
     storage.prepareBookMeta({
-      ...schemaLib.migrateMeta(meta),
-      title: typeof meta.title === 'string' && meta.title ? meta.title : path.basename(bookPath)
+      ...checked.meta,
+      title: typeof checked.meta.title === 'string' && checked.meta.title ? checked.meta.title : path.basename(bookPath)
     }),
     io
   );
