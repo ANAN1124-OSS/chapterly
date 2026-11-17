@@ -49,6 +49,22 @@ function hostConsumers() {
 
 const IPC_HOST_FILES = ['ipc/book-data.js', 'ipc/book.js', 'ipc/export.js', 'ipc/proofread.js'];
 
+const lineCount = (text) => text.split('\n').length;
+
+// 紧贴在某段代码上方的连续 `//` 注释块（允许中间空一行），用于「注释瘦身但契约仍在」的闸门。
+function commentAbove(source, marker) {
+  const at = source.indexOf(marker);
+  assert.ok(at > 0, `找不到标记：${marker}`);
+  const lines = source.slice(0, at).split('\n');
+  const block = [];
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (block.length === 0 && lines[i].trim() === '') continue;
+    if (lines[i].trimStart().startsWith('//')) block.unshift(lines[i]);
+    else break;
+  }
+  return block.join('\n');
+}
+
 function functionBody(name) {
   const start = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(SOURCE);
   assert.ok(start, `core/glossary.js 找不到 function ${name}(`);
@@ -289,4 +305,73 @@ test('R7 A2：index.html / 装配清单的 assert-host 入口换成 ../core/，�
   const files = manifest.MODULES.map(([file]) => file);
   assert.equal(files.indexOf('../core/assert-host.js'), files.indexOf('ime-guard.js') + 1, '清单顺序被改了');
   assert.equal(files[files.indexOf('../core/assert-host.js') + 1], 'font-logic.js', '清单顺序被改了');
+});
+
+test('R8 D2：审计叙事注释瘦身——三处头注只留当前契约与红线，代码行为不随注释变', () => {
+  // ① ipc/export.js 头注：搬移行号 / 旧实现叙事归档内部文档，当前红线留在代码旁。
+  const exportSrc = read('ipc/export.js');
+  const exportHeader = exportSrc.slice(0, exportSrc.indexOf('*/') + 2);
+  assert.ok(lineCount(exportHeader) <= 15, `ipc/export.js 头注仍有 ${lineCount(exportHeader)} 行（应 ≤15：只留当前契约）`);
+  for (const keep of [
+    'V114', // wp34-structure 的「搬移来源」静态闸门
+    '只搬不改行为', // 同上：行为零变化的纪律声明
+    '保存对话框确认之后才读正文', // 审计 #7 红线
+    'atomicWriteFileStream', // 流式写盘契约
+    '逐章读', // B1 的「不常驻整本」契约
+    'chapter:rescue', // 本域唯一新增频道
+    'register(host)',
+    'REQUIRED_HOST',
+    'getter', // 可变句柄按引用现取
+    '不 require electron' // 依赖装配只在 main.js
+  ]) {
+    assert.ok(exportHeader.includes(keep), `ipc/export.js 头注丢了当前契约 / 红线：${keep}`);
+  }
+  for (const drop of ['collectExportTexts', '2505–2772', '模块内仍保留原注释', '行号按搬前代码']) {
+    assert.equal(exportHeader.includes(drop), false, `ipc/export.js 头注还留着搬移史叙事：${drop}`);
+  }
+  // 契约留在代码里：流式写盘与救稿入口的实现关键字还在（行为由既有套件全量覆盖）
+  assert.ok(exportSrc.includes('atomicWriteFileStream('), 'ipc/export.js 的流式写盘实现不许被注释瘦身带走');
+  assert.ok(exportSrc.includes("handle('chapter:rescue'"), 'chapter:rescue 的实现不许被注释瘦身带走');
+
+  // ② core/storage.js 的 assertChapterFile 防退化注释：只留现场红线，删掉审计编号与勘误叙事。
+  const storageSrc = read('core/storage.js');
+  const guardComment = commentAbove(storageSrc, 'function assertChapterFile(');
+  assert.ok(lineCount(guardComment) <= 6, `assertChapterFile 注释仍有 ${lineCount(guardComment)} 行（应 ≤6）`);
+  for (const keep of ['不拦「退化」', '写盘前一律过这里', '只读入口同样过它', '保留名']) {
+    assert.ok(guardComment.includes(keep), `assertChapterFile 注释丢了现场红线：${keep}`);
+  }
+  for (const drop of ['勘误', 'B4（审计 #21', 'N1、N2']) {
+    assert.equal(guardComment.includes(drop), false, `assertChapterFile 注释还留着审计叙事：${drop}`);
+  }
+  assert.ok(storageSrc.includes('if (chaptersLib.reservedStem(file)) {'), '保留名过滤实现不许被注释瘦身带走');
+
+  // ③ main.js 启动参数注：保留「打包版不认自动化 + 刻意保留的隔离参数」，删掉版本史编号。
+  const mainSrc = read('main.js');
+  const at = mainSrc.indexOf('打包版判定只算一次');
+  assert.ok(at > 0, 'main.js 要有「打包版判定只算一次」的当前契约说明');
+  const automationEnd = mainSrc.indexOf('\n', mainSrc.indexOf('const automation = ', at)) + 1;
+  const block = mainSrc.slice(at, automationEnd).trimEnd();
+  assert.ok(lineCount(block) <= 18, `main.js 启动参数注 + 开关代码有 ${lineCount(block)} 行（应 ≤18）`);
+  for (const keep of [
+    'app.isPackaged === true',
+    '刻意保留的启动参数',
+    '--user-data',
+    '--books-root',
+    '--remote-debugging-port',
+    '自检频道'
+  ]) {
+    assert.ok(block.includes(keep), `main.js 启动参数注丢了当前契约：${keep}`);
+  }
+  for (const drop of ['C2（审计 S2）', 'v0.9 A-1', 'v0.9 A-4']) {
+    assert.equal(block.includes(drop), false, `main.js 启动参数注还留着历史编号：${drop}`);
+  }
+  for (const code of [
+    'const packagedApp = app.isPackaged === true;',
+    "const isE2E = !packagedApp && process.argv.includes('--e2e');",
+    "const isBench = !packagedApp && process.argv.includes('--bench');",
+    "const isContrast = !packagedApp && process.argv.includes('--contrast');",
+    "const automation = isE2E || isBench || isContrast || Boolean(screenshotPath);"
+  ]) {
+    assert.ok(mainSrc.includes(code), `main.js 启动开关代码被注释瘦身改动：${code}`);
+  }
 });

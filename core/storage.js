@@ -237,13 +237,11 @@ function assertInside(bookPath, file) {
   return target;
 }
 
-// 章节文件字段（书目.json 的 chapters[].file）的防退化校验（审计 B4 / #21、N1、N2）。
-// assertInside 只拦「逃逸出书目录」，不拦「退化」：空串 / 子目录 / 绝对路径 / 非 txt /
-// Windows 保留设备名都能通过前缀检查。写盘前一律过这里 —— 宁可把这种书记成损坏
-// （书架显示「点开可以修复」，可从目录重建），也绝不按坏字段写错文件 / 建出嵌套目录。
-// 只读入口同样过它：坏字段会让书显式报 BAD_PATH，而不是静默读错或「缺章」。
-// 注意：不要把「nul.txt 假成功丢稿」当成本函数的理由（勘误 E1 实测 Node 能落成普通文件）；
-// 保留名过滤是为壳层 / 工具兼容性（E2）。
+// 章节文件字段（书目 chapters[].file）的防退化校验：assertInside 只拦「逃逸出书目录」，不拦「退化」
+// ——空串 / 子目录 / 绝对路径 / 非 txt / Windows 保留设备名都能通过前缀检查。写盘前一律过这里：
+// 宁可把这种书记成损坏（书架显示「点开可以修复」，可从目录重建），也绝不按坏字段写错文件 /
+// 建出嵌套目录；只读入口同样过它（坏字段显式 BAD_PATH，不静默读错或「缺章」）。保留名过滤是为
+// 壳层 / 工具兼容性，不是「nul.txt 丢稿」的防线（本机实测能落成普通文件）。
 function assertChapterFile(bookPath, file) {
   if (typeof file !== 'string' || !file.trim()) {
     throw new StorageError('BAD_PATH', '章节文件名为空');

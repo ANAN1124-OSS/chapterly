@@ -28,22 +28,18 @@ function argValue(name) {
   return hit ? hit.slice(prefix.length) : null;
 }
 
-// C2（审计 S2）：打包版判定只算一次（app.isPackaged 在 app ready 前也可读）。
-// 打包后的正式版不认任何自动化开关 —— 见下面 isE2E / isBench / isContrast / screenshotPath 的注释。
+// 打包版判定只算一次（app.isPackaged 在 ready 前也可读）：打包后的正式版一律不认任何自动化开关。
+// 生产包带 --e2e 会注册 config:test-pick / font:test-pick / update:test-mock 等自检频道（可把书架
+// 指到任意目录、模拟对话框选中路径），以及「不真关窗 / 不退出」的自检行为；开发 / E2E 构建
+// （app.isPackaged 为 false）完全不受影响。刻意保留的启动参数：--user-data（隔离配置目录）与
+// --books-root（把书架指到临时副本），以及 Chromium 自己的 --remote-debugging-port——安装版冒烟要用。
 const packagedApp = app.isPackaged === true;
 
 const isE2E = !packagedApp && process.argv.includes('--e2e');
-// 前端基准（v0.9 A-1）：和截图 / E2E 同一套自动化模式（临时 userData + 临时书库 + ?test=1
-// 测试钩子），只是驱动换成 scripts/bench-driver.js；正常启动路径完全不受影响。
+// 前端基准 / 对比度审计与截图、E2E 共用同一套自动化模式（临时 userData + 临时书库 + ?test=1
+// 测试钩子），只换驱动脚本；正常启动路径完全不受影响。
 const isBench = !packagedApp && process.argv.includes('--bench');
-// 对比度审计（v0.9 A-4）：同一套自动化模式（临时 userData + 临时书库 + ?test=1 测试钩子），
-// 驱动换成 scripts/contrast-driver.js；只在开发自检时走，正常启动路径完全不受影响。
 const isContrast = !packagedApp && process.argv.includes('--contrast');
-// C2（审计 S2）：打包后的正式版一律不认自动化开关（含 --screenshot）——生产包带 --e2e 启动
-// 会注册 config:test-pick / font:test-pick / update:test-mock 等自检频道（可把书架指到任意目录、
-// 模拟对话框选中路径），以及「不真关窗 / 不退出」的自检行为。开发 / E2E 构建（app.isPackaged
-// 为 false）完全不受影响。刻意保留的启动参数：--user-data（隔离配置目录）与 --books-root
-// （把书架指到临时副本），以及 Chromium 自己的 --remote-debugging-port——安装版冒烟要用。
 const booksRootOverride = argValue('books-root');
 const screenshotPath = packagedApp ? null : argValue('screenshot');
 const screenshotBook = argValue('book');

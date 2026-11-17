@@ -1,28 +1,15 @@
 /* 主进程 IPC 域模块：导出 / 复制（v1.8.0 WP-34 / D1 + V114，D-6 已定范围）。
  *
- * 搬走的段（原 main.js 的 registerIpc() 内，行号按搬前代码）：
- *   · collectExportTexts（2473–2503）：拼导出 / 复制用的正文，批读 + override，chars 口径不变；
- *   · 导出区（2505–2772）：book:export-plan / book:export / book:export-epub / book:export-docx /
- *     book:copy / chapter:copy-platform，以及 isDirectory / prepareExport / writeTxtExport /
- *     archiveExportResult 等同域助手。
+ * 只搬不改行为：三个导出入口仍是「保存对话框确认之后才读正文」（审计 #7）；TXT / EPUB / DOCX 都走
+ * atomicWriteFileStream + core/*.stream*（逐章读、流式打包，不常驻整本正文 / 整包 Buffer），字节产物
+ * 与整本构建路径逐字节一致（tests/export-stream-wp13.test.js R1/R3/R4/R10 对拍）。chapter:rescue 是
+ * 本域唯一新增（V302）：保存被阻断时的救稿出口，复用本模块的保存对话框 / 原子写 / 剪贴板句柄，
+ * 刻意不读也不写书库（书 / 章文件可能已经不在）。其余频道（导入 / 整理 / 历史 / 排版…）仍留在
+ * main.js —— D-6 只拆导出 / 校对 / 书 CRUD 三块。
  *
- * 只搬不改行为：三个导出入口仍是「保存对话框确认之后才读正文」（审计 #7）、TXT 走
- * atomicWriteFileStream 流式写盘（B5 / WP-28）。B1（审计 #17 / WP13）起 EPUB / DOCX 也改成
- * 逐章读 + 流式打包（atomicWriteFileStream + core/*.stream*），整本 texts / 整包 Buffer 不再常驻；
- * 字节产物与整本构建路径逐字节一致（tests/export-stream-wp13.test.js R1/R3/R4/R10 对拍）。
- * 其余频道（导入 / 整理 / 历史 / 排版…）本版仍留在 main.js —— D-6 只拆导出 / 校对 / 书 CRUD 三块。
- *
- * 本模块唯一的新增（不属于搬移范围）：审计修复 #6（V302）的 chapter:rescue —— 保存被阻断时的
- * 救稿出口。它同样属于「导出 / 复制」域（另存本章 txt / 复制正文），复用本模块已有的保存对话框、
- * 原子写与剪贴板句柄；因为书 / 章文件可能已经不在，它刻意不读也不写书库。
- *
- * 契约：register(host) —— host 成员逐条列在 REQUIRED_HOST 里；缺任何一个在 registerIpc() 装配时
- * 直接抛 TypeError（宁可在启动时炸，也不要到点频道才 ReferenceError）。host 成员都是 main.js 的
- * 函数 / 常量 / 活绑定，模块自己不 require electron、不缓存状态快照。
- *
- * 模块内仍保留原注释与缩进（只搬不改）：频道名 / 参数顺序 / 返回形状 / 文案 / 读盘与写盘顺序
- * 与搬运前逐字一致；依赖取值处只有两处被改成 getter —— 剪贴板句柄与配置仓库句柄都是可变绑定
- * （activeClipboard 由自检宿主替换、configStore 在 getConfig 里懒建），快照会过期。
+ * 契约：register(host) —— host 成员逐条列在 REQUIRED_HOST，缺任何一个在 registerIpc() 装配时抛
+ * TypeError（不在频道调用时才 ReferenceError）。模块自己不 require electron、不缓存状态快照；剪贴板与
+ * 配置仓库句柄按 getter 现取（两者都是可变绑定，快照会过期）。
  */
 const { assertHost } = require('../core/assert-host');
 
