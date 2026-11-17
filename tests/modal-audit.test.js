@@ -39,6 +39,9 @@ const ALLOWED = [
   // WP1（E-N1）：V302 的标题按错误码分支（META_CHANGED 用 META_CHANGED_TITLE），仍是同一处调用点。
   ['save-rescue-ui.js', 'title: metaChanged ? META_CHANGED_TITLE : RESCUE_TITLE', '保存被阻断（V302）：另存 / 复制正文 / 留在这里（选择型）'],
   ['save-rescue-ui.js', 'title: CONFLICT_TITLE', '外部改动（V301）：覆盖 / 先另存一份 / 放弃我的修改并重载（选择型）'],
+  // WP6（N2）：别的窗口换了书架根 → 本窗口的孤岛书收到一次性提示。同样只是「给出口」：
+  // 留在这里 / 复制正文 / 另存这一章为 txt… / 回书架，不直接改书、不直接清脏。
+  ['config-change-ui.js', 'title: NOTICE_TITLE', '书架目录已更换（N2）：孤岛书留在这里 / 复制 / 另存 / 回书架（选择型）'],
   ['history-ui.js', "title: '把备份移入回收站'", '清理备份（保留 ③ / D-5）：WP4 起改为移入回收站可恢复，仍是破坏性动作，必须两步确认并列出组数 / 占用']
 ];
 
@@ -78,7 +81,7 @@ function openModalSites(source) {
 }
 
 test('模态审计：openModal 的调用点数量与用途固定（多了少了都要在评审里说清）', () => {
-  const files = ['renderer.js', 'import-ui.js', 'statusbar-ui.js', 'find-ui.js', 'history-ui.js', 'save-rescue-ui.js'];
+  const files = ['renderer.js', 'import-ui.js', 'statusbar-ui.js', 'find-ui.js', 'history-ui.js', 'save-rescue-ui.js', 'config-change-ui.js'];
   const found = [];
   for (const file of files) {
     for (const site of openModalSites(read(file))) found.push({ file, ...site });

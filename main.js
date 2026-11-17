@@ -1427,6 +1427,10 @@ function registerIpc() {
     // 「目录没建但锁清了」或反过来的分叉。
     if (configGate.booksRootChanged(previousRoot, nextConfig.booksRoot)) {
       storage.clearBookLocks();
+      // WP6（N2，审计中 #7）：换书架根要广播给所有窗口 —— 别的窗口里停在旧根下的书，继续保存只会
+      // 被 assertBookPath 拦成 BAD_PATH。渲染层收到后：停在书架就刷新成新目录；开着旧根的书给一次性
+      // 提示 + 救稿出口。只带生效根（装饰层后的值）：--books-root 覆盖时判据同上，覆盖目录不算换根。
+      broadcast('config:changed', { reason: 'booksRoot', booksRoot: nextConfig.booksRoot });
     }
     // b8：设置里打开 / 关闭「后台监听剪贴板」立即生效（幂等）
     syncClipboardWatch();

@@ -94,14 +94,17 @@ test('契约：REQUIRED_HOST 逐成员校验（缺一个 / null 都当场 TypeEr
   assert.doesNotThrow(() => saveRescueUi.create(host));
 });
 
-test('纯判定：EXTERNAL_CHANGE → conflict；BOOK_MISSING / CHAPTER_MISSING / META_CHANGED → 救稿出口，其余失败照旧', () => {
+test('纯判定：EXTERNAL_CHANGE → conflict；BOOK_MISSING / CHAPTER_MISSING / META_CHANGED / BAD_PATH → 救稿出口，其余失败照旧', () => {
   assert.equal(saveRescueUi.EXTERNAL_CHANGE, 'EXTERNAL_CHANGE');
   // 项 3=A（WP1）：META_CHANGED 也纳入救稿码集合（书目被外部改过时给「另存 / 复制」出口）
-  assert.deepEqual([...saveRescueUi.RESCUE_CODES], ['BOOK_MISSING', 'CHAPTER_MISSING', 'META_CHANGED']);
+  // 项 3=A（WP6）：BAD_PATH 同样纳入——换了书架根之后旧根里的书保存全被 assertBookPath 拦成
+  // BAD_PATH，必须给同一组救稿出口，否则正文留在编辑区却没地方可存。
+  assert.deepEqual([...saveRescueUi.RESCUE_CODES], ['BOOK_MISSING', 'CHAPTER_MISSING', 'META_CHANGED', 'BAD_PATH']);
   assert.equal(saveRescueUi.rescuePlanFor('EXTERNAL_CHANGE'), 'conflict');
   assert.equal(saveRescueUi.rescuePlanFor('BOOK_MISSING'), 'rescue');
   assert.equal(saveRescueUi.rescuePlanFor('CHAPTER_MISSING'), 'rescue');
   assert.equal(saveRescueUi.rescuePlanFor('META_CHANGED'), 'rescue');
+  assert.equal(saveRescueUi.rescuePlanFor('BAD_PATH'), 'rescue');
   for (const code of ['CROSS_WINDOW_BUSY', 'META_SAVE_FAILED', 'NO_CHAPTER', 'CHAPTER_MISMATCH', 'PARSE_ERROR', '', null]) {
     assert.equal(saveRescueUi.rescuePlanFor(code), '', String(code));
   }
@@ -201,6 +204,36 @@ test('V303（E-N1）：META_CHANGED 进救稿出口——文案说明「正文�
   assert.equal(modal.cancelValue, 'stay');
   assert.equal(state.dirty, true, '书目没更新：脏标记必须保留');
   assert.deepEqual(result, { ok: false, code: 'META_CHANGED', message: err.message });
+});
+
+// ---------- V304（N2 / 项 3=A）：BAD_PATH → 救稿出口（换根后的孤岛书） ----------
+// 场景：另一个窗口换了书架根，本窗口还开着旧根的书。下一次保存会被 handleBook 的
+// assertBookPath 按新根拦下 → BAD_PATH「只能操作书架目录下的书」。修前这个码不在 RESCUE_CODES，
+// 正文留在编辑区却只有一条 toast（没有「另存 / 复制」出口）。
+test('V304（N2）：BAD_PATH 进救稿出口——文案点明「书架目录可能已被更换」、dirty 保留', async () => {
+  const { host, state, calls } = makeHost({ modalAction: 'stay' });
+  const err = { code: 'BAD_PATH', message: '只能操作书架目录下的书' };
+  const result = await create(host).handleSaveFailure(err);
+  assert.equal(calls.modal.length, 1, 'BAD_PATH 必须弹救稿出口（不再只写状态栏）');
+  const modal = calls.modal[0];
+  assert.equal(modal.title, '保存被阻止：这些字还没落盘');
+  assert.match(modal.message, /只能操作书架目录下的书/);
+  assert.match(modal.message, /书架目录可能已被更换/, '要点明最常见的原因：书架根被别的窗口换了');
+  assert.match(modal.message, /正文还在编辑区里（未保存）/);
+  assert.deepEqual(modal.buttons, [
+    { label: '留在这里', value: 'stay' },
+    { label: '复制正文', value: 'copy' },
+    { label: '另存这一章为 txt…', value: 'save', kind: 'primary' }
+  ]);
+  assert.equal(state.dirty, true, '保存被拦下：脏标记必须保留');
+  assert.deepEqual(result, { ok: false, code: 'BAD_PATH', message: err.message });
+});
+
+test('V304（N2）：BAD_PATH + 选「另存这一章为 txt…」→ chapter:rescue(save)，不在书库里重试保存', async () => {
+  const { host, calls } = makeHost({ modalAction: 'save', text: '换根前写的字' });
+  await create(host).handleSaveFailure({ code: 'BAD_PATH', message: '只能操作书架目录下的书' });
+  assert.deepEqual(calls.rescue, [['换根前写的字', 'save', '第1章：第一章']]);
+  assert.deepEqual(calls.save, [], '救稿不是保存：不许再走 saveCurrent');
 });
 
 // ---------- V301：外部改动 → 覆盖 / 另存 / 放弃并重载 ----------

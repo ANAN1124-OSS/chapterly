@@ -43,11 +43,14 @@
   // 载入之后磁盘上那一章被改过 → EXTERNAL_CHANGE。其余失败照旧走状态栏 + toast，不进这里。
   // WP1（E-N1，项 3=A）：META_CHANGED（正文已落盘、写 书目.json 前发现外部改了书目）也进救稿出口——
   // 那一章的字数 / 章序元数据没同步，至少要让作者能先把正文另存 / 复制走。
-  const RESCUE_CODES = ['BOOK_MISSING', 'CHAPTER_MISSING', 'META_CHANGED'];
+  // WP6（N2，项 3=A）：BAD_PATH 同样进救稿出口——别的窗口换了书架根之后，旧根里的书下一次保存会
+  // 被 assertBookPath 拦成 BAD_PATH，正文留在编辑区，必须给「另存 / 复制」出口。
+  const RESCUE_CODES = ['BOOK_MISSING', 'CHAPTER_MISSING', 'META_CHANGED', 'BAD_PATH'];
   const EXTERNAL_CHANGE = 'EXTERNAL_CHANGE';
   const CONFLICT_TITLE = '这一章在应用外被改过';
   const RESCUE_TITLE = '保存被阻止：这些字还没落盘';
   const META_CHANGED_TITLE = '保存被阻止：书目在应用外被改过';
+  const BAD_PATH_HINT = '书架目录可能已被更换（这本书在旧目录里），或这个章节路径被主进程拒绝。';
 
   // 纯判定（单测直接钉）：哪个错误码需要哪个出口；其余返回空串，不进救稿链路。
   function rescuePlanFor(code) {
@@ -84,16 +87,21 @@
 
     // V302：保存被 BOOK_MISSING / CHAPTER_MISSING 阻断 → 三个出口（留在这里 / 复制正文 / 另存 txt）。
     // WP1（E-N1）：META_CHANGED 走同一组出口，但说明不同（正文已落盘、书目没同步）。
+    // WP6（N2）：BAD_PATH 也走同一组出口，并点明最常见的两种原因（书架根被换 / 章节路径被拒）。
     // 走完这里编辑区与 dirty 一个字节都不动：救稿只是「另外存一份」，书库仍然是被阻断的状态。
     async function rescueBlockedSave({ message, silent, code }) {
       const metaChanged = code === 'META_CHANGED';
+      const badPath = code === 'BAD_PATH';
       const res = await openModal({
         title: metaChanged ? META_CHANGED_TITLE : RESCUE_TITLE,
         message: metaChanged
           ? `${message}\n\n正文已写入磁盘，但这一章的字数 / 章序等书目信息没有同步（书目保持外部那一版）。` +
             '先另存成 txt 或复制正文，再从书架重开这本书就不会丢。'
-          : `${message}\n\n正文还在编辑区里（未保存）。先另存成 txt 或复制正文，` +
-            '就不会因为书 / 章文件没了而丢。',
+          : badPath
+            ? `${message}\n\n${BAD_PATH_HINT}\n\n正文还在编辑区里（未保存）。先另存成 txt 或复制正文，` +
+              '再从书架重新打开这本书就不会丢。'
+            : `${message}\n\n正文还在编辑区里（未保存）。先另存成 txt 或复制正文，` +
+              '就不会因为书 / 章文件没了而丢。',
         buttons: [
           { label: '留在这里', value: 'stay' },
           { label: '复制正文', value: 'copy' },
@@ -204,7 +212,9 @@
 
     return {
       handleSaveFailure,
-      rescuePlanFor
+      rescuePlanFor,
+      // WP6（N2）：换根提示里的「复制正文 / 另存这一章为 txt…」复用同一份实现（不复制一套 IPC）。
+      rescueCopy
     };
   }
 

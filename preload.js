@@ -204,6 +204,9 @@ const api = {
   onForceClose: (cb) => on('app:force-close', cb),
   // 书架数据变了（别的窗口新建 / 删除 / 保存 / 整理）：停在书架的窗口跟着刷新
   onShelfChanged: (cb) => on('shelf:changed', cb),
+  // WP6（N2）：别的窗口换了书架根目录 → 本窗口刷新成新目录的书架；开着旧根的书给一次性提示 +
+  // 救稿出口（payload 只带 { reason: 'booksRoot', booksRoot }，不带旧根 / 不读盘）
+  onConfigChanged: (cb) => on('config:changed', cb),
   onImportProgress: (cb) => on('import:progress', cb),
   onFormatProgress: (cb) => on('format:progress', cb),
   // 全局快捷键 / 界面按钮触发捕获：主进程已读好剪贴板纯文本，渲染层只负责弹确认面板

@@ -393,7 +393,13 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //      测试钩子入口 setTestFindNextDelay（2 行注释 + 1 行代码）。
   //   纯判定（身份快照 / 边界 / 定位 / 文案）全在 renderer/replace-one-guard.js，Node 单测 9 条；
   //   留在这里的只是 editorEl / state / call / scrollCaretIntoView 的上下文接线，搬走只会反向注入整条链路。
-  const RENDERER_LINE_BUDGET = 6455;
+  // WP6（N2，审计中 #7）：6455 → 6473（+18，当前 6473 行）：换书架根的跨窗口接线无法搬走——
+  //   ① 模块顶部 `const configChangeUiModule = window.CWConfigChangeUi;`（2 行说明 + 1 行声明）；
+  //   ② bindEvents 里 create 一次（host 用惰性箭头取 backToShelf，避免 4170 的 const 在装配前 TDZ）
+  //      与 `api.onConfigChanged` 订阅一次（15 行，含 2 行「一次性去重 / 复用既有入口」说明）。
+  //   纯判定（路径包含 / 是否孤岛 / 一次性去重 / 提示文案与按钮）全在 renderer/config-change-ui.js，
+  //   Node 单测 9 条；留在这里的只是 state / api / openModal / saveRescueUi / backToShelf 的上下文接线。
+  const RENDERER_LINE_BUDGET = 6473;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

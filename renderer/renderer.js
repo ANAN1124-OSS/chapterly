@@ -110,6 +110,9 @@
   // 保存失败的两个救稿出口（审计修复 #5 V301 / #6 V302）：外部改动三选 / 书章文件没了给另存 + 复制。
   // 对话框与动作编排都在 save-rescue-ui.js 里；这里只装配（正文取编辑区现值、写盘仍走 saveCurrent）。
   const saveRescueUiModule = window.CWSaveRescueUi;
+  // 换书架根的跨窗口提示（WP6 / 审计 N2）：路径判定 / 一次性去重 / 提示编排在 config-change-ui.js；
+  // 这里只接线（孤岛书的救稿复用 saveRescueUi，回书架复用 backToShelf）。
+  const configChangeUiModule = window.CWConfigChangeUi;
   // 撤销层（1.4.0 P0-2：撤销优先）：单槽 + 10s TTL + Ctrl+Z 焦点保护纯逻辑在 undo-action.js，
   // 全局撤销条 DOM / 定时器在 undo-ui.js；这里只接线（删除章节等动作直接执行后登记撤销）。
   const undoActionModule = window.CWUndoAction;
@@ -5786,6 +5789,21 @@
     if (state.view === 'shelf' && !state.importing && !state.formatBookRunning) {
       refreshShelf().catch(() => {});
     }
+  });
+  // WP6（N2）：别的窗口换了书架根 → 本窗口刷新成新目录的书架；开着旧根的书则一次性提示 +
+  // 救稿出口（同一个根只提示一次，去重在模块闭包里；救稿 / 回书架都复用既有入口）。
+  const configChangeUi = configChangeUiModule.create({
+    state, openModal, toast,
+    rescueCopy: (mode) => saveRescueUi.rescueCopy(mode),
+    goBackToShelf: () => backToShelf(),
+    refreshShelf: () => refreshShelf(),
+    refreshConfig: async () => {
+      state.globalConfig = await call(api.getConfig);
+      state.config = effectiveConfig();
+    }
+  });
+  api.onConfigChanged((payload) => {
+    void configChangeUi.handleConfigChanged(payload).catch(() => {});
   });
 
     // 主进程内部错误（崩溃 / 未处理的 Promise）：只弹一句固定提示，细节留在日志里。

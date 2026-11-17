@@ -177,6 +177,19 @@ test('renderContinueWriting：书被删 / 被改名 / 坏书 → 藏卡片（不
   assert.equal(corrupt.host.$('shelf-continue').classList.contains('hidden'), true);
 });
 
+test('N2 护栏：换了书架根后旧根最近书不在新书架列表 → 继续写作入口隐藏、点了报「没有可继续的书」', async () => {
+  installDocument();
+  const { host, opened } = makeHost({
+    recentBook: { path: 'C:/旧书架/书甲', chapterIndex: 0, chapterName: '甲章', at: 'T1' },
+    books: [{ ...BOOK, path: 'D:/新书架/书乙', title: '书乙' }]
+  });
+  const ui = shelfUi.create(host);
+  ui.renderContinueWriting();
+  assert.equal(host.$('shelf-continue').classList.contains('hidden'), true, '旧根的书不在新书架里：入口隐藏');
+  assert.deepEqual(await ui.openContinueBook(), { ok: false, message: '没有可继续的书' });
+  assert.deepEqual(opened, [], '不许拿旧根路径去开书（换根后它已不在书架里）');
+});
+
 test('renderContinueWriting：path 比对大小写不敏感，标题 / title 属性 / 元信息逐字一致', () => {
   installDocument();
   const { host, state } = makeHost({
