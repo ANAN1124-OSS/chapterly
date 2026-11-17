@@ -36,7 +36,8 @@ const ALLOWED = [
   ['statusbar-ui.js', "title: '检测到外部修改'", '外部修改：重新加载 / 保留当前（选择型）'],
   // 审计修复 #5（V301）/ #6（V302）：两个「保存被拦下」的选择型弹窗（不是确认），
   // 全都只给出口、不做破坏性动作；标题常量在 save-rescue-ui.js 顶部。
-  ['save-rescue-ui.js', 'title: RESCUE_TITLE', '保存被阻断（V302）：另存 / 复制正文 / 留在这里（选择型）'],
+  // WP1（E-N1）：V302 的标题按错误码分支（META_CHANGED 用 META_CHANGED_TITLE），仍是同一处调用点。
+  ['save-rescue-ui.js', 'title: metaChanged ? META_CHANGED_TITLE : RESCUE_TITLE', '保存被阻断（V302）：另存 / 复制正文 / 留在这里（选择型）'],
   ['save-rescue-ui.js', 'title: CONFLICT_TITLE', '外部改动（V301）：覆盖 / 先另存一份 / 放弃我的修改并重载（选择型）'],
   ['history-ui.js', "title: '永久删除备份'", '永久删除备份（保留 ③ / D-5）：删的是副本、应用内没有撤销通道，必须两步确认并列出组数 / 占用']
 ];

@@ -164,7 +164,9 @@ function registerBookIpc(host) {
   }, { mutation: MUTATION.SAVE });
 
   handleBook('chapter:load', async (bookPath, file) =>
-    storage.loadChapterText(bookPath, file), READ_ONLY
+    // WP1（E-N2）：{ track: true } 让主进程记下「编辑器载入这一版」的内容指纹（只存内存）——
+    // 保存前用它发现 rsync -t / robocopy /COPY:DAT 这类保留时间戳的外部改写。
+    storage.loadChapterText(bookPath, file, { track: true }), READ_ONLY
   );
   handleBook('chapter:stat', async (bookPath, file) =>
     storage.statChapter(bookPath, file), READ_ONLY

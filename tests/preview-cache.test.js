@@ -310,8 +310,10 @@ test('静态闸门：预览两条记录快照、执行两条消费快照，缓�
   assert.doesNotMatch(cacheSource, /\b(writeFile|readFile|mkdir|copyFile|appendFile)\b/);
 
   // loadChapterText 必须先 stat 再读：反过来会在「读与 stat 之间被改」时记下更新的 mtime，
-  // 执行阶段就会把旧正文当新正文用（快照校验的前提）
-  const loadStart = storageSource.indexOf('async function loadChapterText(bookPath, file) {');
+  // 执行阶段就会把旧正文当新正文用（快照校验的前提）。
+  // WP1（E-N2）：签名新增可选 { track }（记录「编辑器载入那一版」的内容指纹）；
+  // stat-before-read 的口径不变，读盘仍走 await fs.readFile(p, 'utf8')。
+  const loadStart = storageSource.indexOf('async function loadChapterText(bookPath, file, { track = false } = {}) {');
   assert.notEqual(loadStart, -1);
   const loadEnd = storageSource.indexOf('\nasync function statChapter(', loadStart);
   assert.notEqual(loadEnd, -1);

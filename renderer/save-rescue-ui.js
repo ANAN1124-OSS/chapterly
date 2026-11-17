@@ -41,10 +41,13 @@
 
   // 两个错误码的口径（审计原文）：书 / 章文件在应用外没了 → BOOK_MISSING / CHAPTER_MISSING；
   // 载入之后磁盘上那一章被改过 → EXTERNAL_CHANGE。其余失败照旧走状态栏 + toast，不进这里。
-  const RESCUE_CODES = ['BOOK_MISSING', 'CHAPTER_MISSING'];
+  // WP1（E-N1，项 3=A）：META_CHANGED（正文已落盘、写 书目.json 前发现外部改了书目）也进救稿出口——
+  // 那一章的字数 / 章序元数据没同步，至少要让作者能先把正文另存 / 复制走。
+  const RESCUE_CODES = ['BOOK_MISSING', 'CHAPTER_MISSING', 'META_CHANGED'];
   const EXTERNAL_CHANGE = 'EXTERNAL_CHANGE';
   const CONFLICT_TITLE = '这一章在应用外被改过';
   const RESCUE_TITLE = '保存被阻止：这些字还没落盘';
+  const META_CHANGED_TITLE = '保存被阻止：书目在应用外被改过';
 
   // 纯判定（单测直接钉）：哪个错误码需要哪个出口；其余返回空串，不进救稿链路。
   function rescuePlanFor(code) {
@@ -80,13 +83,17 @@
     }
 
     // V302：保存被 BOOK_MISSING / CHAPTER_MISSING 阻断 → 三个出口（留在这里 / 复制正文 / 另存 txt）。
+    // WP1（E-N1）：META_CHANGED 走同一组出口，但说明不同（正文已落盘、书目没同步）。
     // 走完这里编辑区与 dirty 一个字节都不动：救稿只是「另外存一份」，书库仍然是被阻断的状态。
-    async function rescueBlockedSave({ message, silent }) {
+    async function rescueBlockedSave({ message, silent, code }) {
+      const metaChanged = code === 'META_CHANGED';
       const res = await openModal({
-        title: RESCUE_TITLE,
-        message:
-          `${message}\n\n正文还在编辑区里（未保存）。先另存成 txt 或复制正文，` +
-          '就不会因为书 / 章文件没了而丢。',
+        title: metaChanged ? META_CHANGED_TITLE : RESCUE_TITLE,
+        message: metaChanged
+          ? `${message}\n\n正文已写入磁盘，但这一章的字数 / 章序等书目信息没有同步（书目保持外部那一版）。` +
+            '先另存成 txt 或复制正文，再从书架重开这本书就不会丢。'
+          : `${message}\n\n正文还在编辑区里（未保存）。先另存成 txt 或复制正文，` +
+            '就不会因为书 / 章文件没了而丢。',
         buttons: [
           { label: '留在这里', value: 'stay' },
           { label: '复制正文', value: 'copy' },
@@ -188,7 +195,8 @@
         return { ok: false, code, message };
       }
       if (plan === 'rescue') {
-        await rescueBlockedSave({ message, silent });
+        // code 一起透传：META_CHANGED 的说明是「正文已落盘、书目没同步」，与书 / 章文件没了不同。
+        await rescueBlockedSave({ message, silent, code });
         return { ok: false, code, message };
       }
       return null;

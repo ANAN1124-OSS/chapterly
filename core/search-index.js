@@ -32,6 +32,9 @@ const { nowIso, mapLimit, normalizeForMatch } = require('./common');
 const { normalizePath } = require('./path-utils');
 const storage = require('./storage');
 const chaptersLib = require('./chapters');
+// E4：每章内容指纹（字节数 + 首尾各 4 KB 哈希）只在 core/chapter-fingerprint.js 里实现一份。
+// 审计修复 WP1（E-N2）：storage 的保存守卫也用同一份口径，两边不再各抄一套。
+const { chapterContentHashOf } = require('./chapter-fingerprint');
 
 const INDEX_FILE_NAME = 'search-index.json';
 // E5（审计修复 #8）：索引形状升级为 2 = 每章多 contentHash、每书多 bloomCrc。
@@ -56,11 +59,9 @@ const BITS_PER_ITEM = 8;
 const HASH_COUNT = 3;
 const MIN_BLOOM_BITS = 1024;
 const MAX_BLOOM_BITS = 64 * 1024 * 1024; // 单本 8MB 位图上限（异常输入兜底）
-// E4（审计修复 #8）：章文件指纹的首 / 尾采样大小。只读 4 KB × 2，够发现同大小改写又不拖慢校验。
-// 边界（审计残留修复 #R20 / #8-E4-E5）：首尾采样是设计取舍 —— 只改文件中段、又保留 size+mtime 的
-// 改写算出的指纹与旧值一致，不会被发现（要等大小 / mtime 变化或重建索引）；全量哈希会把每次校验的
-// 读盘量放大到整本，不取。这里只如实注明这种采样口径的已知盲区。
-const FINGERPRINT_SAMPLE_BYTES = 4096;
+// E4（审计修复 #8）：章文件指纹的首 / 尾采样（4 KB × 2）与已知盲区（只改中段 + 保留 size/mtime
+// 的改写发现不了）连同实现一起收进 core/chapter-fingerprint.js —— 那是唯一实现，storage 的保存守卫
+// 也用它比对「编辑器载入那一版」，口径永远一致。
 
 const MIN_QUERY_CHARS = 2; // 正文搜索至少两个字（单字几乎没有筛选意义）
 const DEFAULT_RESULT_LIMIT = 40;
@@ -185,57 +186,8 @@ function crc32(buffer) {
   return (crc ^ -1) >>> 0;
 }
 
-// 首尾内容指纹用 FNV-1a 32 位（与 core/clipboard-watch.js 同一套思路）：不是加密哈希，
-// 只回答「这一段字节还是不是原来那一段」。检出「同大小、同时间戳的改写」即可，不做安全判定。
-function sampleHashOf(buffer, seed) {
-  let hash = seed >>> 0;
-  for (let i = 0; i < buffer.length; i += 1) {
-    hash ^= buffer[i];
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash >>> 0;
-}
-
-// 从文件指定位置读一小段（本地文件偶发短读时循环补齐；读不满就按实际字节算哈希）。
-async function readSampleAt(handle, length, position) {
-  if (length <= 0) return Buffer.alloc(0);
-  const buffer = Buffer.alloc(length);
-  let done = 0;
-  while (done < length) {
-    const result = await handle.read(buffer, done, length - done, position + done);
-    if (!result || !result.bytesRead) break;
-    done += result.bytesRead;
-  }
-  return done === length ? buffer : buffer.subarray(0, done);
-}
-
-// E4：一章文件的内容指纹 = 字节数 + 首 4 KB 哈希 + 尾 4 KB 哈希。
-// 审计残留修复 #R20（#8/E4-E5）：采样口径的盲区是「只改中段、保留 size+mtime」的改写（见
-// FINGERPRINT_SAMPLE_BYTES 上方的取舍说明）；读不到（被占用 / 权限）时返回空串：下一次校验会把它
-// 当「变化」重算，宁可重建也不漏报。
-async function chapterContentHashOf(filePath, size) {
-  let handle = null;
-  try {
-    handle = await fs.open(filePath, 'r');
-    const total = Math.max(0, Math.floor(Number(size) || 0));
-    const head = await readSampleAt(handle, Math.min(FINGERPRINT_SAMPLE_BYTES, total), 0);
-    const tailLength = Math.min(FINGERPRINT_SAMPLE_BYTES, total - head.length);
-    const tail = tailLength > 0 ? await readSampleAt(handle, tailLength, total - tailLength) : Buffer.alloc(0);
-    const headHash = sampleHashOf(head, 0x811c9dc5).toString(16).padStart(8, '0');
-    const tailHash = sampleHashOf(tail, 0x7f4a7c15).toString(16).padStart(8, '0');
-    return `${total}:${headHash}:${tailHash}`;
-  } catch {
-    return '';
-  } finally {
-    if (handle) {
-      try {
-        await handle.close();
-      } catch {
-        /* 关不掉也不影响指纹 */
-      }
-    }
-  }
-}
+// E4：章文件内容指纹 = 字节数 + 首 4 KB 哈希 + 尾 4 KB 哈希。
+// 实现与 storage 保存守卫共用 core/chapter-fingerprint.js（唯一一份，采样口径与盲区见该文件头）。
 
 function bloomParams(itemCount) {
   const n = Math.max(0, Math.floor(Number(itemCount) || 0));

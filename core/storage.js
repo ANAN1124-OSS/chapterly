@@ -17,6 +17,8 @@ const openBooksLib = require('./open-books');
 const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
 const previewCacheLib = require('./preview-cache');
+// E-N2（审计中 #2）：章节内容指纹（字节数 + 首尾 4 KB 哈希）与搜索索引共用同一份实现。
+const { chapterContentHashOf } = require('./chapter-fingerprint');
 
 const BOOK_FILE = '书目.json';
 const BOOK_BAK = '书目.json.bak';
@@ -53,10 +55,48 @@ function stampOfMeta(meta) {
   return stamp && typeof stamp === 'object' ? stamp : null;
 }
 
+function stampMatchesStat(stamp, stat) {
+  return Boolean(stamp && stat && stat.size === stamp.size && stat.mtimeMs === stamp.mtimeMs);
+}
+
 function metaStampMatches(meta, stat) {
-  const stamp = stampOfMeta(meta);
-  if (!stamp || !stat) return false;
-  return stat.size === stamp.size && stat.mtimeMs === stamp.mtimeMs;
+  return stampMatchesStat(stampOfMeta(meta), stat);
+}
+
+// E-N2（审计中 #2）：保存守卫的「编辑器载入那一版」内容指纹（只存在主进程内存，绝不写盘）。
+//
+// 为什么需要它：只比 mtime 会漏掉 rsync -t / robocopy /COPY:DAT / 部分同步盘那种「保留时间戳的
+// 外部改写」。chapter:load 带 { track: true } 时记下磁盘那一版的首尾哈希（与搜索索引同一口径），
+// saveChapterText 成功后刷新同一条基线；prepareChapterSave 在 mtime 对得上时再比内容指纹。
+//
+// 键 = 书路径 + 章节文件（pathKey 归一，Windows 不分大小写）。上限 512 条，超了丢最旧的一条：
+// 这只是「最近一次编辑器载入 / 保存」的基线，不是审计日志。
+const trackedChapterFingerprints = new Map();
+const TRACKED_FINGERPRINT_MAX = 512;
+
+function trackedFingerprintKey(bookPath, file) {
+  return pathUtils.pathKey(path.join(bookPath, file));
+}
+
+function rememberChapterFingerprint(bookPath, file, fingerprint, mtimeMs) {
+  if (!fingerprint) return;
+  const key = trackedFingerprintKey(bookPath, file);
+  // 先删再塞：更新过的条目排到 Map 末尾，超限时先丢掉最久没动的。
+  trackedChapterFingerprints.delete(key);
+  trackedChapterFingerprints.set(key, {
+    hash: fingerprint,
+    mtimeMs: Number(mtimeMs),
+    size: Number(String(fingerprint).split(':')[0])
+  });
+  while (trackedChapterFingerprints.size > TRACKED_FINGERPRINT_MAX) {
+    const oldest = trackedChapterFingerprints.keys().next().value;
+    if (oldest === undefined) break;
+    trackedChapterFingerprints.delete(oldest);
+  }
+}
+
+function trackedChapterFingerprint(bookPath, file) {
+  return trackedChapterFingerprints.get(trackedFingerprintKey(bookPath, file)) || null;
 }
 
 class StorageError extends Error {
@@ -453,7 +493,24 @@ function prepareBookMeta(meta, { touchUpdatedAt = true } = {}) {
   };
 }
 
-async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true, structural = false, touchUpdatedAt = true } = {}) {
+// 审计修复 WP1（E-N1，项 3=A）：新增两个可选参数，默认值 = 旧行为（老调用方一个字节都不变）：
+//   · rotateBak：true 时即使 structural=false 也轮换 .bak —— chapter:save 的普通保存用。
+//     写放大约多「读一次主文件 + 写一次小文件」；本地书目通常几 KB～几 MB，换「每次 Ctrl+S 都有
+//     上一版可退」，数据保命优先（B2 的「默认不轮换」语义不变，只是保存链路显式开启）。
+//   · expectedStamp：调用方读 meta 时拍下的文件身份（size + mtimeMs）。写前核对，不一致
+//     （含被外部删掉 / 换成超大文件）→ META_CHANGED，一个字节都不写、也不轮换 .bak。外部同步盘 /
+//     另一实例并发改书目不会再被这份内存快照整份静默覆盖。
+async function writeBookMeta(
+  bookPath,
+  meta,
+  {
+    ensureDir: ensureDirectory = true,
+    structural = false,
+    rotateBak = false,
+    touchUpdatedAt = true,
+    expectedStamp = null
+  } = {}
+) {
   if (ensureDirectory) await ensureDir(bookPath);
   const metaPath = path.join(bookPath, BOOK_FILE);
   const bakPath = path.join(bookPath, BOOK_BAK);
@@ -469,12 +526,14 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
       `${BOOK_FILE}内容有 ${formatByteSize(writtenBytes)}，超过单文件写入上限 ${formatByteSize(MAX_META_READ_BYTES)}，没有写盘`
     );
   }
-  // B2（审计 P2）：.bak 只在「结构性变更」时轮换（增删章 / 改名 / 分卷 / 导入 / 改书名…），
-  // 普通保存（章节正文、字数缓存、上次打开章节）跳过第二次 fsync。
-  // 备份语义刻意保守：调用方要显式传 { structural: true } 才轮换；不传 = 只写主文件。
+  // B2（审计 P2）：.bak 默认只在「结构性变更」时轮换（增删章 / 改名 / 分卷 / 导入 / 改书名…）；
+  // WP1 起保存链路可以显式传 rotateBak（普通保存也留上一版），不传 = 只写主文件（老调用方不变）。
   // 「修复 / 从 .bak 恢复」流程会先把主文件改名归档，这里读不到主文件（ENOENT）就自然跳过，
   // 不会用坏文件覆盖掉唯一可用的 .bak。
-  if (structural) {
+  const rotate = structural || rotateBak;
+  let currentStat = null;
+  let previousBytes = null;
+  if (rotate) {
     try {
       // 审计修复 #45（E19）：轮换前先过尺寸闸门（C17 的读闸门漏了这一处）—— 旧实现直接 fs.readFile，
       // 主文件被外部换成超大文件时，一次结构性保存会把它整份读进内存再写 .bak。
@@ -485,6 +544,7 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
       const handle = await fs.open(metaPath, 'r');
       try {
         const oldStat = await handle.stat();
+        currentStat = oldStat;
         const tooLarge = readSizeProblem(oldStat.size, {
           code: 'META_TOO_LARGE',
           label: BOOK_FILE,
@@ -497,11 +557,42 @@ async function writeBookMeta(bookPath, meta, { ensureDir: ensureDirectory = true
           await handle.close();
         } catch { /* 关不掉不影响已经读到的内容 */ }
       }
-      if (old) await atomicWriteFile(bakPath, old, 'utf8', { ensureDir: ensureDirectory });
+      previousBytes = old;
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+  } else if (expectedStamp) {
+    // 不轮换、但要核对身份：同样走 open → handle.stat（与轮换分支一条同句柄口径，
+    // 不许退回按路径 stat —— 闸门与读盘脱节的 TOCTOU 窗口在 #45/S8 已经修过）。
+    try {
+      const handle = await fs.open(metaPath, 'r');
+      try {
+        currentStat = await handle.stat();
+      } finally {
+        try {
+          await handle.close();
+        } catch { /* 只 stat，关不掉不影响结论 */ }
+      }
     } catch (err) {
       if (err.code !== 'ENOENT') throw err;
     }
   }
+  // WP1（E-N1）：写前核对书目身份。拒绝必须早于「轮换 .bak」与「写主文件」—— 一个字节都不写。
+  if (expectedStamp) {
+    if (!currentStat) {
+      throw new StorageError(
+        'META_CHANGED',
+        `${BOOK_FILE} 在载入之后已经不在书文件夹里了（可能是同步盘 / 另一个窗口移走了它）。为避免重新生成影子书目，这次没有写盘；再按一次保存会读入最新书目后重试。`
+      );
+    }
+    if (!stampMatchesStat(expectedStamp, currentStat)) {
+      throw new StorageError(
+        'META_CHANGED',
+        `${BOOK_FILE} 在载入之后被应用外的程序改过（大小或修改时间变了，可能是同步盘 / 记事本 / 另一个窗口）。为避免覆盖外部那一版书目，这次没有写盘；再按一次保存会读入最新书目后重试。`
+      );
+    }
+  }
+  if (previousBytes) await atomicWriteFile(bakPath, previousBytes, 'utf8', { ensureDir: ensureDirectory });
   await atomicWriteFile(metaPath, serialized, 'utf8', { ensureDir: ensureDirectory });
   return next;
 }
@@ -845,7 +936,9 @@ async function verifyBook(bookPath) {
   return { chapterCount: meta.chapters.length, totalChars: stats.totalChars, missing };
 }
 
-async function loadChapterText(bookPath, file) {
+// E-N2（审计中 #2）：track=true 时记下「编辑器载入这一版」的内容指纹（chapter:load 用）。
+// 只多读首尾 4 KB × 2；正文仍是同一次 readFile。stat 仍在 readFile 之前（预览快照的 mtime 口径不变）。
+async function loadChapterText(bookPath, file, { track = false } = {}) {
   const p = assertChapterFile(bookPath, file);
   // C2（审计 #2 / P2）：先 stat 再读 —— 返回的 mtimeMs 必须是「正文被读出来之前」的那一版。
   // 预览快照拿它做执行阶段的复用校验；反过来（读完再 stat）若正文恰好在两次 IO 之间被改，
@@ -873,6 +966,10 @@ async function loadChapterText(bookPath, file) {
     if (err.code === 'ENOENT') throw new StorageError('CHAPTER_MISSING', `章节文件不存在：${file}`);
     throw err;
   }
+  if (track) {
+    // 读不到（被占用 / 权限）时 chapterContentHashOf 返回空串 → 不记基线，保存守卫回落 mtime 口径。
+    rememberChapterFingerprint(bookPath, file, await chapterContentHashOf(p, stat.size), stat.mtimeMs);
+  }
   return {
     text: chaptersLib.normalizeNewlines(stripBom(raw)),
     mtimeMs: stat.mtimeMs,
@@ -898,6 +995,9 @@ async function saveChapterText(bookPath, file, text, { ensureDir: ensureDirector
   const p = assertChapterFile(bookPath, file);
   await atomicWriteFile(p, chaptersLib.toDiskNewlines(text), 'utf8', { ensureDir: ensureDirectory });
   const stat = await fs.stat(p);
+  // E-N2（审计中 #2）：保存成功后刷新「编辑器手上那一版」的内容指纹 —— 紧接着的下一次保存
+  // 不会拿载入时的旧基线误报 EXTERNAL_CHANGE。读不到（空串）就不更新，守卫回落 mtime 口径。
+  rememberChapterFingerprint(bookPath, file, await chapterContentHashOf(p, stat.size), stat.mtimeMs);
   return { mtimeMs: stat.mtimeMs, chars: chaptersLib.countChars(text) };
 }
 
@@ -934,6 +1034,8 @@ function assertBookNotBusy(bookPath, windowId, action = 'write') {
 // 任一失效都抛错阻止写盘（saveChapterText 会带 ensureDir:false，atomic 不会重建目录）。
 // 审计修复 #5（V301）：expectedMtimeMs 是渲染层载入 / 上次保存拿到的 mtime；文件被应用外改过时
 // 抛 EXTERNAL_CHANGE（「磁盘上这一版不是载入时那一版」），由渲染层弹覆盖 / 另存 / 重载三选。
+// 审计修复 WP1（E-N1/E-N2）：返回值额外带 metaStamp（读到的 书目.json 文件身份，交给 writeBookMeta
+// 写前核对）；mtime 对得上时再用「编辑器载入那一版」的内容指纹发现保留时间戳的外部改写。
 async function prepareChapterSave(bookPath, chapterId, { windowId = null, file = null, expectedMtimeMs = null } = {}) {
   assertBookNotBusy(bookPath, windowId, 'save');
   let bookStat = null;
@@ -956,14 +1058,28 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
     meta && Array.isArray(meta.chapters)
       ? meta.chapters.find((item) => item && item.id === chapterId)
       : null;
+  const expected = Number(expectedMtimeMs);
   let chapterExists = false;
   let chapterMtimeMs = null;
+  let chapterFingerprint = '';
+  let expectedFingerprint = '';
   if (chapter) {
     try {
-      const stat = await fs.stat(assertChapterFile(bookPath, chapter.file));
+      const chapterPath = assertChapterFile(bookPath, chapter.file);
+      const stat = await fs.stat(chapterPath);
       chapterExists = stat.isFile();
       // 审计修复 #5（V301）：交给 verifySaveTarget 与 expectedMtimeMs 比对（只在文件确实在时才有意义）
       chapterMtimeMs = stat.mtimeMs;
+      // E-N2（中 #2）：mtime 对得上才有「保留时间戳的改写」这条漏网路径。只有基线是同一 mtime 的
+      // 「编辑器载入 / 上次保存」那一版时才比内容（避免拿另一段生命周期的同名文件误报）；
+      // 指纹读不到（空串）就跳过，不据此误拦。覆盖保存 expectedMtimeMs=0 完全不进这条分支。
+      if (chapterExists && Number.isFinite(expected) && expected > 0 && expected === stat.mtimeMs) {
+        const tracked = trackedChapterFingerprint(bookPath, chapter.file);
+        if (tracked && tracked.mtimeMs === stat.mtimeMs) {
+          expectedFingerprint = tracked.hash;
+          chapterFingerprint = await chapterContentHashOf(chapterPath, stat.size);
+        }
+      }
     } catch {
       chapterExists = false;
     }
@@ -977,10 +1093,12 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
     file: file || (chapter ? chapter.file : null),
     chapterExists,
     chapterMtimeMs,
-    expectedMtimeMs
+    expectedMtimeMs,
+    chapterFingerprint,
+    expectedFingerprint
   });
   if (!checked.ok) throw new StorageError(checked.code, checked.message);
-  return { meta, chapter: checked.chapter, index: checked.index };
+  return { meta, chapter: checked.chapter, index: checked.index, metaStamp: stampOfMeta(meta) };
 }
 
 // 新建章节并一次性写入正文（剪贴板捕获用）：先把正文写进新章节文件，再写书目；

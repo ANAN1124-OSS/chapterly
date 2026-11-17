@@ -72,7 +72,13 @@ test('存储层：正文写成功后书目写失败，磁盘上的正文仍是�
 test('静态闸门：chapter:save 的 writeBookMeta 失败回 META_SAVE_FAILED 部分成功（E4）', () => {
   const body = channelBody(MAIN_SOURCE, 'chapter:save');
   // 书目写盘在 try/catch 里，catch 抛出带白名单字段的错误
-  assert.match(body, /try \{[\s\S]{0,400}?await storage\.writeBookMeta\(bookPath, meta, \{ ensureDir: false \}\);[\s\S]{0,400}?\} catch \(metaErr\) \{/);
+  // WP1 契约扩展：chapter:save 的写书目调用新增 rotateBak（普通保存也留上一版）与
+  // expectedStamp（书目身份核对）；ensureDir:false 与 A7 的 try/catch 顺序保持不变。
+  assert.match(
+    body,
+    /try \{[\s\S]{0,400}?await storage\.writeBookMeta\(bookPath, meta, \{ ensureDir: false, rotateBak: true, expectedStamp: prepared\.metaStamp \}\);[\s\S]{0,400}?\} catch \(metaErr\) \{/
+  );
+  assert.match(body, /if \(metaErr\.code === 'META_CHANGED'\) \{/, 'META_CHANGED 要在同一个 catch 里单独回包（正文已落盘）');
   assert.ok(body.includes("code: 'META_SAVE_FAILED'"), 'chapter:save 书目失败要回 META_SAVE_FAILED');
   assert.ok(body.includes('bodySaved: true'), '要把「正文已落盘」明确标出来');
   assert.ok(body.includes('chars: result.chars'), '要把这次正文的字数带回去（界面字数缓存跟着更新）');

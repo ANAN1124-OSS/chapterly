@@ -94,12 +94,14 @@ test('契约：REQUIRED_HOST 逐成员校验（缺一个 / null 都当场 TypeEr
   assert.doesNotThrow(() => saveRescueUi.create(host));
 });
 
-test('纯判定：只有 EXTERNAL_CHANGE / BOOK_MISSING / CHAPTER_MISSING 进救稿链路，其余失败照旧', () => {
+test('纯判定：EXTERNAL_CHANGE → conflict；BOOK_MISSING / CHAPTER_MISSING / META_CHANGED → 救稿出口，其余失败照旧', () => {
   assert.equal(saveRescueUi.EXTERNAL_CHANGE, 'EXTERNAL_CHANGE');
-  assert.deepEqual([...saveRescueUi.RESCUE_CODES], ['BOOK_MISSING', 'CHAPTER_MISSING']);
+  // 项 3=A（WP1）：META_CHANGED 也纳入救稿码集合（书目被外部改过时给「另存 / 复制」出口）
+  assert.deepEqual([...saveRescueUi.RESCUE_CODES], ['BOOK_MISSING', 'CHAPTER_MISSING', 'META_CHANGED']);
   assert.equal(saveRescueUi.rescuePlanFor('EXTERNAL_CHANGE'), 'conflict');
   assert.equal(saveRescueUi.rescuePlanFor('BOOK_MISSING'), 'rescue');
   assert.equal(saveRescueUi.rescuePlanFor('CHAPTER_MISSING'), 'rescue');
+  assert.equal(saveRescueUi.rescuePlanFor('META_CHANGED'), 'rescue');
   for (const code of ['CROSS_WINDOW_BUSY', 'META_SAVE_FAILED', 'NO_CHAPTER', 'CHAPTER_MISMATCH', 'PARSE_ERROR', '', null]) {
     assert.equal(saveRescueUi.rescuePlanFor(code), '', String(code));
   }
@@ -173,6 +175,32 @@ test('V302：当前章已不在书目里（载章失败态）也能给出建议�
   const { host, calls } = makeHost({ index: -1, modalAction: 'save' });
   await create(host).handleSaveFailure({ code: 'CHAPTER_MISSING', message: '文件没了' });
   assert.deepEqual(calls.rescue, [['还没落盘的正文', 'save', '未保存的这一章']]);
+});
+
+// ---------- V303（E-N1 / 项 3=A）：META_CHANGED → 救稿出口 ----------
+// 场景：chapter:save 里正文已经落盘，写 书目.json 前发现外部改了书目 → 主进程回 META_CHANGED。
+// 正文不会丢，但这一章的字数 / 章序元数据没同步；这里给「另存 / 复制 / 留在这里」出口，
+// dirty 必须保持（书目仍是旧的，关窗照旧提示）。
+test('V303（E-N1）：META_CHANGED 进救稿出口——文案说明「正文已落盘、书目没更新」、dirty 保留', async () => {
+  const { host, state, calls } = makeHost({ modalAction: 'stay' });
+  const err = {
+    code: 'META_CHANGED',
+    message: '书目.json 在载入之后被应用外的程序改过，这次没有写盘；再按一次保存会读入最新书目后重试。'
+  };
+  const result = await create(host).handleSaveFailure(err);
+  assert.equal(calls.modal.length, 1, 'META_CHANGED 必须弹救稿出口（不再只写状态栏）');
+  const modal = calls.modal[0];
+  assert.equal(modal.title, '保存被阻止：书目在应用外被改过');
+  assert.match(modal.message, /书目\.json 在载入之后被应用外的程序改过/);
+  assert.match(modal.message, /正文已写入磁盘/, '要说明正文已经落盘（不当成「白写了」）');
+  assert.deepEqual(modal.buttons, [
+    { label: '留在这里', value: 'stay' },
+    { label: '复制正文', value: 'copy' },
+    { label: '另存这一章为 txt…', value: 'save', kind: 'primary' }
+  ]);
+  assert.equal(modal.cancelValue, 'stay');
+  assert.equal(state.dirty, true, '书目没更新：脏标记必须保留');
+  assert.deepEqual(result, { ok: false, code: 'META_CHANGED', message: err.message });
 });
 
 // ---------- V301：外部改动 → 覆盖 / 另存 / 放弃并重载 ----------

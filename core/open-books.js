@@ -214,6 +214,10 @@ function checkMutation({ registry, windowId, bookPath, action = 'write' }) {
 // 审计修复 #5（V301）：expectedMtimeMs（渲染层载入 / 上次保存拿到的 mtime）给了就必须与磁盘一致，
 // 不一致 = 载入之后被应用外的程序（同步盘 / 记事本）改过 → EXTERNAL_CHANGE，绝不静默覆盖。
 // 0 / null / 非数字一律视为「不校验」（覆盖保存与老调用方）。
+// 审计修复 WP1（E-N2，中 #2）：mtime 对得上也还不够 —— rsync -t / robocopy /COPY:DAT / 部分同步盘
+// 会保留时间戳改写正文。chapterFingerprint（磁盘现在那一版的内容指纹）与 expectedFingerprint
+// （编辑器载入那一版）都给且不等 → 同样 EXTERNAL_CHANGE。缺任一指纹就回落「只比 mtime」的旧口径，
+// 不新增误拦（指纹口径见 core/chapter-fingerprint.js）。
 function verifySaveTarget({
   bookPath,
   bookExists,
@@ -223,7 +227,9 @@ function verifySaveTarget({
   file,
   chapterExists,
   chapterMtimeMs,
-  expectedMtimeMs
+  expectedMtimeMs,
+  chapterFingerprint,
+  expectedFingerprint
 }) {
   if (!bookExists) {
     return {
@@ -277,6 +283,24 @@ function verifySaveTarget({
       code: CODE.EXTERNAL_CHANGE,
       message: `「${bookLabel(bookPath)}」的这一章在载入之后被应用外的程序改过（可能是同步盘或记事本）。为避免覆盖外部那一版正文，已阻止这次保存。`
     };
+  }
+  // 审计修复 WP1（E-N2）：mtime 一样不代表内容一样（时间戳被保留的改写）。两个指纹都有效才比，
+  // 「读不到 / 没有基线」一律跳过 —— 宁可回落旧口径，不新增误拦。
+  if (
+    Number.isFinite(expected) &&
+    expected > 0 &&
+    Number.isFinite(actual) &&
+    actual === expected
+  ) {
+    const wanted = typeof expectedFingerprint === 'string' ? expectedFingerprint : '';
+    const seen = typeof chapterFingerprint === 'string' ? chapterFingerprint : '';
+    if (wanted && seen && wanted !== seen) {
+      return {
+        ok: false,
+        code: CODE.EXTERNAL_CHANGE,
+        message: `「${bookLabel(bookPath)}」的这一章在载入之后被应用外的程序改过（文件时间戳没变，但内容已经不是载入时那一版；可能是同步盘 / 保留了时间戳的外部改写）。为避免覆盖外部那一版正文，已阻止这次保存。`
+      };
+    }
   }
   return { ok: true, chapter, index };
 }

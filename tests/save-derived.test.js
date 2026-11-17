@@ -81,10 +81,12 @@ test('静态闸门：保存链 4 项派生失败各记一条 warn 日志（固�
     assert.ok(calls.some((line) => line.includes(`code: '${code}'`)), `缺少 ${code} 的留痕`);
     assert.ok(calls.some((line) => line.includes(`level: 'warn'`)), `${code} 应是 warn 级别`);
   }
-  // 4 处派生失败都只是「记日志 + 带回原因」，不许把保存改判成失败：整个保存体里唯一的 throw
-  // 是 A7 的 META_SAVE_FAILED 部分成功（语义不能动）。
+  // 4 处派生失败都只是「记日志 + 带回原因」，不许把保存改判成失败：整个保存体里的 throw 只有
+  // 两处，都是「正文已落盘」的收尾 —— WP1（E-N1）的 META_CHANGED 与 A7 的 META_SAVE_FAILED
+  // （后者带 bodySaved 部分成功语义，不变）。
   const throws = body.match(/throw\s/g) || [];
-  assert.equal(throws.length, 1, '派生失败不许重抛；保存体里只该保留 META_SAVE_FAILED 那一处 throw');
+  assert.equal(throws.length, 2, '派生失败不许重抛；保存体里只该保留「正文已落盘」的两处 throw');
+  assert.match(body, /code: 'META_CHANGED'/);
   assert.match(body, /code: 'META_SAVE_FAILED', bodySaved: true/);
 });
 

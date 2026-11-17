@@ -1843,8 +1843,22 @@ function registerIpc() {
         logError('save-derived', err, { level: 'warn', code: 'INDEX_DIRTY_FAILED' });
       }
       try {
-        await storage.writeBookMeta(bookPath, meta, { ensureDir: false });
+        // WP1（E-N1/E-N2，中 #1/#2）：普通保存也轮换 .bak（上一版书目可退），并把 prepareChapterSave
+        // 读到的 书目.json 身份交回去 —— 写前发现外部改了书目（同步盘 / 另一实例）就拒绝覆盖。
+        await storage.writeBookMeta(bookPath, meta, { ensureDir: false, rotateBak: true, expectedStamp: prepared.metaStamp });
       } catch (metaErr) {
+        // WP1（E-N1）：书目在「读 meta → 写正文 → 写 meta」之间被应用外改过。正文已经落盘，
+        // 但书目这次不许覆盖外部那一版；再按一次保存会读到最新书目（新 stamp）后重试。
+        // META_CHANGED 进救稿出口（项 3=A）：界面给「另存 / 复制 / 留在这里」，dirty 保持。
+        if (metaErr.code === 'META_CHANGED') {
+          throw Object.assign(
+            new Error(
+              '正文已写入磁盘，但书目在保存途中被应用外的程序改过，这次没有覆盖书目（外部那一版原样保留）；' +
+                '再按一次保存会读入最新书目后重试'
+            ),
+            { code: 'META_CHANGED' }
+          );
+        }
         // A7（审计 E4）：正文已经写进磁盘、书目没更新成功。不能把这次保存整体当失败——
         // 渲染层会以为正文没保存（关窗时可能让作者重写 / 丢弃刚写的内容）。回可判别的部分成功：
         // code=META_SAVE_FAILED + bodySaved:true + chars/file（见 fail() 的白名单透传），
