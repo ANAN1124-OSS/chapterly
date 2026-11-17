@@ -113,6 +113,11 @@
   // 换书架根的跨窗口提示（WP6 / 审计 N2）：路径判定 / 一次性去重 / 提示编排在 config-change-ui.js；
   // 这里只接线（孤岛书的救稿复用 saveRescueUi，回书架复用 backToShelf）。
   const configChangeUiModule = window.CWConfigChangeUi;
+  // 崩溃恢复（WP5 / 审计 N1）：周期上报未保存正文（默认关）+ 启动 / 重载后的恢复提示都在
+  // crash-recovery-ui.js；这里只接线（正文取编辑区、开书 / 载章复用既有入口）。
+  const crashRecoveryUiModule = window.CWCrashRecoveryUi;
+  // 装配在 bindEvents 里；saveCurrent 成功后要用它删掉「这一章已保存」的旧草稿。
+  let crashRecoveryUi = null;
   // 撤销层（1.4.0 P0-2：撤销优先）：单槽 + 10s TTL + Ctrl+Z 焦点保护纯逻辑在 undo-action.js，
   // 全局撤销条 DOM / 定时器在 undo-ui.js；这里只接线（删除章节等动作直接执行后登记撤销）。
   const undoActionModule = window.CWUndoAction;
@@ -3202,6 +3207,8 @@
       }
       state.baseText = text;
       state.loadedMtimeMs = data.mtimeMs;
+      // WP5（N1）：这一章已经落盘——旧崩溃草稿（只服务「未保存」状态）顺手删掉。
+      if (crashRecoveryUi) void crashRecoveryUi.noteSaved(bookPath, chapterId).catch(() => {});
       state.savedAt = new Date();
       state.saveError = null;
       // 保存期间作者又敲了字：磁盘里只有快照，编辑区多出来的内容必须保持未保存（C1 的核心）
@@ -5805,6 +5812,16 @@
   api.onConfigChanged((payload) => {
     void configChangeUi.handleConfigChanged(payload).catch(() => {});
   });
+  // WP5（N1）：崩溃恢复。默认关（开关只在设置里打开）；打开后周期上报未保存正文 +
+  // 启动 / 重载后检查上次崩溃草稿。恢复时正文只进编辑区（仍 dirty），Ctrl+S 才写盘。
+  crashRecoveryUi = crashRecoveryUiModule.create({
+    state, api, editorEl, toast, openModal, chapterTitle, openBookByPath, loadChapterAt,
+    applyRecoveredText: (text) => {
+      editorEl.value = text;
+      onEditorInput();
+    }
+  });
+  crashRecoveryUi.start();
 
     // 主进程内部错误（崩溃 / 未处理的 Promise）：只弹一句固定提示，细节留在日志里。
     // 应用不退出，作者可以先 Ctrl+S 保存再重启。
@@ -6063,6 +6080,8 @@
       calendarSummaryText,
       call,
       captureUi,
+      // WP5（N1）：崩溃草稿周期上报 / 恢复状态（E2E 用 crashDraftTick / setCrashDraftEnabled）
+      crashRecoveryUi,
       canUndoFormat,
       caretColorLib,
       caretColorValue,

@@ -188,6 +188,12 @@ const api = {
   // 诊断日志（提案 7.4）：只读目录清单 + 让主进程打开日志文件夹；渲染层仍然没有 fs 权限
   logInfo: () => invoke('logs:info'),
   openLogFolder: () => invoke('logs:open-folder'),
+  // v1.8.2 WP5（N1）：可选崩溃草稿（默认关）。只写 userData；恢复 / 丢弃都走主进程，
+  // 渲染层拿不到 fs，也不会把草稿写进书库。read 拿全文，list 只拿元数据。
+  saveCrashDraft: (payload) => invoke('crash:draft', payload),
+  crashRecovery: () => invoke('crash:recovery'),
+  readCrashDraft: (draftId) => invoke('crash:read-draft', draftId),
+  discardCrashDraft: (target) => invoke('crash:discard-draft', target),
   // 正文全文搜索（提案 7.3）：索引在 userData，渲染层只拿状态和搜索结果（拿不到正文文件）
   // searchIndexStatus 只被自检取用（renderer/test-hooks.js 的测试钩子），产品界面用
   // ensureSearchIndex / searchContent；留着是为了自检能单独问「索引现在什么状态」。

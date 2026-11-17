@@ -29,6 +29,7 @@
       $, alignTypewriter, answerModalValue, api, applyCaretColor, applyEditorStyle, applyFormatToEditor,
       applySidebarWidth, applyStatsFilter, backToShelf, buildStatsCsv, call, canUndoFormat, caretColorLib,
       captureUi,
+      crashRecoveryUi,
       caretColorValue, chapterNote, chapterStatus, chapterTitle, chapterVolumeId, checkUpdate,
       clearChapterSelection,
       commandPalette, openCommandPalette,
@@ -216,6 +217,15 @@
         host.testFindNext = delay
           ? (fn, ...args) => new Promise((resolve) => setTimeout(resolve, delay)).then(() => call(fn, ...args))
           : null;
+      },
+      // WP5（N1）：崩溃恢复（默认关）。tick = 立刻做一次草稿周期上报（不必等 30 秒）；
+      // setCrashDraftEnabled 走与设置保存同一条 config:set，开 / 关后 state.config 立即生效。
+      crashDraftTick: () => crashRecoveryUi.snapshotNow(),
+      crashRecoveryStatus: () => crashRecoveryUi.snapshotState(),
+      setCrashDraftEnabled: async (enabled) => {
+        state.globalConfig = await call(api.setConfig, { crashDraftEnabled: enabled === true });
+        state.config = effectiveConfig();
+        return state.config.crashDraftEnabled === true;
       },
       chapterTitles: () => state.chapters.map((c, i) => chapterTitle(i, c.name)),
       // 章节列表 DOM 里真正显示的两格拼起来（序号格 + 章名格），E2E 用它对照 core.formatTitle

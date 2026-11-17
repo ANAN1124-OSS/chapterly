@@ -1,7 +1,8 @@
 // v1.8.0 WP-32（A8）：渲染层 host 契约校验的共享实现（renderer/assert-host.js）回归锚点。
 //
-// 背景：31 个渲染层模块的 createX(host)（v1.8.0 WP-34 起多一个 renderer/shortcuts-ui.js；
-// 审计修复 #6（V302）再加一个 renderer/save-rescue-ui.js；WP6（N2）再加一个 renderer/config-change-ui.js）
+// 背景：32 个渲染层模块的 createX(host)（v1.8.0 WP-34 起多一个 renderer/shortcuts-ui.js；
+// 审计修复 #6（V302）再加一个 renderer/save-rescue-ui.js；WP6（N2）再加一个 renderer/config-change-ui.js；
+// WP5（N1）再加一个 renderer/crash-recovery-ui.js）
 // 以前各写一遍「host 是对象 + REQUIRED_HOST 逐成员存在」；
 // 这一轮抽成一份 assertHost(name, host, required)。纪律是**报错文案与行为逐字不变**：
 //   · 非对象 → `createX 需要 host 对象`；
@@ -74,9 +75,9 @@ test('assertHost：缺成员（undefined / null）都抛「的 host 缺少 key�
   );
 });
 
-test('静态闸门：32 个 host 消费者都只调共享 assertHost（清单与文案留在模块里）', () => {
+test('静态闸门：33 个 host 消费者都只调共享 assertHost（清单与文案留在模块里）', () => {
   const files = consumers();
-  assert.equal(files.length, 32, 'host 消费者数量变了（新增 / 删除模块请同步本闸门）');
+  assert.equal(files.length, 33, 'host 消费者数量变了（新增 / 删除模块请同步本闸门）');
   for (const file of files) {
     const raw = read(`renderer/${file}`);
     const src = stripComments(raw);

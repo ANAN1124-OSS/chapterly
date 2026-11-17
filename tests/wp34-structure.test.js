@@ -8,7 +8,7 @@
 //   ② registerIpc() 只做装配（被搬走的频道不许在 main.js 里回潮），且行数降到可导航规模；
 //   ③ 依赖注入的 host 契约：缺成员在装配时 TypeError；两个可变句柄（configStore / 剪贴板）走 getter；
 //   ④ 频道总数不丢：main.js + ipc/*.js 的注册点 = 105（WP-34 后 104 + V302 的 chapter:rescue），
-//      preload 的 invoke 全在其中；
+//      外加 WP5 崩溃草稿 4 个频道（110）；preload 的 invoke 全在其中；
 //   ⑤ 渲染层：快捷键一览整段搬进 renderer/shortcuts-ui.js；state 动态字段全部收敛声明（reportedDirty）。
 // 真实运行时的回归由 E2E 全量（重构类：PASS 名字与基线逐行一致）兜底。
 const test = require('node:test');
@@ -235,11 +235,12 @@ test('WP-34：模块自己不 require electron；依赖由 main.js 的 buildIpcH
   assert.equal(IPC_SOURCE.includes('activeClipboard.writeText('), false, 'ipc 模块里不许直呼 activeClipboard');
 });
 
-test('WP-34：频道总数不丢（main + ipc = 106），preload 的 invoke 全在注册点里', () => {
+test('WP-34：频道总数不丢（main + ipc = 110），preload 的 invoke 全在注册点里', () => {
   const registered = registrationsOf(MAIN + '\n' + IPC_SOURCE);
-  // 106 = 搬前 104 + 审计修复 #6（V302）新增的 chapter:rescue（导出域尾部）+ WP4 清理计划频道
-  assert.equal(registered.length, 106, '主进程 IPC 注册点数量与「搬前 104 + V302 的 chapter:rescue + WP4 计划频道」不一致');
-  assert.equal(new Set(registered.map((item) => item.channel)).size, 106, '有频道被重复注册');
+  // 110 = 搬前 104 + 审计修复 #6（V302）新增的 chapter:rescue（导出域尾部）+ WP4 清理计划频道
+  //       + WP5 崩溃草稿的 crash:draft / crash:recovery / crash:read-draft / crash:discard-draft
+  assert.equal(registered.length, 110, '主进程 IPC 注册点数量与「搬前 104 + V302 的 chapter:rescue + WP4 计划频道 + WP5 崩溃草稿 4 频道」不一致');
+  assert.equal(new Set(registered.map((item) => item.channel)).size, 110, '有频道被重复注册');
   const all = new Set(registered.map((item) => item.channel));
   for (const channel of ALL_DOMAIN_CHANNELS) assert.ok(all.has(channel), `频道总数里找不到 ${channel}`);
   const preload = read('preload.js');

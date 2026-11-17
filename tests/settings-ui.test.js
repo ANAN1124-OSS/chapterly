@@ -118,6 +118,7 @@ const BASE_IDS = [
   'settings-long-para-threshold', 'settings-long-para-hint',
   'settings-snapshot-enabled', 'settings-snapshot-days', 'settings-daily-goal', 'settings-write-duration',
   'settings-clipboard-watch', 'settings-clipboard-field',
+  'settings-crash-draft-field', 'settings-crash-draft-enabled',
   'settings-chapter-template', 'settings-template-preview', 'settings-export-conversion',
   'settings-sensitive-path', 'settings-sensitive-status', 'settings-proofread-path', 'settings-proofread-status',
   'settings-logs-status', 'settings-update-version', 'settings-update-status', 'settings-scope-hint',

@@ -122,6 +122,9 @@
     'settings-snapshot-enabled': 'data',
     'settings-snapshot-days-field': 'data',
     'settings-snapshot-days': 'data',
+    // 数据安全 · 可选崩溃恢复草稿（v1.8.2 WP5，默认关）
+    'settings-crash-draft-field': 'data',
+    'settings-crash-draft-enabled': 'data',
     'settings-export-group': 'data',
     'settings-export-field': 'data',
     'settings-export-conversion': 'data',

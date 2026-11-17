@@ -1153,10 +1153,20 @@
         </select>
         <span class="muted small">只清理应用生成的「快照-YYYYMMDD」目录，不动其他备份</span>
       </label>
+      <div class="field" id="settings-crash-draft-field">
+        <label class="check-row">
+          <input id="settings-crash-draft-enabled" type="checkbox" />
+          <span>可选崩溃恢复草稿（默认关）：开启后写作页每 30 秒把<strong>未保存的正文</strong>写进
+            <code>%APPDATA%\chapter-writer\crash-drafts\</code>；界面崩溃或重载后可恢复</span>
+        </label>
+        <span class="muted small">只写应用配置目录，<strong>不写书库、不写章节 txt</strong>；恢复出来的正文仍是未保存状态，
+          按 Ctrl+S 才写盘。这不是自动保存，干净退出会清掉这些草稿。</span>
+      </div>
       <p class="muted small">
         本应用只在你点「保存」时写正文：没有自动保存。每日快照默认关闭；开启后每次保存成功时，
         当天第一次保存会把这一章的上一版复制到书内 <code>_trash\快照-YYYYMMDD\</code>，并按上面的天数清理旧快照
-        （只清理应用自己生成的快照目录，不动其他备份）。切章、关窗、导出时会提醒你保存，
+        （只清理应用自己生成的快照目录，不动其他备份）。崩溃恢复草稿同样默认关闭：开启后只把未保存正文
+        写进应用配置目录、仅用于崩溃恢复，不会替你保存。切章、关窗、导出时会提醒你保存，
         也请自己定期把书库复制到网盘或移动硬盘。
       </p>
       <div class="field-group" id="settings-export-group">导出</div>
@@ -1309,6 +1319,7 @@
   <script src="save-status-ui.js"></script>
   <script src="save-rescue-ui.js"></script>
   <script src="config-change-ui.js"></script>
+<script src="crash-recovery-ui.js"></script>
 <script src="shelf-filter-ui.js"></script>
 <script src="shelf-search-ui.js"></script>
 <script src="shelf-nav-ui.js"></script>

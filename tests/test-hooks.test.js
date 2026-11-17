@@ -115,10 +115,10 @@ test('测试钩子模块：Node 里能 require、导出 create，create() 不碰
   assert.strictEqual(typeof hooks.handleCloseRequest, 'function');
 });
 
-test('测试钩子模块：拆分前后钩子名称与数量不变（513 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1 / 2026-11-14 WP-01 保存延迟注入 +1 / WP-02 长操作延迟注入 +1、编辑区锁查询 +1 / WP-03 开书、载章延迟注入 +2 / WP3 替换回执延迟注入 +1）', () => {
+test('测试钩子模块：拆分前后钩子名称与数量不变（516 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1 / 2026-11-14 WP-01 保存延迟注入 +1 / WP-02 长操作延迟注入 +1、编辑区锁查询 +1 / WP-03 开书、载章延迟注入 +2 / WP3 替换回执延迟注入 +1 / WP5 崩溃恢复 +3）', () => {
   const hooks = hooksModule.create(stubHost());
   const names = Object.keys(hooks).sort();
-  assert.strictEqual(names.length, 513, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
+  assert.strictEqual(names.length, 516, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
   // 每个功能域各抽一个，防止「数量对但换了一批」
   for (const name of [
     'ready', 'state', 'newBook', 'openBookPath', 'openBookInNewWindow', 'releaseBook', 'windowInfo',
@@ -127,6 +127,7 @@ test('测试钩子模块：拆分前后钩子名称与数量不变（513 个；2
     'save', 'saveVisible', 'toasts', 'clearToasts', 'setTestVerifyBook', 'setTestSaveDelay', 'chapterTitles',
     'setTestBookOpDelay', 'editorLocked', 'setTestOpenBookDelay', 'setTestLoadChapterDelay',
     'setTestFindNextDelay',
+    'crashDraftTick', 'crashRecoveryStatus', 'setCrashDraftEnabled',
     'openFindPanel', 'closeFindPanel', 'openProofreadPanel', 'proofreadRun', 'openSensitivePanel',
     'sensitiveRun', 'ttsFakeState', 'ttsFakeFinish',
     'formatCurrentChapter', 'runFormatBook', 'exportFormat', 'fontDecodeMode', 'setInput', 'setSelect',
@@ -399,7 +400,16 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //      与 `api.onConfigChanged` 订阅一次（15 行，含 2 行「一次性去重 / 复用既有入口」说明）。
   //   纯判定（路径包含 / 是否孤岛 / 一次性去重 / 提示文案与按钮）全在 renderer/config-change-ui.js，
   //   Node 单测 9 条；留在这里的只是 state / api / openModal / saveRescueUi / backToShelf 的上下文接线。
-  const RENDERER_LINE_BUDGET = 6473;
+  // WP5（N1，审计中 #6）：6473 → 6492（+19，当前 6492 行）：崩溃恢复接线无法搬走——
+  //   ① 模块顶部 `const crashRecoveryUiModule = window.CWCrashRecoveryUi;`（2 行说明 + 1 行声明）
+  //      与模块级 `let crashRecoveryUi = null;`（1 行说明 + 1 行声明）；
+  //   ② bindEvents 里 create 一次（host 的 applyRecoveredText 必须调本文件闭包里的 onEditorInput，
+  //      恢复后的 dirty / 状态栏 / 章节条目标记才与作者打字同一口径）+ start() 一行（10 行 + 3 行说明）；
+  //   ③ saveCurrent 成功后 noteSaved（2 行，含说明）——保存成功才删这一章的旧草稿；
+  //   ④ testHooksScope 里 `crashRecoveryUi,`（1 行说明 + 1 行键）。
+  //   周期上报 / 恢复提示 / 失败路径全在 renderer/crash-recovery-ui.js（Node 单测 U1–U7），
+  //   这里只留 state / editorEl / openModal / 开书载章入口的上下文接线。
+  const RENDERER_LINE_BUDGET = 6492;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

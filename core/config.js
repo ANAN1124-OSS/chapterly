@@ -84,6 +84,11 @@ const DEFAULTS = Object.freeze({
   // 当天第一次保存会把这一章的上一版复制到书内 _trash/快照-YYYYMMDD/。
   snapshotEnabled: false,
   snapshotKeepDays: snapshotLib.DEFAULT_KEEP_DAYS,
+  // v1.8.2 WP5（N1 / 中 #6，作者拍板项 1=B）：可选「崩溃恢复草稿」，默认关。
+  // 开启后写作页每 30 秒把未保存正文写进 %APPDATA%\chapter-writer\crash-drafts（只写 userData，
+  // 不写书库 / 书目 / 章节 txt），下次启动或渲染进程崩溃重载时提示恢复。**这不是自动保存**：
+  // 恢复出来的正文仍只是编辑区内容，按 Ctrl+S 才写盘；干净退出会清掉草稿与运行标记。
+  crashDraftEnabled: false,
   // 每日写作目标（字数）：0 = 不设目标；只统计保存动作写下的正字数。
   // 统计本身存在 userData/stats.json，不写进书库。
   dailyGoal: statsLib.DEFAULT_GOAL,
@@ -429,6 +434,8 @@ function sanitize(raw) {
   cfg.writeDurationEnabled = cfg.writeDurationEnabled === true;
   // 剪贴板监听（批 D b8）：只认真正的 true（缺字段 / 写错类型都按「关」），默认关。
   cfg.clipboardWatchEnabled = cfg.clipboardWatchEnabled === true;
+  // 崩溃恢复草稿（v1.8.2 WP5 / N1）：只认真正的 true（缺字段 / 写错类型都按「关」），默认关。
+  cfg.crashDraftEnabled = cfg.crashDraftEnabled === true;
   // 章节模板：换行统一成 \n、去掉 NUL、夹到长度上限；非字符串 / 旧配置缺键都当空模板。
   cfg.chapterTemplate = templateLib.sanitizeTemplate(cfg.chapterTemplate);
   // 敏感词表路径：只做基本清洗（非字符串 / 超长 → 未设置）；文件不存在时由预检面板提示，

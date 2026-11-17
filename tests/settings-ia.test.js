@@ -39,7 +39,7 @@ test('分组映射：完整覆盖 index.html 里的每一个设置项，且没�
   const fieldIds = settingsIdsInHtml().filter(isFieldId).sort();
   const mapped = Object.keys(ia.FIELD_SECTION).sort();
   assert.deepEqual(mapped, fieldIds, '分组映射表必须与 index.html 的设置项一一对应');
-  assert.equal(fieldIds.length, 63, '1.4.0 基线 + 章号 3 项 + 1.6.0 统计累计汇总 2 项：设置项 63 个');
+  assert.equal(fieldIds.length, 65, '1.4.0 基线 + 章号 3 项 + 1.6.0 统计累计汇总 2 项 + WP5 崩溃草稿 2 项：设置项 65 个');
 });
 
 test('分组映射：每个分区都非空，且只落在 5 个合法分区里', () => {
@@ -59,6 +59,8 @@ test('分组映射：每个分区都非空，且只落在 5 个合法分区里',
   assert.equal(ia.sectionForField('settings-sensitive-path'), 'content');
   assert.equal(ia.sectionForField('settings-root'), 'data');
   assert.equal(ia.sectionForField('settings-snapshot-enabled'), 'data');
+  assert.equal(ia.sectionForField('settings-crash-draft-enabled'), 'data');
+  assert.equal(ia.sectionForField('settings-crash-draft-field'), 'data');
   assert.equal(ia.sectionForField('settings-export-conversion'), 'data');
   assert.equal(ia.sectionForField('settings-logs-status'), 'about');
   assert.equal(ia.sectionForField('settings-update-version'), 'about');

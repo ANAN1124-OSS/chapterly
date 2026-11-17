@@ -74,6 +74,9 @@ const glossaryLib = require('./core/glossary');
 const s2tLib = require('./core/s2t');
 const ttsLib = require('./core/tts');
 const logsLib = require('./core/logs');
+// v1.8.2 WP5（N1 / 中 #6）：崩溃草稿仓库（只写 userData）+ 崩溃 / 假死的纯决策（可单测）。
+const crashDraftLib = require('./core/crash-draft');
+const crashRecovery = require('./core/crash-recovery');
 const searchIndexLib = require('./core/search-index');
 const updateLib = require('./core/update');
 const updateResponseLib = require('./core/update-response');
@@ -614,6 +617,76 @@ function logError(kind, err, extra = {}) {
 // 审计修复 #32（▲V305）：core/storage 的「书目重复章节 id 已按位置重新分配」要留一条诊断日志，
 // 但 core 模块不持有日志 store —— 启动时把现成的 logError 注入一次（写不进去只吞掉，绝不影响读书目）。
 storage.setDiagnostics({ logError });
+
+// ---------- 渲染崩溃恢复（v1.8.2 WP5 / 审计 N1，中 #6；作者拍板项 1=B） ----------
+// 三件事：① render-process-gone 自动 reload（重载环用 60 秒保护窗 + 对话框出口）；
+// ② unresponsive 给「继续等待 / 强制重载」出口；③ 可选崩溃草稿（默认关、设置可开）。
+// 草稿只写 userData\crash-drafts（core/crash-draft.js），绝不写书库；开关没开时一个字节都不写：
+// syncCrashDraftSession 只在 crashDraftEnabled === true 时 beginSession，save 频道也先看开关。
+let crashDraftStore = null;
+let crashSessionStarted = false;
+let crashPreviousAbnormal = false;
+let appQuitting = false;
+
+function getCrashDraftStore() {
+  if (!crashDraftStore) {
+    try {
+      crashDraftStore = crashDraftLib.createCrashDraftStore(app.getPath('userData'));
+    } catch {
+      crashDraftStore = null; // 连 userData 都拿不到：静默降级，不影响写作
+    }
+  }
+  return crashDraftStore;
+}
+
+// 按配置开 / 关崩溃草稿会话（幂等）：开 → 写运行标记并读上次是否异常退出；关 → 清标记 + 草稿。
+// 开关默认关，所以默认启动路径这里什么都不写。
+async function syncCrashDraftSession() {
+  const store = getCrashDraftStore();
+  if (!store) return null;
+  let cfg;
+  try {
+    cfg = await getConfig();
+  } catch {
+    return null;
+  }
+  const enabled = cfg && cfg.crashDraftEnabled === true;
+  if (enabled && !crashSessionStarted) {
+    const started = await store.beginSession();
+    crashSessionStarted = Boolean(started && started.ok);
+    crashPreviousAbnormal = Boolean(started && started.abnormal);
+  } else if (!enabled && crashSessionStarted) {
+    await store.endSession();
+    crashSessionStarted = false;
+    crashPreviousAbnormal = false;
+  }
+  return { enabled, started: crashSessionStarted, abnormal: crashPreviousAbnormal };
+}
+
+// 干净退出：删运行标记 + 全部草稿（尽力而为，不抛、不影响退出）。
+async function endCrashDraftSession() {
+  const store = getCrashDraftStore();
+  if (!store) return { ok: true, cleared: 0 };
+  crashSessionStarted = false;
+  crashPreviousAbnormal = false;
+  try {
+    return await store.endSession();
+  } catch {
+    return { ok: false, cleared: 0 };
+  }
+}
+
+// 崩溃对话框里的「打开日志文件夹」：与设置里同一个入口，E2E 不乱弹资源管理器。
+async function openLogFolderForRecovery() {
+  const store = getLogStore();
+  if (!store) return;
+  try {
+    await fs.mkdir(store.dir, { recursive: true });
+    if (!isE2E) await shell.openPath(store.dir);
+  } catch {
+    /* 打不开日志文件夹不影响恢复出口 */
+  }
+}
 
 // 配置里「指向磁盘」的项被来源不明地改动时记一条 info 日志：
 // 只记字段名 —— 绝不记路径值，也不把任何路径回给渲染层（日志里没有本机目录）。
@@ -1435,6 +1508,8 @@ function registerIpc() {
     // b8：设置里打开 / 关闭「后台监听剪贴板」立即生效（幂等）
     syncClipboardWatch();
     if (gated.rejected.length) logRejectedConfigPaths(gated.rejected);
+    // v1.8.2 WP5（N1）：崩溃草稿开关同样立即生效（默认关；关掉时清标记 + 草稿）。
+    await syncCrashDraftSession();
     return config;
   });
 
@@ -2072,6 +2147,45 @@ function registerIpc() {
     return { dir: store.dir, opened: true };
   });
 
+  // 崩溃恢复（v1.8.2 WP5 / N1，拍板项 1=B）：草稿只写 userData，渲染层没有 fs 权限。
+  // 开关没开时 crash:draft 直接回 { saved:false }，目录 / 标记 / 草稿一个字节都不写。
+  handle('crash:draft', async (payload) => {
+    const cfg = await getConfig();
+    if (!cfg || cfg.crashDraftEnabled !== true) return { saved: false, code: 'DISABLED' };
+    const store = getCrashDraftStore();
+    if (!store) return { saved: false, code: 'DRAFT_UNAVAILABLE' };
+    // 正文上限 / 形状都在 core/crash-draft 里统一清洗（与正文 500 万字同口径），不抛给 IPC 层。
+    const result = await store.writeDraft(payload);
+    if (!result.ok) return { saved: false, code: result.code, message: result.message };
+    return { saved: true, draftId: result.draftId, chars: result.chars };
+  });
+  handle('crash:recovery', async () => {
+    const cfg = await getConfig();
+    const enabled = Boolean(cfg && cfg.crashDraftEnabled === true);
+    if (!enabled) return { enabled: false, previousExitAbnormal: false, drafts: [] };
+    const store = getCrashDraftStore();
+    if (!store) return { enabled: true, previousExitAbnormal: crashPreviousAbnormal, drafts: [] };
+    return { enabled: true, previousExitAbnormal: crashPreviousAbnormal, drafts: await store.listDrafts() };
+  });
+  handle('crash:read-draft', async (draftId) => {
+    const cfg = await getConfig();
+    if (!cfg || cfg.crashDraftEnabled !== true) return { draft: null, code: 'DISABLED' };
+    const store = getCrashDraftStore();
+    if (!store) return { draft: null, code: 'DRAFT_UNAVAILABLE' };
+    const result = await store.readDraft(draftId);
+    if (!result.ok) return { draft: null, code: result.code, message: result.message };
+    return { draft: result.draft };
+  });
+  handle('crash:discard-draft', async (target) => {
+    const store = getCrashDraftStore();
+    if (!store || !target || typeof target !== 'object') return { removed: 0 };
+    if (typeof target.draftId === 'string' && target.draftId) return store.removeDraft(target.draftId);
+    if (typeof target.bookPath === 'string' && typeof target.chapterId === 'string') {
+      return store.removeFor({ bookPath: target.bookPath, chapterId: target.chapterId });
+    }
+    return { removed: 0 };
+  });
+
   // 正文全文搜索（提案 7.3）：书架搜索升级成能搜正文。
   // 索引存 userData/search-index.json，只含「双字哈希位图 + 每章 mtime/size」，不含正文；
   // 书 / 章一动（保存、改名、删除、外部改 txt）由下一次校验自动增量更新，作者不需要手动操作。
@@ -2361,15 +2475,86 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
   browserWin.on('blur', () => applyWindowChrome(session));
   setupCloseFlow(session);
 
-  // 渲染进程崩溃 / 窗口无响应也记一条（主进程的 uncaughtException 抓不到渲染层崩溃）
+  // 渲染进程崩溃 / 窗口无响应（v1.8.2 WP5 / 审计 N1）：先记一条日志，再给恢复出口。
+  // 决策在 core/crash-recovery.js（纯函数、单测覆盖）：首次崩溃自动 reload 恢复视图；
+  // 60 秒内重复崩溃改成「重载 / 打开日志 / 关闭窗口」对话框，避免「崩 → 重载 → 再崩」的环。
+  // 自检同样走 reload（原生对话框会把自动化挂住）；生产里对话框默认停在最安全的选项。
+  const crashState = { lastReloadAtMs: 0, reloadCount: 0 };
+  const reloadWindow = () => {
+    if (browserWin.isDestroyed()) return false;
+    try {
+      browserWin.webContents.reload();
+      return true;
+    } catch (err) {
+      logError('reload-failed', err);
+      if (!browserWin.isDestroyed()) {
+        const plan = crashRecovery.reloadFailureDialog({ message: (err && err.message) || String(err) });
+        void showMessageBox(plan, browserWin)
+          .then((response) => {
+            if (plan.actions[response.response] === 'logs') void openLogFolderForRecovery();
+          })
+          .catch(() => {});
+      }
+      return false;
+    }
+  };
   browserWin.webContents.on('render-process-gone', (_event, details) => {
     const reason = (details && details.reason) || 'unknown';
     logError('render-process-gone', {
       code: reason,
       message: `渲染进程退出：${reason}（exitCode ${details && details.exitCode}，appCrashed ${Boolean(details && details.appCrashed)}）`
     });
+    const plan = crashRecovery.decideRenderCrash({
+      reason,
+      nowMs: Date.now(),
+      lastReloadAtMs: crashState.lastReloadAtMs,
+      reloadCount: crashState.reloadCount,
+      quitting: appQuitting
+    });
+    if (plan.action === 'reload') {
+      crashState.lastReloadAtMs = plan.nextLastReloadAtMs;
+      crashState.reloadCount = plan.nextReloadCount;
+      // 崩溃后的 reload 要等当前事件派发完，避免在 gone 回调里同步重入 webContents。
+      setImmediate(() => reloadWindow());
+      return;
+    }
+    if (plan.action !== 'ask') return;
+    crashState.reloadCount = plan.nextReloadCount;
+    if (isE2E) {
+      setImmediate(() => reloadWindow());
+      return;
+    }
+    const planDialog = crashRecovery.renderCrashDialog({ reason });
+    void showMessageBox(planDialog, browserWin)
+      .then((response) => {
+        const action = planDialog.actions[response.response];
+        if (action === 'reload') {
+          crashState.lastReloadAtMs = Date.now();
+          crashState.reloadCount = 0;
+          reloadWindow();
+        } else if (action === 'logs') {
+          void openLogFolderForRecovery();
+        } else if (action === 'close' && !browserWin.isDestroyed()) {
+          browserWin.close();
+        }
+      })
+      .catch(() => {});
   });
-  browserWin.on('unresponsive', () => logError('unresponsive', { message: '窗口无响应（界面可能卡住）' }));
+  // 窗口假死（渲染层主线程被超大操作卡住）：默认继续等待，作者明确点了才强制重载。
+  browserWin.on('unresponsive', () => {
+    logError('unresponsive', { message: '窗口无响应（界面可能卡住）' });
+    if (browserWin.isDestroyed()) return;
+    if (isE2E) {
+      reloadWindow();
+      return;
+    }
+    const plan = crashRecovery.unresponsivePlan();
+    void showMessageBox(plan, browserWin)
+      .then((response) => {
+        if (plan.actions[response.response] === 'reload') reloadWindow();
+      })
+      .catch(() => {});
+  });
 
   // Windows 关机/注销：尽力而为地拦住一次，提示先保存（系统不强等应用，不能保证）。
   // 多窗口：哪个窗口有未保存修改就拦一次并让它先问；其它窗口照常。
@@ -2520,6 +2705,9 @@ if (!gotLock) {
       // core/error-text 脱敏，路径只留最后一节），界面侧只保留一句固定说明。
       logError('startup-config', err);
     }
+    // v1.8.2 WP5（N1）：默认关；开关打开才建立崩溃草稿会话（写运行标记 / 清过期草稿）。
+    // 放在建窗之前：渲染层启动后要立刻查「上次是否异常退出」。
+    await syncCrashDraftSession();
     // X8（v1.8.0 WP-40）：启动时回收上次崩溃留在 userData 的孤儿临时文件（索引 / 配置等）。
     // 只认本应用命名、非本进程 pid、且 mtime 超过 1 小时的临时文件；失败不影响启动。
     await cleanupOrphanTmpFiles(app.getPath('userData')).catch(() => {});
@@ -2546,6 +2734,11 @@ if (!gotLock) {
     app.exit(1);
   });
 
+  // 退出开始后任何渲染崩溃都不再自动重载（avoid 关窗过程中把页面又拉起来）
+  app.on('before-quit', () => {
+    appQuitting = true;
+  });
+
   // 退出时主动注销全局快捷键，避免退出瞬间的热键残留
   app.on('will-quit', (event) => {
     // b8：后台剪贴板监听随应用关闭停止（清定时器，不留下轮询）
@@ -2556,16 +2749,16 @@ if (!gotLock) {
       /* 注销失败不影响退出 */
     }
     // B3：退出前把防抖中的「上次打开章节」落盘（不等就退出会丢掉最后一次切章）。
-    // 拦一次退出、写完再 quit；flushAll 自己吞失败，不会卡住退出流程。
-    if (!lastOpenQuitFlushStarted && lastOpenWrites.size() > 0) {
+    // v1.8.2 WP5：崩溃草稿会话也在同一处收尾（删运行标记 + 草稿），两件事都完成才真退出。
+    // 拦一次退出、写完再 quit；flushAll / endSession 自己吞失败，不会卡住退出流程。
+    if (!lastOpenQuitFlushStarted && (lastOpenWrites.size() > 0 || crashSessionStarted)) {
       lastOpenQuitFlushStarted = true;
       event.preventDefault();
-      lastOpenWrites
-        .flushAll()
-        .catch(() => {})
-        .finally(() => {
-          app.quit();
-        });
+      const flush = lastOpenWrites.size() > 0 ? lastOpenWrites.flushAll().catch(() => {}) : Promise.resolve();
+      const closeCrash = endCrashDraftSession().catch(() => {});
+      Promise.all([flush, closeCrash]).finally(() => {
+        app.quit();
+      });
     }
   });
 

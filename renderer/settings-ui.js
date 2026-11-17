@@ -381,6 +381,8 @@
     $('settings-long-para-threshold').value = String(editorLogic.sanitizeThreshold(cfg.longParagraphThreshold));
     $('settings-snapshot-enabled').checked = cfg.snapshotEnabled === true;
     setSelectValue('settings-snapshot-days', cfg.snapshotKeepDays, 7);
+    // 崩溃恢复草稿（v1.8.2 WP5 / N1）：默认关，只认真正的 true
+    $('settings-crash-draft-enabled').checked = cfg.crashDraftEnabled === true;
     const goal = Math.max(0, Math.round(Number(cfg.dailyGoal) || 0));
     $('settings-daily-goal').value = String(goal);
     // 写作时长：默认关，只认真正的 true（旧配置没有这个键 = 关）
@@ -733,6 +735,11 @@
       const el = $(id);
       if (el) el.classList.toggle('hidden', isBook);
     }
+    // 崩溃恢复草稿也是全局的（一个应用一份 userData 草稿），写作页的按书设置里不显示
+    for (const id of ['settings-crash-draft-field']) {
+      const el = $(id);
+      if (el) el.classList.toggle('hidden', isBook);
+    }
     // 检查更新也是全局的（一个应用一个版本），写作页的按书设置里不显示
     for (const id of ['settings-update-group', 'settings-update-field']) {
       const el = $(id);
@@ -900,6 +907,8 @@
         ...readStatsForm(),
         // b8：剪贴板后台监听（全局开关；主进程 config:set 后立即启停轮询）
         clipboardWatchEnabled: $('settings-clipboard-watch') ? $('settings-clipboard-watch').checked === true : false,
+        // WP5（N1）：崩溃恢复草稿（全局开关，默认关；主进程 config:set 后立即建 / 清会话）
+        crashDraftEnabled: $('settings-crash-draft-enabled').checked === true,
         chapterTemplate: $('settings-chapter-template').value,
         exportConversion: $('settings-export-conversion').value,
         sensitiveWordsPath: (state.sensitiveWordsDraft || '').trim(),
