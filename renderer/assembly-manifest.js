@@ -6,14 +6,15 @@
  * tests/load-order.test.js 会在 Node 里全链跑一遍才能发现。
  *
  * 这里把「顺序 + 全局名 + renderer.js 里的本地名」收成唯一一份清单：
- *   · renderer.js 启动时调用 assertInstalled(window)，一次报全所有缺失模块（以前是某个
- *     const 静默 undefined，报错点离原因很远）；
- *   · tests/assembly-manifest.test.js 拿这份清单核对 index.html 的 <script> 顺序、每个模块
- *     真的挂出了清单里的 window.CW 全局名、renderer.js 的每个引用都在清单内（漏插 / 写错全局名
- *     都会红）；
- *   · 新增模块只改：本文件一行 + index.html 的 <script> + renderer.js 里用到的地方（以及
- *     模块自己的测试）。新增「按域下沉」的模块时仍按现有模式：纯逻辑进 core/ 单测覆盖，
- *     面板进 renderer/*-ui.js，renderer.js 只接线。
+ *   · index.html 的 <script> 装配块由 scripts/assembly-sync.js 从本清单生成 / 注入（M-N1）：
+ *     新增模块只改本文件一行，跑 `node scripts/assembly-sync.js --write` 重新生成；
+ *     `--check`（tests/wp17-refactor.test.js R9）与 scripts/wiring-check.js 的
+ *     renderer-assembly-generated 契约会拦住「手改块内文本 / 块外再插脚本」；
+ *   · renderer.js 启动时调用 assertInstalled(window)，一次报全所有缺失模块；
+ *   · tests/assembly-manifest.test.js 拿这份清单核对每个模块真的挂出了 window.CW 全局名、
+ *     renderer.js 的每个引用都在清单内；
+ *   · 新增「按域下沉」的模块时仍按现有模式：纯逻辑进 core/ 单测覆盖，面板进 renderer/*-ui.js，
+ *     renderer.js 只接线。
  *
  * 结构：每项 [文件（相对 renderer/）, window 全局名, renderer.js 里的本地名或 '', 一句话职责]。
  * 本地名为 '' 的表示 renderer.js 只在安装 / 打开时按 window.CW 全局名直接取用（可选 UI 增强），

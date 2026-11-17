@@ -6,24 +6,27 @@
 // 业务行为仍由各域自己的用例钉住。任何一条接线对不上，Electron 里的表现都是「某个按钮点了没反应」，
 // 而且报错点离原因很远——这里在 Node 里一次报全。
 //
-// 七个契约（violations 里的 id 固定）：
-//   renderer-assembly-order   index.html 的 <script> 顺序 = renderer/assembly-manifest.js 的 MODULES；
-//   renderer-module-globals   每个模块文件真的挂出了清单声明的 window.CWxxx；
-//   renderer-module-refs      renderer.js 的 const 本地名 / 所有 window.CWxxx 引用都在清单内；
-//   preload-api-exposed       renderer 用到的每个 api.<键> 都在 preload 暴露；
-//   ipc-invoke-registered     preload 的每个 invoke('频道') 都有主进程 handle / handleBook；
-//   ipc-send-registered       preload 的每个 ipcRenderer.send('频道') 都有主进程 ipcMain.on；
-//   ipc-notify-listened       主进程每个通知发送频道都有 preload 监听；preload 监听不许没有发送方
-//                             （历史死监听白名单见 KNOWN_DEAD_LISTENERS，新死监听 / 白名单过期都算违规）。
-//   source-missing            任何一个来源文件读不了（ENOENT / EISDIR / EPERM）——不静默通过。
+// 契约（violations 里的 id 固定）：
+//   renderer-assembly-order      index.html 的 <script> 顺序 = renderer/assembly-manifest.js 的 MODULES；
+//   renderer-assembly-generated  index.html 的装配块标记唯一、块内脚本 = 清单生成结果（无块外脚本）；
+//   renderer-module-globals      每个模块文件真的挂出了清单声明的 window.CWxxx；
+//   renderer-module-refs         renderer.js 的 const 本地名 / 所有 window.CWxxx 引用都在清单内；
+//   preload-api-exposed          renderer 用到的每个 api.<键> 都在 preload 暴露；
+//   ipc-invoke-registered        preload 的每个 invoke('频道') 都有主进程 handle / handleBook；
+//   ipc-send-registered          preload 的每个 ipcRenderer.send('频道') 都有主进程 ipcMain.on；
+//   ipc-notify-listened          主进程每个通知发送频道都有 preload 监听；preload 监听不许没有发送方
+//                                （历史死监听白名单见 KNOWN_DEAD_LISTENERS，新死监听 / 白名单过期都算违规）。
+//   source-missing               任何一个来源文件读不了（ENOENT / EISDIR / EPERM）——不静默通过。
 //
 // CLI：node scripts/wiring-check.js [--root <目录>] [--json]
 //   真实树通过 exit 0；有违规 exit 1；根目录不存在 / 读不了 exit 2。
 const fs = require('node:fs');
 const path = require('node:path');
+const assemblySync = require('./assembly-sync');
 
 const CHECK_IDS = [
   'renderer-assembly-order',
+  'renderer-assembly-generated',
   'renderer-module-globals',
   'renderer-module-refs',
   'preload-api-exposed',
@@ -243,6 +246,37 @@ function auditWiring(root) {
         violations.push({
           id: 'renderer-assembly-order',
           detail: `index.html 的模块顺序与装配清单不一致：${parts.join('；')}`
+        });
+      }
+    }
+    // 装配块生成（M-N1）：模块脚本必须由清单生成并落在 ASSEMBLY 标记块里。顺序已由上面的
+    // renderer-assembly-order 钉住，这里再钉「块是生成的」——标记唯一 + 块内脚本与清单逐项一致；
+    // 等价重构（单引号 / 多余空白）由 parseScriptSrcs 归一，不算违规。
+    const beginCount = indexHtml.split(assemblySync.BEGIN_MARKER).length - 1;
+    const endCount = indexHtml.split(assemblySync.END_MARKER).length - 1;
+    if (beginCount !== 1 || endCount !== 1) {
+      violations.push({
+        id: 'renderer-assembly-generated',
+        detail:
+          `index.html 的装配标记必须各恰好 1 个（实际 BEGIN ${beginCount} / END ${endCount}）；` +
+          '修法：node scripts/assembly-sync.js --write'
+      });
+    } else if (modules.length) {
+      const blockSrcs = parseScriptSrcs(assemblySync.extractBlock(indexHtml));
+      const expected = modules.map((entry) => entry[0]).concat(assemblySync.TAIL_SCRIPTS);
+      const missing = expected.filter((file) => !blockSrcs.includes(file));
+      const extra = blockSrcs.filter((file) => !expected.includes(file));
+      const orderMismatch = expected.findIndex((file, index) => blockSrcs[index] !== file);
+      if (missing.length || extra.length || orderMismatch >= 0) {
+        const parts = [];
+        if (missing.length) parts.push(`缺 ${missing.join(', ')}`);
+        if (extra.length) parts.push(`多 ${extra.join(', ')}`);
+        if (orderMismatch >= 0) {
+          parts.push(`第 ${orderMismatch + 1} 项应为 ${expected[orderMismatch]}，实际 ${blockSrcs[orderMismatch]}`);
+        }
+        violations.push({
+          id: 'renderer-assembly-generated',
+          detail: `index.html 的装配块与清单生成结果不一致：${parts.join('；')}（修法：node scripts/assembly-sync.js --write）`
         });
       }
     }

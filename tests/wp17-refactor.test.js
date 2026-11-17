@@ -15,6 +15,7 @@
 //      装配清单同一条目 / 全局名 / 本地名不变（顺序与条数不改）
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
@@ -374,4 +375,84 @@ test('R8 D2：审计叙事注释瘦身——三处头注只留当前契约与红
   ]) {
     assert.ok(mainSrc.includes(code), `main.js 启动开关代码被注释瘦身改动：${code}`);
   }
+});
+
+test('R9 M-N1：index.html 装配块由清单生成（--write 幂等；--check 拦手改 / 块外脚本）', () => {
+  const sync = require('../scripts/assembly-sync');
+  const SCRIPT = path.join(ROOT, 'scripts', 'assembly-sync.js');
+  const manifest = require('../renderer/assembly-manifest');
+  const html = read('renderer/index.html');
+  const eol = sync.detectEol(html);
+
+  // ① 真实树：标记唯一、块逐字节等于清单生成结果、块外零 <script src>、renderer.js 仍单文件且最后加载
+  assert.equal(html.split(sync.BEGIN_MARKER).length - 1, 1, 'BEGIN 标记必须恰好 1 个');
+  assert.equal(html.split(sync.END_MARKER).length - 1, 1, 'END 标记必须恰好 1 个');
+  const real = sync.checkRoot(ROOT);
+  assert.equal(real.ok, true, `真实树装配块必须一致：${real.reason || ''}`);
+  assert.equal(real.modules, manifest.MODULES.length);
+  const block = sync.extractBlock(html).trimEnd();
+  assert.equal(block, sync.buildBlock(manifest, eol), '装配块必须逐字节等于清单生成结果（手改块会红）');
+  assert.equal(
+    block.split(/\r?\n/).length,
+    manifest.MODULES.length + sync.TAIL_SCRIPTS.length,
+    '块行数 = 清单模块 + assembly-manifest.js → renderer.js（不许多 / 少脚本）'
+  );
+  const outside = html.replace(sync.extractBlock(html), '');
+  assert.equal(
+    [...outside.matchAll(/<script\b[^>]*\bsrc\s*=/gi)].length,
+    0,
+    '装配块外不许再有 <script src>（所有模块脚本必须由清单生成）'
+  );
+  const blockSrcs = [...block.matchAll(/src="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(blockSrcs[blockSrcs.length - 1], 'renderer.js', 'renderer.js 必须仍是最后一个脚本');
+  assert.equal(blockSrcs[blockSrcs.length - 2], 'assembly-manifest.js');
+  assert.equal(fs.existsSync(path.join(ROOT, 'renderer', 'renderer.js')), true, 'M-N1 不拆 renderer.js');
+  // --write 在已同步的树上必须零改动（幂等）
+  assert.equal(sync.applyBlock(html, sync.buildBlock(manifest, eol)), html, '--write 必须幂等');
+
+  // ② 夹具：手改块 / 块外插脚本 / 标记缺失都要红；--write 能修回
+  const dir = tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-assembly-')));
+  fs.mkdirSync(path.join(dir, 'renderer'));
+  fs.copyFileSync(path.join(ROOT, 'renderer', 'assembly-manifest.js'), path.join(dir, 'renderer', 'assembly-manifest.js'));
+  fs.copyFileSync(path.join(ROOT, 'renderer', 'index.html'), path.join(dir, 'renderer', 'index.html'));
+  // 临时目录在 D:\Temp 下（宿主 package.json 是 type: module），复制仓库 package.json 让清单按 CommonJS 解析。
+  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(dir, 'package.json'));
+  const fixtureIndex = path.join(dir, 'renderer', 'index.html');
+  assert.equal(sync.checkRoot(dir).ok, true, '原样复制必须绿');
+
+  // 块内手改（删一行）→ 红并指出第一处不同的行号
+  const missingLine = fs.readFileSync(fixtureIndex, 'utf8').replace(/\s*<script src="undo-ui\.js"><\/script>\r?\n/, '\n');
+  fs.writeFileSync(fixtureIndex, missingLine, 'utf8');
+  const drift = sync.checkRoot(dir);
+  assert.equal(drift.ok, false, '块内手改必须红');
+  assert.ok(drift.line > 0, '不一致要指出第一处不同的行号');
+  assert.equal(sync.writeRoot(dir).changed, true, '--write 要能把手改修回');
+  assert.equal(sync.checkRoot(dir).ok, true, '--write 之后必须绿');
+  assert.equal(sync.writeRoot(dir).changed, false, '--write 修回后再跑必须零改动');
+
+  // 块外插 <script> → 红（绕过清单的手工装配）
+  const ghost = fs.readFileSync(fixtureIndex, 'utf8').replace(sync.END_MARKER, `${sync.END_MARKER}${eol}  <script src="ghost-ui.js"></script>`);
+  fs.writeFileSync(fixtureIndex, ghost, 'utf8');
+  const outsideBad = sync.checkRoot(dir);
+  assert.equal(outsideBad.ok, false, '块外插脚本必须红');
+  assert.match(outsideBad.reason, /块外/, `失败原因要点名块外脚本：${outsideBad.reason}`);
+
+  // 标记缺失 → 红（不是崩溃）
+  const noMarker = fs.readFileSync(fixtureIndex, 'utf8')
+    .replace(sync.BEGIN_MARKER, '<!-- 标记被删 -->')
+    .replace(sync.END_MARKER, '<!-- 标记被删 -->');
+  fs.writeFileSync(fixtureIndex, noMarker, 'utf8');
+  const markerBad = sync.checkRoot(dir);
+  assert.equal(markerBad.ok, false, '标记缺失必须红');
+  assert.match(markerBad.reason, /标记/);
+
+  // ③ CLI：真实树 exit 0；漂移树 exit 1；根目录不存在 exit 2
+  const clean = spawnSync(process.execPath, [SCRIPT, '--check'], { cwd: ROOT, encoding: 'utf8' });
+  assert.equal(clean.status, 0, `真实树应 exit 0，实际 ${clean.status}\n${clean.stderr}`);
+  assert.match(clean.stdout, /装配块一致/);
+  const bad = spawnSync(process.execPath, [SCRIPT, '--check', '--root', dir], { encoding: 'utf8' });
+  assert.equal(bad.status, 1, `漂移夹具应 exit 1，实际 ${bad.status}\n${bad.stdout}\n${bad.stderr}`);
+  assert.match(bad.stderr, /装配块校验未通过/);
+  const missingRoot = spawnSync(process.execPath, [SCRIPT, '--check', '--root', path.join(dir, '没有这个根')], { encoding: 'utf8' });
+  assert.equal(missingRoot.status, 2, '根目录不存在应 exit 2（配置错误，不是内容漂移）');
 });

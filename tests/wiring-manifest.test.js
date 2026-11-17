@@ -154,6 +154,26 @@ test('R4e 变异负控：新暴露但没人用的 api 仍要提示（E2E_ONLY_AP
   assert.match(result.warnings[0], /__fakeUnusedForTest/, '新未用 api 必须被点名，不许被 E2E 名单吞掉');
 });
 
+// WP17（M-N1）：index.html 的脚本块改为 assembly-manifest 生成的 ASSEMBLY 标记块后，
+// 「块是生成的」也是接线事实：标记被删 / 块内被手改都要命中 renderer-assembly-generated。
+test('R4f 变异负控：删装配标记 / 块内手改 script → renderer-assembly-generated', () => {
+  const markerDir = makeFixture();
+  mutate(markerDir, 'renderer/index.html', (text) => text.replace('<!-- ASSEMBLY:BEGIN -->', '<!-- 标记被删 -->'));
+  const markerResult = wiring.auditWiring(markerDir);
+  const markerHit = violation(markerResult, 'renderer-assembly-generated');
+  assert.ok(markerHit, '删装配标记必须命中 renderer-assembly-generated，实际：' + ids(markerResult).join(','));
+  assert.match(markerHit.detail, /标记/);
+
+  const blockDir = makeFixture();
+  mutate(blockDir, 'renderer/index.html', (text) =>
+    text.replace(/\s*<script src="undo-ui\.js"><\/script>\r?\n/, '\n')
+  );
+  const blockResult = wiring.auditWiring(blockDir);
+  const blockHit = violation(blockResult, 'renderer-assembly-generated');
+  assert.ok(blockHit, '块内删脚本必须命中 renderer-assembly-generated，实际：' + ids(blockResult).join(','));
+  assert.match(blockHit.detail, /undo-ui\.js/, '违规详情要点名块内缺的脚本');
+});
+
 test('R4d 等价重构不假红：CRLF + 注释 + script 标签单引号 / 多余空白仍零违规', () => {
   const dir = makeFixture();
   const textFiles = [

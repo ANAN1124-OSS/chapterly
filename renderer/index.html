@@ -1276,6 +1276,9 @@
        脚本本来就全部排在 body 结束标签之前（解析到这里时 DOM 已经完整），defer 只能省下几毫秒的解析阻塞，
        却会改变渲染层入口的启动时机，且全仓几十条「脚本顺序」静态闸门与 UMD 浏览器链必须整体重写一遍。
        真要引入 defer：先改 tests/ 的顺序闸门与 host 校验 / UMD 浏览器链，再加，不许只给一半脚本加。 -->
+  <!-- 渲染层装配（M-N1）：唯一事实源 = renderer/assembly-manifest.js；本块由 `node scripts/assembly-sync.js --write` 生成，勿手改。
+       装配清单与入口脚本按清单顺序最后加载，启动时一次报全缺模块。 -->
+  <!-- ASSEMBLY:BEGIN -->
   <script src="../core/common.js"></script>
   <script src="../core/heading.js"></script>
   <script src="../core/chapters.js"></script>
@@ -1290,14 +1293,14 @@
   <script src="chapter-filter-logic.js"></script>
   <script src="chapter-selection.js"></script>
   <script src="open-book-guard.js"></script>
-<script src="format-ui.js"></script>
+  <script src="format-ui.js"></script>
   <script src="find-logic.js"></script>
   <script src="focus-logic.js"></script>
   <script src="reading-logic.js"></script>
   <script src="save-logic.js"></script>
   <script src="long-op-logic.js"></script>
   <script src="replace-one-guard.js"></script>
-<script src="modal-queue.js"></script>
+  <script src="modal-queue.js"></script>
   <script src="stale-guard.js"></script>
   <script src="ime-guard.js"></script>
   <script src="../core/assert-host.js"></script>
@@ -1319,36 +1322,36 @@
   <script src="save-status-ui.js"></script>
   <script src="save-rescue-ui.js"></script>
   <script src="config-change-ui.js"></script>
-<script src="crash-recovery-ui.js"></script>
-<script src="shelf-filter-ui.js"></script>
-<script src="shelf-search-ui.js"></script>
-<script src="shelf-nav-ui.js"></script>
-<script src="focus-mode-ui.js"></script>
-<script src="write-timer-ui.js"></script>
-<script src="fragments-ui.js"></script>
-<script src="find-bookmark-ui.js"></script>
-<script src="find-ui.js"></script>
-<script src="tidy-card-ui.js"></script>
-<script src="settings-ia.js"></script>
-<script src="settings-ui.js"></script>
-<script src="bookinfo-ui.js"></script>
-<script src="result-jump-ui.js"></script>
-<script src="sensitive-ui.js"></script>
-<script src="proofread-ui.js"></script>
-<script src="editor-marks-ui.js"></script>
-<script src="reading-ui.js"></script>
-<script src="backup-guard.js"></script>
-<script src="history-ui.js"></script>
-<script src="capture-ui.js"></script>
-<script src="window-chrome-ui.js"></script>
-<script src="undo-action.js"></script>
-<script src="undo-ui.js"></script>
-<script src="command-catalog.js"></script>
-<script src="command-registry.js"></script>
-<script src="command-palette-ui.js"></script>
-<script src="shortcuts-ui.js"></script>
-<!-- 审计修复 #55（M4）：装配清单最后加载，renderer.js 启动时据此一次报全缺模块（清单见 assembly-manifest.js） -->
-<script src="assembly-manifest.js"></script>
-<script src="renderer.js"></script>
+  <script src="crash-recovery-ui.js"></script>
+  <script src="shelf-filter-ui.js"></script>
+  <script src="shelf-search-ui.js"></script>
+  <script src="shelf-nav-ui.js"></script>
+  <script src="focus-mode-ui.js"></script>
+  <script src="write-timer-ui.js"></script>
+  <script src="fragments-ui.js"></script>
+  <script src="find-bookmark-ui.js"></script>
+  <script src="find-ui.js"></script>
+  <script src="tidy-card-ui.js"></script>
+  <script src="settings-ia.js"></script>
+  <script src="settings-ui.js"></script>
+  <script src="bookinfo-ui.js"></script>
+  <script src="result-jump-ui.js"></script>
+  <script src="sensitive-ui.js"></script>
+  <script src="proofread-ui.js"></script>
+  <script src="editor-marks-ui.js"></script>
+  <script src="reading-ui.js"></script>
+  <script src="backup-guard.js"></script>
+  <script src="history-ui.js"></script>
+  <script src="capture-ui.js"></script>
+  <script src="window-chrome-ui.js"></script>
+  <script src="undo-action.js"></script>
+  <script src="undo-ui.js"></script>
+  <script src="command-catalog.js"></script>
+  <script src="command-registry.js"></script>
+  <script src="command-palette-ui.js"></script>
+  <script src="shortcuts-ui.js"></script>
+  <script src="assembly-manifest.js"></script>
+  <script src="renderer.js"></script>
+  <!-- ASSEMBLY:END -->
 </body>
 </html>
