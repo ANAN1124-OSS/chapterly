@@ -86,6 +86,8 @@ const closeGuard = require('./core/close-guard');
 const quitFlushGuard = require('./core/quit-flush-guard');
 const openBooksLib = require('./core/open-books');
 const fontPolicy = require('./core/font-policy');
+// E2（审计 #28）：字体文件的同句柄读取（open → fstat → read → close，消除 stat/readFile 的 TOCTOU）
+const fontReadLib = require('./core/font-read');
 // B9（v1.8.0 WP-29）：字体读取缓存（按 realpath + mtime + size 命中；见 core/font-cache.js）
 const { createFontReadCache } = require('./core/font-cache');
 const securityPolicy = require('./core/security-policy');
@@ -1482,7 +1484,9 @@ function registerIpc() {
     if (recovery.recovered) current = applyConfig(await configStore.get());
     // C23（整合版审计）：「换根前的生效根」也走「sanitize + 装饰层」——设置了 --books-root 时它就是
     // 覆盖目录（这时 patch 里的 booksRoot 改不动生效根，不该被误判成换根）。与后面的目标根同口径比较。
-    const previousRoot = decorateConfig(sanitizeConfig(current)).booksRoot;
+    // C2（审计 #21）：先按这份快照兜底；真正参与「判根 + mkdir」的值在 configStore.set 的 beforeWrite
+    // 里用队列内刚读到的 current 重算（并发写配置时快照可能已过期，见下）。
+    let previousRoot = decorateConfig(sanitizeConfig(current)).booksRoot;
     const session = flowSession();
     const picked = session ? pickedConfigPaths.snapshot(session.id) : null;
     const gated = configGate.filterPathPatch(patch, { current, picked });
@@ -1508,13 +1512,20 @@ function registerIpc() {
     // 但配置已经落盘——重启后书架指向一个不存在的目录，作者会以为「书没了」。
     // C23（整合版审计）：只在书架根**真的变化**时才 mkdir。以前这里无条件 mkdir——改字号 / 主题 /
     // 按书字体这类无关 patch 也会去动书架根，书架在断开的网络盘 / USB 上时，保存无关设置会跟着失败。
-    // 目标目录按「当前配置 + 放行后的 patch」走同一份 sanitize 算，和写盘后的 config.booksRoot 一致。
-    // 目标目录同样的口径：过装饰层——设置了 --books-root 时它就是覆盖目录，没设置时就是 sanitize 的结果。
-    const targetRoot = decorateConfig(sanitizeConfig({ ...current, ...gated.patch })).booksRoot;
-    if (configGate.booksRootChanged(previousRoot, targetRoot)) {
-      await fs.mkdir(targetRoot, { recursive: true });
-    }
-    const next = await configStore.set(gated.patch);
+    // C2（审计 #21）：判根 / mkdir / 写盘必须进同一个写队列。旧实现用队列外的 current 快照算
+    // previousRoot / targetRoot，多窗口并发写配置时判定会过期（A 刚换根，B 还按旧根判 → 新根没被预建）。
+    // 现在把「判根 + mkdir」放进 configStore.set 的 beforeWrite：它和写盘同一个 enqueue，拿的是
+    // 队列内刚读到的 current；mkdir 失败 ⇒ set 直接抛出，配置一个字都不写（A3 的顺序语义不变）。
+    // 目标目录仍按「当前配置 + 放行后的 patch」走同一份 sanitize，并过装饰层（--books-root 时是覆盖目录）。
+    const next = await configStore.set(gated.patch, {
+      async beforeWrite({ current: freshCurrent }) {
+        previousRoot = decorateConfig(sanitizeConfig(freshCurrent)).booksRoot;
+        const targetRoot = decorateConfig(sanitizeConfig({ ...freshCurrent, ...gated.patch })).booksRoot;
+        if (configGate.booksRootChanged(previousRoot, targetRoot)) {
+          await fs.mkdir(targetRoot, { recursive: true });
+        }
+      }
+    });
     const nextConfig = applyConfig(next);
     // A4（审计 #11 / O3、P6）：换了书架根目录后，旧根下的书锁条目没有复用价值——主动回收空闲条目
     // （正在跑 / 正在排队的链绝不拆，它们 settle 后自己回收，这里只是尽早腾掉 Map 位置）。
@@ -2099,36 +2110,47 @@ function registerIpc() {
     if (!fontPolicy.isFontFile(realPath)) {
       throw new storage.StorageError('BAD_FONT', '只支持 .ttf / .otf / .ttc 字体文件');
     }
-    const stat = await fs.stat(realPath);
-    if (!stat.isFile()) throw new storage.StorageError('BAD_FONT', '选中的不是一个字体文件');
-    if (!fontPolicy.isFontSizeAllowed(stat.size)) {
-      throw new storage.StorageError('FONT_TOO_BIG', '字体文件太大（超过 24MB），请换一个小一点的');
+    // E2（审计 #28）：扩展名校验之后 open 一次，fstat（是不是文件 / 24MB 大小闸）与 readFile
+    // 都走同一个句柄 —— 校验的和读的必是同一个文件，没有 realpath → stat → readFile 的 TOCTOU 窗口
+    // （对齐 storage.writeBookMeta 的 .bak 轮换模式）。错误码 / 文案与改前一致。
+    const loaded = await fontReadLib.openFontFile(fs, realPath, {
+      validate(handleStat) {
+        if (!handleStat.isFile()) throw new storage.StorageError('BAD_FONT', '选中的不是一个字体文件');
+        if (!fontPolicy.isFontSizeAllowed(handleStat.size)) {
+          throw new storage.StorageError('FONT_TOO_BIG', '字体文件太大（超过 24MB），请换一个小一点的');
+        }
+      }
+    });
+    try {
+      const stat = loaded.stat;
+      // B9（v1.8.0 WP-29）：命中缓存就跳过 24MB 读盘 + ~32MB base64 编码（key 含 realpath / mtime / size，
+      // 字体文件被外部替换也会重新读）。缓存只存 name/size/base64，source 与 path 仍按本次解析结果现算。
+      const cacheKey = fontReadCache.keyOf(realPath, stat);
+      const cached = fontReadCache.get(cacheKey);
+      let fontName;
+      let base64;
+      if (cached) {
+        fontName = cached.name;
+        base64 = cached.base64;
+      } else {
+        const buffer = await loaded.read();
+        fontName = path.basename(realPath);
+        base64 = buffer.toString('base64');
+        fontReadCache.put(cacheKey, { name: fontName, size: stat.size, base64 });
+      }
+      const payload = {
+        name: fontName,
+        size: stat.size,
+        base64,
+        source: source.source
+      };
+      // 只有「刚在对话框里选的」这一趟回 path（渲染层本来就从 font:pick 拿到过这个路径）；
+      // 按书 / 全局配置解析出来的路径绝不回传，避免把配置里的本机路径带进渲染层。
+      if (source.source === 'picked') payload.path = resolved;
+      return payload;
+    } finally {
+      await loaded.close().catch(() => {});
     }
-    // B9（v1.8.0 WP-29）：命中缓存就跳过 24MB 读盘 + ~32MB base64 编码（key 含 realpath / mtime / size，
-    // 字体文件被外部替换也会重新读）。缓存只存 name/size/base64，source 与 path 仍按本次解析结果现算。
-    const cacheKey = fontReadCache.keyOf(realPath, stat);
-    const cached = fontReadCache.get(cacheKey);
-    let fontName;
-    let base64;
-    if (cached) {
-      fontName = cached.name;
-      base64 = cached.base64;
-    } else {
-      const buffer = await fs.readFile(realPath);
-      fontName = path.basename(realPath);
-      base64 = buffer.toString('base64');
-      fontReadCache.put(cacheKey, { name: fontName, size: stat.size, base64 });
-    }
-    const payload = {
-      name: fontName,
-      size: stat.size,
-      base64,
-      source: source.source
-    };
-    // 只有「刚在对话框里选的」这一趟回 path（渲染层本来就从 font:pick 拿到过这个路径）；
-    // 按书 / 全局配置解析出来的路径绝不回传，避免把配置里的本机路径带进渲染层。
-    if (source.source === 'picked') payload.path = resolved;
-    return payload;
   });
 
   if (automation) {

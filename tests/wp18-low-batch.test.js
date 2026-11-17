@@ -860,3 +860,307 @@ test('R16 C3：启动回收 lastExportDir 的孤儿 tmp（口径与 userData / �
   assert.match(mainSrc, /const exportDir = .*lastExportDir/, '导出目录取自配置的 lastExportDir');
   assert.match(mainSrc, /cleanupOrphanTmpFiles\(exportDir\)\.catch\(\(\) => \{\}\)/, '尽力而为：失败不影响启动');
 });
+// ---------- R17 / R18 / R19 / R20：WP18 第 3 轮（C2 / C5=F3 / F2 / E2） ----------
+
+const { createConfigStore } = require('../core/config');
+
+test('R17 C2：config:set 的判根 / mkdir 与写盘同一个 enqueue（beforeWrite 钩子）', async () => {
+  const dir = await mkTmp('cw-wp18-c2-');
+  const rootA = path.join(dir, '新书架 有空格');
+  const hookLog = [];
+  let releaseSlowWrite = null;
+  const slowWrite = new Promise((resolve) => {
+    releaseSlowWrite = resolve;
+  });
+  const store = createConfigStore(dir, {
+    write: async (file, next) => {
+      hookLog.push(`write:${next.booksRoot}`);
+      if (next.booksRoot === rootA) await slowWrite;
+      await atomic.writeJsonAtomic(file, next);
+    }
+  });
+  const initial = await store.get();
+
+  // 并发：A 换根（写盘慢，占住队列），B 紧接着入队改无关设置。
+  // B 的钩子必须看到 A 已提交的 booksRoot —— 说明钩子拿到的是队列内 current，而不是入队前的快照。
+  const first = store.set(
+    { booksRoot: rootA },
+    {
+      beforeWrite: ({ current, next }) => {
+        hookLog.push(`hookA:${current.booksRoot}->${next.booksRoot}`);
+      }
+    }
+  );
+  await sleep(5);
+  const second = store.set(
+    { editorFontSize: 21 },
+    {
+      beforeWrite: ({ current }) => {
+        hookLog.push(`hookB:${current.booksRoot}`);
+      }
+    }
+  );
+  await sleep(5);
+  releaseSlowWrite();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(
+    hookLog.filter((line) => line.startsWith('hook')),
+    [`hookA:${initial.booksRoot}->${rootA}`, `hookB:${rootA}`],
+    '后一个 set 的钩子必须看到前一个 set 已提交的 booksRoot（队列内 current）'
+  );
+  assert.ok(
+    hookLog.findIndex((line) => line.startsWith('hookA:')) < hookLog.indexOf(`write:${rootA}`),
+    '钩子必须在写盘之前跑'
+  );
+  const disk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(disk.booksRoot, rootA, '换根写盘成功');
+  assert.equal(disk.editorFontSize, 21, '第二个 set 不能吞掉第一个的 patch');
+
+  // 失败注入：钩子抛错 ⇒ 不写盘、cache 与磁盘都保持旧值（E3：建不出来配置一个字都不写）
+  const beforeBytes = await fs.readFile(path.join(dir, 'config.json'), 'utf8');
+  let writeCalls = 0;
+  const failingStore = createConfigStore(dir, {
+    write: async (file, next) => {
+      writeCalls += 1;
+      await atomic.writeJsonAtomic(file, next);
+    }
+  });
+  await failingStore.get();
+  const hookError = Object.assign(new Error('模拟 EACCES：目标书架建不出来'), { code: 'EACCES' });
+  await assert.rejects(
+    () => failingStore.set({ editorFontSize: 19 }, { beforeWrite: async () => { throw hookError; } }),
+    (err) => err.code === 'EACCES'
+  );
+  assert.equal(writeCalls, 0, '钩子抛错时一个字都不写盘');
+  assert.equal((await failingStore.get()).editorFontSize, 21, 'cache 保持旧值，不假装已保存');
+  assert.equal(await fs.readFile(path.join(dir, 'config.json'), 'utf8'), beforeBytes, '磁盘旧字节不动');
+
+  // 不传钩子时行为与旧实现一致（回归保护）
+  await failingStore.set({ editorFontSize: 19 });
+  assert.equal(writeCalls, 1);
+  assert.equal((await failingStore.get()).editorFontSize, 19);
+
+  // 静态：main.js 的 mkdir 必须搬进 configStore.set 的 beforeWrite（与写盘同一个 enqueue）
+  const mainSrc = readSource('main.js');
+  const body = mainSrc.slice(mainSrc.indexOf("handle('config:set'"), mainSrc.indexOf("handle('config:test-pick'"));
+  const setAt = body.indexOf('configStore.set(gated.patch, {');
+  assert.ok(setAt > 0, 'config:set 的 set 必须带写前钩子（否则判根仍是队列外快照）');
+  const hookAt = body.indexOf('async beforeWrite({ current: freshCurrent })', setAt);
+  assert.ok(hookAt > setAt, 'beforeWrite 必须作为 configStore.set 的选项传入');
+  const mkdirAt = body.indexOf('fs.mkdir(', setAt);
+  assert.ok(mkdirAt > hookAt, 'mkdir 必须在钩子内（同一次 enqueue、写盘之前）');
+  assert.equal((body.match(/fs\.mkdir\(/g) || []).length, 1, 'config:set 里只该有这一处 mkdir');
+  assert.match(body, /previousRoot = decorateConfig\(sanitizeConfig\(freshCurrent\)\)\.booksRoot;/, '换根前的生效根要用队列内 current');
+  assert.match(
+    body,
+    /targetRoot = decorateConfig\(sanitizeConfig\(\{ \.\.\.freshCurrent, \.\.\.gated\.patch \}\)\)\.booksRoot;/,
+    '目标根要按队列内 current + 放行后的 patch 算'
+  );
+  assert.match(
+    body,
+    /if \(configGate\.booksRootChanged\(previousRoot, targetRoot\)\) \{\s*await fs\.mkdir\(targetRoot, \{ recursive: true \}\);\s*\}/,
+    'mkdir 仍只在书架根真的变化时做'
+  );
+  assert.match(body, /if \(configGate\.booksRootChanged\(previousRoot, nextConfig\.booksRoot\)\)/, '写后清锁 / 广播仍用同一判据');
+  // core 实现的契约：beforeWrite 必须在 writeJson 之前（集合内唯一一处 set(patch, options)）
+  const configSrc = readSource('core/config.js');
+  const configSetStart = configSrc.indexOf('function set(patch, options = {})');
+  const configSetBodyStart = configSrc.indexOf(') {', configSetStart);
+  const configSetBody = configSrc.slice(configSetBodyStart, configSrc.indexOf('\n  }\n', configSetBodyStart));
+  assert.ok(
+    configSetBody.indexOf('await beforeWrite({ current, next });') < configSetBody.indexOf('await writeJson(file, next);'),
+    'config.js 的写前钩子必须先于 writeJson'
+  );
+});
+
+test('R18 C5=F3：e2e-weekly 与 verify 同口径补 Node 22 / 24 矩阵', () => {
+  const weekly = readSource('.github/workflows/e2e-weekly.yml');
+  const verify = readSource('.github/workflows/verify.yml');
+  const pkg = JSON.parse(readSource('package.json'));
+  const major = Number(String(pkg.engines && pkg.engines.node).replace(/[^0-9.]/g, '').split('.')[0]);
+  assert.equal(major >= 22, true, 'engines 下限仍是 >=22');
+
+  assert.match(
+    weekly,
+    /^ {4}strategy:\n {6}fail-fast: false\n {6}matrix:\n {8}node: \[22, 24\]$/m,
+    'e2e-weekly 必须声明 Node 22 / 24 矩阵（fail-fast: false）'
+  );
+  assert.match(weekly, /node-version: \$\{\{ matrix\.node \}\}/, 'e2e-weekly 的 setup-node 必须读 matrix.node');
+  assert.equal(weekly.includes('node-version: 24'), false, 'e2e-weekly 不许再写死单档 Node 24');
+  assert.match(verify, /^ {6}matrix:\n {8}node: \[22, 24\]$/m, 'verify 的 22 / 24 矩阵保持不变');
+
+  // 矩阵不能把 E2E 的关键步骤削掉：供应链校验 → 固定时区 → 全量 E2E
+  const commands = weekly
+    .split('\n')
+    .filter((line) => line.trim().startsWith('run:'))
+    .join('\n');
+  assert.match(commands, /pnpm install --frozen-lockfile/);
+  assert.match(commands, /node scripts\/supply-chain-check\.js/);
+  assert.match(commands, /pnpm run e2e/);
+  assert.match(weekly, /tzutil \/s "China Standard Time"/);
+  assert.equal(weekly.includes('ELECTRON_SKIP_BINARY_DOWNLOAD'), false, 'E2E 仍要装 Electron 二进制');
+});
+
+test('R19 F2：tests/*.test.js 的 mkdtemp 必须经 tmpCleanup.track 登记（静态闸门）', () => {
+  const testsDir = path.join(__dirname);
+  const files = require('node:fs')
+    .readdirSync(testsDir)
+    .filter((name) => name.endsWith('.test.js'))
+    .sort();
+  assert.ok(files.length >= 200, `要扫到全部测试文件（实际 ${files.length}）`);
+
+  const callRe = /\bmkdtemp\s*\(/;
+  const stripLineComment = (line) => {
+    const at = line.indexOf('//');
+    return at === -1 ? line : line.slice(0, at);
+  };
+  const untracked = [];
+  let scannedCalls = 0;
+  for (const name of files) {
+    const source = require('node:fs').readFileSync(path.join(testsDir, name), 'utf8');
+    const lines = source.split('\n');
+    let fileCalls = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = stripLineComment(lines[index]);
+      if (!callRe.test(line)) continue;
+      fileCalls += 1;
+      scannedCalls += 1;
+      const next = stripLineComment(lines[index + 1] || '');
+      const sameLine = line.includes('tmpCleanup.track(');
+      const chained = /^\s*\.then\(/.test(next) && next.includes('tmpCleanup.track(');
+      if (!sameLine && !chained) untracked.push(`${name}:${index + 1}`);
+    }
+    if (fileCalls > 0) {
+      assert.match(source, /require\('\.\/tmp-cleanup'\)/, `${name} 用了 mkdtemp 但没 require ./tmp-cleanup`);
+    }
+  }
+  assert.ok(scannedCalls >= 50, `闸门必须真的扫到 mkdtemp 调用（实际 ${scannedCalls}）`);
+  assert.deepEqual(untracked, [], '这些 mkdtemp 没登记 tmp-cleanup.track（退出时不会回收）：\n' + untracked.join('\n'));
+});
+
+test('R20 E2：font:read 同句柄 open→fstat→read（TOCTOU 窗口归零）', async () => {
+  const fontReadLib = require('../core/font-read');
+  assert.equal(typeof fontReadLib.openFontFile, 'function', 'core/font-read.js 必须导出 openFontFile');
+
+  // 假 fs：open 之后路径立刻被换掉。只许读句柄；任何按路径的 stat / readFile 都直接抛。
+  const original = Buffer.from('font-bytes-original');
+  const swapped = Buffer.from('font-bytes-swapped');
+  let openedContent = original;
+  const fakeStats = { size: original.length, mtimeMs: 1700000000000, isFile: () => true };
+  const handle = {
+    statCalls: 0,
+    readCalls: 0,
+    closeCalls: 0,
+    async stat() {
+      this.statCalls += 1;
+      return fakeStats;
+    },
+    async readFile() {
+      this.readCalls += 1;
+      return openedContent;
+    },
+    async close() {
+      this.closeCalls += 1;
+    }
+  };
+  const opened = [];
+  let pathStatCalls = 0;
+  let pathReadCalls = 0;
+  const fsLike = {
+    async open(target, mode) {
+      opened.push({ target, mode });
+      openedContent = original;
+      // 打开之后、读取之前，路径被外部换成别的文件（模拟 TOCTOU）
+      return handle;
+    },
+    async stat() {
+      pathStatCalls += 1;
+      return { size: swapped.length, mtimeMs: 1, isFile: () => true };
+    },
+    async readFile() {
+      pathReadCalls += 1;
+      return swapped;
+    }
+  };
+
+  let validated = null;
+  const loaded = await fontReadLib.openFontFile(fsLike, 'D:\\字体 有空格\\A.ttf', {
+    validate(stat) {
+      validated = stat;
+    }
+  });
+  assert.equal(opened.length, 1, '只 open 一次');
+  assert.equal(opened[0].mode, 'r', '只读打开');
+  assert.equal(validated, fakeStats, 'validate 拿到的是句柄 fstat 的结果');
+  const buffer = await loaded.read();
+  assert.deepEqual(buffer, original, '读到的是打开时那份文件（不是按路径重读的替换文件）');
+  assert.equal(handle.readCalls, 1);
+  assert.equal(pathStatCalls, 0, '不许按路径 stat');
+  assert.equal(pathReadCalls, 0, '不许按路径 readFile');
+  await loaded.close();
+  await loaded.close();
+  assert.equal(handle.closeCalls, 1, 'close 幂等（只关一次）');
+
+  // validate 抛错（非字体 / 超限）：句柄关闭、零读取
+  const failHandle = {
+    statCalls: 0,
+    readCalls: 0,
+    closeCalls: 0,
+    async stat() {
+      this.statCalls += 1;
+      return { size: 25 * 1024 * 1024, isFile: () => true };
+    },
+    async readFile() {
+      this.readCalls += 1;
+      return Buffer.alloc(0);
+    },
+    async close() {
+      this.closeCalls += 1;
+    }
+  };
+  const tooBig = Object.assign(new Error('字体文件太大'), { code: 'FONT_TOO_BIG' });
+  await assert.rejects(
+    () =>
+      fontReadLib.openFontFile(
+        { open: async () => failHandle },
+        'D:\\字体\\超大.ttf',
+        {
+          validate() {
+            throw tooBig;
+          }
+        }
+      ),
+    (err) => err.code === 'FONT_TOO_BIG'
+  );
+  assert.equal(failHandle.readCalls, 0, '闸门没过不许读');
+  assert.equal(failHandle.closeCalls, 1, '抛错也要关句柄');
+
+  // open 失败原样抛（ENOENT 由上层 fail() 脱敏，不在这一层改码）
+  const enoent = Object.assign(new Error('ENOENT: 字体不存在'), { code: 'ENOENT' });
+  await assert.rejects(
+    () =>
+      fontReadLib.openFontFile(
+        {
+          open: async () => {
+            throw enoent;
+          }
+        },
+        'D:\\字体\\没有.ttf'
+      ),
+    (err) => err.code === 'ENOENT'
+  );
+
+  // main.js 静态：font:read 走 openFontFile + 句柄读取，不再按路径 stat / readFile
+  const mainSrc = readSource('main.js');
+  const fontBody = mainSrc.slice(mainSrc.indexOf("handle('font:read'"), mainSrc.indexOf("handle('font:test-pick'"));
+  assert.match(fontBody, /openFontFile\(fs, realPath, \{/, 'font:read 必须在 realpath 之后开句柄');
+  assert.match(fontBody, /const buffer = await loaded\.read\(\);/, '未命中缓存时从同一句柄读');
+  assert.match(fontBody, /await loaded\.close\(\)\.catch\(\(\) => \{\}\)/, '必须在 finally 里关句柄');
+  assert.equal(/fs\.stat\(realPath\)/.test(fontBody), false, '不许再按路径 stat（TOCTOU）');
+  assert.equal(/fs\.readFile\(realPath\)/.test(fontBody), false, '不许再按路径 readFile（TOCTOU）');
+  assert.ok(
+    fontBody.indexOf('fontReadCache.get(cacheKey)') < fontBody.indexOf('loaded.read()'),
+    '缓存命中时仍零读盘（get 在 read 之前）'
+  );
+});

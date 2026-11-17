@@ -103,7 +103,11 @@ test('B9：字体读盘缓存按 realpath + mtime + size 命中，LRU 只保最�
   assert.match(main, /const cacheKey = fontReadCache\.keyOf\(realPath, stat\);/);
   assert.match(main, /fontReadCache\.put\(cacheKey, \{ name: fontName, size: stat\.size, base64 \}\);/);
   const fontRead = between(main, "handle('font:read'", "handle('font:test-pick'");
-  assert.ok(fontRead.indexOf('fontReadCache.get(cacheKey)') < fontRead.indexOf('await fs.readFile(realPath)'));
+  assert.ok(
+    fontRead.indexOf('fontReadCache.get(cacheKey)') < fontRead.indexOf('loaded.read()'),
+    '缓存命中时跳过一次读盘（E2 同句柄：未命中才从同一句柄读）'
+  );
+  assert.match(fontRead, /openFontFile\(fs, realPath, \{/, 'E2：大小闸 / 读盘走同一句柄，不按路径 stat / readFile');
   assert.match(between(main, "browserWin.on('closed'", "browserWin.on('focus'"), /pickedFontPaths\.delete\(session\.id\)/);
 });
 

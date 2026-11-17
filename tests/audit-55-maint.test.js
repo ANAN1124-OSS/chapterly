@@ -12,9 +12,10 @@ const path = require('node:path');
 const common = require('../core/common');
 const { createConfigStore, DEFAULTS } = require('../core/config');
 const { writeJsonAtomic } = require('../core/atomic');
+const tmpCleanup = require('./tmp-cleanup');
 
 async function mkTmp(prefix) {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 test('M7：config.get() 返回深拷贝——嵌套对象逐个不共享引用', async () => {

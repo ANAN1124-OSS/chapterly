@@ -12,6 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const importer = require('../core/importer');
+const tmpCleanup = require('./tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -24,7 +25,7 @@ async function cleanup(base, links = []) {
 }
 
 test('S7：含符号链接 / 目录联接的现成书来源整源跳过（不复制、不留半本书），干净来源照常导入', async () => {
-  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-import-link-'));
+  const base = tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-import-link-')));
   const links = [];
   try {
     const sourceRoot = path.join(base, '外部来源');
@@ -56,7 +57,7 @@ test('S7：含符号链接 / 目录联接的现成书来源整源跳过（不复
 });
 
 test('S7：listSourceLinks 只收链接 / 用相对路径 / _trash 与点开头目录不进', async () => {
-  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-import-link-scan-'));
+  const base = tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-import-link-scan-')));
   const links = [];
   try {
     const target = path.join(base, 'target');

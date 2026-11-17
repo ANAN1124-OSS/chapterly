@@ -19,12 +19,13 @@ const storage = require('../core/storage');
 const ipcPaths = require('../core/ipc-paths');
 const pathUtils = require('../core/path-utils');
 const openBooks = require('../core/open-books');
+const tmpCleanup = require('./tmp-cleanup');
 
 // Windows 用 junction（不需要管理员权限）；其它平台退化成普通目录符号链接，只为本地可跑。
 const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
 
 async function mkTmp(prefix) {
-  return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 // 先删联接本身、再删临时根目录：绝不 recursive 地穿过联接去动目标。

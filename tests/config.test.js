@@ -1834,7 +1834,7 @@ test('C7 / V110 接线静态闸门：自动写带 auto 标记、config:set 先�
   const body = main.slice(from, to);
   const retryAt = body.indexOf('configStore.retryLoad()');
   const mkdirAt = body.indexOf('fs.mkdir(targetRoot');
-  const writeAt = body.indexOf('configStore.set(gated.patch)');
+  const writeAt = body.indexOf('configStore.set(gated.patch, {');
   assert.ok(retryAt > -1, 'config:set 必须先重试读（C7：保存设置前先重试读）');
   assert.ok(retryAt < mkdirAt && retryAt < writeAt, '重试读必须在建目标目录 / 写盘之前');
   assert.match(body, /if \(!recovery\.ok\)/, '仍读不到要明确失败（不能拿默认值写盘）');

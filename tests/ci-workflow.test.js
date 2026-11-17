@@ -185,6 +185,21 @@ test('e2e-weekly.yml 每周定时整跑 E2E，且装 Electron 二进制', () => 
   assert.match(text, /tzutil \/s "China Standard Time"/, 'E2E 要固定时区（统计 / 日期断言按 +08）');
 });
 
+// C5=F3（审计 #24）：engines 声明 node >=22，每周 E2E 不能只测开发机的 24 —— 与 verify 同口径补矩阵。
+test('e2e-weekly.yml 用 Node 22 / 24 两档矩阵（engines ≥22 下限进集成回归）', () => {
+  const text = readE2e().replace(/\r\n/g, '\n');
+  assert.match(
+    text,
+    /^ {4}strategy:\n {6}fail-fast: false\n {6}matrix:\n {8}node: \[22, 24\]$/m,
+    'e2e-weekly 必须声明 Node 22 / 24 矩阵（fail-fast: false）'
+  );
+  assert.match(text, /node-version: \$\{\{ matrix\.node \}\}/, 'setup-node 必须读 matrix.node');
+  assert.equal(text.includes('node-version: 24'), false, '不能再写死单档 Node 24');
+  const commands = commandsOf(text);
+  assert.match(commands, /run: pnpm run e2e/, '矩阵不能削掉全量 E2E');
+  assert.match(commands, /node scripts\/supply-chain-check\.js/, '矩阵不能削掉供应链校验');
+});
+
 test('依赖安装以锁文件为准：pnpm-lock.yaml 入库且三个工作流里不出现裸 pnpm install', () => {
   assert.ok(fs.existsSync(path.join(ROOT, 'pnpm-lock.yaml')), 'pnpm-lock.yaml 必须入库');
   for (const file of [VERIFY_PATH, E2E_PATH, E2E_PR_PATH]) {

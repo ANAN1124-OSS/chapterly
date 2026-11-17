@@ -12,6 +12,7 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const driver = require('../scripts/screenshot-driver');
+const tmpCleanup = require('./tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
 const DRIVER_SOURCE = fs.readFileSync(path.join(ROOT, 'scripts', 'screenshot-driver.js'), 'utf8');
@@ -212,7 +213,7 @@ test('SCREENSHOT_PICK_VOLUME_JS：选中「按卷导出」并挑第一个卷，�
 });
 
 test('run：--screenshot 流程能截图落盘（等页面 → 截屏 → 写 PNG → exit 0）', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-shot-unit-'));
+  const dir = tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-shot-unit-')));
   const target = path.join(dir, 'nested', 'shot.png');
   const png = Buffer.from('fake-png-bytes');
   const executed = [];
@@ -396,7 +397,7 @@ test('shouldStealFocus：开关关 / 已聚焦 / 别的应用窗口在前台时�
 });
 
 test('run：E2E 收尾把系统剪贴板原文写回（场景改过剪贴板也能还原）', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-e2e-unit-'));
+  const dir = tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-e2e-unit-')));
   const scenarioPath = require.resolve('../scripts/e2e-scenario.js');
   const previous = require.cache[scenarioPath];
   let clipboardText = '用户原剪贴板';

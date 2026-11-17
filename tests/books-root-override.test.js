@@ -98,11 +98,12 @@ test('静态闸门：每个配置写入口都走 applyConfig（不许绕过装�
     const body = slice(MAIN, start, end);
     assert.ok(body.includes('applyConfig('), `${name} 写完配置必须走 applyConfig 更新缓存（否则界面与路径校验口径漂移）`);
   }
-  // config:set 的 mkdir 目标同样过装饰层（--books-root 时就是覆盖目录）
+  // config:set 的 mkdir 目标同样过装饰层（--books-root 时就是覆盖目录）；
+  // C2 起目标根按 configStore.set 钩子里队列内的 freshCurrent + patch 算。
   const setBody = slice(MAIN, "handle('config:set'", '\n  });');
   assert.match(
     setBody,
-    /decorateConfig\(sanitizeConfig\(\{ \.\.\.current, \.\.\.gated\.patch \}\)\)\.booksRoot/,
+    /decorateConfig\(sanitizeConfig\(\{ \.\.\.freshCurrent, \.\.\.gated\.patch \}\)\)\.booksRoot/,
     'config:set 的 mkdir 目标要过装饰层，不能被 patch 带偏'
   );
 });

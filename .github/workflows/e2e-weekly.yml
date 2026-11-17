@@ -25,12 +25,18 @@ jobs:
   e2e:
     runs-on: windows-2022
     timeout-minutes: 60
+    # C5=F3（审计 #24）：engines 声明 node >=22，集成回归不能只测开发机的 24。
+    # 与 verify.yml 同一口径补 22 / 24 两档矩阵（fail-fast: false：一档红了另一档仍跑完）。
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:

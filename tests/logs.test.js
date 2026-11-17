@@ -4,9 +4,10 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const logsLib = require('../core/logs');
+const tmpCleanup = require('./tmp-cleanup');
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cw-logs-'));
+  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-logs-')));
 }
 
 async function readAll(dir) {

@@ -471,30 +471,46 @@ test('静态闸门：book:set-display 过 filterBookDisplayPatch；字体对话�
   const readBody = MAIN_SOURCE.slice(readAt, MAIN_SOURCE.indexOf('\n  });', readAt));
   assert.match(readBody, /await fs\.realpath\(resolved\)/, 'font:read 要做 realpath');
   assert.match(readBody, /isFontFile\(realPath\)/, 'realpath 之后用真实路径校验扩展名');
-  assert.match(readBody, /readFile\(realPath\)/, '读的必须是 realpath 之后的文件');
+  assert.match(readBody, /openFontFile\(fs, realPath, \{/, 'E2：realpath 之后开一次句柄（大小闸 + 读盘同一句柄）');
+  assert.match(readBody, /const buffer = await loaded\.read\(\)/, '未命中缓存时从同一句柄读');
+  assert.equal(/fs\.stat\(realPath\)/.test(readBody), false, '不许再按路径 stat（E2 TOCTOU）');
+  assert.equal(/fs\.readFile\(realPath\)/.test(readBody), false, '不许再按路径 readFile（E2 TOCTOU）');
   assert.match(readBody, /if \(source\.source === 'picked'\) payload\.path = resolved;/, '只有刚选中的那趟回 path');
 });
 
 // A3（审计 E3）：config:set 先验证 booksRoot（mkdir 成功）再写配置。
 // 旧顺序「先 configStore.set → 再 fs.mkdir」会出现「界面报错但配置已经保存」：
 // 重启后书架指向一个建不出来的目录，作者会以为书没了。
-test('静态闸门：config:set 先 mkdir 目标书架目录、成功后才写配置（E3）', () => {
+test('静态闸门：config:set 先 mkdir 目标书架目录、成功后才写配置（E3 / C2 同 enqueue）', () => {
   const start = MAIN_SOURCE.indexOf("handle('config:set'");
   assert.ok(start > 0, 'main.js 里找不到 config:set');
   const body = MAIN_SOURCE.slice(start, MAIN_SOURCE.indexOf('\n  handle(', start + 1));
-  const mkdirAt = body.indexOf('fs.mkdir(');
-  const writeAt = body.indexOf('configStore.set(');
-  assert.ok(mkdirAt > 0, 'config:set 必须自己建书架目录');
-  assert.ok(writeAt > 0, 'config:set 必须写配置');
-  assert.ok(mkdirAt < writeAt, 'config:set 必须先 mkdir、成功后才 configStore.set（E3：避免「报错但已保存」）');
-  // 建目录的目标必须从「当前配置 + 放行后的 patch」算，而不是写盘后的 config（顺序倒了就算不出来）
-  assert.match(body, /sanitizeConfig\(\{ \.\.\.current, \.\.\.gated\.patch \}\)/, 'mkdir 目标要按 sanitize(当前 + patch) 算');
+  // C2（审计 #21）：mkdir 搬进 configStore.set 的 beforeWrite —— 判根 / 建目录 / 写盘同一个写队列
+  const setAt = body.indexOf('configStore.set(gated.patch, {');
+  assert.ok(setAt > 0, 'config:set 的写盘必须带 beforeWrite 钩子（判根不能再用队列外快照）');
+  const hookAt = body.indexOf('async beforeWrite({ current: freshCurrent })', setAt);
+  assert.ok(hookAt > setAt, 'beforeWrite 要作为 configStore.set 的选项传入');
+  const mkdirAt = body.indexOf('fs.mkdir(', setAt);
+  assert.ok(mkdirAt > hookAt, 'mkdir 只能在钩子里（写盘之前、同一个 enqueue）');
+  assert.equal((body.match(/fs\.mkdir\(/g) || []).length, 1, 'config:set 里只该有这一处 mkdir');
+  // 建目录的目标必须从「队列内 current + 放行后的 patch」算，而不是队列外快照 / 写盘后的 config
+  assert.match(body, /sanitizeConfig\(\{ \.\.\.freshCurrent, \.\.\.gated\.patch \}\)/, 'mkdir 目标要按 sanitize(队列内 current + patch) 算');
   // 播放器 / 自动化覆盖（--books-root）仍指向覆盖目录，不能被 patch 带偏。
   // A3（审计 #9 / O1）起覆盖只在 main.js 的 decorateConfig 一处应用，这里钉住「mkdir 目标过装饰层」。
   assert.match(
     body,
-    /decorateConfig\(sanitizeConfig\(\{ \.\.\.current, \.\.\.gated\.patch \}\)\)\.booksRoot/,
+    /decorateConfig\(sanitizeConfig\(\{ \.\.\.freshCurrent, \.\.\.gated\.patch \}\)\)\.booksRoot/,
     'config:set 的 mkdir 目标要过 booksRootOverride 装饰层'
+  );
+  // 钩子契约在 core/config.js：先 beforeWrite、后 writeJson —— 钩子抛错 ⇒ 配置一个字都不写
+  const configSource = require('node:fs')
+    .readFileSync(require('node:path').join(__dirname, '..', 'core/config.js'), 'utf8')
+    .replace(/\r\n/g, '\n');
+  const setStart = configSource.indexOf('function set(patch, options = {})');
+  const setBody = configSource.slice(setStart, configSource.indexOf('\n  }\n', setStart));
+  assert.ok(
+    setBody.indexOf('await beforeWrite({ current, next });') < setBody.indexOf('await writeJson(file, next);'),
+    'beforeWrite 必须先于 writeJson（否则又回到「报错但已保存」）'
   );
 });
 
@@ -513,7 +529,7 @@ test('C23：书架根变化判定走全仓唯一 pathKey 口径（无关 patch �
   assert.equal(configGate.booksRootChanged(null, bookRoot), true);
 });
 
-test('静态闸门：config:set 只在书架根变化时 mkdir（C23）', () => {
+test('静态闸门：config:set 只在书架根变化时 mkdir（C23 / C2）', () => {
   const start = MAIN_SOURCE.indexOf("handle('config:set'");
   assert.ok(start > 0, 'main.js 里找不到 config:set');
   const body = MAIN_SOURCE.slice(start, MAIN_SOURCE.indexOf('\n  handle(', start + 1));
@@ -524,24 +540,27 @@ test('静态闸门：config:set 只在书架根变化时 mkdir（C23）', () => 
     /if \(configGate\.booksRootChanged\(previousRoot, targetRoot\)\) \{\s*await fs\.mkdir\(targetRoot, \{ recursive: true \}\);\s*\}/,
     'mkdir 必须在「书架根真的变化」的分支里（改字号 / 主题这类无关 patch 不碰书架目录）'
   );
-  // 判变化的两边都要过「sanitize + 装饰层」：--books-root 覆盖时生效根是覆盖目录
+  // 判变化的两边都要过「sanitize + 装饰层」：--books-root 覆盖时生效根是覆盖目录。
+  // C2（审计 #21）：previousRoot 必须取自 configStore.set 钩子里的 freshCurrent（队列内），
+  // 不是入队前的 current 快照 —— 并发写配置时快照会过期。
   assert.match(
     body,
-    /const previousRoot = decorateConfig\(sanitizeConfig\(current\)\)\.booksRoot;/,
-    '换根前的生效根也要过 sanitize + 装饰层'
+    /previousRoot = decorateConfig\(sanitizeConfig\(freshCurrent\)\)\.booksRoot;/,
+    '换根前的生效根要用队列内 current（beforeWrite 的 freshCurrent）'
   );
   assert.match(
     body,
-    /const targetRoot = decorateConfig\(sanitizeConfig\(\{ \.\.\.current, \.\.\.gated\.patch \}\)\)\.booksRoot;/,
+    /const targetRoot = decorateConfig\(sanitizeConfig\(\{ \.\.\.freshCurrent, \.\.\.gated\.patch \}\)\)\.booksRoot;/,
     '目标根走同一份 sanitize + 装饰层'
   );
-  // A3 顺序不变：判根变化 → mkdir → 写盘（建不出来配置一个字都不写）
+  // A3 顺序语义不变：判根变化 → mkdir → 写盘；C2 之后前两步在 beforeWrite 里，写盘紧随其后
+  // （core/config.js 的 set 契约由 R17 行为锚点钉住：beforeWrite 先于 writeJson）。
+  const hookAt = body.indexOf('async beforeWrite({ current: freshCurrent })');
   const changeAt = body.indexOf('booksRootChanged(previousRoot, targetRoot)');
   const mkdirAt = body.indexOf('fs.mkdir(');
-  const writeAt = body.indexOf('configStore.set(gated.patch)');
   assert.ok(
-    changeAt > -1 && changeAt < mkdirAt && mkdirAt < writeAt,
-    '顺序必须是：判根变化 → mkdir → configStore.set'
+    hookAt > -1 && changeAt > hookAt && mkdirAt > changeAt,
+    '顺序必须是：beforeWrite 内判根变化 → mkdir（写盘在钩子之后）'
   );
   // A4 换根清锁共用同一判据，不许再各写一份 path.resolve(...).toLowerCase() 比较
   assert.match(

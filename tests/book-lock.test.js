@@ -14,6 +14,7 @@ const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const common = require('../core/common');
+const tmpCleanup = require('./tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -131,7 +132,7 @@ test('withBookLock：持锁期间锁另一本书仍是独立链（不把两本�
 });
 
 test('三个内置锁写入口：在 withBookLock 里按 chapter:save 的顺序整段调用不丢结果（M6）', async () => {
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-write-lock-'));
+  const dir = tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-write-lock-')));
   try {
     const created = await storage.createBook(dir, '锁内保存');
     const bookPath = created.path;

@@ -15,12 +15,13 @@ const os = require('node:os');
 const path = require('node:path');
 
 const draftLib = require('../core/crash-draft');
+const tmpCleanup = require('./tmp-cleanup');
 
 const BOOK = path.join('C:\\', '书库 有空格', '测试 书');
 const roots = [];
 
 async function newRoot() {
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-crash-draft-'));
+  const dir = tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-crash-draft-')));
   roots.push(dir);
   return dir;
 }

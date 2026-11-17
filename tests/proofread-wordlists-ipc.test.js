@@ -10,6 +10,7 @@ const path = require('node:path');
 const pathUtils = require('../core/path-utils');
 const glossary = require('../core/glossary');
 const proofread = require('../core/proofread');
+const tmpCleanup = require('./tmp-cleanup');
 
 const readSource = (rel) =>
   require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
@@ -32,7 +33,7 @@ function sliceFrom(source, startMarker) {
 const matchesOf = (source, pattern) => [...source.matchAll(pattern)].map((m) => m[1]);
 
 async function mkTmp() {
-  return fsPromises.mkdtemp(path.join(os.tmpdir(), 'cw-wordlists-d2-'));
+  return tmpCleanup.track(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'cw-wordlists-d2-')));
 }
 
 test('行为：单份旧配置（proofreadWordsPath）保持原样单表读取，公开信息是旧形状（V60）', async () => {

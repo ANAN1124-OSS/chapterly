@@ -760,12 +760,19 @@ function createConfigStore(userDataDir, deps = {}) {
     });
   }
 
+  // C2（审计 #21）：可选的写前钩子 beforeWrite({ current, next })。
+  // 「判书架根是否变化 + mkdir 目标根」必须和写盘处在同一个 enqueue，并用队列内刚读到的
+  // current —— 队列外快照在多窗口并发写配置时可能已经过期（窗口 A 刚换根、窗口 B 还拿旧根
+  // 判定 → 新根没被预建）。钩子抛错 = 这次不写盘（cache / 磁盘都保持旧值，A3/E3 顺序语义不变）。
+  // 只有主进程的 config:set 传它；不传时行为与旧实现逐字节一致。
   function set(patch, options = {}) {
     const auto = Boolean(options && options.auto);
+    const beforeWrite = options && typeof options.beforeWrite === 'function' ? options.beforeWrite : null;
     return enqueue(async () => {
       await gateWrite(auto);
       const current = await get();
       const next = sanitize({ ...current, ...(patch || {}) });
+      if (beforeWrite) await beforeWrite({ current, next });
       // 先写盘：失败就抛出，cache 保持旧值（内存不再「假装已保存」）
       await writeJson(file, next);
       cache = next;
