@@ -82,6 +82,8 @@ const updateLib = require('./core/update');
 const updateResponseLib = require('./core/update-response');
 // 关窗看门狗阈值 + 强制退出顺序（1.6.0 A1 / 审计 E-03）：纯数据 / 纯函数，单测钉住
 const closeGuard = require('./core/close-guard');
+// v1.8.3 WP9（审计 C1，中 #8）：退出收尾的有界等待（flush 不回来也要退出），纯逻辑单测钉住
+const quitFlushGuard = require('./core/quit-flush-guard');
 const openBooksLib = require('./core/open-books');
 const fontPolicy = require('./core/font-policy');
 // B9（v1.8.0 WP-29）：字体读取缓存（按 realpath + mtime + size 命中；见 core/font-cache.js）
@@ -2751,13 +2753,20 @@ if (!gotLock) {
     // B3：退出前把防抖中的「上次打开章节」落盘（不等就退出会丢掉最后一次切章）。
     // v1.8.2 WP5：崩溃草稿会话也在同一处收尾（删运行标记 + 草稿），两件事都完成才真退出。
     // 拦一次退出、写完再 quit；flushAll / endSession 自己吞失败，不会卡住退出流程。
+    // v1.8.3 WP9（审计 C1，中 #8）：便利数据不能当退出硬前置 —— 书在断开的网络盘 / 同步盘，或书锁
+    // 被整本长操作持有时，这两个收尾可能永远不回来，退出就无限期挂住（关窗路径早有 8 秒看门狗，
+    // 退出路径没有）。加 2.5 秒看门狗：到点直接 quit。超时放弃的只是 lastOpenChapterId（下次切章
+    // 重建）与崩溃草稿标记清理（残留由下次启动按 pid 判「上次异常退出」），正文 / 书目不受影响。
     if (!lastOpenQuitFlushStarted && (lastOpenWrites.size() > 0 || crashSessionStarted)) {
       lastOpenQuitFlushStarted = true;
       event.preventDefault();
       const flush = lastOpenWrites.size() > 0 ? lastOpenWrites.flushAll().catch(() => {}) : Promise.resolve();
       const closeCrash = endCrashDraftSession().catch(() => {});
-      Promise.all([flush, closeCrash]).finally(() => {
-        app.quit();
+      void quitFlushGuard.runQuitCleanup({
+        work: () => Promise.all([flush, closeCrash]),
+        timeoutMs: quitFlushGuard.QUIT_FLUSH_TIMEOUT_MS,
+        log: (entry) => logError('quit-flush', entry, { level: 'warn' }),
+        quit: () => app.quit()
       });
     }
   });
