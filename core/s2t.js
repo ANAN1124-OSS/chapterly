@@ -478,6 +478,10 @@
     const copy = { ...meta };
     if (typeof meta.title === 'string') copy.title = convertText(meta.title, m);
     if (typeof meta.author === 'string') copy.author = convertText(meta.author, m);
+    // 审计修复 X-N9（#26 / WP13）：章标题模板（chapters.formatTitle 的 titleTemplate）也要转。
+    // 不转的话 TXT（整块转换，模板跟着转）与 EPUB/DOCX（convertMeta 后拼标题）在同一本书上
+    // 会出现「第3节：轉換後章名」这种简繁混排。{num} / {name} 是 ASCII，转换不会碰占位符。
+    if (typeof meta.titleTemplate === 'string') copy.titleTemplate = convertText(meta.titleTemplate, m);
     if (Array.isArray(meta.chapters)) {
       copy.chapters = meta.chapters.map((chapter) => {
         if (!chapter || typeof chapter !== 'object') return chapter;

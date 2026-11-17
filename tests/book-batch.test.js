@@ -223,19 +223,19 @@ test('静态闸门：导出入口释放中间引用（TXT 流式写出，归档�
   assert.match(writer, /atomicWriteFileStream\(/);
   assert.doesNotMatch(writer, /collectExportTexts|buildTxtExport|Buffer\.from/);
   // 审计修复 #24（R2）：EPUB / DOCX 的这段流程已收进共享内核 exportStructured，
-  // 「就地转换 + 用完即清」的检查锚在内核上，两个入口只证明委托了内核。
+  // 「不整本常驻」的检查锚在内核上。B1（审计 #17 / WP13）起内核自己也不再整本读 texts：
+  // 改成 atomicWriteFileStream + 逐章 readText → 格式的流式构建（整本正文 / 整包 Buffer 都不物化）。
   const kernel = sliceFrom(ipcExportSource, '  async function exportStructured(bookPath, override, range, options) {');
-  assert.match(
-    kernel,
-    /exporter\.convertTextsInPlace\(texts, conversion, s2tLib\.convertText\)/,
-    '共享内核要就地转换（不再 texts.map 造第二份全书数组）'
-  );
-  assert.match(kernel, /exporter\.releaseTexts\(texts\)/, '打包完要放掉整本正文');
-  assert.doesNotMatch(kernel, /texts\.map\(\(text\) => s2tLib\.convertText/);
+  assert.match(kernel, /atomicWriteFileStream\(filePath/, '共享内核要流式原子写盘');
+  assert.match(kernel, /options\.stream\(/, '共享内核要调格式的流式构建');
+  assert.match(kernel, /readText: async \(index, chapter\)/, '共享内核要逐章读正文');
+  assert.doesNotMatch(kernel, /collectExportTexts|readExportTexts/, '共享内核不许再整本读 texts');
+  assert.doesNotMatch(kernel, /convertTextsInPlace|releaseTexts/, '流式路径不需要整本转换 / 整本释放');
   for (const channel of ['book:export-epub', 'book:export-docx']) {
     const body = sliceFrom(ipcExportSource, `  handleBook('${channel}', async (bookPath, override, range) =>\n    exportStructured(`);
-    assert.equal(body.includes('releaseTexts'), false, `${channel} 不再自己放整本正文（在内核里做）`);
-    assert.equal(body.includes('convertTextsInPlace'), false, `${channel} 不再自己转换（在内核里做）`);
+    assert.equal(body.includes('releaseTexts'), false, `${channel} 不再自己放整本正文（流式路径没有整本）`);
+    assert.equal(body.includes('convertTextsInPlace'), false, `${channel} 不再自己转换（内核逐章转）`);
+    assert.ok(body.includes(channel === 'book:export-epub' ? 'epubLib.streamEpub(' : 'docxLib.streamDocx('), `${channel} 传流式构建`);
   }
 });
 

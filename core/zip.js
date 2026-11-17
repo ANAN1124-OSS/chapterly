@@ -60,13 +60,26 @@ const CRC_TABLE = (() => {
   return table;
 })();
 
+function crc32Start() {
+  return 0xffffffff;
+}
+
+// 增量 CRC：流式打包时逐块更新（B1 / WP13），不额外物化整条载荷。
+function crc32Update(crc, buffer) {
+  let value = crc >>> 0;
+  for (let i = 0; i < buffer.length; i += 1) {
+    value = (CRC_TABLE[(value ^ buffer[i]) & 0xff] ^ (value >>> 8)) >>> 0;
+  }
+  return value;
+}
+
+function crc32Finish(crc) {
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
 function crc32(buffer) {
   const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(String(buffer == null ? '' : buffer), 'utf8');
-  let crc = 0xffffffff;
-  for (let i = 0; i < buf.length; i += 1) {
-    crc = (CRC_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8)) >>> 0;
-  }
-  return (crc ^ 0xffffffff) >>> 0;
+  return crc32Finish(crc32Update(crc32Start(), buf));
 }
 
 // zip 的时间戳是 DOS 格式（1980 起、2 秒精度）；同一份内容 + 同一个时间 ⇒ 字节完全一样。
@@ -164,4 +177,220 @@ async function buildZip(entries, options) {
   return Buffer.concat([...localParts, ...centralParts, end]);
 }
 
-module.exports = { crc32, buildZip, entryNameProblem, assertEntryName, MAX_ENTRY_NAME_BYTES };
+// ---------- 流式打包（B1 / 审计 #17 / WP13） ----------
+// buildZip 要先把所有条目的本地头 + 载荷攒进 localParts，最后 Buffer.concat 出整包：
+// 大书导出时整份 zip 在内存里至少两份（分片 + 成品）。streamZip 改成「逐条写进调用方写入器」：
+//   · 本地文件头 / 条目名 / 载荷按 buildZip 的字段与顺序直接 write 出去；
+//   · 只把中央目录（每条 46 + 名称字节，通常几百 KB）留在内存；
+//   · 产物与 buildZip 逐字节一致（tests/export-stream-wp13.test.js R1 对拍），
+//     「同样的输入 + 同样的时间 ⇒ 同样的文件」这条承诺不变。
+// 条目数据有两种来源：
+//   · entry.data  —— string / Buffer，一次性压（与 buildZip 同一判定：压完更大就原样存）；
+//   · entry.chunks —— 工厂函数，返回 string / Buffer 的同步或异步可迭代对象：
+//     分块喂 zlib 的流式 deflate（实测与一次性 deflateRaw 逐字节相同），压缩产物按块收着
+//     （压缩后体积远小于原文，通常是整本的 1/10 量级）；万一压完反而更大，重新调用工厂
+//     收原始分块按 store 写（不为了省一次重跑而多留一份原文）。
+function toPayloadBuffer(piece) {
+  if (Buffer.isBuffer(piece)) return piece;
+  return Buffer.from(String(piece == null ? '' : piece), 'utf8');
+}
+
+// 等 deflate 的 drain（背压），同时把流自身的错误转成 reject。
+function waitDrain(stream) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      stream.removeListener('drain', onDrain);
+      stream.removeListener('error', onError);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (err) => {
+      cleanup();
+      reject(err);
+    };
+    stream.once('drain', onDrain);
+    stream.once('error', onError);
+  });
+}
+
+// chunks 工厂 → 流式压缩：返回 { rawLength, crc, parts(压缩块), deflatedLength }。
+async function deflateChunkSource(makeChunks) {
+  const deflate = zlib.createDeflateRaw({ level: 9 });
+  const parts = [];
+  let deflatedLength = 0;
+  const finished = new Promise((resolve, reject) => {
+    deflate.once('end', resolve);
+    deflate.once('error', reject);
+  });
+  // 提前退出（写入器失败 / 工厂抛错）时不要留下未处理的 rejection
+  finished.catch(() => {});
+  deflate.on('data', (part) => {
+    parts.push(part);
+    deflatedLength += part.length;
+  });
+  let rawLength = 0;
+  let crc = crc32Start();
+  try {
+    for await (const piece of makeChunks()) {
+      const buf = toPayloadBuffer(piece);
+      if (!buf.length) continue;
+      rawLength += buf.length;
+      crc = crc32Update(crc, buf);
+      if (!deflate.write(buf)) await waitDrain(deflate);
+    }
+    deflate.end();
+    await finished;
+    return { rawLength, crc: crc32Finish(crc), parts, deflatedLength };
+  } catch (err) {
+    deflate.destroy();
+    throw err;
+  }
+}
+
+// 兜底：压缩反而更大时按 store 收原始分块（工厂会被第二次调用）。
+async function collectChunkSource(makeChunks) {
+  const parts = [];
+  let rawLength = 0;
+  let crc = crc32Start();
+  for await (const piece of makeChunks()) {
+    const buf = toPayloadBuffer(piece);
+    if (!buf.length) continue;
+    rawLength += buf.length;
+    crc = crc32Update(crc, buf);
+    parts.push(buf);
+  }
+  return { rawLength, crc: crc32Finish(crc), parts, deflatedLength: rawLength };
+}
+
+// entries 可以是数组，也可以是（异步）生成器；options 与 buildZip 相同（date 可选）。
+// write(chunk) 由调用方提供（atomicWriteFileStream 的 write）；返回 { bytes, count }，
+// bytes = 实际写出的字节数，等于 buildZip 产物长度。
+async function streamZip(entries, options, write) {
+  if (typeof write !== 'function') throw new TypeError('streamZip 需要写入回调');
+  const list =
+    entries && (typeof entries[Symbol.asyncIterator] === 'function' || typeof entries[Symbol.iterator] === 'function')
+      ? entries
+      : [];
+  const stamp = dosDateTime(options && options.date);
+  const centralParts = [];
+  let offset = 0;
+  let count = 0;
+  for await (const entry of list) {
+    count += 1;
+    // zip 的中央目录用 2 字节记条目数：超了不写坏包（与 buildZip 同一文案）
+    if (count > 0xffff) throw new Error('ZIP 条目太多（上限 65535 项）');
+    const name = Buffer.from(assertEntryName(entry && entry.name), 'utf8');
+    let method = 0;
+    let rawLength;
+    let crc;
+    let payloadParts;
+    let payloadLength;
+    if (entry && typeof entry.chunks === 'function' && entry.store !== true) {
+      const deflated = await deflateChunkSource(entry.chunks);
+      if (deflated.rawLength > 0 && deflated.deflatedLength < deflated.rawLength) {
+        method = 8;
+        rawLength = deflated.rawLength;
+        crc = deflated.crc;
+        payloadParts = deflated.parts;
+        payloadLength = deflated.deflatedLength;
+      } else {
+        const raw = await collectChunkSource(entry.chunks);
+        method = 0;
+        rawLength = raw.rawLength;
+        crc = raw.crc;
+        payloadParts = raw.parts;
+        payloadLength = raw.rawLength;
+      }
+    } else if (entry && typeof entry.chunks === 'function') {
+      // store:true 的分块条目原样写（与 buildZip 的 store=true 同义）
+      const raw = await collectChunkSource(entry.chunks);
+      rawLength = raw.rawLength;
+      crc = raw.crc;
+      payloadParts = raw.parts;
+      payloadLength = raw.rawLength;
+    } else {
+      const raw = toPayloadBuffer(entry && entry.data);
+      rawLength = raw.length;
+      crc = crc32(raw);
+      payloadParts = [raw];
+      payloadLength = raw.length;
+      if (entry.store !== true && raw.length > 0) {
+        const deflated = await deflateRaw(raw, { level: 9 });
+        // 小文件压完反而更大时仍然原样存，省得白白变胖（与 buildZip 同判定）
+        if (deflated.length < raw.length) {
+          method = 8;
+          payloadParts = [deflated];
+          payloadLength = deflated.length;
+        }
+      }
+    }
+    // 中央目录用 4 字节记偏移 / 长度：超 4 GB 直接报错（同上，不写 zip64）
+    if (offset + 30 + name.length + payloadLength > 0xffffffff) {
+      throw new Error('ZIP 包超过 4 GB 上限');
+    }
+
+    // 本地文件头：字段 / 顺序 / 取值与 buildZip 逐项一致
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); // 本地文件头签名
+    local.writeUInt16LE(20, 4); // 解压所需版本
+    local.writeUInt16LE(0, 6); // 标志位（文件名全是 ASCII，不用 UTF-8 标志）
+    local.writeUInt16LE(method, 8);
+    local.writeUInt16LE(stamp.time, 10);
+    local.writeUInt16LE(stamp.date, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(payloadLength, 18);
+    local.writeUInt32LE(rawLength, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28); // 扩展字段长度（mimetype 也必须是 0）
+    await write(local);
+    await write(name);
+    for (const part of payloadParts) await write(part);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); // 中央目录签名
+    central.writeUInt16LE(20, 4); // 创建者版本
+    central.writeUInt16LE(20, 6); // 解压所需版本
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(method, 10);
+    central.writeUInt16LE(stamp.time, 12);
+    central.writeUInt16LE(stamp.date, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(payloadLength, 20);
+    central.writeUInt32LE(rawLength, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30); // 扩展字段
+    central.writeUInt16LE(0, 32); // 注释
+    central.writeUInt16LE(0, 34); // 起始磁盘号
+    central.writeUInt16LE(0, 36); // 内部属性
+    central.writeUInt32LE(0, 38); // 外部属性
+    central.writeUInt32LE(offset, 42); // 本地头偏移
+    centralParts.push(central, name);
+
+    offset += 30 + name.length + payloadLength;
+  }
+
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); // 目录结尾记录
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(count, 8);
+  end.writeUInt16LE(count, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+  for (const part of centralParts) await write(part);
+  await write(end);
+  return { bytes: offset + centralSize + 22, count };
+}
+
+module.exports = {
+  crc32,
+  buildZip,
+  streamZip,
+  entryNameProblem,
+  assertEntryName,
+  MAX_ENTRY_NAME_BYTES
+};

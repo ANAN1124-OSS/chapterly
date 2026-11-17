@@ -17,7 +17,7 @@
 // 只把选中的章节写进文档；章号 / 章名仍按全书顺序，卷标题只生成选中章所在的卷。
 const chaptersLib = require('./chapters');
 const exporter = require('./exporter');
-const { buildZip } = require('./zip');
+const { buildZip, streamZip } = require('./zip');
 // XML 字符清洗 / 转义 / 切段只有一份实现（和 EPUB 导出共用，见 core/xml.js）；
 // 导出时间戳也在那里（经 core/exporter.normalizeExportInput 统一取，本文件不再直接引用）。
 const { escapeXml, paragraphsFromText } = require('./xml');
@@ -159,33 +159,35 @@ function appPropertiesDocument() {
   ].join('\n');
 }
 
-function documentBody({ title, author, metaLine, content }) {
-  const body = [
-    paragraph('Title', title),
-    author ? paragraph('Subtitle', author) : '',
-    metaLine ? paragraph('Subtitle', metaLine) : '',
-    pageBreakParagraph(),
-    ...content
-  ].filter(Boolean);
-  return body;
-}
-
-function documentDocument({ title, author, metaLine, content }) {
+// B1（审计 #17 / WP13）：document.xml 的行拼装只在这里定义。
+// documentDocument 用 join('\n') 出整份字符串（buildDocx 原路径逐字节不变）；
+// documentXmlChunks 按同一批行逐行 + '\n' 喂给流式 zip（拼接结果与 join 等价，
+// 末尾那个空元素行等价于最后一行后的一个换行）。
+function documentPrefixLines({ title, author, metaLine }) {
   return [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     `<w:document xmlns:w="${WORD_NAMESPACE}">`,
     '  <w:body>',
-    ...documentBody({ title, author, metaLine, content }),
-    '    <w:sectPr>',
-    '      <w:pgSz w:w="11906" w:h="16838"/>',
-    '      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="851" w:footer="992" w:gutter="0"/>',
-    '      <w:cols w:space="425"/>',
-    '      <w:docGrid w:linePitch="312"/>',
-    '    </w:sectPr>',
-    '  </w:body>',
-    '</w:document>',
-    ''
-  ].join('\n');
+    paragraph('Title', title),
+    author ? paragraph('Subtitle', author) : '',
+    metaLine ? paragraph('Subtitle', metaLine) : '',
+    pageBreakParagraph()
+  ].filter(Boolean);
+}
+
+const DOCUMENT_SUFFIX_LINES = [
+  '    <w:sectPr>',
+  '      <w:pgSz w:w="11906" w:h="16838"/>',
+  '      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="851" w:footer="992" w:gutter="0"/>',
+  '      <w:cols w:space="425"/>',
+  '      <w:docGrid w:linePitch="312"/>',
+  '    </w:sectPr>',
+  '  </w:body>',
+  '</w:document>'
+];
+
+function documentDocument({ title, author, metaLine, content }) {
+  return [...documentPrefixLines({ title, author, metaLine }), ...content, ...DOCUMENT_SUFFIX_LINES, ''].join('\n');
 }
 
 // ---------- 书籍结构 ----------
@@ -202,15 +204,41 @@ function normalizeInput(input) {
   return { meta, chapters, texts, title, author, stamp, plan };
 }
 
-function buildBundle(input) {
+// B1（审计 #17 / WP13）：导出计划的元数据只有这一份；buildBundle 用整本 texts 同步拼
+// document.xml，streamDocx 用 readText 逐章喂 collected chunks（XML 不整份物化）。
+function planBundle(input) {
   const { meta, chapters, texts, title, author, stamp, plan } = normalizeInput(input);
-  const content = [];
   let volumeCount = 0;
   for (const group of exporter.groupByVolume(meta, plan.indexes)) {
-    if (group.name) {
-      content.push(paragraph('Heading1', group.name));
-      volumeCount += 1;
-    }
+    if (group.name) volumeCount += 1;
+  }
+  const metaBits = [];
+  if (plan.mode !== 'all') metaBits.push(plan.label);
+  metaBits.push(`共 ${plan.count} 章`);
+  if (volumeCount > 0) metaBits.push(`${volumeCount} 卷`);
+  const metaLine = metaBits.join(' · ');
+  const displayAuthor = author ? `作者：${author}` : '';
+  return {
+    meta,
+    chapters,
+    texts,
+    title,
+    author,
+    stamp,
+    plan,
+    volumeCount,
+    metaLine,
+    displayAuthor,
+    chapterCount: plan.count
+  };
+}
+
+function buildBundle(input) {
+  const planInfo = planBundle(input);
+  const { meta, chapters, texts, title, author, stamp, plan, volumeCount, metaLine, displayAuthor } = planInfo;
+  const content = [];
+  for (const group of exporter.groupByVolume(meta, plan.indexes)) {
+    if (group.name) content.push(paragraph('Heading1', group.name));
     for (const index of group.indexes) {
       const chapter = chapters[index];
       const chapterTitle = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
@@ -220,13 +248,6 @@ function buildBundle(input) {
       }
     }
   }
-
-  const metaBits = [];
-  if (plan.mode !== 'all') metaBits.push(plan.label);
-  metaBits.push(`共 ${plan.count} 章`);
-  if (volumeCount > 0) metaBits.push(`${volumeCount} 卷`);
-  const metaLine = metaBits.join(' · ');
-  const displayAuthor = author ? `作者：${author}` : '';
 
   const files = [
     { name: '[Content_Types].xml', data: contentTypesDocument() },
@@ -281,6 +302,72 @@ async function buildDocx(input) {
   };
 }
 
+// B1（审计 #17 / WP13）：document.xml 的流式版本 —— 逐行产出（每行带 '\n'），
+// 与 documentDocument 的 join('\n') 逐字节等价；正文由 readText 逐章读，
+// 不再先建整本 content 数组 / 整份 XML 字符串的多份拷贝。工厂可被调用两次（压缩兜底时）。
+async function* documentXmlChunks({ title, author, metaLine, meta, chapters, texts, plan, readText }) {
+  for (const line of documentPrefixLines({ title, author, metaLine })) yield `${line}\n`;
+  for (const group of exporter.groupByVolume(meta, plan.indexes)) {
+    if (group.name) yield `${paragraph('Heading1', group.name)}\n`;
+    for (const index of group.indexes) {
+      const chapter = chapters[index];
+      const chapterTitle = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
+      yield `${paragraph('Heading2', chapterTitle)}\n`;
+      const text = readText ? await readText(index, chapter) : texts[index];
+      for (const para of paragraphsFromText(text)) yield `${paragraph('BodyText', para)}\n`;
+    }
+  }
+  for (const line of DOCUMENT_SUFFIX_LINES) yield `${line}\n`;
+}
+
+// B1（审计 #17 / WP13）：流式 DOCX —— 静态部位照旧，word/document.xml 用分块生成器喂 zip。
+// 产物与 buildDocx 逐字节一致（R4 对拍）；返回字段与 buildDocx 相同（没有 buffer）。
+// 说明：document.xml 是单一 zip 条目，本地头需要压缩后长度，所以压缩块（通常只有原文的
+// 1/10 量级）仍会按块收在内存里；换来的是「不建整本 content 数组、不物化整份 XML 字符串」。
+async function streamDocx(input, write) {
+  if (typeof write !== 'function') throw new TypeError('streamDocx 需要写入回调');
+  const planInfo = planBundle(input);
+  const { meta, chapters, texts, title, author, stamp, plan, volumeCount, metaLine, displayAuthor } = planInfo;
+  const readText = input && typeof input.readText === 'function' ? input.readText : null;
+  const fallbackTexts = Array.isArray(texts) ? texts : [];
+  const files = [
+    { name: '[Content_Types].xml', data: contentTypesDocument() },
+    { name: '_rels/.rels', data: packageRelsDocument() },
+    {
+      name: 'word/document.xml',
+      chunks: () =>
+        documentXmlChunks({
+          title,
+          author: displayAuthor,
+          metaLine,
+          meta,
+          chapters,
+          texts: fallbackTexts,
+          plan,
+          readText
+        })
+    },
+    { name: 'word/styles.xml', data: stylesDocument() },
+    { name: 'word/_rels/document.xml.rels', data: documentRelsDocument() },
+    {
+      name: 'docProps/core.xml',
+      data: corePropertiesDocument({ title, author: author || '章回', modified: stamp.iso })
+    },
+    { name: 'docProps/app.xml', data: appPropertiesDocument() }
+  ];
+  const zipDate = (input && input.zipDate) || stamp.date;
+  const result = await streamZip(files, { date: zipDate }, write);
+  return {
+    chapterCount: planInfo.chapterCount,
+    volumeCount,
+    bytes: result.bytes,
+    title,
+    modified: stamp.iso,
+    rangeMode: plan.mode,
+    rangeLabel: plan.label
+  };
+}
+
 // 导出对话框默认文件名：全书 = 书名.docx；按卷 / 按范围 = 书名-范围.docx
 // （范围规则和 TXT / EPUB 导出完全一致，由 core/exporter.exportFileName 统一实现）
 function docxFileName(meta, range) {
@@ -292,5 +379,6 @@ module.exports = {
   WORD_LINE_SPACING,
   docxFiles,
   buildDocx,
+  streamDocx,
   docxFileName
 };

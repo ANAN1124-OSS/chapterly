@@ -55,7 +55,13 @@ function groupByVolume(meta, indexes) {
   return groups;
 }
 
+// 审计修复 X-N8（#25 / WP13）：null / undefined / 空串（含纯空白）一律当「没传」返回 null。
+// 以前 `Math.floor(Number(null))` === 0、`Number('')` === 0，于是 range 的「null = 没传」
+// 分支永远不生效，缺省范围被夹成第 1–1 章（静默只导第 1 章）。显式 0 仍是「传了数字」，
+// 由调用方按旧口径夹到第 1 章 —— 不把 0 和「没传」混为一谈。
 function toInt(value) {
+  if (value == null) return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
   const n = Math.floor(Number(value));
   return Number.isFinite(n) ? n : null;
 }

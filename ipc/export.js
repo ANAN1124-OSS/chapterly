@@ -3,11 +3,13 @@
  * 搬走的段（原 main.js 的 registerIpc() 内，行号按搬前代码）：
  *   · collectExportTexts（2473–2503）：拼导出 / 复制用的正文，批读 + override，chars 口径不变；
  *   · 导出区（2505–2772）：book:export-plan / book:export / book:export-epub / book:export-docx /
- *     book:copy / chapter:copy-platform，以及 isDirectory / prepareExport / readExportTexts /
- *     writeTxtExport / archiveExportResult 五个同域助手。
+ *     book:copy / chapter:copy-platform，以及 isDirectory / prepareExport / writeTxtExport /
+ *     archiveExportResult 等同域助手。
  *
- * 只搬不改行为：三个导出入口仍是「保存对话框确认之后才读正文」（审计 #7）、TXT 仍走
- * atomicWriteFileStream 流式写盘（B5 / WP-28）、EPUB / DOCX 仍是「就地转换 + 用完即清」（C1）。
+ * 只搬不改行为：三个导出入口仍是「保存对话框确认之后才读正文」（审计 #7）、TXT 走
+ * atomicWriteFileStream 流式写盘（B5 / WP-28）。B1（审计 #17 / WP13）起 EPUB / DOCX 也改成
+ * 逐章读 + 流式打包（atomicWriteFileStream + core/*.stream*），整本 texts / 整包 Buffer 不再常驻；
+ * 字节产物与整本构建路径逐字节一致（tests/export-stream-wp13.test.js R1/R3/R4/R10 对拍）。
  * 其余频道（导入 / 整理 / 历史 / 排版…）本版仍留在 main.js —— D-6 只拆导出 / 校对 / 书 CRUD 三块。
  *
  * 本模块唯一的新增（不属于搬移范围）：审计修复 #6（V302）的 chapter:rescue —— 保存被阻断时的
@@ -180,20 +182,15 @@ function registerExportIpc(host) {
     return { meta, plan, override: safeOverride, cfg, defaultDir, range: safeRange };
   }
 
-  // 保存对话框确认之后才走的正文读取（审计 #7）：prepareExport 的后半段，三个导出入口共用。
-  // 调用点必须放在 `if (canceled || !filePath) return { canceled: true };` 之后——顺序反了就等于
-  // 用户取消也白读整本；tests/export-read-order.test.js 的静态闸门钉住这个时序。
-  async function readExportTexts(bookPath, prepared) {
-    const { meta, plan, override } = prepared;
-    return collectExportTexts(bookPath, meta, override, plan.indexes);
-  }
+  // 保存对话框确认之后才走的正文读取（审计 #7）已并进 exportStructured 的逐章回调：
+  // EPUB / DOCX 走流式构建（B1 / WP13），TXT 走 writeTxtExport → streamTxtExport（WP-28）。
+  // 三处共同纪律：只读、按章读、对话框确认之后才第一次读盘；chars 仍按原始正文去空白计数。
 
   // B5（v1.8.0 WP-28）：TXT 导出流式写盘 —— 每章读出来 → 拼块 → 简繁转换 → 立刻写进临时文件，
   // 整本 texts 数组 / 整本串 / 整本 Buffer 都不常驻（峰值从「约 2 份全书」降到「一章 + 它的导出块」）。
   // 字节口径与旧链（collectExportTexts → buildTxtExport）逐字节一致：BOM 先写、块间 `\r\n\r\n`、末尾一个 `\r\n`。
   // 顺序仍是「保存对话框确认 → 才开始读正文」（审计 #7）；中途失败由 atomicWriteFileStream 删掉临时文件，
-  // 目标文件一个字节不动。EPUB / DOCX 本轮评估后不动：两个 builder 需要整本 texts 才能算目录 / 打包，
-  // 改成按章喂入要重写打包层（见台账 WP-28 口径），现有 C1「就地转换 + 用完即清」保持原样。
+  // 目标文件一个字节不动。B1（WP13）起 EPUB / DOCX 也走同一条流式写盘纪律（见 exportStructured）。
   async function writeTxtExport(filePath, bookPath, prepared) {
     const { meta, plan, override } = prepared;
     const conversion = s2tLib.normalizeMode(prepared.cfg.exportConversion);
@@ -234,10 +231,12 @@ function registerExportIpc(host) {
     };
   }
 
-  // 审计修复 #24（R2）：EPUB / DOCX 的导出流程 = 保存对话框 → 读正文 → 简繁转换 → 构建 →
-  // 原子写盘 → 记目录 → 回形状，两个入口以前各抄一份（≈24 行近逐字重复）。现在只留这一份：
-  // 每个格式只提供自己的对话框标题 / 扩展名 / 默认文件名与 build 函数，其余全共用。
-  // 时序纪律不变（审计 #7）：正文只在保存对话框确认之后才读（取消 / 改主意都不白读整本）。
+  // 审计修复 #24（R2）：EPUB / DOCX 的导出流程 = 保存对话框 → 逐章读正文 → 简繁转换 → 流式构建 / 写盘
+  // → 记目录 → 回形状，两个入口以前各抄一份（≈24 行近逐字重复）。现在只留这一份：
+  // 每个格式只提供自己的对话框标题 / 扩展名 / 默认文件名与 stream 函数，其余全共用。
+  // B1（审计 #17 / WP13）：正文不再一次读成整本 texts —— readText 回调把「读盘 + override + chars
+  // + 简繁转换」按章交给格式的流式构建，整本正文 / 整本串 / 整包 Buffer 都不常驻。
+  // 时序纪律不变（审计 #7）：readText 定义在取消分支之后，取消 / 改主意都不读一个字节正文。
   async function exportStructured(bookPath, override, range, options) {
     const prepared = await prepareExport(bookPath, override, range);
     const { meta, cfg, defaultDir, range: safeRange } = prepared;
@@ -248,17 +247,33 @@ function registerExportIpc(host) {
       filters: options.filters
     });
     if (canceled || !filePath) return { canceled: true };
-    // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）。
-    const { texts, chars, includedUnsaved } = await readExportTexts(bookPath, prepared);
-    // 简繁转换：书名 / 卷名 / 章名 / 正文都换成导出用的副本，目录和正文才一致；
+    // 审计 #7：落点确认之后才读正文（取消 / 改主意都不会白读）。B1 起改成逐章读。
+    // 简繁转换：书名 / 卷名 / 章名 / 模板 / 正文都换成导出用的副本，目录和正文才一致；
     // 书目与章节 txt 一概不动（chars 仍按原稿字数算）。
     const conversion = s2tLib.normalizeMode(cfg.exportConversion);
     const exportMeta = s2tLib.convertMeta(meta, conversion);
-    // C1（审计 #1 / P3）：正文转换就地做（不再额外建一整份全书数组）；打包完立刻放掉整本正文。
-    exporter.convertTextsInPlace(texts, conversion, s2tLib.convertText);
-    const built = await options.build(exportMeta, texts, safeRange);
-    exporter.releaseTexts(texts);
-    await atomicWriteFile(filePath, built.buffer);
+    const overrideIndex = exporter.chapterIndexOf(meta, prepared.override);
+    const includedUnsaved = overrideIndex >= 0 && prepared.plan.indexes.includes(overrideIndex);
+    let chars = 0;
+    let built = null;
+    await atomicWriteFileStream(filePath, async (write) => {
+      built = await options.stream(
+        {
+          meta: exportMeta,
+          range: safeRange,
+          // 每章只读一次：override 章用编辑区最新内容（不写盘），其余读磁盘；chars 按原始正文计。
+          readText: async (index, chapter) => {
+            const text =
+              index === overrideIndex
+                ? prepared.override.text
+                : (await storage.loadChapterText(bookPath, chapter.file)).text;
+            chars += chaptersLib.countChars(text);
+            return conversion ? s2tLib.convertText(text, conversion) : text;
+          }
+        },
+        write
+      );
+    });
     await rememberExportDir(path.dirname(filePath));
     return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, prepared.plan);
   }
@@ -300,7 +315,7 @@ function registerExportIpc(host) {
       title: '导出 EPUB',
       filters: [{ name: 'EPUB 电子书', extensions: ['epub'] }],
       defaultName: (prepared) => epubLib.epubFileName(prepared.meta, prepared.range),
-      build: (meta, texts, safeRange) => epubLib.buildEpub({ meta, texts, range: safeRange })
+      stream: (input, write) => epubLib.streamEpub(input, write)
     })
   );
 
@@ -312,7 +327,7 @@ function registerExportIpc(host) {
       title: '导出 DOCX',
       filters: [{ name: 'Word 文档', extensions: ['docx'] }],
       defaultName: (prepared) => docxLib.docxFileName(prepared.meta, prepared.range),
-      build: (meta, texts, safeRange) => docxLib.buildDocx({ meta, texts, range: safeRange })
+      stream: (input, write) => docxLib.streamDocx(input, write)
     })
   );
 

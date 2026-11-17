@@ -26,8 +26,16 @@ function sliceFrom(source, startMarker) {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
-const PREPARE = sliceFrom(MAIN, '  async function prepareExport(bookPath, override, range) {');
-const READ_AFTER = sliceFrom(MAIN, '  async function readExportTexts(bookPath, prepared) {');
+// 取函数体：从锚点到同缩进的下一个 `\n  }\n`（只读函数本身，不吃后面的注释段落）。
+function sliceBody(source, startMarker) {
+  const start = source.indexOf(startMarker);
+  assert.notEqual(start, -1, `找不到锚点：${startMarker}`);
+  const end = source.indexOf('\n  }\n', start);
+  assert.notEqual(end, -1, `找不到函数结尾：${startMarker}`);
+  return source.slice(start, end + 4);
+}
+
+const PREPARE = sliceBody(MAIN, '  async function prepareExport(bookPath, override, range) {');
 
 test('静态闸门：prepareExport 只做只读前置，不读正文（#7）', () => {
   assert.doesNotMatch(PREPARE, /collectExportTexts/, 'prepareExport 不许读正文（否则取消导出就白读整本）');
@@ -41,10 +49,15 @@ test('静态闸门：prepareExport 只做只读前置，不读正文（#7）', (
   assert.match(PREPARE, /override: safeOverride/, 'prepareExport 要把 sanitize 过的 override 传给后半段');
 });
 
-test('静态闸门：readExportTexts 是 prepareExport 的后半段（#7）', () => {
-  assert.match(READ_AFTER, /collectExportTexts\(/, 'readExportTexts 必须真的读正文');
-  assert.match(READ_AFTER, /plan\.indexes/, 'readExportTexts 必须按已解析的范围下标读（保持空串占位对齐）');
-  assert.match(READ_AFTER, /prepared/, 'readExportTexts 复用 prepareExport 的结果，不重新解析范围');
+test('静态闸门：EPUB / DOCX 的逐章读取是 prepareExport 的后半段（#7 / B1）', () => {
+  // B1（审计 #17 / WP13）：整本 readExportTexts 收掉，正文改由 exportStructured 的 readText
+  // 回调逐章供给格式的流式构建。这里钉住「回调真的读盘、按已解析的范围读、复用 prepared」。
+  assert.equal(MAIN.includes('async function readExportTexts('), false, '整本读取的 readExportTexts 已删除');
+  const KERNEL = sliceFrom(MAIN, '  async function exportStructured(bookPath, override, range, options) {');
+  assert.match(KERNEL, /readText: async \(index, chapter\) =>/, '共享内核要定义逐章读取回调');
+  assert.match(KERNEL, /storage\.loadChapterText\(bookPath, chapter\.file\)/, '逐章读取必须真的读盘');
+  assert.match(KERNEL, /prepared\.override/, '逐章读取复用 prepareExport 的 override');
+  assert.match(KERNEL, /prepared\.plan\.indexes/, 'includedUnsaved 要按已解析的范围下标判');
 });
 
 test('静态闸门：三个导出入口都在保存对话框确认之后才读正文（#7 / 审计 #24 R2）', () => {
@@ -62,32 +75,29 @@ test('静态闸门：三个导出入口都在保存对话框确认之后才读�
   assert.ok(TXT_DIALOG < TXT_CANCEL, 'TXT：取消分支必须在保存对话框之后');
   assert.ok(TXT_CANCEL < TXT_READ, 'TXT：正文必须在保存对话框确认之后才读（#7）');
 
-  // 共享内核：对话框 → 取消分支 → 读正文，顺序不许反；也不许绕过内核从 prepareExport 拿 texts。
+  // 共享内核：对话框 → 取消分支 → 流式写盘（内部逐章读正文），顺序不许反；也不许绕过内核从 prepareExport 拿 texts。
   const KERNEL = sliceFrom(MAIN, '  async function exportStructured(bookPath, override, range, options) {');
   const DIALOG = KERNEL.indexOf('await showSaveDialog(');
   const CANCEL = KERNEL.indexOf('if (canceled || !filePath) return { canceled: true };');
-  const READ = KERNEL.indexOf('await readExportTexts(bookPath, prepared)');
+  const READ = KERNEL.indexOf('await atomicWriteFileStream(filePath');
   assert.notEqual(DIALOG, -1, 'exportStructured：找不到保存对话框');
   assert.notEqual(CANCEL, -1, 'exportStructured：找不到取消分支');
   assert.notEqual(READ, -1, 'exportStructured：正文读取没走约定的入口（可能又改回 prepareExport 里读了）');
   assert.ok(DIALOG < CANCEL, 'exportStructured：取消分支必须在保存对话框之后');
   assert.ok(CANCEL < READ, 'exportStructured：正文必须在保存对话框确认之后才读（#7：取消导出不许白读整本）');
-  assert.doesNotMatch(
-    KERNEL,
-    /const \{[^}]*texts[^}]*\} = await prepareExport\(/,
-    'exportStructured：不许从 prepareExport 拿 texts'
-  );
+  assert.doesNotMatch(KERNEL, /const \{[^}]*texts[^}]*\} = await prepareExport\(/);
+  assert.doesNotMatch(KERNEL, /readExportTexts|collectExportTexts/, '共享内核不许再整本读 texts（B1 流式）');
 
   // 两个格式入口：都只委托共享内核，不许把「弹框 → 读正文」再抄一份回来（#24 R2 的回潮闸门）。
-  for (const [channel, buildCall] of [
-    ['book:export-epub', 'epubLib.buildEpub('],
-    ['book:export-docx', 'docxLib.buildDocx(']
+  for (const [channel, streamCall] of [
+    ['book:export-epub', 'epubLib.streamEpub('],
+    ['book:export-docx', 'docxLib.streamDocx(']
   ]) {
     // 锚点本身是「channel 行 + 下一行 exportStructured(」，找到了就等于确实委托了共享内核
     const body = sliceFrom(MAIN, `  handleBook('${channel}', async (bookPath, override, range) =>\n    exportStructured(`);
     assert.equal(body.includes('showSaveDialog('), false, `${channel}：不许再自己弹保存对话框`);
-    assert.equal(body.includes('readExportTexts('), false, `${channel}：不许再自己读正文`);
-    assert.ok(body.includes(buildCall), `${channel}：build 函数要传进共享内核`);
+    assert.equal(body.includes('readText'), false, `${channel}：不许再自己读正文`);
+    assert.ok(body.includes(streamCall), `${channel}：流式构建函数要传进共享内核`);
     assert.ok(body.includes('defaultName:'), `${channel}：默认文件名要传进共享内核`);
   }
 });

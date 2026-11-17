@@ -20,7 +20,7 @@
 const crypto = require('node:crypto');
 const chaptersLib = require('./chapters');
 const exporter = require('./exporter');
-const { buildZip, crc32 } = require('./zip');
+const { buildZip, streamZip, crc32 } = require('./zip');
 // XML 字符清洗 / 转义 / 切段只有一份实现（和 DOCX 导出共用，见 core/xml.js）；
 // 导出时间戳也在那里（经 core/exporter.normalizeExportInput 统一取，本文件不再直接引用）。
 const { escapeXml, paragraphsFromText } = require('./xml');
@@ -287,19 +287,22 @@ function normalizeInput(input) {
   return { meta, chapters, texts, title, lang, identifier, stamp, plan };
 }
 
-function buildBundle(input) {
+// B1（审计 #17 / WP13）：文件清单与元数据只有这一份顺序。
+// 非章节文件（mimetype / container / nav / ncx / css / cover / opf）直接给具体字符串；
+// 章节文件给 { index, title } 描述符 —— buildBundle 用整本 texts 同步填，
+// streamEpub 用 readText 逐章读，两边顺序 / 内容由 R3 的逐字节对拍锁住。
+function bundlePlan(input) {
   const { meta, chapters, texts, title, lang, identifier, stamp, plan } = normalizeInput(input);
-  // 空范围检查已在 normalizeInput（core/exporter.normalizeExportInput）里统一做，这里不重复。
   // 1.7.0 P4-1：分组收编到 core/exporter.groupByVolume（txt / docx / epub 共用一份）
   const groups = exporter.groupByVolume(meta, plan.indexes);
-  const files = [];
+  const items = [];
   const manifest = [];
   const spine = [];
   const navItems = [];
   let volumeCount = 0;
 
-  files.push({ name: 'mimetype', data: EPUB_MIMETYPE, store: true });
-  files.push({ name: 'META-INF/container.xml', data: containerDocument() });
+  items.push({ name: 'mimetype', data: EPUB_MIMETYPE, store: true });
+  items.push({ name: 'META-INF/container.xml', data: containerDocument() });
 
   manifest.push({ id: 'nav', href: 'nav.xhtml', mediaType: 'application/xhtml+xml', properties: 'nav' });
   manifest.push({ id: 'ncx', href: 'toc.ncx', mediaType: 'application/x-dtbncx+xml' });
@@ -314,7 +317,7 @@ function buildBundle(input) {
       volumeCount += 1;
       volumeHref = `text/volume-${pad4(volumeCount)}.xhtml`;
       const id = `vol${volumeCount}`;
-      files.push({
+      items.push({
         name: `${EPUB_DIR}/${volumeHref}`,
         data: volumeDocument({ title: group.name, lang, cssHref: '../style.css' })
       });
@@ -330,11 +333,7 @@ function buildBundle(input) {
       // 章名 / 章号规则和 TXT 导出完全一致（core/chapters.formatTitle）：
       // 按卷编号时标题用各卷自己的章号；包内文件名 / id 仍按全书下标（内部标识，不显示）。
       const chapterTitle = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
-      const text = texts[index] == null ? '' : texts[index];
-      files.push({
-        name: `${EPUB_DIR}/${href}`,
-        data: chapterDocument({ title: chapterTitle, text, lang, cssHref: '../style.css' })
-      });
+      items.push({ name: `${EPUB_DIR}/${href}`, chapter: { index, title: chapterTitle } });
       manifest.push({ id, href, mediaType: 'application/xhtml+xml' });
       spine.push(id);
       const item = { label: chapterTitle, href };
@@ -344,16 +343,16 @@ function buildBundle(input) {
     if (hasVolumePage) navItems.push({ label: group.name, href: volumeHref, children });
   }
 
-  files.push({
+  items.push({
     name: `${EPUB_DIR}/nav.xhtml`,
     data: navDocument({ title, lang, items: navItems, cssHref: 'style.css' })
   });
-  files.push({
+  items.push({
     name: `${EPUB_DIR}/toc.ncx`,
     data: ncxDocument({ title, identifier, lang, items: navItems })
   });
-  files.push({ name: `${EPUB_DIR}/style.css`, data: STYLE_CSS });
-  files.push({
+  items.push({ name: `${EPUB_DIR}/style.css`, data: STYLE_CSS });
+  items.push({
     name: `${EPUB_DIR}/cover.xhtml`,
     data: coverDocument({
       title,
@@ -364,7 +363,7 @@ function buildBundle(input) {
       cssHref: 'style.css'
     })
   });
-  files.push({
+  items.push({
     name: `${EPUB_DIR}/content.opf`,
     data: opfDocument({
       title,
@@ -376,9 +375,24 @@ function buildBundle(input) {
     })
   });
 
+  return { items, meta, chapters, texts, title, lang, identifier, stamp, plan, chapterCount: plan.count, volumeCount };
+}
+
+function buildBundle(input) {
+  const planInfo = bundlePlan(input);
+  const { items, texts, title, lang, identifier, stamp, plan, chapterCount, volumeCount } = planInfo;
+  // 空范围检查已在 normalizeInput（core/exporter.normalizeExportInput）里统一做，这里不重复。
+  const files = items.map((item) => {
+    if (!item.chapter) return item;
+    const text = texts[item.chapter.index] == null ? '' : texts[item.chapter.index];
+    return {
+      name: item.name,
+      data: chapterDocument({ title: item.chapter.title, text, lang, cssHref: '../style.css' })
+    };
+  });
   return {
     files,
-    chapterCount: plan.count,
+    chapterCount,
     volumeCount,
     title,
     identifier,
@@ -416,6 +430,45 @@ async function buildEpub(input) {
   };
 }
 
+// B1（审计 #17 / WP13）：流式导出 —— 按「卷 → 章」逐个生成 XHTML 并立刻交给 zip 写入器，
+// 不再把整本 texts 数组 / 全书 XHTML 清单 / 整包 Buffer 常驻。正文由 readText(index, chapter)
+// 按章读（ipc/export.js 负责覆盖章与简繁转换），峰值约为「一章 + 它的 XHTML」。
+// 产物与 buildBundle → buildZip 逐字节一致（R3 对拍）；返回字段与 buildEpub 相同（没有 buffer）。
+async function streamEpub(input, write) {
+  if (typeof write !== 'function') throw new TypeError('streamEpub 需要写入回调');
+  const planInfo = bundlePlan(input);
+  const { items, chapters, texts, lang, plan, stamp } = planInfo;
+  const readText = input && typeof input.readText === 'function' ? input.readText : null;
+  const fallbackTexts = Array.isArray(texts) ? texts : [];
+  const entries = (async function* epubEntries() {
+    for (const item of items) {
+      if (!item.chapter) {
+        yield item;
+        continue;
+      }
+      const { index, title } = item.chapter;
+      const text = readText
+        ? await readText(index, chapters[index])
+        : fallbackTexts[index] == null
+          ? ''
+          : fallbackTexts[index];
+      yield { name: item.name, data: chapterDocument({ title, text, lang, cssHref: '../style.css' }) };
+    }
+  })();
+  const zipDate = (input && input.zipDate) || stamp.date;
+  const result = await streamZip(entries, { date: zipDate }, write);
+  return {
+    chapterCount: planInfo.chapterCount,
+    volumeCount: planInfo.volumeCount,
+    bytes: result.bytes,
+    title: planInfo.title,
+    identifier: planInfo.identifier,
+    modified: stamp.iso,
+    rangeMode: plan.mode,
+    rangeLabel: plan.label
+  };
+}
+
 // 导出对话框默认文件名：全书 = 书名.epub；按卷 / 按范围 = 书名-范围.epub
 // （范围规则和 TXT 导出完全一致，由 core/exporter.exportFileName 统一实现）
 function epubFileName(meta, range) {
@@ -428,5 +481,6 @@ module.exports = {
   paragraphsFromText,
   epubFiles,
   buildEpub,
+  streamEpub,
   epubFileName
 };
