@@ -44,6 +44,12 @@
   // （与标记层 30 万字阈值对齐）；core/capture-queue.js 的单条上限直接引用这里，别再各写一份。
   const MAX_BODY_CHARS = 300000;
 
+  // 单条捕获**原文长度**上限（含空白的原始长度，B3）：字数口径挡不住「290 万个前导换行 +
+  // 10 万字正文」这种空白重型 payload（字数 10 万、原文 300 万）。这个数同时是队列总量上限
+  // （core/capture-queue.js 的 DEFAULT_MAX_TOTAL_CHARS = 10 条 × 30 万字满额），两处共用一份；
+  // 它挡的是原文长度 / 内存，不是显示字数（显示仍按 MAX_BODY_CHARS）。
+  const MAX_RAW_CHARS = 3000000;
+
   // 列表预览：整块展示时最多 300 字 / 6 行（先截行再截字）。再多就不是「认出是哪一段」，
   // 而是把正文又铺一遍到渲染层了。
   const PREVIEW_MAX_CHARS = 300;
@@ -85,10 +91,16 @@
       value = '';
     }
     value = stripBom(value).replace(/\r\n?/g, '\n').replace(/\u0000/g, '');
+    // 2026-11-17（审计 B3）：首部空行原来用 while + lines.shift()，每次 shift 都要把整条数组
+    // 前移（O(n²)）——「290 万个前导换行 + 10 万字正文」是队列合法条目，点「章节」进来会冻住
+    // 主进程数十分钟。改成 findIndex 找首个非空行 + 一次 slice（同文件 stripLeadingBlankLines
+    // 早就是这个写法）；末尾空行从尾部收指针，同样只 slice 一次，收敛口径与原来逐行 pop 一致。
     const lines = value.split('\n').map((line) => line.replace(/[ \t\u3000]+$/g, ''));
-    while (lines.length && !lines[0].trim()) lines.shift();
-    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-    return lines.join('\n');
+    const first = lines.findIndex((line) => Boolean(line.trim()));
+    if (first < 0) return '';
+    let end = lines.length;
+    while (end > first && !lines[end - 1].trim()) end -= 1;
+    return lines.slice(first, end).join('\n');
   }
 
   // 一行是不是章节标题：先按 NFKC 归一（全角数字 / 日文「第１話」），再走 core/txt.js 的 parseHeading。
@@ -176,9 +188,67 @@
     return { title: '', body: normalized, titleOnly: false, reason: 'body' };
   }
 
+  // 捕获入口的统一限额判定（审计 B3）：commit-record 与队列同一口径，先按**原文长度**挡，
+  // 再按**去空白字数**挡。顺序不能反：空白重型 payload（290 万前导换行 + 10 万字正文）字数很小、
+  // 原文却极长——先算字数不但白扫 300 万字符，而且字数闸根本挡不住它。
+  // 返回 { tooLarge, reason: 'raw'|'chars'|'', rawLength, chars }；reason='raw' 时 chars=null
+  // （没算，调用方也不需要）。非字符串按空串处理——调用方的 BAD_TEXT 闸在它之前。
+  function checkCaptureLimits(text) {
+    const source = typeof text === 'string' ? text : '';
+    const rawLength = source.length;
+    if (rawLength > MAX_RAW_CHARS) {
+      return { tooLarge: true, reason: 'raw', rawLength, chars: null };
+    }
+    const chars = countChars(source);
+    if (chars > MAX_BODY_CHARS) {
+      return { tooLarge: true, reason: 'chars', rawLength, chars };
+    }
+    return { tooLarge: false, reason: '', rawLength, chars };
+  }
+
   // 列表展示用的截断正文：CRLF→LF，最多 300 字 / 6 行（先截行再截字），截断末尾加「…」。
   // 空文本（含全空白）返回 ''。主进程 capture-queue.list() 与渲染层 pending 行共用同一份，
   // 免得两边各写一套截断规则、列表和面板显示不一样。
+  //
+  // 2026-11-17（审计 B4）：预览只要 300 字 / 6 行，不再对全文 split + Array.from 物化全部码点
+  // （首行 300 万字时一次产生约 300 万个临时字符串、~100 MB 级）。boundedPreviewPrefix 只走到
+  // 「第 maxLines 个换行」或「第 maxChars+1 个码点」为止，最多收 maxChars 个码点；全空白短路
+  // 仍扫一遍 trim（不分配、不 split，量级只有一次线性扫描）。
+  function boundedPreviewPrefix(value, maxChars, maxLines) {
+    const chars = [];
+    let lines = 1;
+    let truncated = false;
+    let i = 0;
+    while (i < value.length) {
+      const code = value.charCodeAt(i);
+      let width = 1;
+      let ch = value[i];
+      if (code === 13 || code === 10) {
+        // CRLF / 孤立 CR / LF 都算换行（与原 replace(/\r\n?/g, '\n') 后 split('\n') 同口径）
+        ch = '\n';
+        if (code === 13 && value.charCodeAt(i + 1) === 10) width = 2;
+        if (lines >= maxLines) {
+          truncated = true; // 第 maxLines 行之后还有内容 → 行截断（这个换行不进预览）
+          break;
+        }
+        lines += 1;
+      } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length) {
+        const low = value.charCodeAt(i + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) {
+          width = 2; // 代理对整对收，按码点截字时不会从中间切开
+          ch = value.slice(i, i + 2);
+        }
+      }
+      if (chars.length >= maxChars) {
+        truncated = true; // 已收满 maxChars 个码点、后面还有 → 字截断
+        break;
+      }
+      chars.push(ch);
+      i += width;
+    }
+    return { preview: chars.join(''), truncated };
+  }
+
   function recordPreview(text, options = {}) {
     const maxChars = positiveInt(options.maxChars, PREVIEW_MAX_CHARS);
     const maxLines = positiveInt(options.maxLines, PREVIEW_MAX_LINES);
@@ -189,25 +259,16 @@
       value = '';
     }
     if (!value.trim()) return '';
-    value = value.replace(/\r\n?/g, '\n');
-
-    const lines = value.split('\n');
-    let truncated = lines.length > maxLines;
-    const kept = truncated ? lines.slice(0, maxLines) : lines;
-    let preview = kept.join('\n');
-    // 按码点截字（emoji 等代理对不会被从中间切开）；超出才加省略号，正好 300 字不加。
-    const chars = Array.from(preview);
-    if (chars.length > maxChars) {
-      preview = chars.slice(0, maxChars).join('');
-      truncated = true;
-    }
-    return truncated ? `${preview}${ELLIPSIS}` : preview;
+    const bounded = boundedPreviewPrefix(value, maxChars, maxLines);
+    // 超出才加省略号，正好 maxChars 字不加（口径与旧实现逐字节一致，R5 用参考实现钉住）。
+    return bounded.truncated ? `${bounded.preview}${ELLIPSIS}` : bounded.preview;
   }
 
   return {
     MAX_NAME_LENGTH,
     MAX_TITLE_LENGTH,
     MAX_BODY_CHARS,
+    MAX_RAW_CHARS,
     PREVIEW_MAX_CHARS,
     PREVIEW_MAX_LINES,
     CaptureError,
@@ -215,6 +276,7 @@
     looksLikeHeading,
     splitInlineHeading,
     splitRecordTitle,
+    checkCaptureLimits,
     recordPreview,
     countChars
   };

@@ -1661,13 +1661,19 @@ function registerIpc() {
     if (typeof text !== 'string' || !text.trim()) {
       throw new captureLib.CaptureError('BAD_TEXT', '捕获内容格式不对');
     }
-    const captureChars = captureLib.countChars(text);
-    if (captureChars > captureLib.MAX_BODY_CHARS) {
-      throw new captureLib.CaptureError(
-        'TOO_LARGE',
-        `内容太长（${formatCount(captureChars)} 字，最多 ${formatCount(captureLib.MAX_BODY_CHARS)} 字）；` +
-          '请先拆成多段再捕获'
-      );
+    // 2026-11-17（审计 B3）：先挡**原文长度**，再挡去空白字数。空白重型 payload（290 万前导
+    // 换行 + 10 万字正文）字数是 10 万、原文却是 300 万，只按字数挡会放它进标题拆分与写盘。
+    // 原文上限与队列单条 / 总量同一口径（capture.MAX_RAW_CHARS = 3,000,000）；先判还省掉一次
+    // 全串字数统计。闸门位置在 splitRecordTitle 与任何写盘之前：超限 payload 一个字节都不写。
+    const limits = captureLib.checkCaptureLimits(text);
+    if (limits.tooLarge) {
+      const message =
+        limits.reason === 'raw'
+          ? `原文太长（${formatCount(limits.rawLength)} 个字符，最多 ${formatCount(captureLib.MAX_RAW_CHARS)} 个字符）；` +
+            '请先删掉多余空行或拆成多段再捕获'
+          : `内容太长（${formatCount(limits.chars)} 字，最多 ${formatCount(captureLib.MAX_BODY_CHARS)} 字）；` +
+            '请先拆成多段再捕获';
+      throw new captureLib.CaptureError('TOO_LARGE', message);
     }
     const parts = captureLib.splitRecordTitle(text);
     const rawIndex = Number(data.insertIndex);

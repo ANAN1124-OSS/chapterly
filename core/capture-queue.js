@@ -29,7 +29,10 @@ const DEFAULT_MAX_ENTRIES = 50;
 // 单条上限不再另写一份：直接跟 core/capture.js 的捕获正文上限走（2026-11-08 提到 30 万字），
 // 两边各写一份只会漂移（commit-record 按 capture.MAX_BODY_CHARS 挡，队列按这里挡）。
 const DEFAULT_MAX_ENTRY_CHARS = captureLib.MAX_BODY_CHARS;
-const DEFAULT_MAX_TOTAL_CHARS = 3000000;
+// 队列总量上限 = 10 条 × 30 万字满额 = 300 万。2026-11-17（审计 B3）：单条原文长度上限
+// （capture.MAX_RAW_CHARS）与它同值，commit-record 的原文闸也用那一份 —— 两处各写一个
+// 3000000 只会漂移，这里直接引用；maxTotalChars 仍可按实例覆盖（单测口径不变）。
+const DEFAULT_MAX_TOTAL_CHARS = captureLib.MAX_RAW_CHARS;
 // 队列列表只显示首行预览（不是全文）：够认出是哪一段，又不把正文多发一份到渲染层。
 const PREVIEW_LIMIT = 40;
 
@@ -39,16 +42,71 @@ function positiveInt(value, fallback) {
   return Math.max(1, Math.round(n));
 }
 
+// JS 的 \s（String#trim / /\s/ 正则）判定的空白码位：逐码位判定，比整行 replace 少一次分配，
+// 也不会漏掉全角空格 / 不换行空格 / 行分隔符这些「看着不是空格、trim 却算空白」的码位。
+function isWhitespaceCode(code) {
+  return (
+    (code >= 0x0009 && code <= 0x000d) || // \t \n \v \f \r（\n 在调用处单独当行尾处理）
+    code === 0x0020 || // 空格
+    code === 0x00a0 || // 不换行空格
+    code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 || // 行分隔符
+    code === 0x2029 || // 段分隔符
+    code === 0x202f ||
+    code === 0x205f ||
+    code === 0x3000 || // 全角空格
+    code === 0xfeff // BOM（\s 也认）
+  );
+}
+
 // 首行预览：跳空行、把连续空白折成一个空格、超长截断加省略号；空文本返回空串。
+// 2026-11-17（审计 B4）：原来对全文 split(/\r?\n/) 再对首个非空行整行 replace(/\s+/g,' ')；
+// 队列 50 条 × 300 万字时 list() 每次都重扫全文。改成单趟按行推进、只看首个非空行，折叠结果
+// 一超过 limit 字就立刻返回（后面的内容影响不到前 limit 个字；行尾空白本来就要 trim 掉）。
 function previewOf(text, limit = PREVIEW_LIMIT) {
   const source = typeof text === 'string' ? text : '';
   const max = positiveInt(limit, PREVIEW_LIMIT);
-  for (const raw of source.split(/\r?\n/)) {
-    const line = raw.replace(/\s+/g, ' ').trim();
-    if (!line) continue;
-    return line.length > max ? `${line.slice(0, max)}…` : line;
+  let line = ''; // 当前行的折叠结果：不含行首 / 行尾空白，行内连续空白只留一个空格
+  let pendingSpace = false;
+  let i = 0;
+  while (i < source.length) {
+    const code = source.charCodeAt(i);
+    if (code === 10) {
+      // 行尾：这一行有内容就返回（跳空行的口径不变）；没有就接着看下一行
+      if (line) return line.length > max ? `${line.slice(0, max)}…` : line;
+      pendingSpace = false;
+      i += 1;
+      continue;
+    }
+    if (code === 13 && source.charCodeAt(i + 1) === 10) {
+      i += 1; // CRLF：\r 属于行尾，交给下一拍的 \n 收行
+      continue;
+    }
+    if (isWhitespaceCode(code)) {
+      if (line) pendingSpace = true; // 行首空白直接丢；行内空白先挂起，等下一个实字再补一个空格
+      i += 1;
+      continue;
+    }
+    let width = 1;
+    let ch = source[i];
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < source.length) {
+      const low = source.charCodeAt(i + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        width = 2; // 代理对整对收（原实现按码元 slice，这里只保证不拆开）
+        ch = source.slice(i, i + 2);
+      }
+    }
+    if (pendingSpace) {
+      line += ' ';
+      pendingSpace = false;
+    }
+    line += ch;
+    if (line.length > max) return `${line.slice(0, max)}…`; // 折叠后已超 limit → 截断口径确定，立即返回
+    i += width;
   }
-  return '';
+  if (!line) return '';
+  return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
 function createCaptureQueue(options = {}) {
@@ -61,15 +119,23 @@ function createCaptureQueue(options = {}) {
   let nextId = 1;
   let totalChars = 0; // 各条 rawLength 之和（内存口径；上限按它淘汰）
 
+  // 入队时算一次预览就挂在条目上（2026-11-17 审计 B4）：正文在队列里不可变，list() 不该对每条
+  // 原文重算。面板开着时每记一条新复制就 refreshQueue（renderer/renderer.js:5772/5785），
+  // 50 条 × 300 万字的队列每次重扫是周期性热点；改成「入队算一次、list() 只读缓存」后，
+  // list() 成本 = O(条数 × 预览长度)。两个预览函数的口径一点没变（仍共用 core/capture.js）。
+  function previewFieldsOf(entry) {
+    return { preview: previewOf(entry.text), previewText: captureLib.recordPreview(entry.text) };
+  }
+
   function metaOf(entry) {
     return {
       id: entry.id,
       chars: entry.chars,
       rawLength: entry.rawLength,
       at: entry.at,
-      preview: previewOf(entry.text),
+      preview: entry.preview,
       // 整条记录的截断正文（列表项正文区用）；仍是截断文本，不是全文。
-      previewText: captureLib.recordPreview(entry.text)
+      previewText: entry.previewText
     };
   }
 
@@ -103,6 +169,8 @@ function createCaptureQueue(options = {}) {
       return { added: false, reason: 'duplicate', entry: metaOf(newest) };
     }
     const entry = { id: nextId, text: source, chars, rawLength, at: now() };
+    // 预览只在入队时算这一次（list() 读缓存）：条目被删除 / 淘汰时预览跟着走，不另留引用。
+    Object.assign(entry, previewFieldsOf(entry));
     nextId += 1;
     entries.push(entry);
     totalChars += rawLength;
