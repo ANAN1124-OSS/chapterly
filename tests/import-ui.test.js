@@ -155,6 +155,33 @@ test('summarizeImport：只导入（前三本列名，多出来的写「等」�
   );
 });
 
+// WP7（X-N1）：主进程导入结果报告了替换符数量 —— 有有损书时汇总里点出来（谁、坏了几个字），
+// 没有有损书时输出与旧口径逐字一致（上面几条断言就是守这个）。
+test('summarizeImport：有损导入在汇总里点名（WP7 / X-N1），无 replacements 时文案不变', () => {
+  const ui = importUi.create(makeHost().host);
+  assert.equal(
+    ui.summarizeImport([{ title: '雪夜', encoding: 'utf-8', replacements: 1 }], [], []),
+    '已导入 1 本：雪夜。（1 本编码可能有损：《雪夜》替换 1 个字符）'
+  );
+  assert.equal(
+    ui.summarizeImport(
+      [
+        { title: '甲', encoding: 'utf-8' },
+        { title: '乙', encoding: 'gb18030', replacements: 3 },
+        { title: '丙', encoding: 'utf-8', replacements: 2 }
+      ],
+      [],
+      []
+    ),
+    '已导入 3 本：甲、乙、丙。（2 本编码可能有损：《乙》替换 3 个字符 等）'
+  );
+  // replacements: 0 与字符串 '0' 都不算有损（只认 > 0 的数字）
+  assert.equal(
+    ui.summarizeImport([{ title: '干净', encoding: 'utf-8', replacements: 0 }], [], []),
+    '已导入 1 本：干净'
+  );
+});
+
 test('summarizeImport：跳过原因去重且最多 2 条，失败同样最多 2 条，三段用「。」连接', () => {
   const ui = importUi.create(makeHost().host);
   assert.equal(

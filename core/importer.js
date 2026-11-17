@@ -16,6 +16,7 @@ const storage = require('./storage');
 const repair = require('./repair');
 const {
   decodeBufferWithEncoding,
+  detectBomlessUtf16,
   splitChapters,
   splitChaptersRaw,
   splitLongUntitled,
@@ -73,9 +74,21 @@ async function isDirectory(p) {
 // 现在 `-2` … `-999` 用完仍撞名就抛 BAD_PATH（错误码与章节撞名一致，文案由 error-text 脱敏后给界面）。
 const MAX_FOLDER_SUFFIX = 999;
 
+// 目标文件夹名（安全名）的唯一实现：uniqueFolderName 用它做 base，导入暂存层也用它建「书目录」
+// （repair.rebuildFromFiles 的 title 取 basename(bookPath)，暂存层目录名必须是书名，不能是 .import-…）。
+function safeFolderName(desired) {
+  return chaptersLib.safeName(desired) || '导入的书';
+}
+
+// 「这次导入最终会叫什么」：现成书形态用书目标题（缺省来源文件夹名），其余形态用来源文件夹名。
+// IPC 的跨窗口预检与真正的导入必须用同一份口径（见 importFolders 的 guardTarget）。
+function desiredFolderName(sourceDir, analysis) {
+  return analysis.kind === 'book' ? analysis.meta.title || path.basename(sourceDir) : path.basename(sourceDir);
+}
+
 // maxSuffix 可注入：单测不必真造 999 个文件夹，也能钉住「撞满上限就明确报错、绝不无限循环」。
 async function uniqueFolderName(booksRoot, desired, { maxSuffix = MAX_FOLDER_SUFFIX } = {}) {
-  const base = chaptersLib.safeName(desired) || '导入的书';
+  const base = safeFolderName(desired);
   let candidate = base;
   if (!(await storage.exists(path.join(booksRoot, candidate)))) return candidate;
   for (let i = 2; i <= maxSuffix; i += 1) {
@@ -85,6 +98,75 @@ async function uniqueFolderName(booksRoot, desired, { maxSuffix = MAX_FOLDER_SUF
   throw new storage.StorageError(
     'BAD_PATH',
     `同名书文件夹太多（已试到第 ${maxSuffix} 个后缀），请先把已有书名改短，或整理书架里的文件夹`
+  );
+}
+
+// ---------- WP7（X-N2）：暂存 + 原子 rename 提交 ----------
+// 审计 #22 的缺陷：book / chapter-folder 形态以前直接往正式书目录 fs.cp，失败还 fs.rm(正式目标)。
+// 两个窗口并发导入同名来源时双方探测都空闲 → 同名内容互相合并（丢章），任一方失败还会删掉
+// 另一方已复制进同一目录的内容。现在与 importNovelFile 统一：先写书架根下的隐藏暂存目录，
+// 写完再 fs.rename 成正式目录；rename 是原子的，撞名（另一个窗口抢先提交）就换下一个后缀重试，
+// 失败只清自己的暂存 —— 绝不触碰正式目录里别人的东西。
+const STAGING_PREFIX = '.import-';
+// 并发撞名重试上限：正常最多被抢 1–2 次；连续 8 次说明环境异常，明确报错让作者重试，绝不无限循环。
+const MAX_COMMIT_ATTEMPTS = 8;
+const MAX_STAGING_ATTEMPTS = 3;
+
+// 建随机隐藏暂存根（书架扫描不看 . 开头的目录；崩溃残留由 cleanupStaleStaging 1 小时后回收）。
+// 名字含 pid + 时间 + 随机数：撞名直接失败 / 重试，绝不复用别人的暂存目录。
+async function createStagingRoot(booksRoot) {
+  await fs.mkdir(booksRoot, { recursive: true });
+  for (let attempt = 0; attempt < MAX_STAGING_ATTEMPTS; attempt += 1) {
+    const name = `${STAGING_PREFIX}${process.pid}-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    const dir = path.join(booksRoot, name);
+    try {
+      await fs.mkdir(dir);
+      return dir;
+    } catch (err) {
+      if (err && err.code !== 'EEXIST') throw err;
+    }
+  }
+  throw new storage.StorageError('IMPORT_FAILED', '导入暂存目录创建失败（同名目录反复被占用），请重试');
+}
+
+// 把写好的暂存目录一次性改名成正式书目录：
+//   · 先用 uniqueFolderName 解析目标名（重名 → -2 / -3 …）；
+//   · rename 失败但目标已存在 = 另一个窗口刚提交了同名书 → 重新探测下一个空闲后缀再试；
+//   · 目标不存在 = 真错误（EPERM / ENOSPC …），原样上抛，不掩盖；
+//   · 重试 maxAttempts 次仍撞名 → BAD_PATH（有界，不无限探测）。
+// resolveFolder 只给单测注入（钉「重试用尽」）；产品路径一律走 uniqueFolderName。
+async function commitStagedFolder(booksRoot, staging, desiredFolder, options = {}) {
+  const maxAttempts =
+    Number.isFinite(options.maxAttempts) && options.maxAttempts > 0
+      ? Math.floor(options.maxAttempts)
+      : MAX_COMMIT_ATTEMPTS;
+  const resolveFolder = typeof options.resolveFolder === 'function' ? options.resolveFolder : null;
+  const nextFolder = async (attempt) => {
+    const folder = resolveFolder ? await resolveFolder(attempt) : await uniqueFolderName(booksRoot, desiredFolder);
+    if (typeof folder !== 'string' || !folder) {
+      throw new storage.StorageError('BAD_PATH', '导入目标文件夹名无效，没有提交');
+    }
+    return folder;
+  };
+  let folder = await nextFolder(1);
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const target = path.join(booksRoot, folder);
+    try {
+      await fs.rename(staging, target);
+      return { folder, path: target };
+    } catch (err) {
+      // Windows：rename 到已存在目录 → EPERM / EEXIST；POSIX：ENOTEMPTY。目标仍在才当撞名重试，
+      // 目标不在（权限 / 盘错误）原样上抛 —— 不把「没写进去」伪装成「撞名」。
+      if (!(await storage.exists(target))) throw err;
+      if (attempt === maxAttempts) break;
+      folder = await nextFolder(attempt + 1);
+    }
+  }
+  throw new storage.StorageError(
+    'BAD_PATH',
+    `导入时同名书文件夹反复被占用（已重试 ${maxAttempts} 次），请稍后再试`
   );
 }
 
@@ -255,51 +337,55 @@ async function copyAsTexts(sourceDir, target, txtFiles, oversized) {
 
 // 现成的书 / 一本书的章节目录
 async function importBookFolder(booksRoot, sourceDir, analysis) {
-  const desiredFolder =
-    analysis.kind === 'book'
-      ? analysis.meta.title || path.basename(sourceDir)
-      : path.basename(sourceDir);
-  const folder = await uniqueFolderName(booksRoot, desiredFolder);
-  const target = path.join(booksRoot, folder);
+  const desiredFolder = desiredFolderName(sourceDir, analysis);
 
-  try {
-    // 审计修复 #56（S7）：整目录复制前先扫符号链接 / 目录联接；有链接就整源跳过（见 listSourceLinks）。
-    // 审计残留修复 #R18：扫描与下面的 copyAsBook 是两趟，两趟之间新建的链接仍会被复制 —— 固有 TOCTOU，
-    // 口径见 listSourceLinks 上方的边界说明。
-    if (analysis.kind === 'book') {
-      const links = await listSourceLinks(sourceDir);
-      if (links.length) {
-        const sample =
-          links.slice(0, 3).join('、') + (links.length > 3 ? ` 等 ${links.length} 个` : '');
-        throw new storage.StorageError(
-          'SOURCE_LINK',
-          `《${path.basename(sourceDir)}》里含符号链接 / 目录联接（${sample}），导入不跟随链接` +
-            `（会绕过单本 ${formatImportSize(MAX_IMPORT_BYTES)} 上限、把书库外的内容带进来），已跳过；` +
-            '请把链接换成真实文件 / 目录后重试'
-        );
-      }
-    }
-    // V57：现成书整目录 fs.cp 递归复制 → 闸门看递归清单；章节目录形态只复制顶层 txt → 只看顶层
-    const gateFiles =
-      analysis.kind === 'book' ? await listTxtFilesDeep(sourceDir) : analysis.txtFiles;
-    const oversized = await collectOversizedTxt(sourceDir, gateFiles);
-    // V57：按相对路径（不是 basename）判「哪一章会丢」，同名的其它目录章不被连坐
-    const oversizedKeys = new Set(oversized.map((entry) => relativeKey(entry.file)));
-    const willLose =
-      analysis.kind === 'book'
-        ? analysis.meta.chapters.filter((chapter) => oversizedKeys.has(relativeKey(chapter.file))).length
-        : oversized.length;
-    const totalTxt = analysis.kind === 'book' ? analysis.meta.chapters.length : analysis.txtFiles.length;
-    if (totalTxt > 0 && willLose >= totalTxt) {
-      // 一个能导入的文件都不剩：当成这次来源失败（整批照常继续），不留一本空书
+  // 审计修复 #56（S7）：整目录复制前先扫符号链接 / 目录联接；有链接就整源跳过（见 listSourceLinks）。
+  // 审计残留修复 #R18：扫描与下面的 copyAsBook 是两趟，两趟之间新建的链接仍会被复制 —— 固有 TOCTOU，
+  // 口径见 listSourceLinks 上方的边界说明。这些闸门是「跳过」语义：错误码原样上抛，由 importFolders
+  // 记进 skipped（不包成 IMPORT_FAILED —— 否则界面文案会从「…已跳过」变成「复制失败：…」）。
+  if (analysis.kind === 'book') {
+    const links = await listSourceLinks(sourceDir);
+    if (links.length) {
+      const sample =
+        links.slice(0, 3).join('、') + (links.length > 3 ? ` 等 ${links.length} 个` : '');
       throw new storage.StorageError(
-        'FILE_TOO_LARGE',
-        `《${path.basename(sourceDir)}》里的文件全部超过单本导入上限 ${formatImportSize(MAX_IMPORT_BYTES)}，已跳过`
+        'SOURCE_LINK',
+        `《${path.basename(sourceDir)}》里含符号链接 / 目录联接（${sample}），导入不跟随链接` +
+          `（会绕过单本 ${formatImportSize(MAX_IMPORT_BYTES)} 上限、把书库外的内容带进来），已跳过；` +
+          '请把链接换成真实文件 / 目录后重试'
       );
     }
+  }
+  // V57：现成书整目录 fs.cp 递归复制 → 闸门看递归清单；章节目录形态只复制顶层 txt → 只看顶层
+  const gateFiles = analysis.kind === 'book' ? await listTxtFilesDeep(sourceDir) : analysis.txtFiles;
+  const oversized = await collectOversizedTxt(sourceDir, gateFiles);
+  // V57：按相对路径（不是 basename）判「哪一章会丢」，同名的其它目录章不被连坐
+  const oversizedKeys = new Set(oversized.map((entry) => relativeKey(entry.file)));
+  const willLose =
+    analysis.kind === 'book'
+      ? analysis.meta.chapters.filter((chapter) => oversizedKeys.has(relativeKey(chapter.file))).length
+      : oversized.length;
+  const totalTxt = analysis.kind === 'book' ? analysis.meta.chapters.length : analysis.txtFiles.length;
+  if (totalTxt > 0 && willLose >= totalTxt) {
+    // 一个能导入的文件都不剩：当成这次来源失败（整批照常继续），不留一本空书
+    throw new storage.StorageError(
+      'FILE_TOO_LARGE',
+      `《${path.basename(sourceDir)}》里的文件全部超过单本导入上限 ${formatImportSize(MAX_IMPORT_BYTES)}，已跳过`
+    );
+  }
+
+  // 审计 WP7（X-N2）：复制 / 重建书目 / 超限章节裁剪全部在隐藏暂存目录里做，正式书目录只由
+  // commitStagedFolder 的一次 rename 产生 —— 并发同名导入不会合并，失败也只清自己的暂存。
+  let stagingRoot = null;
+  try {
+    stagingRoot = await createStagingRoot(booksRoot);
+    // 暂存层的「书目录」名字 = 目标安全名：repair.rebuildFromFiles 的 title 取 basename，
+    // 这样重建出来的书目标题就是书名，不是 .import-… 临时名。
+    const staging = path.join(stagingRoot, safeFolderName(desiredFolder));
+
     if (analysis.kind === 'book') {
-      await copyAsBook(sourceDir, target, oversized);
-      let meta = await storage.readBookMeta(target);
+      await copyAsBook(sourceDir, staging, oversized);
+      let meta = await storage.readBookMeta(staging);
       if (oversized.length) {
         // 超限章节根本没复制进来：书目只保留真实存在的章节，不留下打不开的悬挂章节
         const dropped = new Set(oversized.map((entry) => relativeKey(entry.file)));
@@ -309,44 +395,59 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
             ? meta.lastOpenChapterId
             : kept[0].id;
           meta = await storage.writeBookMeta(
-            target,
+            staging,
             { ...meta, chapters: kept, lastOpenChapterId },
             { structural: true }
           );
         }
       }
+      const committed = await commitStagedFolder(booksRoot, staging, desiredFolder);
       return withSkippedEntries(
         {
           imported: true,
           kind: 'book',
-          folder,
-          path: target,
+          folder: committed.folder,
+          path: committed.path,
           title: meta.title,
           chapters: meta.chapters.length
         },
         oversized
       );
     }
-    await copyAsTexts(sourceDir, target, analysis.txtFiles, oversized);
-    const rebuilt = await repair.rebuildFromFiles(target);
+
+    await copyAsTexts(sourceDir, staging, analysis.txtFiles, oversized);
+    const rebuilt = await repair.rebuildFromFiles(staging);
+    const committed = await commitStagedFolder(booksRoot, staging, desiredFolder);
+    let title = rebuilt.meta.title;
+    if (title !== committed.folder) {
+      // 撞名后缀变了（另一次并发导入抢先提交）：沿用「书目标题 = 实际文件夹名」的旧行为。
+      // 书内容此时已经完整发布；标题同步失败只影响显示名，不把一次成功的导入报成失败。
+      title = await storage
+        .writeBookMeta(committed.path, { ...rebuilt.meta, title: committed.folder })
+        .then(() => committed.folder)
+        .catch(() => rebuilt.meta.title);
+    }
     return withSkippedEntries(
       {
         imported: true,
         kind: 'chapter-folder',
-        folder,
-        path: target,
-        title: rebuilt.meta.title,
+        folder: committed.folder,
+        path: committed.path,
+        title,
         chapters: rebuilt.meta.chapters.length
       },
       oversized
     );
   } catch (err) {
-    await fs.rm(target, { recursive: true, force: true }).catch(() => {});
     // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 包成 IMPORT_FAILED 会把界面文案
     // 从「…已跳过」改成「复制失败：…」并把错误码一起丢掉。这里原样放行，由 importFolders 记进 skipped。
     // 审计修复 #56（S7）：含符号链接的来源同理（SOURCE_LINK 也是「跳过」，不是复制失败）。
-    if (err && (err.code === 'FILE_TOO_LARGE' || err.code === 'SOURCE_LINK')) throw err;
+    if (err && (err.code === 'FILE_TOO_LARGE' || err.code === 'SOURCE_LINK' || err.code === 'IMPORT_FAILED')) throw err;
     throw new storage.StorageError('IMPORT_FAILED', `复制失败：${errorText.describeForUi(err).message}`);
+  } finally {
+    // 只清自己的暂存根：成功时里面已经空了（书目录被 rename 走），失败时连半成品一起清。
+    // 绝不再 fs.rm(正式目标) —— 那个目录可能属于另一个窗口刚提交的同名书。
+    if (stagingRoot) await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -398,7 +499,10 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
   const sizeProblem = stat ? importSizeProblem(stat.size, baseName) : null;
   if (sizeProblem) throw new storage.StorageError(sizeProblem.code, sizeProblem.message);
   const buffer = await fs.readFile(filePath);
-  if (isProbablyBinary(buffer)) {
+  // WP7（X-N1）：无 BOM 的 UTF-16（双字节均非 0 的纯中文，或只在新行 / ASCII 处有 0 字节）
+  // 会被「含 0 字节」一刀切成二进制。先问无 BOM UTF-16 启发式，命中就放过；真正的二进制
+  // （随机 0 字节 / 编码坏掉）仍按原口径拒绝（NOT_TEXT 文案不变）。
+  if (!detectBomlessUtf16(buffer) && isProbablyBinary(buffer)) {
     throw new storage.StorageError(
       'NOT_TEXT',
       `《${baseName}》看起来不是纯文本文件（含 0 字节），已跳过`
@@ -410,17 +514,11 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
     throw new storage.StorageError('EMPTY_FILE', `《${baseName}》是空文件，跳过`);
   }
 
-  const folder = await uniqueFolderName(booksRoot, baseName);
-  const target = path.join(booksRoot, folder);
-  // 先写到隐藏的临时目录，写完再改名成正式书文件夹：
-  // 导入中途崩溃时不会留下半本「看起来正常」的书（隐藏目录不会被书架扫描）。
-  const staging = path.join(
-    booksRoot,
-    `.import-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
-  );
-  // C6（审计 S8）：书架目录本身允许首次导入时不存在（用 recursive 建）；暂存目录则不带
-  // recursive——名字含 pid + 时间 + 随机，撞名时直接失败，不悄悄复用别人的目录。
-  await fs.mkdir(booksRoot, { recursive: true });
+  // 审计 WP7（X-N2）：与文件夹形态统一 —— 先写隐藏暂存根里的「书目录」，写完再由
+  // commitStagedFolder 原子 rename；并发导入同一个 txt 时后到者自动拿 -2（不再白丢一次导入），
+  // 失败也只清自己的暂存。书架目录本身允许首次导入时不存在（createStagingRoot 用 recursive 建）。
+  const stagingRoot = await createStagingRoot(booksRoot);
+  const staging = path.join(stagingRoot, safeFolderName(baseName));
   await fs.mkdir(staging);
 
   try {
@@ -490,7 +588,9 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
       const file = chaptersLib.buildFileName(1, '全文');
       // 审计修复 #54（P10）：源文件本来就是 UTF-8（含 UTF-8 BOM）时按字节原样复制，连 BOM / 换行都不动。
       // 编码判定与上面的解码是同一趟（decodedInfo.encoding），不再整本 fatal 解码第二遍。
-      if (decodedInfo.encoding === 'utf-8') {
+      // WP7（X-N1）：宽容 UTF-8（有坏字节 → U+FFFD）的解码结果不是合法 UTF-8，不能按字节照抄，
+      // 必须写解码后的合法 UTF-8（否则下游按 UTF-8 读会再次出现替换符 / 乱码）。
+      if (decodedInfo.encoding === 'utf-8' && !decodedInfo.replacements) {
         await fs.writeFile(path.join(staging, file), buffer);
       } else {
         // 非 UTF-8（如 GBK）必须转成 UTF-8 应用才能读；只转编码，文字内容不变
@@ -520,19 +620,25 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
     // B2（审计 P2）：导入是结构性变更，显式声明（暂存目录里通常还没有上一版书目，
     // 读不到主文件就自然跳过备份；这里传 true 是为了「以后暂存流程若改成二次写盘」语义不丢）。
     await storage.writeBookMeta(staging, meta, { structural: true });
-    await fs.rename(staging, target);
-    return {
+    // 审计 WP7（X-N2）：正式目录只由这一次原子 rename 产生（撞名自动换 -2 / -3）。
+    const committed = await commitStagedFolder(booksRoot, staging, baseName);
+    const result = {
       imported: true,
       kind: 'novel',
       mode,
-      folder,
-      path: target,
+      folder: committed.folder,
+      path: committed.path,
       title: baseName,
-      chapters: chapterList.length
+      chapters: chapterList.length,
+      // WP7（X-N1）：导入结果报告判定编码；有替换符时才多 replacements 字段（0 不出现，
+      // 保持旧回包形状只多 encoding）。
+      encoding: decodedInfo.encoding
     };
-  } catch (err) {
-    await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
-    throw err;
+    if (decodedInfo.replacements) result.replacements = decodedInfo.replacements;
+    return result;
+  } finally {
+    // 只清自己的暂存根：成功时里面已空（书目录被 rename 走），失败时连半成品一起清。
+    await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -563,6 +669,9 @@ function normalizeSources(sources) {
 
 async function importFolders(booksRoot, sources, options = {}) {
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  // 审计 WP7（X-N2）：跨窗口预检钩子（ipc/book.js 传入）。它拿到的是 uniqueFolderName 解析出的
+  // 「最终撞名目标名」而不是来源 basename —— 重名会自动变成 -2 / -3，预检查的必须是那个名字。
+  const guardTarget = typeof options.guardTarget === 'function' ? options.guardTarget : null;
   const mode =
     options.mode === 'split' ? 'split' : options.mode === 'raw' ? 'raw' : 'chapters';
   const imported = [];
@@ -601,6 +710,18 @@ async function importFolders(booksRoot, sources, options = {}) {
     const items = analysis.kind === 'novels' ? analysis.files.length : 1;
     plans.push({ source, sourceDir, analysis, items });
     total += items;
+    // 文件夹形态（现成书 / 章节目录）在复制前就问一次最终目标名：预检拒绝（别的窗口正开着这本书）
+    // 时整次导入在复制开始前中止，语义与旧实现「复制前拒绝」一致。解析撞满 999 之类不在这里拦，
+    // 交给真正的导入阶段如实报（不因为预检把整批吞掉）。
+    if (guardTarget && analysis.kind !== 'novels') {
+      let folder = null;
+      try {
+        folder = await uniqueFolderName(root, desiredFolderName(sourceDir, analysis));
+      } catch {
+        folder = null;
+      }
+      if (folder) await guardTarget({ source, sourceDir, folder, path: path.join(root, folder) });
+    }
   }
   if (onProgress) onProgress({ done: 0, total });
 
@@ -660,6 +781,13 @@ module.exports = {
   // V106（WP-21）：导入文件夹撞名后缀上限 + 探测入口（单测注入小上限验证「撞满就报错」）
   MAX_FOLDER_SUFFIX,
   uniqueFolderName,
+  // 审计 WP7（X-N2）：暂存 + 原子提交（导出给单测钉「撞名换后缀 / 重试有界 / 失败只清自己暂存」；
+  // 生产调用点只有 importBookFolder / importNovelFile 两处）。MAX_COMMIT_ATTEMPTS / desiredFolderName
+  // 只在本模块内用，不导出（sweep-unused 闸门：没人引用的导出不许留）。
+  STAGING_PREFIX,
+  safeFolderName,
+  createStagingRoot,
+  commitStagedFolder,
   // C30（v1.8.0 WP-26）：目录包含判定（大小写归一）导出给单测钉口径
   isInside,
   formatImportSize,

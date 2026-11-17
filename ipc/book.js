@@ -275,21 +275,36 @@ function registerBookIpc(host) {
       }
       dirs = filePaths;
     }
-    // 导入会往书库里写文件夹：目标正好是别的窗口正开着的书 → 拒绝（「导入覆盖」也要拦）
+    // 导入会往书库里写文件夹：目标正好是别的窗口正开着的书 → 拒绝（「导入覆盖」也要拦）。
     const session = flowSession();
-    for (const sourceDir of dirs) {
-      const base = path.basename(path.resolve(String(sourceDir)));
-      const target = path.join(cfg.booksRoot, base);
-      const owner = storage.findOpenBookWindow(target);
-      if (owner && (!session || String(owner) !== String(session.id))) {
-        throw new storage.StorageError(
-          'CROSS_WINDOW_BUSY',
-          `导入目标「${base}」正在另一个窗口打开。请先关掉另一个窗口，或先切换到那个窗口后再导入。`
-        );
+    // 审计 WP7（X-N2）：预检按「最终撞名目标名」—— 导入会先 uniqueFolderName 解析真正的目标
+    // （同名书已存在时自动 -2 / -3），旧实现却拿来源 basename 去查打开登记：既可能误拦
+    // （目标是 -2，预检拦的是同名旧书），也会漏拦（-2 正被另一个窗口开着）。
+    // 现在两处都查：最终目标名（新增的漏拦面）+ 来源 basename 目标（E2E 55 的既有拒绝行为不回退），
+    // 同一个 key 去重。拒绝语义与旧实现一致：整次导入在复制开始前中止并抛 CROSS_WINDOW_BUSY。
+    const guardImportTarget = async ({ sourceDir, path: finalTarget }) => {
+      const candidates = [finalTarget];
+      const sourceTarget = path.join(cfg.booksRoot, path.basename(path.resolve(String(sourceDir))));
+      if (pathUtils.pathKey(sourceTarget) !== pathUtils.pathKey(finalTarget)) {
+        candidates.push(sourceTarget);
       }
-    }
+      const seen = new Set();
+      for (const candidate of candidates) {
+        const key = pathUtils.pathKey(candidate);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const owner = storage.findOpenBookWindow(candidate);
+        if (owner && (!session || String(owner) !== String(session.id))) {
+          throw new storage.StorageError(
+            'CROSS_WINDOW_BUSY',
+            `导入目标「${path.basename(candidate)}」正在另一个窗口打开。请先关掉另一个窗口，或先切换到那个窗口后再导入。`
+          );
+        }
+      }
+    };
     const imported = await importer.importFolders(cfg.booksRoot, dirs, {
       mode: options && options.mode,
+      guardTarget: guardImportTarget,
       onProgress: (progress) => {
         sendToFlow('import:progress', progress);
       }

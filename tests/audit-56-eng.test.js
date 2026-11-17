@@ -83,7 +83,9 @@ test('S7：listSourceLinks 只收链接 / 用相对路径 / _trash 与点开头�
 test('S7 静态闸门：复制前先扫链接；SOURCE_LINK 按「跳过」记录（不是复制失败）', () => {
   const source = read('core/importer.js');
   const gateAt = source.indexOf('await listSourceLinks(sourceDir)');
-  const copyAt = source.indexOf('await copyAsBook(sourceDir, target, oversized)');
+  // WP7（X-N2）：整目录复制先落隐藏暂存目录（target 变量不再存在）—— 断言口径不变：
+  // 链接闸门必须排在 fs.cp 整目录复制之前。
+  const copyAt = source.indexOf('await copyAsBook(sourceDir, staging, oversized)');
   assert.ok(gateAt > 0, 'importBookFolder 必须先扫符号链接');
   assert.ok(copyAt > gateAt, '链接闸门要排在 fs.cp 整目录复制之前');
   assert.match(source, /code === 'FILE_TOO_LARGE' \|\| err\.code === 'SOURCE_LINK'/, 'importFolders 要把 SOURCE_LINK 记进 skipped');

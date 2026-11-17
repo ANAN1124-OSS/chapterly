@@ -85,7 +85,9 @@ test('解码（残留 #50 / E15）：BOM 锁定编码 —— 载荷坏也不整�
   assert.equal(decodeBufferStrict(utf8Bad), null, '严格解码仍如实判坏编码（词表读取靠它）');
   assert.deepEqual(decodeBufferWithEncoding(utf8Bad), {
     text: `${head}\uFFFD${tail}`,
-    encoding: 'utf-8'
+    encoding: 'utf-8',
+    // WP7（X-N1）：非严格路径如实报告替换符数量（BOM 锁定 / 宽容 UTF-8 / UTF-16 启发式 / GB18030 兜底）
+    replacements: 1
   });
   // 关键回归：旧行为在这里会把整本书解成 GB18030 乱码；现在正文逐字可读，只有坏字节是替换符
   assert.equal(decodeBuffer(utf8Bad), `${head}\uFFFD${tail}`);
@@ -100,7 +102,8 @@ test('解码（残留 #50 / E15）：BOM 锁定编码 —— 载荷坏也不整�
   assert.equal(decodeBufferStrict(utf16Bad), null);
   assert.deepEqual(decodeBufferWithEncoding(utf16Bad), {
     text: `${head}\uFFFD${tail}`,
-    encoding: 'utf-16le'
+    encoding: 'utf-16le',
+    replacements: 1
   });
   assert.equal(decodeBuffer(utf16Bad).includes('\u0000'), false, '不许解出带 NUL 的 UTF-16 / GB18030 乱码');
 
@@ -111,10 +114,14 @@ test('解码（残留 #50 / E15）：BOM 锁定编码 —— 载荷坏也不整�
   utf32Bad.writeUInt32LE(0xd800, 8); // 孤立代理码点
   utf32Bad.writeUInt32LE('文'.codePointAt(0), 12);
   assert.equal(decodeBufferStrict(utf32Bad), null);
-  assert.deepEqual(decodeBufferWithEncoding(utf32Bad), { text: '中\uFFFD文', encoding: 'utf-32le' });
+  assert.deepEqual(decodeBufferWithEncoding(utf32Bad), { text: '中\uFFFD文', encoding: 'utf-32le', replacements: 1 });
 
-  // 没有 BOM 的坏文件仍走 GB18030 兜底（老口径不变：坏字节变 U+FFFD）
-  assert.deepEqual(decodeBufferWithEncoding(Buffer.from([0xff])), { text: '\uFFFD', encoding: 'gb18030' });
+  // 没有 BOM 的坏文件仍走 GB18030 兜底（老口径不变：坏字节变 U+FFFD），并如实报告替换数量
+  assert.deepEqual(decodeBufferWithEncoding(Buffer.from([0xff])), {
+    text: '\uFFFD',
+    encoding: 'gb18030',
+    replacements: 1
+  });
 });
 
 test('标题识别：各种常见写法', () => {

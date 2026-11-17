@@ -45,6 +45,17 @@
     if (importProgressEl) importProgressEl.textContent = text;
   }
 
+  // WP7（X-N1）：主进程的导入结果现在会报告「判定编码 + 替换符数量」。有有损的书就在汇总里
+  // 点明是谁、坏了几个字（作者可以换编码重导，源文件一个字节都不动）；没有有损书时返回空串，
+  // 汇总文案与旧口径逐字一致（既有用例全部原样通过）。
+  function lossyImportNote(imported) {
+    const lossy = imported.filter((book) => book && Number(book.replacements) > 0);
+    if (!lossy.length) return '';
+    const first = lossy[0];
+    const more = lossy.length > 1 ? ' 等' : '';
+    return `（${lossy.length} 本编码可能有损：《${first.title}》替换 ${first.replacements} 个字符${more}）`;
+  }
+
   function summarizeImport(imported, skipped, failed) {
     // V45（1.7.2 D3）：主进程的导入结果只留一套「跳过」表示 —— skipped[]，每条
     // { source(相对名), reason, code, tooLarge }（整源跳过只有 source / reason）。
@@ -62,6 +73,8 @@
           ? `已导入 ${imported.length} 本：${shown} 等`
           : `已导入 ${imported.length} 本：${shown}`
       );
+      const lossy = lossyImportNote(imported);
+      if (lossy) messages.push(lossy);
     }
     if (skipped.length) {
       messages.push(`跳过 ${skipped.length} 个（${uniqueReasons(skipped, 'reason')}）`);

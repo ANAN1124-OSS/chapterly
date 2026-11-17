@@ -156,20 +156,167 @@ function decodeBufferWithBomLocked(buffer) {
   return null;
 }
 
-// 把任意编码的文本文件解码成字符串：UTF-8（含 BOM）→ UTF-32LE BOM → UTF-16 BOM →
-// 严格 UTF-8 → 严格 GB18030 → BOM 锁定宽容解（只有带 BOM 的文件）→ 非 fatal GB18030 总兜底。
-// 审计修复 #50（E15）：旧实现的最后一行是 latin1 兜底，但前面的 GB18030 用了非 fatal 解码器
-// （几乎不抛），那一行永远走不到 —— 是死代码。这里删掉死分支：能完整识别就按严格结果返回，
-// 识别不了就用 GB18030 非 fatal 把坏字节替成 U+FFFD（导入老文件不中断），词表读取侧再据
-// decodeBufferStrict 做严格判断（见 core/wordlist.js）。
+// ---------- WP7（X-N1）：无 BOM 路径的宽容解码与 UTF-16 启发式 ----------
+// 审计 #21 的缺陷：没有 BOM 且严格 UTF-8 失败时旧实现直接落 GB18030（严格或非 fatal 兜底），
+// 网络抓取来的 UTF-8 小说只要混 1 个坏字节，整本就被解成「绗笁绔」式乱码；同一内容带 BOM 时
+// 走 BOM 锁定宽容解却只有 1 个 U+FFFD —— 差一个 BOM，结果从「个别替换符」劣化成「整本乱码」。
+// 这里补三步（严格入口 decodeBufferStrictInfo 一个字节不改，词表读取仍如实判坏编码）：
+//   · 无 BOM UTF-16LE/BE 启发式（先于严格解码：带 NUL 的 UTF-16 也能被严格 UTF-8「成功」解出）；
+//   · 严格 UTF-8 失败后先评估「坏字节极少」→ 宽容 UTF-8（坏字节 → U+FFFD），与 BOM 路径对称；
+//   · 只有明显非 UTF-8 才落严格 GB18030 / 非 fatal GB18030 兜底，并如实报告替换符数量。
+const TOLERANT_UTF8_MIN_REPLACEMENTS = 2;
+const TOLERANT_UTF8_BYTES_PER_REPLACEMENT = 1000;
+const TOLERANT_UTF8_MIN_VALID_CHARS = 8;
+const TOLERANT_UTF8_CHUNK = 1024 * 1024;
+// 无 BOM UTF-16：采样前 64 KB、要求 ≥ 98% 的 16 位码元落在「正文常用码位」。
+// 阈值取 0.98 而不是 0.9 —— 纯 ASCII 文本按 LE 读出的码元（如 'eH' = 0x6548）会落进 CJK 区，
+// 但只占约五成；GBK 双字节按 LE 读出几乎全在 0xA1xx 以上（Hangul / Yi，不计入）。纯中文
+// UTF-16 的码元则几乎 100% 是 CJK / 换行 / ASCII，能稳稳过线。
+const UTF16_SAMPLE_CODE_UNITS = 32 * 1024;
+const UTF16_TEXT_RATIO = 0.98;
+const UTF16_MIN_CODE_UNITS = 4;
+
+// 统计一段文本里的 U+FFFD 数量。只给「非严格路径」用：严格路径解出来的 U+FFFD 是原文已有的字，
+// 不算替换（所以严格路径的返回对象不带 replacements 字段）。
+function countReplacements(text) {
+  let count = 0;
+  for (const ch of String(text || '')) {
+    if (ch === '\uFFFD') count += 1;
+  }
+  return count;
+}
+
+// 分块非 fatal 解码，只统计「替换符数量 + 可读字符数量」，不保留整段文本 ——
+// 128 MB 上限文件也不会为了预估坏字节多占一份整本字符串内存（判断完再整本解一遍拿正文）。
+function countUtf8Replacements(buffer) {
+  const decoder = new TextDecoder('utf-8');
+  let replacements = 0;
+  let valid = 0;
+  const count = (piece) => {
+    for (const ch of piece) {
+      if (ch === '\uFFFD') replacements += 1;
+      else valid += 1;
+    }
+  };
+  for (let at = 0; at < buffer.length; at += TOLERANT_UTF8_CHUNK) {
+    const end = Math.min(at + TOLERANT_UTF8_CHUNK, buffer.length);
+    count(decoder.decode(buffer.subarray(at, end), { stream: true }));
+  }
+  count(decoder.decode());
+  return { replacements, valid };
+}
+
+// 「像正文的 16 位码元」：ASCII 可打印 / 换行、CJK 统一表意（含扩展 A）、CJK 标点、全角字符。
+// 不含 Hangul / Yi / 拉丁扩展等 —— 那些正是 GBK / 随机字节被按 16 位读出来的落点。
+function isLikelyTextCodeUnit(cp) {
+  return (
+    cp === 0x09 ||
+    cp === 0x0a ||
+    cp === 0x0d ||
+    (cp >= 0x20 && cp <= 0x7e) ||
+    (cp >= 0x3000 && cp <= 0x303f) ||
+    (cp >= 0x3400 && cp <= 0x4dbf) ||
+    (cp >= 0x4e00 && cp <= 0x9fff) ||
+    (cp >= 0xff00 && cp <= 0xffef)
+  );
+}
+
+function utf16TextScore(buffer, littleEndian) {
+  const evenBytes = buffer.length - (buffer.length % 2);
+  const units = Math.min(evenBytes / 2, UTF16_SAMPLE_CODE_UNITS);
+  if (units < UTF16_MIN_CODE_UNITS) return 0;
+  let good = 0;
+  for (let index = 0; index < units; index += 1) {
+    const at = index * 2;
+    const cp = littleEndian ? buffer.readUInt16LE(at) : buffer.readUInt16BE(at);
+    if (isLikelyTextCodeUnit(cp)) good += 1;
+  }
+  return good / units;
+}
+
+// 无 BOM UTF-16 判定（纯逻辑）：返回 'utf-16le' / 'utf-16be' / null。带 BOM 的返回 null
+// （走 BOM 分支，口径不变）。只用在「严格 UTF-8 失败」或「缓冲里有 NUL」的入口（见下）。
+function detectBomlessUtf16(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < UTF16_MIN_CODE_UNITS * 2) return null;
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) return null;
+  if (buffer.length >= 3 && buffer.subarray(0, 3).equals(BOM_UTF8)) return null;
+  if (buffer.length >= 2 && (buffer.subarray(0, 2).equals(BOM_UTF16LE) || buffer.subarray(0, 2).equals(BOM_UTF16BE))) {
+    return null;
+  }
+  const le = utf16TextScore(buffer, true);
+  const be = utf16TextScore(buffer, false);
+  if (le >= UTF16_TEXT_RATIO && le >= be) return 'utf-16le';
+  if (be >= UTF16_TEXT_RATIO) return 'utf-16be';
+  return null;
+}
+
+function hasAnyBom(buffer) {
+  if (buffer.length >= 3 && buffer.subarray(0, 3).equals(BOM_UTF8)) return true;
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) return true;
+  if (buffer.length >= 2 && (buffer.subarray(0, 2).equals(BOM_UTF16LE) || buffer.subarray(0, 2).equals(BOM_UTF16BE))) {
+    return true;
+  }
+  return false;
+}
+
+// 宽容 UTF-8 是否可行：坏字节「极少」（预算 = max(2, 每 1000 字节 1 个)）且至少有 8 个可读字符
+// —— 1–2 个字节的碎片（如单个 0xFF）不算「以 UTF-8 为主」，仍走 GB18030 兜底的老口径。
+function canDecodeAsTolerantUtf8(buffer) {
+  const { replacements, valid } = countUtf8Replacements(buffer);
+  if (valid < TOLERANT_UTF8_MIN_VALID_CHARS) return false;
+  const budget = Math.max(
+    TOLERANT_UTF8_MIN_REPLACEMENTS,
+    Math.floor(buffer.length / TOLERANT_UTF8_BYTES_PER_REPLACEMENT)
+  );
+  return replacements <= budget;
+}
+
+// 把任意编码的文本文件解码成字符串。审计 #21（X-N1）后的判定链：
+//   带 BOM：严格判定 → BOM 锁定宽容（口径不变，补 replacements）→ 兜底；
+//   无 BOM：无 BOM UTF-16 启发式 → 严格 UTF-8 → 宽容 UTF-8（坏字节极少）→ 严格 GB18030 →
+//           非 fatal GB18030 兜底。
+// 返回 { text, encoding }，非严格路径额外带 replacements（解出来的 U+FFFD 计数；严格路径不出现该字段）。
+// 审计修复 #50（E15）：删掉不可达的 latin1 兜底（GB18030 非 fatal 几乎不抛）。
 // 审计修复 #54（P10）：带编码信息的同一份解码入口（见 decodeBufferStrictInfo 的注释）。
 // 审计残留修复 #50（E15）：BOM 锁定 —— 带 BOM 的文件绝不落到 GB18030 兜底（见 decodeBufferWithBomLocked）。
 function decodeBufferWithEncoding(buffer) {
-  const info = decodeBufferStrictInfo(buffer);
-  if (info) return info;
-  const bomLocked = decodeBufferWithBomLocked(buffer);
-  if (bomLocked) return bomLocked;
-  return { text: new TextDecoder('gb18030').decode(buffer), encoding: 'gb18030' };
+  if (!buffer || !buffer.length) return { text: '', encoding: 'empty' };
+  if (hasAnyBom(buffer)) {
+    const info = decodeBufferStrictInfo(buffer);
+    if (info) return info;
+    const bomLocked = decodeBufferWithBomLocked(buffer);
+    if (bomLocked) return { ...bomLocked, replacements: countReplacements(bomLocked.text) };
+  } else {
+    // 顺序很关键：
+    //   · 有 NUL 的缓冲先过 UTF-16 启发式 —— 带 NUL 的无 BOM UTF-16（正文里有换行 / ASCII）会被
+    //     严格 UTF-8「成功」解成一串 NUL，不能先信严格 UTF-8；
+    //   · 没有 NUL 的缓冲先信严格 UTF-8 —— 合法 UTF-8 永远优先，绝不被启发式抢走（纯 ASCII 按
+    //     16 位读也有约五成码元落进 CJK 区，先严格解码就完全没有这个误判面）；
+    //     严格 UTF-8 失败后才试无 BOM UTF-16（纯中文 UTF-16 双字节均非 0，会被严格 GB18030 静默误解）。
+    const hasNul = buffer.includes(0);
+    let utf16 = hasNul ? detectBomlessUtf16(buffer) : null;
+    if (!utf16) {
+      try {
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+        return { text, encoding: 'utf-8' };
+      } catch { /* 不是合法 UTF-8，继续试无 BOM UTF-16 / 宽容 UTF-8 */ }
+      utf16 = detectBomlessUtf16(buffer);
+    }
+    if (utf16) {
+      const text = new TextDecoder(utf16).decode(buffer);
+      return { text, encoding: utf16, replacements: countReplacements(text) };
+    }
+    if (canDecodeAsTolerantUtf8(buffer)) {
+      const text = new TextDecoder('utf-8').decode(buffer);
+      return { text, encoding: 'utf-8', replacements: countReplacements(text) };
+    }
+    try {
+      const text = new TextDecoder('gb18030', { fatal: true }).decode(buffer);
+      return { text, encoding: 'gb18030' };
+    } catch { /* 识别不了 */ }
+  }
+  const text = new TextDecoder('gb18030').decode(buffer);
+  return { text, encoding: 'gb18030', replacements: countReplacements(text) };
 }
 
 function decodeBuffer(buffer) {
@@ -351,6 +498,8 @@ module.exports = {
   // 导出带 encoding 的那一份结果，调用方就不必再整包重解一遍。
   decodeBufferStrictInfo,
   decodeBufferStrict,
+  // WP7（X-N1）：无 BOM UTF-16 启发式（导入的二进制闸门先问它，再决定要不要放过含 0 字节的缓冲）
+  detectBomlessUtf16,
   parseHeading,
   isChapterHeading,
   splitChapters,
