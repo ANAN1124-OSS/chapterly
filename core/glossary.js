@@ -216,28 +216,40 @@ function glossaryErrorText(code) {
 //   · 1.7.2 D2/V47：最多 3 份同时读（core/common.js 的 mapLimit 保序），合并仍按原顺序
 const READ_CONCURRENCY = 3;
 
-// 把每份自己的 entries 按原顺序合并（term 去重 / 总数封顶）。
-// readGlossaryFiles 与「enabledLists 子集过滤」共用这一份算法（V46）：子集在内存里重合并，
-// 不再为勾选子集重复 readGlossaryFiles(enabledPaths) 读第二遍。
+// 把每份自己的 entries 按原顺序合并（term 去重 / 总数封顶）——**全仓唯一一份合并算法**：
+// readGlossaryFiles（整表）与「enabledLists 子集过滤」都调这里，合并语义只许改这一处。
 // indexes 为 null 表示全取；传入 Set 时只合并选中的那几份。
+// 返回：entries（合并后的词条，先到先得）/ truncated（有词没进来）/ listTruncated（与 lists 等长：
+// 第 i 份有「新词因总数封顶没进来」；子集合并只关心整体 truncated，不用这个字段）。
 function mergeListEntries(lists, indexes) {
   const entries = [];
   const seen = new Set();
   const picked = Array.isArray(lists) ? lists : [];
-  // 审计修复 #49（E24）：子集合并以前只回 entries，截断标记在调用方丢失。
-  // 现在把「这份文件自己读时被截断」与「合并时撞到 5000 上限」都如实带回。
+  const listTruncated = new Array(picked.length).fill(false);
   let truncated = false;
   let capped = false;
-  for (let index = 0; index < picked.length && !capped; index += 1) {
+  for (let index = 0; index < picked.length; index += 1) {
     if (indexes && !indexes.has(index)) continue;
     const list = picked[index];
-    if (list && list.ownTruncated === true) truncated = true;
+    // 审计修复 #49（E24）：子集合并要把「这份文件自己读时被截断」与「合并时撞到 5000 上限」
+    // 分开结算，未勾选的份把额度占掉不代表选中的这份不完整。
+    const ownTruncated = Boolean(list && list.ownTruncated === true);
+    if (ownTruncated) truncated = true;
     const own = list && Array.isArray(list.entries) ? list.entries : [];
+    // 撞顶后不再合并，但仍要如实标出「这份还有新词没进来」（每份 truncated 的旧口径）。
+    if (capped) {
+      if (own.some((entry) => !seen.has(entry.term))) {
+        truncated = true;
+        listTruncated[index] = true;
+      }
+      continue;
+    }
     for (const entry of own) {
       // 和单文件 parseGlossary 同一顺序：先去重，再看总数上限
       if (seen.has(entry.term)) continue;
       if (entries.length >= MAX_ENTRIES) {
         truncated = true;
+        listTruncated[index] = true;
         capped = true;
         break;
       }
@@ -245,7 +257,7 @@ function mergeListEntries(lists, indexes) {
       entries.push({ term: entry.term, suggestion: entry.suggestion });
     }
   }
-  return { entries, truncated };
+  return { entries, truncated, listTruncated };
 }
 
 async function readGlossaryFiles(paths) {
@@ -253,8 +265,6 @@ async function readGlossaryFiles(paths) {
   if (Array.isArray(paths)) requested = paths;
   else if (typeof paths === 'string' && paths.trim()) requested = [paths];
   const read = await mapLimit(requested, READ_CONCURRENCY, (request) => readGlossaryFile(request));
-  const entries = [];
-  const seen = new Set();
   const lists = [];
   let anyOk = false;
   for (const one of read) {
@@ -262,28 +272,22 @@ async function readGlossaryFiles(paths) {
     // ownTruncated 是「这一份文件自己」的截断；truncated 还会在总数上限处被合并逻辑标真。
     // 子集合并要区分这两件事（unselected 的份把额度占掉，不代表选中的这份不完整）。
     const ownTruncated = Boolean(one.ok && one.stats && one.stats.truncated);
-    let truncated = ownTruncated;
-    for (const entry of own) {
-      // 和单文件 parseGlossary 同一顺序：先去重，再看总数上限
-      if (seen.has(entry.term)) continue;
-      if (entries.length >= MAX_ENTRIES) {
-        truncated = true;
-        break;
-      }
-      seen.add(entry.term);
-      entries.push({ term: entry.term, suggestion: entry.suggestion });
-    }
     lists.push({
       ok: one.ok === true,
       count: own.length,
       error: one.ok === true ? '' : glossaryErrorText(one.code),
-      truncated,
+      truncated: ownTruncated,
       ownTruncated,
       entries: own
     });
     if (one.ok === true) anyOk = true;
   }
-  return { ok: anyOk, entries, lists, total: entries.length };
+  // 合并只走 mergeListEntries 这一份实现；每份的 truncated 由它回填（含撞顶后的份）。
+  const merged = mergeListEntries(lists, null);
+  for (let index = 0; index < lists.length; index += 1) {
+    if (merged.listTruncated[index]) lists[index].truncated = true;
+  }
+  return { ok: anyOk, entries: merged.entries, lists, total: merged.entries.length };
 }
 
 // 只给渲染层的词表信息：绝不把词表正文（entries）带过去，界面只需要数量与状态。
