@@ -3261,7 +3261,7 @@
       //   ② BOOK_MISSING / CHAPTER_MISSING：另存这一章为 txt… / 复制正文 / 留在这里。
       // 其余失败照旧只写状态栏 + 一条 toast；救稿出口自己弹完对话框后原样上抛失败结果。
       if (saveRescueUi.rescuePlanFor(err.code)) {
-        return await saveRescueUi.handleSaveFailure(err, { silent });
+        return await saveRescueUi.handleSaveFailure(err, { silent, conflictBookPath: bookPath, conflictChapterId: chapterId });
       }
       if (!silent) toast(`保存失败：${err.message}`, 'error');
       return { ok: false, code: err.code, message: err.message };

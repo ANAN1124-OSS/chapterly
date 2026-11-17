@@ -12,7 +12,7 @@
  *
  * 契约：createSaveRescueUi(host)，host 成员见 REQUIRED_HOST；缺一个在装配时直接 TypeError。
  *   - state 只写两个字段：state.saving（覆盖重试前解除「正在保存」）与 state.dirty（作者明确
- *     选择「放弃我的修改并重载」时先丢弃本地修改）；其余一律只读。
+ *     选择「放弃我的修改并重载」且重载成功后才丢弃本地修改）；其余一律只读。
  *   - 正文 / 名额都不在这里拼：正文取 editorEl.value，文件名取 host.chapterTitle，主进程再清洗。
  *   - 写盘只有两条既有通道：saveCurrent（覆盖保存）与 api.rescueChapterText（另存 / 复制）。
  *
@@ -106,7 +106,7 @@
 
     // V301：主进程比对 expectedMtimeMs 不符 → 覆盖 / 先另存一份 / 放弃我的修改并重载。
     // 覆盖保存要重新进 saveCurrent，先把 state.saving 解除，否则会被「正在保存」挡回（BUSY）。
-    async function resolveExternalChange({ message, silent }) {
+    async function resolveExternalChange({ message, silent, conflictBookPath, conflictChapterId }) {
       const res = await openModal({
         title: CONFLICT_TITLE,
         message: `${message}\n\n直接保存会盖掉磁盘上那一版正文。`,
@@ -132,9 +132,33 @@
         return null;
       }
       if (action === 'reload') {
-        // 作者明确选择丢弃本地修改：先清掉脏标记再按磁盘重载（loadChapterAt 会重建基线与 mtime）
-        state.dirty = false;
-        await loadChapterAt(state.index);
+        // E-N3：先重载成功、后清脏。作者明确选择了丢弃本地修改，但「脏」必须等磁盘那一版真的进了
+        // 编辑区才清 —— 重载失败 / 冲突章已不在书目 / 已经换了书时保留 dirty，关窗仍会提示，
+        // 不出现「正文在编辑区、脏标记已清」的丢稿窗口。
+        // 目标按冲突章 id 找，不用 live state.index：对话框开着的这段时间，索引可能已经被切章推着走。
+        const targetId = conflictChapterId || state.loadedChapterId;
+        const chapters = Array.isArray(state.chapters) ? state.chapters : [];
+        const targetIndex = chapters.findIndex((chapter) => chapter && chapter.id === targetId);
+        const sameBook = !conflictBookPath || conflictBookPath === state.bookPath;
+        if (!sameBook) {
+          state.dirty = true;
+          toast('已经换了书，未重载；正文仍未保存，可先另存一份', 'warn');
+          return null;
+        }
+        if (targetIndex < 0) {
+          state.dirty = true;
+          toast('冲突章已不在书目，未重载；正文仍未保存，可先另存一份', 'warn');
+          return null;
+        }
+        // loadChapterAt 成功路径会自己重建基线 / mtime 并清脏，这里再兜一次防 host 实现漂移；
+        // 失败（{ok:false}）不预清脏，内容还在编辑区，关窗必须照旧提示。
+        const result = await loadChapterAt(targetIndex);
+        if (result && result.ok) {
+          state.dirty = false;
+        } else {
+          state.dirty = true;
+          toast('重载失败，正文仍未保存；可先另存一份或重试', 'warn');
+        }
         return null;
       }
       return null;
@@ -152,7 +176,13 @@
       // 而窗口可能 500ms 后就被销毁 —— 那时候没人能点这个对话框。照旧回失败结果，状态栏也照旧记。
       if (silent) return null;
       if (plan === 'conflict') {
-        const result = await resolveExternalChange({ message, silent });
+        // 冲突章身份（书 + 章 id）在 saveCurrent 发起保存时就拍好了，原样透传给重载分支（E-N3）
+        const result = await resolveExternalChange({
+          message,
+          silent,
+          conflictBookPath: options.conflictBookPath,
+          conflictChapterId: options.conflictChapterId
+        });
         // 覆盖保存有回执（成功或再次失败）：原样上抛，别把它盖成一条笼统的失败
         if (result && typeof result === 'object' && 'ok' in result) return result;
         return { ok: false, code, message };

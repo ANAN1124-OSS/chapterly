@@ -15,10 +15,17 @@ const { rendererCode, indexSrc, moduleSrc, moduleCode } = loadSourceGate('save-r
 // 其余能力全部记进 calls，断言「点了哪个按钮 → 谁被调用、参数是什么、提示是什么」。
 function makeHost(options = {}) {
   const calls = { modal: [], toast: [], rescue: [], save: [], load: [] };
+  const chapters = options.chapters || [{ id: 'c1', name: '第一章', file: '0001.txt' }];
+  const index = options.index === undefined ? 0 : options.index;
   const state = {
-    bookPath: 'C:/tmp/books/测试书',
-    index: options.index === undefined ? 0 : options.index,
-    chapters: options.chapters || [{ id: 'c1', name: '第一章', file: '0001.txt' }],
+    bookPath: options.bookPath === undefined ? 'C:/tmp/books/测试书' : options.bookPath,
+    index,
+    chapters,
+    // 冲突章身份的另一半：真实 renderer 载章成功就一定写 loadedChapterId；
+    // 缺省按 index 对齐，让「没传 conflictChapterId」的旧调用仍能重载眼前这一章（向后兼容）。
+    loadedChapterId: options.loadedChapterId === undefined
+      ? ((chapters[index] && chapters[index].id) || null)
+      : options.loadedChapterId,
     saving: options.saving === undefined ? true : Boolean(options.saving),
     dirty: options.dirty === undefined ? true : Boolean(options.dirty)
   };
@@ -50,9 +57,11 @@ function makeHost(options = {}) {
       if (options.saveThrows) throw new Error('save boom');
       return options.saveResult || { ok: true, data: { mtimeMs: 333 } };
     },
-    loadChapterAt: async (index) => {
-      calls.load.push(index);
+    loadChapterAt: async (at) => {
+      calls.load.push(at);
       if (options.loadThrows) throw new Error('load boom');
+      // R1 的假 host 契约与真实 loadChapterAt 一致：失败只回 {ok:false}，不清脏、不动正文
+      if (options.loadFails) return { ok: false, code: 'LOAD_FAILED', message: '磁盘那一章读不出来' };
       state.dirty = false;
       return { ok: true };
     },
@@ -206,7 +215,7 @@ test('V301：覆盖保存又失败 → 把重试的真实回执上抛（不盖�
   assert.deepEqual(await create(host).handleSaveFailure(externalErr()), failed);
 });
 
-test('V301：选「放弃我的修改并重载」→ 先清脏再按磁盘重载（索引不变）', async () => {
+test('V301：选「放弃我的修改并重载」→ 重载成功后才清脏，且按冲突章 id（索引不变）', async () => {
   const { host, state, calls } = makeHost({ modalAction: 'reload', index: 1, chapters: [
     { id: 'c1', name: '第一章', file: '0001.txt' },
     { id: 'c2', name: '第二章', file: '0002.txt' }
@@ -215,6 +224,89 @@ test('V301：选「放弃我的修改并重载」→ 先清脏再按磁盘重载
   assert.deepEqual(calls.load, [1]);
   assert.equal(state.dirty, false);
   assert.deepEqual(result, { ok: false, code: 'EXTERNAL_CHANGE', message: externalErr().message });
+});
+
+// ---------- E-N3（审计中 #3）红-绿锚点：重载必须先成功、后清脏；目标按冲突章 id ----------
+// 真实场景：主进程比对 expectedMtimeMs 不符 → saveCurrent catch 带着 (conflictBookPath, conflictChapterId)
+// 进救稿出口。冲突对话框开着的这段时间，state.index 可能已经被切章 / 换书推着走；磁盘那一章也可能
+// 刚被删 / 被占用。修复前是「先 state.dirty=false，再按 live index 重载」——重载失败或载错章时，
+// 编辑区里还是本地未保存正文，脏标记却已清，关窗不再提示（丢稿窗口）。
+const RELOAD_CHAPTERS = [
+  { id: 'c1', name: '第一章', file: '0001.txt' },
+  { id: 'c2', name: '第二章', file: '0002.txt' }
+];
+
+test('R1（E-N3）：重载失败（{ok:false}）→ 不清脏、仍按冲突章 id 尝试、warn 提示', async () => {
+  const { host, state, calls } = makeHost({
+    modalAction: 'reload',
+    index: 0,
+    chapters: RELOAD_CHAPTERS,
+    loadFails: true
+  });
+  const result = await create(host).handleSaveFailure(externalErr(), {
+    conflictBookPath: 'C:/tmp/books/测试书',
+    conflictChapterId: 'c2'
+  });
+  assert.deepEqual(calls.load, [1], '按冲突章 id 定位（c2 在下标 1），不是 live index 0');
+  assert.equal(state.dirty, true, '重载失败：脏标记必须保留，关窗仍要提示');
+  assert.ok(
+    calls.toast.some(([message, kind]) => kind === 'warn' && /重载失败/.test(message)),
+    '重载失败要有一条 warn，让作者知道正文还没保存'
+  );
+  assert.deepEqual(result, { ok: false, code: 'EXTERNAL_CHANGE', message: externalErr().message });
+});
+
+test('R2（E-N3）：重载抛错 → 不吞错、脏标记同样保留', async () => {
+  const { host, state } = makeHost({ modalAction: 'reload', index: 1, chapters: RELOAD_CHAPTERS, loadThrows: true });
+  await assert.rejects(
+    () => create(host).handleSaveFailure(externalErr(), { conflictChapterId: 'c2' }),
+    /load boom/,
+    '重载抛错必须让调用方看到，不许当成「已重载」吞掉'
+  );
+  assert.equal(state.dirty, true);
+});
+
+test('R3（E-N3）：对话框开着时 state.index 漂移 → 仍按冲突章 id 载入', async () => {
+  const { host, state, calls } = makeHost({
+    modalAction: 'reload',
+    index: 1,
+    chapters: RELOAD_CHAPTERS,
+    onModal: (live) => { live.index = 0; }
+  });
+  await create(host).handleSaveFailure(externalErr(), { conflictChapterId: 'c2' });
+  assert.deepEqual(calls.load, [1], '冲突章 c2 始终在下标 1；修复前会跟着 live index 载 0');
+  assert.equal(state.dirty, false, '重载成功才清脏');
+});
+
+test('R4（E-N3）：冲突章已不在书目 → 不重载、保留 dirty、warn', async () => {
+  const { host, state, calls } = makeHost({ modalAction: 'reload', index: 0, chapters: RELOAD_CHAPTERS });
+  const result = await create(host).handleSaveFailure(externalErr(), { conflictChapterId: 'c9' });
+  assert.deepEqual(calls.load, [], '冲突章已消失：不许退化成「载 live index 那一章」');
+  assert.equal(state.dirty, true);
+  assert.ok(
+    calls.toast.some(([message, kind]) => kind === 'warn' && /冲突章已不在书目/.test(message)),
+    '要告诉作者为什么没重载'
+  );
+  assert.deepEqual(result, { ok: false, code: 'EXTERNAL_CHANGE', message: externalErr().message });
+});
+
+test('R5（E-N3）：已切换到另一本书 → 不拿同 id 的别书章节顶替、保留 dirty、warn', async () => {
+  const { host, state, calls } = makeHost({
+    modalAction: 'reload',
+    index: 0,
+    chapters: RELOAD_CHAPTERS,
+    bookPath: 'C:/tmp/books/另一本书'
+  });
+  await create(host).handleSaveFailure(externalErr(), {
+    conflictBookPath: 'C:/tmp/books/测试书',
+    conflictChapterId: 'c1'
+  });
+  assert.deepEqual(calls.load, [], '书已换：冲突章身份对新书不成立（章 id 可能撞名）');
+  assert.equal(state.dirty, true);
+  assert.ok(
+    calls.toast.some(([message, kind]) => kind === 'warn' && /换了书/.test(message)),
+    '要告诉作者为什么没重载'
+  );
 });
 
 test('V301：选「先另存一份」→ 走 chapter:rescue 落 txt，编辑区仍是未保存（不覆盖书库）', async () => {
@@ -283,7 +375,13 @@ test('接线（V301）：saveCurrent 带 expectedMtimeMs；只有「覆盖保存
   assert.match(body, /state\.saveError = err\.message;\s*\n\s*updateStatus\(\);/);
   const rescueAt = body.indexOf('saveRescueUi.rescuePlanFor(err.code)');
   assert.ok(rescueAt > 0, 'saveCurrent 失败分支没接救稿出口');
-  assert.ok(body.indexOf('return await saveRescueUi.handleSaveFailure(err, { silent })') > rescueAt);
+  // E-N3：救稿出口必须带着发起保存时拍下的冲突章身份（书 + 章 id），不能退回 live state.index
+  const handleAt = body.indexOf('return await saveRescueUi.handleSaveFailure(err, {');
+  assert.ok(handleAt > rescueAt, '救稿出口调用必须在 rescuePlanFor 之后');
+  const handleCall = body.slice(handleAt, body.indexOf('});', handleAt) + 3);
+  assert.match(handleCall, /silent/);
+  assert.match(handleCall, /conflictBookPath:\s*bookPath/);
+  assert.match(handleCall, /conflictChapterId:\s*chapterId/);
   assert.ok(
     body.indexOf("toast(`保存失败：${err.message}`, 'error')") > rescueAt,
     '通用失败 toast 必须排在救稿判定之后（救稿码不重复弹）'
