@@ -43,10 +43,20 @@
     return typeof value === 'string' ? String(value) : '';
   }
 
-  // 单行文本：换行 / 制表折成空格、连续空白压成一个、首尾去掉，再限长（限长走 core/common.js
-  // 的 truncateSafe：按 UTF-16 长度截断但不切开代理对）。
+  // WP14 C10（审计低批）：书籍信息的展示字段不允许携带控制字符。
+  //   · C0 控制字符（\s 不匹配 U+0000，旧实现会让 NUL 原样进 tags / 作者 / 分组）；
+  //   · bidi 格式控制（U+202E 等会把书架上的书名 / 标签排版倒过来）。
+  // 换行 / 制表由各自的清洗函数另行处理（brief 保留 \n，单行把它们折成空格）。
+  const CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+  const BIDI_CONTROL_RE = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+  function stripUnsafeChars(text) {
+    return text.replace(CONTROL_CHARS_RE, '').replace(BIDI_CONTROL_RE, '');
+  }
+
+  // 单行文本：剔控制字符 → 换行 / 制表折成空格、连续空白压成一个、首尾去掉，再限长（限长走
+  // core/common.js 的 truncateSafe：按 UTF-16 长度截断但不切开代理对）。
   function sanitizeSingleLine(value, maxLength) {
-    const text = asText(value)
+    const text = stripUnsafeChars(asText(value))
       .replace(/[\r\n\t]+/g, ' ')
       .replace(/[\s\u3000]+/g, ' ')
       .trim();
@@ -64,7 +74,7 @@
   // 简介允许多行：统一换行、去掉每行行尾空白、连续空行压成一个空行、整体 trim。
   // 纯文本，不做任何标点 / 引号 / 全半角转换。
   function sanitizeBrief(value) {
-    const text = asText(value).replace(/\r\n?/g, '\n');
+    const text = stripUnsafeChars(asText(value).replace(/\r\n?/g, '\n'));
     const lines = text.split('\n').map((line) => line.replace(/[ \t\u3000]+$/g, ''));
     const kept = [];
     let blank = 0;
@@ -157,6 +167,17 @@
     return Object.keys(fields).length ? fields : null;
   }
 
+  // WP14 C10：标签逐元素比较。旧实现用 tags.join('\u0000') —— 标签里一旦带 NUL，
+  // ['a','b'] 与 ['a\u0000b'] join 后同为 'a\u0000b'，被判成「没有变化」而静默不写盘。
+  // 清洗已经剔掉 NUL，这里再改成逐元素比较做纵深防御（不依赖上游清洗顺序）。
+  function sameTagList(left, right) {
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i += 1) {
+      if (left[i] !== right[i]) return false;
+    }
+    return true;
+  }
+
   function sameBookInfo(a, b) {
     const left = readBookInfo(a);
     const right = readBookInfo(b);
@@ -164,7 +185,7 @@
       left.author === right.author &&
       left.brief === right.brief &&
       left.group === right.group &&
-      left.tags.join('\u0000') === right.tags.join('\u0000')
+      sameTagList(left.tags, right.tags)
     );
   }
 

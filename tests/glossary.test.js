@@ -57,9 +57,11 @@ test('校对词表：sanitizeEntries 去空 / 去重 / 限长 / 限量，字符�
   ]);
   assert.deepEqual(cleaned, [
     { term: '做为', suggestion: '' },
-    { term: '禁词', suggestion: '' },
-    { term: '建议太长', suggestion: '' }
+    { term: '禁词', suggestion: '' }
   ]);
+  // WP14 C8：数组入口与文件入口同口径——「建议 >100 字」按单行超长整条跳过，
+  // 不再「留词、建议置空」（否则同一条词在两条入口下校对覆盖不同）。
+  assert.deepEqual(glossary.parseGlossary('建议太长 => ' + '建'.repeat(101)).entries, []);
   assert.deepEqual(glossary.sanitizeEntries('不是数组'), []);
 });
 

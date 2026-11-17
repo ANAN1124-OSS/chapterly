@@ -3269,6 +3269,9 @@
           }
         }
         if (!sameChapter) return { ok: false, code: err.code, message: err.message, bodySaved: true };
+        // WP14 E-N6（审计低批）：正文已经落盘，mtime 跟着变了；把主进程带回的落盘 mtime 同步到
+        // 「编辑器手上这一版」，下一次保存不会拿载入时的旧 mtime 比对而误报 EXTERNAL_CHANGE。
+        if (Number.isFinite(Number(err.mtimeMs))) state.loadedMtimeMs = Number(err.mtimeMs);
         state.saveError = err.message;
         updateStatus();
         if (!silent) toast(err.message, 'warn');

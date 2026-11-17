@@ -150,9 +150,12 @@ function sanitizeOverride(override, { maxText = MAX_TEXT_CHARS, label = '当前�
 // 导出范围：沿用 core/exporter.resolveExportRange 的「越界自动收紧、坏值当没传」口径，
 // 这里只把对象形状归一化（非对象 = 全书；未知 mode = 全书；from/to 按数字解析，非法给 null）。
 // 不抛错：历史上坏 range 就是「按全书导出」，没必要把能用的一次导出变成报错。
+// WP14 C7：mode='volume' 而 volumeId 是坏值（非字符串 / 超 200 字）时，旧实现静默置 null、
+// 但 mode 仍是 volume —— exporter 把 null 解释成「未分卷」，导出内容悄悄变成未分卷章节集。
+// 现在坏值直接降级 mode='all'（与「坏值当没传 → 全书」一致）；缺省 / null 仍是合法的「未分卷」。
 function sanitizeRange(range) {
   if (!range || typeof range !== 'object' || Array.isArray(range)) return null;
-  const mode = typeof range.mode === 'string' && RANGE_MODES.includes(range.mode) ? range.mode : 'all';
+  let mode = typeof range.mode === 'string' && RANGE_MODES.includes(range.mode) ? range.mode : 'all';
   const toNumber = (value) => {
     if (value == null) return null;
     const n = Number(value);
@@ -164,8 +167,9 @@ function sanitizeRange(range) {
   let volumeId = null;
   if (typeof range.volumeId === 'string' && range.volumeId.length <= MAX_ID_CHARS) {
     volumeId = range.volumeId;
-  } else if (range.volumeId == null) {
-    volumeId = null;
+  } else if (range.volumeId != null) {
+    // 非字符串 / 超长 = 坏值：不是「未分卷」，按没指定处理 → 全书
+    if (mode === 'volume') mode = 'all';
   }
   return { mode, from: toNumber(range.from), to: toNumber(range.to), volumeId };
 }

@@ -127,7 +127,10 @@ function sanitizeEntries(raw) {
       suggestion = typeof item.suggestion === 'string' ? item.suggestion.trim() : '';
     }
     if (!term || term.length > MAX_TERM_LENGTH || seen.has(term)) continue;
-    if (suggestion.length > MAX_SUGGESTION_LENGTH) suggestion = '';
+    // WP14 C8（审计低批）：与文件入口 parseGlossary 同一口径 —— 建议超过 100 字属于
+    // 「单行超过 100 字」，整条跳过（旧实现留词、把建议置空，导致同一条词在两条入口下
+    // 校对覆盖不同）。这里不留半个词条，避免两套语义继续漂移。
+    if (suggestion.length > MAX_SUGGESTION_LENGTH) continue;
     seen.add(term);
     out.push({ term, suggestion });
     if (out.length >= MAX_ENTRIES) break;

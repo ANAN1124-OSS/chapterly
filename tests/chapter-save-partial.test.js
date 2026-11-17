@@ -124,3 +124,43 @@ test('静态闸门：渲染层把 META_SAVE_FAILED 当部分成功提示、不�
   assert.match(saveBody, /toast\(err\.message, 'warn'\)/, '部分成功要用 warn 提示（不是「保存失败」的 error）');
   assert.equal(/toast\(`保存失败：\$\{err\.message\}`, 'error'\)/.test(saveBody), true, '整体失败分支保持不变');
 });
+
+// WP14 E-N6（审计低批）：部分成功回包缺 mtime —— 正文已写盘、书目失败时，mtime 已经变了；
+// 渲染层不更新 loadedMtimeMs，下一次保存会拿旧 mtime 比对 → 误报 EXTERNAL_CHANGE。
+// 主进程部分的 fail() 是 Electron 主进程文件（Node 不能 require），这里用静态接线 + 存储层
+// 真实返回值两层锚点；真实 IO 部分成功由本文件的 EPERM 用例覆盖。
+test('E-N6：部分成功回包带 mtimeMs，渲染层同步 loadedMtimeMs（重试不误报 EXTERNAL_CHANGE）', async () => {
+  // 存储层：saveChapterText 返回的 mtimeMs 就是刚写盘文件的 stat.mtimeMs（部分成功要透传的就是它）
+  const root = await mkTmp();
+  const created = await storage.createBook(root, 'mtime 演练');
+  const file = created.meta.chapters[0].file;
+  const saved = await storage.saveChapterText(created.path, file, '正文一版');
+  const stat = await fs.stat(path.join(created.path, file));
+  assert.equal(saved.mtimeMs, stat.mtimeMs, 'saveChapterText 必须回报落盘后的 mtimeMs');
+  assert.equal(Number.isFinite(saved.mtimeMs), true);
+  await fs.rm(root, { recursive: true, force: true });
+
+  // chapter:save 的 catch：部分成功错误对象要带 result.mtimeMs
+  const body = channelBody(MAIN_SOURCE, 'chapter:save');
+  assert.ok(body.includes('mtimeMs: result.mtimeMs'), 'META_SAVE_FAILED 错误要带 result.mtimeMs');
+
+  // fail() 白名单：只透传有限 mtimeMs（原错误对象 / 路径仍只进日志）
+  const failStart = MAIN_SOURCE.indexOf('function fail(err, channel)');
+  const failBody = MAIN_SOURCE.slice(failStart, MAIN_SOURCE.indexOf('\n}\n', failStart) + 3);
+  assert.ok(failBody.includes('Number.isFinite(Number(err.mtimeMs))'), 'mtimeMs 要过有限性判断');
+  assert.ok(failBody.includes('partial.mtimeMs = Number(err.mtimeMs)'), 'fail() 要透传 mtimeMs');
+
+  // renderer：sameChapter 之后、saveError 之前更新 loadedMtimeMs（绝不把别的章的 mtime 写到眼前这一章）
+  const partialAt = RENDERER_SOURCE.indexOf("err.code === 'META_SAVE_FAILED' && err.bodySaved === true");
+  assert.ok(partialAt > 0, 'saveCurrent 找不到部分成功分支');
+  const sameAt = RENDERER_SOURCE.indexOf('if (!sameChapter) return', partialAt);
+  const mtimeAt = RENDERER_SOURCE.indexOf('state.loadedMtimeMs = Number(err.mtimeMs)', partialAt);
+  const saveErrAt = RENDERER_SOURCE.indexOf('state.saveError = err.message', partialAt);
+  assert.ok(sameAt > 0 && mtimeAt > sameAt, 'loadedMtimeMs 必须在 sameChapter 判定之后更新');
+  assert.ok(saveErrAt > mtimeAt, '更新 mtime 在保存错误文案之前（同一分支内）');
+  assert.match(
+    RENDERER_SOURCE.slice(mtimeAt - 80, mtimeAt + 80),
+    /Number\.isFinite\(Number\(err\.mtimeMs\)\)/,
+    '只接受有限 mtimeMs'
+  );
+});

@@ -23,7 +23,6 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
 const FIXED = new Date('2026-11-01T00:00:00Z');
-const FIXED_ISO = FIXED.toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 function parseArgs(argv) {
   const args = { mode: 'all', chapters: 1000, chars: 12000, out: '' };

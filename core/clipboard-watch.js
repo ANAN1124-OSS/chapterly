@@ -74,6 +74,10 @@ function createWatcher(options = {}) {
     }
     if (!enabled) return { changed: false, record: false, notify: false, chars: 0, reason: 'disabled' };
     if (typeof text !== 'string' || !text.length) {
+      // WP14 C9（审计低批）：空读数（剪贴板清空 / 读失败的非字符串）也要推进基准。
+      // 旧实现直接返回不更新 baseline：复制 A → 清空剪贴板 → 再复制 A 时第二次 A 被判 unchanged，
+      // 「每次复制各记一条」漏记。空读数本身不记队列、不提示（changed 仍 false）。
+      baseline = fingerprint('');
       return { changed: false, record: false, notify: false, chars: 0, reason: 'empty' };
     }
     const chars = text.length;

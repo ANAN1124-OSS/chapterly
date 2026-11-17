@@ -235,23 +235,35 @@ function setOwnEntry(target, key, value) {
 // 5 秒内不重复写盘（换章照常更新）；判断在 configStore 的写队列里做（见 rememberLastBook）。
 const RECENT_BOOK_DEDUPE_MS = 5000;
 
+// WP14 X-N7（审计低批）：lastBook.at 的未来容差。
+// at 只要求「有限正数」时，一次时钟前跳（或渲染层 bug）写入的远未来时间戳会让
+// rememberLastBook 的 stale 守卫（prev.at > next.at）把之后所有正常记录都判 stale，
+// 「继续上次写作」冻结到时钟追上。写入 / 读取时把「超过 now + 10 分钟」的 at 夹到 now
+// （正常的多窗口时钟抖动远小于这个窗口，容差内的轻微未来值原样保留）。
+const MAX_LAST_BOOK_FUTURE_MS = 10 * 60 * 1000;
+
 // 「继续上次写作」：只记书架级的位置，读的时候一律清洗；坏值/空值当作没记过（null），
 // 不影响旧配置文件（没有 lastBook 就显示不出入口，其余功能照常）。
-function sanitizeLastBook(raw) {
+// now 只用于 X-N7 的未来容差（不传 = 现在）；显式传入让 rememberLastBook 与清洗用同一个时钟。
+function sanitizeLastBook(raw, now = Date.now()) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const bookPath = typeof raw.path === 'string' ? raw.path.trim() : '';
   if (!bookPath || bookPath.length > 1000) return null;
   const title = typeof raw.title === 'string' ? raw.title.trim().slice(0, 200) : '';
   const chapterId = typeof raw.chapterId === 'string' ? raw.chapterId.trim().slice(0, 100) : '';
   const chapterName = typeof raw.chapterName === 'string' ? raw.chapterName.trim().slice(0, 200) : '';
-  const at = Number(raw.at);
+  const rawAt = Number(raw.at);
+  const clock = Number.isFinite(Number(now)) ? Math.round(Number(now)) : Date.now();
+  const at = Number.isFinite(rawAt) && rawAt > 0 ? Math.round(rawAt) : 0;
   return {
     path: bookPath,
     title,
     chapterId,
     chapterIndex: clampRoundedInt(raw.chapterIndex, 0, 1000000, 0),
     chapterName,
-    at: Number.isFinite(at) && at > 0 ? Math.round(at) : 0
+    // 过去的 at 原样保留（历史记录照常显示）；只有明显越界的远未来才夹到 now
+    // （容差内的轻微时钟抖动保留原值，避免多窗口记录被抹平）。
+    at: at > 0 ? (at > clock + MAX_LAST_BOOK_FUTURE_MS ? clock : at) : 0
   };
 }
 
@@ -855,7 +867,7 @@ function createConfigStore(userDataDir, deps = {}) {
       await gateWrite(auto);
       const current = await get();
       const prev = current.lastBook;
-      const next = sanitizeLastBook(raw);
+      const next = sanitizeLastBook(raw, now);
       // 缺 path / chapterId 的记录不算「上次写作」（与 main.js 旧入口的守卫一致）
       if (!next || !next.chapterId) return { written: false, reason: 'invalid', config: { ...current } };
       // 打开书时 open + set-last 会连着报同一个位置：5 秒内不重复写盘（换章照常更新）
@@ -927,6 +939,7 @@ module.exports = {
   createConfigStore,
   DEFAULTS,
   WORDLIST_MAX,
+  MAX_LAST_BOOK_FUTURE_MS,
   sanitize,
   sanitizeLastBook,
   sameWindowBounds,

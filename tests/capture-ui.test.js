@@ -274,12 +274,20 @@ function build(options = {}) {
           { name: '第二章', volumeId: null }
         ]
       : options.chapters;
+  const initialIndex = options.index === undefined ? 1 : options.index;
   const state = {
     view: options.view === undefined ? 'editor' : options.view,
     bookPath: options.bookPath === undefined ? '/tmp/books/书甲' : options.bookPath,
     meta: { title: '书甲', titleTemplate: '', chapters },
     chapters,
-    index: options.index === undefined ? 1 : options.index,
+    index: initialIndex,
+    // WP14 E-N10：新建章后要检查载章结果，并按编辑区实际载入的章对齐 index。
+    loadedChapterId:
+      options.loadedChapterId === undefined
+        ? chapters[initialIndex] && chapters[initialIndex].id !== undefined
+          ? chapters[initialIndex].id
+          : null
+        : options.loadedChapterId,
     dirty: Boolean(options.dirty),
     stats: null,
     streak: null
@@ -396,7 +404,14 @@ function build(options = {}) {
     },
     loadChapterAt: async (index) => {
       log.push(`loadChapterAt:${index}`);
+      if (options.loadFails) {
+        return { ok: false, code: 'LOAD_FAILED', message: options.loadFailMessage || '读取新章失败' };
+      }
       state.index = index;
+      state.loadedChapterId = state.chapters[index] && state.chapters[index].id !== undefined
+        ? state.chapters[index].id
+        : null;
+      return { ok: true };
     },
     renderStatsUi: () => log.push('renderStatsUi'),
     staleGuard,
@@ -858,13 +873,20 @@ test('正文：消费 IPC 失败 → 插入仍算成功，本地列表兜底去�
       [2],
       '本地兜底：正文已经进编辑区，列表里不能再留着这条'
     );
-    // 审计修复 #42（V405）：删队列失败必须出声（以前静默摘掉本地行，作者不知道主进程队列里还在）
+    // 审计修复 #42（V405）+ WP14 E-N9：删队列失败必须出声，而且只发一条合并提示——
+    // 以前 warn「没能从队列移除」之后还无条件跟一条「已从列表移除」，两条自相矛盾。
     assert.ok(
       ctx.log.includes(
-        'toast:warn:这条记录没能从队列移除（本窗口已隐藏它，刷新不会再画回来；其它窗口若仍出现请勿重复插入）'
+        `toast:warn:已插入正文（${result.chars} 字），但这条记录没能从队列移除（本窗口已隐藏它，刷新不会再画回来；其它窗口若仍出现请勿重复插入）`
       ),
-      '删队列失败要有一条 warn 提示'
+      '删队列失败要有一条合并后的 warn 提示'
     );
+    assert.equal(
+      ctx.log.some((item) => item.includes('这条记录已从列表移除')),
+      false,
+      '删队列失败时不许再报「已从列表移除」'
+    );
+    assert.equal(ctx.log.filter((item) => item.startsWith('toast:')).length, 1, '插入结果只发一条提示');
 
     // 再刷新一次（模拟作者又复制了一段 → clipboard:recorded → refreshQueue 全量重拉）：
     // 主进程队列里这条还在，但本地消费登记把它挡住 —— 不许画回来，否则再点「正文」就是重复插入。
@@ -1113,6 +1135,77 @@ test('章节：直捕 >30 万字 → 不调写盘 IPC、toast + 显示「去导�
     const uiNormal = captureUiModule.create(normal.host);
     await uiNormal.open();
     assert.equal(normal.dom.map.get('btn-capture-import').classList.contains('hidden'), true);
+  }));
+
+test('章节：原文 >300 万字符（空白重型）→ 渲染层按同一闸提前拦下 + 「去导入小说…」，不调写盘 IPC（台账 #2）', () =>
+  withFakeDocument(async () => {
+    // 去空白字数很小、原文长度超过 MAX_RAW_CHARS：正是审计 B3 的空白重型 payload。
+    const hugeRaw = `${'\n'.repeat(capture.MAX_RAW_CHARS + 10)}正文一段`;
+    const ctx = build({ clipboardText: hugeRaw });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    assert.ok(capture.countChars(hugeRaw) < capture.MAX_BODY_CHARS, '样本字数不超限，只有原文长度超限');
+    const result = await ui.createChapter({ pending: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'TOO_LARGE');
+    assert.equal(result.reason, 'raw', '必须能区分「原文太长」与「字数太长」');
+    assert.equal(ctx.commitPayloads.length, 0, '注定被主进程拒绝的 payload 不再发 IPC');
+    assert.equal(ctx.log.some((item) => item.startsWith('saveCurrent')), false, '闸门在保存当前章之前');
+    const warn = ctx.log.find((item) => item.startsWith('toast:warn:原文太长'));
+    assert.ok(warn, '要与主进程同口径提示原文太长');
+    assert.match(warn, /去导入小说/, '空白重型 payload 也要给「去导入小说…」出口（台账 #2）');
+    assert.equal(ctx.dom.map.get('btn-capture-import').classList.contains('hidden'), false, '显示导入入口');
+    assert.deepEqual(ui.records().map((item) => item.kind), ['pending'], '超限时记录保留');
+    assert.equal(ui.isBusy(), false);
+  }));
+
+test('章节：载章失败 → 不报成功、index 对齐编辑区实际章、记录仍算消费（E-N10）', () =>
+  withFakeDocument(async () => {
+    const chapters = [
+      { id: 'ch_a', name: '旧章', volumeId: 'vol-1' },
+      { id: 'ch_b', name: '第二章', volumeId: null }
+    ];
+    // 新章插到当前章之前（按卷插入的真实情形）：载章失败后旧的 state.index 会指向新章，
+    // 下次保存就会拿旧章正文按新章身份写 → CHAPTER_MISMATCH。
+    const ctx = build({
+      clipboardText: PENDING_TEXT,
+      chapters,
+      index: 0,
+      loadedChapterId: 'ch_a',
+      commitIndex: 0,
+      loadFails: true
+    });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    const result = await ui.createChapter({ pending: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'LOAD_FAILED');
+    assert.equal(result.index, 0, '新章确实建好了（回包带它的下标）');
+    assert.equal(
+      ctx.log.some((item) => item.startsWith('toast:info:已从剪贴板新建：')),
+      false,
+      '载章失败不许报「已从剪贴板新建」成功'
+    );
+    const errorToast = ctx.log.find((item) => item.startsWith('toast:error:'));
+    assert.ok(errorToast, '必须给一条 error');
+    assert.match(errorToast, /已新建章节/);
+    assert.match(errorToast, /打开新章失败/);
+    assert.match(errorToast, /读取新章失败/, '带上载章失败原因');
+    // 编辑区仍是 ch_a：index 必须对齐到它在新闻目里的新位置（0 → 1）
+    assert.equal(ctx.state.index, 1, 'state.index 跟随编辑区实际章');
+    assert.equal(ctx.state.loadedChapterId, 'ch_a');
+    assert.equal(ctx.state.chapters.length, 3);
+    // 正文已落盘 = 记录已消费：pending 清空、队列重拉，再点不会重复建章
+    assert.deepEqual(ui.records().map((item) => item.kind), []);
+    const loadAt = ctx.log.indexOf('loadChapterAt:0');
+    const listCalls = ctx.log
+      .map((value, index) => ({ value, index }))
+      .filter((item) => item.value === 'api.captureQueueList');
+    assert.ok(listCalls.some((item) => item.index > loadAt), '失败后也要重拉队列');
+    assert.equal(ctx.commitPayloads.length, 1);
+    await ui.createChapter({ pending: true });
+    assert.equal(ctx.commitPayloads.length, 1, '记录已消费，再点不会重复建章');
+    assert.equal(ui.isBusy(), false);
   }));
 
 test('插入位置：默认全书末尾 / after-current 用当前章下标 +1 并跟随卷；每次打开回默认', () =>

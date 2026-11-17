@@ -869,6 +869,9 @@ function fail(err, channel) {
   if (described.code === 'META_SAVE_FAILED' && err && err.bodySaved === true) {
     const partial = { ok: false, code: described.code, message: described.message, bodySaved: true };
     if (Number.isFinite(Number(err.chars))) partial.chars = Math.max(0, Math.round(Number(err.chars)));
+    // WP14 E-N6（审计低批）：正文已经写盘，mtime 也已经变了。把落盘后的 mtime 带回渲染层，
+    // 让 state.loadedMtimeMs 跟着更新；否则下一次保存会拿载入时的旧 mtime 比对，误报 EXTERNAL_CHANGE。
+    if (Number.isFinite(Number(err.mtimeMs))) partial.mtimeMs = Number(err.mtimeMs);
     if (typeof err.file === 'string') partial.file = err.file;
     return partial;
   }
@@ -1952,7 +1955,7 @@ function registerIpc() {
         // 界面提示「正文已写入磁盘，但书目更新失败，可重试保存」，dirty 保持，再按保存会重试。
         throw Object.assign(
           new Error(`正文已写入磁盘，但书目更新失败（${errorText.describeForUi(metaErr).message}），可再按一次保存重试`),
-          { code: 'META_SAVE_FAILED', bodySaved: true, chars: result.chars, file: chapter.file }
+          { code: 'META_SAVE_FAILED', bodySaved: true, chars: result.chars, file: chapter.file, mtimeMs: result.mtimeMs }
         );
       }
       // 每日字数统计：只记这次保存带来的正字数增量（删字不扣今天的进度）。

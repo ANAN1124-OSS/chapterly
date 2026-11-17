@@ -586,6 +586,7 @@
         const chars = Number(result.chars) || captureLib.countChars(resolved.text);
         // 只有插入成功才消费。pending 只在本层内存里，直接清；队列条目交给主进程原子删。
         // 删失败 / 这条已被别处消费也不把记录留在列表上：正文已经进编辑区，再点一次只会重复插入。
+        let removalFailed = false;
         if (resolved.pending) {
           panel.pendingText = null;
         } else {
@@ -605,10 +606,20 @@
             // 作者再点「正文」就重复插入同一段。这里登记消费，并明确告诉作者为什么它「没删掉」。
             markConsumed(resolved.id);
             panel.queue = panel.queue.filter((item) => item.id !== resolved.id);
-            toast('这条记录没能从队列移除（本窗口已隐藏它，刷新不会再画回来；其它窗口若仍出现请勿重复插入）', 'warn');
+            removalFailed = true;
           }
         }
-        toast(`已插入正文（${formatCount(chars)} 字），这条记录已从列表移除`);
+        // WP14 E-N9（审计低批）：删队列失败时只发一条合并提示。旧实现先 warn「没能从队列移除」，
+        // 再无条件跟一条「已从列表移除」，两条自相矛盾。
+        if (removalFailed) {
+          toast(
+            `已插入正文（${formatCount(chars)} 字），但这条记录没能从队列移除` +
+              '（本窗口已隐藏它，刷新不会再画回来；其它窗口若仍出现请勿重复插入）',
+            'warn'
+          );
+        } else {
+          toast(`已插入正文（${formatCount(chars)} 字），这条记录已从列表移除`);
+        }
         // 键盘连续处理：焦点交给下一条的「正文」（列表空了就落到「取消」），不用每次重新 Tab。
         focusList();
         return { ok: true, chars, consumed: true };
@@ -629,18 +640,20 @@
         const resolved = await resolveOrReport(ref);
         if (!resolved.ok) return resolved;
         const text = resolved.text;
-        // 2026-11-15：这里也改成去空白字数（和队列 / 主进程 / 状态栏同一个口径），
-        // 原文里的换行、缩进不再把「到底超没超 30 万字」算歪。
-        const chars = captureLib.countChars(text);
-        // 单条 >30 万字本来就不入队；直捕的超长内容点「章节」时这里拦下：不调 IPC，给导入引导。
-        if (chars > captureLib.MAX_BODY_CHARS) {
+        // WP14（台账 #2）：与主进程 capture:commit-record 同一套闸（core/capture.js 唯一实现）——
+        // 先原文长度、后去空白字数。旧实现只按字数拦，空白重型 payload（290 万前导换行 + 10 万字）
+        // 在渲染层放行、到主进程才被拒，作者只看到「新建章节失败」，也拿不到「去导入小说…」出口。
+        const limits = captureLib.checkCaptureLimits(text);
+        if (limits.tooLarge) {
           panel.tooLarge = true;
-          toast(
-            `内容太长（${formatCount(chars)} 字，最多 ${formatCount(captureLib.MAX_BODY_CHARS)} 字）；` +
-              '剪贴板捕获一次只新建一章，请先拆成多段再捕获，或用「去导入小说…」',
-            'warn'
-          );
-          return { ok: false, code: 'TOO_LARGE', chars };
+          const message =
+            limits.reason === 'raw'
+              ? `原文太长（${formatCount(limits.rawLength)} 个字符，最多 ${formatCount(captureLib.MAX_RAW_CHARS)} 个字符）；` +
+                '剪贴板捕获一次只新建一章，请先删掉多余空行或拆成多段再捕获，或用「去导入小说…」'
+              : `内容太长（${formatCount(limits.chars)} 字，最多 ${formatCount(captureLib.MAX_BODY_CHARS)} 字）；` +
+                '剪贴板捕获一次只新建一章，请先拆成多段再捕获，或用「去导入小说…」';
+          toast(message, 'warn');
+          return { ok: false, code: 'TOO_LARGE', chars: limits.chars, reason: limits.reason };
         }
         if (state.dirty) {
           const saved = await saveCurrent();
@@ -669,11 +682,25 @@
           if (data.stats.streak) state.streak = data.stats.streak;
           renderStatsUi();
         }
-        await loadChapterAt(data.index);
+        const loaded = await loadChapterAt(data.index);
         // 被消费的记录消失：pending 只在本层内存里，直接清；队列重新拉（主进程已按 queueId 删掉原文）。
+        // WP14 E-N10：正文已经落盘 = 记录已经消费，无论编辑区能否切到新章都要清，否则再点一次
+        // 会重复建章。切换失败单独处理（见下）。
         if (resolved.pending) panel.pendingText = null;
         await reloadQueue(resolved.id);
         panel.tooLarge = false;
+        if (loaded && loaded.ok === false) {
+          // 新章已建好，但编辑区还停在旧章：把 state.index 对齐到「编辑区实际载入的那一章」，
+          // 否则下一次保存会拿旧章正文按新章身份写（renderer.js 的 CHAPTER_MISMATCH）。
+          const currentId = state.loadedChapterId;
+          if (currentId) {
+            const at = state.chapters.findIndex((item) => item && item.id === currentId);
+            if (at >= 0) state.index = at;
+          }
+          const message = (loaded && loaded.message) || '读取新章失败';
+          toast(`已新建章节，但打开新章失败：${message}；请从书架重新打开本书后再继续写`, 'error');
+          return { ok: false, code: 'LOAD_FAILED', index: data.index, message };
+        }
         // titleOnly（整条 <100 字当章名、没有正文）时主进程返回 bodyChars=0 / chars=0：
         // 不能拿整条原文长度回退，否则 toast 会把章名字数当成正文字数报出去。
         const written = Number(data.bodyChars) || Number(data.chars) || 0;

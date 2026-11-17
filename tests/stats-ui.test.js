@@ -442,11 +442,47 @@ test('翻月竞态：旧回执晚到整段作废，日历停在最新一次翻�
   );
 });
 
-// 审计残留修复 #R13（#14/E10-E11）：refreshStats 原来没有令牌 —— 与翻月是两条独立链路，
-// 设置页筛选 / 保存后刷新触发的 stats:get 晚到时会用「默认月」的 calendar 把用户刚翻到的月份盖回去。
-// 现在它与翻月共用 calendarSeq：只有最新一次发出的请求能写 state.calendar / streak。
-test('跨路径竞态：#R13 refreshStats 的旧回执不覆盖翻月结果（共用世代令牌）', async () => {
+// 审计残留修复 #R13（#14/E10-E11）+ WP14 E-N8：日历与刷新拆世代号。
+// 旧契约（#R13）是「刷新与翻月共用 calendarSeq，最新发出者写日历」——它挡住了旧回执，
+// 但留下 E-N8 的实测缺陷：
+//   ① 用户翻到历史月后，筛选变化 / 保存后的 refreshStats 成为最新请求，把日历拉回本月；
+//   ② 用户在途翻月的回执被后发的刷新判成 stale，翻月白点。
+// 新契约：calendarSeq 只服务翻月（翻月的乱序仍按 E11 作废旧回执）；
+// refreshStats 用 statsSeq 管自己的汇总数据，且只有「当前显示本月 / 还没有日历」时才回写
+// state.calendar / streak —— 历史月视图归用户显式翻月，刷新无权改。
+test('跨路径：刷新不把历史月拉回本月、翻月回执按自己的世代号结算（E-N8 / #R13）', async () => {
   installDocument();
+  // ① 先翻到历史月，再刷新统计：日历 / 连续天数不动，汇总与柱状图照常更新。
+  const october = calendarView({ month: 10, label: '2026 年 10 月', isCurrentMonth: false });
+  const historyGates = [];
+  const history = makeHost({
+    onCall: (channel) => {
+      if (channel === 'stats:get') return new Promise((resolve) => historyGates.push(resolve));
+      return undefined;
+    }
+  });
+  const historyUi = statsUi.create(history.host);
+  history.state.calendar = october;
+  history.state.streak = { current: 10, best: 10 };
+  const historyRefresh = historyUi.refreshStats();
+  const refreshedInHistory = {
+    todayChars: 1200,
+    goal: 2000,
+    goalPercent: 60,
+    goalMet: false,
+    days: [],
+    recentTotal: 5000,
+    todaySeconds: 0,
+    streak: { current: 1, best: 1 },
+    calendar: calendarView()
+  };
+  historyGates[0](refreshedInHistory);
+  assert.equal(await historyRefresh, refreshedInHistory);
+  assert.equal(history.state.stats, refreshedInHistory, '汇总 / 柱状图的数据照常更新');
+  assert.equal(history.state.calendar, october, '历史月视图不许被刷新拉回本月');
+  assert.deepEqual(history.state.streak, { current: 10, best: 10 }, '连续天数也不许被刷新改回本月口径');
+
+  // ② 刷新先发、翻月后发：翻月先回，刷新晚到 —— 汇总更新，日历停在十月。
   const statsGates = [];
   const calendarGates = [];
   const { host, state } = makeHost({
@@ -461,18 +497,15 @@ test('跨路径竞态：#R13 refreshStats 的旧回执不覆盖翻月结果（�
   state.streak = { current: 5, best: 9 };
 
   const refreshing = ui.refreshStats(); // 先发出：带默认月的 payload
-  const loaded = ui.loadStatsCalendar(2026, 10); // 后发出：翻到十月 → 令牌更新
+  const loaded = ui.loadStatsCalendar(2026, 10); // 后发出：翻到十月
   assert.equal(statsGates.length, 1);
   assert.equal(calendarGates.length, 1);
 
-  // 翻月先回：十月落盘
-  const october = calendarView({ month: 10, label: '2026 年 10 月', isCurrentMonth: false });
   calendarGates[0]({ calendar: october, streak: { current: 10, best: 10 } });
   assert.equal(await loaded, october);
   assert.equal(state.calendar.month, 10);
   assert.equal(host.$('calendar-label').textContent, '2026 年 10 月');
 
-  // 先发出的刷新后回：state.stats 照常更新，但日历 / 连续天数不许被旧回执盖回默认月
   const late = {
     todayChars: 1200,
     goal: 2000,
@@ -487,19 +520,22 @@ test('跨路径竞态：#R13 refreshStats 的旧回执不覆盖翻月结果（�
   statsGates[0](late);
   assert.equal(await refreshing, late);
   assert.equal(state.stats, late, '汇总 / 柱状图的数据照常更新');
-  assert.equal(state.calendar.month, 10, '日历停在最新一次翻月的月份');
-  assert.deepEqual(state.streak, { current: 10, best: 10 }, '连续天数不许被旧回执改回去');
+  assert.equal(state.calendar.month, 10, '日历停在用户翻到的月份');
+  assert.deepEqual(state.streak, { current: 10, best: 10 }, '连续天数不许被刷新改回本月口径');
   assert.equal(host.$('calendar-label').textContent, '2026 年 10 月');
 
-  // 反向：翻月先发、刷新后发 —— 刷新是最新请求，有权写日历；旧翻月回执作废（与 E11 同一口径）
-  const gates = [];
-  const second = makeHost({
-    onCall: (channel) => new Promise((resolve) => gates.push({ channel, resolve }))
+  // ③ 翻月先发、刷新后发：刷新先回也不许吃掉在途翻月；用户显式翻到的九月最终生效。
+  const reverseGates = [];
+  const reverse = makeHost({
+    onCall: (channel) => new Promise((resolve) => reverseGates.push({ channel, resolve }))
   });
-  const ui2 = statsUi.create(second.host);
-  second.state.calendar = calendarView();
-  const staleShift = ui2.loadStatsCalendar(2026, 9);
-  const freshRefresh = ui2.refreshStats();
+  const ui2 = statsUi.create(reverse.host);
+  reverse.state.calendar = calendarView(); // 停在本月
+  reverse.state.streak = { current: 5, best: 9 };
+  const flipToSeptember = ui2.loadStatsCalendar(2026, 9);
+  const refreshAfter = ui2.refreshStats();
+  assert.equal(reverseGates[0].channel, 'stats:calendar');
+  assert.equal(reverseGates[1].channel, 'stats:get');
   const payload = {
     todayChars: 5,
     goal: 0,
@@ -511,14 +547,16 @@ test('跨路径竞态：#R13 refreshStats 的旧回执不覆盖翻月结果（�
     streak: { current: 2, best: 2 },
     calendar: october
   };
-  gates[1].resolve(payload); // 刷新（后发）先回
-  assert.equal(await freshRefresh, payload);
-  assert.equal(second.state.calendar, october);
-  gates[0].resolve({ calendar: calendarView({ month: 9, label: '2026 年 9 月', isCurrentMonth: false }) });
-  assert.equal(await staleShift, null, '旧翻月回执不结算');
-  assert.equal(second.state.calendar, october, '旧翻月不许把日历拉回九月');
-  assert.deepEqual(second.state.streak, { current: 2, best: 2 });
-  assert.equal(second.host.$('calendar-label').textContent, '2026 年 10 月');
+  reverseGates[1].resolve(payload); // 刷新（后发）先回
+  assert.equal(await refreshAfter, payload);
+  reverseGates[0].resolve({
+    calendar: calendarView({ month: 9, label: '2026 年 9 月', isCurrentMonth: false }),
+    streak: { current: 9, best: 9 }
+  });
+  const septemberView = calendarView({ month: 9, label: '2026 年 9 月', isCurrentMonth: false });
+  assert.deepEqual(await flipToSeptember, septemberView, '翻月自己的世代号仍是最新，不被刷新作废');
+  assert.equal(reverse.state.calendar.month, 9, '用户显式翻到的月份最终生效');
+  assert.deepEqual(reverse.state.streak, { current: 9, best: 9 });
 });
 
 test('renderStatsCalendar：没有视图时清空格子、汇总给提示、三个按钮都禁用', () => {

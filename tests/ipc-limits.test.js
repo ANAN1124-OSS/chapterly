@@ -163,9 +163,15 @@ test('导出范围：坏形状 / 未知模式降级成全书，越界仍按 expo
   assert.deepEqual(ipcLimits.sanitizeRange({ mode: 'volume', volumeId: 'vol_1' }), {
     mode: 'volume', from: null, to: null, volumeId: 'vol_1'
   });
-  // 卷 id 超长 / 非字符串：当没指定（未分卷），不抛错
-  assert.equal(ipcLimits.sanitizeRange({ mode: 'volume', volumeId: 'v'.repeat(201) }).volumeId, null);
-  assert.equal(ipcLimits.sanitizeRange({ mode: 'volume', volumeId: 42 }).volumeId, null);
+  // WP14 C7：卷 id 超长 / 非字符串 = 坏值 → 降级全书（mode:'all'），不再静默选「未分卷」章节集
+  assert.deepEqual(ipcLimits.sanitizeRange({ mode: 'volume', volumeId: 'v'.repeat(201) }), {
+    mode: 'all', from: null, to: null, volumeId: null
+  });
+  assert.deepEqual(ipcLimits.sanitizeRange({ mode: 'volume', volumeId: 42 }), {
+    mode: 'all', from: null, to: null, volumeId: null
+  });
+  // 缺省 / null 仍是合法的「未分卷」
+  assert.equal(ipcLimits.sanitizeRange({ mode: 'volume' }).mode, 'volume');
   // 审计修复 #47（E22）：from/to 先夹到书目章节数硬上限，天文数字不再原样进核心
   assert.deepEqual(ipcLimits.sanitizeRange({ mode: 'range', from: 1e12, to: Number.MAX_SAFE_INTEGER }), {
     mode: 'range', from: ipcLimits.MAX_CHAPTER_ITEMS, to: ipcLimits.MAX_CHAPTER_ITEMS, volumeId: null

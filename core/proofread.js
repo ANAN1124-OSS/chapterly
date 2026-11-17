@@ -337,7 +337,11 @@ function repeatWordIssues(line, options) {
     let windowStart = -1;
     for (let j = options.repeatCount - 1; j < occ.length; j += 1) {
       const start = occ[j - options.repeatCount + 1];
-      if (occ[j] + 2 - start <= options.repeatWindow) {
+      // WP14 C6（审计低批）：窗口判定按「起点在窗口内」（start 距离 < repeatWindow），
+      // 与消息「在 N 字内出现 K 次」和下面的计数区间 [windowStart, windowEnd) 同一口径。
+      // 旧实现按「整词容纳」（occ[j] + 2 - start <= repeatWindow）：起 0/100/299、窗口 300 时
+      // 299 + 2 = 301 > 300 被漏报，但三个起点其实都落在 [0, 300)。
+      if (occ[j] - start < options.repeatWindow) {
         windowStart = start;
         break;
       }

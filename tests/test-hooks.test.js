@@ -411,7 +411,9 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   这里只留 state / editorEl / openModal / 开书载章入口的上下文接线。
   // WP10（P-N2）：6492 → 6497（+5 行）。保存后全书校验改成 save-logic.js 的纯逻辑单飞工厂，
   // renderer 只留「工厂声明 + 一行 request」的接线；校验文案 / 失败日志 / 不 await 的语义不变。
-  const RENDERER_LINE_BUDGET = 6497;
+  // WP14（E-N6）：6497 → 6500（+3 行）。部分成功回执的落盘 mtime 必须写在 saveCurrent 的 catch 里
+  // （同一分支、sameChapter 判定之后），搬走会把「编辑器手上这一版」的状态拆到两个模块。
+  const RENDERER_LINE_BUDGET = 6500;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

@@ -55,6 +55,9 @@
       throw new TypeError('createStatsUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
     }
     const calendarSeq = staleGuard.createSeq();
+    // WP14 E-N8（审计低批）：刷新统计与翻月拆世代号。refreshStats 只负责汇总 / 柱状图，
+    // 用独立令牌管自己的最新回执；日历归翻月链路（calendarSeq）。
+    const statsSeq = staleGuard.createSeq();
   // ---------- 每日字数统计（提案 3.2） ----------
   // 只统计「保存动作」带来的新增字数：没保存的编辑不计数，删字也不会倒扣今天。
   // 日期 / 增量都在主进程算，渲染层只负责显示；统计文件在 userData，不碰书库。
@@ -64,17 +67,29 @@
   // 不该因为「只看某本书」就变成别的数字。
   let statsFilter = { bookId: '', year: 0 };
 
+  // WP14 E-N8：刷新统计能不能回写日历？只有「当前显示的是本月（或还没有日历）」才可以。
+  // 用户翻到历史月后，筛选变化 / 保存后刷新触发的 stats:get 回执只该更新汇总与柱状图，
+  // 不许把日历拉回本月（旧实现与翻月共用世代号，刷新成为最新请求时就会把月份盖回去）。
+  function calendarOnCurrentMonth() {
+    if (!state.calendar) return true;
+    const cursor = statsLogic.calendarCursor(state.calendar);
+    const current = statsLogic.currentYearMonth();
+    return cursor.year === current.year && cursor.month === current.month;
+  }
+
   async function refreshStats() {
-    // 审计残留修复 #R13（#14/E10-E11）：刷新统计与翻月共用同一个世代令牌。旧实现只有
-    // loadStatsCalendar 上令牌，设置页筛选 / 保存后刷新触发的 stats:get 回执晚到时会用
-    // 「默认月」的 calendar 覆盖掉用户刚翻到的月份（跨路径竞态）。现在两条链路都从 calendarSeq
-    // 取号：只有最新发出的那次请求能写 state.calendar / streak；旧回执照常更新 state.stats
-    //（汇总 / 柱状图与日历无关，上一次数据比没有强），但不许动日历。
-    const token = calendarSeq.next();
+    // 审计残留修复 #R13（#14/E10-E11）+ WP14 E-N8：刷新统计使用自己的世代号（statsSeq）——
+    // 旧刷新回执不许覆盖新刷新的汇总数据；日历 / 连续天数仍由翻月链路管：只有当前显示本月
+    // （或还没有日历）时刷新才有权回写，历史月视图不受筛选变化 / 保存后刷新的影响。
+    const token = statsSeq.next();
     try {
       const payload = await call(api.getStats, { bookId: statsFilter.bookId, year: statsFilter.year });
+      if (!statsSeq.isCurrent(token)) {
+        renderStatsUi();
+        return state.stats;
+      }
       state.stats = payload;
-      if (calendarSeq.isCurrent(token)) {
+      if (calendarOnCurrentMonth()) {
         state.streak = payload && payload.streak ? payload.streak : null;
         state.calendar = payload && payload.calendar ? payload.calendar : null;
       }
