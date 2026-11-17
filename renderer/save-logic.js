@@ -48,5 +48,64 @@
     return live !== snapshot;
   }
 
-  return { savedToastText, verifyWarnText, isDirtyAgainstSnapshot };
+  // 保存后全书校验（book:verify）的单飞 / 合并（WP10 / 审计 P-N2）。
+  //
+  // 改前：每次保存成功都 fire-and-forget 起一趟 `book:verify`（逐章 stat + bookStats），
+  // 没有在途标志；连按 Ctrl+S 会叠出 N 趟「同一本书的同一份扫描」，白占磁盘 / 线程池。
+  // 改后：同一本书同时最多一趟；在途时再来的请求只标记「结束后补一次」（不排队 N 趟）；
+  // 不同书互不影响（可并行）。一趟失败只由这里吞掉（onError 可观察），不卡死后续请求。
+  //
+  // 纯逻辑：不碰 DOM / IPC / 计时器；`run(key)` 是调用方给的异步函数（渲染层接 book:verify）。
+  function createVerifySingleFlight(run, options) {
+    const runner = typeof run === 'function' ? run : () => {};
+    const opts = options || {};
+    const onError = typeof opts.onError === 'function' ? opts.onError : null;
+    const active = new Map(); // key -> { rerun }
+
+    function start(key) {
+      const token = { rerun: false };
+      active.set(key, token);
+      Promise.resolve()
+        .then(() => runner(key))
+        .catch((err) => {
+          // 校验失败不影响保存：默认静默，调用方需要观察时传 onError（自己记日志）。
+          if (onError) {
+            try {
+              onError(err, key);
+            } catch {
+              /* 观察者的异常也不许影响单飞账 */
+            }
+          }
+        })
+        .then(() => {
+          if (active.get(key) !== token) return; // 已被更新的在途项替换（理论上不会发生）
+          if (token.rerun) {
+            token.rerun = false;
+            start(key); // 在途期间有过请求 → 结束后最多补一次
+            return;
+          }
+          active.delete(key);
+        });
+    }
+
+    function request(target) {
+      const key = String(target == null ? '' : target);
+      if (!key) return 'ignored';
+      const token = active.get(key);
+      if (token) {
+        token.rerun = true;
+        return 'coalesced';
+      }
+      start(key);
+      return 'started';
+    }
+
+    return {
+      request,
+      isActive: (target) => active.has(String(target == null ? '' : target)),
+      activeCount: () => active.size
+    };
+  }
+
+  return { savedToastText, verifyWarnText, isDirtyAgainstSnapshot, createVerifySingleFlight };
 });

@@ -50,7 +50,8 @@ const MAX_INDEX_READ_BYTES = 64 * 1024 * 1024;
 // 写侧还要有总量预算 —— 200 本 × 数 MB 位图 = 数百 MB 的单文件，每次 flush 整份重写（写放大 =
 // 文件大小），启动首载还要整份 parse。32 MB 仍远高于真实书架（280 本 × 25 万字 ≈ 22 MB）：
 // 正常书架一本都不会被淘汰；超限时按「书目最后修改时间从旧到新」丢掉整本书的位图（章节指纹保留），
-// 被丢的书以后永远当候选、逐章核对 —— 只降速、不漏结果。
+// 被丢的书以后永远当候选、逐章核对 —— 只降速、不漏结果（WP10/E-N5 起候选组装不按 60 本上限
+// 截断它们；只有位图匹配的候选才受上限约束，超出的部分在结果里如实标 unscannedBooks）。
 // 只在写盘时压缩：下一次有书变脏 / 换书架根时新人选会被重新评估。
 const MAX_INDEX_BYTES = 32 * 1024 * 1024;
 
@@ -83,7 +84,11 @@ const MAX_FOCUS_FIELD_CHARS = 260;
 // （坏索引 / 手改 JSON），超限整条丢弃，由下一次构建按真实书目补回。
 const MAX_CHAPTER_FILE_CHARS = 4096;
 const SNIPPET_RADIUS = 16;
-const MAX_CANDIDATE_BOOKS = 60; // 两字常用词可能命中一大半书：最多读这么多本
+// E-N5（审计修复 WP10）：这条上限只约束「位图匹配到、能按位图读」的候选书。
+// 没有位图的书（预算淘汰 bloomDropped / 建图放弃 bloomOmitted / 位图解码失败 / 没有 bloom）
+// 本来就只能逐章核对、不可能被位图筛掉，一律追加在 60 本之后（时间预算兜底）——否则被淘汰的
+// 书越多、越靠后的书越「根本不扫」，与模块注释「只降速、不漏结果」的承诺冲突。
+const MAX_CANDIDATE_BOOKS = 60;
 const SEARCH_TIME_BUDGET_MS = 1800; // 超过就带着已有结果返回（结果标 truncated）
 // B11（v1.8.0 WP-29）：核对候选书时逐章读盘的预读并发度。以前整本串行 await loadChapterText，
 // 机械盘 / 杀软环境下 1800ms 预算只够读几十章、truncated 常态化；按 4 章一批预读（顺序仍按
@@ -92,6 +97,13 @@ const SEARCH_TIME_BUDGET_MS = 1800; // 超过就带着已有结果返回（结�
 const CHAPTER_READ_CONCURRENCY = 4;
 const MAX_CHAPTER_READ_CONCURRENCY = 8;
 const FULL_VALIDATE_INTERVAL_MS = 10000; // 后台深度校验的节流（外部改 txt 最迟这么久后发现）
+// WP10（审计 P-N1）：深度校验的内容指纹（首尾各 4 KB 哈希）按书低频复核 —— 逐章 stat 仍然
+// 每趟做（mtime / size 变化照旧立刻发现），但「信封没变」的章节不再每趟 open 文件。
+// 3000 章的书原来每次回书架（约 10 s 节流）= 3000 stat + 3000 open + ≤24 MB 读；现在同一本书
+// 5 分钟才复核一次，中间各趟只 stat。同大小 + 保留 mtime 的改写（E4）最迟在复核 / 下次启动时
+// 发现（README 第 21 条的已知盲区不变，只是复核频率从「每趟」降到「低频」）。
+// 间隔按书路径加稳定抖动（hashJitterMs），避免整架书在同一个整点一起复扫。
+const HASH_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
 // 搜索自身不做逐章 stat（太慢），但距上次深度校验超过 1 分钟时会顺带做一次兜底校验，
 // 保证「一直在书架搜、不回书架」也能发现外部改过的 txt。
 const SEARCH_DEEP_INTERVAL_MS = 60000;
@@ -569,11 +581,30 @@ function latestModifiedMs(metaMtimeMs, chapters) {
   return latest;
 }
 
+// WP10（P-N1）：每本书内容指纹复核时刻的稳定抖动（只依赖路径，不依赖时钟）。
+// 上限 min(间隔 × 0.4, 120 s)：同一书架的复盘时刻散开在约「间隔 + 抖动」的窗口里，
+// 不会整架书在同一个整点一起 open 上千个章文件；单本书自己的窗口仍然可预期。
+function hashJitterMs(key, intervalMs) {
+  const interval = Number.isFinite(intervalMs) && intervalMs > 0 ? Math.floor(intervalMs) : 0;
+  if (!interval) return 0;
+  const span = Math.min(Math.floor(interval * 0.4), 120000);
+  if (span <= 0) return 0;
+  const text = String(key == null ? '' : key);
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) hash = (Math.imul(hash, 31) + text.charCodeAt(i)) >>> 0;
+  return hash % span;
+}
+
 // 一本书的索引：读书目 + 逐章文件指纹；正文变过（或强制 / 脏标记）才重算位图。
 // 返回 null 表示「没有可用书目」（损坏 / 没有 书目.json），这本书不参与搜索。
 async function buildBookEntry(bookPath, folder, old, options, onProgress) {
   const force = Boolean(options.force);
   const dirty = Boolean(options.dirty);
+  // WP10（P-N1）：这一趟要不要复核「信封没变」章节的内容指纹，由调用方（doEnsure 的按书低频
+  // 账）决定；直接调用 / 建索引 / 强制 / 脏书一律全算（默认 true = 旧行为）。
+  const recheckHashes = options.recheckHashes !== false;
+  // 指纹实现可注入：单测数「这一趟 open 了几章」；产品里就是唯一实现 chapterContentHashOf。
+  const hashOf = typeof options.contentHashOf === 'function' ? options.contentHashOf : chapterContentHashOf;
   let meta;
   try {
     meta = await storage.readBookMeta(bookPath);
@@ -592,15 +623,27 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
   );
   // 章节文件指纹：并发 stat + 首尾各 4 KB 内容采样（E4：同 mtime / size 的改写也要能发现）。
   // 采样读不到时 contentHash 为空串：下次校验会当「变化」重算（宁可重建，不可漏报）。
+  // WP10（P-N1）分层：先看信封（mtime + size）——
+  //   · 信封变了 / 新章 / 没有旧指纹 / 空指纹 → 必须真算（变化立刻发现）；
+  //   · 信封没变且本趟不复核 → 复用旧指纹，不 open 文件（这就是「3000 章少 3000 open」）；
+  //   · 信封没变且本趟复核（低频到期）→ 真算，用来抓「同大小 + 保留 mtime」的改写（E4）。
   const stats = await mapLimit(rawChapters, 24, async (chapter) => {
     try {
       const filePath = storage.assertChapterFile(bookPath, chapter.file);
       const stat = await fs.stat(filePath);
       if (!stat.isFile()) return null;
+      const previous = oldChapters.get(chapter.file);
+      const reusable =
+        !recheckHashes &&
+        previous &&
+        previous.mtimeMs === stat.mtimeMs &&
+        previous.size === stat.size &&
+        typeof previous.contentHash === 'string' &&
+        previous.contentHash !== '';
       return {
         mtimeMs: stat.mtimeMs,
         size: stat.size,
-        contentHash: await chapterContentHashOf(filePath, stat.size)
+        contentHash: reusable ? previous.contentHash : await hashOf(filePath, stat.size)
       };
     } catch {
       return null; // 缺文件的章节不参与搜索（书目里还在，历史面板能找回）
@@ -764,6 +807,20 @@ function createSearchStore(options = {}) {
   const bloomMaxItems = Number.isFinite(options.bloomMaxItems)
     ? Math.max(1, Math.floor(options.bloomMaxItems))
     : undefined;
+  // WP10（审计 P-N1）：内容指纹复核间隔。
+  // 缺省（没传）沿用本模块「validateIntervalMs=0 = 单测每次都要看到外部改动」的既有口径
+  // （E4 既有用例正是 0，断言口径不破），其余情况走 5 分钟常量（生产默认 validateIntervalMs = 10 s）。
+  // 显式传了但非法（负数 / NaN / Infinity / 字符串 / 对象）→ 落回默认常量，不出现「永不复核 / 每趟复核」的意外组合。
+  const hashRecheckIntervalMs =
+    options.hashRecheckIntervalMs === undefined || options.hashRecheckIntervalMs === null
+      ? validateIntervalMs === 0
+        ? 0
+        : HASH_RECHECK_INTERVAL_MS
+      : Number.isFinite(options.hashRecheckIntervalMs) && options.hashRecheckIntervalMs >= 0
+        ? Math.floor(options.hashRecheckIntervalMs)
+        : HASH_RECHECK_INTERVAL_MS;
+  // 指纹实现可注入（单测数 open 次数）；产品默认唯一实现 chapterContentHashOf。
+  const hashOf = typeof options.contentHashOf === 'function' ? options.contentHashOf : chapterContentHashOf;
   // 搜索侧窗口：validateIntervalMs=0（单测里「每次都要看到外部改动」的口径）时退回旧行为。
   const searchEnsureIntervalMs = validateIntervalMs === 0 ? 0 : SEARCH_ENSURE_INTERVAL_MS;
   const nowMs = () => {
@@ -798,6 +855,10 @@ function createSearchStore(options = {}) {
   let rootSignature = '';
   let lastSignatureCheckAt = 0;
   const dirtyBooks = new Set();
+  // WP10（审计 P-N1）：进程内的「这本书上次整本复核内容指纹」时刻（归一化书路径 → nowMs）。
+  // 只做节流、**不落盘**：写进索引会让每次复核都整份重写 22 MB（写放大），而下次启动对每本书
+  // 再复核一次本来就和改前行为一致。删书 / 换根时清掉对应 key（不随会话泄漏）。
+  const hashCheckedAt = new Map();
   // V93：path -> { bloom(base64), bits, buffer }，按 LRU 只留最近用过的 BLOOM_CACHE_MAX 本。
   // P3（审计修复 #19）：条数之外再加字节预算（BLOOM_CACHE_MAX_BYTES，单测可注入
   // options.bloomCacheMaxBytes）—— 32 条 × 单本最大 8 MB 位图 ≈ 256 MB 的老口径在这里被压住。
@@ -1017,6 +1078,8 @@ function createSearchStore(options = {}) {
       bloomCache.clear();
       bloomCacheBytes = 0;
       lastFullValidateAt = 0;
+      // WP10（P-N1）：新书架根的每本书都要从「建索引」口径复核一次（旧根的节流账作废）。
+      hashCheckedAt.clear();
     }
     rootProblem = '';
 
@@ -1089,12 +1152,19 @@ function createSearchStore(options = {}) {
         chapters: run.chapters
       });
       let built = null;
+      // WP10（审计 P-N1）：这一本书这一趟要不要复核「信封没变」章节的内容指纹。
+      // 建索引 / 强制 / 脏书 / 到期（低频 + 按路径抖动）才复核；其余趟只 stat。
+      const due =
+        hashRecheckIntervalMs === 0 ||
+        nowMs() - (hashCheckedAt.get(key) || 0) >=
+          hashRecheckIntervalMs + hashJitterMs(key, hashRecheckIntervalMs);
+      const recheckHashes = force || dirty || !old || due;
       try {
         built = await buildBookEntry(
           bookPath,
           folder,
           old,
-          { force, dirty, bloomMaxItems },
+          { force, dirty, bloomMaxItems, recheckHashes, contentHashOf: hashOf },
           (info) => report({ ...info, done: doneBooks, total: folders.length })
         );
       } catch {
@@ -1107,6 +1177,8 @@ function createSearchStore(options = {}) {
         // 没有书目 / 读不出来：不索引这本书（书卡在书架上仍会显示损坏提示）
         continue;
       }
+      // 只有真的整本复核过才记账；单章信封变化时只更新那一章，不算整本复核（下次到期仍复核）。
+      if (recheckHashes) hashCheckedAt.set(key, nowMs());
       const entry = built.entry;
       if (!old) run.addedBooks += 1;
       else if (built.rebuilt) run.rebuiltBooks += 1;
@@ -1120,8 +1192,13 @@ function createSearchStore(options = {}) {
     if (previous.size) run.changed = true;
     run.books = nextBooks.length;
     run.chapters = totalChapters({ books: nextBooks });
+    const folderKeys = new Set(folders.map((folder) => normalizePath(folder.bookPath)));
     for (const key of Array.from(dirtyBooks)) {
-      if (!folders.some((folder) => normalizePath(folder.bookPath) === key)) dirtyBooks.delete(key);
+      if (!folderKeys.has(key)) dirtyBooks.delete(key);
+    }
+    // WP10（P-N1）：删掉 / 移走的书不再占节流账（换根时 rootChanged 已清索引，这里兜底）。
+    for (const key of Array.from(hashCheckedAt)) {
+      if (!folderKeys.has(key)) hashCheckedAt.delete(key);
     }
     index = {
       version: INDEX_VERSION,
@@ -1379,11 +1456,16 @@ function createSearchStore(options = {}) {
       };
     }
 
+    // E-N5（审计修复 WP10）：候选分两类记 —— 「有位图书」按位图匹配结果进候选；「无位图书」
+    // （预算淘汰 / 建图放弃 / 位图解码失败 / 空位图）永远进候选、只能逐章核对。
+    // 后者不受 MAX_CANDIDATE_BOOKS 截断（见下面的 scanTarget 组装）。
     const candidates = [];
+    let bloomlessCandidates = 0;
     for (const book of index.books) {
       const bloom = bloomFor(book);
       if (!bloom) {
-        candidates.push(book); // 没有位图（有章节读不了）→ 永远核查，不能漏
+        candidates.push({ book, bloomless: true });
+        bloomlessCandidates += 1;
         continue;
       }
       let ok = true;
@@ -1393,10 +1475,18 @@ function createSearchStore(options = {}) {
           break;
         }
       }
-      if (ok) candidates.push(book);
+      if (ok) candidates.push({ book, bloomless: false });
     }
-    candidates.sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0));
-    const scanTarget = candidates.slice(0, maxBooks);
+    candidates.sort((a, b) => (b.book.lastModified || 0) - (a.book.lastModified || 0));
+    const scanTarget = candidates.slice(0, maxBooks).map((item) => item.book);
+    // E-N5：无位图书不受 60 本上限截断 —— 它们在候选里只会被位图误报拖慢，不可能被筛掉；
+    // 再一刀切等于「被预算淘汰的书越多、越靠后的书越根本不扫」。按同一排序追加，
+    // 时间预算仍是最终兜底（超时照样 truncated）。
+    for (let i = maxBooks; i < candidates.length; i += 1) {
+      if (candidates[i].bloomless) scanTarget.push(candidates[i].book);
+    }
+    // 只有「位图匹配到、却因上限没进 scanTarget」的书才是真正可能漏结果的书数（界面据此明说）。
+    const unscannedBooks = candidates.length - scanTarget.length;
     const results = [];
     let matchedChapters = 0;
     // P22-4：totalMatches 从「已列出的片段数」改成「真命中数」——每章按位置数完再只列前 3 条，
@@ -1510,6 +1600,11 @@ function createSearchStore(options = {}) {
       }),
       results,
       candidateBooks: candidates.length,
+      // E-N5：候选里「有位但被 60 本上限挡住、没扫」的书数 —— 无位图书已全部追加（不再计在这里）。
+      // 界面据此把「只查了最近的一部分书」说具体：另有 N 本较旧的书未扫描。
+      unscannedBooks,
+      // 无位图书数（预算淘汰 / 建图放弃 / 位图坏）：这些书永远逐章核对，只降速不漏结果。
+      bloomlessBooks: bloomlessCandidates,
       scannedBooks,
       scannedChapters,
       skippedChapters,
@@ -1577,6 +1672,9 @@ module.exports = {
   MAX_FOCUS_FIELD_CHARS,
   // E4 / E5（审计修复 #8）：章文件首尾采样指纹与每书位图 CRC32（单测直接钉住形状与校验）
   crc32,
+  // WP10（E-N5 / P-N1）：候选上限（有位图书）与内容指纹低频复核间隔（单测直接钉住口径）
+  MAX_CANDIDATE_BOOKS,
+  HASH_RECHECK_INTERVAL_MS,
   chapterContentHashOf,
   normalizeQuery,
   bigramHash,

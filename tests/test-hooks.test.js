@@ -409,7 +409,9 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   ④ testHooksScope 里 `crashRecoveryUi,`（1 行说明 + 1 行键）。
   //   周期上报 / 恢复提示 / 失败路径全在 renderer/crash-recovery-ui.js（Node 单测 U1–U7），
   //   这里只留 state / editorEl / openModal / 开书载章入口的上下文接线。
-  const RENDERER_LINE_BUDGET = 6492;
+  // WP10（P-N2）：6492 → 6497（+5 行）。保存后全书校验改成 save-logic.js 的纯逻辑单飞工厂，
+  // renderer 只留「工厂声明 + 一行 request」的接线；校验文案 / 失败日志 / 不 await 的语义不变。
+  const RENDERER_LINE_BUDGET = 6497;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

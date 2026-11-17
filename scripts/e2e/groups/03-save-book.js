@@ -210,6 +210,45 @@ module.exports = async function group3SaveBook(t) {
   await fs.rename(path.join(missingHoldDir, '002-夜雨.txt'), path.join(bookDir, '002-夜雨.txt'));
   await fs.rm(missingHoldDir, { recursive: true, force: true });
 
+  // ③c. WP10（P-N2）：保存后全书校验单飞——同一本书在途时连按保存不叠第二趟，
+  //     结束后最多补一次。这里用 setTestVerifyBook 造一趟 4 秒在途的假校验，连存 3 次：
+  //     修复前每次保存各起一趟（max=3）；修复后任何时刻最多 1 趟，全部收尾后总共 2 趟。
+  await exec('window.__cwTest.clearToasts()');
+  await exec(`(() => {
+    window.__e2eVerifyCalls = 0;
+    window.__e2eVerifyActive = 0;
+    window.__e2eVerifyMax = 0;
+    window.__cwTest.setTestVerifyBook(() => {
+      window.__e2eVerifyCalls += 1;
+      window.__e2eVerifyActive += 1;
+      window.__e2eVerifyMax = Math.max(window.__e2eVerifyMax, window.__e2eVerifyActive);
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          window.__e2eVerifyActive -= 1;
+          resolve({ chapterCount: 3, missing: [] });
+        }, 4000);
+      });
+    });
+    return 'ok';
+  })()`);
+  for (let i = 0; i < 3; i += 1) {
+    await exec(`window.__cwTest.setText(${JSON.stringify(`风从海面吹来。\n\n单飞连存第 ${i + 1} 趟。`)})`);
+    await exec('window.__cwTest.saveVisible()');
+  }
+  const verifyDuring = await exec('({ calls: window.__e2eVerifyCalls, active: window.__e2eVerifyActive, max: window.__e2eVerifyMax })');
+  await sleep(3200); // 第一趟 4s 还没结束：连存期间任何时刻都不许叠趟
+  const verifyMid = await exec('({ calls: window.__e2eVerifyCalls, active: window.__e2eVerifyActive, max: window.__e2eVerifyMax })');
+  await sleep(5200); // 第一趟（4s）+ 合并补的一趟（4s）都结束
+  const verifyDone = await exec('({ calls: window.__e2eVerifyCalls, active: window.__e2eVerifyActive, max: window.__e2eVerifyMax })');
+  check(
+    '保存后全书校验单飞（P-N2）：在途连存不叠趟，结束后最多补一次（3 次保存 → 2 趟）',
+    verifyDuring.max === 1 && verifyMid.max === 1 && verifyDone.max === 1 &&
+      verifyDuring.calls === 1 && verifyDone.calls === 2 && verifyDone.active === 0,
+    { verifyDuring, verifyMid, verifyDone }
+  );
+  await exec('window.__cwTest.setTestVerifyBook(null)');
+  await exec('delete window.__e2eVerifyCalls; delete window.__e2eVerifyActive; delete window.__e2eVerifyMax');
+
   // ③b. 状态栏失败态（1.3.0 T7 = 规范 C-05 / I-01）：把章节文件设成只读让真实写盘失败 →
   //    朱红「保存失败：原因」+ 出现「重试」按钮；恢复权限后点重试 = 同一条 saveCurrent() 真的写盘。
   //    失败 toast 保持 1.2.0 原样（规范只要求成功不弹），所以这里只断言状态栏。

@@ -3135,17 +3135,22 @@
   // 正常启动恒为 null，替换热路径就是原来的 call(api.findNext, ...)。
   let testFindNext = null;
 
+  // WP10（P-N2）：保存后的全书校验走单飞 / 合并（纯逻辑在 save-logic.js）——
+  // 同一本书在途时再保存只标记「结束后补一次」，连按 Ctrl+S 不会叠出 N 趟全量 stat；
+  // 不同书互不影响。保存热路径仍不 await 校验（F2 语义不变）。
+  const verifyBookScheduler = saveLogic.createVerifySingleFlight(async (bookPath) => {
+    try {
+      const verify = testVerifyBook || ((target) => call(api.verifyBook, target));
+      const report = await verify(bookPath);
+      const warn = saveLogic.verifyWarnText(report);
+      if (warn) toast(warn, 'warn');
+    } catch (err) {
+      console.warn('保存后的全书校验失败（已忽略，不影响保存结果）', err);
+    }
+  });
+
   function verifyBookInBackground(bookPath) {
-    void (async () => {
-      try {
-        const verify = testVerifyBook || ((target) => call(api.verifyBook, target));
-        const report = await verify(bookPath);
-        const warn = saveLogic.verifyWarnText(report);
-        if (warn) toast(warn, 'warn');
-      } catch (err) {
-        console.warn('保存后的全书校验失败（已忽略，不影响保存结果）', err);
-      }
-    })();
+    verifyBookScheduler.request(bookPath);
   }
 
   async function saveCurrent({ silent = false, force = false } = {}) {

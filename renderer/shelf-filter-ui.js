@@ -274,10 +274,14 @@
       parts.push(`正文搜索至少 ${CONTENT_SEARCH_MIN_CHARS} 个字`);
     } else if (meta && meta.results && meta.results.length) {
       const shown = Math.min(content.shown, meta.results.length);
+      // WP10（E-N5）：只笼统写「只查了最近的一部分书」不够——被位图匹配、却因候选上限没扫的
+      // 书数由主进程如实回报（unscannedBooks），这里明写成「另有 N 本较旧的书未扫描」。
+      const unscanned = Math.max(0, Math.round(Number(meta.unscannedBooks) || 0));
       parts.push(
         `正文命中 ${contentMatchTotal(meta)} 处（显示 ${shown} 条）` +
           (meta.truncated ? ' · 只查了最近的一部分书' : '') +
           ` · 已查 ${meta.scannedBooks}/${meta.candidateBooks} 本` +
+          (unscanned > 0 ? ` · 另有 ${unscanned} 本较旧的书未扫描` : '') +
           // 功能-5（2026-11-11）：书架不读每本书的编号设置，这里的章号一律按全书顺序；
           // 书设为按卷编号时写作页显示的是卷内号 —— 只写清已知差异，不改显示语义。
           ' · 章号按全书顺序显示（书设为「每卷重新编号」时，写作页显示的是卷内号，两处不同）'

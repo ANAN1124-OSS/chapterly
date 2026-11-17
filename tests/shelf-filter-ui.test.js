@@ -385,6 +385,29 @@ test('renderShelfContent：没有结果时的空态两种文案（截断 / 全�
   assert.equal(list.children[0].textContent, '书名、章节名和正文里都没找到。换个更短或更具体的词再试；按 Esc 清空搜索。');
 });
 
+test('renderShelfContent（WP10 / E-N5）：截断摘要明说「另有 N 本较旧的书未扫描」，原来两句逐字保留', () => {
+  const hit = row();
+  const ctx = build({
+    shelfQuery: '张三',
+    results: [hit, row({ bookTitle: '书乙' })],
+    meta: { results: [hit, hit], truncated: true, scannedBooks: 8, candidateBooks: 10, unscannedBooks: 2 }
+  });
+  withDom(ctx.dom, () => ctx.ui.renderShelfContent());
+  const summary = ctx.dom.$('shelf-content-summary').textContent;
+  // 审计 E-N5：只笼统写「只查了最近的一部分书」不够——被位图匹配却因上限没扫的书数要明说。
+  assert.match(summary, / · 另有 2 本较旧的书未扫描/);
+  assert.match(summary, /^正文命中 2 处（显示 2 条） · 只查了最近的一部分书 · 已查 8\/10 本/);
+
+  // 没有未扫本数（全部无位图书都已追加）时不许凭空多这句
+  const clean = build({
+    shelfQuery: '张三',
+    results: [hit],
+    meta: { results: [hit], truncated: false, scannedBooks: 1, candidateBooks: 1, unscannedBooks: 0 }
+  });
+  withDom(clean.dom, () => clean.ui.renderShelfContent());
+  assert.equal(clean.dom.$('shelf-content-summary').textContent.includes('未扫描'), false);
+});
+
 test('renderShelfContent：正文索引在建时摘要带进度（有 total / 没 total 两种）', () => {
   const withTotal = build({
     shelfQuery: '张三',
