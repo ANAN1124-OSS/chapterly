@@ -1,7 +1,8 @@
 // WP15 / 审计 E1=O-N2（中 #18）：构建供应链校验和入 CI 与发版门禁。
 //
 // 政策类（事实源写在断言旁）：官方 SHASUMS256.txt 入库、e2e-weekly 接线、README 发版门禁、
-// package.json 不自动挂钩 —— 这些事实要打包 / CI 环境才观察得到，本地 node --test 看不到。
+// package.json 的 predist / predist:dir 自动门禁（R7）—— 这些事实要打包 / CI 环境才观察得到，
+// 本地 node --test 看不到。
 // 行为类：scripts/supply-chain-check.js 的退出码 / 文案 / IO 失败注入（真临时文件，不联网、不下载）。
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -270,17 +271,43 @@ test('R6 发版门禁接线 + 闸门不打包：维护者文档 / package.json /
   assert.equal(readme.includes('### 构建供应链（Electron 二进制）'), false, 'README 不再承载供应链详情');
 
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(pkg.scripts.dist, 'electron-builder --win nsis', 'dist 保持原样（校验不自动挂钩）');
-  assert.equal(pkg.scripts['dist:dir'], 'electron-builder --win dir', 'dist:dir 同理');
-  assert.equal(
-    Object.values(pkg.scripts).some((value) => String(value).includes('supply-chain')),
-    false,
-    '不新增自动调用的 npm 入口（门禁由 CI / 发版流程显式执行）'
-  );
+  assert.equal(pkg.scripts.dist, 'electron-builder --win nsis', 'dist 本体保持原样（门禁只是前置步骤）');
+  assert.equal(pkg.scripts['dist:dir'], 'electron-builder --win dir', 'dist:dir 本体同理');
 
   const source = read('scripts/supply-chain-check.js');
   assert.equal(/\brequire\(['"]node:child_process['"]\)/.test(source), false, '闸门不许起子进程');
   assert.equal(/\bspawn\s*\(/.test(source), false, '闸门不许 spawn');
   assert.equal(source.includes('electron-builder'), false, '闸门绝不打包');
   assert.equal(/\brequire\(['"]node:https?['"]\)/.test(source), false, '闸门不许联网');
+});
+
+// R7（M-N3 复核缺口）：发版门禁不能只活在文档里——npm 生命周期 pre 脚本把校验接成打包前置门禁。
+// 失败注入（静态）：predist / predist:dir 缺失、改名或指向 echo 等别的命令 → 下面两条精确相等断言直接红。
+test('R7 发版门禁接成 npm 前置脚本：predist / predist:dir 指向 supply-chain-check（政策类）', () => {
+  const pkg = JSON.parse(read('package.json'));
+  const gate = 'node scripts/supply-chain-check.js';
+  // npm / pnpm 都会在 `npm run dist` / `npm run dist:dir` 前自动执行对应的 pre 脚本；
+  // 门禁非 0（清单缺失 / zip 被篡改 / 缓存里没有）时打包根本不会开始。
+  assert.equal(pkg.scripts.predist, gate, 'npm run dist 前必须自动跑供应链校验');
+  assert.equal(pkg.scripts['predist:dir'], gate, 'npm run dist:dir 前同样要跑（快速验证也要先核对二进制）');
+  assert.match(pkg.scripts.predist, /^node scripts\/supply-chain-check\.js$/, 'pre 脚本只能指向闸门本体（不许 echo 糊弄）');
+  assert.match(
+    pkg.scripts['predist:dir'],
+    /^node scripts\/supply-chain-check\.js$/,
+    'dist:dir 的 pre 脚本同样只能指向闸门本体'
+  );
+
+  // 文档与 npm 生命周期同口径：不能再写「不在 dist 里自动执行」；显式命令仍保留供排查。
+  const docs = read('docs/维护与自检.md');
+  const sectionStart = docs.indexOf('### 构建供应链（Electron 二进制）');
+  assert.ok(sectionStart > 0, '维护者文档要有「构建供应链」小节');
+  const sectionEnd = docs.indexOf('\n## ', sectionStart + 1);
+  const section = sectionEnd > sectionStart ? docs.slice(sectionStart, sectionEnd) : docs.slice(sectionStart);
+  assert.ok(section.includes('predist'), '维护文档要写明 predist / predist:dir 自动门禁');
+  assert.equal(
+    section.includes('不在 `pnpm run dist` 里自动执行'),
+    false,
+    '不能再写「不在 pnpm run dist 里自动执行」（与 package.json 的 pre 门禁矛盾）'
+  );
+  assert.ok(section.includes(gate), '显式命令仍保留（排查时可单独跑）');
 });

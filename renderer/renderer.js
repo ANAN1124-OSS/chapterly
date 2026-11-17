@@ -300,11 +300,8 @@
   async function call(fn, ...args) {
     const res = await fn(...args);
     if (!res || res.ok === false) {
-      // 只认白名单里的部分成功字段（不带 ok / message 这些已有字段，免得覆盖 Error 的语义）
-      const extra = res && res.bodySaved === true
-        ? { bodySaved: true, chars: res.chars, file: res.file }
-        : null;
-      throw new ApiError((res && res.message) || '未知错误', res && res.code, extra);
+      // 白名单（部分成功字段 / 重试 mtime）在 save-logic.js；原始错误与路径仍只留在主进程日志
+      throw new ApiError((res && res.message) || '未知错误', res && res.code, saveLogic.saveFailureExtra(res));
     }
     return res.data;
   }
@@ -3273,13 +3270,16 @@
         if (!sameChapter) return { ok: false, code: err.code, message: err.message, bodySaved: true };
         // WP14 E-N6（审计低批）：正文已经落盘，mtime 跟着变了；把主进程带回的落盘 mtime 同步到
         // 「编辑器手上这一版」，下一次保存不会拿载入时的旧 mtime 比对而误报 EXTERNAL_CHANGE。
-        if (Number.isFinite(Number(err.mtimeMs))) state.loadedMtimeMs = Number(err.mtimeMs);
+        state.loadedMtimeMs = saveLogic.retryMtimeMs(err, state.loadedMtimeMs);
         state.saveError = err.message;
         updateStatus();
         if (!silent) toast(err.message, 'warn');
         return { ok: false, code: err.code, message: err.message, bodySaved: true };
       }
       if (!sameChapter) return { ok: false, code: err.code, message: err.message };
+      // WP1 补漏（M-N1）：META_CHANGED 也带回正文落盘后的新 mtime（同 META_SAVE_FAILED 口径），
+      // 更新基线后下一次保存不再误报 EXTERNAL_CHANGE；冲突本身照报，dirty / 救稿语义不变。
+      if (err.code === 'META_CHANGED') state.loadedMtimeMs = saveLogic.retryMtimeMs(err, state.loadedMtimeMs);
       state.saveError = err.message;
       updateStatus();
       // 审计修复 #5 / #6（V301 / V302）：两个「救稿出口」只在这两个码上出现——

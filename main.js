@@ -843,19 +843,19 @@ function ok(data) {
 function fail(err, channel) {
   const described = errorText.describeForUi(err);
   console.error('[ipc-fail]', channel ? `${channel}:` : '', described.code, described.message);
-  // 保存失败单独记一条（错误码 + 章节文件名，绝不含正文），方便排查「保存失败」类反馈
+  // 保存失败单独记一条（错误码 + 章节文件名，绝不含正文）
   logError(channel === 'chapter:save' ? 'save-failed' : 'ipc-error', err, { channel });
-  // A7（审计 E4）：部分成功（chapter:save 的 META_SAVE_FAILED）要把「正文已落盘」的证据回给渲染层，
-  // 界面据此提示「正文已写入磁盘、书目更新失败、可重试保存」。只透传白名单字段（file 只是章节文件名），
-  // 原始错误 / 路径仍然只进日志。
+  // 白名单透传（A7 / E-N6 / M-N1）：部分成功字段 + 正文落盘后的 mtime（META_SAVE_FAILED 与
+  // META_CHANGED 都要后者；0 是 force 哨兵，坏回包不采用）。
   if (described.code === 'META_SAVE_FAILED' && err && err.bodySaved === true) {
     const partial = { ok: false, code: described.code, message: described.message, bodySaved: true };
     if (Number.isFinite(Number(err.chars))) partial.chars = Math.max(0, Math.round(Number(err.chars)));
-    // WP14 E-N6（审计低批）：正文已经写盘，mtime 也已经变了。把落盘后的 mtime 带回渲染层，
-    // 让 state.loadedMtimeMs 跟着更新；否则下一次保存会拿载入时的旧 mtime 比对，误报 EXTERNAL_CHANGE。
     if (Number.isFinite(Number(err.mtimeMs))) partial.mtimeMs = Number(err.mtimeMs);
     if (typeof err.file === 'string') partial.file = err.file;
     return partial;
+  }
+  if (described.code === 'META_CHANGED' && Number.isFinite(Number(err && err.mtimeMs)) && Number(err.mtimeMs) > 0) {
+    return { ok: false, code: described.code, message: described.message, mtimeMs: Number(err.mtimeMs) };
   }
   return { ok: false, code: described.code, message: described.message };
 }
@@ -1950,7 +1950,7 @@ function registerIpc() {
               '正文已写入磁盘，但书目在保存途中被应用外的程序改过，这次没有覆盖书目（外部那一版原样保留）；' +
                 '再按一次保存会读入最新书目后重试'
             ),
-            { code: 'META_CHANGED' }
+            { code: 'META_CHANGED', mtimeMs: result.mtimeMs }
           );
         }
         // A7（审计 E4）：正文已经写进磁盘、书目没更新成功。不能把这次保存整体当失败——

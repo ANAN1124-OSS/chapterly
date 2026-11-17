@@ -107,5 +107,34 @@
     };
   }
 
-  return { savedToastText, verifyWarnText, isDirtyAgainstSnapshot, createVerifySingleFlight };
+  // 保存失败回执里的「可采用的下一版 mtime」（WP14 E-N6 / WP1 M-N1 补漏）。
+  // META_SAVE_FAILED 与 META_CHANGED 都是「正文已经写盘、书目没同步」：主进程把写盘后的章节
+  // mtime 带回来，界面据此更新 loadedMtimeMs；否则下一次保存拿载入时的旧 mtime 比对，会误报
+  // EXTERNAL_CHANGE。只接受 > 0 的有限数：0 是 force 保存的哨兵（expectedMtimeMs=0），负数 /
+  // NaN / 缺字段（老主进程 / 坏回包）一律回落旧基线——绝不静默关掉外部改动检查。
+  function retryMtimeMs(errorOrMtimeMs, currentMtimeMs) {
+    const raw = errorOrMtimeMs && typeof errorOrMtimeMs === 'object' ? errorOrMtimeMs.mtimeMs : errorOrMtimeMs;
+    const next = Number(raw);
+    if (Number.isFinite(next) && next > 0) return next;
+    const current = Number(currentMtimeMs);
+    return Number.isFinite(current) ? current : 0;
+  }
+
+  // IPC 失败回执的白名单（renderer.call() 用）：A7 部分成功（bodySaved / chars / file）与
+  // WP14 E-N6 / WP1 M-N1 的重试 mtime（META_SAVE_FAILED 与 META_CHANGED 都是正文已落盘、mtime 已变）。
+  // 只收白名单字段（不带 ok / message）；mtime 只认 > 0 的有限数：0 是 force 哨兵，坏回包不采用。
+  function saveFailureExtra(res) {
+    if (!res || typeof res !== 'object') return null;
+    const extra = {};
+    if (res.bodySaved === true) {
+      extra.bodySaved = true;
+      if (Number.isFinite(Number(res.chars))) extra.chars = Number(res.chars);
+      if (typeof res.file === 'string') extra.file = res.file;
+    }
+    const mtimeMs = Number(res.mtimeMs);
+    if (Number.isFinite(mtimeMs) && mtimeMs > 0) extra.mtimeMs = mtimeMs;
+    return Object.keys(extra).length ? extra : null;
+  }
+
+  return { savedToastText, verifyWarnText, isDirtyAgainstSnapshot, createVerifySingleFlight, saveFailureExtra, retryMtimeMs };
 });

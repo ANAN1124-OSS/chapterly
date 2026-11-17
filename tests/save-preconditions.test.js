@@ -15,13 +15,17 @@ const fs = require('node:fs/promises');
 const fss = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 const storage = require('../core/storage');
 const openBooks = require('../core/open-books');
+const errorText = require('../core/error-text');
 const tmpCleanup = require('./tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
 // 源码在工作树里是 CRLF；静态闸门只关心语义，统一成 LF 再切片（免得 indexOf 落空）
 const read = (rel) => fss.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+const MAIN_SOURCE = read('main.js');
+const RENDERER_SOURCE = read('renderer/renderer.js');
 
 async function mkTmp() {
   return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-save-precond-')));
@@ -43,6 +47,23 @@ function channelBody(source, channel) {
   const end = source.indexOf('\n  });', start + 1);
   assert.ok(end > start, `${channel} 的注册体找不到结尾`);
   return source.slice(start, end);
+}
+
+// 主进程 fail() 在 Electron 主进程文件里，Node 不能 require main.js；但 fail() 是自包含函数：
+// 从源码里切出来，在 vm 里用真的 core/error-text.js + 假日志执行——断言的是真实输入→回包形状，
+// 不是正则。老实现（META_CHANGED 不带 mtimeMs）在这里会直接红。
+function loadMainFail() {
+  const start = MAIN_SOURCE.indexOf('function fail(err, channel)');
+  assert.ok(start > 0, 'main.js 里找不到 fail()');
+  const end = MAIN_SOURCE.indexOf('\n}\n', start);
+  assert.ok(end > start, 'fail() 函数体找不到结尾');
+  const context = vm.createContext({
+    console: { error() {} },
+    logError() {},
+    errorText
+  });
+  vm.runInContext(MAIN_SOURCE.slice(start, end + 2), context, { filename: 'main.js#fail' });
+  return vm.runInContext('fail', context);
 }
 
 // ---------- R1：书目身份 stamp 不一致 → META_CHANGED，外部那一版原样保留 ----------
@@ -197,6 +218,123 @@ test('R6（静态接线）：ipc/book.js 的 chapter:load 用 { track: true } �
   assert.ok(start > 0, 'ipc/book.js 里找不到 chapter:load');
   const body = src.slice(start, start + 400);
   assert.match(body, /loadChapterText\(bookPath, file, \{ track: true \}\)/, 'chapter:load 必须带 { track: true }（否则生产链路没有内容基线）');
+});
+
+// ---------- R7：META_CHANGED 回包带「正文写盘后的 mtime」（重试链的关键缺口） ----------
+test('R7（M-N1）：META_CHANGED 回包带 data.mtimeMs（正文写盘后的 mtime），缺字段 / 坏值不透传', async () => {
+  // 真 IO：saveChapterText 回报的 mtimeMs 就是磁盘上那一版（失败后的重试基线必须采用它）
+  const root = await mkTmp();
+  const { bookPath, meta } = await makeBook(root, 'META_CHANGED 重试基线');
+  const saved = await storage.saveChapterText(bookPath, meta.chapters[0].file, '冲突前的这一版正文。', {
+    ensureDir: false
+  });
+  const stat = await fs.stat(path.join(bookPath, meta.chapters[0].file));
+  assert.equal(saved.mtimeMs, stat.mtimeMs, '用例前提：saveChapterText 回报落盘后的 mtimeMs');
+
+  const fail = loadMainFail();
+  const conflict = Object.assign(new Error('正文已写入磁盘，但书目在保存途中被应用外的程序改过'), {
+    code: 'META_CHANGED',
+    mtimeMs: saved.mtimeMs
+  });
+  const reply = fail(conflict, 'chapter:save');
+  assert.equal(reply.ok, false);
+  assert.equal(reply.code, 'META_CHANGED', '错误码原样带回（救稿出口按码分支，语义不变）');
+  assert.equal(reply.mtimeMs, saved.mtimeMs, 'META_CHANGED 回包必须带正文写盘后的 mtime（下一次保存的重试基线）');
+  assert.equal('bodySaved' in reply, false, 'META_CHANGED 不是部分成功，bodySaved 语义不变');
+  assert.equal('file' in reply, false, 'META_CHANGED 不回显章节文件名');
+
+  // 失败注入：老主进程 / 坏回包缺 mtimeMs、0、负数、非数字 → 不带可采用的 mtime（渲染层回落旧值）
+  for (const bad of [undefined, 0, -1, 'not-a-number', NaN]) {
+    const broken = Object.assign(new Error('正文已写入磁盘，但书目在保存途中被应用外的程序改过'), {
+      code: 'META_CHANGED',
+      mtimeMs: bad
+    });
+    const replyBad = fail(broken, 'chapter:save');
+    assert.equal(replyBad.code, 'META_CHANGED');
+    assert.equal('mtimeMs' in replyBad, false, `坏 mtime (${String(bad)}) 不许进回包`);
+  }
+
+  // 抛错对象是 fail() 的唯一来源：chapter:save 的 META_CHANGED 分支必须带 result.mtimeMs
+  const body = channelBody(MAIN_SOURCE, 'chapter:save');
+  assert.match(
+    body,
+    /code: 'META_CHANGED',\s*mtimeMs: result\.mtimeMs/,
+    'chapter:save 抛 META_CHANGED 时要带正文落盘后的 result.mtimeMs'
+  );
+});
+
+// ---------- R8：渲染层采用 META_CHANGED 回包的重试 mtime（下一次保存不再误报 EXTERNAL_CHANGE） ----------
+test('R8（M-N1）：META_CHANGED 后 loadedMtimeMs 更新为回包值；缺字段 / 0 / 负值回落旧值，dirty 与救稿语义不变', () => {
+  const saveLogic = require('../renderer/save-logic');
+  assert.equal(typeof saveLogic.retryMtimeMs, 'function', 'save-logic.js 要提供 retryMtimeMs（从回包取重试基线）');
+
+  const old = 1700000000000;
+  // 正常回包：META_CHANGED / META_SAVE_FAILED 同一口径，采用正文落盘后的新 mtime
+  assert.equal(saveLogic.retryMtimeMs({ code: 'META_CHANGED', mtimeMs: 1700000001234 }, old), 1700000001234);
+  assert.equal(saveLogic.retryMtimeMs({ code: 'META_SAVE_FAILED', mtimeMs: 1700000001234 }, old), 1700000001234);
+  assert.equal(saveLogic.retryMtimeMs({ mtimeMs: '1700000001234' }, old), 1700000001234, '数字字符串收成 number');
+  // 失败注入：缺字段（老主进程 / 坏回包）→ 保持旧 mtime；0 是 force 哨兵，负数 / 非数字一律不采用
+  const broken = [
+    { code: 'META_CHANGED' },
+    { code: 'META_CHANGED', mtimeMs: 0 },
+    { code: 'META_CHANGED', mtimeMs: -1 },
+    { code: 'META_CHANGED', mtimeMs: NaN },
+    { code: 'META_CHANGED', mtimeMs: 'not-a-number' },
+    { code: 'META_CHANGED', mtimeMs: '' },
+    null
+  ];
+  for (const err of broken) {
+    assert.equal(saveLogic.retryMtimeMs(err, old), old, `坏回包 (${JSON.stringify(err)}) 必须回落旧 mtime`);
+  }
+  assert.equal(saveLogic.retryMtimeMs({ mtimeMs: 1700000001234 }, 'bad-current'), 1700000001234, '新值合法就用新值');
+  assert.equal(saveLogic.retryMtimeMs({ mtimeMs: 0 }, 'bad-current'), 0, '旧值本身坏时最多回 0（不写 NaN）');
+
+  // 静态接线 1：saveCurrent 的 catch 里两条回包都用同一个纯函数更新基线（sameChapter 之后 / saveError 之前）
+  const saveStart = RENDERER_SOURCE.indexOf('async function saveCurrent(');
+  assert.ok(saveStart > 0, 'renderer.js 里找不到 saveCurrent');
+  const saveEnd = RENDERER_SOURCE.indexOf('\n  }\n', saveStart);
+  const saveBody = RENDERER_SOURCE.slice(saveStart, saveEnd + 4);
+  const updates = saveBody.match(/state\.loadedMtimeMs = saveLogic\.retryMtimeMs\(err, state\.loadedMtimeMs\);/g) || [];
+  assert.ok(updates.length >= 2, 'META_SAVE_FAILED 与 META_CHANGED 都要经 retryMtimeMs 更新 loadedMtimeMs');
+  const changedAt = saveBody.indexOf("if (err.code === 'META_CHANGED')");
+  assert.ok(changedAt > 0, 'saveCurrent 要有 META_CHANGED 的重试基线分支');
+  const changedBlock = saveBody.slice(changedAt, saveBody.indexOf('\n', changedAt));
+  assert.ok(changedBlock.includes('saveLogic.retryMtimeMs'), 'META_CHANGED 分支要更新 loadedMtimeMs');
+  assert.equal(/state\.dirty\s*=/.test(changedBlock), false, 'META_CHANGED 分支不许改 dirty（正文仍算已保存）');
+  assert.equal(/state\.saveError\s*=/.test(changedBlock), false, 'META_CHANGED 分支不许改 saveError（仍走救稿出口）');
+  const rescueAt = saveBody.indexOf('saveRescueUi.handleSaveFailure(', changedAt);
+  assert.ok(rescueAt > changedAt, 'META_CHANGED 仍要进救稿出口（书目冲突必须报，不静默覆盖）');
+  assert.ok(
+    saveBody.includes('const expectedMtimeMs = force ? 0 : state.loadedMtimeMs;'),
+    '覆盖保存仍走 force（expectedMtimeMs=0）：回包坏 / 缺字段时救稿路径不因基线卡死'
+  );
+
+  // 行为：call() 的白名单（纯函数）把 mtimeMs 放进 ApiError 的 extra；META_CHANGED / META_SAVE_FAILED 同口径
+  assert.equal(typeof saveLogic.saveFailureExtra, 'function', 'save-logic.js 要提供 saveFailureExtra（call() 的失败回执白名单）');
+  assert.deepEqual(saveLogic.saveFailureExtra({ ok: false, code: 'META_CHANGED', mtimeMs: 1700000001234 }), {
+    mtimeMs: 1700000001234
+  });
+  assert.deepEqual(
+    saveLogic.saveFailureExtra({
+      ok: false,
+      code: 'META_SAVE_FAILED',
+      bodySaved: true,
+      chars: 12,
+      file: '001-章.txt',
+      mtimeMs: 1700000001234
+    }),
+    { bodySaved: true, chars: 12, file: '001-章.txt', mtimeMs: 1700000001234 },
+    '部分成功字段与重试 mtime 同一条白名单'
+  );
+  for (const bad of [0, -1, 'x', NaN, undefined, null]) {
+    assert.deepEqual(saveLogic.saveFailureExtra({ ok: false, code: 'META_CHANGED', mtimeMs: bad }), null);
+  }
+  assert.equal(saveLogic.saveFailureExtra({ ok: false, code: 'EXTERNAL_CHANGE', message: '冲突' }), null, '普通失败没有 extra');
+  // 静态接线：call() 交给 ApiError 的 extra 必须来自这个纯函数（renderer 不自己复制一份白名单）
+  const callStart = RENDERER_SOURCE.indexOf('async function call(fn, ...args)');
+  assert.ok(callStart > 0, 'renderer.js 里找不到 call()');
+  const callBody = RENDERER_SOURCE.slice(callStart, RENDERER_SOURCE.indexOf('\n  }\n', callStart) + 4);
+  assert.ok(callBody.includes('saveLogic.saveFailureExtra(res)'), 'call() 的 ApiError extra 要走 saveLogic.saveFailureExtra');
 });
 
 // ---------- 失败注入 F1：含空格路径 × 书目只读（EPERM/EACCES/EBUSY） ----------
