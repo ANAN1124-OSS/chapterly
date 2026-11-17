@@ -68,6 +68,7 @@
     ['stats-ui.js', 'CWStatsUi', 'statsUiModule', '码字日历 / 统计面板'],
     ['import-ui.js', 'CWImportUi', 'importUiModule', '导入小说面板'],
     ['drag-sort-ui.js', 'CWDragSortUi', 'dragSortUiModule', '章节 / 卷拖拽排序'],
+    ['chapter-directory-ui.js', 'CWChapterDirectoryUi', 'chapterDirectoryUiModule', '章节列表 / 卷章目录显示层（筛选 / 卷头 / 条目 / 多选标记 / 整表重建）'],
     ['shelf-ui.js', 'CWShelfUi', 'shelfUiModule', '书架书卡与书架操作'],
     ['statusbar-ui.js', 'CWStatusbarUi', 'statusbarUiModule', '状态栏'],
     ['save-status-ui.js', 'CWSaveStatusUi', 'saveStatusUiModule', '保存状态提示'],

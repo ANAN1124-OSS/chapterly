@@ -21,6 +21,9 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const RENDERER = read('renderer/renderer.js');
+// WP17 A3 第一刀：章节条目 / 选择态同步 / 批量条随章节列表显示层迁到 chapter-directory-ui.js
+// （读取路径改，断言一条不改）；syncChapterItemInfo 仍是渲染层的保存后快路径，留在 renderer.js。
+const CHAPTER_DIRECTORY = read('renderer/chapter-directory-ui.js');
 const INDEX = read('renderer/index.html');
 const STYLES = read('renderer/styles.css');
 const TEST_HOOKS = read('renderer/test-hooks.js');
@@ -36,19 +39,20 @@ function sliceBetween(source, startNeedle, endNeedle) {
   return source.slice(start, end + endNeedle.length);
 }
 
-const MAKE_ITEM = sliceBetween(RENDERER, 'function makeChapterItem(', 'return item;');
-const SYNC_SELECTION = sliceBetween(RENDERER, 'function syncChapterSelectionUi()', 'syncChapterBatchBar();');
+const MAKE_ITEM = sliceBetween(CHAPTER_DIRECTORY, 'function makeChapterItem(', 'return item;');
+const SYNC_SELECTION = sliceBetween(CHAPTER_DIRECTORY, 'function syncChapterSelectionUi()', 'syncChapterBatchBar();');
 const SYNC_ITEM = sliceBetween(RENDERER, 'function syncChapterItemInfo(', 'return true;');
+const RENDERER_AND_DIRECTORY = RENDERER + CHAPTER_DIRECTORY;
 
 test('X2：章节条目保留 button 角色，渲染层不再 set / get aria-selected', () => {
   assert.ok(MAKE_ITEM.includes("item.setAttribute('role', 'button')"), '章节条目仍是按钮角色');
   assert.equal(
-    (RENDERER.match(/setAttribute\('aria-selected'/g) || []).length,
+    (RENDERER_AND_DIRECTORY.match(/setAttribute\('aria-selected'/g) || []).length,
     0,
     '渲染层不许再挂 aria-selected：button 角色不支持这个属性，读屏读不到'
   );
   assert.equal(
-    (RENDERER.match(/getAttribute\('aria-selected'/g) || []).length,
+    (RENDERER_AND_DIRECTORY.match(/getAttribute\('aria-selected'/g) || []).length,
     0,
     '渲染层不再读 aria-selected'
   );

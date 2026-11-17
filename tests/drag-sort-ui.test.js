@@ -18,6 +18,11 @@ const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
 restoreGlobalsAfter(test, ['document', 'window']);
 
 const { rendererCode, indexSrc, moduleSrc, moduleCode } = loadSourceGate('drag-sort-ui.js');
+// WP17 A3 第一刀：章节列表的 pointerdown 委托随章节列表显示层迁到 chapter-directory-ui.js。
+const CHAPTER_DIRECTORY_SOURCE = require('node:fs').readFileSync(
+  require('node:path').join(__dirname, '..', 'renderer', 'chapter-directory-ui.js'),
+  'utf8'
+);
 
 const HOST_KEYS = [
   '$', 'api', 'call', 'chapterVolumeId', 'renderChapterList', 'renderEditorHeader',
@@ -852,10 +857,16 @@ test('静态闸门：renderer.js 只剩接线，拖拽实现一份都不许留',
     assert.equal(rendererCode.includes(line), true, '接线缺少：' + line);
   }
   // 1.5.0 P0-2：章节条目不再逐条绑指针事件，改由 #chapter-list 容器委托分派一次
+  // （WP17 A3 第一刀后委托整段在 chapter-directory-ui.js；renderer.js 不许再留第二份）
   assert.equal(
-    rendererCode.split('startChapterDrag(event, hit.index, hit.item)').length - 1,
+    CHAPTER_DIRECTORY_SOURCE.split('startChapterDrag(event, hit.index, hit.item)').length - 1,
     1,
     '章节列表的 pointerdown 委托只该有一处（且要把条目元素显式传给拖拽模块）'
+  );
+  assert.equal(
+    rendererCode.split('startChapterDrag(event, hit.index, hit.item)').length - 1,
+    0,
+    '委托已整段迁出：renderer.js 里不许再有第二份（只留 dragSortUi.startChapterDrag 的接线）'
   );
   assert.equal((rendererCode.match(/^\s{4}setupChapterDrag\(\);$/gm) || []).length, 1, '事件绑定的 setupChapterDrag() 只该有一处');
   // 测试钩子的宿主契约里仍然有这三个键

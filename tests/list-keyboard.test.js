@@ -22,6 +22,9 @@ const STYLES = read('renderer/styles.css');
 // 第 4 步九刀·第六刀：书架书卡整段搬到 renderer/bookinfo-ui.js；书卡的 roving / 无障碍属性
 // 从这里读（只改读取路径，断言一条不改）。
 const BOOKINFO_UI = read('renderer/bookinfo-ui.js');
+// WP17 A3 第一刀：章节条目 / 事件委托 / 整表重建整段迁到 chapter-directory-ui.js（读取路径改，
+// 断言一条不改）。
+const CHAPTER_DIRECTORY = read('renderer/chapter-directory-ui.js');
 
 const key = (name, extra) => ({ key: name, preventDefault() {}, ...(extra || {}) });
 
@@ -627,13 +630,15 @@ test('静态闸门：渲染层用模块接线，不许自己再抄一套键盘�
     '只认真正的书卡——同一张网格里的「＋ 新建一本书」是原生按钮，不能被拦'
   );
   // 章节条目 / 书卡都要真的可聚焦，并且带无障碍名称与角色
-  assert.ok(RENDERER.includes('item.tabIndex = index === state.index ? 0 : -1'), '章节条目要参与 roving');
-  assert.ok(RENDERER.includes("item.setAttribute('role', 'button')"), '章节条目要有按钮角色');
-  assert.ok(RENDERER.includes('item.setAttribute(\'aria-label\', `打开${chapterTitle(index, chapter.name)}`)'));
+  assert.ok(CHAPTER_DIRECTORY.includes('item.tabIndex = index === state.index ? 0 : -1'), '章节条目要参与 roving');
+  assert.ok(CHAPTER_DIRECTORY.includes("item.setAttribute('role', 'button')"), '章节条目要有按钮角色');
+  assert.ok(
+    CHAPTER_DIRECTORY.includes('item.setAttribute(\'aria-label\', `打开${chapterTitle(index, chapter.name)}`)')
+  );
   assert.ok(BOOKINFO_UI.includes('card.tabIndex = 0'), '书卡要可聚焦');
   assert.ok(BOOKINFO_UI.includes("card.setAttribute('aria-label', `打开《${book.title}》`)"));
   assert.ok(RENDERER.includes('next.tabIndex = 0'), '切章快路径要把 Tab 停留点跟着挪');
-  assert.ok(RENDERER.includes("listKeyboard.ensureTabStop(list, '.chapter-item')"));
+  assert.ok(CHAPTER_DIRECTORY.includes("listKeyboard.ensureTabStop(list, '.chapter-item')"));
 });
 
 test('静态闸门：F2 重命名接线（全局 keydown + 右键菜单键帽 + 键帽靠右布局）', () => {

@@ -25,6 +25,9 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const CSS_SOURCE = read('renderer/styles.css');
 const RENDERER_SOURCE = read('renderer/renderer.js');
+// WP17 A3 第一刀：章节列表显示层（条目 / 事件委托 / 整表重建 / 当前章缓存）整段迁到
+// chapter-directory-ui.js；这些函数的源码闸门改读模块（同一条断言，读取路径变）。
+const CHAPTER_DIRECTORY_SOURCE = read('renderer/chapter-directory-ui.js');
 
 /** 去掉注释（保留字符串），静态闸门要看的是代码本身，不是注释里的说明 */
 function stripComments(src) {
@@ -74,12 +77,13 @@ function stripComments(src) {
 }
 
 const RENDERER_CODE = stripComments(RENDERER_SOURCE);
+const CHAPTER_DIRECTORY_CODE = stripComments(CHAPTER_DIRECTORY_SOURCE);
 
 /** 取一个顶层 function 的源码：从 `function 名字(` 到下一个同缩进的 function 声明为止 */
 function functionSource(src, name) {
   const pattern = new RegExp(`(?:^|\\n)  (?:async )?function ${name}\\(`);
   const match = pattern.exec(src);
-  assert.ok(match, `renderer.js 里找不到 function ${name}(`);
+  assert.ok(match, `源码里找不到 function ${name}(`);
   const start = match.index + (match[0].startsWith('\n') ? 1 : 0);
   const rest = src.slice(start + 1);
   const next = /\n  (?:async )?function [A-Za-z_$][\w$]*\(/.exec(rest);
@@ -96,9 +100,9 @@ function cssRuleBody(source, selector) {
 }
 
 const chapterItemRule = cssRuleBody(CSS_SOURCE, '.chapter-item');
-const renderChapterListSrc = functionSource(RENDERER_CODE, 'renderChapterList');
+const renderChapterListSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'renderChapterList');
 const syncActiveSrc = functionSource(RENDERER_CODE, 'syncActiveChapterItem');
-const makeChapterItemSrc = functionSource(RENDERER_CODE, 'makeChapterItem');
+const makeChapterItemSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'makeChapterItem');
 const loadChapterAtSrc = functionSource(RENDERER_CODE, 'loadChapterAt');
 
 test('CSS 闸门：章节条目跳过屏幕外渲染，intrinsic 尺寸接近真实行高（20–80px 的整数）', () => {
@@ -169,14 +173,14 @@ test('保存快路径：单条更新核对 data-index + chapter id，改字数�
   assert.match(syncCharsSrc, /item\.title = chapterItemTitleText\(chapter, index\)/, 'tooltip 要跟着字数更新');
   assert.match(syncCharsAfterSaveSrc, /index \+ 1 < state\.chapters\.length/, '下一章的「比上章短」提示要跟着更新');
   // 复用同一套 tooltip 生成，别在快路径里抄一份（抄了就会两边漂）
-  const titleSrc = functionSource(RENDERER_CODE, 'chapterItemTitleText');
+  const titleSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'chapterItemTitleText');
   assert.match(titleSrc, /chapterItemTip\(chapter, index\)/);
-  assert.match(functionSource(RENDERER_CODE, 'makeChapterItem'), /chapterItemTitleText\(chapter, index\)/);
+  assert.match(functionSource(CHAPTER_DIRECTORY_CODE, 'makeChapterItem'), /chapterItemTitleText\(chapter, index\)/);
 });
 
 // 1.5.0 P0-2（审计 P1）：章节列表事件委托 —— 条目本身不再带监听，容器一套分派。
-const delegationSrc = functionSource(RENDERER_CODE, 'setupChapterListEvents');
-const chapterItemAtSrc = functionSource(RENDERER_CODE, 'chapterItemAt');
+const delegationSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'setupChapterListEvents');
+const chapterItemAtSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'chapterItemAt');
 
 test('事件委托：章节条目不再逐条绑监听，改由 #chapter-list 容器一套分派', () => {
   assert.equal(makeChapterItemSrc.includes('addEventListener('), false, 'makeChapterItem 里不许再逐条绑事件');
@@ -201,8 +205,8 @@ test('输入热路径：当前章条目走缓存引用，不再每次击键 quer
     'onEditorInput 里不许再每次击键扫 DOM（要用 activeChapterItem 的缓存引用）'
   );
   assert.match(onInputSrc, /activeChapterItem\(\)/, 'onEditorInput 应通过 activeChapterItem() 拿当前条目');
-  const helperSrc = functionSource(RENDERER_CODE, 'activeChapterItem');
-  assert.match(helperSrc, /cachedActiveChapterItem/, 'activeChapterItem 要有缓存引用');
+  const helperSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'activeChapterItem');
+  assert.match(helperSrc, /cachedActiveChapterItem|getCachedActiveChapterItem/, 'activeChapterItem 要有缓存引用');
   assert.match(helperSrc, /isConnected/, '缓存条目掉出文档（整表重建）时要能回退重查');
   assert.match(
     functionSource(RENDERER_CODE, 'syncActiveChapterItem'),
@@ -210,8 +214,8 @@ test('输入热路径：当前章条目走缓存引用，不再每次击键 quer
     '切章快路径要更新缓存'
   );
   assert.match(
-    functionSource(RENDERER_CODE, 'renderChapterList'),
-    /cachedActiveChapterItem/,
+    functionSource(CHAPTER_DIRECTORY_CODE, 'renderChapterList'),
+    /setCachedActiveChapterItem|CachedActiveChapterItem/,
     '整表重建后要重算缓存（旧条目已经掉出文档）'
   );
 });

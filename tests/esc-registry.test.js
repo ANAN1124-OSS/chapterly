@@ -22,6 +22,8 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const REGISTRY_SOURCE = read('renderer/esc-registry.js');
 const RENDERER_SOURCE = read('renderer/renderer.js');
+// WP17 A3 第一刀：章节列表显示层（含筛选框的 Esc 判断）整段迁到 chapter-directory-ui.js。
+const CHAPTER_DIRECTORY_SOURCE = read('renderer/chapter-directory-ui.js');
 const INDEX_SOURCE = read('renderer/index.html');
 // 纯逻辑闸门只看代码：注释里提到 window / document 是在解释边界，不算越界
 const REGISTRY_CODE = REGISTRY_SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
@@ -387,15 +389,20 @@ test('接线闸门：12 段复制块已收掉，keydown 里不再手写弹层判
   // keydown 里只该剩「输入框自己清空」这一类 Escape 判断：书架搜索框 + 卷章目录筛选框
   // （2026-11-10 目录重设计新增）。弹层判断一个都不许回到 renderer.js。
   const escapes = (RENDERER_SOURCE.match(/event\.key === 'Escape'/g) || []).length;
-  assert.equal(escapes, 2, `renderer.js 里只该剩两个输入框自己的 Esc 判断（现在 ${escapes} 处）`);
+  assert.equal(escapes, 1, `renderer.js 里只该剩书架搜索框自己的 Esc 判断（现在 ${escapes} 处）`);
   assert.ok(
     RENDERER_SOURCE.includes("$('shelf-search').addEventListener('keydown', (event) => {"),
     '书架搜索框的 Esc 判断要留着'
   );
   assert.ok(
-    RENDERER_SOURCE.includes('function setupChapterDirectory()') &&
-      RENDERER_SOURCE.includes("input.addEventListener('keydown', (event) => {"),
+    CHAPTER_DIRECTORY_SOURCE.includes('function setupChapterDirectory()') &&
+      CHAPTER_DIRECTORY_SOURCE.includes("input.addEventListener('keydown', (event) => {"),
     '卷章目录筛选框的 Esc 判断要在 setupChapterDirectory 里（只清筛选词，不接弹层）'
+  );
+  assert.equal(
+    RENDERER_SOURCE.includes('function setupChapterDirectory()'),
+    false,
+    '卷章目录显示层已整段迁出（A3 第一刀）：renderer.js 不许再留第二份'
   );
   // Esc 链与关窗清理都必须走注册表，且只调一次
   assert.equal((RENDERER_SOURCE.match(/escLib\.resolve\(/g) || []).length, 1, 'Esc 链必须只有一处调用注册表');

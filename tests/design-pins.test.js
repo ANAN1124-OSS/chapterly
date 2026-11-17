@@ -140,6 +140,9 @@ test('I-06 空状态三件套：书架 / 章节栏 / 剪贴板 / 查找四处都
   // 真正怕的是以后顺手把「为什么空 / 接下来点哪」删成一句「暂无内容」。这里按源码钉住四处的
   // 三件套与三类标注；同时钉住「不加插画」——四处空态都不许 new Image / <img。
   const RENDERER = read('renderer/renderer.js');
+  // WP17 A3 第一刀：章节栏空态随 renderChapterList 整段迁到 chapter-directory-ui.js（读取路径改，
+  // 断言一条不改）。
+  const CHAPTER_DIRECTORY = read('renderer/chapter-directory-ui.js');
   const BOOKINFO = read('renderer/bookinfo-ui.js');
   const SHELF_FILTER = read('renderer/shelf-filter-ui.js');
   const FIND = read('renderer/find-ui.js');
@@ -155,11 +158,11 @@ test('I-06 空状态三件套：书架 / 章节栏 / 剪贴板 / 查找四处都
   assert.match(BOOKINFO, /搜索会看书名 \/ 作者 \/ 分组 \/ 标签 \/ 章节名，也会在正文里找/);
 
   // ② 章节栏：真空（0 章）——现有按钮 / Ctrl+N 是直接路径，章节模板是学习线索。
-  assert.match(RENDERER, /if \(!state\.chapters\.length\) \{/);
-  assert.match(RENDERER, /className = 'chapter-list-empty muted small'/);
-  assert.match(RENDERER, /empty\.dataset\.emptyKind = 'vacuum'/);
-  assert.match(RENDERER, /点左下「＋ 新建章节」或按 Ctrl\+N/);
-  assert.match(RENDERER, /新章会自动套用设置里的章节模板/);
+  assert.match(CHAPTER_DIRECTORY, /if \(!state\.chapters\.length\) \{/);
+  assert.match(CHAPTER_DIRECTORY, /className = 'chapter-list-empty muted small'/);
+  assert.match(CHAPTER_DIRECTORY, /empty\.dataset\.emptyKind = 'vacuum'/);
+  assert.match(CHAPTER_DIRECTORY, /点左下「＋ 新建章节」或按 Ctrl\+N/);
+  assert.match(CHAPTER_DIRECTORY, /新章会自动套用设置里的章节模板/);
   assert.match(CSS, /\.chapter-list-empty\s*\{[\s\S]*?padding:\s*22px 8px;/);
 
   // ③ 剪贴板：真空——summary 说明只驻内存，空态给设置路径 / 快捷键 / 两个动作。

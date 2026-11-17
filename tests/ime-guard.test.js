@@ -8,8 +8,8 @@
 //
 // 本测试钉住三件事：
 //   ① isImeComposing 的纯逻辑（isComposing / keyCode 229 / 坏入参）；
-//   ② 四个消费者（renderer.js / find-ui / command-palette-ui / bookinfo-ui）都只走共享函数，
-//      不再各写一份 `event.isComposing`；
+//   ② 五个消费者（renderer.js / chapter-directory-ui.js / find-ui / command-palette-ui / bookinfo-ui）
+//      都只走共享函数，不再各写一份 `event.isComposing`；
 //   ③ index.html 的加载顺序：ime-guard.js 排在所有消费者之前，且只加载一次。
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -39,9 +39,11 @@ test('isImeComposing：isComposing 是标准判据，keyCode 229 是旧版输入
   assert.equal(imeGuard.isImeComposing('Enter'), false);
 });
 
-test('静态闸门：四个消费者都走共享函数，没有第二份 event.isComposing', () => {
+test('静态闸门：五个消费者都走共享函数，没有第二份 event.isComposing', () => {
+  // WP17 A3 第一刀：章节目录筛选框的 Enter 判断随 setupChapterDirectory 迁到 chapter-directory-ui.js。
   const consumers = {
     'renderer.js': read('renderer.js'),
+    'chapter-directory-ui.js': read('chapter-directory-ui.js'),
     'find-ui.js': read('find-ui.js'),
     'command-palette-ui.js': read('command-palette-ui.js'),
     'bookinfo-ui.js': read('bookinfo-ui.js')
@@ -51,12 +53,18 @@ test('静态闸门：四个消费者都走共享函数，没有第二份 event.i
     assert.equal(code.includes('event.isComposing'), false, `${file} 里还有手写的 event.isComposing`);
     assert.match(code, /imeGuard\.isImeComposing\(event\)/, `${file} 没接共享守卫`);
   }
-  // renderer.js 的 6 处提交键：全局 Enter 兜底 / 跳章 / 书目筛选 / 书架搜索 / ? / Ctrl+K（其中 Ctrl+K 是取反）
+  // renderer.js 的 5 处提交键（目录筛选框那一处已随模块迁走）：全局 Enter 兜底 / 跳章 / 书目筛选 /
+  // 书架搜索 / Ctrl+K（其中 Ctrl+K 是取反）；目录模块 1 处。
   const rendererCode = codeOf(consumers['renderer.js']);
-  assert.equal(rendererCode.split('imeGuard.isImeComposing(event)').length - 1, 6, 'renderer.js 的 6 处提交键');
+  assert.equal(rendererCode.split('imeGuard.isImeComposing(event)').length - 1, 5, 'renderer.js 的 5 处提交键');
   assert.equal(rendererCode.split('!imeGuard.isImeComposing(event)').length - 1, 1, 'Ctrl+K 的取反判据');
-  // 装配：三个模块的 create 都拿到 imeGuard（缺了会在启动时抛 TypeError）
-  assert.equal(consumers['renderer.js'].split('\n    imeGuard,').length - 1, 3, '三处 create 都要装配 imeGuard');
+  assert.equal(
+    codeOf(consumers['chapter-directory-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
+    1,
+    '目录筛选框的 Enter 仍走共享守卫'
+  );
+  // 装配：四个模块的 create 都拿到 imeGuard（缺了会在启动时抛 TypeError）
+  assert.equal(consumers['renderer.js'].split('\n    imeGuard,').length - 1, 4, '四处 create 都要装配 imeGuard');
 });
 
 test('静态闸门：index.html 在消费者之前加载 ime-guard.js，且只加载一次', () => {

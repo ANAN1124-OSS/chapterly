@@ -215,9 +215,10 @@ test('R5 A2：共享 host 校验器归 core/assert-host.js，renderer 不留 shi
     );
   }
 
-  // ③ renderer 侧 33 个消费者统一 Node 分支；条件分支（crash-recovery / shelf-filter）也走同一份
+  // ③ renderer 侧 34 个消费者统一 Node 分支；条件分支（crash-recovery / shelf-filter）也走同一份
+  // （A3 第一刀 +chapter-directory-ui.js：新模块同样只调共享 assertHost）
   const consumers = hostConsumers();
-  assert.equal(consumers.length, 33, `host 消费者数量变了：${consumers.length}`);
+  assert.equal(consumers.length, 34, `host 消费者数量变了：${consumers.length}`);
   for (const file of consumers) {
     const src = stripComments(read(`renderer/${file}`));
     assert.equal(src.includes("require('./assert-host')"), false, `${file} 不许再 require('./assert-host')`);
@@ -455,4 +456,139 @@ test('R9 M-N1：index.html 装配块由清单生成（--write 幂等；--check �
   assert.match(bad.stderr, /装配块校验未通过/);
   const missingRoot = spawnSync(process.execPath, [SCRIPT, '--check', '--root', path.join(dir, '没有这个根')], { encoding: 'utf8' });
   assert.equal(missingRoot.status, 2, '根目录不存在应 exit 2（配置错误，不是内容漂移）');
+});
+
+// WP17（A3 第一刀，审计 #20，2026-11-18，HEAD d409c7d）：章节目录 / 卷章显示层整段迁出 renderer.js。
+//   R10 模块 / 装配 / 定义面：新模块存在且 UMD 双分支契约不变（Node 可 require、浏览器只挂
+//       CWChapterDirectoryUi）；index.html 装配块含且只含一次、排在 renderer.js 之前；renderer.js
+//       不再定义这 48 个被迁函数（逐函数名断言）、只留「常量 + 一次 create + 按原名取入口」；
+//       E2E 名字来源（组索引 0–83）未被本刀改动——逐行 PASS 名字由全量 E2E 门禁与基线日志对拍。
+const CD_FILE = 'chapter-directory-ui.js';
+const CD_GLOBAL = 'CWChapterDirectoryUi';
+const CD_LOCAL = 'chapterDirectoryUiModule';
+const CD_MOVED = [
+  'chapterFilterQuery', 'chapterFilterActive', 'chapterIndexMatchesFilter', 'matchingChapterIndexes',
+  'chapterCharsTotal', 'formatCharsLabel', 'renderBookMeta', 'syncChapterFilterUi',
+  'cancelScheduledChapterFilter', 'scheduleChapterFilterRender', 'setChapterFilter', 'appendChapterName',
+  'volumeGroupKeys', 'renderVolumeToggle', 'toggleAllVolumes', 'activeChapterItem',
+  'syncCurrentVolumeMarker', 'currentChapterGroupKey', 'updateCurrentChapterPill', 'scrollToCurrentChapter',
+  'setupChapterDirectory', 'chapterItemAt', 'chapterMoreAt', 'setupChapterListEvents',
+  'openBatchMenu', 'setupChapterBatchBar', 'volumeList', 'volumeById',
+  'volumeDisplayName', 'chapterVolumeId', 'toggleVolumeCollapse', 'makeVolumeHeader',
+  'chapterItemTip', 'chapterItemTitleText', 'chapterSelectionSnapshot', 'chapterIdAt',
+  'currentChapterId', 'chapterIdsInBookOrder', 'renderedChapterIds', 'selectedChapterIndexes',
+  'syncChapterBatchBar', 'syncChapterSelectionUi', 'setChapterSelection', 'clearChapterSelection',
+  'pruneChapterSelection', 'ensureChapterSelected', 'makeChapterItem', 'renderChapterList'
+];
+// renderer.js 里仍有人调用的 26 个入口：只有它们需要按原名接线；其余 22 个随调用点一起内聚到
+// 模块里（再解构出来既没人读，也会被 eslint no-unused-vars 判红）。
+const CD_WIRED = [
+  'chapterFilterActive', 'chapterIndexMatchesFilter', 'renderBookMeta', 'syncChapterFilterUi',
+  'renderVolumeToggle', 'activeChapterItem', 'syncCurrentVolumeMarker', 'updateCurrentChapterPill',
+  'setupChapterDirectory', 'setupChapterListEvents', 'setupChapterBatchBar', 'volumeList',
+  'volumeById', 'volumeDisplayName', 'chapterVolumeId', 'toggleVolumeCollapse',
+  'chapterItemTitleText', 'chapterSelectionSnapshot', 'chapterIdAt', 'currentChapterId',
+  'renderedChapterIds', 'selectedChapterIndexes', 'syncChapterBatchBar', 'setChapterSelection',
+  'clearChapterSelection', 'renderChapterList'
+];
+
+test('R10 A3：章节目录显示层整段迁出 renderer.js（模块 / 装配 / 定义面 / E2E 基线）', () => {
+  const modulePath = path.join(ROOT, 'renderer', CD_FILE);
+  assert.equal(fs.existsSync(modulePath), true, `新模块必须存在：renderer/${CD_FILE}`);
+  const source = read(`renderer/${CD_FILE}`);
+
+  // ① UMD 双分支 + Node 契约：Node 直接 require 可 create；浏览器只挂 CWChapterDirectoryUi 一个全局。
+  const mod = require(`../renderer/${CD_FILE}`);
+  assert.equal(typeof mod.create, 'function', 'Node 分支要导出 create');
+  assert.ok(Array.isArray(mod.REQUIRED_HOST) && mod.REQUIRED_HOST.length > 0, 'Node 分支要导出 REQUIRED_HOST');
+  assert.match(source, /require\('\.\.\/core\/assert-host'\)\.assertHost/, 'UMD Node 分支从 core 取 assertHost');
+  assert.match(
+    source,
+    /root\.CWChapterDirectoryUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost\)/,
+    '浏览器分支挂 CWChapterDirectoryUi（全局名不变）'
+  );
+  const win = {};
+  vm.runInContext(source, vm.createContext(win), { filename: CD_FILE });
+  assert.equal(typeof win[CD_GLOBAL].create, 'function', '浏览器里 CWChapterDirectoryUi.create 必须是函数');
+  assert.deepEqual(Object.keys(win), [CD_GLOBAL], '浏览器分支只许挂 CWChapterDirectoryUi 一个全局名');
+  // 页面按清单先加载 core/assert-host.js、后加载本模块：缺成员要在 create 时逐字报错，不能 ReferenceError。
+  const win2 = {};
+  const ctx2 = vm.createContext(win2);
+  vm.runInContext(read('core/assert-host.js'), ctx2, { filename: 'core/assert-host.js' });
+  vm.runInContext(source, ctx2, { filename: CD_FILE });
+  assert.throws(
+    () => win2[CD_GLOBAL].create({}),
+    new TypeError(`createChapterDirectoryUi 的 host 缺少 ${mod.REQUIRED_HOST[0]}`),
+    '缺成员文案逐字不变（再往下就 ReferenceError）'
+  );
+
+  // ② create(host) 返回全部被迁入口（48 个，按原名薄调用）；host 清单逐成员都在。
+  assert.equal(CD_MOVED.length, 48, '被迁函数清单必须正好 48 个（R10 与 R9 口径）');
+  const host = {};
+  for (const key of mod.REQUIRED_HOST) host[key] = () => ({});
+  host.state = {};
+  host.CHAPTER_STATUS_LABELS = {};
+  host.chapterSelectionLib = {};
+  host.chaptersLib = {};
+  host.chapterFilterLogic = {};
+  host.editorLogic = {};
+  const ui = mod.create(host);
+  assert.deepEqual(Object.keys(ui).sort(), CD_MOVED.slice().sort(), 'create 返回面 = 迁出的 48 个入口');
+  for (const name of CD_MOVED) assert.equal(typeof ui[name], 'function', `${name} 必须是函数`);
+
+  // ③ index.html 装配块：含且只含一次，排在 renderer.js 之前（块由清单生成，手改会被 R9 拦）。
+  const html = read('renderer/index.html');
+  const tag = `<script src="${CD_FILE}"></script>`;
+  assert.equal((html.split(tag).length - 1), 1, `index.html 必须恰好加载一次 ${CD_FILE}`);
+  const at = html.indexOf(tag);
+  assert.ok(at > 0, `index.html 找不到 ${CD_FILE} 的 <script>`);
+  assert.ok(at < html.indexOf('<script src="renderer.js"></script>'), `${CD_FILE} 必须排在 renderer.js 之前`);
+  const sync = require('../scripts/assembly-sync');
+  const block = sync.extractBlock(html);
+  assert.equal((block.split(tag).length - 1), 1, '装配块含且只含一次（块外手插会被 assembly-sync --check 拦住）');
+
+  // ④ 装配清单：一条、全局名 / 本地名正确、依赖（assert-host）在前，renderer.js 仍最后加载。
+  const manifest = require('../renderer/assembly-manifest');
+  const entries = manifest.MODULES.filter(([file]) => file === CD_FILE);
+  assert.equal(entries.length, 1, '装配清单里只许一条');
+  assert.deepEqual(entries[0].slice(0, 3), [CD_FILE, CD_GLOBAL, CD_LOCAL], '清单的全局名 / 本地名不对');
+  const files = manifest.MODULES.map(([file]) => file);
+  assert.ok(files.indexOf(CD_FILE) > files.indexOf('../core/assert-host.js'), '必须排在校验器之后（先校验后建模块）');
+  assert.ok(files.indexOf(CD_FILE) < files.length - 1, '清单条目不许压在末尾（后续仍要有独立模块）');
+
+  // ⑤ renderer.js 定义面：48 个函数一个都不许留；只留常量 + 一次 create + 按原名取入口。
+  const renderer = read('renderer/renderer.js');
+  assert.ok(renderer.includes(`const ${CD_LOCAL} = window.${CD_GLOBAL};`), 'renderer.js 要按清单本地名取模块');
+  assert.equal(
+    (renderer.split(`const chapterDirectoryUi = ${CD_LOCAL}.create({`).length - 1),
+    1,
+    '装配只许一处 create'
+  );
+  const wiring = /const \{([\s\S]*?)\} = chapterDirectoryUi;/.exec(renderer);
+  assert.ok(wiring, 'renderer.js 要按原名取全部入口（薄接线，不重写显示层）');
+  for (const name of CD_MOVED) {
+    assert.doesNotMatch(
+      renderer,
+      new RegExp(`(?:^|\\n)  (?:async )?function ${name}\\(`),
+      `${name} 仍定义在 renderer.js（必须整段迁走，只留同名接线）`
+    );
+    assert.match(source, new RegExp(`\\n  function ${name}\\(`), `新模块里找不到 function ${name}(`);
+    if (CD_WIRED.includes(name)) {
+      assert.ok(wiring[1].includes(name), `renderer.js 的接线块少了 ${name}（原调用点会断）`);
+    } else {
+      assert.equal(
+        wiring[1].includes(name),
+        false,
+        `${name} 已随调用点内聚进模块：renderer.js 里没人读，不许再解构（eslint no-unused-vars 会红）`
+      );
+    }
+  }
+  assert.equal(CD_WIRED.length, 26, 'renderer.js 的接线面必须正好 26 个入口（其余 22 个内聚在模块里）');
+
+  // ⑥ E2E 名字基线：本刀不新增 / 删除 / 重排任何 E2E 组（名字逐行一致由全量 E2E 日志对拍）。
+  const { groups } = require('../scripts/e2e/groups');
+  assert.equal(groups.length, 84, 'E2E 组数变了（名字基线会被本刀意外改写）');
+  assert.deepEqual(groups.map((group) => group.id), Array.from({ length: 84 }, (_v, index) => index), '组号顺序变了');
+  for (const group of groups) assert.equal(typeof group.run, 'function', `E2E 组 ${group.id} 的 runner 丢了`);
+  assert.ok(read('scripts/run-e2e.js').includes('${item.name}'), 'PASS / FAIL 行仍按 item.name 逐行打印');
 });
