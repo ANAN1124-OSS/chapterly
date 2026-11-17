@@ -209,6 +209,14 @@
           ? (fn, ...args) => new Promise((resolve) => setTimeout(resolve, delay)).then(() => call(fn, ...args))
           : null;
       },
+      // 替换这一处（E-N4，WP3）：E2E 用它在「查找下一处」IPC 外面包一层延迟，制造回执迟到的窗口；
+      // 延迟后仍走真实 call(api.findNext, ...)，查找链路本身一个字都不改；传 0 恢复直连。
+      setTestFindNextDelay(ms) {
+        const delay = Math.max(0, Number(ms) || 0);
+        host.testFindNext = delay
+          ? (fn, ...args) => new Promise((resolve) => setTimeout(resolve, delay)).then(() => call(fn, ...args))
+          : null;
+      },
       chapterTitles: () => state.chapters.map((c, i) => chapterTitle(i, c.name)),
       // 章节列表 DOM 里真正显示的两格拼起来（序号格 + 章名格），E2E 用它对照 core.formatTitle
       chapterListLabels: () =>

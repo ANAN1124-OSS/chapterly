@@ -1,6 +1,6 @@
 /* 渲染层装配清单（审计修复 #55 / M4）
  *
- * 背景：渲染层是 index.html 里 68 个 <script> 手工排序的加载链，模块之间靠 window.CW 全局名串起来。
+ * 背景：渲染层是 index.html 里 69 个 <script> 手工排序的加载链，模块之间靠 window.CW 全局名串起来。
  * 「加一个模块」要同时改 index.html 的 <script>、renderer.js 的 `const x = window.CW…`、
  * 测试里的静态闸门；漏一处时 Electron 里表现是「某个弹层点不开 / 一片按钮没反应」，只有
  * tests/load-order.test.js 会在 Node 里全链跑一遍才能发现。
@@ -49,6 +49,7 @@
     ['reading-logic.js', 'CWReadingLogic', 'readingLogic', '阅读模式档位 / 进度'],
     ['save-logic.js', 'CWSaveLogic', 'saveLogic', '保存提示文案与后台校验结论'],
     ['long-op-logic.js', 'CWLongOpLogic', 'longOpLogic', '长异步操作回执的收尾判定'],
+    ['replace-one-guard.js', 'CWReplaceOneGuard', 'replaceOneGuard', '「替换这一处」回执的书 / 章 / 正文身份复核'],
     ['modal-queue.js', 'CWModalQueue', 'modalQueueModule', '询问框排队与防重入'],
     ['stale-guard.js', 'CWStaleGuard', 'staleGuard', '长 IPC 回执的世代令牌 / 身份快照'],
     ['ime-guard.js', 'CWImeGuard', 'imeGuard', '输入法组字守卫'],

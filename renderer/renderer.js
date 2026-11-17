@@ -56,6 +56,9 @@
   // 回执到达时「书换没换 / 期间有没有新输入」在 long-op-logic.js 里、Node 单测覆盖；
   // 这里只按结论决定「重载 / 保留编辑区 / 什么都不动」。
   const longOpLogic = window.CWLongOpLogic;
+  // 「替换这一处」回执的书 / 章 / 正文身份复核（v1.8.2 WP3 / 审计 E-N4）：回执迟到（切章 / 换书 /
+  // 改正文）就整段作废，旧章下标绝不套到眼前的正文上；判定在 replace-one-guard.js 里、Node 单测覆盖。
+  const replaceOneGuard = window.CWReplaceOneGuard;
   // 输入法组字守卫（v1.8.0 WP-04 / 审计 C3、C8、V112）：isComposing 之外再认 keyCode 229（防御性
   // 加固），纯函数在 ime-guard.js 里、Node 单测覆盖；这里只把判定铺到本文件的各个提交键。
   const imeGuard = window.CWImeGuard;
@@ -3120,6 +3123,9 @@
   // WP-01/C1 验收用：?test=1 时 E2E 用 setTestSaveDelay 把保存 IPC 拖慢，制造「保存在途」窗口；
   // 正常启动恒为 null，保存热路径就是原来的 call(api.saveChapter, ...)。
   let testSaveChapter = null;
+  // WP3/E-N4 验收用：?test=1 时 E2E 用 setTestFindNextDelay 把「查找下一处」IPC 拖慢，制造回执迟到窗口；
+  // 正常启动恒为 null，替换热路径就是原来的 call(api.findNext, ...)。
+  let testFindNext = null;
 
   function verifyBookInBackground(bookPath) {
     void (async () => {
@@ -4674,9 +4680,20 @@
     }
     const text = editorEl.value;
     const from = editorEl.selectionStart || 0;
+    // 审计 E-N4（WP3）：载章在途时编辑区马上要被新章覆盖，这次替换会静默丢失——入口直接拒绝。
+    if (state.loading) {
+      $('find-summary').textContent = replaceOneGuard.staleHint('loading');
+      return { ok: false, code: 'STALE_TARGET', reason: 'loading' };
+    }
+    // 发起查找时拍下「这本书 + 这一章 + 这版正文」：findNext 回执迟到（切章 / 换书 / 改正文）就整段作废。
+    const target = replaceOneGuard.captureTarget({
+      bookPath: state.bookPath,
+      chapterId: state.loadedChapterId,
+      text
+    });
     let picked;
     try {
-      picked = await call(api.findNext, text, options.query, from, {
+      picked = await (testFindNext || call)(api.findNext, text, options.query, from, {
         caseSensitive: options.caseSensitive
       });
     } catch (err) {
@@ -4694,6 +4711,17 @@
     }
     const match = picked.match;
     const replacement = options.replacement;
+    // 回执可能迟到：这期间切了书 / 切了章 / 改了正文——旧下标绝不能套到眼前的正文上，越界也不拼接。
+    const verdict = replaceOneGuard.checkTarget(target, {
+      bookPath: state.bookPath,
+      chapterId: state.loadedChapterId,
+      text: editorEl.value,
+      loading: state.loading
+    });
+    if (!verdict.same || !replaceOneGuard.matchInBounds(match, text.length)) {
+      $('find-summary').textContent = replaceOneGuard.staleHint(verdict.same ? 'stale' : verdict.reason);
+      return { ok: false, code: 'STALE_TARGET', reason: verdict.same ? 'out-of-bounds' : verdict.reason };
+    }
     editorEl.focus();
     editorEl.setSelectionRange(match.index, match.index + match.length);
     const inserted = replaceEditorTextNative(replacement);
@@ -4715,25 +4743,36 @@
     let next = null;
     try {
       const after = match.index + replacement.length;
-      next = await call(api.findNext, editorEl.value, options.query, after, {
+      next = await (testFindNext || call)(api.findNext, editorEl.value, options.query, after, {
         caseSensitive: options.caseSensitive
       });
     } catch { /* 找下一处失败不影响已经替换的内容 */ }
-    if (next && next.match) {
-      editorEl.setSelectionRange(next.match.index, next.match.index + next.match.length);
-      scrollCaretIntoView(next.match.index);
-    } else {
+    // 第二个回执也可能迟到：旧章命中只用来定位，切章后绝不把下标套到新章（只改选中，不改正文）。
+    const locate = replaceOneGuard.locateNext(next && next.match, target, {
+      bookPath: state.bookPath,
+      chapterId: state.loadedChapterId,
+      textLength: editorEl.value.length,
+      loading: state.loading
+    });
+    if (locate.index != null) {
+      editorEl.setSelectionRange(locate.index, locate.index + locate.length);
+      scrollCaretIntoView(locate.index);
+    } else if (!locate.stale) {
       const caret = match.index + replacement.length;
       editorEl.setSelectionRange(caret, caret);
       scrollCaretIntoView(caret);
     }
-    const nextHint = next && next.match ? `；已选中下一处（第 ${next.index + 1} 处）` : '；本章后面没有下一处了';
+    const nextHint = locate.stale
+      ? '；期间章节已变，不再定位下一处'
+      : locate.index != null
+        ? `；已选中下一处（第 ${next.index + 1} 处）`
+        : '；本章后面没有下一处了';
     const truncated = Boolean(picked.truncated);
     const totalLabel = truncated ? `${picked.total}+` : String(picked.total);
     const truncatedHint = truncated ? '（本章命中超过单章上限 5000 处，只统计 / 处理前 5000 处）' : '';
     $('find-summary').textContent =
       `已替换第 ${picked.index + 1}/${totalLabel} 处（未保存：Ctrl+S 写盘，Ctrl+Z 可撤销）${nextHint}${truncatedHint}`;
-    return { ok: true, index: picked.index, total: picked.total, truncated, hasNext: Boolean(next && next.match) };
+    return { ok: true, index: picked.index, total: picked.total, truncated, hasNext: locate.index != null };
   }
 
   // 从最近的「整本替换」备份还原；还原前二次确认，并由 storage 把当前内容再备份一份。
@@ -6227,6 +6266,10 @@
       },
       set testLoadChapter(value) {
         testLoadChapter = value;
+      },
+      // 活绑定：测试钩子用 setTestFindNextDelay 包一层「查找下一处」IPC（WP3/E-N4 回执迟到）
+      set testFindNext(value) {
+        testFindNext = value;
       }
     };
   }

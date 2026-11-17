@@ -115,10 +115,10 @@ test('测试钩子模块：Node 里能 require、导出 create，create() 不碰
   assert.strictEqual(typeof hooks.handleCloseRequest, 'function');
 });
 
-test('测试钩子模块：拆分前后钩子名称与数量不变（512 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1 / 2026-11-14 WP-01 保存延迟注入 +1 / WP-02 长操作延迟注入 +1、编辑区锁查询 +1 / WP-03 开书、载章延迟注入 +2）', () => {
+test('测试钩子模块：拆分前后钩子名称与数量不变（513 个；2026-11-10 卷章目录 +3 / 章节多选 +2 / 1.6.0 统计筛选 +6 / 1.6.0 书架分组 +10 / 1.6.0b 分组列表 +3 / 1.7.0 F3d 多份校对词表 +1 / 2026-11-14 WP-01 保存延迟注入 +1 / WP-02 长操作延迟注入 +1、编辑区锁查询 +1 / WP-03 开书、载章延迟注入 +2 / WP3 替换回执延迟注入 +1）', () => {
   const hooks = hooksModule.create(stubHost());
   const names = Object.keys(hooks).sort();
-  assert.strictEqual(names.length, 512, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
+  assert.strictEqual(names.length, 513, '钩子数量变了：拆文件时漏了 / 多了，核对 E2E 引用');
   // 每个功能域各抽一个，防止「数量对但换了一批」
   for (const name of [
     'ready', 'state', 'newBook', 'openBookPath', 'openBookInNewWindow', 'releaseBook', 'windowInfo',
@@ -126,6 +126,7 @@ test('测试钩子模块：拆分前后钩子名称与数量不变（512 个；2
     'inputTick',
     'save', 'saveVisible', 'toasts', 'clearToasts', 'setTestVerifyBook', 'setTestSaveDelay', 'chapterTitles',
     'setTestBookOpDelay', 'editorLocked', 'setTestOpenBookDelay', 'setTestLoadChapterDelay',
+    'setTestFindNextDelay',
     'openFindPanel', 'closeFindPanel', 'openProofreadPanel', 'proofreadRun', 'openSensitivePanel',
     'sensitiveRun', 'ttsFakeState', 'ttsFakeFinish',
     'formatCurrentChapter', 'runFormatBook', 'exportFormat', 'fontDecodeMode', 'setInput', 'setSelect',
@@ -373,7 +374,7 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   editorEl、state 身份都在渲染层闭包里；拆一半出去只会把同一条纪律分叉成两份。三处兜底调用点
   //   （插入正文 / 套模板 / 替换这一处）+ 两个 UI 模块的 host.recordFallbackWrite 接的是同一份实现。
   // 审计修复 #55（M4，装配清单化）：6393 → 6396（+3，当前 6396 行）：renderer.js 只多一行
-  //   `window.CWRendererAssembly.assertInstalled(window)` 与 2 行说明；清单本身（68 个模块的顺序 /
+  //   `window.CWRendererAssembly.assertInstalled(window)` 与 2 行说明；清单本身（69 个模块的顺序 /
   //   window 全局名 / renderer 本地名）在 renderer/assembly-manifest.js，缺模块时启动即报全，
   //   不再让某个 const 静默 undefined。这是审计 M4 要求的「装配清单」，没有往回搬业务代码。
   // 审计残留修复 #40（V403，第二阶段 R7）：6396 → 6401（+5）：document 级「整理快照优先」分支补
@@ -383,7 +384,16 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // 审计残留修复 #R12（#55/M4，第二阶段）：6401 → 6412（+11）：装配清单自身漏加载时走同一种聚合报错
   //   （8 行守卫：判 assertInstalled 是不是函数、造带 code / missing 的 TypeError 再抛）+ 3 行说明；
   //   清单文件没加载时不再抛「Cannot read properties of undefined」，报错点名的就是缺的那个脚本。
-  const RENDERER_LINE_BUDGET = 6412;
+  // WP3（E-N4，审计中 #4）：6412 → 6455（+43，当前 6455 行）：runReplaceOne 的时序接线无法搬走——
+  //   ① 模块级 `const replaceOneGuard = window.CWReplaceOneGuard;`（2 行说明 + 1 行声明）；
+  //   ② 入口 state.loading 拒绝（4 行）+ await 前 captureTarget（5 行）+ 回执后 checkTarget /
+  //      matchInBounds 复核与 STALE_TARGET 返回（10 行）；
+  //   ③ 第二个 await 后 locateNext + 按结论选中 / 保留光标（14 行）+ nextHint 三态（4 行）；
+  //   ④ 测试钩子活绑定 testFindNext（2 行声明 + 1 行注释）/ 两个 await 改走 (testFindNext || call)（行数不变）/
+  //      测试钩子入口 setTestFindNextDelay（2 行注释 + 1 行代码）。
+  //   纯判定（身份快照 / 边界 / 定位 / 文案）全在 renderer/replace-one-guard.js，Node 单测 9 条；
+  //   留在这里的只是 editorEl / state / call / scrollCaretIntoView 的上下文接线，搬走只会反向注入整条链路。
+  const RENDERER_LINE_BUDGET = 6455;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,
