@@ -18,6 +18,8 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (relative) => fs.readFileSync(path.join(ROOT, relative), 'utf8');
 const RENDERER = read(path.join('renderer', 'renderer.js'));
+// WP17 A3 第二刀：切章后记「上次打开的章」随载章链迁到 save-chain-ui.js。
+const SAVE_CHAIN = read(path.join('renderer', 'save-chain-ui.js'));
 const DRAG_SORT = read(path.join('renderer', 'drag-sort-ui.js'));
 const SHELF_NAV = read(path.join('renderer', 'shelf-nav-ui.js'));
 const PRELOAD = read('preload.js');
@@ -104,13 +106,13 @@ test('B1 关键链：三处 .then 都有 .catch（回书架 / 切章 / 删章）
 });
 
 test('B1 / E6：4 处裸 await api.* 全部改走统一 call()（失败才真的进 catch）', () => {
-  // renderer.js：切章后记「上次打开的章」
+  // 切章后记「上次打开的章」（WP17 A3 第二刀后整条载章链在 save-chain-ui.js）
   assert.equal(
-    /await api\.setLastOpenChapter\(/.test(RENDERER),
+    /await api\.setLastOpenChapter\(/.test(RENDERER + SAVE_CHAIN),
     false,
-    'renderer.js 里不许再有裸 await api.setLastOpenChapter(...)'
+    'renderer.js / save-chain-ui.js 里不许再有裸 await api.setLastOpenChapter(...)'
   );
-  assert.match(RENDERER, /await call\(api\.setLastOpenChapter, state\.bookPath, chapter\.id,/);
+  assert.match(SAVE_CHAIN, /await call\(api\.setLastOpenChapter, state\.bookPath, chapter\.id,/);
   // drag-sort-ui.js：两条写盘路径（drop / 键盘移动）后各一处
   assert.equal(
     DRAG_SORT.includes('await api.setLastOpenChapter('),

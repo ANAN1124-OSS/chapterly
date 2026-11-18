@@ -18,6 +18,8 @@ const saveRescueUiModule = require('../renderer/save-rescue-ui');
 const saveLogic = require('../renderer/save-logic');
 
 const RENDERER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+// WP17 A3 第二刀：saveCurrent / 等待者 / saveDepth 整段迁到 save-chain-ui.js；函数真身改从模块切。
+const SAVE_CHAIN_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'save-chain-ui.js'), 'utf8');
 
 // 从源码切一个顶层「  [async] function 名字( ... ) { ... }」的真身：先按括号配对跳过形参
 // （saveCurrent 的形参里有解构大括号），再从函数体起始的大括号按配对切到收尾——不能用
@@ -76,16 +78,16 @@ function extractFunction(source, name) {
   throw new Error(`function ${name} 的大括号没有配对`);
 }
 
-const saveCurrentSrc = extractFunction(RENDERER_SRC, 'saveCurrent');
-const waitForSavingIdleSrc = extractFunction(RENDERER_SRC, 'waitForSavingIdle');
-const notifySavingIdleSrc = extractFunction(RENDERER_SRC, 'notifySavingIdle')
+const saveCurrentSrc = extractFunction(SAVE_CHAIN_SRC, 'saveCurrent');
+const waitForSavingIdleSrc = extractFunction(SAVE_CHAIN_SRC, 'waitForSavingIdle');
+const notifySavingIdleSrc = extractFunction(SAVE_CHAIN_SRC, 'notifySavingIdle')
   .replace('function notifySavingIdle(', 'function notifySavingIdleRaw(');
 
 // 注意：这里必须用普通字符串拼接，不能用模板字面量——saveCurrent 源码里带 `${...}`。
 const RUNTIME_BODY = [
   'const {',
-  '  state, editorEl, api, call, testSaveChapter, saveLogic, formatChars, toast,',
-  '  saveStatusUi, crashRecoveryUi, syncChapterCharsAfterSave, renderChapterList,',
+  '  state, editorEl, api, call, getTestSaveChapter, getCrashRecoveryUi, saveLogic, formatChars, toast,',
+  '  saveStatusUi, syncChapterCharsAfterSave, renderChapterList,',
   '  renderStatsUi, flushWriteTimer, restoreFindBookmarkForCurrentChapter,',
   '  verifyBookInBackground, loadChapterAt, openModal, chapterTitle,',
   '  saveRescueUiModule, counts',
@@ -172,7 +174,8 @@ function makeRuntime(options = {}) {
     editorEl,
     api,
     call: callHost,
-    testSaveChapter: null,
+    getTestSaveChapter: () => null,
+    getCrashRecoveryUi: () => null,
     saveLogic,
     formatChars: (chars) => `${chars} 字`,
     toast: (message, kind) => { counts.toast.push([message, kind]); },
@@ -277,7 +280,8 @@ test('R4（保护）：BUSY 并发仍拒；覆盖保存后 waitForSavingIdle 等
 });
 
 test('静态闸门：saveDepth 声明在模块级，saveCurrent 内只加减一次且只在深度归零时收尾', () => {
-  assert.match(RENDERER_SRC, /let saveDepth = 0;/, 'renderer.js 需要模块级 saveDepth（深度守卫）');
+  assert.match(SAVE_CHAIN_SRC, /let saveDepth = 0;/, 'save-chain-ui.js 需要模块级 saveDepth（深度守卫）');
+  assert.equal(/let saveDepth = 0;/.test(RENDERER_SRC), false, '编排器不许再留第二份深度状态');
   assert.equal((saveCurrentSrc.match(/saveDepth \+= 1;/g) || []).length, 1, '进入保存只许加一次深度');
   assert.equal((saveCurrentSrc.match(/saveDepth -= 1;/g) || []).length, 1, 'finally 只许减一次深度');
   assert.match(

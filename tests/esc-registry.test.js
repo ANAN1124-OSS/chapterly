@@ -22,6 +22,8 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const REGISTRY_SOURCE = read('renderer/esc-registry.js');
 const RENDERER_SOURCE = read('renderer/renderer.js');
+// WP17 A3 第二刀：关窗清理调用随 handleCloseRequest 迁到 save-chain-ui.js（计数跨两处，总数仍是 1）。
+const SAVE_CHAIN_SOURCE = read('renderer/save-chain-ui.js');
 // WP17 A3 第一刀：章节列表显示层（含筛选框的 Esc 判断）整段迁到 chapter-directory-ui.js。
 const CHAPTER_DIRECTORY_SOURCE = read('renderer/chapter-directory-ui.js');
 const INDEX_SOURCE = read('renderer/index.html');
@@ -406,7 +408,12 @@ test('接线闸门：12 段复制块已收掉，keydown 里不再手写弹层判
   );
   // Esc 链与关窗清理都必须走注册表，且只调一次
   assert.equal((RENDERER_SOURCE.match(/escLib\.resolve\(/g) || []).length, 1, 'Esc 链必须只有一处调用注册表');
-  assert.equal((RENDERER_SOURCE.match(/escLib\.cleanupActions\(/g) || []).length, 1, '关窗清理必须只有一处调用注册表');
+  assert.equal(
+    (RENDERER_SOURCE.match(/escLib\.cleanupActions\(/g) || []).length +
+      (SAVE_CHAIN_SOURCE.match(/escLib\.cleanupActions\(/g) || []).length,
+    1,
+    '关窗清理必须只有一处调用注册表（现 1 处：save-chain-ui.js 的 handleCloseRequest）'
+  );
   assert.match(RENDERER_SOURCE, /const escLib = window\.CWEscRegistry;/, 'renderer.js 要引用 window.CWEscRegistry');
 });
 

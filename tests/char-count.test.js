@@ -240,19 +240,21 @@ test('静态闸门：五个消费方都引用共享实现，没有本地 countCh
   // v0.9 B-5 第七刀把「本章字数」搬家到 renderer/statusbar-ui.js；第 4 步九刀·第八刀把「整理后光标映射」
   // 随整理流程搬到 renderer/tidy-card-ui.js；2026-11-07 剪贴板单列表的 host.insertIntoBody 契约要求
   // 返回 chaptersLib.countChars(text)，renderer.js 因此多 1 处；WP21（N3）大章软提示在书目缓存缺失时
-  // 回落到正文去空白字数，renderer.js 再多 1 处。总数变 6，只是分布变了
+  // 回落到正文去空白字数；WP17 A3 第二刀把载章链搬到 save-chain-ui.js，这一处随之迁出。总数仍是 6，只是分布变了
   //（只改计数口径的读取范围，断言语义不变）。
   const rendererSource = read('renderer/renderer.js');
+  const saveChainSource = read('renderer/save-chain-ui.js');
   const statusbarSource = read('renderer/statusbar-ui.js');
   const tidyCardSource = read('renderer/tidy-card-ui.js');
   const fragmentsSource = read('renderer/fragments-ui.js');
   assert.equal(
     (rendererSource.match(/chaptersLib\.countChars\(/g) || []).length +
+      (saveChainSource.match(/chaptersLib\.countChars\(/g) || []).length +
       (statusbarSource.match(/chaptersLib\.countChars\(/g) || []).length +
       (tidyCardSource.match(/chaptersLib\.countChars\(/g) || []).length +
       (fragmentsSource.match(/chaptersLib\.countChars\(/g) || []).length,
     6,
-    '6 处字数调用都要走 core 的 countChars（现分布：statusbar-ui.js 1 处 + tidy-card-ui.js 1 处 + fragments-ui.js 2 处 + renderer.js 2 处（剪贴板正文插入 + 大章载入回落））'
+    '6 处字数调用都要走 core 的 countChars（现分布：statusbar-ui.js 1 处 + tidy-card-ui.js 1 处 + fragments-ui.js 2 处 + renderer.js 1 处（剪贴板正文插入）+ save-chain-ui.js 1 处（大章载入回落））'
   );
   // 全库只许 core/chapters.js 定义 function countChars
   for (const rel of [
@@ -260,6 +262,7 @@ test('静态闸门：五个消费方都引用共享实现，没有本地 countCh
     'core/search-index.js',
     'renderer/editor-logic.js',
     'renderer/renderer.js',
+    'renderer/save-chain-ui.js',
     'renderer/statusbar-ui.js',
     'renderer/tidy-card-ui.js',
     'renderer/fragments-ui.js'

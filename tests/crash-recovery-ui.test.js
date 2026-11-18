@@ -326,7 +326,9 @@ test('接线：renderer.js / index.html / 装配清单 / preload / main / E2E �
   assert.match(renderer, /const crashRecoveryUiModule = window\.CWCrashRecoveryUi;/, 'renderer.js 要有模块常量');
   assert.match(renderer, /crashRecoveryUiModule\.create\(\{/, 'bindEvents 里要 create');
   assert.match(renderer, /crashRecoveryUi\.start\(\)/, '启动时要 start（周期上报 + 恢复检查）');
-  assert.match(renderer, /crashRecoveryUi\.noteSaved\(/, '保存成功后要删对应草稿');
+  // WP17 A3 第二刀：saveCurrent 整段迁到 save-chain-ui.js；noteSaved 的接点在模块里（按 getter 现取）。
+  assert.match(read('renderer/save-chain-ui.js'), /getCrashRecoveryUi\(\)\.noteSaved\(/, '保存成功后要删对应草稿');
+  assert.equal(/crashRecoveryUi\.noteSaved\(/.test(renderer), false, '保存链已迁出 renderer.js，不许再留第二份');
   // 两个测试钩子实际定义在 renderer/test-hooks.js（renderer.js 只把 crashRecoveryUi 放进 testHooksScope），
   // 所以静态断言的目标是钩子源码本身；正则与严格度不变。
   const hooks = read('renderer/test-hooks.js');

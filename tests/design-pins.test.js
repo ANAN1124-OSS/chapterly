@@ -238,6 +238,8 @@ test('C-05 / I-01 状态栏：三段布局、成功 2s 淡到 60%、失败可点
   // 逐条钉住；这里只钉住以后最容易被顺手改掉的四件事。
   const RENDERER = read('renderer/renderer.js');
   const SAVE_STATUS = read('renderer/save-status-ui.js');
+  // WP17 A3 第二刀：保存成功摘要的接线整段在 save-chain-ui.js（源码闸门改读模块）。
+  const SAVE_CHAIN = read('renderer/save-chain-ui.js');
 
   // ① 左段保存态 / 中段章节 + 本章字数 / 右段今日字数·计时，中间两个弹性空档
   const start = HTML.indexOf('<footer class="statusbar">');
@@ -260,8 +262,8 @@ test('C-05 / I-01 状态栏：三段布局、成功 2s 淡到 60%、失败可点
   assert.match(RENDERER, /saveStatusUi\.bindRetry\(\);/);
 
   // ④ 保存成功不再弹 toast：完整摘要改挂状态栏 title（文案仍由 save-logic 生成）
-  assert.match(RENDERER, /saveStatusUi\.setSavedDetail\(\s*\n\s*saveLogic\.savedToastText\(\{/);
-  assert.doesNotMatch(RENDERER, /toast\(\s*\n?\s*saveLogic\.savedToastText/, '成功摘要不许再走 toast');
+  assert.match(SAVE_CHAIN, /saveStatusUi\.setSavedDetail\(\s*\n\s*saveLogic\.savedToastText\(\{/);
+  assert.doesNotMatch(RENDERER + SAVE_CHAIN, /toast\(\s*\n?\s*saveLogic\.savedToastText/, '成功摘要不许再走 toast');
   assert.match(SAVE_STATUS, /textEl\.title = savedDetail;/);
 
   // ⑤ 窄窗（960 = 最小窗口宽）中段整段让位，不缩字号

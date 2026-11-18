@@ -16,6 +16,8 @@ const { loadSourceGate, makeIdEl } = require('./ui-test-preambles');
 
 const ROOT = path.join(__dirname, '..');
 const { rendererCode, indexSrc } = loadSourceGate('undo-action.js');
+// WP17 A3 第二刀：换章作废快照的注入点随载章链迁到 save-chain-ui.js（源码闸门改读模块）。
+const saveChainCode = fs.readFileSync(path.join(ROOT, 'renderer', 'save-chain-ui.js'), 'utf8').replace(/\r\n/g, '\n');
 const storageSrc = fs.readFileSync(path.join(ROOT, 'core', 'storage.js'), 'utf8');
 const stylesSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
 
@@ -402,7 +404,7 @@ test('静态闸门（V402）：兜底整串赋值统一配一次性快照 + 提�
   assert.match(rendererCode, /const undone = bulkWriteUndo \? undoBulkWrite\(\) : undoFallbackWrite\(\);/);
   // 三个作废点：输入处理 / 换章成功 / 换书提交
   assert.match(rendererCode, /function onEditorInput\(\) \{[\s\S]{0,300}bulkWriteUndo = null;\n    fallbackWriteUndo = null;/);
-  assert.match(rendererCode, /bulkWriteUndo = null;\n      fallbackWriteUndo = null; \/\/ 审计修复 #39（V402）：兜底写入快照同理/);
+  assert.match(saveChainCode, /setBulkWriteUndo\(null\);\n      setFallbackWriteUndo\(null\); \/\/ 审计修复 #39（V402）：兜底写入快照同理/);
   // 两个模块的兜底路径都接到同一份记账（host 注入），装配点必须真的传进去
   assert.match(rendererCode, /\$, state, api, call, toast, staleGuard, recordFallbackWrite,/);
   assert.match(rendererCode, /\$, state, api, call, toast, recordFallbackWrite,/);

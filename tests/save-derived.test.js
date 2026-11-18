@@ -23,7 +23,8 @@ const saveLogic = require('../renderer/save-logic');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const MAIN = read('main.js');
-const RENDERER = read('renderer/renderer.js');
+// WP17 A3 第二刀：保存热路径整段迁到 save-chain-ui.js（源码闸门改读模块，同一条断言）。
+const SAVE_CHAIN = read('renderer/save-chain-ui.js');
 
 function between(source, from, to) {
   const start = source.indexOf(from);
@@ -100,7 +101,7 @@ test('静态闸门：保存结果带 charsBaselineMissing，统计失败仍返�
 });
 
 test('静态闸门：渲染层把 charsBaselineMissing 传给「已保存」提示（基线缺失才多一句）', () => {
-  const saveSrc = between(RENDERER, 'async function saveCurrent(', '\n  }');
+  const saveSrc = between(SAVE_CHAIN, 'async function saveCurrent(', '\n  }');
   assert.match(saveSrc, /charsBaselineMissing: Boolean\(data\.charsBaselineMissing\)/);
   // 具体文案在纯逻辑里（另有用例钉住），这里确认标记真的接进了 savedToastText
   assert.match(saveSrc, /saveLogic\.savedToastText\(\{[\s\S]*?charsBaselineMissing/);

@@ -23,6 +23,8 @@ const ROOT = path.join(__dirname, '..');
 // 源码在工作树里是 CRLF；静态闸门只关心语义，统一成 LF 再切片（免得 indexOf('\n...') 落空）
 const MAIN_SOURCE = fss.readFileSync(path.join(ROOT, 'main.js'), 'utf8').replace(/\r\n/g, '\n');
 const RENDERER_SOURCE = fss.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8').replace(/\r\n/g, '\n');
+// WP17 A3 第二刀：保存热路径整段迁到 save-chain-ui.js；saveCurrent 的源码闸门改读模块（同一条断言）。
+const SAVE_CHAIN_SOURCE = fss.readFileSync(path.join(ROOT, 'renderer', 'save-chain-ui.js'), 'utf8').replace(/\r\n/g, '\n');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -133,9 +135,9 @@ test('静态闸门：渲染层把 META_SAVE_FAILED 当部分成功提示、不�
     'ApiError 要带上 bodySaved / chars / file / mtimeMs'
   );
   // saveCurrent 的 catch：认得 META_SAVE_FAILED → warn 提示 + dirty 保持（不显示「保存失败」）
-  const saveStart = RENDERER_SOURCE.indexOf('async function saveCurrent(');
-  assert.ok(saveStart > 0, 'renderer.js 里找不到 saveCurrent');
-  const saveBody = RENDERER_SOURCE.slice(saveStart, RENDERER_SOURCE.indexOf('\n  }\n', saveStart) + 4);
+  const saveStart = SAVE_CHAIN_SOURCE.indexOf('async function saveCurrent(');
+  assert.ok(saveStart > 0, 'save-chain-ui.js 里找不到 saveCurrent');
+  const saveBody = SAVE_CHAIN_SOURCE.slice(saveStart, SAVE_CHAIN_SOURCE.indexOf('\n  }\n', saveStart) + 4);
   assert.ok(saveBody.includes("err.code === 'META_SAVE_FAILED'"), 'saveCurrent 要单独处理 META_SAVE_FAILED');
   assert.ok(saveBody.includes('bodySaved: true'), 'saveCurrent 的返回里要标出正文已存');
   assert.match(saveBody, /toast\(err\.message, 'warn'\)/, '部分成功要用 warn 提示（不是「保存失败」的 error）');
@@ -168,15 +170,15 @@ test('E-N6：部分成功回包带 mtimeMs，渲染层同步 loadedMtimeMs（重
   assert.ok(failBody.includes('partial.mtimeMs = Number(err.mtimeMs)'), 'fail() 要透传 mtimeMs');
 
   // renderer：sameChapter 之后、saveError 之前更新 loadedMtimeMs（绝不把别的章的 mtime 写到眼前这一章）
-  const partialAt = RENDERER_SOURCE.indexOf("err.code === 'META_SAVE_FAILED' && err.bodySaved === true");
+  const partialAt = SAVE_CHAIN_SOURCE.indexOf("err.code === 'META_SAVE_FAILED' && err.bodySaved === true");
   assert.ok(partialAt > 0, 'saveCurrent 找不到部分成功分支');
-  const sameAt = RENDERER_SOURCE.indexOf('if (!sameChapter) return', partialAt);
-  const mtimeAt = RENDERER_SOURCE.indexOf('state.loadedMtimeMs = saveLogic.retryMtimeMs(err, state.loadedMtimeMs)', partialAt);
-  const saveErrAt = RENDERER_SOURCE.indexOf('state.saveError = err.message', partialAt);
+  const sameAt = SAVE_CHAIN_SOURCE.indexOf('if (!sameChapter) return', partialAt);
+  const mtimeAt = SAVE_CHAIN_SOURCE.indexOf('state.loadedMtimeMs = saveLogic.retryMtimeMs(err, state.loadedMtimeMs)', partialAt);
+  const saveErrAt = SAVE_CHAIN_SOURCE.indexOf('state.saveError = err.message', partialAt);
   assert.ok(sameAt > 0 && mtimeAt > sameAt, 'loadedMtimeMs 必须在 sameChapter 判定之后更新');
   assert.ok(saveErrAt > mtimeAt, '更新 mtime 在保存错误文案之前（同一分支内）');
   assert.match(
-    RENDERER_SOURCE.slice(mtimeAt - 40, mtimeAt + 120),
+    SAVE_CHAIN_SOURCE.slice(mtimeAt - 40, mtimeAt + 120),
     /saveLogic\.retryMtimeMs\(err, state\.loadedMtimeMs\)/,
     '经 retryMtimeMs 只接受 > 0 的有限 mtime（0 是 force 哨兵，不采用）'
   );

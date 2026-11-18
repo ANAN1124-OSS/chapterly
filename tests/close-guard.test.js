@@ -17,6 +17,8 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const MAIN = read('main.js');
 const RENDERER = read('renderer/renderer.js');
+// WP17 A3 第二刀：关窗拦截与「不保存退出」清脏整段迁到 save-chain-ui.js（源码闸门改读模块）。
+const SAVE_CHAIN = read('renderer/save-chain-ui.js');
 const PRELOAD = read('preload.js');
 
 function between(source, from, to) {
@@ -65,16 +67,16 @@ test('静态闸门 + 时序：同毫秒的保存回执不放行关窗（N3：宁
 });
 
 test('静态闸门：渲染层「不保存退出」先如实清掉脏状态，再放行关窗（E5/S5）', () => {
-  const helperSrc = between(RENDERER, 'function discardUnsavedForClose() {', '\n  }');
+  const helperSrc = between(SAVE_CHAIN, 'function discardUnsavedForClose() {', '\n  }');
   assert.match(helperSrc, /state\.dirty = false;/, '主动丢弃要清脏状态');
   assert.match(helperSrc, /updateStatus\(\);/, '清完要上报主进程（app:dirty）');
-  const discardSrc = between(RENDERER, "if (action === 'discard') {", 'return;');
+  const discardSrc = between(SAVE_CHAIN, "if (action === 'discard') {", 'return;');
   assert.match(discardSrc, /discardUnsavedForClose\(\);[\s\S]{0,80}api\.closeReady\(true\);/, 'discard 分支要先清脏再放行');
   // 保存失败后选「放弃修改退出」这条也要清
-  const failedDiscardSrc = between(RENDERER, "if (again.action !== 'discard') {", 'api.closeReady(true);');
+  const failedDiscardSrc = between(SAVE_CHAIN, "if (again.action !== 'discard') {", 'api.closeReady(true);');
   assert.match(failedDiscardSrc, /discardUnsavedForClose\(\);/, '保存失败后放弃退出也要先清脏');
   // 取消分支仍然明确拒绝关窗
-  assert.match(RENDERER, /if \(action === 'cancel'\) \{[\s\S]{0,80}api\.closeReady\(false\);/, '取消仍要拒绝关窗');
+  assert.match(SAVE_CHAIN, /if \(action === 'cancel'\) \{[\s\S]{0,80}api\.closeReady\(false\);/, '取消仍要拒绝关窗');
 });
 
 // ---------- A1（审计 E-03）：关窗看门狗阈值与强制退出顺序 ----------

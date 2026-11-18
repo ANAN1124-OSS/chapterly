@@ -10,6 +10,8 @@ const saveRescueUi = require('../renderer/save-rescue-ui');
 const { loadSourceGate } = require('./ui-test-preambles');
 
 const { rendererCode, indexSrc, moduleSrc, moduleCode } = loadSourceGate('save-rescue-ui.js');
+// WP17 A3 第二刀：saveCurrent 整段迁到 save-chain-ui.js（同一条接线断言，读取路径变）。
+const SAVE_CHAIN_SRC = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'save-chain-ui.js'), 'utf8').replace(/\r\n/g, '\n');
 
 // 假 host：state / editorEl 是真对象（模块会读，冲突路径还会写 state.saving / state.dirty），
 // 其余能力全部记进 calls，断言「点了哪个按钮 → 谁被调用、参数是什么、提示是什么」。
@@ -426,9 +428,9 @@ test('接线：renderer.js 与模块按全局名装配，只 create 一次，缺
 });
 
 test('接线（V301）：saveCurrent 带 expectedMtimeMs；只有「覆盖保存」传 force', () => {
-  const start = rendererCode.indexOf('async function saveCurrent(');
-  assert.ok(start > 0, 'renderer.js 里找不到 saveCurrent');
-  const body = rendererCode.slice(start, rendererCode.indexOf('\n  // ---------- 切换', start));
+  const start = SAVE_CHAIN_SRC.indexOf('async function saveCurrent(');
+  assert.ok(start > 0, 'save-chain-ui.js 里找不到 saveCurrent');
+  const body = SAVE_CHAIN_SRC.slice(start, SAVE_CHAIN_SRC.indexOf('\n  async function handleCloseRequest(', start));
   assert.match(body, /async function saveCurrent\(\{ silent = false, force = false \} = \{\}\)/);
   assert.match(body, /const expectedMtimeMs = force \? 0 : state\.loadedMtimeMs;/);
   assert.match(body, /api\.saveChapter, bookPath, chapterId, text, expectedMtimeMs\)/);

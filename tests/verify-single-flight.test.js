@@ -171,12 +171,15 @@ test('V4：不同书互不合并（可并行），同书仍单飞', async () => 
 
 test('V5：静态接线——渲染层走单飞工厂，保存热路径仍不 await 校验', () => {
   const renderer = read('renderer/renderer.js');
-  assert.match(renderer, /saveLogic\.createVerifySingleFlight\(/, 'renderer 要接单飞工厂');
-  const body = between(renderer, 'function verifyBookInBackground(', '\n  }');
+  // WP17 A3 第二刀：保存后的全书校验整段迁到 save-chain-ui.js；工厂 / 入口 / 调用点改读模块（同一条断言）。
+  const saveChain = read('renderer/save-chain-ui.js');
+  assert.match(saveChain, /saveLogic\.createVerifySingleFlight\(/, '保存链模块要接单飞工厂');
+  const body = between(saveChain, 'function verifyBookInBackground(', '\n  }');
   assert.match(body, /request\(bookPath\)/, '入口只提交请求');
   assert.equal(body.includes('void (async () =>'), false, '旧的 fire-and-forget 匿名体必须收掉');
-  assert.match(renderer, /verifyBookInBackground\(bookPath\);/, '保存成功后的调用点不变');
-  assert.equal(/await\s+verifyBookInBackground/.test(renderer), false, '保存热路径不许 await 校验');
+  assert.match(saveChain, /verifyBookInBackground\(bookPath\);/, '保存成功后的调用点不变');
+  assert.equal(/await\s+verifyBookInBackground/.test(renderer + saveChain), false, '保存热路径不许 await 校验');
+  assert.equal(/function verifyBookInBackground\(/.test(renderer), false, '入口只被模块内部调用，编排器不再定义同名包装');
 
   const saveLogicSrc = read('renderer/save-logic.js');
   assert.match(saveLogicSrc, /function createVerifySingleFlight/, '纯逻辑在 save-logic（不碰 DOM / IPC）');

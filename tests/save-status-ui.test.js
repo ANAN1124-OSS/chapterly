@@ -13,6 +13,8 @@ const { loadSourceGate, restoreGlobalsAfter, makeIdEl } = require('./ui-test-pre
 restoreGlobalsAfter(test, ['document', 'window']);
 
 const { rendererSrc, rendererCode, indexSrc, moduleSrc, moduleCode } = loadSourceGate('save-status-ui.js');
+// WP17 A3 第二刀：updateStatus 与成功摘要接线整段迁到 save-chain-ui.js（源码闸门改读模块）。
+const SAVE_CHAIN_SRC = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'save-chain-ui.js'), 'utf8');
 
 function formatClock(date) {
   if (!date) return '';
@@ -277,16 +279,17 @@ test('静态闸门：渲染层只剩接线——保存成功不弹 toast、四�
     assert.equal(rendererSrc.includes(ref), false, `renderer.js 不许再自己写 ${ref}`);
   }
   // 1.6.0 A5/P-09：updateStatus 多了一个 options 参数（输入路径的 typing 传下去让字数统计防抖）
-  assert.match(rendererCode, /function updateStatus\(options\) \{[\s\S]{0,400}?saveStatusUi\.render\(\);/);
+  assert.match(SAVE_CHAIN_SRC, /function updateStatus\(options\) \{[\s\S]{0,400}?saveStatusUi\.render\(\);/);
+  assert.match(rendererCode, /function updateStatus\(options\) \{ return saveChainUi\.updateStatus\(options\); \}/, '编排器只留同名包装');
   assert.match(rendererCode, /saveStatusUi\.bindRetry\(\);/);
   assert.equal((rendererCode.match(/saveStatusUi\.bindRetry\(\)/g) || []).length, 1);
   assert.match(
-    rendererCode,
+    SAVE_CHAIN_SRC,
     /if \(!silent\) \{\s*\n\s*saveStatusUi\.setSavedDetail\(\s*\n\s*saveLogic\.savedToastText\(\{/,
     '成功摘要改挂状态栏，不再 toast'
   );
   // 保存成功路径里不许再出现 toast( ——错误路径的 toast 保留
-  const saveBody = rendererCode.slice(rendererCode.indexOf('async function saveCurrent('), rendererCode.indexOf('\n  }', rendererCode.indexOf('async function saveCurrent(')));
+  const saveBody = SAVE_CHAIN_SRC.slice(SAVE_CHAIN_SRC.indexOf('async function saveCurrent('), SAVE_CHAIN_SRC.indexOf('\n  }', SAVE_CHAIN_SRC.indexOf('async function saveCurrent(')));
   assert.equal(saveBody.includes('toast('), true, '失败路径仍要 toast');
   assert.equal(/toast\(\s*\n?\s*saveLogic\.savedToastText/.test(saveBody), false, '成功摘要不许再走 toast');
   // 装配一次 + host 成员点名

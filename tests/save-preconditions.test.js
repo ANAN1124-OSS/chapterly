@@ -26,6 +26,8 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fss.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const MAIN_SOURCE = read('main.js');
 const RENDERER_SOURCE = read('renderer/renderer.js');
+// WP17 A3 第二刀：保存热路径整段迁到 save-chain-ui.js；saveCurrent 的源码闸门改读模块（同一条断言）。
+const SAVE_CHAIN_SOURCE = read('renderer/save-chain-ui.js');
 
 async function mkTmp() {
   return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-save-precond-')));
@@ -290,10 +292,10 @@ test('R8（M-N1）：META_CHANGED 后 loadedMtimeMs 更新为回包值；缺字�
   assert.equal(saveLogic.retryMtimeMs({ mtimeMs: 0 }, 'bad-current'), 0, '旧值本身坏时最多回 0（不写 NaN）');
 
   // 静态接线 1：saveCurrent 的 catch 里两条回包都用同一个纯函数更新基线（sameChapter 之后 / saveError 之前）
-  const saveStart = RENDERER_SOURCE.indexOf('async function saveCurrent(');
-  assert.ok(saveStart > 0, 'renderer.js 里找不到 saveCurrent');
-  const saveEnd = RENDERER_SOURCE.indexOf('\n  }\n', saveStart);
-  const saveBody = RENDERER_SOURCE.slice(saveStart, saveEnd + 4);
+  const saveStart = SAVE_CHAIN_SOURCE.indexOf('async function saveCurrent(');
+  assert.ok(saveStart > 0, 'save-chain-ui.js 里找不到 saveCurrent');
+  const saveEnd = SAVE_CHAIN_SOURCE.indexOf('\n  }\n', saveStart);
+  const saveBody = SAVE_CHAIN_SOURCE.slice(saveStart, saveEnd + 4);
   const updates = saveBody.match(/state\.loadedMtimeMs = saveLogic\.retryMtimeMs\(err, state\.loadedMtimeMs\);/g) || [];
   assert.ok(updates.length >= 2, 'META_SAVE_FAILED 与 META_CHANGED 都要经 retryMtimeMs 更新 loadedMtimeMs');
   const changedAt = saveBody.indexOf("if (err.code === 'META_CHANGED')");

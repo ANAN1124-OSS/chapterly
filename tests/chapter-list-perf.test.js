@@ -28,6 +28,9 @@ const RENDERER_SOURCE = read('renderer/renderer.js');
 // WP17 A3 第一刀：章节列表显示层（条目 / 事件委托 / 整表重建 / 当前章缓存）整段迁到
 // chapter-directory-ui.js；这些函数的源码闸门改读模块（同一条断言，读取路径变）。
 const CHAPTER_DIRECTORY_SOURCE = read('renderer/chapter-directory-ui.js');
+// WP17 A3 第二刀：载章状态机与保存热路径整段迁到 save-chain-ui.js；这两条源码闸门改读模块
+// （同一条断言，读取路径变）。
+const SAVE_CHAIN_SOURCE = read('renderer/save-chain-ui.js');
 
 /** 去掉注释（保留字符串），静态闸门要看的是代码本身，不是注释里的说明 */
 function stripComments(src) {
@@ -78,6 +81,7 @@ function stripComments(src) {
 
 const RENDERER_CODE = stripComments(RENDERER_SOURCE);
 const CHAPTER_DIRECTORY_CODE = stripComments(CHAPTER_DIRECTORY_SOURCE);
+const SAVE_CHAIN_CODE = stripComments(SAVE_CHAIN_SOURCE);
 
 /** 取一个顶层 function 的源码：从 `function 名字(` 到下一个同缩进的 function 声明为止 */
 function functionSource(src, name) {
@@ -103,7 +107,7 @@ const chapterItemRule = cssRuleBody(CSS_SOURCE, '.chapter-item');
 const renderChapterListSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'renderChapterList');
 const syncActiveSrc = functionSource(RENDERER_CODE, 'syncActiveChapterItem');
 const makeChapterItemSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'makeChapterItem');
-const loadChapterAtSrc = functionSource(RENDERER_CODE, 'loadChapterAt');
+const loadChapterAtSrc = functionSource(SAVE_CHAIN_CODE, 'loadChapterAt');
 
 test('CSS 闸门：章节条目跳过屏幕外渲染，intrinsic 尺寸接近真实行高（20–80px 的整数）', () => {
   assert.match(chapterItemRule, /content-visibility:\s*auto\s*;/, '.chapter-item 缺 content-visibility: auto');
@@ -149,7 +153,7 @@ test('反回退：切章时不许靠 setTimeout / requestAnimationFrame 这类�
 });
 
 // B5（审计 P5）：保存后只更新当前章这一条的字数，不再整表重建（千章书每次 Ctrl+S 都重建 1000 条）。
-const saveCurrentSrc = functionSource(RENDERER_CODE, 'saveCurrent');
+const saveCurrentSrc = functionSource(SAVE_CHAIN_CODE, 'saveCurrent');
 const syncCharsSrc = functionSource(RENDERER_CODE, 'syncChapterItemChars');
 const syncCharsAfterSaveSrc = functionSource(RENDERER_CODE, 'syncChapterCharsAfterSave');
 

@@ -73,6 +73,7 @@
     ['statusbar-ui.js', 'CWStatusbarUi', 'statusbarUiModule', '状态栏'],
     ['save-status-ui.js', 'CWSaveStatusUi', 'saveStatusUiModule', '保存状态提示'],
     ['save-rescue-ui.js', 'CWSaveRescueUi', 'saveRescueUiModule', '保存阻断的三选救稿出口'],
+    ['save-chain-ui.js', 'CWSaveChainUi', 'saveChainUiModule', '保存链（载章 / 保存 / 关窗拦截）'],
     ['config-change-ui.js', 'CWConfigChangeUi', 'configChangeUiModule', '换书架根后的孤岛提示 / 救稿出口'],
     ['crash-recovery-ui.js', 'CWCrashRecoveryUi', 'crashRecoveryUiModule', '崩溃草稿周期上报 / 启动恢复提示'],
     ['shelf-filter-ui.js', 'CWShelfFilterUi', 'shelfFilterUiModule', '书架筛选'],

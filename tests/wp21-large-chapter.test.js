@@ -21,6 +21,8 @@ const captureLib = require('../core/capture');
 
 const ROOT = path.join(__dirname, '..');
 const RENDERER_SRC = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
+// WP17 A3 第二刀：载章状态机整段迁到 save-chain-ui.js；函数真身与阈值常量改从模块读。
+const SAVE_CHAIN_SRC = fs.readFileSync(path.join(ROOT, 'renderer', 'save-chain-ui.js'), 'utf8');
 const CAPTURE_UI_SRC = fs.readFileSync(path.join(ROOT, 'renderer', 'capture-ui.js'), 'utf8');
 const CAPTURE_SRC = fs.readFileSync(path.join(ROOT, 'core', 'capture.js'), 'utf8');
 
@@ -79,9 +81,9 @@ function extractFunction(source, name) {
   throw new Error(`function ${name} 的大括号没有配对`);
 }
 
-const loadChapterAtSrc = extractFunction(RENDERER_SRC, 'loadChapterAt');
+const loadChapterAtSrc = extractFunction(SAVE_CHAIN_SRC, 'loadChapterAt');
 // 阈值只许有一份：渲染层模块级常量。测试从源码读，不硬编码第二份数字。
-const softCharsMatch = /const LARGE_CHAPTER_SOFT_CHARS = (\d+);/.exec(RENDERER_SRC);
+const softCharsMatch = /const LARGE_CHAPTER_SOFT_CHARS = (\d+);/.exec(SAVE_CHAIN_SRC);
 const sourceSoftChars = softCharsMatch ? Number(softCharsMatch[1]) : undefined;
 
 const LARGE_CHAPTER_MESSAGE = '本章超过 50 万字，编辑/查找可能较慢，可考虑拆分章节';
@@ -89,7 +91,7 @@ const LARGE_CHAPTER_MESSAGE = '本章超过 50 万字，编辑/查找可能较�
 // 普通字符串拼接（不用模板字面量包源码）：loadChapterAt 源码里带 `${...}`。
 const RUNTIME_BODY = [
   'const {',
-  '  state, editorEl, api, call, testLoadChapter, toast, chaptersLib,',
+  '  state, editorEl, api, call, toast, chaptersLib,',
   '  applyEditorEditable, setChapterMask, clearFindSession, stopTtsForChapterChange,',
   '  syncActiveChapterItem, renderEditorHeader, updateStatus, renderSelectionStats,',
   '  scheduleMarksRender, scheduleTypewriterAlign, restoreFindBookmarkForCurrentChapter,',
@@ -99,7 +101,10 @@ const RUNTIME_BODY = [
   'let bulkWriteUndo = null;',
   'let fallbackWriteUndo = null;',
   'const LARGE_CHAPTER_SOFT_CHARS = largeChapterSoftChars;',
-  'function notifyLoadingIdle() { counts.loadingIdle += 1; }',
+  'function getTestLoadChapter() { return deps.testLoadChapter; }',
+  'function setBulkWriteUndo(value) { bulkWriteUndo = value; }',
+  'function setFallbackWriteUndo(value) { fallbackWriteUndo = value; }',
+'function notifyLoadingIdle() { counts.loadingIdle += 1; }',
   loadChapterAtSrc,
   'return { loadChapterAt, seq: () => loadChapterSeq, bulk: () => bulkWriteUndo, fallback: () => fallbackWriteUndo };'
 ].join('\n');
@@ -367,9 +372,10 @@ test('R4（保护·已覆盖证据）：捕获 raw 超限提示沿用 capture �
 });
 
 test('静态闸门：软提示只一条、严格大于阈值、位置在成功提交之后且在 return 之前、不写 state', () => {
-  assert.match(RENDERER_SRC, /\n  const LARGE_CHAPTER_SOFT_CHARS = 500000;/, 'renderer.js 需要模块级 LARGE_CHAPTER_SOFT_CHARS = 500000');
-  assert.equal((RENDERER_SRC.match(/const LARGE_CHAPTER_SOFT_CHARS/g) || []).length, 1, '阈值只许定义一份');
-  assert.match(RENDERER_SRC, /载入大章软告知阈值[\s\S]{0,600}30 万[\s\S]{0,400}raw/, '常量注释要写明区别于标记层 30 万 / 捕获 raw 3M');
+  assert.match(SAVE_CHAIN_SRC, /\n    const LARGE_CHAPTER_SOFT_CHARS = 500000;/, 'save-chain-ui.js 需要模块级 LARGE_CHAPTER_SOFT_CHARS = 500000');
+  assert.equal((SAVE_CHAIN_SRC.match(/const LARGE_CHAPTER_SOFT_CHARS/g) || []).length, 1, '阈值只许定义一份');
+  assert.equal(/LARGE_CHAPTER_SOFT_CHARS/.test(RENDERER_SRC), false, '编排器不许再留第二份阈值');
+  assert.match(SAVE_CHAIN_SRC, /载入大章软告知阈值[\s\S]{0,600}30 万[\s\S]{0,400}raw/, '常量注释要写明区别于标记层 30 万 / 捕获 raw 3M');
   assert.equal((loadChapterAtSrc.match(/本章超过 50 万字/g) || []).length, 1, '一次载入路径只许一条大章提示');
   assert.match(loadChapterAtSrc, /if \(loadedChars > LARGE_CHAPTER_SOFT_CHARS\)/, '阈值必须严格大于（500000 本身不提示）');
   assert.match(loadChapterAtSrc, /toast\('本章超过 50 万字，编辑\/查找可能较慢，可考虑拆分章节', 'info'\)/, '非阻塞 info 软提示');

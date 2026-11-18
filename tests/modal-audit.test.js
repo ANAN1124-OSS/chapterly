@@ -30,7 +30,8 @@ const ALLOWED = [
   ['renderer.js', 'title,', 'promptText：重命名 / 备注这类「填一个值」的输入框（不是确认）'],
   ['renderer.js', "title: title || '有未保存的修改'", 'askUnsaved：未保存拦截（保留 ①）'],
   ['renderer.js', 'title: `修复「${book.title || \'这本书\'}」`,', '修复方式：从目录重建 / 从备份恢复（选择型）'],
-  ['renderer.js', "title: '保存失败'", '保存失败仍要退出：未保存拦截的延伸（保留 ①）'],
+  // WP17 A3 第二刀：关窗拦截整段迁到 save-chain-ui.js（同一个选择型弹窗，换文件）。
+  ['save-chain-ui.js', "title: '保存失败'", '保存失败仍要退出：未保存拦截的延伸（保留 ①）'],
   ['import-ui.js', "title: '导入小说'", '导入模式：按原文章节 / 整本一章（选择型）'],
   ['import-ui.js', "title: '删除这本书'", '删除整本书（保留 ②）'],
   ['statusbar-ui.js', "title: '检测到外部修改'", '外部修改：重新加载 / 保留当前（选择型）'],
@@ -81,7 +82,7 @@ function openModalSites(source) {
 }
 
 test('模态审计：openModal 的调用点数量与用途固定（多了少了都要在评审里说清）', () => {
-  const files = ['renderer.js', 'import-ui.js', 'statusbar-ui.js', 'find-ui.js', 'history-ui.js', 'save-rescue-ui.js', 'config-change-ui.js'];
+  const files = ['renderer.js', 'save-chain-ui.js', 'import-ui.js', 'statusbar-ui.js', 'find-ui.js', 'history-ui.js', 'save-rescue-ui.js', 'config-change-ui.js'];
   const found = [];
   for (const file of files) {
     for (const site of openModalSites(read(file))) found.push({ file, ...site });
