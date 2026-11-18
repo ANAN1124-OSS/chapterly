@@ -1174,6 +1174,10 @@
   // 制造「响应乱序」「载章在途」的窗口；正常启动恒为 null，直接走 call(api.openBook / api.loadChapter)。
   let testOpenBook = null;
   let testLoadChapter = null;
+  // N3（审计低）：载入大章软告知阈值——按**显示字数**（去空白）判定，只影响一条非阻塞 info toast，
+  // 不拒载、不改 dirty / baseText / 遮罩。口径与「标记层超过 30 万字整层收起」（editor-marks-ui.js）、
+  // 捕获 raw 原文上限 3,000,000 字符（core/capture.js 唯一实现）明确区分；这里不是硬限。
+  const LARGE_CHAPTER_SOFT_CHARS = 500000;
 
   // 编辑区只读态的唯一出口：长操作锁 / 正在打开新书 / 正在载章 / 没有有效章节，任一成立就只读。
   // 统一走这里，避免「谁最后解自己的锁」互相覆盖（典型事故：长操作结束把载章中的锁一起解掉）。
@@ -1916,7 +1920,7 @@
     const start = Math.max(0, Math.min(Math.round(rawStart), size));
     const end = Math.max(start, Math.min(Math.round(rawEnd), size));
     const expected = before.slice(0, start) + value + before.slice(end);
-    // 字数只算一次（两条写入通道共用同一口径，静态闸门也钉住「renderer.js 只有 1 处 countChars」）。
+    // 字数只算一次（两条写入通道共用同一口径；静态闸门钉住全库字数调用都走 core/chapters.js 的 countChars）。
     const chars = chaptersLib.countChars(value);
     // 试用分支 B（粘贴大段优化）：长串插入不走 Chromium 的编辑管线。execCommand('insertText') /
     // 原生粘贴对十几万字是逐行强制布局的秒级路径（Chromium issue 341564372）；直接把整串赋给
@@ -2203,6 +2207,17 @@
       renderSelectionStats();
       scheduleMarksRender(0);
       if (state.focus.typewriter) scheduleTypewriterAlign(0);
+      // N3（审计低）：大章载入软告知。只读判定 + 一条非阻塞 toast：不写 state / dirty / baseText、
+      // 不动遮罩与只读态；每次成功载入只跑一遍（失败 / stale 在上面的提前返回里已经走了）。
+      // 显示字数优先用书目缓存（chapter.chars，状态栏 / 章节列表同一口径）；缓存缺失（null / 坏值）
+      // 才回落到刚从磁盘读到的正文去空白字数——不能把 null 当 0 字，否则老书目会漏提示。
+      const cachedChars = chapter.chars == null ? NaN : Number(chapter.chars);
+      const loadedChars = Number.isFinite(cachedChars) && cachedChars >= 0
+        ? Math.round(cachedChars)
+        : chaptersLib.countChars(data.text);
+      if (loadedChars > LARGE_CHAPTER_SOFT_CHARS) {
+        toast('本章超过 50 万字，编辑/查找可能较慢，可考虑拆分章节', 'info');
+      }
       // 主进程按书合并 1.5 秒内的连续切章（B3），这里只等它受理；真正落盘前若有读操作
       // （书架 / 打开书 / 继续上次写作）主进程会先 flush，重开书不会回到旧章。
       // 「继续上次写作」的书架级记忆在切章当下就写（配置很小），只把书目.json 的大写入防抖。
