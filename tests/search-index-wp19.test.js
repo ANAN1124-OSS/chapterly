@@ -12,6 +12,9 @@
 //     含空格路径 / 读盘必失败条目的 IO 注入 / 保留 mtime 伪装）→ 常规搜索一次越界读盘都不许发生、
 //     结果不含它们；focus 对同一本书同样拒绝（口径对齐）。当前 HEAD 上 ensure 重建会先剔除越界
 //     条目，所以「不读外」这一半修复前就是绿的（红的是「结果带出计数」这一半，见作业卡 §9）。
+//   * §R1c 行为窗口：索引窗口内复用内存索引（60s 不再 ensure）时把 book.path 改成书架外真实可读的
+//     目录 → 常规搜索必须由候选循环自己跳过（skippedOutOfRoot=1）且一次盘都不读（§R1b 只覆盖
+//     「ensure 重建兜底」那条路径，计数恒为 0，钉不到纵深本体）。
 //   * §R2 保护：root 内合法多书的命中 / 顺序 / 片段 / 字段集合与修复前逐字段一致，且一个都不跳过。
 //
 // S-N3 / R-N3 / P-N3（§R3–§R5，WP19.2–19.4）：
@@ -217,6 +220,45 @@ test('S-N2/§R1b：索引被外部改写指向书架外 → 常规搜索不读�
     });
     assert.equal(focused.focusError, '聚焦的书籍不在书架索引里', 'focus 对书架外的书必须拒绝（基准口径）');
     assert.deepEqual(focused.results, []);
+  } finally {
+    storage.loadChapterText = original;
+  }
+});
+
+test('S-N2/§R1c：搜索窗口复用内存索引时，被篡改的越界 book.path 在候选循环被跳过且绝不读盘', async () => {
+  // §R1b 走的是「坏索引落盘 → 新 store → ensure 重建」：重建会把越界条目先剔除，候选循环这一趟
+  // 没有需要跳过的书（所以只能钉 skippedOutOfRoot=0）。本用例走另一条真实窗口：索引已就绪 +
+  // 同一书架根 + 60s 搜索窗口内不再 ensure（search-index.js:1347-1358），此时内存索引被外部
+  // 改写（同步盘冲突 / 索引被手改）就必须由候选循环自己兜住 —— 这是 S-N2 的纵深本体。
+  const base = await mkTmp('cw-wp19-n2-window-');
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  const outsideDir = path.join(base, '外部 书架', '越界书');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  await fs.mkdir(outsideDir, { recursive: true });
+  const inside = await makeBook(booksRoot, '书001', '书1', ['书里的正文：青柠色的雨伞挂在门口。']);
+  // 书架外放一份真实可读的章节文件：越界条目哪怕「文件真实存在」也不许读。
+  await fs.copyFile(path.join(inside.bookPath, '001-章1.txt'), path.join(outsideDir, '001-章1.txt'));
+
+  const clockMs = Date.parse('2026-11-18T10:00:00.000Z');
+  const store = search.createSearchStore({ userDataDir: userData, now: () => new Date(clockMs) });
+  await store.ensure({ booksRoot });
+  const live = store.getIndex();
+  assert.equal(live.books.length, 1, '前提：内存索引里只有一本合法的书');
+  live.books[0].path = outsideDir; // 外部改写：book.path 指向书架外
+
+  const original = storage.loadChapterText;
+  const readCalls = [];
+  storage.loadChapterText = async (bookPath, file, options) => {
+    readCalls.push({ bookPath, file });
+    return original(bookPath, file, options);
+  };
+  try {
+    const found = await store.search({ booksRoot, query: '青柠色', timeBudgetMs: 5000 });
+    assert.equal(found.skippedOutOfRoot, 1, '窗口内复用内存索引也必须跳过越界书并计数（不静默）');
+    assert.deepEqual(readCalls, [], '越界书一次盘都不许读（文件真实存在也不许碰）');
+    assert.equal(found.results.length, 0, '越界书不许出现在结果里');
   } finally {
     storage.loadChapterText = original;
   }

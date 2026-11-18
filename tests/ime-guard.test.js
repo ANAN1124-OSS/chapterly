@@ -70,8 +70,15 @@ test('静态闸门：五个消费者都走共享函数，没有第二份 event.i
     1,
     '目录筛选框的 Enter 仍走共享守卫'
   );
-  // 装配：四个模块的 create 都拿到 imeGuard（缺了会在启动时抛 TypeError）
-  assert.equal(consumers['renderer.js'].split('imeGuard,').length - 1, 5, '五处 create 都要装配 imeGuard（A3-B 后书架视图是第 5 处）');
+  // 装配：四个模块的 create 都拿到 imeGuard（缺了会在启动时抛 TypeError）。
+  // A3-B 后书架视图是第 5 处；它是同行装配（不是独占一行），所以按两种形态分别钉死，
+  // 不用裸 'imeGuard,' 计数（那会把注释 / 别的实参也一起数进去，等于放宽）。
+  assert.equal(rendererCode.split('\n    imeGuard,').length - 1, 4, '四处 create 的独占行装配 imeGuard');
+  assert.equal(
+    rendererCode.split('renderShelfContent, imeGuard,').length - 1,
+    1,
+    '书架视图 create 装配 imeGuard（A3-B 后第 5 处，同行形态）'
+  );
 });
 
 test('静态闸门：index.html 在消费者之前加载 ime-guard.js，且只加载一次', () => {
