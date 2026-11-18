@@ -1456,12 +1456,24 @@ function createSearchStore(options = {}) {
       };
     }
 
+    // S-N2（补漏低批 WP19）：常规搜索与上面 focus 分支同一套 root 纵深校验 —— 索引里的 book.path
+    // 被外部改写（绝对外路径 / `..` 越界 / 兄弟目录 / book===root）时一律跳过、不读盘。候选循环以前
+    // 只信索引：ensure 重建通常会把越界条目先剔除，但搜索窗口（reuseIndex）内不再重建，纵深不能押在
+    // 「上一步一定跑过」上。rootPrefix 口径与 focus 逐字相同（尾部分隔符拒绝 books2 这类兄弟前缀）。
+    const rootKey = normalizePath(index.root);
+    const rootPrefix = rootKey ? (rootKey.endsWith(path.sep) ? rootKey : rootKey + path.sep) : '';
     // E-N5（审计修复 WP10）：候选分两类记 —— 「有位图书」按位图匹配结果进候选；「无位图书」
     // （预算淘汰 / 建图放弃 / 位图解码失败 / 空位图）永远进候选、只能逐章核对。
     // 后者不受 MAX_CANDIDATE_BOOKS 截断（见下面的 scanTarget 组装）。
     const candidates = [];
     let bloomlessCandidates = 0;
+    let skippedOutOfRoot = 0;
     for (const book of index.books) {
+      const bookKey = normalizePath(book.path);
+      if (!rootPrefix || !bookKey || bookKey === rootKey || !bookKey.startsWith(rootPrefix)) {
+        skippedOutOfRoot += 1;
+        continue;
+      }
       const bloom = bloomFor(book);
       if (!bloom) {
         candidates.push({ book, bloomless: true });
@@ -1608,6 +1620,9 @@ function createSearchStore(options = {}) {
       scannedBooks,
       scannedChapters,
       skippedChapters,
+      // S-N2（WP19）：索引里路径越界（不在 index.root 下）被候选循环跳过、未读盘的书数。
+      // 正常索引恒为 0；大于 0 说明索引被外部改写过（或换了书架根），界面据此告知「部分书目路径越界已跳过」。
+      skippedOutOfRoot,
       matchedChapters,
       totalMatches,
       truncated,
