@@ -1166,6 +1166,10 @@
   let editorChapterMasked = false;
   let loadingWaiters = [];
   let savingWaiters = [];
+  // WP20（R-N2）：同一笔用户保存的 force 重入（「仍然覆盖保存」）会嵌套进 saveCurrent。深度在真正
+  // 开始写盘的 try 里加一、finally 里减一；只有最外层归零才唤醒等待者 / 收尾状态栏——否则内外
+  // 两层各收尾一次，状态栏双跳、等待者被提前唤醒（审计 R-N2）。
+  let saveDepth = 0;
   // ?test=1 时 E2E 用 setTestOpenBookDelay / setTestLoadChapterDelay 给这两条 IPC 外面包延迟，
   // 制造「响应乱序」「载章在途」的窗口；正常启动恒为 null，直接走 call(api.openBook / api.loadChapter)。
   let testOpenBook = null;
@@ -2305,6 +2309,7 @@
     state.saving = true;
     updateStatus();
     try {
+      saveDepth += 1;
       // WP-01 验收锚点：?test=1 下 E2E 注入保存延迟；正常启动 testSaveChapter 恒为 null
       const data = await (testSaveChapter || call)(api.saveChapter, bookPath, chapterId, text, expectedMtimeMs);
       // WP-03（C10）：保存在途时作者可能已经切章 / 换书。回执按快照章身份完成——
@@ -2407,9 +2412,14 @@
       if (!silent) toast(`保存失败：${err.message}`, 'error');
       return { ok: false, code: err.code, message: err.message };
     } finally {
+      saveDepth -= 1;
       state.saving = false;
-      notifySavingIdle();
-      updateStatus();
+      // WP20（R-N2）：覆盖重入（saveCurrent → 救稿出口 → saveCurrent({force:true})）是同一笔用户
+      // 保存的延续：内层 finally 只结算 saving，状态栏与等待者留给最外层 —— 一次保存恰好收尾一次。
+      if (saveDepth === 0) {
+        notifySavingIdle();
+        updateStatus();
+      }
     }
   }
 
