@@ -14,7 +14,13 @@
 //     条目，所以「不读外」这一半修复前就是绿的（红的是「结果带出计数」这一半，见作业卡 §9）。
 //   * §R2 保护：root 内合法多书的命中 / 顺序 / 片段 / 字段集合与修复前逐字段一致，且一个都不跳过。
 //
-// S-N3 / R-N3 / P-N3（§R3–§R5）在 WP19.2–19.4 往本文件续写，本刀不占用编号。
+// S-N3 / R-N3 / P-N3（§R3–§R5，WP19.2–19.4）：
+//   * §R3 坏索引单本 bloom 塞超长 base64（1200 万字符）→ 清洗后按「位 → 字节 → base64 字符」换算
+//     出的上限截断，解码回到 8 MB 量级；合法 8 MB 位图（恰好压在上限、含 = 填充）逐字不变、仍可解码。
+//   * §R4 dropped / omitted 三态互斥：坏索引同时写两个标记 → 以 dropped 为准；dropBookBloom 清掉
+//     omitted；只有 omitted 的书语义不变（无位图永远当候选）。
+//   * §R5 未超预算的 flush 不白做第二份 withoutBloom 序列化（探针 getter 计数钉死）；超预算的淘汰
+//     顺序 / 保留对象 / 字节上界与 eager 口径逐本一致。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
@@ -310,4 +316,187 @@ test('S-N2/§R2：root 内合法多书搜索逐字段不回退（顺序 / 命中
   assert.equal(found.matchedChapters, 2);
   assert.equal(found.totalMatches, 3);
   assert.equal(found.truncated, false);
+});
+
+// ---------------------------------------------------------------- S-N3（WP19.2）
+
+test('S-N3/§R3：坏索引超长 bloom 按「位→字节→base64 字符」截断（≤8MB），合法 8MB 位图逐字不变', () => {
+  // 与实现独立算一遍：位上限 8 MB → base64 字符上限 = ceil(bits / 8 / 3) * 4。
+  // 取 ceil 是必须的：合法 8 MB 位图（8,388,608 字节，尾部一个 = 填充）编码后**恰好**是这个字符数，
+  // 用 floor 会把合法位图切掉 4 个字符。代价是「无填充的坏串」最多多解 1 字节（≤8 MB + 1），
+  // decodeBloom 的「bits === 字节数 × 8」校验会拒掉这种错位（不会当合法位图用）。
+  const MAX_BITS = 64 * 1024 * 1024;
+  const MAX_CHARS = Math.ceil(MAX_BITS / 8 / 3) * 4;
+
+  const mkIndex = (bloom, bloomBits, bloomCrc) => ({
+    version: search.INDEX_VERSION,
+    root: 'C:\\books',
+    builtAt: 'x',
+    updatedAt: 'y',
+    books: [
+      {
+        path: 'C:\\books\\坏书',
+        folder: '坏书',
+        id: 'b_bad',
+        title: '坏书',
+        metaMtimeMs: 0,
+        lastModified: 0,
+        bloom,
+        bloomBits,
+        bloomCrc,
+        itemCount: 1,
+        bloomOmitted: false,
+        bloomDropped: false,
+        chapters: []
+      }
+    ]
+  });
+
+  // ① 坏索引（外部改写 / 同步盘冲突）：单本塞 1200 万 base64 字符（> 字符上限，但远小于旧的
+  //    64M 字符闸门）→ 清洗后必须按字符上限截断，解码尺寸回到 8 MB 量级（修复前放行 1200 万字符）。
+  const oversized = 'A'.repeat(12000000);
+  assert.ok(oversized.length > MAX_CHARS, '前提：坏串确实超过字符上限');
+  const bad = search.parseIndex(JSON.stringify(mkIndex(oversized, MAX_BITS, 0)));
+  assert.ok(bad && bad.books.length === 1, '前提：坏索引仍能过版本 / 路径清洗');
+  const kept = bad.books[0].bloom;
+  assert.equal(kept.length, MAX_CHARS, `坏位图必须截到 base64 字符上限（实际 ${kept.length}）`);
+  const keptBytes = Buffer.from(kept, 'base64').length;
+  assert.ok(keptBytes <= MAX_BITS / 8 + 1, `截断后解码不许再是 ≈48MB 量级（实际 ${keptBytes} 字节）`);
+
+  // ② 保护：合法 8 MB 位图（真实位图上限）编码后逐字保留、仍能解码 —— 收紧上限不许误伤上限本身。
+  const legalBuffer = Buffer.alloc(8 * 1024 * 1024, 0xff);
+  const legal = legalBuffer.toString('base64');
+  assert.equal(legal.length, MAX_CHARS, '前提：8 MB 位图的 base64 恰好是字符上限（含 = 填充）');
+  const okIndex = search.parseIndex(
+    JSON.stringify(mkIndex(legal, MAX_BITS, search.crc32(legalBuffer)))
+  );
+  assert.equal(okIndex.books[0].bloom, legal, '合法 8 MB 位图必须逐字不变');
+  const decoded = search.decodeBloom(
+    okIndex.books[0].bloom,
+    okIndex.books[0].bloomBits,
+    okIndex.books[0].bloomCrc
+  );
+  assert.ok(decoded && decoded.length === 8 * 1024 * 1024, '合法 8 MB 位图仍可正常解码');
+});
+
+// ---------------------------------------------------------------- R-N3（WP19.3）
+
+test('R-N3/§R4：dropped 与 omitted 三态互斥（坏索引不许并存，淘汰主导）', () => {
+  const rawBook = (patch) => ({
+    path: 'C:\\books\\书',
+    folder: '书',
+    id: 'b_1',
+    title: '书',
+    metaMtimeMs: 0,
+    lastModified: 0,
+    bloom: 'QUJD',
+    bloomBits: 24,
+    bloomCrc: 0,
+    itemCount: 5,
+    bloomOmitted: false,
+    bloomDropped: false,
+    chapters: [],
+    ...patch
+  });
+  const rawIndex = (books) => ({
+    version: search.INDEX_VERSION,
+    root: 'C:\\books',
+    builtAt: '',
+    updatedAt: '',
+    books
+  });
+
+  // ① 清洗：坏索引同时写 bloomDropped:true + bloomOmitted:true + 非空 bloom → 收口成「dropped 主导」。
+  const parsed = search.parseIndex(
+    JSON.stringify(rawIndex([rawBook({ bloomDropped: true, bloomOmitted: true })]))
+  );
+  assert.ok(parsed && parsed.books.length === 1);
+  const book = parsed.books[0];
+  assert.equal(book.bloom, '', 'dropped 书的位图必须清空');
+  assert.equal(book.bloomBits, 0);
+  assert.equal(book.itemCount, 0);
+  assert.equal(book.bloomDropped, true);
+  assert.equal(book.bloomOmitted, false, 'dropped 与 omitted 不许并存（dropped 主导）');
+
+  // ② 预算淘汰路径（dropBookBloom）：被淘汰的书记住 dropped，同时清掉 omitted。
+  const dropped = search.enforceIndexBudget(
+    rawIndex([rawBook({ bloomOmitted: true })]),
+    1
+  );
+  assert.equal(dropped.dropped, 1, '前提：预算 1 字节 → 这本的位图必被淘汰');
+  const out = dropped.index.books[0];
+  assert.equal(out.bloom, '');
+  assert.equal(out.bloomDropped, true);
+  assert.equal(out.bloomOmitted, false, 'dropBookBloom 必须同时清掉 bloomOmitted');
+
+  // ③ 保护：只有 omitted（没有 dropped）的书照旧 omitted=true —— 「无位图永远当候选」语义不变。
+  const omitted = search.parseIndex(
+    JSON.stringify(rawIndex([rawBook({ bloomOmitted: true, bloom: '', bloomBits: 0, bloomCrc: -1 })]))
+  );
+  assert.equal(omitted.books[0].bloomOmitted, true);
+  assert.equal(omitted.books[0].bloomDropped, false);
+});
+
+// ---------------------------------------------------------------- P-N3（WP19.4）
+
+test('P-N3/§R5：未超预算不白做第二份序列化（懒算 withoutBloom）；超预算淘汰顺序与 eager 口径一致', () => {
+  const bloomA = Buffer.alloc(4096, 1).toString('base64');
+  const bloomB = Buffer.alloc(4096, 2).toString('base64');
+  const mkBook = (folder, lastModified, bloom) => ({
+    path: `C:\\books\\${folder}`,
+    folder,
+    id: `b_${folder}`,
+    title: folder,
+    metaMtimeMs: lastModified,
+    lastModified,
+    bloom,
+    bloomBits: bloom ? 16384 : 0,
+    bloomCrc: bloom ? 7 : 0,
+    itemCount: bloom ? 99 : 0,
+    bloomOmitted: false,
+    bloomDropped: false,
+    chapters: [{ id: 'ch_001', name: '章', file: '001.txt', index: 0, mtimeMs: 1, size: 2, contentHash: 'abc', chars: 3 }]
+  });
+  // 探针 getter：每次被「展开 / 逐属性读取」都计数。withBloom 序列化读 1 次；
+  // 旧实现为了算 withoutBloom 还要对每本有位图的书再 spread 一次（再读 1 次）。
+  let probeReads = 0;
+  const withProbe = (book) => {
+    Object.defineProperty(book, 'probe', {
+      enumerable: true,
+      configurable: true,
+      get() {
+        probeReads += 1;
+        return 'p';
+      }
+    });
+    return book;
+  };
+  const index = {
+    version: search.INDEX_VERSION,
+    root: 'C:\\books',
+    builtAt: 'x',
+    updatedAt: 'y',
+    books: [withProbe(mkBook('新书', 300, bloomA)), withProbe(mkBook('旧书', 100, bloomB))]
+  };
+  const fullBytes = Buffer.byteLength(search.serializeIndex(index));
+  assert.ok(probeReads > 0, '前提：探针 getter 能观察到序列化读取');
+
+  // ① 未超预算：只许算 withBloom（每本一次）；修复前会给每本有位图的书白算一份 withoutBloom。
+  probeReads = 0;
+  const under = search.enforceIndexBudget(index, fullBytes + 1000);
+  assert.equal(under.dropped, 0);
+  assert.equal(probeReads, index.books.length, `未超预算只许序列化一份（观察到 ${probeReads} 次，eager 版应为 ${index.books.length * 2} 次）`);
+
+  // ② 超预算：从最旧（lastModified 小）开始淘汰；只差 1 字节 → 丢最旧一本的位图就够。
+  //    淘汰本数 / 保留对象 / 字节上界必须与 eager 版逐本一致（懒算只省未超预算的那份）。
+  const capped = search.enforceIndexBudget(index, fullBytes - 1);
+  assert.equal(capped.dropped, 1, '预算只少 1 字节：丢掉最旧一本的位图就够');
+  const dropped = capped.index.books.find((item) => item.folder === '旧书');
+  assert.equal(dropped.bloomDropped, true, '最久没改的书被淘汰位图');
+  assert.equal(dropped.bloom, '');
+  const kept = capped.index.books.find((item) => item.folder === '新书');
+  assert.equal(kept.bloom, bloomA, '最新修改的书保留位图（淘汰顺序不许变）');
+  assert.equal(kept.bloomDropped, false);
+  assert.ok(Buffer.byteLength(search.serializeIndex(capped.index)) <= fullBytes - 1, '淘汰后回到预算内');
+  assert.equal(index.books[1].bloom, bloomB, '纯函数不改入参');
 });

@@ -60,6 +60,12 @@ const BITS_PER_ITEM = 8;
 const HASH_COUNT = 3;
 const MIN_BLOOM_BITS = 1024;
 const MAX_BLOOM_BITS = 64 * 1024 * 1024; // 单本 8MB 位图上限（异常输入兜底）
+// S-N3（审计 WP19 / M-N2 同项）：上面是「位」数，而索引里的 bloom 是 base64 **字符**串 ——
+// 8 MB 位图编码后是 ceil(bits / 8 / 3) * 4 = 11,184,812 个字符（含尾部 = 填充）。
+// 以前 sanitize 直接拿位上限当字符上限 slice（64M 字符），坏索引单本可以驻留 ≈48 MB 才被
+// decodeBloom 拒；按「位 → 字节 → base64 字符」换算后，坏索引单本至多留 8 MB 位图量级的串，
+// 合法 8 MB 位图恰好压在上限上、逐字不变（用 floor 会切掉合法位图的最后 4 个字符，故必须 ceil）。
+const MAX_BLOOM_BASE64_CHARS = Math.ceil(MAX_BLOOM_BITS / 8 / 3) * 4;
 // E4（审计修复 #8）：章文件指纹的首 / 尾采样（4 KB × 2）与已知盲区（只改中段 + 保留 size/mtime
 // 的改写发现不了）连同实现一起收进 core/chapter-fingerprint.js —— 那是唯一实现，storage 的保存守卫
 // 也用它比对「编辑器载入那一版」，口径永远一致。
@@ -420,7 +426,8 @@ function sanitizeBook(raw) {
     title: typeof raw.title === 'string' ? raw.title.slice(0, 200) : '',
     metaMtimeMs: Number.isFinite(metaMtimeMs) ? metaMtimeMs : 0,
     lastModified: Number.isFinite(lastModified) ? lastModified : 0,
-    bloom: bloom.slice(0, MAX_BLOOM_BITS), // base64 字符数上限（异常输入兜底）
+    // S-N3（审计 WP19）：按「位 → 字节 → base64 字符」换算出的字符上限截断（见常量处推导）。
+    bloom: bloom.slice(0, MAX_BLOOM_BASE64_CHARS), // base64 字符数上限（异常输入兜底）
     bloomBits: bits,
     bloomCrc,
     itemCount:
@@ -429,7 +436,10 @@ function sanitizeBook(raw) {
         : Math.max(0, Math.round(Number(raw.itemCount))),
     // P3（审计修复 #19）：这本书的双字集合超过 MAX_BLOOM_ITEMS，主动放弃位图（永远当候选）。
     // 老索引没有这个字段 → false，照旧按 bloom 字不空就走位图。
-    bloomOmitted: raw.bloomOmitted === true,
+    // R-N3（审计 WP19）：三态互斥 —— bloomDropped（预算淘汰）与 bloomOmitted（建图放弃）都是
+    // 「这本书没有可用位图、永远当候选」的标记，不许并存；手改 / 坏索引写了两个时以 dropped 为准
+    //（dropped 还额外保证 bloom / bits / crc / itemCount 全是空值，见上方强制清零）。
+    bloomOmitted: bloomDropped ? false : raw.bloomOmitted === true,
     // 审计修复 #33（▲V307）：索引总量超预算时被丢掉位图（章节指纹保留，永远当候选、逐章核对）。
     bloomDropped,
     chapters
@@ -469,14 +479,28 @@ function serializeIndex(index) {
 // 只清 bloom 字段（base64 位图就是体积大头），章节指纹 / 书名 / 章名全部保留：下次校验仍能
 // 发现正文变化，正常增量更新不受影响；被清空的书 = 永远当候选、逐章核对（只降速不漏报）。
 // 纯函数，不修改入参；返回 { index, dropped }，cap 非正数时视为不设预算。
+// R-N3（审计 WP19）：三态互斥 —— dropped 主导，必须同时清掉 bloomOmitted（否则坏索引 / 手改
+// 能造出「既被预算淘汰、又标记建图放弃」的矛盾态；两者都表示无位图、搜索行为相同，但状态口径
+// 只能有一个来源，后续校验原样复用两个字段时也不会把矛盾态带着走）。
 function dropBookBloom(book) {
-  return { ...book, bloom: '', bloomBits: 0, bloomCrc: 0, itemCount: 0, bloomDropped: true };
+  return {
+    ...book,
+    bloom: '',
+    bloomBits: 0,
+    bloomCrc: 0,
+    itemCount: 0,
+    bloomOmitted: false,
+    bloomDropped: true
+  };
 }
 
 // 审计残留修复 #R17（#33-V307）：预算尽力而为 —— 所有书都没有可丢的位图（纯章节指纹），或丢完
 // 所有位图仍超预算时，原样返回（dropped=0），调用方照常写出。不为了凑预算删章节指纹：指纹是
 // 增量校验的依据，删掉就得每次启动全量重扫。读侧另有 MAX_INDEX_READ_BYTES（64 MB）闸门兜底，
 // 超限按空索引重建 —— 所以「写出的索引 ≤ 32 MB」是正常书架的保证，不是任何输入下的硬上界。
+// P-N3（审计 WP19）：只算必需的那份序列化 —— 先算「带位图」尺寸与总量，预算内直接返回，
+// 不再为每本书预先构造 dropBookBloom 的第二份 JSON；只有确实超预算时才给候选淘汰对象懒算
+// withoutBloom（成本只在巨书架 / 需要淘汰时发生，淘汰顺序与结果与 eager 版逐本一致）。
 function enforceIndexBudget(index, maxBytes) {
   const cap = Number(maxBytes);
   if (!Number.isFinite(cap) || cap <= 0) return { index, dropped: 0 };
@@ -484,23 +508,26 @@ function enforceIndexBudget(index, maxBytes) {
   // 一次算准字节数：数组序列化 = 逐项 JSON.stringify 用逗号连接，正好等于拼接结果；
   // 用 Buffer.byteLength 按 UTF-8 计（书名 / 路径里的中文按实际写盘字节算）。
   const baseBytes = Buffer.byteLength(serializeIndex({ ...index, books: [] }));
-  const sizes = books.map((book) => ({
-    withBloom: Buffer.byteLength(JSON.stringify(book)),
-    withoutBloom: book.bloom ? Buffer.byteLength(JSON.stringify(dropBookBloom(book))) : null
-  }));
+  const withBloomBytes = books.map((book) => Buffer.byteLength(JSON.stringify(book)));
   let total = baseBytes + Math.max(0, books.length - 1);
-  for (const size of sizes) total += size.withBloom;
+  for (const bytes of withBloomBytes) total += bytes;
   if (total <= cap) return { index, dropped: 0 };
-  const victims = sizes
-    .map((size, i) => ({ i, size, lastModified: Number.isFinite(books[i].lastModified) ? books[i].lastModified : 0 }))
-    .filter((item) => item.size.withoutBloom !== null)
+  const victims = withBloomBytes
+    .map((bytes, i) => ({
+      i,
+      withBloom: bytes,
+      lastModified: Number.isFinite(books[i].lastModified) ? books[i].lastModified : 0
+    }))
+    .filter((item) => books[item.i].bloom)
     .sort((a, b) => a.lastModified - b.lastModified || b.i - a.i);
   const next = books.slice();
   let dropped = 0;
   for (const victim of victims) {
     if (total <= cap) break;
-    next[victim.i] = dropBookBloom(books[victim.i]);
-    total -= victim.size.withBloom - victim.size.withoutBloom;
+    const droppedBook = dropBookBloom(books[victim.i]);
+    const withoutBloom = Buffer.byteLength(JSON.stringify(droppedBook));
+    next[victim.i] = droppedBook;
+    total -= victim.withBloom - withoutBloom;
     dropped += 1;
   }
   // 审计残留修复 #R17（#33-V307）：没有可淘汰的位图 / 淘汰后仍超预算 → 原样返回，调用方照常
