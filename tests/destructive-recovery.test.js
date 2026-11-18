@@ -27,6 +27,8 @@ const storage = require('../core/storage');
 const readSource = (rel) => require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
 const STORAGE_SOURCE = readSource(path.join('core', 'storage.js'));
 const RENDERER_SOURCE = readSource(path.join('renderer', 'renderer.js'));
+// WP17 A3 第四刀：删除章 / 撤销登记的整段随编辑域搬到 chapter-ops-ui.js（静态闸门改读模块）。
+const CHAPTER_OPS_SOURCE = readSource(path.join('renderer', 'chapter-ops-ui.js'));
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -501,7 +503,7 @@ test('静态闸门：三个批次操作的中途失败都要带「改了几章 +
 });
 
 test('静态闸门：渲染层删「当前章」前必须先问未保存的修改', () => {
-  const body = functionBody(RENDERER_SOURCE, 'async function deleteChapterAt(', '  ');
+  const body = functionBody(CHAPTER_OPS_SOURCE, 'async function deleteChapterAt(', '  ');
   const askAt = body.indexOf('askUnsaved(');
   assert.ok(askAt >= 0, '删当前章前必须问未保存的修改（不能静默丢编辑区里的字）');
   // 1.4.0 P0-2（撤销优先）：删除不再弹「删除章节」确认框，改成直接执行 + 10 秒撤销；

@@ -18,6 +18,9 @@ const ROOT = path.join(__dirname, '..');
 const { rendererCode, indexSrc } = loadSourceGate('undo-action.js');
 // WP17 A3 第二刀：换章作废快照的注入点随载章链迁到 save-chain-ui.js（源码闸门改读模块）。
 const saveChainCode = fs.readFileSync(path.join(ROOT, 'renderer', 'save-chain-ui.js'), 'utf8').replace(/\r\n/g, '\n');
+// WP17 A3 第四刀：删除章 / 撤销登记 / 章节模板的兜底记账随编辑域搬到 chapter-ops-ui.js。
+const chapterOpsCode = fs.readFileSync(path.join(ROOT, 'renderer', 'chapter-ops-ui.js'), 'utf8').replace(/\r\n/g, '\n');
+const editorDomainCode = rendererCode + '\n/* ---- chapter-ops-ui.js ---- */\n' + chapterOpsCode;
 const storageSrc = fs.readFileSync(path.join(ROOT, 'core', 'storage.js'), 'utf8');
 const stylesSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
 
@@ -333,8 +336,8 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   assert.match(rendererCode, /undoUiModule\.create\(\{ \$, slot: undoActionModule\.createUndoSlot\(\), toast \}\)/);
   assert.match(rendererCode, /undoUi\.setup\(\)/);
   assert.match(rendererCode, /undoActionModule\.isUndoKey\(event, undoActionModule\.isTypingTarget\(document\.activeElement\)\)/);
-  assert.match(rendererCode, /function activateDeleteUndo\(info\)/);
-  assert.match(rendererCode, /api\.restoreDeletedChapter/);
+  assert.match(chapterOpsCode, /function activateDeleteUndo\(info\)/);
+  assert.match(chapterOpsCode, /api\.restoreDeletedChapter/);
   assert.match(rendererCode, /if \(view !== 'editor'\) undoUi\.clear\(\)/);
   // 审计修复 #7（V401）：换书时撤销条与大段插入快照必须一起作废（快照跨书会串台）
   assert.match(
@@ -345,13 +348,13 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   assert.match(rendererCode, /'close-undo-bar': \(\) => undoUi\.dismiss\(\)/);
   assert.match(rendererCode, /!event\.repeat/, 'Ctrl+K 要判 event.repeat（长按不许开-关抖动）');
   assert.match(
-    rendererCode,
+    chapterOpsCode,
     /state\.chapters\.findIndex\(\(item\) => item && item\.id === info\.chapter\.id\)/,
     '撤销前按 id 在书目里重查'
   );
-  assert.match(rendererCode, /neighborBeforeId/);
-  assert.match(rendererCode, /neighborAfterId/);
-  assert.match(rendererCode, /Math\.min\(info\.index, state\.chapters\.length\)/, '找不到邻居才退回捕获下标');
+  assert.match(chapterOpsCode, /neighborBeforeId/);
+  assert.match(chapterOpsCode, /neighborAfterId/);
+  assert.match(chapterOpsCode, /Math\.min\(info\.index, state\.chapters\.length\)/, '找不到邻居才退回捕获下标');
 });
 
 test('静态闸门（V403）：正文 Ctrl+Z 拦截器执行成功后停止冒泡，不再叠上 document 级「撤销整理」', () => {
@@ -393,11 +396,13 @@ test('静态闸门（V402）：兜底整串赋值统一配一次性快照 + 提�
   assert.match(rendererCode, /function recordFallbackWrite\(info\) \{/);
   assert.match(rendererCode, /function undoFallbackWrite\(\) \{/);
   assert.match(rendererCode, /toastActionable\(\n\s+`\$\{label\}没能走原生输入[\s\S]{0,200}?'撤销',\n\s+undoFallbackWrite\n\s+\);/);
-  // renderer.js 的三处兜底（剪贴板正文 / 章节模板 / 替换这一处）都要记账，且禁掉「整串赋值」静默清栈
+  // 编辑域的三处兜底（剪贴板正文 / 章节模板 / 替换这一处）都要记账，且禁掉「整串赋值」静默清栈；
+  // 章节模板随 A3-Cβ 搬进 chapter-ops-ui.js，按两个文件合并计数（总数仍 3）。
   const rendererCalls = rendererCode.match(/recordFallbackWrite\(\{/g) || [];
-  assert.equal(rendererCalls.length, 3, 'renderer.js 的三处兜底赋值都要记账');
+  const opsCalls = chapterOpsCode.match(/recordFallbackWrite\(\{/g) || [];
+  assert.equal(rendererCalls.length + opsCalls.length, 3, '编辑域的三处兜底赋值都要记账');
   for (const label of ['插入正文', '套用章节模板', '替换这一处']) {
-    assert.ok(rendererCode.includes(`label: '${label}'`), '兜底调用点少了一条：' + label);
+    assert.ok(editorDomainCode.includes(`label: '${label}'`), '兜底调用点少了一条：' + label);
   }
   // 正文上的第一下 Ctrl+Z 与 bulk 共用拦截口；兜底快照也要能被它接住
   assert.match(rendererCode, /if \(!bulkWriteUndo && !fallbackWriteUndo\) return;/);
@@ -439,14 +444,14 @@ test('静态闸门（V402）：fragments / tidy / find 的兜底赋值都走 hos
 });
 
 test('静态闸门：删除章节不再弹「删除章节」确认框（P0-2 只留两处确认）', () => {
-  const start = rendererCode.indexOf('async function deleteChapterAt');
-  const end = rendererCode.indexOf('function activateDeleteUndo');
+  const start = chapterOpsCode.indexOf('async function deleteChapterAt');
+  const end = chapterOpsCode.indexOf('function activateDeleteUndo');
   assert.ok(start > 0 && end > start, '找不到 deleteChapterAt / activateDeleteUndo');
-  const body = rendererCode.slice(start, end);
+  const body = chapterOpsCode.slice(start, end);
   assert.doesNotMatch(body, /openModal\(/, '删除章节里不该再弹确认框');
-  assert.doesNotMatch(rendererCode, /title: '删除章节'/);
+  assert.doesNotMatch(editorDomainCode, /title: '删除章节'/);
   // 未保存拦截仍在：删当前脏章之前必须先问
-  assert.match(rendererCode, /title: '删除前先处理未保存的修改'/);
+  assert.match(chapterOpsCode, /title: '删除前先处理未保存的修改'/);
 });
 
 test('静态闸门：CSS 用现有纸色令牌，撤销按钮至少 24×24（WCAG 2.5.8）', () => {

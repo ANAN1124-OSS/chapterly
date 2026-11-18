@@ -131,7 +131,7 @@ test('换书入口闸门：四个入口（命令面板 / 书签跨书 / 章节�
   assert.match(read('renderer/test-hooks.js'), /await openBookByPath\(bookPath\)/, '测试钩子 openBookPath 要走 openBookByPath');
 });
 
-test('换书入口闸门：其它渲染层模块不许自己调 api.openBook 绕过守卫', () => {
+test('换书入口闸门：其它渲染层模块不许自己调 api.openBook 绕过守卫（编辑域只许删除卷撤销重开同一本书）', () => {
   const modules = fs
     .readdirSync(path.join(__dirname, '..', 'renderer'))
     .filter((name) => name.endsWith('.js') && name !== 'renderer.js');
@@ -140,12 +140,24 @@ test('换书入口闸门：其它渲染层模块不许自己调 api.openBook 绕
     const source = read(`renderer/${name}`);
     if (/api\.openBook\b/.test(source)) offenders.push(name);
   }
-  assert.deepEqual(offenders, [], '这些模块绕过了 openBookByPath 的换书守卫');
+  // WP17 A3 第四刀：deleteVolumeFlow 的撤销要在同一本书上重开书目（卷序 / 章归属一起回来），
+  // 这是搬前 renderer.js 里就允许的「同一本书重载」，不是换书入口。只放行这一处，并把它钉死：
+  //   · 只能有一处 api.openBook；· 只能重开注册撤销时捕获的 bookPath；· 必须在 deleteVolumeFlow 里。
+  assert.deepEqual(offenders, ['chapter-ops-ui.js'], '除编辑域外不许有模块直接摸 api.openBook');
+  const ops = read('renderer/chapter-ops-ui.js');
+  assert.equal((ops.match(/api\.openBook\b/g) || []).length, 1, '编辑域只许一处 api.openBook（删除卷撤销）');
+  assert.match(ops, /const reopened = await call\(api\.openBook, bookPath\);/);
+  const volumeUndo = ops.slice(ops.indexOf('async function deleteVolumeFlow('), ops.indexOf('function openVolumeChooserInMenu('));
+  assert.ok(volumeUndo.includes('call(api.openBook, bookPath)'), '重开书只能发生在删除卷撤销里');
 });
 
-test('换书入口闸门：renderer.js 里直接 api.openBook 的调用只能是「同一本书从磁盘重载」', () => {
+test('换书入口闸门：renderer.js + 编辑域模块里直接 api.openBook 的调用只能是「同一本书从磁盘重载」', () => {
   const source = read('renderer/renderer.js');
-  const direct = source.match(/call\(api\.openBook,\s*[^)]+\)/g) || [];
+  const ops = read('renderer/chapter-ops-ui.js');
+  const direct = [
+    ...(source.match(/call\(api\.openBook,\s*[^)]+\)/g) || []),
+    ...(ops.match(/call\(api\.openBook,\s*[^)]+\)/g) || [])
+  ];
   assert.equal(direct.length, 4, `直接 api.openBook 的处数变了（${direct.length}），请确认没有新增绕过守卫的换书路径`);
   for (const callLine of direct) {
     assert.match(

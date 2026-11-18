@@ -16,37 +16,42 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const RENDERER_SRC = read('renderer/renderer.js');
+// WP17 A3 第四刀：章节模板 / 分卷 / 批量动作整段搬到 chapter-ops-ui.js；
+// 收口闸门按「两个文件合并计数」保持语义（实现仍只有一份，只是住址变了）。
+const CHAPTER_OPS_SRC = read('renderer/chapter-ops-ui.js');
+const EDITOR_DOMAIN_SRC = RENDERER_SRC + '\n/* ---- chapter-ops-ui.js ---- */\n' + CHAPTER_OPS_SRC;
 const HISTORY_SRC = read('renderer/history-ui.js');
 
 const countOf = (source, needle) => source.split(needle).length - 1;
 
 test('C2：章节 / 分卷写盘后统一 applyMetaAndRelocate，不再散落 9 份「换书目 + 重定位」', () => {
-  assert.equal(countOf(RENDERER_SRC, 'function applyMetaAndRelocate('), 1, '收口函数只该定义一次');
+  assert.equal(countOf(EDITOR_DOMAIN_SRC, 'function applyMetaAndRelocate('), 1, '收口函数只该定义一次');
   // 1 处定义 + 14 个调用点（新建章 / 新建卷 / 重命名卷 / 移动卷 / 删除卷 / 移到卷 / 重命名章 / 删章 / 改章节信息
   // + 1.4.0 P0-2 的「撤销删除」+ 1.5.0 功能-1 的批量删除（逐章删 + 一次撤销恢复）/ 批量移到卷 / 批量改状态）
-  assert.equal(countOf(RENDERER_SRC, 'applyMetaAndRelocate('), 15, '调用点应为 14 个');
+  assert.equal(countOf(EDITOR_DOMAIN_SRC, 'applyMetaAndRelocate('), 15, '调用点应为 14 个');
   // 只该剩换书（openBookByPath 要连 bookPath / bookId / 折叠状态一起换，不适用）与 helper 本体两处
-  assert.equal(countOf(RENDERER_SRC, 'state.meta = data.meta;'), 2, '散落的换书目应已收进 helper');
-  assert.equal(countOf(RENDERER_SRC, 'state.chapters = data.meta.chapters;'), 2, '散落的换章节数组应已收进 helper');
+  assert.equal(countOf(EDITOR_DOMAIN_SRC, 'state.meta = data.meta;'), 2, '散落的换书目应已收进 helper');
+  assert.equal(countOf(EDITOR_DOMAIN_SRC, 'state.chapters = data.meta.chapters;'), 2, '散落的换章节数组应已收进 helper');
   // 兜底语义留在调用点：删卷找不到当前章回第 1 章；删章（非当前章）找不到回「原下标与末章取小」
-  assert.ok(/const at = applyMetaAndRelocate\(data, currentId\);\s*\n\s*if \(at < 0\) state\.index = 0;/.test(RENDERER_SRC), '删卷的兜底不见了');
+  assert.ok(/const at = applyMetaAndRelocate\(data, currentId\);\s*\n\s*if \(at < 0\) state\.index = 0;/.test(EDITOR_DOMAIN_SRC), '删卷的兜底不见了');
   assert.ok(
-    /if \(at < 0\) state\.index = Math\.min\(index, state\.chapters\.length - 1\);/.test(RENDERER_SRC),
+    /if \(at < 0\) state\.index = Math\.min\(index, state\.chapters\.length - 1\);/.test(EDITOR_DOMAIN_SRC),
     '删非当前章的下标兜底不见了'
   );
   // helper 本身：不传 id 只换书目，传了才重定位（新建 / 重命名 / 改信息这些顺序不变的场景不重定位）
-  assert.ok(/function applyMetaAndRelocate\(data, currentId\) \{[\s\S]{0,400}if \(!currentId\) return -1;/.test(RENDERER_SRC));
+  assert.ok(/function applyMetaAndRelocate\(data, currentId\) \{[\s\S]{0,400}if \(!currentId\) return -1;/.test(EDITOR_DOMAIN_SRC));
 });
 
-test('C3：编辑区原生插入只留一份 replaceEditorTextNative，三个调用点都在 renderer.js', () => {
+test('C3：编辑区原生插入只留一份 replaceEditorTextNative，三个调用点跨 renderer / 编辑域模块', () => {
   assert.equal(countOf(RENDERER_SRC, 'document.execCommand('), 1, 'renderer.js 里只该有 replaceEditorTextNative 里那一处 execCommand');
-  assert.equal(countOf(RENDERER_SRC, 'function replaceEditorTextNative('), 1, 'replaceEditorTextNative 只该定义一次');
+  assert.equal(countOf(EDITOR_DOMAIN_SRC, 'function replaceEditorTextNative('), 1, 'replaceEditorTextNative 只该定义一次');
   // 2026-11-07 剪贴板单列表面板：「正文」按钮插入当前章（契约 §5 host.insertIntoBody）复用这一份实现，
   // 不另写 execCommand；调用点因此从两个变三个（章节模板 / 替换这一处 / 剪贴板正文插入）。
-  assert.equal(countOf(RENDERER_SRC, 'replaceEditorTextNative('), 4, '定义 + 三个调用点（章节模板 / 替换这一处 / 剪贴板正文插入）');
+  assert.equal(countOf(RENDERER_SRC, 'replaceEditorTextNative('), 3, 'renderer.js 里仍是定义 + 两个本域调用点');
+  assert.equal(countOf(EDITOR_DOMAIN_SRC, 'replaceEditorTextNative('), 4, '定义 + 三个调用点（章节模板 / 替换这一处 / 剪贴板正文插入）');
   // 两个调用点的兜底必须还在：execCommand 不可用 / 内容没进去时手动塞回，绝不丢内容
   assert.ok(
-    /if \(!inserted \|\| editorEl\.value !== text\) \{[\s\S]{0,120}editorEl\.value = text;/.test(RENDERER_SRC),
+    /if \(!inserted \|\| editorEl\.value !== text\) \{[\s\S]{0,120}editorEl\.value = text;/.test(EDITOR_DOMAIN_SRC),
     '章节模板的整段替换兜底不见了'
   );
   assert.ok(

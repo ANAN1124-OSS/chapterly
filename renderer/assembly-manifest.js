@@ -75,6 +75,7 @@
     ['save-rescue-ui.js', 'CWSaveRescueUi', 'saveRescueUiModule', '保存阻断的三选救稿出口'],
     ['save-chain-ui.js', 'CWSaveChainUi', 'saveChainUiModule', '保存链（载章 / 保存 / 关窗拦截）'],
     ['shelf-view-ui.js', 'CWShelfViewUi', 'shelfViewUiModule', '书架视图（刷新编排 / 显示设置 / 网格列数 / 搜索事件）'],
+    ['chapter-ops-ui.js', 'CWChapterOpsUi', 'chapterOpsUiModule', '章节模板 / 分卷 / 批量动作（新建 / 改名 / 删除 / 撤销）'],
     ['config-change-ui.js', 'CWConfigChangeUi', 'configChangeUiModule', '换书架根后的孤岛提示 / 救稿出口'],
     ['crash-recovery-ui.js', 'CWCrashRecoveryUi', 'crashRecoveryUiModule', '崩溃草稿周期上报 / 启动恢复提示'],
     ['shelf-filter-ui.js', 'CWShelfFilterUi', 'shelfFilterUiModule', '书架筛选'],

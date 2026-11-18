@@ -512,15 +512,18 @@ test('B20：导出卷选项一次遍历计数（不再逐卷 filter 整本章节
 
 test('B17：改名 / 改状态 / 批量改状态 / 卷改名走单条快路径（结构变化才整表重建）', () => {
   const renderer = read('renderer/renderer.js');
+  // WP17 A3 第四刀：改名 / 改状态 / 卷改名 / 批量改状态随编辑域搬到 chapter-ops-ui.js；
+  // 两个快路径出口 syncChapterItemInfo / syncVolumeHeaderName 仍在渲染层（本闸门仍读 renderer.js）。
+  const ops = read('renderer/chapter-ops-ui.js');
   assert.match(renderer, /function syncChapterItemInfo\(index\) \{/);
   assert.match(renderer, /function syncVolumeHeaderName\(volumeId\) \{/);
-  const rename = between(renderer, 'async function renameChapterAt(index, nameOverride) {', '\n  }');
+  const rename = between(ops, 'async function renameChapterAt(index, nameOverride) {', '\n  }');
   assert.match(rename, /if \(!syncChapterItemInfo\(index\)\) renderChapterList\(\);/);
-  const updateInfo = between(renderer, 'async function updateChapterInfo(index, patch) {', '\n  }');
+  const updateInfo = between(ops, 'async function updateChapterInfo(index, patch) {', '\n  }');
   assert.match(updateInfo, /if \(!syncChapterItemInfo\(index\)\) renderChapterList\(\);/);
-  const renameVolume = between(renderer, 'async function renameVolumeFlow(volumeId, nameOverride) {', '\n  }');
+  const renameVolume = between(ops, 'async function renameVolumeFlow(volumeId, nameOverride) {', '\n  }');
   assert.match(renameVolume, /if \(!syncVolumeHeaderName\(volumeId\)\) renderChapterList\(\);/);
-  const batch = between(renderer, 'async function setSelectedChaptersStatus(status) {', '\n  }');
+  const batch = between(ops, 'async function setSelectedChaptersStatus(status) {', '\n  }');
   assert.match(batch, /if \(!syncChapterItemInfo\(index\)\)/);
 });
 

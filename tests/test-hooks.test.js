@@ -413,7 +413,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // renderer 只留「工厂声明 + 一行 request」的接线；校验文案 / 失败日志 / 不 await 的语义不变。
   // WP14（E-N6）：6497 → 6500（+3 行）。部分成功回执的落盘 mtime 必须写在 saveCurrent 的 catch 里
   // （同一分支、sameChapter 判定之后），搬走会把「编辑器手上这一版」的状态拆到两个模块。
-  const RENDERER_LINE_BUDGET = 6500;
+  // WP17 A3（四刀：保存链 → 书架视图 → 章节目录 → 编辑域剩余）：6500 → 4600。
+  // 四域函数体全部搬出后 renderer.js = 4441 行（≤ 手册 §6.1-3 的 4,500 判据）；
+  // 预算按「实际值 + 少量余量」收紧，防以后再靠新增行回流（新代码请搬进独立模块）。
+  const RENDERER_LINE_BUDGET = 4600;
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,

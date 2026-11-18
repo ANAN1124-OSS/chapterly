@@ -51,7 +51,11 @@ test('A4：SOURCE_META 不再有 restorable 死字段，能还原的来源只有
 });
 
 test('A6：批量删除后的 missed 死逻辑已删，当前章缺失的兜底仍在', () => {
-  const source = stripComments(read('renderer/renderer.js'));
+  // WP17 A3 第四刀：批量删除整段随编辑域搬到 chapter-ops-ui.js；死逻辑与兜底按
+  // 「renderer + 编辑域模块」合并核对（兜底仍只有一份）。
+  const source = stripComments(
+    read('renderer/renderer.js') + '\n' + read('renderer/chapter-ops-ui.js')
+  );
   assert.equal(source.includes('const missed = state.chapters.findIndex('), false, 'missed 死逻辑不许回潮');
   assert.equal(source.includes('missed >= 0'), false, 'missed 的分支不许回潮');
   // 后件保留：当前章在书目里找不到（外部改坏）时回第一处原下标，别停在空下标上
