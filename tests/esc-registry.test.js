@@ -26,6 +26,8 @@ const RENDERER_SOURCE = read('renderer/renderer.js');
 const SAVE_CHAIN_SOURCE = read('renderer/save-chain-ui.js');
 // WP17 A3 第一刀：章节列表显示层（含筛选框的 Esc 判断）整段迁到 chapter-directory-ui.js。
 const CHAPTER_DIRECTORY_SOURCE = read('renderer/chapter-directory-ui.js');
+// WP17 A3 第三刀：书架搜索框的 Esc 判断随书架事件段迁到 shelf-view-ui.js（计数跨两处，总数仍是 1）。
+const SHELF_VIEW_SOURCE = read('renderer/shelf-view-ui.js');
 const INDEX_SOURCE = read('renderer/index.html');
 // 纯逻辑闸门只看代码：注释里提到 window / document 是在解释边界，不算越界
 const REGISTRY_CODE = REGISTRY_SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
@@ -390,11 +392,16 @@ test('接线闸门：12 段复制块已收掉，keydown 里不再手写弹层判
   }
   // keydown 里只该剩「输入框自己清空」这一类 Escape 判断：书架搜索框 + 卷章目录筛选框
   // （2026-11-10 目录重设计新增）。弹层判断一个都不许回到 renderer.js。
+  // A3-B 之后书架搜索框那一段在 shelf-view-ui.js（bindShelfEvents）里，所以计数跨 renderer + 模块，
+  // 总数仍是 1；renderer.js 里一处都不许留（留下就是第二份实现）。
   const escapes = (RENDERER_SOURCE.match(/event\.key === 'Escape'/g) || []).length;
-  assert.equal(escapes, 1, `renderer.js 里只该剩书架搜索框自己的 Esc 判断（现在 ${escapes} 处）`);
+  const moduleEscapes = (SHELF_VIEW_SOURCE.match(/event\.key === 'Escape'/g) || []).length;
+  assert.equal(escapes, 0, `renderer.js 里不该再有 Esc 判断（书架搜索框那一段已迁到 shelf-view-ui.js；现在 ${escapes} 处）`);
+  assert.equal(moduleEscapes, 1, `书架搜索框自己的 Esc 判断只该在 shelf-view-ui.js 里一份（现在 ${moduleEscapes} 处）`);
+  assert.equal(escapes + moduleEscapes, 1, `书架搜索框自己的 Esc 判断合计只许 1 处（现在 ${escapes + moduleEscapes} 处）`);
   assert.ok(
-    RENDERER_SOURCE.includes("$('shelf-search').addEventListener('keydown', (event) => {"),
-    '书架搜索框的 Esc 判断要留着'
+    SHELF_VIEW_SOURCE.includes("$('shelf-search').addEventListener('keydown', (event) => {"),
+    '书架搜索框的 Esc 判断要留在 shelf-view-ui.js 的 bindShelfEvents 里'
   );
   assert.ok(
     CHAPTER_DIRECTORY_SOURCE.includes('function setupChapterDirectory()') &&

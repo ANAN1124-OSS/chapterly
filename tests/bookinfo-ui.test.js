@@ -26,6 +26,8 @@ test.after(() => {
 
 const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
+// A3-B：书架刷新与书架搜索事件段已迁到 renderer/shelf-view-ui.js（renderShelf 的调用点随段走）。
+const shelfViewSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'shelf-view-ui.js'), 'utf8');
 const indexSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 const stylesSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
 const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'bookinfo-ui.js'), 'utf8');
@@ -1011,7 +1013,7 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
   assert.match(rendererSrc, /'close-bookinfo': \(\) => closeBookInfoDialog\(\),/);
   assert.match(rendererSrc, /'close-group-manage': \(\) => closeGroupManageDialog\(\),/);
   assert.ok(backdropRegistry.LIST.includes('group-manage'), '弹层注册表要登记分组管理弹层');
-  assert.ok(rendererSrc.includes('renderShelf();'), '书架 / 正文搜索 / 事件绑定仍按名字调 renderShelf');
+  assert.ok((rendererSrc + shelfViewSrc).includes('renderShelf();'), '书架 / 正文搜索 / 事件绑定仍按名字调 renderShelf（A3-B 后事件段在 shelf-view-ui.js）');
   for (const key of ['openBookInfoDialog', 'closeBookInfoDialog', 'readBookInfoForm', 'saveBookInfoDialog', 'renderShelf', 'createBookWithTitle']) {
     assert.match(rendererSrc, new RegExp('^      ' + key + ',$', 'm'), 'testHooksScope 少了 ' + key);
   }

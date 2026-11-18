@@ -14,6 +14,9 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const RENDERER = read('renderer/renderer.js');
+// WP17 A3 第三刀：书架搜索的事件段（250ms 防抖 + rAF + Esc / 清空立即重画）已整段迁到
+// renderer/shelf-view-ui.js 的 bindShelfEvents()；静态闸门改读模块，断言语义一条未改。
+const SHELF_VIEW = read('renderer/shelf-view-ui.js');
 const TEST_HOOKS = read('renderer/test-hooks.js');
 const BOOKINFO = read('renderer/bookinfo-ui.js');
 
@@ -27,7 +30,7 @@ function sliceBetween(source, from, to) {
 
 test('静态闸门：书架搜索输入走 250ms 防抖 + 下一帧渲染，不许每键同步重建', () => {
   const inputBlock = sliceBetween(
-    RENDERER,
+    SHELF_VIEW,
     "$('shelf-search').addEventListener('input', () => {",
     "$('shelf-search').addEventListener('keydown'"
   );
@@ -36,12 +39,18 @@ test('静态闸门：书架搜索输入走 250ms 防抖 + 下一帧渲染，不�
   assert.ok(inputBlock.includes('state.shelfQuery = '), '查询词仍要立刻写回 state（正文搜索 / 回车用最新值）');
   assert.ok(inputBlock.includes('scheduleContentSearch()'), '正文搜索的独立防抖调度不变');
 
-  const scheduler = sliceBetween(RENDERER, 'function scheduleShelfRender() {', '\n    }\n');
+  const scheduler = sliceBetween(SHELF_VIEW, 'function scheduleShelfRender() {', '\n    }\n');
   assert.match(scheduler, /clearTimeout\(shelfFilterTimer\)/, '连续输入要合并（清掉上一个定时器）');
   assert.match(scheduler, /setTimeout\(/, '要有防抖定时器');
   assert.match(scheduler, /\},\s*250\);/, '防抖间隔应为 250ms（200–300ms 区间）');
   assert.match(scheduler, /requestAnimationFrame\(/, '渲染要放到下一帧（和绘制合并）');
   assert.match(scheduler, /renderShelf\(\)/, '定时器到点后要真的渲染');
+  // A3-B 回归闸门：事件段只许在新模块里（renderer.js 不许长回第二份）。
+  assert.equal(
+    RENDERER.includes("$('shelf-search').addEventListener('input'"),
+    false,
+    '书架搜索事件段只许在 shelf-view-ui.js（renderer.js 不许长回第二份）'
+  );
 });
 
 test('静态闸门：Esc / 清空仍立即重渲染；E2E 测试钩子仍同步渲染', () => {
@@ -49,13 +58,13 @@ test('静态闸门：Esc / 清空仍立即重渲染；E2E 测试钩子仍同步�
   // 2026-11-10 卷章目录新增了第二个输入框 Esc（筛选清空），所以这里从书架搜索框的
   // keydown 起切，不再抓全文件第一个 Escape。
   const escRender = sliceBetween(
-    RENDERER,
+    SHELF_VIEW,
     "$('shelf-search').addEventListener('keydown', (event) => {",
     'return;'
   );
   assert.ok(escRender.includes('renderShelf();'), 'Esc 清空后要立即重渲染（旧行为）');
   const clearBlock = sliceBetween(
-    RENDERER,
+    SHELF_VIEW,
     "$('btn-shelf-search-clear').addEventListener('click'",
     '});'
   );

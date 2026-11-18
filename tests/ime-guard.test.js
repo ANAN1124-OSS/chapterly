@@ -46,17 +46,24 @@ test('静态闸门：五个消费者都走共享函数，没有第二份 event.i
     'chapter-directory-ui.js': read('chapter-directory-ui.js'),
     'find-ui.js': read('find-ui.js'),
     'command-palette-ui.js': read('command-palette-ui.js'),
-    'bookinfo-ui.js': read('bookinfo-ui.js')
+    'bookinfo-ui.js': read('bookinfo-ui.js'),
+    // WP17 A3 第三刀：书架搜索框的 Enter 判断随 bindShelfEvents 迁到 shelf-view-ui.js。
+    'shelf-view-ui.js': read('shelf-view-ui.js')
   };
   for (const [file, src] of Object.entries(consumers)) {
     const code = codeOf(src);
     assert.equal(code.includes('event.isComposing'), false, `${file} 里还有手写的 event.isComposing`);
     assert.match(code, /imeGuard\.isImeComposing\(event\)/, `${file} 没接共享守卫`);
   }
-  // renderer.js 的 5 处提交键（目录筛选框那一处已随模块迁走）：全局 Enter 兜底 / 跳章 / 书目筛选 /
-  // 书架搜索 / Ctrl+K（其中 Ctrl+K 是取反）；目录模块 1 处。
+  // renderer.js 的 4 处提交键（目录筛选框已随模块迁走、书架搜索随 A3-B 迁到 shelf-view-ui.js）：
+  // 全局 Enter 兜底 / 跳章 / 书目筛选 / Ctrl+K（其中 Ctrl+K 是取反）；两个模块各 1 处。
   const rendererCode = codeOf(consumers['renderer.js']);
-  assert.equal(rendererCode.split('imeGuard.isImeComposing(event)').length - 1, 5, 'renderer.js 的 5 处提交键');
+  assert.equal(rendererCode.split('imeGuard.isImeComposing(event)').length - 1, 4, 'renderer.js 的 4 处提交键');
+  assert.equal(
+    codeOf(consumers['shelf-view-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
+    1,
+    '书架搜索框的 Enter 仍走共享守卫（A3-B 后）'
+  );
   assert.equal(rendererCode.split('!imeGuard.isImeComposing(event)').length - 1, 1, 'Ctrl+K 的取反判据');
   assert.equal(
     codeOf(consumers['chapter-directory-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
@@ -64,7 +71,7 @@ test('静态闸门：五个消费者都走共享函数，没有第二份 event.i
     '目录筛选框的 Enter 仍走共享守卫'
   );
   // 装配：四个模块的 create 都拿到 imeGuard（缺了会在启动时抛 TypeError）
-  assert.equal(consumers['renderer.js'].split('\n    imeGuard,').length - 1, 4, '四处 create 都要装配 imeGuard');
+  assert.equal(consumers['renderer.js'].split('imeGuard,').length - 1, 5, '五处 create 都要装配 imeGuard（A3-B 后书架视图是第 5 处）');
 });
 
 test('静态闸门：index.html 在消费者之前加载 ime-guard.js，且只加载一次', () => {
