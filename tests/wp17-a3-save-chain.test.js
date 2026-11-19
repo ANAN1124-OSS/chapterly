@@ -18,6 +18,7 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const saveLogic = require('../renderer/save-logic');
 const chaptersLib = require('../core/chapters');
+const longOpLogic = require('../renderer/long-op-logic');
 
 const RENDERER_SRC = read('renderer/renderer.js');
 const MODULE_REL = 'renderer/save-chain-ui.js';
@@ -185,7 +186,8 @@ function makeHost(overrides = {}) {
     savingIdle: 0,
     verify: 0,
     saveCalls: [],
-    loadCalls: []
+    loadCalls: [],
+    askUnsaved: 0
   };
   const state = {
     bookPath: 'C:/tmp/books/测试书',
@@ -296,7 +298,10 @@ function makeHost(overrides = {}) {
     scheduleMarksRender: () => {},
     scheduleTypewriterAlign: () => {},
     longOpLocked: () => false,
-    askUnsaved: async () => overrides.unsavedAction || 'cancel',
+    askUnsaved: async () => {
+      counts.askUnsaved += 1;
+      return overrides.unsavedAction || 'cancel';
+    },
     escLib: { cleanupActions: () => [] },
     escProbe: () => ({}),
     escRun: () => {},
@@ -581,4 +586,89 @@ test('A3-A / B8：保存成功摘要文案仍走 saveLogic.savedToastText（不�
   await rt.ui.saveCurrent();
   assert.equal(rt.counts.saveStatus.length, 1);
   assert.equal(rt.counts.saveStatus[0], '已保存：2 章 · 本章 18 字 · 今日快照已留');
+});
+
+// ---------- 五-H2 / 五-H3 / 五-M9（第五轮审计 BP-02 / BP-03 / L-F1 / ES-2） ----------
+// 缺陷：共享的「还原前未保存拦截」保存分支只看 saved.ok（保存 IPC 期间敲的字让 dirty 重新为 true 也放行），
+// discard 分支什么都不做（不清 dirty）→ 下游 reloadOpenBookFromDisk 的脏闸拒载：磁盘已还原、编辑区仍是
+// 作者刚明确选择丢弃的旧脏文、toast 却报「已还原 N 章」；关窗链则不等在途保存，必然撞 BUSY 并弹
+// 「保存失败：正在保存中… / 仍要退出吗？」。修法：统一 saveForTransition 原语 + 关窗先等 saving idle。
+
+test('五-H2/H3：saveForTransition —— 保存回执后复核 dirty；仍脏再问，明确丢弃才清脏放行', async () => {
+  // ① 保存期间敲字：保存成功 ≠ 干净 → 必须第二次询问；作者取消 → 过渡不继续，编辑区的字一个字不丢。
+  const answers = ['save', 'cancel'];
+  const rt = makeHost({ get unsavedAction() { return answers.shift() || 'cancel'; } });
+  rt.state.dirty = true;
+  rt.editorEl.value = '作者原稿';
+  rt.host.api.saveChapter = async (...args) => {
+    rt.counts.saveCalls.push(args);
+    rt.editorEl.value = '作者原稿 + 保存期间敲的字';
+    return { ok: true, data: { chars: 20, mtimeMs: 333, snapshot: { taken: true } } };
+  };
+  const result = await rt.ui.saveForTransition({
+    title: '还原前先处理未保存的修改',
+    message: '还原会覆盖磁盘正文。',
+    saveLabel: '保存修改后再还原',
+    discardLabel: '放弃修改并还原'
+  });
+  assert.deepEqual(result, { ok: false, canceled: true }, '仍脏时作者取消 → 过渡不继续');
+  assert.equal(rt.counts.saveCalls.length, 1, '先保存一次');
+  assert.equal(rt.counts.askUnsaved, 2, '保存回执后复核到仍脏必须再问一次（不许只看 saved.ok）');
+  assert.equal(rt.state.dirty, true, '保存期间的字仍标记为脏');
+  assert.equal(rt.editorEl.value, '作者原稿 + 保存期间敲的字', '编辑区的字一个字不丢');
+
+  // ② 明确「丢弃」：清 dirty + 同步基线 / 状态栏 —— 下游 reloadOpenBookFromDisk 的脏闸靠这个放行。
+  const discard = makeHost({ unsavedAction: 'discard' });
+  discard.state.dirty = true;
+  discard.editorEl.value = '作者选择丢弃的旧脏文';
+  const discarded = await discard.ui.saveForTransition({ title: '还原前先处理未保存的修改', message: '还原会覆盖磁盘正文。' });
+  assert.deepEqual(discarded, { ok: true, discarded: true });
+  assert.equal(discard.state.dirty, false, '丢弃必须清脏（否则还原结果被脏闸拒载）');
+  assert.equal(discard.state.baseText, '作者选择丢弃的旧脏文', '基线同步到编辑区，后续输入按它重算 dirty');
+  assert.ok(discard.counts.status >= 1, '状态栏 / 窗口标题要跟着刷新');
+  assert.equal(discard.counts.saveCalls.length, 0, '丢弃不该写盘');
+  assert.equal(
+    longOpLogic.canReloadFromDisk({ expectedBookPath: 'x', currentBookPath: 'x', dirty: discard.state.dirty }),
+    true,
+    '清脏后 reloadOpenBookFromDisk 的闸门放行'
+  );
+
+  // ③ 已经干净：不弹框、不保存。
+  const clean = makeHost();
+  clean.state.dirty = false;
+  assert.deepEqual(await clean.ui.saveForTransition({ title: 't' }), { ok: true });
+  assert.equal(clean.counts.askUnsaved, 0);
+  assert.equal(clean.counts.saveCalls.length, 0);
+
+  // ④ silentFirst（捕获面板「章节」的口径）：首趟静默保存；只有保存期间又输入才交给作者决定。
+  const silent = makeHost({ unsavedAction: 'cancel' });
+  silent.state.dirty = true;
+  silent.editorEl.value = '静默保存的正文';
+  const silentGuard = await silent.ui.saveForTransition({ silentFirst: true, title: 't', message: 'm' });
+  assert.deepEqual(silentGuard, { ok: true });
+  assert.equal(silent.counts.saveCalls.length, 1);
+  assert.equal(silent.counts.askUnsaved, 0, '没人在保存期间输入 → 不需要再问');
+});
+
+test('五-M9（ES-2）：关窗撞上保存在途 → 先等它落定再判定，不把 BUSY 当「保存失败」弹误导框', async () => {
+  const rt = makeHost({ unsavedAction: 'save' }); // 没等的话会走 save → BUSY → 弹「保存失败」
+  rt.state.dirty = true;
+  rt.editorEl.value = '正在保存的正文';
+  const gate = deferred();
+  rt.host.api.saveChapter = (...args) => {
+    rt.counts.saveCalls.push(args);
+    return gate.promise;
+  };
+  const pendingSave = rt.ui.saveCurrent();
+  await flush();
+  assert.equal(rt.state.saving, true, '保存 IPC 在途');
+  const close = rt.ui.handleCloseRequest();
+  await flush();
+  gate.release({ ok: true, data: { chars: 9, mtimeMs: 444, snapshot: { taken: true } } });
+  await pendingSave;
+  await close;
+  assert.deepEqual(rt.counts.closeReady, [true], '等保存落定后按干净放行');
+  assert.equal(rt.counts.modal.length, 0, '不许把 BUSY 弹成「保存失败」');
+  assert.equal(rt.counts.askUnsaved, 0, '保存已落定且干净 → 不用再问三选一');
+  assert.equal(rt.counts.saveCalls.length, 1, '在途那笔保存只写一次');
 });

@@ -736,24 +736,29 @@
     return res.action || 'cancel';
   }
 
+  // 五-H2/H3/H5/M9：统一「过渡前保存」原语（实现在 renderer/save-chain-ui.js，见该函数注释）。
+  // 保存回执落地后复核 dirty、丢弃时清脏都是同一份实现；capture / shelf-nav 装配时按可选成员拿到它。
+  // 函数声明会提升，saveChainUi 在启动装配段才 create —— 调用都发生在用户动作里，不存在 TDZ 问题。
+  async function saveForTransition(options) { return saveChainUi.saveForTransition(options); }
+
   // 「还原前」的未保存拦截：整本替换备份还原（本文件）与历史备份还原（renderer/history-ui.js）流程相同，
   // 只有文案不同 —— 取消 / 放弃修改并还原 / 保存修改后再还原，保存失败就停在原地不继续还原。
   // 调用方各自判 state.dirty（历史弹层还能看别的书，不能拿当前书的脏标记去拦别的书）。
+  // 五-H2/H3（BP-02 / BP-03 / L-F1）：三选一的语义收进 saveForTransition —— 保存成功后复核 dirty，
+  // 仍脏（保存期间又敲了字）就再问一轮；作者选「放弃」时当场清脏，下游 reloadOpenBookFromDisk 的脏闸
+  // 才不会把还原结果拒之门外（旧实现只看 saved.ok、discard 不清脏，导致「还原成功」假报）。
   // 返回 { ok:true } = 可以继续还原；{ ok:false, canceled:true } = 作者取消；
   // { ok:false, saved } = 保存失败，saved 是 saveCurrent() 的失败结果（原样上抛，提示已弹过）。
   async function confirmRestoreWithUnsaved(message) {
-    const action = await askUnsaved({
+    const guard = await saveForTransition({
       title: '还原前先处理未保存的修改',
       message,
       saveLabel: '保存修改后再还原',
       discardLabel: '放弃修改并还原'
     });
-    if (action === 'cancel') return { ok: false, canceled: true };
-    if (action === 'save') {
-      const saved = await saveCurrent();
-      if (!saved.ok) return { ok: false, saved };
-    }
-    return { ok: true };
+    if (guard.ok) return { ok: true };
+    if (guard.canceled) return { ok: false, canceled: true };
+    return { ok: false, saved: guard.saved };
   }
 
   // ---------- 视图切换 ----------
@@ -2001,7 +2006,9 @@
   // 装配点必须放在 statsUi 之后：renderStatsUi 是上面那一行解构出来的 const。
   // 「打开面板前收起顶栏菜单」不进 host：事件绑定 / 测试钩子走 open(text, { beforeOpen: hideHeaderMenus })。
   const captureUi = captureUiModule.create({
-    $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody, staleGuard
+    $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody, staleGuard,
+    // 五-H5（L-F6）：可选成员——统一「过渡前保存」原语（保存回执后复核 dirty）。不是契约 §5 的必需成员。
+    saveForTransition
   });
 
   // ---------- 写作时长（状态栏秒表） ----------
@@ -2189,7 +2196,10 @@
   const shelfNavUi = shelfNavUiModule.create({
     $, api, state, editorEl, askUnsaved, saveCurrent, currentChapterLabel, clearFindSession,
     effectiveConfig, applyEditorStyle, syncCaretParagraphFromConfig, applySidebarWidth,
-    showView, refreshShelf, promptText, call, updateWindowTitle, toast
+    showView, refreshShelf, promptText, call, updateWindowTitle, toast,
+    // 五-M9（SS-02）/ 五-H3：可选成员——回书架前等「保存在途 / 载章在途」落定（与切章同口径），
+    // 保存走统一原语（保存回执后复核 dirty，仍脏就重新询问）。
+    waitForSavingIdle, waitForLoadingIdle, saveForTransition
   });
   const { backToShelf, renameBookFlow } = shelfNavUi;
 
@@ -2804,6 +2814,9 @@
         const expectedBackup = await backupGuard.fingerprint(bookPath, undoName);
         undoUi.activate(`已还原到「${target.name}」前的正文`, async () => {
           if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) throw new Error('已经换了书，不能撤销');
+          // 五-H3（L-F1）：撤销会拿备份整组覆盖磁盘 + 从磁盘重载。编辑区有未保存的字时执行，
+          // 等于把作者刚写的正文连磁盘带编辑区一起盖掉（reload 的脏闸也拦不住已经发生的写盘）。
+          if (state.dirty) throw new Error('编辑区有未保存的修改，请先保存后再撤销');
           await backupGuard.assertUnchanged(bookPath, expectedBackup);
           const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
           if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');
@@ -3155,19 +3168,17 @@
     hideFormatMenu();
     hideDisplayMenu();
     if (state.dirty) {
-      const action = await askUnsaved({
+      // 五-H3（L-F1）：整本整理自身的未保存拦截与历史还原共用同一条语义——保存回执后复核 dirty，
+      // 仍脏（保存在途敲了字）就再问一轮；选「不保存」才用磁盘旧内容继续。旧实现只看 saved.ok，
+      // 整理备份里不含「保存期间输入」，随后 keep-edits + Ctrl+S + 10 秒撤销会把这份输入静默弄丢。
+      const guard = await saveForTransition({
         title: '整理本书前先处理未保存的修改',
         message: `「${currentChapterLabel()}」还有未保存的修改；整本整理会直接写盘，建议先保存。`,
         saveLabel: '保存后整理',
         discardLabel: '不保存（按磁盘内容整理）'
       });
-      if (action === 'cancel') return { ok: false, canceled: true };
-      if (action === 'save') {
-        const saved = await saveCurrent();
-        if (!saved.ok) return saved;
-      } else {
-        await loadChapterAt(state.index); // 用磁盘上的旧内容继续
-      }
+      if (!guard.ok) return guard.canceled ? { ok: false, canceled: true } : (guard.saved || { ok: false });
+      if (guard.discarded) await loadChapterAt(state.index); // 用磁盘上的旧内容继续
     }
 
     const options = formatUi.mergeOptions(state.config && state.config.formatOptions);
@@ -3263,6 +3274,9 @@
         const expectedBackup = await backupGuard.fingerprint(bookPath, backupName);
         undoUi.activate(`已整理全书 ${result.chaptersChanged} 章`, async () => {
           if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) throw new Error('已经换了书，不能撤销');
+          // 五-H3（L-F1）：撤销会拿整理备份整组覆盖磁盘 + 从磁盘重载；编辑区有未保存的字时执行
+          // 会把它们连磁盘带编辑区一起盖掉（reload 的脏闸拦不住已经发生的写盘）。
+          if (state.dirty) throw new Error('编辑区有未保存的修改，请先保存后再撤销');
           await backupGuard.assertUnchanged(bookPath, expectedBackup);
           const data = await call(api.restoreHistoryDir, bookPath, `dir:${backupName}`);
           if (!data || !Number(data.restored)) throw new Error('整理备份里没有可还原的章节');

@@ -408,6 +408,56 @@
     }
   }
 
+  // 五-H2/H3/H5/M9（审计 BP-02 / BP-03 / L-F1 / L-F6 / SS-02）：统一「过渡前保存」原语。
+  // 任何「保存成功后就要重载 / 覆盖编辑区 / 离开写作页 / 建新章」的过渡都必须走这里。原因是
+  // **保存成功 ≠ 编辑区干净**：saveCurrent 的回执按发起时的正文快照重算 dirty（C1 的正确行为），
+  // 保存 IPC 往返（fsync / 书目 / 统计写盘，冷盘/杀软下可达数百 ms）期间敲入的字会让 dirty 重新为 true。
+  // 以前各入口只看 saved.ok 就继续，于是出现「保存期间输入」被重载 / 载新章静默覆盖（H1 族第六类入口）。
+  //
+  // 做法：先按调用方口径询问（silentFirst 时第一趟静默保存，与捕获面板「章节」的既有行为一致）；
+  // 保存回执落地后复核 dirty，仍脏就再问一次，绝不带着未保存输入继续过渡。
+  // 作者明确选「不保存 / 丢弃」时当场清脏并同步基线 / 状态栏——下游 reloadOpenBookFromDisk 的脏闸
+  // 靠这个放行，否则会出现「磁盘已还原、编辑区没变、toast 假报成功」（BP-02 的确定性失效）。
+  // 返回 { ok:true, discarded? } / { ok:false, canceled:true } / { ok:false, saved }（失败回执原样上抛）。
+  async function saveForTransition(options = {}) {
+    const {
+      title = '保存后继续',
+      message = '当前章节有未保存的修改。',
+      saveLabel = '保存并继续',
+      discardLabel = '不保存，丢弃修改',
+      silentFirst = false
+    } = options || {};
+    // 询问期间可能换书（弹窗不阻塞其它入口）：脏标记属于哪本书必须按发起时这一本来判，
+    // 绝不拿 A 书的「放弃修改」去清 B 书的脏标记。
+    const startBookPath = state.bookPath;
+    const sameStartBook = () =>
+      String(state.bookPath == null ? '' : state.bookPath) === String(startBookPath == null ? '' : startBookPath);
+    let silent = silentFirst === true;
+    for (;;) {
+      if (!state.dirty) return { ok: true };
+      if (silent) {
+        silent = false;
+        const saved = await saveCurrent();
+        if (!saved || saved.ok === false) return { ok: false, saved };
+        continue; // 保存回执后复核 dirty：仍脏（保存期间又输入）就交给作者决定，不静默继续
+      }
+      const action = await askUnsaved({ title, message, saveLabel, discardLabel });
+      if (action === 'cancel') return { ok: false, canceled: true };
+      if (action !== 'save') {
+        // 作者明确选择丢弃。只有仍是发起时那本书才清脏（换书后这份脏属于新书，见上面的身份说明）。
+        if (sameStartBook()) {
+          state.dirty = false;
+          state.baseText = editorEl.value;
+          updateStatus();
+        }
+        return { ok: true, discarded: true };
+      }
+      const saved = await saveCurrent();
+      if (!saved || saved.ok === false) return { ok: false, saved };
+      // 保存成功但编辑区仍脏 → 下一轮重新询问（不直接返回 ok）
+    }
+  }
+
   async function handleCloseRequest() {
     // 关窗前先把写作计时里没上报的整秒记下（异步：统计写失败也不影响关窗判断）
     await flushWriteTimer();
@@ -419,49 +469,67 @@
     // 收哪几层、按什么顺序由 renderer/esc-registry.js 的 CLEANUP 决定（**只 6 项，是有意的子集**：
     // 书籍信息 / 查找 / 灵感箱 / 插入碎片 / 校对 / 敏感词本来就不会挡着关窗询问，照改前口径不收）。
     for (const action of escLib.cleanupActions(escProbe())) escRun(action);
-    if (!state.dirty || !state.bookPath) {
-      api.closeReady(true);
-      return;
-    }
-    const action = await askUnsaved({
-      title: '退出前保存',
-      message: '当前章节有未保存的修改，退出会丢失这些内容。',
-      saveLabel: '保存并退出',
-      discardLabel: '不保存退出'
-    });
-    if (action === 'cancel') {
-      api.closeReady(false);
-      return;
-    }
-    if (action === 'discard') {
-      discardUnsavedForClose();
-      api.closeReady(true);
-      return;
-    }
-    const saved = await saveCurrent();
-    if (!saved.ok) {
-      const again = await openModal({
-        title: '保存失败',
-        message: `保存失败：${saved.message}\n仍要退出吗？`,
-        buttons: [
-          { label: '返回保存', value: 'cancel', kind: 'primary' },
-          { label: '放弃修改退出', value: 'discard', kind: 'danger' }
-        ],
-        cancelValue: 'cancel'
+    // 五-M9（ES-2）：保存在途时先等它按快照章身份落定，再判定脏状态 / 弹三选一——否则
+    // 「保存并退出」必然撞 BUSY 被当成「保存失败」弹误导框，「不保存退出」也可能被在途写入违背。
+    for (;;) {
+      if (state.saving) await waitForSavingIdle();
+      if (!state.dirty || !state.bookPath) {
+        api.closeReady(true);
+        return;
+      }
+      const action = await askUnsaved({
+        title: '退出前保存',
+        message: '当前章节有未保存的修改，退出会丢失这些内容。',
+        saveLabel: '保存并退出',
+        discardLabel: '不保存退出'
       });
-      if (again.action !== 'discard') {
+      if (action === 'cancel') {
         api.closeReady(false);
         return;
       }
+      if (action === 'discard') {
+        discardUnsavedForClose();
+        api.closeReady(true);
+        return;
+      }
+      const saved = await saveCurrent();
+      if (!saved.ok) {
+        // 五-M9：等过在途保存仍撞 BUSY（另一笔保存刚好又开始）——这是一句状态提示，不是「保存失败」；
+        // 绝不弹「保存失败：正在保存中… / 仍要退出吗」诱导作者把正在写的稿子丢掉。
+        if (saved.code === 'BUSY') {
+          toast('正在保存中，请稍候再试', 'warn');
+          api.closeReady(false);
+          return;
+        }
+        const again = await openModal({
+          title: '保存失败',
+          message: `保存失败：${saved.message}\n仍要退出吗？`,
+          buttons: [
+            { label: '返回保存', value: 'cancel', kind: 'primary' },
+            { label: '放弃修改退出', value: 'discard', kind: 'danger' }
+          ],
+          cancelValue: 'cancel'
+        });
+        if (again.action !== 'discard') {
+          api.closeReady(false);
+          return;
+        }
+        discardUnsavedForClose();
+        api.closeReady(true);
+        return;
+      }
+      // 五-H3 同口径：保存成功 ≠ 编辑区干净（保存期间又敲了字会让 dirty 重新为 true）——
+      // 仍脏就回到三选一重新问，绝不把「保存并退出」当成已经保存干净。
+      if (!state.dirty) {
+        discardUnsavedForClose();
+        api.closeReady(true);
+        return;
+      }
     }
-    // 走到这里：保存成功过，或作者在「保存失败」里明确选了「放弃修改退出」——
-    // 后者也要先把脏状态清掉，主进程才会放行（C5）。
-    discardUnsavedForClose();
-    api.closeReady(true);
   }
 
     return {
-      loadChapterAt, saveCurrent, updateStatus, discardUnsavedForClose,
+      loadChapterAt, saveCurrent, saveForTransition, updateStatus, discardUnsavedForClose,
       setChapterMask, applyEditorEditable,
       waitForLoadingIdle, notifyLoadingIdle, waitForSavingIdle, notifySavingIdle,
       verifyBookInBackground, handleCloseRequest

@@ -606,6 +606,9 @@
           // （大小写不敏感）—— Windows 上 state.bookPath 与备份清单里的路径大小写不一致时，
           // 严格比较会把「同一本书」误判成换了书，撤销被无故拒绝。
           if (!sameBookPath(state.bookPath, bookPath)) throw new Error('已经换了书，不能撤销');
+          // 五-H3（L-F1）：撤销会拿备份整组覆盖磁盘 + 从磁盘重载；编辑区有未保存的字时执行
+          // 会把它们连磁盘带编辑区一起盖掉（reloadOpenBookFromDisk 的脏闸拦不住已经发生的写盘）。
+          if (state.dirty) throw new Error('编辑区有未保存的修改，请先保存后再撤销');
           await guard.assertUnchanged(bookPath, expectedBackup);
           const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
           if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');

@@ -421,7 +421,10 @@ function build(options = {}) {
       if (typeof options.insertIntoBody === 'function') return options.insertIntoBody(text);
       if (options.insertFails) return { ok: false, message: '编辑器不可用' };
       return { ok: true, chars: capture.countChars(text) };
-    }
+    },
+    // 五-H5：可选成员 host.saveForTransition（统一「过渡前保存」原语）由用例按需注入；
+    // 不注入时走原有 saveCurrent 路径，既有用例一字不改。
+    ...(options.extraHost || {})
   };
   return { host, dom, state, api, log, commitPayloads, insertPayloads, queue };
 }
@@ -1094,6 +1097,34 @@ test('章节：dirty 先 saveCurrent；保存失败就中止，记录保留、�
       ['pending'],
       '失败保留记录'
     );
+  }));
+
+// 五-H5（L-F6）：静默保存后发现编辑区仍脏（保存期间输入）——必须停下询问，不建章、不消费记录。
+// 旧实现只看 saved.ok，直接 captureCommitRecord + loadChapterAt，把这份输入静默盖掉（H1 族新入口）。
+test('五-H5：有统一原语时「章节」走它；保存回执后仍脏就停下，不建章、不消费记录', () =>
+  withFakeDocument(async () => {
+    const seen = [];
+    const ctx = build({
+      dirty: true,
+      extraHost: {
+        saveForTransition: async (options) => {
+          seen.push(options);
+          return { ok: false, canceled: true };
+        }
+      }
+    });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open('正文一段');
+    const result = await ui.createChapter({ pending: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.canceled, true, '作者取消 → 调用方要知道这是取消而不是写盘失败');
+    assert.equal(seen.length, 1, '走统一原语，不再自己 saveCurrent');
+    assert.equal(seen[0].silentFirst, true, '「章节」沿用静默保存口径（首趟不弹窗）');
+    assert.equal(ctx.log.includes('saveCurrent'), false, '有原语就不再自己保存');
+    assert.equal(ctx.commitPayloads.length, 0, '没保存干净就不许建章写盘');
+    assert.equal(ui.isOpen(), true);
+    assert.equal(ui.isBusy(), false, '失败后要解锁');
+    assert.deepEqual(ui.records().map((item) => item.kind), ['pending'], '记录保留，可以再处理');
   }));
 
 test('章节：写盘失败 → toast error、记录保留、面板不关、不载入章节', () =>

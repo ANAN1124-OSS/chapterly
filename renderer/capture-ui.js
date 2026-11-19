@@ -20,6 +20,8 @@
  *
  * 契约：createCaptureUi(host) 由渲染层调用一次，host 正好 10 个成员（契约 §5）：
  *   { $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody, staleGuard }
+ * 另有可选成员 host.saveForTransition（五-H5 / L-F6）：统一「过渡前保存」原语。
+ * 有它时「章节」的写前保存会复核「保存期间输入」，仍脏就交给作者决定；旧宿主 / 单测没有也不影响装配。
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到点捕获时 ReferenceError）。
  * insertIntoBody(text) → { ok, chars?, message? }：T3 在 renderer.js 实现（原生 execCommand 保 Ctrl+Z，
  * 失败手动拼接兜底）；本模块只负责「什么时候调、成功 / 失败怎么反馈」。
@@ -109,6 +111,10 @@
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
     assertHost('createCaptureUi', host, REQUIRED_HOST);
     const { $, state, api, call, toast, saveCurrent, loadChapterAt, renderStatsUi, insertIntoBody, staleGuard } = host;
+    // 五-H5（L-F6）：可选成员——统一「过渡前保存」原语（renderer/save-chain-ui.js 的 saveForTransition）。
+    // 有它时「章节」的静默保存会复核 dirty：保存 IPC 期间敲入的字仍脏就再询问，绝不直接建章 + 载新章
+    // 把这份输入静默覆盖（H1 族新入口）。旧宿主 / 单测没有该成员时退回原有 saveCurrent 路径。
+    const saveForTransition = typeof host.saveForTransition === 'function' ? host.saveForTransition : null;
     if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
       throw new TypeError('createCaptureUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
     }
@@ -656,8 +662,26 @@
           return { ok: false, code: 'TOO_LARGE', chars: limits.chars, reason: limits.reason };
         }
         if (state.dirty) {
-          const saved = await saveCurrent();
-          if (!saved || saved.ok === false) return saved || { ok: false, code: 'SAVE_FAILED' };
+          if (saveForTransition) {
+            // 五-H5（L-F6）：静默保存（不弹窗）后复核 dirty——保存 IPC 往返期间敲入的字会让 dirty
+            // 重新为 true；这时继续建章 + loadChapterAt 会把它们静默盖掉。原语会停下来重新询问，
+            // 作者取消 / 保存失败都不往下走（记录不消费、一个字不写盘）。
+            const guard = await saveForTransition({
+              silentFirst: true,
+              title: '新建章节前先处理未保存的修改',
+              message: '保存期间编辑区又有新的修改；继续新建章节会把它们丢掉。',
+              saveLabel: '保存后再新建',
+              discardLabel: '丢弃这些修改并新建'
+            });
+            if (!guard.ok) {
+              return guard.canceled
+                ? { ok: false, code: 'CANCELED', canceled: true }
+                : (guard.saved || { ok: false, code: 'SAVE_FAILED' });
+            }
+          } else {
+            const saved = await saveCurrent();
+            if (!saved || saved.ok === false) return saved || { ok: false, code: 'SAVE_FAILED' };
+          }
         }
         const target = state.bookPath;
         const insertTarget = computeInsertTarget(state.chapters, state.index, panel.position);

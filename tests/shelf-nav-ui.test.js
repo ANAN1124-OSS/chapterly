@@ -76,6 +76,7 @@ function build(options = {}) {
     async saveCurrent() {
       calls.saveCurrent += 1;
       log.push('saveCurrent');
+      if (typeof options.saveCurrent === 'function') return options.saveCurrent();
       return { ok: options.saveOk !== false };
     },
     currentChapterLabel() {
@@ -115,7 +116,10 @@ function build(options = {}) {
     toast(message, kind) {
       calls.toast.push([message, kind]);
       log.push('toast');
-    }
+    },
+    // 五-M9：可选成员（waitForSavingIdle / waitForLoadingIdle / saveForTransition）由用例按需注入；
+    // 不注入时走模块里的旧路径，既有用例一字不改。
+    ...(options.extraHost || {})
   };
   const ui = shelfNavUi.create(host);
   return { ui, host, state, editorEl, dom, calls, log };
@@ -379,4 +383,60 @@ test('UMD：浏览器分支挂成 CWShelfNavUi，不顺手造别的全局', () =
   assert.equal(win.CWShelfNavUi.REQUIRED_HOST.length, 18);
   assert.equal(win.CWShelfNavUi.REQUIRED_HOST.includes('currentChapterLabel'), true);
   assert.equal(win.CWShelfFilterUi, undefined, '单独加载 shelf-nav 不该顺手造出别的全局');
+});
+
+// ---------- 五-M9 / 五-H3（第五轮审计 SS-02 / L-F1） ----------
+// 缺陷：backToShelf 是切章 / 换书两个入口修掉「不等 saved.idle」后的漏网第三入口——
+// 选「不保存丢弃」会被在途写入违背；选「保存」撞 BUSY 静默 return（按钮像坏了）。
+// 修法：与 switchChapter 同口径先 waitForSavingIdle / waitForLoadingIdle，再询问；
+// 保存走统一原语（保存回执后复核 dirty）。
+
+test('五-M9：回书架先等保存在途落定，再按剩余脏字走统一原语；原语取消就不回书架', async () => {
+  const order = [];
+  let ctx;
+  ctx = build({
+    dirty: true,
+    extraHost: {
+      waitForSavingIdle: async () => {
+        order.push('waitForSavingIdle');
+        ctx.state.saving = false; // 在途保存落定后现场已干净（下面不再询问）
+      },
+      saveForTransition: async (options) => {
+        order.push('saveForTransition');
+        ctx.calls.guardOptions = options;
+        return { ok: false, canceled: true };
+      }
+    }
+  });
+  ctx.state.saving = true;
+  await ctx.ui.backToShelf();
+  assert.deepEqual(order, ['waitForSavingIdle', 'saveForTransition'], '先等保存在途，再走统一原语');
+  assert.deepEqual(ctx.calls.guardOptions, { title: '返回书架前保存', message: '「第2章 第二章」有未保存的修改。' });
+  assert.equal(ctx.calls.askUnsaved.length, 0, '有统一原语就不再自己 ask');
+  assert.equal(ctx.calls.saveCurrent, 0, '保存动作全交给原语');
+  assert.equal(ctx.calls.releaseBook, 0, '原语返回取消 → 不回书架');
+  assert.equal(ctx.state.view, 'edit', '取消后仍停在写作页');
+});
+
+test('五-M9：没有可选原语时（旧宿主）保存在途仍先等落定；BUSY 要给 toast，不再静默返回', async () => {
+  // 等落定后再询问：询问时 dirty 已被在途保存抹平 → 一个框都不弹，直接回书架。
+  const waited = build({
+    dirty: true,
+    extraHost: {
+      waitForSavingIdle: async () => {
+        waited.state.dirty = false; // 在途保存已把这份草稿写盘
+        waited.state.saving = false;
+      }
+    }
+  });
+  waited.state.saving = true;
+  await waited.ui.backToShelf();
+  assert.equal(waited.calls.askUnsaved.length, 0, '等落定后已干净 → 不用再问');
+  assert.equal(waited.calls.releaseBook, 1, '照常回书架');
+
+  // 另一笔保存刚好开始 → saveCurrent 返回 BUSY：给状态提示，不静默、也不回书架。
+  const busy = build({ dirty: true, action: 'save', saveCurrent: () => ({ ok: false, code: 'BUSY', message: '正在保存中，请稍候再试' }) });
+  await busy.ui.backToShelf();
+  assert.deepEqual(busy.calls.toast, [['正在保存中，请稍候再试', 'warn']], 'BUSY 要出声');
+  assert.equal(busy.calls.releaseBook, 0, '没保存成功不回书架');
 });

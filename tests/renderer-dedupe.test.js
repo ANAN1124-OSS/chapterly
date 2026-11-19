@@ -85,17 +85,23 @@ test('C3：「还原前」未保存拦截只留一份，历史备份还原与整
   );
 });
 
-test('C3：拦截的返回值形状与旧行为一致（ok / canceled / saved 三态）', () => {
-  // 形状是调用方 return guard.canceled ? {...canceled} : guard.saved 的依据，逐条钉住
-  assert.ok(
-    /if \(action === 'cancel'\) return \{ ok: false, canceled: true \};/.test(RENDERER_SRC),
-    '取消必须返回 { ok:false, canceled:true }'
-  );
-  assert.ok(
-    /if \(!saved\.ok\) return \{ ok: false, saved \};/.test(RENDERER_SRC),
-    '保存失败必须把 saveCurrent 的结果原样带回去'
-  );
-  assert.ok(/return \{ ok: true \};/.test(RENDERER_SRC), '可以继续时返回 { ok:true }');
+test('C3：拦截的三态形状（ok / canceled / saved）由共享原语产出，适配器与调用方原样映射', () => {
+  // 五-H2/H3（BP-02 / BP-03 / L-F1）：三选一的语义（保存回执后复核 dirty、丢弃时清脏）收进
+  // save-chain-ui 的 saveForTransition；编排器 confirmRestoreWithUnsaved 只做三态映射。
+  // 形状是调用方 return guard.canceled ? … : guard.saved 的依据，钉在原语实现处，
+  // 防止以后又有人把「只看 saved.ok / discard 不清脏」的旧分支抄回来。
+  const SAVE_CHAIN_SRC = read('renderer/save-chain-ui.js');
+  assert.ok(/async function saveForTransition\(/.test(SAVE_CHAIN_SRC), '统一原语必须在保存链模块里');
+  assert.match(SAVE_CHAIN_SRC, /if \(action === 'cancel'\) return \{ ok: false, canceled: true \};/, '取消必须返回 { ok:false, canceled:true }');
+  assert.match(SAVE_CHAIN_SRC, /return \{ ok: false, saved \};/, '保存失败必须把 saveCurrent 的结果原样带回去');
+  assert.match(SAVE_CHAIN_SRC, /return \{ ok: true[^}]*\};/, '可以继续时返回 ok:true');
+  assert.match(SAVE_CHAIN_SRC, /state\.dirty = false;/, '丢弃分支必须显式清脏（下游 reload 的脏闸靠它放行）');
+  assert.match(SAVE_CHAIN_SRC, /state\.baseText = editorEl\.value;/, '丢弃分支要同步基线');
+  // 适配器：只按原语的三态映射，不再自己 askUnsaved / saveCurrent
+  assert.match(RENDERER_SRC, /const guard = await saveForTransition\(\{/, '整本替换还原要走共享拦截');
+  assert.ok(/if \(guard\.ok\) return \{ ok: true \};/.test(RENDERER_SRC), '可以继续时放行');
+  assert.ok(/if \(guard\.canceled\) return \{ ok: false, canceled: true \};/.test(RENDERER_SRC), '取消原样映射');
+  assert.ok(/return \{ ok: false, saved: guard\.saved \};/.test(RENDERER_SRC), '保存失败原样上抛');
   // 两处调用方都按三态还原（取消 → canceled；保存失败 → 原样上抛）
   for (const source of [RENDERER_SRC, HISTORY_SRC]) {
     assert.ok(
@@ -103,4 +109,14 @@ test('C3：拦截的返回值形状与旧行为一致（ok / canceled / saved �
       '调用方必须按三态还原旧返回值'
     );
   }
+});
+
+test('C3 / 五-H3：还原型撤销闭包执行前核编辑区脏状态（不许拿备份盖掉未保存的字）', () => {
+  const guardLine = /if \(state\.dirty\) throw new Error\('编辑区有未保存的修改，请先保存后再撤销'\);/;
+  assert.equal(
+    (RENDERER_SRC.match(/if \(state\.dirty\) throw new Error\('编辑区有未保存的修改，请先保存后再撤销'\);/g) || []).length,
+    2,
+    '渲染层两处还原型撤销（整本替换还原 / 整本整理）都要先核脏'
+  );
+  assert.match(HISTORY_SRC, guardLine, '历史还原的撤销闭包同样要先核脏');
 });
