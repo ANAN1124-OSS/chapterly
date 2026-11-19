@@ -376,6 +376,45 @@ test('停止 / 收起 / 切章：清错误与状态，切章还会 toast 一句'
   assert.equal(toasts.length, toastCount);
 });
 
+// ---------- 五-M20（MP-01）：收起朗读条要清空 chunks ----------
+// 旧实现 stopTts 只改 status / open，chunks 原样留着：收起朗读条（或切章自动停）之后，
+// save-chain-ui 在每次载章成功都调 stopTtsForChapterChange，判据 `!open && !chunks.length`
+// 因残留分段不成立 → 此后每一次切章都弹「已切换章节，朗读已停止」——朗读几个小时前就停了；
+// 残留还跨书存活（commitOpenBook 不碰 tts），新书第一章载入同样假提示。
+// 修法：closeTtsBar（条子真的收起、看不见了）时清 chunks / index；stopTts（条子还开着）保留分段，
+// 作者停止后还能按「播放」接着念同一章。
+test('M20（MP-01）：收起朗读条清空 chunks / index——此后切章不再弹假提示、残留不跨书', async () => {
+  const { host, state, toasts } = makeHost();
+  const engine = makeEngine();
+  const { tts } = await openWith(host, engine);
+  assert.equal(state.tts.chunks.length, 3);
+
+  tts.closeTtsBar();
+  assert.equal(state.tts.open, false);
+  assert.deepEqual(state.tts.chunks, [], '收起朗读条后不再保留整章分段');
+  assert.equal(state.tts.index, 0, '分段下标归零');
+
+  // 此后每次载章成功都会调 stopTtsForChapterChange（save-chain-ui.js:185）：没有残留就静默
+  const count = toasts.length;
+  tts.stopTtsForChapterChange();
+  tts.stopTtsForChapterChange();
+  assert.equal(toasts.length, count, '不许再弹「已切换章节，朗读已停止」假提示');
+
+  // 残留不跨书：同一窗口换书后第一章载入，同样静默
+  state.bookPath = 'C:/tmp/books/另一本';
+  tts.stopTtsForChapterChange();
+  assert.equal(toasts.length, count);
+
+  // 对照：停止但条子还开着 → 保留分段，作者还能按「播放」继续念同一章
+  const keep = makeHost();
+  const kept = await openWith(keep.host, makeEngine());
+  kept.tts.stopTts();
+  assert.equal(keep.state.tts.open, true, '条子仍开着');
+  assert.equal(keep.state.tts.chunks.length, 3, '条子还开着时停止：保留分段供继续播放');
+  assert.equal(keep.get('btn-tts-play').disabled, false, '停止后播放按钮仍可用');
+  assert.deepEqual(kept.tts.toggleTtsPlay(), { ok: true, action: 'play' }, '还能接着念');
+});
+
 // 2026-11-04 拍板 #6：toast 抬起量从写死 184px 改成 var(--tts-toast-lift, 184px)，
 // 变量由渲染层按朗读条**实际高度 + 52**（44 条底距 + 8 间隙）算出。这两项钉住「怎么算」和「收起后清掉」。
 test('toast 抬起（拍板 #6）：条子开着时写 高度 + 52 到 --tts-toast-lift，条子变高会重算', async () => {

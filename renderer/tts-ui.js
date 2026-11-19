@@ -244,6 +244,12 @@
   function closeTtsBar() {
     if (!state.tts.open && !state.tts.chunks.length) return;
     stopTts({ keepOpen: false });
+    // 五-M20（MP-01）：条子收起后分段没有消费者了（看不见、也不能再播），必须清掉。旧实现只把
+    // open 置 false、chunks 原样留着：save-chain-ui 每次载章成功都会调 stopTtsForChapterChange，
+    // 判据 `!open && !chunks.length` 因残留不成立 → 此后每一次切章都误弹「已切换章节，朗读已停止」，
+    // 残留状态还跨书存活（commitOpenBook 不碰 tts）。停止（条子还开着）则**不**清——作者还能接着念。
+    state.tts.chunks = [];
+    state.tts.index = 0;
   }
 
   function failTts(message) {
