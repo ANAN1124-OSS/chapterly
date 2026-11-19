@@ -511,6 +511,32 @@ test('静态闸门：index.html 在 renderer.js 之前加载 tts-ui.js，且模�
   assert.ok(!/^  \$\(/m.test(moduleSrc), '模块顶层不许直接查 DOM');
 });
 
+// ---------- 五-M21（MP-03）：编辑视图内换书要先停朗读 ----------
+// 书 A 正在朗读时，不经书架直接在编辑视图换到书 B（命令面板「打开《B》」/ 查找面板跨书书签）：
+// openBookByPath → commitOpenBook 全程不停 TTS。speechSynthesis 继续念书 A；每次段末 advanceTts →
+// selectTtsChunk 把书 A 的 start/end 套进书 B 已清空 / 遮罩的编辑区；showView('editor') 本来就停在
+// editor，L773 的 closeTtsBar 不触发。正常路径要等新书载章成功（save-chain-ui.js:185）才停；
+// 载章失败（遮罩态）时永不执行，旧书朗读无限期继续。修法：commitOpenBook 开头（清任何状态之前）就停。
+// 这一段必须留在 renderer.js（编排器闭包），所以用静态闸门钉住接线与顺序。
+test('M21（MP-03）：commitOpenBook 在清空书状态之前先停朗读（换书不再跨书继续念）', () => {
+  const start = rendererSrc.indexOf('async function commitOpenBook(');
+  assert.ok(start > 0, '找不到 commitOpenBook');
+  const body = rendererSrc.slice(start, rendererSrc.indexOf('\n  async function ', start + 1));
+  const stopAt = body.indexOf('stopTtsForChapterChange();');
+  assert.ok(stopAt > -1, '换书必须先停朗读（commitOpenBook 里找不到 stopTtsForChapterChange）');
+  const clearUndoAt = body.indexOf('undoUi.clear();');
+  assert.ok(clearUndoAt > -1, '找不到 undoUi.clear()');
+  assert.ok(stopAt < clearUndoAt, '停朗读必须排在清撤销 / 清书状态之前');
+  assert.ok(
+    stopAt < body.indexOf('state.bookPath = bookPath;'),
+    '停朗读必须在改写 state.bookPath 之前（停的是旧书那一段）'
+  );
+  assert.ok(
+    stopAt < body.indexOf('editorEl.value = '),
+    '停朗读必须在清空编辑区之前'
+  );
+});
+
 // V31：暂停期间到点的 watchdog 只会自己退出；「继续」时如果不重新计时，语音真没响应就会永远停在「正在朗读」。
 // 用真实引擎适配 + 假 speechSynthesis / 注入计时器：能数出 watchdog 挂了几颗、几秒。
 test('watchdog：暂停超时后再「继续」要重新挂计时器，恢复无响应时能报错（V31）', async () => {

@@ -1277,6 +1277,12 @@
   // 新书提交（WP-03 / V101）：调用方已确认这次响应属于当前世代。返回 false = 提交前又被新的开书取代，
   // 什么都没提交（调用方按过期处理）；返回 true = 书目已换成本书（即使后面载章失败也不回滚）。
   async function commitOpenBook(bookPath, data, target, isStale) {
+    // 五-M21（MP-03）：换书先停朗读。朗读条 / 语音属于「上一本书的那一章」，commitOpenBook 全程
+    // 不切视图（showView('editor') 时本来就是 editor，走不到 closeTtsBar），旧书正文会继续念，
+    // 段末 advanceTts → selectTtsChunk 还会把旧书分段的偏移套进新书已清空 / 遮罩的编辑区；
+    // 若新书载章失败，载章成功路径上的 stopTtsForChapterChange 永不执行，旧书朗读无限期继续。
+    // 放在清任何状态之前：这时 chunks 还是旧书的，toast 文案才对。
+    stopTtsForChapterChange();
     // 换书：撤销条不跨书（撤销闭包里还会再核对一次 state.bookPath）
     undoUi.clear();
     // 审计修复 #7（V401）：大段插入的一次性快照也必须跟着换书作废 —— 以前这里只清 undoUi，
