@@ -268,6 +268,15 @@
     }
     const opened = await openBookByPath(bookmark.bookPath, { chapterId: bookmark.chapterId });
     if (!opened) return { ok: false };
+    // 五-M8（MP-02）：openBookByPath 的失败返回几乎都是对象（STALE / BOOK_OPEN_IN_OTHER_WINDOW /
+    // PARSE_ERROR / OPEN_FAILED…），只判 falsy 会把失败当成功，接着在**旧书**的章节列表里找目标章，
+    // 误报「这一章已经不存在了」并诱导作者删掉一条有效书签。失败按原 code 返回，不再往下走。
+    if (opened.ok === false) {
+      const failure = { ok: false };
+      if (opened.code) failure.code = opened.code;
+      if (opened.message !== undefined) failure.message = opened.message;
+      return failure;
+    }
     const index = state.chapters.findIndex((chapter) => chapter.id === bookmark.chapterId);
     if (index < 0) {
       toast('这一章已经不存在了（书签还留着，可在查找面板里删除）', 'warn');

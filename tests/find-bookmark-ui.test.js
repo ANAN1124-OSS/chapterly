@@ -180,6 +180,7 @@ function build(options = {}) {
       },
       async openBookByPath(bookPath, opts) {
         calls.openBookByPath.push([bookPath, opts]);
+        if (options.openBookResult !== undefined) return options.openBookResult;
         if (options.openFails) return false;
         if (options.openBookChapters) state.chapters = options.openBookChapters;
         return true;
@@ -392,6 +393,31 @@ test('jumpToFindBookmark：没书 / 同书已删章 / 同书成功（切章后�
   const openedRes = await opened.ui.jumpToFindBookmark(makeBookmark({ bookPath: '/书库/书乙', bookId: 'id-2', chapterId: 'c1' }));
   assert.equal(opened.calls.openBookByPath.length, 1);
   assert.deepEqual(openedRes, { ok: false, code: 'NO_CHAPTER' }, '打开后发现章节没了');
+});
+
+test('五-M8：跨书书签开书失败返回对象（另一窗口 / STALE / 解析失败）→ 按原 code 返回，不在旧书章节里误诊「章不存在」', async () => {
+  // 目标章属于书乙（c9 在书甲里不存在）：开书失败后若继续往下走，就会误报「这一章已经不存在了」
+  // 并诱导作者去删一条有效书签。
+  const target = makeBookmark({ bookPath: '/书库/书乙', bookId: 'id-2', chapterId: 'c9' });
+
+  const inOther = build({ openBookResult: { ok: false, code: 'BOOK_OPEN_IN_OTHER_WINDOW' } });
+  assert.deepEqual(await inOther.ui.jumpToFindBookmark(target), { ok: false, code: 'BOOK_OPEN_IN_OTHER_WINDOW' }, '另一窗口打开：按原 code 返回');
+  assert.equal(inOther.calls.toast.length, 0, '不许误报「这一章已经不存在了」');
+  assert.equal(inOther.state.chapters.some((chapter) => chapter.id === 'c9'), false, '旧书章节列表不该被当成新书用');
+
+  const stale = build({ openBookResult: { ok: false, code: 'STALE' } });
+  assert.deepEqual(await stale.ui.jumpToFindBookmark(target), { ok: false, code: 'STALE' });
+  assert.equal(stale.calls.toast.length, 0);
+
+  const broken = build({ openBookResult: { ok: false, code: 'PARSE_ERROR', message: '书目坏了' } });
+  assert.deepEqual(await broken.ui.jumpToFindBookmark(target), { ok: false, code: 'PARSE_ERROR', message: '书目坏了' });
+  assert.equal(broken.calls.toast.length, 0, '失败原因由开书流程自己提示，这里不重复也不误诊');
+
+  // 取消换书（undefined）仍按旧口径返回，不算失败码；成功返回（true）照旧往下走。
+  const cancel = build({ openFails: true });
+  assert.deepEqual(await cancel.ui.jumpToFindBookmark(target), { ok: false });
+  const ok = build({ openBookChapters: [{ id: 'c9' }] });
+  assert.deepEqual(await ok.ui.jumpToFindBookmark(target), { ok: true, index: 0 }, '成功开书后照旧在目标书里找章');
 });
 
 // ---------- 打开章节时重扫高亮 ----------
