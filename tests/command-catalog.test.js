@@ -217,3 +217,22 @@ test('命令目录：README 快捷键表由系统键表生成，与 README 里�
   assert.equal(actual, expected, 'README 系统键表漂移了：改表请跑 node scripts/gen-shortcut-doc.js --write');
   assert.ok(actual.includes('Ctrl+K') && actual.includes('Ctrl+Z'), 'README 表要含 Ctrl+K / Ctrl+Z');
 });
+// 五-M5（SS-01）：命令面板章节条目的 run 闭包不许捕获构建时下标——面板开着时删章 / 移卷会整体
+// 换掉 state.chapters，而 markCommandsDirty 只作废快照、不重画已渲染行；旧下标会切到错位那一章。
+test('五-M5 静态闸门：章节条目 run 按 chapter.id 现场解析下标，章已删则提示而不切章', () => {
+  const body = RENDERER.slice(
+    RENDERER.indexOf('const chapterId = chapter && chapter.id != null ? chapter.id : null;'),
+    RENDERER.indexOf('for (const book of state.books || [])')
+  );
+  assert.ok(body.length > 0, '找不到章节条目构建段');
+  assert.match(body, /const chapterId = chapter && chapter\.id != null \? chapter\.id : null;/, '要先记下 chapter.id');
+  assert.match(
+    body,
+    /state\.chapters\.findIndex\(\(item\) => item && String\(item\.id\) === String\(chapterId\)\)/,
+    'run 必须按 id 现场解析当前下标'
+  );
+  assert.match(body, /if \(at < 0\) \{[\s\S]{0,160}toast\([\s\S]{0,120}已经不存在/, '章已删要明确提示');
+  assert.equal(/switchChapter\(index\)/.test(body), false, '不许再按构建时下标切章（会切错章）');
+  assert.match(body, /switchChapter\(at\)/, '切章用现场解析出的下标');
+  assert.match(body, /focusChapterItem\(\{ mode: 'switch', index: at \}\)/, '焦点也要落到现场解析出的那一章');
+});

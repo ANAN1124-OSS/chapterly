@@ -80,8 +80,9 @@ test('A7：三种焦点归位合并成唯一实现 focusChapterItem，三个落�
   // switch 那一路「只在焦点原本就在章节列表里才动」的判据在合并后的实现里
   assert.ok(body.includes("closest('#chapter-list')"), '不许从编辑区抢焦点');
   // 调用点：id ×3（Alt+↑↓ 移动 / 跨卷撤销前后）、switch ×2（Ctrl+Page / 命令面板）、position ×2（单删 / 批删）
+  // 命令面板的 switch 落点在 五-M5 后按 chapter.id 现场解析出 at（不再用构建时下标）。
   assert.equal((source.match(/focusChapterItem\(\{ mode: 'id', id: chapter\.id \}\)/g) || []).length, 3);
-  assert.equal((source.match(/focusChapterItem\(\{ mode: 'switch', index(: target)? \}\)/g) || []).length, 2);
+  assert.equal((source.match(/focusChapterItem\(\{ mode: 'switch', index(: (?:target|at))? \}\)/g) || []).length, 2);
   assert.equal((source.match(/focusChapterItem\(\{ mode: 'position', position \}\)/g) || []).length, 2);
 });
 

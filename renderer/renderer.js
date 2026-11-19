@@ -2394,6 +2394,7 @@
     }
     if (state.view === 'editor' && state.bookPath) {
       state.chapters.forEach((chapter, index) => {
+        const chapterId = chapter && chapter.id != null ? chapter.id : null;
         out.push({
           id: `chapter:${chapter.id}`,
           title: chapterTitle(index, chapter.name),
@@ -2401,9 +2402,19 @@
           hint: index === state.index ? '当前章' : `第 ${chaptersLib.chapterNumber(state.meta, index)} 章`,
           keywords: [chapter.name || '', `ch${chaptersLib.chapterNumber(state.meta, index)}`, `ch${index + 1}`],
           run: () => {
-            void switchChapter(index).then((result) => {
+            // 五-M5（SS-01）：面板开着时删章 / 移卷会整体换掉章节数组，而 markCommandsDirty 只作废
+            // 快照、不重画已渲染行；run 闭包里捕获的 index 会指到错位的那一章。这里按 chapter.id
+            // 现场解析，章已删就明确提示，绝不按旧下标切到别的章。
+            const at = chapterId == null
+              ? -1
+              : state.chapters.findIndex((item) => item && String(item.id) === String(chapterId));
+            if (at < 0) {
+              toast('这一章已经不存在了（可能在面板打开期间被删除），请重新打开面板', 'warn');
+              return;
+            }
+            void switchChapter(at).then((result) => {
               if (!result || result.ok !== true) return;
-              focusChapterItem({ mode: 'switch', index });
+              focusChapterItem({ mode: 'switch', index: at });
             });
           }
         });
