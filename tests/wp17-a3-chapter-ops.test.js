@@ -932,3 +932,64 @@ test('A3-Cβ / B8：移到卷菜单——当前卷不再列 / 批量列全部卷
     else global.document = realDocument;
   }
 });
+test('五-M7：备注 prompt 在途时章节数组被换掉——按 prompt 前捕获的章 id 落笔，不拿旧 index 改写另一章', async () => {
+  // 方向一：prompt 期间这一章被移到别的下标（移卷 / 排序 / 换数组的回执）→ 备注仍写到原章。
+  const box = {};
+  const rt = makeHost({
+    host: {
+      promptText: async () => {
+        // prompt 在途：章节数组被替换，c1 从下标 0 挪到末尾
+        const chapters = box.rt.state.chapters;
+        chapters.push(chapters.splice(0, 1)[0]);
+        box.rt.state.meta.chapters = chapters;
+        return '写给第一章的备注';
+      }
+    }
+  });
+  box.rt = rt;
+  const written = [];
+  rt.host.api.updateChapterMeta = async (bookPath, chapterId, patch) => {
+    written.push(chapterId);
+    const target = rt.state.chapters.find((item) => item.id === chapterId);
+    if (!target) return { ok: false, code: 'NO_CHAPTER', message: '章节不存在' };
+    Object.assign(target, patch);
+    return {
+      ok: true,
+      data: { changed: true, chapter: { ...target }, meta: { chapters: rt.state.chapters, volumes: rt.state.meta.volumes } }
+    };
+  };
+  assert.equal(await rt.ui.editChapterNoteAt(0), '写给第一章的备注');
+  assert.deepEqual(written, ['c1'], '备注必须落到 prompt 打开的那一章（c1），不是现在下标 0 的 c2');
+  assert.equal(rt.state.chapters.find((item) => item.id === 'c1').note, '写给第一章的备注');
+  assert.equal(rt.state.chapters.find((item) => item.id === 'c2').note, undefined, '别的章不许长出备注');
+
+  // 方向二：prompt 期间这一章被删掉 → 不写任何章、给出提示、返回 null。
+  const box2 = {};
+  const rt2 = makeHost({
+    host: {
+      promptText: async () => {
+        box2.rt.state.chapters = box2.rt.state.chapters.filter((item) => item.id !== 'c1');
+        box2.rt.state.meta.chapters = box2.rt.state.chapters;
+        return '写给第一章的备注';
+      }
+    }
+  });
+  box2.rt = rt2;
+  const written2 = [];
+  rt2.host.api.updateChapterMeta = async (bookPath, chapterId, patch) => {
+    written2.push(chapterId);
+    const target = rt2.state.chapters.find((item) => item.id === chapterId);
+    if (!target) return { ok: false, code: 'NO_CHAPTER', message: '章节不存在' };
+    Object.assign(target, patch);
+    return {
+      ok: true,
+      data: { changed: true, chapter: { ...target }, meta: { chapters: rt2.state.chapters, volumes: rt2.state.meta.volumes } }
+    };
+  };
+  assert.equal(await rt2.ui.editChapterNoteAt(0), null);
+  assert.deepEqual(written2, [], '那一章已经不在书里：不许拿旧 index 去写现位置的另一章');
+  assert.equal(rt2.state.chapters[0].id, 'c2');
+  assert.equal(rt2.state.chapters[0].note, undefined);
+  assert.equal(rt2.counts.toast.at(-1)[1], 'warn');
+  assert.match(rt2.counts.toast.at(-1)[0], /已经不在书里/);
+});

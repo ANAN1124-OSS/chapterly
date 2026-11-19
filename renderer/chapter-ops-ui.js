@@ -913,6 +913,9 @@
   async function editChapterNoteAt(index) {
     const chapter = state.chapters[index];
     if (!chapter) return null;
+    // 五-M7：prompt 在途时章节数组可能已被删章 / 移卷 / 整本替换换掉。
+    // 记下 prompt 打开的是哪一章（id），回来后现场解析下标 —— 旧 index 可能已经指向另一章。
+    const chapterId = chapter.id;
     const value = await promptText({
       title: `章节备注：${chapterTitle(index, chapter.name)}`,
       message: '给自己记一句话（最多 200 字，只存进书目.json，不碰正文）。清空后确定 = 删除备注。',
@@ -920,9 +923,14 @@
       placeholder: '比如：这章结尾要重写'
     });
     if (value === null) return null;
-    const res = await updateChapterInfo(index, { note: value });
+    const at = state.chapters.findIndex((item) => item && item.id === chapterId);
+    if (at < 0) {
+      toast('这一章已经不在书里了，备注没有保存', 'warn');
+      return null;
+    }
+    const res = await updateChapterInfo(at, { note: value });
     if (!res.ok) return null;
-    const freshNote = chapterNote(state.chapters[index]);
+    const freshNote = chapterNote(state.chapters[at]);
     toast(freshNote ? '备注已保存' : '备注已清除');
     return freshNote;
   }
