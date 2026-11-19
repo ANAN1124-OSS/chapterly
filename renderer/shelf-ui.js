@@ -145,6 +145,15 @@
   const sameBookPath = (left, right) =>
     String(left == null ? '' : left).toLowerCase() === String(right == null ? '' : right).toLowerCase();
 
+  // 五-M6（SS-03）：增量读卡的世代复核。
+  // shelf:changed 只说「哪本书变了」，读卡是异步的；广播一到就推进这本书的世代号（删书也算一次），
+  // 在途回执回来时只有仍是最新一代才允许落地。否则「删书广播 + 在途读卡」会把已删书卡插回书架
+  // （点它弹「修复」），同书两次变更的回执乱序到达时旧卡还会盖掉新卡。
+  // 整表刷新取代此前所有增量读卡，同样推进会话世代，让刷新前发出的回执一并作废。
+  let shelfCardSeq = 0;
+  let shelfFullEpoch = 0;
+  const shelfCardSeqByPath = new Map(); // 小写 path → 这本书最新一次广播的序号
+
   function applyShelfCard(card, bookPath) {
     const books = Array.isArray(state.books) ? state.books.slice() : [];
     const at = books.findIndex((book) => sameBookPath(book && book.path, bookPath));
@@ -155,15 +164,23 @@
   }
 
   async function handleShelfChanged(payload) {
-    // 写作页不打断作者（回书架时会整表刷新）；导入 / 整本整理期间的广播也不插手。
-    if (state.view !== 'shelf' || state.importing || state.formatBookRunning) return { mode: 'skipped' };
     const reason = payload && typeof payload.reason === 'string' ? payload.reason : '';
     const bookPath = payload && typeof payload.bookPath === 'string' ? payload.bookPath : '';
+    // 五-M6（SS-03）：广播一到就推进这本书的世代（先于所有 await / 早退），
+    // 之后到达的旧回执据此知道自己已被更新的一次广播（含删书）取代。
+    const cardSeq = bookPath ? ++shelfCardSeq : 0;
+    if (bookPath) shelfCardSeqByPath.set(bookPath.toLowerCase(), cardSeq);
+    const epochAtStart = shelfFullEpoch;
+    // 写作页不打断作者（回书架时会整表刷新）；导入 / 整本整理期间的广播也不插手。
+    if (state.view !== 'shelf' || state.importing || state.formatBookRunning) return { mode: 'skipped' };
     const canIncrement = Boolean(
       bookPath && api && typeof api.readBookCard === 'function' && callApi && renderShelfNow
     );
     if (!canIncrement || !refreshShelfAll) {
-      if (typeof refreshShelfAll === 'function') await refreshShelfAll();
+      if (typeof refreshShelfAll === 'function') {
+        shelfFullEpoch += 1; // 整表刷新取代此前所有增量读卡（刷新前发出的回执作废）
+        await refreshShelfAll();
+      }
       return { mode: 'full' };
     }
     if (reason === 'book:delete') {
@@ -181,8 +198,14 @@
       card = null; // 坏书 / 路径失效：下面的整表兜底
     }
     if (!card || typeof card !== 'object' || Array.isArray(card) || typeof card.path !== 'string') {
+      shelfFullEpoch += 1; // 读失败 → 整表兜底，同样取代在途的增量读卡
       await refreshShelfAll();
       return { mode: 'full' };
+    }
+    // 五-M6（SS-03）：回执落地前复核世代 —— 期间这本书被删 / 又有更新的一次变更，
+    // 或发生过整表刷新 → 丢弃，不插卡、不重画（否则已删书卡会被插回书架）。
+    if (epochAtStart !== shelfFullEpoch || shelfCardSeqByPath.get(bookPath.toLowerCase()) !== cardSeq) {
+      return { mode: 'stale' };
     }
     applyShelfCard(card, bookPath);
     if (typeof markCommandsDirty === 'function') markCommandsDirty(); // 书名可能变，命令面板「书」条目要重建
