@@ -29,6 +29,9 @@
   const REQUIRED_HOST = ['state', 'openModal', 'toast', 'rescueCopy', 'goBackToShelf', 'refreshShelf', 'refreshConfig'];
 
   const NOTICE_TITLE = '书架目录已更换';
+  // 五-M17（SS-08）：模态答复时这本书已经不孤岛（根被换回 / 作者切到新根下的书）→ 提示作废、
+  // 不执行任何动作。调用方可用它区分「没动作」与「留在原地」。
+  const STALE_ACTION = 'stale';
 
   // 路径归一化只用于「在不在这个根下」的判定：trim、正反斜杠统一、小写、去掉 /. 段与末尾分隔符。
   // 与 main.js 的 booksRootChanged / core/ipc-paths 的大小写口径一致（Windows 不敏感）；不 realpath
@@ -63,6 +66,15 @@
     return !isInsideRoot(bookPath, booksRoot);
   }
 
+  // 「当前生效根」：渲染层的 state.config 由 refreshConfig（收到换根广播时）刷新成 main 的最新配置；
+  // 取不到就回空串，调用方再用 payload 里的根兜底。五-M17（SS-08）：换根提示的生命周期里根可能
+  // 又变了（换回 / 再换），判定与执行动作之前都要按这个「当前根」复核，不能只看收到 payload 那一拍。
+  function currentRoot(state) {
+    const cfg = state && typeof state === 'object' ? state.config : null;
+    const root = cfg && typeof cfg.booksRoot === 'string' ? cfg.booksRoot : '';
+    return root;
+  }
+
   function messageFor(booksRoot) {
     return `另一个窗口把书架目录改成了「${booksRoot}」。\n\n这本书还在旧目录里，应用不会再往旧目录保存（现在保存会被阻止）。\n` +
       '正文还在编辑区里（未保存）：先另存成本地 txt 或复制正文，再回书架；要接着写这本书，把书文件夹移到新的书架目录后重新打开即可。';
@@ -76,6 +88,12 @@
     // 「一次性」按根去重：同一个根（含大小写 / 斜杠 / 末尾分隔符的不同写法）只处理一次；
     // 真的又换了一个根才重新提示。放在闭包里 = 每个窗口各自一份，不写 state（不新增界面状态）。
     let noticedRoot = '';
+
+    // 五-M17（SS-08）：按「当前生效根」复核这本书还是不是孤岛。没有配置快照（老 host / 首启竞态）
+    // 时退回提示里的那个根——宁可多提示一次，也不要让孤岛书静默继续失败。
+    function stillStranded(booksRoot) {
+      return strandedBook(state, currentRoot(state) || booksRoot);
+    }
 
     async function noticeStranded(booksRoot) {
       const res = await openModal({
@@ -91,6 +109,13 @@
         cancelValue: 'stay'
       });
       const action = (res && res.action) || 'stay';
+      // 五-M17（SS-08）：模态可能排队等了一会儿。执行动作前按当前生效根 / 当前书复核一次：
+      // 期间根被换回、或作者切到了新根下的另一本书，就撤销过期警告、不执行救稿 / 回书架——
+      // 否则「复制正文」复制的是另一本书的正文，「回书架」也与换根无关（旧文案还会误导成保存被阻止）。
+      if (!stillStranded(booksRoot)) {
+        toast('这本书现在能正常保存：刚才的换根提示已作废');
+        return STALE_ACTION;
+      }
       if (action === 'copy' || action === 'save') {
         // 救稿复用 save-rescue-ui 的同一份实现（正文取编辑区现值、写盘走 chapter:rescue）；
         // 失败要说清（不能把「没另存成功」装成成功）。
@@ -141,13 +166,16 @@
         return { handled: true, prompted: false, view: 'shelf' };
       }
 
-      if (!strandedBook(state, booksRoot)) {
+      // 五-M17（SS-08）：判「孤岛」要用当前生效根（refreshConfig 刚刷新过），不是收到的那条 payload
+      // 里的根——广播可能乱序 / 延迟到达，那时按旧根判定会弹出过期的保命提示。
+      const effectiveRoot = currentRoot(state) || booksRoot;
+      if (!strandedBook(state, effectiveRoot)) {
         // 书还在新根下（或当前没有书）：保存照常，只轻提示一次。
         toast('书架目录已更换；这本书仍在新目录下，保存照常');
         return { handled: true, prompted: false, view: state.view };
       }
 
-      const action = await noticeStranded(booksRoot);
+      const action = await noticeStranded(effectiveRoot);
       return { handled: true, prompted: true, action };
     }
 
@@ -158,8 +186,10 @@
     create: createConfigChangeUi,
     REQUIRED_HOST,
     NOTICE_TITLE,
+    STALE_ACTION,
     normalizeRootPath,
     isInsideRoot,
-    strandedBook
+    strandedBook,
+    currentRoot
   };
 });

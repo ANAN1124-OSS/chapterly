@@ -29,7 +29,10 @@ function makeHost(options = {}) {
   const state = {
     view: options.view === undefined ? 'editor' : options.view,
     bookPath: options.bookPath === undefined ? OLD_ROOT_BOOK : options.bookPath,
-    dirty: options.dirty === undefined ? true : Boolean(options.dirty)
+    dirty: options.dirty === undefined ? true : Boolean(options.dirty),
+    // 五-M17（SS-08）：当前生效配置（booksRoot 由 refreshConfig 刷新）——提示期间的根 / 书变化
+    // 要靠它复核「还是不是孤岛」。老用例不传 = 没有配置快照，退回按 payload 里的根判定。
+    config: options.config === undefined ? null : options.config
   };
   const host = {
     state,
@@ -252,6 +255,65 @@ test('R7（N2）：refreshConfig / refreshShelf 失败不吞掉提示，也不�
     shelfBroken.calls.toast.some(([message, kind]) => kind === 'error' && /刷新书架失败/.test(message)),
     '书架刷新失败要明确报错，不能让作者以为已经切到新目录'
   );
+});
+
+// ---------- 五-M17（SS-08）：换根孤岛提示按「当前生效根 / 当前书」复核 ----------
+// 模态可能排队等一会儿：期间别的窗口把根换回去 / 再换、或作者切到新根下的另一本书，
+// 已弹出的模态仍断言「现在保存会被阻止」并按旧文案执行救稿 / 回书架（会救错对象）。
+// 修复后：答复后执行动作前按当前生效根 + 当前书复核，已不孤岛就撤销警告、不执行动作。
+test('M17（SS-08）：提示期间根被换回（书已在新根下）→ 答复后不救稿、不弹旧路径，改发「提示已作废」', async () => {
+  const host = makeHost({
+    config: { booksRoot: NEW_ROOT },
+    modalAction: 'copy',
+    onModal: (state) => { state.config = { booksRoot: 'C:/旧书架' }; } // 提示期间根被换回这本书所在的目录
+  });
+  const result = await create(host.host).handleConfigChanged(rootPayload());
+  assert.equal(host.calls.modal.length, 1, '提示照常先弹（当时确实孤岛）');
+  assert.deepEqual(host.calls.rescue, [], '已经不再孤岛：不许再执行「复制正文」救稿');
+  assert.equal(result.action, 'stale', '返回「提示已作废」而不是动作');
+  assert.equal(result.prompted, true, '提示确实弹过');
+  assert.ok(
+    host.calls.toast.some(([message]) => /提示已作废/.test(message)),
+    '要明确撤销过期警告（不能让作者以为还在孤岛）'
+  );
+  assert.equal(host.calls.toast.some(([message]) => /保存会被阻止/.test(message)), false, '过期警告不许再说一遍');
+  assert.equal(host.state.bookPath, OLD_ROOT_BOOK, '不碰当前书身份');
+});
+
+test('M17（SS-08）：提示期间作者切到新根下的书 → 答复「回书架」也不执行；旧根下的书仍照旧执行', async () => {
+  const switched = makeHost({
+    config: { booksRoot: NEW_ROOT },
+    modalAction: 'shelf',
+    onModal: (state) => { state.bookPath = 'D:/新书架/书乙'; }
+  });
+  const switchedResult = await create(switched.host).handleConfigChanged(rootPayload());
+  assert.deepEqual(switched.calls.shelf, [], '当前书已在新根下，回书架动作与换根无关，不再执行');
+  assert.deepEqual(switched.calls.rescue, []);
+  assert.equal(switchedResult.action, 'stale');
+  assert.ok(switched.calls.toast.some(([message]) => /提示已作废/.test(message)));
+
+  // 对照：提示期间什么都没变 → 动作照旧执行
+  const still = makeHost({ config: { booksRoot: NEW_ROOT }, modalAction: 'shelf' });
+  const stillResult = await create(still.host).handleConfigChanged(rootPayload());
+  assert.deepEqual(still.calls.shelf, [true]);
+  assert.equal(stillResult.action, 'shelf');
+});
+
+test('M17（SS-08）：收到的根已过期（当前生效根下这本书正常）→ 不弹过期提示，只提示保存照常', async () => {
+  // 乱序 / 延迟到达的广播：本窗口已经刷新到 R1（书在根下），又收到一条 R2 的换根通知
+  const host = makeHost({ config: { booksRoot: 'C:/旧书架' } });
+  const result = await create(host.host).handleConfigChanged(rootPayload());
+  assert.deepEqual(host.calls.modal, [], '按当前生效根判定：这本书不孤岛，不该弹保命提示');
+  assert.ok(host.calls.toast.some(([message]) => /保存照常/.test(message)));
+  assert.equal(result.prompted, false);
+});
+
+test('R1c（SS-08）：currentRoot 只认 state.config.booksRoot 的字符串值，取不到回空串（调用方再兜底）', () => {
+  assert.equal(configChangeUi.currentRoot({ config: { booksRoot: ' C:/书架 ' } }), ' C:/书架 ');
+  assert.equal(configChangeUi.currentRoot({ config: { booksRoot: 123 } }), '');
+  assert.equal(configChangeUi.currentRoot({ config: null }), '');
+  assert.equal(configChangeUi.currentRoot({}), '');
+  assert.equal(configChangeUi.currentRoot(null), '');
 });
 
 // ---------- R8：静态接线 ----------
