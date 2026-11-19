@@ -487,12 +487,21 @@
         renderFindResults(payload);
         return;
       }
-      const res = await call(api.findAll, editorEl.value, options.query, {
+      // 五-M1（RF-01）：当前章查找也要拍正文快照——IPC 在飞期间作者继续敲字时 onEditorInput 只清
+      // 查找会话、不推进 findSeq，令牌与书 / 章身份两道复核都拦不住；旧正文的命中下标画到新正文上，
+      // 高亮 / 选区 / 计数会全部错位（只读，不写盘）。与「当前章替换」的 stillSameText 同口径。
+      const snapshot = editorEl.value;
+      const res = await call(api.findAll, snapshot, options.query, {
         caseSensitive: options.caseSensitive
       });
       if (!findSeq.isCurrent(token)) return { ok: false, stale: true };
       if (!staleGuard.sameChapterIdentity(expectedChapter, staleGuard.chapterIdentity(state))) {
         $('find-summary').textContent = '查找期间已经换了章节，这次结果没有显示；请重新查找';
+        $('find-results').innerHTML = '';
+        return { ok: false, stale: true };
+      }
+      if (editorEl.value !== snapshot) {
+        $('find-summary').textContent = '正文刚改过，这次查找结果没有显示；请重新查找';
         $('find-results').innerHTML = '';
         return { ok: false, stale: true };
       }

@@ -1245,3 +1245,24 @@ test('runFind（WP-15 / C36）：整本查找在途换书 → 旧书的清单不
   );
   assert.equal(ctx.dom.map.get('find-results').children.length, 0, '旧书的章名不许留在新书面板');
 });
+
+// 五-M1（RF-01）：当前章查找在途作者继续敲字 → 旧正文的命中下标不许画到新正文上。
+// onEditorInput 只清查找会话、不推进 findSeq，令牌 / 书章身份都拦不住，必须核正文快照。
+test('五-M1（RF-01）：当前章查找在途正文被改 → 旧命中作废，高亮 / 选区不错位', async () => {
+  let release;
+  const ctx = build({
+    query: '张三',
+    text: '张三一。张三二。',
+    findAll: () => new Promise((resolve) => { release = resolve; })
+  });
+  const pending = ctx.ui.runFind();
+  ctx.editorEl.value = '张三一。张三二。在途补的一段字'; // 期间输入（会话被清，令牌不推进）
+  release({ count: 2, matches: [{ index: 0, length: 2 }, { index: 4, length: 2 }] });
+  assert.deepEqual(await pending, { ok: false, stale: true });
+  assert.equal(
+    ctx.dom.map.get('find-summary').textContent,
+    '正文刚改过，这次查找结果没有显示；请重新查找'
+  );
+  assert.equal(ctx.state.find.total, 0, '旧正文的命中不许进查找会话');
+  assert.equal(ctx.dom.map.get('find-results').children.length, 0);
+});
