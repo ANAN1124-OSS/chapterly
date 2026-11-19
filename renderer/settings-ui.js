@@ -122,6 +122,10 @@
   // 五-M14（SS-11）：弹层是否开着（openSettings 显示弹层后置位、closeSettings 复位）。
   // 别的窗口改了全局设置时要靠它判断「本窗口有没有一份会按旧值写回的表单」。
   let settingsOpen = false;
+  // 五-M15（SS-04）：按书保存跨两个文件（书目.json 的章号 / config.json 的 bookDisplay）。上一次保存
+  // 只写进了章号时记在这里，取消前再提示一次——「取消一个字节不写」这条入口口径已经做不到，
+  // 至少不许静默。openSettings / 下一次两步都成功的保存都会清掉它。
+  let settingsPartialSave = null;
 
   function settingsTabNodes() {
     const nav = $('settings-nav');
@@ -805,6 +809,7 @@
     // 冷盘 / 杀软下可感知）。回填 / 分区 / 台账的顺序与内容都不变，只是弹层先可见。
     $('settings-backdrop').classList.remove('hidden');
     settingsOpen = true;
+    settingsPartialSave = null; // 每次打开都是新的编辑会话：上一次的部分写入提示不跨会话
     // 打开时刷新一次今天 / 近 30 天，避免跨过午夜后还显示昨天的数字
     await refreshStats();
     fillSettingsFields(cfg);
@@ -851,6 +856,11 @@
       renderWriteTimer();
       renderDurationSettings();
     }
+    // 五-M15（SS-04）：上一次保存只写进了章号（书目.json），取消撤回不了——明说，不静默。
+    if (restore && settingsPartialSave && settingsPartialSave.numbering) {
+      toast('章号已经保存到「书目.json」：取消只还原显示设置的预览，不会撤回章号', 'warn');
+    }
+    settingsPartialSave = null;
     state.settingsBackup = null;
   }
 
@@ -918,19 +928,45 @@
         const numberingEl = $('settings-chapter-numbering');
         const numberingWanted = numberingEl && numberingEl.value === 'volume' ? 'volume' : 'continuous';
         const numberingNow = state.meta && state.meta.chapterNumbering === 'volume' ? 'volume' : 'continuous';
-        if (numberingWanted !== numberingNow) {
-          const saved = await call(api.setChapterNumbering, state.bookPath, numberingWanted);
-          if (saved && saved.meta) applyChapterNumbering(saved.meta);
+        // 五-M15（SS-04）：章号写「书目.json」、显示设置写 config.json 的 bookDisplay，是两个文件，
+        // 没有跨文件事务。旧实现把两步包在同一个 catch 里：章号写成功、显示设置写失败时只报
+        // 「保存设置失败」——作者以为什么都没写，点「取消」只还原显示预览，书目里的章号却已经变了。
+        // 这里记下每一步的真实落盘情况：失败时如实说明已经保存了哪一半，取消时再提示一次。
+        let numberingWritten = false;
+        let displayWritten = false;
+        try {
+          if (numberingWanted !== numberingNow) {
+            const saved = await call(api.setChapterNumbering, state.bookPath, numberingWanted);
+            numberingWritten = true;
+            if (saved && saved.meta) applyChapterNumbering(saved.meta);
+          }
+          const display = await call(api.setBookDisplay, state.bookId, form);
+          displayWritten = true;
+          state.bookDisplay = display || {};
+          state.config = effectiveConfig();
+          applyEditorStyle();
+          syncCaretParagraphFromConfig();
+          applySidebarWidth(state.config.editorSidebarWidth != null ? state.config.editorSidebarWidth : 250);
+          settingsPartialSave = null; // 这次真的两步都成了：清掉上一次的部分写入残留
+          closeSettings({ restore: false });
+          toast('已保存：这本书的显示设置（只影响本书）');
+          return;
+        } catch (err) {
+          if (displayWritten) {
+            // 显示设置已经落盘，失败发生在它之后的重绘 / 收尾：别把已保存的那半说成没保存
+            toast(`保存设置失败（显示设置已经保存）：${err.message}`, 'error');
+          } else if (numberingWritten) {
+            settingsPartialSave = { numbering: true };
+            toast(
+              `保存了一半：章号已保存到「书目.json」，显示设置没保存（${err.message}）。` +
+                '可再点一次「保存设置」重试',
+              'error'
+            );
+          } else {
+            toast(`保存设置失败：${err.message}`, 'error');
+          }
+          return;
         }
-        const display = await call(api.setBookDisplay, state.bookId, form);
-        state.bookDisplay = display || {};
-        state.config = effectiveConfig();
-        applyEditorStyle();
-        syncCaretParagraphFromConfig();
-        applySidebarWidth(state.config.editorSidebarWidth != null ? state.config.editorSidebarWidth : 250);
-        closeSettings({ restore: false });
-        toast('已保存：这本书的显示设置（只影响本书）');
-        return;
       }
       // 关掉「写作时长」前，先把计时器里还没上报的整秒记下来（配置一改主进程就不再接收）
       if (writeDurationEnabled() && $('settings-write-duration').checked !== true) {

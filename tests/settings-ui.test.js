@@ -115,6 +115,7 @@ const BASE_IDS = [
   'settings-size', 'settings-line-height', 'settings-letter-spacing', 'settings-padding-x', 'settings-page-width',
   'settings-text-autospace',
   'settings-paper', 'settings-caret-paragraph', 'settings-caret-color', 'settings-caret-colors', 'settings-caret-hint',
+  'settings-chapter-numbering',
   'settings-long-para-threshold', 'settings-long-para-hint',
   'settings-snapshot-enabled', 'settings-snapshot-days', 'settings-daily-goal', 'settings-write-duration',
   'settings-clipboard-watch', 'settings-clipboard-field',
@@ -170,7 +171,7 @@ function build(options = {}) {
     writeTimer: { running: false }
   };
   const calls = {
-    setConfig: [], setBookDisplay: [], resetBookDisplay: [], toast: [], getConfig: 0, refreshStats: 0, renderStatsChart: 0,
+    setConfig: [], setBookDisplay: [], setChapterNumbering: [], resetBookDisplay: [], toast: [], getConfig: 0, refreshStats: 0, renderStatsChart: 0,
     renderDurationSettings: 0, renderWriteTimer: 0, applyWriteTimerConfig: 0, flushWriteTimer: 0,
     renderEditorMarks: 0, renderMarksMenu: 0, refreshShelf: 0,
     refreshSensitiveWordList: 0, refreshProofreadWordList: 0, pickSensitiveWords: [], pickProofreadWords: [],
@@ -183,6 +184,12 @@ function build(options = {}) {
   const api = {
     async setConfig(patch) { calls.setConfig.push(patch); if (options.setConfigGate) await options.setConfigGate; if (options.saveError) throw new Error(options.saveError); return { ...state.globalConfig, ...patch }; },
     async setBookDisplay(bookId, patch) { calls.setBookDisplay.push([bookId, patch]); if (options.saveError) throw new Error(options.saveError); return patch; },
+    // 五-M15（SS-04）：章号走 书目.json（与 bookDisplay 是两个文件，没有跨文件事务）
+    async setChapterNumbering(bookPath, mode) {
+      calls.setChapterNumbering.push([bookPath, mode]);
+      if (options.numberingError) throw new Error(options.numberingError);
+      return { meta: { ...(state.meta || {}), chapterNumbering: mode } };
+    },
     async resetBookDisplay(bookId) { calls.resetBookDisplay.push(bookId); if (options.resetError) throw new Error(options.resetError); return {}; },
     // 五-M14（SS-11）：config:get 回包（本窗口的 state.globalConfig 可能是旧快照，主进程才是唯一事实源）
     async getConfig() {
@@ -223,7 +230,7 @@ function build(options = {}) {
     toast(message, kind) { calls.toast.push([message, kind]); },
     chaptersLib,
     display: {
-      applyEditorStyle(cfg) { calls.applyEditorStyle.push(cfg); },
+      applyEditorStyle(cfg) { calls.applyEditorStyle.push(cfg); if (options.applyEditorStyleThrows) throw new Error('重绘失败'); },
       syncCaretParagraphFromConfig() { calls.syncCaretParagraphFromConfig += 1; },
       // 与 renderer.js 的 effectiveConfig 同口径：生效值 = 全局配置 + 当前书的覆盖（state.config 是缓存）
       effectiveConfig: () => ({ ...(state.globalConfig || state.config || {}), ...(state.bookDisplay || {}) }),
@@ -238,7 +245,8 @@ function build(options = {}) {
       s2tLib,
       templateLib,
       editorLogic,
-      applyChapterNumbering(meta) { calls.applyChapterNumbering.push(meta); }
+      // 与 renderer.js 的 applyChapterNumberingMeta 同口径：回执落地后 state.meta 就换成新 meta
+      applyChapterNumbering(meta) { calls.applyChapterNumbering.push(meta); if (meta && typeof meta === 'object') state.meta = meta; }
     },
     peers: {
       stats: { refreshStats() { calls.refreshStats += 1; }, renderStatsChart() { calls.renderStatsChart += 1; } },
@@ -991,6 +999,84 @@ test('saveSettings（按书）：写 bookDisplay、重绘显示层、关弹层�
   assert.deepEqual(ctx.calls.toast[0], ['已保存：这本书的显示设置（只影响本书）', undefined]);
   assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), true);
   assert.deepEqual(ctx.calls.setConfig, []);
+});
+
+// ---------- 五-M15（SS-04）：按书设置保存非原子 ----------
+// 按书保存跨两个文件：章号写「书目.json」、显示设置写 config.json 的 bookDisplay。旧实现把两步
+// 包在同一个 catch 里：章号先写成功后显示设置写失败，只报「保存设置失败」→ 作者以为什么都没写，
+// 点「取消」只还原显示预览，书目里的章号却已经变了（与「点取消一个字节不写」的入口口径矛盾）。
+test('M15（SS-04）：章号已写、显示设置失败 → 如实说「章号已保存」，取消时再提示不能撤回', async () => {
+  const options = {
+    scope: 'book', bookId: 'id-1',
+    config: { booksRoot: '/书库', editorFontSize: 18 },
+    saveError: '磁盘只读'
+  };
+  const ctx = build(options);
+  await ctx.ui.openSettings();
+  assert.equal(ctx.state.settingsScope, 'book');
+  ctx.dom.map.get('settings-chapter-numbering').value = 'volume';
+
+  await ctx.ui.saveSettings();
+  // 先写章号、后写显示：章号那一半已经落盘
+  assert.deepEqual(ctx.calls.setChapterNumbering, [['/书库/书甲', 'volume']], '章号确实先写成功');
+  assert.equal(ctx.calls.setBookDisplay.length, 1, '显示设置也发起了（随后失败）');
+  assert.deepEqual(ctx.calls.applyChapterNumbering, [{ title: '书甲', chapterNumbering: 'volume' }], '章号显示层已按回执更新（与磁盘一致）');
+  assert.equal(ctx.calls.toast.length, 1);
+  const [message, kind] = ctx.calls.toast[0];
+  assert.equal(kind, 'error');
+  assert.match(message, /章号已保存/, '必须明说章号已经写进去了');
+  assert.match(message, /显示设置没保存/, '同时明说显示设置没写');
+  assert.notEqual(message, '保存设置失败：磁盘只读', '不许再用一句「保存设置失败」掩盖部分写入');
+  assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), false, '失败不关弹层（还能重试）');
+
+  // 重试成功：章号已与磁盘一致（不再重复写），显示设置补上后正常收尾
+  options.saveError = null;
+  await ctx.ui.saveSettings();
+  assert.equal(ctx.calls.setChapterNumbering.length, 1, '章号已经一致，不重复写');
+  assert.deepEqual(ctx.calls.toast[ctx.calls.toast.length - 1], ['已保存：这本书的显示设置（只影响本书）', undefined]);
+  assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), true);
+
+  // 取消：部分写入过一次之后再点「取消」，不许静默——要提示章号不会撤回
+  const cancel = build({ scope: 'book', bookId: 'id-1', config: { booksRoot: '/书库' }, saveError: '磁盘只读' });
+  await cancel.ui.openSettings();
+  cancel.dom.map.get('settings-chapter-numbering').value = 'volume';
+  await cancel.ui.saveSettings();
+  cancel.calls.toast.length = 0; // 只看取消时的提示
+  const backup = { ...cancel.state.config };
+  cancel.ui.closeSettings();
+  assert.deepEqual(cancel.state.config, backup, '取消仍还原显示设置的预览');
+  assert.equal(cancel.calls.toast.length, 1);
+  assert.equal(cancel.calls.toast[0][1], 'warn');
+  assert.match(cancel.calls.toast[0][0], /章号已经保存/);
+  assert.match(cancel.calls.toast[0][0], /取消/, '要点明取消撤回不了章号');
+});
+
+test('M15（SS-04）：什么都没写进去时保持原提示；显示设置已保存后的失败也要说清', async () => {
+  // ① 章号没有改动 + 显示设置失败：什么都没落盘，原提示保持不变
+  const plain = build({ scope: 'book', bookId: 'id-1', saveError: '写盘失败' });
+  await plain.ui.openSettings();
+  await plain.ui.saveSettings();
+  assert.deepEqual(plain.calls.setChapterNumbering, [], '章号没变不写');
+  assert.deepEqual(plain.calls.toast, [['保存设置失败：写盘失败', 'error']]);
+  plain.ui.closeSettings();
+  assert.equal(plain.calls.toast.length, 1, '没有部分写入，取消不加提示');
+
+  // ② 显示设置写成功后重绘抛错：显示设置已经在磁盘上，不能再说「保存设置失败」了事
+  const late = build({ scope: 'book', bookId: 'id-1', applyEditorStyleThrows: true });
+  await late.ui.openSettings();
+  await late.ui.saveSettings();
+  assert.equal(late.calls.setBookDisplay.length, 1);
+  assert.match(late.calls.toast[0][0], /显示设置已经保存/);
+  assert.match(late.calls.toast[0][0], /重绘失败/);
+
+  // ③ 章号写入本身失败：两步都没落盘，原提示
+  const numberFail = build({ scope: 'book', bookId: 'id-1', numberingError: '书已被删除' });
+  await numberFail.ui.openSettings();
+  numberFail.dom.map.get('settings-chapter-numbering').value = 'volume';
+  await numberFail.ui.saveSettings();
+  assert.deepEqual(numberFail.calls.setChapterNumbering, [['/书库/书甲', 'volume']]);
+  assert.deepEqual(numberFail.calls.setBookDisplay, [], '章号失败后不再写显示设置');
+  assert.deepEqual(numberFail.calls.toast, [['保存设置失败：书已被删除', 'error']]);
 });
 
 test('saveSettings（全局）：关闭写作时长前 flush、setConfig payload 逐字段、刷新书架与两个词表', async () => {
