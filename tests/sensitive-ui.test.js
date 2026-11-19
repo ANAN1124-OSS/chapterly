@@ -732,3 +732,45 @@ test('runSensitiveCheck（#43 / E17）：失败路径按发起时的身份结算
   assert.deepEqual(await same.ui.runSensitiveCheck(), { ok: false, message: '词表读不出来' });
   assert.equal(same.dom.map.get('sensitive-summary').textContent, '预检失败：词表读不出来');
 });
+
+// ---------- 五-M13（SE-01）：整本预检在途换词表 ----------
+test('五-M13：整本预检在途换词表——旧回执 wordList 不许盖回新词表，撞 busy 要补跑一次', async () => {
+  const dom = makeDocument();
+  const oldInfo = { ok: true, name: '旧词表.txt', count: 2 };
+  const newPicked = { ok: true, path: '/词表/新词表.txt', name: '新词表.txt', count: 9 };
+  const ctx = build({ dom, wordInfo: oldInfo, picked: newPicked });
+  await ctx.ui.refreshSensitiveWordList();
+  assert.equal(ctx.state.sensitiveWordList.name, '旧词表.txt');
+  dom.map.get('sensitive-backdrop').classList.remove('hidden'); // 面板开着：换词表会触发重跑
+
+  // 整本预检卡在 await 上；回执里的 wordList 是发起时（旧词表）的快照。
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  ctx.host.api.sensitiveCheckText = async () => {
+    calls += 1;
+    if (calls === 1) {
+      await gate;
+      return { total: 1, wordHitCount: 1, byWord: [{ word: '旧', count: 1 }], issues: [], wordList: oldInfo };
+    }
+    return { total: 0, wordHitCount: 0, byWord: [], issues: [], wordList: newPicked };
+  };
+  const pending = ctx.ui.runSensitiveCheck();
+  await flush();
+  assert.equal(ctx.state.sensitiveBusy, true, '预检在途');
+
+  // 作者在 busy 期间换词表：配置已写新表、状态行已是新表 → 撞 busy 应登记补跑（不是静默吞掉）
+  const picked = await ctx.ui.pickSensitiveWords({ persist: true });
+  assert.equal(picked.name, '新词表.txt');
+  assert.equal(ctx.state.sensitiveWordList.name, '新词表.txt');
+  assert.deepEqual(ctx.calls.setConfig, [{ sensitiveWordsPath: '/词表/新词表.txt' }]);
+
+  release();
+  await pending;
+  assert.equal(ctx.state.sensitiveWordList.name, '新词表.txt', '旧回执的词表快照不许把刚选的新词表盖回去');
+
+  await flush();
+  await flush();
+  assert.equal(calls, 2, '预检在途换了词表：跑完要按新词表补跑一次');
+  assert.equal(ctx.state.sensitiveWordList.name, '新词表.txt', '补跑回执同样按最新词表落地');
+});

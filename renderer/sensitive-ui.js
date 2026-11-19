@@ -105,6 +105,11 @@
     return text;
   }
 
+  // 五-M13（SE-01）：词表状态世代。整本预检在途时作者还可能换词表（或设置页保存后刷新状态）——
+  // 回包里的 wordList 是发起时的快照，不能反向覆盖刚更新的状态（否则状态行与结果仍是旧词表）。
+  // 每次本地改写 state.sensitiveWordList 都推进这一代；落地时不是发起那一代就不采用回包的 wordList。
+  let sensitiveWordListSeq = 0;
+
   function renderSensitiveWordList() {
     const el = $('sensitive-wordlist-text');
     if (!el) return;
@@ -120,6 +125,7 @@
     } catch (err) {
       state.sensitiveWordList = { ok: false, code: 'ERROR', message: `读取词表失败：${err.message}` };
     }
+    sensitiveWordListSeq += 1; // 五-M13：状态刚被刷新，在途预检的旧快照不再回写
     renderSensitiveWordList();
     return state.sensitiveWordList;
   }
@@ -159,6 +165,9 @@
     $('sensitive-busy').classList.toggle('hidden', !busy);
     $('btn-sensitive-run').disabled = Boolean(busy);
   }
+
+  // 五-M13（SE-01）：预检在途时换了词表 —— 这一轮结束后按最新词表补跑一次（不并发、不吞操作）。
+  let sensitiveRerunPending = false;
 
   function sensitiveChapterTitle(match) {
     let index = Number(match.chapterIndex);
@@ -314,6 +323,8 @@
     }
     if (state.sensitiveBusy) return { ok: false, message: '正在预检中' };
     const scope = sensitiveScope();
+    // 五-M13（SE-01）：发起时的词表世代。回执回来时词表已经被换过 / 刷新过 → 不采用旧 wordList。
+    const wordListSeqAtStart = sensitiveWordListSeq;
     state.sensitiveScope = scope;
     setSensitiveBusy(true);
     $('sensitive-summary').textContent =
@@ -381,7 +392,8 @@
         return failSensitivePayload();
       }
       state.sensitive = payload;
-      if (payload.wordList) state.sensitiveWordList = payload.wordList;
+      // 五-M13（SE-01）：只有词表这一代没变过才写回；预检在途换过词表，回包是旧快照。
+      if (payload.wordList && wordListSeqAtStart === sensitiveWordListSeq) state.sensitiveWordList = payload.wordList;
       renderSensitiveWordList();
       renderSensitiveSummary();
       renderSensitiveResults();
@@ -399,6 +411,11 @@
       return { ok: false, message: err.message };
     } finally {
       setSensitiveBusy(false);
+      // 五-M13（SE-01）：预检在途时换词表撞 busy 被静默吞掉——跑完按最新词表补跑一次。
+      if (sensitiveRerunPending) {
+        sensitiveRerunPending = false;
+        if (!$('sensitive-backdrop').classList.contains('hidden')) void runSensitiveCheck();
+      }
     }
   }
 
@@ -422,11 +439,14 @@
       }
       state.sensitiveWordsInfo = picked;
       state.sensitiveWordList = picked;
+      sensitiveWordListSeq += 1; // 五-M13：换了词表，在途预检的旧 wordList 不许盖回来
       renderSensitiveWordList();
       renderSensitiveSettings();
       toast(`已选择词表：${picked.name}（${picked.count} 个词）`);
       if (persist && !$('sensitive-backdrop').classList.contains('hidden')) {
-        await runSensitiveCheck();
+        // 五-M13（SE-01）：预检在途时直接重跑会撞 busy 被静默吞掉——登记补跑，这一轮结束后按新词表跑。
+        if (state.sensitiveBusy) sensitiveRerunPending = true;
+        else await runSensitiveCheck();
       }
       return picked;
     } catch (err) {
