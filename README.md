@@ -1,4 +1,4 @@
-# 章回 / Chapterly v1.8.1
+# 章回 / Chapterly v1.9.0
 
 给写个人自用的 Windows 桌面写作工具：**整本书一键保存、绝不丢稿**；新建章节自动生成「第12章：」这样的标题，你只填名字。
 
@@ -41,7 +41,7 @@
 
 ### 方式一：安装包（推荐，不用命令行）
 
-**下载**：从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-1.8.1-win-x64-setup.exe`（已于 2026-11-16 发布，见 [v1.8.1](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.8.1)），或者直接用本机打包产物 `dist\chapterly-1.8.1-win-x64-setup.exe`；开发时也可以先用开发版（`pnpm start`）。
+**下载**：从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-1.9.0-win-x64-setup.exe`（已于 2026-11-19 发布，见 [v1.9.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.9.0)），或者直接用本机打包产物 `dist\chapterly-1.9.0-win-x64-setup.exe`；开发时也可以先用开发版（`pnpm start`）。
 
 安装：
 
@@ -396,8 +396,8 @@ pnpm start          # 启动应用
 > 其余开发自检细节（bench / contrast / sweep-unused / lint-gate / a11y-gate 的完整参数说明、截图命令）与完整目录结构已归档到内部文档（`内部文档/归档-2026-11-15/README-开发自检细节.md`，`.gitignore` 整目录忽略、不进公开仓库）。
 
 ```bash
-pnpm test          # 单元测试（node:test，2738 项）
-pnpm run e2e       # 端到端自检：真实启动 Electron 走 1902 项主流程（场景与 84 个组文件共用一份 harness；**84 个组文件（00–83）** 按组号派发）
+pnpm test          # 单元测试（node:test，3014 项）
+pnpm run e2e       # 端到端自检：真实启动 Electron 走 1916 项主流程（场景与 84 个组文件共用一份 harness；**84 个组文件（00–83）** 按组号派发）
 pnpm run demo      # 生成演示书库到 shots/demo-library（截图/演示用）
 ```
 
