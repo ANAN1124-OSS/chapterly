@@ -210,6 +210,29 @@ test('summarizeImport：统一后的 skipped[]（带 tooLarge）文案不变，�
   );
 });
 
+// 五-H6（TC-1 半步）：UTF-8 失败后落严格 GB18030 成功的书带 encodingSuspect ——汇总里提示作者
+// 打开核对（反向校验阈值待作者拍板，这一版不擅自改判定）。有损（替换符）与可疑两段可以并存。
+test('summarizeImport：encodingSuspect（UTF-8 失败后按 GB18030 解）在汇总里提示核对', () => {
+  const ui = importUi.create(makeHost().host);
+  assert.equal(
+    ui.summarizeImport([{ title: 'GBK收藏', encoding: 'gb18030', encodingSuspect: true }], [], []),
+    '已导入 1 本：GBK收藏。（1 本编码判定待核对：《GBK收藏》按 gb18030 解码；' +
+      '若打开后正文是乱码，请用原始编码另存后重导）'
+  );
+  assert.equal(
+    ui.summarizeImport(
+      [
+        { title: '甲', encoding: 'gb18030', encodingSuspect: true },
+        { title: '乙', encoding: 'utf-8', replacements: 2 }
+      ],
+      [],
+      []
+    ),
+    '已导入 2 本：甲、乙。（1 本编码可能有损：《乙》替换 2 个字符）' +
+      '（1 本编码判定待核对：《甲》按 gb18030 解码；若打开后正文是乱码，请用原始编码另存后重导）'
+  );
+});
+
 test('importBooksFlow：state.importing 时立刻返回 { busy: true }，不打 IPC、不建 toast、不碰按钮', async () => {
   const { host, state, calls, toasts, els } = makeHost();
   const created = installDocument();

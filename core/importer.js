@@ -675,6 +675,9 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
       encoding: decodedInfo.encoding
     };
     if (decodedInfo.replacements) result.replacements = decodedInfo.replacements;
+    // 五-H6（TC-1）半步：UTF-8 失败后按严格 GB18030 解成功时如实带「编码可疑」标记，
+    // 由导入界面提示作者核对正文（反向校验阈值属产品决策，待作者拍板；这一版不擅自改判定）。
+    if (decodedInfo.encodingSuspect) result.encodingSuspect = true;
     return result;
   } finally {
     // 只清自己的暂存根：成功时里面已空（书目录被 rename 走），失败时连半成品一起清。

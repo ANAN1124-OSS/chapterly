@@ -129,9 +129,15 @@ test('X-N1 E4：无 BOM 纯中文 UTF-16BE → 识别为 utf-16be，解码逐字
 });
 
 // E5：GBK 书的老路径不回退（严格 GB18030 能认出来时不许被宽容 UTF-8 抢走）。
-test('X-N1 E5：GBK 编码仍按 gb18030 解，且严格路径不带 replacements', async () => {
+test('X-N1 E5：GBK 编码仍按 gb18030 解，严格路径不回退且替换符不误报；但会带「编码可疑」标记', async () => {
   const gbk = Buffer.from([0xb5, 0xda, 0xd2, 0xbb, 0xd5, 0xc2, 0x20, 0xd6, 0xd0, 0xce, 0xc4]);
-  assert.deepEqual(txt.decodeBufferWithEncoding(gbk), { text: '第一章 中文', encoding: 'gb18030' });
+  // 五-H6（TC-1）半步：UTF-8 严格失败 → 严格 GB18030 成功，这条路径无法排除「UTF-8 被误判成
+  // GB18030」，所以回包带 encodingSuspect（导入界面提示作者核对）。反向校验阈值待作者拍板。
+  assert.deepEqual(txt.decodeBufferWithEncoding(gbk), {
+    text: '第一章 中文',
+    encoding: 'gb18030',
+    encodingSuspect: true
+  });
 
   const base = await mkTmp();
   const src = path.join(base, 'GBK收藏');
@@ -140,6 +146,7 @@ test('X-N1 E5：GBK 编码仍按 gb18030 解，且严格路径不带 replacement
   const res = await importer.importFolders(path.join(base, '书架'), [src]);
   assert.equal(res.imported.length, 1);
   assert.equal(res.imported[0].encoding, 'gb18030');
+  assert.equal(res.imported[0].encodingSuspect, true, '导入回包要带可疑标记给界面提示');
   assert.equal('replacements' in res.imported[0], false, '干净 GBK 不许误报替换符');
 });
 
@@ -152,6 +159,9 @@ test('X-N1 E6：UTF-8 正文后接大量坏字节 → 超出宽容预算，仍�
   const info = txt.decodeBufferWithEncoding(buffer);
   assert.equal(info.encoding, 'gb18030', '400 个坏字节已经明显不是 UTF-8，不能被「宽容 UTF-8」吞掉');
   assert.ok(info.replacements > 0, '兜底替换必须报告数量');
+  // 五-H6（TC-1）：这条路径本身是「非 fatal GB18030 兜底」，已被 replacements 如实报告；
+  // encodingSuspect 只标在「严格 GB18030 成功」那条更可疑的路径上，不重复标记。
+  assert.equal('encodingSuspect' in info, false);
 });
 
 // E7：严格路径的形状不变 —— 合法 UTF-8（哪怕原文里本来就有 U+FFFD）不带 replacements 字段；
@@ -186,4 +196,15 @@ test('X-N1 E8：干净导入只多 encoding 字段，不带 replacements', async
   assert.equal(res.imported.length, 1);
   assert.equal(res.imported[0].encoding, 'utf-8');
   assert.equal('replacements' in res.imported[0], false);
+});
+// 五-H6（TC-1，半步）：UTF-8 正文混入 GBK 片段（UTF-8 坏字节超出宽容预算）→ UTF-8 严格失败后
+// 「严格 GB18030」成功，整本被解成「绗笁绔」式乱码且旧回包不带任何证据。现在回包如实带
+// encodingSuspect，导入界面据此提示作者核对；反向校验阈值属产品决策（待作者拍板）。
+test('五-H6（TC-1）：UTF-8 正文混 GBK 片段 → 严格 GB18030「成功」也标可疑，不静默当正常', () => {
+  const utf8Body = Buffer.from('天地玄黄宇宙洪荒'.repeat(20), 'utf8');
+  const gbkFragment = Buffer.from([0xbb, 0xb5, 0xd7, 0xd6, 0xbd, 0xda]); // GBK「坏字节」
+  const info = txt.decodeBufferWithEncoding(Buffer.concat([utf8Body, gbkFragment]));
+  assert.equal(info.encoding, 'gb18030');
+  assert.equal(info.encodingSuspect, true, 'UTF-8 失败后按严格 GB18030 解成功必须标可疑');
+  assert.equal('replacements' in info, false, '严格路径没有替换符字段（乱码不是替换符）');
 });

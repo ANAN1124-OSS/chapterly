@@ -312,7 +312,12 @@ function decodeBufferWithEncoding(buffer) {
     }
     try {
       const text = new TextDecoder('gb18030', { fatal: true }).decode(buffer);
-      return { text, encoding: 'gb18030' };
+      // 五-H6（TC-1）半步：UTF-8 严格解码失败后落「严格 GB18030」成功，并不等于真的是 GB18030 ——
+      // UTF-8 中文字节流几乎总是合法 GB18030（E4–E9 首字节 ∈ 81–FE），整本可能被解成「绗笁绔」式乱码。
+      // 「真的是 GB18030 吗」的反向校验阈值（CJK 常用字占比 / 再编码重合率）属产品决策，待作者拍板；
+      // 这一版先把可疑度如实带回包（encodingSuspect），由导入界面提示作者核对，不再静默当正常。
+      // 注意：真正的 GBK 文件也走这条路径，所以这是「待核对」提示，不是「已损坏」结论。
+      return { text, encoding: 'gb18030', encodingSuspect: true };
     } catch { /* 识别不了 */ }
   }
   const text = new TextDecoder('gb18030').decode(buffer);
