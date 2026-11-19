@@ -410,7 +410,15 @@ test('U-D9：没装 onDelete 的列表（书卡）与容器外的元素（编辑
 test('静态闸门：Delete 删除章节接线（复用 deleteChapterAt，不抄第二份删除逻辑；删后焦点回列表）', () => {
   assert.ok(RENDERER.includes('allowDelete: true'), '章节列表要打开删除键');
   assert.ok(RENDERER.includes('onDelete: (item, position)'), '章节列表要装 onDelete');
-  assert.ok(RENDERER.includes('void deleteChapterAt(position)'), 'Delete 必须复用现成的 deleteChapterAt');
+  // 五-H1（ES-5）：position 是渲染行位置（筛选 / 折叠跳行），deleteChapterAt 吃的是书内下标。
+  // 必须按 dataset.index 取书内下标（与 onActivate / onExtend 同口径），裸 position 会删错章。
+  assert.ok(RENDERER.includes('const chapterIndex = Number(item.dataset.index)'), 'Delete 要按 dataset.index 取书内下标');
+  assert.ok(RENDERER.includes('void deleteChapterAt(chapterIndex)'), 'Delete 必须复用现成的 deleteChapterAt（书内下标）');
+  assert.ok(
+    RENDERER.includes('state.selectedIds.has(chapterIdAt(chapterIndex))'),
+    '多选判定同样要用书内下标（否则批量意图退化成单删错章）'
+  );
+  assert.equal(RENDERER.includes('void deleteChapterAt(position)'), false, '不许再把渲染行位置当书内下标');
   assert.ok(
     RENDERER.includes("if (deleted) focusChapterItem({ mode: 'position', position })"),
     '删完把焦点放回列表（不掉回 body）'
@@ -666,6 +674,12 @@ test('静态闸门：F2 重命名接线（全局 keydown + 右键菜单键帽 + 
 
 test('静态闸门：Alt+↑/↓ 章节上移 / 下移接线（列表接管、卷内 / 跨卷都走现成写盘、焦点回到这一章）', () => {
   assert.ok(RENDERER.includes('onAltMove: (item, position, direction)'), '章节列表要装 onAltMove');
+  // 五-H1（ES-5）：moveChapterStep 吃书内下标；渲染行位置在筛选 / 折叠下会跳行，必须用 dataset.index。
+  assert.ok(
+    RENDERER.includes('void moveChapterStep(Number(item.dataset.index), direction)'),
+    'Alt+↑/↓ 要按 dataset.index（书内下标）移章'
+  );
+  assert.equal(RENDERER.includes('void moveChapterStep(position, direction)'), false, '不许再把渲染行位置当书内下标');
   assert.ok(
     RENDERER.includes('dragSortUiModule.stepMoveTarget(state.chapters, index, direction, chapterVolumeId)'),
     '目标计算走纯逻辑（同卷相邻才给目标）'

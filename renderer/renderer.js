@@ -4313,16 +4313,21 @@
       itemSelector: '.chapter-item',
       arrows: true,
       // Phase D / D1：Alt+↑/↓ 在本卷内上移 / 下移这一章（跨卷不接管，仍用拖拽 /「移到卷…」）
+      // 五-H1（ES-5）：position 是**渲染行位置**（筛选 / 折叠会跳行），moveChapterStep 吃的是
+      // **书内下标**；dataset.index 才是书内下标（与 onActivate / onExtend 同口径）。
       onAltMove: (item, position, direction) => {
-        void moveChapterStep(position, direction);
+        void moveChapterStep(Number(item.dataset.index), direction);
       },
       // U-D9：列表焦点里按 Delete = 删除焦点所在这一章。键位只是复用右键菜单同一条
       // deleteChapterAt（未保存询问 / 确认框 / 进 _trash / 失败提示全都不动），不新增删除语义。
       // 删完把焦点放回列表原位置，键盘用户不会掉回 body；编辑区不在这个容器里，Delete 删字不受影响。
       allowDelete: true,
       onDelete: (item, position) => {
+        // 五-H1（ES-5）：position 是渲染行位置（筛选 / 折叠会跳行）——直接当书内下标消费会删错章。
+        // dataset.index 才是书内下标（与 onActivate / onExtend 同口径）。
+        const chapterIndex = Number(item.dataset.index);
         // 1.5.0 功能-1：焦点章在多选里（且选了不止一章）→ Delete 删整批，只登记一条撤销
-        if (state.selectedIds.size > 1 && state.selectedIds.has(chapterIdAt(position))) {
+        if (state.selectedIds.size > 1 && state.selectedIds.has(chapterIdAt(chapterIndex))) {
           void deleteSelectedChapters()
             .then((deleted) => {
               if (deleted) focusChapterItem({ mode: 'position', position });
@@ -4331,7 +4336,7 @@
           return;
         }
         // B1（审计 E2）：删除失败不再静默（原来 .then 没有 .catch，焦点恢复那步永不执行）
-        void deleteChapterAt(position)
+        void deleteChapterAt(chapterIndex)
           .then((deleted) => {
             if (deleted) focusChapterItem({ mode: 'position', position });
           })

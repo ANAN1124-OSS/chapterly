@@ -94,10 +94,11 @@ test('B1 关键链：三处 .then 都有 .catch（回书架 / 切章 / 删章）
     'switchChapter(target).then(...) 必须补 .catch'
   );
   // 3) 章节列表焦点里按 Delete 删章
+  // 五-H1（ES-5）：删章目标从渲染行位置改成书内下标 chapterIndex（dataset.index），.catch 链不变。
   assert.match(
     RENDERER,
-    /void deleteChapterAt\(position\)[\s\S]{0,220}?\.catch\(\(err\) => reportChainFailure\('删除这一章失败', err\)\)/,
-    'deleteChapterAt(position).then(...) 必须补 .catch'
+    /void deleteChapterAt\(chapterIndex\)[\s\S]{0,260}?\.catch\(\(err\) => reportChainFailure\('删除这一章失败', err\)\)/,
+    'deleteChapterAt(chapterIndex).then(...) 必须补 .catch'
   );
   // 统一出口：先留痕，再给一句可读提示（口径与仓库其它失败提示一致）
   const chain = functionBody(RENDERER, 'reportChainFailure');

@@ -476,7 +476,11 @@
           setChapterSelection(
             chapterSelectionLib.extendTo(
               chapterSelectionSnapshot(),
-              chapterIdsInBookOrder(),
+              // 五-M23（CD-01）：order 取**当前渲染出来的行**（与键盘 Ctrl+A / Shift+↑↓ 同口径）。
+              // 以前传全书顺序，筛选 / 折叠下 Shift+连选会把看不见的章一起选进批量目标集
+              // （批量删除 / 移卷 / 改状态波及不可见章）。anchor 失效时回落当前章，但当前章
+              // 不在可见行里时模型只会选中目标这一条，不再按全书范围扩。
+              renderedChapterIds(),
               id,
               currentChapterId()
             )
