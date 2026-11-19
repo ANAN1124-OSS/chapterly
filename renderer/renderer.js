@@ -1690,7 +1690,9 @@
   // 本章字数（含超大单章 400ms 防抖）/ 选中字数两段整段搬走，行为一字未改。
   // 这里只剩接线：三个入口按原名被章节列表 / 写作时长 / 编辑器小件 / 测试钩子取用。
   const statusbarUi = statusbarUiModule.create({
-    $, state, editorEl, formatChars, formatCount, chaptersLib, editorLogic, call, api, toast, openModal, loadChapterAt, staleGuard
+    $, state, editorEl, formatChars, formatCount, chaptersLib, editorLogic, call, api, toast, openModal, loadChapterAt, staleGuard,
+    // 五-M18（SS-10）：外部修改检测按编辑区同一份长操作锁口径守卫（函数声明，已提升）
+    longOpLocked
   });
   const { chapterCharsOf, renderCharCount, renderSelectionStats } = statusbarUi;
 

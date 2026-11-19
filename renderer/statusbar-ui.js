@@ -16,7 +16,8 @@
  * 契约：createStatusbarUi(host) 由渲染层调用一次，host 提供：
  *   host = {
  *     $, state, editorEl, formatChars, chaptersLib, editorLogic,
- *     call, api, toast, openModal, loadChapterAt
+ *     call, api, toast, openModal, loadChapterAt,
+ *     longOpLocked                       // 可选（五-M18 / SS-10）：长操作锁在途时外部修改检测不查
  *   }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到打字 / 回到前台时 ReferenceError）。
  * host 成员全是一次性解构的稳定引用；它们在渲染层都是函数声明（会提升）或先于装配点的 const。
@@ -46,6 +47,11 @@
     if (!staleGuard || typeof staleGuard.chapterIdentity !== 'function') {
       throw new TypeError('createStatusbarUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
     }
+    // 五-M18（SS-10）：长操作锁（整本整理 / 备份还原 / 整本替换还原）是**可选** host 成员——不进
+    // REQUIRED_HOST 契约：老 host / 单测不传时退化成「没有锁」，守卫行为与旧版一致。这些操作期间
+    // 编辑区只是被锁成只读，state.loading / saving 都是 false；不判它就会把应用自己的逐章写盘
+    // 误报成外部修改（整理收尾还会自己重载一次，再叠加这里的一次）。
+    const longOpLocked = typeof host.longOpLocked === 'function' ? host.longOpLocked : () => false;
   // ---------- 状态栏 ----------
   // 本章字数（1.6.0 A5/P-09）：输入路径（每敲一个字都会走）统一 200ms 防抖，连打只算最后一次；
   // 切章 / 保存 / 套用等非输入路径不传 defer，立刻算 —— 作者切过来就得看见字数，不能等 200ms。
@@ -141,7 +147,19 @@
   // chapter:save 的 expectedMtimeMs（见 core/storage.js prepareChapterSave）。
   function setupExternalChangeWatch() {
     window.addEventListener('focus', async () => {
-      if (!state.bookPath || state.index < 0 || state.loading || state.saving || state.modal || state.reading.open) return;
+      // 五-M18（SS-10）：守卫与 applyEditorEditable 的锁口径对齐——长操作锁 / 整本整理 / 导入在途都不查。
+      // 这些是「应用自己正在写盘」的场景，mtime 变了不等于外部修改。
+      if (
+        !state.bookPath ||
+        state.index < 0 ||
+        state.loading ||
+        state.saving ||
+        state.modal ||
+        state.reading.open ||
+        state.formatBookRunning ||
+        state.importing ||
+        longOpLocked()
+      ) return;
       const chapter = state.chapters[state.index];
       if (!chapter) return;
       // WP-15（C40）：发起时记下「书 + 章 + 载入 mtime」。await 期间切章时 state.loadedMtimeMs

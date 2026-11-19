@@ -44,7 +44,9 @@ function makeHost(options = {}) {
     loading: Boolean(options.loading),
     saving: Boolean(options.saving),
     modal: Boolean(options.modal),
-    reading: { open: Boolean(options.readingOpen) }
+    reading: { open: Boolean(options.readingOpen) },
+    formatBookRunning: Boolean(options.formatBookRunning),
+    importing: Boolean(options.importing)
   };
   const editorEl = {
     value: options.text || '',
@@ -86,7 +88,9 @@ function makeHost(options = {}) {
       return { ok: true };
     },
     // WP-15（C40）：外部修改检测按发起时的「书 + 章 + mtime」结算
-    staleGuard
+    staleGuard,
+    // 五-M18（SS-10）：长操作锁是可选 host 成员（不传 = 没锁，老 host 行为不变）
+    longOpLocked: options.longOpLocked
   };
   return { host, state, els, editorEl, calls };
 }
@@ -372,6 +376,45 @@ test('外部修改检测：mtime 没变 → 不弹框不重载', async () => {
   assert.deepEqual(calls.toast, []);
   assert.deepEqual(calls.modal, []);
   assert.deepEqual(calls.load, []);
+});
+
+// ---------- 五-M18（SS-10）：长操作锁 / 整本整理 / 导入在途时不许查外部修改 ----------
+// 整本整理逐章写盘（当前章 mtime 已变，loadedMtimeMs 要到收尾重载才更新），编辑区只是被长操作锁
+// 设成只读，state.loading / saving 都是 false。旧守卫（没书 / 载章 / 保存 / 弹层 / 阅读）全过 →
+// 回焦把应用自己的写盘误报成「外部修改」，还会在整理收尾重载之外再插一次 loadChapterAt，
+// 与 statusbar-ui.js 头注释「应用自己在写」的承诺不符。
+test('M18（SS-10）：长操作锁 / 整本整理 / 导入在途时回焦不查 mtime、不弹外部修改提示；没锁时照旧查', async () => {
+  const cases = [
+    { name: '长操作锁', options: { mtimeMs: 222, longOpLocked: () => true } },
+    { name: '整本整理进行中', options: { mtimeMs: 222, formatBookRunning: true } },
+    { name: '导入在途', options: { mtimeMs: 222, importing: true } }
+  ];
+  for (const { name, options } of cases) {
+    const listeners = installWindow();
+    const { host, calls } = makeHost(options);
+    statusbarUi.create(host).setupExternalChangeWatch();
+    await listeners.focus[0]();
+    assert.deepEqual(calls.stat, [], name + '：不该去 stat 章节文件');
+    assert.deepEqual(calls.modal, [], name + '：不许弹「检测到外部修改」');
+    assert.deepEqual(calls.toast, [], name + '：不许误报');
+    assert.deepEqual(calls.load, [], name + '：不许插入多余重载');
+  }
+
+  // 对照：没有长操作 → mtime 变了照旧查 + 弹询问（守卫没有把正常检测一起关掉）
+  const listeners = installWindow();
+  const normal = makeHost({ loadedMtimeMs: 111, mtimeMs: 222 });
+  statusbarUi.create(normal.host).setupExternalChangeWatch();
+  await listeners.focus[0]();
+  assert.equal(normal.calls.stat.length, 1);
+  assert.equal(normal.calls.modal.length, 1);
+});
+
+test('静态闸门（M18/SS-10）：外部修改检测守卫含长操作锁 / 整理 / 导入，渲染层注入长操作锁', () => {
+  // 模块：三个守卫与 applyEditorEditable 的锁口径对齐；没传 longOpLocked 时退化成「无锁」
+  assert.match(moduleCode, /state\.formatBookRunning\s*\|\|\s*state\.importing\s*\|\|\s*longOpLocked\(\)/);
+  assert.match(moduleCode, /const longOpLocked = typeof host\.longOpLocked === 'function' \? host\.longOpLocked : \(\) => false;/);
+  // 渲染层装配：把编排器的 longOpLocked（函数声明，已提升）注入进去
+  assert.match(rendererSrc, /statusbarUiModule\.create\(\{[\s\S]{0,400}\blongOpLocked\b/);
 });
 
 test('外部修改检测：变了 + 有未保存修改 → 只 toast 警告（warn），不弹框不重载', async () => {
