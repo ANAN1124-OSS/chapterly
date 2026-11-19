@@ -100,7 +100,10 @@
       if (byVolume && matches.length > 1) {
         text = `本书按卷编号：「第 ${result.number} 章」找到 ${matches.length} 处（按卷 / 未分卷分组），回车跳第一条。`;
       } else {
-        text = `按章号跳转：${byVolume && matches[0].volumeName ? `${matches[0].volumeName} · ` : ''}${chapterTitle(matches[0].index, matches[0].name)}`;
+        text = `按章号跳转：${byVolume && matches[0].volumeName ? `${matches[0].volumeName} · ` : ''}${chapterTitle(
+          Math.max(0, resolveMatchIndex(matches[0])),
+          matches[0].name
+        )}`;
       }
     } else {
       const hitCount = Number(result && result.total) || matches.length;
@@ -109,26 +112,45 @@
     summary.textContent = text;
     summary.classList.toggle('warn', warn);
 
+    let renderedRows = 0;
     for (const match of matches) {
-      const chapter = state.chapters[match.index];
+      // 五-M2（RF-03）：结果行按 match.chapterId 定位到**当前**章节数组；批量删章 / 移卷之后
+      // 旧下标可能已指向另一章，标题 / 状态 / 点击目标必须与真实章节一致。
+      const at = resolveMatchIndex(match);
+      const chapter = at >= 0 ? state.chapters[at] : null;
       if (!chapter) continue;
       const row = document.createElement('button');
       row.type = 'button';
       row.className = 'jump-result';
-      row.dataset.index = String(match.index);
+      row.dataset.index = String(at);
       const label = document.createElement('span');
       label.className = 'jump-chapter';
-      const titleText = chapterTitle(match.index, match.name);
+      const titleText = chapterTitle(at, match.name);
       label.textContent = byVolume && match.volumeName ? `${match.volumeName} · ${titleText}` : titleText;
       const status = document.createElement('span');
       status.className = 'jump-status';
       status.textContent = CHAPTER_STATUS_LABELS[chapterStatus(chapter)] || '';
       row.appendChild(label);
       row.appendChild(status);
-      row.addEventListener('click', () => jumpToIndex(match.index));
+      // 点击时按 id **再**解析一次（对话框可能已开了一会儿）：章已删除就明确拒绝，绝不按旧下标跳错章。
+      row.addEventListener('click', () => jumpToIndex(at, match.chapterId));
       list.appendChild(row);
+      renderedRows += 1;
     }
-    $('btn-jump-confirm').disabled = !matches.length;
+    $('btn-jump-confirm').disabled = renderedRows === 0;
+  }
+
+  // 五-M2（RF-03）：回执 / 点击时一律按 match.chapterId 重新定位到当前章节数组——批量删章 / 移卷
+  // 的回执会整体换掉 state.chapters 但不推进 jumpToken，旧下标会指到另一章（跳错章、标题状态混搭）。
+  // 只有回执没有 chapterId（旧形状 / 坏数据）时才回落到 match.index；负值 / 越界由调用方再挡。
+  function resolveMatchIndex(match) {
+    if (!match) return -1;
+    if (match.chapterId != null) {
+      const at = state.chapters.findIndex((chapter) => chapter && String(chapter.id) === String(match.chapterId));
+      if (at >= 0) return at;
+      return -1; // 书里已经没有这一章：明确当「不存在」，绝不按旧下标跳到别的章
+    }
+    return Number(match.index);
   }
 
   async function refreshJumpMatches() {
@@ -137,6 +159,9 @@
     const query = input ? input.value : '';
     state.jumpQuery = query;
     const token = (state.jumpToken += 1);
+    // 五-M2（RF-03）：发起时记下章节数组引用。回执落地前批量操作可能整体换掉 state.chapters
+    // （applyMetaAndRelocate 不推进 jumpToken）——旧下标的结果不能再渲染 / 点击。
+    const chaptersRef = state.chapters;
     if (!String(query).trim()) {
       state.jumpMatches = [];
       state.jumpOutOfRange = false;
@@ -149,6 +174,16 @@
         numbering: state.meta && state.meta.chapterNumbering === 'volume' ? 'volume' : 'continuous'
       });
       if (token !== state.jumpToken) return; // 输入已经又变了，旧结果丢掉
+      if (chaptersRef !== state.chapters) {
+        // 章节数组已经换过（批量删章 / 移卷 / 换书）：清单里的旧下标没有意义，按 stale 丢弃并请作者重查。
+        state.jumpMatches = [];
+        state.jumpOutOfRange = false;
+        $('jump-summary').textContent = '章节列表刚变过，这次查找结果没有显示；请重新输入';
+        $('jump-summary').classList.add('warn');
+        $('jump-results').innerHTML = '';
+        $('btn-jump-confirm').disabled = true;
+        return;
+      }
       state.jumpMatches = (result && Array.isArray(result.matches)) ? result.matches : [];
       state.jumpOutOfRange = Boolean(result && result.outOfRange);
       renderJumpMatches(result || {});
@@ -206,13 +241,22 @@
     $('jump-summary').textContent = '';
   }
 
-  async function jumpToIndex(index) {
-    if (!state.bookPath || index < 0 || index >= state.chapters.length) {
+  async function jumpToIndex(index, chapterId = null) {
+    if (!state.bookPath) return { ok: false, message: '章节不存在' };
+    // 五-M2（RF-03）：带章 id 时按 id 现查下标——对话框开着期间批量删章 / 移卷会换掉章节数组，
+    // 旧下标不可信。章已被删就明确拒绝（不关框，作者可以重新输入），绝不跳到另一章。
+    let target = Number(index);
+    if (chapterId != null) {
+      const at = state.chapters.findIndex((chapter) => chapter && String(chapter.id) === String(chapterId));
+      if (at < 0) return { ok: false, message: '这一章已经不存在了' };
+      target = at;
+    }
+    if (!Number.isInteger(target) || target < 0 || target >= state.chapters.length) {
       return { ok: false, message: '章节不存在' };
     }
     // 先把对话框收起来，再走正常的切章流程（有未保存修改时由 switchChapter 弹窗拦截）
     closeJumpDialog();
-    const res = await switchChapter(index);
+    const res = await switchChapter(target);
     return res;
   }
 
@@ -221,7 +265,8 @@
       $('jump-summary').classList.add('warn');
       return { ok: false, message: '没有匹配的章节' };
     }
-    return jumpToIndex(state.jumpMatches[0].index);
+    const first = state.jumpMatches[0];
+    return jumpToIndex(resolveMatchIndex(first), first.chapterId);
   }
     return {
       refreshJumpMatches,

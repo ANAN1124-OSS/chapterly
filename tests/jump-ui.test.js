@@ -579,3 +579,59 @@ test('V206：jumpChapterPayload 只在书目 / 章节数组换新引用时重算
   assert.equal(numberCalls, 15, '书目换新引用也要重算（章号 / 卷名输入可能变）');
   assert.notEqual(withMeta, next);
 });
+
+// 五-M2（RF-03）：跳章结果只按 jumpToken 作废不够——批量删章 / 移卷的回执会整体换掉 state.chapters
+// 但不推进 jumpToken，旧下标会指到另一章。修法：发起时记数组引用、回执落地比对；渲染 / 点击按
+// match.chapterId 现查下标，章已删则明确拒绝。
+test('五-M2（RF-03）：跳章查找在途章节数组被换 → 旧下标结果作废，不渲染不跳错章', async () => {
+  installDocument();
+  let release;
+  const { host, state } = makeHost({
+    onCall: () => new Promise((resolve) => { release = resolve; })
+  });
+  const ui = jumpUi.create(host);
+  host.$('jump-input').value = '第一章';
+  const pending = ui.refreshJumpMatches();
+  // 批量操作回执：整体换掉章节数组（applyMetaAndRelocate 不推进 jumpToken）
+  state.chapters = [
+    { id: 'c2', name: '第二章', status: 'done' },
+    { id: 'c1', name: '第一章', status: 'draft' }
+  ];
+  release({ matches: [{ index: 0, name: '第一章', chapterId: 'c1' }], total: 1 });
+  await pending;
+  assert.deepEqual(state.jumpMatches, [], '旧数组下标的结果不许进清单');
+  assert.equal(
+    host.$('jump-summary').textContent,
+    '章节列表刚变过，这次查找结果没有显示；请重新输入'
+  );
+  assert.equal(host.$('jump-results').children.length, 0);
+  assert.equal(host.$('btn-jump-confirm').disabled, true);
+});
+
+test('五-M2（RF-03）：结果行 / 点击按 chapterId 重新定位——数组换了也不跳错章，章被删则明确拒绝', async () => {
+  installDocument();
+  const { host, state, switches } = makeHost();
+  const ui = jumpUi.create(host);
+  host.$('jump-backdrop').classList.remove('hidden');
+  // 回执来自旧数组：index=0 是「第一章」；随后数组被换，第一章实际挪到了下标 1
+  state.chapters = [
+    { id: 'c2', name: '第二章', status: 'done' },
+    { id: 'c1', name: '第一章', status: 'draft' }
+  ];
+  ui.renderJumpMatches({ matches: [{ index: 0, name: '第一章', chapterId: 'c1' }], total: 1 });
+  const rows = host.$('jump-results').children;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].dataset.index, '1', '行下标按 id 现查（不是旧回执的 0）');
+  assert.match(rows[0].children[0].textContent, /第2章：第一章/, '标题按当前数组位置显示');
+  assert.equal(rows[0].children[1].textContent, '草稿', '状态标签来自当前数组里的那一章');
+  rows[0]._listeners[0].fn();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(switches, [1], '按 id 跳到第一章现在的位置');
+
+  // 章在对话框开着期间被删：点击明确拒绝，不按旧下标跳到别的章
+  host.$('jump-backdrop').classList.remove('hidden');
+  const before = switches.length;
+  assert.deepEqual(await ui.jumpToIndex(0, 'deleted-id'), { ok: false, message: '这一章已经不存在了' });
+  assert.equal(switches.length, before);
+  assert.equal(host.$('jump-backdrop').classList.contains('hidden'), false, '拒绝时不关框，作者可重新输入');
+});
