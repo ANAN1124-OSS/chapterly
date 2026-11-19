@@ -763,6 +763,11 @@
 
   // ---------- 视图切换 ----------
   function showView(view) {
+    // 五-M19（SS-12）：离开阅读视图的统一兜底——阅读态（open / token / 定时器 / DOM）必须先复位。
+    // 回书架、从书架打开另一本书、换根提示回书架都会经过这里；不复位的话 statusbar 的外部修改
+    // 检测会被 reading.open 永久守卫掉，在途阅读加载也会继续把旧书章节读进隐藏的阅读视图。
+    // 已经在阅读模式外时是 no-op（exitReadingMode 先复位再切视图，这里不会再动一次）。
+    if (view !== 'reading') leaveReadingMode();
     // 撤销窗口（1.4.0 P0-2）只对当前写作现场有效：回书架 / 进阅读页就收起，绝不跨视图执行
     if (view !== 'editor') undoUi.clear();
     if (view !== 'editor') closeTtsBar();
@@ -1799,7 +1804,7 @@
     view: { showView, hideContextMenu, hideVolumeMenu, hideHeaderMenus, editorEl, scheduleMarksRender, updateWindowTitle },
     chapterTitle
   });
-  const { readingScrollEl, readingBlockElements, readingBlockIndexAt, readingLoadedIndexes, readingMeasureBlocks, readingCurrentIndex, readingVisibleIndex, readingNearBottom, setReadingPref, updateReadingUi, readingScrollToBlock, scheduleReadingScrollCheck, readingGo, readingJumpTo, openReadingMode, exitReadingMode } = readingUi;
+  const { readingScrollEl, readingBlockElements, readingBlockIndexAt, readingLoadedIndexes, readingMeasureBlocks, readingCurrentIndex, readingVisibleIndex, readingNearBottom, setReadingPref, updateReadingUi, readingScrollToBlock, scheduleReadingScrollCheck, readingGo, readingJumpTo, openReadingMode, exitReadingMode, leaveReadingMode } = readingUi;
 
   // ---------- 每日字数统计 / 码字日历（v0.9 B-5 第三刀：整段搬到 renderer/stats-ui.js） ----------
   // 书架头 / 状态栏的今日字数与目标、设置里的近 30 天柱状图、码字日历（月视图 / 连续天数 /
@@ -2213,7 +2218,9 @@
     showView, refreshShelf, promptText, call, updateWindowTitle, toast,
     // 五-M9（SS-02）/ 五-H3：可选成员——回书架前等「保存在途 / 载章在途」落定（与切章同口径），
     // 保存走统一原语（保存回执后复核 dirty，仍脏就重新询问）。
-    waitForSavingIdle, waitForLoadingIdle, saveForTransition
+    waitForSavingIdle, waitForLoadingIdle, saveForTransition,
+    // 五-M19（SS-12）：回书架前先复位阅读模式（必须在清空书身份之前，阅读位置才记到原书）
+    leaveReadingMode
   });
   const { backToShelf, renameBookFlow } = shelfNavUi;
 

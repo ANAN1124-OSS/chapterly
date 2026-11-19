@@ -285,14 +285,14 @@ test('host 契约：8 个成员 + 分组内每个真实依赖；缺任何一个�
   assert.throws(() => readingUi.create({ ...ctx.host, view: 'x' }), /host\.view 必须是对象/);
 });
 
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 17 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 18 个入口', () => {
   const dom = makeDoc();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0, 'create() 一次 $ 都不该调');
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'exitReadingMode', 'openReadingMode', 'readingBlockElements', 'readingBlockIndexAt', 'readingCurrentIndex',
-    'readingGo', 'readingJumpTo', 'readingLoadedIndexes', 'readingMeasureBlocks', 'readingNearBottom',
-    'readingScrollEl', 'readingScrollToBlock', 'readingVisibleIndex', 'scheduleReadingScrollCheck',
+    'exitReadingMode', 'leaveReadingMode', 'openReadingMode', 'readingBlockElements', 'readingBlockIndexAt',
+    'readingCurrentIndex', 'readingGo', 'readingJumpTo', 'readingLoadedIndexes', 'readingMeasureBlocks',
+    'readingNearBottom', 'readingScrollEl', 'readingScrollToBlock', 'readingVisibleIndex', 'scheduleReadingScrollCheck',
     'setReadingPref', 'setupReadingUi', 'updateReadingUi'
   ]);
   assert.equal(moduleCode.includes('setInterval'), false, '模块不建循环定时器');
@@ -784,6 +784,44 @@ test('exitReadingMode：不在阅读模式返回 false；在则清 state / timer
   assert.equal(ctx.calls.editorFocus, 1);
 });
 
+// ---------- 五-M19（SS-12）：离开阅读视图的收口 ----------
+// 场景：阅读模式下点「回书架」（换根孤岛提示 / 命令面板 / 顶栏返回都是同一条 backToShelf）。
+// 旧实现只清当前书状态 + showView('shelf')，state.reading.open 一直为 true：
+//   ① statusbar 的外部修改检测被 reading.open 永久守卫掉（本窗口余下会话都失去早期预警）；
+//   ② 回书架瞬间若有在途阅读加载，其回执守卫全过 → 继续把旧书章节读进隐藏的阅读视图（书登记已释放）；
+//   ③ resize 时 scheduleReadingScrollCheck 在书架 / 写作页持续空转。
+// 修复：阅读模块交出「只复位阅读态」的 leaveReadingMode（记位置 / 清 token / 定时器 / DOM，不切视图），
+// exitReadingMode 复用它；backToShelf 在清空书身份之前调它；showView 离开 reading 时统一兜底。
+test('M19（SS-12）：leaveReadingMode 只复位阅读态不切视图（记位置、清 token / timer / DOM），exitReadingMode 复用同一份', () => {
+  const dom = makeDoc();
+  const ctx = build({ dom, open: true });
+  ctx.state.reading.timer = setTimeout(() => {}, 1000);
+  const token = ctx.state.reading.token;
+  dom.newBlock(0, 0);
+  dom.map.get('reading-end').classList.remove('hidden');
+  dom.map.get('reading-note').classList.remove('hidden');
+
+  assert.equal(ctx.ui.leaveReadingMode(), true);
+  assert.equal(ctx.state.reading.open, false);
+  assert.equal(ctx.state.reading.loading, false);
+  assert.equal(ctx.state.reading.timer, null, '滚动检查定时器要清掉');
+  assert.equal(ctx.state.reading.token, token + 1, 'token 自增：在途阅读回执作废');
+  assert.equal(dom.map.get('reading-content').children.length, 0);
+  assert.equal(dom.map.get('reading-end').classList.contains('hidden'), true);
+  assert.equal(dom.map.get('reading-note').classList.contains('hidden'), true);
+  assert.deepEqual(ctx.calls.showView, [], '只复位阅读态，视图由调用方自己切');
+  assert.equal(ctx.ui.leaveReadingMode(), false, '已经不在阅读模式：返回 false（不重复记位置）');
+
+  // exitReadingMode = leaveReadingMode + 切回写作页；两次调用不会重复记位置 / 重复自增 token
+  const tokenAfter = ctx.state.reading.token;
+  assert.equal(ctx.ui.exitReadingMode(), false);
+  assert.equal(ctx.state.reading.token, tokenAfter);
+  ctx.state.reading.open = true;
+  assert.equal(ctx.ui.exitReadingMode(), true);
+  assert.deepEqual(ctx.calls.showView, ['editor']);
+  assert.equal(ctx.state.reading.token, tokenAfter + 1);
+});
+
 // ---------- 阅读位置记忆（v0.13 / U-D10：只记本次运行） ----------
 // 假 DOM 里 loadChapter 造的区块没有布局，这里按标签塞一个高度，模拟「这一章有多高」，恢复位置才有得算。
 function fakeBlockHeight(dom, height) {
@@ -1123,8 +1161,16 @@ test('静态闸门：renderer.js 不再内嵌阅读模式实现，只剩装配�
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);
   }
   assert.ok(rendererSrc.includes(
-    'const { readingScrollEl, readingBlockElements, readingBlockIndexAt, readingLoadedIndexes, readingMeasureBlocks, readingCurrentIndex, readingVisibleIndex, readingNearBottom, setReadingPref, updateReadingUi, readingScrollToBlock, scheduleReadingScrollCheck, readingGo, readingJumpTo, openReadingMode, exitReadingMode } = readingUi;'
-  ), '16 个入口按原名解构');
+    'const { readingScrollEl, readingBlockElements, readingBlockIndexAt, readingLoadedIndexes, readingMeasureBlocks, readingCurrentIndex, readingVisibleIndex, readingNearBottom, setReadingPref, updateReadingUi, readingScrollToBlock, scheduleReadingScrollCheck, readingGo, readingJumpTo, openReadingMode, exitReadingMode, leaveReadingMode } = readingUi;'
+  ), '17 个入口按原名解构');
+  // 五-M19（SS-12）：showView 离开阅读视图时统一兜底复位（回书架 / 换书 / 任何切换都不再漏）
+  assert.match(rendererSrc, /if \(view !== 'reading'\) leaveReadingMode\(\);/, 'showView 统一兜底');
+  // 回书架入口注入同一份复位函数（阅读位置要记在清空书身份之前）
+  assert.match(
+    rendererSrc,
+    /shelfNavUiModule\.create\(\{[\s\S]{0,1200}\bleaveReadingMode\b/,
+    'backToShelf 要在清空书身份之前复位阅读态'
+  );
   // 绑定块搬走：不再注册阅读 8 个元素，只留一次 setup 调用
   for (const id of ['btn-reading', 'btn-reading-exit', 'btn-reading-first', 'btn-reading-prev', 'btn-reading-next', 'reading-font-level', 'reading-line-level', 'reading-toc', 'reading-scroll']) {
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);

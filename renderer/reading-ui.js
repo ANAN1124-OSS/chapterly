@@ -6,7 +6,8 @@
  *   加载与滚动（setReadingLoading / readingNearBottom / renderReadingToc / readingApplyStyle / setReadingPref /
  *     updateReadingUi / readingScrollToBlock / onReadingScroll / pruneReadingBlocks / createReadingBlock /
  *     fetchReadingBlock / readingReplaceAt / readingAppendNext / readingPrependPrev / autoFillReading /
- *     scheduleReadingScrollCheck / readingGo / readingJumpTo / openReadingMode / exitReadingMode）
+ *     scheduleReadingScrollCheck / readingGo / readingJumpTo / openReadingMode /
+ *     leaveReadingMode / exitReadingMode）
  * **只搬不改行为**：只读 IPC（chapter:load）、token 作废旧响应、自动接章上限 8、最多留 40 块、
  * 字号 / 行距只改 CSS 变量不写配置、未保存提示文案、退出后回写作页并归还焦点——全部一字未改。
  *
@@ -106,6 +107,11 @@
   // 阅读位置的按书记忆（v0.13 / U-D10）：Map<书路径, { index, ratio, editorIndex }>，只活这一次运行。
   // 不写 config.json、不进书目；重开应用回到默认（从当前写作章开始）。纯逻辑在 readingLogic 里。
   let readingPositionsByBook = new Map();
+  // 五-M19（SS-12）：本次阅读属于哪本书 / 编辑区当时停在哪一章。退出阅读可能由「换书 / 回书架」
+  // 触发，那时 state.bookPath / state.index 已经变了；记阅读位置必须用进阅读模式时捕获的这份身份，
+  // 否则会把旧书的阅读进度记到新书上（或把章号记成 −1）。
+  let readingOwnerBookPath = '';
+  let readingOwnerEditorIndex = -1;
 
   function readingScrollEl() {
     return $('reading-scroll');
@@ -205,13 +211,17 @@
   // 退出阅读时把位置记进内存（v0.13 / U-D10）：只记本次运行，不写盘。
   // 正在读盘时不记（DOM 里可能只有半截），让上一次的位置留着。
   function rememberReadingPosition() {
-    if (!state.bookPath || state.reading.loading) return;
+    // 五-M19（SS-12）：优先用「进阅读模式时那本书」——换书 / 回书架触发的收口可能已经改写了
+    // state.bookPath；没有捕获过（老入口 / 单测直接置 open）才退回当前 state。
+    const bookPath = readingOwnerBookPath || state.bookPath;
+    if (!bookPath || state.reading.loading) return;
     const position = readingPositionNow();
     if (!position) return;
+    const editorIndex = Number.isFinite(state.index) && state.index >= 0 ? state.index : readingOwnerEditorIndex;
     readingPositionsByBook = readingLogic.withReadingPosition(
       readingPositionsByBook,
-      state.bookPath,
-      { index: position.index, ratio: position.ratio, editorIndex: state.index },
+      bookPath,
+      { index: position.index, ratio: position.ratio, editorIndex },
       state.chapters.length
     );
   }
@@ -572,6 +582,9 @@
     hideContextMenu();
     hideVolumeMenu();
     hideHeaderMenus();
+    // 五-M19（SS-12）：捕获这次阅读的身份（退出时可能已经在别的书 / 别的章上）
+    readingOwnerBookPath = state.bookPath;
+    readingOwnerEditorIndex = state.index;
     state.reading.open = true;
     const total = state.chapters.length;
     const editorIndex = Math.max(0, Math.min(state.index < 0 ? 0 : state.index, total - 1));
@@ -613,7 +626,11 @@
     return { ok: true, startIndex: state.reading.startIndex };
   }
 
-  function exitReadingMode() {
+  // 五-M19（SS-12）：离开阅读视图的「只复位」入口——不切视图。回书架（backToShelf / 换根孤岛提示
+  // 的「回书架」/ 命令面板）、从书架打开另一本书、以及 showView 的统一兜底都用它：
+  // 只清阅读态（open / token / 定时器 / DOM）；在清空书身份之前调用还能把阅读位置记到原书。
+  // 返回是否真的在阅读模式里（false = 什么都不用做）。
+  function leaveReadingMode() {
     if (!state.reading.open) return false;
     // 先记下「读到哪了」（v0.13 / U-D10）：只进内存 Map，不写盘；读盘没回来 / 有坏章时不记。
     rememberReadingPosition();
@@ -629,6 +646,14 @@
     $('reading-end').classList.add('hidden');
     $('reading-note').classList.add('hidden');
     $('reading-toc').innerHTML = '';
+    readingOwnerBookPath = '';
+    readingOwnerEditorIndex = -1;
+    return true;
+  }
+
+  // 五-M19（SS-12）：退出阅读模式 = 复位阅读态 + 切回写作页（与搬走前的行为一字不差）。
+  function exitReadingMode() {
+    if (!leaveReadingMode()) return false;
     // 回到写作页：不重新加载章节、不移动正文、不写盘；未保存内容原样还在编辑区
     showView('editor');
     scheduleMarksRender(0);
@@ -729,6 +754,7 @@
       readingGo,
       readingJumpTo,
       openReadingMode,
+      leaveReadingMode,
       exitReadingMode,
       setupReadingUi
     };

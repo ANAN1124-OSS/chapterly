@@ -440,3 +440,44 @@ test('五-M9：没有可选原语时（旧宿主）保存在途仍先等落定�
   assert.deepEqual(busy.calls.toast, [['正在保存中，请稍候再试', 'warn']], 'BUSY 要出声');
   assert.equal(busy.calls.releaseBook, 0, '没保存成功不回书架');
 });
+
+// ---------- 五-M19（SS-12）：回书架必须先复位阅读模式 ----------
+// 阅读模式里点「回书架」（顶栏返回 / 命令面板 / 换根孤岛提示的「回书架」都是同一个入口）：
+// 旧实现只清书状态 + showView('shelf')，state.reading.open 残留为 true —— 外部修改检测被永久
+// 守卫掉、在途阅读加载继续把旧书章节读进隐藏视图、resize 空转。复位必须发生在清空书身份之前，
+// 阅读位置才记得住是哪本书。
+test('M19（SS-12）：回书架在清空书身份之前复位阅读模式（位置才记到原书），取消则不复位', async () => {
+  const seen = [];
+  let ctx;
+  ctx = build({
+    dirty: true,
+    extraHost: {
+      leaveReadingMode: () => {
+        seen.push(ctx.state.bookPath);
+        return true;
+      }
+    }
+  });
+  await ctx.ui.backToShelf();
+  assert.deepEqual(seen, ['/books/书甲'], '复位时 state.bookPath 还在（阅读位置才能记到原书）');
+  assert.equal(ctx.calls.releaseBook, 1);
+  assert.equal(ctx.state.view, 'shelf');
+  assert.equal(ctx.state.bookPath, null, '复位之后才清空书身份');
+
+  // 未保存询问里点「取消」→ 留在原处，阅读模式一个字节都不动
+  const keep = [];
+  const canceled = build({
+    dirty: true,
+    action: 'cancel',
+    extraHost: { leaveReadingMode: () => { keep.push(1); return true; } }
+  });
+  await canceled.ui.backToShelf();
+  assert.deepEqual(keep, [], '取消回书架不该退出阅读模式');
+  assert.equal(canceled.state.bookPath, '/books/书甲');
+
+  // 旧宿主（没有 leaveReadingMode）照常回书架，不抛
+  const old = build({ dirty: false });
+  old.state.reading = { open: true };
+  await old.ui.backToShelf();
+  assert.equal(old.state.view, 'shelf');
+});

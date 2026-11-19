@@ -19,7 +19,9 @@
  *            showView, refreshShelf, promptText, call, updateWindowTitle, toast }
  * 另有可选成员（五-M9 / 五-H3，旧宿主 / 单测没有也能跑）：
  *   waitForSavingIdle / waitForLoadingIdle —— 回书架前等「保存在途 / 载章在途」落定（与切章同口径）；
- *   saveForTransition —— 统一「过渡前保存」原语：保存回执后复核 dirty，仍脏就重新询问，绝不静默丢字。
+ *   saveForTransition —— 统一「过渡前保存」原语：保存回执后复核 dirty，仍脏就重新询问，绝不静默丢字；
+ *   leaveReadingMode —— 五-M19（SS-12）：阅读模式里回书架时先复位阅读态（记位置 / 清 token / 定时器），
+ *     必须在清空书身份之前调用（阅读位置按书路径记）。
  * 缺任何一个必需成员直接抛 TypeError（宁可在启动时炸，也不要到点「返回书架」/「改名」时才 ReferenceError）。
  * host 成员都是渲染层 IIFE 闭包里的函数 / 常量 / 活绑定引用，装配点早于任何调用；模块自己不缓存状态快照。
  * create() 不注册任何事件、不建定时器、不碰 DOM（只在被调用时才动 DOM）。
@@ -55,6 +57,8 @@
     // 五-H2/H3/M9：可选成员——统一「过渡前保存」原语（renderer/save-chain-ui.js）。有它时
     // 保存回执后会复核 dirty，仍脏（保存期间输入）就重新询问；没有就退回原来的 askUnsaved 路径。
     const saveForTransition = typeof host.saveForTransition === 'function' ? host.saveForTransition : null;
+    // 五-M19（SS-12）：阅读模式里回书架要先复位阅读态（可选成员：旧宿主不传就维持原行为）。
+    const leaveReadingMode = typeof host.leaveReadingMode === 'function' ? host.leaveReadingMode : null;
   // ---------- 返回书架 ----------
   async function backToShelf() {
     // 五-M9（SS-02）：保存在途时先等它按快照章身份落定，再按「剩下真正没保存的字」询问——
@@ -95,6 +99,11 @@
     } catch {
       /* 释放失败由主进程在窗口销毁时兜底 */
     }
+    // 五-M19（SS-12）：阅读模式里点「回书架」（顶栏返回 / 命令面板 / 换根孤岛提示的「回书架」）时，
+    // 先把阅读态复位——必须在清空 state.bookPath 之前：阅读位置是按书路径记的，位置要记到原书上。
+    // 不复位的话 state.reading.open 会一直残留：外部修改检测被永久守卫掉、在途阅读加载继续读旧书、
+    // resize 的滚动检查在书架 / 写作页空转。已经在书架视图 / 旧宿主没注入时是 no-op。
+    if (leaveReadingMode) leaveReadingMode();
     state.view = 'shelf';
     state.bookPath = null;
     state.meta = null;
