@@ -126,6 +126,9 @@
   // 只写进了章号时记在这里，取消前再提示一次——「取消一个字节不写」这条入口口径已经做不到，
   // 至少不许静默。openSettings / 下一次两步都成功的保存都会清掉它。
   let settingsPartialSave = null;
+  // 五-M16（SS-05）：打开链是否在途（连点「设置」防重入）。在途期间表单已经回填完，
+  // 只有弹层可见性 / 台账读取这些展示性动作还在跑。
+  let openingSettings = false;
 
   function settingsTabNodes() {
     const nav = $('settings-nav');
@@ -800,38 +803,53 @@
   }
 
   async function openSettings(options = {}) {
-    state.settingsScope = resolveSettingsScope(options);
-    // 回填按作用域取配置：全局 = 全局默认；按书 = 生效值（全局 + 本书覆盖）。
-    const cfg = settingsBackfillConfig(state.settingsScope);
-    state.settingsBackup = state.config ? { ...state.config } : null;
-    // V204（v1.8.0 WP-29）：先把弹层显示出来，再去等统计 IPC —— 改前 refreshStats() 在
-    // remove('hidden') 之前 await，点击「设置」到弹层出现要白等一趟 stats:get 往返（几十 ms，
-    // 冷盘 / 杀软下可感知）。回填 / 分区 / 台账的顺序与内容都不变，只是弹层先可见。
-    $('settings-backdrop').classList.remove('hidden');
-    settingsOpen = true;
-    settingsPartialSave = null; // 每次打开都是新的编辑会话：上一次的部分写入提示不跨会话
-    // 打开时刷新一次今天 / 近 30 天，避免跨过午夜后还显示昨天的数字
-    await refreshStats();
-    fillSettingsFields(cfg);
-    // 1.4.0 P0-1：每次打开都回到默认分区、清空搜索框（深链入口在下面再切分区并滚过去）
-    settingsActiveTab = DEFAULT_SETTINGS_TAB;
-    const searchInput = settingsSearchInput();
-    if (searchInput) searchInput.value = '';
-    updateSettingsScopeUi();
-    // 入口指定了分区（U-D4 的码字日历）时立刻滚到那里 —— 放在异步台账读取之前，
-    // 弹层一出现就已经在日历上，不会先停在顶部再跳一下。普通打开没有 section，一个字都不动。
-    if (options && options.section) revealSettingsSection(options.section);
-    // 全局设置里顺手读一次三份台账（词表 / 校对词表 / 日志目录，都只读；按书设置里不显示这几组）。
-    // 三者互不依赖，一次并发发起，省掉两趟串行 IPC；各自的返回值、状态字段与分区渲染都不变。
-    if (state.settingsScope === 'global') {
-      await Promise.all([
-        refreshSensitiveSettingsInfo(),
-        refreshProofreadSettingsInfo(),
-        refreshLogInfo()
-      ]);
+    // 五-M16（SS-05）：打开链防重入。连点「设置」/「今日字数」会并行跑两条打开链（各自回填 / 读台账），
+    // 后到的那次回填会把作者刚改的表单值覆盖掉。在途时再点一次直接忽略（弹层已经在开着）。
+    if (openingSettings) return state.settingsScope;
+    openingSettings = true;
+    try {
+      state.settingsScope = resolveSettingsScope(options);
+      // 回填按作用域取配置：全局 = 全局默认；按书 = 生效值（全局 + 本书覆盖）。
+      const cfg = settingsBackfillConfig(state.settingsScope);
+      state.settingsBackup = state.config ? { ...state.config } : null;
+      // V204（v1.8.0 WP-29）：先把弹层显示出来，再去等统计 IPC —— 改前 refreshStats() 在
+      // remove('hidden') 之前 await，点击「设置」到弹层出现要白等一趟 stats:get 往返（几十 ms，
+      // 冷盘 / 杀软下可感知）。
+      $('settings-backdrop').classList.remove('hidden');
+      settingsOpen = true;
+      settingsPartialSave = null; // 每次打开都是新的编辑会话：上一次的部分写入提示不跨会话
+      // 五-M16（SS-05）：回填挪到第一个 await 之前。V204 让弹层先可见之后，refreshStats 的往返期间
+      // 表单里是上一次打开的残留值 / index.html 默认值：作者这时改项会被随后的回填静默覆盖，
+      // 点「保存设置」更会把残留值整份写进 config（booksRoot 是空串 → 配置层回落默认目录，
+      // 自定义根下的书从书架消失，而这个字段在「数据」分区、默认停在「显示」分区根本看不见）。
+      // 现在弹层一出现表单就是对的，后面的异步只做展示性刷新。
+      fillSettingsFields(cfg);
+      // 1.4.0 P0-1：每次打开都回到默认分区、清空搜索框（深链入口在下面再切分区并滚过去）
+      settingsActiveTab = DEFAULT_SETTINGS_TAB;
+      const searchInput = settingsSearchInput();
+      if (searchInput) searchInput.value = '';
+      updateSettingsScopeUi();
+      // 入口指定了分区（U-D4 的码字日历）时立刻滚到那里 —— 放在异步台账读取之前，
+      // 弹层一出现就已经在日历上，不会先停在顶部再跳一下。普通打开没有 section，一个字都不动。
+      if (options && options.section) revealSettingsSection(options.section);
+      // 打开时刷新一次今天 / 近 30 天，避免跨过午夜后还显示昨天的数字
+      await refreshStats();
+      // 打开链在途时被「保存设置」/「取消」关掉了：不再往已关的弹层里写台账 / 更新区块
+      if (!settingsOpen) return state.settingsScope;
+      // 全局设置里顺手读一次三份台账（词表 / 校对词表 / 日志目录，都只读；按书设置里不显示这几组）。
+      // 三者互不依赖，一次并发发起，省掉两趟串行 IPC；各自的返回值、状态字段与分区渲染都不变。
+      if (state.settingsScope === 'global') {
+        await Promise.all([
+          refreshSensitiveSettingsInfo(),
+          refreshProofreadSettingsInfo(),
+          refreshLogInfo()
+        ]);
+      }
+      // 检查更新：只显示当前版本和上次检查结果（不自动联网；点按钮才检查）
+      if (state.settingsScope === 'global') renderUpdateSettings();
+    } finally {
+      openingSettings = false;
     }
-    // 检查更新：只显示当前版本和上次检查结果（不自动联网；点按钮才检查）
-    if (state.settingsScope === 'global') renderUpdateSettings();
   }
 
   // v0.13 U-D4：状态栏「今日字数」= 码字日历入口。

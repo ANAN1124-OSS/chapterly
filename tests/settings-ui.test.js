@@ -249,7 +249,7 @@ function build(options = {}) {
       applyChapterNumbering(meta) { calls.applyChapterNumbering.push(meta); if (meta && typeof meta === 'object') state.meta = meta; }
     },
     peers: {
-      stats: { refreshStats() { calls.refreshStats += 1; }, renderStatsChart() { calls.renderStatsChart += 1; } },
+      stats: { async refreshStats() { calls.refreshStats += 1; if (options.statsGate) await options.statsGate; }, renderStatsChart() { calls.renderStatsChart += 1; } },
       writeTimer: {
         renderDurationSettings() { calls.renderDurationSettings += 1; },
         renderWriteTimer() { calls.renderWriteTimer += 1; },
@@ -905,6 +905,66 @@ test('openSettings（U-D4 旧配置）：全局配置缺统计 / 时长 / 模板
   assert.equal(ctx.dom.map.get('settings-snapshot-days').value, '7');
   ctx.ui.closeSettings();
   assert.deepEqual(ctx.calls.setConfig, [], '只打开 / 取消不写盘');
+});
+
+// ---------- 五-M16（SS-05）：openSettings 回填时序 / 防重入 ----------
+// V204 为了不让作者白等，把弹层挪到 await refreshStats() 之前显示；但回填还在 stats 往返之后，
+// 期间表单不禁用、保存可点：作者此时改项会被回填静默覆盖；点保存则把残留值 / index.html 默认值
+// 写进 config（booksRoot 是空串 → 配置层回落默认目录，自定义根下的书从书架消失，且该字段在
+// 「数据」分区、默认停在「显示」分区根本看不见）。连点「设置」还会并行跑两条打开链、互相覆盖回填。
+test('M16（SS-05）：弹层一出现表单就是对的（回填在 refreshStats 之前），期间编辑不被覆盖、保存不再读残留值', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({
+    view: 'shelf', bookId: null,
+    config: { booksRoot: '/书库/自定义根', dailyGoal: 1000 },
+    statsGate: gate
+  });
+  const opening = ctx.ui.openSettings();
+  // 不等打开链：此刻 refreshStats 在途，弹层已经可见 —— 表单必须已经按配置回填
+  assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), false, '弹层已可见');
+  assert.equal(ctx.calls.refreshStats, 1, 'stats 读取已发起（在途）');
+  assert.equal(ctx.dom.map.get('settings-root').value, '/书库/自定义根', '回填已完成：书架根不是空串');
+  assert.equal(ctx.dom.map.get('settings-daily-goal').value, '1000');
+
+  // 作者在 stats 往返期间改项：回填已经发生，不会被 stats 回执覆盖
+  ctx.dom.map.get('settings-daily-goal').value = '1500';
+  release();
+  await opening;
+  assert.equal(ctx.dom.map.get('settings-daily-goal').value, '1500', '作者期间改的值不被回填覆盖');
+
+  // 保存读到的是真实值（不再是残留 / 默认值）
+  await ctx.ui.saveSettings();
+  assert.equal(ctx.calls.setConfig.length, 1);
+  assert.equal(ctx.calls.setConfig[0].dailyGoal, 1500);
+  assert.equal(ctx.calls.setConfig[0].booksRoot, '/书库/自定义根', 'booksRoot 不许被空串回落成默认目录');
+});
+
+test('M16（SS-05）：连点「设置」只跑一条打开链；打开链在途时被关掉，不再往已关的弹层里写', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库' }, statsGate: gate });
+  const first = ctx.ui.openSettings();
+  const second = ctx.ui.openSettings(); // 同一拍再点一次：在途，直接忽略
+  await flush();
+  assert.equal(ctx.calls.refreshStats, 1, '打开链在途时第二次点击不再发起 stats 读取');
+  release();
+  await Promise.all([first, second]);
+  assert.equal(ctx.calls.refreshStats, 1);
+  assert.deepEqual(ctx.calls.setConfig, []);
+
+  // 打开链停在 stats 往返、作者点了取消：剩下的台账读取 / 更新区块不再执行
+  let release2;
+  const gate2 = new Promise((resolve) => { release2 = resolve; });
+  const closed = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库' }, statsGate: gate2 });
+  const opening = closed.ui.openSettings();
+  closed.ui.closeSettings();
+  release2();
+  await opening;
+  assert.equal(closed.calls.logInfo, 0, '弹层已关掉：不再读日志台账');
+  assert.equal(closed.calls.sensitiveWordsInfo, 0);
+  assert.equal(closed.calls.proofreadWordsInfo, 0);
+  assert.equal(closed.dom.map.get('settings-backdrop').classList.contains('hidden'), true);
 });
 
 test('closeSettings：默认回到打开前的配置并重绘显示层；restore=false 只关弹层；两种情况都清备份', () => {
