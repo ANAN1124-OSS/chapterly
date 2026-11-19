@@ -122,7 +122,8 @@ function registerProofreadIpc(host) {
     });
   });
   // 多份校对词表（1.7.0 F3b2）：添加只允许通过系统对话框挑文件（渲染层给不了路径），
-  // 移除只收索引。渲染层既不能指定路径，也拿不到路径；落盘走配置仓库，
+  // 移除只收索引 + 点击时看到的份数（五-M12 身份核对：份数对不上说明列表已变，拒绝而不按错位索引删）。
+  // 渲染层既不能指定路径，也拿不到路径；落盘走配置仓库，
   // 配置清洗会再兜一遍绝对路径 / 去重 / WORDLIST_MAX 条上限（托底，不靠这一层）。
   // 1.7.2 D4（V42）：条数上限与提示文案都取 core/config.js 的 WORDLIST_MAX，这里不再声明同名常量。
   // 1.7.2 D4（V53）：先校验（stat / 重复 / 上限）再读词表；picked 是 path.resolve 的结果、恒为绝对
@@ -157,7 +158,7 @@ function registerProofreadIpc(host) {
     return { canceled: false, added: true, ...(await proofreadWordlistInfoNow()) };
   });
 
-  handle('proofread:wordlists-remove', async (index) => {
+  handle('proofread:wordlists-remove', async (index, expectedCount) => {
     const cfg = await getConfig();
     const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
     // 审计修复 #12（E8）：判型先要求 number —— Number(null / '' / false / []) 全是 0，会通过下面的
@@ -166,6 +167,12 @@ function registerProofreadIpc(host) {
     const at = typeof index === 'number' && Number.isInteger(index) ? index : -1;
     if (at < 0 || at >= current.length) {
       return { canceled: false, removed: false, code: 'WORDLIST_NOT_FOUND', message: '这一份词表不在列表里，可能已经被移除了', ...(await proofreadWordlistInfoNow()) };
+    }
+    // 五-M12（PR-02）：索引只是渲染时看到的列表位置。两次移除交叠（快速连点 / 双窗口）时配置已经
+    // 前移，仅判边界会删到下一份。渲染层把「点击时看到的份数」一起发来；对不上就明确拒绝并回最新
+    // 列表（渲染层据此重画），绝不再按错位索引 splice。旧调用不带份数时保持既有行为。
+    if (Number.isInteger(expectedCount) && expectedCount >= 0 && expectedCount !== current.length) {
+      return { canceled: false, removed: false, code: 'WORDLIST_CHANGED', message: '词表列表已经变了（可能在另一个窗口改过），请确认后再移除', ...(await proofreadWordlistInfoNow()) };
     }
     current.splice(at, 1);
     const next = await getConfigStore().set({ proofreadWordlists: current });

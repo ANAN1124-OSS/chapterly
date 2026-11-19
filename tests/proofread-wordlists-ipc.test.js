@@ -293,7 +293,7 @@ test('静态闸门：新增的添加 / 移除频道在 main 与 preload 一一�
   assert.match(addBody, /canceled: true/, '取消要回 { canceled: true }');
   assert.match(addBody, /proofreadWordlists/, '要操作多份字段');
   assert.match(addBody, /getConfigStore\(\)\.set\(/, '要落盘');
-  const removeBody = sliceFrom(proofreadIpcSource, "  handle('proofread:wordlists-remove', async (index) => {");
+  const removeBody = sliceFrom(proofreadIpcSource, "  handle('proofread:wordlists-remove', async (index, expectedCount) => {");
   assert.match(removeBody, /Number\.isInteger\(/, 'index 必须是整数');
   assert.match(removeBody, /splice\(/, '合法索引才能移除');
   assert.match(removeBody, /getConfigStore\(\)\.set\(/, '要落盘');
@@ -384,7 +384,7 @@ test('行为：添加词表先 stat / 判重 / 判上限，再读词表；被拒
     await fsPromises.rm(dir, { recursive: true, force: true });
   }
 });
-const REMOVE_ANCHOR = "  handle('proofread:wordlists-remove', async (index) => {";
+const REMOVE_ANCHOR = "  handle('proofread:wordlists-remove', async (index, expectedCount) => {";
 
 // 把 remove 处理器装进假作用域：配置读写与公开信息都是替身，断言的是「改没改配置」。
 function loadRemoveWordlistHandler({ config }) {
@@ -421,4 +421,32 @@ test('行为：wordlists-remove 先判型再动弹，null / \"\" / false / [] / 
   const ok = await handler(1);
   assert.equal(ok.removed, true);
   assert.deepEqual(writes, [{ proofreadWordlists: ['甲.txt'] }], '只 splice 掉那一份，顺序不变');
+});
+
+// 五-M12（PR-02）：移除只给索引时，两次移除交叠 / 双窗口改动会让索引错位，删到下一份。
+// 渲染层把「点击时看到的份数」一起发来；主进程对不上就明确拒绝并回最新列表，不写配置。
+test('行为：wordlists-remove 带点击时的份数——错位索引不删错，明确拒绝并回最新列表（五-M12）', async () => {
+  const config = { proofreadWordlists: ['甲.txt', '乙.txt', '丙.txt'] };
+  const first = loadRemoveWordlistHandler({ config });
+  const res1 = await first.handler(0, 3);
+  assert.equal(res1.removed, true);
+  assert.deepEqual(first.writes.at(-1), { proofreadWordlists: ['乙.txt', '丙.txt'] }, '第一份点得对：删甲');
+
+  // 同一批点击里的第二次（点击时也看到 3 份、索引 1 = 乙）：此刻配置只剩 2 份 → 拒绝，绝不许删丙
+  const second = loadRemoveWordlistHandler({ config: { proofreadWordlists: ['乙.txt', '丙.txt'] } });
+  const res2 = await second.handler(1, 3);
+  assert.equal(res2.removed, false);
+  assert.equal(res2.code, 'WORDLIST_CHANGED');
+  assert.match(res2.message, /列表已经变了/);
+  assert.deepEqual(second.writes, [], '错位索引一个字节都不写配置');
+
+  // 面板按回包重画后重试（份数对得上）：照常删
+  const retry = loadRemoveWordlistHandler({ config: { proofreadWordlists: ['乙.txt', '丙.txt'] } });
+  const res3 = await retry.handler(0, 2);
+  assert.equal(res3.removed, true);
+  assert.deepEqual(retry.writes.at(-1), { proofreadWordlists: ['丙.txt'] });
+
+  // 旧调用不带份数：保持既有行为（E8 判型 + 边界），不因新参数把老路径打断
+  const legacy = loadRemoveWordlistHandler({ config: { proofreadWordlists: ['乙.txt'] } });
+  assert.equal((await legacy.handler(0)).removed, true);
 });

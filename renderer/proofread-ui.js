@@ -440,10 +440,14 @@
     const lists = proofreadListsOf(state.proofreadWordList);
     if (!Number.isInteger(index) || index < 0 || index >= lists.length) return { ok: false };
     try {
-      const res = await call(api.removeProofreadWordlist, index);
+      // 五-M12（PR-02）：索引只是渲染时看到的列表位置，把点击时看到的份数一起发去主进程核对；
+      // 两次移除交叠 / 双窗口改动后份数对不上 → 主进程拒绝（WORDLIST_CHANGED），绝不删下一位。
+      const res = await call(api.removeProofreadWordlist, index, lists.length);
       if (!res || res.canceled) return { canceled: true };
       if (res.removed === false) {
         toast(res.message || '这份词表不在列表里，可能已经被移除了', 'warn');
+        // 列表在别处变过：会话内「启用」是按旧列表索引记的，已经对不上 —— 回到默认全开再重画。
+        if (res.code === 'WORDLIST_CHANGED') state.proofreadListsEnabled = {};
         applyProofreadWordListInfo(res);
         return res;
       }

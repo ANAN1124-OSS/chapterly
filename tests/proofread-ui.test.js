@@ -212,8 +212,8 @@ function build(options = {}) {
       if (options.addResult !== undefined) return options.addResult;
       return { canceled: false, added: true, ...MULTI_INFO };
     },
-    async removeProofreadWordlist(index) {
-      calls.removeProofreadWordlist.push(index);
+    async removeProofreadWordlist(index, expectedCount) {
+      calls.removeProofreadWordlist.push([index, expectedCount]);
       if (options.removeError) throw new Error(options.removeError);
       if (options.removeResult !== undefined) return options.removeResult;
       return { canceled: false, removed: true, ...MULTI_INFO_TWO };
@@ -1001,7 +1001,7 @@ test('多份词表：移除按钮走 api.removeProofreadWordlist(index)，开关
   box.children[0].children[3]._fire('click');
   await flush();
   await flush();
-  assert.deepEqual(ctx.calls.removeProofreadWordlist, [0]);
+  assert.deepEqual(ctx.calls.removeProofreadWordlist, [[0, 3]], '五-M12：带上点击时看到的份数，主进程才核对得出索引错位');
   assert.equal(ctx.state.proofreadListsEnabled[0], undefined, '被移除那一份的开关跟着丢掉');
   assert.equal(dom.map.get('proofread-wordlists').children.length, 2);
   assert.match(ctx.calls.toast.at(-1)[0], /已移除一份校对词表（还剩 2 份）/);
@@ -1153,4 +1153,26 @@ test('五-M11：整本校对在途移除词表——旧回执的 wordList 不许
   await flush();
   assert.equal(calls, 2, 'busy 期间改了词表：跑完要按最新词表补跑一次');
   assert.equal(ctx.state.proofreadWordList.lists.length, 2, '补跑回执同样按最新列表落地');
+});
+
+// ---------- 五-M12（PR-02）：错位索引的移除请求 ----------
+test('五-M12：主进程拒绝错位移除（WORDLIST_CHANGED）→ 按回包最新列表重画，会话启用表回到默认全开', async () => {
+  const dom = makeDocument();
+  const changed = {
+    canceled: false, removed: false, code: 'WORDLIST_CHANGED',
+    message: '词表列表已经变了（可能在另一个窗口改过），请确认后再移除', ...MULTI_INFO_TWO
+  };
+  const ctx = build({ dom, wordInfo: MULTI_INFO, removeResult: changed });
+  ctx.ui.setupProofreadUi();
+  await ctx.ui.refreshProofreadWordList();
+  // 先关掉第 2 份（旧列表索引 1）；列表已在别处变过时，这套按旧索引记的开关不可信
+  dom.map.get('proofread-wordlists').children[1].children[2]._fire('click');
+  assert.equal(ctx.state.proofreadListsEnabled[1], false);
+
+  const res = await ctx.ui.removeProofreadWordlist(0);
+  assert.equal(res.removed, false);
+  assert.deepEqual(ctx.calls.removeProofreadWordlist, [[0, 3]], '请求带上点击时的份数');
+  assert.deepEqual(ctx.state.proofreadListsEnabled, {}, '列表变过：会话启用表按旧索引不可信，回到默认全开');
+  assert.equal(dom.map.get('proofread-wordlists').children.length, 2, '按回包的最新列表重画');
+  assert.deepEqual(ctx.calls.toast.at(-1), [changed.message, 'warn']);
 });
