@@ -158,6 +158,7 @@
     } catch (err) {
       state.proofreadWordList = { ok: false, code: 'ERROR', message: `读取校对词表失败：${err.message}` };
     }
+    proofreadWordListSeq += 1; // 五-M11：面板词表刚被刷新，在途跑的旧快照不再回写
     renderProofreadWordList();
     return state.proofreadWordList;
   }
@@ -286,6 +287,11 @@
   // lists 按 index 对齐配置里的顺序（渲染层拿不到路径，也不会回写路径）。
   // 启用开关只存本次会话：state.proofreadListsEnabled 是按 index 的布尔表，不写配置、不新增字段；
   // 列表本身（哪几份）由主进程持久化——添加 / 移除立刻写 config，这里只管显示与刷新。
+  // 五-M11（PR-01）：词表状态世代。整本校对在途时作者还可能增删词表——回包里的 wordList 是
+  // 发起时的快照，不能反向覆盖刚更新的面板状态（否则已删词表「复活」、启用表按旧列表错位）。
+  // 每次本地改写 state.proofreadWordList 都推进这一代；落地时不是发起那一代就不采用回包的 wordList。
+  let proofreadWordListSeq = 0;
+
   function proofreadListsOf(info) {
     return info && Array.isArray(info.lists) ? info.lists : [];
   }
@@ -400,6 +406,7 @@
     if (info && typeof info === 'object') {
       const lists = proofreadListsOf(info);
       state.proofreadWordList = lists.length ? { ...info, multi: true } : info;
+      proofreadWordListSeq += 1; // 五-M11：列表被增删（含被拒绝的最新回包）→ 在途跑的旧 wordList 作废
     }
     renderProofreadWordList();
     return state.proofreadWordList;
@@ -416,7 +423,12 @@
       }
       applyProofreadWordListInfo(res);
       toast(`已添加一份校对词表（现在共 ${proofreadListsOf(res).length} 份）`);
-      if (!$('proofread-backdrop').classList.contains('hidden')) await runProofread();
+      // 五-M11（PR-01）：整本校对在途时重跑会撞 busy 被静默吞掉——与规则 / 逐份开关同口径登记补跑，
+      // 这一轮结束后按最新词表再跑一次（不并发、不吞操作）。
+      if (!$('proofread-backdrop').classList.contains('hidden')) {
+        if (state.proofreadBusy) proofreadRerunPending = true;
+        else await runProofread();
+      }
       return res;
     } catch (err) {
       toast(`添加校对词表失败：${err.message}`, 'error');
@@ -438,7 +450,11 @@
       shiftProofreadListEnabled(index);
       applyProofreadWordListInfo(res);
       toast(`已移除一份校对词表（还剩 ${proofreadListsOf(res).length} 份）`);
-      if (!$('proofread-backdrop').classList.contains('hidden')) await runProofread();
+      // 五-M11（PR-01）：同添加——busy 期间移除也要登记补跑，避免旧跑回执带着已删词表落地。
+      if (!$('proofread-backdrop').classList.contains('hidden')) {
+        if (state.proofreadBusy) proofreadRerunPending = true;
+        else await runProofread();
+      }
       return res;
     } catch (err) {
       toast(`移除校对词表失败：${err.message}`, 'error');
@@ -597,6 +613,8 @@
     if (state.proofreadBusy) return { ok: false, message: '正在校对中' };
     const scope = proofreadScope();
     const runOptions = proofreadOptions();
+    // 五-M11（PR-01）：发起时的词表世代。回执回来时词表已经被增删 / 刷新过 → 不采用旧 wordList。
+    const wordListSeqAtStart = proofreadWordListSeq;
     state.proofreadScope = scope;
     setProofreadBusy(true);
     $('proofread-summary').textContent =
@@ -650,9 +668,10 @@
         };
       }
       state.proofread = payload;
-      if (payload.wordList) {
+      if (payload.wordList && wordListSeqAtStart === proofreadWordListSeq) {
         // 1.7.1 P6（V52）：text / book 校对回包只描述这一轮词条（不带 multi）；
         // 保留 words-info 刚确认的多份事实，别让一次校对把面板打回旧单份样式。
+        // 五-M11（PR-01）：只有词表这一代没变过才写回；跑的过程中增删过词表，回包是旧快照。
         const multi = Boolean(state.proofreadWordList && state.proofreadWordList.multi === true);
         state.proofreadWordList = multi ? { ...payload.wordList, multi: true } : payload.wordList;
       }
@@ -696,6 +715,7 @@
       }
       state.proofreadWordsInfo = picked;
       state.proofreadWordList = picked;
+      proofreadWordListSeq += 1; // 五-M11：换了词表，在途跑的旧 wordList 不许盖回来
       renderProofreadWordList();
       renderProofreadSettings();
       toast(`已选择校对词表：${picked.name}（${picked.count} 个词）`);

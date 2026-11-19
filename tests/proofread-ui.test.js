@@ -1112,3 +1112,45 @@ test('runProofread（WP-15 / V202）：整本校对在飞期间换书 → 结果
     '校对期间已经换了书或章节，这次结果没有显示；请重新校对'
   );
 });
+
+// ---------- 五-M11（PR-01）：整本校对在途时增删词表 ----------
+test('五-M11：整本校对在途移除词表——旧回执的 wordList 不许覆盖新状态，撞 busy 要补跑一次', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, wordInfo: MULTI_INFO });
+  await ctx.ui.refreshProofreadWordList();
+  assert.equal(ctx.state.proofreadWordList.lists.length, 3);
+  dom.map.get('proofread-backdrop').classList.remove('hidden'); // 面板开着：词表操作会触发重跑
+
+  // 整本跑卡在 proofreadText 的 await 上；回执里的 wordList 是发起时（3 份）的快照。
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  ctx.host.api.proofreadText = async () => {
+    calls += 1;
+    if (calls === 1) {
+      await gate;
+      return {
+        total: 1, byRule: { 'custom-word': 1 }, issues: [],
+        wordList: { ok: true, name: '发起时的三份', count: 27, lists: MULTI_INFO.lists }
+      };
+    }
+    return { total: 0, byRule: {}, issues: [], wordList: { ok: true, name: '两份', count: 27, lists: MULTI_INFO_TWO.lists } };
+  };
+  const pending = ctx.ui.runProofread();
+  await flush();
+  assert.equal(ctx.state.proofreadBusy, true, '整本跑在途');
+
+  // 作者在 busy 期间移除第 1 份词表：配置成功 → 撞 busy 应登记补跑（不是静默吞掉）
+  const removed = await ctx.ui.removeProofreadWordlist(0);
+  assert.equal(removed.removed, true);
+  assert.equal(ctx.state.proofreadWordList.lists.length, 2);
+
+  release();
+  await pending;
+  assert.equal(ctx.state.proofreadWordList.lists.length, 2, '旧回执的三份词表快照不许把已移除的那份画回来');
+
+  await flush();
+  await flush();
+  assert.equal(calls, 2, 'busy 期间改了词表：跑完要按最新词表补跑一次');
+  assert.equal(ctx.state.proofreadWordList.lists.length, 2, '补跑回执同样按最新列表落地');
+});
