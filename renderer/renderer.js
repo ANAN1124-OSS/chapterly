@@ -1845,10 +1845,25 @@
   // 只改编辑区、只标脏，不自动保存（与「插入碎片」/「替换这一处」的既有口径一致）；
   // 面板保持打开；插入成功后由 capture-ui 消费这一条记录（2026-11-08：正文也「用过就消失」）。
   function insertIntoBody(text) {
-    if (!state.bookPath || state.view !== 'editor' || !state.chapters.length) {
-      return { ok: false, message: '没有打开的书，插入正文前请先打开一章' };
-    }
-    if (state.loading) return { ok: false, message: '正在切换章节，请稍候再试' };
+    // 五-H4（BP-01 / L-F5）：程序化插入先过「有效章节 / 可编辑态」闸（纯逻辑在 editor-logic）。
+    // readOnly 挡得住键盘，挡不住这里的 `.value` 赋值 / execCommand 失败后的兜底赋值：
+    //   · 遮罩态（开书目标章读取失败：index=-1 + loadedChapterId=null）插入 = 「存不了、退不出、
+    //     记录已消费、崩溃草稿也不写」的幽灵脏正文；
+    //   · 开书在途插入会被 commitOpenBook 的 `editorEl.value=''` 静默抹掉；
+    //   · 长操作锁定期间插入会在随后按备份重载时被覆盖。
+    // 拒绝时捕获面板按回执保留记录（applyBody 只在 ok 时消费）。
+    const gate = editorLogic.insertGuard({
+      bookPath: state.bookPath,
+      view: state.view,
+      chapterCount: state.chapters.length,
+      loading: state.loading,
+      index: state.index,
+      loadedChapterId: state.loadedChapterId,
+      openingBook,
+      longOpLocked: longOpLocked(),
+      readOnly: editorEl.readOnly === true
+    });
+    if (!gate.ok) return { ok: false, code: gate.code, message: gate.message };
     const value = String(text == null ? '' : text);
     if (!value.trim()) return { ok: false, message: '这一条没有可插入的内容' };
     const before = editorEl.value;

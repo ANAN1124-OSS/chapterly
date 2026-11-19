@@ -597,6 +597,27 @@ test('insertSelectedFragment：没选碎片 / 没书早退；成功替换选区�
   assert.equal(clamp.editorEl.value, 'XYQ', '越界起点夹到正文末尾');
 });
 
+// 五-H4（L-F5）：编辑区只读锁期间碎片插入必须被拒——readOnly 挡得住键盘，挡不住兜底的整串赋值。
+test('五-H4：只读锁（遮罩 / 开书在途 / 长操作 / 载章）期间碎片插入被拒，不写正文、不关对话框、不报成功', () => {
+  const locked = build({ editorText: 'ABCDEF' });
+  assert.equal(locked.ui.openInsertFragmentDialog(), true);
+  locked.state.fragmentSelected = { name: 'a.txt', text: 'ZZ', chars: 2 };
+  locked.editorEl.readOnly = true;
+  const res = locked.ui.insertSelectedFragment();
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'LOCKED');
+  assert.match(res.message, /稍候再插入碎片/);
+  assert.equal(locked.editorEl.value, 'ABCDEF', '正文一个字节不动');
+  assert.equal(locked.calls.onEditorInput, 0, '不触发输入处理 / 不标脏');
+  assert.equal(locked.calls.fallbackWrites.length, 0, '不记兜底快照');
+  assert.equal(
+    locked.dom.map.get('fragments-backdrop').classList.contains('hidden'),
+    false,
+    '插入对话框保持打开，现场恢复后可以重试'
+  );
+  assert.deepEqual(locked.calls.toast, [[res.message, 'warn']], '只给「稍候」提示，不报插入成功');
+});
+
 // ---------- 1.5.0 功能-3：碎片拖进正文 ----------
 test('拖拽插入：行可拖（dataTransfer 只带名字）、面板让路、落在落点处插入且不写盘不删碎片', async () => {
   const ctx = build({ editorText: 'ABCDEF', selection: 3, selectionEnd: 3 });

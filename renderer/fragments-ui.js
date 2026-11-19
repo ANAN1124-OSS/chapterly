@@ -331,6 +331,12 @@
   // 走原生输入，保住 Ctrl+Z；execCommand 不可用 / 结果对不上时手动拼接兜底（会丢原生撤销链，但不丢内容）。
   // 只改编辑区（onEditorInput 会标未保存），绝不自动保存、绝不删除原碎片。
   function insertFragmentAt(fragment, start, end) {
+    // 五-H4（L-F5）：与捕获「正文」同一条闸——只读锁（遮罩 / 开书在途 / 长操作 / 载章）期间
+    // execCommand 会失败，兜底的整串赋值却照样写进编辑区，随后被重载 / 换书清掉。
+    // 编辑区只读态由 save-chain-ui.applyEditorEditable 唯一出口决定，这里只认 readOnly。
+    if (editorEl.readOnly === true) {
+      return { ok: false, code: 'LOCKED', message: '编辑区正在切换或载入章节，稍候再插入碎片' };
+    }
     const length = editorEl.value.length;
     const from = Math.max(0, Math.min(Number(start) || 0, length));
     const to = Math.max(from, Math.min(Number(end) || from, length));
@@ -375,6 +381,11 @@
     if (!state.bookPath) return { ok: false, message: '先打开一本书' };
     const range = state.insertFragmentRange || { start: editorEl.selectionStart || 0, end: editorEl.selectionEnd || 0 };
     const result = insertFragmentAt(fragment, range.start, range.end);
+    if (result.ok === false) {
+      // 五-H4：只读锁 / 载章在途期间不插、不关对话框、不报成功——作者可以稍后重试。
+      toast(result.message || '插入碎片失败', 'warn');
+      return result;
+    }
     closeInsertFragmentDialog();
     toast(`已插入碎片 ${fragment.name}（${formatCount(fragment.chars)} 字）· 仍是未保存，Ctrl+S 写盘`);
     return result;
@@ -495,6 +506,11 @@
         return { ok: false, message };
       }
       const result = insertFragmentAt({ name: data.name, text: data.text, chars: data.chars }, offset, offset);
+      if (result.ok === false) {
+        // 五-H4：只读锁期间拖拽插入也不许写进去（读碎片期间现场可能刚开始换书 / 长操作）。
+        toast(result.message || '插入碎片失败', 'warn');
+        return result;
+      }
       closeInsertFragmentDialog();
       toast(`已插入碎片 ${data.name}（${formatCount(data.chars)} 字）· 仍是未保存，Ctrl+S 写盘`);
       return result;

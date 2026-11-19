@@ -584,3 +584,68 @@ test('大段写入通道（试用 B）：自定义阈值 / 坏阈值夹到 1000�
   // 超上限夹到 100 万字：100 万字整串仍走原生输入（这一档本来就该走导入，不当成「大段插入」）
   assert.equal(logic.shouldBulkWrite('a'.repeat(1000001), 999999999), true);
 });
+
+// ---------- 五-H4（BP-01 / L-F5）：程序化插入的「有效章节 + 可编辑态」闸 ----------
+// 缺陷：insertIntoBody / 碎片插入只查 bookPath / view / chapters.length / loading，不查遮罩态
+// （index=-1 + loadedChapterId=null）/ 开书在途 / 长操作锁 / readOnly。readOnly 只挡键盘，程序化
+// execCommand 失败后的兜底 `.value` 赋值照样写进去 → 「存不了、退不出、记录已消费、无崩溃草稿」。
+// 判定收在 insertGuard 纯逻辑里，渲染层接线由静态闸门钉住。
+
+test('五-H4：insertGuard —— 无书 / 遮罩 / 开书在途 / 长操作 / 只读全部拒绝，正常态放行', () => {
+  const ok = {
+    bookPath: 'D:/书库/测试书',
+    view: 'editor',
+    chapterCount: 3,
+    loading: false,
+    index: 1,
+    loadedChapterId: 'c2',
+    openingBook: false,
+    longOpLocked: false,
+    readOnly: false
+  };
+  assert.deepEqual(logic.insertGuard(ok), { ok: true });
+  assert.deepEqual(logic.insertGuard(), { ok: false, code: 'NO_BOOK', message: '没有打开的书，插入正文前请先打开一章' });
+  assert.equal(logic.insertGuard(null).ok, false);
+  // 边界：chapterCount 是数字字符串也认（state.chapters.length 正常是数字，防宿主传错）
+  assert.equal(logic.insertGuard({ ...ok, chapterCount: '3' }).ok, true);
+
+  const cases = [
+    [{ bookPath: '' }, 'NO_BOOK'],
+    [{ view: 'shelf' }, 'NO_BOOK'],
+    [{ view: 'reading' }, 'NO_BOOK'],
+    [{ chapterCount: 0 }, 'NO_BOOK'],
+    [{ loading: true }, 'LOADING'],
+    [{ index: -1 }, 'NO_CHAPTER'],
+    [{ loadedChapterId: null }, 'NO_CHAPTER'],
+    [{ openingBook: true }, 'LOCKED'],
+    [{ longOpLocked: true }, 'LOCKED'],
+    [{ readOnly: true }, 'LOCKED']
+  ];
+  for (const [patch, code] of cases) {
+    const verdict = logic.insertGuard({ ...ok, ...patch });
+    assert.equal(verdict.ok, false, JSON.stringify(patch) + ' 必须拒绝');
+    assert.equal(verdict.code, code, JSON.stringify(patch) + ' 的错误码');
+    assert.ok(typeof verdict.message === 'string' && verdict.message.length > 0, '拒绝要给可读提示');
+  }
+  // 遮罩态优先级高于其它锁：提示「没有载入章节」，而不是笼统的「稍候再试」
+  assert.equal(logic.insertGuard({ ...ok, index: -1, openingBook: true }).code, 'NO_CHAPTER');
+});
+
+test('五-H4 静态闸门：renderer.js 的 insertIntoBody 先过 insertGuard，不再手写第二套守卫', () => {
+  const rendererSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  const body = rendererSrc.match(/function insertIntoBody\([^)]*\) \{[\s\S]*?\n  \}/);
+  assert.ok(body, '找不到 insertIntoBody()');
+  assert.match(body[0], /editorLogic\.insertGuard\(\{/);
+  assert.match(body[0], /bookPath: state\.bookPath/);
+  assert.match(body[0], /chapterCount: state\.chapters\.length/);
+  assert.match(body[0], /index: state\.index/);
+  assert.match(body[0], /loadedChapterId: state\.loadedChapterId/);
+  assert.match(body[0], /openingBook,/);
+  assert.match(body[0], /longOpLocked: longOpLocked\(\)/);
+  assert.match(body[0], /readOnly: editorEl\.readOnly === true/);
+  assert.equal(
+    body[0].includes("if (!state.bookPath || state.view !== 'editor' || !state.chapters.length)"),
+    false,
+    '旧的四道裸守卫应已被闸门收编（不然两套口径会漂）'
+  );
+});

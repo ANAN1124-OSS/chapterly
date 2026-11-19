@@ -460,6 +460,29 @@
     return items[0];
   }
 
+  // 五-H4（BP-01 / L-F5）：程序化插入（捕获「正文」/ 碎片插入）的「有效章节 + 可编辑态」判定。
+  // 编辑区只读态原本只有一个出口（save-chain-ui.js 的 applyEditorEditable：长操作锁 / 开书在途 /
+  // 载章 / 遮罩态），但 readOnly 只挡键盘——程序化 execCommand 在只读 textarea 上会失败，兜底的
+  // 整串 `.value` 赋值却照样写进去。遮罩态（index=-1 + loadedChapterId=null）插入会产生
+  // 「存不了（NO_CHAPTER）、退不出（切章保存失败）、捕获记录已消费、崩溃草稿也不写」的幽灵脏正文；
+  // 开书在途插入会被 commitOpenBook 的 `editorEl.value=''` 静默抹掉。这里把判定收成纯逻辑，
+  // 渲染层 insertIntoBody 与各插入入口共用，避免再来一份「谁最后解自己的锁」。
+  function insertGuard(options) {
+    const opts = options || {};
+    if (!opts.bookPath || opts.view !== 'editor' || !(Number(opts.chapterCount) > 0)) {
+      return { ok: false, code: 'NO_BOOK', message: '没有打开的书，插入正文前请先打开一章' };
+    }
+    if (opts.loading) return { ok: false, code: 'LOADING', message: '正在切换章节，请稍候再试' };
+    // 遮罩态：编辑区有占位提示，但没有可保存的目标章（index=-1 / loadedChapterId=null）。
+    if (Number(opts.index) < 0 || opts.loadedChapterId == null) {
+      return { ok: false, code: 'NO_CHAPTER', message: '当前没有载入章节，无法插入正文；请先打开一章' };
+    }
+    if (opts.openingBook || opts.longOpLocked || opts.readOnly) {
+      return { ok: false, code: 'LOCKED', message: '正在切换书籍或章节，请稍候再试' };
+    }
+    return { ok: true };
+  }
+
   return {
     MAX_MARK_CHARS,
     MAX_MARK_RAW_CHARS,
@@ -473,6 +496,7 @@
     BULK_WRITE_CHARS,
     BULK_WRITE_LIMITS,
     shouldBulkWrite,
+    insertGuard,
     countChars,
     lineRanges,
     paragraphRanges,
