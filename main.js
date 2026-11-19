@@ -1513,6 +1513,17 @@ function registerIpc() {
       // 被 assertBookPath 拦成 BAD_PATH。渲染层收到后：停在书架就刷新成新目录；开着旧根的书给一次性
       // 提示 + 救稿出口。只带生效根（装饰层后的值）：--books-root 覆盖时判据同上，覆盖目录不算换根。
       broadcast('config:changed', { reason: 'booksRoot', booksRoot: nextConfig.booksRoot });
+    } else {
+      // 五-M14（SS-11）：非换根的全局设置变更也要广播。旧实现只在换根时通知，别的窗口的
+      // state.globalConfig 就停在它上一次读到的旧值——作者在那边点一次保存，config:set 带的是
+      // 整份全局表单，会把这里刚改的项（dailyGoal / 字号 / 快照 / 词表路径…）静默盖回旧值。
+      // 载荷只带「改了哪些顶层键」的摘要（不带值：路径类字段不进广播）；发起窗口自己已经拿到
+      // 回包，用 except 跳过它，免得本窗口把自己的保存当成「别的窗口改过设置」再重填一遍表单。
+      broadcast(
+        'config:changed',
+        { reason: 'config', changed: Object.keys(gated.patch || {}) },
+        { except: session ? session.id : null }
+      );
     }
     // b8：设置里打开 / 关闭「后台监听剪贴板」立即生效（幂等）
     syncClipboardWatch();

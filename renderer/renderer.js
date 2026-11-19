@@ -3367,7 +3367,7 @@
     },
     texts: { commonLib, formatBytes }
   });
-  const { setSelectValue, renderSettingsCaretColors, renderChapterTemplatePreview, renderSensitiveSettings, renderProofreadSettings, checkUpdate, openUpdateDownload, previewSettings, openSettings, openStatsCalendar, closeSettings, resetBookDisplay, saveSettings, setupSettingsUi } = settingsUi;
+  const { setSelectValue, renderSettingsCaretColors, renderChapterTemplatePreview, renderSensitiveSettings, renderProofreadSettings, checkUpdate, openUpdateDownload, previewSettings, openSettings, openStatsCalendar, closeSettings, handleExternalConfigChange, resetBookDisplay, saveSettings, setupSettingsUi } = settingsUi;
 
   // ---------- A3 第二刀：保存链模块装配（host 里全是已绑定的 const / 提升函数） ----------
   // 为什么放这里：本刀 host 依赖 saveStatusUi / saveRescueUi / renderStatsUi / flushWriteTimer /
@@ -3794,18 +3794,34 @@
   api.onShelfChanged((payload) => shelfUi.handleShelfChanged(payload).catch(() => {}));
   // WP6（N2）：别的窗口换了书架根 → 本窗口刷新成新目录的书架；开着旧根的书则一次性提示 +
   // 救稿出口（同一个根只提示一次，去重在模块闭包里；救稿 / 回书架都复用既有入口）。
+  // 五-M14（SS-11）：本窗口的全局配置快照刷新（config:changed 的两种 reason 共用同一份实现）。
+  // 别的窗口改过设置后不刷新的话，本窗口下一次打开设置会按旧值整份写回（含把书架根换回去）。
+  async function refreshGlobalConfigFromMain() {
+    state.globalConfig = await call(api.getConfig);
+    state.config = effectiveConfig();
+  }
   const configChangeUi = configChangeUiModule.create({
     state, openModal, toast,
     rescueCopy: (mode) => saveRescueUi.rescueCopy(mode),
     goBackToShelf: () => backToShelf(),
     refreshShelf: () => refreshShelf(),
-    refreshConfig: async () => {
-      state.globalConfig = await call(api.getConfig);
-      state.config = effectiveConfig();
-    }
+    refreshConfig: refreshGlobalConfigFromMain
   });
+  // 五-M14（SS-11）：主进程的 config:set 现在「非换根也广播」（reason:'config'，带改了哪些顶层键）。
+  // 换根仍走 configChangeUi（刷新配置 + 孤岛提示 + 救稿出口）；非换根只刷新本窗口的 globalConfig，
+  // 再把开着的设置表单重定基（settings-ui 自己判「弹层开着 + 全局作用域 + 保存不在途」）。
+  // 通知是尽力而为：任何一步失败都不阻断正在进行的操作，也不冒充成功。
   api.onConfigChanged((payload) => {
-    void configChangeUi.handleConfigChanged(payload).catch(() => {});
+    if (!payload || payload.reason !== 'config') {
+      void configChangeUi.handleConfigChanged(payload).catch(() => {});
+      // 换根同样要给开着的设置表单重定基：表单里还留着旧根，保存会把 booksRoot 写回旧根（再广播
+      // 一次 → 对面窗口反而收到孤岛提示）。configChangeUi 自己会忽略坏 payload，这里也先判一次。
+      if (payload && payload.reason === 'booksRoot') void handleExternalConfigChange().catch(() => {});
+      return;
+    }
+    void refreshGlobalConfigFromMain()
+      .then(() => handleExternalConfigChange())
+      .catch(() => {});
   });
   // WP5（N1）：崩溃恢复。默认关（开关只在设置里打开）；打开后周期上报未保存正文 +
   // 启动 / 重载后检查上次崩溃草稿。恢复时正文只进编辑区（仍 dirty），Ctrl+S 才写盘。

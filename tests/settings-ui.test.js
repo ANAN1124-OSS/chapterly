@@ -170,7 +170,7 @@ function build(options = {}) {
     writeTimer: { running: false }
   };
   const calls = {
-    setConfig: [], setBookDisplay: [], resetBookDisplay: [], toast: [], refreshStats: 0, renderStatsChart: 0,
+    setConfig: [], setBookDisplay: [], resetBookDisplay: [], toast: [], getConfig: 0, refreshStats: 0, renderStatsChart: 0,
     renderDurationSettings: 0, renderWriteTimer: 0, applyWriteTimerConfig: 0, flushWriteTimer: 0,
     renderEditorMarks: 0, renderMarksMenu: 0, refreshShelf: 0,
     refreshSensitiveWordList: 0, refreshProofreadWordList: 0, pickSensitiveWords: [], pickProofreadWords: [],
@@ -184,6 +184,12 @@ function build(options = {}) {
     async setConfig(patch) { calls.setConfig.push(patch); if (options.setConfigGate) await options.setConfigGate; if (options.saveError) throw new Error(options.saveError); return { ...state.globalConfig, ...patch }; },
     async setBookDisplay(bookId, patch) { calls.setBookDisplay.push([bookId, patch]); if (options.saveError) throw new Error(options.saveError); return patch; },
     async resetBookDisplay(bookId) { calls.resetBookDisplay.push(bookId); if (options.resetError) throw new Error(options.resetError); return {}; },
+    // 五-M14（SS-11）：config:get 回包（本窗口的 state.globalConfig 可能是旧快照，主进程才是唯一事实源）
+    async getConfig() {
+      calls.getConfig += 1;
+      if (options.getConfigError) throw new Error(options.getConfigError);
+      return options.getConfigResult === undefined ? state.globalConfig : options.getConfigResult;
+    },
     async sensitiveWordsInfo() {
       calls.sensitiveWordsInfo += 1;
       if (options.infoGate) await options.infoGate;
@@ -219,7 +225,8 @@ function build(options = {}) {
     display: {
       applyEditorStyle(cfg) { calls.applyEditorStyle.push(cfg); },
       syncCaretParagraphFromConfig() { calls.syncCaretParagraphFromConfig += 1; },
-      effectiveConfig: () => state.config,
+      // 与 renderer.js 的 effectiveConfig 同口径：生效值 = 全局配置 + 当前书的覆盖（state.config 是缓存）
+      effectiveConfig: () => ({ ...(state.globalConfig || state.config || {}), ...(state.bookDisplay || {}) }),
       applySidebarWidth(w) { calls.applySidebarWidth.push(w); },
       async loadCustomFont(path, opts) { calls.loadCustomFont.push([path, opts]); return true; },
       readDisplayForm: () => options.displayForm || {
@@ -299,14 +306,15 @@ test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个�
   }
 });
 
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 14 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 15 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0);
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'checkUpdate', 'closeSettings', 'openSettings', 'openStatsCalendar', 'openUpdateDownload', 'previewSettings',
-    'renderChapterTemplatePreview', 'renderProofreadSettings', 'renderSensitiveSettings', 'renderSettingsCaretColors',
-    'resetBookDisplay', 'saveSettings', 'setSelectValue', 'setupSettingsUi'
+    'checkUpdate', 'closeSettings', 'handleExternalConfigChange', 'openSettings', 'openStatsCalendar',
+    'openUpdateDownload', 'previewSettings', 'renderChapterTemplatePreview', 'renderProofreadSettings',
+    'renderSensitiveSettings', 'renderSettingsCaretColors', 'resetBookDisplay', 'saveSettings', 'setSelectValue',
+    'setupSettingsUi'
   ]);
   assert.equal(moduleCode.includes('setInterval'), false);
 });
@@ -734,6 +742,147 @@ test('saveSettings：失败 / 成功后 savingSettings 都复位，还能再次�
   assert.equal(ok.calls.setConfig.length, 2, '成功后必须复位');
 });
 
+// ---------- 五-M14（SS-11）：跨窗口全局设置同步 / 设置表单重定基 ----------
+// 多窗口 A、B 同开。A 改了全局设置（dailyGoal / 字号 / 快照 / 换书架根…）并保存 → 主进程写盘。
+// 旧实现只在「换根」时广播 config:changed，且渲染层收到换根只刷新 state.globalConfig，
+// **不回填开着的设置表单、不更新取消用的 settingsBackup** → B 之后点一次保存，config:set 里
+// 那份「整份全局表单」就把 A 刚改的项按旧值静默盖回去（换根子情形 = 书架根被换回旧根，
+// 再广播一次，A 窗口反而收到孤岛提示）。这里用假 host 钉住修复后的两半：
+//   ① 弹层开着（全局作用域）收到别窗变更 → 按 main 的最新配置重填表单 + 重定基 settingsBackup；
+//   ② 重填后保存写回的是最新值，不再按旧值盖掉别窗改动。
+test('M14（SS-11）：弹层开着收到别窗配置变更 → 表单按最新配置重定基，保存不再把别窗改动按旧值写回', async () => {
+  // 本窗口打开设置时读到的全局配置（旧快照）
+  const stale = { booksRoot: '/书库', editorFont: 'serif', editorFontSize: 18, dailyGoal: 1000 };
+  // 另一个窗口刚写盘的最新配置（主进程 config:get 的回包）
+  const fresh = { ...stale, dailyGoal: 2000 };
+  const ctx = build({ view: 'shelf', bookId: null, config: stale, getConfigResult: fresh });
+  await ctx.ui.openSettings();
+  assert.equal(ctx.dom.map.get('settings-daily-goal').value, '1000', '打开时按当时的全局配置回填');
+  assert.deepEqual(ctx.state.settingsBackup, stale, '取消备份也是打开时那份旧配置');
+
+  // 渲染层收到 config:changed（reason:'config'）→ 先刷新 globalConfig，再让本模块重定基
+  assert.equal(await ctx.ui.handleExternalConfigChange(), true);
+  assert.equal(ctx.calls.getConfig, 1, '重定基按 main 的最新配置来（不信任本窗口的旧 state.globalConfig）');
+  assert.equal(ctx.dom.map.get('settings-daily-goal').value, '2000', '表单按最新配置重填（否则保存会把旧值整份写回）');
+  assert.deepEqual(ctx.state.globalConfig, fresh, '本窗口的全局配置快照已刷新');
+  assert.deepEqual(ctx.state.settingsBackup, ctx.state.config, '取消备份同步重定基（取消也不再还原成过期配置）');
+  assert.ok(
+    ctx.calls.toast.some(([message, kind]) => kind === 'warn' && /另一个窗口/.test(message)),
+    '要明示表单为什么被重填（否则作者在面板里刚填的值会凭空消失）'
+  );
+
+  // 作者随后点保存：整份表单里的 dailyGoal 必须是刷新后的 2000，不能是打开时读到的 1000
+  await ctx.ui.saveSettings();
+  assert.equal(ctx.calls.setConfig.length, 1);
+  assert.equal(ctx.calls.setConfig[0].dailyGoal, 2000, '不许把别窗刚改的 dailyGoal 按旧值盖回去');
+  assert.equal(ctx.calls.setConfig[0].booksRoot, '/书库', '书架根仍是最新配置里的值（没有换根就不该动根）');
+});
+
+test('M14（SS-11）：面板没开 / 保存自身在途 / 按书作用域 → 不重填表单、不打扰作者', async () => {
+  // ① 面板没开：连配置都不取（没有会写回旧值的表单）
+  const closed = build({
+    view: 'shelf', bookId: null,
+    config: { booksRoot: '/书库', dailyGoal: 1000 },
+    getConfigResult: { booksRoot: '/书库', dailyGoal: 2000 }
+  });
+  assert.equal(await closed.ui.handleExternalConfigChange(), false);
+  assert.equal(closed.calls.getConfig, 0, '面板没开不取配置');
+  assert.deepEqual(closed.calls.toast, []);
+  assert.equal(closed.dom.map.get('settings-daily-goal').value, '');
+
+  // ② 保存自身在途：这是本窗口那次 setConfig 的回声，重填只会把作者刚提交/刚填的值抹掉
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const saving = build({
+    view: 'shelf', bookId: null,
+    config: { booksRoot: '/书库', dailyGoal: 1000 },
+    getConfigResult: { booksRoot: '/书库', dailyGoal: 2000 },
+    setConfigGate: gate
+  });
+  await saving.ui.openSettings();
+  const inflight = saving.ui.saveSettings();
+  await flush();
+  assert.equal(saving.calls.setConfig.length, 1, '保存已进入 setConfig 在途');
+  assert.equal(await saving.ui.handleExternalConfigChange(), false, '自己的保存回包在途：不当外部变更处理');
+  assert.equal(saving.calls.getConfig, 0);
+  release();
+  await inflight;
+
+  // ③ 按书作用域：保存走 book:set-display（只写这本书的覆盖），碰不到全局配置，无需重定基
+  const book = build({
+    view: 'editor', bookId: 'id-1', scope: 'book',
+    config: { booksRoot: '/书库', editorFontSize: 18 },
+    getConfigResult: { booksRoot: '/书库', editorFontSize: 20 }
+  });
+  await book.ui.openSettings();
+  assert.equal(book.state.settingsScope, 'book');
+  assert.equal(await book.ui.handleExternalConfigChange(), false);
+  assert.equal(book.calls.getConfig, 0);
+  assert.equal(book.dom.map.get('settings-size').value, '18', '按书面板不因全局默认变化而重填');
+  assert.deepEqual(book.calls.toast, []);
+
+  // ④ 取配置失败 / 回包形状不对：不炸、不动表单、不假装重定基成功
+  const broken = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库', dailyGoal: 1000 }, getConfigError: 'config:get 失败' });
+  await broken.ui.openSettings();
+  assert.equal(await broken.ui.handleExternalConfigChange(), false);
+  assert.equal(broken.dom.map.get('settings-daily-goal').value, '1000');
+});
+
+test('静态闸门（M14/SS-11）：config:set 非换根也广播；渲染层刷新 globalConfig 并接上重定基入口', () => {
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const start = mainSrc.indexOf("handle('config:set'");
+  assert.ok(start > 0, 'main.js 里找不到 config:set');
+  const body = mainSrc.slice(start, mainSrc.indexOf('\n  handle(', start + 1));
+  // 换根分支原样保留（payload 只带 reason / booksRoot，现有 WP6 闸门仍盯这行）
+  assert.match(body, /broadcast\('config:changed', \{ reason: 'booksRoot', booksRoot: nextConfig\.booksRoot \}\)/);
+  // 写盘成功之后：非换根变更也广播，带顶层键摘要，并跳过发起窗口（自己已拿到回包，不自回声）
+  assert.match(
+    body,
+    /broadcast\(\s*'config:changed',\s*\{ reason: 'config', changed: Object\.keys\(gated\.patch \|\| \{\}\) \},\s*\{ except: session \? session\.id : null \}\s*\)/,
+    '非换根的全局设置变更要广播（reason: config + changed 摘要 + 跳过发起窗口）'
+  );
+  const applyAt = body.indexOf('const nextConfig = applyConfig(next);');
+  const configReasonAt = body.indexOf("reason: 'config'");
+  assert.ok(applyAt > -1 && configReasonAt > applyAt, '广播必须在配置写盘成功之后');
+  assert.ok(
+    body.indexOf("broadcast('config:changed', { reason: 'booksRoot'") < configReasonAt,
+    '换根分支在前、非换根分支在后（现有闸门按这个顺序取清锁 / 广播的位置）'
+  );
+
+  // 渲染层：只订阅一次；换根仍交给 configChangeUi；reason 'config' → 刷新全局配置 → 设置表单重定基
+  assert.equal((rendererSrc.match(/api\.onConfigChanged\(/g) || []).length, 1, '只订阅一次');
+  assert.match(rendererSrc, /refreshConfig: refreshGlobalConfigFromMain/, '换根路径复用同一份配置刷新');
+  assert.match(rendererSrc, /payload\.reason !== 'config'/, '按 reason 分流');
+  assert.match(rendererSrc, /\.then\(\(\) => handleExternalConfigChange\(\)\)/, '非换根变更要把开着的表单重定基');
+  // 换根子情形同样要重定基（否则表单里的旧 booksRoot 会被保存写回旧根 → 换根乒乓）
+  assert.equal(
+    (rendererSrc.match(/handleExternalConfigChange\(\)/g) || []).length,
+    2,
+    '非换根 + 换根两条 reason 都要给开着的表单重定基'
+  );
+  assert.match(
+    rendererSrc,
+    /if \(payload && payload\.reason === 'booksRoot'\) void handleExternalConfigChange\(\)/,
+    '换根分支也要重定基'
+  );
+  assert.match(rendererSrc, /state\.globalConfig = await call\(api\.getConfig\);/, '刷新的是 globalConfig 快照');
+  assert.match(rendererSrc, /\bhandleExternalConfigChange\b[^}]*\} = settingsUi;/, '重定基入口必须从设置模块解构出来');
+
+  // 设置模块：三个前置条件（面板开着 / 保存不在途 / 全局作用域）+ 取配置回来后再复核一遍 + 重定基动作
+  assert.match(moduleCode, /if \(!settingsOpen \|\| savingSettings \|\| state\.settingsScope !== 'global'\) return false;/);
+  assert.equal(
+    (moduleCode.match(/!settingsOpen \|\| savingSettings \|\| state\.settingsScope !== 'global'/g) || []).length,
+    2,
+    '取配置前后都要复核（取配置期间弹层可能被关 / 重开成按书作用域 / 本窗口开始保存）'
+  );
+  assert.match(moduleCode, /cfg = await call\(api\.getConfig\)/);
+  assert.match(moduleCode, /state\.globalConfig = cfg;/);
+  assert.match(moduleCode, /fillSettingsFields\(settingsBackfillConfig\('global'\)\)/);
+  assert.match(moduleCode, /state\.settingsBackup = state\.config \? \{ \.\.\.state\.config \} : null;/);
+  assert.match(moduleCode, /settingsOpen = true;/, 'openSettings 显示弹层后置位');
+  assert.match(moduleCode, /settingsOpen = false;/, 'closeSettings 复位');
+});
+
 test('openSettings（U-D4 旧配置）：全局配置缺统计 / 时长 / 模板键也能打开，按默认回填且取消不写盘', async () => {
   const ctx = build({ view: 'editor', bookId: 'id-1', config: { booksRoot: '/书库' } });
   // 旧 config：没有任何统计 / 时长 / 剪贴板 / 模板 / 导出键（本单元没有新增字段，缺键照旧按默认）
@@ -1006,9 +1155,11 @@ test('静态闸门：renderer.js 不再内嵌设置实现，只剩装配与转�
   ]) {
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);
   }
+  // 五-M14（SS-11）：解构表从 14 个入口变 15 个——新增 handleExternalConfigChange（跨窗口设置
+  // 变更后给开着的设置表单重定基）。入口仍按原名解构，一个都不许在 renderer 里另写一份实现。
   assert.ok(rendererSrc.includes(
-    'const { setSelectValue, renderSettingsCaretColors, renderChapterTemplatePreview, renderSensitiveSettings, renderProofreadSettings, checkUpdate, openUpdateDownload, previewSettings, openSettings, openStatsCalendar, closeSettings, resetBookDisplay, saveSettings, setupSettingsUi } = settingsUi;'
-  ), '14 个入口按原名解构');
+    'const { setSelectValue, renderSettingsCaretColors, renderChapterTemplatePreview, renderSensitiveSettings, renderProofreadSettings, checkUpdate, openUpdateDownload, previewSettings, openSettings, openStatsCalendar, closeSettings, handleExternalConfigChange, resetBookDisplay, saveSettings, setupSettingsUi } = settingsUi;'
+  ), '15 个入口按原名解构');
   // 6 个绑定块里的设置 id 不再出现在 renderer 的事件绑定里（写作计时 / 日历绑定仍留）
   for (const id of ['btn-settings', 'btn-settings-cancel', 'btn-settings-save', 'btn-reset-book-display', 'btn-pick-folder',
     'btn-pick-font', 'btn-reset-font', 'settings-font', 'settings-caret-paragraph', 'settings-caret-color']) {

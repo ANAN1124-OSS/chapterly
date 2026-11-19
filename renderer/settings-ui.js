@@ -4,6 +4,7 @@
  *   作用域判定与各分区显隐（settingsScopeForView / updateSettingsScopeUi）、表单回填与预览
  *   （fillSettingsFields / renderSettingsCaretColors / renderChapterTemplatePreview / previewSettings）、
  *   打开 / 关闭 / 保存 / 恢复全局默认（openSettings / closeSettings / saveSettings / resetBookDisplay）、
+ *   跨窗口全局设置变更后的表单重定基（handleExternalConfigChange：五-M14 / SS-11）、
  *   状态栏「今日字数」→ 码字日历入口（openStatsCalendar：全局作用域 + 定位到日历；v0.13 U-D4）、
  *   数据台账子区（敏感词表 / 校对词表 / 诊断日志 / 检查更新 / 版本显示：renderSensitiveSettings /
  *   refreshSensitiveSettingsInfo / renderProofreadSettings / refreshProofreadSettingsInfo / renderLogSettings /
@@ -118,6 +119,9 @@
   // WP-13（审计 V203）：保存设置防重入。连点「保存设置」只跑一条保存链——以前两次并发会各走一遍
   // setConfig / refreshShelf / 词表刷新并弹两条 toast（主进程写队列串行，配置最终一致，属一致性缺口）。
   let savingSettings = false;
+  // 五-M14（SS-11）：弹层是否开着（openSettings 显示弹层后置位、closeSettings 复位）。
+  // 别的窗口改了全局设置时要靠它判断「本窗口有没有一份会按旧值写回的表单」。
+  let settingsOpen = false;
 
   function settingsTabNodes() {
     const nav = $('settings-nav');
@@ -800,6 +804,7 @@
     // remove('hidden') 之前 await，点击「设置」到弹层出现要白等一趟 stats:get 往返（几十 ms，
     // 冷盘 / 杀软下可感知）。回填 / 分区 / 台账的顺序与内容都不变，只是弹层先可见。
     $('settings-backdrop').classList.remove('hidden');
+    settingsOpen = true;
     // 打开时刷新一次今天 / 近 30 天，避免跨过午夜后还显示昨天的数字
     await refreshStats();
     fillSettingsFields(cfg);
@@ -833,6 +838,7 @@
   }
 
   function closeSettings({ restore = true } = {}) {
+    settingsOpen = false;
     $('settings-backdrop').classList.add('hidden');
     // 关掉时顺手清空搜索（只动界面，不写配置）：下次打开不会带着上次的过滤词
     const searchInput = settingsSearchInput();
@@ -846,6 +852,36 @@
       renderDurationSettings();
     }
     state.settingsBackup = null;
+  }
+
+  // 五-M14（SS-11）：别的窗口改了全局设置 → 本窗口开着的设置表单按最新配置重定基。
+  // 为什么必须做：openSettings 回填的是打开那一刻的全局配置，而保存把表单里**全部**全局字段整份
+  // 写回 config:set（booksRoot / 统计 / 快照 / 模板 / 词表路径…）。别的窗口刚改过某项后，这边按旧
+  // 表单保存就会把它静默盖回旧值；换根子情形更重——booksRoot 被写回旧根，根被换回去还会再广播
+  // 一次，对面窗口反而收到孤岛提示。这里按 main 的最新配置重填表单，并同步「取消」用的
+  // settingsBackup（否则取消也会把生效配置还原成过期值）。
+  // 只做全局作用域：按书作用域的保存走 book:set-display（只写这本书的覆盖），碰不到全局配置。
+  // 保存自身在途时不重填：那是本窗口自己那次 setConfig 的回声（重填只会把作者刚提交的值抹掉）。
+  async function handleExternalConfigChange() {
+    if (!settingsOpen || savingSettings || state.settingsScope !== 'global') return false;
+    let cfg;
+    try {
+      cfg = await call(api.getConfig);
+    } catch {
+      return false; // 取不到最新配置：保持原样，等下一次广播 / 重新打开设置
+    }
+    if (!cfg || typeof cfg !== 'object') return false;
+    // 取配置期间弹层可能被关、被重开成按书作用域，或本窗口开始保存：复核一遍再动表单
+    if (!settingsOpen || savingSettings || state.settingsScope !== 'global') return false;
+    state.globalConfig = cfg;
+    state.config = effectiveConfig();
+    fillSettingsFields(settingsBackfillConfig('global'));
+    state.settingsBackup = state.config ? { ...state.config } : null;
+    updateSettingsScopeUi();
+    toast('另一个窗口改过设置：本窗口的设置表单已按最新配置重新填好', 'warn');
+    // 回填把两份词表台账重置成「正在读取」：按新路径再读一次（与 openSettings 同一口径）
+    await Promise.all([refreshSensitiveSettingsInfo(), refreshProofreadSettingsInfo()]);
+    return true;
   }
 
   // 忘掉这本书的单独设置，恢复用全局默认
@@ -1128,6 +1164,7 @@
       openSettings,
       openStatsCalendar,
       closeSettings,
+      handleExternalConfigChange,
       resetBookDisplay,
       saveSettings,
       setupSettingsUi
