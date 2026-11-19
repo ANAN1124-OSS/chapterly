@@ -152,6 +152,10 @@
 
   let formatPreviewToken = 0;
   let formatPreviewTimer = null;
+  // 五-H7（TC-01）：排版对话框「套用」的代数令牌。closeFormatDialog（Esc / 取消 / 关闭）推进它，
+  // 在途 apply 在后面的 await 落地时发现自己已过期，就丢弃结果——作者点了套用又马上反悔时，
+  // 旧整理稿绝不能在 setConfig 写盘落地后再整串盖进编辑区（尤其已按 Esc 后开始打字 / 切章）。
+  let formatApplyToken = 0;
 
   function scheduleFormatPreview(delay = 140) {
     const token = formatPreviewToken + 1;
@@ -218,6 +222,9 @@
   function closeFormatDialog() {
     $('format-backdrop').classList.add('hidden');
     formatPreviewToken += 1; // 让还没回来的预览结果失效
+    // 五-H7（TC-01）：关框 = 取消在途「套用」；Esc 之后锁键层解除，作者打字 / 切章都合法，
+    // 旧 apply 必须在下次 await 落地时作废，不能再写回编辑区。
+    formatApplyToken += 1;
     if (formatPreviewTimer) {
       clearTimeout(formatPreviewTimer);
       formatPreviewTimer = null;
@@ -229,6 +236,21 @@
   // hint = { text: 整理前的正文, pos: 整理前光标位置 }，用来把光标映射回原来的位置。
   function insertFormattedText(text, hint, options) {
     const opts = options && typeof options === 'object' ? options : {};
+    // 五-H7（TC-01）：整串替换前的最后一道身份闸。hint 是调用方「这次替换所依据的编辑区快照」：
+    //   · apply / 一键整理 = 整理前的 (bookPath, chapterId, 正文)；
+    //   · 撤销整理 = 撤销后应回的 (bookPath, chapterId, 正文)。
+    // await / 弹层窗口里现场已经变了（换书 / 切章 / 作者打字 / Esc 后重开再套用）就拒绝写入，
+    // 由调用方按 stale 处理——绝不把 A 章整理稿盖进 B 章编辑区，也不盖掉作者刚敲的字。
+    if (hint && typeof hint === 'object') {
+      const chapter = state.chapters[state.index];
+      if (
+        (hint.bookPath !== undefined && hint.bookPath !== state.bookPath) ||
+        (hint.chapterId !== undefined && (!chapter || chapter.id !== hint.chapterId)) ||
+        (typeof hint.text === 'string' && editorEl.value !== hint.text)
+      ) {
+        return false;
+      }
+    }
     // 审计修复 #39（V402）：兜底整串赋值前的正文（撤销基准；不能只信 hint.text，调用方可能不传）
     const beforeText = editorEl.value;
     const pos = hint && Number.isFinite(hint.pos) ? hint.pos : 0;
@@ -257,6 +279,7 @@
       // 免得把「撤销」这一步又包装成一次可撤销写入。
       recordFallbackWrite({ before: beforeText, after: text, start: caret, label: '整理本章' });
     }
+    return true;
   }
 
   // 整理只动空白/标点，正文有效字符的顺序不变：按「第 N 个非空白字符」把光标映射回去，
@@ -306,9 +329,21 @@
 
   function undoFormat() {
     if (!canUndoFormat()) return false;
-    const top = state.formatUndo.pop();
+    const top = state.formatUndo[state.formatUndo.length - 1];
     const caret = editorEl.selectionStart || 0;
-    insertFormattedText(top.before, { text: top.after, pos: caret }, { recordFallback: false });
+    // 五-H7（TC-01）：写回前再核一次书 / 章 / 正文快照（insertFormattedText 的身份闸）；
+    // 通过后才弹出快照——被拒绝时这一步仍可重试，不会白丢撤销退路。
+    if (
+      !insertFormattedText(
+        top.before,
+        { bookPath: top.bookPath, chapterId: top.chapterId, text: top.after, pos: caret },
+        { recordFallback: false }
+      )
+    ) {
+      toast('正文刚改过，这次撤销没有套用', 'warn');
+      return false;
+    }
+    state.formatUndo.pop();
     toast('已撤销整理（仍在编辑区，未写盘）');
     return true;
   }
@@ -352,7 +387,10 @@
         toast('正文刚改过，这次整理没有套用，请再点一次「整理」', 'warn');
         return { ok: false, reason: 'stale' };
       }
-      insertFormattedText(res.text, { text: before, pos: beforeCaret });
+      if (!insertFormattedText(res.text, { bookPath, chapterId, text: before, pos: beforeCaret })) {
+        toast('正文刚改过，这次整理没有套用，请再点一次「整理」', 'warn');
+        return { ok: false, reason: 'stale' };
+      }
       pushFormatUndo(before, res.text);
       toast(formatUi.successToast(options, res.stats));
       return { ok: true, changed: 1, stats: res.stats, steps: formatUndoSteps() };
@@ -376,6 +414,9 @@
     const bookPath = state.bookPath;
     const chapterId = state.chapters[state.index] && state.chapters[state.index].id;
     const options = readFormatOptions();
+    // 五-H7（TC-01）：这次 apply 的代数。closeFormatDialog（Esc / 取消 / 关闭）会推进它——
+    // 作者「点了套用又马上反悔」时，下面的 setConfig 落地后会发现代数已过期，旧结果一律丢弃。
+    const applyToken = ++formatApplyToken;
     $('btn-format-apply').disabled = true;
     try {
       const res = await call(api.formatText, before, options);
@@ -383,6 +424,7 @@
       // （绝不把 A 章的内容写进 B 章的编辑区）
       const chapter = state.chapters[state.index];
       if (
+        applyToken !== formatApplyToken ||
         state.bookPath !== bookPath ||
         !chapter ||
         chapter.id !== chapterId ||
@@ -401,17 +443,36 @@
         state.globalConfig = cfg;
         state.config = effectiveConfig();
       } catch { /* 记不住规则不影响整理 */ }
+      // 五-H7（TC-01）：setConfig 是**第二个 await**。落地后必须重跑同一份三行复核 + 核对这次 apply
+      // 仍是当前代数——期间按 Esc（closeFormatDialog 推进代数）后作者打字 / 切章 / 重开再套用都合法，
+      // 旧整理稿绝不能在此时整串盖进编辑区（旧实现只核第一个 await，切章时会把旧章整理稿写进新章）。
+      const chapterAfter = state.chapters[state.index];
+      if (
+        applyToken !== formatApplyToken ||
+        state.bookPath !== bookPath ||
+        !chapterAfter ||
+        chapterAfter.id !== chapterId ||
+        editorEl.value !== before
+      ) {
+        toast('正文刚改过，这次整理没有套用，请再点一次「整理」', 'warn');
+        return { ok: false, reason: 'stale' };
+      }
       closeFormatDialog();
       if (!res.changed) {
         // 和点「整理」走同一句（哪套规则 + 没有可改的地方），别在这里写第二种说法
         toast(formatUi.noChangeToast(options));
-        return;
+        return { ok: true, changed: 0, stats: res.stats };
       }
-      insertFormattedText(res.text, { text: before, pos: beforeCaret });
+      if (!insertFormattedText(res.text, { bookPath, chapterId, text: before, pos: beforeCaret })) {
+        toast('正文刚改过，这次整理没有套用，请再点一次「整理」', 'warn');
+        return { ok: false, reason: 'stale' };
+      }
       pushFormatUndo(before, res.text);
       toast(formatUi.successToast(options, res.stats));
+      return { ok: true, changed: 1, stats: res.stats, steps: formatUndoSteps() };
     } catch (err) {
       toast(`整理失败：${err.message}`, 'error');
+      return { ok: false, reason: 'error', message: err.message };
     } finally {
       $('btn-format-apply').disabled = false;
     }

@@ -530,6 +530,63 @@ test('applyFormatToEditor：没书直接返回；空正文警告；成功套用 
   assert.equal(fail.dom.map.get('btn-format-apply').disabled, false);
 });
 
+// ---------- 五-H7（TC-01）：apply 的第二个 await（setConfig）落地必须复核身份 / 代数 ----------
+// 缺陷：身份复核只在第一个 await（formatText）后；setConfig 写盘在途时按 Esc 关框（锁键解除）
+// 后作者打字 / 切章 / 重开再套用，旧结果落地后仍整串写进编辑区——静默丢字，极端时把旧章整理稿
+// 写进新章并可按 Ctrl+S 存盘。修法：apply 代数令牌（closeFormatDialog 推进）+ 第二个 await 后重跑复核。
+test('五-H7：apply 在第二个 await（setConfig）期间按 Esc 取消 → 旧整理稿作废，不写进编辑区', async () => {
+  let releaseSet;
+  let started;
+  const startedPromise = new Promise((resolve) => { started = resolve; });
+  const ctx = build({ text: '第一段  文字' });
+  ctx.host.api.setConfig = () => {
+    started();
+    return new Promise((resolve) => { releaseSet = resolve; });
+  };
+  const applying = ctx.ui.applyFormatToEditor();
+  await startedPromise; // formatText 已回来且复核通过，setConfig 写盘在途
+  ctx.ui.closeFormatDialog(); // 作者按 Esc 放弃（按钮已禁用、窗已关）
+  releaseSet({});
+  const result = await applying;
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'stale', 'Esc 后这次 apply 必须作废');
+  assert.equal(ctx.editorEl.value, '第一段  文字', '编辑区一个字都不许被旧整理稿覆盖');
+  assert.equal(ctx.calls.onEditorInput, 0, '没有发生整串写入');
+  assert.deepEqual(ctx.state.formatUndo, [], '不许登记一条指向旧结果的撤销');
+  assert.match(ctx.calls.toast[ctx.calls.toast.length - 1][0], /正文刚改过/);
+});
+
+test('五-H7：apply 的 setConfig 期间切章 + 输入 → 旧章整理稿绝不写进新章编辑区', async () => {
+  let releaseSet;
+  let started;
+  const startedPromise = new Promise((resolve) => { started = resolve; });
+  const ctx = build({
+    text: '旧章正文  甲',
+    chapters: [
+      { id: 'c1', name: '第一章', file: 'c1.txt' },
+      { id: 'c2', name: '第二章', file: 'c2.txt' }
+    ],
+    index: 0
+  });
+  ctx.host.api.formatText = () => Promise.resolve({ changed: true, text: '旧章正文甲', stats: {} });
+  ctx.host.api.setConfig = () => {
+    started();
+    return new Promise((resolve) => { releaseSet = resolve; });
+  };
+  const applying = ctx.ui.applyFormatToEditor();
+  await startedPromise;
+  // 窗口期内作者切到第 2 章并敲了新内容（Esc 关框 / 切章在第二个 await 期间都合法）
+  ctx.state.index = 1;
+  ctx.editorEl.value = '新章自己的正文';
+  releaseSet({});
+  const result = await applying;
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'stale');
+  assert.equal(ctx.editorEl.value, '新章自己的正文', '绝不把旧章整理稿盖进新章');
+  assert.equal(ctx.calls.onEditorInput, 0);
+  assert.deepEqual(ctx.state.formatUndo, [], '撤销快照不许按新章 id 登记');
+});
+
 // ---------- 事件绑定 ----------
 test('setupTidyCardUi：整理卡 / 显示菜单 / 取色器 / 格式对话框全部绑定逐条钉住', async () => {
   const dom = makeDocument();
