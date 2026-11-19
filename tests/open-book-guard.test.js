@@ -176,3 +176,72 @@ test('换书入口闸门：index.html 在 renderer.js 之前加载 open-book-gua
   assert.ok(rendererAt > moduleAt, 'open-book-guard.js 必须排在 renderer.js 之前');
   assert.match(read('renderer/renderer.js'), /window\.CWOpenBookGuard/, 'renderer.js 要取 window.CWOpenBookGuard');
 });
+// ---------- 五-M3（SS-07）：开书目标章解析 ----------
+// 缺陷：书架正文搜索按 chapterId + matchIndex 直达命中章；目标章在打开前被删时旧实现静默回落
+// 上次阅读章，openBookByPath 又无条件把旧章的命中下标套上去（选区错位、无提示）。
+// 修法：起点解析收进 resolveOpenTarget；没命中时 targetMissing=true，调用方提示且不套命中下标。
+test('五-M3：resolveOpenTarget —— chapterId 命中用目标章；没命中回落上次阅读章并标 targetMissing', () => {
+  const chapters = [
+    { id: 'c1', name: '第一章' },
+    { id: 'c2', name: '第二章' },
+    { id: 'c3', name: '第三章' }
+  ];
+  assert.deepEqual(
+    guard.resolveOpenTarget({ chapters, target: { chapterId: 'c2', matchIndex: 10 }, lastOpenChapterId: 'c3' }),
+    { startIndex: 1, targetMissing: false },
+    '目标章还在 → 直达（命中下标由调用方另核）'
+  );
+  assert.deepEqual(
+    guard.resolveOpenTarget({ chapters, target: { chapterId: 'gone', matchIndex: 999 }, lastOpenChapterId: 'c3' }),
+    { startIndex: 2, targetMissing: true },
+    '目标章已删 → 回落上次阅读章，并且必须标 targetMissing'
+  );
+  assert.deepEqual(
+    guard.resolveOpenTarget({ chapters, target: { chapterId: 'gone' }, lastOpenChapterId: 'gone-too' }),
+    { startIndex: 0, targetMissing: true },
+    '目标章与上次阅读章都没了 → 第 1 章 + targetMissing'
+  );
+  // 没有 chapterId 的「章节命中直达」：合法 0 起下标照旧生效；越界 / 坏值保持旧行为（静默回落、不提示）
+  assert.deepEqual(
+    guard.resolveOpenTarget({ chapters, target: { chapterIndex: 2 }, lastOpenChapterId: 'c1' }),
+    { startIndex: 2, targetMissing: false }
+  );
+  assert.deepEqual(
+    guard.resolveOpenTarget({ chapters, target: { chapterIndex: 9 }, lastOpenChapterId: 'c2' }),
+    { startIndex: 1, targetMissing: false },
+    '越界包丢（旧行为：回落，不冒充「目标章被删」）'
+  );
+  assert.deepEqual(
+    guard.resolveOpenTarget({ chapters, lastOpenChapterId: 'c2' }),
+    { startIndex: 1, targetMissing: false },
+    '没有 target → 上次阅读章'
+  );
+  // 坏输入不炸
+  assert.deepEqual(guard.resolveOpenTarget(null), { startIndex: 0, targetMissing: false });
+  assert.deepEqual(guard.resolveOpenTarget({ chapters: null, target: 'x' }), { startIndex: 0, targetMissing: false });
+});
+
+test('五-M3 静态闸门：commitOpenBook 用 resolveOpenTarget；目标章没命中时不许把旧命中下标套到回落章', () => {
+  const source = read('renderer/renderer.js');
+  const commitBody = sliceFunction(source, 'async function commitOpenBook(');
+  assert.match(commitBody, /openBookGuard\.resolveOpenTarget\(\{/);
+  assert.match(commitBody, /return \{ ok: true, targetMissing: resolved\.targetMissing \};/);
+  assert.equal(
+    /if \(targetIndex >= 0\) startIndex = targetIndex;/.test(commitBody),
+    false,
+    '旧的「找不到 chapterId 就静默用 lastOpenChapterId」分支必须已经收编'
+  );
+
+  const openBody = sliceFunction(source, 'async function openBookByPath(');
+  assert.match(openBody, /if \(committed\.targetMissing\) \{/, '目标章没命中要单独分支');
+  assert.match(openBody, /toast\('查找命中的章节已经不在了/, '要给作者一条明确提示');
+  // selectEditorRange 只许出现在 else（targetMissing 为假）分支里
+  const missingAt = openBody.indexOf('if (committed.targetMissing)');
+  const selectAt = openBody.indexOf('selectEditorRange(Number(target.matchIndex)');
+  assert.ok(missingAt >= 0 && selectAt > missingAt, 'selectEditorRange 必须在 targetMissing 分支之后');
+  assert.match(
+    openBody.slice(missingAt, selectAt),
+    /\} else \{/,
+    '旧命中下标只能在「目标章仍命中」的 else 分支里套'
+  );
+});

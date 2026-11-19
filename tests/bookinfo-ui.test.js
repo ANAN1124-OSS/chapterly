@@ -31,6 +31,8 @@ const shelfViewSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'shelf-view-ui.
 const indexSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 const stylesSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
 const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'bookinfo-ui.js'), 'utf8');
+// 五-M3（SS-07）：开书起点解析（含 chapterIndex 直达）收进 open-book-guard.js 纯逻辑。
+const openBookGuardSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'open-book-guard.js'), 'utf8');
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 // ---------- 假 DOM ----------
@@ -994,8 +996,11 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);
   }
   // 「章节命中」直达：openBookByPath 认 target.chapterIndex（0 起、只在本书范围内生效）
-  assert.ok(rendererSrc.includes('target.chapterIndex !== undefined'), 'openBookByPath 要认 chapterIndex');
-  assert.ok(rendererSrc.includes('chapterIndex < state.chapters.length'), 'chapterIndex 要按本书章节数校验');
+  // 五-M3（SS-07）：起点解析（含 chapterIndex 范围校验 / 目标章缺失标记）收进
+  // open-book-guard.resolveOpenTarget；renderer.js 只剩调用。
+  assert.ok(rendererSrc.includes('openBookGuard.resolveOpenTarget('), '开书要走起点解析');
+  assert.ok(openBookGuardSrc.includes('target.chapterIndex !== undefined'), 'resolveOpenTarget 要认 chapterIndex');
+  assert.ok(openBookGuardSrc.includes('chapterIndex < chapters.length'), 'chapterIndex 要按本书章节数校验');
   assert.match(
     rendererSrc,
     /const \{\r?\n    openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,\r?\n    openGroupManageDialog, closeGroupManageDialog, moveBookToGroup,\r?\n    openBookGroupChooser, closeBookGroupChooser, newGroupForBook,\r?\n    renderShelf, createBookWithTitle, onNewBookClick, maybeShowFirstRunTip\r?\n  \} = bookinfoUi;/,

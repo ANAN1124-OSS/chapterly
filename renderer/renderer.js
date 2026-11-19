@@ -1251,7 +1251,13 @@
       if (!committed) return { ok: false, code: 'STALE' };
       if (stale()) return { ok: false, code: 'STALE' };
       if (target && Number.isFinite(Number(target.matchIndex))) {
-        selectEditorRange(Number(target.matchIndex), Number(target.matchLength) || 0);
+        // 五-M3（SS-07）：目标章在打开前被删（chapterId 没命中）时，绝不把属于旧章的命中下标
+        // 套到回落章正文上（越界还会夹到文末）；明确提示作者，让他重新搜索。
+        if (committed.targetMissing) {
+          toast('查找命中的章节已经不在了（可能刚被删除），已打开上次阅读的章节；请重新搜索', 'warn');
+        } else {
+          selectEditorRange(Number(target.matchIndex), Number(target.matchLength) || 0);
+        }
       }
       return data;
     } finally {
@@ -1304,29 +1310,20 @@
     await applyBookDisplay(data.meta.id);
     // applyBookDisplay 期间可能有更晚的一次开书已经提交了自己的书：界面归它，这里不再载章，
     // 也不许解它的锁（openingBook 仍归那一次）。
-    if (state.bookPath !== bookPath) return true;
+    if (state.bookPath !== bookPath) return { ok: true, targetMissing: false };
     if (!isStale()) {
       openingBook = false;
       applyEditorEditable();
     }
-    let startIndex = Math.max(
-      0,
-      state.chapters.findIndex((c) => c.id === data.meta.lastOpenChapterId)
-    );
-    if (target && target.chapterId) {
-      const targetIndex = state.chapters.findIndex((c) => c.id === target.chapterId);
-      if (targetIndex >= 0) startIndex = targetIndex;
-    } else if (target && target.chapterIndex !== undefined && target.chapterIndex !== null) {
-      // 「章节命中」直达：0 起的章节序号；只认落在这本书章节范围内的整数，
-      // 越界 / 坏值不夹到首尾，直接回落到上次打开的章节（与旧行为一致）。
-      const rawIndex = Number(target.chapterIndex);
-      if (Number.isFinite(rawIndex)) {
-        const chapterIndex = Math.round(rawIndex);
-        if (chapterIndex >= 0 && chapterIndex < state.chapters.length) startIndex = chapterIndex;
-      }
-    }
-    await loadChapterAt(startIndex);
-    return true;
+    // 五-M3（SS-07）：起点章与「目标章是否命中」收进 open-book-guard 纯逻辑——目标章被删时
+    // 回落上次阅读章并标记 targetMissing，调用方据此提示 + 不套旧命中下标。
+    const resolved = openBookGuard.resolveOpenTarget({
+      chapters: state.chapters,
+      target,
+      lastOpenChapterId: data.meta.lastOpenChapterId
+    });
+    await loadChapterAt(resolved.startIndex);
+    return { ok: true, targetMissing: resolved.targetMissing };
   }
 
   // 把编辑区选区放到命中位置（正文命中点进来用）：只改光标 / 选区与滚动，不改内容

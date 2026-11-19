@@ -8,6 +8,9 @@
  *
  *   decideOpenBook({ dirty })                       → { action: 'proceed' | 'prompt' }
  *   decideOpenBook({ dirty, choice, saveResult })   → { action: 'proceed' | 'abort' | 'prompt', reason, message? }
+ *   resolveOpenTarget({ chapters, target, lastOpenChapterId })（五-M3 / SS-07）
+ *                                                   → { startIndex, targetMissing }
+ *     开书起点章：chapterId 命中就用它；没命中回落上次阅读章并标记 targetMissing（调用方提示 + 不套命中下标）。
  *
  * 取值口径（拿不准时一律保守 —— 宁可多问一次，也不能悄悄把没保存的字换掉）：
  *   · dirty 只认严格的 true（渲染层的 state.dirty 本来就是布尔；'false' / 1 这类值不算脏）；
@@ -54,5 +57,36 @@
     return { action: 'prompt', reason: 'unsaved' };
   }
 
-  return { decideOpenBook };
+  // 五-M3（SS-07）：开书「目标章」解析（书架正文搜索 / 章节命中直达都走这里）。
+  // 缺陷：target.chapterId 在打开前被删（另一窗口 / 同步盘 / 索引未更新）时，旧实现在 commitOpenBook 里
+  // 静默回落到 lastOpenChapterId，openBookByPath 又无条件把 target.matchIndex 套到回落章正文上——
+  // 作者看到的是「上次阅读章 + 属于已删章的命中下标」，选区错位且没有任何提示。
+  // 这里把「起点章 + 目标章是否命中」收成纯逻辑：
+  //   · chapterId 命中 → 用该章，targetMissing = false；
+  //   · chapterId 给了但没命中 → 回落 lastOpenChapterId（没有就第 1 章），targetMissing = true
+  //     （调用方据此提示「目标章已不存在」并**不**套命中下标）；
+  //   · 没有 chapterId、有合法 chapterIndex（0 起）→ 用它（越界 / 坏值保持旧行为：静默回落，不提示）；
+  //   · 都没有 → lastOpenChapterId。
+  function resolveOpenTarget(input) {
+    const opts = input || {};
+    const chapters = Array.isArray(opts.chapters) ? opts.chapters : [];
+    const target = opts.target && typeof opts.target === 'object' ? opts.target : null;
+    const lastAt = chapters.findIndex((chapter) => chapter && chapter.id === opts.lastOpenChapterId);
+    let startIndex = Math.max(0, lastAt);
+    let targetMissing = false;
+    if (target && target.chapterId) {
+      const at = chapters.findIndex((chapter) => chapter && String(chapter.id) === String(target.chapterId));
+      if (at >= 0) startIndex = at;
+      else targetMissing = true;
+    } else if (target && target.chapterIndex !== undefined && target.chapterIndex !== null) {
+      const raw = Number(target.chapterIndex);
+      if (Number.isFinite(raw)) {
+        const chapterIndex = Math.round(raw);
+        if (chapterIndex >= 0 && chapterIndex < chapters.length) startIndex = chapterIndex;
+      }
+    }
+    return { startIndex, targetMissing };
+  }
+
+  return { decideOpenBook, resolveOpenTarget };
 });
