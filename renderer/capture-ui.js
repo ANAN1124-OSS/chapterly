@@ -699,6 +699,20 @@
           toast('新建章节失败：主进程没有返回书目', 'error');
           return { ok: false, code: 'BAD_RESPONSE' };
         }
+        // 五-M4（BP-04）：commit 回执落地前核书身份。写章 IPC 在途期间作者可能已经发起换书
+        // （命令面板 / 书签跨书）：openBook 回执先到会提交新书 state；这里再把旧书的 meta/chapters
+        // 盖回去，目录 / 统计会显示旧书，loadChapterAt 还会按「新书路径 + 旧章 file」读错对象。
+        // 主进程已写章 = 记录已消费，所以队列照常清掉，只丢弃 state 更新。
+        if (state.bookPath !== target) {
+          if (resolved.pending) panel.pendingText = null;
+          await reloadQueue(resolved.id);
+          const createdTitle = data.chapter && data.chapter.name ? `「${data.chapter.name}」` : '';
+          toast(
+            `已新建章节${createdTitle}，但你已经切换了书；新章在《${data.meta.title || '原来那本'}》里，回到那本书查看`,
+            'warn'
+          );
+          return { ok: false, code: 'BOOK_CHANGED', index: data.index };
+        }
         state.meta = data.meta;
         state.chapters = data.meta.chapters;
         if (data.stats) {

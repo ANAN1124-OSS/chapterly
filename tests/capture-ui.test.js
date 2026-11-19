@@ -1826,3 +1826,32 @@ test('静态闸门（WP-16 / C14）：clearQueue 的 finally 统一复位 busy �
     '成功文案只留一处，且仍在 try 之后'
   );
 });
+
+// 五-M4（BP-04）：新建章节 commit 回执落地前核书身份——在途换书不许把旧书的 meta/chapters
+// 盖进新书状态（否则目录 / 统计显示旧书，loadChapterAt 还会按「新书路径 + 旧章 file」读错对象）。
+test('五-M4：新建章节 commit 在途换书 → 回执丢弃、状态不被旧书覆盖，记录仍算消费', () =>
+  withFakeDocument(async () => {
+    const ctx = build();
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open('正文一段');
+    const chaptersBefore = ctx.state.chapters.length;
+    const commit = ctx.api.captureCommitRecord;
+    ctx.api.captureCommitRecord = async (...args) => {
+      const res = await commit(...args);
+      ctx.state.bookPath = '/tmp/books/书乙'; // openBook 回执先提交了新书
+      return res;
+    };
+    const result = await ui.createChapter({ pending: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'BOOK_CHANGED');
+    assert.equal(ctx.state.bookPath, '/tmp/books/书乙');
+    assert.equal(ctx.state.chapters.length, chaptersBefore, '旧书的章节数组不许盖进新书状态');
+    assert.equal(ctx.state.meta.chapters.length, chaptersBefore, '旧书 meta 不许盖回来');
+    const toastLine = ctx.log.find((line) => line.startsWith('toast:warn:'));
+    assert.ok(toastLine, '要有一条提示');
+    assert.match(toastLine, /已新建章节「撞见了幽灵」/);
+    assert.match(toastLine, /你已经切换了书/);
+    assert.match(toastLine, /新章在《书甲》里/);
+    assert.deepEqual(ui.records(), [], '主进程已写章 = 记录已消费（不许重复插入）');
+    assert.equal(ui.isBusy(), false);
+  }));
