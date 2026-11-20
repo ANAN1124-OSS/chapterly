@@ -119,6 +119,18 @@
   // WP-13（审计 V203）：保存设置防重入。连点「保存设置」只跑一条保存链——以前两次并发会各走一遍
   // setConfig / refreshShelf / 词表刷新并弹两条 toast（主进程写队列串行，配置最终一致，属一致性缺口）。
   let savingSettings = false;
+  // 五-L18（SS-13）：保存 / 恢复全局默认两条写操作共用同一份表单与配置状态，彼此之间同样要互斥 ——
+  // 「reset 回执后到」会把刚保存的显示设置从界面清空（磁盘上仍在），「保存在途点取消」则让取消被
+  // 保存回执违背。任一写操作在途时，四个动作按钮（保存 / 恢复默认 / 取消 / 右上关闭×）一起禁用。
+  let resettingSettings = false;
+
+  function setSettingsActionsDisabled(disabled) {
+    const on = Boolean(disabled);
+    for (const id of ['btn-settings-save', 'btn-reset-book-display', 'btn-settings-cancel', 'btn-settings-close']) {
+      const el = $(id);
+      if (el) el.disabled = on;
+    }
+  }
   // 五-M14（SS-11）：弹层是否开着（openSettings 显示弹层后置位、closeSettings 复位）。
   // 别的窗口改了全局设置时要靠它判断「本窗口有没有一份会按旧值写回的表单」。
   let settingsOpen = false;
@@ -936,8 +948,18 @@
   // 忘掉这本书的单独设置，恢复用全局默认
   async function resetBookDisplay() {
     if (state.settingsScope !== 'book' || !state.bookId) return false;
+    // 五-L18（SS-13）：与保存互斥；在途期间别的路径关掉弹层 / 换了书时，回执按作废处理
+    if (savingSettings || resettingSettings) return false;
+    const bookIdAtStart = state.bookId;
+    // 弹层本来开着（正常入口）才要求在途期间仍然开着；测试 / 程序化直接调用（弹层没开）照旧生效。
+    const wasOpen = settingsOpen;
+    resettingSettings = true;
+    setSettingsActionsDisabled(true);
     try {
       await call(api.resetBookDisplay, state.bookId);
+      if (wasOpen && (!settingsOpen || state.settingsScope !== 'book' || state.bookId !== bookIdAtStart)) {
+        return false;
+      }
       state.bookDisplay = {};
       state.config = effectiveConfig();
       if (state.config.editorFont === 'custom' && state.config.editorCustomFontPath) {
@@ -954,12 +976,17 @@
     } catch (err) {
       toast(`恢复默认失败：${err.message}`, 'error');
       return false;
+    } finally {
+      resettingSettings = false;
+      setSettingsActionsDisabled(savingSettings);
     }
   }
 
   async function saveSettings() {
-    if (savingSettings) return; // WP-13 / V203：连点只跑一条保存链（finally 复位）
+    // WP-13 / V203：连点只跑一条保存链（finally 复位）；五-L18：与「恢复全局默认」也互斥
+    if (savingSettings || resettingSettings) return;
     savingSettings = true;
+    setSettingsActionsDisabled(true);
     try {
       const form = readDisplayForm();
       if (state.settingsScope === 'book' && state.bookId) {
@@ -1042,6 +1069,7 @@
       toast(`保存设置失败：${err.message}`, 'error');
     } finally {
       savingSettings = false;
+      setSettingsActionsDisabled(resettingSettings);
     }
   }
 
@@ -1049,9 +1077,16 @@
   // 写作计时 / 码字日历的绑定不在本域，仍留在渲染层原位置）
   function setupSettingsUi() {
     $('btn-settings').addEventListener('click', openSettings);
-    $('btn-settings-cancel').addEventListener('click', closeSettings);
+    // 五-L18（SS-13）：写操作在途时取消 / 关闭都不执行 —— 否则保存回执落地会违背「取消」，
+    // 或在按书作用域里把刚保存的显示设置从界面清空（磁盘上仍在）。按钮本身也已 disabled，
+    // 这里再挡一层，键盘 / 程序化触发同样挡住。
+    const cancelSettings = () => {
+      if (savingSettings || resettingSettings) return;
+      closeSettings();
+    };
+    $('btn-settings-cancel').addEventListener('click', cancelSettings);
     // 右上「×」与底栏「取消」完全同义（含关闭前的预览还原，拍板 #3）
-    $('btn-settings-close').addEventListener('click', closeSettings);
+    $('btn-settings-close').addEventListener('click', cancelSettings);
     $('btn-settings-save').addEventListener('click', saveSettings);
     // 1.4.0 P0-1：左导航切分区（Tab 可达；方向键 / Home / End 按标准 tablist 走，点击也切）
     const nav = $('settings-nav');

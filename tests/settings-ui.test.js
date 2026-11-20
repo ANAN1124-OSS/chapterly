@@ -1032,7 +1032,9 @@ test('静态闸门：设置弹层右上只有一个 ×，标签与 aria 到位�
   assert.match(block, /title="关闭设置（Esc）" aria-label="关闭设置">×<\/button>/);
   assert.equal(indexSrc.split('id="btn-settings-close"').length - 1, 1, '只加一个');
   assert.equal(rendererSrc.includes("$('btn-settings-close').addEventListener"), false, '绑定只在模块里');
-  assert.equal(moduleSrc.includes("$('btn-settings-close').addEventListener('click', closeSettings);"), true);
+  // 五-L18（SS-13）：× / 取消统一走带「写操作在途」守卫的 cancelSettings（两按钮仍同义）
+  assert.equal(moduleSrc.includes("const cancelSettings = () => {"), true);
+  assert.equal(moduleSrc.includes("$('btn-settings-close').addEventListener('click', cancelSettings);"), true);
 });
 
 test('resetBookDisplay：不是按书作用域直接 false；成功写回全局默认并重填表单；失败 toast', async () => {
@@ -1529,4 +1531,59 @@ test('SS-06（五-L16）：设置搜索按作用域与字段级 .hidden 过滤�
   assert.equal(snapshotRow.classList.contains('search-hidden'), false);
   assert.equal(visibleRow.classList.contains('search-hidden'), false);
   assert.equal(hiddenRow.classList.contains('search-hidden'), false);
+});
+
+// SS-13（五-L18）：保存 / 恢复默认 / 取消之间没有互斥 —— 保存 IPC 在途时点「取消」，closeSettings
+// 先把 state.config 还原成 settingsBackup，保存回执随后落地又按新值套用并 toast「已保存」：作者的
+// 取消被无视。按书作用域里「恢复全局默认」与保存交叠时，后到的 reset 回执把刚保存的显示设置从界面
+// 清空（磁盘上仍在）。现在任一写操作在途时禁用保存 / 重置 / 取消，且回执收尾前复核弹层与作用域。
+test('SS-13（五-L18）：设置写操作在途时取消/重置/重复保存被挡住；reset 回执收尾复核弹层', async () => {
+  // ① 保存在途：三个动作按钮都 disabled，点取消不关弹层、再点保存不再发 IPC
+  const ctx = build({ scope: 'book', bookId: 'id-1' });
+  await ctx.ui.openSettings({ scope: 'book' });
+  const gate = { release: null };
+  ctx.host.api.setBookDisplay = () => new Promise((resolve) => { gate.release = resolve; });
+  const saveBtn = ctx.dom.map.get('btn-settings-save');
+  const cancelBtn = ctx.dom.map.get('btn-settings-cancel');
+  const closeBtn = ctx.dom.map.get('btn-settings-close');
+  const resetBtn = ctx.dom.map.get('btn-reset-book-display');
+  const pendingSave = ctx.ui.saveSettings();
+  await flush();
+  assert.equal(saveBtn.disabled, true, '保存在途时保存按钮禁用');
+  assert.equal(resetBtn.disabled, true, '保存在途时「恢复全局默认」禁用');
+  assert.equal(cancelBtn.disabled, true, '保存在途时取消禁用');
+  assert.equal(closeBtn.disabled, true, '保存在途时右上关闭禁用');
+  cancelBtn._fire('click');
+  closeBtn._fire('click');
+  assert.equal(
+    ctx.dom.map.get('settings-backdrop').classList.contains('hidden'),
+    false,
+    '保存在途时取消 / 关闭都不许关掉弹层（否则保存回执会违背取消）'
+  );
+  assert.deepEqual(ctx.calls.resetBookDisplay, [], '保存在途时重置不发起');
+  gate.release({ editorFontSize: 20 });
+  assert.equal(await pendingSave, undefined);
+  assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), true, '保存成功后照常关弹层');
+  assert.equal(saveBtn.disabled, false, '收尾后按钮恢复可点');
+  assert.equal(cancelBtn.disabled, false);
+
+  // ② reset 在途时弹层被别的路径关掉：回执落地不许再改眼前状态
+  const ctx2 = build({ scope: 'book', bookId: 'id-1' });
+  await ctx2.ui.openSettings({ scope: 'book' });
+  ctx2.state.bookDisplay = { editorFontSize: 20 };
+  let releaseReset;
+  ctx2.host.api.resetBookDisplay = () => new Promise((resolve) => { releaseReset = resolve; });
+  const pendingReset = ctx2.ui.resetBookDisplay();
+  await flush();
+  assert.equal(ctx2.dom.map.get('btn-settings-save').disabled, true, '重置在途时保存同样禁用');
+  ctx2.ui.closeSettings();
+  releaseReset(true);
+  assert.equal(await pendingReset, false, '弹层已关：reset 回执按作废处理');
+  assert.deepEqual(ctx2.state.bookDisplay, { editorFontSize: 20 }, '作废的回执不许清掉显示覆盖');
+  assert.equal(
+    ctx2.calls.toast.some((item) => String(item[0]).includes('已恢复为全局默认')),
+    false,
+    '作废的回执也不许 toast 成功'
+  );
+  assert.equal(ctx2.dom.map.get('btn-settings-save').disabled, false, '收尾后按钮恢复可点');
 });
