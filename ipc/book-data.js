@@ -88,7 +88,13 @@ function registerBookDataIpc(host) {
   handleBook('book:plan-delete-history-backups', async (bookPath, groupIds, options) => {
     const settings = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
     const plan = await storage.planHistoryBackupDeletion(bookPath, groupIds, settings);
-    const planToken = deletePlanTokens.issue({ bookPath, groupIds });
+    // 五-M29（IPC-02）：令牌不只绑原始 groupIds，还把「计划实际解析出的可清理集合」绑进去 ——
+    // 执行阶段撤掉 protectedGroupIds 也删不到确认框里明示跳过的组（storage 执行前会复核）。
+    const planToken = deletePlanTokens.issue({
+      bookPath,
+      groupIds,
+      cleanableIds: (plan.cleanable || []).map((entry) => entry.id)
+    });
     if (!planToken) {
       throw new storage.StorageError('DELETE_PLAN_INVALID', '这次清理没有拿到确认凭证，一个文件都没有动');
     }
@@ -102,6 +108,9 @@ function registerBookDataIpc(host) {
       return await storage.deleteHistoryBackups(bookPath, groupIds, {
         // 渲染层能给的只有保护列表 / stat 注入这类补充信息；删除动作由主进程现填。
         ...settings,
+        // 五-M29（IPC-02）：执行清单只认计划里确认过的可清理集合 —— 渲染层临时改 protectedGroupIds
+        // 让解析结果多出没确认过的组时，storage 整次拒绝（一个文件都不动），令牌放回可重试。
+        confirmedGroupIds: claim.record.cleanable,
         // 主进程唯一可用的删除动作：移入 Windows 回收站。失败就逐组如实报错，绝不降级成硬删。
         trash: (dir) => shell.trashItem(dir)
       });

@@ -965,6 +965,44 @@ test('删除备份（B6/WP4）：跳过 10 秒撤销引用的组并说明，其�
   );
 });
 
+test('删除备份（B6/WP4 / 五-M29）：执行清单必须等于计划确认的可清理集合，撤保护多删直接拒绝', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await makeBook(root, '计划绑定书');
+  const replaceDir = await writeBackupDir(bookPath, '替换备份-2026-10-31-210000', { '001-a.txt': '替换前' });
+  const restoreDir = await writeBackupDir(bookPath, '还原前备份-2026-10-31-190000', { '001-a.txt': '还原前' });
+  const replaceId = 'dir:替换备份-2026-10-31-210000';
+  const restoreId = 'dir:还原前备份-2026-10-31-190000';
+  const bin = await makeFakeTrash(root);
+
+  // 计划时还原前备份仍被 10 秒撤销条保护 → 只确认清理替换备份（确认框只展示这一组）
+  const plan = await storage.planHistoryBackupDeletion(bookPath, [replaceId, restoreId], {
+    protectedGroupIds: [restoreId]
+  });
+  assert.deepEqual(plan.cleanable.map((entry) => entry.id), [replaceId]);
+  // 执行时撤掉保护（坏渲染层）：解析结果多出没确认过的还原前备份 → 整次拒绝，一个文件都不动
+  await assert.rejects(
+    () =>
+      storage.deleteHistoryBackups(bookPath, [replaceId, restoreId], {
+        confirmedGroupIds: [replaceId],
+        trash: bin.trash
+      }),
+    (err) => err.code === 'DELETE_PLAN_INVALID' && /一个文件都没有动/.test(err.message)
+  );
+  assert.deepEqual(bin.moved, [], '多出未确认的组时一个文件都不许动');
+  assert.deepEqual(await fs.readdir(replaceDir), ['001-a.txt']);
+  assert.deepEqual(await fs.readdir(restoreDir), ['001-a.txt']);
+
+  // 执行清单等于计划确认集合（受保护组仍被跳过）：照常只清确认过的那一组
+  const ok = await storage.deleteHistoryBackups(bookPath, [replaceId, restoreId], {
+    confirmedGroupIds: [replaceId],
+    protectedGroupIds: [restoreId],
+    trash: bin.trash
+  });
+  assert.equal(ok.deletedGroups, 1);
+  assert.equal(bin.moved.length, 1);
+  assert.deepEqual(await fs.readdir(restoreDir), ['001-a.txt'], '未被确认 / 仍受保护的组必须留着');
+});
+
 test('删除备份（B6/WP4）：非法 id / 不可清理组一律拒绝，绝不越界删任何文件', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await makeBook(root, '清理守卫书');

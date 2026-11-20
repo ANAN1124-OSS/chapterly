@@ -2641,7 +2641,22 @@ async function deleteHistoryBackups(bookPath, groupIds, options = {}) {
       '清理备份需要系统回收站，这次没有可用的回收站接口；一个文件都没有动'
     );
   }
+  // 五-M29（IPC-02）：计划令牌会把「计划实际解析出的可清理集合」带到这里。有效删除集合 =
+  // f(groupIds, protectedGroupIds)，只绑 groupIds 时坏渲染层能在确认后撤掉保护列表、把确认框里
+  // 明示跳过的组补进删除集。执行前复核：解析结果里只要有计划外的组就整次拒绝、一个文件都不动。
+  const confirmed = Array.isArray(rawSettings.confirmedGroupIds)
+    ? new Set(rawSettings.confirmedGroupIds.filter((id) => typeof id === 'string'))
+    : null;
   const { targets, skipped } = await resolveCleanupTargets(bookPath, groupIds, cleanupSettings(rawSettings));
+  if (confirmed) {
+    const unconfirmed = targets.filter((target) => !confirmed.has(target.id));
+    if (unconfirmed.length) {
+      throw new StorageError(
+        'DELETE_PLAN_INVALID',
+        '这次执行多出了确认时没有列出的备份组（保护列表可能在确认之后被改过），已取消；一个文件都没有动'
+      );
+    }
+  }
   const deleted = [];
   let deletedBytes = 0;
   for (const target of targets) {

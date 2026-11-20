@@ -6,13 +6,14 @@
  *      来源 / 本书 _trash 直接子目录 / 联接 / 保护列表都自己核一遍），并发一张一次性令牌；
  *   ② book:delete-history-backups —— 必须带令牌回来：存在 / 没过期 / 同一本书 / 组清单一致，
  *      四条全过才放行，成功立刻作废（一次性）。
- * 令牌只绑「书 + 组清单摘要 + 过期时间」，不绑文件内容 —— 执行阶段 storage 会重新解析一遍，
- * 目录在这一小段时间里换了内容，最多影响「清掉的是不是刚确认的那一份备份」，而备份本身是副本；
- * 真正的兜底是删除动作只走 shell.trashItem（可恢复），不在本模块。
+ * 令牌只绑「书 + 组清单摘要 + 计划可清理集合 + 过期时间」，不绑文件内容 —— 执行阶段 storage 会重新
+ * 解析一遍；执行清单超出计划可清理集合（五-M29：例如撤掉 protectedGroupIds 把确认时说「跳过」的组
+ * 补进删除集）一律拒绝，目录在这一小段时间里换了内容，最多影响「清掉的是不是刚确认的那一份备份」，
+ * 而备份本身是副本；真正的兜底是删除动作只走 shell.trashItem（可恢复），不在本模块。
  *
  * 契约：
  *   createStore({ ttlMs, maxEntries, now, randomUUID }) → {
- *     issue({ bookPath, groupIds }) → token 字符串（参数不合法回 ''，绝不发半张凭证）
+ *     issue({ bookPath, groupIds, cleanableIds }) → token 字符串（参数不合法回 ''，绝不发半张凭证）
  *     take(token, { bookPath, groupIds }) → { ok:true, record } | { ok:false, reason }
  *     release(record) → 是否放回成功（执行阶段整体失败时让作者原地重试）
  *     size(), clear(), ttlMs, maxEntries
@@ -80,6 +81,26 @@ function digestOf(ids) {
   return crypto.createHash('sha256').update(ids.join('\n'), 'utf8').digest('hex');
 }
 
+// 五-M29（IPC-02）：令牌同时绑「计划实际解析出的可清理集合」——有效删除集合 =
+// f(groupIds, protectedGroupIds)，只绑 groupIds 时，执行阶段撤掉保护列表就能把确认框里明示
+// 「跳过」的组补进删除集。计划集合必须是确认清单的子集（解析只从清单里挑），形状不对整张不发。
+// 空数组合法：整张计划都被跳过时，执行阶段据此拒绝删除任何东西。
+function normalizeCleanableIds(input, groupIdSet) {
+  if (!Array.isArray(input) || input.length > MAX_GROUP_IDS) return null;
+  const seen = new Set();
+  const out = [];
+  for (const raw of input) {
+    if (typeof raw !== 'string') return null;
+    const id = raw.trim();
+    if (!id || id.length > MAX_GROUP_ID_CHARS) return null;
+    if (!groupIdSet.has(id)) return null;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out.sort();
+}
+
 function createStore(options = {}) {
   const source = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
   const ttlMs =
@@ -127,6 +148,11 @@ function createStore(options = {}) {
     if (!isBoundedText(data.bookPath, MAX_PATH_CHARS)) return '';
     const ids = normalizeGroupIds(data.groupIds);
     if (!ids) return '';
+    const idSet = new Set(ids);
+    // 五-M29（IPC-02）：计划里的可清理集合也绑进令牌；调用方不传时按「全部组都可清理」兜底
+    // （旧调用口径不变，生产调用点必须传真实计划结果）。
+    const cleanable = normalizeCleanableIds(data.cleanableIds === undefined ? ids : data.cleanableIds, idSet);
+    if (!cleanable) return '';
     const at = clock();
     prune(at);
     let token = '';
@@ -143,6 +169,7 @@ function createStore(options = {}) {
       bookPath: data.bookPath,
       digest: digestOf(ids),
       count: ids.length,
+      cleanable: cleanable.slice(),
       expiresAt: at + ttlMs
     });
     evictOverflow();
@@ -179,7 +206,7 @@ function createStore(options = {}) {
     if (!ids || digestOf(ids) !== record.digest) return { ok: false, reason: 'plan-mismatch' };
     entries.delete(raw);
     prune(at);
-    return { ok: true, record: { ...record } };
+    return { ok: true, record: { ...record, cleanable: record.cleanable.slice() } };
   }
 
   // 执行阶段整体失败（回收站暂时不可用 / 书被别的窗口占住）时把令牌放回去，作者可以原地再点一次。
@@ -191,6 +218,11 @@ function createStore(options = {}) {
     if (!isBoundedText(record.bookPath, MAX_PATH_CHARS)) return false;
     if (typeof record.digest !== 'string' || record.digest.length !== 64) return false;
     if (!Number.isInteger(record.count) || record.count <= 0 || record.count > MAX_GROUP_IDS) return false;
+    // 五-M29（IPC-02）：计划可清理集合是令牌的一部分（执行层据此复核），放回时一并校验 / 带回。
+    if (!Array.isArray(record.cleanable) || record.cleanable.length > MAX_GROUP_IDS) return false;
+    for (const id of record.cleanable) {
+      if (!isBoundedText(id, MAX_GROUP_ID_CHARS)) return false;
+    }
     if (!Number.isFinite(record.expiresAt) || record.expiresAt <= at) return false;
     if (entries.has(record.token)) return false;
     prune(at);
@@ -200,6 +232,7 @@ function createStore(options = {}) {
       bookPath: record.bookPath,
       digest: record.digest,
       count: record.count,
+      cleanable: record.cleanable.slice(),
       expiresAt: record.expiresAt
     });
     releasedRecords.add(record);

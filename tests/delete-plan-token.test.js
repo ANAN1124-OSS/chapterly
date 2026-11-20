@@ -136,3 +136,35 @@ test('T6 计划令牌：errorFor 统一 code / 文案；release 让作者原地�
   assert.equal(store.release(claim.record), false, '同一份 record 不能放回两次');
   assert.equal(store.take(token, { bookPath, groupIds: ['dir:a'] }).ok, true, '放回后还能用一次');
 });
+
+// 五-M29（IPC-02）：令牌不只绑原始 groupIds，还要绑「计划实际解析出的可清理集合」——
+// 有效删除集合 = f(groupIds, protectedGroupIds)，只绑前者时，执行阶段撤掉 protectedGroupIds
+// 就能把确认框里明示「跳过」的组补进删除集。这里钉住令牌携带的计划集合 + 输入校验。
+test('T7 计划令牌：绑定计划可清理集合（cleanableIds），执行阶段只能删这份清单', () => {
+  const store = tokenLib.createStore({ randomUUID: () => 'tok-cleanable' });
+  const bookPath = 'D:\\书库\\书甲';
+  const token = store.issue({
+    bookPath,
+    groupIds: ['dir:替换备份-1', 'dir:还原前备份-2'],
+    cleanableIds: ['dir:替换备份-1'] // 还原前备份当时被 10 秒撤销条保护 → 计划里跳过
+  });
+  assert.ok(token);
+  const claim = store.take(token, { bookPath, groupIds: ['dir:还原前备份-2', 'dir:替换备份-1'] });
+  assert.equal(claim.ok, true, 'groupIds 仍是确认过的那张清单');
+  assert.deepEqual(claim.record.cleanable, ['dir:替换备份-1'], 'record 要带计划可清理集合给执行层复核');
+
+  // cleanableIds 必须是确认清单的子集、形状合法 —— 否则整张不发（不能发一张绑不上计划的凭证）
+  for (const bad of [
+    { bookPath, groupIds: ['dir:a'], cleanableIds: ['dir:b'] },
+    { bookPath, groupIds: ['dir:a'], cleanableIds: 'dir:a' },
+    { bookPath, groupIds: ['dir:a'], cleanableIds: [42] },
+    { bookPath, groupIds: ['dir:a'], cleanableIds: [`dir:${'x'.repeat(400)}`] }
+  ]) {
+    assert.equal(store.issue(bad), '', `非法 cleanableIds 不发令牌：${JSON.stringify(bad)}`);
+  }
+  // 空集合合法（整张计划都被跳过）：照样绑定，执行层据此拒绝删除任何东西
+  const emptyToken = store.issue({ bookPath, groupIds: ['dir:a'], cleanableIds: [] });
+  const emptyClaim = store.take(emptyToken, { bookPath, groupIds: ['dir:a'] });
+  assert.deepEqual(emptyClaim.record.cleanable, []);
+  assert.equal(store.release(emptyClaim.record), true, 'release 也要带得动这份绑定');
+});

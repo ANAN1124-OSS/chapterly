@@ -357,6 +357,50 @@ test('行为：清理计划只读 / 发令牌；执行必须带令牌，且删�
   assert.deepEqual(trashed, ['D:\\书库\\书\\_trash\\替换备份-1'], '删除动作只走主进程注入的 shell.trashItem');
 });
 
+// 五-M29（IPC-02）：计划令牌要把「计划实际解析出的可清理集合」带到执行阶段 ——
+// 只绑原始 groupIds 时，坏渲染层在确认框之后撤掉 protectedGroupIds，就能把确认时明示跳过的组
+// 一起删掉。现在计划频道把 plan.cleanable 的 id 绑进令牌，执行频道把同一份集合交给 storage 复核。
+test('五-M29（IPC-02）：执行阶段带上计划确认过的可清理集合，撤保护也删不到确认清单外', async () => {
+  const calls = [];
+  const { channels } = makeBookDataHost({
+    storage: {
+      planHistoryBackupDeletion: async () => ({
+        cleanable: [{ id: 'dir:替换备份-1', name: '替换备份-1', fileCount: 1, bytes: 9 }],
+        skipped: [{ id: 'dir:还原前备份-2', name: '还原前备份-2', reason: 'active-undo' }],
+        groupCount: 1,
+        totalBytes: 9,
+        recoverable: true
+      }),
+      deleteHistoryBackups: async (bookPath, groupIds, options) => {
+        calls.push({ bookPath, groupIds, options });
+        return { deletedGroups: 0, deletedBytes: 0, deleted: [], skipped: [] };
+      },
+      StorageError: class StorageError extends Error {
+        constructor(code, message) {
+          super(message);
+          this.code = code;
+        }
+      }
+    },
+    shell: { trashItem: async () => {}, openPath: async () => '' }
+  });
+  const groupIds = ['dir:替换备份-1', 'dir:还原前备份-2'];
+  const plan = await channels.get('book:plan-delete-history-backups').fn('D:\\书库\\书', groupIds, {
+    protectedGroupIds: ['dir:还原前备份-2']
+  });
+  // 执行时把 protectedGroupIds 撤掉（模拟坏渲染层）：groupIds 摘要一致，take 仍会通过
+  await channels.get('book:delete-history-backups').fn('D:\\书库\\书', groupIds.slice().reverse(), {
+    planToken: plan.planToken
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(
+    calls[0].options.confirmedGroupIds,
+    ['dir:替换备份-1'],
+    '执行层只认计划确认过的可清理集合（不是原始 groupIds）'
+  );
+  assert.equal(calls[0].options.protectedGroupIds, undefined, '执行时确实没再带保护列表（模拟撤保护）');
+});
+
 // 从 main.js 切出真实的 handleBook 包装函数（括号 / 函数体按层级配平），放进假作用域执行。
 function loadHandleBookWrapper() {
   const start = MAIN.indexOf('function handleBook(');
