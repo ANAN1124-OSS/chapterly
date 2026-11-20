@@ -48,6 +48,12 @@ function registerExportIpc(host) {
     atomicWriteFileStream
   } = host;
 
+  // 五-M33（IE-02）：只读长流程（导出三格式 / 整本复制）的在途租约 —— 不拿书写锁（会阻塞同书
+  // 正常保存），但 book:delete 的闸门会据此拒绝「导出途中把自己正在读的书删掉」。宿主没提供时
+  // 退化为空租约（最小桩单测 / 老宿主），生产始终由 core/storage.js 实现。
+  const beginReadLease =
+    typeof storage.beginReadLease === 'function' ? storage.beginReadLease : () => () => {};
+
   // 拼导出/复制用的正文：默认读磁盘；override 是编辑区里当前章的最新内容（未保存也算，只参与拼接不写盘）
   // chars 回报的是「正文字数」（去掉空白/换行，和编辑页字数统计同一口径），不是文件字节数
   // indexes 可选：只读选中的章（按范围导出用），没选中的位置留空字符串但保持下标对齐
@@ -183,19 +189,25 @@ function registerExportIpc(host) {
     const conversion = s2tLib.normalizeMode(prepared.cfg.exportConversion);
     const overrideIndex = exporter.chapterIndexOf(meta, override);
     let chars = 0;
-    await atomicWriteFileStream(filePath, async (write) => {
-      await write(exporter.BOM);
-      const summary = await exporter.streamTxtExport(meta, prepared.range, {
-        conversion,
-        convertText: s2tLib.convertText,
-        readText: async (index, chapter) => {
-          if (index === overrideIndex) return override.text;
-          return (await storage.loadChapterText(bookPath, chapter.file)).text;
-        },
-        onChunk: (chunk) => write(chunk)
+    // 五-M33（IE-02）：逐章读盘期间登记在途租约（删除闸门据此拒绝），finally 保证成功 / 失败都释放
+    const releaseLease = beginReadLease(bookPath);
+    try {
+      await atomicWriteFileStream(filePath, async (write) => {
+        await write(exporter.BOM);
+        const summary = await exporter.streamTxtExport(meta, prepared.range, {
+          conversion,
+          convertText: s2tLib.convertText,
+          readText: async (index, chapter) => {
+            if (index === overrideIndex) return override.text;
+            return (await storage.loadChapterText(bookPath, chapter.file)).text;
+          },
+          onChunk: (chunk) => write(chunk)
+        });
+        chars = summary.chars;
       });
-      chars = summary.chars;
-    });
+    } finally {
+      releaseLease();
+    }
     return {
       chars,
       includedUnsaved: overrideIndex >= 0 && plan.indexes.includes(overrideIndex),
@@ -253,25 +265,31 @@ function registerExportIpc(host) {
     const includedUnsaved = overrideIndex >= 0 && prepared.plan.indexes.includes(overrideIndex);
     let chars = 0;
     let built = null;
-    await atomicWriteFileStream(filePath, async (write) => {
-      built = await options.stream(
-        {
-          meta: exportMeta,
-          range: safeRange,
-          labels,
-          // 每章只读一次：override 章用编辑区最新内容（不写盘），其余读磁盘；chars 按原始正文计。
-          readText: async (index, chapter) => {
-            const text =
-              index === overrideIndex
-                ? prepared.override.text
-                : (await storage.loadChapterText(bookPath, chapter.file)).text;
-            chars += chaptersLib.countChars(text);
-            return conversion ? s2tLib.convertText(text, conversion) : text;
-          }
-        },
-        write
-      );
-    });
+    // 五-M33（IE-02）：EPUB / DOCX 同样在逐章读盘期间登记在途租约，finally 释放
+    const releaseLease = beginReadLease(bookPath);
+    try {
+      await atomicWriteFileStream(filePath, async (write) => {
+        built = await options.stream(
+          {
+            meta: exportMeta,
+            range: safeRange,
+            labels,
+            // 每章只读一次：override 章用编辑区最新内容（不写盘），其余读磁盘；chars 按原始正文计。
+            readText: async (index, chapter) => {
+              const text =
+                index === overrideIndex
+                  ? prepared.override.text
+                  : (await storage.loadChapterText(bookPath, chapter.file)).text;
+              chars += chaptersLib.countChars(text);
+              return conversion ? s2tLib.convertText(text, conversion) : text;
+            }
+          },
+          write
+        );
+      });
+    } finally {
+      releaseLease();
+    }
     await rememberExportDir(path.dirname(filePath));
     return archiveExportResult(filePath, built, chars, includedUnsaved, conversion, prepared.plan);
   }
@@ -338,7 +356,15 @@ function registerExportIpc(host) {
     if (selected && !selected.length) {
       return { chapterCount: 0, chars: 0, includedUnsaved: false, empty: true };
     }
-    const { texts, chars, includedUnsaved } = await collectExportTexts(bookPath, meta, safeOverride, selected);
+    // 五-M33（IE-02）：整本 / 选中章复制同样逐章读盘 —— 复制途中删书会让剪贴板只拿到半本书
+    const releaseLease = beginReadLease(bookPath);
+    let collected;
+    try {
+      collected = await collectExportTexts(bookPath, meta, safeOverride, selected);
+    } finally {
+      releaseLease();
+    }
+    const { texts, chars, includedUnsaved } = collected;
     const text = selected ? exporter.composeSelected(meta, texts, selected) : exporter.composeBook(meta, texts);
     await getClipboard().writeText(text);
     return {

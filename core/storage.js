@@ -1054,10 +1054,45 @@ function findOpenBookWindow(bookPath) {
   return openBookRegistry.findWindow(bookPath);
 }
 
+// 五-M33（IE-02）：只读长流程（导出三格式 / 整本复制）的在途租约。导出刻意不拿书写锁 ——
+// 拿锁会阻塞同书正常保存；但同窗口「回书架 → 删同书」的删除闸门只查打开登记，导出在逐章读盘
+// 期间源文件夹被 trashItem 搬走，下一次 loadChapterText 命中 ENOENT、整次导出白做。
+// 这里按 bookPath 记在途计数（pathKey 口径，大小写 / 斜杠写法等价）：assertBookNotBusy 只在
+// action === 'delete' 时据此拒绝，保存 / 整理 / 替换等写操作一律照常。
+// beginReadLease 返回幂等的 release 函数 —— 调用方在 finally 里释放，成功 / 失败都不漏。
+const readLeases = new Map(); // pathKey(bookPath) -> 在途只读流程数
+
+function beginReadLease(bookPath) {
+  const key = pathUtils.pathKey(bookPath);
+  if (!key) return () => {};
+  readLeases.set(key, (readLeases.get(key) || 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = (readLeases.get(key) || 0) - 1;
+    if (next > 0) readLeases.set(key, next);
+    else readLeases.delete(key);
+  };
+}
+
+function isBookReadLeased(bookPath) {
+  const key = pathUtils.pathKey(bookPath);
+  return Boolean(key) && (readLeases.get(key) || 0) > 0;
+}
+
 // 跨窗口删改拦截：抛出 CROSS_WINDOW_BUSY，由 IPC 统一转成界面提示。
+// 五-M33（IE-02）：删除还要过「只读长流程在途」这一道 —— 导出期间删书会把源文件夹整个搬走。
 function assertBookNotBusy(bookPath, windowId, action = 'write') {
   const result = openBooksLib.checkMutation({ registry: openBookRegistry, windowId, bookPath, action });
   if (!result.ok) throw new StorageError(result.code, result.message);
+  if (action === 'delete' && isBookReadLeased(bookPath)) {
+    const label = path.basename(String(bookPath == null ? '' : bookPath)) || '这本书';
+    throw new StorageError(
+      'READ_LEASE_BUSY',
+      `「${label}」正在导出，已阻止这次删除。请等导出完成后再删。`
+    );
+  }
   return true;
 }
 
@@ -2900,6 +2935,9 @@ module.exports = {
   releaseOpenBook,
   releaseOpenBookPath,
   findOpenBookWindow,
+  // 五-M33（IE-02）：只读长流程（导出 / 整本复制）的在途租约
+  beginReadLease,
+  isBookReadLeased,
   assertBookNotBusy,
   createChapter: lockedWriteEntry(createChapter),
   createChapterWithText: lockedWriteEntry(createChapterWithText),

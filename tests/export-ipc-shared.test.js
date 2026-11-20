@@ -25,7 +25,7 @@ async function mkTmp() {
   return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-export-shared-')));
 }
 
-function makeHost({ targetPath, canceled = false } = {}) {
+function makeHost({ targetPath, canceled = false, readHook = null } = {}) {
   const channels = new Map();
   const calls = { dialogs: [], exportDirs: [], reads: 0 };
   const host = {
@@ -35,8 +35,11 @@ function makeHost({ targetPath, canceled = false } = {}) {
       readBookMeta: (bookPath) => storage.readBookMeta(bookPath),
       loadChapterText: async (bookPath, file) => {
         calls.reads += 1;
+        if (readHook) await readHook(bookPath, file);
         return storage.loadChapterText(bookPath, file);
-      }
+      },
+      // 五-M33（IE-02）：只读长流程在途租约（真实实现，行为用例要用它拦删除）
+      beginReadLease: (bookPath) => storage.beginReadLease(bookPath)
     },
     exporter,
     chaptersLib,
@@ -148,5 +151,53 @@ test('#24 R2：默认文件名在对话框之前算好（EPUB / DOCX 各自复�
     path.basename(host.calls.dialogs[0].defaultPath),
     '共享导出-第1章.epub',
     '共享内核把 defaultName 传给对话框（不是写死书名）'
+  );
+});
+// 五-M33（IE-02）：导出 / 整本复制是只读长流程 —— 不拿书写锁（会阻塞同书正常保存），但同窗口
+// 「回书架 → 删同书」在逐章读盘期间能把源文件夹整个搬进回收站，导出中途撞 CHAPTER_MISSING。
+// 现在主进程按 bookPath 登记在途租约：book:delete 的闸门据此拒绝（保存 / 整理等写操作照常），
+// 导出成功或失败都在 finally 释放，删除不再依赖「作者不会在导出时删书」。
+test('五-M33（IE-02）：导出在途时同一本书的删除被租约拦下，导出结束立即释放', async () => {
+  const dir = await mkTmp();
+  const root = path.join(dir, '书库');
+  await fs.mkdir(root, { recursive: true });
+  const bookPath = await makeBook(root);
+  let blocked = null;
+  const { channels } = makeHost({
+    targetPath: path.join(dir, '租约.epub'),
+    readHook: () => {
+      if (blocked) return;
+      try {
+        storage.assertBookNotBusy(bookPath, 'win-any', 'delete');
+      } catch (err) {
+        blocked = err;
+      }
+    }
+  });
+
+  const res = await channels.get('book:export-epub')(bookPath);
+  assert.equal(res.canceled, false);
+  assert.ok(blocked, '导出读正文期间删除必须被拦下（而不是让导出打到一半 CHAPTER_MISSING）');
+  assert.equal(blocked.code, 'READ_LEASE_BUSY');
+  assert.match(blocked.message, /正在导出/);
+  assert.equal(storage.isBookReadLeased(bookPath), false, '导出结束（成功 / 失败）租约都要释放');
+  // 结束之后正常删除闸门不再被拦
+  assert.doesNotThrow(() => storage.assertBookNotBusy(bookPath, 'win-any', 'delete'));
+});
+
+test('五-M33 静态闸门：TXT / EPUB+DOCX / 整本复制三条长读取流程都登记并释放租约', () => {
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'ipc', 'export.js'), 'utf8');
+  assert.ok(
+    (src.match(/beginReadLease\(bookPath\)/g) || []).length >= 3,
+    'TXT 导出 / exportStructured / book:copy 都要登记在途租约'
+  );
+  assert.ok(
+    (src.match(/releaseLease\(\)/g) || []).length >= 3,
+    '每条租约都要有释放点（finally）'
+  );
+  assert.match(
+    src,
+    /handleBook\('book:copy'[\s\S]{0,900}beginReadLease\(bookPath\)/,
+    '整本复制（collectExportTexts 逐章读）也要登记'
   );
 });

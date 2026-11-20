@@ -2197,3 +2197,37 @@ test('审计 #32（▲V305）：读书目时自愈重复 id、按新 id 操作�
     storage.setDiagnostics({});
   }
 });
+
+// 五-M33（IE-02）：只读长流程的在途租约 —— book:delete 的闸门要据此拒绝，保存 / 整理照常。
+test('五-M33（IE-02）：只读长流程租约拦删除不拦保存，释放 / 重复释放幂等', () => {
+  const bookPath = 'D:\\书库\\导出的书';
+  assert.equal(storage.isBookReadLeased(bookPath), false);
+  const releaseA = storage.beginReadLease(bookPath);
+  assert.equal(storage.isBookReadLeased(bookPath), true);
+  assert.throws(
+    () => storage.assertBookNotBusy(bookPath, 'win-1', 'delete'),
+    (err) =>
+      err.code === 'READ_LEASE_BUSY' &&
+      /正在导出/.test(err.message) &&
+      /导出的书/.test(err.message) &&
+      !err.message.includes('D:\\书库')
+  );
+  assert.doesNotThrow(() => storage.assertBookNotBusy(bookPath, 'win-1', 'save'), '保存不受租约影响');
+  assert.doesNotThrow(() => storage.assertBookNotBusy(bookPath, 'win-1', 'format'), '整理不受租约影响');
+
+  // 同一本书并发两段只读流程：都结束后才允许删除
+  const releaseB = storage.beginReadLease(bookPath);
+  releaseA();
+  assert.equal(storage.isBookReadLeased(bookPath), true, '还有一段在途');
+  releaseA(); // 幂等：重复释放不多减
+  assert.equal(storage.isBookReadLeased(bookPath), true);
+  releaseB();
+  assert.equal(storage.isBookReadLeased(bookPath), false);
+  assert.doesNotThrow(() => storage.assertBookNotBusy(bookPath, 'win-1', 'delete'));
+
+  // 大小写 / 斜杠写法等价（pathKey 口径）：同一本书的两种写法共享同一份计数
+  const lower = storage.beginReadLease('d:/书库/导出的书');
+  assert.equal(storage.isBookReadLeased(bookPath), true);
+  lower();
+  assert.equal(storage.isBookReadLeased(bookPath), false, '同一本书的两种路径写法应落在同一个 key 上');
+});
