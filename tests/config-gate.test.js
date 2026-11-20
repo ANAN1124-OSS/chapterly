@@ -448,6 +448,26 @@ test('静态闸门：config:set 的 bookDisplay 逐书过来源校验并按书�
   assert.match(body, /delete gated\.patch\.bookDisplay/, '形状不对的 bookDisplay 整项丢弃（保留原配置）');
 });
 
+// 五-M28（CI-5）：整份 bookDisplay map 的条目数同样要有闸 —— 正常 UI 一次只带一本书，
+// 一张数十万条的 patch 既不可能是正常设置，也不该让逐条过滤 + 调用方合并 + 配置深拷贝全部白做。
+// 上限与 core/config.js 是同一个常量；超限整段拒绝（保留原配置），与「形状不对整项不生效」同口径。
+test('按书显示 map：条目数超过 BOOK_DISPLAY_MAX 的整份 patch 直接拒绝（CI-5）', () => {
+  const { BOOK_DISPLAY_MAX } = require('../core/config');
+  const big = {};
+  for (let i = 0; i <= BOOK_DISPLAY_MAX; i += 1) big[`b_${i}`] = { editorFontSize: 20 };
+  assert.deepEqual(configGate.filterBookDisplayMapPatch(big, { current: {} }), {
+    patch: null,
+    rejected: ['bookDisplay']
+  });
+
+  // 恰好等于上限、条目形状合法：照常放行（闸门只挡无界增长，不误伤正常 patch）
+  const atLimit = {};
+  for (let i = 0; i < BOOK_DISPLAY_MAX; i += 1) atLimit[`b_${i}`] = { editorFontSize: 20 };
+  const ok = configGate.filterBookDisplayMapPatch(atLimit, { current: {} });
+  assert.equal(Object.keys(ok.patch).length, BOOK_DISPLAY_MAX);
+  assert.deepEqual(ok.rejected, []);
+});
+
 test('静态闸门：book:set-display 过 filterBookDisplayPatch；字体对话框把路径记进来源登记（C1）', () => {
   assert.ok(
     (MAIN_SOURCE.match(/configGate\.filterBookDisplayPatch\(/g) || []).length === 1,

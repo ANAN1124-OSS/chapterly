@@ -18,6 +18,8 @@
 // 路径等价口径与 core/path-utils.js 完全一致（1.7.2 D4/V43）：resolve + 小写 + Windows 下正斜杠
 // 归反斜杠。这里不再自留 pathLib / pathKey —— 判「是不是同一个路径」的实现在全仓只有一份。
 const { pathKey } = require('./path-utils');
+// 五-M28（CI-5）：bookDisplay 的条目数上限与 core/config.js 共用同一个常量（那里是唯一声明处）。
+const { BOOK_DISPLAY_MAX } = require('./config');
 
 // 需要来源校验的字段（审计结论本身：以后往 config 里加「路径」字段必须加到这里）
 // C1（审计 S1）：补上自定义字体路径。原来它不在白名单里，config:set / book:set-display 原样透传，
@@ -172,6 +174,10 @@ function filterBookDisplayMapPatch(raw, options = {}) {
       : {};
   const picked = options.picked && typeof options.picked === 'object' ? options.picked : {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { patch: null, rejected: ['bookDisplay'] };
+  // 五-M28（CI-5）：整份 map 也要有条目数闸 —— 正常 UI 一次只带一本书，一张数十万条的 patch
+  // 既不可能是正常设置，也不该让逐条过滤 + 调用方合并 + 配置深拷贝全部白做。
+  // 超限整段拒绝（保留原配置），与「形状不对整项不生效」同一口径；上限与 core/config.js 同一份常量。
+  if (Object.keys(raw).length > BOOK_DISPLAY_MAX) return { patch: null, rejected: ['bookDisplay'] };
   const entries = [];
   let rejected = false;
   for (const [bookId, entry] of Object.entries(raw)) {

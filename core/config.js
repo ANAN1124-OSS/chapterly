@@ -214,11 +214,16 @@ function sanitizeBookDisplayEntry(raw) {
 function sanitizeBookDisplay(raw) {
   const out = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  let count = 0;
   for (const [bookId, entry] of Object.entries(raw)) {
+    if (count >= BOOK_DISPLAY_MAX) break; // 五-M28（CI-5）：条目数有界（插入顺序保留先出现的）
     const key = typeof bookId === 'string' ? bookId.trim() : '';
     if (!key || key.length > 200) continue;
     const clean = sanitizeBookDisplayEntry(entry);
-    if (Object.keys(clean).length) setOwnEntry(out, key, clean);
+    if (Object.keys(clean).length) {
+      setOwnEntry(out, key, clean);
+      count += 1;
+    }
   }
   return out;
 }
@@ -270,6 +275,12 @@ function sanitizeLastBook(raw, now = Date.now()) {
 // 多份校对词表的条数上限（1.7.0 F3a）：面板上再多也读不完，超过的截断。
 // 1.7.2 D4（V42）：这是唯一一处定义，main.js 从这里 require（文案也用这个常量拼），别再声明同名常量。
 const WORDLIST_MAX = 8;
+
+// 五-M28（CI-5）：按书显示设置（bookDisplay）的条目数上限。它是唯一没有总量闸的已知配置键 ——
+// 每次 get() 都全量深拷贝、每次自动写盘都整份序列化，注入威胁模型下一次 config:set 就能写数十 MB。
+// 2000 本条足够覆盖正常书库（书架几十本到几百本）；超出的按插入顺序截断，不抛错、不静默涨回去。
+// config-gate.filterBookDisplayMapPatch 用同一个常量挡整份超大 patch（那边从本模块 require）。
+const BOOK_DISPLAY_MAX = 2000;
 
 // 多份校对词表的路径清洗（1.7.0 F3a；1.7.1 V51/V48）：必须数组、最多 WORDLIST_MAX 条、只留字符串、
 // trim、只收绝对路径、去重（判「同一份」走 core/path-utils.js 的 pathKey：resolve + 小写 + Windows
@@ -946,6 +957,7 @@ module.exports = {
   createConfigStore,
   DEFAULTS,
   WORDLIST_MAX,
+  BOOK_DISPLAY_MAX,
   MAX_LAST_BOOK_FUTURE_MS,
   sanitize,
   sanitizeLastBook,

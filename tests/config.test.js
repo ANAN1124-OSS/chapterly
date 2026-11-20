@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { createConfigStore, sanitize, sanitizeLastBook, DEFAULTS } = require('../core/config');
+const { createConfigStore, sanitize, sanitizeLastBook, DEFAULTS, BOOK_DISPLAY_MAX } = require('../core/config');
 const { writeJsonAtomic } = require('../core/atomic');
 const { readGlossaryFile, readGlossaryFiles } = require('../core/glossary');
 
@@ -286,6 +286,34 @@ test('按书显示设置：非法值按全局规则夹紧，非法 bookId 被忽
   assert.equal(cleaned.bookDisplay.b_ok.editorPaper, 'kraft');
   assert.equal(cleaned.bookDisplay.b_ok.editorSidebarWidth, 800);
   assert.equal(sanitize({ bookDisplay: 'not-an-object' }).bookDisplay && Object.keys(sanitize({ bookDisplay: 'not-an-object' }).bookDisplay).length, 0);
+});
+
+// 五-M28（CI-5）：bookDisplay 是唯一「条目数无上限」的已知配置键 —— 每次 get() 全量深拷贝、
+// 每次自动写盘整份序列化，注入威胁模型下一次 config:set 就能把 config.json 撑到数十 MB。
+// 现在条目数按 BOOK_DISPLAY_MAX 截断（按插入顺序保留先出现的），落盘 / 深拷贝都有界。
+test('五-M28（CI-5）：bookDisplay 条目数有上限，超限配置按插入顺序截断', async () => {
+  const over = BOOK_DISPLAY_MAX + 50;
+  const big = {};
+  for (let i = 0; i < over; i += 1) big[`b_${i}`] = { editorFontSize: 20 + (i % 5) };
+  const cleaned = sanitize({ bookDisplay: big });
+  assert.equal(Object.keys(cleaned.bookDisplay).length, BOOK_DISPLAY_MAX, '清洗后的条目数必须有界');
+  assert.ok(Object.prototype.hasOwnProperty.call(cleaned.bookDisplay, 'b_0'), '先出现的条目保留');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(cleaned.bookDisplay, `b_${BOOK_DISPLAY_MAX}`),
+    false,
+    '超出上限的条目丢弃'
+  );
+
+  // 真文件往返：磁盘上已经是超限配置，读进来也必须是有界的（writeJsonAtomic 不经过清洗）
+  const dir = await mkTmp();
+  await writeJsonAtomic(path.join(dir, 'config.json'), { bookDisplay: big });
+  const store = createConfigStore(dir);
+  const cfg = await store.get();
+  assert.equal(Object.keys(cfg.bookDisplay).length, BOOK_DISPLAY_MAX);
+  // 再写一次后磁盘上的条目数同样有界（不会把整份超限 map 原样留在文件里）
+  await store.set({ dailyGoal: 2000 });
+  const onDisk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(Object.keys(onDisk.bookDisplay).length, BOOK_DISPLAY_MAX);
 });
 
 test('当前段落高亮（N10b）：默认关 + 跟随主题；旧配置缺字段照常启动', () => {
