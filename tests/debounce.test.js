@@ -221,3 +221,66 @@ test('静态闸门：main.js 的切章走防抖，读书目前与退出前都 fl
   const flushBody = source.slice(flushStart, source.indexOf('\n});', flushStart));
   assert.equal(flushBody.includes('rememberRecentBook'), false, '防抖落盘只写书目，不再写 config');
 });
+
+// PM-1（五-L9）：storage.setLastOpenChapter 读 / 写失败会收成 { ok:false } 正常 resolve，
+// 而 debounce 的唯一生产 save 直接把它 return —— flush 永不 reject、定时器路径自己 catch、
+// 退出 flush .catch(()=>{})：全链路没有一处看结果或记日志。「重开书回到上次章」偶尔静默回退、
+// 事后零线索，与 debounce.js「写入失败不吞」的契约不符。
+// 这里直接执行 main.js 的 saveLastOpenChapter 包装（提取源码 + 假 storage / logError）。
+test('五-L9（PM-1）：防抖落盘检查 { ok:false } —— 非竞态失败留 warn 并 reject，章已删记 info 不抛', async () => {
+  const fsMod = require('node:fs');
+  const pathMod = require('node:path');
+  const mainSource = fsMod.readFileSync(pathMod.join(__dirname, '..', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const marker = mainSource.indexOf('async function saveLastOpenChapter(');
+  assert.ok(marker > 0, 'main.js 必须把防抖落盘的 save 抽成 saveLastOpenChapter（可单测）');
+  // 括号配平切出函数真身
+  const openBrace = mainSource.indexOf('{', mainSource.indexOf(')', marker));
+  let depth = 0;
+  let fnSource = '';
+  for (let i = openBrace; i < mainSource.length; i += 1) {
+    if (mainSource[i] === '{') depth += 1;
+    else if (mainSource[i] === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        fnSource = mainSource.slice(marker, i + 1);
+        break;
+      }
+    }
+  }
+  assert.ok(fnSource, 'saveLastOpenChapter 的大括号要配平');
+  const make = (setLastOpenChapter, logs) =>
+    new Function('storage', 'logError', `${fnSource}; return saveLastOpenChapter;`)(
+      { setLastOpenChapter },
+      (kind, err, meta) => logs.push([kind, err, meta])
+    );
+
+  // ① 成功：零日志、原样回包
+  const okLogs = [];
+  const ok = make(async () => ({ ok: true, changed: true }), okLogs);
+  assert.deepEqual(await ok({ bookPath: 'D:/书库/书', chapterId: 'c1' }), { ok: true, changed: true });
+  assert.equal(okLogs.length, 0);
+
+  // ② 写盘失败（EBUSY）：留 warn + 按契约 reject（flush 调用方能看到）
+  const failLogs = [];
+  const failing = make(
+    async () => ({ ok: false, code: 'EBUSY', message: '文件正被别的程序占用' }),
+    failLogs
+  );
+  await assert.rejects(
+    () => failing({ bookPath: 'D:/书库/书', chapterId: 'c1' }),
+    (err) => err.code === 'EBUSY' && /占用/.test(err.message)
+  );
+  assert.equal(failLogs.length, 1, '失败必须留一条可查的日志');
+  assert.equal(failLogs[0][0], 'set-last');
+  assert.equal(failLogs[0][2].level, 'warn');
+  assert.equal(failLogs[0][2].code, 'EBUSY');
+
+  // ③ 章在防抖窗口里被删（正常竞态）：记 info、不抛（删章流程不该出现告警噪音）
+  const benignLogs = [];
+  const benign = make(async () => ({ ok: false, code: 'CHAPTER_NOT_FOUND', chapterCount: 0 }), benignLogs);
+  const result = await benign({ bookPath: 'D:/书库/书', chapterId: 'c9' });
+  assert.equal(result.ok, false);
+  assert.equal(benignLogs.length, 1);
+  assert.equal(benignLogs[0][2].level, 'info');
+  assert.equal(benignLogs[0][2].code, 'CHAPTER_NOT_FOUND');
+});

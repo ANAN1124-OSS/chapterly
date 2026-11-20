@@ -1114,13 +1114,26 @@ async function rememberRecentBook(bookPath, info) {
 // 保证「重开书回到上次章」看到的一定是最后一次切章。
 const LAST_OPEN_DEBOUNCE_MS = 1500;
 let lastOpenQuitFlushStarted = false; // will-quit 里只拦一次退出、只 flush 一次
+// 五-L9（PM-1）：storage.setLastOpenChapter 把读 / 写失败收成 { ok:false } 正常 resolve ——
+// 防抖落盘这一层必须看一眼结果，否则「重开书回到上次章」静默回退、事后零日志可查，也与
+// core/debounce.js「写入失败不吞」的契约不符。非「章已被删」的失败按契约 reject（flush 调用方
+// 自己决定记 / 忽略，定时器路径本来就会 catch），并留一条 warn；章在防抖窗口里被删掉是正常竞态
+// （记不住这次切章），只记 info、不抛，免得删章流程的日志变噪。
+async function saveLastOpenChapter({ bookPath, chapterId }) {
+  const result = await storage.setLastOpenChapter(bookPath, chapterId);
+  if (result && result.ok === false) {
+    const failure = Object.assign(new Error(result.message || '写入「上次打开章节」失败'), {
+      code: result.code || 'SET_LAST_FAILED'
+    });
+    const benign = result.code === 'CHAPTER_NOT_FOUND';
+    logError('set-last', failure, { level: benign ? 'info' : 'warn', code: failure.code });
+    if (!benign) throw failure;
+  }
+  return result;
+}
 const lastOpenWrites = createKeyedDebouncer({
   delayMs: LAST_OPEN_DEBOUNCE_MS,
-  save: async ({ bookPath, chapterId }) => {
-    // 只落「书目.json 的 lastOpenChapterId」；书架级「继续上次写作」（写 config.json）在
-    // book:set-last 当下就写掉了——配置很小，不再延迟，免得别的只读比对被迟到写盘干扰。
-    return storage.setLastOpenChapter(bookPath, chapterId);
-  }
+  save: saveLastOpenChapter
 });
 
 // 1.7.2 D4（V43/V83）：判「同一本书」不再手写 path.resolve().toLowerCase()，与词表去重 / 配置
