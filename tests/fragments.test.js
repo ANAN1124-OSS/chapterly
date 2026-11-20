@@ -60,6 +60,43 @@ test('灵感箱：nextFragmentName 在当天已有编号后递增，忽略别的
   assert.equal(frag.nextFragmentSerial(null, '2026-10-31'), 1);
 });
 
+// PM-4（五-L11）：解析只认 1–999999，生成却 max+1 不封顶 —— 第 100 万条写成
+// YYYY-MM-DD-1000000.txt（自己解析不认），此后当天新建算出的还是 1000000，永远命中
+// 「同名已存在」→ 提示「请再点一次保存」但永远无效，当天彻底卡死。
+test('灵感箱（PM-4 / 五-L11）：当天序号到顶时明确报「序号已满」，不生成解析不认的名字', async () => {
+  assert.deepEqual(frag.parseFragmentName('2026-10-31-999999.txt'), { date: '2026-10-31', seq: 999999 });
+  assert.equal(frag.parseFragmentName('2026-10-31-1000000.txt'), null, '上限之外的名字解析不认');
+  const atTop = ['2026-10-31-999999.txt'];
+  assert.throws(
+    () => frag.nextFragmentSerial(atTop, '2026-10-31'),
+    (err) => err.code === 'SERIAL_EXHAUSTED' && /序号已满/.test(err.message),
+    '到顶必须明确报错，不许返回 1000000'
+  );
+  assert.throws(
+    () => frag.nextFragmentName(atTop, new Date(2026, 9, 31, 12)),
+    (err) => err.code === 'SERIAL_EXHAUSTED'
+  );
+  assert.equal(frag.nextFragmentSerial(atTop, '2026-11-01'), 1, '别的日期不受影响');
+
+  // 旧版已经写出过 1000000：create 不能再撞同名的 NAME_CONFLICT，而要明确报序号已满
+  const root = await mkTmp();
+  const store = frag.createFragmentStore(root);
+  const dir = path.join(root, '_碎片');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, '2026-10-31-999999.txt'), '旧碎片', 'utf8');
+  await fs.writeFile(path.join(dir, '2026-10-31-1000000.txt'), '旧版写出的超上限碎片', 'utf8');
+  await assert.rejects(
+    () => store.create('今天再存一条', { now: new Date(2026, 9, 31, 12) }),
+    (err) => err.code === 'SERIAL_EXHAUSTED' && /序号已满/.test(err.message)
+  );
+  assert.deepEqual(
+    (await fs.readdir(dir)).sort(),
+    ['2026-10-31-1000000.txt', '2026-10-31-999999.txt'],
+    '拒绝发生在写盘前：一个文件都不多、旧碎片一个字节不动'
+  );
+  assert.equal(await fs.readFile(path.join(dir, '2026-10-31-999999.txt'), 'utf8'), '旧碎片');
+});
+
 test('灵感箱：cleanFragmentText 去 BOM / 统一换行 / 去首尾空白，空内容和超长明确拒绝', () => {
   const ok = frag.cleanFragmentText('\uFEFF第一段\r\n\r\n第二段\r\n');
   assert.equal(ok.ok, true);

@@ -15,6 +15,13 @@ const chaptersLib = require('./chapters');
 
 const FRAGMENT_DIR_NAME = '_碎片';
 const NAME_RE = /^(\d{4})-(\d{2})-(\d{2})-(\d+)\.txt$/;
+// PM-4（五-L11）：文件名序号的唯一上限 —— 解析与生成必须同口径。旧实现解析只认到 999999，
+// nextFragmentSerial 却 max+1 不封顶：第 100 万条写成 YYYY-MM-DD-1000000.txt（列表里 date/seq
+// 为 null），之后再新建算出的还是 1000000 → stat 命中 → 「同名已存在，请再点一次保存」永远无效。
+const MAX_FRAGMENT_SEQ = 999999;
+const SERIAL_EXHAUSTED_MESSAGE =
+  `当天的碎片序号已满（最多 ${MAX_FRAGMENT_SEQ} 条），今天不能再新建；` +
+  '可以先把 _碎片 文件夹里的旧碎片整理归档，或明天再存';
 const MAX_TEXT_CHARS = 100000; // 单条碎片最多 10 万字（够放一整段灵感，又不会把界面卡死）
 const MAX_READ_BYTES = 4 * 1024 * 1024; // 读外部手写 txt 的上限；超过只报错，不截断插入
 const MAX_READ_CHARS = 200000;
@@ -60,11 +67,12 @@ function parseFragmentName(name) {
   const date = `${match[1]}-${match[2]}-${match[3]}`;
   if (!isValidDayStamp(date)) return null;
   const seq = Number(match[4]);
-  if (!Number.isFinite(seq) || seq < 1 || seq > 999999) return null;
+  if (!Number.isFinite(seq) || seq < 1 || seq > MAX_FRAGMENT_SEQ) return null;
   return { date, seq };
 }
 
 // 当天序号：取已有同日期碎片的最大序号 + 1（从 1 开始）。删掉的号不回收，避免和回收站里的旧文件撞名。
+// 到顶（999999）时明确报错，绝不返回一个自己解析不认的名字（见 MAX_FRAGMENT_SEQ 的注释）。
 function nextFragmentSerial(names, stamp) {
   let max = 0;
   for (const name of Array.isArray(names) ? names : []) {
@@ -72,6 +80,7 @@ function nextFragmentSerial(names, stamp) {
     if (!parsed || parsed.date !== stamp) continue;
     if (parsed.seq > max) max = parsed.seq;
   }
+  if (max >= MAX_FRAGMENT_SEQ) throw new FragmentError('SERIAL_EXHAUSTED', SERIAL_EXHAUSTED_MESSAGE);
   return max + 1;
 }
 
