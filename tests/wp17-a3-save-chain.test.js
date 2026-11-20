@@ -17,6 +17,7 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const saveLogic = require('../renderer/save-logic');
+const saveStatusUi = require('../renderer/save-status-ui');
 const chaptersLib = require('../core/chapters');
 const longOpLogic = require('../renderer/long-op-logic');
 
@@ -400,6 +401,58 @@ test('A3-A / B2（极值 × IO 失败注入）：ENOSPC / EPERM 写盘失败—�
   rt.host.api.saveChapter = async () => ({ ok: false, code: 'EPERM', message: 'EPERM: 拒绝访问（模拟）' });
   await rt.ui.saveCurrent({ silent: true });
   assert.equal(rt.counts.toast.length, 0, 'silent 失败不许弹 toast');
+});
+
+// 五-L13（ES-4）：保存失败后点「重试」——旧实现只在成功分支清 saveError，发起时不清；
+// 而 saveStateModel 的优先级是「失败 > 正在保存 > 未保存 > 已保存」，于是重试写盘全程状态栏
+// 仍显示「保存失败：…」、圆点仍是 error、重试按钮 disabled，四态的「正在保存…」永远不出现。
+test('五-L13（ES-4）：重试保存在途时上一次的 saveError 已作废，状态栏回到「正在保存…」', async () => {
+  const rt = makeHost();
+  // ① 先失败一次：saveError 落地、dirty 保持（失败不丢稿）
+  rt.host.api.saveChapter = async () => ({ ok: false, code: 'EPERM', message: 'EPERM: 拒绝访问（模拟）' });
+  rt.state.dirty = true;
+  rt.editorEl.value = '未保存的正文';
+  const failed = await rt.ui.saveCurrent();
+  assert.equal(failed.ok, false);
+  assert.equal(rt.state.saveError, 'EPERM: 拒绝访问（模拟）');
+  assert.equal(rt.state.dirty, true);
+
+  // ② 点重试：在途期间状态栏必须是「正在保存…」（saveError 作废，不是等成功才清）
+  const gate = deferred();
+  rt.host.api.saveChapter = () => gate.promise;
+  const pending = rt.ui.saveCurrent();
+  await flush();
+  assert.equal(rt.state.saving, true);
+  assert.equal(rt.state.saveError, null, '发起保存即作废上一次失败，不许全程显示「保存失败」');
+  assert.deepEqual(
+    saveStatusUi.saveStateModel({ saving: rt.state.saving, saveError: rt.state.saveError, dirty: rt.state.dirty }),
+    { dot: 'saving', text: '正在保存…', error: false },
+    '重试写盘期间四态必须是「正在保存…」（圆点 saving、重试按钮 disabled）'
+  );
+  gate.release({ ok: true, data: { chars: 6, mtimeMs: 444, snapshot: { taken: true } } });
+  const done = await pending;
+  assert.equal(done.ok, true);
+  assert.equal(rt.state.saveError, null);
+  assert.equal(rt.state.dirty, false, '正文快照与编辑区一致 → 干净');
+});
+
+// 五-L13 的回归面：发起时清 saveError 不许把「别的书的旧错误」也清掉（回执按发起时身份落地，
+// 换书后眼前书的状态栏一个字都不回写 —— 与 B3 ② 同一口径）。
+test('五-L13（ES-4）：换书后旧书的重试在途，不许把眼前书的 saveError 清掉', async () => {
+  const rt = makeHost();
+  const gate = deferred();
+  rt.host.api.saveChapter = () => gate.promise;
+  rt.state.dirty = true;
+  const pending = rt.ui.saveCurrent();
+  await flush();
+  // 在途期间换了书，眼前书有自己的错误（上一本的重试还在途）
+  rt.state.bookPath = 'C:/tmp/books/另一本书';
+  rt.state.loadedChapterId = 'c9';
+  rt.state.saveError = '另一本书自己的旧错误';
+  gate.release({ ok: true, data: { chars: 6, mtimeMs: 444, snapshot: { taken: true } } });
+  const done = await pending;
+  assert.equal(done.ok, true);
+  assert.equal(rt.state.saveError, '另一本书自己的旧错误', '在途换书后不许回写眼前书的 saveError');
 });
 
 test('A3-A / B3：EXTERNAL_CHANGE → 救稿出口拿到发起时的书 / 章身份（在途换书不串到眼前书）', async () => {

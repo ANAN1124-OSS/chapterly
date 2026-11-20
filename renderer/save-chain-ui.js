@@ -291,6 +291,11 @@
     // EXTERNAL_CHANGE（同步盘后台落盘 / 记事本改过 / 检测只 toast 过的场景都在这里被拦下），
     // 绝不静默覆盖外部那一版正文。force = 作者在对话框里明确选了「仍然覆盖保存」。
     const expectedMtimeMs = force ? 0 : state.loadedMtimeMs;
+    // 五-L13（ES-4）：这一次保存已经发起 —— 上一次失败的 saveError 当场作废。
+    // saveStateModel 的优先级是「失败 > 正在保存 > 未保存 > 已保存」，旧实现只在成功分支清
+    // saveError，于是「保存失败 → 点重试」的整个写盘期间状态栏仍显示「保存失败：…」、圆点
+    // 仍是 error、重试按钮 disabled，四态的「正在保存…」永远不出现。新一次失败会在 catch 里重新写入。
+    state.saveError = null;
     state.saving = true;
     updateStatus();
     try {
