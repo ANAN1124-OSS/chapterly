@@ -1062,6 +1062,9 @@ function statsSummaryPayload(stats, cfg, now = new Date()) {
 // 记住这次导出保存到的目录（下次导出默认还开在这里）；记不住也绝不影响导出结果。
 async function rememberExportDir(dir) {
   if (!dir) return;
+  // 五-L3（CI-6）：这个目录是本窗口的导出流程真的落盘过的 —— 登记为「刚选中的来源」，
+  // 之后同一窗口 config:set 原样回传这个值也能过来源校验（与字体 / 词表同一口径）。
+  rememberPickedConfigPath('lastExportDir', dir);
   const cfg = await getConfig();
   if (dir === cfg.lastExportDir) return;
   try {

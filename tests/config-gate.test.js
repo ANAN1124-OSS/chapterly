@@ -26,12 +26,40 @@ test('配置来源校验：不在名单里的字段原样透传（显示设置 /
     dailyGoal: 1234,
     chapterTemplate: '第{n}章 {title}',
     formatOptions: { indent: 2 },
-    lastExportDir: path.join(ROOT, '导出'),
     bookDisplay: { 某书: { editorPaper: 'night' } }
   };
   const result = configGate.filterPathPatch(patch, { current: {} });
   assert.deepEqual(result.patch, patch);
   assert.deepEqual(result.rejected, []);
+});
+
+// CI-6（五-L3）：lastExportDir 是路径字段却漏在 GUARDED_PATH_FIELDS 之外 —— 注入脚本
+// config:set { lastExportDir: '任意目录' } 会原样落盘，下次启动主进程对那个目录 readdir + unlink
+// 本应用命名的孤儿 tmp（删除面被命名模式限死，但「把回收引到哪个目录」不该由渲染层点名）。
+// 只认三种来源：原值（设置表单原样回传） / 清空 / 本窗口导出流程真正落盘过的目录。
+test('配置来源校验（CI-6 / 五-L3）：lastExportDir 登记为路径字段，只认原值 / 清空 / 刚选中的目录', () => {
+  const current = { lastExportDir: 'D:\\上次导出' };
+  // 原值放行
+  assert.deepEqual(configGate.filterPathPatch({ lastExportDir: 'D:\\上次导出' }, { current }), {
+    patch: { lastExportDir: 'D:\\上次导出' },
+    rejected: []
+  });
+  // 清空放行（配置清洗决定最终值）
+  assert.deepEqual(configGate.filterPathPatch({ lastExportDir: '' }, { current }).rejected, []);
+  // 来源不明：整字段忽略、回包只带字段名（绝不带路径值）
+  const forged = configGate.filterPathPatch({ lastExportDir: 'D:\\任意目录' }, { current });
+  assert.deepEqual(forged.patch, {});
+  assert.deepEqual(forged.rejected, ['lastExportDir']);
+  assert.equal(JSON.stringify(forged).includes('任意目录'), false);
+  // 坏类型同样拒绝（不做类型转换）
+  assert.deepEqual(configGate.filterPathPatch({ lastExportDir: 12345 }, { current }).rejected, ['lastExportDir']);
+  // 本窗口导出流程真的落盘过这个目录：放行
+  const picked = configGate.filterPathPatch(
+    { lastExportDir: 'D:\\新导出' },
+    { current, picked: { lastExportDir: 'D:\\新导出' } }
+  );
+  assert.deepEqual(picked.rejected, []);
+  assert.equal(picked.patch.lastExportDir, 'D:\\新导出');
 });
 
 test('配置来源校验：与原值相同就放行（设置界面每次保存都会原样回传整张表单）', () => {
@@ -257,9 +285,10 @@ test('选择登记：未知字段 / 空窗口 id 不记账（不留下无主登�
 test('静态闸门：config:set 必须过 filterPathPatch，三个对话框入口必须记账', () => {
   // 校验清单本身就是审计结论：改名 / 加字段都要同步改这里
   // C1（审计 S1）：补上 editorCustomFontPath（字体文件也会被主进程整份读给渲染层）
+  // 五-L3（CI-6）：补上 lastExportDir（启动时会对它 readdir + unlink 本应用孤儿 tmp）
   assert.deepEqual(
     configGate.GUARDED_PATH_FIELDS.slice().sort(),
-    ['booksRoot', 'editorCustomFontPath', 'proofreadWordsPath', 'proofreadWordlists', 'sensitiveWordsPath'].sort()
+    ['booksRoot', 'editorCustomFontPath', 'lastExportDir', 'proofreadWordsPath', 'proofreadWordlists', 'sensitiveWordsPath'].sort()
   );
   // config:set 里少了这道校验就红（防止以后为了「方便」把它摘掉）
   assert.equal(

@@ -1,4 +1,4 @@
-// 配置里「指向磁盘」的四项值的来源校验（v0.9 C-2b，C1 安全模型一致性的延伸）——
+// 配置里「指向磁盘」的路径值的来源校验（v0.9 C-2b，C1 安全模型一致性的延伸）——
 // 纯逻辑：不 require electron、不读盘、不写盘，可在 node:test 里直接测。
 //
 // 问题：渲染层没有 fs，所有文件操作都在主进程；但 config:set 能改 booksRoot / 两份词表路径，
@@ -29,7 +29,11 @@ const GUARDED_PATH_FIELDS = Object.freeze([
   'proofreadWordsPath', // 校对词表：主进程会读这个 txt
   'proofreadWordlists', // 校对词表（多份，1.7.0 F3a）：主进程会逐份读这些 txt
   'sensitiveWordsPath', // 敏感词表：同上
-  'editorCustomFontPath' // 自定义字体：主进程会读它并整份 base64 回给渲染层
+  'editorCustomFontPath', // 自定义字体：主进程会读它并整份 base64 回给渲染层
+  // 五-L3（CI-6）：导出目标目录。主进程会在下次启动时对它 readdir + unlink 本应用命名的孤儿 tmp
+  // （core/atomic.cleanupOrphanTmpFiles），也会拿它当导出对话框默认目录。删除面被 tmp 命名模式限死，
+  // 但「把回收引到哪个目录」同样不该由渲染层点名 —— 只认原值 / 清空 / 导出流程真正落盘过的目录。
+  'lastExportDir'
 ]);
 
 // 两个路径是不是同一个（Windows 大小写不敏感；末尾分隔符、`/` 与 `\` 混用、相对写法都算同一个）
