@@ -357,3 +357,63 @@ test('b10 性能（P-06）：1 万字单行逐字等价，且不再平方复制�
     `切片复制的字符数应与文本长度同一量级（不做平方拷贝）：copy=${copied} n=${text.length}`
   );
 });
+
+// 五-M26（TC-9）：旧实现每切一片都从窗口末尾往回 lastIndexOf('\n\n') —— 全文没有空行时
+// 每一片都扫回字符串开头，总扫描量 O(n²/chunk)（128 MB 合法输入能把主进程同步卡死数秒）。
+// 这里用 indexOf / lastIndexOf 的「扫描字符数」估算把一次调用的空行搜索总量量出来
+// （注入断言，不测墙钟），同时钉住切分产物逐字等价。
+function countBlankScans(fn) {
+  const originalIndexOf = String.prototype.indexOf;
+  const originalLastIndexOf = String.prototype.lastIndexOf;
+  let scanned = 0;
+  const note = (self, needle, fromIndex, result, backward) => {
+    if (needle !== '\n\n' || self.length < 1000) return;
+    const last = self.length - 1;
+    const from = Number.isFinite(fromIndex)
+      ? Math.max(0, Math.min(Number(fromIndex), last))
+      : backward
+        ? last
+        : 0;
+    scanned += result >= 0 ? Math.abs(result - from) + 2 : backward ? from + 1 : self.length - from + 1;
+  };
+  String.prototype.indexOf = function (needle, fromIndex) {
+    const result = originalIndexOf.call(this, needle, fromIndex);
+    note(this, needle, fromIndex, result, false);
+    return result;
+  };
+  String.prototype.lastIndexOf = function (needle, fromIndex) {
+    const result = originalLastIndexOf.call(this, needle, fromIndex);
+    note(this, needle, fromIndex, result, true);
+    return result;
+  };
+  try {
+    return { result: fn(), scanned };
+  } finally {
+    String.prototype.indexOf = originalIndexOf;
+    String.prototype.lastIndexOf = originalLastIndexOf;
+  }
+}
+
+test('五-M26 性能：无空行长文的断点搜索随正文线性扫描，不再逐片回扫 O(n²)', () => {
+  const text = '字'.repeat(100000); // 完全没有空行（最坏形态）
+  const injected = { threshold: 2000, chunkChars: 1000 };
+  const { result: parts, scanned } = countBlankScans(() => splitLongUntitled(text, injected));
+  assert.equal(parts.length, 100);
+  assert.deepEqual(parts.map((part) => part.body.length), Array(100).fill(1000));
+  assert.equal(parts.map((part) => part.body).join(''), text, '拼回去必须与原文逐字相同');
+  assert.ok(
+    scanned <= text.length * 4,
+    `空行搜索的扫描量应随正文线性增长（不做逐片回扫）：scanned=${scanned} n=${text.length}`
+  );
+});
+
+test('五-M26：重叠空行（连续三个换行）的断点与旧 lastIndexOf 落点逐字一致', () => {
+  // 窗口上限 1000：'\\n\\n' 在 998 / 999 两处都命中，旧实现取 999 → 切到 1001；
+  // 新实现按 +1 前进收集重叠空行，落点必须相同（不能少吞或多吞换行）。
+  const text = `${'a'.repeat(998)}\n\n\n${'b'.repeat(300)}`;
+  const parts = splitLongUntitled(text, { threshold: 100, chunkChars: 1000 });
+  assert.equal(parts.length, 2);
+  assert.equal(parts[0].body, `${'a'.repeat(998)}\n\n\n`);
+  assert.equal(parts[1].body, 'b'.repeat(300));
+  assert.equal(parts.map((part) => part.body).join(''), text);
+});

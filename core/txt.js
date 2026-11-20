@@ -463,9 +463,15 @@ function splitLongUntitled(text, options = {}) {
   const parts = [];
   // P-06（1.6.0 A5）：按绝对下标推进，不再每切一片就复制剩余全文（旧实现 rest = rest.slice(cut)
   // 让整篇的字符拷贝量变成 O(n²/chunk)）。切片只用于产出每一片的正文，总拷贝量 ≈ 原文长度。
+  // 五-M26（TC-9）：断点搜索同样不能逐片回扫 —— 旧实现每片都从 pos+chunkChars 往回
+  // lastIndexOf('\n\n')，全文没有空行时等于每片都扫回字符串开头，总扫描量 O(n²/chunk)
+  // （128 MB 合法输入能把主进程同步卡死数秒）。现在改成一次前向 indexOf「顺序取下一个空行」
+  // 并记住它：每个字符最多被扫一遍，窗口里最后一个空行由游标直接给出。重叠的 '\n\n'
+  // 也逐个收（用 +1 前进），落点与旧 lastIndexOf 完全一致。
   const total = normalized.length;
   let pos = 0;
   let index = 1;
+  let nextBlank = normalized.indexOf('\n\n');
   while (pos < total) {
     const remaining = total - pos;
     if (remaining <= chunkChars) {
@@ -474,10 +480,15 @@ function splitLongUntitled(text, options = {}) {
     }
     // 最近的段落空行（「空行」= 两个连续换行）；找不到 / 太靠前就按目标长度硬切。
     // 断在空行之后（前一段带上这个空行），下一段从正文开头开始，读起来干净。
-    // lastIndexOf 的 fromIndex 是绝对下标；命中的空行落在本片窗口 [pos, pos+chunkChars] 之外
-    // （只有窗口里没有空行时才会往回找到上一片）就当没找到。
-    let cut = normalized.lastIndexOf('\n\n', pos + chunkChars);
-    cut = cut < pos ? -1 : cut - pos;
+    const limit = pos + chunkChars;
+    let lastBlank = -1;
+    while (nextBlank !== -1 && nextBlank <= limit) {
+      lastBlank = nextBlank;
+      nextBlank = normalized.indexOf('\n\n', nextBlank + 1);
+    }
+    // 命中的空行落在本片窗口 [pos, limit] 之外（只有窗口里没有空行时才会拿到上一片的位置）
+    // 就当没找到。
+    let cut = lastBlank >= pos ? lastBlank - pos : -1;
     if (cut >= 0 && cut + 2 <= remaining && cut + 2 >= chunkChars * LONG_UNTITLED_MIN_RATIO) {
       cut += 2;
     } else {
