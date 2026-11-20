@@ -865,3 +865,127 @@ test('五-M24：同步冲突副本不参与形态判定，章节目录不会被�
   assert.equal(res.imported[0].kind, 'chapter-folder');
   assert.equal(res.imported[0].chapters, 3, '冲突副本不进书目');
 });
+
+// ---------- 五-M25（TC-7）：大小闸门与读盘 / 复制必须绑在同一趟上 ----------
+
+// 单本形态：旧的「先 stat 后 readFile」两趟在间隙里被同步盘换大就会绕过 128 MB 闸门，
+// 整份读进主进程。现在改成单句柄 open → fstat → handle.readFile（S8 口径），
+// 并按句柄实际读到的字节再复核一次。这里用一个假句柄模拟「fstat 时还小、读出来已经超限」。
+test('五-M25：单本读取的尺寸闸门绑在同一个句柄上，读出来超限也拒绝（不 OOM）', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '收藏夹');
+  await fs.mkdir(src);
+  const file = path.join(src, '会变大的书.txt');
+  await fs.writeFile(file, '第1章 开端\n\n正文。', 'utf8');
+
+  const realOpen = fs.open;
+  let opened = 0;
+  fs.open = async (target, ...rest) => {
+    if (path.resolve(String(target)) !== path.resolve(file)) return realOpen(target, ...rest);
+    opened += 1;
+    return {
+      async stat() {
+        return { size: 16 };
+      },
+      async readFile() {
+        return Buffer.alloc(importer.MAX_IMPORT_BYTES + 1, 0x41);
+      },
+      async close() {}
+    };
+  };
+  const booksRoot = path.join(base, '书架');
+  try {
+    await assert.rejects(
+      () => importer.importNovelFile(booksRoot, file),
+      (err) => err.code === 'FILE_TOO_LARGE' && /128 MB/.test(err.message) && !err.message.includes(base)
+    );
+  } finally {
+    fs.open = realOpen;
+  }
+  assert.equal(opened, 1, '闸门与读盘必须走同一个句柄');
+  assert.deepEqual(await fs.readdir(booksRoot).catch(() => []), [], '被拒绝的导入不留任何东西');
+});
+
+// 章节目录形态：collectOversizedTxt 之后到 fs.copyFile 之间被换大，旧实现会把 >128 MB 的文件
+// 抄进书库（之后永久打不开）。现在复制完按暂存副本的实际字节复核，超限的删掉自己刚复制的
+// 那一份并记 skipped（源文件不动）。
+test('五-M25：章节目录复制后复核实际字节，间隙里被换大的 txt 删除并记 skipped', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '书目录');
+  await fs.mkdir(src);
+  await fs.writeFile(path.join(src, '001-开端.txt'), '第1章 开端\n\n正文一。', 'utf8');
+  await fs.writeFile(path.join(src, '002-承接.txt'), '第2章 承接\n\n正文二。', 'utf8');
+
+  const realCopyFile = fs.copyFile;
+  fs.copyFile = async (from, to, ...rest) => {
+    const result = await realCopyFile(from, to, ...rest);
+    if (path.basename(String(from)) === '002-承接.txt') {
+      // 复制瞬间被同步盘换大：只在暂存副本上做稀疏截断，源文件保持原样
+      await fs.truncate(String(to), importer.MAX_IMPORT_BYTES + 1);
+    }
+    return result;
+  };
+  const booksRoot = path.join(base, '书架');
+  let res;
+  try {
+    res = await importer.importFolders(booksRoot, [src]);
+  } finally {
+    fs.copyFile = realCopyFile;
+  }
+
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].kind, 'chapter-folder');
+  assert.equal(res.imported[0].chapters, 1, '超限那一章不进书目');
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].code, 'FILE_TOO_LARGE');
+  assert.equal(res.skipped[0].source, '002-承接.txt');
+  assert.equal(res.skippedTooLarge, 1);
+  const importedPath = res.imported[0].path;
+  await assert.rejects(fs.access(path.join(importedPath, '002-承接.txt')), '超限副本不该发布');
+  const meta = await storage.readBookMeta(importedPath);
+  assert.deepEqual(meta.chapters.map((chapter) => chapter.file), ['001-开端.txt']);
+  // 源文件一个字节都没动（只清理暂存里的副本）
+  assert.equal((await fs.stat(path.join(src, '002-承接.txt'))).size, Buffer.byteLength('第2章 承接\n\n正文二。'));
+});
+
+// 现成书形态：fs.cp 整目录复制同样有「先扫描后复制」的间隙。复制后按暂存副本实际字节复核，
+// 超限章节从书目剔掉并记 skipped —— 不能让书库里出现永久打不开的章节文件。
+test('五-M25：现成书整目录复制后复核实际字节，超限章节剔出书目并记 skipped', async () => {
+  const base = await mkTmp();
+  const externalRoot = path.join(base, '外部');
+  await fs.mkdir(externalRoot);
+  const created = await storage.createBook(externalRoot, '外部书');
+  await storage.createChapter(created.path, 2, '承接');
+  const sourceMeta = await storage.readBookMeta(created.path);
+  await storage.saveChapterText(created.path, sourceMeta.chapters[0].file, '第一章内容');
+  await storage.saveChapterText(created.path, sourceMeta.chapters[1].file, '第二章内容');
+  const targetChapterFile = sourceMeta.chapters[1].file;
+
+  const realCp = fs.cp;
+  fs.cp = async (from, to, options) => {
+    const result = await realCp(from, to, options);
+    if (path.resolve(String(from)) === path.resolve(created.path)) {
+      await fs.truncate(path.join(String(to), targetChapterFile), importer.MAX_IMPORT_BYTES + 1);
+    }
+    return result;
+  };
+  const booksRoot = path.join(base, '书架');
+  let res;
+  try {
+    res = await importer.importFolders(booksRoot, [created.path]);
+  } finally {
+    fs.cp = realCp;
+  }
+
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].kind, 'book');
+  assert.equal(res.imported[0].chapters, 1, '超限章节从书目里剔掉');
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].code, 'FILE_TOO_LARGE');
+  assert.equal(res.skipped[0].source, targetChapterFile);
+  const importedPath = res.imported[0].path;
+  await assert.rejects(fs.access(path.join(importedPath, targetChapterFile)), '超限章节不该发布');
+  const importedMeta = await storage.readBookMeta(importedPath);
+  assert.equal(importedMeta.chapters.length, 1);
+  assert.ok(importedMeta.chapters.some((chapter) => chapter.id === importedMeta.lastOpenChapterId));
+});

@@ -435,10 +435,17 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
 
     if (analysis.kind === 'book') {
       await copyAsBook(sourceDir, staging, oversized, keepFiles);
+      // 五-M25（TC-7）：fs.cp 同样是「先扫描后复制」两趟 —— 复制完按暂存副本的实际字节复核，
+      // 间隙里被换大的章节删掉并剔出书目（否则书库多出永久打不开的章节文件）。
+      const copiedOversized = await removeOversizedCopies(
+        staging,
+        await listTxtFilesDeep(staging, '', keepFiles)
+      );
+      const skippedEntries = oversized.concat(copiedOversized);
       let meta = await storage.readBookMeta(staging);
-      if (oversized.length) {
-        // 超限章节根本没复制进来：书目只保留真实存在的章节，不留下打不开的悬挂章节
-        const dropped = new Set(oversized.map((entry) => relativeKey(entry.file)));
+      if (skippedEntries.length) {
+        // 超限章节根本没复制进来 / 已被清理：书目只保留真实存在的章节，不留下打不开的悬挂章节
+        const dropped = new Set(skippedEntries.map((entry) => relativeKey(entry.file)));
         const kept = meta.chapters.filter((chapter) => !dropped.has(relativeKey(chapter.file)));
         if (kept.length !== meta.chapters.length) {
           const lastOpenChapterId = kept.some((c) => c.id === meta.lastOpenChapterId)
@@ -461,11 +468,21 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
           title: meta.title,
           chapters: meta.chapters.length
         },
-        oversized
+        skippedEntries
       );
     }
 
     await copyAsTexts(sourceDir, staging, copyFiles, oversized);
+    // 五-M25（TC-7）：fs.copyFile 之后按暂存副本的实际字节复核，间隙里被换大的文件删掉并记 skipped
+    const copiedOversized = await removeOversizedCopies(staging, copyFiles);
+    const skippedEntries = oversized.concat(copiedOversized);
+    if (copyFiles.length && skippedEntries.length >= copyFiles.length) {
+      // 复制后复核发现一个能导入的文件都不剩：与「全部超限」同语义，整源跳过、不留空书
+      throw new storage.StorageError(
+        'FILE_TOO_LARGE',
+        `《${path.basename(sourceDir)}》里的文件全部超过单本导入上限 ${formatImportSize(MAX_IMPORT_BYTES)}，已跳过`
+      );
+    }
     const rebuilt = await repair.rebuildFromFiles(staging);
     const committed = await commitStagedFolder(booksRoot, staging, desiredFolder);
     let title = rebuilt.meta.title;
@@ -486,7 +503,7 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
         title,
         chapters: rebuilt.meta.chapters.length
       },
-      oversized
+      skippedEntries
     );
   } catch (err) {
     // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 包成 IMPORT_FAILED 会把界面文案
@@ -525,6 +542,42 @@ function importSizeProblem(bytes, baseName) {
   };
 }
 
+// 五-M25（TC-7）：尺寸闸门与读盘绑在同一个句柄上（审计 #45-S8 口径）—— 旧实现 stat 之后按路径
+// readFile，间隙里文件被同步盘 / 外部进程换成大文件就绕过 128 MB 上限、整份读进主进程。
+// 句柄打开后文件仍可能被追加，所以按实际读到的字节再复核一次（rename 换文件不影响已打开的句柄）。
+async function readImportFile(filePath, baseName) {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    const problem = importSizeProblem(stat.size, baseName);
+    if (problem) throw new storage.StorageError(problem.code, problem.message);
+    const buffer = await handle.readFile();
+    const grown = importSizeProblem(buffer.length, baseName);
+    if (grown) throw new storage.StorageError(grown.code, grown.message);
+    return buffer;
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+// 五-M25（TC-7）：文件夹形态的闸门是「先 stat 后复制」两趟 —— 间隙里文件被换大时，
+// fs.copyFile / fs.cp 已经把 >128 MB 的字节抄进了自己的暂存目录。复制后按暂存副本的实际字节
+// 复核：超限的删掉这一份（源文件不动），返回与 collectOversizedTxt 同形的条目，交给调用方
+// 记 skipped / 从书目里剔掉 —— 书库里绝不发布永久打不开的章节文件。
+async function removeOversizedCopies(target, files) {
+  const removed = [];
+  for (const file of files || []) {
+    const dest = path.join(target, file);
+    const stat = await fs.stat(dest).catch(() => null);
+    if (!stat) continue;
+    const problem = importSizeProblem(stat.size, path.basename(file, path.extname(file)));
+    if (!problem) continue;
+    await fs.rm(dest, { recursive: true, force: true }).catch(() => {});
+    removed.push({ file, code: problem.code, message: problem.message });
+  }
+  return removed;
+}
+
 function hasUtf16Bom(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 2) return false;
   return (buffer[0] === 0xff && buffer[1] === 0xfe) || (buffer[0] === 0xfe && buffer[1] === 0xff);
@@ -544,11 +597,9 @@ function isProbablyBinary(buffer) {
 // mode='split'：旧版自动分章（会重排编号），保留兼容。
 async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) {
   const baseName = path.basename(filePath, path.extname(filePath)).trim() || '未命名小说';
-  // 先看大小，再读内容：超大文件连 Buffer 都不分配
-  const stat = await fs.stat(filePath).catch(() => null);
-  const sizeProblem = stat ? importSizeProblem(stat.size, baseName) : null;
-  if (sizeProblem) throw new storage.StorageError(sizeProblem.code, sizeProblem.message);
-  const buffer = await fs.readFile(filePath);
+  // 五-M25（TC-7）：先看大小再读内容，但两件事必须落在同一个句柄上 —— 超大文件连 Buffer 都不分配，
+  // 句柄打开后再被追加也按实际读到的字节复核（readImportFile）。
+  const buffer = await readImportFile(filePath, baseName);
   // WP7（X-N1）：无 BOM 的 UTF-16（双字节均非 0 的纯中文，或只在新行 / ASCII 处有 0 字节）
   // 会被「含 0 字节」一刀切成二进制。先问无 BOM UTF-16 启发式，命中就放过；真正的二进制
   // （随机 0 字节 / 编码坏掉）仍按原口径拒绝（NOT_TEXT 文案不变）。
