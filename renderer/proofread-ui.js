@@ -609,8 +609,16 @@
     return { ok: false, stale: true, message: '校对期间已经换了书或章节' };
   }
 
-  async function runProofread() {
-    if (!state.bookPath || !state.chapters.length) {
+  // 五-L19（SE-02）：范围在途被切换 —— 已按旧范围跑完的结果不再画回。change 处理器已经把旧结果
+  // 收起并写了「已切到…」提示，摘要保留它；否则下拉框写「当前章」、摘要 / 列表却重新列整本命中，
+  // 与作者刚做的切换意图相反，两套口径在面板上交替。
+  function discardSwitchedProofreadScope() {
+    state.proofread = null;
+    $('proofread-results').innerHTML = '';
+    return { ok: false, stale: true, message: '校对范围已经切换' };
+  }
+
+  async function runProofread() {    if (!state.bookPath || !state.chapters.length) {
       $('proofread-summary').textContent = '这本书里还没有章节';
       return { ok: false, message: '没有章节' };
     }
@@ -671,6 +679,8 @@
             : []
         };
       }
+      // 五-L19（SE-02）：回包的目标范围必须与当前下拉框一致，否则按 stale 丢弃（不画回旧范围结果）
+      if (proofreadScope() !== scope) return discardSwitchedProofreadScope();
       state.proofread = payload;
       if (payload.wordList && wordListSeqAtStart === proofreadWordListSeq) {
         // 1.7.1 P6（V52）：text / book 校对回包只描述这一轮词条（不带 multi）；

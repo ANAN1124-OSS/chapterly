@@ -307,6 +307,15 @@
     return { ok: false, stale: true, message: '预检期间已经换了书或章节' };
   }
 
+  // 五-L19（SE-02）：范围在途被切换 —— 已按旧范围跑完的结果不再画回。change 处理器已经把旧结果
+  // 收起并写了「已切到…」提示，摘要保留它；否则下拉框写「当前章」、摘要 / 列表却重新列整本命中，
+  // 与作者刚做的切换意图相反，两套口径在面板上交替。
+  function discardSwitchedSensitiveScope() {
+    state.sensitive = null;
+    $('sensitive-results').innerHTML = '';
+    return { ok: false, stale: true, message: '预检范围已经切换' };
+  }
+
   // 审计修复 #43（E17）：主进程回包形状不对（没有命中列表数组）时不再让 .map / .length 抛一句
   // 「res.issues.map is not a function」顶在面板上 —— 按结构化失败处理，面板文案说清下一步。
   function failSensitivePayload() {
@@ -382,6 +391,9 @@
               chapterName: chapter ? chapter.name : ''
             };
       }
+      // 五-L19（SE-02）：回包的目标范围必须与当前下拉框一致，否则按 stale 丢弃（不画回旧范围结果；
+      // 旧范围的失败 / 形状异常同样不写到已切范围的眼前面板上）
+      if (sensitiveScope() !== scope) return discardSwitchedSensitiveScope();
       // 审计修复 #43（E17）：整本回包同样先确认 matches 是数组，后面 .length / .slice 才安全。
       // 审计残留修复 #43（E17）：必须先排除 ok===false —— 词表读不了之类的失败回包本来就没有
       // matches，旧顺序把它也判成「预检结果格式不对」，吞掉真实错误（词表文件不存在）、

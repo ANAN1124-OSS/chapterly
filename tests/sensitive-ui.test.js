@@ -388,6 +388,46 @@ test('runSensitiveCheck（整本）：调 sensitiveCheckBook 并带「当前章�
   );
 });
 
+// SE-02（五-L19）：整本预检在途时把范围切到「当前章」—— change 处理器已收起旧结果并写
+// 「已切到当前这一章…」，但旧实现在落地只复核书 / 章身份、不核 scope：整本回包又把
+// 摘要 / 列表按整本画回来，下拉框却写着「当前章」，两套口径在面板上交替。
+test('SE-02（五-L19）：整本跑在途切范围，旧范围结果不再画回、摘要保留切换提示', async () => {
+  const ctx = build({ scope: 'book' });
+  let release;
+  ctx.host.api.sensitiveCheckBook = () => new Promise((resolve) => { release = resolve; });
+  const pending = ctx.ui.runSensitiveCheck();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ctx.state.sensitiveBusy, true);
+  // 作者在整本跑在途时把范围切到当前章（= change 处理器做的那三件事）
+  ctx.dom.map.get('sensitive-scope').value = 'current';
+  ctx.state.sensitiveScope = 'current';
+  ctx.state.sensitive = null;
+  ctx.dom.map.get('sensitive-results').innerHTML = '';
+  const switchHint = '已切到当前这一章：点「开始预检」检查编辑区里的最新内容。';
+  ctx.dom.map.get('sensitive-summary').textContent = switchHint;
+  release({
+    total: 2,
+    chapterCount: 2,
+    chapterHitCount: 1,
+    wordHitCount: 2,
+    skippedChapters: 0,
+    byWord: [{ word: '血', count: 2 }],
+    matches: []
+  });
+  const res = await pending;
+  assert.equal(res.stale, true);
+  assert.equal(ctx.state.sensitive, null, '旧范围的整本结果不许写回');
+  assert.equal(ctx.dom.map.get('sensitive-results').innerHTML, '', '列表保持清空');
+  assert.equal(ctx.dom.map.get('sensitive-summary').textContent, switchHint, '摘要保留切换提示，不被旧结果覆盖');
+  assert.equal(ctx.state.sensitiveBusy, false);
+
+  // 对照：范围没变的整本跑照旧落地（不许把正常结果也判成 stale）
+  const ok = build({ scope: 'book' });
+  const done = await ok.ui.runSensitiveCheck();
+  assert.equal(done.stale, undefined);
+  assert.equal(ok.state.sensitive.scope, 'book');
+});
+
 test('runSensitiveCheck：整本 0 命中（含跳过章节）/ 当前章 0 命中 的说明文案', async () => {
   const book = build({ scope: 'book', bookResult: { total: 0, chapterCount: 4, chapterHitCount: 0, wordHitCount: 0, skippedChapters: 3, byWord: [], matches: [] } });
   await book.ui.runSensitiveCheck();

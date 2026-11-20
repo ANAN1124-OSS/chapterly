@@ -465,6 +465,38 @@ test('runProofread（整本）：调 proofreadBook 并带上「当前章编辑�
   assert.equal(dom.map.get('proofread-summary').textContent, '全书 2 章共 2 处可疑，涉及 1 章：半角标点 2');
 });
 
+// SE-02（五-L19）：整本校对在途时把范围切到「当前章」—— change 处理器已收起旧结果并写
+// 「已切到当前这一章…」，但旧实现在落地只复核书 / 章身份、不核 scope：整本回包又把
+// 摘要 / 列表按整本画回来，下拉框却写着「当前章」，两套口径在面板上交替。
+test('SE-02（五-L19）：整本跑在途切范围，旧范围结果不再画回、摘要保留切换提示', async () => {
+  const ctx = build({ scope: 'book' });
+  let release;
+  ctx.host.api.proofreadBook = () => new Promise((resolve) => { release = resolve; });
+  const pending = ctx.ui.runProofread();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ctx.state.proofreadBusy, true);
+  // 作者在整本跑在途时把范围切到当前章（= change 处理器做的那三件事）
+  ctx.dom.map.get('proofread-scope').value = 'current';
+  ctx.state.proofreadScope = 'current';
+  ctx.state.proofread = null;
+  ctx.dom.map.get('proofread-results').innerHTML = '';
+  const switchHint = '已切到当前这一章：点「开始校对」检查编辑区里的最新内容。';
+  ctx.dom.map.get('proofread-summary').textContent = switchHint;
+  release({ total: 2, chapterCount: 2, chapterHitCount: 1, skippedChapters: 0, byRule: {}, issues: [] });
+  const res = await pending;
+  assert.equal(res.stale, true);
+  assert.equal(ctx.state.proofread, null, '旧范围的整本结果不许写回');
+  assert.equal(ctx.dom.map.get('proofread-results').innerHTML, '', '列表保持清空');
+  assert.equal(ctx.dom.map.get('proofread-summary').textContent, switchHint, '摘要保留切换提示，不被旧结果覆盖');
+  assert.equal(ctx.state.proofreadBusy, false);
+
+  // 对照：范围没变的整本跑照旧落地（不许把正常结果也判成 stale）
+  const ok = build({ scope: 'book' });
+  const done = await ok.ui.runProofread();
+  assert.equal(done.stale, undefined);
+  assert.equal(ok.state.proofread.scope, 'book');
+});
+
 test('runProofread：整本 0 处 / 跳过缺文件章节 的摘要文案', async () => {
   const ctx = build({ scope: 'book', bookResult: { total: 0, chapterCount: 5, chapterHitCount: 0, skippedChapters: 2, byRule: {}, issues: [] } });
   await ctx.ui.runProofread();
