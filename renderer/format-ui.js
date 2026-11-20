@@ -50,12 +50,21 @@
     return { ...DEFAULT_OPTIONS, ...(options && typeof options === 'object' ? options : {}) };
   }
 
-  // 兼容旧配置里的布尔缩进：true = 缩进两格，false = 不处理
+  // 兼容旧配置里的布尔缩进：true = 缩进两格，false = 不处理。
+  // 五-L23（IE-01）：坏值回落必须与 core/format.js 的 normalizeIndentMode 同口径（回默认 '2'，
+  // 不是「不处理」）。旧实现把 String(indent) 原样比对，'9' / null 等显示「缩进不处理」，
+  // 而主进程实际按 '2' 缩进两格写盘（数字 0 也被 core 当坏值回 '2'）—— 摘要与真实行为相反。
+  const INDENT_MODES = ['none', '0', '2'];
+  const INDENT_LABELS = { none: '缩进不处理', 0: '段首缩进 0 字符', 2: '段首缩进 2 字符' };
+
+  function normalizeIndentMode(raw) {
+    if (typeof raw === 'boolean') return raw ? '2' : 'none';
+    if (INDENT_MODES.includes(raw)) return raw;
+    return DEFAULT_OPTIONS.indent;
+  }
+
   function indentLabel(indent) {
-    const mode = indent === true ? '2' : indent === false ? 'none' : String(indent);
-    if (mode === '2') return '段首缩进 2 字符';
-    if (mode === '0') return '段首缩进 0 字符';
-    return '缩进不处理';
+    return INDENT_LABELS[normalizeIndentMode(indent)];
   }
 
   // 规则摘要：「段首缩进 2 字符 · 段间空一行 · 删行尾空白 · 中文旁标点转全角」

@@ -20,6 +20,27 @@ test('整理文案：默认规则与 core/format.js 完全一致（两边不许�
   );
 });
 
+// IE-01（五-L23）：indentLabel 的坏值分支与 core/format.js 的 normalizeIndentMode 相反 ——
+// core 对 '9' / null / 数字 0 / 显式 undefined 等一律回默认 '2'（真的缩进两格写盘），
+// 摘要却写「缩进不处理」。逐值拿 core 的 sanitizeOptions 结果对摘要，两边必须完全一致。
+test('规则摘要（IE-01 / 五-L23）：缩进坏值回落与 core.sanitizeOptions 同口径', () => {
+  const labelOf = { none: '缩进不处理', 0: '段首缩进 0 字符', 2: '段首缩进 2 字符' };
+  const base = { blankLines: 'none', trimTrailing: false, normalizePunct: false };
+  for (const raw of ['none', '0', '2', true, false, 0, 1, '9', '4', null, undefined, Number.NaN, {}, []]) {
+    const mode = formatLib.sanitizeOptions({ ...base, indent: raw }).indent;
+    assert.equal(
+      formatUi.describeRules({ ...base, indent: raw }),
+      `${labelOf[mode]} · 段间不空行`,
+      `indent=${String(raw)} 的摘要必须与 core 实际采用的缩进（${mode}）一致`
+    );
+  }
+  // 头号坏值：'9' 的真正行为是「缩进 2 字符」，摘要不许再写「缩进不处理」
+  assert.equal(
+    formatUi.describeRules({ ...base, indent: '9' }),
+    '段首缩进 2 字符 · 段间不空行'
+  );
+});
+
 test('规则摘要：缩进三挡 + 旧布尔写法、段间四种、四个可选开关按顺序补', () => {
   assert.equal(
     formatUi.describeRules({ indent: '0', blankLines: 'keep', trimTrailing: false, normalizePunct: false }),
@@ -35,10 +56,10 @@ test('规则摘要：缩进三挡 + 旧布尔写法、段间四种、四个可�
     formatUi.describeRules({ indent: false, trimTrailing: false, normalizePunct: false }),
     '缩进不处理 · 段间空一行'
   );
-  // 坏值：缩进 / 段间空行都回默认，不抛异常
+  // 坏值：缩进 / 段间空行都回默认，不抛异常（五-L23：缩进回默认 '2'，与 core 真正执行的规则一致）
   assert.equal(
     formatUi.describeRules({ indent: '9', blankLines: 'wat', trimTrailing: false, normalizePunct: false }),
-    '缩进不处理 · 段间空一行'
+    '段首缩进 2 字符 · 段间空一行'
   );
   assert.equal(
     formatUi.describeRules({
