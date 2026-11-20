@@ -25,7 +25,7 @@ async function mkTmp() {
   return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-export-shared-')));
 }
 
-function makeHost({ targetPath, canceled = false, readHook = null } = {}) {
+function makeHost({ targetPath, canceled = false, readHook = null, docxLib: docxLibOverride = null } = {}) {
   const channels = new Map();
   const calls = { dialogs: [], exportDirs: [], reads: 0 };
   const host = {
@@ -44,7 +44,7 @@ function makeHost({ targetPath, canceled = false, readHook = null } = {}) {
     exporter,
     chaptersLib,
     epubLib,
-    docxLib,
+    docxLib: docxLibOverride || docxLib,
     s2tLib,
     ipcLimits,
     mapLimit: async (items, _limit, fn) => Promise.all(items.map(fn)),
@@ -200,4 +200,42 @@ test('五-M33 静态闸门：TXT / EPUB+DOCX / 整本复制三条长读取流程
     /handleBook\('book:copy'[\s\S]{0,900}beginReadLease\(bookPath\)/,
     '整本复制（collectExportTexts 逐章读）也要登记'
   );
+});
+
+// TC-4（五-L6）：streamZip 在 document.xml「deflate 后不更小」时会第二次调用 chunks 工厂（store 兜底），
+// readText 随工厂重跑一遍 —— 旧实现每跑一遍就 `chars +=` 一次，导出回包字数翻倍（XML 必可压缩，
+// 几乎不可达，但 chars 副作用没有按幂等设计）。现在 chars 按章（index）只计一次。
+// 这里用假 docxLib 精确模拟「工厂被调用两遍」：真实压缩兜底路径没法在单测里稳定制造。
+test('五-L6（TC-4）：streamDocx 压缩兜底二次调用工厂，chars 仍按章只计一次（不翻倍）', async () => {
+  const dir = await mkTmp();
+  const root = path.join(dir, '书库');
+  await fs.mkdir(root, { recursive: true });
+  const bookPath = await makeBook(root);
+  const meta = await storage.readBookMeta(bookPath);
+  const body = '第一段正文。\n第二段：还带一点标点，';
+  let factoryRuns = 0;
+  const fakeDocx = {
+    docxFileName: () => '兜底.docx',
+    streamDocx: async (input, write) => {
+      // 模拟文档 XML 的 chunks 工厂被 zip 兜底调用第二遍：同一章 readText 再执行一次
+      for (let pass = 0; pass < 2; pass += 1) {
+        for (const index of [0]) {
+          await input.readText(index, meta.chapters[index]);
+          factoryRuns += 1;
+        }
+      }
+      await write(Buffer.from('PK-fake'));
+      return { bytes: 7, chapterCount: 1, rangeMode: 'book', rangeLabel: '全书' };
+    }
+  };
+  const { channels } = makeHost({ targetPath: path.join(dir, '兜底.docx'), docxLib: fakeDocx });
+  const result = await channels.get('book:export-docx')(bookPath, null, null);
+  assert.equal(result.canceled, false);
+  assert.equal(factoryRuns, 2, '前提：工厂确实被调用了两遍');
+  assert.equal(
+    result.chars,
+    chaptersLib.countChars(body),
+    'chars 按章只计一次（旧实现二次调用再累加 → 翻倍）'
+  );
+  assert.equal(await fs.readFile(result.filePath, 'utf8'), 'PK-fake', '兜底包装照样写盘');
 });

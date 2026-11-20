@@ -264,6 +264,10 @@ function registerExportIpc(host) {
     const overrideIndex = exporter.chapterIndexOf(meta, prepared.override);
     const includedUnsaved = overrideIndex >= 0 && prepared.plan.indexes.includes(overrideIndex);
     let chars = 0;
+    // TC-4（五-L6）：streamZip 在 document.xml「deflate 后不更小」时会第二次调用 chunks 工厂
+    // （store 兜底），readText 随工厂重跑一遍 —— chars 不能跟着再累加一次（旧实现回包字数翻倍）。
+    // 按章 index 记账：同一章无论工厂被调用几遍，只计一次原稿字数。
+    const countedChapters = new Set();
     let built = null;
     // 五-M33（IE-02）：EPUB / DOCX 同样在逐章读盘期间登记在途租约，finally 释放
     const releaseLease = beginReadLease(bookPath);
@@ -280,7 +284,10 @@ function registerExportIpc(host) {
                 index === overrideIndex
                   ? prepared.override.text
                   : (await storage.loadChapterText(bookPath, chapter.file)).text;
-              chars += chaptersLib.countChars(text);
+              if (!countedChapters.has(index)) {
+                countedChapters.add(index);
+                chars += chaptersLib.countChars(text);
+              }
               return conversion ? s2tLib.convertText(text, conversion) : text;
             }
           },
