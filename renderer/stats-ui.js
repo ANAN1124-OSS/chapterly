@@ -89,8 +89,12 @@
         return state.stats;
       }
       state.stats = payload;
+      // 五-L15（RF-04）：连续天数（书架头常显的「连续 N 天」）不属于任何月份视图 ——
+      // 它随最新一次刷新回执无条件更新。旧实现把 streak 与 calendar 绑在同一个
+      // 「日历停在本月」闸门里：翻到历史月或跨午夜后再保存，书架连续天数一直停在旧值，
+      // 要手动点「本月」才恢复。日历本身仍保留 WP14 E-N8 的闸门：刷新不许把视图拉回本月。
+      state.streak = payload && payload.streak ? payload.streak : null;
       if (calendarOnCurrentMonth()) {
-        state.streak = payload && payload.streak ? payload.streak : null;
         state.calendar = payload && payload.calendar ? payload.calendar : null;
       }
     } catch {

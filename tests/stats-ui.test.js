@@ -178,6 +178,35 @@ test('refreshStats：走 api.getStats，写 state.stats / streak / calendar，�
   assert.equal(second.state.calendar, null);
 });
 
+// 五-L15（RF-04）：连续天数是书架常显信息，不属于「用户正在看哪个月」—— 旧实现把 streak 与
+// calendar 绑在同一个「日历停在本月」闸门里：翻到历史月 / 跨午夜后再保存，刷新回执里的 streak
+// 永远写不进来，书架头「连续 N 天」停在翻月前的旧值，要手动点「本月」才恢复。
+test('五-L15（RF-04）：翻历史月 / 跨午夜后刷新，连续天数随最新回执更新，日历视图留在原月', async () => {
+  installDocument();
+  const october = calendarView({ month: 10, label: '2026 年 10 月', isCurrentMonth: false });
+  const payload = {
+    todayChars: 800,
+    goal: 0,
+    goalPercent: 0,
+    goalMet: false,
+    days: [],
+    recentTotal: 800,
+    todaySeconds: 0,
+    streak: { current: 4, best: 9 },
+    calendar: calendarView()
+  };
+  const { host, state } = makeHost({ onCall: (channel) => (channel === 'stats:get' ? payload : undefined) });
+  const ui = statsUi.create(host);
+  // 用户翻到历史月；或应用开着跨过午夜、日历游标还停在上一月（两种场景同一个闸门）
+  state.calendar = october;
+  state.streak = { current: 3, best: 9 };
+  await ui.refreshStats();
+  assert.deepEqual(state.streak, payload.streak, '连续天数必须随最新回执更新（与月份视图无关）');
+  assert.equal(state.calendar, october, '日历仍留在用户翻到的月份（E-N8 的日历闸门不变）');
+  assert.equal(host.$('shelf-stats-streak').textContent, '连续 4 天', '书架头立刻显示最新连续天数');
+  assert.equal(host.$('shelf-stats-streak').title, '已连续写作 4 天 · 最长连续 9 天');
+});
+
 test('refreshStats：IPC 失败不炸、保留上一次数据、照常重绘', async () => {
   installDocument();
   const { host, state, calls } = makeHost({ onCall: (channel) => (channel === 'stats:get' ? new Error('统计坏了') : undefined) });
@@ -410,8 +439,9 @@ test('翻月竞态：旧回执晚到整段作废，日历停在最新一次翻�
 //   ① 用户翻到历史月后，筛选变化 / 保存后的 refreshStats 成为最新请求，把日历拉回本月；
 //   ② 用户在途翻月的回执被后发的刷新判成 stale，翻月白点。
 // 新契约：calendarSeq 只服务翻月（翻月的乱序仍按 E11 作废旧回执）；
-// refreshStats 用 statsSeq 管自己的汇总数据，且只有「当前显示本月 / 还没有日历」时才回写
-// state.calendar / streak —— 历史月视图归用户显式翻月，刷新无权改。
+// refreshStats 用 statsSeq 管自己的汇总数据；state.calendar 只有「当前显示本月 / 还没有日历」
+// 时才回写（历史月视图归用户显式翻月，刷新无权改）；连续天数按五-L15 无条件随最新回执更新
+// —— 它是书架常显信息，不属于月份视图，不许被同一道闸门冻结。
 test('跨路径：刷新不把历史月拉回本月、翻月回执按自己的世代号结算（E-N8 / #R13）', async () => {
   installDocument();
   // ① 先翻到历史月，再刷新统计：日历 / 连续天数不动，汇总与柱状图照常更新。
@@ -442,7 +472,11 @@ test('跨路径：刷新不把历史月拉回本月、翻月回执按自己的�
   assert.equal(await historyRefresh, refreshedInHistory);
   assert.equal(history.state.stats, refreshedInHistory, '汇总 / 柱状图的数据照常更新');
   assert.equal(history.state.calendar, october, '历史月视图不许被刷新拉回本月');
-  assert.deepEqual(history.state.streak, { current: 10, best: 10 }, '连续天数也不许被刷新改回本月口径');
+  assert.deepEqual(
+    history.state.streak,
+    refreshedInHistory.streak,
+    '五-L15：连续天数随最新刷新更新（不属于月份视图），日历仍停在历史月'
+  );
 
   // ② 刷新先发、翻月后发：翻月先回，刷新晚到 —— 汇总更新，日历停在十月。
   const statsGates = [];
@@ -483,7 +517,7 @@ test('跨路径：刷新不把历史月拉回本月、翻月回执按自己的�
   assert.equal(await refreshing, late);
   assert.equal(state.stats, late, '汇总 / 柱状图的数据照常更新');
   assert.equal(state.calendar.month, 10, '日历停在用户翻到的月份');
-  assert.deepEqual(state.streak, { current: 10, best: 10 }, '连续天数不许被刷新改回本月口径');
+  assert.deepEqual(state.streak, late.streak, '五-L15：连续天数跟随最新刷新回执（日历仍停在十月）');
   assert.equal(host.$('calendar-label').textContent, '2026 年 10 月');
 
   // ③ 翻月先发、刷新后发：刷新先回也不许吃掉在途翻月；用户显式翻到的九月最终生效。
