@@ -63,6 +63,10 @@ function isBoundedText(value, max) {
   return typeof value === 'string' && value.trim() !== '' && value.length <= max;
 }
 
+// 五-M30（IPC-03）：组 id 里出现控制字符（换行 / 制表 / NUL…）没有真实目录能对上，只会被用来
+// 拼出「拆开 join 后与另一份清单同字节」的摘要碰撞。口径与 core/ipc-limits.js 的 restoreFileName 一致。
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
+
 // groupIds 归一：只收字符串、trim、去重、排序（顺序无关），并卡上限。
 // 任何一条不合法都整张拒绝（绝不「过滤掉坏的那条」再发令牌 —— 那样清单已经不是你确认过的那份）。
 function normalizeGroupIds(input) {
@@ -71,14 +75,17 @@ function normalizeGroupIds(input) {
   for (const raw of input) {
     if (typeof raw !== 'string') return null;
     const id = raw.trim();
-    if (!id || id.length > MAX_GROUP_ID_CHARS) return null;
+    if (!id || id.length > MAX_GROUP_ID_CHARS || CONTROL_CHARS_RE.test(id)) return null;
     ids.add(id);
   }
   return ids.size ? [...ids].sort() : null;
 }
 
+// 五-M30（IPC-03）：摘要用 JSON.stringify（转义引号 / 反斜杠 / 控制字符），不用 join('\n') ——
+// 后者对「内部含换行的 id」与「拆开的多条 id」产出同一串字节，摘要不再有歧义。
+// 配合上面的控制字符拒绝与 take 的条数比对，三条独立防线挡住「确认一份、执行另一份」。
 function digestOf(ids) {
-  return crypto.createHash('sha256').update(ids.join('\n'), 'utf8').digest('hex');
+  return crypto.createHash('sha256').update(JSON.stringify(ids), 'utf8').digest('hex');
 }
 
 // 五-M29（IPC-02）：令牌同时绑「计划实际解析出的可清理集合」——有效删除集合 =
@@ -92,7 +99,7 @@ function normalizeCleanableIds(input, groupIdSet) {
   for (const raw of input) {
     if (typeof raw !== 'string') return null;
     const id = raw.trim();
-    if (!id || id.length > MAX_GROUP_ID_CHARS) return null;
+    if (!id || id.length > MAX_GROUP_ID_CHARS || CONTROL_CHARS_RE.test(id)) return null;
     if (!groupIdSet.has(id)) return null;
     if (seen.has(id)) continue;
     seen.add(id);
@@ -203,7 +210,10 @@ function createStore(options = {}) {
       return { ok: false, reason: 'book-mismatch' };
     }
     const ids = normalizeGroupIds(expected.groupIds);
-    if (!ids || digestOf(ids) !== record.digest) return { ok: false, reason: 'plan-mismatch' };
+    // 五-M30（IPC-03）：摘要之外再比条数 —— 任何「元素数不同但摘要撞上」的可达碰撞都拒绝。
+    if (!ids || ids.length !== record.count || digestOf(ids) !== record.digest) {
+      return { ok: false, reason: 'plan-mismatch' };
+    }
     entries.delete(raw);
     prune(at);
     return { ok: true, record: { ...record, cleanable: record.cleanable.slice() } };

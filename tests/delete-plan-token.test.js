@@ -168,3 +168,36 @@ test('T7 计划令牌：绑定计划可清理集合（cleanableIds），执行�
   assert.deepEqual(emptyClaim.record.cleanable, []);
   assert.equal(store.release(emptyClaim.record), true, 'release 也要带得动这份绑定');
 });
+
+// 五-M30（IPC-03）：摘要 join('\n') 有歧义 + take 不比 count —— 一条含内部换行的拼凑 id 与拆分后的
+// 清单 join 出同一串字节（「确认一份清单、执行另一份」）。现在 normalize 拒绝控制字符（与
+// ipc-limits.restoreFileName 同口径）、摘要改无歧义序列化（JSON.stringify）、take 再比 count。
+test('T8 计划令牌：含换行的拼凑 id 不发令牌；摘要无歧义且 take 比对条数', () => {
+  const store = tokenLib.createStore({ randomUUID: () => 'tok-digest' });
+  const bookPath = 'D:\\书库\\书甲';
+  // findings 里的 A = ['dir:X\ndir:Y', 'dir:R']：旧摘要 join('\n') 与 B（拆开的三条）拼出同一串。
+  // 现在这种拼凑 id 连第一道 normalize 都过不了 —— 整张拒绝，绝不发一张能对上 B 的令牌。
+  assert.equal(store.issue({ bookPath, groupIds: ['dir:X\ndir:Y', 'dir:R'] }), '', '含换行的拼凑 id 不发令牌');
+  for (const bad of ['dir:a\nb', 'dir:a\tb', 'dir:a\u0000b', 'dir:a\u007fb']) {
+    assert.equal(store.issue({ bookPath, groupIds: [bad] }), '', `控制字符 id 不发令牌：${JSON.stringify(bad)}`);
+  }
+  // 计划可清理集合同样不收控制字符（它是执行层的白名单）
+  assert.equal(
+    store.issue({ bookPath, groupIds: ['dir:甲'], cleanableIds: ['dir:甲\n乙'] }),
+    '',
+    'cleanableIds 也要拒绝控制字符'
+  );
+  assert.equal(store.size(), 0);
+
+  // take 要比对条数（防御「元素数不同但摘要撞上」的任何可达碰撞）：篡改放回记录的 count 后，
+  // 同一份 groupIds 就不再通过。
+  const token = store.issue({ bookPath, groupIds: ['dir:甲', 'dir:乙'] });
+  const claim = store.take(token, { bookPath, groupIds: ['dir:乙', 'dir:甲'] });
+  assert.equal(claim.ok, true);
+  claim.record.count = 3;
+  assert.equal(store.release(claim.record), true);
+  assert.deepEqual(store.take(token, { bookPath, groupIds: ['dir:甲', 'dir:乙'] }), {
+    ok: false,
+    reason: 'plan-mismatch'
+  });
+});
