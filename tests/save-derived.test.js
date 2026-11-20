@@ -96,7 +96,7 @@ test('静态闸门：保存结果带 charsBaselineMissing，统计失败仍返�
   assert.match(body, /charsBaselineMissing: charsDelta\.baselineMissing/);
   assert.match(body, /const charsDelta = statsLib\.saveCharsDelta\(previousChars, result\.chars\)/);
   assert.match(body, /const recordedStats = await statsLib\.recordSaveChars\(getStatsStore\(\), \{/);
-  assert.match(body, /statsError = statsErr\.message;/, '统计失败的原因仍沿旧字段带回界面');
+  assert.match(body, /statsError = errorText\.describeForUi\(statsErr\)\.message;/, '统计失败的原因仍沿旧字段带回界面（五-L21：改走 error-text 脱敏）');
   assert.match(body, /stats,/, '保存结果里保留 stats 字段');
 });
 

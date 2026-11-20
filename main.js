@@ -1728,7 +1728,9 @@ function registerIpc() {
         });
         stats = statsSummaryPayload(recorded.stats, cfg);
       } catch (err) {
-        statsError = err.message;
+        // MC-2（五-L21）：统计写失败的原因同样不许把原始 err.message（fs 错误带本机绝对路径）
+        // 原样跨 IPC —— 与 fail() 同一道 error-text 脱敏出口。
+        statsError = errorText.describeForUi(err).message;
       }
     }
     await rememberRecentBook(bookPath, {
@@ -2002,7 +2004,9 @@ function registerIpc() {
         stats = statsSummaryPayload(recordedStats.recorded.stats, cfg);
       } else {
         const statsErr = recordedStats.error;
-        statsError = statsErr.message;
+        // MC-2（五-L21）：同 capture:commit-record 的 statsError —— 原始 message 只进日志（下面 logError
+        // 自己脱敏），跨 IPC 的那份必须过 error-text，别把统计文件的绝对路径带进渲染层。
+        statsError = errorText.describeForUi(statsErr).message;
         logError('save-derived', statsErr, { level: 'warn', code: 'STATS_RECORD_FAILED' });
       }
       // 保存也算「写作过」：书架「继续上次写作」的时间戳跟着更新（只写配置，不碰书库）
