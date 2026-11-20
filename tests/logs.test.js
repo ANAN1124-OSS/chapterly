@@ -467,6 +467,68 @@ test('崩溃日志：份数上限生效，旧的按日期删、不认识的文�
   }
 });
 
+// PM-2（五-L10）：planPrune 只按 day+index 排序留最新 —— 时钟回拨 / 时区前移到「今天早于现存最旧
+// 一份」时，刚 append 写成功（write + fsync 已落盘）的日志排在最旧，被同一次 append 自己 unlink，
+// 回执仍是 ok:true。protect 参数把本次刚写的文件名排除出删除候选（回拨期最多多留一份）。
+test('崩溃日志（PM-2 / 五-L10）：刚写成功的日志不许被同一次 append 的裁剪删掉', () => {
+  const files = [
+    { name: 'chapter-writer-2026-11-05.log' },
+    { name: 'chapter-writer-2026-11-06.log' },
+    { name: 'chapter-writer-2026-11-07.log' }
+  ];
+  // 不传 protect：照旧删最旧（老口径不变）
+  assert.deepEqual(logsLib.planPrune(files, { maxFiles: 3 }), []);
+  assert.deepEqual(logsLib.planPrune([{ name: 'chapter-writer-2026-10-25.log' }, ...files], { maxFiles: 3 }), [
+    'chapter-writer-2026-10-25.log'
+  ]);
+  // 传 protect：刚写的回拨日文件即使排最旧也不删；其余超出份数的照删
+  assert.deepEqual(
+    logsLib.planPrune([{ name: 'chapter-writer-2026-10-25.log' }, ...files], {
+      maxFiles: 3,
+      protect: 'chapter-writer-2026-10-25.log'
+    }),
+    [],
+    '刚写成功的那一份必须从删除候选里排除'
+  );
+  assert.deepEqual(
+    logsLib.planPrune(
+      [{ name: 'chapter-writer-2026-10-24.log' }, { name: 'chapter-writer-2026-10-25.log' }, ...files],
+      { maxFiles: 3, protect: 'chapter-writer-2026-10-25.log' }
+    ),
+    ['chapter-writer-2026-10-24.log'],
+    '多出来的更旧文件照删，但保护对象不动'
+  );
+});
+
+test('崩溃日志（PM-2 / 五-L10）：时钟回拨后新日志真的留在磁盘上（write 不再自己删自己的产物）', async () => {
+  const base = await mkTmp();
+  const dir = path.join(base, 'logs');
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    for (const day of ['2026-11-05', '2026-11-06', '2026-11-07']) {
+      await fs.writeFile(path.join(dir, `chapter-writer-${day}.log`), 'old\n');
+    }
+    // 系统时钟被拨回 10 月：新条目写进 chapter-writer-2026-10-25.log（按文件名是最旧的一份）
+    const store = logsLib.createLogStore(base, {
+      now: () => new Date(2026, 9, 25, 5, 0, 0),
+      maxFiles: 3
+    });
+    const result = await store.write({ level: 'error', kind: 'ipc-error', message: '回拨后写的第一条' });
+    assert.equal(result.ok, true);
+    const names = (await fs.readdir(dir)).sort();
+    assert.ok(
+      names.includes('chapter-writer-2026-10-25.log'),
+      `刚写成功的日志被自己删掉了：${names.join(',')}`
+    );
+    const text = await readAll(dir);
+    assert.ok(text.includes('回拨后写的第一条'), '回执说写成功，文件里就必须真的有这一条');
+    assert.equal(result.pruned.includes('chapter-writer-2026-10-25.log'), false, '回执里的裁剪清单也不许含刚写的这份');
+    assert.equal(store.counters().pruned, 0);
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
 test('崩溃日志：同样的错误 5 秒内只记一条，过了窗口再记', async () => {
   const base = await mkTmp();
   let nowMs = new Date(2026, 10, 1, 6, 0, 0).getTime();

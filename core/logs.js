@@ -264,14 +264,21 @@ function chooseLogFile(files, { now = new Date(), maxFileBytes = DEFAULT_MAX_FIL
 
 // 只保留最新 maxFiles 份（按文件名里的日期 + 序号），返回要删的文件名。
 // 文件名解析不出来的一律不动（作者自己放进日志目录的东西不能被日志滚动删掉）。
-function planPrune(files, { maxFiles = DEFAULT_MAX_FILES } = {}) {
+// 五-L10（PM-2）：protect = 本次刚 append 成功的文件名。时钟回拨 / 时区前移后「今天」可能早于
+// 现存最旧一份，排序后刚写的日志会落进删除候选 —— 同一次写入里把它 unlink 掉，回执却仍说成功。
+// 保护它的代价是回拨期间最多多留一份，可接受。
+function planPrune(files, { maxFiles = DEFAULT_MAX_FILES, protect = '' } = {}) {
   const keep = normalizeLimits({ maxFiles }).maxFiles;
+  const protectedName = typeof protect === 'string' ? protect : '';
   const known = (Array.isArray(files) ? files : [])
     .map((file) => (file && typeof file.name === 'string' ? parseLogFileName(file.name) : null))
     .filter(Boolean)
     .sort(compareLogFiles);
   if (known.length <= keep) return [];
-  return known.slice(0, known.length - keep).map((file) => file.name);
+  return known
+    .slice(0, known.length - keep)
+    .map((file) => file.name)
+    .filter((name) => name !== protectedName);
 }
 
 // 日志目录里的文件清单（只认本应用的日志文件；读不到就当空目录）
@@ -334,7 +341,8 @@ function createLogStore(baseDir, options = {}) {
     const after = files.some((file) => file.name === name)
       ? files
       : files.concat([{ ...(parseLogFileName(name) || { day: localDayKey(time), index: 1 }), name, size: 0 }]);
-    const remove = planPrune(after, { maxFiles: limits.maxFiles });
+    // 五-L10（PM-2）：刚写成功的这一份不许被同一次裁剪删掉（时钟回拨时它会排在最旧）
+    const remove = planPrune(after, { maxFiles: limits.maxFiles, protect: name });
     for (const old of remove) {
       try {
         await fs.unlink(path.join(dir, old));
