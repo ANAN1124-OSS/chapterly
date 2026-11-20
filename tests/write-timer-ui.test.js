@@ -125,13 +125,15 @@ test('host 契约：6 个成员 + 分组内每个真实依赖；缺任何一个�
   assert.throws(() => writeTimerUi.create(brokenStats), /host\.statsUi 缺少 renderStatsUi/);
 });
 
-test('create() 只建表：不碰 DOM / 不建定时器，交出 12 个入口', () => {
+test('create() 只建表：不碰 DOM / 不建定时器，交出 14 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0);
+  // 五-M32（PM-3）：新增 handleSystemSuspend / handleSystemResume 两个系统睡眠 / 唤醒入口
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'applyWriteTimerConfig', 'flushWriteTimer', 'pauseWriteTimer', 'renderDurationSettings',
-    'renderWriteTimer', 'resetWriteTimer', 'setupWriteTimerUi', 'startWriteTimer', 'writeDurationEnabled',
+    'applyWriteTimerConfig', 'flushWriteTimer', 'handleSystemResume', 'handleSystemSuspend',
+    'pauseWriteTimer', 'renderDurationSettings', 'renderWriteTimer', 'resetWriteTimer',
+    'setupWriteTimerUi', 'startWriteTimer', 'writeDurationEnabled',
     'writeTimerSessionSeconds', 'writeTimerTodaySeconds', 'writeTimerUnsentMs'
   ]);
   assert.equal(moduleCode.includes('setTimeout'), false);
@@ -375,6 +377,81 @@ test('setupWriteTimerUi：点按钮在开始与暂停之间切换', async () => 
   Date.now = realDateNow;
 });
 
+// ---------- 五-M32（PM-3）：系统睡眠 / 唤醒不污染写作时长 ----------
+// 计时按墙钟差累计：合盖睡眠数小时，唤醒后第一次 flush 会把整段睡眠算进 unsentMs（单日 86400
+// 秒夹住、次日继续）。主进程 powerMonitor 的 suspend / resume 广播到这里：睡眠前先把已经写的那一段
+// 结掉，唤醒后从当前时刻续（不补睡眠）；手动暂停中的计时器不会被自动拉起。
+test('五-M32（PM-3）：睡眠前结算、唤醒后不把睡眠时段计入写作时长', async () => {
+  const ctx = build({ config: { writeDurationEnabled: true } });
+  const t = ctx.state.writeTimer;
+  try {
+    Date.now = () => 1000;
+    assert.equal(ctx.ui.startWriteTimer(), true);
+
+    // 已经写了 10 秒 → 系统进入睡眠
+    Date.now = () => 11000;
+    assert.equal(ctx.ui.handleSystemSuspend(), true);
+    assert.equal(t.running, true, '睡眠不改变「作者正在计时」这个状态');
+    assert.equal(t.sessionMs, 10000, '睡眠前已经写的那 10 秒照常累计');
+    assert.equal(t.unsentMs, 10000);
+
+    // 睡眠 3 小时：期间任何查询都不许把这段算进去
+    Date.now = () => 11000 + 3 * 60 * 60 * 1000;
+    assert.equal(ctx.ui.writeTimerSessionSeconds(), 10);
+    assert.equal(ctx.ui.writeTimerUnsentMs(), 10000);
+    ctx.ui.renderWriteTimer();
+    assert.match(ctx.dom.map.get('write-timer-text').textContent, /计时 0:10/);
+
+    // 唤醒：从当前时刻继续，醒后再写 5 秒才 +5
+    assert.equal(ctx.ui.handleSystemResume(), true);
+    Date.now = () => 11000 + 3 * 60 * 60 * 1000 + 5000;
+    assert.equal(ctx.ui.writeTimerSessionSeconds(), 15);
+    assert.equal(ctx.ui.writeTimerUnsentMs(), 15000);
+
+    await ctx.ui.pauseWriteTimer();
+    assert.equal(t.running, false);
+    assert.deepEqual(ctx.calls.api, [{ seconds: 15 }], '上报的是真实写作秒数，不含睡眠');
+  } finally {
+    // 失败时也要收掉 ticker，别让 node --test 进程被真实 setInterval 挂着
+    ctx.ui.resetWriteTimer({ flush: false });
+    Date.now = realDateNow;
+  }
+});
+
+test('五-M32（PM-3）：手动暂停中的计时器不会被唤醒自动拉起；坏事件 / 重复事件幂等', async () => {
+  const ctx = build({ config: { writeDurationEnabled: true } });
+  const t = ctx.state.writeTimer;
+  try {
+    assert.equal(ctx.ui.handleSystemSuspend(), false, '没在计时：suspend 是空操作');
+    assert.equal(ctx.ui.handleSystemResume(), false, '没在计时：resume 也不会自动开始');
+    assert.equal(t.running, false);
+
+    Date.now = () => 2000;
+    ctx.ui.startWriteTimer();
+    await ctx.ui.pauseWriteTimer(); // 作者手动暂停
+    assert.equal(t.running, false);
+    assert.equal(ctx.ui.handleSystemSuspend(), false, '暂停中睡眠：不改变暂停状态');
+    assert.equal(ctx.ui.handleSystemResume(), false, '暂停中唤醒：不许偷偷开始计时');
+    assert.equal(t.running, false);
+
+    // 睡眠事件重复到达（不同平台可能连发）：第二次不重复结算
+    Date.now = () => 3000;
+    ctx.ui.startWriteTimer();
+    Date.now = () => 9000;
+    ctx.ui.handleSystemSuspend();
+    const settled = t.sessionMs;
+    assert.equal(settled, 6000);
+    assert.equal(ctx.ui.handleSystemSuspend(), true);
+    assert.equal(t.sessionMs, settled, '重复 suspend 不重复累计');
+    assert.equal(ctx.ui.handleSystemResume(), true);
+    assert.equal(ctx.ui.handleSystemResume(), false, '重复 resume 幂等');
+    await ctx.ui.pauseWriteTimer();
+  } finally {
+    ctx.ui.resetWriteTimer({ flush: false });
+    Date.now = realDateNow;
+  }
+});
+
 // ---------- 静态闸门 ----------
 test('静态闸门：renderer.js 不再内嵌写作时长实现，只剩装配与转发', () => {
   for (const shape of [
@@ -440,6 +517,28 @@ test('静态闸门：模块不 require / 不摸 Electron·fs / 不注册全局�
   assert.equal(/window\.addEventListener|document\.addEventListener/.test(moduleCode), false);
   assert.equal((moduleCode.match(/setTimeout\(/g) || []).length, 0);
   assert.equal((moduleCode.match(/setInterval\(/g) || []).length, 2);
+});
+
+test('五-M32 静态闸门：主进程 powerMonitor 广播 → preload 订阅 → 渲染层交给写作计时', () => {
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  const preloadSrc = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8');
+  assert.match(mainSrc, /powerMonitor/, '主进程要接 Electron powerMonitor（全仓唯一睡眠感知来源）');
+  assert.match(
+    mainSrc,
+    /powerMonitor\.on\('suspend',[\s\S]{0,80}broadcast\('power:suspend'/,
+    'suspend 要广播 power:suspend'
+  );
+  assert.match(
+    mainSrc,
+    /powerMonitor\.on\('resume',[\s\S]{0,80}broadcast\('power:resume'/,
+    'resume 要广播 power:resume'
+  );
+  assert.match(preloadSrc, /onPowerSuspend: \(cb\) => on\('power:suspend', cb\)/, 'preload 暴露 suspend 订阅');
+  assert.match(preloadSrc, /onPowerResume: \(cb\) => on\('power:resume', cb\)/, 'preload 暴露 resume 订阅');
+  assert.equal((rendererSrc.match(/api\.onPowerSuspend\(/g) || []).length, 1, 'suspend 只订阅一次');
+  assert.equal((rendererSrc.match(/api\.onPowerResume\(/g) || []).length, 1, 'resume 只订阅一次');
+  assert.match(rendererSrc, /api\.onPowerSuspend\(\(\) => writeTimerUi\.handleSystemSuspend\(\)\)/);
+  assert.match(rendererSrc, /api\.onPowerResume\(\(\) => writeTimerUi\.handleSystemResume\(\)\)/);
 });
 
 test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWWriteTimerUi，且不乱造别的全局', () => {

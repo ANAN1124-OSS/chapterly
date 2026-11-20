@@ -208,7 +208,7 @@ test('preload：invoke 频道与 main.js 注册的 handle 频道一一对应（�
   assert.equal(new Set(handlers).size, handlers.length, 'main.js 里有重复注册的频道');
 });
 
-test('preload：单向通知 / 上报频道与 main.js 一一对应（12 条通知 + 2 条上报）', () => {
+test('preload：单向通知 / 上报频道与 main.js 一一对应（14 条通知 + 2 条上报）', () => {
   const { exposed, calls } = loadPreload();
   for (const fn of Object.values(exposed.api)) fn(() => {});
   const { sent, received } = mainChannels();
@@ -220,7 +220,8 @@ test('preload：单向通知 / 上报频道与 main.js 一一对应（12 条通�
   // 1.6.0 F4b 新增 app:command-palette（顶栏右键菜单 → 打开命令面板，空通知）
   // 1.6.1 P-01 新增 app:force-close（强制退出前的收尾通知；没有接收端那 500 ms 就是空转）
   // WP6（N2）新增 config:changed（换书架根 → 各窗口刷新 / 孤岛提示）
-  assert.equal(calls.subscribed.length, 12);
+  // 五-M32（PM-3）新增 power:suspend / power:resume（系统睡眠 / 唤醒 → 写作计时冻结 / 续算）
+  assert.equal(calls.subscribed.length, 14);
   assert.equal(calls.sent.length, 2);
 });
 

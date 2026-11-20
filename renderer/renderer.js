@@ -442,6 +442,7 @@
     writeTimer: {
       running: false, // 现在是否在计时
       segmentStart: 0, // 这一段开始计时的 Date.now()（暂停 = 0）
+      awaitingResume: false, // 五-M32：系统睡眠中（冻结，resume 后从当前时刻续算）
       sessionMs: 0, // 本次打开这本书累计的毫秒（只用于界面秒表）
       unsentMs: 0, // 还没上报给主进程的毫秒（保留不足 1 秒的零头）
       flushTimer: null, // 每 30 秒上报一次
@@ -3858,6 +3859,10 @@
       .then(() => handleExternalConfigChange())
       .catch(() => {});
   });
+  // 五-M32（PM-3）：系统睡眠 / 唤醒 → 写作计时先结算再冻结 / 唤醒后从当前时刻续算。
+  // 只影响派生统计（写作时长），不碰正文 / 保存；手动暂停中的计时器不会被自动拉起。
+  api.onPowerSuspend(() => writeTimerUi.handleSystemSuspend());
+  api.onPowerResume(() => writeTimerUi.handleSystemResume());
   // WP5（N1）：崩溃恢复。默认关（开关只在设置里打开）；打开后周期上报未保存正文 +
   // 启动 / 重载后检查上次崩溃草稿。恢复时正文只进编辑区（仍 dirty），Ctrl+S 才写盘。
   crashRecoveryUi = crashRecoveryUiModule.create({

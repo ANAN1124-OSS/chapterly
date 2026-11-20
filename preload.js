@@ -265,6 +265,10 @@ const api = {
   // 1.6.0 F4b：顶栏右键菜单的「命令面板」——主进程只发一条空通知，
   // 开面板 / 锁键层判定留在渲染层（与 Ctrl+K 同一个入口）。
   onCommandPalette: (cb) => on('app:command-palette', cb),
+  // 五-M32（PM-3）：系统睡眠 / 唤醒（powerMonitor）——写作计时用它在睡眠前冻结、唤醒后续算，
+  // 不把睡眠时段算进写作时长。只发空通知，秒表状态留在渲染层。
+  onPowerSuspend: (cb) => on('power:suspend', cb),
+  onPowerResume: (cb) => on('power:resume', cb),
   reportDirty: (dirty) => ipcRenderer.send('app:dirty', Boolean(dirty)),
   closeReady: (allowed) => ipcRenderer.send('app:close-ready', Boolean(allowed))
 };

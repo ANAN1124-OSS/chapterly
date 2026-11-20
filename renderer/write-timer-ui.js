@@ -75,7 +75,21 @@
 
   function writeTimerSegmentMs() {
     const t = state.writeTimer;
-    return t.running ? Math.max(0, Date.now() - t.segmentStart) : 0;
+    // 五-M32（PM-3）：睡眠期间 segmentStart 被冻结（awaitingResume），不许把整段睡眠算进时长。
+    if (!t.running || t.awaitingResume) return 0;
+    return Math.max(0, Date.now() - t.segmentStart);
+  }
+
+  // 五-M32（PM-3）：把「正在计时的这一段」按墙钟差结算进本次 / 未上报毫秒并重置起点。
+  // 正常 flush 与睡眠前的冻结共用这一份，避免两处口径漂移。
+  function settleRunningSegment(now = Date.now()) {
+    const t = state.writeTimer;
+    if (!t.running || t.awaitingResume) return 0;
+    const delta = Math.max(0, Number(now) - t.segmentStart);
+    t.segmentStart = now;
+    t.sessionMs += delta;
+    t.unsentMs += delta;
+    return delta;
   }
 
   function writeTimerSessionMs() {
@@ -155,8 +169,35 @@
     const t = state.writeTimer;
     if (t.running) return true;
     t.running = true;
+    t.awaitingResume = false;
     t.segmentStart = Date.now();
     startWriteTimerTicker();
+    renderWriteTimer();
+    renderDurationSettings();
+    return true;
+  }
+
+  // 五-M32（PM-3）：系统睡眠 / 唤醒。计时按墙钟差累计 —— 合盖睡眠数小时，唤醒后定时器恢复触发时
+  // 会把整段睡眠一次性算进「写作时长」（单日 86400 秒夹住、次日继续）。主进程 powerMonitor 广播
+  // 到这里：suspend 先把已经写的那一段结算进本次 / 未上报（不写盘、等下一条 flush），然后冻结；
+  // resume 从当前时刻重新起算，绝不补睡眠时间。只影响派生统计，不碰正文 / 保存。
+  // 手动暂停中（running=false）的两个事件都是空操作，不会被自动拉起。
+  function handleSystemSuspend() {
+    const t = state.writeTimer;
+    if (!t.running) return false;
+    settleRunningSegment();
+    t.awaitingResume = true;
+    t.segmentStart = 0;
+    renderWriteTimer();
+    renderDurationSettings();
+    return true;
+  }
+
+  function handleSystemResume() {
+    const t = state.writeTimer;
+    if (!t.running || !t.awaitingResume) return false;
+    t.awaitingResume = false;
+    t.segmentStart = Date.now();
     renderWriteTimer();
     renderDurationSettings();
     return true;
@@ -176,13 +217,7 @@
 
   async function flushWriteTimerNow() {
     const t = state.writeTimer;
-    if (t.running) {
-      const now = Date.now();
-      const delta = Math.max(0, now - t.segmentStart);
-      t.segmentStart = now;
-      t.sessionMs += delta;
-      t.unsentMs += delta;
-    }
+    settleRunningSegment();
     const seconds = Math.floor(t.unsentMs / 1000);
     // 关掉记录时不写盘：配置切换前会先 flush 一次，这里只是兜底。
     if (seconds <= 0 || !writeDurationEnabled()) {
@@ -210,6 +245,7 @@
     await flushWriteTimer();
     t.running = false;
     t.segmentStart = 0;
+    t.awaitingResume = false;
     stopWriteTimerTicker();
     renderWriteTimer();
     renderDurationSettings();
@@ -222,6 +258,7 @@
     const t = state.writeTimer;
     t.running = false;
     t.segmentStart = 0;
+    t.awaitingResume = false;
     t.sessionMs = 0;
     t.unsentMs = 0;
     stopWriteTimerTicker();
@@ -261,6 +298,8 @@
       flushWriteTimer,
       resetWriteTimer,
       applyWriteTimerConfig,
+      handleSystemSuspend,
+      handleSystemResume,
       writeTimerTodaySeconds,
       writeTimerSessionSeconds,
       writeTimerUnsentMs,

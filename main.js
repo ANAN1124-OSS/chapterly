@@ -15,6 +15,7 @@ const {
   globalShortcut,
   screen,
   net,
+  powerMonitor,
   // 注意：Electron 的 session 模块与「每个窗口一个会话」的 session 同名，这里别名导入，
   // 避免 main.js 里到处用的窗口 session 变量被遮蔽（createWindow 里就有 const session = ...）
   session: electronSession,
@@ -219,6 +220,18 @@ function registerCaptureShortcut() {
       new Error(`全局快捷键 ${CAPTURE_ACCELERATOR} 注册失败（可能被其它程序占用）；界面上的「捕获」按钮仍可用`),
       { level: 'warn' }
     );
+  }
+}
+
+// 五-M32（PM-3）：系统睡眠 / 唤醒广播给渲染层。写作计时按墙钟差累计，睡眠数小时会被整段算进
+// 「写作时长」（派生统计，不碰正文 / 保存）。主进程只如实通知，冻结 / 续算由渲染层的秒表决定
+// （手动暂停中的计时器不会被自动拉起）。powerMonitor 在部分平台 / 无桌面会话时不发事件，忽略即可。
+function setupPowerMonitor() {
+  try {
+    powerMonitor.on('suspend', () => broadcast('power:suspend', {}));
+    powerMonitor.on('resume', () => broadcast('power:resume', {}));
+  } catch (err) {
+    logError('power-monitor', err, { level: 'warn' });
   }
 }
 
@@ -2755,6 +2768,8 @@ if (!gotLock) {
     if (exportDir) await cleanupOrphanTmpFiles(exportDir).catch(() => {});
     // b8：按配置决定要不要开始后台监听剪贴板（默认关）
     syncClipboardWatch();
+    // 五-M32（PM-3）：睡眠 / 唤醒通知（写作计时排除睡眠时段）
+    setupPowerMonitor();
     // 每次启动记一条 info（版本 / 平台 / Electron 版本），排查反馈时先看这里
     logStartup();
     try {
