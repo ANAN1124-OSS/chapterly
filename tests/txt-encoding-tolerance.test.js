@@ -208,3 +208,29 @@ test('五-H6（TC-1）：UTF-8 正文混 GBK 片段 → 严格 GB18030「成功�
   assert.equal(info.encodingSuspect, true, 'UTF-8 失败后按严格 GB18030 解成功必须标可疑');
   assert.equal('replacements' in info, false, '严格路径没有替换符字段（乱码不是替换符）');
 });
+
+// TC-5（五-L7）：UTF-32BE 是大端对称缺口 —— 旧实现四个 BOM 分支全不命中，严格 UTF-8 失败后
+// 被「含 0 字节」的二进制闸门判成 NOT_TEXT（报错明确、无数据损坏，但完全读不了 UTF-32BE 小说）。
+test('TC-5（五-L7）：UTF-32BE 小说正常导入，章名 / 正文逐字还原、回包报告 utf-32be', async () => {
+  const text = '第一章 雪夜\n\n他推开门，屋里没有人。\n第二章 归途\n\n雪停了。';
+  const buffer = Buffer.alloc(4 + Array.from(text).length * 4);
+  Buffer.from([0x00, 0x00, 0xfe, 0xff]).copy(buffer, 0);
+  Array.from(text).forEach((ch, index) => buffer.writeUInt32BE(ch.codePointAt(0), 4 + index * 4));
+
+  assert.equal(importer.isProbablyBinary(buffer), false, 'UTF-32BE BOM 不该被当二进制');
+  assert.deepEqual(txt.decodeBufferWithEncoding(buffer), { text, encoding: 'utf-32be' });
+
+  const base = await mkTmp();
+  const src = path.join(base, 'UTF32BE 导出');
+  await fs.mkdir(src);
+  await fs.writeFile(path.join(src, '雪夜.txt'), buffer);
+  const res = await importer.importFolders(path.join(base, '书架'), [src]);
+  assert.equal(res.failed.length, 0, `不许再报「不是纯文本文件」：${JSON.stringify(res.failed)}`);
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].encoding, 'utf-32be');
+  const meta = await storage.readBookMeta(res.imported[0].path);
+  assert.deepEqual(meta.chapters.map((c) => c.name), ['第一章 雪夜', '第二章 归途']);
+  const loaded = await storage.loadChapterText(res.imported[0].path, meta.chapters[0].file);
+  assert.match(loaded.text, /他推开门，屋里没有人。/);
+  assert.equal(loaded.text.includes('\u0000'), false, '正文里不许残留 NUL');
+});

@@ -46,18 +46,22 @@ const BOM_UTF16BE = Buffer.from([0xfe, 0xff]);
 // 审计修复 #50（E15）：UTF-32LE BOM（FF FE 00 00）的前两字节与 UTF-16LE 相同，旧实现先命中
 // UTF-16LE 分支 → 解出带 NUL 的乱码，且 hasUtf16Bom 放行二进制闸门。必须先判 4 字节 BOM。
 const BOM_UTF32LE = Buffer.from([0xff, 0xfe, 0x00, 0x00]);
+// TC-5（五-L7）：UTF-32BE BOM（00 00 FE FF）在旧实现的四个 BOM 分支里一个都不命中 ——
+// 严格 UTF-8 失败后按「含 0 字节」判成二进制，导入直接报 NOT_TEXT。E15 补了 UTF-32LE，
+// 这里补上对称的大端缺口（00 00 开头与任何 UTF-16 BOM 都不冲突，但仍按 4 字节先判）。
+const BOM_UTF32BE = Buffer.from([0x00, 0x00, 0xfe, 0xff]);
 const UTF32_CHUNK = 8192;
 
-// UTF-32LE 没有内置 TextDecoder（Node 只支持 UTF-8 / UTF-16 / GB18030），这里手写一份：
-// 每 4 字节按小端读码点，拒绝代理区与超出 U+10FFFF 的坏值；长度不是 4 的倍数也返回 null。
-// 按块拼接，避免逐字符 `out +=` 在长篇上退化成 O(n²)。
-function decodeUtf32Le(buffer, offset) {
+// UTF-32 没有内置 TextDecoder（Node 只支持 UTF-8 / UTF-16 / GB18030），这里手写严格解码，
+// 大端 / 小端共用一份：每 4 字节按端序读码点，拒绝代理区与超出 U+10FFFF 的坏值；
+// 长度不是 4 的倍数也返回 null。按块拼接，避免逐字符 `out +=` 在长篇上退化成 O(n²)。
+function decodeUtf32Strict(buffer, offset, littleEndian) {
   const bytes = buffer.length - offset;
   if (bytes < 0 || bytes % 4 !== 0) return null;
   let out = '';
   let chunk = '';
   for (let at = offset; at < buffer.length; at += 4) {
-    const cp = buffer.readUInt32LE(at);
+    const cp = littleEndian ? buffer.readUInt32LE(at) : buffer.readUInt32BE(at);
     if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
     chunk += String.fromCodePoint(cp);
     if (chunk.length >= UTF32_CHUNK) {
@@ -68,11 +72,19 @@ function decodeUtf32Le(buffer, offset) {
   return out + chunk;
 }
 
+function decodeUtf32Le(buffer, offset) {
+  return decodeUtf32Strict(buffer, offset, true);
+}
+
+function decodeUtf32Be(buffer, offset) {
+  return decodeUtf32Strict(buffer, offset, false);
+}
+
 // 严格解码：只认「能完整识别」的编码，识别不了返回 null（不产出 U+FFFD）。
 // 词表读取用它区分「解码器替换出来的坏字符」与「原文里本来就有的 U+FFFD」。
-//   UTF-8 BOM → UTF-32LE BOM（先于 UTF-16LE）→ UTF-16 BOM → 严格 UTF-8 → 严格 GB18030
-// 审计修复 #54（P10）：判定结果同时带 encoding（utf-8 / utf-16le / utf-16be / utf-32le / gb18030 /
-// empty）。导入 raw 模式要在「同一份解码结果」上判断源文件是不是 UTF-8（旧实现 decodeBuffer 解一遍、
+//   UTF-8 BOM → UTF-32LE / UTF-32BE BOM（先于 UTF-16）→ UTF-16 BOM → 严格 UTF-8 → 严格 GB18030
+// 审计修复 #54（P10）：判定结果同时带 encoding（utf-8 / utf-16le / utf-16be / utf-32le / utf-32be /
+// gb18030 / empty）。导入 raw 模式要在「同一份解码结果」上判断源文件是不是 UTF-8（旧实现 decodeBuffer 解一遍、
 // isUtf8 再整本 fatal 解一遍 —— 128 MB 文件双倍解码），有了 encoding 就不必再解第二次。
 function decodeBufferStrictInfo(buffer) {
   if (!buffer || !buffer.length) return { text: '', encoding: 'empty' };
@@ -86,6 +98,10 @@ function decodeBufferStrictInfo(buffer) {
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) {
     const text = decodeUtf32Le(buffer, 4);
     return text === null ? null : { text, encoding: 'utf-32le' };
+  }
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32BE)) {
+    const text = decodeUtf32Be(buffer, 4);
+    return text === null ? null : { text, encoding: 'utf-32be' };
   }
   if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16LE)) {
     try {
@@ -115,14 +131,15 @@ function decodeBufferStrict(buffer) {
   return info ? info.text : null;
 }
 
-// 非 fatal 的 UTF-32LE 解码：坏码点（代理区 / 超 U+10FFFF）与不足 4 字节的尾巴都换成 U+FFFD，
-// 不返回 null。只给下面的 BOM 锁定宽容兜底用（严格版 decodeUtf32Le 仍回 null，词表读取靠它）。
-function decodeUtf32LeLoose(buffer, offset) {
+// 非 fatal 的 UTF-32 解码（大端 / 小端共用）：坏码点（代理区 / 超 U+10FFFF）与不足 4 字节的尾巴
+// 都换成 U+FFFD，不返回 null。只给下面的 BOM 锁定宽容兜底用（严格版 decodeUtf32Le / Be 仍回 null，
+// 词表读取靠它）。
+function decodeUtf32Loose(buffer, offset, littleEndian) {
   let out = '';
   let chunk = '';
   let at = offset;
   for (; at + 4 <= buffer.length; at += 4) {
-    const cp = buffer.readUInt32LE(at);
+    const cp = littleEndian ? buffer.readUInt32LE(at) : buffer.readUInt32BE(at);
     chunk += cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? '\uFFFD' : String.fromCodePoint(cp);
     if (chunk.length >= UTF32_CHUNK) {
       out += chunk;
@@ -131,6 +148,14 @@ function decodeUtf32LeLoose(buffer, offset) {
   }
   if ((buffer.length - offset) % 4 !== 0) chunk += '\uFFFD'; // 缺字节
   return out + chunk;
+}
+
+function decodeUtf32LeLoose(buffer, offset) {
+  return decodeUtf32Loose(buffer, offset, true);
+}
+
+function decodeUtf32BeLoose(buffer, offset) {
+  return decodeUtf32Loose(buffer, offset, false);
 }
 
 // 审计残留修复 #50（E15，中危回归）：BOM 锁定编码（宽容版）。
@@ -146,6 +171,10 @@ function decodeBufferWithBomLocked(buffer) {
   // UTF-32LE BOM 的前两字节与 UTF-16LE 相同：必须先判 4 字节（与严格判定同一顺序）
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) {
     return { text: decodeUtf32LeLoose(buffer, 4), encoding: 'utf-32le' };
+  }
+  // TC-5（五-L7）：UTF-32BE 与 LE 对称 —— 00 00 FE FF 一旦命中，载荷坏了也只按 UTF-32BE 宽容解
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32BE)) {
+    return { text: decodeUtf32BeLoose(buffer, 4), encoding: 'utf-32be' };
   }
   if (buffer.length >= 2 && buffer.subarray(0, 2).equals(BOM_UTF16LE)) {
     return { text: new TextDecoder('utf-16le').decode(buffer.subarray(2)), encoding: 'utf-16le' };
@@ -239,6 +268,9 @@ function utf16TextScore(buffer, littleEndian) {
 function detectBomlessUtf16(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < UTF16_MIN_CODE_UNITS * 2) return null;
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) return null;
+  // TC-5（五-L7）：UTF-32BE 的正文按 16 位 BE 读也只有一半落在 CJK 区（高分字节是 0x0000），
+  // 本来过不了 0.98 的阈值；这里显式按 BOM 排除，避免将来阈值调整时把它抢成 UTF-16BE。
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32BE)) return null;
   if (buffer.length >= 3 && buffer.subarray(0, 3).equals(BOM_UTF8)) return null;
   if (buffer.length >= 2 && (buffer.subarray(0, 2).equals(BOM_UTF16LE) || buffer.subarray(0, 2).equals(BOM_UTF16BE))) {
     return null;
@@ -253,6 +285,7 @@ function detectBomlessUtf16(buffer) {
 function hasAnyBom(buffer) {
   if (buffer.length >= 3 && buffer.subarray(0, 3).equals(BOM_UTF8)) return true;
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32LE)) return true;
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(BOM_UTF32BE)) return true;
   if (buffer.length >= 2 && (buffer.subarray(0, 2).equals(BOM_UTF16LE) || buffer.subarray(0, 2).equals(BOM_UTF16BE))) {
     return true;
   }

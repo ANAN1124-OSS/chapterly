@@ -52,6 +52,32 @@ test('解码（审计 #50 / E15）：UTF-32LE BOM 先于 UTF-16LE 判定，不�
   assert.equal(decodeBufferStrict(partial), null);
 });
 
+// TC-5（五-L7）：E15 补了 UTF-32LE，大端 00 00 FE FF 是对称缺口 —— 旧实现四个 BOM 分支全不命中，
+// 严格 UTF-8 失败后按「含 0 字节」判二进制（导入直接报 NOT_TEXT）。这里钉住与 LE 同一口径。
+test('解码（TC-5 / 五-L7）：UTF-32BE BOM 与 LE 对称支持，不落 GB18030 / 二进制闸门', () => {
+  const text = '第一章 雪夜';
+  const utf32be = Buffer.alloc(4 + Array.from(text).length * 4);
+  Buffer.from([0x00, 0x00, 0xfe, 0xff]).copy(utf32be, 0);
+  Array.from(text).forEach((ch, index) => {
+    utf32be.writeUInt32BE(ch.codePointAt(0), 4 + index * 4);
+  });
+  assert.equal(decodeBuffer(utf32be), text, 'UTF-32BE 必须解成原文，而不是 NUL 夹 GB18030 乱码');
+  assert.equal(decodeBuffer(utf32be).includes('\u0000'), false);
+  assert.equal(decodeBufferStrict(utf32be), text);
+  assert.deepEqual(decodeBufferWithEncoding(utf32be), { text, encoding: 'utf-32be' });
+  // 坏码点（代理区）严格解码返回 null；BOM 锁定宽容只把坏码点变 U+FFFD，其余正文照旧可读
+  const bad = Buffer.alloc(4 + 3 * 4);
+  Buffer.from([0x00, 0x00, 0xfe, 0xff]).copy(bad, 0);
+  bad.writeUInt32BE('中'.codePointAt(0), 4);
+  bad.writeUInt32BE(0xd800, 8);
+  bad.writeUInt32BE('文'.codePointAt(0), 12);
+  assert.equal(decodeBufferStrict(bad), null);
+  assert.deepEqual(decodeBufferWithEncoding(bad), { text: '中\uFFFD文', encoding: 'utf-32be', replacements: 1 });
+  // 缺字节同样严格回 null（不产出半截字符）
+  const partial = Buffer.concat([Buffer.from([0x00, 0x00, 0xfe, 0xff]), Buffer.alloc(2)]);
+  assert.equal(decodeBufferStrict(partial), null);
+});
+
 test('解码（审计 #50 / E15）：删掉不可达的 latin1 兜底；严格解码不产出替换符，U+FFFD 只能是原文', () => {
   // 单字节 0xFF：既不是合法 UTF-8，也不是合法 GB18030 → 严格解码 null；宽容解码用 U+FFFD
   assert.equal(decodeBufferStrict(Buffer.from([0xff])), null);

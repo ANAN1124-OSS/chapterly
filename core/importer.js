@@ -583,11 +583,21 @@ function hasUtf16Bom(buffer) {
   return (buffer[0] === 0xff && buffer[1] === 0xfe) || (buffer[0] === 0xfe && buffer[1] === 0xff);
 }
 
-// 编码闸门（纯逻辑）：纯文本里不该有 NUL 字节。带 BOM 的 UTF-16 本来就一半是 0，放过；
+// TC-5（五-L7）：UTF-32BE 的 BOM 是 00 00 FE FF —— 前两字节不是任何 UTF-16 BOM，旧实现直接
+// 落到「含 0 字节」判成二进制（导入报 NOT_TEXT）。与 UTF-16 同口径：BOM 一旦认出就放过。
+function hasUtf32Bom(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return false;
+  return (
+    (buffer[0] === 0x00 && buffer[1] === 0x00 && buffer[2] === 0xfe && buffer[3] === 0xff) ||
+    (buffer[0] === 0xff && buffer[1] === 0xfe && buffer[2] === 0x00 && buffer[3] === 0x00)
+  );
+}
+
+// 编码闸门（纯逻辑）：纯文本里不该有 NUL 字节。带 BOM 的 UTF-16 / UTF-32 本来就一半是 0，放过；
 // 其它含 0x00 的一律当二进制 / 坏编码，不去解码，免得导进来一本乱码书。
 function isProbablyBinary(buffer) {
   if (!Buffer.isBuffer(buffer) || !buffer.length) return false;
-  if (hasUtf16Bom(buffer)) return false;
+  if (hasUtf16Bom(buffer) || hasUtf32Bom(buffer)) return false;
   return buffer.includes(0);
 }
 

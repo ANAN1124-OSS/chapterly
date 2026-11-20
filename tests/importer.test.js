@@ -384,6 +384,10 @@ test('导入边界：编码闸门（纯逻辑）——含 NUL 的当二进制，
   assert.equal(importer.isProbablyBinary(utf16le), false);
   assert.equal(importer.hasUtf16Bom(Buffer.from([0xfe, 0xff, 0x00])), true);
   assert.equal(importer.hasUtf16Bom(Buffer.from([0xef, 0xbb, 0xbf])), false);
+  // TC-5（五-L7）：UTF-32BE 的 00 00 FE FF 同样「本来就一半是 0」，不能当二进制拒掉
+  const utf32be = Buffer.concat([Buffer.from([0x00, 0x00, 0xfe, 0xff]), Buffer.alloc(4)]);
+  assert.equal(importer.isProbablyBinary(utf32be), false, 'UTF-32BE BOM 是文本');
+  assert.equal(importer.isProbablyBinary(Buffer.from([0x00, 0x00, 0x01, 0x02])), true, '只是 NUL 开头、没有 BOM 仍是二进制');
 });
 
 test('导入边界：超过上限的 txt 直接拒绝，不建书、不留临时目录、不建书架目录', async () => {
