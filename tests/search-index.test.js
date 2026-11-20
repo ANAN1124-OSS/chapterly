@@ -1531,3 +1531,65 @@ test('E21（#46）：落盘只有一条串行链 —— doEnsure / load 不再�
   const calls = src.match(/await saveNow\(\);/g) || [];
   assert.equal(calls.length, 0, `仍有 ${calls.length} 处直调 saveNow()`);
 });
+
+// 五-M27（CI-1）：markDirty 与在途 doEnsure 的竞态 —— 书 A 已被本趟 ensure 处理过之后才保存标脏，
+// 旧实现 ensure 尾部无条件把复用窗口重开（lastEnsureAt=now），脏标记在复用路径不被消费：
+// 60 s 窗口内搜索直接用保存前的位图，刚保存的内容静默漏报（违反「位图只会误报、不会漏报」）。
+// 现在尾部只在脏集为空时重开窗口，复用判据也要求脏集为空 —— 标脏必校验。
+test('五-M27（CI-1）：ensure 在途时才标脏的书，ensure 结束后搜索仍会先校验（不静默漏报）', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const { bookPath: bookAPath, meta: bookAMeta } = await makeBook(booksRoot, 'A书', 'A书', [
+    { name: '第一章', text: '青柠色的雨伞挂在门口。' }
+  ]);
+  const { bookPath: bookBPath } = await makeBook(booksRoot, 'B书', 'B书', [
+    { name: '第一章', text: '灰蓝色的窗帘。' }
+  ]);
+
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let triggerReached;
+  const trigger = new Promise((resolve) => {
+    triggerReached = resolve;
+  });
+  let heldOnce = false;
+  // buildBookEntry 的 书目.json / 章节 stat 都直调 fs.stat：在 B 书的书目 stat 上把 ensure 按住，
+  // 让「A 书已按保存前内容处理完」的时序成为确定事实。
+  const realStat = fs.stat;
+  fs.stat = async (target, ...rest) => {
+    if (path.resolve(String(target)) === path.resolve(bookBPath, '书目.json') && !heldOnce) {
+      heldOnce = true;
+      triggerReached();
+      await held;
+    }
+    return realStat(target, ...rest);
+  };
+  const store = makeStore(userData, { validateIntervalMs: 2000 }); // 非 0：搜索侧 60 s 复用窗口生效
+
+  try {
+    const running = store.ensure({ booksRoot });
+    await trigger;
+    // A 书处理完之后作者才保存：改正文 + markDirty（此时 ensure 还没跑完）
+    await fs.writeFile(
+      path.join(bookAPath, bookAMeta.chapters[0].file),
+      '青柠色的雨伞挂在门口。灯芯在风里晃了一下。',
+      'utf8'
+    );
+    store.markDirty(bookAPath);
+    release();
+    await running;
+  } finally {
+    fs.stat = realStat;
+  }
+
+  assert.equal(store.dirtyList().length, 1, 'A 书已被本趟 ensure 处理过，脏标记要留到下一趟');
+  // 旧实现：ensure 尾部把复用窗口重开 → 这次搜索直接复用保存前的位图，0 命中
+  const found = await store.search({ booksRoot, query: '灯芯' });
+  assert.ok(found.results.length >= 1, '刚保存的内容不许在复用窗口里静默漏报');
+  assert.equal(store.dirtyList().length, 0, '搜索前的那趟校验要消费掉脏标记');
+});

@@ -1236,7 +1236,11 @@ function createSearchStore(options = {}) {
     };
     lastFullValidateAt = fullValidate ? nowMs() : lastFullValidateAt;
     // P-01：这次校验是「全部就绪」的，记下窗口起点与签名，后续搜索直接用内存索引。
-    lastEnsureAt = nowMs();
+    // 五-M27（CI-1）：本趟 ensure 期间又被保存标脏的书可能已经在本趟处理过（读到的是保存前的位图），
+    // 脏集非空就不能重开复用窗口 —— 否则搜索在 60 s 内直接复用旧索引、用旧位图把刚保存的内容
+    // 当「不匹配」滤掉（违反「位图只会误报、不会漏报」的不变量）。保持 lastEnsureAt=0，
+    // 下一次 search 立刻再校验一趟，把这批脏书消费掉。
+    lastEnsureAt = dirtyBooks.size === 0 ? nowMs() : 0;
     rootSignature = signature;
     lastSignatureCheckAt = lastEnsureAt;
     if (run.changed || rootChanged) await saveThrough(); // 审计修复 #46（E21）：排进 flush 的串行链
@@ -1346,6 +1350,8 @@ function createSearchStore(options = {}) {
       index.root === searchRoot &&
       index.version === INDEX_VERSION &&
       lastEnsureAt > 0 &&
+      // 五-M27（CI-1）：脏集非空 = 有书保存过但还没重建位图，复用旧索引会漏报，必须先校验。
+      dirtyBooks.size === 0 &&
       now - lastEnsureAt < searchEnsureIntervalMs &&
       !forceEnsure;
     let signatureChanged = false;
