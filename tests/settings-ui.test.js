@@ -227,6 +227,9 @@ function build(options = {}) {
     state,
     api,
     call: async (fn, ...args) => fn(...args),
+    // 信息架构（分区 / 搜索 / 深链）纯逻辑；老用例不传 ia，模块退回一长条设置（行为不变）。
+    // 五-L16（SS-06）的搜索用例要注入真 ia 才能覆盖「按作用域过滤搜索单位」。
+    ia: options.ia || null,
     toast(message, kind) { calls.toast.push([message, kind]); },
     chaptersLib,
     display: {
@@ -1469,4 +1472,61 @@ test('multi=true 保存设置不回写 proofreadWordsPath（V52）', async () =>
   assert.equal(patch.booksRoot, '/书库');
   assert.equal(patch.sensitiveWordsPath, '');
   assert.deepEqual(ctx.calls.toast, [['设置已保存（全局默认）', undefined]]);
+});
+
+// SS-06（五-L16）：设置搜索的计数 / 空态用的是「全部 5 个分区」的单位，而显示时按作用域裁剪 ——
+// 按书设置里搜只存在于「数据」分区的词（快照 / 词表 / 更新…）或搜被字段级 .hidden 藏起来的项时，
+// 状态栏播报「匹配 N 个设置项」，可见区却一片空白，且 empty=false 连「没有匹配的设置」都不显示。
+test('SS-06（五-L16）：设置搜索按作用域与字段级 .hidden 过滤，计数 / 空态与可见区一致', () => {
+  const settingsIa = require('../renderer/settings-ia');
+  const dom = makeDocument();
+  const ctx = build({ dom, scope: 'book', ia: settingsIa });
+  const displaySec = dom.ensure('settings-section-display');
+  const dataSec = dom.ensure('settings-section-data');
+  const visibleRow = makeEl('div');
+  visibleRow.textContent = '正文显示 字体 字号 行距';
+  const hiddenRow = makeEl('div');
+  hiddenRow.textContent = '章号编号方式（按书设置里隐藏）';
+  hiddenRow.classList.add('hidden');
+  displaySec.appendChild(visibleRow);
+  displaySec.appendChild(hiddenRow);
+  const snapshotRow = makeEl('div');
+  snapshotRow.textContent = '写作快照 保留天数';
+  dataSec.appendChild(snapshotRow);
+  const search = dom.ensure('settings-search');
+  const empty = dom.ensure('settings-empty');
+  const status = dom.ensure('settings-search-status');
+  ctx.ui.setupSettingsUi();
+
+  // ① 按书作用域搜「快照」（只在数据分区）：一个都显示不出来 → 不进计数、要显示空态
+  search.value = '快照';
+  search._fire('input');
+  assert.equal(status.textContent, '', '不可见分区的命中不许播报成「匹配 N 个」');
+  assert.equal(empty.classList.contains('hidden'), false, '搜不到可见项时必须显示「没有匹配的设置」空态');
+  assert.equal(dataSec.hidden, true, '数据分区在按书作用域里仍然隐藏');
+  assert.equal(snapshotRow.classList.contains('search-hidden'), false, '不可见分区的行不参与搜索，也不留脏标记');
+
+  // ② 按书作用域搜被字段级 .hidden 藏起来的项：同样不算命中
+  search.value = '编号';
+  search._fire('input');
+  assert.equal(status.textContent, '', '字段级隐藏项不许计入命中数');
+  assert.equal(empty.classList.contains('hidden'), false);
+  assert.equal(hiddenRow.classList.contains('search-hidden'), false);
+
+  // ③ 全局作用域搜「快照」：数据分区可见、播报 1 个、空态收起（正常命中口径不变）
+  ctx.state.settingsScope = 'global';
+  search.value = '快照';
+  search._fire('input');
+  assert.equal(status.textContent, '匹配 1 个设置项');
+  assert.equal(empty.classList.contains('hidden'), true);
+  assert.equal(dataSec.hidden, false, '全局作用域里数据分区照常露出来');
+  assert.equal(snapshotRow.classList.contains('search-hidden'), false);
+  assert.equal(visibleRow.classList.contains('search-hidden'), true, '没命中的行照常收起');
+
+  // ④ 清空搜索：所有行（含被过滤掉的分区）的 search-hidden 标记都要清掉，切作用域不残留
+  search.value = '';
+  search._fire('input');
+  assert.equal(snapshotRow.classList.contains('search-hidden'), false);
+  assert.equal(visibleRow.classList.contains('search-hidden'), false);
+  assert.equal(hiddenRow.classList.contains('search-hidden'), false);
 });

@@ -175,10 +175,15 @@
 
   // 搜索时把「分区里的每个顶层块」当成一行：field-group 标题算分组，其余都算行。
   // 行的文本用 textContent（label + 说明文字一起匹配），分组标题用于「命中整组」。
+  // 五-L16（SS-06）：搜索单位先按当前作用域与字段级 .hidden 过滤 —— 被作用域裁掉的分区、被作用域
+  // 逐项隐藏的字段无论如何都不会显示，让它们参与命中计数只会出现「匹配 N 个设置项」但可见区一片空白
+  // （empty=false 连空态块都不出）。
   function settingsSearchUnits() {
     const units = [];
     if (!ia) return units;
+    const allowed = ia.sectionsForScope(state.settingsScope);
     for (const tab of ia.TAB_IDS) {
+      if (allowed.indexOf(tab) < 0) continue;
       const section = settingsSectionNode(tab);
       if (!section || !section.children) continue;
       let groupId = tab + ':0';
@@ -186,6 +191,7 @@
       let rowIndex = 0;
       for (const child of Array.from(section.children)) {
         if (!child) continue;
+        if (child.hidden === true || (child.classList && child.classList.contains('hidden'))) continue;
         const isGroup = Boolean(child.classList && child.classList.contains('field-group'));
         if (isGroup) {
           groupIndex += 1;
@@ -198,6 +204,19 @@
       }
     }
     return units;
+  }
+
+  // 清掉上一次搜索留在所有分区行上的 search-hidden（过滤后的单位集合可能不含上次的某些行，
+  // 只按当前 units 清会留下过期标记；切作用域 / 清空搜索时都要先整表清一遍）。
+  function clearSettingsSearchMarks() {
+    if (!ia) return;
+    for (const tab of ia.TAB_IDS) {
+      const section = settingsSectionNode(tab);
+      if (!section || !section.children) continue;
+      for (const child of Array.from(section.children)) {
+        if (child && child.classList) child.classList.remove('search-hidden');
+      }
+    }
   }
 
   function settingsSearchInput() {
@@ -215,6 +234,8 @@
     if (!ia) return;
     const input = settingsSearchInput();
     const query = input ? String(input.value || '') : '';
+    // 五-L16（SS-06）：先整表清掉上次的搜索标记，再按「当前作用域 + 字段级 .hidden」过滤后的单位重算
+    clearSettingsSearchMarks();
     const units = settingsSearchUnits();
     const plan = ia.planSearch(query, units);
     const clearBtn = $('btn-settings-search-clear');
