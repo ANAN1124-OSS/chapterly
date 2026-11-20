@@ -450,6 +450,8 @@ function splitChapters(text) {
 // title = 原文标题行（去掉首尾空白），body = 该标题之后到下一标题之前的原文（不做 trim，保留空行）。
 // 用于「按原文章节导入」：章名和正文都保持原样。
 // 第一个标题之前的书名/作者/简介等，会并入第一章正文，避免多出一个原文没有的「开篇」章。
+// 并入口径 = 原文去掉标题行（标题行连同它自己的换行一起去掉，其余字符一个不动；含纯空白前言，
+// 见 TC-8 / 五-L8）。
 function splitChaptersRaw(text) {
   const normalized = normalizeText(text);
   const lines = normalized.split('\n');
@@ -467,7 +469,10 @@ function splitChaptersRaw(text) {
     const start = marks[i].index + 1;
     const end = i + 1 < marks.length ? marks[i + 1].index : lines.length;
     let body = lines.slice(start, end).join('\n');
-    if (i === 0 && preface.trim()) body = `${preface}\n${body}`;
+    // TC-8（五-L8）：判据是「标题前有没有行」，不是「前言 trim 后是否为空」——
+    // 纯空白前言（文件开头留白 / 单个空行，甚至前言 join 出来就是空串）同样是原文的一部分，
+    // 旧实现按 preface.trim() 判假整段丢弃，与 chapters 模式「正文一字不改」的承诺不符。
+    if (i === 0 && marks[0].index > 0) body = `${preface}\n${body}`;
     parts.push({ title: marks[i].title, body });
   }
   return parts;

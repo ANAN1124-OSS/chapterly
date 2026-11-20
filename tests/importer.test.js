@@ -263,6 +263,24 @@ test('默认「按原文章节导入」：章名照抄原文、正文原样保�
   assert.equal((await storage.loadChapterText(res.imported[0].path, meta.chapters[1].file)).text, '\n正文二\n');
 });
 
+// TC-8（五-L8）：源文件以空行开头（抓取 / 排版常见的文件头留白）时，旧实现按 preface.trim()
+// 判假把纯空白前言整段丢弃 —— 与默认 chapters 模式「正文一字不改」的承诺不符。
+test('TC-8（五-L8）：文件开头的纯空白前言原样并入第一章，正文 = 原文去掉标题行', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '带留白前言');
+  await fs.mkdir(src);
+  const title = '第一章 起';
+  const original = `\n\n${title}\n\n正文`;
+  await fs.writeFile(path.join(src, '留白.txt'), original, 'utf8');
+
+  const res = await importer.importFolders(path.join(base, '书架'), [src]);
+  assert.equal(res.imported.length, 1);
+  const meta = await storage.readBookMeta(res.imported[0].path);
+  const text = (await storage.loadChapterText(res.imported[0].path, meta.chapters[0].file)).text;
+  assert.equal(text, original.replace(`${title}\n`, ''), '正文必须逐字等于原文去掉标题行');
+  assert.equal(text, '\n\n\n正文', '开头的两行留白不许静默吞掉');
+});
+
 test('C25/WP-24：按原文章节导入的 chars 只算正文（不含标题行），书架字数 = 各章正文之和', async () => {
   const base = await mkTmp();
   const src = path.join(base, '字数口径');

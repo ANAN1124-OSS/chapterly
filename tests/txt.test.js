@@ -230,6 +230,24 @@ test('切章：CRLF 与空章都能处理', () => {
   assert.equal(parts[2].text, '内容三');
 });
 
+// TC-8（五-L8）：默认 chapters 模式承诺「正文一字不改」，但纯空白前言被 preface.trim() 判假后整段丢弃。
+// 正文口径 = 原文去掉标题行（标题行连同它自己的换行一起去掉，其余一个字符不动）。
+test('原样切章：文件开头的纯空白前言原样保留，正文 = 原文去掉标题行（TC-8 / 五-L8）', () => {
+  const titled = '第一章 起';
+  const multi = `\n\n${titled}\n\n正文`;
+  const parts = splitChaptersRaw(multi);
+  assert.equal(parts.length, 1);
+  assert.equal(parts[0].title, titled);
+  assert.equal(parts[0].body, '\n\n\n正文', '两行空白前言 + 标题换行之后的部分，逐字保留');
+  assert.equal(parts[0].body, multi.replace(`${titled}\n`, ''), '正文 = 原文去掉标题行');
+  // 单行留白：preface 本身是空串，但标题前的那一个换行仍属于正文
+  assert.equal(splitChaptersRaw(`\n${titled}\n正文`)[0].body, '\n正文');
+  // 标题就在首行：没有前言，不许凭空多出空行
+  assert.equal(splitChaptersRaw(`${titled}\n正文`)[0].body, '正文');
+  // 只有空格的前言行同样保留
+  assert.equal(splitChaptersRaw(`  \n${titled}\n正文`)[0].body, '  \n正文');
+});
+
 test('原样切章：章名照抄原文标题、正文不做 trim', () => {
   const text = '第1章 开端\n\n正文一，带 空格。\n\n第2章 转折\n\n正文二\n';
   const parts = splitChaptersRaw(text);
