@@ -1580,10 +1580,18 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     // 书目没写成功 = 这次撤销没有发生：刚放回的章节重新移回 _trash，补章也放回原处。
     // 放不回去时在错误里说清文件现在在哪（绝不静默）。
     const notes = [];
+    let rollbackFailed = false;
     try {
       await fs.rename(target, source);
     } catch {
-      notes.push(`「${file}」现在在书文件夹里，_trash 里那一份也还在`);
+      // 五-M31（IPC-01）：:1544 是 move 不是 copy —— 回滚失败时 _trash 里已经**没有**这一份，
+      // 磁盘上唯一副本是书文件夹里这个还没登记进书目的 txt。旧注记却声称「_trash 里那一份也还在」，
+      // 与事实相反，可能诱导作者把唯一副本当垃圾清掉。这里如实描述位置 + 给可操作补救。
+      rollbackFailed = true;
+      notes.push(
+        `「${file}」现在只在书文件夹里（_trash 里的那一份已经移走，这里是唯一副本），` +
+          '还没有登记进书目；请用「从目录重建」把它登记回去，别把这个文件当垃圾删掉'
+      );
     }
     if (autoTrashPath) {
       try {
@@ -1592,7 +1600,11 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
         notes.push(`自动补的「${autoChapter.file}」在 ${trashDirLabel(trashDir)} 里`);
       }
     }
-    throw batchFailure(err, { code: 'RESTORE_FAILED', action: '撤销删除', notes });
+    const failure = batchFailure(err, { code: 'RESTORE_FAILED', action: '撤销删除', notes });
+    // 五-M31（IPC-01）：回滚也失败时原地重试必然撞 RESTORE_MISSING / RESTORE_TARGET_EXISTS
+    // 两条与注记矛盾的错误；标记「不要再放回撤销凭证」，让界面只给这一份如实的恢复指引。
+    if (rollbackFailed) failure.restoreOrphan = true;
+    throw failure;
   }
 }
 

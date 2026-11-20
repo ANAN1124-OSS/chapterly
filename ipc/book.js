@@ -226,7 +226,10 @@ function registerBookIpc(host) {
     try {
       return await storage.restoreDeletedChapterFromTrash(bookPath, clean);
     } catch (err) {
-      restoreTokens.release(claim.record);
+      // 五-M31（IPC-01）：回滚也失败（唯一副本留在书文件夹、_trash 已无备份）时不要把凭证放回去 ——
+      // 那种现场原地重试必然撞 RESTORE_MISSING / RESTORE_TARGET_EXISTS，给出与恢复指引矛盾的
+      // 第二条错误。其余失败（占用 / 书目暂时写不进去）照旧放回，作者修好现场还能再撤一次。
+      if (!(err && err.restoreOrphan)) restoreTokens.release(claim.record);
       throw err;
     }
   }, {

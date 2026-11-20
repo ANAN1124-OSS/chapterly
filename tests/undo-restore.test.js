@@ -313,7 +313,8 @@ const deleteThroughIpc = async (bookPath, chapterId) => {
 };
 
 // 与 main.js 的 handleBook('chapter:restore-deleted') 同形：先白名单，再验撤销凭证（一次性），
-// 最后下传 storage；storage 失败时把凭证放回去（作者还能再试）。
+// 最后下传 storage；storage 失败时把凭证放回去（作者还能再试）——五-M31 起「回滚也失败」的
+// 孤儿现场除外（err.restoreOrphan：_trash 已无备份，重试只会给矛盾错误，与生产 handler 同步）。
 // （main.js 的 handler 是 async，校验层的同步抛错在那里会变成 rejected promise，交给 fail()；
 //  这里同样用 async 包一层，测试口径与真实 IPC 一致。）
 const restoreThroughIpc = async (bookPath, payload) => {
@@ -325,7 +326,7 @@ const restoreThroughIpc = async (bookPath, payload) => {
   try {
     return await storage.restoreDeletedChapterFromTrash(bookPath, clean);
   } catch (err) {
-    restoreTokens.release(claim.record);
+    if (!(err && err.restoreOrphan)) restoreTokens.release(claim.record);
     throw err;
   }
 };
@@ -569,4 +570,66 @@ test('撤销删除：自动补章被换成超大文件 → 不读内容、按非
   assert.deepEqual(after.chapters.map((c) => c.file), [chapter.file, autoFile], '原章放回、补章保留');
   assert.equal((await storage.loadChapterText(bookPath, chapter.file)).text, '唯一的一章');
   await fs.truncate(autoPath, 0).catch(() => {});
+});
+
+// 五-M31（IPC-01）：撤销删除的双重失败分支（书目写盘失败 → 回滚 rename 也失败）——
+// :1544 是 move 不是 copy，此刻 _trash 里已经没有这一份，唯一副本是书文件夹里「未登记进书目」的
+// 孤儿 txt。旧注记却声称「_trash 里那一份也还在」，与磁盘事实相反，可能诱导作者把唯一副本当
+// 垃圾清掉；凭证还会被放回去鼓励重试，而重试必然撞 RESTORE_MISSING / RESTORE_TARGET_EXISTS
+// 两条互相矛盾的错误。现在：注记如实描述磁盘状态 + 可操作补救，凭证不再放回（避免误导重试）。
+test('五-M31（IPC-01）：回滚也失败时注记如实描述唯一副本，且不再放回撤销凭证', async () => {
+  const root = await mkTmp();
+  const { bookPath, meta } = await makeBook(root);
+  const chapter = snapshot(meta, 1);
+  await storage.saveChapterText(bookPath, chapter.file, '第二章正文');
+  const deleted = await deleteThroughIpc(bookPath, chapter.id);
+  const trashName = path.basename(deleted.trashPath);
+  const payload = { trashName, undoToken: deleted.undoToken, index: 1, chapter };
+  const targetPath = path.join(bookPath, chapter.file);
+  const trashDir = path.join(bookPath, '_trash');
+
+  const realRename = fs.rename;
+  fs.rename = async (from, to) => {
+    // 书目写盘失败：atomicWriteFile 的 tmp → 书目.json 这一步
+    if (path.basename(String(to)) === '书目.json') {
+      throw Object.assign(new Error('EPERM: 模拟书目写盘失败'), { code: 'EPERM' });
+    }
+    // 回滚：把刚放回的章节移回 _trash —— 也失败（文件被占用 / 同步盘锁住）
+    if (String(from) === targetPath && String(to).startsWith(trashDir + path.sep)) {
+      throw Object.assign(new Error('EBUSY: 模拟回滚被占用'), { code: 'EBUSY' });
+    }
+    return realRename(from, to);
+  };
+  let failure;
+  try {
+    await assert.rejects(
+      () => restoreThroughIpc(bookPath, payload),
+      (err) => {
+        failure = err;
+        return err.code === 'RESTORE_FAILED';
+      }
+    );
+  } finally {
+    fs.rename = realRename;
+  }
+
+  assert.ok(failure);
+  assert.doesNotMatch(failure.message, /也还在/, '不许声称 _trash 里还有第二份（move 不是 copy）');
+  assert.match(failure.message, /只在书文件夹里/, '要如实说明唯一副本在哪');
+  assert.match(failure.message, /还没有登记进书目/, '要说明它还没登记进书目');
+  assert.match(failure.message, /从目录重建/, '要给出可操作的补救');
+  // 与磁盘事实一致：书文件夹里是唯一副本（正文还在），_trash 里没有；书目里也还没登记
+  assert.ok((await fs.readFile(targetPath, 'utf8')).includes('第二章正文'));
+  await assert.rejects(() => fs.access(path.join(trashDir, trashName)), (err) => err.code === 'ENOENT');
+  assert.equal(
+    (await storage.readBookMeta(bookPath)).chapters.some((c) => c.file === chapter.file),
+    false,
+    '书目里还没登记这份孤儿正文'
+  );
+
+  // 凭证不再放回：重试会明确说「撤销凭证无效」，而不是撞 RESTORE_MISSING 再给一条矛盾指引
+  await assert.rejects(
+    () => restoreThroughIpc(bookPath, payload),
+    (err) => err.code === 'RESTORE_TOKEN_INVALID'
+  );
 });
