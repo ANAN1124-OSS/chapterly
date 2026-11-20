@@ -8,29 +8,85 @@ const { contextBridge, ipcRenderer } = require('electron');
 // 这层实现刻意保持小而有界；行为由 tests/wp18-low-batch.test.js › R13 逐条钉住。
 // （函数刻意自包含：R13 的锚点从 preload.js 里抽出这一只函数直接跑行为，不希望它依赖模块级常量。）
 function sanitizeTransportMessage(value) {
+  // 五-L20（MC-1）：传输层脱敏与 core/error-text 的现行口径对齐 —— 旧实现「遇空白就断」：
+  // `C:\Users\Zhang San\Documents\我的小说\书\001-第 1 章.txt` 只遮到 `…\Zhang`，用户名 / 书名
+  // 原样漏进渲染层；正斜杠 UNC `//server/share/x`、`\\?\` 设备前缀、编码盘符 `C%3A%5C…` 整条漏出。
+  // sandbox preload 只能 require electron，这里自包含一份同语义实现（找起点 → 逐字符判结尾 → 只留
+  // 最后一节）；行为由 tests/wp18-low-batch.test.js › R13 逐条钉住（含这些形状）。
   const MAX_CHARS = 400;
   // 控制字符（含 DEL）；保留 \t \n 之外的一律清掉，和 core/error-text 同口径。
   const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
-  // 路径尾遇到这些字符就停（空白 + 界面文案常用的标点 / 括号）；ASCII 冒号保留给 `file:///D:/…`。
-  const PATH_STOP = String.raw`\u0000-\u001f<>|*?'"\[\]{}「」『』（）【】《》，。；：、！？,;=\s`;
-  // 三类绝对路径起点：盘符 / UNC / file://；POSIX 单列（要保留前缀空白 / 括号）。
-  const PATH_START_RE = new RegExp(
-    String.raw`(?:[A-Za-z]:[\\/]|\\\\[^\s\\]+\\|file:/{1,3})[^${PATH_STOP}]*`,
-    'g'
-  );
-  const POSIX_START_RE = new RegExp(String.raw`(^|[\s(（「【])(\/[^\s\/]+\/[^${PATH_STOP}]*)`, 'g');
+  // 路径里遇到这些字符就结束（ASCII 括号保留：`Program Files (x86)` 是真实目录名）。
+  const PATH_STOP_RE = /[\u0000-\u001f<>|*?'"\[\]{}「」『』（）【】《》，。；：、！？,;=]/;
+  const ASCII_PATH_TOKEN_RE = /^[A-Za-z0-9_.~%+-]+$/;
+  const EXT_PATH_TOKEN_RE = /^[^\s'"<>|*?/\\]+\.[A-Za-z0-9]{1,8}$/;
+  const FILE_SEGMENT_RE = /\.[A-Za-z0-9]{1,8}(?=$|[:)])/;
+  const ABSOLUTE_START_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/|\/[^\s/])/;
+  const TOKEN_STOP_RE = /[\s'"<>|*?\[\]{}「」『』（）【】《》，。；：、！？,;=]/;
+  // 绝对路径起点：盘符 / 编码盘符（%3A + %5C|%2F）/ `\\?\` 设备前缀 / 反斜杠 UNC / 正斜杠 UNC / file URL。
+  const START_PATTERN = String.raw`(?:[A-Za-z]:[\\/]|[A-Za-z](?:%3A|%3a)(?:%5C|%5c|%2F|%2f)|\\\\\?\\|\\\\[^\s\\]+\\|file:\/{1,3}|\/{2}[^\s\\/]+\/)`;
   const tailOf = (pathText) => {
     const parts = String(pathText)
       .replace(/^file:\/{0,3}/i, '')
-      .split(/[\\/]+/)
+      .split(/(?:%5C|%5c|%2F|%2f|[\\/])+/)
       .filter(Boolean);
     return parts.length ? `…\\${parts[parts.length - 1]}` : '…';
   };
+  // 空格之后的下一个「词」（到界面标点 / 引号 / 空白为止）
+  function nextPathToken(text) {
+    let i = 0;
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    if (i >= text.length) return null;
+    let end = i;
+    while (end < text.length && !TOKEN_STOP_RE.test(text[end])) end += 1;
+    const token = text.slice(i, end);
+    return token ? { token, rest: text.slice(end) } : null;
+  }
+  // 空格后面这个词还算不算同一条路径的一段：另一条绝对路径 → 不算；自带分隔符 / 带 ASCII 扩展名 →
+  // 算；纯 ASCII 词（Zhang / San / 1）→ 算（用户名里的空格不能被当成路径结束）；中文正文 → 不算。
+  function isPathContinuationToken(token, previousSegment) {
+    if (!token) return false;
+    if (ABSOLUTE_START_RE.test(token)) return false;
+    if (token[0] === '/' || token[0] === '\\') return false;
+    if (token.includes('\\') || token.includes('/')) return true;
+    if (EXT_PATH_TOKEN_RE.test(token)) return true;
+    if (FILE_SEGMENT_RE.test(String(previousSegment || ''))) return false;
+    return ASCII_PATH_TOKEN_RE.test(token);
+  }
+  function readPathEnd(text, from) {
+    let end = from;
+    while (end < text.length) {
+      const ch = text[end];
+      if (PATH_STOP_RE.test(ch)) break;
+      if (ch === ' ' || ch === '\t') {
+        const next = nextPathToken(text.slice(end + 1));
+        const lastSegment = text.slice(from, end).split(/[\\/]/).pop() || '';
+        if (!next || !isPathContinuationToken(next.token, lastSegment)) break;
+        end += 1;
+        continue;
+      }
+      end += 1;
+    }
+    return end;
+  }
   const text = typeof value === 'string' ? value : value == null ? '' : String(value);
   if (!text) return '';
   let out = text.replace(CONTROL_RE, '');
-  out = out.replace(PATH_START_RE, (matched) => tailOf(matched));
-  out = out.replace(POSIX_START_RE, (_matched, prefix, pathText) => prefix + tailOf(pathText));
+  const startRe = new RegExp(START_PATTERN, 'gi');
+  let masked = '';
+  let cursor = 0;
+  for (const match of out.matchAll(startRe)) {
+    const start = match.index;
+    if (start < cursor) continue;
+    // `\\?\` 里的 `?` 是 PATH_STOP 字符：剥掉设备前缀再往后读（与 core/error-text 的 maskDevicePaths 同口径）
+    const scanFrom = match[0].startsWith('\\\\?\\') ? start + 4 : start;
+    const end = Math.max(readPathEnd(out, scanFrom), start + match[0].length);
+    masked += out.slice(cursor, start) + tailOf(out.slice(start, end));
+    cursor = end;
+  }
+  out = masked + out.slice(cursor);
+  // POSIX 单斜杠路径：保留前缀（行首 / 空白 / 括号），只把中间段遮掉
+  out = out.replace(new RegExp(String.raw`(^|[\s(（「【])(\/[^\s\/]+\/[^\s]*)`, 'g'), (_matched, prefix, pathText) => prefix + tailOf(pathText));
   if (out.length > MAX_CHARS) out = `${out.slice(0, MAX_CHARS - 1)}…`;
   return out;
 }

@@ -768,6 +768,24 @@ test('R13 C4：preload 传输层异常文案过脱敏（盘符 / UNC / file URL 
   assert.equal(sanitize('打开失败 \\\\server\\share\\书\\ch1.txt 不存在'), '打开失败 …\\ch1.txt 不存在');
   // file:// URL
   assert.equal(sanitize('file:///D:/写书/导出/书.epub 打不开'), '…\\书.epub 打不开');
+  // 五-L20（MC-1）：传输层与 core/error-text 的现行口径对齐 —— 旧实现「遇空白就断」，
+  // 含空格的路径只遮住前半截（用户名 / 书名原样漏出），正斜杠 UNC / 设备前缀 / 编码盘符整条漏出。
+  assert.equal(
+    sanitize("Error invoking remote method 'book:open': ENOENT: D:\\Users\\Zhang San\\Documents\\我的小说\\书\\001-第 1 章.txt"),
+    "Error invoking remote method 'book:open': ENOENT: …\\001-第 1 章.txt",
+    '含空格的本机路径必须整条遮住，只留最后一节'
+  );
+  assert.equal(sanitize('打开失败 //server/share/书/ch1.txt 不存在'), '打开失败 …\\ch1.txt 不存在', '正斜杠 UNC 同样收口');
+  assert.equal(
+    sanitize('打开失败 C%3A%5CUsers%5CZhang%5C我的小说%5C书%5Cch1.txt 不存在'),
+    '打开失败 …\\ch1.txt 不存在',
+    '编码盘符（%3A / %5C）同样收口'
+  );
+  assert.equal(
+    sanitize('\\\\?\\D:\\写书\\导出\\书.epub 打不开'),
+    '…\\书.epub 打不开',
+    '设备前缀 \\\\?\\ 同样收口'
+  );
   // 控制字符清掉；没有本机路径的文案一个字节不动
   assert.equal(sanitize('通道\u0000未注册\u001f'), '通道未注册');
   assert.equal(sanitize("Error invoking remote method 'chapter:save': Error: 磁盘空间不足"), "Error invoking remote method 'chapter:save': Error: 磁盘空间不足");
