@@ -43,6 +43,8 @@ const REQUIRED_HOST = [
   'path',
   'shell',
   'getConfig',
+  // 五-L1（CI-2）：删书成功后按书目 id 清掉这本书的显示覆盖（config.json 的 bookDisplay）
+  'getConfigStore',
   'flowSession',
   'sessionById',
   'focusSession',
@@ -64,7 +66,7 @@ function registerBookIpc(host) {
     handle, handleBook, storage, repair,
     importer, openBooksLib, ipcLimits, ipcPaths,
     ipcRestoreToken, restoreTokens, errorText, pathUtils,
-    fs, path, shell, getConfig,
+    fs, path, shell, getConfig, getConfigStore,
     flowSession, sessionById, focusSession, flushLastOpenBeforeRead,
     lastOpenWrites, bookKeyOf, rememberRecentBook, notifyShelfChanged,
     sendToFlow, logError, showOpenDialog, automation,
@@ -348,6 +350,15 @@ function registerBookIpc(host) {
       if (!(await storage.exists(path.join(target, storage.BOOK_FILE)))) {
         throw new storage.StorageError('NOT_A_BOOK', '这不是一本书（文件夹里没有 书目.json）');
       }
+      // 五-L1（CI-2）：删书后这本书的按书显示覆盖（字体 / 纸色 / 字号…）已经没有归属，按书目
+      // meta.id 一并清掉。id 读不出来（书目坏了）就当没有可清的条目 —— 删除语义不变。
+      let displayBookId = '';
+      try {
+        const meta = await storage.readBookMeta(target);
+        displayBookId = String((meta && meta.id) || '').trim();
+      } catch {
+        /* 坏书目没有可信 id：跳过显示覆盖清理，删除照常 */
+      }
       let result;
       // 测试环境用固定兜底路径，避免把测试数据丢进你的回收站
       if (isE2E) {
@@ -372,6 +383,15 @@ function registerBookIpc(host) {
       // A4（审计 #11 / O3、P6）：这本书的锁条目（若有）也一并回收；在飞的链留到 settle 后自己回收。
       // 当前这条删除链正在跑（pending > 0），clearIdle 只清空闲条目，不会把正在跑的锁拆掉。
       storage.clearBookLock(target);
+      // 五-L1（CI-2）：显示覆盖随书一起作废（config.json 不再随「曾经调过显示设置的书数」单调增长）。
+      // 清不掉只留一条 warn：书已经删掉了，配置收尾失败不许把删除结果改判成失败。
+      if (displayBookId) {
+        try {
+          await getConfigStore().resetBookDisplay(displayBookId);
+        } catch (err) {
+          logError('book-delete', err, { level: 'warn', code: 'BOOK_DISPLAY_RESET_FAILED' });
+        }
+      }
       return result;
     });
   }, { mutation: MUTATION.DELETE });

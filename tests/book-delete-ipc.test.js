@@ -18,8 +18,10 @@ async function mkTmp() {
 
 // 装配真实的 ipc/book.js，只把 Electron / 窗口 / 配置这些宿主替换成最小桩：
 // handle / handleBook 收到的频道函数按名字存进 Map，测试直接调 book:delete。
-function makeHost(root) {
+function makeHost(root, options = {}) {
   const channels = new Map();
+  const logs = [];
+  const defaultStore = { resetBookDisplay: async () => true };
   const host = {
     handle: (name, fn) => { channels.set(name, fn); },
     handleBook: (name, fn) => { channels.set(name, fn); },
@@ -41,6 +43,8 @@ function makeHost(root) {
     path,
     shell: { trashItem: async () => {} },
     getConfig: async () => ({ booksRoot: root }),
+    // 五-L1（CI-2）：删书成功后按 meta.id 清掉这本书的显示覆盖（configStore 由 main.js 注入）
+    getConfigStore: () => options.configStore || defaultStore,
     flowSession: () => null,
     sessionById: () => null,
     focusSession: () => {},
@@ -50,13 +54,15 @@ function makeHost(root) {
     rememberRecentBook: () => {},
     notifyShelfChanged: () => {},
     sendToFlow: () => {},
-    logError: () => {},
+    logError: (kind, err, meta) => { logs.push([kind, err && err.message, meta && meta.code, meta && meta.level]); },
     showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
     automation: { enabled: false },
     isE2E: true
   };
-  bookIpc.register(host);
-  return channels;
+  const registered = bookIpc.register(host) || channels;
+  // 既有调用点按 Map 用（channels.get(channel)）；另挂 logs 给新用例看留痕，不改变返回形状
+  registered.logs = logs;
+  return registered;
 }
 
 test('book:delete：_trash / _碎片 / 无书目的文件夹不许当书删，真书仍走兜底删除（S1）', async () => {
@@ -87,4 +93,49 @@ test('book:delete：_trash / _碎片 / 无书目的文件夹不许当书删，�
   assert.equal(result.folder, path.basename(bookPath));
   assert.equal(await storage.exists(bookPath), false);
   assert.ok(result.trashPath.startsWith(path.join(root, '_trash')));
+});
+// CI-2（五-L1）：每本书的显示覆盖（bookDisplay[meta.id]）过去只有「渲染层主动重置显示设置」一个
+// 删除入口 —— 删书后该 id 永久留在 config.json，条目随「曾经调过显示设置的书数」单调增长，
+// 每次写配置（窗口位置防抖 / lastBook 自动写）都整份重写。删书成功时按书目 id 一并清掉。
+test('五-L1（CI-2）：删书成功后按书目 id 清掉这本书的显示覆盖', async () => {
+  const root = await mkTmp();
+  const resets = [];
+  const channels = makeHost(root, {
+    configStore: {
+      resetBookDisplay: async (id) => { resets.push(id); return true; }
+    }
+  });
+  const created = await storage.createBook(root, '调过字体的书');
+  const result = await channels.get('book:delete')(created.path);
+  assert.equal(result.method, 'move');
+  assert.deepEqual(resets, [created.meta.id], '删掉的是哪本书，就清哪个 id 的显示覆盖');
+});
+
+test('五-L1（CI-2）：清理失败 / 书目已坏都不影响删书本身（收尾不许盖住删除结果）', async () => {
+  const root = await mkTmp();
+  const channels = makeHost(root, {
+    configStore: {
+      resetBookDisplay: async () => { throw new Error('EACCES: 配置只读'); }
+    }
+  });
+  const created = await storage.createBook(root, '配置只读时的书');
+  const result = await channels.get('book:delete')(created.path);
+  assert.equal(result.method, 'move', '显示覆盖没清掉也不许把删除报成失败');
+  assert.deepEqual(
+    channels.logs.map((item) => item[2]),
+    ['BOOK_DISPLAY_RESET_FAILED'],
+    '清不掉要留一条可诊断的 warn 日志'
+  );
+  assert.equal(channels.logs[0][3], 'warn');
+
+  // 书目已经坏了：读不出可信 id 就跳过清理，删除语义不变（坏书目本来就是允许删的）
+  const brokenRoot = await mkTmp();
+  const brokenChannels = makeHost(brokenRoot, {
+    configStore: { resetBookDisplay: async () => { throw new Error('不该被调用'); } }
+  });
+  const brokenPath = path.join(brokenRoot, '坏书目的书');
+  await fs.mkdir(brokenPath, { recursive: true });
+  await fs.writeFile(path.join(brokenPath, storage.BOOK_FILE), '{ 坏掉了', 'utf8');
+  const brokenResult = await brokenChannels.get('book:delete')(brokenPath);
+  assert.equal(brokenResult.method, 'move');
 });

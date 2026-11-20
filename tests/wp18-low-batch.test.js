@@ -454,6 +454,8 @@ function makeDeleteHost(root, { isE2E = false, trashItem } = {}) {
     path,
     shell: { trashItem: trashItem || (async () => {}) },
     getConfig: async () => ({ booksRoot: root }),
+    // 五-L1（CI-2）：删书成功后按 meta.id 清显示覆盖（真实实现由 main.js 注入 configStore）
+    getConfigStore: () => ({ resetBookDisplay: async () => true }),
     flowSession: () => null,
     sessionById: () => null,
     focusSession: () => {},
