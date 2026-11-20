@@ -1193,6 +1193,38 @@ test('正文索引（V93）：bloomCache 有上界 32 条（LRU），长书架�
   assert.ok(store.getBloomCacheSize() <= search.BLOOM_CACHE_MAX);
 });
 
+// 五-L4（CI-7）：旧候选循环对整架每本书都 bloomFor → rememberBloom。书架 >32 本时，本轮缓存里
+// 只剩顺序上最后 32 本；下一轮从第 1 本开始又逐本 miss、把上一轮留下的也挤掉 —— 跨搜索命中率恒为 0
+// （280 本 ≈ 22MB 位图每次搜索整架 base64 解码 + CRC32，纯属白付）。现在只把「位图筛选通过、
+// 真要去读正文」的候选登记进缓存，让 32 条上界覆盖注释所说的候选热区。
+test('五-L4（CI-7）：只有通过位图筛选的候选进 bloomCache，非候选不再冲刷整架热区', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  const TOTAL = 40;
+  for (let i = 0; i < TOTAL; i += 1) {
+    const text = i === TOTAL - 1 ? '第 40 本：青柠色的雨伞挂在门口。' : `第 ${i} 本：窗外的雨下了一夜。`;
+    await makeBook(booksRoot, `书${pad3(i)}`, `书${pad3(i)}`, [{ name: '第一章', text }]);
+  }
+  const store = makeStore(userData);
+  await store.ensure({ booksRoot });
+  const found = await store.search({ booksRoot, query: '青柠色', limit: 60 });
+  assert.equal(found.candidateBooks, 1, '前提：只有一本书的位图能通过筛选');
+  assert.equal(found.results.length, 1);
+  assert.equal(
+    store.getBloomCacheSize(),
+    1,
+    '缓存只留真候选（旧实现把整架最后 32 本塞进去，跨搜索命中率恒为 0）'
+  );
+  // 第二次搜索：结果一致，缓存仍是那一份候选热区（没被非候选重新冲刷）
+  const again = await store.search({ booksRoot, query: '青柠色', limit: 60 });
+  assert.equal(again.results.length, 1);
+  assert.equal(again.candidateBooks, 1);
+  assert.equal(store.getBloomCacheSize(), 1);
+});
+
 // P3（审计修复 #19）：整本建图时中间「不重复双字」集合也有硬上限 —— 以前只有最终位图受
 // MAX_BLOOM_BITS 限制，中间 Set 随正文无限长大（千万字级巨书可达数百 MB）。
 test('正文索引（P3）：双字集合到上限就放弃位图（bloomOmitted），不是截断位图', () => {

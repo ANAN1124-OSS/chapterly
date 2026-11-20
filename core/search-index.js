@@ -920,6 +920,11 @@ function createSearchStore(options = {}) {
     }
   }
 
+  // 取一本书的解码位图：缓存命中就按 LRU 触碰；未命中只解码、**不登记**（见下）。
+  // 五-L4（CI-7）：登记缓存的责任挪给候选循环 —— 只有「位图筛选通过、真要去读正文」的候选才值得
+  // 占 32 条 LRU 名额。旧实现在这里对整架每本书都 rememberBloom：书架 >32 本时本轮只能留下顺序上
+  // 最后 32 本，下一轮从第 1 本开始又逐本 miss、把上一轮留下的也挤掉，跨搜索命中率恒为 0
+  // （280 本 ≈ 22MB 位图每次搜索整架重新 base64 解码 + CRC32，纯属白付）。
   function bloomFor(book) {
     if (!book.bloom) return null;
     const cached = bloomCache.get(book.path);
@@ -933,9 +938,7 @@ function createSearchStore(options = {}) {
       // E5（审计修复 #8）：位图 / CRC 校验不过 → 搜这本书时永远当候选、逐章核对（只降速不漏报），
       // 并登记脏书把搜索窗口关掉，让下一次校验重建它（自愈）。旧实现会静默用坏位图漏报。
       markDirty(book.path);
-      return null;
     }
-    rememberBloom(book.path, { bloom: book.bloom, bits: book.bloomBits, crc: book.bloomCrc, buffer });
     return buffer;
   }
 
@@ -1520,7 +1523,11 @@ function createSearchStore(options = {}) {
           break;
         }
       }
-      if (ok) candidates.push({ book, bloomless: false });
+      if (ok) {
+        // 五-L4（CI-7）：位图筛选通过 = 真候选，才登记进 LRU（未命中的 decode 结果在这里入缓存）。
+        rememberBloom(book.path, { bloom: book.bloom, bits: book.bloomBits, crc: book.bloomCrc, buffer: bloom });
+        candidates.push({ book, bloomless: false });
+      }
     }
     candidates.sort((a, b) => (b.book.lastModified || 0) - (a.book.lastModified || 0));
     const scanTarget = candidates.slice(0, maxBooks).map((item) => item.book);
