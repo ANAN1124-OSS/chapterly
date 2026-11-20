@@ -655,6 +655,39 @@ test('updateShelfSearchUi：有命中 / 没命中 / 带分组与正文命中提�
   assert.equal(loading.dom.$('shelf-search-summary').textContent, '搜索「王五」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名 · 正在搜正文…（Esc 清除）');
 });
 
+// SS-09（五-L17）：索引首建期搜索（search:content 短路回 building + 空结果）—— 旧实现 contentNote
+// 只看 loading / results.length，书名也没命中时摘要写「正文也没有找到」，与同一屏正文区
+// 「正在为书架建正文索引…」自相矛盾；作者可能据此以为正文真的搜过了。
+test('updateShelfSearchUi（SS-09 / 五-L17）：索引首建期不谎报「正文也没有找到」', () => {
+  // meta.index.building（主进程回包）与 indexStatus.building（渲染层进度）两种形状都要认
+  const viaMeta = build({
+    shelfQuery: '灯芯',
+    books: [{}],
+    results: [],
+    meta: { results: [], truncated: true, index: { building: true, books: 0, chapters: 0 } }
+  });
+  viaMeta.ui.updateShelfSearchUi(0);
+  const metaText = viaMeta.dom.$('shelf-search-summary').textContent;
+  assert.equal(
+    metaText,
+    '搜索「灯芯」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名 · 正文索引建立中（Esc 清除）'
+  );
+  assert.equal(metaText.includes('正文也没有找到'), false, '建索引期间不许下「没找到」的结论');
+
+  const viaStatus = build({
+    shelfQuery: '灯芯',
+    books: [{}],
+    results: [],
+    meta: { results: [] },
+    indexStatus: { building: true, ready: false }
+  });
+  viaStatus.ui.updateShelfSearchUi(0);
+  assert.equal(
+    viaStatus.dom.$('shelf-search-summary').textContent,
+    '搜索「灯芯」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名 · 正文索引建立中（Esc 清除）'
+  );
+});
+
 test('静态闸门：renderer.js 里不许长回实现，装配只有一处，7 个入口按名字接线', () => {
   for (const shape of [
     'function shelfQueryText(',

@@ -365,11 +365,20 @@
     }
     summary.classList.remove('hidden');
     const content = state.shelfContent;
+    // SS-09（五-L17）：索引首建期 search:content 短路回 building + 空结果，这不是「正文没找到」——
+    // 与 renderShelfContent 同口径（meta.index.building 或渲染层 indexStatus.building 任一成立），
+    // 摘要如实说「正文索引建立中」，别和同一屏的建索引提示自相矛盾。
+    const contentIndexBuilding = Boolean(
+      (content.meta && content.meta.index && content.meta.index.building) ||
+        (content.indexStatus && content.indexStatus.building)
+    );
     const contentNote = content.loading
       ? ' · 正在搜正文…'
       : content.meta && content.meta.results && content.meta.results.length
         ? ` · 正文命中 ${contentMatchTotal(content.meta)} 处`
-        : '';
+        : contentIndexBuilding
+          ? ' · 正文索引建立中'
+          : '';
     const groupNote = state.shelfGroup ? '（已按分组筛选）' : '';
     const tagNote = state.shelfTag ? '（已按标签筛选）' : '';
     summary.textContent =
