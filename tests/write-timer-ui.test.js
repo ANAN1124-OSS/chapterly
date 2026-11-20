@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const writeTimerUi = require('../renderer/write-timer-ui');
+const { pad2 } = require('../core/common');
 const editorLogic = require('../renderer/editor-logic');
 const { makeEl } = require('./ui-test-preambles');
 
@@ -33,6 +34,11 @@ function formatStopwatch(seconds) {
 }
 function formatDuration(n) {
   return editorLogic.formatDuration(n);
+}
+// 五-L12（ES-3）：上报载荷带上秒数所属的本地日期（跨午夜 / 失败积压按天拆开）
+function localDayKey(ms = Date.now()) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 const ROOT = path.join(__dirname, '..');
@@ -261,7 +267,7 @@ test('ticker 回调：30 秒定时 flush、1 秒定时只刷新文字；暂停 /
   flushTimer.fn();
   await flush();
   assert.equal(ctx.calls.api.length, 1);
-  assert.deepEqual(ctx.calls.api[0], { seconds: 2 });
+  assert.deepEqual(ctx.calls.api[0], { seconds: 2, day: localDayKey() });
 
   await ctx.ui.pauseWriteTimer();
   assert.equal(intervals.every((i) => i.cleared), true, '暂停后两个定时器都清掉');
@@ -289,7 +295,7 @@ test('flushWriteTimer：关掉 / 不足 1 秒不写盘；成功更新 stats 与 
   ok.state.writeTimer.unsentMs = 2600;
   const recorded = await ok.ui.flushWriteTimer();
   assert.equal(recorded, 2);
-  assert.deepEqual(ok.calls.api, [{ seconds: 2 }]);
+  assert.deepEqual(ok.calls.api, [{ seconds: 2, day: localDayKey() }]);
   assert.equal(ok.state.stats.todaySeconds, 200);
   assert.equal(ok.state.streak, 3);
   assert.equal(ok.calls.renderStatsUi, 1);
@@ -318,7 +324,7 @@ test('flushWriteTimer：运行中先把当前段落计入本次与未上报；�
   const serial = build();
   serial.state.writeTimer.unsentMs = 5000;
   await Promise.all([serial.ui.flushWriteTimer(), serial.ui.flushWriteTimer()]);
-  assert.deepEqual(serial.calls.api, [{ seconds: 5 }], '第二次时未上报已清零，不重复上报');
+  assert.deepEqual(serial.calls.api, [{ seconds: 5, day: localDayKey() }], '第二次时未上报已清零，不重复上报');
 });
 
 // ---------- 暂停 / 重置 / 应用配置 ----------
@@ -410,7 +416,7 @@ test('五-M32（PM-3）：睡眠前结算、唤醒后不把睡眠时段计入写
 
     await ctx.ui.pauseWriteTimer();
     assert.equal(t.running, false);
-    assert.deepEqual(ctx.calls.api, [{ seconds: 15 }], '上报的是真实写作秒数，不含睡眠');
+    assert.deepEqual(ctx.calls.api, [{ seconds: 15, day: localDayKey() }], '上报的是真实写作秒数，不含睡眠（日期取自唤醒后的当前本地日）');
   } finally {
     // 失败时也要收掉 ticker，别让 node --test 进程被真实 setInterval 挂着
     ctx.ui.resetWriteTimer({ flush: false });
@@ -450,6 +456,73 @@ test('五-M32（PM-3）：手动暂停中的计时器不会被唤醒自动拉起
     ctx.ui.resetWriteTimer({ flush: false });
     Date.now = realDateNow;
   }
+});
+
+// ---------- 五-L12（ES-3）：写作计时按「秒数所属日期」记账 ----------
+// 旧实现只报一个总秒数，主进程按回执到达时刻算日期：跨午夜最后 ≤30 秒、IPC 连续失败积压的整段
+// 都会被记到成功那一刻的新一天；单日上限夹住的差额则静默蒸发。现在按本地午夜拆日上报 { seconds, day }。
+test('五-L12（ES-3）：跨午夜的计时段按本地日期拆开上报（午夜前记前一天）', async () => {
+  const beforeMidnight = new Date(2026, 10, 20, 23, 59, 40).getTime();
+  const afterMidnight = new Date(2026, 10, 21, 0, 0, 10).getTime();
+  const ctx = build({ config: { writeDurationEnabled: true } });
+  try {
+    Date.now = () => beforeMidnight;
+    ctx.ui.startWriteTimer();
+    Date.now = () => afterMidnight;
+    await ctx.ui.pauseWriteTimer();
+    assert.deepEqual(
+      ctx.calls.api,
+      [
+        { seconds: 20, day: '2026-11-20' },
+        { seconds: 10, day: '2026-11-21' }
+      ],
+      '午夜前 20 秒记前一天、午夜后 10 秒记当天（逐日上报，旧实现整段记到新一天）'
+    );
+    assert.equal(ctx.state.writeTimer.unsentMs, 0, '全部上报完，零头归零');
+    assert.deepEqual(ctx.state.writeTimer.unsentDays, {}, '按日队列清空，不留空条目');
+  } finally {
+    ctx.ui.resetWriteTimer({ flush: false });
+    Date.now = realDateNow;
+  }
+});
+
+test('五-L12（ES-3）：单日上限夹住的差额不静默蒸发，也不留在队列里无限重试', async () => {
+  const ctx = build({
+    addResult: { recorded: 2, capped: true, day: '2026-11-20', stats: { todaySeconds: 86400 } }
+  });
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    ctx.state.writeTimer.unsentMs = 5000;
+    ctx.state.writeTimer.unsentDays = { '2026-11-20': 5000 };
+    const recorded = await ctx.ui.flushWriteTimer();
+    assert.equal(recorded, 2);
+    assert.equal(ctx.state.writeTimer.unsentMs, 0, '上限夹住的部分丢弃，不留在队列里每次 flush 重试');
+    assert.deepEqual(ctx.state.writeTimer.unsentDays, {});
+    assert.equal(warnings.length, 1, '不许静默蒸发：至少留一次说明');
+    assert.match(warnings[0], /单日上限/);
+    assert.match(warnings[0], /3 秒/);
+    await ctx.ui.flushWriteTimer();
+    assert.equal(ctx.calls.api.length, 1, '清掉之后不会拿同一批秒数反复上报');
+    // 同一天再被夹住：不重复刷同一条提示
+    ctx.state.writeTimer.unsentMs = 4000;
+    ctx.state.writeTimer.unsentDays = { '2026-11-20': 4000 };
+    await ctx.ui.flushWriteTimer();
+    assert.equal(warnings.length, 1, '每个日期只提示一次');
+  } finally {
+    console.warn = realWarn;
+  }
+});
+
+test('五-L12（ES-3）：非上限原因的「少记」把差额放回该日期，下次再试', async () => {
+  const ctx = build({ addResult: { recorded: 2, stats: { todaySeconds: 10 } } });
+  ctx.state.writeTimer.unsentMs = 5000;
+  ctx.state.writeTimer.unsentDays = { '2026-11-20': 5000 };
+  const recorded = await ctx.ui.flushWriteTimer();
+  assert.equal(recorded, 2);
+  assert.equal(ctx.state.writeTimer.unsentMs, 3000, '少记的 3 秒回到未上报队列（旧实现直接蒸发）');
+  assert.equal(ctx.state.writeTimer.unsentDays['2026-11-20'], 3000, '差额记在所属日期上，不会挪到今天');
 });
 
 // ---------- 静态闸门 ----------
@@ -506,11 +579,11 @@ test('静态闸门：index.html 在 renderer.js 之前加载 write-timer-ui.js�
 });
 
 test('静态闸门：模块不 require / 不摸 Electron·fs / 不注册全局监听；setTimeout 为 0、setInterval 只有两个', () => {
-  // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
-  // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // A8（WP-32）：允许的 require 只有 UMD 的 Node 分支 —— core/assert-host.js（host 校验）与
+  // core/common.js（pad2 共用实现，五-L12；浏览器走 window.CWCommon）；运行时代码仍不许 require 任何东西。
+  const umdNodeBranch = "module.exports = factory(require('../core/common'), require('../core/assert-host').assertHost);";
+  assert.ok(moduleCode.includes(umdNodeBranch), 'UMD 的 Node 分支要从 ./assert-host 与 ./common 取共享实现');
+  const runtimeCode = moduleCode.split(umdNodeBranch).join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'process.']) {
     assert.equal(runtimeCode.includes(forbidden), false, 'write-timer-ui.js 不许出现 ' + forbidden);
   }
@@ -542,7 +615,7 @@ test('五-M32 静态闸门：主进程 powerMonitor 广播 → preload 订阅 �
 });
 
 test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWWriteTimerUi，且不乱造别的全局', () => {
-  const win = {};
+  const win = { CWCommon: { pad2: (n) => String(n).padStart(2, '0') } };
   const context = vm.createContext(win);
   vm.runInContext(moduleSrc, context, { filename: 'renderer/write-timer-ui.js' });
   assert.equal(typeof win.CWWriteTimerUi, 'object');

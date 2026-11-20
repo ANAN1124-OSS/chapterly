@@ -445,6 +445,9 @@
       awaitingResume: false, // 五-M32：系统睡眠中（冻结，resume 后从当前时刻续算）
       sessionMs: 0, // 本次打开这本书累计的毫秒（只用于界面秒表）
       unsentMs: 0, // 还没上报给主进程的毫秒（保留不足 1 秒的零头）
+      // 五-L12（ES-3）：还没上报的毫秒按「所属本地日期」记账（跨午夜 / 失败积压分开上报）
+      unsentDays: {},
+      capWarnedDay: '', // 单日上限夹住时每个日期只提示一次
       flushTimer: null, // 每 30 秒上报一次
       tickTimer: null // 每秒刷新一下按钮上的秒表（纯显示，不写盘）
     },

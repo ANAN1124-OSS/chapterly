@@ -31,11 +31,11 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../core/assert-host').assertHost);
+    module.exports = factory(require('../core/common'), require('../core/assert-host').assertHost);
   } else if (root) {
-    root.CWWriteTimerUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
+    root.CWWriteTimerUi = factory(root.CWCommon, root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (commonLib, assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'common', 'statsUi'];
@@ -54,6 +54,11 @@
     }
     const { formatStopwatch, formatDuration, WRITE_TIMER_FLUSH_MS } = common;
     const { renderStatsUi } = statsUi;
+    // 五-L12（ES-3）：日期键补零用 core/common.js 的唯一实现（不在这里再抄一份 pad2 / padStart）
+    if (!commonLib || typeof commonLib.pad2 !== 'function') {
+      throw new TypeError('write-timer-ui 需要 core/common.js（CWCommon）先加载');
+    }
+    const { pad2 } = commonLib;
 
   // ---------- 写作时长（v0.8-2，提案 N2，参考口袋写作 tb_stat.writeDuration） ----------
   // 默认关：设置里打开后才在状态栏出现「写作计时」按钮。
@@ -85,10 +90,9 @@
   function settleRunningSegment(now = Date.now()) {
     const t = state.writeTimer;
     if (!t.running || t.awaitingResume) return 0;
-    const delta = Math.max(0, Number(now) - t.segmentStart);
+    const delta = accrueUnsentSpan(t, t.segmentStart, now);
     t.segmentStart = now;
     t.sessionMs += delta;
-    t.unsentMs += delta;
     return delta;
   }
 
@@ -102,6 +106,54 @@
 
   function writeTimerUnsentMs() {
     return Math.max(0, state.writeTimer.unsentMs + writeTimerSegmentMs());
+  }
+
+  // 五-L12（ES-3）：秒数按「所属本地日期」记账。旧实现只报一个总数、主进程按回执到达时刻算日期，
+  // 午夜前最后 ≤30 秒和失败积压的整段都会被记到新一天。这里把每一段真实时间按本地午夜切开，
+  // 累进 unsentDays[YYYY-MM-DD]（毫秒），上报时逐日发送 { seconds, day }。
+  function localDayKeyOf(ms) {
+    const date = new Date(Number.isFinite(Number(ms)) ? Number(ms) : Date.now());
+    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  }
+
+  function nextLocalMidnightMs(ms) {
+    const date = new Date(Number(ms));
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 0, 0, 0, 0).getTime();
+  }
+
+  // 把 [fromMs, toMs) 这段墙钟时间按本地午夜切开记进 unsentDays，同时维护 unsentMs 总数。
+  function accrueUnsentSpan(t, fromMs, toMs) {
+    const start = Number(fromMs);
+    const end = Number(toMs);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+    if (!t.unsentDays || typeof t.unsentDays !== 'object') t.unsentDays = {};
+    let cursor = start;
+    while (cursor < end) {
+      const day = localDayKeyOf(cursor);
+      const next = Math.min(end, nextLocalMidnightMs(cursor));
+      t.unsentDays[day] = (Number(t.unsentDays[day]) || 0) + Math.max(0, next - cursor);
+      cursor = next > cursor ? next : end; // next 落在同一毫秒时兜底前进，绝不原地打转
+    }
+    t.unsentMs += end - start;
+    return end - start;
+  }
+
+  // 未上报总量里若有「没有日期归属」的部分（旧状态 / 测试直接注入 unsentMs），
+  // 按当前本地日补进 unsentDays —— 与旧口径一致（当时唯一的选择就是记到今天）。
+  function syncUnsentDays(t) {
+    if (!t.unsentDays || typeof t.unsentDays !== 'object') t.unsentDays = {};
+    let attributed = 0;
+    for (const key of Object.keys(t.unsentDays)) {
+      const ms = Math.max(0, Number(t.unsentDays[key]) || 0);
+      if (ms > 0) t.unsentDays[key] = ms;
+      else delete t.unsentDays[key];
+      attributed += ms;
+    }
+    const total = Math.max(0, Number(t.unsentMs) || 0);
+    if (total > attributed) {
+      const today = localDayKeyOf(Date.now());
+      t.unsentDays[today] = (Number(t.unsentDays[today]) || 0) + (total - attributed);
+    }
   }
 
   function renderWriteTimer() {
@@ -218,26 +270,56 @@
   async function flushWriteTimerNow() {
     const t = state.writeTimer;
     settleRunningSegment();
-    const seconds = Math.floor(t.unsentMs / 1000);
     // 关掉记录时不写盘：配置切换前会先 flush 一次，这里只是兜底。
-    if (seconds <= 0 || !writeDurationEnabled()) {
+    if (!writeDurationEnabled()) {
       renderWriteTimer();
       return 0;
     }
-    t.unsentMs -= seconds * 1000;
-    try {
-      const res = await call(api.addStatsDuration, { seconds });
-      if (res && res.stats) {
-        state.stats = res.stats;
-        if (res.stats.streak) state.streak = res.stats.streak;
-        renderStatsUi();
+    syncUnsentDays(t);
+    let recordedTotal = 0;
+    // 按日期从旧到新逐日上报（正常运行只有今天一份；跨午夜 / 失败积压可能是多份）。
+    // 某一天失败就把这一天的秒数放回并停下，后面的日期留给下次 —— 与「串行上报」语义一致。
+    for (const day of Object.keys(t.unsentDays).sort()) {
+      if (!writeDurationEnabled()) break;
+      const ms = Math.max(0, Math.floor(Number(t.unsentDays[day]) || 0));
+      const seconds = Math.floor(ms / 1000);
+      if (seconds <= 0) continue;
+      // 先按整秒扣账（保留不足 1 秒的零头），失败 / 少记再补回来
+      t.unsentDays[day] = ms - seconds * 1000;
+      t.unsentMs = Math.max(0, Math.round(Number(t.unsentMs) || 0) - seconds * 1000);
+      try {
+        const res = await call(api.addStatsDuration, { seconds, day });
+        const recorded = Math.max(0, Math.min(seconds, Math.floor(Number(res && res.recorded) || 0)));
+        recordedTotal += recorded;
+        if (res && res.stats) {
+          state.stats = res.stats;
+          if (res.stats.streak) state.streak = res.stats.streak;
+          renderStatsUi();
+        }
+        if (recorded < seconds) {
+          const deficit = seconds - recorded;
+          if (res && res.capped === true) {
+            // 五-L12（ES-3）：单日上限（86400 秒）夹住的部分本来就不可能记账 —— 不再放回（否则每次
+            // flush 都会拿同一批秒数重试、永远记不上），但也不静默蒸发：每个日期留一次控制台说明。
+            if (t.capWarnedDay !== day) {
+              t.capWarnedDay = day;
+              console.warn(`写作时长超过单日上限，${day} 多出的 ${deficit} 秒没有计入统计`);
+            }
+          } else {
+            t.unsentDays[day] = (Number(t.unsentDays[day]) || 0) + deficit * 1000;
+            t.unsentMs += deficit * 1000;
+          }
+        }
+      } catch {
+        // 统计写失败不能影响写作：把整段放回这个日期，下次暂停 / 保存 / 定时再试
+        t.unsentDays[day] = (Number(t.unsentDays[day]) || 0) + seconds * 1000;
+        t.unsentMs += seconds * 1000;
+        break;
       }
-      return (res && res.recorded) || 0;
-    } catch {
-      // 统计写失败不能影响写作：把秒数放回去，下次暂停 / 保存 / 定时再试
-      t.unsentMs += seconds * 1000;
-      return 0;
+      if (!(Number(t.unsentDays[day]) > 0)) delete t.unsentDays[day];
     }
+    renderWriteTimer();
+    return recordedTotal;
   }
 
   async function pauseWriteTimer() {
@@ -261,6 +343,8 @@
     t.awaitingResume = false;
     t.sessionMs = 0;
     t.unsentMs = 0;
+    t.unsentDays = {}; // 五-L12（ES-3）：本次运行还没上报的按日毫秒也一起清掉
+    t.capWarnedDay = '';
     stopWriteTimerTicker();
     renderWriteTimer();
     renderDurationSettings();

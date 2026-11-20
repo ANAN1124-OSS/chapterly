@@ -1625,7 +1625,12 @@ function registerIpc() {
   handle('stats:duration', async (request) => {
     const cfg = await getConfig();
     const now = new Date();
-    const day = statsLib.localDayKey(now);
+    const today = statsLib.localDayKey(now);
+    // 五-L12（ES-3）：允许渲染层带上「秒数所属的本地日期」（跨午夜 / 失败积压按天拆开上报，
+    // 旧实现一律按回执到达时刻算日期）。只认合法日期键；未来日期（时钟 / 时区异常）一律按今天，
+    // 免得提前占用明天的写作用时配额；过去的日期照收（积压补记）。
+    const requestedDay = statsLib.localDayKey(request && request.day);
+    const day = requestedDay > today ? today : requestedDay;
     if (cfg.writeDurationEnabled !== true) {
       const stats = await getStatsStore().get();
       return { recorded: 0, disabled: true, day, stats: statsSummaryPayload(stats, cfg, now) };
@@ -1641,6 +1646,9 @@ function registerIpc() {
     const recorded = await getStatsStore().addDuration({ day, seconds: requested });
     return {
       recorded: recorded.added,
+      // 五-L12（ES-3）：单日上限夹住时明确告知（added < requested）。渲染层据此丢弃超出部分，
+      // 不再每次 flush 拿同一批秒数无限重试，也不静默当成功。
+      capped: recorded.added < requested,
       disabled: false,
       day: recorded.day,
       stats: statsSummaryPayload(recorded.stats, cfg, new Date())
