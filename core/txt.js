@@ -197,6 +197,17 @@ const TOLERANT_UTF8_MIN_REPLACEMENTS = 2;
 const TOLERANT_UTF8_BYTES_PER_REPLACEMENT = 1000;
 const TOLERANT_UTF8_MIN_VALID_CHARS = 8;
 const TOLERANT_UTF8_CHUNK = 1024 * 1024;
+// 五-H6（TC-1）反向校验阈值（作者授权本轮定口径；实测数据见 tests/txt-encoding-tolerance.test.js）：
+//   · 近似有效 UTF-8（坏字符 ≤ 30%）：UTF-8 只是局部损坏、大部分正文还能读出来，优先按 UTF-8 宽容解
+//     （30% 已很宽松；真 GBK 被当 UTF-8 读时坏字符占 66–80%，不可能落进这个区间，且下面还有常用字闸门）；
+//   · 常用字闸门：解码结果里 ≥ 85% 的汉字是 GB2312 一级常用字才算「像正常中文」——
+//     实测真 GBK 小说 ≈ 0.99，UTF-8 中文字节流被当 GB18030 解出的乱码只有 0–17%；
+//   · 可疑提示区间：坏字符占比在 (0, 40%] 且 GB18030 解出来不像正常中文 → encodingSuspect；
+//     真 GBK（≈ 0.78）与明显非 UTF-8 的内容都不再误报。
+const NEAR_VALID_UTF8_MAX_BAD_RATIO = 0.3;
+const COMMON_HAN_MIN_RATIO = 0.85;
+const ENCODING_SUSPECT_MAX_BAD_RATIO = 0.4;
+const COMMON_HAN_SAMPLE_CHARS = 200000;
 // 无 BOM UTF-16：采样前 64 KB、要求 ≥ 98% 的 16 位码元落在「正文常用码位」。
 // 阈值取 0.98 而不是 0.9 —— 纯 ASCII 文本按 LE 读出的码元（如 'eH' = 0x6548）会落进 CJK 区，
 // 但只占约五成；GBK 双字节按 LE 读出几乎全在 0xA1xx 以上（Hangul / Yi，不计入）。纯中文
@@ -294,8 +305,9 @@ function hasAnyBom(buffer) {
 
 // 宽容 UTF-8 是否可行：坏字节「极少」（预算 = max(2, 每 1000 字节 1 个)）且至少有 8 个可读字符
 // —— 1–2 个字节的碎片（如单个 0xFF）不算「以 UTF-8 为主」，仍走 GB18030 兜底的老口径。
-function canDecodeAsTolerantUtf8(buffer) {
-  const { replacements, valid } = countUtf8Replacements(buffer);
+// 五-H6：统计结果可由调用方传入（判定链只统计一次，不做第二遍整本解码）。
+function canDecodeAsTolerantUtf8(buffer, stats) {
+  const { replacements, valid } = stats || countUtf8Replacements(buffer);
   if (valid < TOLERANT_UTF8_MIN_VALID_CHARS) return false;
   const budget = Math.max(
     TOLERANT_UTF8_MIN_REPLACEMENTS,
@@ -304,11 +316,56 @@ function canDecodeAsTolerantUtf8(buffer) {
   return replacements <= budget;
 }
 
+// 五-H6（TC-1）：反向校验 —— 「这段解码结果像不像正常中文」。
+// GB2312 一级常用字（B0A1–D7F9，3755 字）在首次调用时用同一个 GB18030 解码器建一次集合。
+// 真 GBK 小说解出来基本全落在这个集合里；UTF-8 中文字节流被当 GB18030 解出的乱码则是
+// 「澶╁湴鐜勯粍」这类生僻字 / 符号，常用字占比极低 —— 两者差一个数量级，阈值 0.85 很宽。
+let commonHanSetCache = null;
+function commonHanSet() {
+  if (commonHanSetCache) return commonHanSetCache;
+  const set = new Set();
+  const decoder = new TextDecoder('gb18030');
+  for (let hi = 0xb0; hi <= 0xd7; hi += 1) {
+    for (let lo = 0xa1; lo <= 0xfe; lo += 1) {
+      let ch = '';
+      try {
+        ch = decoder.decode(Buffer.from([hi, lo]));
+      } catch {
+        ch = '';
+      }
+      if (ch && ch !== '\uFFFD') set.add(ch);
+    }
+  }
+  commonHanSetCache = set;
+  return set;
+}
+
+function isHanCharacter(ch) {
+  const cp = ch.codePointAt(0);
+  return (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf);
+}
+
+// 采样前 20 万字（乱码 / 正常文本的分布是均匀的，不必为 128 MB 文件整本走一遍）。
+function commonHanRatio(text) {
+  const source = String(text || '');
+  const sample = source.length > COMMON_HAN_SAMPLE_CHARS ? source.slice(0, COMMON_HAN_SAMPLE_CHARS) : source;
+  let han = 0;
+  let common = 0;
+  const set = commonHanSet();
+  for (const ch of sample) {
+    if (!isHanCharacter(ch)) continue;
+    han += 1;
+    if (set.has(ch)) common += 1;
+  }
+  return han ? common / han : 0;
+}
+
 // 把任意编码的文本文件解码成字符串。审计 #21（X-N1）后的判定链：
 //   带 BOM：严格判定 → BOM 锁定宽容（口径不变，补 replacements）→ 兜底；
-//   无 BOM：无 BOM UTF-16 启发式 → 严格 UTF-8 → 宽容 UTF-8（坏字节极少）→ 严格 GB18030 →
-//           非 fatal GB18030 兜底。
-// 返回 { text, encoding }，非严格路径额外带 replacements（解出来的 U+FFFD 计数；严格路径不出现该字段）。
+//   无 BOM：无 BOM UTF-16 启发式 → 严格 UTF-8 → 宽容 UTF-8（坏字节极少）→
+//           近似有效 UTF-8（坏字节 ≤ 30% 且反向校验判为 UTF-8，五-H6）→ 严格 GB18030 → 非 fatal GB18030 兜底。
+// 返回 { text, encoding }，非严格路径额外带 replacements（解出来的 U+FFFD 计数；严格路径不出现该字段）；
+// 五-H6 起，严格 GB18030 命中但「坏字符占比 / 常用字占比」判定不可靠时额外带 encodingSuspect（提示核对）。
 // 审计修复 #50（E15）：删掉不可达的 latin1 兜底（GB18030 非 fatal 几乎不抛）。
 // 审计修复 #54（P10）：带编码信息的同一份解码入口（见 decodeBufferStrictInfo 的注释）。
 // 审计残留修复 #50（E15）：BOM 锁定 —— 带 BOM 的文件绝不落到 GB18030 兜底（见 decodeBufferWithBomLocked）。
@@ -339,19 +396,45 @@ function decodeBufferWithEncoding(buffer) {
       const text = new TextDecoder(utf16).decode(buffer);
       return { text, encoding: utf16, replacements: countReplacements(text) };
     }
-    if (canDecodeAsTolerantUtf8(buffer)) {
+    const utf8Stats = countUtf8Replacements(buffer);
+    if (canDecodeAsTolerantUtf8(buffer, utf8Stats)) {
       const text = new TextDecoder('utf-8').decode(buffer);
       return { text, encoding: 'utf-8', replacements: countReplacements(text) };
     }
+    // 五-H6（TC-1）反向校验：UTF-8 严格失败后不能直接信「严格 GB18030 成功」——
+    // UTF-8 中文字节流几乎总是合法 GB18030（E4–E9 首字节 ∈ 81–FE），整本可能被解成「绗笁绔」式乱码。
+    // 先量坏字符占比；坏字符 ≤ 30% 时再用「常用字占比」把两份候选解互相比对：
+    // UTF-8 解出来像正常中文、GB18030 解出来像乱码 → 判为局部损坏的 UTF-8。
+    const badRatio = utf8Stats.replacements / Math.max(1, utf8Stats.replacements + utf8Stats.valid);
+    const utf8Recoverable =
+      utf8Stats.replacements > 0 &&
+      utf8Stats.valid >= TOLERANT_UTF8_MIN_VALID_CHARS &&
+      badRatio <= NEAR_VALID_UTF8_MAX_BAD_RATIO;
+    let gbText = null;
     try {
-      const text = new TextDecoder('gb18030', { fatal: true }).decode(buffer);
-      // 五-H6（TC-1）半步：UTF-8 严格解码失败后落「严格 GB18030」成功，并不等于真的是 GB18030 ——
-      // UTF-8 中文字节流几乎总是合法 GB18030（E4–E9 首字节 ∈ 81–FE），整本可能被解成「绗笁绔」式乱码。
-      // 「真的是 GB18030 吗」的反向校验阈值（CJK 常用字占比 / 再编码重合率）属产品决策，待作者拍板；
-      // 这一版先把可疑度如实带回包（encodingSuspect），由导入界面提示作者核对，不再静默当正常。
-      // 注意：真正的 GBK 文件也走这条路径，所以这是「待核对」提示，不是「已损坏」结论。
-      return { text, encoding: 'gb18030', encodingSuspect: true };
-    } catch { /* 识别不了 */ }
+      gbText = new TextDecoder('gb18030', { fatal: true }).decode(buffer);
+    } catch { gbText = null; }
+    if (utf8Recoverable) {
+      const utf8Text = new TextDecoder('utf-8').decode(buffer);
+      if (
+        gbText == null ||
+        (commonHanRatio(utf8Text) >= COMMON_HAN_MIN_RATIO && commonHanRatio(gbText) < COMMON_HAN_MIN_RATIO)
+      ) {
+        return { text: utf8Text, encoding: 'utf-8', replacements: countReplacements(utf8Text) };
+      }
+    }
+    if (gbText != null) {
+      // 剩下的严格 GB18030 成功要么是真 GBK（坏字符 ≈ 78%、常用字 ≈ 0.99），要么落在「说不清」的
+      // 中间区：只有中间区（坏字符 ≤ 40% 且解出来不像正常中文）才带 encodingSuspect 提示核对。
+      if (
+        utf8Stats.replacements > 0 &&
+        badRatio <= ENCODING_SUSPECT_MAX_BAD_RATIO &&
+        commonHanRatio(gbText) < COMMON_HAN_MIN_RATIO
+      ) {
+        return { text: gbText, encoding: 'gb18030', encodingSuspect: true };
+      }
+      return { text: gbText, encoding: 'gb18030' };
+    }
   }
   const text = new TextDecoder('gb18030').decode(buffer);
   return { text, encoding: 'gb18030', replacements: countReplacements(text) };

@@ -129,14 +129,14 @@ test('X-N1 E4：无 BOM 纯中文 UTF-16BE → 识别为 utf-16be，解码逐字
 });
 
 // E5：GBK 书的老路径不回退（严格 GB18030 能认出来时不许被宽容 UTF-8 抢走）。
-test('X-N1 E5：GBK 编码仍按 gb18030 解，严格路径不回退且替换符不误报；但会带「编码可疑」标记', async () => {
+test('X-N1 E5：GBK 编码仍按 gb18030 解，严格路径不回退且替换符不误报；真 GBK 不再带可疑标记', async () => {
   const gbk = Buffer.from([0xb5, 0xda, 0xd2, 0xbb, 0xd5, 0xc2, 0x20, 0xd6, 0xd0, 0xce, 0xc4]);
-  // 五-H6（TC-1）半步：UTF-8 严格失败 → 严格 GB18030 成功，这条路径无法排除「UTF-8 被误判成
-  // GB18030」，所以回包带 encodingSuspect（导入界面提示作者核对）。反向校验阈值待作者拍板。
+  // 五-H6（TC-1）反向校验落地：真 GBK 解出来的汉字 99% 以上是 GB2312 一级常用字（实测 ≈ 0.99），
+  // 而 UTF-8 中文字节流被当 GB18030 解出的乱码只有 0–17% ——「常用字占比」能确定性区分两者。
+  // 半步版的「一律标 encodingSuspect」会让每本 GBK 书都提示核对，这里收窄成只在中间区提示。
   assert.deepEqual(txt.decodeBufferWithEncoding(gbk), {
     text: '第一章 中文',
-    encoding: 'gb18030',
-    encodingSuspect: true
+    encoding: 'gb18030'
   });
 
   const base = await mkTmp();
@@ -146,7 +146,7 @@ test('X-N1 E5：GBK 编码仍按 gb18030 解，严格路径不回退且替换符
   const res = await importer.importFolders(path.join(base, '书架'), [src]);
   assert.equal(res.imported.length, 1);
   assert.equal(res.imported[0].encoding, 'gb18030');
-  assert.equal(res.imported[0].encodingSuspect, true, '导入回包要带可疑标记给界面提示');
+  assert.equal('encodingSuspect' in res.imported[0], false, '真 GBK 不再误报「编码可疑」');
   assert.equal('replacements' in res.imported[0], false, '干净 GBK 不许误报替换符');
 });
 
@@ -197,16 +197,46 @@ test('X-N1 E8：干净导入只多 encoding 字段，不带 replacements', async
   assert.equal(res.imported[0].encoding, 'utf-8');
   assert.equal('replacements' in res.imported[0], false);
 });
-// 五-H6（TC-1，半步）：UTF-8 正文混入 GBK 片段（UTF-8 坏字节超出宽容预算）→ UTF-8 严格失败后
-// 「严格 GB18030」成功，整本被解成「绗笁绔」式乱码且旧回包不带任何证据。现在回包如实带
-// encodingSuspect，导入界面据此提示作者核对；反向校验阈值属产品决策（待作者拍板）。
-test('五-H6（TC-1）：UTF-8 正文混 GBK 片段 → 严格 GB18030「成功」也标可疑，不静默当正常', () => {
+// 五-H6（TC-1）：UTF-8 正文混入 GBK 片段（坏字节略超「坏字节极少」预算）→ 旧实现整本落到严格
+// GB18030 解成「绗笁绔」式乱码。反向校验落地后：坏字符只占 ~2.4%，UTF-8 解出来是正常中文、
+// GB18030 解出来是乱码 → 判为「局部损坏的 UTF-8」，按 UTF-8 宽容解并如实报替换数量。
+test('五-H6（TC-1）：UTF-8 正文混 GBK 片段 → 仍按 UTF-8 解（个别替换符），不再整本乱码', () => {
   const utf8Body = Buffer.from('天地玄黄宇宙洪荒'.repeat(20), 'utf8');
   const gbkFragment = Buffer.from([0xbb, 0xb5, 0xd7, 0xd6, 0xbd, 0xda]); // GBK「坏字节」
   const info = txt.decodeBufferWithEncoding(Buffer.concat([utf8Body, gbkFragment]));
+  assert.equal(info.encoding, 'utf-8', '坏字符 ~2.4% + 正文像正常中文 → 判为局部损坏的 UTF-8');  assert.ok(info.replacements > 0, '坏字节要如实报告替换数量');
+  assert.match(info.text, /^天地玄黄宇宙洪荒天地玄黄/, '正文主体不许被解成「绗笁绔」式乱码');
+  assert.equal('encodingSuspect' in info, false, '已按 UTF-8 解，不再标 GB18030 可疑');
+});
+
+// 五-H6（TC-1）：坏字符 6% 的 UTF-8 书 —— 方向由「常用字占比」判，不按单一比例阈值拍板：
+// UTF-8 解出来是正常中文，GB18030 连严格解码都过不了 → 仍按 UTF-8 宽容解，正文不被整本毁掉。
+test('五-H6（TC-1）：坏字符 6% 的 UTF-8 书仍按 UTF-8 解，只坏掉那几个字节', () => {
+  const body = Buffer.from('天地玄黄宇宙洪荒'.repeat(20), 'utf8');
+  const info = txt.decodeBufferWithEncoding(Buffer.concat([body, Buffer.alloc(10, 0xff)]));
+  assert.equal(info.encoding, 'utf-8');
+  assert.equal(info.replacements, 10);
+  assert.match(info.text, /^天地玄黄宇宙洪荒/);
+});
+
+// 五-H6（TC-1）：反向校验的第二个方向 —— 坏字符占比高（23%）但 GB18030 解出来是正常中文时，
+// 说明就是真 GBK，不许被「宽容 UTF-8」抢走，也不再误报可疑。
+test('五-H6（TC-1）：ASCII 夹少量 GBK 中文 → 判真 GBK，不误报「编码可疑」', () => {
+  const gbk = Buffer.concat([Buffer.from('Chapter 1\n', 'utf8'), Buffer.from([0xc4, 0xe3, 0xba, 0xc3])]);
+  assert.deepEqual(txt.decodeBufferWithEncoding(gbk), { text: 'Chapter 1\n你好', encoding: 'gb18030' });
+});
+
+// 五-H6（TC-1）：中间区 —— UTF-8 坏字符占比不算高（10%），但 UTF-8 解出来不像正常中文
+// （没有汉字，只有 ASCII + 替换符）、GB18030 解出来也不像（丂不是常用字）→ 判定不可靠，
+// 回包仍如实带 encodingSuspect，由导入界面提示作者核对，不静默当正常。
+test('五-H6（TC-1）：既不像真 GBK 也不像正常中文 → 仍提示「编码可疑」', () => {
+  const body = Buffer.from('0123456789'.repeat(8), 'utf8');
+  // 0x81 0x40 是合法 GB18030 双字节，解出「丂」（非 GB2312 一级常用字）→ 常用字占比 0
+  const rare = Buffer.from(Array.from({ length: 10 }, () => [0x81, 0x40]).flat());
+  const info = txt.decodeBufferWithEncoding(Buffer.concat([body, rare]));
   assert.equal(info.encoding, 'gb18030');
-  assert.equal(info.encodingSuspect, true, 'UTF-8 失败后按严格 GB18030 解成功必须标可疑');
-  assert.equal('replacements' in info, false, '严格路径没有替换符字段（乱码不是替换符）');
+  assert.equal(info.encodingSuspect, true, '判不清方向时要如实提示核对');
+  assert.equal('replacements' in info, false, '严格 GB18030 路径没有替换符字段');
 });
 
 // TC-5（五-L7）：UTF-32BE 是大端对称缺口 —— 旧实现四个 BOM 分支全不命中，严格 UTF-8 失败后

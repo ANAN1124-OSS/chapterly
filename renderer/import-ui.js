@@ -48,9 +48,9 @@
   // WP7（X-N1）：主进程的导入结果现在会报告「判定编码 + 替换符数量」。有有损的书就在汇总里
   // 点明是谁、坏了几个字（作者可以换编码重导，源文件一个字节都不动）；没有有损书时返回空串，
   // 汇总文案与旧口径逐字一致（既有用例全部原样通过）。
-  // 五-H6（TC-1）半步：UTF-8 失败后按严格 GB18030 解成功的书带 encodingSuspect ——这类判定在
-  // 「大文件 + 中等比例坏字节」时可能是整本误判（UTF-8 中文字节流几乎总是合法 GB18030）。
-  // 反向校验阈值属产品决策（待作者拍板），这一版先如实提示作者打开核对，不静默当正常。
+  // 五-H6（TC-1）：UTF-8 失败后落严格 GB18030 的书现在会先做反向校验（坏字符占比 + 常用字占比）：
+  // 判为「局部损坏的 UTF-8」时按 utf-8 解并带 replacements（上面的有损提示）；
+  // 判为真 GBK 的干净书不再带任何标记；只有判不清方向的中间区才带 encodingSuspect，提示作者核对。
   function lossyImportNote(imported) {
     const lossy = imported.filter((book) => book && Number(book.replacements) > 0);
     const suspect = imported.filter(

@@ -193,9 +193,9 @@ test('P10/#54：decodeBufferWithEncoding 一次给出文本与编码；decodeBuf
   assert.deepEqual(txt.decodeBufferWithEncoding(utf32), { text: '中文', encoding: 'utf-32le' });
   assert.deepEqual(txt.decodeBufferWithEncoding(Buffer.from([0xc9, 0xab, 0xc7, 0xe9])), {
     text: '色情',
-    encoding: 'gb18030',
-    // 五-H6（TC-1）：UTF-8 严格失败后落严格 GB18030 成功 → 回包如实带「编码可疑」标记
-    encodingSuspect: true
+    encoding: 'gb18030'
+    // 五-H6（TC-1）反向校验：真 GBK 的常用字占比 ≈ 0.99 → 不再标 encodingSuspect
+    // （半步版一律标可疑会在每本 GBK 书上误报；中间区才提示，见 txt-encoding-tolerance.test.js）
   });
   assert.deepEqual(txt.decodeBufferWithEncoding(Buffer.alloc(0)), { text: '', encoding: 'empty' });
   // 旧入口结果不变（含坏字节的 GB18030 兜底）
