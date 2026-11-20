@@ -279,7 +279,9 @@
       // 免得把「撤销」这一步又包装成一次可撤销写入。
       recordFallbackWrite({ before: beforeText, after: text, start: caret, label: '整理本章' });
     }
-    return true;
+    // 五-L22（TC-02）：返回值带「这次是不是原生写回」——execCommand 成功时原生撤销栈里已经多了一条
+    // 整理记录，撤销整理可以直接弹掉它；兜底整串赋值则会清空原生栈，只能整串写回。
+    return { ok: true, native: !fallbackUsed, fallbackUsed };
   }
 
   // 整理只动空白/标点，正文有效字符的顺序不变：按「第 N 个非空白字符」把光标映射回去，
@@ -299,10 +301,13 @@
   }
 
 
-  function pushFormatUndo(before, after) {
+  function pushFormatUndo(before, after, options) {
     const chapter = state.chapters[state.index];
     if (!chapter) return;
-    state.formatUndo.push({ bookPath: state.bookPath, chapterId: chapter.id, before, after });
+    // 五-L22（TC-02）：native = 这次整理是 execCommand 写回的（原生撤销栈里有对应的一条），
+    // 撤销整理时弹掉它，而不是再 insertText 一次（那会压一条方向相反的新记录）。
+    const native = Boolean(options && options.native === true);
+    state.formatUndo.push({ bookPath: state.bookPath, chapterId: chapter.id, before, after, native });
     while (state.formatUndo.length > MAX_FORMAT_UNDO) state.formatUndo.shift();
   }
 
@@ -330,6 +335,30 @@
   function undoFormat() {
     if (!canUndoFormat()) return false;
     const top = state.formatUndo[state.formatUndo.length - 1];
+    // 五-L22（TC-02）：这次整理是 execCommand 写回的 → 原生撤销栈顶就是「整理」那一条，直接弹掉它。
+    // 旧实现无论原生与否都 insertText 回写 before：原生栈里又多一条方向相反的记录，作者随后按
+    // Ctrl+Z 就把整理套回来（编辑区从 before 跳回 after），而卡片上「撤销上次整理」已经不可用。
+    if (top.native === true) {
+      const valueBeforeUndo = editorEl.value;
+      const caretInAfter = editorEl.selectionStart || 0;
+      let undone = false;
+      try {
+        undone = document.execCommand('undo') !== false;
+      } catch {
+        undone = false;
+      }
+      if (undone && editorEl.value === top.before) {
+        const caret = mapCaretPosition(valueBeforeUndo, top.before, caretInAfter);
+        editorEl.setSelectionRange(Math.min(caret, top.before.length), Math.min(caret, top.before.length));
+        state.formatUndo.pop();
+        // 原生 undo 在真实浏览器里会发 input；这里显式再跑一次，保证 dirty / 字数口径不依赖事件时序
+        onEditorInput();
+        scrollCaretIntoView(caret);
+        toast('已撤销整理（仍在编辑区，未写盘）');
+        return true;
+      }
+      // 原生栈对不上（被别的写入动过 / 环境不支持）：退回下面的整串写回，语义仍是回到整理前
+    }
     const caret = editorEl.selectionStart || 0;
     // 五-H7（TC-01）：写回前再核一次书 / 章 / 正文快照（insertFormattedText 的身份闸）；
     // 通过后才弹出快照——被拒绝时这一步仍可重试，不会白丢撤销退路。
@@ -387,11 +416,12 @@
         toast('正文刚改过，这次整理没有套用，请再点一次「整理」', 'warn');
         return { ok: false, reason: 'stale' };
       }
-      if (!insertFormattedText(res.text, { bookPath, chapterId, text: before, pos: beforeCaret })) {
+      const wrote = insertFormattedText(res.text, { bookPath, chapterId, text: before, pos: beforeCaret });
+      if (!wrote) {
         toast('正文刚改过，这次整理没有套用，请再点一次「整理」', 'warn');
         return { ok: false, reason: 'stale' };
       }
-      pushFormatUndo(before, res.text);
+      pushFormatUndo(before, res.text, { native: wrote.native === true });
       toast(formatUi.successToast(options, res.stats));
       return { ok: true, changed: 1, stats: res.stats, steps: formatUndoSteps() };
     } catch (err) {
@@ -463,11 +493,12 @@
         toast(formatUi.noChangeToast(options));
         return { ok: true, changed: 0, stats: res.stats };
       }
-      if (!insertFormattedText(res.text, { bookPath, chapterId, text: before, pos: beforeCaret })) {
+      const wrote = insertFormattedText(res.text, { bookPath, chapterId, text: before, pos: beforeCaret });
+      if (!wrote) {
         toast('正文刚改过，这次整理没有套用，请再点一次「整理」', 'warn');
         return { ok: false, reason: 'stale' };
       }
-      pushFormatUndo(before, res.text);
+      pushFormatUndo(before, res.text, { native: wrote.native === true });
       toast(formatUi.successToast(options, res.stats));
       return { ok: true, changed: 1, stats: res.stats, steps: formatUndoSteps() };
     } catch (err) {

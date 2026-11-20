@@ -840,3 +840,48 @@ test('applyFormatToEditor：记规则失败也不污染 state.config（全局写
   assert.deepEqual(ctx.state.config, before, '写全局失败时生效值不许动');
   assert.equal(ctx.state.globalConfig, globalConfig, '全局配置也不许假写');
 });
+// TC-02（五-L22）：整理写回走 execCommand('insertText') 时，原生撤销栈里已经有「整理」这一条；
+// 卡片「撤销上次整理」再 insertText 回写 before，会压一条方向相反的原生记录 —— 之后 Ctrl+Z
+// 又把整理套回来（编辑区从 before 跳回 after），而且没有提示。现在记录「这次是原生写回」，
+// 撤销时弹掉原生那一条，不再把回退本身做成一次新编辑。
+test('TC-02（五-L22）：原生写回的整理在「撤销上次整理」时走 execCommand(undo)，不再双栈互录', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, text: '第一段  文字', caret: 4 });
+  const cmds = [];
+  let undoTop = null;
+  dom.doc.execCommand = (cmd, _flag, value) => {
+    cmds.push(cmd);
+    if (cmd === 'insertText') {
+      undoTop = ctx.editorEl.value; // 伪原生栈：记下被替换前的正文
+      ctx.editorEl.value = value;
+      return true;
+    }
+    if (cmd === 'undo') {
+      if (undoTop == null) return false;
+      ctx.editorEl.value = undoTop;
+      undoTop = null;
+      return true;
+    }
+    return false;
+  };
+  const formatted = await ctx.ui.formatCurrentChapterFromConfig();
+  assert.equal(formatted.ok, true);
+  assert.deepEqual(cmds, ['insertText'], '前提：整理走原生写回（原生栈里已有这一条）');
+  assert.equal(ctx.state.formatUndo.length, 1);
+  assert.equal(ctx.state.formatUndo[0].native, true, '快照要记住这次是原生写回');
+
+  // 卡片「撤销上次整理」：弹掉原生那一条，不再 insertText 一次
+  assert.equal(ctx.ui.undoFormat(), true);
+  assert.deepEqual(cmds, ['insertText', 'undo'], '撤销整理走原生 undo（旧实现会再 push 一条 insertText）');
+  assert.equal(ctx.editorEl.value, '第一段  文字', '编辑区回到整理前');
+  assert.equal(ctx.state.formatUndo.length, 0);
+  assert.ok(ctx.calls.onEditorInput >= 1, '撤销后仍标记未保存（不静默）');
+  assert.deepEqual(ctx.calls.toast[ctx.calls.toast.length - 1], ['已撤销整理（仍在编辑区，未写盘）', undefined]);
+
+  // 兜底回退路径（没有 execCommand）照旧：整串写回、提示不变
+  const plain = build({ text: '第一段  文字' });
+  assert.equal((await plain.ui.formatCurrentChapterFromConfig()).ok, true);
+  assert.equal(plain.state.formatUndo[0].native, false, '兜底写回没有原生记录可弹');
+  assert.equal(plain.ui.undoFormat(), true);
+  assert.equal(plain.editorEl.value, '第一段  文字');
+});
