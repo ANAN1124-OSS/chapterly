@@ -932,16 +932,23 @@
 
   // 显示设置里按书改的项（含当前段落高亮的开关 / 颜色）：写作页写 bookDisplay，书架写全局默认。
   // 只写 config.json（原子写），不碰正文 / 书目 / 章节文件。
+  // 五-M10（L-F2）：发起时拍「哪本书」的令牌；IPC 在途时命令面板换书（不脏不拦），旧书回执落地前
+  // 复核 state.bookId 仍相同 —— 否则 A 书的覆盖会被写进 B 书的内存 / 编辑区，随后保存再污染 B 的配置。
   async function persistDisplayPatch(patch) {
-    if (state.bookId) {
-      state.bookDisplay = (await call(api.setBookDisplay, state.bookId, patch)) || {};
+    const bookId = state.bookId || null;
+    if (bookId) {
+      const display = (await call(api.setBookDisplay, bookId, patch)) || {};
+      if (!editorLogic.displayWritebackIsCurrent(bookId, state.bookId)) {
+        return { ok: true, applied: false, stale: true };
+      }
+      state.bookDisplay = display;
     } else {
       state.globalConfig = await call(api.setConfig, patch);
     }
     state.config = effectiveConfig();
     applyEditorStyle();
     renderMarksMenu();
-    return state.config;
+    return { ok: true, applied: true };
   }
 
   // 编辑器小件两个开关按书记忆（1.1.0）：「显示 ▾」里切换「不可见字符 / 超长段落」时只写
@@ -961,10 +968,12 @@
   async function setCaretParagraphPersisted(on, { quiet = false } = {}) {
     const next = Boolean(on);
     const previous = state.marks.caretParagraph;
+    const bookId = state.bookId || null;
     setMarksToggle('caretParagraph', next);
     try {
-      await persistDisplayPatch({ caretParagraph: next });
-      if (!quiet) {
+      const result = await persistDisplayPatch({ caretParagraph: next });
+      // 五-M10（L-F2）：回执到达时已经换了书：这次写入是 A 书的事，别拿「只对这本书」的提示误导 B 书。
+      if (!quiet && !(result && result.stale)) {
         toast(
           next
             ? `已开启当前段落高亮（${state.bookId ? '只对这本书' : '全局默认'}，会记住）`
@@ -973,6 +982,8 @@
       }
       return true;
     } catch (err) {
+      // 五-M10（L-F2）：回滚也是针对 A 书的（previous 是 A 书的旧值），换了书就不许套到 B 书界面。
+      if (!editorLogic.displayWritebackIsCurrent(bookId, state.bookId)) return false;
       setMarksToggle('caretParagraph', previous);
       toast(`保存当前段落高亮开关失败：${err.message}`, 'error');
       return false;
@@ -984,15 +995,18 @@
   async function setCaretColorPersisted(color, { quiet = true } = {}) {
     const next = caretColorLib.normalizeColor(color);
     const previous = caretColorValue(state.config);
+    const bookId = state.bookId || null;
     applyCaretColor({ caretParagraphColor: next });
     renderCaretColorRow();
     try {
-      await persistDisplayPatch({ caretParagraphColor: next });
-      if (!quiet) {
+      const result = await persistDisplayPatch({ caretParagraphColor: next });
+      // 五-M10（L-F2）：换了书之后这次写入只属于 A 书，提示会误导当前（B 书）界面。
+      if (!quiet && !(result && result.stale)) {
         toast(next ? `高亮颜色已保存（${state.bookId ? '只对这本书' : '全局默认'}）` : '高亮颜色已恢复跟随背景主题');
       }
       return true;
     } catch (err) {
+      if (!editorLogic.displayWritebackIsCurrent(bookId, state.bookId)) return false;
       applyCaretColor({ caretParagraphColor: previous });
       renderCaretColorRow();
       toast(`保存高亮颜色失败：${err.message}`, 'error');
@@ -1019,9 +1033,12 @@
 
   // 章节栏宽度：开着书就记到这本书，否则记全局
   async function persistSidebarWidth(width) {
+    const bookId = state.bookId || null;
     try {
-      if (state.bookId) {
-        const display = await call(api.setBookDisplay, state.bookId, { editorSidebarWidth: width });
+      if (bookId) {
+        const display = await call(api.setBookDisplay, bookId, { editorSidebarWidth: width });
+        // 五-M10（L-F2）：拖分隔条（pointerup / 双击）期间命令面板换书：A 书的宽度回执不许写进 B 书状态。
+        if (!editorLogic.displayWritebackIsCurrent(bookId, state.bookId)) return;
         state.bookDisplay = display || {};
         state.config = effectiveConfig();
       } else {
@@ -3337,9 +3354,12 @@
   async function setDisplayPreset(name) {
     const preset = DISPLAY_PRESETS[name];
     if (!preset) return;
+    const bookId = state.bookId || null;
     try {
-      if (state.bookId) {
-        const display = await call(api.setBookDisplay, state.bookId, preset.patch);
+      if (bookId) {
+        const display = await call(api.setBookDisplay, bookId, preset.patch);
+        // 五-M10（L-F2）：预设写回在途时换书（命令面板 / 整理卡片）：丢弃旧书回执，也别说「本书已切换」。
+        if (!editorLogic.displayWritebackIsCurrent(bookId, state.bookId)) return;
         state.bookDisplay = display || {};
         state.config = effectiveConfig();
         applyEditorStyle();

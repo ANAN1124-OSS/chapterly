@@ -649,3 +649,41 @@ test('五-H4 静态闸门：renderer.js 的 insertIntoBody 先过 insertGuard，
     '旧的四道裸守卫应已被闸门收编（不然两套口径会漂）'
   );
 });
+
+// 五-M10（L-F2）：显示设置写回的「还是发起时那本书吗」判定。M5 只覆盖 applyBookDisplay；
+// persistDisplayPatch / persistSidebarWidth / setDisplayPreset 与两个失败回滚不在其列 ——
+// IPC 在途时命令面板换书（openBookByPath 不脏不拦），旧书回执落地会把 A 书覆盖套到 B 书界面。
+test('五-M10（L-F2）：显示设置回执的书身份令牌 —— 还是发起时那本书才落地', () => {
+  assert.equal(logic.displayWritebackIsCurrent('b_a', 'b_a'), true);
+  assert.equal(logic.displayWritebackIsCurrent('b_a', 'b_b'), false, '在途换书：旧书回执必须丢弃');
+  assert.equal(logic.displayWritebackIsCurrent('b_a', null), false, '在途回书架 / 关闭书也算换了落点');
+  assert.equal(logic.displayWritebackIsCurrent(null, null), true, '全局写（书架态）没有书身份');
+  assert.equal(logic.displayWritebackIsCurrent(undefined, null), true, '缺省按同一口径归一成 null');
+});
+
+test('五-M10 静态闸门：三个显示写回入口都拍令牌并复核，失败回滚也不作用到新书', () => {
+  const rendererSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  const bodyOf = (name) => {
+    const match = rendererSrc.match(new RegExp(`async function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}`));
+    assert.ok(match, `找不到 ${name}`);
+    return match[0];
+  };
+  for (const name of ['persistDisplayPatch', 'persistSidebarWidth', 'setDisplayPreset']) {
+    const body = bodyOf(name);
+    assert.match(body, /const bookId = state\.bookId \|\| null;/, `${name} 发起时要拍书身份令牌`);
+    assert.match(
+      body,
+      /displayWritebackIsCurrent\(bookId, state\.bookId\)/,
+      `${name} 回执落地前要复核还是那本书`
+    );
+  }
+  for (const name of ['setCaretParagraphPersisted', 'setCaretColorPersisted']) {
+    const body = bodyOf(name);
+    assert.match(body, /const bookId = state\.bookId \|\| null;/, `${name} 失败回滚前要有令牌`);
+    assert.match(
+      body,
+      /displayWritebackIsCurrent\(bookId, state\.bookId\)/,
+      `${name} 失败回滚不能套到已经换过的书`
+    );
+  }
+});

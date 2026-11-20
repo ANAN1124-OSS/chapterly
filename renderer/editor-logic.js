@@ -483,6 +483,16 @@
     return { ok: true };
   }
 
+  // 五-M10（L-F2）：显示设置写回的「还是发起时那本书吗」判定。M5 只覆盖 applyBookDisplay；
+  // persistDisplayPatch / persistSidebarWidth / setDisplayPreset 与两处失败回滚不在其列 —— IPC 在途时
+  // 命令面板换书（openBookByPath 不脏不拦），旧书的 setBookDisplay 回执落地会把 A 书的显示覆盖
+  // 写进 B 书的内存状态 / 编辑区；随后在设置里保存又会把 A 的值写进 B 的 bookDisplay。
+  // 令牌口径与开书世代一致：发起时拍 bookId（null = 全局 / 书架态），回执落地前必须仍相同；
+  // 书作用域的回执不匹配就丢弃（磁盘上 A 书的覆盖已经正确落盘，只是不往 B 书界面写）。
+  function displayWritebackIsCurrent(tokenBookId, currentBookId) {
+    return (tokenBookId || null) === (currentBookId || null);
+  }
+
   return {
     MAX_MARK_CHARS,
     MAX_MARK_RAW_CHARS,
@@ -497,6 +507,7 @@
     BULK_WRITE_LIMITS,
     shouldBulkWrite,
     insertGuard,
+    displayWritebackIsCurrent,
     countChars,
     lineRanges,
     paragraphRanges,
