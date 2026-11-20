@@ -440,12 +440,17 @@ test('静态闸门：config:set 的 bookDisplay 逐书过来源校验并按书�
   assert.ok(start > 0, 'main.js 里找不到 config:set');
   const body = MAIN_SOURCE.slice(start, MAIN_SOURCE.indexOf('\n  handle(', start + 1));
   assert.match(body, /configGate\.filterBookDisplayMapPatch\(/, 'config:set 必须逐书过字体来源校验（E1 旁路）');
-  assert.match(
-    body,
-    /\.\.\.Object\.entries\(current\.bookDisplay/,
-    '按书合并：只带一本书的 patch 不能抹掉别的书的显示覆盖'
+  // 五-L2（CI-4）：并 map 合并挪进 configStore.set 的写队列（书的显示覆盖更新与写盘同一 enqueue），
+  // 不再用队列外的 current 快照 —— 旧写法会整份盖掉并发 book:set-display 的更新。
+  assert.match(body, /bookDisplayPatch: displayPatch/, '按书合并要走 set 的 bookDisplayPatch（队列内 current 重算）');
+  assert.equal(
+    body.includes('...Object.entries(current.bookDisplay'),
+    false,
+    '不许再用队列外 current 快照整 map 合并（CI-4）'
   );
   assert.match(body, /delete gated\.patch\.bookDisplay/, '形状不对的 bookDisplay 整项丢弃（保留原配置）');
+  // 五-L2：广播摘要要补上 bookDisplay 这个顶层键（patch 里已经没有它了）
+  assert.match(body, /if \(displayPatch\) changed\.push\('bookDisplay'\)/, '广播 changed 摘要要补 bookDisplay');
 });
 
 // 五-M28（CI-5）：整份 bookDisplay map 的条目数同样要有闸 —— 正常 UI 一次只带一本书，

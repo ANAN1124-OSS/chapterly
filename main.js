@@ -1483,16 +1483,14 @@ function registerIpc() {
     // 会被 font:read 整份 base64 读回渲染层，等于绕过字体来源闸门。这里逐书过 book:set-display 同一份
     // 校验（filterBookDisplayMapPatch），并按书合并回当前 map：被拒的字体路径保留原值，只带一本书的
     // patch 不会把别的书的显示覆盖抹掉；形状不对的 bookDisplay 整个键丢掉（保留原配置）。
+    let displayPatch = null;
     if (Object.prototype.hasOwnProperty.call(gated.patch, 'bookDisplay')) {
       const displayGate = configGate.filterBookDisplayMapPatch(gated.patch.bookDisplay, { current, picked });
-      if (displayGate.patch) {
-        gated.patch.bookDisplay = Object.fromEntries([
-          ...Object.entries(current.bookDisplay || {}),
-          ...Object.entries(displayGate.patch)
-        ]);
-      } else {
-        delete gated.patch.bookDisplay;
-      }
+      if (displayGate.patch) displayPatch = displayGate.patch;
+      // 五-L2（CI-4）：这里只做「逐书过闸门」，并 map 的合并交给 configStore.set 的 bookDisplayPatch
+      // （写队列内用刚读到的 current 重算）——旧实现拿队列外这份 current 快照整 map 合并，会静默
+      // 吞掉别的窗口并发 book:set-display 刚写进去的更新。
+      delete gated.patch.bookDisplay;
       if (displayGate.rejected.length) gated.rejected.push(...displayGate.rejected);
     }
     // 只把放行的字段交给配置仓库：被拒的字段保留原值，正常字段照旧生效。
@@ -1507,6 +1505,8 @@ function registerIpc() {
     // 队列内刚读到的 current；mkdir 失败 ⇒ set 直接抛出，配置一个字都不写（A3 的顺序语义不变）。
     // 目标目录仍按「当前配置 + 放行后的 patch」走同一份 sanitize，并过装饰层（--books-root 时是覆盖目录）。
     const next = await configStore.set(gated.patch, {
+      // 五-L2（CI-4）：每本书显示覆盖的并 map 合并进写队列（队列内 current 重算，不吞并发更新）
+      bookDisplayPatch: displayPatch,
       async beforeWrite({ current: freshCurrent }) {
         previousRoot = decorateConfig(sanitizeConfig(freshCurrent)).booksRoot;
         const targetRoot = decorateConfig(sanitizeConfig({ ...freshCurrent, ...gated.patch })).booksRoot;
@@ -1532,9 +1532,13 @@ function registerIpc() {
       // 整份全局表单，会把这里刚改的项（dailyGoal / 字号 / 快照 / 词表路径…）静默盖回旧值。
       // 载荷只带「改了哪些顶层键」的摘要（不带值：路径类字段不进广播）；发起窗口自己已经拿到
       // 回包，用 except 跳过它，免得本窗口把自己的保存当成「别的窗口改过设置」再重填一遍表单。
+      // 五-L2（CI-4）：bookDisplay 的合并已经挪进写队列，patch 里不再有它 —— 摘要补上这个顶层键，
+      // 别的窗口才会把按书显示覆盖也刷新一遍。
+      const changed = Object.keys(gated.patch || {});
+      if (displayPatch) changed.push('bookDisplay');
       broadcast(
         'config:changed',
-        { reason: 'config', changed: Object.keys(gated.patch || {}) },
+        { reason: 'config', changed },
         { except: session ? session.id : null }
       );
     }

@@ -258,6 +258,37 @@ test('按书显示设置：只存改过的项，脏数据被清洗', async () =>
   assert.equal(await store.resetBookDisplay(bookId), false, '没有覆盖时再重置返回 false');
 });
 
+// CI-4（五-L2）：config:set 带 bookDisplay 时，旧实现用队列外快照整 map 合并 → 与并发的
+// book:set-display 互相吞更新（窗口 B 刚更新的书 X 被窗口 A 的旧快照整份盖回）。
+// 现在「并 map」合并挪进 set 的写队列，用队列内刚读到的 current 重算。
+test('五-L2（CI-4）：set 的 bookDisplayPatch 在写队列内合并，不吞并发 book:set-display 的更新', async () => {
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+  await store.load();
+  // A 窗口的按书更新先入队，B 窗口的 config:set（带另一本书的显示 patch）后入队
+  const displayFirst = store.setBookDisplay('b_bookA', { editorFontSize: 20 });
+  const configSet = store.set({ dailyGoal: 1234 }, {
+    bookDisplayPatch: { b_bookB: { editorFontSize: 18 } }
+  });
+  const [display, saved] = await Promise.all([displayFirst, configSet]);
+  assert.deepEqual(display, { editorFontSize: 20 });
+  assert.equal(saved.dailyGoal, 1234);
+  assert.equal(
+    saved.bookDisplay.b_bookA.editorFontSize,
+    20,
+    'A 窗口刚写进队列的按书更新不许被 B 的旧快照吞掉'
+  );
+  assert.equal(saved.bookDisplay.b_bookB.editorFontSize, 18, 'B 的按书 patch 照常合并进 map');
+  // 落盘与内存一致（写队列内的合并结果就是最终配置）
+  const onDisk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(onDisk.bookDisplay.b_bookA.editorFontSize, 20);
+  assert.equal(onDisk.bookDisplay.b_bookB.editorFontSize, 18);
+  // 没带 bookDisplayPatch 时：原有条目一个都不动（口径与旧实现一致）
+  const next = await store.set({ dailyGoal: 2000 });
+  assert.equal(next.bookDisplay.b_bookA.editorFontSize, 20);
+  assert.equal(next.bookDisplay.b_bookB.editorFontSize, 18);
+});
+
 test('按书显示设置：非法值按全局规则夹紧，非法 bookId 被忽略', async () => {
   const dir = await mkTmp();
   const store = createConfigStore(dir);

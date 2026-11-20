@@ -776,13 +776,26 @@ function createConfigStore(userDataDir, deps = {}) {
   // current —— 队列外快照在多窗口并发写配置时可能已经过期（窗口 A 刚换根、窗口 B 还拿旧根
   // 判定 → 新根没被预建）。钩子抛错 = 这次不写盘（cache / 磁盘都保持旧值，A3/E3 顺序语义不变）。
   // 只有主进程的 config:set 传它；不传时行为与旧实现逐字节一致。
+  // 五-L2（CI-4）：可选 bookDisplayPatch —— 每本书显示覆盖的「并 map」合并必须和写盘同一个 enqueue，
+  // 用队列内刚读到的 current 重算（队列外快照会整份盖掉并发 book:set-display 刚写进的更新）。
+  // 传了它时 patch 里不要再带 bookDisplay（这里会基于 current 重算整份 map）。
   function set(patch, options = {}) {
     const auto = Boolean(options && options.auto);
     const beforeWrite = options && typeof options.beforeWrite === 'function' ? options.beforeWrite : null;
+    const bookDisplayPatch =
+      options && options.bookDisplayPatch && typeof options.bookDisplayPatch === 'object'
+        ? options.bookDisplayPatch
+        : null;
     return enqueue(async () => {
       await gateWrite(auto);
       const current = await get();
-      const next = sanitize({ ...current, ...(patch || {}) });
+      const next = sanitize({
+        ...current,
+        ...(patch || {}),
+        ...(bookDisplayPatch
+          ? { bookDisplay: { ...(current.bookDisplay || {}), ...bookDisplayPatch } }
+          : {})
+      });
       if (beforeWrite) await beforeWrite({ current, next });
       // 先写盘：失败就抛出，cache 保持旧值（内存不再「假装已保存」）
       await writeJson(file, next);
