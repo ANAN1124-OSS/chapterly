@@ -210,6 +210,12 @@
 
   // 退出阅读时把位置记进内存（v0.13 / U-D10）：只记本次运行，不写盘。
   // 正在读盘时不记（DOM 里可能只有半截），让上一次的位置留着。
+  // 五-L14（RF-02）：除了下标还记章 id —— 删章 / 插入 / 重排后下标会漂，重进时按 id 认回同一章。
+  function chapterIdAt(index) {
+    const chapter = state.chapters[index];
+    return chapter && chapter.id != null ? chapter.id : null;
+  }
+
   function rememberReadingPosition() {
     // 五-M19（SS-12）：优先用「进阅读模式时那本书」——换书 / 回书架触发的收口可能已经改写了
     // state.bookPath；没有捕获过（老入口 / 单测直接置 open）才退回当前 state。
@@ -221,7 +227,13 @@
     readingPositionsByBook = readingLogic.withReadingPosition(
       readingPositionsByBook,
       bookPath,
-      { index: position.index, ratio: position.ratio, editorIndex },
+      {
+        index: position.index,
+        ratio: position.ratio,
+        editorIndex,
+        chapterId: chapterIdAt(position.index),
+        editorChapterId: chapterIdAt(editorIndex)
+      },
       state.chapters.length
     );
   }
@@ -590,8 +602,14 @@
     const editorIndex = Math.max(0, Math.min(state.index < 0 ? 0 : state.index, total - 1));
     // 阅读位置记忆（v0.13 / U-D10）：编辑区还停在记位置时的那一章 → 回到上次读到的章；
     // 否则按编辑区当前章开始（作者明确换了章 / 第一次进这本书）。只看内存，不读盘。
+    // 五-L14（RF-02）：身份按章 id 比对（下标会随增删章漂移），下标只在没有 id 的旧记录上兜底。
+    const chapterIds = state.chapters.map((chapter) => (chapter && chapter.id != null ? chapter.id : null));
     const saved = readingLogic.readingPositionForBook(readingPositionsByBook, state.bookPath, total);
-    const startIndex = readingLogic.readingStartIndex(saved, editorIndex, total);
+    const resume = readingLogic.readingResumePlan(saved, editorIndex, total, {
+      chapterIds,
+      editorChapterId: chapterIds[editorIndex]
+    });
+    const startIndex = resume.index;
     state.reading.startIndex = startIndex;
     state.reading.index = state.reading.startIndex;
     state.reading.programmaticScrollTop = 0;
@@ -617,8 +635,9 @@
     if (scroll) scroll.scrollTop = 0;
     await readingReplaceAt(state.reading.startIndex);
     // 回到上次读到的章内位置（v0.13 / U-D10）：只在这一章就是记下来的那一章、且比例 > 0 时滚；
-    // 章顶 / 换了起点都保持原来的「从章首开始」。
-    if (state.reading.open && startIndex === saved.index && saved.ratio > 0) {
+    // 章顶 / 换了起点都保持原来的「从章首开始」。五-L14：resume.restored 由章 id 解析得出，
+    // 章被删 / 作者换章时不会被旧下标误判成「回到了原处」。
+    if (state.reading.open && resume.restored && saved.ratio > 0) {
       readingScrollToBlock(startIndex, saved.ratio);
       updateReadingUi();
     }

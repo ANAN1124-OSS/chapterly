@@ -939,6 +939,34 @@ test('阅读位置：本次阅读出现过读取失败区块 → 不记位置，
   stopReading(ctx);
 });
 
+// 五-L14（RF-02）：章结构变化（插章 / 重排）后，按章 id 仍回得到上次读到的那一章；
+// 只按下标会静默恢复到另一章（本次运行的内存态，但会串章）。
+test('五-L14（RF-02）：阅读位置按章 id 恢复——插章后仍回到上次读到的那一章', async () => {
+  const chapters = makeChapters(3);
+  chapters.forEach((chapter, index) => {
+    chapter.id = `id-${index + 1}`;
+  });
+  const dom = makeDoc();
+  const ctx = build({ dom, chapters, index: 0, bookPath: '/书库/书甲' });
+  ctx.state.reading.open = true;
+  dom.newBlock(0, -1400, 1000);
+  dom.newBlock(1, -400, 800);
+  const scroll = dom.map.get('reading-scroll');
+  scroll.clientHeight = 400;
+  scroll.scrollHeight = 5000;
+  scroll.scrollTop = 1400; // 第 2 章（id-2）50%，编辑区在第 1 章（id-1）
+  ctx.ui.exitReadingMode();
+
+  // 章结构变化：最前面插一章 → 编辑区当前下标变成 1，但章 id 仍是 id-1
+  ctx.state.chapters = [{ id: 'new-0', name: '插章', file: 'n.txt' }, ...chapters];
+  ctx.state.index = 1;
+  fakeBlockHeight(dom, 800);
+  const res = await ctx.ui.openReadingMode();
+  assert.equal(res.startIndex, 2, '按 id 找到原第 2 章（现在第 3 位），不按旧下标落回第 1 章');
+  assert.equal(ctx.state.reading.index, 2);
+  stopReading(ctx);
+});
+
 // ---------- 键盘翻章（Phase D / D3） ----------
 function fireReadingKey(dom, key, extra = {}) {
   let prevented = 0;

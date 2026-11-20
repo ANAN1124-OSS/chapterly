@@ -387,3 +387,68 @@ test('阅读位置：记录 → 重开同书 → 恢复 / 重启（新的表）�
   assert.deepEqual(reading.readingPositionForBook(twoBooks, '/书库/长篇', 3), saved);
   assert.deepEqual(reading.readingPositionForBook(twoBooks, '/书库/短篇', 3), { index: 0, ratio: 0.9, editorIndex: 0 });
 });
+
+// 五-L14（RF-02）：阅读位置还记「章 id」—— 删章 / 插入 / 重排后下标会漂，
+// 只存 index 会把作者恢复到另一章（且是静默的）。id 是唯一能跨结构变化认回同一章的身份。
+test('五-L14（RF-02）：阅读位置按章 id 恢复，插章 / 重排后仍回到同一章，章被删才退回当前写作章', () => {
+  const ids = ['a', 'b', 'c', 'd'];
+  const store = reading.withReadingPosition(
+    new Map(),
+    '/书库/长篇',
+    { index: 2, ratio: 0.4, editorIndex: 0, chapterId: 'c', editorChapterId: 'a' },
+    4
+  );
+  const saved = reading.readingPositionForBook(store, '/书库/长篇', 4);
+  assert.deepEqual(saved, { index: 2, ratio: 0.4, editorIndex: 0, chapterId: 'c', editorChapterId: 'a' });
+  // 编辑区没换章 → 按 id 找到 c
+  assert.deepEqual(reading.readingResumePlan(saved, 0, 4, { chapterIds: ids, editorChapterId: 'a' }), {
+    index: 2,
+    restored: true
+  });
+  // 前面插一章：下标整体后移，c 现在在第 4 位（0 基 3）
+  assert.deepEqual(
+    reading.readingResumePlan(saved, 1, 5, { chapterIds: ['x', 'a', 'b', 'c', 'd'], editorChapterId: 'a' }),
+    { index: 3, restored: true }
+  );
+  // 重排：c 挪到第 1 位
+  assert.deepEqual(reading.readingResumePlan(saved, 1, 4, { chapterIds: ['c', 'a', 'b', 'd'], editorChapterId: 'a' }), {
+    index: 0,
+    restored: true
+  });
+  // 记下来的那一章被删 → 不猜相邻章，回编辑区当前章
+  assert.deepEqual(reading.readingResumePlan(saved, 0, 3, { chapterIds: ['a', 'b', 'd'], editorChapterId: 'a' }), {
+    index: 0,
+    restored: false
+  });
+  // 作者在编辑器里明确换了章（按 id 比对）→ 以编辑器当前章为起点
+  assert.deepEqual(reading.readingResumePlan(saved, 2, 4, { chapterIds: ids, editorChapterId: 'c' }), {
+    index: 2,
+    restored: false
+  });
+  // 没有章 id 上下文（旧三参调用）→ 完全退回旧口径
+  assert.equal(reading.readingStartIndex(saved, 0, 4), 2);
+  assert.equal(reading.readingStartIndex(saved, 2, 4), 2);
+  // 旧记录（没有 chapterId）仍按下标恢复，行为不变
+  const legacy = reading.withReadingPosition(new Map(), '/书库/长篇', { index: 1, ratio: 0.2, editorIndex: 0 }, 4);
+  assert.deepEqual(reading.readingPositionForBook(legacy, '/书库/长篇', 4), { index: 1, ratio: 0.2, editorIndex: 0 });
+  assert.deepEqual(
+    reading.readingResumePlan(reading.readingPositionForBook(legacy, '/书库/长篇', 4), 0, 4, {
+      chapterIds: ids,
+      editorChapterId: 'a'
+    }),
+    { index: 1, restored: true }
+  );
+  // 坏 id（对象 / 空串）一律当没有，不参与判定；数字 id 归一成字符串
+  const dirty = reading.withReadingPosition(
+    new Map(),
+    '/书库/长篇',
+    { index: 1, editorIndex: 0, chapterId: { bad: true }, editorChapterId: 42 },
+    4
+  );
+  assert.deepEqual(reading.readingPositionForBook(dirty, '/书库/长篇', 4), {
+    index: 1,
+    ratio: 0,
+    editorIndex: 0,
+    editorChapterId: '42'
+  });
+});

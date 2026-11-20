@@ -106,11 +106,21 @@
   //   ratio       停在这一章的纵向比例（0 = 章顶，1 = 章底），用来回到章内的大致位置
   //   editorIndex 记这份位置时编辑区停在哪一章：只有编辑区没换过章才恢复阅读位置；
   //               作者在编辑器里明确点了别的章，就以那一章为起点 —— 不抢他的选择。
+  // 五-L14（RF-02）：在上面的下标之外再记章 id（chapterId / editorChapterId）—— 删章 / 插入 /
+  // 重排之后下标会整体漂移，只有 id 能认回「上次读到的那一章」（下标只做旧记录与坏值的兜底）。
   // 三个函数都不抛错，也不改传进来的 store / 位置对象；空路径 / 坏值一律收敛到「没有位置」。
   function positionRatio(value) {
     const n = toFinite(value);
     if (n == null) return 0;
     return Math.min(Math.max(n, 0), 1);
+  }
+
+  // 五-L14（RF-02）：章 id 归一 —— 只认短字符串 / 数字（书目里的 id 就是这两种），
+  // 空值 / 对象 / 超长一样当「没有记录」，绝不把坏值写进判定。
+  function readingIdentity(value) {
+    if (typeof value !== 'string' && typeof value !== 'number') return '';
+    const id = String(value);
+    return id && id.length <= 200 ? id : '';
   }
 
   function readingPositionForBook(store, bookPath, total) {
@@ -125,7 +135,13 @@
     const index = Math.min(Math.max(Math.floor(rawIndex), 0), safeTotal - 1);
     const rawEditor = toFinite(stored.editorIndex);
     const editorIndex = rawEditor == null ? -1 : Math.min(Math.max(Math.floor(rawEditor), 0), safeTotal - 1);
-    return { index, ratio: positionRatio(stored.ratio), editorIndex };
+    const found = { index, ratio: positionRatio(stored.ratio), editorIndex };
+    // 五-L14：id 只在记录里当时确实有值时出现（旧记录 / 坏值不造字段，deepEqual 口径不变）。
+    const chapterId = readingIdentity(stored.chapterId);
+    if (chapterId) found.chapterId = chapterId;
+    const editorChapterId = readingIdentity(stored.editorChapterId);
+    if (editorChapterId) found.editorChapterId = editorChapterId;
+    return found;
   }
 
   function withReadingPosition(store, bookPath, position, total) {
@@ -139,23 +155,72 @@
     const index = Math.min(Math.max(Math.floor(rawIndex), 0), safeTotal - 1);
     const rawEditor = source ? toFinite(source.editorIndex) : null;
     const editorIndex = rawEditor == null ? index : Math.min(Math.max(Math.floor(rawEditor), 0), safeTotal - 1);
-    next.set(key, { index, ratio: positionRatio(source && source.ratio), editorIndex });
+    const record = { index, ratio: positionRatio(source && source.ratio), editorIndex };
+    const chapterId = readingIdentity(source && source.chapterId);
+    if (chapterId) record.chapterId = chapterId;
+    const editorChapterId = readingIdentity(source && source.editorChapterId);
+    if (editorChapterId) record.editorChapterId = editorChapterId;
+    next.set(key, record);
     return next;
+  }
+
+  // 五-L14（RF-02）：按章 id 现场解析「记下来的那一章」现在的下标（删章 / 插入 / 重排后下标会漂）。
+  // 没记 id / 没有章列表 / 找不到都回 -1，由调用方决定退回哪一章。
+  function readingSavedIndexFor(position, chapterIds) {
+    const saved = position && typeof position === 'object' && !Array.isArray(position) ? position : null;
+    if (!saved || !Array.isArray(chapterIds)) return -1;
+    const id = readingIdentity(saved.chapterId);
+    if (!id) return -1;
+    for (let index = 0; index < chapterIds.length; index += 1) {
+      if (readingIdentity(chapterIds[index]) === id) return index;
+    }
+    return -1;
+  }
+
+  // 五-L14（RF-02）：重进阅读时从哪一章开始，返回 { index, restored }。
+  // 与旧 readingStartIndex 的差别是「身份优先按章 id、下标只做兜底」：
+  //   · 作者在编辑器里换没换章：两边都有 editorChapterId 时比 id —— 前面增删章导致下标漂移
+  //     不会再把「没换章」误判成「换了章」（旧口径会按下标直接放弃恢复）；
+  //   · 回到上次读到的章：按 chapterId 现场解析（重排 / 前面插章后仍对得上）；
+  //   · 记下来的章已被删：回编辑区当前章，绝不猜相邻章（旧口径会按旧下标落到别的章）；
+  //   · 没有 chapterIds 上下文（旧三参调用 / 老记录）时完全退回旧口径，行为一字不变。
+  // restored = 确实回到了记下来的那一章（阅读界面据此决定要不要恢复章内比例）。
+  function readingResumePlan(position, editorIndex, total, context) {
+    const safeTotal = Math.max(0, Math.floor(Number(total) || 0));
+    const rawEditor = toFinite(editorIndex);
+    const current = safeTotal
+      ? Math.min(Math.max(Math.floor(rawEditor == null ? 0 : rawEditor), 0), safeTotal - 1)
+      : 0;
+    if (!safeTotal) return { index: 0, restored: false };
+    const saved = position && typeof position === 'object' && !Array.isArray(position) ? position : null;
+    if (!saved) return { index: current, restored: false };
+    const ctx = context && typeof context === 'object' && !Array.isArray(context) ? context : {};
+    const chapterIds = Array.isArray(ctx.chapterIds) ? ctx.chapterIds : null;
+    const savedEditorId = readingIdentity(saved.editorChapterId);
+    const editorId = readingIdentity(ctx.editorChapterId);
+    let changed;
+    if (savedEditorId && editorId) {
+      changed = savedEditorId !== editorId;
+    } else {
+      const savedEditor = toFinite(saved.editorIndex);
+      changed = savedEditor == null || Math.floor(savedEditor) !== current;
+    }
+    if (changed) return { index: current, restored: false };
+    if (chapterIds) {
+      const at = readingSavedIndexFor(saved, chapterIds);
+      if (at >= 0) return { index: Math.min(at, safeTotal - 1), restored: true };
+      // 有 id 却找不到 = 那一章被删了：回当前写作章，不猜。
+      if (readingIdentity(saved.chapterId)) return { index: current, restored: false };
+    }
+    const rawIndex = toFinite(saved.index);
+    if (rawIndex == null) return { index: current, restored: false };
+    return { index: Math.min(Math.max(Math.floor(rawIndex), 0), safeTotal - 1), restored: true };
   }
 
   // 重进阅读时从哪一章开始：编辑区还停在记位置的那一章（没在编辑器里换章）→ 回到上次读到的章；
   // 否则按编辑区当前章（作者明确选了新起点，或第一次进这本书）。坏参数一律收敛到合法章。
-  function readingStartIndex(position, editorIndex, total) {
-    const safeTotal = Math.max(0, Math.floor(Number(total) || 0));
-    if (!safeTotal) return 0;
-    const rawEditor = toFinite(editorIndex);
-    const current = Math.min(Math.max(Math.floor(rawEditor == null ? 0 : rawEditor), 0), safeTotal - 1);
-    const saved = position && typeof position === 'object' ? position : null;
-    const savedIndex = saved ? toFinite(saved.index) : null;
-    const savedEditor = saved ? toFinite(saved.editorIndex) : null;
-    if (savedIndex == null || savedEditor == null) return current;
-    if (Math.floor(savedEditor) !== current) return current;
-    return Math.min(Math.max(Math.floor(savedIndex), 0), safeTotal - 1);
+  function readingStartIndex(position, editorIndex, total, context) {
+    return readingResumePlan(position, editorIndex, total, context).index;
   }
 
   // Ctrl+= / Ctrl+- 调阅读字号（Phase D / D6）：返回 +1（放大）/ -1（缩小）/ 0（不是字号键）。
@@ -341,6 +406,8 @@
     positionAtScroll,
     readingPositionForBook,
     withReadingPosition,
+    readingSavedIndexFor,
+    readingResumePlan,
     readingStartIndex,
     fontStepForKey,
     readingProgress,
