@@ -368,6 +368,42 @@ test('修复重建：同一秒内两次归档不重名，两份坏书目都留�
   assert.equal(meta.chapters.length, 1, '两次重建后书目仍是合法 JSON');
 });
 
+test('从目录重建：章节数超过单本上限时明确拒绝，一个字节不写，原书目照常可读（TC-3 / 五-L5）', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '超多章的书');
+  await fs.mkdir(bookPath);
+  const total = storage.MAX_META_CHAPTERS;
+  // 正好达上限：放行（闸门必须是「超过」才拒，不能把 20000 章的正常书判死）
+  for (let base = 0; base < total; base += 2000) {
+    const jobs = [];
+    for (let i = base; i < Math.min(base + 2000, total); i += 1) {
+      jobs.push(fs.writeFile(path.join(bookPath, `${String(i + 1).padStart(5, '0')}-章.txt`), '正文', 'utf8'));
+    }
+    await Promise.all(jobs);
+  }
+  const atLimit = await repair.rebuildFromFiles(bookPath);
+  assert.equal(atLimit.count, total, '正好上限放行');
+  const metaPath = path.join(bookPath, storage.BOOK_FILE);
+  const before = await fs.readFile(metaPath, 'utf8');
+
+  // 多一个 txt：重建必须拒绝，且不许写出「下次读取即判损坏」的书目（不能报成功）
+  await fs.writeFile(path.join(bookPath, `${String(total + 1).padStart(5, '0')}-多出来的一章.txt`), '正文', 'utf8');
+  await assert.rejects(
+    () => repair.rebuildFromFiles(bookPath),
+    (err) =>
+      err.code === 'TOO_MANY_CHAPTERS' &&
+      err.message.includes(`上限 ${storage.MAX_META_CHAPTERS}`) &&
+      err.message.includes(`${storage.MAX_META_CHAPTERS + 1}`)
+  );
+  // 拒绝发生在换书目之前：原书目一个字节没动、也没有残留临时文件
+  assert.equal(await fs.readFile(metaPath, 'utf8'), before, '超限重建不许动原书目');
+  const files = await fs.readdir(bookPath);
+  assert.equal(files.includes('.repair-meta.json'), false, '超限重建不许留下临时书目');
+  assert.equal(files.some((f) => f.startsWith(storage.CORRUPT_PREFIX)), false, '超限重建不归档原书目');
+  const meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapters.length, total, '原书目照常可读（仍在上限内）');
+});
+
 test('从目录重建：超大序号夹到 9999，fileSeq 不许放大成超长路径（V80）', async () => {
   const root = await mkTmp();
   const bookPath = path.join(root, '超大序号的书');

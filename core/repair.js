@@ -94,6 +94,16 @@ async function rebuildFromFiles(bookPath, io = {}) {
         : '这个文件夹里没有找到章节 txt，无法重建'
     );
   }
+  // TC-3（五-L5）：重建前先过与读侧 / IPC 写入侧同一道章节条数闸门（MAX_META_CHAPTERS）。
+  // 旧实现有多少 txt 就写多少章：>20000 个文件时书目能写盘、界面还报「重建成功」，
+  // 但下次 readBookMeta 直接判 META_TOO_MANY_CHAPTERS 损坏 —— 再修一次还是同样结果，
+  // 只能手工删文件。这里在换书目前明确拒绝，一个字节不写，原书目保持可读。
+  if (files.length > storage.MAX_META_CHAPTERS) {
+    throw new storage.StorageError(
+      'TOO_MANY_CHAPTERS',
+      `这个文件夹里有 ${files.length} 个章节 txt，超过单本上限 ${storage.MAX_META_CHAPTERS}，没有重建；请先移除多余文件再修复`
+    );
+  }
   // X-N3（WP8）：序号解析改走 core/chapter-filename.js 的导入侧同一套形态 ——
   // 旧实现只认 NNN-名称.txt，其余按 listTxtFiles 的 localeCompare 顺序拿 index+1 当序号，
   // 「1.txt…12.txt」排成 1,10,11,12,2…、「第一章…第十章」按拼音排，纯数字文件的章名
