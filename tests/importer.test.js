@@ -788,3 +788,80 @@ test('E9：单个纯数字 txt 按「一本书的章节目录」导入，不占�
   assert.equal(res.imported[0].kind, 'chapter-folder', '单个 001.txt 就是章节目录');
   assert.equal(res.imported[0].title, '旧稿夹', '书名取文件夹名（独立小说才取文件名）');
 });
+
+// ---------- 五-M24（TC-6）＋ TC-2：导入来源的排除口径三形态统一 ----------
+
+// 五-M24（TC-6）：novels 形态（「一堆独立小说」文件夹）以前整条绕过 X-N6 的冲突副本闸门 ——
+// 正本与同步盘生成的「-冲突副本.txt」各导成一本书，书架多出重复书。现在与 copyAsTexts 同口径
+// 排除，并把被排除的文件记进 skipped（既不静默导入，也不静默消失）。
+test('五-M24：novels 形态不把同步冲突副本当独立小说导入，记 skipped', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '独立小说集');
+  await fs.mkdir(src);
+  await fs.writeFile(path.join(src, '星海旅人.txt'), '第1章 夜雨\n\n正文。', 'utf8');
+  await fs.writeFile(path.join(src, '星海旅人-冲突副本.txt'), '第1章 夜雨\n\n旧稿正文。', 'utf8');
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+
+  assert.equal(res.failed.length, 0, JSON.stringify(res.failed));
+  assert.equal(res.imported.length, 1, '正本导入一本，冲突副本不再各成一本');
+  assert.equal(res.imported[0].title, '星海旅人');
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].source, '星海旅人-冲突副本.txt');
+  assert.match(res.skipped[0].reason, /同步冲突副本/);
+  assert.ok(!res.skipped[0].reason.includes(base), '提示里不该带本机目录');
+  assert.equal((await storage.listBooks(booksRoot)).length, 1, '书架里只有正本一本');
+  // 只跳过不删源：源文件夹原样保留两个文件
+  assert.equal((await fs.readdir(src)).length, 2);
+});
+
+// TC-2（与五-M24 同根因）：点前缀文件（macOS / SMB 共享的 AppleDouble `._001-起风.txt`、
+// 作者放的 `.notes.txt`）不是章节 —— 不参与形态判定、不复制进书库、不重建进书目。
+test('五-M24 / TC-2：点前缀 txt 不参与形态判定、不复制、不进书目', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '跨平台目录');
+  await fs.mkdir(src);
+  const real = [];
+  for (let i = 1; i <= 5; i += 1) {
+    const name = `00${i}-第${i}章.txt`;
+    real.push(name);
+    await fs.writeFile(path.join(src, name), `第${i}章 标题\n\n正文${i}。`, 'utf8');
+    // AppleDouble 资源叉：二进制、扩展名仍是 .txt
+    await fs.writeFile(path.join(src, `.${name}`), Buffer.from([0x00, 0x05, 0x16, 0x07, 0x00, 0x02]));
+  }
+  assert.deepEqual(await storage.listTxtFiles(src), real, 'listTxtFiles 统一排除点前缀');
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+
+  assert.equal(res.imported.length, 1, '5 个真章是一本书的章节目录，不是 5 本小说');
+  assert.equal(res.imported[0].kind, 'chapter-folder');
+  assert.equal(res.imported[0].chapters, 5, '._ 文件没有被收编成章节');
+  const importedPath = res.imported[0].path;
+  const copied = await fs.readdir(importedPath);
+  assert.equal(copied.some((name) => name.startsWith('.')), false, '点前缀文件不许进书库');
+  const meta = await storage.readBookMeta(importedPath);
+  assert.deepEqual(meta.chapters.map((chapter) => chapter.file), real);
+});
+
+// TC-2 同口径：形态判定只数「可导入」的文件 —— 冲突副本再多也不能把章节目录翻转成 novels，
+// 否则每个真章会被当成一本独立小说导入（100 个真章 + 100 个冲突副本 → 书架多出 100 本书）。
+test('五-M24：同步冲突副本不参与形态判定，章节目录不会被翻转成一堆独立小说', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '混合目录');
+  await fs.mkdir(src);
+  for (let i = 1; i <= 3; i += 1) {
+    await fs.writeFile(path.join(src, `00${i}-第${i}章.txt`), `第${i}章 标题\n\n正文${i}。`, 'utf8');
+  }
+  for (let i = 1; i <= 4; i += 1) {
+    await fs.writeFile(path.join(src, `旧稿${i} (conflicted copy ${i}).txt`), `旧稿内容${i}`, 'utf8');
+  }
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+
+  assert.equal(res.imported.length, 1, '3 个真章仍是一本书的章节目录');
+  assert.equal(res.imported[0].kind, 'chapter-folder');
+  assert.equal(res.imported[0].chapters, 3, '冲突副本不进书目');
+});

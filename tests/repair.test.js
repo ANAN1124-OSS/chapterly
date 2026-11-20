@@ -63,6 +63,24 @@ test('从目录重建：同步冲突副本不算章节，原样留在文件夹�
   assert.equal(await fs.readFile(path.join(bookPath, '001-起风 (conflicted copy).txt'), 'utf8'), '冲突副本里的旧稿');
 });
 
+test('从目录重建：点前缀 txt 不算章节，原样留在文件夹里（TC-2 / 五-M24）', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '带点前缀的书');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '起风正文', 'utf8');
+  await fs.writeFile(path.join(bookPath, '002-夜雨.txt'), '夜雨正文', 'utf8');
+  await fs.writeFile(path.join(bookPath, '.notes.txt'), '作者的临时笔记', 'utf8');
+  await fs.writeFile(path.join(bookPath, '._001-起风.txt'), Buffer.from([0x00, 0x05, 0x16, 0x07]));
+
+  const res = await repair.rebuildFromFiles(bookPath);
+  assert.equal(res.count, 2, '点前缀文件不是章节');
+  assert.deepEqual(res.meta.chapters.map((c) => c.file), ['001-起风.txt', '002-夜雨.txt']);
+  // 点前缀文件原样保留，不删不改（与 listTxtFilesDeep / copyAsBook 的排除口径一致）
+  const files = await fs.readdir(bookPath);
+  assert.ok(files.includes('.notes.txt'));
+  assert.ok(files.includes('._001-起风.txt'));
+});
+
 test('从目录重建：只有冲突副本时给出可读错误，不产生书目', async () => {
   const root = await mkTmp();
   const bookPath = path.join(root, '只有副本');

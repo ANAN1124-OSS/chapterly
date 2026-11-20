@@ -172,23 +172,31 @@ function looksLikeChapterFile(fileName) {
 
 async function analyzeSource(sourceDir) {
   const txtFiles = await storage.listTxtFiles(sourceDir).catch(() => []);
+  // X-N6（WP18 / 五-M24）：同步盘冲突副本（`*conflicted*` / `*-冲突副本*`）既不是章节，
+  // 也不是一本独立小说 —— 形态判定与 novels 导入清单都必须先剔掉，否则「一堆真章 + 一堆
+  // 冲突副本」会被判成 novels、每个冲突副本各导成一本书（与 copyAsTexts / rebuildFromFiles
+  // 的排除口径对齐）。点前缀文件已由 storage.listTxtFiles 统一排除（TC-2，同一根因）。
+  const importable = txtFiles.filter((file) => !isCopyExcludedName(path.basename(file)));
+  const excludedConflicts = txtFiles.filter((file) => isCopyExcludedName(path.basename(file)));
   try {
     const meta = await storage.readBookMeta(sourceDir);
     return { kind: 'book', meta, txtFiles };
   } catch (err) {
     if (!txtFiles.length) return { kind: 'nothing', reason: err.message };
-    if (txtFiles.length === 1) {
-      // 只有一个 txt：文件名像章节（001-xxx.txt）就当「一本书的章节目录」，
+    // 只有冲突副本：沿用「整源复制后 rebuild 报 NO_FILES」的既有路径与「只有同步冲突副本」提示
+    if (!importable.length) return { kind: 'chapter-folder', txtFiles, reason: err.message };
+    if (importable.length === 1) {
+      // 只有一个可导入 txt：文件名像章节（001-xxx.txt）就当「一本书的章节目录」，
       // 否则当成一本完整的独立小说（例如「书名 - 作者.txt」）
-      return looksLikeChapterFile(txtFiles[0])
+      return looksLikeChapterFile(importable[0])
         ? { kind: 'chapter-folder', txtFiles, reason: err.message }
-        : { kind: 'novels', files: txtFiles, reason: err.message };
+        : { kind: 'novels', files: importable, excludedConflicts, reason: err.message };
     }
-    const chapterLike = txtFiles.filter(looksLikeChapterFile).length;
-    if (chapterLike >= Math.ceil(txtFiles.length * 0.6)) {
+    const chapterLike = importable.filter(looksLikeChapterFile).length;
+    if (chapterLike >= Math.ceil(importable.length * 0.6)) {
       return { kind: 'chapter-folder', txtFiles, reason: err.message };
     }
-    return { kind: 'novels', files: txtFiles, reason: err.message };
+    return { kind: 'novels', files: importable, excludedConflicts, reason: err.message };
   }
 }
 
@@ -212,7 +220,11 @@ async function collectOversizedTxt(sourceDir, txtFiles) {
 // X-N6（WP18）：导入复制过滤与重建侧对齐 —— 同步盘冲突副本（`*conflicted*` / `*-冲突副本*`）
 // 不是章节，重建侧（core/repair.js rebuildFromFiles）本来就不收；损坏书目归档
 // （`书目.json.corrupt-*`）是历史垃圾。两者都不许抄进新书，否则新书里多出永远打不开的孤儿文件。
-// `.bak` 是正常恢复副本，照旧保留；`_trash` / `.` 前缀仍由各自调用点的既有规则排除。
+// `.bak` 是正常恢复副本，照旧保留；`_trash` / `.` 前缀不进新书 —— 顶层清单由
+// storage.listTxtFiles 统一排除点前缀（TC-2，五-M24），递归清单 / 整目录复制
+// （listTxtFilesDeep / copyAsBook）各自已有同一条规则。
+// 五-M24（TC-6）：novels 形态以前整条绕过本函数，现在 analyzeSource 在形态判定之前就用
+// 同一份清单过滤，被排除的冲突副本由 importFolders 记进 skipped（不静默导入、不静默消失）。
 // 例外：源书目的 chapters[].file 真的引用了这种名字时（作者手动改过文件名），调用方传 keepFiles，
 // 该文件照旧复制 —— 绝不让导入后的书目出现悬挂章节。
 function isCopyExcludedName(name) {
@@ -749,6 +761,11 @@ async function importFolders(booksRoot, sources, options = {}) {
         reason: '既没有可用的 书目.json，也没有 txt 文件'
       });
       continue;
+    }
+    // 五-M24（TC-6）：novels 形态被排除的同步冲突副本如实记进 skipped —— 不静默导入成
+    // 一本重复书，也不静默消失（源文件原样保留）。形态判定只数「可导入」的文件。
+    for (const file of analysis.excludedConflicts || []) {
+      skipped.push({ source: file, reason: '同步冲突副本不是章节，已跳过（源文件原样保留）' });
     }
     const items = analysis.kind === 'novels' ? analysis.files.length : 1;
     plans.push({ source, sourceDir, analysis, items });

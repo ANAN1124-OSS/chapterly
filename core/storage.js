@@ -623,7 +623,10 @@ async function listTxtFiles(bookPath) {
     throw err;
   }
   return entries
-    .filter((e) => e.isFile() && /\.txt$/i.test(e.name))
+    // 五-M24 / TC-2：点前缀（macOS / SMB 共享的 AppleDouble `._001-起风.txt`、作者放的
+    // `.notes.txt`）不是章节文件 —— 与导入侧的 listTxtFilesDeep / copyAsBook 同一条排除规则，
+    // 形态判定 / 复制 / 重建三处都不再看见它们。
+    .filter((e) => e.isFile() && !e.name.startsWith('.') && /\.txt$/i.test(e.name))
     .map((e) => e.name)
     .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
 }
