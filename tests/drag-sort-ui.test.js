@@ -750,9 +750,10 @@ test('endChapterDrag：拖拽期间切书 / 原章消失 → 不写盘（按 id 
   assert.deepEqual(w2.calls, []);
 });
 
-test('setupChapterDrag：在 window 上挂 pointermove / pointerup / pointercancel / resize 四个监听', async () => {
+test('setupChapterDrag：在 window 上挂 pointermove / pointerup / pointercancel / resize / blur 五个监听', async () => {
   const w = makeWorld();
-  assert.deepEqual([...w.listeners.keys()].sort(), ['pointercancel', 'pointermove', 'pointerup', 'resize']);
+  // 五-M22（ES-1）：新增 blur —— 拖拽中失焦要把 chapterDrag 一起取消（指针可能还在按着）
+  assert.deepEqual([...w.listeners.keys()].sort(), ['blur', 'pointercancel', 'pointermove', 'pointerup', 'resize']);
   // pointermove 转发给 updateChapterDrag（没有拖拽时是空操作）
   const c1 = chapterEl(0, 100);
   w.list.children = [c1];
@@ -824,6 +825,80 @@ test('cancel 后的点击不被吞', async () => {
   w.fire('pointercancel');
   await w.fire('pointerup');
   assert.equal(w.state.suppressChapterClick, 0, 'cancel 不是「收手」，不该屏蔽紧随其后的点击');
+});
+
+// ---------- 五-M22（ES-1）：幽灵拖拽（窗外松手 / 失焦 / 别的指针）----------
+// 没有指针捕获时，把指针拖出应用窗口再松开，Chromium 不会把 pointerup 派给本窗口；chapterDrag
+// 以 active=true 残留。用户回窗后第一帧 pointermove 的 buttons=0（主键已松开）却被旧实现当成
+// 跟手继续更新落点，随后任意一次普通 pointerup 就按幽灵落点真的 moveChapterTo 改写 书目.json。
+
+test('五-M22（ES-1）：起手捕获指针；回窗的 move（buttons=0）取消拖拽，随后的 pointerup 不写盘', async () => {
+  const w = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  w.list.children = [c1, c2];
+  const captures = [];
+  const releases = [];
+  c1.setPointerCapture = (id) => captures.push(id);
+  c1.releasePointerCapture = (id) => releases.push(id);
+
+  w.ui.startChapterDrag(event(100, { currentTarget: c1, pointerId: 7 }), 0);
+  assert.deepEqual(captures, [7], '起手就要 setPointerCapture（拖出窗口外松手也能收到 pointerup）');
+  w.fire('pointermove', event(150, { pointerId: 7, buttons: 1 }));
+  assert.equal(c1.classList.contains('dragging'), true);
+
+  // 窗外松手后回到窗口的第一帧 move：主键已经不在（buttons=0）
+  w.fire('pointermove', event(300, { pointerId: 7, buttons: 0 }));
+  assert.equal(c1.classList.contains('dragging'), false, '幽灵拖拽要立刻取消');
+  assert.equal(w.body.classList.contains('chapter-dragging'), false);
+  assert.deepEqual(releases, [7], '取消时释放指针捕获');
+  // 回窗后的普通 pointerup：不是收手，不许结算成 moveChapterTo
+  await w.fire('pointerup', { button: 0, clientY: 300, pointerId: 7, buttons: 0 });
+  assert.deepEqual(w.calls.filter((call) => call.channel === 'chapters:move-to'), []);
+  assert.equal(w.state.suppressChapterClick, 0, '取消不是收手，不吞随后的点击');
+});
+
+test('五-M22（ES-1）：拖拽中窗口失焦（Alt+Tab / blur）取消，回窗后 pointerup 不结算', async () => {
+  const w = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  w.list.children = [c1, c2];
+  const releases = [];
+  c1.releasePointerCapture = (id) => releases.push(id);
+
+  w.ui.startChapterDrag(event(100, { currentTarget: c1, pointerId: 9 }), 0);
+  w.fire('pointermove', event(150, { pointerId: 9, buttons: 1 }));
+  assert.equal(c1.classList.contains('dragging'), true);
+
+  w.fire('blur');
+  assert.equal(c1.classList.contains('dragging'), false, '失焦要清掉拖拽视觉态');
+  assert.equal(w.body.classList.contains('chapter-dragging'), false);
+  assert.deepEqual(releases, [9], '失焦取消也要释放指针捕获');
+  await w.fire('pointerup', { button: 0, clientY: 150, pointerId: 9, buttons: 0 });
+  assert.deepEqual(w.calls.filter((call) => call.channel === 'chapters:move-to'), []);
+});
+
+test('五-M22（ES-1）：别的指针 / 主键仍按着的 pointerup 不收手，只有原指针松开才结算', async () => {
+  const w = makeWorld();
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  w.list.children = [c1, c2];
+  w.state.chapters = [
+    { id: 'c1', name: '一', volumeId: null },
+    { id: 'c2', name: '二', volumeId: null }
+  ];
+  w.ui.startChapterDrag(event(100, { currentTarget: c1, pointerId: 3 }), 0);
+  w.fire('pointermove', event(175, { pointerId: 3, buttons: 1 }));
+
+  // 多指触控里另一根手指抬起：不是原拖拽指针，不结算
+  await w.fire('pointerup', { button: 0, pointerId: 4, buttons: 0 });
+  assert.deepEqual(w.calls.filter((call) => call.channel === 'chapters:move-to'), [], '别的 pointerId 不收手');
+  // 原指针但主键还没松开（另有按键在按）：也不收手
+  await w.fire('pointerup', { button: 0, pointerId: 3, buttons: 2 });
+  assert.deepEqual(w.calls.filter((call) => call.channel === 'chapters:move-to'), [], 'buttons≠0 不收手');
+  // 原指针真正松开：照常结算
+  await w.fire('pointerup', { button: 0, pointerId: 3, buttons: 0 });
+  assert.equal(w.calls.filter((call) => call.channel === 'chapters:move-to').length, 1);
 });
 
 // ---------- 静态闸门 ----------

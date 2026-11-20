@@ -17,8 +17,8 @@
  * 不放在渲染层。模块只读 / 写 state 的既有字段（meta / chapters / index /
  * suppressChapterClick），字段语义与搬运前一致。
  *
- * 事件监听（window 的 pointermove / pointerup / pointercancel）由 setupChapterDrag 一次装上，
- * 仍然是渲染层在事件绑定段调用它。1.5.0 P0-2 起章节条目的 pointerdown 由 #chapter-list
+ * 事件监听（window 的 pointermove / pointerup / pointercancel / blur）由 setupChapterDrag 一次
+ * 装上，仍然是渲染层在事件绑定段调用它。1.5.0 P0-2 起章节条目的 pointerdown 由 #chapter-list
  * 容器事件委托分派（整表重建不再逐条绑），调用方把条目元素当第 3 个参数传进来：
  * startChapterDrag(event, index, itemEl) —— 省略时仍退回 event.currentTarget（老调用不变）。
  *
@@ -113,6 +113,8 @@
     stopEdgeScroll(); // C38：上一次拖拽若没走完收手流程，别把旧定时器带进这次
     // 审计修复 #2（E2）：起手时把「是哪本书的哪一章」一起记下来。拖拽是异步结算的
     // （pointerup 之后还要等 IPC 回包），在途切书 / 切章时不能再拿旧下标去套新列表。
+    // 委托后 event.currentTarget 是 #chapter-list 容器；由调用方显式给条目元素
+    const item = itemEl || event.currentTarget;
     chapterDrag = {
       index,
       chapterId: (state.chapters[index] || {}).id,
@@ -124,9 +126,41 @@
       drop: null,
       // 审计修复 #20（P4）：进入拖拽态时量一次的行几何（{ listTop, items }），跟手阶段只读它
       geometry: null,
-      // 委托后 event.currentTarget 是 #chapter-list 容器；由调用方显式给条目元素
-      item: itemEl || event.currentTarget
+      item,
+      // 五-M22（ES-1）：记住起手的 pointerId。没有指针捕获时，把指针拖出窗口再松手，Chromium
+      // 不会把 pointerup 派给本窗口（pointercancel 也不触发）——chapterDrag 以 active=true 残留，
+      // 回窗后的第一帧 move 甚至任意一次普通 pointerup 就会按幽灵落点 moveChapterTo 改写书目。
+      // 起手就 setPointerCapture，让窗口外的松手也回到这里结算；pointerId 用于拒别的指针。
+      pointerId: Number.isFinite(event.pointerId) ? event.pointerId : null
     };
+    if (chapterDrag.pointerId != null && item && typeof item.setPointerCapture === 'function') {
+      try {
+        item.setPointerCapture(chapterDrag.pointerId);
+      } catch {
+        /* 元素已 detach / 浏览器不支持：取消路径（blur / pointercancel）仍会兜底清状态 */
+      }
+    }
+  }
+
+  // 五-M22（ES-1）：释放起手时的指针捕获（收手 / 取消都走这里；已自动释放时 release 会抛，忽略）。
+  function releaseChapterDragCapture(drag) {
+    if (!drag || drag.pointerId == null || !drag.item) return;
+    if (typeof drag.item.releasePointerCapture !== 'function') return;
+    try {
+      drag.item.releasePointerCapture(drag.pointerId);
+    } catch {
+      /* 已经自动释放 / 元素已 detach：没有副作用要处理 */
+    }
+  }
+
+  // 五-M22（ES-1）：取消拖拽（系统打断 / 失焦 / 主键已松开）。与 endChapterDrag 不同：
+  // 这不是「收手」，绝不结算落点、也不设 suppressChapterClick（否则紧随其后的点击被吞 300ms）。
+  function cancelChapterDrag() {
+    stopEdgeScroll();
+    const drag = chapterDrag;
+    chapterDrag = null;
+    releaseChapterDragCapture(drag);
+    clearDragMarks();
   }
 
   function clearDragMarks() {
@@ -306,6 +340,21 @@
 
   function updateChapterDrag(event) {
     if (!chapterDrag) return;
+    // 五-M22（ES-1）：主键已经松开（窗外松手后回窗的第一帧 move 就是 buttons=0）→ 这次拖拽
+    // 已经没有「按着」的指针，立刻取消。旧实现不看 buttons，落点标记还会跟着悬停走，随后任意
+    // 一次普通 pointerup 就按幽灵落点改写书目。buttons 缺省（老调用 / 单测）按「仍按着」处理。
+    if (Number.isFinite(event.buttons) && (event.buttons & 1) === 0) {
+      cancelChapterDrag();
+      return;
+    }
+    // 别的指针的移动不许推进这次拖拽（多指触控 / 笔 + 触摸混用）
+    if (
+      chapterDrag.pointerId != null &&
+      Number.isFinite(event.pointerId) &&
+      event.pointerId !== chapterDrag.pointerId
+    ) {
+      return;
+    }
     if (!chapterDrag.active) {
       if (Math.abs(event.clientY - chapterDrag.startY) < 5) return;
       chapterDrag.active = true;
@@ -319,11 +368,24 @@
     updateEdgeScroll(event.clientY);
   }
 
-  async function endChapterDrag() {
+  async function endChapterDrag(event) {
     stopEdgeScroll(); // C38：松手就停持续滚动（不管这次算不算有效拖拽）
     if (!chapterDrag) return;
+    // 五-M22（ES-1）：只有「原拖拽指针、主键真的松开」的 pointerup 才算收手。
+    // 别的 pointerId（多指抬起）或还有键按着（buttons≠0）都当成跟手杂音，忽略这一发。
+    // buttons / pointerId 缺省（老调用 / 单测）保持旧行为：收到 pointerup 就结算。
+    if (event && Number.isFinite(event.buttons) && event.buttons !== 0) return;
+    if (
+      event &&
+      Number.isFinite(event.pointerId) &&
+      chapterDrag.pointerId != null &&
+      event.pointerId !== chapterDrag.pointerId
+    ) {
+      return;
+    }
     const drag = chapterDrag;
     chapterDrag = null;
+    releaseChapterDragCapture(drag);
     clearDragMarks();
     if (!drag.active) return; // 普通点击，交给 click 处理
     state.suppressChapterClick = Date.now() + 300;
@@ -437,16 +499,19 @@
     window.addEventListener('pointermove', (event) => {
       if (chapterDrag) updateChapterDrag(event);
     });
-    window.addEventListener('pointerup', () => {
-      if (chapterDrag) endChapterDrag();
+    window.addEventListener('pointerup', (event) => {
+      if (chapterDrag) endChapterDrag(event);
+    });
+    // 五-M22（ES-1）：Alt+Tab 切走窗口时指针可能还在按着（松手事件落在别的窗口）——失焦就把
+    // 拖拽活状态一起取消，回窗后不会被残留态继续消费。取消不是收手，不设 suppressChapterClick。
+    window.addEventListener('blur', () => {
+      if (chapterDrag) cancelChapterDrag();
     });
     window.addEventListener('pointercancel', () => {
       // V24（1.6.1 R1）：系统打断拖拽（来电 / 手势 / 指针被夺走）时必须把拖拽活状态一起清掉。
       // 只清视觉标记不够：残留的 chapterDrag 会被下一次普通 pointerup 继续消费，静默 moveChapterTo 改写 书目.json。
       // 这里不走 endChapterDrag()：cancel 不是「收手」，不设 suppressChapterClick（否则紧随其后的点击被吞 300 ms）。
-      stopEdgeScroll(); // C38：系统打断也要停持续滚动，别留着定时器滚列表
-      chapterDrag = null;
-      clearDragMarks();
+      cancelChapterDrag();
     });
   }
     return {
