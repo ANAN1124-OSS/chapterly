@@ -192,3 +192,60 @@ test('X14：维护者文档记录静态闸门策略（不强制削减；M-N3 从
   assert.ok(maintain.includes('不许批量删除或用正则放宽到永远通过'), '要写明重构时的处理口径');
   assert.equal(read('README.md').includes('### 测试与静态闸门策略'), false, 'README 不再混维护者策略');
 });
+test('R23 appId：永久保留 local.chapter-writer 并文档化（拍板 ④）', () => {
+  const pkg = JSON.parse(read('package.json'));
+  assert.equal(pkg.build.appId, 'local.chapter-writer', 'appId 必须保持历史身份（永久保留，不做不可逆迁移）');
+
+  const readme = read('README.md');
+  assert.match(readme, /appId[^\n]*永久保留/, 'README 要写明 appId 永久保留');
+  assert.ok(readme.includes('local.chapter-writer'), 'README 要点名 appId 字面量');
+  assert.ok(readme.includes('历史身份'), 'README 要说明它是历史身份');
+  assert.match(readme, /(不迁移|永不迁移|不再迁移)/, 'README 要写明不做迁移');
+  assert.equal(
+    /正式反向域名[^\n]*顺延到下一个大版本/.test(readme),
+    false,
+    '拍板 ④ 已改为永久保留：不许再承诺下个大版本迁移 appId'
+  );
+  // 与数据目录彻底解耦这条口径保留（数据目录在 main.js 显式指定）。
+  assert.match(readme, /%APPDATA%\\chapter-writer/, '仍要写明应用数据目录名');
+});
+
+test('R24 M-N3：维护者内容迁出 README（打包 / 供应链 / 静态闸门策略 / 完整已知限制）', () => {
+  const exists = (rel) => fs.existsSync(path.join(ROOT, rel));
+  assert.ok(exists('docs/维护与自检.md'), '维护者文档 docs/维护与自检.md 必须存在（M-N3 拆分落点）');
+  assert.ok(exists('docs/已知限制.md'), '完整已知限制 docs/已知限制.md 必须存在（M-N3 拆分落点）');
+
+  const readme = read('README.md');
+  const maintain = read('docs/维护与自检.md');
+  const limits = read('docs/已知限制.md');
+  const checklist = read('验收清单.md');
+
+  // 1) 打包 / 构建供应链 / 静态闸门策略整体迁到维护者文档（内容不丢，只是换文件）。
+  assert.match(maintain, /## 打包（开发者\/维护用）/, '维护者文档要收打包手册');
+  assert.match(maintain, /### 构建供应链（Electron 二进制）/, '维护者文档要收构建供应链');
+  assert.match(maintain, /node scripts\/supply-chain-check\.js/, '发版门禁命令要跟着迁走');
+  assert.match(maintain, /### 测试与静态闸门策略（X14，不强制削减）/, '维护者文档要收静态闸门策略');
+  assert.match(maintain, /## 验收自检纪律（2026-11-11 起）/, '验收自检纪律迁到维护者文档');
+  assert.equal(readme.includes('## 打包（开发者/维护用）'), false, 'README 不再承载详细打包手册');
+  assert.equal(readme.includes('### 构建供应链（Electron 二进制）'), false, 'README 不再承载供应链细节');
+  assert.equal(readme.includes('### 测试与静态闸门策略'), false, 'README 不再承载静态闸门策略');
+  assert.equal(checklist.includes('## 自检纪律（2026-11-11 起 · 硬要求）'), false, '验收清单不再混维护者纪律');
+  assert.match(readme, /docs\/维护与自检\.md/, 'README 要有维护者文档指针');
+  assert.match(checklist, /docs\/维护与自检\.md/, '验收清单要有维护者文档指针');
+
+  // 2) 完整已知限制迁出：README 只留要点 + fuse 声明（version-sync 的 checkFuseDocs 仍从 README 读）。
+  assert.match(readme, /## 已知限制（要点/, 'README 保留「已知限制（要点）」摘要');
+  assert.match(readme, /docs\/已知限制\.md/, 'README 要链到完整已知限制');
+  assert.match(limits, /## 已知限制（仍有意不做）/, '完整已知限制文档保留原标题');
+  assert.match(limits, /Electron 安全开关之外的残余风险/, '完整已知限制内容不丢');
+  assert.match(
+    readme,
+    /已开[^\n]*enableEmbeddedAsarIntegrityValidation[^\n]*onlyLoadAppFromAsar/,
+    'README 摘要仍要如实写明两个 fuse 已开（version-sync M1 门禁）'
+  );
+
+  // 3) 拆分要有可验收的「变短」：README 回落到使用者文档体量，且公开文档清单包含 docs/。
+  assert.ok(readme.length < 90000, `README 要明显变短（现在 ${readme.length} 字符，拆分前 106496）`);
+  assert.ok(readme.split('\n').length < 620, `README 行数要降到 620 以内（现在 ${readme.split('\n').length}）`);
+  assert.match(readme, /公开文档[^\n]*README\.md[^\n]*验收清单\.md[^\n]*LICENSE[^\n]*docs\//, '公开文档清单要包含 docs/');
+});

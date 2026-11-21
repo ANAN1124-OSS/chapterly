@@ -35,6 +35,8 @@ const readE2e = () => readUtf8(E2E_PATH);
 // 新 checkout 上工作区是 CRLF；Policy 断言里用 ^…$ 跨行匹配，先归一成 LF（与 wp16-regression 同口径）。
 const readE2ePr = () => readUtf8(E2E_PR_PATH).replace(/\r\n/g, '\n');
 const readDependabot = () => readUtf8(DEPENDABOT_PATH);
+// TEST-D-01：从 wp18 迁来的 CI 矩阵用例沿用 wp18 的 readSource 口径（读相对路径 + 归一 LF）。
+const readSource = (rel) => readUtf8(path.join(ROOT, rel)).replace(/\r\n/g, '\n');
 
 // 去掉注释行后的「真命令」文本：注释里说明「不进 CI」不算命令。
 function commandsOf(text) {
@@ -286,4 +288,31 @@ test('README 如实描述三套 CI（verify + PR 级 E2E + 每周 E2E）与「�
   // 审计修复 #56（O4）：Node 矩阵与 pnpm 下限要和 CI / workspace 配置一致
   assert.match(readme, /Node 用 22 \/ 24 两档矩阵/, 'README 要写明 verify.yml 的 Node 22/24 矩阵');
   assert.match(readme, /pnpm ≥ 12/, 'pnpm 下限按实测（12.11.2 所在大版本）写，不能留在未实测的 ≥10');
+});
+test('R18 C5=F3：e2e-weekly 与 verify 同口径补 Node 22 / 24 矩阵', () => {
+  const weekly = readSource('.github/workflows/e2e-weekly.yml');
+  const verify = readSource('.github/workflows/verify.yml');
+  const pkg = JSON.parse(readSource('package.json'));
+  const major = Number(String(pkg.engines && pkg.engines.node).replace(/[^0-9.]/g, '').split('.')[0]);
+  assert.equal(major >= 22, true, 'engines 下限仍是 >=22');
+
+  assert.match(
+    weekly,
+    /^ {4}strategy:\n {6}fail-fast: false\n {6}matrix:\n {8}node: \[22, 24\]$/m,
+    'e2e-weekly 必须声明 Node 22 / 24 矩阵（fail-fast: false）'
+  );
+  assert.match(weekly, /node-version: \$\{\{ matrix\.node \}\}/, 'e2e-weekly 的 setup-node 必须读 matrix.node');
+  assert.equal(weekly.includes('node-version: 24'), false, 'e2e-weekly 不许再写死单档 Node 24');
+  assert.match(verify, /^ {6}matrix:\n {8}node: \[22, 24\]$/m, 'verify 的 22 / 24 矩阵保持不变');
+
+  // 矩阵不能把 E2E 的关键步骤削掉：供应链校验 → 固定时区 → 全量 E2E
+  const commands = weekly
+    .split('\n')
+    .filter((line) => line.trim().startsWith('run:'))
+    .join('\n');
+  assert.match(commands, /pnpm install --frozen-lockfile/);
+  assert.match(commands, /node scripts\/supply-chain-check\.js/);
+  assert.match(commands, /pnpm run e2e/);
+  assert.match(weekly, /tzutil \/s "China Standard Time"/);
+  assert.equal(weekly.includes('ELECTRON_SKIP_BINARY_DOWNLOAD'), false, 'E2E 仍要装 Electron 二进制');
 });

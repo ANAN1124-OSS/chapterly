@@ -150,7 +150,7 @@ test('A1 静态闸门：主进程改走 8 秒 + plan / 执行器；提示文案�
 // 片段窗口相应放宽（只截取源码片段，断言本身不变）。
   const forceSeg = closeFlow.slice(forceAt, forceAt + 1600);
   // 台账 #3（WP18）：发送改成字面量（接线清单才看得见 app:force-close 有发送方）；
-  // 动态 plan.channel 必须下线，否则静态清单会把它误判成死监听（见 tests/wp18-low-batch.test.js › R14）。
+  // 动态 plan.channel 必须下线，否则静态清单会把它误判成死监听（见 tests/wp18-shelf-ipc.test.js › R14）。
   assert.match(forceSeg, /send:[\s\S]*webContents\.send\('app:force-close'\)/, '先 send app:force-close（字面量）');
   assert.equal(/webContents\.send\(plan\.channel\)/.test(forceSeg), false, '不许再用动态 plan.channel 发送');
   assert.match(forceSeg, /closeGuard\.FORCE_CLOSE_CHANNEL !== 'app:force-close'/, '字面量要与 close-guard 常量互钉');
