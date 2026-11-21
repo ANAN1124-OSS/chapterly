@@ -114,6 +114,35 @@
   // ia 是纯逻辑模块（见文件头）；拿不到时下面每个函数都直接 return，界面就退回原来的一长条。
   const ia = resolveSettingsIa(host);
   const DEFAULT_SETTINGS_TAB = ia ? ia.DEFAULT_TAB : 'display';
+  // RSHE-A-02（第五轮审计）：按书作用域要隐藏的全局设置项。首选 settings-ia 的
+  // GLOBAL_ONLY_FIELDS（与 FIELD_SECTION 同源维护）；ia 不可用时回落到这份逐字相同的清单
+  // （单测 / 旧宿主）。tests/settings-ui.test.js 有静态闸门对账两处，防漂移。
+  const GLOBAL_ONLY_FIELDS_FALLBACK = [
+    'settings-root-field',
+    'settings-snapshot-field',
+    'settings-snapshot-days-field',
+    'settings-stats-group',
+    'settings-daily-goal-field',
+    'settings-duration-field',
+    'settings-clipboard-field',
+    'settings-stats-chart-field',
+    'settings-stats-totals-field',
+    'settings-calendar-field',
+    'settings-stats-hint',
+    'settings-sensitive-group',
+    'settings-sensitive-field',
+    'settings-proofread-group',
+    'settings-proofread-field',
+    'settings-template-group',
+    'settings-template-field',
+    'settings-export-group',
+    'settings-export-field',
+    'settings-crash-draft-field',
+    'settings-logs-group',
+    'settings-logs-field',
+    'settings-update-group',
+    'settings-update-field'
+  ];
   // 当前分区只存在内存里（不写 config、不进保存 payload）；每次打开设置回到默认分区。
   let settingsActiveTab = DEFAULT_SETTINGS_TAB;
   // WP-13（审计 V203）：保存设置防重入。连点「保存设置」只跑一条保存链——以前两次并发会各走一遍
@@ -732,60 +761,15 @@
 
   function updateSettingsScopeUi() {
     const isBook = state.settingsScope === 'book';
-    const rootField = $('settings-root-field');
-    if (rootField) rootField.classList.toggle('hidden', isBook);
-    // 每日快照是全局设置：按书覆盖没有意义，写作页里不显示
-    const snapshotField = $('settings-snapshot-field');
-    if (snapshotField) snapshotField.classList.toggle('hidden', isBook);
-    const snapshotDays = $('settings-snapshot-days-field');
-    if (snapshotDays) snapshotDays.classList.toggle('hidden', isBook);
-    // 写作统计 / 每日目标 / 写作时长也是全局设置：按书覆盖没有意义，写作页里不显示
-    // b8：后台监听剪贴板同样是全局开关（一个应用一个），按书设置里不显示
-    for (const id of [
-      'settings-stats-group',
-      'settings-daily-goal-field',
-      'settings-duration-field',
-      'settings-clipboard-field',
-      'settings-stats-chart-field',
-      'settings-stats-totals-field',
-      'settings-calendar-field',
-      'settings-stats-hint'
-    ]) {
-      const el = $(id);
-      if (el) el.classList.toggle('hidden', isBook);
-    }
-    // 敏感词表同样是全局设置（所有书共用一份词表），写作页的按书设置里不显示
-    for (const id of ['settings-sensitive-group', 'settings-sensitive-field']) {
-      const el = $(id);
-      if (el) el.classList.toggle('hidden', isBook);
-    }
-    // 校对词表也是全局设置（所有书共用一份），写作页的按书设置里不显示
-    for (const id of ['settings-proofread-group', 'settings-proofread-field']) {
-      const el = $(id);
-      if (el) el.classList.toggle('hidden', isBook);
-    }
-    // 章节模板也是全局设置（新书 / 所有书共用一套），写作页的按书设置里不显示
-    for (const id of ['settings-template-group', 'settings-template-field']) {
-      const el = $(id);
-      if (el) el.classList.toggle('hidden', isBook);
-    }
-    // 导出简繁转换也是全局设置（导出格式对所有书一样），写作页的按书设置里不显示
-    for (const id of ['settings-export-group', 'settings-export-field']) {
-      const el = $(id);
-      if (el) el.classList.toggle('hidden', isBook);
-    }
-    // 诊断日志也是全局的（一个应用一份日志），写作页的按书设置里不显示
-    for (const id of ['settings-logs-group', 'settings-logs-field']) {
-      const el = $(id);
-      if (el) el.classList.toggle('hidden', isBook);
-    }
-    // 崩溃恢复草稿也是全局的（一个应用一份 userData 草稿），写作页的按书设置里不显示
-    for (const id of ['settings-crash-draft-field']) {
-      const el = $(id);
-      if (el) el.classList.toggle('hidden', isBook);
-    }
-    // 检查更新也是全局的（一个应用一个版本），写作页的按书设置里不显示
-    for (const id of ['settings-update-group', 'settings-update-field']) {
+    // RSHE-A-02（第五轮审计）：按书作用域要隐藏的全局设置项收敛到 settings-ia.js 的
+    // GLOBAL_ONLY_FIELDS（与 FIELD_SECTION 同源维护），这里只留一条单循环。以前是八段逐字
+    // 复制的样板循环：新增一个全局设置组必须再抄一段，漏抄 / 抄错就把按书设置变成可改全局。
+    // ia 拿不到（旧宿主 / 单测没注入）时用同一份 id 的本地回落清单，行为一字不变。
+    const globalOnlyFields =
+      ia && Array.isArray(ia.GLOBAL_ONLY_FIELDS) && ia.GLOBAL_ONLY_FIELDS.length
+        ? ia.GLOBAL_ONLY_FIELDS
+        : GLOBAL_ONLY_FIELDS_FALLBACK;
+    for (const id of globalOnlyFields) {
       const el = $(id);
       if (el) el.classList.toggle('hidden', isBook);
     }
@@ -923,26 +907,53 @@
   // settingsBackup（否则取消也会把生效配置还原成过期值）。
   // 只做全局作用域：按书作用域的保存走 book:set-display（只写这本书的覆盖），碰不到全局配置。
   // 保存自身在途时不重填：那是本窗口自己那次 setConfig 的回声（重填只会把作者刚提交的值抹掉）。
-  async function handleExternalConfigChange() {
+  // 代价（如实写明）：重定基会丢弃本窗口作者尚未保存的表单草稿——这是 SS-11 的必要决策，
+  // 连发时该丢弃也只发生一次（下面的合并把连发广播压成一次重定基）。
+  // RSHE-A-01（第五轮审计）：加在途标志 + 合并。多窗口背靠背保存会对每个窗口连发 config:changed，
+  // 旧实现只查状态，两个广播可同时通过守卫，各自 getConfig、重填表单、弹提示、读两份词表。
+  // 在途期间到达的广播只记一个 pending，回包后再补一次重定基；提示按「实际重定基轮次」去重。
+  let externalConfigRefillInFlight = false;
+  let externalConfigRefillPending = false;
+
+  async function handleExternalConfigChange(options = {}) {
     if (!settingsOpen || savingSettings || state.settingsScope !== 'global') return false;
-    let cfg;
-    try {
-      cfg = await call(api.getConfig);
-    } catch {
-      return false; // 取不到最新配置：保持原样，等下一次广播 / 重新打开设置
+    if (externalConfigRefillInFlight) {
+      // 连发合并：在途的这一轮结束后用最新配置再补一次（只补一次，不做队列堆积）
+      externalConfigRefillPending = true;
+      return false;
     }
-    if (!cfg || typeof cfg !== 'object') return false;
-    // 取配置期间弹层可能被关、被重开成按书作用域，或本窗口开始保存：复核一遍再动表单
-    if (!settingsOpen || savingSettings || state.settingsScope !== 'global') return false;
-    state.globalConfig = cfg;
-    state.config = effectiveConfig();
-    fillSettingsFields(settingsBackfillConfig('global'));
-    state.settingsBackup = state.config ? { ...state.config } : null;
-    updateSettingsScopeUi();
-    toast('另一个窗口改过设置：本窗口的设置表单已按最新配置重新填好', 'warn');
-    // 回填把两份词表台账重置成「正在读取」：按新路径再读一次（与 openSettings 同一口径）
-    await Promise.all([refreshSensitiveSettingsInfo(), refreshProofreadSettingsInfo()]);
-    return true;
+    externalConfigRefillInFlight = true;
+    try {
+      let cfg;
+      try {
+        cfg = await call(api.getConfig);
+      } catch {
+        return false; // 取不到最新配置：保持原样，等下一次广播 / 重新打开设置
+      }
+      if (!cfg || typeof cfg !== 'object') return false;
+      // 取配置期间弹层可能被关、被重开成按书作用域，或本窗口开始保存：复核一遍再动表单
+      if (!settingsOpen || savingSettings || state.settingsScope !== 'global') return false;
+      state.globalConfig = cfg;
+      state.config = effectiveConfig();
+      fillSettingsFields(settingsBackfillConfig('global'));
+      state.settingsBackup = state.config ? { ...state.config } : null;
+      updateSettingsScopeUi();
+      if (!options.quiet) {
+        toast('另一个窗口改过设置：本窗口的设置表单已按最新配置重新填好', 'warn');
+      }
+      // 回填把两份词表台账重置成「正在读取」：按新路径再读一次（与 openSettings 同一口径）
+      await Promise.all([refreshSensitiveSettingsInfo(), refreshProofreadSettingsInfo()]);
+      return true;
+    } finally {
+      externalConfigRefillInFlight = false;
+      if (externalConfigRefillPending) {
+        externalConfigRefillPending = false;
+        // 合并后的补跑不再重复弹「另一个窗口改过设置」：作者已经看到过这一轮提示。
+        if (settingsOpen && !savingSettings && state.settingsScope === 'global') {
+          void handleExternalConfigChange({ quiet: true });
+        }
+      }
+    }
   }
 
   // 忘掉这本书的单独设置，恢复用全局默认

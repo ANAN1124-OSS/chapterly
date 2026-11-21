@@ -194,6 +194,7 @@ function build(options = {}) {
     // 五-M14（SS-11）：config:get 回包（本窗口的 state.globalConfig 可能是旧快照，主进程才是唯一事实源）
     async getConfig() {
       calls.getConfig += 1;
+      if (options.getConfigGate) await options.getConfigGate;
       if (options.getConfigError) throw new Error(options.getConfigError);
       return options.getConfigResult === undefined ? state.globalConfig : options.getConfigResult;
     },
@@ -837,6 +838,36 @@ test('M14（SS-11）：面板没开 / 保存自身在途 / 按书作用域 → �
   await broken.ui.openSettings();
   assert.equal(await broken.ui.handleExternalConfigChange(), false);
   assert.equal(broken.dom.map.get('settings-daily-goal').value, '1000');
+});
+
+// RSHE-A-01（第五轮审计）：别的窗口背靠背保存会连发 config:changed，旧实现只查状态 ——
+// 两个广播可同时通过守卫，各自 getConfig / 重填表单 / 弹提示 / 读两份词表。现在在途合并。
+test('RSHE-A-01：连发 config:changed 时不并发重定基，合并成一次补跑且只提示一次', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const fresh = { booksRoot: '/书库', dailyGoal: 2000 };
+  const ctx = build({
+    view: 'shelf', bookId: null,
+    config: { booksRoot: '/书库', dailyGoal: 1000 },
+    getConfigResult: fresh,
+    getConfigGate: gate
+  });
+  await ctx.ui.openSettings();
+  const first = ctx.ui.handleExternalConfigChange();
+  await flush();
+  assert.equal(ctx.calls.getConfig, 1, '第一发进入在途');
+  assert.equal(await ctx.ui.handleExternalConfigChange(), false, '在途期间的广播只登记，不并发第二发');
+  assert.equal(ctx.calls.getConfig, 1);
+  release();
+  assert.equal(await first, true);
+  await flush();
+  assert.equal(ctx.calls.getConfig, 2, '在途期间到达的广播在回包后补一次（用最新配置）');
+  assert.equal(
+    ctx.calls.toast.filter(([message, kind]) => kind === 'warn' && /另一个窗口/.test(message)).length,
+    1,
+    '合并后不许重复弹「另一个窗口改过设置」'
+  );
+  assert.equal(ctx.dom.map.get('settings-daily-goal').value, '2000', '表单最终按最新配置重填');
 });
 
 test('静态闸门（M14/SS-11）：config:set 非换根也广播；渲染层刷新 globalConfig 并接上重定基入口', () => {
@@ -1586,4 +1617,24 @@ test('SS-13（五-L18）：设置写操作在途时取消/重置/重复保存被
     '作废的回执也不许 toast 成功'
   );
   assert.equal(ctx2.dom.map.get('btn-settings-save').disabled, false, '收尾后按钮恢复可点');
+});
+
+// RSHE-A-02（第五轮审计）：按书作用域要隐藏的全局设置项以前是八段手写循环，新增全局组
+// 漏抄一段就把按书设置变成可改全局。现在收敛到 settings-ia.GLOBAL_ONLY_FIELDS + 一条单循环。
+test('RSHE-A-02：按书作用域隐藏清单与 settings-ia 同源，settings-ui 只剩一条单循环', () => {
+  const settingsIa = require('../renderer/settings-ia');
+  assert.ok(Array.isArray(settingsIa.GLOBAL_ONLY_FIELDS), 'settings-ia 要导出 GLOBAL_ONLY_FIELDS');
+  for (const id of settingsIa.GLOBAL_ONLY_FIELDS) {
+    assert.equal(typeof settingsIa.FIELD_SECTION[id], 'string', id + ' 必须已在 FIELD_SECTION 登记（同源维护）');
+  }
+  const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'settings-ui.js'), 'utf8').replace(/\r\n/g, '\n');
+  const fallback = /GLOBAL_ONLY_FIELDS_FALLBACK = \[([\s\S]*?)\];/.exec(moduleSrc);
+  assert.ok(fallback, 'settings-ui 要有 ia 不可用时的回落清单');
+  const fallbackIds = [...fallback[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.deepEqual(fallbackIds, [...settingsIa.GLOBAL_ONLY_FIELDS], '回落清单必须与 settings-ia 逐字一致');
+  const scopeStart = moduleSrc.indexOf('function updateSettingsScopeUi(');
+  assert.ok(scopeStart > 0);
+  const scopeBody = moduleSrc.slice(scopeStart, moduleSrc.indexOf('\n  }', scopeStart));
+  assert.equal((scopeBody.match(/for \(const id of /g) || []).length, 1, '按作用域隐藏只留一条单循环');
+  assert.match(scopeBody, /for \(const id of globalOnlyFields\)/);
 });
