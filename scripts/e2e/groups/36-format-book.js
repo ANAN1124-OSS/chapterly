@@ -227,21 +227,25 @@ module.exports = async function group36FormatBook(t) {
   // 导出目录记忆：导出过的文件夹下次要记住（写进 config.json；坏值自动清洗）
   // 五-L3（CI-6）：lastExportDir 已登记进 config-gate 的路径来源白名单 —— config:set 不能凭空把
   // 主进程的「启动孤儿 tmp 回收」/ 导出默认目录引到任意目录；这个字段只由导出流程自己
-  // （main.js 的 rememberExportDir → configStore.set）写。这里改为验证「伪造来源被拒绝」。
+  // （main.js 的 rememberExportDir → configStore.set）写。这里改为验证「伪造来源被拒绝、原值不变」。
+  // 注意：前面的导出 / 另存测试可能已经由导出流程合法写过一次 lastExportDir ——断言的是
+  // 「伪造值没有改变现状」，不是「一定为空」。
   // app 由场景前导从 ctx 解构（组文件不许 require electron），见文件头 ctx 解构。
   const configFile = path.join(app.getPath('userData'), 'config.json');
+  const configBefore = await exec('window.api.getConfig()');
+  const exportDirBefore = configBefore && configBefore.ok === true ? configBefore.data.lastExportDir : '';
   const wantedDir = 'D:\\导出测试目录';
   const setDirRes = await exec(`window.api.setConfig({ lastExportDir: ${JSON.stringify(wantedDir)} })`);
   check(
-    '导出目录记忆：config:set 不能凭空指定导出目录（来源校验拒绝，保持空）',
-    Boolean(setDirRes && setDirRes.ok === true && setDirRes.data.lastExportDir === ''),
-    setDirRes && setDirRes.data
+    '导出目录记忆：config:set 不能凭空指定导出目录（来源校验拒绝，原值不变）',
+    Boolean(setDirRes && setDirRes.ok === true && setDirRes.data.lastExportDir === exportDirBefore),
+    { before: exportDirBefore, after: setDirRes && setDirRes.data }
   );
   await exec('window.api.setConfig({ lastExportDir: 12345 })');
   const badDirCfg = await exec('window.api.getConfig()');
   check(
-    '导出目录记忆：非法值同样被拒（不做类型转换，仍是空）',
-    Boolean(badDirCfg && badDirCfg.ok === true && badDirCfg.data.lastExportDir === ''),
+    '导出目录记忆：非法值同样被拒（不做类型转换，原值不变）',
+    Boolean(badDirCfg && badDirCfg.ok === true && badDirCfg.data.lastExportDir === exportDirBefore),
     badDirCfg && badDirCfg.data
   );
   await exec(`window.api.setConfig({ lastExportDir: ${JSON.stringify(wantedDir)} })`);
@@ -253,7 +257,7 @@ module.exports = async function group36FormatBook(t) {
   }
   check(
     '导出目录记忆：伪造目录没有落进 config.json（下次启动不会去那个目录清理）',
-    Boolean(savedConfig && savedConfig.lastExportDir === ''),
+    Boolean(savedConfig && savedConfig.lastExportDir === exportDirBefore),
     savedConfig && savedConfig.lastExportDir
   );
 
