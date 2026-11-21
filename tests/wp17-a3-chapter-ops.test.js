@@ -687,6 +687,24 @@ test('A3-Cβ / B4：deleteChapterAt——非当前章不问未保存；当前脏
   assert.equal(rtErr.counts.undo.length, 0);
 });
 
+test('REDT-C-04：删非当前章后当前章从回包书目消失 → 重载编辑区并清脏（不许跨章覆盖）', async () => {
+  const rt = makeHost();
+  rt.state.index = 1; // 当前章 c2
+  rt.state.dirty = true;
+  rt.host.api.deleteChapter = async () => {
+    // 异常前提：删的是 c1，但回包书目里当前章 c2 也不见了（书目被外部改坏）
+    const chapters = rt.state.chapters.filter((chapter) => chapter.id === 'c1');
+    return {
+      ok: true,
+      data: { index: 0, chapters, meta: { chapters, volumes: rt.state.meta.volumes }, trashPath: 'C:\\书\\_trash\\001.md', undoToken: 'tok-9' }
+    };
+  };
+  assert.equal(await rt.ui.deleteChapterAt(0), true);
+  assert.equal(rt.state.dirty, false, '编辑区要换成新章，标脏必须清掉（否则 Ctrl+S 把旧章正文写进新章）');
+  assert.equal(rt.counts.load.length, 1, '必须重新载入编辑区，不能留着已消失章的文字');
+  assert.equal(rt.counts.load[0], rt.state.index, '载入的是回落后与 state.index 一致的那一章');
+});
+
 test('A3-Cβ / B5：批量删除——从后往前删、部分失败仍登记已删章、一次撤销按原下标从前往后插回', async () => {
   const rt = makeHost();
   rt.state.selectedIds = new Set([0, 1, 2]);

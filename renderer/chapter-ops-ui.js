@@ -510,8 +510,14 @@
       if (wasCurrent) {
         state.dirty = false;
         await loadChapterAt(data.index);
+      } else if (at < 0) {
+        // REDT-C-04：删的虽不是当前章，但回包书目里当前章也不见了（书目被外部改坏等异常）。
+        // 只改下标不重载会让编辑区留着已消失章的文字、dirty 原样保留，接着 Ctrl+S 就把旧章正文
+        // 写进新下标指向的章文件 —— 与批量删除同一口径：回落下标、清脏、重载编辑区。
+        state.index = Math.min(index, state.chapters.length - 1);
+        state.dirty = false;
+        await loadChapterAt(state.index);
       } else {
-        if (at < 0) state.index = Math.min(index, state.chapters.length - 1);
         renderChapterList();
         renderEditorHeader();
         updateStatus();
