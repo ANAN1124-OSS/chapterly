@@ -233,17 +233,28 @@
     if (index === state.index) return { ok: true, same: true };
     if (index < 0 || index >= state.chapters.length) return { ok: false, message: '章节不存在' };
     if (state.dirty) {
-      let action = options.dirtyAction;
-      if (!action) {
-        action = await askUnsaved({
-          title: '切换章节前保存',
-          message: `「${currentChapterLabel()}」有未保存的修改，切换会丢失这些内容。`
-        });
-      }
-      if (action === 'cancel') return { ok: false, canceled: true };
-      if (action === 'save') {
+      // REDT-B-01（高）：保存成功 ≠ 编辑区干净。saveCurrent 的回执按发起时的快照重算 dirty
+      // （保存 IPC 往返期间敲入的字不在磁盘上）；以前这里只看 saved.ok 就 loadChapterAt，
+      // 而载章成功会无条件 `state.dirty = false; editorEl.value = data.text`，那部分字被静默
+      // 覆盖且无法撤销。与 saveForTransition 同一纪律：保存回执落地后复核 dirty，仍脏就回到
+      // 询问再走一轮，绝不带着未落盘输入切章。
+      let forcedAction = options.dirtyAction;
+      for (;;) {
+        if (!state.dirty) break;
+        let action = forcedAction;
+        // 显式 dirtyAction 只对调用时那一份脏负责：保存在途又敲了字（dirty 重新为真）时按正常
+        // 询问处理，不让一次「保存」授权把之后的新输入也一起丢掉。
+        forcedAction = null;
+        if (!action) {
+          action = await askUnsaved({
+            title: '切换章节前保存',
+            message: `「${currentChapterLabel()}」有未保存的修改，切换会丢失这些内容。`
+          });
+        }
+        if (action === 'cancel') return { ok: false, canceled: true };
+        if (action !== 'save') break; // 丢弃：loadChapterAt 成功后自行清脏并覆盖编辑区
         const saved = await saveCurrent();
-        if (!saved.ok) return saved;
+        if (!saved || saved.ok !== true) return saved;
       }
     }
     await loadChapterAt(index);

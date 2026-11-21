@@ -73,6 +73,8 @@ function makeHost(options = {}) {
     async saveCurrent() {
       saved.push(true);
       if (options.onSaveCurrent) return options.onSaveCurrent();
+      // 与真实 saveCurrent 的回执一致：保存成功后按快照重算 dirty（正常情况即为干净）。
+      state.dirty = false;
       return { ok: true };
     },
     async loadChapterAt(index) {
@@ -360,6 +362,65 @@ test('switchChapter：脏 + save → 保存失败原样透传（不加载），�
   assert.deepEqual(await shelfUi.create(ok.host).switchChapter(2), { ok: true });
   assert.deepEqual(ok.saved, [true]);
   assert.deepEqual(ok.loaded, [2]);
+});
+
+// REDT-B-01（高）：保存 IPC 往返期间敲入的字不在磁盘上——saveCurrent 的回执会按快照重算
+// dirty=true。切章若只看 saved.ok 就 loadChapterAt，这些字会被载章无条件覆盖且无法撤销。
+test('REDT-B-01：保存回执落地后仍脏（往返期间输入）→ 重新询问，绝不带着未落盘输入切章', async () => {
+  const ctx = makeHost({ index: 0, dirty: true });
+  const replies = ['save', 'cancel'];
+  ctx.host.askUnsaved = async (payload) => {
+    ctx.asked.push(payload);
+    return replies.shift();
+  };
+  let saves = 0;
+  ctx.host.saveCurrent = async () => {
+    saves += 1;
+    ctx.state.dirty = true; // 第一笔保存只落了快照，往返期间作者又敲了字
+    return { ok: true };
+  };
+  assert.deepEqual(await shelfUi.create(ctx.host).switchChapter(2), { ok: false, canceled: true });
+  assert.equal(saves, 1, '只保存一次；不能为了切章再偷偷保存一次');
+  assert.equal(ctx.asked.length, 2, '保存后又脏 → 必须再问一轮');
+  assert.deepEqual(ctx.asked[1].title, '切换章节前保存');
+  assert.deepEqual(ctx.loaded, [], '仍脏时绝不载入新章（否则未落盘的字被覆盖）');
+  assert.equal(ctx.state.index, 0);
+});
+
+test('REDT-B-01：第二轮询问选「保存」且回执后干净了，才真正切章', async () => {
+  const ctx = makeHost({ index: 1, dirty: true });
+  const replies = ['save', 'save'];
+  ctx.host.askUnsaved = async (payload) => {
+    ctx.asked.push(payload);
+    return replies.shift();
+  };
+  let saves = 0;
+  ctx.host.saveCurrent = async () => {
+    saves += 1;
+    ctx.state.dirty = saves === 1; // 只有第一趟有「保存期间输入」
+    return { ok: true };
+  };
+  assert.deepEqual(await shelfUi.create(ctx.host).switchChapter(0), { ok: true });
+  assert.equal(saves, 2);
+  assert.deepEqual(ctx.loaded, [0]);
+});
+
+test('REDT-B-01：显式 dirtyAction="save" 只授权调用时那一份脏，保存后又脏仍会正常询问', async () => {
+  const ctx = makeHost({ index: 0, dirty: true });
+  ctx.host.askUnsaved = async (payload) => {
+    ctx.asked.push(payload);
+    return 'cancel'; // 第二轮的询问：作者选择取消
+  };
+  ctx.host.saveCurrent = async () => {
+    ctx.state.dirty = true; // 往返期间又敲了字
+    return { ok: true };
+  };
+  assert.deepEqual(await shelfUi.create(ctx.host).switchChapter(2, { dirtyAction: 'save' }), {
+    ok: false,
+    canceled: true
+  });
+  assert.equal(ctx.asked.length, 1, '强制 save 不弹第一轮询问，但保存后又脏必须问');
+  assert.deepEqual(ctx.loaded, []);
 });
 
 test('静态闸门：三段实现已经不在 renderer.js 里，渲染层只剩接线', () => {
