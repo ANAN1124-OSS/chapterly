@@ -255,6 +255,26 @@ test('renderStatsUi：今日字数 / 目标百分比 / 达标 / 连续天数 / �
   assert.equal(host.$('status-stats').title, '只统计保存动作写下的字数（不含未保存内容；删字不倒扣）。今日目标 2,000 字。点它打开码字日历（只读）。');
 });
 
+test('RSHE-A-06：目标百分比三处同一夹紧口径（负值不会被算成负进度）', () => {
+  installDocument();
+  const { host, state } = makeHost();
+  const ui = statsUi.create(host);
+  // 脏数据：主进程 / 旧 stats.json 里可能出现负数或超 100 的百分比
+  state.stats = { todayChars: 10, goal: 2000, goalPercent: -20, goalMet: false, days: [], recentTotal: 10, todaySeconds: 0 };
+  ui.renderStatsUi();
+  assert.equal(host.$('shelf-stats-goal').textContent, '目标 2000 字 · 0%');
+  assert.equal(host.$('shelf-goal-fill').style.width, '0%');
+  // 柱状图汇总行过去少了 Math.max(0, …) 下界，三处会互相矛盾；现在三处都走 clampGoalPercent
+  ui.renderStatsChart();
+  assert.match(host.$('settings-stats-summary').textContent, /目标 2000 字（0%）/);
+  assert.equal(host.$('settings-goal-state').textContent, '今天完成 0%');
+  state.stats = { todayChars: 3000, goal: 2000, goalPercent: 150, goalMet: true, days: [], recentTotal: 3000, todaySeconds: 0 };
+  ui.renderStatsUi();
+  assert.equal(host.$('shelf-stats-goal').textContent, '目标 2000 字 · 100% · 已达标');
+  ui.renderStatsChart();
+  assert.match(host.$('settings-stats-summary').textContent, /目标 2000 字（100%）/);
+});
+
 test('renderStatsUi：今天没写字时书架头切安静排法，没设目标时提示去设置里设', () => {
   installDocument();
   const { host, state } = makeHost();

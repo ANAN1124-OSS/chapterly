@@ -77,6 +77,13 @@
     return cursor.year === current.year && cursor.month === current.month;
   }
 
+  // RSHE-A-06：目标完成百分比的唯一夹紧口径（下界 + 上界 + 空值兜底）。
+  // 以前三处各写一份，其中柱状图汇总那处漏了下界 —— 同一个「目标完成 %」在同一屏
+  // （书架头 / 柱状图汇总 / 目标状态行）可能互相矛盾。改舍入边界时只改这一处。
+  function clampGoalPercent(stats) {
+    return Math.max(0, Math.min(100, Math.floor(Number(stats && stats.goalPercent) || 0)));
+  }
+
   async function refreshStats() {
     // 审计残留修复 #R13（#14/E10-E11）+ WP14 E-N8：刷新统计使用自己的世代号（statsSeq）——
     // 旧刷新回执不许覆盖新刷新的汇总数据；日历 / 连续天数仍由翻月链路管：只有当前显示本月
@@ -124,7 +131,7 @@
     const status = $('status-stats');
     const today = Math.max(0, Math.round(Number(stats && stats.todayChars) || 0));
     const goal = Math.max(0, Math.round(Number(stats && stats.goal) || 0));
-    const percent = Math.max(0, Math.min(100, Math.floor(Number(stats && stats.goalPercent) || 0)));
+    const percent = clampGoalPercent(stats);
     const met = Boolean(stats && stats.goalMet);
     const title =
       `只统计保存动作写下的字数（不含未保存内容；删字不倒扣）。` +
@@ -315,13 +322,13 @@
           : '';
       summaryEl.textContent = stats
         ? `今天 ${formatChars(stats.todayChars)} · 近 30 天 ${formatChars(stats.recentTotal)}` +
-          (goal > 0 ? ` · 目标 ${formatChars(goal)}（${Math.min(100, Math.floor(Number(stats.goalPercent) || 0))}%）` : ' · 未设目标') +
+          (goal > 0 ? ` · 目标 ${formatChars(goal)}（${clampGoalPercent(stats)}%）` : ' · 未设目标') +
           durationText
         : '还没有统计数据（保存一次后开始记录）';
     }
     const goalState = $('settings-goal-state');
     if (goalState) {
-      const percent = Math.max(0, Math.min(100, Math.floor(Number(stats && stats.goalPercent) || 0)));
+      const percent = clampGoalPercent(stats);
       goalState.textContent = goal > 0 ? `今天完成 ${percent}%${stats && stats.goalMet ? ' · 已达标' : ''}` : '未设目标';
     }
   }

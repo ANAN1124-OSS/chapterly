@@ -224,8 +224,9 @@
   // 第二口径：把空格去掉再比一次（「每日目标」能命中「每日 目标（字）」这类带空格的文案）。
   // 注：归一后只剩单个半角空格，所以用 split / join 去空格，不写「把 \s 换成空串」的 replace
   //（那条口径全仓库只许 core/chapters.js 有一处，见 tests/char-count.test.js 的静态闸门）。
-  function matchesQuery(query, text) {
-    const needle = normalizeQuery(query);
+  // RSHE-A-08：needle 已归一（planSearch 归一后逐条匹配 61 个搜索单位）时走这一份，
+  // 不再对每个单位重复一遍全串归一；matchesQuery 是「入参视为未归一」的外层包装。
+  function matchesNormalizedQuery(needle, text) {
     if (!needle) return true;
     const hay = normalizeQuery(text);
     if (!hay) return false;
@@ -233,6 +234,11 @@
     const compactNeedle = needle.split(' ').join('');
     if (!compactNeedle) return true;
     return hay.split(' ').join('').indexOf(compactNeedle) >= 0;
+  }
+
+  // 入参视为**未归一**（内部 normalizeQuery 幂等，重复调用不会出错，只是白做一次全串换算）。
+  function matchesQuery(query, text) {
+    return matchesNormalizedQuery(normalizeQuery(query), text);
   }
 
   // 搜索可见性计划（纯函数）：
@@ -259,7 +265,8 @@
     const sections = [];
     for (const unit of list) {
       if (!unit) continue;
-      const hit = matchesQuery(needle, unit.text);
+      // needle 已归一，直接走归一后的匹配（RSHE-A-08：不再对每个单位重复全串归一）。
+      const hit = matchesNormalizedQuery(needle, unit.text);
       if (unit.kind === 'group') {
         if (hit) matchedGroups.add(String(unit.groupId == null ? unit.id : unit.groupId));
       } else if (hit) {

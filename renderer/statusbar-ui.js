@@ -101,18 +101,14 @@
   }
 
   // options.defer：输入路径（每敲一个字都会走）才防抖；不传 = 立刻算（切章 / 保存 / 套用）。
+  // RSHE-A-09：无书 / 无章与「不防抖」本来走的是同一条「清定时器 → 立即重算 → return」，
+  // 以前写成两个逐行相同的分支；合并成一条，状态与语义一一对应（行为不变）。
   function renderCharCount(options) {
-    if (!state.bookPath || state.index < 0) {
-      clearTimeout(charCountTimer);
-      updateCharCountText();
-      return;
-    }
-    if (!options || !options.defer) {
-      clearTimeout(charCountTimer);
-      updateCharCountText();
-      return;
-    }
     clearTimeout(charCountTimer);
+    if (!state.bookPath || state.index < 0 || !options || !options.defer) {
+      updateCharCountText();
+      return;
+    }
     charCountTimer = setTimeout(() => {
       if (!state.bookPath || state.index < 0) return;
       updateCharCountText();

@@ -107,6 +107,36 @@ test('搜索匹配：子串命中、大小写 / 全半角无关、空查询全�
   assert.equal(ia.matchesQuery('快照', ''), false);
 });
 
+test('RSHE-A-08：planSearch 对已归一的 needle 复用同一份匹配（结果与 matchesQuery 完全一致）', () => {
+  // 全角 / 大小写 / 多余空白混合的查询：planSearch 先归一一次，逐条匹配不再重复归一；
+  // 这条用例钉住「复用归一结果后命中口径不变」——把 matchesQuery 换成不归一的内层函数时，
+  // 任何一条的可见集变化都会在这里被抓住。
+  const units = [
+    { id: 'g1', kind: 'group', groupId: 'g', text: '排版与字体', section: 'display' },
+    { id: 'r1', kind: 'row', groupId: 'g', text: '正文字体（宋体 / 衬线）', section: 'display' },
+    { id: 'r2', kind: 'row', groupId: 'g', text: '行间距 1.95', section: 'display' },
+    { id: 'g2', kind: 'group', groupId: 'h', text: '每日目标', section: 'writing' },
+    { id: 'r3', kind: 'row', groupId: 'h', text: '每日 目标（字）', section: 'writing' }
+  ];
+  for (const query of ['字体', 'ＡＢＣ', '每日目标', '每日 目标', '  行间距  ', '每日　目标']) {
+    const plan = ia.planSearch(query, units);
+    if (!ia.normalizeQuery(query)) {
+      assert.equal(plan.active, false, JSON.stringify(query));
+      continue;
+    }
+    const rows = units.filter((unit) => unit.kind === 'row' && ia.matchesQuery(query, unit.text)).map((u) => u.id);
+    const groups = units
+      .filter((unit) => unit.kind === 'group' && ia.matchesQuery(query, unit.text))
+      .map((u) => u.groupId);
+    const visible = units
+      .filter((unit) => (unit.kind === 'group'
+        ? groups.includes(unit.groupId) || units.some((o) => o.kind === 'row' && o.groupId === unit.groupId && rows.includes(o.id))
+        : groups.includes(unit.groupId) || rows.includes(unit.id)))
+      .map((u) => u.id);
+    assert.deepEqual([...plan.visible].sort(), [...visible].sort(), '查询 ' + JSON.stringify(query));
+  }
+});
+
 test('搜索计划：命中行跨分组显示、分组标题命中整组显示、一条不中就是空结果', () => {
   const units = [
     { id: 'g1', kind: 'group', groupId: 'disp:1', text: '字体', section: 'display' },
