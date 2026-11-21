@@ -364,7 +364,9 @@ test('TEST-A-02：focusStealWindow 覆盖所有发真实键盘事件的组，且
   for (const id of [0, 33, 50, 72, 80]) {
     assert.equal(driver.focusStealWindow(id), false, `第 ${id} 组不该抢焦点`);
   }
-  // 静态闸门：groups/*.js 里发 keyDown / keyUp / char 的组必须全在白名单里（防新增键盘组漏登记）。
+  // 静态闸门：groups/*.js 里发真实键盘事件的组必须全在白名单里（防新增键盘组漏登记）。
+  // TEST-A-01 之后按键发送收进 harness.sendKey，组文件里可能只剩 sendKey 调用（79 的 `?` 还要
+  // 单独发 char，仍保留一段 sendInputEvent）；两种写法都算「真实键盘组」。
   const fs = require('node:fs');
   const path = require('node:path');
   const groupsDir = path.join(__dirname, '..', 'scripts', 'e2e', 'groups');
@@ -372,7 +374,9 @@ test('TEST-A-02：focusStealWindow 覆盖所有发真实键盘事件的组，且
   for (const name of fs.readdirSync(groupsDir)) {
     if (!name.endsWith('.js') || name === 'index.js') continue;
     const source = fs.readFileSync(path.join(groupsDir, name), 'utf8');
-    if (/sendInputEvent\(\s*\{[^}]*type:\s*'(?:keyDown|keyUp|char)'/.test(source)) {
+    const sendsKeys =
+      /sendInputEvent\(\s*\{[^}]*type:\s*'(?:keyDown|keyUp|char)'/.test(source) || /\bsendKey\(/.test(source);
+    if (sendsKeys) {
       keyboardGroups.push(Number(name.slice(0, 2)));
     }
   }

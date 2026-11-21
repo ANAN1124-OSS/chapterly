@@ -83,7 +83,7 @@ test('harness.waitForRender / waitForFocus / waitForDisk：有名字的定时等
   await harness.waitForFocus();
   await harness.waitForDisk();
   assert.deepEqual(sleeps, [harness.WAIT.RENDER, harness.WAIT.FOCUS, harness.WAIT.WRITE]);
-  assert.deepEqual(harness.WAIT, { RENDER: 150, FOCUS: 150, WRITE: 150, POLL: 120 });
+  assert.deepEqual(harness.WAIT, { RENDER: 150, FOCUS: 150, WRITE: 150, KEY: 120, POLL: 120 });
   assert.equal(Object.isFrozen(harness.WAIT), true, '常量表要冻结，组里改不动');
   // 个别场景确实需要更长的一拍时显式传，不用再另写一个魔数
   await harness.waitForRender(400);
@@ -281,6 +281,47 @@ test('TEST-A-03/05/06：单实例锁探针消费 stderr、组索引注释与现�
   assert.equal(INDEX_SOURCE.includes('idsFrom(60) = 60 → 82'), false, 'TEST-A-05：范围注释要覆盖到 83');
   assert.ok(INDEX_SOURCE.includes('idsFrom(60) 自动带上当前全部尾部组，现到 83'));
   assert.equal(INDEX_SOURCE.includes('（数组顺序 = 执行顺序）'), false, '数组只负责登记，顺序由 runGroups 调用点决定');
+});
+
+test('TEST-A-01：sendKey / ensureWindowFocus 只有 harness 一份，组文件不得再装第二份', async () => {
+  // 行为：sendKey = keyDown + keyUp + 等一拍；默认等待只从 WAIT 表取，组里不再各改默认值。
+  const sent = [];
+  const { harness, sleeps } = makeHarness({
+    win: { isDestroyed: () => false, webContents: { sendInputEvent: (evt) => sent.push(evt) } }
+  });
+  await harness.sendKey('Tab', ['shift'], 60);
+  assert.deepEqual(sent, [
+    { type: 'keyDown', keyCode: 'Tab', modifiers: ['shift'] },
+    { type: 'keyUp', keyCode: 'Tab', modifiers: ['shift'] }
+  ]);
+  assert.deepEqual(sleeps, [60], '显式传的等待时长要原样使用');
+  sent.length = 0;
+  sleeps.length = 0;
+  await harness.sendKey('Escape');
+  assert.deepEqual(sleeps, [harness.WAIT.KEY], '默认等待取 WAIT.KEY（组文件改不了这个数字）');
+  assert.deepEqual(sent.map((evt) => evt.type), ['keyDown', 'keyUp']);
+  // 窗口不可用要明确报错，不能静默「以为发出去了」
+  const broken = makeHarness({ win: { isDestroyed: () => true, webContents: {} } }).harness;
+  await assert.rejects(() => broken.sendKey('Tab'), /自动化窗口已销毁/);
+
+  // 静态：正本只有 harness 一份，场景经 groupContext 交给组，组文件里不许再定义这两个 helper。
+  assert.match(HARNESS_SOURCE, /const sendKey = async \(keyCode, modifiers = \[\], wait = WAIT\.KEY\)/);
+  assert.match(
+    HARNESS_SOURCE,
+    /场景前导工具（第 0–51 组拆组时从 e2e-scenario\.js 原样下沉[\s\S]*?\n    sendKey,\r?\n    ensureWindowFocus,/
+  );
+  assert.match(SCENARIO_SOURCE, /const \{ ensureWindowFocus, sendKey, setWindowSize/);
+  assert.match(SCENARIO_SOURCE, /\n    ensureWindowFocus,\r?\n    sendKey,\r?\n    setWindowSize,/);
+  for (const name of fs.readdirSync(GROUPS_DIR)) {
+    if (!name.endsWith('.js') || name === 'index.js') continue;
+    const source = fs.readFileSync(path.join(GROUPS_DIR, name), 'utf8');
+    assert.equal(/const\s+sendKey\s*=/.test(source), false, `${name} 不许再定义 sendKey（用 t.sendKey）`);
+    assert.equal(
+      /(?:const|function)\s+ensureWindowFocus\s*[=(]/.test(source),
+      false,
+      `${name} 不许再定义 ensureWindowFocus（用 t.ensureWindowFocus）`
+    );
+  }
 });
 
 test('harness.fileExists：文件 / 目录都算存在，不存在（含父目录不存在）返回 false，不抛错', async () => {

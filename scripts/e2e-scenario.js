@@ -55,7 +55,7 @@ module.exports = async function runScenario(ctx) {
   // 场景开场先让自动化窗口拿一次系统焦点（2026-11-01 v0.9 R0）；工具已下沉 harness.js
   // （ensureWindowFocus / diskText / waitForFile / waitForSummary / waitCloseReady / 剪贴板工具）：
   // 第 0–51 组的组文件与这里用同一份，不许各写一套。
-  const { ensureWindowFocus, setWindowSize, diskText, waitForFile, waitForSummary, waitCloseReady, readClipboard, waitForClipboard } =
+  const { ensureWindowFocus, sendKey, setWindowSize, diskText, waitForFile, waitForSummary, waitCloseReady, readClipboard, waitForClipboard } =
     harness;
 
   // 导出 / 另存为对话框劫持（组 39 用，组 45 / 46 / 59 复用）：
@@ -127,6 +127,7 @@ module.exports = async function runScenario(ctx) {
     // ---------- 公共工具（v0.9 B-7 起收在 harness.js；第 0–51 组也用同一份） ----------
     diskText,
     ensureWindowFocus,
+    sendKey,
     setWindowSize,
     waitForFile,
     waitForSummary,

@@ -121,35 +121,15 @@ const jsFocusId = (id) => `(() => {
 const ESC = "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))";
 
 module.exports = async function group68DialogFocus(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep, waitForFocus } = t;
+  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep, waitForFocus, sendKey, ensureWindowFocus } = t;
 
-  // 真实 Tab 按键：Chromium 的焦点遍历走的是键盘事件的默认行为，只有 sendInputEvent 能触发
+  // 真实 Tab 按键：Chromium 的焦点遍历走的是键盘事件的默认行为，只有 sendInputEvent 能触发。
+  // 按键发送与整圈等待由 harness 的 sendKey 统一（TEST-A-01）；这里只保留「Tab + 60ms」这一步。
   const sendTab = async (shift) => {
-    const modifiers = shift ? ['shift'] : [];
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Tab', modifiers });
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Tab', modifiers });
-    await sleep(60);
+    await sendKey('Tab', shift ? ['shift'] : [], 60);
   };
   const activeNow = async () => JSON.parse(await exec(JS_ACTIVE));
   const dialogInfo = async () => JSON.parse(await exec(JS_DIALOG));
-
-  const ensureWindowFocus = async () => {
-    try {
-      if (!win.isDestroyed()) {
-        win.show();
-        win.focus();
-        win.webContents.focus();
-      }
-    } catch { /* 窗口可能正在销毁 */ }
-    for (let i = 0; i < 12; i += 1) {
-      try {
-        if (await exec('document.hasFocus() === true')) return true;
-      } catch { /* 页面可能还没就绪 */ }
-      try { win.focus(); } catch { /* 忽略 */ }
-      await waitForFocus();
-    }
-    return false;
-  };
 
   // 逐个弹层：打开 → 焦点进来 → Tab 整圈不出去 → 首尾绕回 → 关闭后焦点不丢
   const checkDialog = async (spec) => {

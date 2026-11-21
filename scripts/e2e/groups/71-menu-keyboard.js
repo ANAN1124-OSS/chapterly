@@ -45,34 +45,13 @@ const JS_VOLUME_ROWS = `(() => {
 })()`;
 
 module.exports = async function group71MenuKeyboard(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep, waitForFocus } = t;
+  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, sleep, sendKey, ensureWindowFocus } = t;
 
   // 真实按键：Shift+F10 / Tab / 方向键 / Esc 都要靠浏览器默认行为，只有 sendInputEvent 能触发。
-  // 方向键必须用 Chromium 的加速键名 Down / Up（写 ArrowDown 发出去是 Unidentified，见 A-5b）。
-  const sendKey = async (keyCode, modifiers = [], wait = 110) => {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
-    await sleep(wait);
-  };
+  // 发送与等待由 harness 的 sendKey 统一（TEST-A-01）；方向键必须用 Chromium 的加速键名
+  // Down / Up（写 ArrowDown 发出去是 Unidentified，见 A-5b）。
   const focused = async () => JSON.parse(await exec(JS_FOCUSED));
   const isOpen = (id) => exec(`!document.getElementById('${id}').classList.contains('hidden')`);
-  const ensureWindowFocus = async () => {
-    try {
-      if (!win.isDestroyed()) {
-        win.show();
-        win.focus();
-        win.webContents.focus();
-      }
-    } catch { /* 窗口可能正在销毁 */ }
-    for (let i = 0; i < 12; i += 1) {
-      try {
-        if (await exec('document.hasFocus() === true')) return true;
-      } catch { /* 页面可能还没就绪 */ }
-      try { win.focus(); } catch { /* 忽略 */ }
-      await waitForFocus();
-    }
-    return false;
-  };
   const rightClick = (selector, offsetX = 20, offsetY = 10) =>
     exec(`(() => {
       const el = document.querySelector(${JSON.stringify(selector)});

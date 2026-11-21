@@ -17,6 +17,7 @@ const WAIT = Object.freeze({
   RENDER: 150, // UI 动作（点击 / 切视图 / 搜索过滤）后等一次渲染与重排落定
   FOCUS: 150, // focus() / 键盘事件后等 focusin·blur 链派发完
   WRITE: 150, // 主进程小文件（配置 / 书目 / stats.json）落盘
+  KEY: 120, // sendKey 默认等待（取拆分前组内默认值的最大档，见 sendKey 注释）
   POLL: 120 // waitFor / waitForLog 的轮询间隔（内部用，别拿它当断言等待）
 });
 
@@ -154,6 +155,19 @@ function createHarness(ctx) {
   };
 
   // ---------- 场景前导工具（第 0–51 组拆组时从 e2e-scenario.js 原样下沉；逐字未改行为） ----------
+
+  // 发一枚**真实按键**（TEST-A-01 收口）：Tab 焦点遍历、Enter 激活按钮、方向键菜单都靠浏览器的
+  // 默认行为，渲染层 dispatch 的 KeyboardEvent 走不到，只有 win.webContents.sendInputEvent 能触发。
+  // 拆分前 68/70/71/75/79 各装一份，重试 / 等待 / 告警口径已经分叉（90 / 110 / 120ms），所以正本只留
+  // 这里。默认等待取各份里最慢的一档（WAIT.KEY = 120）；确实需要不同节奏就在调用处显式传 wait
+  //（如 sendKey('Enter', [], 350)），别再在组文件里装第二份改默认值。
+  // 方向键要用 Chromium 的加速键名 Down / Up（写 ArrowDown 发出去是 Unidentified，见 A-5b）。
+  const sendKey = async (keyCode, modifiers = [], wait = WAIT.KEY) => {
+    if (!win || win.isDestroyed()) throw new Error('sendKey 需要可用窗口：自动化窗口已销毁');
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+    await sleep(wait);
+  };
 
   // 场景开始时让自动化窗口拿一次系统焦点（2026-11-01 v0.9 R0）：
   // Chromium 在窗口没有系统焦点时，元素 focus() 可能不派发 focus / focusin 事件，
@@ -301,6 +315,7 @@ function createHarness(ctx) {
     logDir,
     logNamePattern,
     // 场景前导工具（第 0–51 组拆组时下沉；组文件通过 t 拿同一份）
+    sendKey,
     ensureWindowFocus,
     setWindowSize,
     diskText,

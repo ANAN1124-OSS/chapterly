@@ -28,15 +28,10 @@ const JS_PALETTE = `(() => {
 const readPalette = async (exec) => JSON.parse(await exec(JS_PALETTE));
 
 module.exports = async function group75CommandPalette(t) {
-  const { exec, check, waitFor, sleep, storage, booksRoot, deleteBookWithRetry, win } = t;
+  const { exec, check, waitFor, sleep, storage, booksRoot, deleteBookWithRetry, sendKey } = t;
 
-  // 真实按键：Ctrl+K / ↑↓ / Home / End / Enter / Esc 都要走浏览器默认行为，
-  // 只有 sendInputEvent 能触发（和 70 组同一套写法；groupContext 里没有 sendKey，组里自己装）。
-  const sendKey = async (keyCode, modifiers = [], wait = 120) => {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
-    await sleep(wait);
-  };
+  // 真实按键：Ctrl+K / ↑↓ / Home / End / Enter / Esc 都要走浏览器默认行为，只有 sendInputEvent 能触发。
+  // 发送与等待由 harness 的 sendKey 统一（TEST-A-01），本组只保留 Ctrl+K 这一个组合键封装。
   const sendCtrlK = () => sendKey('k', ['control'], 260);
 
   await exec('window.__cwTest.backToShelf()');

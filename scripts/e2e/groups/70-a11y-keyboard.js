@@ -141,34 +141,12 @@ const JS_FOCUSED = `(() => {
 })()`;
 
 module.exports = async function group70A11yKeyboard(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep, waitForFocus, waitForRender, waitForDisk } = t;
+  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, sleep, waitForRender, waitForDisk, sendKey, ensureWindowFocus } = t;
 
-  // 真实按键：Tab / Enter / 空格 / 方向键都要靠浏览器默认行为，只有 sendInputEvent 能触发
-  const sendKey = async (keyCode, modifiers = [], wait = 90) => {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
-    await sleep(wait);
-  };
-  const sendTab = (shift = false) => sendKey('Tab', shift ? ['shift'] : []);
+  // 真实按键：Tab / Enter / 空格 / 方向键都要靠浏览器默认行为，只有 sendInputEvent 能触发。
+  // 发送与等待由 harness 的 sendKey 统一（TEST-A-01），本组只在 Tab 这一步复用同一份实现。
+  const sendTab = async (shift = false) => sendKey('Tab', shift ? ['shift'] : []);
   const focused = async () => JSON.parse(await exec(JS_FOCUSED));
-
-  const ensureWindowFocus = async () => {
-    try {
-      if (!win.isDestroyed()) {
-        win.show();
-        win.focus();
-        win.webContents.focus();
-      }
-    } catch { /* 窗口可能正在销毁 */ }
-    for (let i = 0; i < 12; i += 1) {
-      try {
-        if (await exec('document.hasFocus() === true')) return true;
-      } catch { /* 页面可能还没就绪 */ }
-      try { win.focus(); } catch { /* 忽略 */ }
-      await waitForFocus();
-    }
-    return false;
-  };
 
   // ---------- 演练书 ----------
   await exec('window.__cwTest.backToShelf()');

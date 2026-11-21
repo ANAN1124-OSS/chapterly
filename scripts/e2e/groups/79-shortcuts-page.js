@@ -36,14 +36,10 @@ const JS_SHORTCUTS = `(() => {
 })()`;
 
 module.exports = async function group79ShortcutsPage(t) {
-  const { exec, check, waitFor, sleep, storage, booksRoot, deleteBookWithRetry, win } = t;
+  const { exec, check, waitFor, sleep, storage, booksRoot, deleteBookWithRetry, win, sendKey } = t;
 
-  // 真实按键：`?` 要带字符事件，Ctrl+K / Esc 走 keyDown+keyUp 即可（与第 75 组同一套写法）。
-  const sendKey = async (keyCode, modifiers = [], wait = 120) => {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
-    await sleep(wait);
-  };
+  // 真实按键：`?` 要带字符事件，Ctrl+K / Esc 走 keyDown+keyUp 即可（sendKey 由 harness 统一，
+  // TEST-A-01）。本组只保留 `?` 的 keyDown + char + keyUp 三段式封装（别的组用不到 char）。
   const sendQuestion = async (wait = 260) => {
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: '?' });
     win.webContents.sendInputEvent({ type: 'char', keyCode: '?' });
