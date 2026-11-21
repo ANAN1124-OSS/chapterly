@@ -787,15 +787,33 @@ test('setupBookinfoUi：弹层 Enter 提交 / 取消 / 保存 / 分组筛选四�
   let saved = 0;
   const origSave = ctx.host.api.updateBookInfo;
   ctx.host.api.updateBookInfo = async (...args) => { saved += 1; return origSave(...args); };
-  backdrop._fire('keydown', { key: 'Enter', target: { id: 'bookinfo-author' }, preventDefault() {} });
+  // RSHE-B-01：焦点在按钮 / 下拉上按 Enter 不接管 —— 否则「取消」被 preventDefault 后
+  // 反而执行保存（取消意图变成一次持久化写入）。带修饰键的组合也放行默认行为。
+  let preventedOnButton = 0;
+  backdrop._fire('keydown', {
+    key: 'Enter',
+    target: { id: 'btn-bookinfo-cancel', tagName: 'BUTTON' },
+    preventDefault() { preventedOnButton += 1; }
+  });
+  assert.equal(saved, 0, '按钮上的 Enter 不许触发保存');
+  assert.equal(preventedOnButton, 0, '不许 preventDefault 掉按钮自身的激活');
+  backdrop._fire('keydown', {
+    key: 'Enter',
+    shiftKey: true,
+    target: { id: 'bookinfo-author', tagName: 'INPUT' },
+    preventDefault() { preventedOnButton += 1; }
+  });
+  assert.equal(saved, 0, 'Shift+Enter 不触发保存');
+  assert.equal(preventedOnButton, 0);
+  backdrop._fire('keydown', { key: 'Enter', target: { id: 'bookinfo-author', tagName: 'INPUT' }, preventDefault() {} });
   return Promise.resolve().then(async () => {
     assert.equal(saved, 1, 'Enter 提交保存');
     // brief 里按 Enter 不提交（留给换行）
     const before = saved;
-    backdrop._fire('keydown', { key: 'Enter', target: { id: 'bookinfo-brief' }, preventDefault() {} });
+    backdrop._fire('keydown', { key: 'Enter', target: { id: 'bookinfo-brief', tagName: 'TEXTAREA' }, preventDefault() {} });
     assert.equal(saved, before, '简介里的 Enter 不触发保存');
     // 非 Enter 键不处理
-    backdrop._fire('keydown', { key: 'a', target: { id: 'bookinfo-author' }, preventDefault() {} });
+    backdrop._fire('keydown', { key: 'a', target: { id: 'bookinfo-author', tagName: 'INPUT' }, preventDefault() {} });
     assert.equal(saved, before);
 
     // 取消 / 保存按钮
@@ -839,7 +857,7 @@ test('输入法组字中按 Enter 不触发 updateBookInfo（V73）', async () =
   backdrop._fire('keydown', {
     key: 'Enter',
     isComposing: true,
-    target: { id: 'bookinfo-author' },
+    target: { id: 'bookinfo-author', tagName: 'INPUT' },
     preventDefault() { prevented += 1; }
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -851,7 +869,7 @@ test('输入法组字中按 Enter 不触发 updateBookInfo（V73）', async () =
   backdrop._fire('keydown', {
     key: 'Enter',
     keyCode: 229,
-    target: { id: 'bookinfo-author' },
+    target: { id: 'bookinfo-author', tagName: 'INPUT' },
     preventDefault() { prevented += 1; }
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -862,7 +880,7 @@ test('输入法组字中按 Enter 不触发 updateBookInfo（V73）', async () =
   // 组字结束后的普通 Enter 仍是提交（旧行为不变）
   backdrop._fire('keydown', {
     key: 'Enter',
-    target: { id: 'bookinfo-author' },
+    target: { id: 'bookinfo-author', tagName: 'INPUT' },
     preventDefault() {}
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -896,8 +914,38 @@ test('连按两次只调用一次 updateBookInfo（V75）', async () => {
   assert.equal(ctx.calls.refreshShelf, 1);
 });
 
-test('A 在飞期间弹层切到 B → A resolve 不关 B、不覆盖 B 的表单（V75）', async () => {
+// RSHE-B-02（第五轮审计）：stale 判定只比 book 对象引用（同一本书关掉再重开时引用不变）——
+// 在飞保存的收尾会关掉新弹层、把作者重开后的新输入一起吞掉，还提示「已保存」。
+test('RSHE-B-02：同一本书关掉重开时，在飞保存的收尾不许关掉新弹层 / 吞掉新输入', async () => {
   const dom = makeDocument();
+  const pending = [];
+  let ipcCount = 0;
+  const call = () => {
+    ipcCount += 1;
+    return new Promise((resolve) => pending.push(resolve));
+  };
+  const ctx = build({ dom, call });
+  const book = makeBook();
+  assert.equal(ctx.ui.openBookInfoDialog(book), true);
+  const first = ctx.ui.saveBookInfoDialog(); // 在飞
+  assert.equal(ipcCount, 1);
+  // 作者没等回来：关掉弹层、又对同一本书重开并继续输入
+  ctx.ui.closeBookInfoDialog();
+  assert.equal(ctx.ui.openBookInfoDialog(book), true);
+  dom.map.get('bookinfo-author').value = '重开后的新作者';
+  pending[0]({ changed: true });
+  const res = await first;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(res, { ok: false, stale: true }, '旧会话的收尾必须判过期（不能只比 book 引用）');
+  assert.equal(ctx.state.bookInfoBook, book, '新弹层还开着');
+  assert.equal(dom.map.get('bookinfo-backdrop').classList.contains('hidden'), false, '新弹层不许被旧收尾关掉');
+  assert.equal(dom.map.get('bookinfo-author').value, '重开后的新作者', '作者重开后的输入不许被旧收尾清掉');
+  assert.deepEqual(ctx.calls.toast, [], '旧收尾不许提示「已保存」');
+  assert.equal(ctx.calls.refreshShelf, 0, '旧收尾不该刷新书架');
+  assert.equal(ipcCount, 1);
+});
+
+test('A 在飞期间弹层切到 B → A resolve 不关 B、不覆盖 B 的表单（V75）', async () => {  const dom = makeDocument();
   const pending = [];
   let ipcCount = 0;
   const call = () => {

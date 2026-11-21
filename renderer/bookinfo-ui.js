@@ -69,6 +69,10 @@
   // WP-15（C15）：在飞的是哪一本书。作者没等 A 回来就切到 B 再点保存时，不能用同一句
   // 「返回 {ok:false}」把 B 静默吞掉——至少要在 B 的弹层里说清「上一本还在保存」。
   let savingBook = null;
+  // RSHE-B-02（第五轮审计）：弹层会话令牌。同一本书「关掉再重开」时 book 对象引用不变，
+  // 只比引用认不出这是两次打开：在飞保存的收尾会通过 stale 检测、关掉新弹层并吞掉新输入。
+  // open / close 各推进一次，保存收尾按令牌判断自己是否已经过期。
+  let bookInfoSession = 0;
   // B14（v1.8.0 WP-29）：分组 / 标签下拉的内容签名。renderShelf 每次刷新（保存 / 索引进度 /
   // 统计）都会调 renderShelfGroupBar；下拉选项只由「分组名 + 计数 + 标签名 + 计数」决定，
   // 签名没变就不重建 innerHTML —— 否则下拉正展开时会被整段重绘打断。
@@ -104,6 +108,7 @@
       return false;
     }
     state.bookInfoBook = book;
+    bookInfoSession += 1; // RSHE-B-02：这是一次新的弹层会话（同一本书关掉再重开也算）
     const info = bookInfoLib.readBookInfo(book);
     $('bookinfo-book').textContent = `《${book.title || book.folder || ''}》`;
     $('bookinfo-book').title = book.path || '';
@@ -125,6 +130,7 @@
   }
 
   function closeBookInfoDialog() {
+    bookInfoSession += 1; // RSHE-B-02：关掉即作废在飞保存的收尾
     state.bookInfoBook = null;
     $('bookinfo-backdrop').classList.add('hidden');
     $('bookinfo-error').textContent = '';
@@ -155,6 +161,8 @@
     }
     saving = true;
     savingBook = book;
+    // RSHE-B-02：记下这次保存所属的弹层会话；关掉 / 重开同一本书都会让令牌失效。
+    const sessionAtStart = bookInfoSession;
     try {
       const form = readBookInfoForm();
       // 标签先按应用规则清洗（去空 / 去重 / 最多 10 个），免得作者以为自己存了 15 个
@@ -167,7 +175,8 @@
       });
       // V75：await 期间作者可能已经关掉 A 的弹层、打开了 B（甚至换了同一本书的另一次编辑）。
       // 身份不一致说明这次保存的「收尾」已经过期：不关窗、不提示、不刷新书架，交给当前弹层。
-      if (state.bookInfoBook !== book) return { ok: false, stale: true };
+      // RSHE-B-02：同一本书的「关掉再重开」也必须判过期 —— 只比 book 引用认不出两次打开。
+      if (bookInfoSession !== sessionAtStart || state.bookInfoBook !== book) return { ok: false, stale: true };
       closeBookInfoDialog();
       toast(result.changed ? '书籍信息已保存（只改书目，不改正文和文件名）' : '书籍信息没有变化');
       await refreshShelf();
@@ -177,7 +186,7 @@
       // 不能把 A 的报错写进 B 的错误行（作者会以为是 B 存不上）；改用 toast 点名 A，
       // 至少让作者知道那次保存没成功、需要重来。
       const message = `保存失败：${err.message}`;
-      if (state.bookInfoBook !== book) {
+      if (bookInfoSession !== sessionAtStart || state.bookInfoBook !== book) {
         toast(`《${book.title || book.folder || '刚才那本书'}》${message}`, 'error');
         return { ok: false, stale: true, message: err.message };
       }
@@ -899,7 +908,19 @@
       // 1.7.1 P1（审计 V73）/ WP-04（V112）：组字中的 Enter 是输入法上屏，不是「保存」——
       // 不加这一判，中文作者打书名 / 作者时按 Enter 会把半截表单存下去并关掉弹层。
       // 判据统一走 ime-guard.js（isComposing || keyCode 229）。
-      if (event.key === 'Enter' && !imeGuard.isImeComposing(event) && event.target && event.target.id !== 'bookinfo-brief') {
+      // RSHE-B-01（第五轮审计）：只在「正在输入的文本框」里接管 Enter，并排除带修饰键的组合。
+      // 旧条件只排除了 brief 文本域：焦点停在「取消」按钮上按 Enter 时，preventDefault 会抑制
+      // 按钮自身的激活行为，转而执行保存——作者本想放弃改动，结果把表单写进书目并关了弹层。
+      const target = event.target;
+      const tag = target && target.tagName ? String(target.tagName).toUpperCase() : '';
+      const isTextField = tag === 'INPUT' || tag === 'TEXTAREA';
+      if (
+        event.key === 'Enter' &&
+        !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey &&
+        !imeGuard.isImeComposing(event) &&
+        isTextField &&
+        target.id !== 'bookinfo-brief'
+      ) {
         event.preventDefault();
         void saveBookInfoDialog();
       }
