@@ -20,7 +20,7 @@
 //   --hash-interval 默认 300000 = 产品默认的内容指纹复核间隔（5 分钟）。
 //
 // 与 bench.js 同一约定：书库 / 配置全部建在系统临时目录，**绝不碰真实书库**；跑完只留临时目录
-//（删除动作不进这个项目），JSON 默认写到 shots/（gitignore）。
+//（删除动作不进这个项目），JSON 落点可选（默认只打表格，不写盘）。
 
 const os = require('node:os');
 const fsp = require('node:fs/promises');
@@ -29,16 +29,10 @@ const path = require('node:path');
 const storage = require('../core/storage');
 const chaptersLib = require('../core/chapters');
 const search = require('../core/search-index');
+const { argValue, stringArg } = require('./bench-common');
+const { tableLines } = require('./table');
 
 const DEFAULTS = { chapters: 3000, runs: 4, hashInterval: 300000, out: null };
-
-function argValue(argv, name, fallback) {
-  const prefix = `--${name}=`;
-  const hit = argv.find((arg) => arg.startsWith(prefix));
-  if (!hit) return fallback;
-  const value = Number(hit.slice(prefix.length));
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-}
 
 async function buildFixture(base, count) {
   const booksRoot = path.join(base, 'books');
@@ -83,10 +77,7 @@ async function main() {
   // 「每 10 秒回一次书架 = 每趟全量校验，但同一本书 5 分钟才复核一次内容指纹」。
   // （改前代码没有这个选项，但它的行为等价于「每趟全复核」，因此 before 数据仍可比。）
   const hashInterval = argValue(argv, 'hash-interval', DEFAULTS.hashInterval);
-  const out = (() => {
-    const hit = argv.find((arg) => arg.startsWith('--out='));
-    return hit ? hit.slice('--out='.length) : null;
-  })();
+  const out = stringArg(argv, 'out', DEFAULTS.out);
   const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-bench-index-'));
   const fixture = await buildFixture(base, chapters);
   const store = search.createSearchStore({
@@ -131,7 +122,6 @@ async function main() {
     tempDir: base,
     samples
   };
-  const pad = (value, width) => String(value).padEnd(width);
   console.log('== WP10 · P-N1 索引深度校验基准（只读产品代码）==');
   console.log(`夹具：1 本书 / ${chapters} 章 · 临时目录 ${base}`);
   console.log('口径：每趟 store.ensure（validateIntervalMs=0 全量校验）；opens = 这一趟 fs.open 过的 .txt 数');
@@ -140,10 +130,8 @@ async function main() {
   for (const sample of samples) {
     rows.push([sample.run, sample.ms, sample.opens, sample.rebuiltBooks, sample.reusedBooks]);
   }
-  const widths = [6, 12, 10, 8, 8];
-  for (const row of rows) {
-    console.log(row.map((cell, i) => pad(cell, widths[i])).join(' '));
-  }
+  // TOOL-B06：中文表头「趟」占 2 列，固定列宽会整体错 1 列；改用显示宽度感知的 table.js。
+  for (const line of tableLines(rows, ['left', 'right', 'right', 'right', 'right'])) console.log(line);
   console.log('');
   const steady = samples.slice(1);
   if (steady.length) {

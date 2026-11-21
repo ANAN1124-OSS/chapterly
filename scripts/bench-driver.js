@@ -11,7 +11,7 @@
 // （每步只调真实的界面入口，不写盘、不改配置）→ 把 { env, scenarios } 打回主进程，由
 // main.js 退出；scripts/bench.js 负责建夹具、解析 BENCH_RESULT、打印表格与落 JSON。
 
-const { waitForRenderer } = require('./screenshot-driver');
+const { prepareWindow, waitForAppReady } = require('./driver-common');
 
 // 这个函数会被 toString() 丢进渲染层执行：**只能用浏览器全局**（window / document /
 // performance / Math / JSON），不许引用本文件里的任何变量或 Node API，否则页面里 ReferenceError。
@@ -320,14 +320,11 @@ function benchConfig(argValue) {
 }
 
 async function run(host) {
-  const win = host.getWin();
   const app = host.app;
   try {
-    if (!win || win.isDestroyed()) throw new Error('基准模式没有可用窗口');
-    // 数字对窗口大小 / 可见性敏感：确保窗口是显示出来的，并把实际状态一起带回报告
-    if (!win.isVisible()) win.show();
-    win.focus();
-    await waitForRenderer(win, 'Boolean(window.__cwTest && window.__cwTest.ready)', 20000);
+    // 数字对窗口大小 / 可见性敏感：确保窗口是显示出来的（实际状态随报告带回）。
+    const win = await prepareWindow(host, '基准');
+    await waitForAppReady(win);
     const script = buildBenchScript(benchConfig(host.argValue));
     const result = await win.webContents.executeJavaScript(script, true);
     console.log(`BENCH_RESULT ${JSON.stringify(result)}`);

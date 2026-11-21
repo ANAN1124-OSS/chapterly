@@ -33,10 +33,14 @@ function padCell(text, width, align = 'left') {
   return align === 'right' ? ' '.repeat(gap) + value : value + ' '.repeat(gap);
 }
 
-// 把若干行单元格渲染成对齐的表格文本：第一行是表头，第二行是分隔线（-），
-// 每行之间两个空格；行尾空白去掉（免得日志里出现看不见的尾随空格）。
+// 把若干行单元格渲染成对齐的表格文本：第一行是表头，每行之间两个空格；
+// 行尾空白去掉（免得日志里出现看不见的尾随空格）。
 // aligns：每列 'left' / 'right'，缺省按 'left'；表头列一律左对齐。
-function tableLines(rows, aligns) {
+// options.separator = true 时在表头下插入一条按列宽生成的 `-` 分隔线（bench.js 的老版式）。
+// options.gap：列间距，默认 2（与旧调用方逐字节兼容）。
+function tableLines(rows, aligns, options) {
+  const opt = options || {};
+  const gap = typeof opt.gap === 'number' && opt.gap >= 0 ? Math.floor(opt.gap) : 2;
   const data = (Array.isArray(rows) ? rows : []).filter((row) => Array.isArray(row) && row.length);
   if (!data.length) return [];
   const columns = Math.max(...data.map((row) => row.length));
@@ -49,12 +53,17 @@ function tableLines(rows, aligns) {
     const list = Array.isArray(aligns) ? aligns : [];
     return list[col] === 'right' ? 'right' : 'left';
   };
-  return data.map((row, index) =>
+  const spacer = ' '.repeat(gap);
+  const lines = data.map((row, index) =>
     widths
       .map((width, col) => padCell(row[col], width, alignOf(col, index)))
-      .join('  ')
+      .join(spacer)
       .replace(/\s+$/, '')
   );
+  if (opt.separator && lines.length) {
+    lines.splice(1, 0, widths.map((width) => '-'.repeat(width)).join(spacer));
+  }
+  return lines;
 }
 
 module.exports = { displayWidth, padCell, tableLines };

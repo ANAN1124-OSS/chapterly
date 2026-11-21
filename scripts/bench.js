@@ -31,14 +31,14 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 
-const electronRun = require('./electron-run');
 const { atomicWriteFile } = require('../core/atomic');
 const { clampInt } = require('../core/common');
 const storage = require('../core/storage');
 const chaptersLib = require('../core/chapters');
 const schemaLib = require('../core/schema');
-
-const ROOT = path.resolve(__dirname, '..');
+// TOOL-B04：启动外壳 / marker 解析 / 时间戳 / 机器信息 / 临时根闸门与 contrast.js 共用一份。
+const appShell = require('./spawn-app');
+const { isInside, assertTempRoot, machineInfo, tail, spawnApp } = appShell;
 
 const DEFAULTS = {
   books: 280, // 书架书数（作者真实书架 280 本左右）
@@ -168,22 +168,6 @@ function chapterText(seed, chars) {
 
 // ---------- 夹具落盘（临时书库） ----------
 
-function isInside(parent, child) {
-  const from = path.resolve(parent);
-  const to = path.resolve(child);
-  const rel = path.relative(from, to);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-}
-
-// 安全闸门：书库只许建在系统临时目录里。这条是「绝不读写真实书库」红线的机器检查。
-function assertTempRoot(root) {
-  const tmp = os.tmpdir();
-  if (!isInside(tmp, root)) {
-    throw new Error(`基准脚本只允许在系统临时目录下建书库（拒绝：${root}）`);
-  }
-  return path.resolve(root);
-}
-
 async function folderFor(booksRoot, title) {
   const base = chaptersLib.safeName(title);
   let folder = base;
@@ -292,7 +276,7 @@ function summarize(samples) {
 
 // 终端表格对齐（v0.9 A-4 起在 scripts/table.js：对比度审计脚本也要打同一套中文表格，
 // 两份补位逻辑迟早会算出不一样的对齐；这里原样 re-export，bench 的既有单测仍按老接口跑）。
-const { displayWidth, padCell } = require('./table');
+const { displayWidth, padCell, tableLines } = require('./table');
 
 function fixed(value, digits = 1) {
   return Number.isFinite(value) ? value.toFixed(digits) : '-';
@@ -330,14 +314,8 @@ function formatLines(report) {
       String(s.count)
     ]);
   }
-  const widths = rows[0].map((_, col) => Math.max(...rows.map((row) => displayWidth(row[col]))));
-  rows.forEach((row, index) => {
-    const cells = row.map((cell, col) =>
-      padCell(cell, widths[col], col === 0 ? 'left' : 'right')
-    );
-    lines.push(cells.join('  ').replace(/\s+$/, ''));
-    if (index === 0) lines.push(widths.map((w) => '-'.repeat(w)).join('  '));
-  });
+  // TOOL-B06：手写宽度循环归位到 table.js（separator 选项保留原来的表头分隔线版式）。
+  lines.push(...tableLines(rows, ['left', 'right', 'right', 'right', 'right', 'right'], { separator: true }));
 
   const notes = (report.scenarios || []).filter((item) => item.note);
   if (notes.length) {
@@ -353,41 +331,30 @@ function formatLines(report) {
 
 // ---------- 跑起来 ----------
 
-function stamp(date = new Date()) {
-  return date.toISOString().replace(/[-:T]/g, '').slice(0, 14);
-}
-
-function machineInfo() {
-  const cpus = os.cpus() || [];
-  return {
-    platform: `${os.platform()} ${os.release()}`,
-    arch: os.arch(),
-    cpus: cpus.length,
-    cpuModel: cpus.length ? String(cpus[0].model || '').trim() : '',
-    totalMemMb: Math.round(os.totalmem() / (1024 * 1024)),
-    node: process.version
-  };
-}
+const { stamp } = appShell;
 
 function spawnBench({ base, fixtures, plan, opts }) {
   const userData = path.join(base, 'userdata');
   fs.mkdirSync(userData, { recursive: true });
-  const args = [
-    '--bench',
-    `--user-data=${userData}`,
-    `--books-root=${fixtures.booksRoot}`,
-    `--bench-runs=${opts.runs}`,
-    `--bench-big-book=${fixtures.bigBookPath}`,
-    `--bench-small-book=${fixtures.smallBookPath}`,
-    `--bench-books=${fixtures.shelfCount}`,
-    `--bench-chapters=${fixtures.chapters}`,
-    `--bench-long-index=${fixtures.longIndex}`,
-    `--bench-long-chars=${fixtures.longChars}`,
-    `--bench-search-query=${plan.shelfQuery}`
-  ];
   // TOOL-BX-01：直接跑真正的 Electron（不经 scripts/start.js 包装层），超时由 electron-run
   // 杀掉整棵进程树——否则孤儿持有的 stdout 管道让 close 永不触发，超时被吞成假绿。
-  return electronRun.runElectron(args, { timeout: opts.timeout, cwd: ROOT });
+  // TOOL-B04：外壳与 contrast.js 共用 spawn-app，两工具的参数表之外不再各有一份。
+  return spawnApp({
+    automationFlag: '--bench',
+    timeout: opts.timeout,
+    args: [
+      `--user-data=${userData}`,
+      `--books-root=${fixtures.booksRoot}`,
+      `--bench-runs=${opts.runs}`,
+      `--bench-big-book=${fixtures.bigBookPath}`,
+      `--bench-small-book=${fixtures.smallBookPath}`,
+      `--bench-books=${fixtures.shelfCount}`,
+      `--bench-chapters=${fixtures.chapters}`,
+      `--bench-long-index=${fixtures.longIndex}`,
+      `--bench-long-chars=${fixtures.longChars}`,
+      `--bench-search-query=${plan.shelfQuery}`
+    ]
+  });
 }
 
 // TOOL-BX-02：marker 只做 JSON.parse 不够——ok 不是 true、scenarios 为空、某场景 0 采样
@@ -405,24 +372,13 @@ function resultProblem(result) {
   return null;
 }
 
+// 兼容既有单测 / 调用方的接口：语义仍是「从 stdout 挑 BENCH_RESULT」，解析实现共享。
 function pickResult(stdout) {
-  const hit = /BENCH_RESULT (.+)/.exec(String(stdout || ''));
-  if (!hit) return null;
-  try {
-    return JSON.parse(hit[1]);
-  } catch {
-    return null;
-  }
-}
-
-function tail(text, maxLines = 12) {
-  const lines = String(text || '').trim().split(/\r?\n/);
-  return lines.slice(Math.max(0, lines.length - maxLines)).join('\n');
+  return appShell.pickMarkerResult(stdout, 'BENCH_RESULT');
 }
 
 function reportPath(opts, when) {
-  if (opts.out) return path.resolve(ROOT, opts.out);
-  return path.join(ROOT, 'shots', `bench-${stamp(when)}.json`);
+  return appShell.reportPath('bench', opts && opts.out, when);
 }
 
 async function main(argv = process.argv.slice(2)) {

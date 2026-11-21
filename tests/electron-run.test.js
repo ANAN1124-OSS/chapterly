@@ -16,6 +16,7 @@ const electronRun = require('../scripts/electron-run');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const ELECTRON_RUN_SRC = read('scripts/electron-run.js');
+const SPAWN_APP_SRC = read('scripts/spawn-app.js');
 const BENCH_SRC = read('scripts/bench.js');
 const CONTRAST_SRC = read('scripts/contrast.js');
 
@@ -78,10 +79,15 @@ test('TOOL-BX-01 静态闸门：外壳直接跑 Electron 二进制，不再经 s
   assert.match(ELECTRON_RUN_SRC, /taskkill/, 'Windows 上必须用 taskkill 杀整棵树');
   assert.match(ELECTRON_RUN_SRC, /'\/t', '\/f'/, 'taskkill 必须带 /T /F（树 + 强杀）');
   assert.match(ELECTRON_RUN_SRC, /process\.kill\(-child\.pid/, 'POSIX 必须杀进程组');
+  // TOOL-B04：bench / contrast 的启动外壳归一到了 scripts/spawn-app.js；两工具都必须走它，
+  // 而 spawn-app 必须走共享的 electron-run（超时 / 退出码纪律只有一条链）。
+  assert.match(SPAWN_APP_SRC, /electronRun\.runElectron\(/, 'spawn-app 必须走共享的 electron-run');
+  assert.equal(/spawn\(process\.execPath/.test(SPAWN_APP_SRC), false, 'spawn-app 不许再起 node 包装层');
   for (const [name, src] of [['bench.js', BENCH_SRC], ['contrast.js', CONTRAST_SRC]]) {
     assert.equal(/scripts',\s*'start\.js'/.test(src), false, `${name} 不许再 spawn scripts/start.js`);
     assert.equal(/spawn\(process\.execPath/.test(src), false, `${name} 不许再起 node 包装层`);
-    assert.match(src, /electronRun\.runElectron\(/, `${name} 必须走共享的 electron-run`);
+    assert.match(src, /require\('\.\/spawn-app'\)/, `${name} 必须走共享的 spawn-app 外壳`);
+    assert.match(src, /return spawnApp\(\{/, `${name} 必须通过 spawnApp 启动 Electron`);
     // 超时判定必须早于接受 marker：迟到的 marker 不能冒充成功样本。
     const timedOutAt = src.indexOf('run.timedOut');
     const pickAt = src.indexOf('pickResult(run.stdout)');

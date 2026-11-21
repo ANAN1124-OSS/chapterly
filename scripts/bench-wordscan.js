@@ -6,6 +6,7 @@
 // 旧实现是 O(词数 × 正文)，所以只跑 10 万 / 50 万字的量级（500 万字要 19–20 秒，见终审版实测）；
 // 新实现另跑一遍 500 万字，用来证明整本规模也在可接受范围内。
 const wordscan = require('../core/wordscan');
+const { tableLines } = require('./table');
 
 // 旧实现（B1 之前的 findHits / scanText 扫描段），只用于对比耗时
 function referenceScan(text, terms) {
@@ -89,14 +90,20 @@ function timeIt(fn) {
 
 function printTable(title, rows) {
   console.log(`\n== ${title} ==`);
-  console.log('正文长度    旧实现(逐词 indexOf)   新实现(Aho-Corasick)   加速       命中/原始/截断');
+  const table = [['正文长度', '旧实现(逐词 indexOf)', '新实现(Aho-Corasick)', '加速', '命中/原始/截断']];
   for (const row of rows) {
     const oldText = row.oldMs == null ? '未跑（太慢）' : `${row.oldMs.toFixed(0)} ms`;
     const speed = row.speedup == null ? '-' : `${row.speedup.toFixed(1)}×`;
-    console.log(
-      `${String(row.chars).padStart(7)}  ${oldText.padStart(19)}  ${(`${row.newMs.toFixed(1)} ms`).padStart(18)}  ${speed.padStart(6)}  ${row.hits}/${row.rawCount}/${row.truncated}`
-    );
+    table.push([
+      String(row.chars),
+      oldText,
+      `${row.newMs.toFixed(1)} ms`,
+      speed,
+      `${row.hits}/${row.rawCount}/${row.truncated}`
+    ]);
   }
+  // TOOL-B06：padStart 对中文表头 / 全角括号不感知宽度，改用 table.js 按显示列宽补位。
+  for (const line of tableLines(table, ['left', 'right', 'right', 'right', 'right'])) console.log(line);
 }
 
 const WORDS = 5000;

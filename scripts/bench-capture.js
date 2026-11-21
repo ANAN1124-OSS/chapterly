@@ -26,54 +26,12 @@ const fsp = require('node:fs/promises');
 
 const capture = require('../core/capture');
 const queueLib = require('../core/capture-queue');
+const { argValue, stringArg, sample, skipped } = require('./bench-common');
+const { tableLines } = require('./table');
 
 const DEFAULTS = { runs: 3, out: null, label: '' };
 const HARD_CASE_MS = 50; // 12 万档超过它 = 二次复杂度还在，跳过更大的档位
 const BODY_CHARS = 100000;
-
-function argValue(argv, name, fallback) {
-  const prefix = `--${name}=`;
-  const hit = argv.find((arg) => arg.startsWith(prefix));
-  if (!hit) return fallback;
-  const value = Number(hit.slice(prefix.length));
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-}
-
-function stringArg(argv, name, fallback) {
-  const prefix = `--${name}=`;
-  const hit = argv.find((arg) => arg.startsWith(prefix));
-  return hit ? hit.slice(prefix.length) : fallback;
-}
-
-function round(value) {
-  return Math.round(value * 100) / 100;
-}
-
-// 跑一次取墙钟毫秒（只包被测调用，夹具在采样前造好）。
-function measureMs(runOnce) {
-  const startedAt = process.hrtime.bigint();
-  runOnce();
-  return round(Number(process.hrtime.bigint() - startedAt) / 1e6);
-}
-
-function sample(name, runOnce, runs, note) {
-  measureMs(runOnce); // 预热一次：JIT / 字符串驻留不算进报告
-  const samples = [];
-  for (let i = 0; i < runs; i += 1) samples.push(measureMs(runOnce));
-  const sorted = [...samples].sort((a, b) => a - b);
-  return {
-    name,
-    runs,
-    note: note || '',
-    samples,
-    minMs: sorted[0],
-    medianMs: sorted[Math.floor(sorted.length / 2)]
-  };
-}
-
-function skipped(name, note) {
-  return { name, runs: 0, note, samples: [], minMs: null, medianMs: null, skipped: true };
-}
 
 function buildVisibleQueue() {
   const queue = queueLib.createCaptureQueue();
@@ -175,7 +133,6 @@ async function main() {
     queueSizes: { visible: visibleQueue.size(), blankHeavy: blankQueue.size() },
     items
   };
-  const pad = (value, width) => String(value == null ? '-' : value).padEnd(width);
   console.log('== WP11 · B3/B4 捕获性能基准（只读产品代码）==');
   if (label) console.log(`标签：${label}`);
   console.log(`Node ${process.version} · 每项预热 1 次 + ${runs} 次样本 · 全内存夹具（零 IO）`);
@@ -184,7 +141,8 @@ async function main() {
   for (const item of items) {
     rows.push([item.skipped ? `${item.name}（跳过）` : item.name, item.minMs, item.medianMs]);
   }
-  for (const row of rows) console.log(`${pad(row[0], 64)} ${pad(row[1], 10)} ${pad(row[2], 10)}`);
+  // TOOL-B06：终端中文列宽按显示宽度补位（table.js），不再用 String.padEnd 把「项」列补歪。
+  for (const line of tableLines(rows, ['left', 'right', 'right'])) console.log(line);
   const skippedItems = items.filter((item) => item.skipped);
   if (skippedItems.length) {
     console.log('');

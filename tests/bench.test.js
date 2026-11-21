@@ -14,6 +14,8 @@ const path = require('node:path');
 
 const bench = require('../scripts/bench');
 const driver = require('../scripts/bench-driver');
+const common = require('../scripts/bench-common');
+const table = require('../scripts/table');
 const storage = require('../core/storage');
 const chaptersLib = require('../core/chapters');
 
@@ -153,6 +155,60 @@ test('表格：中文按两列宽对齐、右对齐补在前面', () => {
   assert.strictEqual(bench.padCell('书架', 6), '书架  ');
   assert.strictEqual(bench.padCell('7.2', 6, 'right'), '   7.2');
   assert.strictEqual(bench.padCell('超长文本也放得下', 4), '超长文本也放得下');
+});
+
+test('TOOL-B03：纯 Node 基准共用 bench-common，中位数偶数样本取两中位平均（与 bench.js 同口径）', () => {
+  // bench.js summarize 偶数样本 = 两中位平均；公共件必须是同一个口径，否则 --runs=2/4 两族数字不可比。
+  assert.strictEqual(common.median([40, 10, 30, 20]), 25);
+  assert.strictEqual(common.median([10, 20, 30]), 20);
+  assert.strictEqual(bench.summarize([40, 10, 30, 20]).median, common.median([40, 10, 30, 20]));
+  assert.strictEqual(common.median([]), null);
+  assert.strictEqual(common.round(1.23456), 1.23);
+  assert.strictEqual(common.argValue(['--runs=4'], 'runs', 3), 4);
+  assert.strictEqual(common.argValue(['--runs=0'], 'runs', 3), 3, '非正数按缺省');
+  assert.strictEqual(common.argValue(['--runs=abc'], 'runs', 3), 3);
+  assert.strictEqual(common.argValue(['--other=4'], 'runs', 3), 3);
+  assert.strictEqual(common.stringArg(['--label=before'], 'label', ''), 'before');
+  assert.strictEqual(common.stringArg([], 'label', ''), '');
+  const one = common.sample('项', () => {}, 1);
+  assert.strictEqual(one.runs, 1);
+  assert.strictEqual(one.samples.length, 1);
+  assert.strictEqual(one.minMs, one.medianMs);
+  assert.deepStrictEqual(common.skipped('项', '慢').skipped, true);
+
+  // 静态闸门：四个纯 Node 基准都 require 公共件，不再各自复制五件套 / 上中位实现。
+  for (const file of ['bench-capture.js', 'bench-proofread.js', 'bench-index-deep.js', 'bench-chapters.js']) {
+    const src = fs.readFileSync(path.join(ROOT, 'scripts', file), 'utf8');
+    assert.match(src, /require\('\.\/bench-common'\)/, `${file} 必须用 bench-common`);
+    assert.equal(
+      /function argValue\s*\(|sorted\[Math\.floor\(sorted\.length \/ 2\)\]/.test(src),
+      false,
+      `${file} 不许再复制参数解析 / 上中位实现`
+    );
+  }
+});
+
+test('TOOL-B06：终端表格统一走 table.js（中文列宽感知 + 可加表头分隔线）', () => {
+  const rows = [
+    ['场景', '中位', '最小'],
+    ['书架刷新（全部书）', '12.5', '3'],
+    ['正文', '7', '1']
+  ];
+  const lines = table.tableLines(rows, ['left', 'right', 'right'], { separator: true });
+  assert.deepStrictEqual(lines.length, 4);
+  assert.match(lines[0], /^场景\s+中位\s+最小$/);
+  assert.strictEqual(lines[1], `${'-'.repeat(18)}  ${'-'.repeat(4)}  ${'-'.repeat(4)}`);
+  // 数字右端对齐到同一显示列：两条数据行（含补位）的显示宽度一致。
+  assert.strictEqual(table.displayWidth(lines[2]), table.displayWidth(lines[3]));
+  assert.ok(lines[2].endsWith('3'));
+  assert.ok(lines[3].endsWith('1'));
+  // 四个打表的纯 Node 基准都必须走 tableLines，不再手写 padEnd/padStart 补中文列。
+  for (const file of ['bench-capture.js', 'bench-index-deep.js', 'bench-wordscan.js', 'bench-chapters.js']) {
+    const src = fs.readFileSync(path.join(ROOT, 'scripts', file), 'utf8');
+    assert.match(src, /tableLines\(/, `${file} 的表格必须走 tableLines`);
+  }
+  // bench.js 的 formatLines 也必须走同一份实现（表头分隔线用 separator 选项输出）。
+  assert.match(BENCH_SRC, /tableLines\(rows, \[[^\]]+\], \{ separator: true \}\)/);
 });
 
 test('报告：含窗口 / 夹具 / 口径说明 + 每个场景一行数字 + 场景备注', () => {

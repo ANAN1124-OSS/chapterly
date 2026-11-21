@@ -32,15 +32,16 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 
-const electronRun = require('./electron-run');
 const { clampInt } = require('../core/common');
 const storage = require('../core/storage');
 const chaptersLib = require('../core/chapters');
 const { tableLines } = require('./table');
 const color = require('./contrast-color');
+// TOOL-B04：启动外壳 / marker 解析 / 时间戳 / 机器信息 / 临时根闸门与 bench.js 共用一份。
+const appShell = require('./spawn-app');
+const { isInside, assertTempRoot, machineInfo, tail, spawnApp } = appShell;
 const { SPECS } = require('./contrast-driver');
 
-const ROOT = path.resolve(__dirname, '..');
 const THEMES = ['paper', 'cream', 'green', 'kraft', 'grid', 'night'];
 // 采样分七段：书架（打开书之前）、写作页（普通章）、写作页（当前章变脏后主按钮启用态）、
 // 六个弹层内部（设置 / 导出范围 / 排版 / 查找 / 校对 / 历史）、以及交互态
@@ -112,11 +113,18 @@ function parseArgs(argv) {
     const key = hit[1];
     const value = hit[2];
     if (key === 'themes') {
-      const wanted = String(value || '')
+      // TOOL-B07：未知主题名不许静默吞掉——部分未知给警告、全部未知直接报错退出。
+      // 以前 `--themes=Paper`（大小写错）会静默回退成跑全量 6 套，`--themes=paper,nightt`
+      // 静默丢掉 nightt，使用者以为覆盖了 night 实际没测。
+      const items = String(value || '')
         .split(',')
         .map((item) => item.trim())
-        .filter((item) => THEMES.includes(item));
-      if (wanted.length) opts.themes = THEMES.filter((theme) => wanted.includes(theme)); // 固定顺序，方便对比
+        .filter(Boolean);
+      const known = items.filter((item) => THEMES.includes(item));
+      const unknown = items.filter((item) => !THEMES.includes(item));
+      if (unknown.length) opts.ignoredThemes = unknown;
+      if (known.length) opts.themes = THEMES.filter((theme) => known.includes(theme)); // 固定顺序，方便对比
+      else if (items.length) opts.error = `未知主题：${items.join('、')}`;
     } else if (key === 'out') {
       opts.out = value ? String(value) : null;
     } else if (key === 'timeout') {
@@ -297,25 +305,6 @@ function formatLines(report) {
 
 // ---------- 夹具 ----------
 
-function stamp(date = new Date()) {
-  return date.toISOString().replace(/[-:T]/g, '').slice(0, 14);
-}
-
-function isInside(parent, child) {
-  const rel = path.relative(parent, child);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-}
-
-// 只许在系统临时目录里造书库：传进来的临时根必须落在 os.tmpdir() 下，
-// 并且绝不能是作者的真实书架（这条闸门是防止「路径写错一次就动真书」）。
-function assertTempRoot(base) {
-  const target = path.resolve(String(base || ''));
-  if (!isInside(path.resolve(os.tmpdir()), target)) {
-    throw new Error(`临时书库必须在系统临时目录下：${target}`);
-  }
-  return target;
-}
-
 async function createFixtures(base) {
   const booksRoot = path.join(base, 'books');
   await fsp.mkdir(booksRoot, { recursive: true });
@@ -373,31 +362,25 @@ async function createFixtures(base) {
 
 // ---------- 跑起来 ----------
 
-function machineInfo() {
-  const cpus = os.cpus() || [];
-  return {
-    platform: `${os.platform()} ${os.release()}`,
-    arch: os.arch(),
-    cpus: cpus.length,
-    cpuModel: cpus.length ? String(cpus[0].model || '').trim() : '',
-    node: process.version
-  };
-}
+const { stamp } = appShell;
 
 function spawnContrast({ base, fixtures, opts }) {
   const userData = path.join(base, 'userdata');
   fs.mkdirSync(userData, { recursive: true });
-  const args = [
-    '--contrast',
-    `--user-data=${userData}`,
-    `--books-root=${fixtures.booksRoot}`,
-    `--contrast-book=${fixtures.bookPath}`,
-    `--contrast-chapter=0`,
-    `--contrast-themes=${opts.themes.join(',')}`
-  ];
   // TOOL-BX-01：直接跑真正的 Electron（不经 scripts/start.js 包装层），超时由 electron-run
   // 杀掉整棵进程树。contrast 默认只等 120s、采样面更广，慢机最先踩到的就是「孤儿持管道」。
-  return electronRun.runElectron(args, { timeout: opts.timeout, cwd: ROOT });
+  // TOOL-B04：外壳与 bench.js 共用 spawn-app（超时 / env 清理 / 退出码纪律两工具永久同轨）。
+  return spawnApp({
+    automationFlag: '--contrast',
+    timeout: opts.timeout,
+    args: [
+      `--user-data=${userData}`,
+      `--books-root=${fixtures.booksRoot}`,
+      `--contrast-book=${fixtures.bookPath}`,
+      `--contrast-chapter=0`,
+      `--contrast-themes=${opts.themes.join(',')}`
+    ]
+  });
 }
 
 // TOOL-BX-02：ok 不是 true / samples 为空都是「跑起来了但没量到东西」，必须判失败。
@@ -408,24 +391,13 @@ function resultProblem(result) {
   return null;
 }
 
+// 兼容既有接口：语义仍是「从 stdout 挑 CONTRAST_RESULT」，解析实现共享 spawn-app。
 function pickResult(stdout) {
-  const hit = /CONTRAST_RESULT (.+)/.exec(String(stdout || ''));
-  if (!hit) return null;
-  try {
-    return JSON.parse(hit[1]);
-  } catch {
-    return null;
-  }
-}
-
-function tail(text, maxLines = 12) {
-  const lines = String(text || '').trim().split(/\r?\n/);
-  return lines.slice(Math.max(0, lines.length - maxLines)).join('\n');
+  return appShell.pickMarkerResult(stdout, 'CONTRAST_RESULT');
 }
 
 function reportPath(opts, when) {
-  if (opts.out) return path.resolve(ROOT, opts.out);
-  return path.join(ROOT, 'shots', `contrast-${stamp(when)}.json`);
+  return appShell.reportPath('contrast', opts && opts.out, when);
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -433,6 +405,16 @@ async function main(argv = process.argv.slice(2)) {
   if (opts.help) {
     console.log(usageText());
     return 0;
+  }
+  // TOOL-B07：全部主题名都认不出来时直接退 2，不再静默跑全量冒充「测过」。
+  if (opts.error) {
+    console.error(`[contrast] ${opts.error}（合法：${THEMES.join(', ')}）`);
+    console.error(usageText());
+    return 2;
+  }
+  // 部分未知：保留合法项继续跑，但必须在 stderr 说清楚丢了哪些，不能静默吞掉。
+  if (opts.ignoredThemes && opts.ignoredThemes.length) {
+    console.error(`[contrast] 忽略未知主题：${opts.ignoredThemes.join('、')}`);
   }
   const startedAt = new Date();
   const base = path.join(os.tmpdir(), `cw-contrast-${stamp(startedAt)}-${process.pid}`);

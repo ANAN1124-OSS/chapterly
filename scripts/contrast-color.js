@@ -134,11 +134,19 @@ function composite(fg, bg) {
 // 从最下层（数组末尾）开始往上一层一层盖；遇到不透明层不需要提前退出——它上面的层仍然
 // 可见（早期版本在这里 break，把「元素自身半透明色盖在不透明父层上」算成了父层颜色）。
 // 全都半透明时落到 fallback（默认白）。
+// 任何一层认不出来（`oklch()` / `color(display-p3 …)` 这类不做色域换算的新语法）都返回
+// null，由调用方按「采样失败」处理——**不能当这一层不存在**：丢掉一层就可能把深色遮盖算成
+// 纸白色，产出一个貌似可信的假对比度（TOOL-B02）。null / undefined 才表示「没有这一层」。
 function flatten(stack, fallback) {
   const base = parseColor(fallback == null ? '#ffffff' : fallback) || { r: 255, g: 255, b: 255, a: 1 };
-  const list = (Array.isArray(stack) ? stack : [stack])
-    .map((item) => (item && typeof item === 'object' ? item : parseColor(item)))
-    .filter(Boolean);
+  const raw = Array.isArray(stack) ? stack : [stack];
+  const list = [];
+  for (const item of raw) {
+    if (item == null) continue; // 缺层：浏览器没给这一层
+    const parsed = item && typeof item === 'object' ? item : parseColor(item);
+    if (!parsed) return null; // 认不出的层：整栈不可信
+    list.push(parsed);
+  }
   let result = { r: byte(base.r), g: byte(base.g), b: byte(base.b), a: 1 };
   for (let i = list.length - 1; i >= 0; i -= 1) {
     result = composite(list[i], result);
@@ -213,13 +221,16 @@ function evaluate(sample) {
   const item = sample || {};
   const label = String(item.label == null ? '' : item.label);
   const fg = parseColor(item.color);
-  const stack = (Array.isArray(item.bgStack) ? item.bgStack : [item.bgStack])
-    .map((value) => parseColor(value))
-    .filter(Boolean);
-  const bg = flatten(stack);
+  const bg = flatten(item.bgStack);
   const large = item.ui ? false : isLargeText(item.fontSize, item.fontWeight);
   const options = { ui: Boolean(item.ui), large };
   const ratio = fg && bg ? contrastRatio(fg, bg) : null;
+  // 失败原因分两档：文字色 / 背景层认不出来都算采样失败（TOOL-B02：背景层不许静默丢弃）。
+  const error = fg
+    ? bg
+      ? null
+      : '背景层颜色认不出来（采样失败）'
+    : '文字颜色认不出来（采样失败）';
   return {
     label,
     fg: fg ? formatColor(fg) : null,
@@ -230,7 +241,7 @@ function evaluate(sample) {
     large,
     ui: Boolean(item.ui),
     pass: ratio != null && ratio >= requiredRatio(options),
-    error: ratio == null ? '颜色认不出来（采样失败）' : null
+    error
   };
 }
 

@@ -27,30 +27,13 @@ const { spawnSync } = require('node:child_process');
 const formatLib = require('../core/format');
 const proofreadLib = require('../core/proofread');
 const sensitiveLib = require('../core/sensitive');
+const { argValue, stringArg, round, sample } = require('./bench-common');
 
 const CHILD_FLAG = '--child-repeat-word';
 const DEFAULTS = { runs: 3, out: null, label: '', heapCaps: true };
 
 const RULES_OFF = {};
 for (const rule of proofreadLib.RULE_ORDER) RULES_OFF[rule] = false;
-
-function argValue(argv, name, fallback) {
-  const prefix = `--${name}=`;
-  const hit = argv.find((arg) => arg.startsWith(prefix));
-  if (!hit) return fallback;
-  const value = Number(hit.slice(prefix.length));
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-}
-
-function stringArg(argv, name, fallback) {
-  const prefix = `--${name}=`;
-  const hit = argv.find((arg) => arg.startsWith(prefix));
-  return hit ? hit.slice(prefix.length) : fallback;
-}
-
-function round(value) {
-  return Math.round(value * 100) / 100;
-}
 
 // 稳定伪随机（mulberry32）：同一 seed 在改前 / 改后两次运行里造出逐字节相同的夹具。
 function makeWide(n, seedInit) {
@@ -81,27 +64,6 @@ function sensitiveChapter() {
 // 真实章节：50 段 × 约 60 字（含标点），总约 3100 字。
 function realisticChapter() {
   return Array.from({ length: 50 }, () => makeWide(60, 7)).join('\n');
-}
-
-function measureMs(runOnce) {
-  const startedAt = process.hrtime.bigint();
-  runOnce();
-  return round(Number(process.hrtime.bigint() - startedAt) / 1e6);
-}
-
-function sample(name, runOnce, runs, note) {
-  measureMs(runOnce); // 预热一次：JIT / 字符串驻留不算进报告
-  const samples = [];
-  for (let i = 0; i < runs; i += 1) samples.push(measureMs(runOnce));
-  const sorted = [...samples].sort((a, b) => a - b);
-  return {
-    name,
-    runs,
-    note: note || '',
-    samples,
-    minMs: sorted[0],
-    medianMs: sorted[Math.floor(sorted.length / 2)]
-  };
 }
 
 // 分配足迹 proxy：强制 GC 后取 heapUsed，调用返回后立即再取（含尚未回收的分配）。

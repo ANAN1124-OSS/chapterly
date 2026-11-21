@@ -181,6 +181,39 @@ test('结论汇总：文字 / 大字号 / UI 图形各有阈值，颜色认不�
   assert.match(broken.error, /颜色认不出来/);
 });
 
+test('TOOL-B02：背景栈里认不出的层按采样失败处理，不许静默丢弃（否则产出假对比度）', () => {
+  // flatten：认不出的背景层直接 null，不再被 filter 掉后按更深层纸色合成。
+  assert.equal(color.flatten(['oklch(0.4 0.05 0)', 'rgb(255, 255, 255)']), null);
+  assert.equal(color.flatten(['rgb(255, 255, 255)', 'color(display-p3 0.1 0.2 0.3)']), null);
+  // 缺层（null / undefined）与全透明层仍然表示「没有这一层」，不误判为失败。
+  assert.deepEqual(color.flatten([null, 'rgb(255, 255, 255)']), { r: 255, g: 255, b: 255, a: 1 });
+  assert.deepEqual(color.flatten(['oklab(0 0 0 / 0)', 'rgb(255, 255, 255)']), {
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 1
+  });
+
+  // evaluate：文字色正常、背景层认不出 → ratio=null、pass=false，并在 error 里点明是背景层。
+  const unknownBg = color.evaluate({
+    label: '未来主题',
+    color: 'rgb(43, 40, 34)',
+    bgStack: ['oklch(0.4 0.05 0)']
+  });
+  assert.equal(unknownBg.ratio, null);
+  assert.equal(unknownBg.pass, false);
+  assert.match(unknownBg.error, /背景层颜色认不出来/);
+
+  // 对照：背景层完全透明（color-mix 到 transparent 的 oklab(0 0 0 / 0)）仍按纸色合成。
+  const transparentLayer = color.evaluate({
+    label: '透明混色层',
+    color: 'rgb(43, 40, 34)',
+    bgStack: ['oklab(0 0 0 / 0)', 'rgb(247, 244, 238)']
+  });
+  assert.ok(transparentLayer.ratio > 10);
+  assert.equal(transparentLayer.error, null);
+});
+
 // ---------- 3. 采样规格 / 报告 ----------
 
 test('采样规格：键唯一、令牌都真在 styles.css 里、元素选择器的 id / class 都能在页面里找到', () => {
@@ -295,7 +328,7 @@ test('扩展态：禁用态按 WCAG 豁免（只记录、不计失败）/ 交互
   }
 });
 
-test('审计脚本：临时目录闸门 / 参数 / 结果解析 / 打表', () => {
+test('审计脚本：临时目录闸门 / 参数 / 结果解析 / 打表', async () => {
   // 书库只许建在系统临时目录里（写错一次就会动真实书架）
   const tempRoot = path.join(os.tmpdir(), 'cw-contrast-test');
   assert.equal(contrast.assertTempRoot(tempRoot), path.resolve(tempRoot));
@@ -308,7 +341,18 @@ test('审计脚本：临时目录闸门 / 参数 / 结果解析 / 打表', () =>
   assert.equal(contrast.parseArgs(['--no-fail']).failOnLow, false);
   // 主题按固定顺序过滤：给 night,paper 也只留这两套，且顺序是 theme 表的顺序
   assert.deepEqual(contrast.parseArgs(['--themes=night,paper']).themes, ['paper', 'night']);
-  assert.deepEqual(contrast.parseArgs(['--themes=nope']).themes, contrast.THEMES);
+  // TOOL-B07：全部未知主题直接标 error（main 退 2），不再静默回退全量冒充「测过」；
+  // 部分未知保留合法项，但把被丢弃的名字记下来给 stderr 告警。
+  const allUnknown = contrast.parseArgs(['--themes=nope']);
+  assert.deepEqual(allUnknown.themes, contrast.THEMES);
+  assert.match(allUnknown.error, /未知主题：nope/);
+  const partial = contrast.parseArgs(['--themes=paper,nightt']);
+  assert.deepEqual(partial.themes, ['paper']);
+  assert.deepEqual(partial.ignoredThemes, ['nightt']);
+  assert.equal(partial.error, undefined);
+  assert.deepEqual(contrast.parseArgs(['--themes=Paper']).ignoredThemes, ['Paper']);
+  // 全错时 main 在建夹具 / 起 Electron 之前就退 2（不会跑一遍再报「全量通过」）。
+  assert.equal(await contrast.main(['--themes=nope']), 2);
   assert.equal(contrast.parseArgs(['--timeout=5']).timeout, 10000, '超时要夹到最小值');
   assert.equal(contrast.parseArgs(['--out=shots/x.json']).out, 'shots/x.json');
   assert.match(contrast.usageText(), /--themes=列表/);
@@ -366,6 +410,30 @@ test('注入脚本：语法可编译、参数原样带过去、采样只用同�
     false,
     '采样不许用固定 sleep / 定时器'
   );
+});
+
+test('TOOL-B05：主场景与交互态共用同一份页面 helper / 关颜色过渡代码（注入文本不再各抄一份）', () => {
+  const main = driver.buildContrastScript({ themes: ['paper'], specs: driver.SPECS });
+  const state = driver.buildStateScript({ view: 'hoverBook', specs: driver.SPECS.hoverBook, themes: ['paper'] });
+  assert.doesNotThrow(() => new Function('return ' + main));
+  assert.doesNotThrow(() => new Function('return ' + state));
+  // 四个 helper 在两段注入脚本里各只有一份，且源码文本逐字一致（一份源码，两处注入）。
+  for (const marker of ['function bgChainOf', 'function resolveColor', 'function hasVar', 'function sampleOne']) {
+    assert.equal(main.split(marker).length - 1, 1, `${marker} 在主场景注入脚本里应只有一份`);
+    assert.equal(state.split(marker).length - 1, 1, `${marker} 在交互态注入脚本里应只有一份`);
+    const at = main.indexOf(marker);
+    const other = state.indexOf(marker);
+    const text = (src, from) => src.slice(from, src.indexOf('\n}', from) + 2);
+    assert.equal(text(main, at), text(state, other), `${marker} 两份注入文本必须一致`);
+  }
+  // 关颜色过渡：主场景内联的是共享的 NO_TRANSITION_ON 文本；交互态在同一份常量上 exec。
+  // （占位符必须已被替换；两处不再各有一份内嵌 IIFE。）
+  assert.match(main, /__cwContrastSheet = sheet/);
+  assert.equal(/__NO_TRANSITION_ON__/.test(main), false, '占位符必须被替换成共享实现');
+  assert.match(DRIVER_SRC, /const NO_TRANSITION_ON = /);
+  assert.equal((DRIVER_SRC.match(/transition-duration:0s/g) || []).length, 1, '关过渡脚本只许有一份');
+  assert.equal((DRIVER_SRC.match(/window\.__cwContrastSheet = sheet/g) || []).length, 1);
+  assert.match(DRIVER_SRC, /const PAGE_HELPERS = \[bgChainOf, resolveColor, hasVar, sampleOne\]/);
 });
 
 // ---------- 4. 静态闸门 ----------

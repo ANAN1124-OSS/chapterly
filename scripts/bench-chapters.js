@@ -14,18 +14,13 @@
 'use strict';
 
 const chaptersLib = require('../core/chapters');
+const { argValue, median } = require('./bench-common');
+const { tableLines } = require('./table');
 
-function argValue(name, fallback) {
-  const prefix = `--${name}=`;
-  const hit = process.argv.slice(2).find((arg) => arg.startsWith(prefix));
-  if (!hit) return fallback;
-  const value = Number(hit.slice(prefix.length));
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-}
-
-const CHAPTERS = argValue('chapters', 1000);
-const VOLUMES = argValue('volumes', 20);
-const RUNS = argValue('runs', 20);
+const ARGV = process.argv.slice(2);
+const CHAPTERS = argValue(ARGV, 'chapters', 1000);
+const VOLUMES = argValue(ARGV, 'volumes', 20);
+const RUNS = argValue(ARGV, 'runs', 20);
 
 function buildBook() {
   const volumes = Array.from({ length: VOLUMES }, (_, i) => ({ id: `v${i + 1}`, name: `第${i + 1}卷` }));
@@ -68,9 +63,9 @@ function measure(work, runs) {
     work();
     samples.push(Number(process.hrtime.bigint() - startedAt) / 1e6);
   }
-  samples.sort((a, b) => a - b);
+  const sorted = [...samples].sort((a, b) => a - b);
   const avg = samples.reduce((sum, ms) => sum + ms, 0) / samples.length;
-  return { avg, median: samples[Math.floor(samples.length / 2)], min: samples[0], max: samples[samples.length - 1] };
+  return { avg, median: median(samples), min: sorted[0], max: sorted[sorted.length - 1] };
 }
 
 function ms(value) {
@@ -117,10 +112,15 @@ const speedup = legacy.avg / volumeCold.avg;
 console.log('== 章回 1.5.0 P0-2 · 卷内章号性能自检 ==');
 console.log(`规模：${CHAPTERS} 章 / ${VOLUMES} 卷；每项 ${RUNS} 轮（中位数 + 平均，单位 ms）`);
 console.log('');
-console.log(`连续模式（chapterNumber 全表）${' '.repeat(8)}平均 ${ms(continuous.avg)}  中位 ${ms(continuous.median)}`);
-console.log(`按卷 · 新实现（首次建表）${' '.repeat(12)}平均 ${ms(volumeCold.avg)}  中位 ${ms(volumeCold.median)}`);
-console.log(`按卷 · 新实现（缓存命中）${' '.repeat(12)}平均 ${ms(volumeWarm.avg)}  中位 ${ms(volumeWarm.median)}`);
-console.log(`按卷 · 改前（逐章从 0 数）${' '.repeat(10)}平均 ${ms(legacy.avg)}  中位 ${ms(legacy.median)}`);
+const timingRows = [
+  ['模式', '平均', '中位'],
+  ['连续模式（chapterNumber 全表）', ms(continuous.avg), ms(continuous.median)],
+  ['按卷 · 新实现（首次建表）', ms(volumeCold.avg), ms(volumeCold.median)],
+  ['按卷 · 新实现（缓存命中）', ms(volumeWarm.avg), ms(volumeWarm.median)],
+  ['按卷 · 改前（逐章从 0 数）', ms(legacy.avg), ms(legacy.median)]
+];
+// TOOL-B06：不再用 `' '.repeat(8)` 手凑中文列宽，统一走显示宽度感知的 table.js。
+for (const line of tableLines(timingRows, ['left', 'right', 'right'])) console.log(line);
 console.log('');
 console.log('chapterVolumeKey 调用次数（按卷全表一遍）：');
 console.log(`  改前（逐章从 0 数）      ${legacyCallsPerPass.toLocaleString('en-US')} 次`);

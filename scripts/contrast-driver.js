@@ -28,6 +28,8 @@
 //     时候，改前那一遍还没有它，就退回它替换掉的那个旧令牌，这样「改前 / 改后」量的是同一个
 //     位置、同一件事，而不是「改前量别的、改后量这个」。
 
+const { prepareWindow, waitForAppReady } = require('./driver-common');
+
 // ---------- 采样规格 ----------
 // kind 由字段决定：有 `token` = 令牌（var / color-mix 解析成实际 rgb，bg 用 bgToken）；
 // 否则 = 元素（selector + 可选 pseudo；底色从元素自身往上走）。
@@ -264,6 +266,96 @@ const STATE_TARGETS = {
   disabled: { selector: null, pseudo: [] }
 };
 
+// ---------- 页面内采样 helper（两个场景共用同一份源码） ----------
+// TOOL-B05（审计）：contrastScenario 与 stateSampleScenario 曾各手抄 bgChainOf / resolveColor /
+// hasVar / sampleOne 约 60 行；任一 helper 改动漏改另一份，主场景与交互态的数字就会悄悄分叉。
+// 现在只在这里写一份，buildContrastScript / buildStateScript 用 toString() 注入两个场景；
+// 受「不许引用本文件变量」约束，这几个函数内部只能用浏览器全局。
+function bgChainOf(el) {
+  const chain = [];
+  for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+    const bg = getComputedStyle(node).backgroundColor;
+    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') chain.push(bg);
+  }
+  return chain;
+}
+
+// 令牌 / 伪元素色的实际值：往 body 里插一个临时探针，把 `var(--x)` / `color-mix(...)`
+// 交给浏览器解析成 rgb 再读回来（CSSOM 赋值不受 CSP 限制，项目里色块也是这么写的）。
+function resolveColor(declaration, useBackground) {
+  const el = document.createElement('span');
+  el.style.position = 'absolute';
+  el.style.left = '-10000px';
+  el.style.top = '0';
+  el.style.visibility = 'hidden';
+  el.style.color = declaration;
+  el.style.backgroundColor = declaration;
+  document.body.appendChild(el);
+  const styles = getComputedStyle(el);
+  const value = useBackground ? styles.backgroundColor : styles.color;
+  el.remove();
+  return value;
+}
+
+// 主题里有没有定义这个自定义属性（新加的令牌在改前那一遍还不存在，要用 fallbackToken）。
+function hasVar(name) {
+  if (!name) return false;
+  return String(getComputedStyle(document.body).getPropertyValue(name) || '').trim() !== '';
+}
+
+// 采一条规格：令牌类走 resolveColor + bgToken，元素类从元素自身往上收背景栈。
+// 返回原始采样（不判阈值——阈值与 WCAG 公式在 Node 侧 scripts/contrast-color.js）。
+function sampleOne(view, theme, spec) {
+  const base = {
+    view,
+    theme,
+    key: spec.key,
+    label: spec.label,
+    ui: Boolean(spec.ui),
+    exempt: Boolean(spec.exempt)
+  };
+  try {
+    if (spec.token) {
+      const name = hasVar(spec.token) ? spec.token : spec.fallbackToken;
+      if (!name || !hasVar(name)) return { ...base, found: false, error: '主题里没有这个令牌：' + spec.token };
+      const bgName = spec.bgToken && hasVar(spec.bgToken) ? spec.bgToken : '--paper';
+      return {
+        ...base,
+        found: true,
+        color: resolveColor('var(' + name + ')', false),
+        bgStack: [resolveColor('var(' + bgName + ')', true)],
+        fontSize: Number(spec.fontSize) || 14,
+        fontWeight: Number(spec.fontWeight) || 400,
+        source: 'token ' + name
+      };
+    }
+    const el = document.querySelector(spec.selector);
+    if (!el) return { ...base, found: false, optional: Boolean(spec.optional) };
+    const styles = getComputedStyle(el, spec.pseudo || null);
+    const bgEl = spec.bgSelector ? document.querySelector(spec.bgSelector) || el : el;
+    return {
+      ...base,
+      found: true,
+      color: styles.color,
+      bgStack: bgChainOf(bgEl),
+      bgImage: getComputedStyle(bgEl).backgroundImage,
+      fontSize: parseFloat(styles.fontSize) || 0,
+      fontWeight: Number(styles.fontWeight) || 400,
+      source: spec.selector + (spec.pseudo || '')
+    };
+  } catch (err) {
+    return { ...base, found: false, error: String(err && err.message ? err.message : err) };
+  }
+}
+
+// 注入两个场景时把 /* __PAGE_HELPERS__ */ 换成这一份源码（两个场景的 helper 文本永远一致）。
+const PAGE_HELPERS = [bgChainOf, resolveColor, hasVar, sampleOne]
+  .map((fn) => fn.toString())
+  .join('\n');
+function withPageHelpers(source) {
+  return source.replace('/* __PAGE_HELPERS__ */', PAGE_HELPERS);
+}
+
 // 这个函数会被 toString() 丢进渲染层执行：**只能用浏览器全局**（window / document /
 // getComputedStyle / JSON），不许引用本文件里的任何变量或 Node API，否则页面里 ReferenceError。
 function contrastScenario(cfg) {
@@ -277,24 +369,9 @@ function contrastScenario(cfg) {
     const specs = cfg.specs || {};
     // 关掉颜色过渡再采样：.btn / .chapter-item / 书卡带 120–150ms 的 transition，切完主题
     // 立刻读 computed style 会读到**过渡中间帧**（实测夜间主按钮被读成浅色主题的底色）。
-    // 做法是往「已经允许加载」的 styles.css 里插一条时长归零的规则（CSSOM，CSP 不拦；
-    // 用构造样式表也行，但插入 / 删除规则最直观），采样结束后删掉——不留任何痕迹。
-    const noTransition = (() => {
-      const sheet = Array.from(document.styleSheets).find(
-        (item) => item.href && /styles\.css$/.test(item.href)
-      );
-      if (!sheet) return null;
-      try {
-        const index = sheet.insertRule(
-          '*{transition-duration:0s !important;transition-delay:0s !important;' +
-            'animation-duration:0s !important;animation-delay:0s !important}',
-          sheet.cssRules.length
-        );
-        return { sheet, index };
-      } catch {
-        return null; // 插不进去就照常采样（颜色可能会读到过渡中间帧，报告里能看出来）
-      }
-    })();
+    // 与交互态采样共用同一段代码（TOOL-B05：内嵌式与字符串式两套实现已经漂移）。
+    const noTransition = '__NO_TRANSITION_ON__';
+    /* __PAGE_HELPERS__ */
 
     const applyTheme = (theme) => {
       for (const name of THEME_CLASSES) {
@@ -302,78 +379,6 @@ function contrastScenario(cfg) {
       }
       // 强制一次同步样式 / 布局，让新主题的颜色真的算出来（不靠 rAF / 定时器）。
       return document.body.offsetHeight;
-    };
-
-    // 元素「实际看到的底色」：从元素自身往上收集 backgroundColor，交给 Node 侧合成。
-    // 第一个是最上层（元素自己的底色），最后是 body / html。半透明层也照收，Node 侧会叠。
-    const bgChainOf = (el) => {
-      const chain = [];
-      for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
-        const bg = getComputedStyle(node).backgroundColor;
-        if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') chain.push(bg);
-      }
-      return chain;
-    };
-
-    // 令牌 / 伪元素色的实际值：往 body 里插一个临时探针，把 `var(--x)` / `color-mix(...)`
-    // 交给浏览器解析成 rgb 再读回来（CSSOM 赋值不受 CSP 限制，项目里色块也是这么写的）。
-    const resolveColor = (declaration, useBackground) => {
-      const el = document.createElement('span');
-      el.style.position = 'absolute';
-      el.style.left = '-10000px';
-      el.style.top = '0';
-      el.style.visibility = 'hidden';
-      el.style.color = declaration;
-      el.style.backgroundColor = declaration;
-      document.body.appendChild(el);
-      const styles = getComputedStyle(el);
-      const value = useBackground ? styles.backgroundColor : styles.color;
-      el.remove();
-      return value;
-    };
-
-    // 主题里有没有定义这个自定义属性（新加的令牌在改前那一遍还不存在，要用 fallbackToken）。
-    const hasVar = (name) => {
-      if (!name) return false;
-      return String(getComputedStyle(document.body).getPropertyValue(name) || '').trim() !== '';
-    };
-
-    const sampleOne = (view, theme, spec) => {
-      const base = { view, theme, key: spec.key, label: spec.label, ui: Boolean(spec.ui) };
-      try {
-        if (spec.token) {
-          const name = hasVar(spec.token) ? spec.token : spec.fallbackToken;
-          if (!name || !hasVar(name)) {
-            return { ...base, found: false, error: '主题里没有这个令牌：' + spec.token };
-          }
-          const bgName = spec.bgToken && hasVar(spec.bgToken) ? spec.bgToken : '--paper';
-          return {
-            ...base,
-            found: true,
-            color: resolveColor('var(' + name + ')', false),
-            bgStack: [resolveColor('var(' + bgName + ')', true)],
-            fontSize: Number(spec.fontSize) || 14,
-            fontWeight: Number(spec.fontWeight) || 400,
-            source: 'token ' + name
-          };
-        }
-        const el = document.querySelector(spec.selector);
-        if (!el) return { ...base, found: false, optional: Boolean(spec.optional) };
-        const styles = getComputedStyle(el, spec.pseudo || null);
-        const bgEl = spec.bgSelector ? document.querySelector(spec.bgSelector) || el : el;
-        return {
-          ...base,
-          found: true,
-          color: styles.color,
-          bgStack: bgChainOf(bgEl),
-          bgImage: getComputedStyle(bgEl).backgroundImage,
-          fontSize: parseFloat(styles.fontSize) || 0,
-          fontWeight: Number(styles.fontWeight) || 400,
-          source: spec.selector + (spec.pseudo || '')
-        };
-      } catch (err) {
-        return { ...base, found: false, error: String(err && err.message ? err.message : err) };
-      }
     };
 
     const result = [];
@@ -484,8 +489,9 @@ function contrastScenario(cfg) {
     // 复原主题与过渡规则（不残留到下一次启动的同进程场景；CLI 随后就退出）。
     applyTheme(cfg.restoreTheme || 'paper');
     if (noTransition) {
+      // 与交互态采样同一套全局（NO_TRANSITION_ON 设置的 window.__cwContrastSheet / Rule）。
       try {
-        noTransition.sheet.deleteRule(noTransition.index);
+        window.__cwContrastSheet.deleteRule(window.__cwContrastRule);
       } catch {
         /* 规则已经被别处删掉也无所谓 */
       }
@@ -508,82 +514,23 @@ function stateSampleScenario(cfg) {
     }
     return document.body.offsetHeight;
   };
-  const bgChainOf = (el) => {
-    const chain = [];
-    for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
-      const bg = getComputedStyle(node).backgroundColor;
-      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') chain.push(bg);
-    }
-    return chain;
-  };
-  const resolveColor = (declaration, useBackground) => {
-    const el = document.createElement('span');
-    el.style.position = 'absolute';
-    el.style.left = '-10000px';
-    el.style.top = '0';
-    el.style.visibility = 'hidden';
-    el.style.color = declaration;
-    el.style.backgroundColor = declaration;
-    document.body.appendChild(el);
-    const styles = getComputedStyle(el);
-    const value = useBackground ? styles.backgroundColor : styles.color;
-    el.remove();
-    return value;
-  };
-  const hasVar = (name) => {
-    if (!name) return false;
-    return String(getComputedStyle(document.body).getPropertyValue(name) || '').trim() !== '';
-  };
-  const sampleOne = (theme, spec) => {
-    const base = { view, theme, key: spec.key, label: spec.label, ui: Boolean(spec.ui), exempt: Boolean(spec.exempt) };
-    try {
-      if (spec.token) {
-        const name = hasVar(spec.token) ? spec.token : spec.fallbackToken;
-        if (!name || !hasVar(name)) return { ...base, found: false, error: '主题里没有这个令牌：' + spec.token };
-        const bgName = spec.bgToken && hasVar(spec.bgToken) ? spec.bgToken : '--paper';
-        return {
-          ...base,
-          found: true,
-          color: resolveColor('var(' + name + ')', false),
-          bgStack: [resolveColor('var(' + bgName + ')', true)],
-          fontSize: Number(spec.fontSize) || 14,
-          fontWeight: Number(spec.fontWeight) || 400,
-          source: 'token ' + name
-        };
-      }
-      const el = document.querySelector(spec.selector);
-      if (!el) return { ...base, found: false, optional: Boolean(spec.optional) };
-      const styles = getComputedStyle(el, spec.pseudo || null);
-      const bgEl = spec.bgSelector ? document.querySelector(spec.bgSelector) || el : el;
-      return {
-        ...base,
-        found: true,
-        color: styles.color,
-        bgStack: bgChainOf(bgEl),
-        bgImage: getComputedStyle(bgEl).backgroundImage,
-        fontSize: parseFloat(styles.fontSize) || 0,
-        fontWeight: Number(styles.fontWeight) || 400,
-        source: spec.selector + (spec.pseudo || '')
-      };
-    } catch (err) {
-      return { ...base, found: false, error: String(err && err.message ? err.message : err) };
-    }
-  };
+  /* __PAGE_HELPERS__ */
   const result = [];
   for (const theme of themes) {
     applyTheme(theme);
-    for (const spec of specs) result.push(sampleOne(theme, spec));
+    for (const spec of specs) result.push(sampleOne(view, theme, spec));
   }
   applyTheme(cfg.restoreTheme || 'paper');
   return { ok: true, view, samples: result };
 }
 
 function buildStateScript(cfg) {
-  return `(${stateSampleScenario.toString()})(${JSON.stringify(cfg)})`;
+  return `(${withPageHelpers(stateSampleScenario.toString())})(${JSON.stringify(cfg)})`;
 }
 
-// 交互态采样前把颜色过渡关掉（CSSOM 临时插规则，采样结束后删）：强制 :hover 会触发
-// 120ms 的底色过渡，立刻读计算值会读到中间帧。规则只存在于这一次自检进程里。
+// 采样前把颜色过渡关掉（CSSOM 临时插规则，采样结束后删）：强制 :hover / 切主题都会触发
+// 120ms 的底色过渡，立刻读计算值会读到中间帧。主场景与交互态共用这一份（TOOL-B05）。
+// 规则只存在于这一次自检进程里。
 const NO_TRANSITION_ON = `(() => {
   const sheet = Array.from(document.styleSheets).find((item) => item.href && /styles\\.css$/.test(item.href));
   if (!sheet) return false;
@@ -709,8 +656,13 @@ async function collectStateSamples(win, cfg, themes) {
 }
 
 // 注入脚本 = 函数源码 + 参数（和 bench-driver 一样用 toString()，页面里跑的就是本文件这一份）。
+// 两个场景共用同一份页面 helper 与「关颜色过渡」代码（TOOL-B05：注入后文本永远一致）。
 function buildContrastScript(cfg) {
-  return `(${contrastScenario.toString()})(${JSON.stringify(cfg)})`;
+  const source = withPageHelpers(contrastScenario.toString()).replace(
+    "'__NO_TRANSITION_ON__'",
+    NO_TRANSITION_ON
+  );
+  return `(${source})(${JSON.stringify(cfg)})`;
 }
 
 function contrastConfig(argValue) {
@@ -727,14 +679,10 @@ function contrastConfig(argValue) {
 }
 
 async function run(host) {
-  const win = host.getWin();
   const app = host.app;
   try {
-    if (!win || win.isDestroyed()) throw new Error('对比度模式没有可用窗口');
-    if (!win.isVisible()) win.show();
-    win.focus(); // 采样不看焦点，但让窗口真显示出来，避免走离屏渲染的不同字体路径
-    const { waitForRenderer } = require('./screenshot-driver');
-    await waitForRenderer(win, 'Boolean(window.__cwTest && window.__cwTest.ready)', 20000);
+    const win = await prepareWindow(host, '对比度');
+    await waitForAppReady(win);
     const cfg = contrastConfig(host.argValue);
     cfg.specs = SPECS;
     const script = buildContrastScript(cfg);
