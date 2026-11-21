@@ -33,8 +33,7 @@ const PKG = JSON.parse(read('package.json'));
 
 // ---------- 1. 颜色解析 ----------
 
-test('颜色解析：hex / rgb / rgba / 空格与斜杠语法 / 百分比 / 关键字', () => {
-  assert.deepEqual(color.parseColor('#2b2822'), { r: 43, g: 40, b: 34, a: 1 });
+test('颜色解析：hex / rgb / rgba / 空格与斜杠语法 / 百分比 / 关键字', () => {  assert.deepEqual(color.parseColor('#2b2822'), { r: 43, g: 40, b: 34, a: 1 });
   assert.deepEqual(color.parseColor('#fff'), { r: 255, g: 255, b: 255, a: 1 });
   assert.deepEqual(color.parseColor('#ff000080'), { r: 255, g: 0, b: 0, a: 128 / 255 });
   assert.deepEqual(color.parseColor('#f008'), { r: 255, g: 0, b: 0, a: 136 / 255 });
@@ -490,4 +489,16 @@ test('静态闸门：焦点环 / 滚动条 / 夜间色板 / 固定高亮字这�
   assert.match(DRIVER_SRC, /transition-duration:0s !important/, '采样前要关掉颜色过渡');
   assert.match(DRIVER_SRC, /insertRule\(/, '用 CSSOM 临时插规则，而不是产品 CSS 里的测试类');
   assert.equal(/no-transition/.test(CSS_CODE), false, '产品 CSS 里不要留只给自检用的类');
+});
+
+// RPAN-C01（第五轮审计）：查找命中的底色块必须和标记层共用 --marks-line-pad（行高实测算），
+// 写死 7px 只对 18px / 1.95 刚好 —— 换大字号线距后底色块铺不满行盒，跨行命中断裂。
+test('RPAN-C01：.find-hit 的行内上下 padding 跟随 --marks-line-pad', () => {
+  const block = /\.find-marks \.find-hit \{[\s\S]*?\n\}/.exec(CSS);
+  assert.ok(block, '找不到 .find-marks .find-hit 样式块');
+  assert.match(block[0], /padding: var\(--marks-line-pad\) 0;/, '必须用行高实测令牌');
+  assert.doesNotMatch(block[0], /padding:\s*7px/, '不许再写死 7px');
+  // 令牌定义在 .editor-marks 上，查找层与标记层同一个类（index.html），因此能继承到值
+  assert.match(CSS_CODE, /\.editor-marks \{[\s\S]{0,500}?--marks-line-pad: calc\(/, '令牌必须定义在 .editor-marks 上');
+  assert.match(HTML, /id="editor-find-marks" class="editor-marks find-marks/, '查找层要挂 .editor-marks 才能继承令牌');
 });

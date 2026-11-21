@@ -1961,7 +1961,10 @@ body.theme-night .editor-marks .mark-trail > i { color: #e08a84; }
  * 当前章所有命中画淡琥珀底，正在看的那一处画更重的底色 + 底部细线；只读、不参与编辑与选择。 */
 .find-marks { z-index: 2; }
 .find-marks .find-hit {
-  padding: 7px 0;
+  /* RPAN-C01（第五轮审计）：与标记层共用同一条行高实测口径。以前写死 7px 只对 18px / 1.95
+   * 刚好，换成大字号线距后底色块铺不满行盒，跨行命中会断成一条一条（与 --marks-line-pad
+   * 注释里说的问题同源）。查高层与标记层同挂 .editor-marks，令牌直接继承。 */
+  padding: var(--marks-line-pad) 0;
   border-radius: 2px;
   background: var(--find-hit-tint);
   -webkit-box-decoration-break: clone;
