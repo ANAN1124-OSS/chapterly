@@ -449,6 +449,26 @@ test('deleteBookFlow：确认框文案逐字写死（含章数），点取消不
   assert.deepEqual(toasts, []);
 });
 
+test('deleteBookFlow：损坏书不显示「整本书（0 章）」，改用不依赖章数的删除范围文案（RSHE-B-05）', async () => {
+  installDocument();
+  const { host, modals } = makeHost({ modalResult: { action: 'cancel' } });
+  const ui = importUi.create(host);
+  // 书目损坏的书：chapterCount 由兜底构造恒为 0，按章数写就是「整本书（0 章）」——低估删除量
+  await ui.deleteBookFlow({ title: '甲', path: 'D:\\tmp\\甲', chapterCount: 0, status: 'corrupt' });
+  assert.equal(modals.length, 1);
+  assert.equal(
+    modals[0].message,
+    '确定删除「甲」吗？\n\n书目读不出来，整个书文件夹（含全部正文文件）会被移到 Windows 回收站，可以从回收站还原。'
+  );
+  assert.equal(modals[0].message.includes('（0 章）'), false, '损坏书不许再报 0 章');
+  // 正常书仍按章数（与上一条用例同一口径）
+  await ui.deleteBookFlow({ title: '乙', path: 'D:\\tmp\\乙', chapterCount: 7, status: 'ok' });
+  assert.equal(
+    modals[1].message,
+    '确定删除「乙」吗？\n\n整本书（7 章）会被移到 Windows 回收站，可以从回收站还原。'
+  );
+});
+
 test('deleteBookFlow：skipConfirm 直接删；回收站 / _trash 两条成功提示逐字；删完刷新书架', async () => {
   async function run(book, data) {
     installDocument();

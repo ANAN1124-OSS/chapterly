@@ -163,9 +163,15 @@
   async function deleteBookFlow(book, { skipConfirm = false } = {}) {
     if (!book || !book.path) return;
     if (!skipConfirm) {
+      // RSHE-B-05：损坏书的 chapterCount 由兜底构造恒为 0，写「整本书（0 章）」会低估实际删除量；
+      // 这种书改用不依赖章数的文案（正文文件都在，只是书目读不出来）。
+      const scopeText =
+        book.status === 'corrupt'
+          ? '书目读不出来，整个书文件夹（含全部正文文件）会被移到 Windows 回收站，可以从回收站还原。'
+          : `整本书（${book.chapterCount} 章）会被移到 Windows 回收站，可以从回收站还原。`;
       const res = await openModal({
         title: '删除这本书',
-        message: `确定删除「${book.title}」吗？\n\n整本书（${book.chapterCount} 章）会被移到 Windows 回收站，可以从回收站还原。`,
+        message: `确定删除「${book.title}」吗？\n\n${scopeText}`,
         buttons: [
           { label: '删除这本书', value: 'delete', kind: 'danger' },
           { label: '取消', value: 'cancel', kind: 'primary' }
