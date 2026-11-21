@@ -742,7 +742,8 @@ function notifyInternalError(kind, err) {
 // B1（审计 E2 / E6）：渲染层上报「后台失败」时认的 kind 白名单。
 // 渲染层不开放 DevTools，没被 catch 的 Promise 拒绝只写 console 等于没写，所以由这个通道落一条诊断日志；
 // 白名单让日志里的 kind 只有这几种（拼错 / 注入都进不去），其余字段由 core/error-text 统一脱敏。
-const RENDERER_FAILURE_KINDS = new Set(['unhandledrejection', 'ui-chain']);
+// REDT-A-01（第五轮审计）：uncaught-error = 渲染层 window 'error'（同步异常）的留痕种类。
+const RENDERER_FAILURE_KINDS = new Set(['unhandledrejection', 'uncaught-error', 'ui-chain']);
 
 // 主进程崩溃 / 未处理的 Promise：写日志 + 通知界面，进程不退出（作者可能还有没保存的稿子，
 // 至少让他先 Ctrl+S 再重启）。日志失败也只影响日志。

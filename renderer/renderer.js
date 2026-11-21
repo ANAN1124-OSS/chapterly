@@ -357,6 +357,9 @@
 
   // 全局兜底（审计 E2）：init 之后任何没被 catch 的 Promise 拒绝都至少留一条痕迹 + 一句固定提示。
   // 提示文案写死，绝不拼 event.reason —— reason 里可能有正文 / 本机路径。
+  // REDT-A-01（第五轮审计）：同步异常（window error）同样纳入这条留痕通道。以前只挂
+  // unhandledrejection，事件回调里抛的 TypeError（DOM id 变了 / 空引用）在生产包不进诊断日志，
+  // 白屏 / 按键失灵只能靠用户口述复现。只上报 code / message 两个短字段，脱敏与节流复用同一份。
   function installFailureGuard() {
     if (failureGuardInstalled) return;
     failureGuardInstalled = true;
@@ -364,6 +367,17 @@
       const reported = reportBackgroundFailure('unhandledrejection', event ? event.reason : null);
       if (reported) {
         toast('有一项后台操作失败了，已写进日志。写作和保存不受影响。', 'warn');
+      }
+    });
+    window.addEventListener('error', (event) => {
+      // 资源加载错误（img/script 404）也走 window error，但既没有 Error 对象也没有 message；
+      // 这类不是脚本异常，不写诊断日志（否则图片缺一张就刷一条）。
+      const err = event && event.error instanceof Error ? event.error : null;
+      const message = event && typeof event.message === 'string' ? event.message : '';
+      if (!err && !message) return;
+      const reported = reportBackgroundFailure('uncaught-error', err || { message });
+      if (reported) {
+        toast('界面出现了一个异常，已写进日志。写作和保存不受影响。', 'warn');
       }
     });
   }
@@ -1796,6 +1810,8 @@
     longOpLogic,
     staleGuard,
     imeGuard,
+    // RPAN-A-02：查找面板的弹层遮挡检查走同一份注册表（17 层），不再自己维护互斥清单。
+    backdropRegistry,
     find: { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput },
     nav: { chapterTitle, switchChapter: (index) => switchChapter(index), loadChapterAt, currentChapterLabel: () => currentChapterLabel(), hideHeaderMenus },
     collab: { askUnsaved, saveCurrent, openModal, refreshShelf, renderChapterList, reloadAfterPartialFailure, runReplaceOne,

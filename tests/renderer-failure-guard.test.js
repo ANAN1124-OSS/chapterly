@@ -57,6 +57,28 @@ test('B1 全局兜底：init 最先挂 unhandledrejection，且提示是一句�
   assert.match(functionBody(RENDERER, 'reportBackgroundFailure'), /FAILURE_REPORT_MIN_GAP_MS/, '留痕必须有节流');
 });
 
+// REDT-A-01（第五轮审计）：B1 只挂了 unhandledrejection，事件回调里的同步 TypeError 在生产包
+// （无 DevTools）只有 console —— 白屏 / 按键失灵无法进入诊断日志。同步异常必须走同一条留痕通道。
+test('REDT-A-01：同步异常（window error）也进同一条留痕通道，且不拼事件内容', () => {
+  const guard = functionBody(RENDERER, 'installFailureGuard');
+  assert.match(guard, /window\.addEventListener\('error'/, '必须注册 window error');
+  assert.match(guard, /reportBackgroundFailure\('uncaught-error'/, '同步异常必须复用同一留痕通道');
+  assert.match(
+    guard,
+    /toast\('界面出现了一个异常，已写进日志。写作和保存不受影响。', 'warn'\)/,
+    '同步异常也要给一句固定文案（不许拼 event.message）'
+  );
+  assert.equal((guard.match(/toast\(`/g) || []).length, 0, '提示文案不许是模板串');
+  // 资源加载错误（img/script 404）没有 Error / message：不许刷日志
+  assert.match(guard, /if \(!err && !message\) return;/, '资源加载错误不写诊断日志');
+  // 主进程白名单必须收这个 kind，否则 sanitizeFailureReport 会整条丢弃
+  assert.match(
+    MAIN,
+    /RENDERER_FAILURE_KINDS = new Set\(\[[^\]]*'uncaught-error'/,
+    '主进程 kind 白名单要包含 uncaught-error'
+  );
+});
+
 test('B1 留痕：走 preload 的 reportRendererError，只带 kind / code / message 三个短字符串', () => {
   const reporter = functionBody(RENDERER, 'reportBackgroundFailure');
   assert.match(reporter, /api\.reportRendererError\(\{/, '必须走白名单 IPC（不新增裸 IPC）');
