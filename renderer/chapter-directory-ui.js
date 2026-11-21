@@ -63,10 +63,12 @@
     return chapterFilterQuery() !== '';
   }
 
-  function chapterIndexMatchesFilter(index) {
+  // 归一后的查询词在匹配循环外算一次（RSHE-B-04：以前每章重跑一遍 normalizeQuery，
+  // 千章书一次筛选就是 1000 次全串归一）。外部按 index 单独调用时仍可只传 index。
+  function chapterIndexMatchesFilter(index, normalizedQuery) {
     const chapter = state.chapters[index];
     if (!chapter) return false;
-    const query = chapterFilterQuery();
+    const query = normalizedQuery === undefined ? chapterFilterQuery() : normalizedQuery;
     if (!query) return true;
     // 章号按界面显示的编号方式算（按卷编号 = 卷内号），和目录 / 顶栏 / 状态栏同一份口径
     return chapterFilterLogic.matchChapter(
@@ -78,10 +80,11 @@
     );
   }
 
-  function matchingChapterIndexes() {
+  function matchingChapterIndexes(normalizedQuery) {
+    const query = normalizedQuery === undefined ? chapterFilterQuery() : normalizedQuery;
     const out = [];
     state.chapters.forEach((chapter, index) => {
-      if (chapterIndexMatchesFilter(index)) out.push(index);
+      if (chapterIndexMatchesFilter(index, query)) out.push(index);
     });
     return out;
   }
@@ -105,7 +108,8 @@
     return chars >= 10000 ? `${editorLogic.formatCharsShort(chars)}字` : `${formatCount(chars)} 字`;
   }
 
-  function renderBookMeta() {
+  // matchedCount：renderChapterList 已经算过命中时就传进来，省掉第二遍全表匹配（RSHE-B-04）。
+  function renderBookMeta(matchedCount) {
     const el = $('book-meta');
     if (!el) return;
     const total = state.chapters.length;
@@ -114,9 +118,10 @@
       el.title = '';
       return;
     }
-    if (chapterFilterActive()) {
-      const matched = matchingChapterIndexes().length;
-      const query = chapterFilterQuery();
+    // RSHE-B-04：归一一次，筛选判定与文案共用（以前 chapterFilterActive 与 chapterFilterQuery 各归一一遍）。
+    const query = chapterFilterQuery();
+    if (query) {
+      const matched = Number.isFinite(matchedCount) ? matchedCount : matchingChapterIndexes(query).length;
       // 筛选时这一行就是结果计数：读屏也跟着播报（属性先于文案设置，变化才会被读出来）
       el.setAttribute('aria-live', 'polite');
       el.textContent = `找到 ${matched} 章 · 共 ${total} 章`;
@@ -259,7 +264,9 @@
   function syncCurrentVolumeMarker() {
     const list = $('chapter-list');
     if (!list) return;
-    const key = currentChapterGroupKey();
+    // RSHE-B-06：筛选中所有卷被强制展开、卷头只作分组标签，不再挂「当前卷被折叠」的朱红标记
+    // （那时当前章就在结果里看得见，标记只会误导成「当前卷被折叠」）。
+    const key = chapterFilterActive() ? null : currentChapterGroupKey();
     const collapsed = key !== null && state.collapsedVolumes.has(key);
     list.querySelectorAll('.volume-item').forEach((row) => {
       row.classList.toggle('has-current', collapsed && row.dataset.volumeId === key);
@@ -638,7 +645,11 @@
     row.appendChild(arrow);
     row.appendChild(label);
     row.appendChild(meta);
-    row.title = '单击折叠 / 展开；右键更多（重命名卷 / 在此卷新建章节 / 删除卷）';
+    // RSHE-B-06：筛选时卷头只作分组标签（折叠加开被强制、箭头收起），提示语同步收口，
+    // 不能再承诺「单击折叠 / 展开」；右键菜单仍可用（筛选不影响重命名 / 删除卷）。
+    row.title = filtering
+      ? '筛选中：卷头只作分组标签；右键更多（重命名卷 / 在此卷新建章节 / 删除卷）'
+      : '单击折叠 / 展开；右键更多（重命名卷 / 在此卷新建章节 / 删除卷）';
     row.addEventListener('click', () => toggleVolumeCollapse(volumeId));
     row.addEventListener('contextmenu', (event) => {
       event.preventDefault();
@@ -973,7 +984,8 @@
     }
     syncChapterFilterUi();
     syncChapterBatchBar();
-    renderBookMeta();
+    // 命中已由上面算过，直接传给概览行（RSHE-B-04：不再重跑一遍全表匹配）。
+    renderBookMeta(matched.length);
     renderVolumeToggle();
     updateCurrentChapterPill();
   }
