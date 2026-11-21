@@ -277,3 +277,27 @@ test('C-05 中段：章节位置与标题栏同一口径（第N章），没书 /
   assert.match(STATUSBAR, /group\.classList\.add\('hidden'\)/);
   assert.match(STATUSBAR, /group\.classList\.remove\('hidden'\)/);
 });
+
+// RPAN-C02（审计）：4580 行单文件的补丁式增长留下四组成串冗余 —— 这类规则「改了不生效 / 改两处
+// 漏一处」，最容易在换主题 / 调顶栏时误判。用源码闸门钉住「只留一条事实来源」。
+test('RPAN-C02：styles.css 的四组冗余规则已合并 / 删除', () => {
+  // ① 夜间覆盖与基础规则同值（var(--warn) 本就随主题解析）——整条删除
+  assert.equal(/body\.theme-night \.long-para-bar/.test(CSS), false, '同值夜间覆盖不该回潮');
+  // ② .topbar .btn.ghost 与 .topbar-actions .btn 合并成一条选择器列表
+  assert.match(CSS, /\.topbar \.btn\.ghost,\s*\n\.topbar-actions \.btn \{/, '两条同体规则要合并成一条');
+  const merged = /\.topbar \.btn\.ghost,\r?\n\.topbar-actions \.btn \{/.exec(CSS);
+  assert.ok(merged, '合并后的选择器列表要存在');
+  assert.equal((CSS.match(/\.topbar-actions \.btn \{/g) || []).length, 1, '不允许再单独写一份');
+  // ③ 被全局 .hidden{display:none!important} 完全覆盖的三条规则已删
+  for (const name of ['settings-empty', 'find-backup', 'proofread-wordlists']) {
+    assert.equal(CSS.includes(`.${name}.hidden`), false, `.${name}.hidden 已被全局 .hidden 覆盖，不该再写`);
+  }
+  // ④ 分组下拉的 hover / focus 只在基础规则附近写一处
+  assert.equal((CSS.match(/\.shelf-group-select:hover/g) || []).length, 1, ':hover 只能有一处');
+  assert.equal((CSS.match(/\.shelf-group-select:focus(?!-)/g) || []).length, 1, ':focus 只能有一处');
+  assert.equal((CSS.match(/\.shelf-group-select:focus-visible/g) || []).length, 1, ':focus-visible 只能有一处');
+  // 段头与实际内容一致：第一个「排版」段装的是下拉菜单 / 右键菜单。
+  assert.equal(CSS.includes('/* ---------- 排版 ---------- */'), true, '真正的排版段头仍在');
+  assert.equal((CSS.match(/\/\* ---------- 排版 ---------- \*\//g) || []).length, 1, '只留一个排版段头');
+  assert.match(CSS, /\/\* ---------- 下拉菜单与右键菜单 ---------- \*\//);
+});

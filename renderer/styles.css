@@ -489,8 +489,16 @@ html, body {
   cursor: pointer;}
 /* 分组下拉平时是一条安静的文字（没有描边）；鼠标悬停 / 键盘 Tab 到它时给出可见反馈
  * （v1.0 把 outline 去掉了，键盘用户以前看不出焦点落在哪）。 */
-.shelf-group-select:hover { border-color: var(--folio-field-border); }
-.shelf-group-select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.shelf-group-select:hover {
+  border-color: var(--folio-field-border);
+  background: var(--hover-tint);
+}
+.shelf-group-select:focus,
+.shelf-group-select:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
 /* 标签筛选 + 分组管理（1.6.0 F5）：与分组下拉同一套造型，只多一个左间距；
  * 「管理分组…」推到筛选条最右，窄窗也不会把两个下拉挤成换行（下拉自身 max-width 收窄）。 */
 .shelf-tag-label { margin-left: 4px; }
@@ -1990,8 +1998,7 @@ body.theme-night .editor-marks .mark-trail > i { color: #e08a84; }
   background: var(--warn);
 
   opacity: .55;}
-body.theme-night .long-para-bar { background: var(--warn); 
-  opacity: .55;}
+/* RPAN-C02：夜间覆盖与基础规则声明逐字相同（var(--warn) 本就随主题解析），整条删除。 */
 
 /* ---------- 专注模式（提案 3.5）----------
  * 隐藏左栏、分隔条与顶栏，正文占满；只留右上角一条极简退出条（F11 / 按钮进出，Esc 退出）。
@@ -2462,7 +2469,6 @@ body.theme-night .long-para-bar { background: var(--warn);
   margin: 24px 0 0;
   font-size: 12.5px;
   color: var(--ink-soft);}
-.settings-empty.hidden { display: none; }
 /* 设置弹层的控件贴在滚动区边缘时，外侧焦点环会被 overflow 裁掉（实测 3–4px，贴边那一侧
  * 整圈看不见）。滚动区里的输入框 / 按钮改画内嵌环：环落在控件自身盒内，滚到任何位置都完整。
  * （scroll-padding / scroll-margin 都不作用于 Chromium 的「聚焦滚动」，实测无效，别再加。） */
@@ -2737,7 +2743,7 @@ body.theme-night .long-para-bar { background: var(--warn);
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;}
 
-/* ---------- 排版 ---------- */
+/* ---------- 下拉菜单与右键菜单 ---------- */
 .dropdown-sep,
 .context-menu-sep {
   height: 1px;
@@ -3460,7 +3466,6 @@ body.theme-night .long-para-bar { background: var(--warn);
   background: var(--paper-deep);
   border-radius: 8px;
 }
-.find-backup.hidden { display: none; }
 .find-backup .btn { flex: 0 0 auto; }
 
 /* ---------- 校对（只报告，不改动） ---------- */
@@ -3615,7 +3620,6 @@ body.theme-night .long-para-bar { background: var(--warn);
 .proofread-wordlist .warn { color: var(--warn); }
 /* 1.7.0 F3c：多份校对词表（每份一行：序号 / 数量或错误 / 启用开关 / 移除） */
 .proofread-wordlists { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
-.proofread-wordlists.hidden { display: none; }
 .proofread-wordlist-row {
   display: flex; align-items: center; gap: 8px;
   padding: 4px 8px; border-radius: 8px; background: var(--hover-tint);
@@ -4417,29 +4421,17 @@ progress {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
-.shelf-group-select:focus {
-  border-color: var(--accent);
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-}
 /* 书架路径：文字由渲染层写成「书架：…」，这里不要再加一遍「书架 」前缀
- * （v1.0 的 ::before 让顶栏读成「书架 书架：D:\…」）。 */
-.topbar .btn.ghost {
-  height: 28px;
-  min-height: 28px;
-  padding: 0 8px;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-}
+ * （v1.0 的 ::before 让顶栏读成「书架 书架：D:\…」）。
+ * RPAN-C02：这两条规则体逐字相同且命中同一批顶栏按钮（index.html 三枚都是 .btn.ghost），
+ * 合并成一条选择器列表，避免「改一条漏一条」。 */
+.topbar .btn.ghost,
 .topbar-actions .btn {
   height: 28px;
   min-height: 28px;
   padding: 0 8px;
   font-size: 12.5px;
   color: var(--ink-soft);
-}
-.shelf-group-select:hover {
-  background: var(--hover-tint);
 }
 /* 冲突卡顶部 24px 横条占了「⋯」原来的位置（右上 6px）：把「⋯」挪到书名那一行右侧，
  * 再给书名行补 26px 右侧留白，免得「⋯」悬停出现时压住分组小签 / 书名。 */
