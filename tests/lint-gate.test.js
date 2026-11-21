@@ -113,3 +113,23 @@ test('已纳入门禁：package.json 登记 npm run lint，脚本对当前仓库
   assert.equal(report.findings.length, report.errorCount + report.warnCount);
   assert.ok(report.findings.every((f) => f.rule === 'floating-promise'), '门禁只剩 floating-promise 一条规则');
 });
+// TOOL-A01（第五轮审计）：扫描目录读不了 / 文件清单缺项 / 文件数低于下限时必须报错退 2，
+// 绝不允许输出「0 个 js / 0 ERROR（通过）」的假绿。
+test('TOOL-A01：扫描面残缺（目录缺失 / 下限不足）→ 明确报错，不许静默通过', () => {
+  const lintGate = require('../scripts/lint-gate.js');
+  const os = require('node:os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-lint-scan-'));
+  try {
+    assert.throws(() => lintGate.collectFiles(tmp), /扫描目录读不了/, '缺 core 等扫描目录要报错');
+    // 目录齐全但没有任何 js（main.js / preload.js 也缺）→ 先报缺文件；补上空文件后报下限不足
+    for (const dir of lintGate.SCAN_DIRS) fs.mkdirSync(path.join(tmp, dir), { recursive: true });
+    assert.throws(() => lintGate.collectFiles(tmp), /扫描文件不存在/, 'main.js / preload.js 缺了要报错');
+    for (const file of lintGate.SCAN_FILES) fs.writeFileSync(path.join(tmp, file), '', 'utf8');
+    assert.throws(() => lintGate.collectFiles(tmp), /扫描面残缺/, '只找到 2 个文件必须判残缺');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  // 真仓库照旧通过，且文件数不低于下限
+  const files = lintGate.collectFiles(ROOT);
+  assert.ok(files.length >= lintGate.MIN_SCAN_FILES, `真仓库扫描数 ${files.length} 不许低于下限`);
+});

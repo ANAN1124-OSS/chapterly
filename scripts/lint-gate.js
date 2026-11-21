@@ -26,13 +26,21 @@ const SCAN_DIRS = ['core', 'renderer', 'ipc', 'scripts', 'tests'];
 const SCAN_FILES = ['main.js', 'preload.js'];
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'shots', 'build', 'tests-fixture', '.github', 'trial']);
 const MAX_PRINTED_WARN = 30;
+// TOOL-A01（第五轮审计）：扫描面下限。仓库现在约 480 个 js；低于 200 只可能是目录被改名 /
+// 被删 / 读不了 —— 这时必须报红，绝不许输出「0 个 js / 0 ERROR（通过）」的假绿。
+const MIN_SCAN_FILES = 200;
 
 function listFiles(dir, out) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return out;
+  } catch (err) {
+    // TOOL-A01：目录不存在 / 读不了（EACCES / EBUSY）不许静默当成空目录。
+    const error = new Error(
+      `扫描目录读不了：${path.relative(ROOT, dir) || dir}（${(err && (err.code || err.message)) || '未知错误'}）`
+    );
+    error.code = 'SCAN_DIR_UNREADABLE';
+    throw error;
   }
   for (const entry of entries) {
     if (entry.isDirectory()) {
@@ -51,7 +59,21 @@ function collectFiles(root) {
   for (const dir of SCAN_DIRS) listFiles(path.join(base, dir), absolute);
   for (const file of SCAN_FILES) {
     const full = path.join(base, file);
-    if (fs.existsSync(full)) absolute.push(full);
+    if (!fs.existsSync(full)) {
+      // TOOL-A01：main.js / preload.js 是扫描清单的固定成员，改名 / 移动后清单必须同步改；
+      // 静默跳过等于把整份文件从门禁里摘掉。
+      const error = new Error(`扫描文件不存在：${file}（扫描清单要跟着仓库结构更新）`);
+      error.code = 'SCAN_FILE_MISSING';
+      throw error;
+    }
+    absolute.push(full);
+  }
+  if (absolute.length < MIN_SCAN_FILES) {
+    const error = new Error(
+      `扫描面残缺：只找到 ${absolute.length} 个 js（下限 ${MIN_SCAN_FILES}），目录 / 清单可能被改名或读不了`
+    );
+    error.code = 'SCAN_TOO_SMALL';
+    throw error;
   }
   return absolute
     .map((full) => path.relative(base, full).split(path.sep).join('/'))
@@ -88,7 +110,14 @@ function printReport(report, options) {
 
 function main(argv) {
   const args = Array.isArray(argv) ? argv : [];
-  const report = lintRepo(ROOT);
+  let report;
+  try {
+    report = lintRepo(ROOT);
+  } catch (error) {
+    // TOOL-A01：扫描面不完整按「仓库状态问题」退 2（与其它闸门 CLI 的用法错误同口径）。
+    console.error(`lint-gate：${error && error.message ? error.message : String(error)}`);
+    return 2;
+  }
   const summary = summarize(report.findings);
   if (args.includes('--json')) {
     console.log(JSON.stringify({
@@ -111,3 +140,5 @@ if (require.main === module) {
     process.exitCode = 2;
   }
 }
+
+module.exports = { collectFiles, lintRepo, MIN_SCAN_FILES, SCAN_DIRS, SCAN_FILES };
