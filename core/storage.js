@@ -118,6 +118,19 @@ function batchFailure(err, { code, action, notes = [] }) {
   return new StorageError(code, parts.join('；'));
 }
 
+// CSTO-A03（中）：批量操作中途失败后的「字数缓存补记」。
+// 失败前已经写盘的章，磁盘正文已是新内容、内存 meta 里的 chars 也已按新正文算过；如果就此中止，
+// 磁盘书目保留替换前的旧 chars，而扫描回填只补「缺失」的章（backfill 永不重算有限值）——
+// 书卡总字数会长期偏离正文，且没有自愈出口。这里仍持书锁，把这份「如实记录」补写一次；
+// 补写本身失败（磁盘满 / 书目被外部改）不掩盖原始错误，也不改变错误文案。
+async function persistCharsAfterFailure(bookPath, meta) {
+  try {
+    await writeBookMeta(bookPath, meta, { touchUpdatedAt: false, expectedStamp: stampOfMeta(meta) });
+  } catch {
+    /* 失败路径上尽力而为：原始错误（含已经动了几章、备份在哪）更重要 */
+  }
+}
+
 // P2-3（1.5.0）：还原（替换备份 / 本书历史）与每日快照都是「整个文件读进主进程内存 → 原子写回」。
 // 章节文件被外部程序换成超大文件（误放的视频 / 日志 / 数据库导出）时，会直接把主进程内存打爆
 // 而崩掉整个应用。所以读之前先看 stat.size，超限明确拒绝、一个字节都不写。
@@ -160,10 +173,30 @@ async function assertSourceSize(source, options) {
   return stat;
 }
 
+// CSTO-A02（中）：带尺寸闸门的「同句柄读」—— open → handle.stat → 同一句柄 readFile。
+// 旧实现是 fs.stat(path) 之后按路径 fs.readFile：两步之间的毫秒级窗口里文件被外部换成超大
+// 文件，上限按旧 stat 放行，超限内容整份读进内存并 JSON.parse（正是 C17 / V104 / E-05 注释
+// 声称要防的「顶爆主进程」）。闸门与读盘绑在同一个文件身份上，窗口即消失。
+// ENOENT 等 open 失败原样上抛，调用方按各自既有的错误码 / 文案处理。
+async function readFileWithSizeGate(filePath, { code, label, tail = '', limit, encoding = null } = {}) {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    const problem = readSizeProblem(stat.size, { code, label, tail, limit });
+    if (problem) throw new StorageError(problem.code, problem.message);
+    const buffer = await handle.readFile(encoding ? { encoding } : undefined);
+    return { buffer, stat };
+  } finally {
+    try {
+      await handle.close();
+    } catch { /* 关不掉不影响已经读到的内容 */ }
+  }
+}
+
 // 读还原用的源文件：先过大小闸门再读。
 async function loadChapterSource(source, options) {
-  await assertSourceSize(source, options);
-  return fs.readFile(source);
+  const { buffer } = await readFileWithSizeGate(source, options || {});
+  return buffer;
 }
 
 // 整批还原前的一次性预检：同一批里任何一个源文件超限就整批拒绝 —— 此时还一个字节都没写，
@@ -421,30 +454,26 @@ function validateRestorableMeta(meta) {
 
 async function readBookMeta(bookPath) {
   const metaPath = path.join(bookPath, BOOK_FILE);
-  // C17（v1.8.0 WP-19）：先 stat + 独立小上限再读 —— 这一份要 JSON.parse，被外部换成超大文件时
+  // C17（v1.8.0 WP-19）：先过独立小上限再读 —— 这一份要 JSON.parse，被外部换成超大文件时
   // 以前会整份读进内存（2 GB 的书目直接顶爆主进程）。超限明确报 META_TOO_LARGE，与「内容坏」
   // 的 PARSE_ERROR / INVALID_META 区分开（书架书卡 / 导入分析按 code 分支），一个字节都不读。
-  // stat 本身失败（ENOENT / EACCES / 被占用）不在这里拦，留给下面的 readFile 按原逻辑报错 ——
-  // 与 preflightRestoreSources 同一条口径，保证「读不到」的既有错误码 / 文案一个都不变。
+  // 审计修复 #45 / CSTO-A02：闸门与读盘走同一个文件句柄（open → fstat → handle.readFile）——
+  // 旧实现 stat 之后按路径 readFile，两步之间文件被换成大文件就绕过上限。
+  // open 失败（ENOENT / EACCES / 被占用）按既有错误码 / 文案处理，保证「读不到」的对外语义不变。
   let stat = null;
+  let raw;
   try {
-    stat = await fs.stat(metaPath);
-  } catch {
-    stat = null;
-  }
-  if (stat) {
-    const tooLarge = readSizeProblem(stat.size, {
+    const opened = await readFileWithSizeGate(metaPath, {
       code: 'META_TOO_LARGE',
       label: BOOK_FILE,
       limit: MAX_META_READ_BYTES,
-      tail: '没有读进内存'
+      tail: '没有读进内存',
+      encoding: 'utf8'
     });
-    if (tooLarge) throw new StorageError(tooLarge.code, tooLarge.message);
-  }
-  let raw;
-  try {
-    raw = await fs.readFile(metaPath, 'utf8');
+    stat = opened.stat;
+    raw = opened.buffer;
   } catch (err) {
+    if (err instanceof StorageError) throw err;
     if (err.code === 'ENOENT') throw new StorageError('NO_BOOK', `没有找到 ${BOOK_FILE}`);
     // E7（审计 WP-11）：EACCES / EPERM 这类读失败的 message 带完整本机路径（`EACCES: permission
     // denied, open 'C:\Users\…\书目.json'`），原样 throw 会经 listBooks 的 reason / 导入分析文案
@@ -971,32 +1000,27 @@ async function verifyBook(bookPath) {
 // 只多读首尾 4 KB × 2；正文仍是同一次 readFile。stat 仍在 readFile 之前（预览快照的 mtime 口径不变）。
 async function loadChapterText(bookPath, file, { track = false } = {}) {
   const p = assertChapterFile(bookPath, file);
-  // C2（审计 #2 / P2）：先 stat 再读 —— 返回的 mtimeMs 必须是「正文被读出来之前」的那一版。
+  // C2（审计 #2 / P2）：返回的 mtimeMs 必须是「正文被读出来之前」的那一版。
   // 预览快照拿它做执行阶段的复用校验；反过来（读完再 stat）若正文恰好在两次 IO 之间被改，
   // 会记下更新的 mtime，执行阶段就会把旧正文当新正文用。正常文件两种顺序的值相同，
   // 对外语义（text / mtimeMs / size）与读盘结果都不变。
-  let stat;
+  // CSTO-A02：同样改成 open → fstat → 同一句柄读 —— 上限与正文读的是同一个文件身份，
+  // 外部在窗口期换入超大文件也无法绕过 128 MB 闸门。
+  let opened;
   try {
-    stat = await fs.stat(p);
+    opened = await readFileWithSizeGate(p, {
+      code: 'CHAPTER_TOO_LARGE',
+      label: `章节文件「${file}」`,
+      tail: '没有读进内存',
+      encoding: 'utf8'
+    });
   } catch (err) {
+    if (err instanceof StorageError) throw err;
     if (err.code === 'ENOENT') throw new StorageError('CHAPTER_MISSING', `章节文件不存在：${file}`);
     throw err;
   }
-  // 1.6.0 H6（审计 E-05）：与还原 / 快照同一条大小口径 —— 超过 128 MB 的章节文件在 stat 之后、
-  // 读盘之前就拒绝，绝不整份读进内存（外部换入超大文件 / 坏掉的同步盘不能再顶爆主进程）。
-  const tooLarge = readSizeProblem(stat.size, {
-    code: 'CHAPTER_TOO_LARGE',
-    label: `章节文件「${file}」`,
-    tail: '没有读进内存'
-  });
-  if (tooLarge) throw new StorageError(tooLarge.code, tooLarge.message);
-  let raw;
-  try {
-    raw = await fs.readFile(p, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') throw new StorageError('CHAPTER_MISSING', `章节文件不存在：${file}`);
-    throw err;
-  }
+  const stat = opened.stat;
+  const raw = opened.buffer;
   if (track) {
     // 读不到（被占用 / 权限）时 chapterContentHashOf 返回空串 → 不记基线，保存守卫回落 mtime 口径。
     rememberChapterFingerprint(bookPath, file, await chapterContentHashOf(p, stat.size), stat.mtimeMs);
@@ -1862,8 +1886,13 @@ async function replaceInBook(bookPath, options = {}) {
         }
       }, readStats)
     );
-    if (chaptersChanged) await writeBookMeta(bookPath, meta);
+    // CSTO-A01：整本替换可能持续数分钟，写回书目时必须核对「读入时那一版」的文件身份。
+    // 外部程序（同步盘 / 另一个窗口）在这期间改过的书目不能被这份内存快照整份覆盖；
+    // 命中 META_CHANGED 按 writeBookMeta 的既有文案拒绝（catch 会带「已经替换 N 章」）。
+    if (chaptersChanged) await writeBookMeta(bookPath, meta, { expectedStamp: stampOfMeta(meta) });
   } catch (err) {
+    // CSTO-A03：已经写盘的章先补记字数缓存（否则书目里会留下陈旧但有限的 chars，扫描永不重算）。
+    if (chaptersChanged) await persistCharsAfterFailure(bookPath, meta);
     // 中途失败（磁盘满 / 杀软占住 / 某个章节文件只读）：已经替换掉的章不能"当没发生过"，
     // 报错要说清改了几章、原件备份在哪里，作者才有办法自己退回去（见 batchFailure）。
     throw batchFailure(err, {
@@ -1987,8 +2016,11 @@ async function formatBook(bookPath, options = {}, onProgress) {
         }
       }, readStats)
     );
-    if (changed.length) await writeBookMeta(bookPath, meta);
+    // CSTO-A01：整本整理同整本替换——长操作结束时核对书目身份，绝不静默覆盖外部改动。
+    if (changed.length) await writeBookMeta(bookPath, meta, { expectedStamp: stampOfMeta(meta) });
   } catch (err) {
+    // CSTO-A03：同整本替换——半途失败也把已经整理好那几章的 chars 如实补写进书目。
+    if (changed.length) await persistCharsAfterFailure(bookPath, meta);
     // 半途失败：已经整理好的章节是真写进去了（每章原子写、改前有备份），
     // 必须把「改了几章 + 原件在哪」告诉作者，别让界面只剩一句「失败」（见 batchFailure）。
     throw batchFailure(err, {
@@ -2183,7 +2215,8 @@ async function restoreReplaceBackup(bookPath, backupName, options = {}) {
       // 只重算真正覆盖回书里的那几章：整本 meta.chapters 会让「还原 1 章」把全书写一遍字。
       // restorable 里的名字就是这次被还原的文件名；reader 与扫描回填同口径（过 128 MB 闸门）。
       await refreshChapterChars(bookPath, meta, restorable.map((entry) => entry.name), { readText: settings.readText });
-      await writeBookMeta(bookPath, meta);
+      // CSTO-A01：还原期间外部改过书目时，拒绝用还原开始时的快照覆盖（与保存链路同一条防线）。
+      await writeBookMeta(bookPath, meta, { expectedStamp: stampOfMeta(meta) });
     }
   } catch (err) {
     // 还原到一半失败：说清还原了几章、还原前的正文备份在哪。替换备份本身不会被消耗，
@@ -2461,7 +2494,8 @@ async function restoreHistoryFile(bookPath, groupId, fileName) {
   await ensureDir(restoreDir);
   await copyHistoryEntryToBook(bookPath, group, entry, restoreDir);
   await refreshChapterChars(bookPath, meta, [entry.name]);
-  await writeBookMeta(bookPath, meta);
+  // CSTO-A01：历史还原同样核对书目身份（外部改过的章名 / 分卷不能被旧快照覆盖）。
+  await writeBookMeta(bookPath, meta, { expectedStamp: stampOfMeta(meta) });
   return {
     restored: 1,
     skipped: group.fileCount - 1,
@@ -2504,7 +2538,8 @@ async function restoreHistoryGroup(bookPath, groupId) {
         meta,
         group.files.filter((file) => file.restorable).map((file) => file.name)
       );
-      await writeBookMeta(bookPath, meta);
+      // CSTO-A01：整组还原同单文件还原——写回前核对书目身份，外部改动优先。
+      await writeBookMeta(bookPath, meta, { expectedStamp: stampOfMeta(meta) });
     }
   } catch (err) {
     // 1.6.0 A3（审计 E-08）：整组还原到一半失败，说清「还原了几章」与「还原前的正文备份在哪」，

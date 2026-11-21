@@ -2061,21 +2061,22 @@ test('整本操作：一章 129 MB 超限章 + 两章正常 → 查找 / 替换�
 // E7（v1.8.0 WP-11 / 审计 E7）：读盘失败的原始 message 带完整本机路径（EACCES 形如
 // `EACCES: permission denied, open 'D:\…\书目.json'`），以前 readBookMeta 原样 throw、
 // listBooks 直接把 err.message 塞进损坏书卡的 reason，路径就跟着 IPC 回包进了书架。
-// 真实 EACCES 不好在 Windows 上稳定造（ACL 会污染环境），这里把 readFile 换成「只对书目.json 抛」，
-// 拦截点与生产完全一致（storage 调的是 fs.readFile 活引用）。
+// 真实 EACCES 不好在 Windows 上稳定造（ACL 会污染环境），这里把 fs.open 换成「只对书目.json 抛」。
+// CSTO-A02 起读侧走 open → fstat → handle.readFile 的同句柄口径，拦截点也跟着落在 open 上
+// （与生产一致：打不开文件就不会有半份内容进内存）。
 test('读盘失败脱敏：readBookMeta / listBooks 不回完整本机路径（E7 / WP-11）', async () => {
   const root = await mkTmp();
   const bookPath = path.join(root, '读失败的书');
   await fs.mkdir(bookPath);
-  const realReadFile = fs.readFile;
-  Object.defineProperty(fs, 'readFile', {
+  const realOpen = fs.open;
+  Object.defineProperty(fs, 'open', {
     configurable: true,
     writable: true,
     value: async (file, ...rest) => {
       if (String(file).endsWith('书目.json')) {
         throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' });
       }
-      return realReadFile(file, ...rest);
+      return realOpen(file, ...rest);
     }
   });
   try {
@@ -2099,7 +2100,7 @@ test('读盘失败脱敏：readBookMeta / listBooks 不回完整本机路径（E
     assert.equal(/[A-Za-z]:[\\/]/.test(corrupt.reason), false, '损坏书卡 reason 不许带盘符路径');
     assert.match(corrupt.reason, /没有访问权限/);
   } finally {
-    Object.defineProperty(fs, 'readFile', { configurable: true, writable: true, value: realReadFile });
+    Object.defineProperty(fs, 'open', { configurable: true, writable: true, value: realOpen });
   }
 });
 

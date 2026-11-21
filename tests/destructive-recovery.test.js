@@ -22,6 +22,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
+const chaptersLib = require('../core/chapters');
 
 // 源码闸门按 \n 切（仓库在 Windows 上检出是 CRLF，先归一化，免得闸门自己被换行符绊倒）
 const readSource = (rel) => require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
@@ -287,8 +288,22 @@ test('整本整理：中途失败时报告已整理章数与备份目录，原�
   assert.equal(await fs.readFile(path.join(backupDir, f0), 'utf8'), '第一段  ');
   assert.equal(await fs.readFile(path.join(backupDir, f1), 'utf8'), '第二段  ');
   await assert.rejects(() => fs.access(path.join(backupDir, f2)), '没改动的章不进备份');
-  // 书目没写（字数缓存还是旧的），也没有临时文件
-  assert.equal(await fs.readFile(metaPath, 'utf8'), metaBefore);
+  // CSTO-A03：失败分支会把已经整理好那章的 chars 如实补写一次（这里章节原本还没有 chars 缓存，
+  // 整理后应落成新正文的真实字数）；updatedAt / 标题一个字节都不许动，也不许留下临时文件。
+  const metaAfterFormatFail = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+  const metaBeforeFormatFail = JSON.parse(metaBefore);
+  assert.equal(metaAfterFormatFail.updatedAt, metaBeforeFormatFail.updatedAt, '失败补记不顶 updatedAt');
+  assert.equal(metaAfterFormatFail.title, metaBeforeFormatFail.title);
+  assert.equal(
+    metaAfterFormatFail.chapters[0].chars,
+    chaptersLib.countChars('　　第一段'),
+    '已整理章的新字数落盘'
+  );
+  assert.deepEqual(
+    metaAfterFormatFail.chapters.slice(1).map((chapter) => chapter.chars),
+    metaBeforeFormatFail.chapters.slice(1).map((chapter) => chapter.chars),
+    '失败那一章与没轮到的章不冒充已整理'
+  );
   assert.deepEqual(await tmpEntries(bookPath), []);
 
   // 修好之后重跑：把剩下两章补齐，备份目录另起一个（不覆盖失败那次的现场）
@@ -334,7 +349,25 @@ test('整本替换：中途失败时报告已替换章数与备份目录，备�
   const backupDir = path.join(bookPath, '_trash', backupName);
   assert.equal(await fs.readFile(path.join(backupDir, f0), 'utf8'), '阿明来了。');
   assert.equal(await fs.readFile(path.join(backupDir, f1), 'utf8'), '阿明走了。');
-  assert.equal(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'), metaBefore);
+  // CSTO-A03（第五轮审计）：失败前已经替换的章，chars 缓存已按新正文更新，必须如实补写进书目
+  //（旧行为是「书目一个字节不写」，于是陈旧缓存永远不会被扫描重算）。补写不是一次显式保存：
+  // updatedAt / 标题 / 未处理章的缓存一个字节都不许动，也不许留下临时文件。
+  const metaBeforeObj = JSON.parse(metaBefore);
+  const metaAfterObj = JSON.parse(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'));
+  assert.equal(metaAfterObj.chapters[0].chars, chaptersLib.countChars('小明来了。'), '已替换章的新字数落盘');
+  assert.equal(metaAfterObj.chapters[1].chars, metaBeforeObj.chapters[1].chars, '失败那一章不冒充已替换');
+  assert.equal(metaAfterObj.updatedAt, metaBeforeObj.updatedAt, '补写 chars 不顶 updatedAt');
+  assert.deepEqual(
+    {
+      ...metaAfterObj,
+      chapters: metaAfterObj.chapters.map((chapter) => ({ ...chapter, chars: 0 }))
+    },
+    {
+      ...metaBeforeObj,
+      chapters: metaBeforeObj.chapters.map((chapter) => ({ ...chapter, chars: 0 }))
+    },
+    '除字数缓存以外，书目其余部分一个字节不动'
+  );
   assert.deepEqual(await tmpEntries(bookPath), []);
 
   // 重跑：只剩第二章要替换

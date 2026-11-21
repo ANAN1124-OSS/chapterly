@@ -234,3 +234,142 @@ test('残留 S8（#45）：.bak 轮换的尺寸闸门与读盘走同一个句柄
   assert.equal(body.includes('fs.readFile(metaPath)'), false, '不许再按路径读主文件（TOCTOU 窗口）');
   assert.equal(body.includes('fs.stat(metaPath)'), false, '不许再按路径 stat 主文件（闸门与读盘脱节）');
 });
+
+// ---------- CSTO-A01 / A02 / A03（2026-11-21 第五轮审计） ----------
+
+// CSTO-A02：读侧的三条主路径（书目光 / 章节正文 / 还原来源）都改成「同一个文件句柄」：
+// 闸门看的是句柄上的 fstat，读的也是这个句柄。旧实现按路径 stat 再按路径 readFile，
+// 间隙里换成超大文件就能绕过上限。这里用一个「fstat 报超大、readFile 一旦被调用就记一次」
+// 的假句柄：只有同句柄实现才会在读盘前拒绝。
+test('CSTO-A02：书目 / 章节 / 还原来源的尺寸闸门与读盘绑在同一句柄上', async () => {
+  const root = await mkTmp();
+  const { path: bookPath, meta } = await storage.createBook(root, '同句柄闸门');
+  const file = meta.chapters[0].file;
+  const metaPath = path.join(bookPath, '书目.json');
+  const chapterPath = path.join(bookPath, file);
+  const sourcePath = path.join(root, '还原来源.txt');
+  await fs.writeFile(sourcePath, '还原来源正文');
+  const realOpen = fs.open;
+  let readCalls = 0;
+  const fakeLargeHandle = () => ({
+    stat: async () => ({ size: storage.MAX_META_READ_BYTES + 1, mtimeMs: 1, isFile: () => true }),
+    readFile: async () => {
+      readCalls += 1;
+      return '{}';
+    },
+    close: async () => {}
+  });
+  try {
+    fs.open = async (target, ...rest) => {
+      const normalized = path.resolve(String(target)).toLowerCase();
+      if (normalized === path.resolve(metaPath).toLowerCase()) return fakeLargeHandle();
+      if (normalized === path.resolve(chapterPath).toLowerCase()) {
+        return {
+          stat: async () => ({ size: storage.MAX_CHAPTER_READ_BYTES + 1, mtimeMs: 1, isFile: () => true }),
+          readFile: async () => {
+            readCalls += 1;
+            return '超限章节';
+          },
+          close: async () => {}
+        };
+      }
+      if (normalized === path.resolve(sourcePath).toLowerCase()) {
+        return {
+          stat: async () => ({ size: storage.MAX_CHAPTER_READ_BYTES + 1, mtimeMs: 1, isFile: () => true }),
+          readFile: async () => {
+            readCalls += 1;
+            return '超限来源';
+          },
+          close: async () => {}
+        };
+      }
+      return realOpen(target, ...rest);
+    };
+    await assert.rejects(() => storage.readBookMeta(bookPath), (err) => {
+      assert.equal(err.code, 'META_TOO_LARGE');
+      assert.match(err.message, /没有读进内存/);
+      return true;
+    });
+    await assert.rejects(() => storage.loadChapterText(bookPath, file), (err) => {
+      assert.equal(err.code, 'CHAPTER_TOO_LARGE');
+      return true;
+    });
+  } finally {
+    fs.open = realOpen;
+  }
+  // loadChapterSource 不在公开面（还原流程内部用），用静态闸门钉住它同样走同句柄读。
+  const storageSrc = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  const sourceStart = storageSrc.indexOf('async function loadChapterSource(');
+  assert.ok(sourceStart >= 0, '找不到 loadChapterSource');
+  const sourceBody = storageSrc.slice(sourceStart, storageSrc.indexOf('\n}', sourceStart));
+  assert.match(sourceBody, /readFileWithSizeGate\(/, 'loadChapterSource 必须复用同句柄读（不许 stat 后按路径 readFile）');
+  assert.equal(readCalls, 0, '超过上限的文件必须一个字节都不读（不许走进 readFile）');
+});
+
+// CSTO-A01：整本整理可能在 20000 章的书上跑几分钟。期间外部程序（同步盘 / 另一个窗口 / 记事本）
+// 改过书目时，结束时绝不能拿开始时的内存快照整份覆盖。这里在整理进度回调里同步改一次书目。
+test('CSTO-A01：整本整理期间外部改了书目 → 结束时拒绝覆盖，外部版本原样保留', async () => {
+  const fsNode = require('node:fs');
+  const root = await mkTmp();
+  const { path: bookPath, meta } = await storage.createBook(root, '并发保护');
+  const file = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file, '第一段正文   ');
+  const metaPath = path.join(bookPath, '书目.json');
+  const err = await storage
+    .formatBook(bookPath, { trimTrailing: true }, (progress) => {
+      if (progress.done !== 1) return;
+      // 模拟另一个窗口 / 记事本在整理在途时改书目（同步写，确保赶在最终 writeBookMeta 之前）
+      const current = JSON.parse(fsNode.readFileSync(metaPath, 'utf8'));
+      current.title = '外部改过的书名';
+      current.notes = '外部新增的说明';
+      fsNode.writeFileSync(metaPath, JSON.stringify(current, null, 2), 'utf8');
+    })
+    .then(() => null, (e) => e);
+  assert.ok(err, '外部改动必须让整理结束时拒绝写书目');
+  assert.equal(err.code, 'FORMAT_FAILED');
+  assert.match(err.message, /被应用外的程序改过|META_CHANGED/);
+  const after = await storage.readBookMeta(bookPath);
+  assert.equal(after.title, '外部改过的书名', '外部改的书目不许被旧快照覆盖');
+  assert.equal(after.notes, '外部新增的说明');
+});
+
+// CSTO-A03：整本整理中途失败时，失败前已经整理好的章在内存里算过新 chars，但书目没写 ——
+// 磁盘书目会留下「陈旧但有限」的缓存，扫描回填只补缺失、永不重算。失败分支要如实补写一次。
+test('CSTO-A03：整本整理中途失败后，已整理章的新字数补写进书目（不留陈旧缓存）', async () => {
+  const chaptersLib = require('../core/chapters');
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '失败补记');
+  await storage.createChapter(bookPath, 1, '第二章');
+  const fresh = await storage.readBookMeta(bookPath);
+  const firstFile = fresh.chapters[0].file;
+  const secondFile = fresh.chapters[1].file;
+  await storage.saveChapterText(bookPath, firstFile, '未完...');
+  await storage.saveChapterText(bookPath, secondFile, '未完...');
+  const before = await storage.readBookMeta(bookPath);
+  const oldFirstChars = before.chapters[0].chars;
+  const realStat = fs.stat;
+  let injected = false;
+  fs.stat = async (target, ...rest) => {
+    // 第二章写正文成功后、saveChapterText 的写后 stat 时注入失败：正文已落盘，chars 没进内存
+    if (!injected && String(target).toLowerCase() === path.resolve(path.join(bookPath, secondFile)).toLowerCase()) {
+      injected = true;
+      const err = new Error('模拟杀软占住');
+      err.code = 'EACCES';
+      throw err;
+    }
+    return realStat(target, ...rest);
+  };
+  let err = null;
+  try {
+    err = await storage.formatBook(bookPath, { ellipsis: true }).then(() => null, (e) => e);
+  } finally {
+    fs.stat = realStat;
+  }
+  assert.ok(err, '注入的写后校验失败必须让整理停下');
+  assert.equal(err.code, 'FORMAT_FAILED');
+  assert.match(err.message, /已经整理好 1 章/);
+  const after = await storage.readBookMeta(bookPath);
+  assert.notEqual(oldFirstChars, chaptersLib.countChars('未完……'), '用例前提：整理后字数确实变了');
+  assert.equal(after.chapters[0].chars, chaptersLib.countChars('未完……'), '已整理章的新字数必须落盘（不许留旧缓存）');
+  assert.equal(after.chapters[1].chars, before.chapters[1].chars, '没进内存的那一章不冒充已更新');
+});

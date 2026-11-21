@@ -2,7 +2,7 @@
 //
 // 这里钉五件事：
 //   1. 命中：预览（整本查找 / 整理预检查）→ 执行（整本替换 / 整本整理）时，执行阶段
-//      **一章都不再读盘**（用 patch fs.readFile 计数），结果与「再读一遍」逐字一致；
+//      **一章都不再读盘**（用 open 句柄的 readFile 计数），结果与「再读一遍」逐字一致；
 //   2. 失效回退：预览之后章节文件被外部改过（mtime 变、尺寸不变也算）→ 只重读那一章，
 //      并且按新正文算结果（绝不拿预览时的旧正文去改作者的书）；
 //   3. 没有预览 = 原行为：直接执行照旧逐章读盘（零回归）；
@@ -41,22 +41,29 @@ async function makeBook(textFor, count = 5) {
   return { root, bookPath, meta };
 }
 
-// 统计这本书的章节正文读盘次数（storage / core/atomic 用的是同一个 node:fs/promises 对象，
-// 所以临时替换 readFile 就能精确看到「哪些章真的读了」；书目.json 不算）。
+// 统计这本书的章节正文读盘次数。CSTO-A02 起正文读取走「open → fstat → 同一句柄 readFile」，
+// 所以计数点挂在 fs.open 返回的句柄上：只有真的把整章正文读出来（handle.readFile）才算一次；
+// 内容指纹的 chapterContentHashOf 用 handle.read 只读首尾 4 KB，不会误计。
 async function countChapterReads(bookPath, task) {
   const bookPrefix = path.resolve(bookPath).toLowerCase();
-  const original = fsp.readFile;
+  const original = fsp.open;
   const reads = [];
-  fsp.readFile = async function patchedReadFile(file, ...rest) {
+  fsp.open = async function patchedOpen(file, ...rest) {
+    const handle = await original.call(fsp, file, ...rest);
     const target = String(file).toLowerCase();
-    if (target.startsWith(bookPrefix) && target.endsWith('.txt')) reads.push(String(file));
-    return original.call(fsp, file, ...rest);
+    if (!(target.startsWith(bookPrefix) && target.endsWith('.txt'))) return handle;
+    const realReadFile = handle.readFile.bind(handle);
+    handle.readFile = async (...args) => {
+      reads.push(String(file));
+      return realReadFile(...args);
+    };
+    return handle;
   };
   try {
     const value = await task();
     return { value, reads };
   } finally {
-    fsp.readFile = original;
+    fsp.open = original;
   }
 }
 
@@ -309,17 +316,26 @@ test('静态闸门：预览两条记录快照、执行两条消费快照，缓�
   assert.doesNotMatch(cacheSource, /require\('node:fs/);
   assert.doesNotMatch(cacheSource, /\b(writeFile|readFile|mkdir|copyFile|appendFile)\b/);
 
-  // loadChapterText 必须先 stat 再读：反过来会在「读与 stat 之间被改」时记下更新的 mtime，
-  // 执行阶段就会把旧正文当新正文用（快照校验的前提）。
-  // WP1（E-N2）：签名新增可选 { track }（记录「编辑器载入那一版」的内容指纹）；
-  // stat-before-read 的口径不变，读盘仍走 await fs.readFile(p, 'utf8')。
+  // loadChapterText 必须先拿到 mtime/size 再读正文：反过来会在「读与取尺寸之间被改」时记下
+  // 更新的 mtime，执行阶段就会把旧正文当新正文用（快照校验的前提）。
+  // WP1（E-N2）：签名新增可选 { track }（记录「编辑器载入那一版」的内容指纹）。
+  // CSTO-A02（第五轮审计）：stat 与读盘改成同一个文件句柄（open → handle.stat → handle.readFile），
+  // 顺序不变 —— 读正文之前先 fstat；同句柄同时封死「按路径 stat 后文件被换成大文件」的上限窗口。
   const loadStart = storageSource.indexOf('async function loadChapterText(bookPath, file, { track = false } = {}) {');
   assert.notEqual(loadStart, -1);
   const loadEnd = storageSource.indexOf('\nasync function statChapter(', loadStart);
   assert.notEqual(loadEnd, -1);
   const loadBody = storageSource.slice(loadStart, loadEnd);
-  const statIndex = loadBody.indexOf('await fs.stat(p)');
-  const readIndex = loadBody.indexOf("await fs.readFile(p, 'utf8')");
-  assert.ok(statIndex > -1, 'loadChapterText 里要有 stat');
-  assert.ok(readIndex > statIndex, 'stat 必须在 readFile 之前');
+  assert.match(loadBody, /readFileWithSizeGate\(p, \{/, 'loadChapterText 必须走同句柄读');
+  const gateStart = storageSource.indexOf('async function readFileWithSizeGate(');
+  assert.notEqual(gateStart, -1);
+  const gateEnd = storageSource.indexOf('\n}', gateStart);
+  const gateBody = storageSource.slice(gateStart, gateEnd);
+  const openIndex = gateBody.indexOf("fs.open(filePath, 'r')");
+  const statIndex = gateBody.indexOf('await handle.stat()');
+  const readIndex = gateBody.indexOf('await handle.readFile(');
+  assert.ok(openIndex > -1, '同句柄读必须先 open');
+  assert.ok(statIndex > openIndex, '打开句柄后要先 fstat 拿 mtime / size');
+  assert.ok(readIndex > statIndex, 'fstat（及尺寸闸门）必须早于读正文');
+  assert.equal(gateBody.includes('fs.readFile('), false, '闸门与读盘不许分两步按路径读（TOCTOU）');
 });
