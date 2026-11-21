@@ -21,6 +21,8 @@ const storage = require('../core/storage');
 const ROOT = path.join(__dirname, '..');
 // 源码在工作树里是 CRLF；静态闸门只关心语义，统一成 LF 再切片（免得 indexOf('\n...') 落空）
 const MAIN_SOURCE = fss.readFileSync(path.join(ROOT, 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+// MAIN-03：chapter:save 已下沉 ipc/save.js —— 源码闸门跟着读新落点。
+const SAVE_SOURCE = fss.readFileSync(path.join(ROOT, 'ipc', 'save.js'), 'utf8').replace(/\r\n/g, '\n');
 const RENDERER_SOURCE = fss.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8').replace(/\r\n/g, '\n');
 // WP17 A3 第二刀：保存热路径整段迁到 save-chain-ui.js；saveCurrent 的源码闸门改读模块（同一条断言）。
 const SAVE_CHAIN_SOURCE = fss.readFileSync(path.join(ROOT, 'renderer', 'save-chain-ui.js'), 'utf8').replace(/\r\n/g, '\n');
@@ -32,9 +34,9 @@ const mkTmp = (prefix = 'cw-partial-save-') => tmpCleanup.mkTmp(prefix);
 
 function channelBody(source, channel) {
   const start = source.indexOf(`handleBook('${channel}'`);
-  assert.ok(start > 0, `main.js 里找不到 ${channel}`);
-  // handleBook 注册以两格缩进的 `});` 收尾（内部嵌套回调缩进更深，不会提前命中）
-  const end = source.indexOf('\n  });', start + 1);
+  assert.ok(start > 0, `ipc/save.js 里找不到 ${channel}`);
+  // MAIN-03：结束锚点用带 mutation 的整行，避免旧版 `\n  });` 过度切片到后续频道。
+  const end = source.indexOf('\n  }, { mutation: MUTATION.SAVE });', start + 1);
   assert.ok(end > start, `${channel} 的注册体找不到结尾`);
   return source.slice(start, end);
 }
@@ -70,7 +72,7 @@ test('存储层：正文写成功后书目写失败，磁盘上的正文仍是�
 });
 
 test('静态闸门：chapter:save 的 writeBookMeta 失败回 META_SAVE_FAILED 部分成功（E4）', () => {
-  const body = channelBody(MAIN_SOURCE, 'chapter:save');
+  const body = channelBody(SAVE_SOURCE, 'chapter:save');
   // 书目写盘在 try/catch 里，catch 抛出带白名单字段的错误
   // WP1 契约扩展：chapter:save 的写书目调用新增 rotateBak（普通保存也留上一版）与
   // expectedStamp（书目身份核对）；ensureDir:false 与 A7 的 try/catch 顺序保持不变。
@@ -158,7 +160,7 @@ test('E-N6：部分成功回包带 mtimeMs，渲染层同步 loadedMtimeMs（重
   await fs.rm(root, { recursive: true, force: true });
 
   // chapter:save 的 catch：部分成功错误对象要带 result.mtimeMs
-  const body = channelBody(MAIN_SOURCE, 'chapter:save');
+  const body = channelBody(SAVE_SOURCE, 'chapter:save');
   assert.ok(body.includes('mtimeMs: result.mtimeMs'), 'META_SAVE_FAILED 错误要带 result.mtimeMs');
 
   // fail() 白名单：只透传有限 mtimeMs（原错误对象 / 路径仍只进日志）

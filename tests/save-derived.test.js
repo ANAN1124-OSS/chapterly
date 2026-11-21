@@ -22,7 +22,8 @@ const saveLogic = require('../renderer/save-logic');
 
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
-const MAIN = read('main.js');
+// MAIN-03：chapter:save 已下沉 ipc/save.js —— 保存链源码闸门改读新落点。
+const SAVE = read('ipc/save.js');
 // WP17 A3 第二刀：保存热路径整段迁到 save-chain-ui.js（源码闸门改读模块，同一条断言）。
 const SAVE_CHAIN = read('renderer/save-chain-ui.js');
 
@@ -70,7 +71,7 @@ test('统计写盘失败不阻塞保存：recordSaveChars 把拒绝收成结果�
 });
 
 test('静态闸门：保存链 4 项派生失败各记一条 warn 日志（固定错误码）', () => {
-  const body = between(MAIN, "handleBook('chapter:save'", '\n  });');
+  const body = between(SAVE, "handleBook('chapter:save'", '\n  }, { mutation: MUTATION.SAVE });');
   const calls = body.match(/logError\('save-derived', [^)]*, \{ level: 'warn', code: '[A-Z_]+' \}\)/g) || [];
   assert.equal(calls.length, 4, `4 个 catch 各要一条 warn：${calls.join(' / ')}`);
   for (const code of [
@@ -92,7 +93,7 @@ test('静态闸门：保存链 4 项派生失败各记一条 warn 日志（固�
 });
 
 test('静态闸门：保存结果带 charsBaselineMissing，统计失败仍返回原因', () => {
-  const body = between(MAIN, "handleBook('chapter:save'", '\n  });');
+  const body = between(SAVE, "handleBook('chapter:save'", '\n  }, { mutation: MUTATION.SAVE });');
   assert.match(body, /charsBaselineMissing: charsDelta\.baselineMissing/);
   assert.match(body, /const charsDelta = statsLib\.saveCharsDelta\(previousChars, result\.chars\)/);
   assert.match(body, /const recordedStats = await statsLib\.recordSaveChars\(getStatsStore\(\), \{/);

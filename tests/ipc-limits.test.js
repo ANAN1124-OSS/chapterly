@@ -21,6 +21,7 @@ const IPC_SOURCE = [
   'main.js',
   'ipc/book.js',
   'ipc/book-data.js',
+  'ipc/save.js',
   'ipc/proofread.js',
   'ipc/export.js'
 ]

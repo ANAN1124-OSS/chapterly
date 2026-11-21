@@ -35,7 +35,7 @@ const MAIN = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
 // 顶层函数体（hardenWebContents / windowPreferences 等）仍只认 main.js。
 // 审计修复 #38（▲V306）：书域数据面（查找替换 / 历史 / 整理 / 快照清理 / 打开书文件夹）搬到 ipc/book-data.js，
 // 频道清单与 sendToFlow('format:progress') 都在那份文件里。
-const IPC_SOURCE = ['ipc/book.js', 'ipc/book-data.js', 'ipc/proofread.js', 'ipc/export.js']
+const IPC_SOURCE = ['ipc/book.js', 'ipc/book-data.js', 'ipc/save.js', 'ipc/proofread.js', 'ipc/export.js']
   .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
   .join('\n');
 const PRELOAD = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8');

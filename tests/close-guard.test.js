@@ -16,6 +16,8 @@ const vm = require('node:vm');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const MAIN = read('main.js');
+// MAIN-03：chapter:save 已下沉 ipc/save.js —— 保存回执的源码闸门改读新落点。
+const SAVE = read('ipc/save.js');
 const RENDERER = read('renderer/renderer.js');
 // WP17 A3 第二刀：关窗拦截与「不保存退出」清脏整段迁到 save-chain-ui.js（源码闸门改读模块）。
 const SAVE_CHAIN = read('renderer/save-chain-ui.js');
@@ -34,9 +36,9 @@ test('静态闸门：主进程用 session.dirty + 最近保存回执交叉判定
   assert.match(sessionSrc, /dirtyAt: 0/, 'session 要记「这次变脏」的时间');
   assert.match(sessionSrc, /lastSaveAt: 0/, 'session 要记最近一次保存成功回执');
   // 保存成功回执：chapter:save 成功尾部写 lastSaveAt
-  const saveAt = MAIN.indexOf("handleBook('chapter:save'");
+  const saveAt = SAVE.indexOf("handleBook('chapter:save'");
   assert.ok(saveAt > 0);
-  const saveBody = MAIN.slice(saveAt, MAIN.indexOf('\n  });', saveAt));
+  const saveBody = SAVE.slice(saveAt, SAVE.indexOf('\n  }, { mutation: MUTATION.SAVE });', saveAt));
   assert.match(saveBody, /session\.lastSaveAt = Date\.now\(\);/, '章节保存成功要留回执时间');
   // app:dirty：变脏时记时间，干净时清零
   const dirtySrc = between(MAIN, "ipcMain.on('app:dirty'", '\n  });');

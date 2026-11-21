@@ -12,6 +12,8 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const MAIN = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+// MAIN-03：chapter:save 已下沉 ipc/save.js —— 保存链的统计出口闸门改读新落点。
+const SAVE = fs.readFileSync(path.join(ROOT, 'ipc', 'save.js'), 'utf8');
 
 function blockOf(marker, endMarker) {
   const start = MAIN.indexOf(marker);
@@ -32,13 +34,13 @@ test('MC-2（五-L21）：statsError 只回 describeForUi 的脱敏文案，原�
 
   // chapter:save 的同一字段（变量名 statsErr）同口径 —— 两处一条链路，不许只修一处
   assert.match(
-    MAIN,
+    SAVE,
     /statsError = errorText\.describeForUi\(statsErr\)\.message;/,
     '保存链：statsError 同样走 describeForUi'
   );
   assert.equal(
-    /statsError = (?:err|statsErr)\.message/.test(MAIN),
+    /statsError = (?:err|statsErr)\.message/.test(MAIN + '\n' + SAVE),
     false,
-    'main.js 里不许再出现裸 .message 赋给 statsError'
+    '主进程 IPC 源码里不许再出现裸 .message 赋给 statsError'
   );
 });

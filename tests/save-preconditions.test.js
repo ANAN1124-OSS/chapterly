@@ -24,6 +24,8 @@ const ROOT = path.join(__dirname, '..');
 // 源码在工作树里是 CRLF；静态闸门只关心语义，统一成 LF 再切片（免得 indexOf 落空）
 const read = (rel) => fss.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const MAIN_SOURCE = read('main.js');
+// MAIN-03：chapter:save 已下沉 ipc/save.js —— 保存链的源码闸门改读新落点。
+const SAVE_SOURCE = read('ipc/save.js');
 const RENDERER_SOURCE = read('renderer/renderer.js');
 // WP17 A3 第二刀：保存热路径整段迁到 save-chain-ui.js；saveCurrent 的源码闸门改读模块（同一条断言）。
 const SAVE_CHAIN_SOURCE = read('renderer/save-chain-ui.js');
@@ -43,8 +45,8 @@ async function makeBook(root, title = '保存 前置 空格') {
 
 function channelBody(source, channel) {
   const start = source.indexOf(`handleBook('${channel}'`);
-  assert.ok(start > 0, `main.js 里找不到 ${channel}`);
-  const end = source.indexOf('\n  });', start + 1);
+  assert.ok(start > 0, `ipc/save.js 里找不到 ${channel}`);
+  const end = source.indexOf('\n  }, { mutation: MUTATION.SAVE });', start + 1);
   assert.ok(end > start, `${channel} 的注册体找不到结尾`);
   return source.slice(start, end);
 }
@@ -196,9 +198,9 @@ test('R4（E-N2）：保留 size+mtime 的外部改写（rsync -t / robocopy /CO
   assert.equal(await fs.readFile(filePath, 'utf8'), rewritten, '被拦下的保存绝不写盘（外部那一版原样留着）');
 });
 
-// ---------- R5：main.js 接线（stamp + rotateBak + META_CHANGED 部分成功回包） ----------
+// ---------- R5：ipc/save.js 接线（stamp + rotateBak + META_CHANGED 部分成功回包） ----------
 test('R5（静态接线）：chapter:save 传 expectedStamp + rotateBak，META_CHANGED 按「正文已落盘」单独回包', () => {
-  const body = channelBody(read('main.js'), 'chapter:save');
+  const body = channelBody(SAVE_SOURCE, 'chapter:save');
   assert.match(
     body,
     /storage\.writeBookMeta\(bookPath, meta, \{ ensureDir: false, rotateBak: true, expectedStamp: prepared\.metaStamp \}\)/,
@@ -255,7 +257,7 @@ test('R7（M-N1）：META_CHANGED 回包带 data.mtimeMs（正文写盘后的 mt
   }
 
   // 抛错对象是 fail() 的唯一来源：chapter:save 的 META_CHANGED 分支必须带 result.mtimeMs
-  const body = channelBody(MAIN_SOURCE, 'chapter:save');
+  const body = channelBody(SAVE_SOURCE, 'chapter:save');
   assert.match(
     body,
     /code: 'META_CHANGED',\s*mtimeMs: result\.mtimeMs/,

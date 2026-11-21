@@ -20,7 +20,7 @@ const ROOT = path.join(__dirname, '..');
 // 统一按 LF 读：静态闸门里既有 `^` 多行锚点，也有按 `\n}\n` 切函数体（仓库工作区是 CRLF）。
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 
-const IPC_FILES = ['ipc/book.js', 'ipc/book-data.js', 'ipc/proofread.js', 'ipc/export.js'];
+const IPC_FILES = ['ipc/book.js', 'ipc/book-data.js', 'ipc/save.js', 'ipc/proofread.js', 'ipc/export.js'];
 const MAIN = read('main.js');
 const IPC_SOURCE = IPC_FILES.map((rel) => read(rel)).join('\n');
 
@@ -95,7 +95,9 @@ const DOMAIN_CHANNELS = {
     'book:format-preview',
     'book:format',
     'shell:open-book-folder'
-  ]
+  ],
+  // MAIN-03（审计拆分评估）：章节保存整段下沉到 ipc/save.js（频道顺序与搬前一致）。
+  save: ['chapter:save']
 };
 const ALL_DOMAIN_CHANNELS = Object.values(DOMAIN_CHANNELS).flat();
 // 不走 handleBook 的频道（第一参数不是书路径）：正文 / 词表类走 handle，
@@ -146,7 +148,7 @@ function registrationsOf(source) {
   return hits;
 }
 
-test('WP-34：四个域模块的频道清单 / 顺序 / 注册器种类与搬前一致', () => {
+test('WP-34：五个域模块的频道清单 / 顺序 / 注册器种类与搬前一致', () => {
   let total = 0;
   for (const [domain, expected] of Object.entries(DOMAIN_CHANNELS)) {
     const registered = registerWithSpies(`ipc/${domain}.js`);
@@ -165,10 +167,10 @@ test('WP-34：四个域模块的频道清单 / 顺序 / 注册器种类与搬前
     total += registered.length;
   }
   assert.equal(total, ALL_DOMAIN_CHANNELS.length);
-  // 57 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）+ 审计修复 #6 新增的
+  // 58 = 搬走的三个域（104 个频道里的导出 6 + 校对 10 + 书 / 章 / 卷 25）+ 审计修复 #6 新增的
   // chapter:rescue + 审计修复 #38 下沉的书域数据面 13 个频道 + WP4 新增的清理计划频道
-  // + WP18（B2）新增的 books:card。
-  assert.equal(total, 57, '四个域的频道总数变了（多一个少一个都要同步本闸门）');
+  // + WP18（B2）新增的 books:card + MAIN-03 下沉的 chapter:save。
+  assert.equal(total, 58, '五个域的频道总数变了（多一个少一个都要同步本闸门）');
 });
 
 test('WP-34：host 契约缺成员在 register() 装配时直接 TypeError（与渲染层 A8 同一口径）', () => {
@@ -201,11 +203,12 @@ test('WP-34：registerIpc() 只装配 —— 被搬走的频道不许回潮，�
       );
     }
   }
-  // ② 四个域各一次装配调用（顺序固定：书 CRUD / 书域数据面 / 校对 / 导出）
+  // ② 五个域各一次装配调用（顺序固定：书 CRUD / 书域数据面 / 章节保存 / 校对 / 导出）
   const assembly = [
     'const domainHost = buildIpcHost();',
     'ipcBook.register(domainHost);',
     'ipcBookData.register(domainHost);',
+    'ipcSave.register(domainHost);',
     'ipcProofread.register(domainHost);',
     'ipcExport.register(domainHost);'
   ];

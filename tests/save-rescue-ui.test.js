@@ -455,15 +455,15 @@ test('接线（V301）：saveCurrent 带 expectedMtimeMs；只有「覆盖保存
   assert.ok(body.indexOf("err.code === 'META_SAVE_FAILED'") < rescueAt);
 });
 
-test('接线（V301）：preload 透传第 4 参数，main.js 交给 prepareChapterSave 比对', () => {
+test('接线（V301）：preload 透传第 4 参数，ipc/save.js 交给 prepareChapterSave 比对', () => {
   const preload = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'preload.js'), 'utf8');
   assert.match(preload, /saveChapter: \(bookPath, chapterId, text, expectedMtimeMs\) =>/);
   assert.match(preload, /invoke\('chapter:save', bookPath, chapterId, text, expectedMtimeMs\)/);
-  const mainPath = require('node:path').join(__dirname, '..', 'main.js');
-  const main = require('node:fs').readFileSync(mainPath, 'utf8').replace(/\r\n/g, '\n');
-  assert.match(main, /handleBook\('chapter:save', async \(bookPath, chapterId, text, expectedMtimeMs\) => \{/);
-  const start = main.indexOf("handleBook('chapter:save'");
-  const body = main.slice(start, main.indexOf('\n  });', start));
+  const savePath = require('node:path').join(__dirname, '..', 'ipc', 'save.js');
+  const save = require('node:fs').readFileSync(savePath, 'utf8').replace(/\r\n/g, '\n');
+  assert.match(save, /handleBook\('chapter:save', async \(bookPath, chapterId, text, expectedMtimeMs\) => \{/);
+  const start = save.indexOf("handleBook('chapter:save'");
+  const body = save.slice(start, save.indexOf('\n  }, { mutation: MUTATION.SAVE });', start));
   assert.match(body, /expectedMtimeMs\s*\n?\s*\}\);/);
   assert.match(body, /await storage\.prepareChapterSave\(bookPath, chapterId, \{\s*\n\s*windowId: session \? session\.id : null,\s*\n\s*expectedMtimeMs\s*\n\s*\}\);/);
 });

@@ -497,13 +497,15 @@ function loadHandleBookWrapper() {
   throw new Error('handleBook 函数体没有按预期闭合');
 }
 
-test('O6：chapter:save 带 MUTATION.SAVE（保存成功要广播 shelf:changed），14 个频道不回潮 main.js', () => {
-  const saveStart = MAIN.indexOf("handleBook('chapter:save'");
-  assert.ok(saveStart > 0, 'main.js 里找不到 chapter:save');
-  const saveEnd = MAIN.indexOf('\n  }, { mutation: MUTATION.SAVE });', saveStart);
+test('O6：chapter:save 带 MUTATION.SAVE（保存成功要广播 shelf:changed），频道不回潮 main.js', () => {
+  const saveSource = read('ipc/save.js');
+  const saveStart = saveSource.indexOf("handleBook('chapter:save'");
+  assert.ok(saveStart > 0, 'ipc/save.js 里找不到 chapter:save');
+  const saveEnd = saveSource.indexOf('\n  }, { mutation: MUTATION.SAVE });', saveStart);
   assert.ok(saveEnd > saveStart, 'chapter:save 必须带 { mutation: MUTATION.SAVE }（O6）');
-  assert.ok(MAIN.includes("const { MUTATION } = require('./ipc/book-mutations');"), 'main.js 要引 mutation 常量表');
-  assert.ok(MAIN.includes('ipcBookData.register(domainHost);'), 'registerIpc() 要装配书域数据面');
+  assert.ok(saveSource.includes("const { MUTATION } = require('./book-mutations');"), 'ipc/save.js 要引 mutation 常量表');
+  assert.ok(MAIN.includes('ipcSave.register(domainHost);'), 'registerIpc() 要装配保存域');
+  assert.equal(MAIN.includes("handleBook('chapter:save'"), false, 'chapter:save 不许回潮 main.js');
   for (const channel of DATA_CHANNELS) {
     assert.equal(MAIN.includes(`handleBook('${channel}'`), false, `main.js 里又出现了被搬走的频道：${channel}`);
   }
