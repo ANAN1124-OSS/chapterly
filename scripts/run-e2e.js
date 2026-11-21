@@ -99,6 +99,15 @@ const timer = setTimeout(() => {
 }, budgetMs);
 timer.unref();
 
+// TOOL-C-04：spawn 失败（可执行文件不可用 / EMFILE 等）只有 'error' 事件，不触发 'close' ——
+// 以前只挂 close，进程会挂到看门狗超时才报一句「超时」，掩盖真正的启动失败。
+child.on('error', (err) => {
+  clearTimeout(timer);
+  console.error('[e2e] 启动失败：' + (err && err.message ? err.message : String(err)));
+  killProcessTree();
+  finish({ ok: false, code: 1, missingResult: true });
+});
+
 child.on('close', (code) => {
   clearTimeout(timer);
   const match = stdout.match(/E2E_RESULT (.+)/);

@@ -76,6 +76,31 @@ module.exports = async function runScenario(ctx) {
   const restoreSaveDialog = () => {
     dialog.showSaveDialog = originalShowSaveDialog;
   };
+  // TOOL-C-02 / TOOL-C-03：每组统一走这一层收尾 ——
+  //   ① 无论本组成败都还原 showSaveDialog 劫持（组内中途抛错不会把假对话框泄漏到后面所有组）；
+  //   ② 自动化窗口已销毁时只记一条失败并跳过剩余组，不再让每组各自拖满全局超时（看门狗才杀）。
+  let windowGoneReported = false;
+  const automationWindowGone = () => {
+    try {
+      return !win || (typeof win.isDestroyed === 'function' && win.isDestroyed());
+    } catch {
+      return true;
+    }
+  };
+  const runGroup = async (ids) => {
+    if (automationWindowGone()) {
+      if (!windowGoneReported) {
+        windowGoneReported = true;
+        recordFailure('场景循环', '自动化窗口已销毁：跳过剩余组（不再逐组拖满超时）');
+      }
+      return;
+    }
+    try {
+      await e2eGroups.runGroups(groupContext(), ids);
+    } finally {
+      restoreSaveDialog();
+    }
+  };
   // action = 'txt'（默认）| 'epub'：两个入口现在都打开同一个范围对话框（v0.8 P0 N8）
   const openExportDialogFromMenu = async (action = 'txt') => {
     await exec(
@@ -192,194 +217,194 @@ module.exports = async function runScenario(ctx) {
   });
 
   // 0. 界面版本号跟着 package.json 走（正文在 groups/00-version-and-ipc-guard.js）
-  await e2eGroups.runGroups(groupContext(), [0]);
+  await runGroup([0]);
   // 1. 新建书 → 自动打开、自动带一个空章（正文在 groups/01-new-book.js）
-  await e2eGroups.runGroups(groupContext(), [1]);
+  await runGroup([1]);
   // 2. 改名 + 追加两章 → 章号按顺序自动生成（正文在 groups/02-chapter-numbering.js）
-  await e2eGroups.runGroups(groupContext(), [2]);
+  await runGroup([2]);
   // 3. 手动保存整本：写当前章 + 校验全书（正文在 groups/03-save-book.js）
-  await e2eGroups.runGroups(groupContext(), [3]);
+  await runGroup([3]);
 
   // 4. 中间插入 → 章号自动顺延，旧文件一个都不改名（正文在 groups/04-insert-chapter.js）
-  await e2eGroups.runGroups(groupContext(), [4]);
+  await runGroup([4]);
 
   // 5. 未保存时切章 → 选择「不保存」→ 磁盘不变（正文在 groups/05-switch-discard.js）
-  await e2eGroups.runGroups(groupContext(), [5]);
+  await runGroup([5]);
 
   // 6. 未保存时切章 → 选择「保存并切换」→ 磁盘更新（正文在 groups/06-switch-save.js）
-  await e2eGroups.runGroups(groupContext(), [6]);
+  await runGroup([6]);
 
   // 7. 重命名章节（新建的「灯塔」改名为「灯塔改名」）（正文在 groups/07-rename-chapter.js）
-  await e2eGroups.runGroups(groupContext(), [7]);
+  await runGroup([7]);
 
   // 8. 删除章节 → 文件进 _trash，json 移除（正文在 groups/08-delete-chapter.js）
-  await e2eGroups.runGroups(groupContext(), [8]);
+  await runGroup([8]);
 
   // 9. 复制整本：内容 = 导出拼接格式（标题行 + 空行 + 正文）（正文在 groups/09-copy-book.js）
-  await e2eGroups.runGroups(groupContext(), [9]);
+  await runGroup([9]);
 
   // 10. 关窗拦截：未保存 → 取消 → 不退出（正文在 groups/10-close-guard-cancel.js）
-  await e2eGroups.runGroups(groupContext(), [10]);
+  await runGroup([10]);
 
   // 11. 关窗拦截：未保存 → 保存并退出 → 磁盘更新（正文在 groups/11-close-guard-save.js）
-  await e2eGroups.runGroups(groupContext(), [11]);
+  await runGroup([11]);
 
   // 12. 干净状态关窗：不弹窗直接允许（正文在 groups/12-close-clean.js）
-  await e2eGroups.runGroups(groupContext(), [12]);
+  await runGroup([12]);
 
   // 13. 重载窗口（模拟重启）后重新打开书：内容、顺序、上次章节都还在（正文在 groups/13-reload-window.js）
-  await e2eGroups.runGroups(groupContext(), [13]);
+  await runGroup([13]);
 
   // 14. 外部修改检测：模拟用记事本改了当前章，重新获得焦点时提示重新加载（正文在 groups/14-external-change.js）
-  await e2eGroups.runGroups(groupContext(), [14]);
+  await runGroup([14]);
 
   // 15. 损坏书目恢复：从目录 txt 重建（正文在 groups/15-repair-meta.js）
-  await e2eGroups.runGroups(groupContext(), [15]);
+  await runGroup([15]);
 
   // 16. 导入小说：外部文件夹（纯 txt）→ 书架里的一本书（正文在 groups/16-import-folder.js）
-  await e2eGroups.runGroups(groupContext(), [16]);
+  await runGroup([16]);
 
   // 17. 删除小说：整本书进 _trash（e2e 走兜底路径，不往你的回收站丢测试数据）（正文在 groups/17-delete-book.js）
-  await e2eGroups.runGroups(groupContext(), [17]);
+  await runGroup([17]);
 
   // 18. 导入小说收藏夹：每个 txt 是一本书，自动分章（正文在 groups/18-import-collection.js）
-  await e2eGroups.runGroups(groupContext(), [18]);
+  await runGroup([18]);
 
   // 19. 默认「原文件导入」：整篇一章、内容与源文件完全一致（不拆章、不改字）（正文在 groups/19-import-raw.js）
-  await e2eGroups.runGroups(groupContext(), [19]);
+  await runGroup([19]);
 
   // 20. 默认「按原文章节导入」：按原文标题拆章，章名和正文照抄（正文在 groups/20-import-chapters.js）
-  await e2eGroups.runGroups(groupContext(), [20]);
+  await runGroup([20]);
 
   // 21. 章节栏 / 写作区 之间的分隔条可拖动，宽度按「这本书」记忆（不写全局）（正文在 groups/21-sidebar-splitter.js）
-  await e2eGroups.runGroups(groupContext(), [21]);
+  await runGroup([21]);
 
   // 22. 排版：一键整理本章 —— 改正文但不自动写盘，可撤销，落盘为 CRLF（正文在 groups/22-format-chapter.js）
-  await e2eGroups.runGroups(groupContext(), [22]);
+  await runGroup([22]);
 
   // 23. 显示排版：预设 / 设置实时预览与取消恢复（按书记忆：只影响这本书，全局默认不动）（正文在 groups/23-display-format.js）
-  await e2eGroups.runGroups(groupContext(), [23]);
+  await runGroup([23]);
 
   // 24. 审阅修复复核：① 整理/撤销不把光标打回章首；② 关窗询问能压住排版弹层（正文在 groups/24-review-fixes.js）
-  await e2eGroups.runGroups(groupContext(), [24]);
+  await runGroup([24]);
 
   // 25. 智能排版（对齐口袋写作）：缩进 0 字符 / 空一行（含缩进）（正文在 groups/25-smart-format.js）
-  await e2eGroups.runGroups(groupContext(), [25]);
+  await runGroup([25]);
 
   // 26. 口袋写作同款显示项：字体文件（.ttf）、夜间、纸张纹理、左右边距（正文在 groups/26-display-options.js）
-  await e2eGroups.runGroups(groupContext(), [26]);
+  await runGroup([26]);
 
   // 27. 章节拖拽排序：只改书目顺序，章节文件永不重命名，内容跟着章节走（正文在 groups/27-drag-sort.js）
-  await e2eGroups.runGroups(groupContext(), [27]);
+  await runGroup([27]);
 
   // 28. 全书查找 / 替换（替换前自动备份原章节）（正文在 groups/28-find-replace.js）
-  await e2eGroups.runGroups(groupContext(), [28]);
+  await runGroup([28]);
 
   // 29. 只替换这一处：只改编辑区、替换后选中下一处、只作用于当前章（正文在 groups/29-replace-one.js）
-  await e2eGroups.runGroups(groupContext(), [29]);
+  await runGroup([29]);
 
   // 30. 整本替换的备份还原：列出备份 → 二次确认 → 正文回到替换前（当前内容再备份一份）（正文在 groups/30-replace-backup.js）
-  await e2eGroups.runGroups(groupContext(), [30]);
+  await runGroup([30]);
 
   // 31. 撤销整理：快照上限 10 → 50，菜单显示还能撤销几步（正文在 groups/31-undo-format.js）
-  await e2eGroups.runGroups(groupContext(), [31]);
+  await runGroup([31]);
 
   // 32. 标点扩展：直引号 / 省略号（默认关，勾上才转，预览里给统计）（正文在 groups/32-punct-extend.js）
-  await e2eGroups.runGroups(groupContext(), [32]);
+  await runGroup([32]);
 
   // 33. 书架搜索：书名 + 章节名（不读正文）（正文在 groups/33-shelf-search.js）
-  await e2eGroups.runGroups(groupContext(), [33]);
+  await runGroup([33]);
 
   // 34. 按书记忆显示设置：两本书互不影响，恢复默认回全局（正文在 groups/34-per-book-display.js）
-  await e2eGroups.runGroups(groupContext(), [34]);
+  await runGroup([34]);
 
   // 35. 新建 / 插入章节前自动保存当前章（不再弹「保存 / 不保存 / 取消」）（正文在 groups/35-auto-save.js）
-  await e2eGroups.runGroups(groupContext(), [35]);
+  await runGroup([35]);
 
   // 36. 一键整理本书：复用当前规则 + 确认框 + 整本备份 + 进度（正文在 groups/36-format-book.js）
-  await e2eGroups.runGroups(groupContext(), [36]);
+  await runGroup([36]);
 
   // 37. 章节状态 + 备注：只改书目.json，章节 txt 一个字节不动（正文在 groups/37-chapter-status.js）
-  await e2eGroups.runGroups(groupContext(), [37]);
+  await runGroup([37]);
 
   // 38. 复制本章（平台格式）：只复制正文、段首缩进 + 段间空一行（空行带缩进），不写盘（正文在 groups/38-copy-chapter.js）
-  await e2eGroups.runGroups(groupContext(), [38]);
+  await runGroup([38]);
 
   // 39. 范围 / 分卷导出（v0.5-3）：全书 / 某卷 / 第 X–Y 章，文件名和内容都按范围来（正文在 groups/39-range-export.js）
-  await e2eGroups.runGroups(groupContext(), [39]);
+  await runGroup([39]);
 
   // 40. 继续上次写作 + Ctrl+G 跳章（v0.5-4）（正文在 groups/40-continue-writing.js）
-  await e2eGroups.runGroups(groupContext(), [40]);
+  await runGroup([40]);
 
   // 41. 书目 schemaVersion + 同步冲突副本检测（v0.5-5）（正文在 groups/41-schema-conflict.js）
-  await e2eGroups.runGroups(groupContext(), [41]);
+  await runGroup([41]);
 
   // 42. 本书历史面板（v0.6-1）：统一列出 / 预览 / 还原 _trash 备份（正文在 groups/42-book-history.js）
-  await e2eGroups.runGroups(groupContext(), [42]);
+  await runGroup([42]);
 
   // 43. 可选每日快照（v0.6-2，默认关）：Ctrl+S 时当天首次留上一版，按天数清理（正文在 groups/43-daily-snapshot.js）
-  await e2eGroups.runGroups(groupContext(), [43]);
+  await runGroup([43]);
 
   // 44. 每日字数统计 + 写作目标（v0.6-3，提案 3.2）（正文在 groups/44-stats-goal.js）
-  await e2eGroups.runGroups(groupContext(), [44]);
+  await runGroup([44]);
 
   // 45. 导出 EPUB（v0.7-1）：整本书 → EPUB 3；分卷做目录级、一章一个 XHTML、纯文字封面（正文在 groups/45-export-epub.js）
-  await e2eGroups.runGroups(groupContext(), [45]);
+  await runGroup([45]);
 
   // 46. 校对面板（v0.7-2，提案 5.1）：只报告、不改动；当前章 / 整本都能跑，点一条跳到正文（正文在 groups/46-proofread.js）
-  await e2eGroups.runGroups(groupContext(), [46]);
+  await runGroup([46]);
 
   // 47. 灵感箱（v0.7-3，提案 3.4）：碎片是书架 _碎片 里的普通 txt；插入只改编辑区、不写盘（正文在 groups/47-fragments.js）
-  await e2eGroups.runGroups(groupContext(), [47]);
+  await runGroup([47]);
 
   // 48. 敏感词预检（v0.7-3，提案 5.2）：词表归作者管理、应用不内置词表；只报告、不改动、不写盘（正文在 groups/48-sensitive-words.js）
-  await e2eGroups.runGroups(groupContext(), [48]);
+  await runGroup([48]);
 
   // 49. 朗读本章（v0.7-3，提案 5.3）：系统语音只读正文、不改字、不写盘（正文在 groups/49-tts.js）
-  await e2eGroups.runGroups(groupContext(), [49]);
+  await runGroup([49]);
 
   // 50. 编辑器小件（v0.7-4，提案 4.1）：选中字数 / 超长段落提示 / 不可见字符 ␣ / Alt+↑↓ 段落导航 / 章节字数对比（正文在 groups/50-editor-widgets.js）
-  await e2eGroups.runGroups(groupContext(), [50]);
+  await runGroup([50]);
 
   // 51. 专注模式（提案 3.5）：隐藏左栏与顶栏、F11 / 按钮进出、Esc 退出、打字机模式（正文在 groups/51-focus-mode.js）
-  await e2eGroups.runGroups(groupContext(), [51]);
+  await runGroup([51]);
 
   // 52. 崩溃与错误日志（v0.9 B-7：整段搬到 scripts/e2e/groups/52-crash-logs.js，这里只在原位按组号跑）
-  await e2eGroups.runGroups(groupContext(), [52]);
+  await runGroup([52]);
   // 53. 正文全文搜索索引（v0.9 B-7：整段搬到 scripts/e2e/groups/53-search-index.js，这里只在原位按组号跑）
   // 索引只写 userData\search-index.json（不进书库、不含正文），靠每章 mtime/size 增量更新。
-  await e2eGroups.runGroups(groupContext(), [53]);
+  await runGroup([53]);
 
   // 54. 检查更新（v0.9 B-7：整段搬到 scripts/e2e/groups/54-check-update.js，这里只在原位按组号跑）
   //     网络走主进程假响应（update:test-mock）；54h 的「标题统一测试书」由组文件自己造、自己删。
-  await e2eGroups.runGroups(groupContext(), [54]);
+  await runGroup([54]);
 
   // 56. Electron 安全开关与窗口行为（v0.9 C-1；v0.9 B-7：整段搬到 scripts/e2e/groups/56-security-switches.js）
   //     窗口 webPreferences / CSP / 权限拒绝 / 单实例锁都在组文件里复核，这里只在原位按组号跑。
-  await e2eGroups.runGroups(groupContext(), [56]);
+  await runGroup([56]);
 
   // 57. IPC 路径入口审计（v0.9 C-2；v0.9 B-7：整段搬到 scripts/e2e/groups/57-ipc-paths.js）
   //     路径 / 文件名的越界拒绝与「被拒无副作用」都在组文件里复核，这里只在原位按组号跑。
-  await e2eGroups.runGroups(groupContext(), [57]);
+  await runGroup([57]);
 
   // 58. 配置来源校验（v0.9 C-2b，安全审计 C1 的延伸；v0.9 B-7：整段搬到 scripts/e2e/groups/58-config-gate.js）
   //     config:set 的三项磁盘配置只认「主进程对话框刚选中的路径」/ 原值 / 空串，这里只在原位按组号跑。
-  await e2eGroups.runGroups(groupContext(), [58]);
+  await runGroup([58]);
 
   // 59. 导入 / 导出边界（v0.9 C-3；v0.9 B-7：整段搬到 scripts/e2e/groups/59-import-export.js）
   //     EPUB / DOCX 条目名白名单、另存为默认文件名、超大与二进制 txt 的导入边界都在组文件里复核，这里只在原位按组号跑。
-  await e2eGroups.runGroups(groupContext(), [59]);
+  await runGroup([59]);
 
   // 60 起的组（v0.9 B-7）：断言原样拆到 scripts/e2e/groups/，这里只按组号顺序跑；
   // 顺序与原文件一致（60 → 61 → … → 83，之后才是 55 多窗口）。组的上下文与第 52 组同一份。
   // 第 72 组（剪贴板面板）2026-11-07 随面板改单列表视图整组重写，仍由 idsFrom(60) 排在组尾。
-  await e2eGroups.runGroups(groupContext(), e2eGroups.idsFrom(60));
+  await runGroup(e2eGroups.idsFrom(60));
 
   // 55. 多窗口（提案 7.2；v0.9 B-6：整段搬到 scripts/e2e/groups/55-multiwindow.js）
   //     书卡右键「在新窗口打开」/ 禁止同书双开 / 跨窗口删改拦截 / 各自编辑保存 /
   //     关一个窗口不退出、最后窗口关闭才退出 / 各自未保存拦截 / 继续上次写作 /
   //     书架刷新 / 旧书兼容 / 书库无多余文件都在组文件里复核，这里只在原位按组号跑。
-  await e2eGroups.runGroups(groupContext(), [55]);
+  await runGroup([55]);
 
   // 1.6.0 G2：整轮跑完再统一判失败（check 累计失败 + 组级场景异常都进 details），不再第一处就全停。
   const summary = harness.summary();

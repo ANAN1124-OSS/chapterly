@@ -71,9 +71,21 @@ function createHarness(ctx) {
     await sleep(ms);
   };
 
+  // TOOL-C-03：窗口销毁后继续轮询只是白等（每组要拖满 timeout 才失败，看门狗才杀）。
+  // 没有窗口对象（部分单测的假 ctx）时不判「已销毁」，保持旧行为。
+  const windowGone = () => {
+    try {
+      return Boolean(win) && typeof win.isDestroyed === 'function' && win.isDestroyed();
+    } catch {
+      return true;
+    }
+  };
+
   const waitFor = async (expr, timeout = 10000) => {
     const startedAt = Date.now();
     for (;;) {
+      // 窗口已销毁：立即以可识别的错误结束本次等待（场景层据此跳过剩余组）。
+      if (windowGone()) throw new Error(`窗口已销毁，停止等待：${expr}`);
       let value;
       try {
         value = await exec(expr);
