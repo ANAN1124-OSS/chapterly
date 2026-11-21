@@ -61,8 +61,14 @@ test('静态闸门：五个消费者都走共享函数，没有第二份 event.i
   assert.equal(rendererCode.split('imeGuard.isImeComposing(event)').length - 1, 4, 'renderer.js 的 4 处提交键');
   assert.equal(
     codeOf(consumers['shelf-view-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
-    1,
-    '书架搜索框的 Enter 仍走共享守卫（A3-B 后）'
+    2,
+    '书架搜索框的 Enter 与 Esc 都走共享守卫（A3-B 后 Enter；RSHE-C-02 补 Esc）'
+  );
+  // RSHE-C-02：命令面板的 Esc 分支也接了同一份守卫（Enter + Esc = 2 处）。
+  assert.equal(
+    codeOf(consumers['command-palette-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
+    2,
+    '命令面板的 Enter 与 Esc 都走共享守卫（RSHE-C-02）'
   );
   assert.equal(rendererCode.split('!imeGuard.isImeComposing(event)').length - 1, 1, 'Ctrl+K 的取反判据');
   assert.equal(

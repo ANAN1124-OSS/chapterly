@@ -446,6 +446,17 @@ test('A3-B / B5：bindShelfEvents——输入走 250ms 防抖 + 下一帧（不�
     assert.equal(rt.counts.resetContent, 1);
     assert.equal(rt.counts.renderShelf, 2, 'Esc 立即重画');
 
+    // RSHE-C-02：输入法组字中的 Esc 是「取消候选词」，不许清空搜索词 / 重画（与 Enter 同口径）。
+    rt.setIme(true);
+    search.value = '书目';
+    rt.state.shelfQuery = '书目';
+    const composingEsc = search.emit('keydown', { key: 'Escape' });
+    assert.equal(composingEsc.defaultPrevented, undefined, '组字中的 Esc 不许 preventDefault');
+    assert.equal(search.value, '书目', '组字中的 Esc 不许清空搜索词');
+    assert.equal(rt.state.shelfQuery, '书目');
+    assert.equal(rt.counts.resetContent, 1, '组字中的 Esc 不许清正文结果');
+    rt.setIme(false);
+
     // 清空按钮：同上 + 焦点回到搜索框。
     rt.counts.renderShelf = 0;
     rt.counts.resetContent = 0;

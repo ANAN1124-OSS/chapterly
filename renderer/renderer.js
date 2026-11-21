@@ -434,19 +434,26 @@
     shelfGroup: '', // 书架分组筛选：'' = 全部分组；'__none__' = 未分组；其它 = 分组名（只记内存）
     shelfTag: '', // 书架标签筛选（1.6.0 F5）：'' = 全部标签；其它 = 标签全名（只记内存，与分组 / 搜索 AND）
     // 书架「正文命中」结果（提案 7.3）：搜索走主进程索引，这里只存展示用的结果
+    // 书架正文搜索结果区（P22-4）：**字段写入者的唯一声明处**（RSHE-C-04）。
+    //   · shelf-search-ui.js：query / token / timer / loading / results / meta / error /
+    //     indexStatus / expanded 的整套初值与重置，以及 expanded 的展开 / 收起；
+    //   · shelf-view-ui.js：shown（「显示更多」按钮 +CONTENT_PAGE_SIZE）；
+    //   · shelf-filter-ui.js：只读渲染（renderShelfContent / updateShelfSearchUi），一个字段都不写。
+    // 新增 / 改名字段时只改这一处注释 + 对应写入者，不要再让模块头注释各说一套。
     shelfContent: {
-      query: '', // 这批结果对应的查询词
-      token: 0, // 丢弃过期结果（快速改词时）
-      loading: false, // 正在查正文
-      timer: null, // 输入防抖
+      query: '', // 这批结果对应的查询词（shelf-search-ui 写）
+      token: 0, // 丢弃过期结果（快速改词时；shelf-search-ui 写）
+      loading: false, // 正在查正文（shelf-search-ui 写）
+      timer: null, // 输入防抖（shelf-search-ui 写）
       results: [], // [{ bookPath, bookTitle, chapterIndex, chapterName, matchIndex, snippet }]
       meta: null, // 主进程回报的统计：candidateBooks / scannedBooks / truncated / 索引状态
       error: null, // 搜索失败的原因（只影响正文结果，不影响书名过滤）
-      shown: CONTENT_PAGE_SIZE, // 已经展示几条（「显示更多」每次 +8）
+      shown: CONTENT_PAGE_SIZE, // 已经展示几条（shelf-view-ui 的「显示更多」每次 +8）
       // P22-4：按「书 + 章」展开过的结果（key → { loading, rows, error, truncated }），
-      // 由 shelf-search-ui.js 维护；换查询 / 重新搜索 / 收起都清这里，不写盘。
+      // key 走 core/common.js 的 contentGroupKey（RSHE-C-03，两个模块共用一份算法）；
+      // 由 shelf-search-ui.js 写；换查询 / 重新搜索 / 收起都清这里，不写盘。
       expanded: {},
-      indexStatus: null // 索引状态 / 建索引进度（只用于提示，不落盘）
+      indexStatus: null // 索引状态 / 建索引进度（只用于提示，不落盘；shelf-search-ui 写）
     },
     stats: null, // 每日字数摘要：{ day, todayChars, goal, goalPercent, goalMet, recentTotal, days[], streak }
     calendar: null, // 设置里显示的码字日历月视图（只读；翻月时由 stats:calendar 换）

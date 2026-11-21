@@ -94,7 +94,12 @@
       if (!list) return false;
       list.textContent = '';
       const query = inputEl() ? inputEl().value : '';
-      rows = registry.search(takeItems(), query).slice(0, MAX_ROWS);
+      const found = registry.search(takeItems(), query);
+      rows = found.slice(0, MAX_ROWS);
+      // RSHE-C-07：截断要留话。千章书的空查询会被「命令 + 章节」占满 60 行，书条目整组被切掉；
+      // 以前没有任何提示，作者会以为「书不在命令面板里」。列表尾补一行 muted 说明（不进 rows，
+      // 键盘 / aria-activedescendant 完全不受影响）。
+      const truncated = found.length > MAX_ROWS;
       if (!rows.length) {
         active = 0;
         if (emptyEl()) {
@@ -144,6 +149,14 @@
       });
       const el = inputEl();
       if (el) el.setAttribute('aria-activedescendant', `command-option-${active}`);
+      // 截断说明（RSHE-C-07）：放在最后，颜色 / 字号走通用 muted small，不参与键盘选择。
+      if (truncated && doc) {
+        const note = doc.createElement('div');
+        note.className = 'command-truncated muted small';
+        note.setAttribute('role', 'presentation');
+        note.textContent = `只显示前 ${MAX_ROWS} 条，输入关键词筛选`;
+        list.appendChild(note);
+      }
       scrollActiveIntoView();
       return true;
     }
@@ -260,6 +273,10 @@
         return true;
       }
       if (key === 'Escape') {
+        // RSHE-C-02：与 Enter 同口径 —— 组字中按 Esc 是「取消候选词」，不是收起面板。
+        // ime-guard 的判据覆盖「只报 keyCode 229 的旧版 / 第三方输入法」，这些环境里
+        // keydown 的 key 未必是 'Escape' 之外的 'Process'，所以同一份守卫必须前置。
+        if (imeGuard.isImeComposing(event)) return false;
         if (typeof event.preventDefault === 'function') event.preventDefault();
         closePalette();
         return true;

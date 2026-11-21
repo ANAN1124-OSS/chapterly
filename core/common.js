@@ -332,6 +332,20 @@
     };
   }
 
+  // 正文搜索结果的「书 + 章」组键（RSHE-C-03 / P22-4 展开状态）：分隔符是 U+0000，
+  // 保证「书路径 + 章文件名」两段拼接不会和别的组合撞车。
+  // 为什么放在这里：书架正文搜索模块（写 content.expanded[key]）与书架筛选模块（读同一个 key
+  // 渲染 / 写进 button.dataset.group）各抄过一份逐字相同的 7 行；两份一旦漂移（分隔符 / 字段 /
+  // 归一方式），「展开本章全部」会静默失效且无测试报警。这是「两个以上模块都要用的纯计算」，
+  // 符合本文件的收纳原则；行为与两份旧实现逐字一致（非法行返回 ''）。
+  function contentGroupKey(row) {
+    if (!row || typeof row !== 'object') return '';
+    const bookPath = typeof row.bookPath === 'string' ? row.bookPath : '';
+    const chapterFile = typeof row.chapterFile === 'string' ? row.chapterFile : '';
+    if (!bookPath || !chapterFile) return '';
+    return bookPath + '\u0000' + chapterFile;
+  }
+
   return {
     pad2,
     clampInt,
@@ -354,6 +368,7 @@
     isValidDayKey,
     dayKeyOf,
     createKeyedWriteQueue,
-    createWriteQueue
+    createWriteQueue,
+    contentGroupKey
   };
 });

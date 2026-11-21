@@ -10,8 +10,9 @@
  *   renderShelfContent（正文结果区：摘要文案 / 结果行 / 高亮片段 / 显示更多 / 空态）·
  *   updateShelfSearchUi（搜索摘要文案 + 清除按钮显隐）。
  * 全是内存过滤与 DOM 渲染：本模块**绝不读正文、不写盘、不改 config / 数据格式 / IPC 白名单**。
- * **只搬不改行为**：正文搜索最少 2 字、章名命中最多 3 条、结果每次多显示 8 条（state.shelfContent.shown
- * 由正文搜索模块维护）、所有文案与 class 名一字未改。
+ * **只搬不改行为**：正文搜索最少 2 字、章名命中最多 3 条、结果每次多显示 8 条（state.shelfContent
+ * 的字段写入者见 renderer.js 的 state 初始化注释——shown 由 shelf-view-ui 的「显示更多」累加，
+ * 本模块只读不写，RSHE-C-04）、所有文案与 class 名一字未改。
  *
  * 契约：createShelfFilterUi(host) 由渲染层调用一次，host 提供：
  *   host = { state, $, bookInfoLib, chapterTitle, openContentResult, CONTENT_SEARCH_MIN_CHARS }
@@ -119,13 +120,9 @@
   // ---------- 正文命中：按「书 + 章」聚合（P22-4） ----------
   // 一次搜索里同一章的结果在 results 里天然连续（索引逐书逐章扫），所以按连续段分组即可；
   // 组键只用于「展开过哪几章」的状态，不写盘、不进 state 以外的地方。
-  function contentGroupKey(row) {
-    if (!row || typeof row !== 'object') return '';
-    const bookPath = typeof row.bookPath === 'string' ? row.bookPath : '';
-    const chapterFile = typeof row.chapterFile === 'string' ? row.chapterFile : '';
-    if (!bookPath || !chapterFile) return '';
-    return bookPath + '\u0000' + chapterFile;
-  }
+  // RSHE-C-03：组键算法只有 core/common.js 一份（正文搜索模块写 content.expanded[key]，
+  // 这里读同一个 key；以前两份逐字重复，任一份改动都会让「展开本章全部」静默失效）。
+  const contentGroupKey = common.contentGroupKey;
 
   function contentHitCount(row, fallback) {
     const value = row ? Number(row.chapterMatchCount) : NaN;

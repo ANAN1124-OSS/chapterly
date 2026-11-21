@@ -264,6 +264,56 @@ test('Enter 执行：先记最近使用、再收起、再跑（顺序反了会�
   assert.equal(closed.length, 1);
 });
 
+test('输入法组字中的 Esc 不收起面板（RSHE-C-02：与 Enter 同口径）', () => {
+  const { ui, $, closed } = build();
+  ui.open(null);
+  ui.setup();
+  const input = $('command-input');
+  let prevented = 0;
+  const fire = (event) => {
+    input._listeners.filter((l) => l.type === 'keydown').forEach((l) => l.fn(event));
+  };
+  // 组字中按 Esc 是「取消候选词」，不能把面板整个关掉
+  fire({ key: 'Escape', isComposing: true, preventDefault() { prevented += 1; } });
+  assert.equal(ui.isOpen(), true, '组字中的 Esc 不许收起面板');
+  assert.equal(prevented, 0, '组字中的 Esc 也不该拦默认行为');
+  // V112 的防御性加固：只报 keyCode 229 的旧版 / 第三方输入法同样不收起
+  fire({ key: 'Escape', keyCode: 229, preventDefault() { prevented += 1; } });
+  assert.equal(ui.isOpen(), true);
+  assert.equal(prevented, 0);
+  // 组字结束后普通 Esc：旧行为不变（收起并交回 onClose）
+  fire({ key: 'Escape', preventDefault() {} });
+  assert.equal(ui.isOpen(), false);
+  assert.equal(closed.length, 1);
+});
+
+test('RSHE-C-07：超过 MAX_ROWS 时列表尾补一行截断提示，键盘选择不受影响', () => {
+  const items = [];
+  for (let i = 0; i < 65; i += 1) {
+    items.push({ id: `chapter:${i}`, title: `第${i + 1}章：某章`, group: 'chapter', keywords: [], run: () => {} });
+  }
+  const { ui, $ } = build({ items: () => items.map((item) => ({ ...item })) });
+  ui.open(null);
+  // 60 条上限：只画 60 行，且明确告诉作者还有内容没显示、下一步怎么找
+  assert.equal($('command-list').querySelectorAll('.command-row').length, 60);
+  const note = walk($('command-list')).find((el) => el.className === 'command-truncated muted small');
+  assert.ok(note, '截断时必须有可见提示行');
+  assert.match(note.textContent, /只显示前 60 条/);
+  assert.match(note.textContent, /输入关键词筛选/);
+  // 提示行不进 rows：Home / End / 上下移动仍只在前 60 条里走
+  assert.equal(ui.visibleRows().length, 60);
+  ui.setActive(59);
+  // 检索器会按「最近用过 / 组序」重排，所以比对的是画出来的第 60 行，不是垫进去的第 60 条
+  assert.equal(ui.activeItem().id, $('command-list').querySelectorAll('.command-row')[59].dataset.commandId);
+  // 不截断时不许出现提示行（避免无内容也占一行）
+  const small = build();
+  small.ui.open(null);
+  assert.equal(
+    walk(small.$('command-list')).some((el) => el.className === 'command-truncated muted small'),
+    false
+  );
+});
+
 test('Esc 收起并把打开它的元素交回 onClose；Ctrl+K 再按一次也收起且不外泄', () => {
   const { ui, $, closed } = build();
   const opener = makeEl('button', $('command-backdrop'));

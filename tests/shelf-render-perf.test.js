@@ -57,12 +57,18 @@ test('静态闸门：Esc / 清空仍立即重渲染；E2E 测试钩子仍同步�
   // keydown 里 Esc / Enter 的处理：Esc 立即 renderShelf（不等防抖）。
   // 2026-11-10 卷章目录新增了第二个输入框 Esc（筛选清空），所以这里从书架搜索框的
   // keydown 起切，不再抓全文件第一个 Escape。
+  // RSHE-C-02 起 Esc 分支第一行是 IME 守卫（`return;` 提前），所以切到下一个事件段为止，
+  // 不能再用「第一个 return;」当收尾。
   const escRender = sliceBetween(
     SHELF_VIEW,
     "$('shelf-search').addEventListener('keydown', (event) => {",
-    'return;'
+    "$('btn-shelf-search-clear')"
   );
   assert.ok(escRender.includes('renderShelf();'), 'Esc 清空后要立即重渲染（旧行为）');
+  assert.ok(
+    /if \(event\.key === 'Escape'\) \{[\s\S]*?imeGuard\.isImeComposing\(event\)/.test(escRender),
+    'RSHE-C-02：Esc 分支必须先过 IME 守卫（组字中的 Esc 是取消候选词）'
+  );
   const clearBlock = sliceBetween(
     SHELF_VIEW,
     "$('btn-shelf-search-clear').addEventListener('click'",

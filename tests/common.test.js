@@ -354,12 +354,14 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
   // 对外形状固定：多一个少一个都要在评审里看到（formatCount 是 2026-11-04 拍板 #1 新增的共享格式化；
   // stripBom / normalizeText / lineStartsOf / positionOf / mapLimit / nowIso 是 B6 收编进来的；
   // caseFoldForMatch / normalizeForMatch 是 v1.8.0 WP-25 收编的大小写归一，X7 / V205；
-  // toHalfWidth / HAN_RANGES / formatByteSize / MAX_TEXT_BYTES 是 v1.8.0 WP-31 收编的 A2/A3）
+  // toHalfWidth / HAN_RANGES / formatByteSize / MAX_TEXT_BYTES 是 v1.8.0 WP-31 收编的 A2/A3；
+  // contentGroupKey 是 RSHE-C-03 收编的「书 + 章」搜索组键，书架两个模块共用）
   assert.deepEqual(Object.keys(common).sort(), [
     'HAN_RANGES',
     'MAX_TEXT_BYTES',
     'caseFoldForMatch',
     'clampInt',
+    'contentGroupKey',
     'createKeyedWriteQueue',
     'createWriteQueue',
     'dayKeyOf',
@@ -571,6 +573,32 @@ test('静态闸门：UMD 模块在 Node 分支也把 core 依赖传给工厂', (
     /root\.CWEditorLogic = factory\(root\.CWCommon, root\.CWChapters, root\.CWParagraphs\);/.test(editorLogic),
     '浏览器分支要传 window.CWChapters 与 window.CWParagraphs'
   );
+});
+
+// RSHE-C-03：正文搜索结果的「书 + 章」组键只有 core/common.js 一份实现。
+// 书架正文搜索模块写 content.expanded[key]，书架筛选模块读同一个 key 渲染并写 button.dataset.group；
+// 两份各自维护时任一漂移（分隔符 / 字段 / 归一方式）都会让「展开本章全部」静默失效且无测试报警。
+test('contentGroupKey：书 + 章组键的唯一定义，非法行返回空串，分隔符不会与内容撞车', () => {
+  const { contentGroupKey } = require('../core/common');
+  assert.equal(typeof contentGroupKey, 'function');
+  assert.equal(contentGroupKey({ bookPath: '/书库/甲', chapterFile: '001-起风.txt' }), '/书库/甲\u0000001-起风.txt');
+  // 非法 / 缺字段一律空串（调用方按「不可分组」处理，不猜）
+  for (const row of [null, undefined, 'x', 42, {}, { bookPath: '/书库/甲' }, { chapterFile: 'a.txt' }, { bookPath: '', chapterFile: 'a.txt' }]) {
+    assert.equal(contentGroupKey(row), '', JSON.stringify(row));
+  }
+  // 分隔符是 NUL：路径里出现普通空格 / 竖线时不会和「书 + 章」的另一组合撞成同一个 key
+  assert.notEqual(
+    contentGroupKey({ bookPath: '/a', chapterFile: 'b c.txt' }),
+    contentGroupKey({ bookPath: '/a b', chapterFile: 'c.txt' })
+  );
+  // 静态闸门：两个消费者都不许再长回本地副本（漂移会让展开状态跨模块配不上）
+  const searchSrc = read('renderer/shelf-search-ui.js');
+  const filterSrc = read('renderer/shelf-filter-ui.js');
+  for (const [rel, src] of [['renderer/shelf-search-ui.js', searchSrc], ['renderer/shelf-filter-ui.js', filterSrc]]) {
+    assert.ok(src.includes('common.contentGroupKey'), `${rel} 必须用 core/common.js 的组键`);
+    assert.equal(/function contentGroupKey\s*\(/.test(src), false, `${rel} 不许再定义本地 contentGroupKey`);
+    assert.ok(src.includes("require('../core/common')"), `${rel} 的 Node 分支要取 core/common`);
+  }
 });
 
 test('静态闸门：main.js 不再留着已搬走的死代码（sleep 已随 B-1 / B-3 清掉）', () => {

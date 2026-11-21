@@ -128,6 +128,8 @@
     });
     $('shelf-search').addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
+        // RSHE-C-02：组字中按 Esc 是取消候选词，不该清空搜索词（与下面 Enter 同一份守卫）。
+        if (imeGuard.isImeComposing(event)) return;
         event.preventDefault();
         state.shelfQuery = '';
         $('shelf-search').value = '';

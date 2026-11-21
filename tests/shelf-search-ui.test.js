@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const vm = require('node:vm');
 const shelfSearchUi = require('../renderer/shelf-search-ui');
 const { loadSourceGate, withoutGlobals } = require('./ui-test-preambles');
@@ -583,19 +585,21 @@ test('静态闸门：index.html 在 renderer.js 之前加载 shelf-search-ui.js�
   assert.equal(indexSrc.split('shelf-search-ui.js').length - 1, 1);
   // 顺序：statusbar-ui.js → shelf-search-ui.js → renderer.js
   assert.ok(indexSrc.indexOf('<script src="statusbar-ui.js"></script>') < at);
-  // 模块自己挂全局 CWShelfSearchUi，渲染层按这个全局名字取
+  // 模块自己挂全局 CWShelfSearchUi，渲染层按这个全局名字取。
+  // RSHE-C-03：组键算法来自 core/common.js（浏览器分支取 window.CWCommon），assertHost 仍是第二个依赖。
   assert.match(
     moduleSrc,
-    /root\.CWShelfSearchUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost\);/
+    /root\.CWShelfSearchUi = factory\(root\.CWCommon, root\.CWAssertHost && root\.CWAssertHost\.assertHost\);/
   );
   assert.match(rendererSrc, /const shelfSearchUiModule = window\.CWShelfSearchUi;/);
 });
 
 test('静态闸门：模块不摸文件系统 / IPC / DOM / 存储，只读写 state.shelfContent', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
-  // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
+  // RSHE-C-03 起同一条分支还取 core/common.js（组键算法唯一一份）。
+  const assertHostBranch =
+    "module.exports = factory(require('../core/common'), require('../core/assert-host').assertHost);";
+  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须取 core/common.js 与 core/assert-host.js');
   const runtimeCode = moduleCode.split(assertHostBranch).join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'document.', 'addEventListener', 'window.']) {
     assert.equal(runtimeCode.includes(forbidden), false, forbidden);
@@ -612,6 +616,10 @@ test('静态闸门：模块不摸文件系统 / IPC / DOM / 存储，只读写 s
 test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWShelfSearchUi，且不乱造别的全局', () => {
   const win = {};
   const context = vm.createContext(win);
+  // RSHE-C-03：core/common.js 必须先加载（浏览器里由 index.html 保证，这里同序模拟）。
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'core', 'common.js'), 'utf8'), context, {
+    filename: 'core/common.js'
+  });
   vm.runInContext(moduleSrc, context, { filename: 'renderer/shelf-search-ui.js' });
   assert.equal(typeof win.CWShelfSearchUi, 'object');
   assert.deepEqual(Object.keys(win.CWShelfSearchUi).sort(), ['REQUIRED_HOST', 'create']);

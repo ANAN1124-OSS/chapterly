@@ -26,18 +26,24 @@
  * 本模块交出的 4 个入口。create() 不注册任何事件、不碰 DOM、不建定时器。
  * runContentSearch 是内部件（区外 0 引用），不导出（导出会让 sweep ⑤ 新增一条无消费者导出）。
  *
- * 浏览器里挂成全局 CWShelfSearchUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
+ * 浏览器里挂成全局 CWShelfSearchUi（index.html 排在 core/common.js 与 renderer.js 之前），Node 里可以直接 require。
+ * 组键 contentGroupKey 走 core/common.js 的唯一一份实现（RSHE-C-03）：shelf-filter-ui 读同一个 key。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../core/assert-host').assertHost);
+    module.exports = factory(require('../core/common'), require('../core/assert-host').assertHost);
   } else if (root) {
-    root.CWShelfSearchUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
+    root.CWShelfSearchUi = factory(root.CWCommon, root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (common, assertHost) {
   'use strict';
 
   const REQUIRED_HOST = ['state', 'renderShelfContent', 'renderShelf', 'shelfQueryText', 'shelfContentActive', 'call', 'api', 'openBookByPath', 'CONTENT_PAGE_SIZE', 'CONTENT_SEARCH_DEBOUNCE', 'CONTENT_RESULT_LIMIT'];
+
+  // core/common.js 必须先加载（index.html 里排在本模块之前）；缺了直接报错，不许退回本地副本。
+  if (!common || typeof common.contentGroupKey !== 'function') {
+    throw new Error('CWShelfSearchUi：core/common.js 没有先加载');
+  }
 
   function createShelfSearchUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
@@ -113,13 +119,9 @@
   // 展开一章的全部命中（P22-4）：只发「书 + 章」两个定位字段，正文仍只在主进程读；
   // 返回的每条结果都带 snippet / matchIndex，渲染层照旧点一条打开并定位。
   // 不做任何写盘 / IPC 扩展：复用 search:content，靠 options.focus 让主进程只读这一章。
-  function contentGroupKey(row) {
-    if (!row || typeof row !== 'object') return '';
-    const bookPath = typeof row.bookPath === 'string' ? row.bookPath : '';
-    const chapterFile = typeof row.chapterFile === 'string' ? row.chapterFile : '';
-    if (!bookPath || !chapterFile) return '';
-    return bookPath + '\u0000' + chapterFile;
-  }
+  // RSHE-C-03：组键算法只有 core/common.js 一份（书架筛选模块读同一个 key，漂移会让
+  // 「展开本章全部」静默失效）。
+  const contentGroupKey = common.contentGroupKey;
 
   async function expandContentChapter(row, options = {}) {
     const content = state.shelfContent;

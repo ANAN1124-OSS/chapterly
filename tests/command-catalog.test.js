@@ -204,6 +204,24 @@ test('命令目录：? 页行 = 8 条带键帽的命令 + 系统键（各带分�
   assert.match(SHORTCUTS_UI, /row\.scope/, '系统键的作用范围要画出来');
 });
 
+test('RSHE-C-06：? 页全部键帽无重复（系统键不许与命令表的 kbd 撞车）', () => {
+  const catalog = require(path.join(ROOT, 'renderer', 'command-catalog.js'));
+  const rows = catalog.shortcutRows({ command: '命令' });
+  const kbds = rows.map((row) => row.kbd);
+  // 键帽是展示层唯一事实源；系统键表注释承诺「不与命令表重复」，但此前只有注释、没有闸门。
+  // 往 SYSTEM_KEYS 加一个命令表已有的键，? 页会出现同键两行，这里直接判红。
+  const seen = new Map();
+  const dup = [];
+  for (const kbd of kbds) {
+    if (seen.has(kbd)) dup.push(kbd);
+    else seen.set(kbd, true);
+  }
+  assert.deepEqual(dup, [], '键帽重复：' + dup.join(', '));
+  // 命令行的 8 条键位与系统键表仍各自完整（防「合并去重」时误删）
+  assert.equal(rows.filter((row) => row.group === 'command').length, 8);
+  assert.equal(rows.filter((row) => row.group === 'system').length, catalog.SYSTEM_KEYS.length);
+});
+
 test('命令目录：README 快捷键表由系统键表生成，与 README 里的表逐字一致（漂移即红）', () => {
   const catalog = require(path.join(ROOT, 'renderer', 'command-catalog.js'));
   const doc = require(path.join(ROOT, 'scripts', 'gen-shortcut-doc.js'));
