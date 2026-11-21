@@ -98,14 +98,14 @@ module.exports = async function group27DragSort(t) {
     if (items.length < 3) return { ok: false, reason: 'not-enough-items' };
     const from = items[0].getBoundingClientRect();
     const to = items[2].getBoundingClientRect();
-    const at = (y) => ({ bubbles: true, cancelable: true, clientX: from.left + 30, clientY: y, button: 0, pointerId: 1 });
-    items[0].dispatchEvent(new PointerEvent('pointerdown', at(from.top + from.height / 2)));
-    window.dispatchEvent(new PointerEvent('pointermove', at(to.top + to.height - 4)));
+    const at = (y, buttons) => ({ bubbles: true, cancelable: true, clientX: from.left + 30, clientY: y, button: 0, buttons, pointerId: 1 });
+    items[0].dispatchEvent(new PointerEvent('pointerdown', at(from.top + from.height / 2, 1)));
+    window.dispatchEvent(new PointerEvent('pointermove', at(to.top + to.height - 4, 1)));
     const dragging = items[0].classList.contains('dragging') && document.body.classList.contains('chapter-dragging');
     const marked = document.querySelectorAll(
       '#chapter-list .chapter-item.drop-before, #chapter-list .chapter-item.drop-after, #chapter-list .volume-item.drop-into'
     ).length;
-    window.dispatchEvent(new PointerEvent('pointerup', at(to.top + to.height - 4)));
+    window.dispatchEvent(new PointerEvent('pointerup', at(to.top + to.height - 4, 0)));
     return { ok: true, dragging, marked };
   })()`);
   await waitFor(
