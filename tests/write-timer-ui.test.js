@@ -4,7 +4,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const writeTimerUi = require('../renderer/write-timer-ui');
-const { pad2 } = require('../core/common');
 const editorLogic = require('../renderer/editor-logic');
 const { makeEl } = require('./ui-test-preambles');
 
