@@ -50,25 +50,20 @@
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'peers', 'nav', 'view', 'staleGuard', 'resultJump'];
+  // RPAN-C08：嵌套分组（peers / nav / view）交给共享 assertHost 的第四个参数统一校验，
+  // 不再逐组手写「判对象 + for 循环判键」（文案与旧实现逐字一致）。
+  const REQUIRED_GROUPS = [
+    { path: 'peers', keys: ['closeFindPanel', 'closeProofreadPanel', 'currentChapterRef', 'matchRangeAt', 'renderSensitiveSettings'] },
+    { path: 'nav', keys: ['chapterTitle', 'editorEl', 'switchChapter'] },
+    { path: 'view', keys: ['effectiveConfig', 'hideHeaderMenus', 'scrollCaretIntoView'] }
+  ];
 
   function createSensitiveUi(host) {
-    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
-    assertHost('createSensitiveUi', host, REQUIRED_HOST);
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）；嵌套分组见 REQUIRED_GROUPS。
+    assertHost('createSensitiveUi', host, REQUIRED_HOST, REQUIRED_GROUPS);
     const { $, state, api, call, toast, peers, nav, view, staleGuard } = host;
     if (!staleGuard || typeof staleGuard.chapterIdentity !== 'function') {
       throw new TypeError('createSensitiveUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
-    }
-    if (typeof peers !== 'object') throw new TypeError('createSensitiveUi 的 host.peers 必须是对象');
-    for (const key of ['closeFindPanel', 'closeProofreadPanel', 'currentChapterRef', 'matchRangeAt', 'renderSensitiveSettings']) {
-      if (peers[key] === undefined || peers[key] === null) throw new TypeError('createSensitiveUi 的 host.peers 缺少 ' + key);
-    }
-    if (typeof nav !== 'object') throw new TypeError('createSensitiveUi 的 host.nav 必须是对象');
-    for (const key of ['chapterTitle', 'editorEl', 'switchChapter']) {
-      if (nav[key] === undefined || nav[key] === null) throw new TypeError('createSensitiveUi 的 host.nav 缺少 ' + key);
-    }
-    if (typeof view !== 'object') throw new TypeError('createSensitiveUi 的 host.view 必须是对象');
-    for (const key of ['effectiveConfig', 'hideHeaderMenus', 'scrollCaretIntoView']) {
-      if (view[key] === undefined || view[key] === null) throw new TypeError('createSensitiveUi 的 host.view 缺少 ' + key);
     }
     if (!host.resultJump || typeof host.resultJump.create !== 'function') {
       throw new TypeError('createSensitiveUi 的 host.resultJump 必须提供 create');

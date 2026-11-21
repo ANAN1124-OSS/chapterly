@@ -86,8 +86,10 @@ test('静态闸门：37 个 host 消费者都只调共享 assertHost（清单与
     const fn = /function (create[A-Za-z0-9_$]+)\(host\)/.exec(src);
     assert.ok(fn, `${file} 找不到 createX(host)`);
     const name = fn[1];
-    const calls = src.split(`assertHost('${name}', host, REQUIRED_HOST);`).length - 1;
-    assert.equal(calls, 1, `${file} 必须恰好调用一次 assertHost('${name}', …)`);
+    // RPAN-C08 / RSHE-A-05：嵌套分组模块多传第四个参数 REQUIRED_GROUPS（仍必须是恰好一次调用）。
+    const callRe = new RegExp(`assertHost\\('${name}', host, REQUIRED_HOST(?:, REQUIRED_GROUPS)?\\);`, 'g');
+    const calls = (src.match(callRe) || []).length;
+    assert.equal(calls, 1, `${file} 必须恰好调用一次 assertHost('${name}', host, REQUIRED_HOST…, …)`);
     assert.equal(src.includes('for (const key of REQUIRED_HOST)'), false, `${file} 不许再手写 REQUIRED_HOST 循环`);
     assert.equal(src.includes('需要 host 对象'), false, `${file} 的「需要 host 对象」文案只许留在 assert-host.js`);
     assert.equal(src.includes("的 host 缺少 ' + key"), false, `${file} 的「的 host 缺少」文案只许留在 assert-host.js`);
@@ -126,8 +128,57 @@ test('静态闸门：assert-host.js 是全仓唯一实现（在 core/），且�
   assert.match(ASSET_HOST_SOURCE, /root\.CWAssertHost = factory\(\);/);
 });
 
-test('浏览器链：先加载 core/assert-host.js 后，模块的 create 缺成员仍逐字报错', () => {
-  const win = {};
+// ---------- RPAN-C08 / RSHE-A-05：嵌套分组规格（第四个参数） ----------
+// 三张卡（fragments / sensitive / tidy-card）与设置弹层原来各写一份「判对象 + for 循环判键」，
+// 文案 / 语义必须与共享实现逐字一致（单测按 `host.<path> 缺少 key` 断言）。
+test('assertHost：嵌套分组判对象 + 逐键，文案与各模块原来手写的一致', () => {
+  assert.equal(
+    assertHostModule.assertHost('createDemoUi', { a: 1, peers: { refreshShelf: () => {} } }, ['a'], [
+      { path: 'peers', keys: ['refreshShelf'] }
+    ]).a,
+    1
+  );
+  // 整组缺失（顶层）→ 「的 host 缺少 <前缀>」
+  assert.throws(
+    () => assertHostModule.assertHost('createDemoUi', { a: 1 }, ['a'], [{ path: 'peers.stats', keys: ['refreshStats'] }]),
+    new TypeError('createDemoUi 的 host 缺少 peers')
+  );
+  // 中间层缺失 → 「的 host 缺少 peers.stats」
+  assert.throws(
+    () => assertHostModule.assertHost('createDemoUi', { a: 1, peers: {} }, ['a'], [
+      { path: 'peers.stats', keys: ['refreshStats'] }
+    ]),
+    new TypeError('createDemoUi 的 host 缺少 peers.stats')
+  );
+  // 组不是对象 → 「的 host.<前缀> 必须是对象」
+  assert.throws(
+    () => assertHostModule.assertHost('createDemoUi', { peers: 'x' }, [], [{ path: 'peers', keys: [] }]),
+    new TypeError('createDemoUi 的 host.peers 必须是对象')
+  );
+  // 组内缺键 / null 都算缺
+  for (const broken of [{}, { refreshStats: null }]) {
+    assert.throws(
+      () => assertHostModule.assertHost('createDemoUi', { peers: { stats: broken } }, [], [
+        { path: 'peers.stats', keys: ['refreshStats'] }
+      ]),
+      new TypeError('createDemoUi 的 host.peers.stats 缺少 refreshStats')
+    );
+  }
+});
+
+test('静态闸门：四个嵌套分组模块改用 REQUIRED_GROUPS（分组样板只许在 assert-host.js）', () => {
+  for (const file of ['settings-ui.js', 'fragments-ui.js', 'sensitive-ui.js', 'tidy-card-ui.js']) {
+    const src = stripComments(read(`renderer/${file}`));
+    // 门禁：一律走嵌套分组规格
+    assert.ok(src.includes('const REQUIRED_GROUPS = ['), `${file} 必须声明 REQUIRED_GROUPS`);
+    assert.ok(src.includes('assertHost(') && src.includes(', REQUIRED_GROUPS);'), `${file} 必须把 REQUIRED_GROUPS 传给 assertHost`);
+    // 反门禁：不许留着逐组手写的「判对象 + for 循环判键」样板
+    assert.equal(src.includes("必须是对象'), `create"), false, `${file} 不许再手写分组「必须是对象」样板`);
+    assert.equal(src.includes("缺少 ' + key"), false, `${file} 不许再手写分组逐键样板`);
+  }
+});
+
+test('浏览器链：先加载 core/assert-host.js 后，模块的 create 缺成员仍逐字报错', () => {  const win = {};
   const context = vm.createContext(win);
   vm.runInContext(ASSET_HOST_SOURCE, context, { filename: 'core/assert-host.js' });
   for (const file of ['bookinfo-ui.js', 'undo-ui.js']) {

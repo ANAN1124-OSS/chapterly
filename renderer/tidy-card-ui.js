@@ -55,26 +55,21 @@
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'recordFallbackWrite', 'format', 'menus', 'peers'];
+  // RPAN-C08：嵌套分组（format / menus / peers）交给共享 assertHost 的第四个参数统一校验，
+  // 不再逐组手写「判对象 + for 循环判键」（文案与旧实现逐字一致）。
+  const REQUIRED_GROUPS = [
+    { path: 'format', keys: ['formatUi', 'MAX_FORMAT_UNDO', 'readFormatOptions', 'writeFormatOptions', 'editorEl', 'onEditorInput', 'chaptersLib', 'caretColorLib'] },
+    { path: 'menus', keys: ['hideExportMenu', 'hideMenu', 'renderMarksMenu'] },
+    { path: 'peers', keys: ['openSettings', 'toggleMarks', 'setDisplayPreset', 'applyCaretColor', 'setCaretParagraphPersisted', 'setCaretColorPersisted', 'runFormatBook', 'scrollCaretIntoView', 'effectiveConfig'] }
+  ];
 
   function createTidyCardUi(host) {
-    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
-    assertHost('createTidyCardUi', host, REQUIRED_HOST);
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）；嵌套分组见 REQUIRED_GROUPS。
+    assertHost('createTidyCardUi', host, REQUIRED_HOST, REQUIRED_GROUPS);
     const { $, state, api, call, toast, recordFallbackWrite, format, menus, peers } = host;
     // 审计修复 #39（V402）：兜底整串赋值要由渲染层统一记快照 + 提示（模块自己没有编辑器级拦截器）
     if (typeof recordFallbackWrite !== 'function') {
       throw new TypeError('createTidyCardUi 的 host.recordFallbackWrite 必须是函数');
-    }
-    if (typeof format !== 'object') throw new TypeError('createTidyCardUi 的 host.format 必须是对象');
-    for (const key of ['formatUi', 'MAX_FORMAT_UNDO', 'readFormatOptions', 'writeFormatOptions', 'editorEl', 'onEditorInput', 'chaptersLib', 'caretColorLib']) {
-      if (format[key] === undefined || format[key] === null) throw new TypeError('createTidyCardUi 的 host.format 缺少 ' + key);
-    }
-    if (typeof menus !== 'object') throw new TypeError('createTidyCardUi 的 host.menus 必须是对象');
-    for (const key of ['hideExportMenu', 'hideMenu', 'renderMarksMenu']) {
-      if (menus[key] === undefined || menus[key] === null) throw new TypeError('createTidyCardUi 的 host.menus 缺少 ' + key);
-    }
-    if (typeof peers !== 'object') throw new TypeError('createTidyCardUi 的 host.peers 必须是对象');
-    for (const key of ['openSettings', 'toggleMarks', 'setDisplayPreset', 'applyCaretColor', 'setCaretParagraphPersisted', 'setCaretColorPersisted', 'runFormatBook', 'scrollCaretIntoView', 'effectiveConfig']) {
-      if (peers[key] === undefined || peers[key] === null) throw new TypeError('createTidyCardUi 的 host.peers 缺少 ' + key);
     }
     const { formatUi, MAX_FORMAT_UNDO, readFormatOptions, writeFormatOptions, editorEl, onEditorInput, chaptersLib, caretColorLib } = format;
     const { hideExportMenu, hideMenu, renderMarksMenu } = menus;

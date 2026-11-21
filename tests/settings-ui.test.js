@@ -682,6 +682,30 @@ test('saveSettings（U-D4 全局入口）：写作页里保存的是全局默认
   assert.deepEqual(ctx.calls.toast, [['设置已保存（全局默认）', undefined]]);
 });
 
+test('RSHE-A-03：全局保存已落盘后收尾刷新失败，不许误报「保存设置失败」', async () => {
+  const ctx = build();
+  // 收尾链（refreshShelf 的同步渲染）抛错：配置确实已经写进磁盘、弹层也已经关了
+  ctx.host.peers.refreshShelf = async () => {
+    throw new Error('重绘炸了');
+  };
+  const ui = settingsUi.create(ctx.host);
+  await ui.openSettings({ scope: 'global' });
+  await ui.saveSettings();
+  const texts = ctx.calls.toast.map(([message]) => String(message));
+  assert.equal(ctx.calls.setConfig.length, 1);
+  assert.equal(
+    texts.some((message) => message.startsWith('保存设置失败')),
+    false,
+    'setConfig 回执已落地，任何收尾异常都不许说「保存设置失败」'
+  );
+  assert.equal(texts.filter((message) => message === '设置已保存（全局默认）').length, 1);
+  assert.equal(
+    texts.filter((message) => message.includes('设置已保存，但刷新书架 / 词表状态失败：重绘炸了')).length,
+    1,
+    '收尾失败要如实说「已保存，但刷新失败」'
+  );
+});
+
 test('saveSettings：防重入——连点保存只跑一条保存链、只弹一条 toast（V203 / WP-13）', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
@@ -1390,8 +1414,8 @@ test('结构闸门：头注释列出的 host 成员与代码实际校验一致�
   const commentKeys = [...head.slice(displayStart, displayEnd).matchAll(/^\s*\*\s+([A-Za-z_$][\w$]*)\s*,?\s*(?:\/\/.*)?$/gm)].map((m) => m[1]);
   assert.ok(commentKeys.length > 0, '头注释 display 分组没解析出成员');
 
-  const codeMatch = src.match(/for \(const key of \[([^\]]+)\]\) \{\s*if \(display\[key\]/);
-  assert.ok(codeMatch, '代码里找不到 host.display 的校验表');
+  const codeMatch = src.match(/const DISPLAY_HOST_KEYS = \[([\s\S]*?)\];/);
+  assert.ok(codeMatch, '代码里找不到 host.display 的校验表（DISPLAY_HOST_KEYS）');
   const codeKeys = [...codeMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
   assert.equal(codeKeys.length, codeKeys.filter((k) => k).length);
   assert.deepEqual([...commentKeys].sort(), [...codeKeys].sort(), '头注释 display 成员要和实际校验逐个对上（缺一即红）');

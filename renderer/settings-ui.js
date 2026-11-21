@@ -51,6 +51,11 @@
  *
  * 刻意不搬（留在 renderer.js）：写作计时 / 码字日历的绑定、排版域、测试钩子宿主契约（按名字取本模块入口）。
  *
+ * DOM 访问口径（RSHE-A-07，别再两种风格混写）：弹层骨架节点（settings-backdrop / 各按钮 / 输入框）
+ * 由 index.html 与单测钉死，回填 / 预览这类「打开弹层之后才跑」的路径可以直接访问；**读表单值拼
+ * payload 时一律先判空取默认值**（`$('id') ? $('id').checked === true : false`）——老单测的假 DOM、
+ * 旧宿主可能没有新加的节点，直接 `.checked` 会在保存瞬间抛错。同一 payload 的相邻字段必须同一风格。
+ *
  * 浏览器里挂成全局 CWSettingsUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
  */
 (function (root, factory) {
@@ -64,6 +69,25 @@
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'display', 'peers', 'texts', 'chaptersLib'];
 
+  // RPAN-C08 / RSHE-A-05：嵌套分组的契约规格。以前六个分组各写一段「判对象 + for 循环判键」的
+  // 同构样板（约 25 行），现在交给 core/assert-host.js 的第四个参数统一校验（文案逐字不变：
+  // `host.<path> 必须是对象` / `host.<path> 缺少 key`）。顶层成员仍留在 REQUIRED_HOST 里。
+  // display 的键单独抽一份常量：tests/settings-ui.test.js 的结构闸门按它核对头注释的成员清单。
+  const DISPLAY_HOST_KEYS = [
+    'applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth',
+    'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib',
+    'editorLogic', 'applyChapterNumbering'
+  ];
+  const REQUIRED_GROUPS = [
+    { path: 'display', keys: DISPLAY_HOST_KEYS },
+    { path: 'peers.stats', keys: ['refreshStats', 'renderStatsChart'] },
+    { path: 'peers.writeTimer', keys: ['renderDurationSettings', 'renderWriteTimer', 'applyWriteTimerConfig', 'writeDurationEnabled', 'flushWriteTimer'] },
+    { path: 'peers.editor', keys: ['renderEditorMarks', 'renderMarksMenu'] },
+    { path: 'peers.words', keys: ['refreshSensitiveWordList', 'refreshProofreadWordList', 'sensitiveWordListText', 'proofreadWordListText', 'pickSensitiveWords', 'pickProofreadWords'] },
+    { path: 'peers', keys: ['refreshShelf'] },
+    { path: 'texts', keys: ['commonLib', 'formatBytes'] }
+  ];
+
   // 1.4.0 P0-1：设置面板信息架构（分区 / 搜索 / 深链）的纯逻辑在 renderer/settings-ia.js，
   // 由渲染层通过 host.ia 传进来（正式路径 window.CWSettingsIa）。它**不在 REQUIRED_HOST 里**：
   // 老单测的假 host 不传，本模块就退回原来的一长条设置，行为一个字不变。
@@ -73,34 +97,10 @@
   }
 
   function createSettingsUi(host) {
-    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
-    assertHost('createSettingsUi', host, REQUIRED_HOST);
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）；嵌套分组走同一个函数的
+    // REQUIRED_GROUPS（RPAN-C08 / RSHE-A-05，六段样板收敛成上面的七行声明）。
+    assertHost('createSettingsUi', host, REQUIRED_HOST, REQUIRED_GROUPS);
     const { $, state, api, call, toast, display, peers, texts, chaptersLib } = host;
-    if (typeof display !== 'object') throw new TypeError('createSettingsUi 的 host.display 必须是对象');
-    for (const key of ['applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth', 'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib', 'editorLogic', 'applyChapterNumbering']) {
-      if (display[key] === undefined || display[key] === null) throw new TypeError('createSettingsUi 的 host.display 缺少 ' + key);
-    }
-    if (typeof peers !== 'object') throw new TypeError('createSettingsUi 的 host.peers 必须是对象');
-    for (const group of ['stats', 'writeTimer', 'editor', 'words']) {
-      if (typeof peers[group] !== 'object' || peers[group] === null) throw new TypeError('createSettingsUi 的 host.peers.' + group + ' 必须是对象');
-    }
-    for (const key of ['refreshStats', 'renderStatsChart']) {
-      if (peers.stats[key] === undefined || peers.stats[key] === null) throw new TypeError('createSettingsUi 的 host.peers.stats 缺少 ' + key);
-    }
-    for (const key of ['renderDurationSettings', 'renderWriteTimer', 'applyWriteTimerConfig', 'writeDurationEnabled', 'flushWriteTimer']) {
-      if (peers.writeTimer[key] === undefined || peers.writeTimer[key] === null) throw new TypeError('createSettingsUi 的 host.peers.writeTimer 缺少 ' + key);
-    }
-    for (const key of ['renderEditorMarks', 'renderMarksMenu']) {
-      if (peers.editor[key] === undefined || peers.editor[key] === null) throw new TypeError('createSettingsUi 的 host.peers.editor 缺少 ' + key);
-    }
-    for (const key of ['refreshSensitiveWordList', 'refreshProofreadWordList', 'sensitiveWordListText', 'proofreadWordListText', 'pickSensitiveWords', 'pickProofreadWords']) {
-      if (peers.words[key] === undefined || peers.words[key] === null) throw new TypeError('createSettingsUi 的 host.peers.words 缺少 ' + key);
-    }
-    if (peers.refreshShelf === undefined || peers.refreshShelf === null) throw new TypeError('createSettingsUi 的 host.peers 缺少 refreshShelf');
-    if (typeof texts !== 'object') throw new TypeError('createSettingsUi 的 host.texts 必须是对象');
-    for (const key of ['commonLib', 'formatBytes']) {
-      if (texts[key] === undefined || texts[key] === null) throw new TypeError('createSettingsUi 的 host.texts 缺少 ' + key);
-    }
     const { applyEditorStyle, syncCaretParagraphFromConfig, effectiveConfig, applySidebarWidth, loadCustomFont, readDisplayForm, displaySettingsIds, caretColorLib, s2tLib, templateLib, editorLogic, applyChapterNumbering } = display;
     const { refreshStats, renderStatsChart } = peers.stats;
     const { renderDurationSettings, renderWriteTimer, applyWriteTimerConfig, writeDurationEnabled, flushWriteTimer } = peers.writeTimer;
@@ -1057,7 +1057,7 @@
         // b8：剪贴板后台监听（全局开关；主进程 config:set 后立即启停轮询）
         clipboardWatchEnabled: $('settings-clipboard-watch') ? $('settings-clipboard-watch').checked === true : false,
         // WP5（N1）：崩溃恢复草稿（全局开关，默认关；主进程 config:set 后立即建 / 清会话）
-        crashDraftEnabled: $('settings-crash-draft-enabled').checked === true,
+        crashDraftEnabled: $('settings-crash-draft-enabled') ? $('settings-crash-draft-enabled').checked === true : false,
         chapterTemplate: $('settings-chapter-template').value,
         exportConversion: $('settings-export-conversion').value,
         sensitiveWordsPath: (state.sensitiveWordsDraft || '').trim(),
@@ -1072,10 +1072,17 @@
       applyWriteTimerConfig();
       closeSettings({ restore: false });
       toast('设置已保存（全局默认）');
-      await refreshShelf();
-      // 词表路径可能刚改过：刷新一下状态，下次打开预检面板直接可用
-      await refreshSensitiveWordList();
-      await refreshProofreadWordList();
+      // RSHE-A-03：setConfig 回执落地 = 配置真的写进磁盘了。收尾刷新另起 try ——
+      // 以前它们在主 try 里，收尾同步渲染抛错会走到 catch 报「保存设置失败」，
+      // 而弹层已关、配置已落盘，提示与磁盘真实状态相反（按书链路 1021-1033 行早就这么分流了）。
+      try {
+        await refreshShelf();
+        // 词表路径可能刚改过：刷新一下状态，下次打开预检面板直接可用
+        await refreshSensitiveWordList();
+        await refreshProofreadWordList();
+      } catch (err) {
+        toast(`设置已保存，但刷新书架 / 词表状态失败：${err.message}`, 'error');
+      }
     } catch (err) {
       toast(`保存设置失败：${err.message}`, 'error');
     } finally {

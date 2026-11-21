@@ -46,10 +46,16 @@
   'use strict';
 
   const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'common', 'editor', 'hideHeaderMenus', 'staleGuard', 'recordFallbackWrite'];
+  // RPAN-C08：嵌套分组（common / editor）的「判对象 + 逐键判存在」交给共享 assertHost 的第四个参数，
+  // 不再逐组手写 for 循环（三张卡 fragments / sensitive / tidy-card 共用同一份实现与文案）。
+  const REQUIRED_GROUPS = [
+    { path: 'common', keys: ['chaptersLib', 'formatRelativeTime', 'formatCount'] },
+    { path: 'editor', keys: ['editorEl', 'onEditorInput', 'scrollCaretIntoView'] }
+  ];
 
   function createFragmentsUi(host) {
-    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
-    assertHost('createFragmentsUi', host, REQUIRED_HOST);
+    // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）；嵌套分组见 REQUIRED_GROUPS。
+    assertHost('createFragmentsUi', host, REQUIRED_HOST, REQUIRED_GROUPS);
     const { $, state, api, call, toast, common, editor, hideHeaderMenus, staleGuard, recordFallbackWrite } = host;
     if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
       throw new TypeError('createFragmentsUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
@@ -61,14 +67,6 @@
     // WP-15（C16）：连点两条碎片的「最后一次点击才算数」+ 刷新期间自动选中不得抢走用户点选。
     const selectSeq = staleGuard.createSeq();
     const refreshSeq = staleGuard.createSeq();
-    if (typeof common !== 'object') throw new TypeError('createFragmentsUi 的 host.common 必须是对象');
-    for (const key of ['chaptersLib', 'formatRelativeTime', 'formatCount']) {
-      if (common[key] === undefined || common[key] === null) throw new TypeError('createFragmentsUi 的 host.common 缺少 ' + key);
-    }
-    if (typeof editor !== 'object') throw new TypeError('createFragmentsUi 的 host.editor 必须是对象');
-    for (const key of ['editorEl', 'onEditorInput', 'scrollCaretIntoView']) {
-      if (editor[key] === undefined || editor[key] === null) throw new TypeError('createFragmentsUi 的 host.editor 缺少 ' + key);
-    }
     const { chaptersLib, formatRelativeTime, formatCount } = common;
     const { editorEl, onEditorInput, scrollCaretIntoView } = editor;
 
