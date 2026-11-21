@@ -396,7 +396,7 @@ pnpm start          # 启动应用
 > 其余开发自检细节（bench / contrast / sweep-unused / lint-gate / a11y-gate 的完整参数说明、截图命令）与完整目录结构已归档到内部文档（`内部文档/归档-2026-11-15/README-开发自检细节.md`，`.gitignore` 整目录忽略、不进公开仓库）。
 
 ```bash
-pnpm test          # 单元测试（node:test，3154 项）
+pnpm test          # 单元测试（node:test，3161 项）
 pnpm run e2e       # 端到端自检：真实启动 Electron 走 1916 项主流程（场景与 84 个组文件共用一份 harness；**84 个组文件（00–83）** 按组号派发）
 pnpm run demo      # 生成演示书库到 shots/demo-library（截图/演示用）
 ```
