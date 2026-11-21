@@ -497,6 +497,58 @@ test('SE-02（五-L19）：整本跑在途切范围，旧范围结果不再画�
   assert.equal(ok.state.proofread.scope, 'book');
 });
 
+// RPAN-A-03（第五轮审计）：整本校对在途时关面板，迟到回执不许画回（隐藏 DOM / 重开面板都会看到
+// 不属于当前这一轮的结果）。close 推进面板世代，run 回包时世代对不上整份丢弃。
+test('RPAN-A-03：关掉面板会作废在途校对，迟到的整本结果不画回', async () => {
+  const ctx = build({ scope: 'book' });
+  let release;
+  ctx.host.api.proofreadBook = () => new Promise((resolve) => { release = resolve; });
+  const pending = ctx.ui.runProofread();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ctx.state.proofreadBusy, true, '整本跑在途');
+  const summaryBefore = ctx.dom.map.get('proofread-summary').textContent;
+  assert.match(summaryBefore, /正在通读全书/);
+  // 作者点「关闭」：面板收起，在途任务作废
+  ctx.ui.closeProofreadPanel();
+  assert.equal(ctx.dom.map.get('proofread-backdrop').classList.contains('hidden'), true);
+  release({ total: 1, chapterCount: 2, chapterHitCount: 1, skippedChapters: 0, byRule: { dash: 1 }, issues: [] });
+  const res = await pending;
+  assert.equal(res.stale, true);
+  assert.equal(ctx.state.proofread, null, '关掉面板后迟到的结果不许写进 state');
+  assert.equal(ctx.dom.map.get('proofread-results').innerHTML, '', '隐藏列表也不许被旧结果填充');
+  assert.equal(ctx.state.proofreadBusy, false, '收尾要把忙碌指示关掉，重开面板才能再跑');
+
+  // 对照：没关面板的正常整本跑照旧落地
+  const ok = build({ scope: 'book' });
+  const done = await ok.ui.runProofread();
+  assert.equal(done.ok, true);
+});
+
+test('RPAN-A-03：busy 期间重开面板 → 显示忙碌态，不停在旧结果 / 不假装空闲', async () => {
+  const ctx = build({ scope: 'book' });
+  let release;
+  let started = 0;
+  ctx.host.api.proofreadBook = () => {
+    started += 1;
+    return new Promise((resolve) => { release = resolve; });
+  };
+  ctx.dom.map.get('proofread-backdrop').classList.remove('hidden');
+  const pending = ctx.ui.runProofread();
+  await new Promise((resolve) => setImmediate(resolve));
+  // 关掉再重开（主进程那轮还没回来）
+  ctx.ui.closeProofreadPanel();
+  const reopened = await ctx.ui.openProofreadPanel();
+  assert.equal(reopened, true);
+  assert.equal(ctx.state.proofreadBusy, true, '重开时仍是忙碌态');
+  assert.match(ctx.dom.map.get('proofread-summary').textContent, /正在通读全书/);
+  assert.equal(ctx.dom.map.get('proofread-busy').classList.contains('hidden'), false);
+  assert.equal(started, 1, '重开面板不许并发再发一轮');
+  release({ total: 0, chapterCount: 1, chapterHitCount: 0, skippedChapters: 0, byRule: {}, issues: [] });
+  await pending;
+  assert.equal(ctx.state.proofread, null, '旧一轮结果被作废');
+  assert.equal(ctx.state.proofreadBusy, false);
+});
+
 test('runProofread：整本 0 处 / 跳过缺文件章节 的摘要文案', async () => {
   const ctx = build({ scope: 'book', bookResult: { total: 0, chapterCount: 5, chapterHitCount: 0, skippedChapters: 2, byRule: {}, issues: [] } });
   await ctx.ui.runProofread();

@@ -173,13 +173,24 @@
     $('proofread-scope').value = state.proofreadScope === 'book' ? 'book' : 'current';
     $('proofread-backdrop').classList.remove('hidden');
     renderProofreadRules();
+    // RPAN-A-03（第五轮审计）：上一轮还在主进程里跑时重开面板，不能停在旧结果上假装空闲。
+    // 先把摘要复位成忙碌文案、亮起忙碌指示；旧回执会按「关面板 = 作废」的世代口径丢弃。
+    if (state.proofreadBusy) {
+      $('proofread-summary').textContent =
+        state.proofreadScope === 'book' ? '正在通读全书（只读，不改正文）…' : '正在检查当前章…';
+      setProofreadBusy(true);
+      return true;
+    }
     // 先读一次词表状态（只读），再自动检查当前章；词表有问题只显示提示，不影响内置规则
     await refreshProofreadWordList();
     await runProofread();
     return true;
   }
 
+  // RPAN-A-03：关面板 = 作废这一轮在途校对。主进程没有取消通道（整本只读、跑完就停），
+  // 但渲染层必须丢弃迟到回执：否则隐藏的 DOM 会被旧结果覆盖，重开面板看到的不是当前这一轮。
   function closeProofreadPanel() {
+    proofreadEpoch += 1;
     $('proofread-backdrop').classList.add('hidden');
   }
 
@@ -209,6 +220,8 @@
   // ---------- 规则开关（1.5.0 功能-2） ----------
   // 校对跑到一半被点了开关：记一笔，这一轮结束后按最新开关补跑一次（不并发、也不吞点击）
   let proofreadRerunPending = false;
+  // RPAN-A-03：面板世代。关面板 / 重开面板各推进一次；在途回执回来时世代对不上就整份丢弃。
+  let proofreadEpoch = 0;
   // 每条规则一行「名字 + 本次命中数」，点一下临时关掉。开关只存在 state.proofreadRules
   // （本次会话内存）：不写配置、不新增字段，重开应用回默认（中英间距默认关）。
   function proofreadRuleState() {
@@ -618,7 +631,9 @@
     return { ok: false, stale: true, message: '校对范围已经切换' };
   }
 
-  async function runProofread() {    if (!state.bookPath || !state.chapters.length) {
+  // RPAN-A-07（第五轮审计）：函数签名与首句之间曾被挤在同一行，属搬移时的编辑残留，恢复常规排版。
+  async function runProofread() {
+    if (!state.bookPath || !state.chapters.length) {
       $('proofread-summary').textContent = '这本书里还没有章节';
       return { ok: false, message: '没有章节' };
     }
@@ -627,6 +642,8 @@
     const runOptions = proofreadOptions();
     // 五-M11（PR-01）：发起时的词表世代。回执回来时词表已经被增删 / 刷新过 → 不采用旧 wordList。
     const wordListSeqAtStart = proofreadWordListSeq;
+    // RPAN-A-03：发起时的面板世代。期间关过面板 → 这一轮回执整份丢弃，不往重开的面板上画旧结果。
+    const epochAtStart = proofreadEpoch;
     state.proofreadScope = scope;
     setProofreadBusy(true);
     $('proofread-summary').textContent =
@@ -681,6 +698,8 @@
       }
       // 五-L19（SE-02）：回包的目标范围必须与当前下拉框一致，否则按 stale 丢弃（不画回旧范围结果）
       if (proofreadScope() !== scope) return discardSwitchedProofreadScope();
+      // RPAN-A-03：这期间面板被关过（世代已推进）——迟到的整本结果不许画回（重开的面板会是新一轮）。
+      if (epochAtStart !== proofreadEpoch) return { ok: false, stale: true, message: '校对已取消' };
       state.proofread = payload;
       if (payload.wordList && wordListSeqAtStart === proofreadWordListSeq) {
         // 1.7.1 P6（V52）：text / book 校对回包只描述这一轮词条（不带 multi）；
@@ -695,16 +714,19 @@
       renderProofreadResults();
       return { ok: true, total: payload.total, scope: payload.scope, customWordCount: payload.customWordCount };
     } catch (err) {
+      if (epochAtStart !== proofreadEpoch) return { ok: false, stale: true, message: '校对已取消' };
       state.proofread = null;
       $('proofread-summary').textContent = `校对失败：${err.message}`;
       $('proofread-results').innerHTML = '';
       return { ok: false, message: err.message };
     } finally {
       setProofreadBusy(false);
-      // 跑的过程中被点过开关（面板还开着）：立刻按最新开关再跑一次
+      // 跑的过程中被点过开关（面板还开着、也没被关掉重开）：立刻按最新开关再跑一次
       if (proofreadRerunPending) {
         proofreadRerunPending = false;
-        if (!$('proofread-backdrop').classList.contains('hidden')) void runProofread();
+        if (epochAtStart === proofreadEpoch && !$('proofread-backdrop').classList.contains('hidden')) {
+          void runProofread();
+        }
       }
     }
   }
