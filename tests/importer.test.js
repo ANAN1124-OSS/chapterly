@@ -1073,3 +1073,67 @@ test('CIO-A-01：复制后章节全被剔光 → 按整源跳过，不抛 TypeEr
   assert.match(res.skipped[0].reason, /已跳过/);
   assert.deepEqual(await fs.readdir(booksRoot).catch(() => []), [], '暂存已清，书架里不留空书');
 });
+
+// CIO-A-03：暂存残留判据取「树内最新 mtime」+ 跳过仍存活的 pid。
+// 暂存根只会有一个书子目录、其后写入都在更深一层，根目录 mtime 停在创建时刻——
+// 只看根目录会把超过 1 小时的在途长导入误删。
+test('CIO-A-03：长导入的暂存目录不被误删（看树内活动 + 跳过存活 pid）', async () => {
+  const base = await mkTmp();
+  const source = path.join(base, '源书');
+  await fs.mkdir(source);
+  const created = await storage.createBook(source, '源书');
+  await storage.createChapter(created.path, 1, '一');
+  const booksRoot = path.join(base, '书架');
+  await fs.mkdir(booksRoot, { recursive: true });
+  const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const tag = Date.now().toString(36);
+
+  // 1) 根目录很老，但书子目录里刚写过 = 另一个窗口正在导入 → 必须留下
+  const live = path.join(booksRoot, `.import-99999-${tag}-live01`);
+  await fs.mkdir(path.join(live, '书'), { recursive: true });
+  await fs.writeFile(path.join(live, '书', '001.txt'), '正在写', 'utf8');
+  await fs.utimes(live, old, old); // 根停在创建时刻（这就是旧实现的判据）
+  // 2) 全树都老 + pid 已死 = 崩溃残留 → 回收
+  const stale = path.join(booksRoot, `.import-99999-${tag}-stale1`);
+  await fs.mkdir(path.join(stale, '书'), { recursive: true });
+  await fs.writeFile(path.join(stale, '书', '001.txt'), '旧', 'utf8');
+  await fs.utimes(path.join(stale, '书', '001.txt'), old, old);
+  await fs.utimes(path.join(stale, '书'), old, old);
+  await fs.utimes(stale, old, old);
+  // 3) 名字里的 pid 仍存活（本进程）→ 哪怕全树都老也不动
+  const mine = path.join(booksRoot, `.import-${process.pid}-${tag}-mine01`);
+  await fs.mkdir(path.join(mine, '书'), { recursive: true });
+  await fs.writeFile(path.join(mine, '书', '001.txt'), '本进程在写', 'utf8');
+  await fs.utimes(mine, old, old);
+
+  const res = await importer.importFolders(booksRoot, [created.path]);
+  assert.equal(res.imported.length, 1);
+  const left = (await fs.readdir(booksRoot)).filter((name) => name.startsWith('.import-'));
+  assert.ok(left.includes(path.basename(live)), '树内刚写过 → 不许当残留删');
+  assert.ok(!left.includes(path.basename(stale)), '全树超 1 小时 + pid 已死 → 回收');
+  assert.ok(left.includes(path.basename(mine)), 'pid 仍存活 → 不许动');
+});
+
+// CIO-A-04：书 id 不再只靠毫秒时间戳（跨窗口同毫秒会撞 id），追加随机后缀。
+test('CIO-A-04：导入生成的 book id 带随机后缀，形状仍以 b_ 开头', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '独立小说');
+  await fs.mkdir(src);
+  const booksRoot = path.join(base, '书架');
+  const ids = [];
+  for (const title of ['甲书', '乙书']) {
+    const file = path.join(src, `${title}.txt`);
+    await fs.writeFile(file, '第一章 开端\n\n正文。', 'utf8');
+    const res = await importer.importNovelFile(booksRoot, file);
+    const meta = await storage.readBookMeta(res.path);
+    ids.push(meta.id);
+    assert.match(meta.id, /^b_[0-9a-z]+_[0-9a-z]{4,8}$/, 'id = 毫秒时间戳 + 随机后缀');
+  }
+  assert.notEqual(ids[0], ids[1], '两本书不会拿到同一个 id');
+});
+// CIO-A-05：analyzeSource 的 reason 只写不读（每个分支的调用方都用固定文案），已删。
+test('CIO-A-05：analyzeSource 不再返回只写不读的 reason 死字段', async () => {
+  const raw = await fs.readFile(path.join(__dirname, '..', 'core', 'importer.js'), 'utf8');
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.equal(/reason:\s*err\.message/.test(code), false, 'reason 死数据已删');
+});

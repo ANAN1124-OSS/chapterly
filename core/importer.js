@@ -181,22 +181,25 @@ async function analyzeSource(sourceDir) {
   try {
     const meta = await storage.readBookMeta(sourceDir);
     return { kind: 'book', meta, txtFiles };
-  } catch (err) {
-    if (!txtFiles.length) return { kind: 'nothing', reason: err.message };
+  } catch {
+    // CIO-A-05（审计低批）：这里以前给每个返回值挂 `reason: err.message`，但全模块无人读取
+    // （调用方各分支用固定文案），属只写不读的死数据 —— 删掉，返回形状与实际消费一致。
+    // 读不到书目就是「不是现成书」，形态由下面的 txt 清单决定。
+    if (!txtFiles.length) return { kind: 'nothing' };
     // 只有冲突副本：沿用「整源复制后 rebuild 报 NO_FILES」的既有路径与「只有同步冲突副本」提示
-    if (!importable.length) return { kind: 'chapter-folder', txtFiles, reason: err.message };
+    if (!importable.length) return { kind: 'chapter-folder', txtFiles };
     if (importable.length === 1) {
       // 只有一个可导入 txt：文件名像章节（001-xxx.txt）就当「一本书的章节目录」，
       // 否则当成一本完整的独立小说（例如「书名 - 作者.txt」）
       return looksLikeChapterFile(importable[0])
-        ? { kind: 'chapter-folder', txtFiles, reason: err.message }
-        : { kind: 'novels', files: importable, excludedConflicts, reason: err.message };
+        ? { kind: 'chapter-folder', txtFiles }
+        : { kind: 'novels', files: importable, excludedConflicts };
     }
     const chapterLike = importable.filter(looksLikeChapterFile).length;
     if (chapterLike >= Math.ceil(importable.length * 0.6)) {
-      return { kind: 'chapter-folder', txtFiles, reason: err.message };
+      return { kind: 'chapter-folder', txtFiles };
     }
-    return { kind: 'novels', files: importable, excludedConflicts, reason: err.message };
+    return { kind: 'novels', files: importable, excludedConflicts };
   }
 }
 
@@ -754,7 +757,9 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
 
     const meta = {
       version: 1,
-      id: `b_${Date.now().toString(36)}`,
+      // CIO-A-04（审计低批）：纯毫秒时间戳跨窗口可能撞 id（两窗口同时导入且恰落在同一毫秒）。
+      // 追加随机后缀，形状仍以 b_ 开头；已存在的旧 id 不受影响。
+      id: `b_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       title: baseName,
       titleTemplate: chaptersLib.TITLE_TEMPLATE,
       fileSeq: chapterList.length,
@@ -791,6 +796,56 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
 }
 
 // 清理上次导入崩溃留下的隐藏临时目录（只动自己前缀的，1 小时以前的）
+// CIO-A-03（审计低批）：判残留不能只看暂存根自己的 mtime —— 根目录只有一个书子目录，创建后不再增删，
+// 它的 mtime 停在创建时刻，而之后所有写入都发生在更深一层。长导入（大 txt / 慢盘）超过 1 小时后
+// 会被另一个窗口当成残留整个删掉。这里改成取暂存树内最新的 mtime；名字里的 pid 若仍存活也直接跳过。
+function stagingPidOf(name) {
+  const match = /^\.import-(\d+)-/.exec(String(name == null ? '' : name));
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
+
+function pidAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM = 进程存在但没权限发信号（同一台机器上的另一个用户）；ESRCH 才是真的没了。
+    return Boolean(err && err.code === 'EPERM');
+  }
+}
+
+async function latestMtimeMs(target) {
+  let latest = 0;
+  try {
+    const info = await fs.stat(target);
+    latest = Number(info.mtimeMs) || 0;
+  } catch {
+    return 0;
+  }
+  let entries = [];
+  try {
+    entries = await fs.readdir(target, { withFileTypes: true });
+  } catch {
+    return latest;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      try {
+        const info = await fs.stat(path.join(target, entry.name));
+        if (Number(info.mtimeMs) > latest) latest = Number(info.mtimeMs);
+      } catch { /* 抢不到就跳过：只影响这一个文件的判龄 */ }
+      continue;
+    }
+    const nested = await latestMtimeMs(path.join(target, entry.name));
+    if (nested > latest) latest = nested;
+  }
+  return latest;
+}
+
 async function cleanupStaleStaging(booksRoot) {
   let entries = [];
   try {
@@ -801,10 +856,11 @@ async function cleanupStaleStaging(booksRoot) {
   const now = Date.now();
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith('.import-')) continue;
+    if (pidAlive(stagingPidOf(entry.name))) continue; // 另一个窗口的导入还在跑：绝不碰
     const full = path.join(booksRoot, entry.name);
     try {
-      const stat = await fs.stat(full);
-      if (now - stat.mtimeMs > 3600 * 1000) {
+      const activeAt = await latestMtimeMs(full);
+      if (now - activeAt > 3600 * 1000) {
         await fs.rm(full, { recursive: true, force: true });
       }
     } catch { /* 忽略 */ }
