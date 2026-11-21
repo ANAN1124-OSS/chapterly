@@ -121,6 +121,35 @@ test('没有 .bak 时给出可读错误', async () => {
   await assert.rejects(() => repair.restoreFromBak(bookPath), (err) => err.code === 'NO_BAK');
 });
 
+// CSTO-B-02（第五轮审计）：.bak 存在、只是被杀软 / 同步盘短暂占用（EBUSY / EACCES）时，
+// 旧实现一律报 NO_BAK「没有找到」——作者会以为没备份、改走「从目录重建」而丢掉书目元数据。
+// 只有 ENOENT 才是 NO_BAK；其余 IO 失败单独报 BAK_READ_FAILED。
+test('CSTO-B-02：.bak 存在但读不了 → BAK_READ_FAILED，不误报「没有找到」', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '读不了的备份');
+  await storage.renameBook(bookPath, '读不了的备份-第二版'); // 结构性写盘生成 .bak
+  const bakPath = path.join(bookPath, '书目.json.bak');
+  await fs.access(bakPath); // 用例前提：备份确实在
+  const realReadFile = fs.readFile;
+  fs.readFile = async (file, ...rest) => {
+    if (String(file) === bakPath) {
+      throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${file}'`), { code: 'EBUSY' });
+    }
+    return realReadFile(file, ...rest);
+  };
+  let failed = null;
+  try {
+    failed = await repair.restoreFromBak(bookPath).then(() => null, (err) => err);
+  } finally {
+    fs.readFile = realReadFile;
+  }
+  assert.ok(failed, '读不了 .bak 必须明确报错');
+  assert.equal(failed.code, 'BAK_READ_FAILED', '不许冒充 NO_BAK');
+  assert.match(failed.message, /暂时无法读取/);
+  assert.match(failed.message, /关闭占用/);
+  assert.equal(failed.message.includes(bookPath), false, '错误文案不带本机完整路径');
+});
+
 // V104（v1.8.0 WP-19）：.bak 也是「整份读进内存 → JSON.parse」的小文件，与 readBookMeta 同一条
 // 独立上限（32 MB）。坏同步盘把 .bak 换成超大文件时以前会整份读进主进程；现在 stat 先拒绝。
 test('从 .bak 恢复：.bak 超限 → BAK_TOO_LARGE，不读内容、坏书目与 .bak 一个字节不动', async () => {

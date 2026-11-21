@@ -178,9 +178,20 @@ async function restoreFromBak(bookPath, io = {}) {
     if (tooLarge) throw new storage.StorageError(tooLarge.code, tooLarge.message);
     raw = await fs.readFile(bakPath, 'utf8');
   } catch (err) {
-    // 闸门报错原样上抛（界面按 code 分支）；其余 IO 失败仍按老口径报「没有找到 .bak」
+    // 闸门报错原样上抛（界面按 code 分支）。
     if (err instanceof storage.StorageError) throw err;
-    throw new storage.StorageError('NO_BAK', '没有找到 书目.json.bak，无法从备份恢复');
+    // CSTO-B-02（中）：只有 ENOENT 才是「没有 .bak」。存在但读不了（EACCES / EBUSY / EPERM，
+    // 杀软或同步盘短暂占用）时不能报成「没有找到」——那会诱导作者放弃能恢复书目元数据的备份、
+    // 改走「从目录重建」（卷结构 / 章节状态 / 备注全丢）。单独报 BAK_READ_FAILED，文案按
+    // 与 core/config.js 的 A5/E2 同一条口径：说明是暂时读不了、关掉占用程序再试。
+    if (err.code === 'ENOENT') {
+      throw new storage.StorageError('NO_BAK', `没有找到 ${storage.BOOK_BAK}，无法从备份恢复`);
+    }
+    const described = errorText.describeForUi(err);
+    throw new storage.StorageError(
+      'BAK_READ_FAILED',
+      `${storage.BOOK_BAK} 暂时无法读取：${described.message}；请关闭占用它的程序后重试`
+    );
   }
   let meta;
   try {
