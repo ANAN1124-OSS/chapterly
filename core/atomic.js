@@ -24,11 +24,14 @@ async function renameWithRetry(from, to, { tries = 3, delay = 80, rename = fs.re
   throw lastErr;
 }
 
-// X8（v1.8.0 WP-40，审计 X8）：崩溃 / 断电会让「临时文件 -> fsync -> rename」停在第一步，
-// 目录里留下 `.名.tmp-pid-时间-随机` 的隐藏孤儿。启动时（userData）与打开书时（书目录）各回收一次。
+// X8（v1.8.0 WP-40，审计 X8；CSTO-A06）：崩溃 / 断电会让「临时文件 -> fsync -> rename」停在第一步，
+// 目录里留下 `.名.tmp-pid-时间-随机` 的隐藏孤儿。启动时（userData）、打开书时（书目录）各回收一次。
 // 只认本模块自己造的临时文件名，且必须同时满足「不是本进程的 pid」与「mtime 早于阈值」：
 // 正在写盘的临时文件一定新鲜（阈值内），本进程自己的临时文件哪怕卡住也不动——绝不删掉在途写入。
 // 清理是尽力而为：目录不存在 / 不可读 / 单个文件被占用都只跳过，绝不让打开书或启动失败。
+// depth：CSTO-A06 起可选往下扫几层子目录 —— atomicCopyFile 的临时文件建在**目标目录**里，
+// 而书内备份的临时文件落在 _trash/<备份组>/ 下；只扫单层会让这些崩溃残留永不回收。
+// 判定条件（本进程 pid / 1 小时阈值 / 命名模式）在每一层都一样，不因深入子目录放宽。
 const TMP_FILE_RE = /^\.(.+)\.tmp-(\d+)-(\d+)-([a-z0-9]+)$/;
 const ORPHAN_TMP_MIN_AGE_MS = 60 * 60 * 1000;
 
@@ -39,42 +42,53 @@ function parseTmpName(name) {
   return { base: match[1], pid: Number(match[2]), stamp: Number(match[3]), tag: match[4] };
 }
 
-async function cleanupOrphanTmpFiles(dir, { olderThanMs = ORPHAN_TMP_MIN_AGE_MS, now = Date.now() } = {}) {
+async function cleanupOrphanTmpFiles(dir, { olderThanMs = ORPHAN_TMP_MIN_AGE_MS, now = Date.now(), depth = 0 } = {}) {
   const target = String(dir == null ? '' : dir).trim();
   if (!target) return { removed: 0, kept: 0 };
-  let entries = [];
-  try {
-    entries = await fs.readdir(target, { withFileTypes: true });
-  } catch {
-    return { removed: 0, kept: 0 }; // 目录不存在 / 不可读：清理尽力而为
-  }
   const requested = Number(olderThanMs);
   const minAgeMs = Number.isFinite(requested) && requested >= 0 ? requested : ORPHAN_TMP_MIN_AGE_MS;
   const at = Number(now);
   const nowMs = Number.isFinite(at) ? at : Date.now();
+  const levels = Number(depth);
+  const maxDepth = Number.isFinite(levels) && levels > 0 ? Math.floor(levels) : 0;
   let removed = 0;
   let kept = 0;
-  for (const entry of entries) {
-    if (!entry.isFile()) continue; // 同名目录 / 联接不碰
-    const parsed = parseTmpName(entry.name);
-    if (!parsed) continue; // 不是本应用命名的临时文件，一个都不删
-    if (parsed.pid === process.pid) {
-      kept += 1; // 本进程的临时文件可能正在写（哪怕看起来很久），不动
-      continue;
-    }
-    const full = path.join(target, entry.name);
+
+  const scanDir = async (dirPath, remaining) => {
+    let entries = [];
     try {
-      const info = await fs.stat(full);
-      if (nowMs - info.mtimeMs < minAgeMs) {
-        kept += 1; // 新鲜：可能是另一个还在运行的进程正在写
+      entries = await fs.readdir(dirPath, { withFileTypes: true });
+    } catch {
+      return; // 目录不存在 / 不可读：清理尽力而为
+    }
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        // 子目录（书内 _trash 的备份目录）里也有 atomicCopyFile 的临时文件：按 depth 继续往下。
+        if (entry.isDirectory() && remaining > 0) await scanDir(path.join(dirPath, entry.name), remaining - 1);
+        continue; // 同名目录 / 联接本身不碰
+      }
+      const parsed = parseTmpName(entry.name);
+      if (!parsed) continue; // 不是本应用命名的临时文件，一个都不删
+      if (parsed.pid === process.pid) {
+        kept += 1; // 本进程的临时文件可能正在写（哪怕看起来很久），不动
         continue;
       }
-      await fs.unlink(full);
-      removed += 1;
-    } catch {
-      /* 被别人先删 / 被占用：少清一个，不影响其它文件 */
+      const full = path.join(dirPath, entry.name);
+      try {
+        const info = await fs.stat(full);
+        if (nowMs - info.mtimeMs < minAgeMs) {
+          kept += 1; // 新鲜：可能是另一个还在运行的进程正在写
+          continue;
+        }
+        await fs.unlink(full);
+        removed += 1;
+      } catch {
+        /* 被别人先删 / 被占用：少清一个，不影响其它文件 */
+      }
     }
-  }
+  };
+
+  await scanDir(target, maxDepth);
   return { removed, kept };
 }
 
@@ -173,11 +187,6 @@ async function atomicCopyFile(source, filePath, { ensureDir = true, chunkSize } 
   return written;
 }
 
-async function readJson(filePath) {
-  const raw = await fs.readFile(filePath, 'utf8');
-  return JSON.parse(stripBom(raw));
-}
-
 async function writeJsonAtomic(filePath, obj, options = {}) {
   await atomicWriteFile(filePath, `${JSON.stringify(obj, null, 2)}\n`, 'utf8', options);
 }
@@ -187,7 +196,6 @@ module.exports = {
   atomicWriteFileStream,
   atomicCopyFile,
   renameWithRetry,
-  readJson,
   writeJsonAtomic,
   // X8（WP-40）：孤儿临时文件回收（启动 / 打开书时），以及给单测用的命名解析
   ORPHAN_TMP_MIN_AGE_MS,

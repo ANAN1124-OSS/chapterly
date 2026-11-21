@@ -132,6 +132,27 @@ test('X8：孤儿回收只删「本应用命名 + 非本进程 + 超过阈值」
   assert.equal(await fsp.readFile(normal, 'utf8'), '正文', '正文一个字节不动');
 });
 
+test('CSTO-A06：depth>0 时回收备份子目录里的孤儿；depth 默认只扫单层（书目录内的旧行为不变）', async () => {
+  const dir = await mkTmp();
+  const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  // 书内 _trash 的备份目录：atomicCopyFile 的临时文件正是建在这里
+  const backupDir = path.join(dir, '_trash', '替换备份-2026-11-01-10-00-00');
+  await fsp.mkdir(backupDir, { recursive: true });
+  const nestedOrphan = path.join(backupDir, '.001-起风.txt.tmp-99999-1700000000000-nested');
+  const nestedNormal = path.join(backupDir, '001-起风.txt');
+  await Promise.all([nestedOrphan, nestedNormal].map((file) => fsp.writeFile(file, '正文', 'utf8')));
+  await fsp.utimes(nestedOrphan, old, old);
+
+  // 默认 depth=0：不碰子目录（书目录自己那一层的老行为不变）
+  assert.deepEqual(await atomic.cleanupOrphanTmpFiles(dir), { removed: 0, kept: 0 });
+  assert.equal(await fsp.readFile(nestedOrphan, 'utf8'), '正文', '没开 depth 时子目录里的文件不动');
+
+  // depth=2：_trash → 备份组 → 文件，落到备份子目录里的孤儿被回收，同层的正常章节不动
+  assert.deepEqual(await atomic.cleanupOrphanTmpFiles(dir, { depth: 2 }), { removed: 1, kept: 0 });
+  assert.equal(await fsp.readFile(nestedNormal, 'utf8'), '正文', '备份里的正常章节一个字节不动');
+  assert.equal(await fsp.readFile(nestedOrphan, 'utf8').then(() => true, () => false), false, '孤儿必须被删掉');
+});
+
 test('X8：回收对不存在的目录 / 空路径是空操作，阈值可注入（0 = 只排除本进程 pid）', async () => {
   const missing = path.join(os.tmpdir(), `cw-wp40-missing-${Date.now()}`);
   assert.deepEqual(await atomic.cleanupOrphanTmpFiles(missing), { removed: 0, kept: 0 });
@@ -170,10 +191,12 @@ test('X8：启动清 userData、打开书清本书目录，删除判据只在 co
   const storageSrc = read('core/storage.js');
   const openAt = storageSrc.indexOf('async function openBook(bookPath) {');
   assert.ok(openAt > 0, 'storage.openBook 必须在');
-  const openBody = storageSrc.slice(openAt, openAt + 700);
-  const cleanupAt = openBody.indexOf('cleanupOrphanTmpFiles(bookPath)');
+  const openBody = storageSrc.slice(openAt, openAt + 900);
+  // CSTO-A06：打开书时不仅要清书目录，还要往下扫 _trash 的备份子目录（atomicCopyFile 的临时文件
+  // 建在目标目录里），所以这里认「带 depth 参数的调用」，而不是要求恰好只传目录。
+  const cleanupAt = openBody.search(/cleanupOrphanTmpFiles\(bookPath,\s*\{\s*depth:\s*([1-9]\d*)\s*\}\)/);
   const readAt = openBody.indexOf('readBookMeta(bookPath)');
-  assert.ok(cleanupAt > 0, '打开书时必须清本书目录的孤儿临时文件');
+  assert.ok(cleanupAt > 0, '打开书时必须清本书目录（含 _trash 备份子目录）的孤儿临时文件');
   assert.ok(readAt > cleanupAt, '清理要排在读书目之前（读完再清已经晚了）');
 
   // 回收实现 / 命名模式不许在别处再抄一份

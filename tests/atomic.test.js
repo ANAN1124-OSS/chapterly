@@ -7,7 +7,7 @@
 //   2. 「要么旧完整版、要么新完整版」：失败时目标一个字节不动、临时文件不残留。
 //   3. 临时文件必须和目标**同目录**（rename 不能跨卷）且以「.」开头（脏不了目录列表）。
 //   4. fsync 必须在 rename **之前**（静态闸门：顺序不许调换，否则断电会丢内容）。
-//   5. readJson / stripBom：BOM、坏 JSON 的行为。
+//   5. stripBom：BOM 的行为（读侧不再收编：CSTO-A05 删掉死导出 readJson）。
 //   6. 反回退：core/storage.js 与 main.js 不许绕过 atomic 直接写盘。
 
 const test = require('node:test');
@@ -169,7 +169,7 @@ test('静态闸门：临时文件 → fsync → rename 的顺序不许调换，�
   assert.ok(closeAt > syncAt, 'fsync 之后才 close');
   assert.ok(renameAt > closeAt, 'fsync + close 之后才 rename');
   assert.match(src, /catch \(err\) \{[\s\S]*?fs\.unlink\(tmp\)/, '失败路径必须删掉临时文件');
-  for (const name of ['atomicWriteFile', 'renameWithRetry', 'readJson', 'writeJsonAtomic', 'stripBom', 'sleep']) {
+  for (const name of ['atomicWriteFile', 'renameWithRetry', 'writeJsonAtomic', 'stripBom', 'sleep']) {
     assert.equal(typeof atomic[name], 'function', `导出 ${name} 不许被删`);
   }
 });
@@ -298,17 +298,16 @@ test('atomicWriteFile：同一路径并发写也只会是「整份的某一版�
   assert.deepEqual(await tmpEntries(dir), [], '并发写不许留下临时文件');
 });
 
-test('writeJsonAtomic / readJson：两空格缩进 + 结尾换行，能原样读回；BOM 开头也能读', async () => {
+test('writeJsonAtomic：两空格缩进 + 结尾换行，原样能读回', async () => {
   const dir = await mkTmp();
   const file = path.join(dir, '书目.json');
   const obj = { version: 1, chapters: [{ id: 'ch_001', file: '001-起风.txt', name: '起风' }] };
   await atomic.writeJsonAtomic(file, obj);
   assert.equal(await fs.readFile(file, 'utf8'), `${JSON.stringify(obj, null, 2)}\n`);
-  assert.deepEqual(await atomic.readJson(file), obj);
+});
 
-  const bomFile = path.join(dir, '带BOM.json');
-  await fs.writeFile(bomFile, `\uFEFF${JSON.stringify(obj)}`, 'utf8');
-  assert.deepEqual(await atomic.readJson(bomFile), obj);
+test('CSTO-A05：读侧不再从 atomic 导出（生产零调用，读 JSON 由调用方 fs.readFile + stripBom 自理）', () => {
+  assert.equal(Object.prototype.hasOwnProperty.call(atomic, 'readJson'), false, 'atomic 不许再导出死读侧入口');
 });
 
 test('stripBom：只吃开头那个 BOM，普通文本 / 数字 / null 都安全', () => {
@@ -320,12 +319,8 @@ test('stripBom：只吃开头那个 BOM，普通文本 / 数字 / null 都安全
   assert.equal(atomic.stripBom(42), '42');
 });
 
-test('readJson：坏 JSON 直接抛错，不返回半份数据', async () => {
-  const dir = await mkTmp();
-  const broken = path.join(dir, '坏.json');
-  await fs.writeFile(broken, '{"chapters": [', 'utf8');
-  await assert.rejects(() => atomic.readJson(broken), (err) => err instanceof SyntaxError);
-  await assert.rejects(() => atomic.readJson(path.join(dir, '不存在.json')), (err) => err.code === 'ENOENT');
+test('readJson 已删（CSTO-A05）：坏输入不会再被一个无人使用的读侧入口掩盖', () => {
+  assert.equal(typeof atomic.readJson, 'undefined');
 });
 
 test('反回退：core/storage.js 与 main.js 不许绕过原子写（不直接 writeFile / writeFileSync / createWriteStream）', async () => {
