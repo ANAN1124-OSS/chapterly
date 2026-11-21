@@ -552,7 +552,11 @@ test('正文索引：整本建位图按批累积，跨批边界结果与整本�
   // 静态闸门：不允许退回「整本 texts 数组一次常驻」
   const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'search-index.js'), 'utf8');
   const anchor = source.indexOf('async function buildBookEntry');
-  const body = source.slice(anchor, source.indexOf('function createSearchStore', anchor));
+  const nextFn = source.indexOf('function createSearchStore', anchor);
+  // TESTC-03：锚点缺 -1 防护时 slice(anchor, -1) 会静默截取几乎全文（或反向截成空串），闸门会误挂 / 误绿。
+  assert.ok(anchor >= 0, '找不到 buildBookEntry（锚点失效）');
+  assert.ok(nextFn > anchor, '找不到 createSearchStore（终点锚点失效）');
+  const body = source.slice(anchor, nextFn);
   assert.equal(/mapLimit\(chapters,/.test(body), false, '整本 chapters 不能再一次性 mapLimit');
   assert.equal(body.includes('BLOOM_BUILD_BATCH'), true);
   assert.equal(body.includes('missingText'), true);
@@ -586,13 +590,21 @@ test('V107/WP-21：lastModified 改循环取最大（20 万章不展开实参）
   const chapterStats = await Promise.all(
     built.entry.chapters.map((chapter) => fs.stat(path.join(bookPath, chapter.file)))
   );
-  assert.equal(built.entry.lastModified, Math.max(metaStat.mtimeMs, ...chapterStats.map((item) => item.mtimeMs)));
+  // 期望值用循环取最大（TESTC-07：这条用例自己也不许用「展开整章数组」的写法，否则与它钉的口径相反）。
+  let expectedLastModified = metaStat.mtimeMs;
+  for (const item of chapterStats) expectedLastModified = Math.max(expectedLastModified, item.mtimeMs);
+  assert.equal(built.entry.lastModified, expectedLastModified);
 
   // 静态闸门：不许再出现「把 chapters 展开成 Math.max 实参」（只看代码行，注释里的历史写法不算）
   const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'search-index.js'), 'utf8');
-  const code = source.replace(/^\s*\/\/.*$/gm, '');
+  // TESTC-02：声明「注释里的历史写法不算」就要真的全剥——整行 // 之外还要剥块注释与行尾注释
+  //（行尾注释只在前面有空白时剥，免得把字符串里的 https:// 切坏）。
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '');
   const anchor = source.indexOf('async function buildBookEntry');
-  const body = source.slice(anchor, source.indexOf('function createSearchStore', anchor));
+  const nextFn = source.indexOf('function createSearchStore', anchor);
+  assert.ok(anchor >= 0, '找不到 buildBookEntry（锚点失效）');
+  assert.ok(nextFn > anchor, '找不到 createSearchStore（终点锚点失效）');
+  const body = source.slice(anchor, nextFn);
   assert.equal(/\.\.\.\s*chapters/.test(code), false, '不许再把整个 chapters 数组展开成实参');
   assert.equal(/Math\.max\(\s*metaMtimeMs/.test(code), false, 'Math.max 展开写法不许回潮');
   assert.equal(body.includes('latestModifiedMs(metaMtimeMs, chapters)'), true, 'buildBookEntry 必须走循环版最大值');
@@ -1011,7 +1023,8 @@ test('正文索引（P22-4）：单章计数硬上限 10000，超过后 chapterC
   assert.equal(focused.truncated, true);
 });
 
-test('正文索引：200 章规模的书建索引 / 搜索可用（不要求速度，只要求不出错）', async () => {  const base = await mkTmp();
+test('正文索引：200 章规模的书建索引 / 搜索可用（不要求速度，只要求不出错）', async () => {
+  const base = await mkTmp();
   const userData = path.join(base, 'userdata');
   const booksRoot = path.join(base, 'books');
   await fs.mkdir(userData);
@@ -1610,9 +1623,15 @@ test('E21（#46）：落盘只有一条串行链 —— doEnsure / load 不再�
   // 串行链唯一入队口
   assert.ok(src.includes('function saveThrough()'), '缺 saveThrough');
   assert.ok(/savePromise = savePromise\.then\(saveNow, saveNow\)/.test(src));
-  // 两个曾经绕开链的调用点改为入队
-  assert.ok(src.includes('await saveThrough(); // 审计修复 #46（E21）：走与 flush 同一条串行链'));
-  assert.ok(src.includes('await saveThrough(); // 审计修复 #46（E21）：排进 flush 的串行链'));
+  // 两个曾经绕开链的调用点 (load / doEnsure) 改为入队：只钉调用结构，不钉注释措辞 / 审计编号（TESTC-01）。
+  const loadAt = src.indexOf('function load()');
+  const statusAt = src.indexOf('function status()', loadAt);
+  assert.ok(loadAt >= 0 && statusAt > loadAt, '要能定位 load() 的函数体');
+  assert.ok(src.slice(loadAt, statusAt).includes('await saveThrough();'), 'load 不许绕过串行链直写');
+  const ensureAt = src.indexOf('async function doEnsure');
+  const ensureEnd = src.indexOf('function ensure(', ensureAt);
+  assert.ok(ensureAt >= 0 && ensureEnd > ensureAt, '要能定位 doEnsure() 的函数体');
+  assert.ok(src.slice(ensureAt, ensureEnd).includes('await saveThrough();'), 'doEnsure 不许绕过串行链直写');
   // 除串行链自身以外，任何地方都不许再直调 saveNow()
   const calls = src.match(/await saveNow\(\);/g) || [];
   assert.equal(calls.length, 0, `仍有 ${calls.length} 处直调 saveNow()`);

@@ -120,7 +120,10 @@ function makeEl(tag = 'div') {
     get() {
       return '';
     },
-    set() {
+    set(value) {
+      // TESTC-05：手写假 DOM 只支持「清空」这一种用法（renderer/capture-ui.js 只用 `innerHTML = ''`）。
+      // 非空赋值直接抛错——以前是静默吞掉、连子节点都不建，改走 innerHTML 构建节点时测试会莫名错位或假绿。
+      if (String(value) !== '') throw new Error('假 DOM 只支持清空 innerHTML（不支持用 innerHTML 建节点）');
       el.children.length = 0;
     }
   });
@@ -489,17 +492,21 @@ test('契约：createCaptureUi 的 host 正好 10 个成员（含 insertIntoBody
 
 // 审计修复 #41（V404）：契约注释与 REQUIRED_HOST 的成员数必须一致。V404 前源码两处还写着「9 个成员」
 // （测试早已是 10），按注释理解契约的人会数不出第 10 个 staleGuard。这里把三处注释一起钉住。
-test('契约注释（V404）：capture-ui / renderer.js 都写「正好 10 个成员」，不再残留 9', () => {
+test('契约注释（V404）：capture-ui / renderer.js 的成员计数与清单对齐 REQUIRED_HOST', () => {
   assert.equal(/正好 9 个成员|这 9 个键/.test(moduleSrc), false, 'capture-ui.js 还有「9 个成员」的旧计数');
-  assert.match(moduleSrc, /host 正好 10 个成员（契约 §5）/);
-  assert.match(moduleSrc, /契约 §5：host 正好 10 个成员/);
-  // 契约成员清单也要和 REQUIRED_HOST 一字不差（含第 10 个 staleGuard）
-  const listed = [...moduleSrc.matchAll(/契约：createCaptureUi\(host\) 由渲染层调用一次，host 正好 10 个成员（契约 §5）：\r?\n \*   \{ ([^}]+) \}/g)][0];
-  assert.ok(listed, '契约头部的成员清单不见了');
-  assert.deepEqual(
-    listed[1].split(',').map((item) => item.trim()),
-    ['$', 'state', 'api', 'call', 'toast', 'saveCurrent', 'loadChapterAt', 'renderStatsUi', 'insertIntoBody', 'staleGuard']
+  // TESTC-01：防的是「注释写 9、实现 10」这类失实，不是注释排版——只钉计数，不钉星号 / 空格 / 标点。
+  assert.ok(
+    (moduleSrc.match(/host 正好 10 个成员/g) || []).length >= 2,
+    '契约头部与 §5 说明两处都要写「host 正好 10 个成员」'
   );
+  // 契约成员清单与 REQUIRED_HOST 对齐（清单内容比注释格式重要：成员名逐个对，排版随便）。
+  const headerStart = moduleSrc.indexOf('契约：createCaptureUi(host)');
+  assert.notEqual(headerStart, -1, '找不到契约头部注释');
+  const headerEnd = moduleSrc.indexOf('另有可选成员', headerStart);
+  assert.notEqual(headerEnd, -1, '找不到契约头部结尾（另有可选成员）');
+  const listed = moduleSrc.slice(headerStart, headerEnd).match(/\{\s*([^}]+)\s*\}/);
+  assert.ok(listed, '契约头部的成员清单不见了');
+  assert.deepEqual(listed[1].split(',').map((item) => item.trim()), captureUiModule.REQUIRED_HOST);
   assert.equal(/host 正好 9 个成员/.test(rendererSrc), false, 'renderer.js 装配注释还在写 9 个成员');
   assert.match(rendererSrc, /createCaptureUi\(host\) 一次装配，host 正好 10 个成员/);
 });
@@ -1054,7 +1061,8 @@ test('章节：titleOnly（整条当章名、没有正文）→ toast 标「仅�
   }));
 
 test('章节：队列条目成功 → payload 带 queueId、被消费的记录消失、其余记录保留、面板不关', () =>
-  withFakeDocument(async () => {    const ctx = build({ queue: [{ text: QUEUE_A }, { text: QUEUE_B }] });
+  withFakeDocument(async () => {
+    const ctx = build({ queue: [{ text: QUEUE_A }, { text: QUEUE_B }] });
     const ui = captureUiModule.create(ctx.host);
     await ui.open();
     const result = await ui.createChapter({ id: 1 });
@@ -1560,10 +1568,10 @@ test('静态闸门：renderer.js 只接线（9 成员 host / 列表委托 / 插�
 
 test('静态闸门：面板实现只在 renderer/capture-ui.js，renderer.js 不许长回第二份', () => {
   assert.ok(moduleSrc.includes('function createCaptureUi(host)'), '模块必须交出 createCaptureUi(host)');
-  assert.ok(
-    moduleSrc.includes(
-      'root.CWCaptureUi = factory(root.CWChapters, root.CWCapture, root.CWCommon, root.CWBackdropRegistry, root.CWAssertHost && root.CWAssertHost.assertHost)'
-    ),
+  // TESTC-01：只钉挂载的实参序列（依赖按序传入），不钉换行方式 / 整行字面量。
+  assert.match(
+    moduleSrc,
+    /root\.CWCaptureUi = factory\(\s*root\.CWChapters,\s*root\.CWCapture,\s*root\.CWCommon,\s*root\.CWBackdropRegistry,\s*root\.CWAssertHost && root\.CWAssertHost\.assertHost\s*\)/,
     '浏览器挂载口径（1.8.0 WP-17：第 4 个依赖是弹层注册表；A8/WP-32：第 5 个是共享 host 校验）'
   );
   assert.ok(moduleSrc.includes('REQUIRED_HOST'), '必须有 host 契约清单');
@@ -1622,6 +1630,11 @@ test('静态闸门：test-hooks 钩子改成列表版（applyBody / createChapte
 });
 
 test('静态闸门：模块不碰 Electron / 文件系统 / localStorage，只走白名单 IPC', () => {
+  // TESTC-05：假 DOM 的 innerHTML 只支持清空（非空赋值会抛错）；模块侧同样只许 `innerHTML = ''`。
+  const innerHtmlAssignments = moduleCode.match(/\.innerHTML\s*=\s*[^;\n]+/g) || [];
+  for (const assignment of innerHtmlAssignments) {
+    assert.match(assignment, /=\s*''\s*$/, `innerHTML 只许清空（假 DOM 不支持建节点）：${assignment.trim()}`);
+  }
   for (const forbidden of [
     "require('electron')",
     'ipcRenderer',
@@ -1820,8 +1833,9 @@ test('静态闸门（WP-16 / C14）：clearQueue 的 finally 统一复位 busy �
     'busy 复位必须带 render（失败路径也要把按钮画回可用态）'
   );
   assert.match(body, /refreshSeq\.next\(\)/, 'WP-15 / C36：清空开始即作废在途刷新，不能被这次重画弄丢');
+  // TESTC-01：只钉「成功文案只留一处」，不钉引号 / 包裹写法（文案本身仍必须出现）。
   assert.equal(
-    (body.match(/toast\('已清空本次运行的捕获队列'\)/g) || []).length,
+    (body.match(/toast\([^)]*已清空本次运行的捕获队列[^)]*\)/g) || []).length,
     1,
     '成功文案只留一处，且仍在 try 之后'
   );
