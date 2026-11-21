@@ -1011,3 +1011,65 @@ test('五-M25：现成书整目录复制后复核实际字节，超限章节剔�
   assert.equal(importedMeta.chapters.length, 1);
   assert.ok(importedMeta.chapters.some((chapter) => chapter.id === importedMeta.lastOpenChapterId));
 });
+// ---------- 第五轮审计：CIO-A-01 / CIO-A-02（导入产物的「书目=真实文件」口径） ----------
+
+// 半坏来源：书目引用了 _trash 下的章节（copyAsBook 无条件过滤，keep 豁免不生效）。
+// 旧逻辑只剔 oversized 命中的章，这条引用会原样进新书 → 永远打不开的悬挂章节。
+test('CIO-A-02：来源书目引用 _trash 里的章节时，导入书目把它剔掉（不留悬挂章节）', async () => {
+  const base = await mkTmp();
+  const externalRoot = path.join(base, '外部');
+  await fs.mkdir(externalRoot);
+  const created = await storage.createBook(externalRoot, '半坏来源');
+  await storage.createChapter(created.path, 1, '第二章');
+  const meta = await storage.readBookMeta(created.path);
+  const first = meta.chapters[0].file;
+  await storage.saveChapterText(created.path, first, '第一章正文');
+  await fs.mkdir(path.join(created.path, '_trash'), { recursive: true });
+  await fs.writeFile(path.join(created.path, '_trash', '002-挪走.txt'), '旧稿', 'utf8');
+  await storage.writeBookMeta(created.path, {
+    ...meta,
+    chapters: [meta.chapters[0], { ...meta.chapters[1], file: '_trash/002-挪走.txt' }]
+  });
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [created.path]);
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].kind, 'book');
+  assert.equal(res.imported[0].chapters, 1, '悬挂章节不进新书');
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].code, 'CHAPTER_MISSING');
+  assert.equal(res.skipped[0].tooLarge, false, '缺失不是体量超限，不许冒充 tooLarge');
+  assert.match(res.skipped[0].reason, /没有复制进新书/);
+  const importedMeta = await storage.readBookMeta(res.imported[0].path);
+  assert.equal(importedMeta.chapters.length, 1);
+  assert.equal(importedMeta.chapters[0].file, first);
+  assert.equal(importedMeta.chapters.some((chapter) => chapter.file.startsWith('_trash')), false);
+});
+
+// CIO-A-01：预检之后所有章节都被剔光（复制期间被换大 / 全在排除目录）时，旧实现落到
+// `kept[0].id` 抛 TypeError，被包成 IMPORT_FAILED「复制失败：Cannot read properties…」。
+// 现在按整源跳过报 FILE_TOO_LARGE，与章节目录分支对称。
+test('CIO-A-01：复制后章节全被剔光 → 按整源跳过，不抛 TypeError 变成「复制失败」', async () => {
+  const base = await mkTmp();
+  const externalRoot = path.join(base, '外部');
+  await fs.mkdir(externalRoot);
+  const created = await storage.createBook(externalRoot, '全悬挂来源');
+  const meta = await storage.readBookMeta(created.path);
+  await storage.saveChapterText(created.path, meta.chapters[0].file, '正文');
+  await fs.mkdir(path.join(created.path, '_trash'), { recursive: true });
+  await fs.writeFile(path.join(created.path, '_trash', '001-挪走.txt'), '旧稿', 'utf8');
+  await storage.writeBookMeta(created.path, {
+    ...meta,
+    chapters: [{ ...meta.chapters[0], file: '_trash/001-挪走.txt' }]
+  });
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [created.path]);
+  assert.equal(res.imported.length, 0, '一个能导入的章节都不剩时不留空书');
+  assert.equal(res.failed.length, 0, '这是「跳过」，不是「复制失败」');
+  assert.equal(res.skipped.length, 1, JSON.stringify(res.skipped));
+  assert.equal(res.skipped[0].code, 'FILE_TOO_LARGE');
+  assert.match(res.skipped[0].reason, /没能复制进新书/);
+  assert.match(res.skipped[0].reason, /已跳过/);
+  assert.deepEqual(await fs.readdir(booksRoot).catch(() => []), [], '暂存已清，书架里不留空书');
+});

@@ -332,7 +332,9 @@ function withSkippedEntries(result, oversized) {
       source: entry.file,
       reason: entry.message,
       code: entry.code,
-      tooLarge: true
+      // 绝大多数「跳过」是体量超限；CIO-A-02 起「书目引用的章节在来源里缺失」也走同形记录，
+      // 但它不是体量问题，显式给 tooLarge:false，界面/统计不把它算成超限文件。
+      tooLarge: entry.tooLarge !== false
     }))
   };
 }
@@ -443,10 +445,40 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
       );
       const skippedEntries = oversized.concat(copiedOversized);
       let meta = await storage.readBookMeta(staging);
-      if (skippedEntries.length) {
+      // CIO-A-02 / CIO-A-01（第五轮审计）：「不复制排除目录」与「书目剔章」必须同一条口径。
+      // 来源书目的 chapters[].file 可能指向 _trash/ 或点目录（copyAsBook 无条件过滤、keep 豁免
+      // 不生效），也可能在复制窗口里消失；这些章节既不在 oversized 里、也不会被原逻辑剔掉，
+      // 会变成新书里永远打不开的悬挂章节。这里按「暂存树里实际存在」逐章核对（keepFiles 用
+      // 同一份相对路径清单，书名里的冲突副本名豁免在暂存树上同样生效），缺失一律剔出书目。
+      const present = new Set(
+        (await listTxtFilesDeep(staging, '', (analysis.meta.chapters || []).map((chapter) => chapter.file))).map(
+          (file) => relativeKey(file)
+        )
+      );
+      const dropped = new Set(skippedEntries.map((entry) => relativeKey(entry.file)));
+      for (const chapter of meta.chapters) {
+        const key = relativeKey(chapter.file);
+        if (present.has(key) || dropped.has(key)) continue;
+        dropped.add(key);
+        skippedEntries.push({
+          file: chapter.file,
+          code: 'CHAPTER_MISSING',
+          message: '这一章在来源里位于 _trash / 点目录（或复制期间消失），没有复制进新书，已从书目剔除',
+          tooLarge: false
+        });
+      }
+      if (dropped.size) {
         // 超限章节根本没复制进来 / 已被清理：书目只保留真实存在的章节，不留下打不开的悬挂章节
-        const dropped = new Set(skippedEntries.map((entry) => relativeKey(entry.file)));
         const kept = meta.chapters.filter((chapter) => !dropped.has(relativeKey(chapter.file)));
+        if (!kept.length && meta.chapters.length) {
+          // CIO-A-01：预检之后所有章节都被剔光（复制期间被换大 / 全在排除目录）——不能落到
+          // kept[0].id 的 TypeError；按「整源跳过」语义报 FILE_TOO_LARGE，与章节目录分支对称，
+          // 由 importFolders 记进 skipped（不是 IMPORT_FAILED 的「复制失败」）。
+          throw new storage.StorageError(
+            'FILE_TOO_LARGE',
+            `《${path.basename(sourceDir)}》里的章节都没能复制进新书（源文件缺失或超过上限），已跳过`
+          );
+        }
         if (kept.length !== meta.chapters.length) {
           const lastOpenChapterId = kept.some((c) => c.id === meta.lastOpenChapterId)
             ? meta.lastOpenChapterId
