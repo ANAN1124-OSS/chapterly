@@ -3,7 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { AsyncLocalStorage } = require('node:async_hooks');
-const { atomicWriteFile, atomicCopyFile, stripBom, cleanupOrphanTmpFiles } = require('./atomic');
+const { atomicWriteFile, atomicCopyFile, stripBom, cleanupOrphanTmpFiles, renameWithRetry } = require('./atomic');
 const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, MAX_TEXT_BYTES } = require('./common');
 const chaptersLib = require('./chapters');
 const findLib = require('./find');
@@ -976,7 +976,8 @@ async function openBook(bookPath) {
   // X8（v1.8.0 WP-40）：打开书时顺手回收上次崩溃留在本书目录的孤儿临时文件。
   // 只删「不是本进程 + 超过 1 小时」的 `.名.tmp-pid-时间-随机`（章节正文 / 书目 / 其它文件一个不碰）；
   // 清理失败不影响打开书（core/atomic 内部已吞掉所有 IO 失败）。
-  await cleanupOrphanTmpFiles(bookPath);
+  // CSTO-A06：书内 _trash 的备份目录里也有 atomicCopyFile 的临时文件，往下扫两层一起回收。
+  await cleanupOrphanTmpFiles(bookPath, { depth: 2 });
   const meta = await readBookMeta(bookPath);
   const [stats, missing] = await Promise.all([
     bookStats(bookPath, meta),
@@ -1426,7 +1427,7 @@ async function moveToTrash(bookPath, file) {
     dest = path.join(trashDir, destName);
   }
   try {
-    await fs.rename(source, dest);
+    await renameWithRetry(source, dest);
   } finally {
     inflightTrashTargets.delete(dest);
   }
@@ -1491,7 +1492,7 @@ async function deleteChapter(bookPath, chapterId) {
     }
     let rolledBack = false;
     try {
-      await fs.rename(trashPath, targetPath);
+      await renameWithRetry(trashPath, targetPath);
       rolledBack = true;
     } catch { /* 放不回去就按下面的「文件在 _trash」报错 */ }
     throw batchFailure(err, {
@@ -1600,7 +1601,7 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     }
   }
 
-  await fs.rename(source, target);
+  await renameWithRetry(source, target);
   let autoTrashPath = null;
   try {
     if (autoChapter) {
@@ -1641,7 +1642,7 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     const notes = [];
     let rollbackFailed = false;
     try {
-      await fs.rename(target, source);
+      await renameWithRetry(target, source);
     } catch {
       // 五-M31（IPC-01）：:1544 是 move 不是 copy —— 回滚失败时 _trash 里已经**没有**这一份，
       // 磁盘上唯一副本是书文件夹里这个还没登记进书目的 txt。旧注记却声称「_trash 里那一份也还在」，
@@ -1654,7 +1655,7 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     }
     if (autoTrashPath) {
       try {
-        await fs.rename(autoTrashPath, path.join(bookPath, autoChapter.file));
+        await renameWithRetry(autoTrashPath, path.join(bookPath, autoChapter.file));
       } catch {
         notes.push(`自动补的「${autoChapter.file}」在 ${trashDirLabel(trashDir)} 里`);
       }
@@ -2827,7 +2828,7 @@ async function trashBook(booksRoot, bookPath) {
       dest = path.join(trashDir, `${stamp}-${folder}-${serial}`);
       serial += 1;
     }
-    await fs.rename(target, dest);
+    await renameWithRetry(target, dest);
     return dest;
   });
 }

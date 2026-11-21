@@ -473,7 +473,9 @@ test('静态闸门：删章必须「先移文件 → 再写书目」，失败分
   assert.ok(moveAt < metaAt, '顺序不许反过来：先写书目再移文件会留下「书目里没有了、文件还在」的孤儿');
   assert.match(body, /batchFailure\(/, '书目写盘失败必须走统一报错（带现场）');
   assert.match(body, /DELETE_FAILED/);
-  assert.match(body, /fs\.rename\(trashPath/, '失败后必须尝试把文件放回原处');
+  // CSTO-A04：回滚也走 renameWithRetry —— 杀软 / 同步盘瞬时占用时与保存链路同一套重试口径
+  assert.match(body, /renameWithRetry\(trashPath/, '失败后必须尝试把文件放回原处（走带重试的 rename）');
+  assert.equal(/fs\.rename\(/.test(body), false, '删章链路不许再出现裸 fs.rename');
 });
 
 // WP-06（审计 C5）：删章路径（deleteChapter + moveToTrash + 回滚）必须过 assertChapterFile，
@@ -486,7 +488,7 @@ test('静态闸门：删章入口先过 assertChapterFile，回滚只用校验�
   assert.ok(assertAt < moveAt, '校验必须在移文件之前：任何副作用之前就拒绝');
   assert.match(body, /const targetPath = assertChapterFile\(bookPath, target\.file\)/, '回滚路径复用校验结果');
   assert.equal(body.includes('path.join(bookPath, target.file)'), false, '回滚不许按原始字段现拼路径（否则能写出书外）');
-  assert.match(body, /fs\.rename\(trashPath, targetPath\)/, '回滚必须用校验过的绝对路径');
+  assert.match(body, /renameWithRetry\(trashPath, targetPath\)/, '回滚必须用校验过的绝对路径（走带重试的 rename）');
   const moveBody = functionBody(STORAGE_SOURCE, 'async function moveToTrash(', '');
   const moveAssertAt = moveBody.indexOf('assertChapterFile(');
   assert.ok(moveAssertAt >= 0, 'moveToTrash 自己也要挡（撤销删空补章同走这里）');

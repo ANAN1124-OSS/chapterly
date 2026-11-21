@@ -1205,7 +1205,9 @@ test('分卷：书目里章节乱序或指向不存在的卷，读取时会归�
   await fs.writeFile(metaPath, JSON.stringify(raw), 'utf8');
   const meta = await storage.readBookMeta(bookPath);
   assert.deepEqual(meta.chapters.map((c) => c.name), ['孤儿', '卷一']);
-  assert.equal(meta.chapters[0].volumeId, null);
+  // CSTO-B-05：回未分卷的章节不再留 `volumeId: null` 字段（读盘归一即删）
+  assert.equal(Object.prototype.hasOwnProperty.call(meta.chapters[0], 'volumeId'), false);
+  assert.equal(meta.chapters[0].volumeId, undefined);
   assert.equal(meta.chapters[1].volumeId, 'v_001');
 });
 
@@ -2233,4 +2235,45 @@ test('五-M33（IE-02）：只读长流程租约拦删除不拦保存，释放 /
   assert.equal(storage.isBookReadLeased(bookPath), true);
   lower();
   assert.equal(storage.isBookReadLeased(bookPath), false, '同一本书的两种路径写法应落在同一个 key 上');
+});
+
+// CSTO-A04：书内 rename（删章 / 撤销删除 / 删书）与保存链路同一套瞬时失败重试——
+// 杀软 / 同步盘短暂占用文件时自动重试，不把「可重试」报成删除失败。
+test('CSTO-A04：删章 / 删书的 rename 走 renameWithRetry，瞬态 EPERM 自动重试', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '重试删除');
+  await storage.createChapter(bookPath, 1, '待删');
+  let meta = await storage.readBookMeta(bookPath);
+  const target = meta.chapters[1];
+  const real = fs.rename;
+  const fails = { trash: 2 };
+  const patched = async (from, to) => {
+    if (String(to).includes('_trash') && fails.trash > 0) {
+      fails.trash -= 1;
+      throw Object.assign(new Error('EPERM: 模拟杀软瞬时占用'), { code: 'EPERM' });
+    }
+    return real.call(fs, from, to);
+  };
+  Object.defineProperty(fs, 'rename', { value: patched, configurable: true, writable: true });
+  try {
+    const res = await storage.deleteChapter(bookPath, target.id);
+    assert.ok(res.trashPath.includes('_trash'), '瞬态 EPERM 之后删章成功（不是直接报 TRASH_FAILED）');
+    assert.equal(fails.trash, 0, '两次失败都被 renameWithRetry 重试掉了');
+  } finally {
+    Object.defineProperty(fs, 'rename', { value: real, configurable: true, writable: true });
+  }
+  meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapters.length, 1);
+
+  // 删书（trashBook）也走同一套重试
+  const second = await storage.createBook(root, '待删的书');
+  fails.trash = 2;
+  Object.defineProperty(fs, 'rename', { value: patched, configurable: true, writable: true });
+  try {
+    const dest = await storage.trashBook(root, second.path);
+    assert.ok(dest.includes('_trash'), '瞬态 EPERM 之后删书成功');
+    assert.equal(fails.trash, 0);
+  } finally {
+    Object.defineProperty(fs, 'rename', { value: real, configurable: true, writable: true });
+  }
 });
