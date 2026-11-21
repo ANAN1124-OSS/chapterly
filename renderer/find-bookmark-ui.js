@@ -239,6 +239,10 @@
 
   // 跳到书签所在的「书 + 章」：同一本书直接切章；别的书先确认还在书架里再打开。
   // 切章 / 开书后由 loadChapterAt 统一按最新正文重扫并高亮，所以这里不自己查。
+  // RPAN-A-01（第五轮审计）：Windows 上 state.bookPath 与书签里存的路径可能只差大小写
+  // （history-ui #43 已认定这是真实场景并改用不敏感比较）。严格 === 会把有效书签误判成
+  // 「书已不在书架」，引导作者删掉它。同书判定与书架匹配都走同一份 pathKey 口径。
+  const sameBookPath = (a, b) => String(a == null ? '' : a).toLowerCase() === String(b == null ? '' : b).toLowerCase();
   async function jumpToFindBookmark(bookmark) {
     if (!bookmark) return { ok: false };
     if (!state.bookPath) {
@@ -247,7 +251,7 @@
     }
     closeFindPanel();
     const sameBook =
-      state.bookPath === bookmark.bookPath || (state.bookId && state.bookId === bookmark.bookId);
+      sameBookPath(state.bookPath, bookmark.bookPath) || (state.bookId && state.bookId === bookmark.bookId);
     if (sameBook) {
       const index = state.chapters.findIndex((chapter) => chapter.id === bookmark.chapterId);
       if (index < 0) {
@@ -261,7 +265,7 @@
       const restored = await restoreFindBookmarkForCurrentChapter({ force: true, toastHint: true });
       return { ok: Boolean(restored && restored.ok), index, count: restored ? restored.count : 0 };
     }
-    const known = (state.books || []).find((book) => book.path === bookmark.bookPath);
+    const known = (state.books || []).find((book) => sameBookPath(book.path, bookmark.bookPath));
     if (!known) {
       toast('这本书已经不在书架里了（书签还留着，可在查找面板里删除）', 'warn');
       return { ok: false, code: 'BOOK_GONE' };

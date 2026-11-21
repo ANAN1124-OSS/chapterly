@@ -395,6 +395,31 @@ test('jumpToFindBookmark：没书 / 同书已删章 / 同书成功（切章后�
   assert.deepEqual(openedRes, { ok: false, code: 'NO_CHAPTER' }, '打开后发现章节没了');
 });
 
+// RPAN-A-01（第五轮审计）：Windows 上 state.bookPath 与书签里存的路径只差大小写是真实场景
+// （history-ui #43 已按不敏感比较修过）。严格 === 会把有效书签误报成「书已不在书架」，
+// 甚至在 bookId 也变化时诱导作者删掉它。同书判定与书架匹配都必须按不敏感路径。
+test('RPAN-A-01：书签路径与当前书只差大小写时按同书处理（不误报「书已不在书架」）', async () => {
+  const bookmark = makeBookmark({
+    bookPath: 'C:\\Books\\BookA',
+    bookId: 'id-old',
+    chapterId: 'c2',
+    chapterName: '第二章',
+    chapterIndex: 2
+  });
+  const ctx = build({ bookmarks: [bookmark] });
+  ctx.state.bookPath = 'c:\\books\\booka';
+  ctx.state.bookId = 'id-new'; // 书重新导入后 id 变了：只能靠路径判同书
+  ctx.state.books = [{ path: 'C:\\books\\BOOKA', title: '书甲' }];
+  assert.equal(ctx.state.bookPath === bookmark.bookPath, false, '用例前提：严格比较确实不相等');
+  ctx.host.find.findSessionMatchesOptions = () => false;
+  const res = await ctx.ui.jumpToFindBookmark(bookmark);
+  assert.deepEqual(ctx.calls.switchChapter, [1], '按同书处理：直接切到目标章（不再走跨书分支）');
+  assert.equal(ctx.calls.toast.length, 0, '不许提示「这本书已经不在书架里了」');
+  // 书签按 bookId 索引：这里的 bookId 已变（重新导入），恢复高亮那一步查不到书签，但跳转本身
+  // 不再被误判成「书没了」——这正是本条要修的那条误导路径。
+  assert.equal(res.code, undefined);
+});
+
 test('五-M8：跨书书签开书失败返回对象（另一窗口 / STALE / 解析失败）→ 按原 code 返回，不在旧书章节里误诊「章不存在」', async () => {
   // 目标章属于书乙（c9 在书甲里不存在）：开书失败后若继续往下走，就会误报「这一章已经不存在了」
   // 并诱导作者去删一条有效书签。
