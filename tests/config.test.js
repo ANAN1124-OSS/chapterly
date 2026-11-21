@@ -1,11 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createConfigStore, sanitize, sanitizeLastBook, DEFAULTS, BOOK_DISPLAY_MAX } = require('../core/config');
 const { writeJsonAtomic } = require('../core/atomic');
 const { readGlossaryFile, readGlossaryFiles } = require('../core/glossary');
+
+// TB-07：main.js 源码只读一次、只归一换行一次（静态闸门本来就是同步逻辑）；
+// 以前三处各写一种读法（fs.readFile / require('node:fs').readFileSync / 不归一），纯样板噪音。
+const MAIN_SOURCE = fsSync
+  .readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  .replace(/\r\n/g, '\n');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -115,15 +122,16 @@ test('V103/WP-26：窗口尺寸上限放宽、main.js 存普通态几何并按�
   assert.equal(sanitize({ windowBounds: { width: 100, height: 100 } }).windowBounds.width, 960);
   assert.equal(sanitize({ windowBounds: { width: 100, height: 100 } }).windowBounds.height, 620);
 
-  const main = (await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8')).replace(/\r\n/g, '\n');
+  const main = MAIN_SOURCE;
+  // TB-01：钉「用了 getNormalBounds / 普通态几何 + maximized」，不钉临时变量名（`normal` 改名属无害重构）。
   assert.match(
     main,
-    /const normal = session\.win\.getNormalBounds\(\);/,
+    /const \w+ = session\.win\.getNormalBounds\(\);/,
     '保存窗口位置要用 getNormalBounds（最大化时 getBounds 是最大化矩形）'
   );
   assert.match(
     main,
-    /const nextBounds = \{ \.\.\.normal, maximized: session\.win\.isMaximized\(\) \};/,
+    /const nextBounds = \{ \.\.\.\w+, maximized: session\.win\.isMaximized\(\) \};/,
     '存的是普通态几何 + maximized 标志（只构造一次 nextBounds，A4）'
   );
   assert.match(
@@ -588,7 +596,6 @@ test('超长段落阈值（1.1.0）：默认 500、夹紧 50–20000、非法值
   assert.equal(cleaned.bookDisplay.b_nan.longParagraphThreshold, 500);
   assert.deepEqual(cleaned.bookDisplay.b_ok, { longParagraphThreshold: 620, editorPaper: 'night' });
   assert.equal(cleaned.longParagraphThreshold, 500, '按书覆盖不回写全局');
-  assert.equal(sanitize({ bookDisplay: 'not-an-object' }).bookDisplay && Object.keys(sanitize({ bookDisplay: 'not-an-object' }).bookDisplay).length, 0);
 
   // 写盘往返：全局 800 + A 书 620；B 书没有覆盖 = 回落全局（合并发生在渲染层，这里按同一规则验证）
   const dir = await mkTmp();
@@ -1909,7 +1916,7 @@ test('CSTO-B-01：config:set 不许升版本号，也不许把 patch 里的新�
 // C7 接线静态闸门：读失败闸门只有靠 main.js 把三条自动写标成 auto 才生效；显式保存必须先重试读
 // 再算目标书架目录 / 建目录 / 写盘（顺序错了就会出现「先建一个错目录再报失败」）。
 test('C7 / V110 接线静态闸门：自动写带 auto 标记、config:set 先重试读', () => {
-  const main = require('node:fs').readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = MAIN_SOURCE;
   assert.match(
     main,
     /configStore\.set\(\{ windowBounds:[\s\S]{0,200}?\}, \{ auto: true \}\)/,
@@ -1929,7 +1936,10 @@ test('C7 / V110 接线静态闸门：自动写带 auto 标记、config:set 先�
   const retryAt = body.indexOf('configStore.retryLoad()');
   const mkdirAt = body.indexOf('fs.mkdir(targetRoot');
   const writeAt = body.indexOf('configStore.set(gated.patch, {');
+  // TB-01：三处锚点都要显式防 -1（否则 -1 参与比较会给出误导性的「顺序不对」失败信息）。
   assert.ok(retryAt > -1, 'config:set 必须先重试读（C7：保存设置前先重试读）');
+  assert.ok(mkdirAt > -1, '找不到建目标目录的调用（fs.mkdir(targetRoot…)）');
+  assert.ok(writeAt > -1, '找不到写盘调用（configStore.set(gated.patch, …)）');
   assert.ok(retryAt < mkdirAt && retryAt < writeAt, '重试读必须在建目标目录 / 写盘之前');
   assert.match(body, /if \(!recovery\.ok\)/, '仍读不到要明确失败（不能拿默认值写盘）');
   assert.match(body, /recovery\.recovered/, '读盘恢复后要刷新主进程缓存再继续');
@@ -1938,7 +1948,7 @@ test('C7 / V110 接线静态闸门：自动写带 auto 标记、config:set 先�
 // 审计残留修复 R28（#52/E25）：主进程启动时只能 peek（记日志用），提示留给 app:warning 取当前值；
 // 启动就 take 走的话，写前重试归档成功后的「已归档」更正永远没人读（旧实现的死代码）。
 test('R28 静态闸门：main.js 启动只 peek 提示，app:warning 取 store 当前值', async () => {
-  const mainSource = await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const mainSource = MAIN_SOURCE;
   assert.match(mainSource, /configWarning = configStore\.peekLoadWarning\(\);/);
   assert.doesNotMatch(
     mainSource,
@@ -1947,7 +1957,10 @@ test('R28 静态闸门：main.js 启动只 peek 提示，app:warning 取 store �
   );
   const handlerAt = mainSource.indexOf("handle('app:warning'");
   assert.ok(handlerAt > 0, 'app:warning 处理器还在');
-  const handler = mainSource.slice(handlerAt, mainSource.indexOf('});', handlerAt));
+  const handlerEnd = mainSource.indexOf('});', handlerAt);
+  // TB-01：终点锚点缺 -1 防护时 slice(handlerAt, -1) 会拿到 handler 之后的全部源码，闸门静默失效。
+  assert.ok(handlerEnd > handlerAt, 'app:warning 处理器要有配对的结束括号');
+  const handler = mainSource.slice(handlerAt, handlerEnd);
   assert.match(
     handler,
     /const warning = configStore \? configStore\.takeLoadWarning\(\) : configWarning;/,

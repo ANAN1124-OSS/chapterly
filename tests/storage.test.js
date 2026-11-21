@@ -365,12 +365,13 @@ test('审计 #22（P6）：20000 章「前一半缺 id + 后一半占满低位�
   assert.deepEqual(ids.slice(10000, 10003), ['ch_001', 'ch_002', 'ch_003'], '已有 id 一个都不改写');
 });
 
-test('审计 #22（P6）：静态闸门 —— 回填不再从 i+1 逐章重扫', async () => {
-  const src = await fs.readFile(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
-  assert.match(src, /function backfillMissingChapterIds\(chapters\)/);
-  assert.match(src, /const backfilledIds = backfillMissingChapterIds\(meta\.chapters\)/, 'readBookMeta 必须走这一份');
-  const start = src.indexOf('function backfillMissingChapterIds(chapters)');
-  const body = src.slice(start, src.indexOf('\nfunction validateMeta(', start));
+test('审计 #22（P6）：静态闸门 —— 回填不再从 i+1 逐章重扫', () => {
+  // TB-01：函数体锚点统一走 topLevelBody（它在找不到函数时 assert 失败）；
+  // 旧写法 `src.slice(start, src.indexOf('\nfunction validateMeta(', start))` 在 validateMeta 改名 /
+  // 删除后会拿到 slice(start, -1)——范围静默扩大到剩余全文，后续 assert.match 反而更容易通过。
+  assert.match(STORAGE_SOURCE, /function backfillMissingChapterIds\(\w+\)/);
+  assert.match(STORAGE_SOURCE, /const backfilledIds = backfillMissingChapterIds\(meta\.chapters\)/, 'readBookMeta 必须走这一份');
+  const body = topLevelBody('backfillMissingChapterIds');
   assert.match(body, /let cursor = 1/, '必须有单调游标');
   assert.match(body, /Math\.max\(cursor, i \+ 1\)/, '每个缺 id 的章从游标与位置号的较大者起步');
   assert.match(body, /cursor = n/, '探测过后游标只前进');
@@ -1656,12 +1657,13 @@ test('审计 #25（R4）：字数回填 / 刷新共用同一个读盘计数内�
     assert.ok(kernel.includes(token), `内核必须包含 ${token}`);
   }
   const backfill = topLevelBody('backfillChapterChars');
-  assert.ok(backfill.includes('countChapterChars(bookPath, pending, options)'), 'backfill 必须走内核');
+  // TB-01：只钉「走了同一个内核」，不钉实参名（改名 / 换局部变量名属无害重构）。
+  assert.ok(backfill.includes('countChapterChars('), 'backfill 必须走内核');
   assert.equal(backfill.includes('mapLimit('), false, 'backfill 不许再自己 mapLimit');
   assert.equal(backfill.includes('countChars('), false, 'backfill 不许再自己算字数');
 
   const refresh = topLevelBody('refreshChapterChars');
-  assert.ok(refresh.includes('countChapterChars(bookPath, targets'), 'refresh 必须走同一个内核');
+  assert.ok(refresh.includes('countChapterChars('), 'refresh 必须走同一个内核');
   assert.equal(refresh.includes('mapLimit('), false, 'refresh 不许再自己 mapLimit');
   assert.equal(refresh.includes('stripBom'), false, 'refresh 不许再自己处理 BOM / 计数');
 });
