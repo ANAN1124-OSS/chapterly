@@ -12,9 +12,10 @@
  * **只搬不改行为**：文案 / class / DOM 结构 / 返回值形状 / token 作废逻辑 / 失败兜底全部一字未改
  * （indent / 空行也保持原样）；面板 CSS 与 index.html 的 DOM 一个字节没动。
  *
- * 契约：createHistoryUi(host) 由渲染层调用一次。host 9 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createHistoryUi(host) 由渲染层调用一次。host 10 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, api, call, toast,                      // 基础 5：DOM 查询 / 共享状态 / IPC 白名单 / IPC 包装 / 提示
+ *     staleGuard,                                       // WP-15：在途回执的世代令牌（stale-guard.js 的 chapterIdentity）
  *     guard: {                                          // 1.5.0 P0-5（审计 V-2）：撤销前的备份指纹核对
  *       fingerprint,                                   //   登记撤销时记 { dirName, fileCount, mtimeMs }（读不到 = null）
  *       assertUnchanged                                //   撤销执行前再核一次，备份变了抛「备份已变化，撤销取消」

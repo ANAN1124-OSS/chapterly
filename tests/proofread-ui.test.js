@@ -12,8 +12,8 @@ const chaptersLib = require('../core/chapters');
 // 结果行结构 / 截断提示 / 跳转兜底 / 忙碌态 / 选词表 persist 两条路径在 Node 里一步都测不到。
 // 搬出来以后用「假 host + 假 DOM」逐条钉住，再用静态闸门保证渲染层不长回第二份。
 //
-// 契约：host 8 个成员 = 基础 5（$, state, api, call, toast）+ peers{closeFindPanel,renderProofreadSettings}
-// + nav{chapterTitle,editorEl,switchChapter} + view{effectiveConfig,hideHeaderMenus,scrollCaretIntoView}。
+// 契约：host 10 个成员 = 基础 5（$, state, api, call, toast）+ staleGuard + peers{closeFindPanel,renderProofreadSettings}
+// + nav{chapterTitle,editorEl,switchChapter} + view{effectiveConfig,hideHeaderMenus,scrollCaretIntoView} + resultJump。
 
 const realDocument = globalThis.document;
 test.after(() => {
@@ -256,9 +256,9 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...proofreadUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'nav', 'peers', 'staleGuard', 'state', 'toast', 'view']);
-  assert.equal(proofreadUi.REQUIRED_HOST.length, 9);
+test('host 契约：10 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...proofreadUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'nav', 'peers', 'resultJump', 'staleGuard', 'state', 'toast', 'view']);
+  assert.equal(proofreadUi.REQUIRED_HOST.length, 10);
   const ctx = build();
   assert.doesNotThrow(() => proofreadUi.create(ctx.host));
   assert.throws(() => proofreadUi.create(null), /createProofreadUi 需要 host 对象/);
@@ -802,7 +802,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWProofreadU
   vm.runInContext(moduleSrc, context, { filename: 'renderer/proofread-ui.js' });
   assert.equal(typeof win.CWProofreadUi, 'object');
   assert.deepEqual(Object.keys(win.CWProofreadUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWProofreadUi.REQUIRED_HOST.length, 9);
+  assert.equal(win.CWProofreadUi.REQUIRED_HOST.length, 10);
   assert.equal(win.CWEditorMarksUi, undefined);
 });
 

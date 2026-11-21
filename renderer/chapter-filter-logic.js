@@ -16,7 +16,9 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  // 去掉首尾空白、把连续空白压成一个空格；保留全角空格以外的普通空格（多词分隔）
+  // 去掉首尾空白、把连续空白压成一个空格。ECMAScript 的 \s 与 trim 都覆盖全角空格（U+3000）
+  // 与 U+00A0 等 Zs 类空白：所有 Unicode 空白统一折叠成半角空格，并作为多词 AND 的分隔符
+  //（RSHE-B-07：注释按实际口径写，别让人以为全角空格能保住长词）。
   function normalizeQuery(value) {
     return String(value == null ? '' : value).trim().replace(/\s+/g, ' ');
   }

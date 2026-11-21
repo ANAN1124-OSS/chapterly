@@ -375,7 +375,7 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   editorEl、state 身份都在渲染层闭包里；拆一半出去只会把同一条纪律分叉成两份。三处兜底调用点
   //   （插入正文 / 套模板 / 替换这一处）+ 两个 UI 模块的 host.recordFallbackWrite 接的是同一份实现。
   // 审计修复 #55（M4，装配清单化）：6393 → 6396（+3，当前 6396 行）：renderer.js 只多一行
-  //   `window.CWRendererAssembly.assertInstalled(window)` 与 2 行说明；清单本身（69 个模块的顺序 /
+  //   `window.CWRendererAssembly.assertInstalled(window)` 与 2 行说明；清单本身（模块顺序 /
   //   window 全局名 / renderer 本地名）在 renderer/assembly-manifest.js，缺模块时启动即报全，
   //   不再让某个 const 静默 undefined。这是审计 M4 要求的「装配清单」，没有往回搬业务代码。
   // 审计残留修复 #40（V403，第二阶段 R7）：6396 → 6401（+5）：document 级「整理快照优先」分支补

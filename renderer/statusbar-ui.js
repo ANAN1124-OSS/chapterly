@@ -15,8 +15,8 @@
  *
  * 契约：createStatusbarUi(host) 由渲染层调用一次，host 提供：
  *   host = {
- *     $, state, editorEl, formatChars, chaptersLib, editorLogic,
- *     call, api, toast, openModal, loadChapterAt,
+ *     $, state, editorEl, formatChars, formatCount, chaptersLib, editorLogic,
+ *     call, api, toast, openModal, loadChapterAt, staleGuard,   // staleGuard：在途回执的世代令牌
  *     longOpLocked                       // 可选（五-M18 / SS-10）：长操作锁在途时外部修改检测不查
  *   }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到打字 / 回到前台时 ReferenceError）。

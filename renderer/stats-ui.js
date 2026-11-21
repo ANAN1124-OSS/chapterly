@@ -8,9 +8,9 @@
  *
  * 契约：createStatsUi(host) 由渲染层调用一次，host 提供：
  *   host = {
- *     $, api, call, state, statsLogic, statsFormat, formatChars, formatDuration,
+ *     $, api, call, state, statsLogic, statsFormat, formatChars, formatCount, formatDuration,
  *     writeDurationEnabled, renderDurationSettings, renderWriteTimer, calendarSummaryText,
- *     calendarCells, shiftCalendarCursor, calendarStreakLabel
+ *     calendarCells, shiftCalendarCursor, calendarStreakLabel, staleGuard
  *   }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到刷新统计时才 ReferenceError）。
  * statsFormat = { formatChars, formatDuration } 是渲染层的格式化口径（与书架同一套），

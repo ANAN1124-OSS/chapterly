@@ -16,6 +16,7 @@
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（state.find）/ IPC 白名单 / IPC 包装 / 提示
  *     recordFallbackWrite,                 // 审计残留修复 #39（V402）：兜底整串赋值后由渲染层统一记账 + 提示
+ *     staleGuard,                          // WP-15：在途回执的世代令牌（stale-guard.js 的 chapterIdentity）
  *     imeGuard,                            // 输入法组字守卫（ime-guard.js）：查找 / 替换两条 Enter 提交键的判据
  *     backdropRegistry,                    // 可选（RPAN-A-02）：弹层清单唯一事实源；缺省时退回 find↔proofread 互关
  *     longOpLogic,                         // 长操作收尾判定（long-op-logic.js，WP-02/C2）：整本替换回执到达时书换没换

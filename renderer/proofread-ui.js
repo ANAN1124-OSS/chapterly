@@ -8,9 +8,10 @@
  *   选校对词表（persist=false 进设置草稿 / persist=true 立刻写配置并重跑）。
  * **只搬不改行为**：文案 / class / DOM 结构 / 返回结构 / 忙碌态 / 失败兜底 / 「一次最多列 300 条」全部一字未改。
  *
- * 契约：createProofreadUi(host) 由渲染层调用一次。host 8 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
+ * 契约：createProofreadUi(host) 由渲染层调用一次。host 10 个成员（含 3 个语义分组，分组内每个真实依赖都列在这里）：
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态 / IPC 白名单 / IPC 包装 / 提示
+ *     staleGuard,                          // WP-15：在途回执的世代令牌（stale-guard.js 的 chapterIdentity）
  *     peers: {                              // 与相邻面板 / 设置域协作的回调
  *       closeFindPanel,                     //   打开校对前若查找面板开着先关掉
  *       renderProofreadSettings             //   选完词表后刷新「设置 → 校对词表」那一行
@@ -24,7 +25,8 @@
  *       effectiveConfig,                    //   选词表后重算生效配置（全局 + 当前书覆盖）
  *       hideHeaderMenus,                    //   打开面板前收起顶栏菜单
  *       scrollCaretIntoView                 //   跳过去后把光标滚进视野
- *     }
+ *     },
+ *     resultJump                            // 结果跳转共用实现（renderer/result-jump-ui.js 的 create）
  *   }
  * 缺任何一个（含分组内成员）直接抛 TypeError。分组在 create 时一次解构，行为等价。
  * create() 不注册事件、不建定时器、不碰 DOM；事件绑定在 setupProofreadUi()，由 bindEvents() 在
@@ -44,7 +46,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'peers', 'nav', 'view', 'staleGuard'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'peers', 'nav', 'view', 'staleGuard', 'resultJump'];
 
   function createProofreadUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。

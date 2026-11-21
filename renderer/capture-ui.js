@@ -30,8 +30,12 @@
  * 面板列表拿到的只是主进程截好的 previewText（最多 300 字 / 6 行），隐私口径与旧队列一致。
  *
  * 面板状态只在本模块内存里（open / busy / position / queue / pendingText / tooLarge），不进渲染层 state。
+ * 唯一例外是「章节」提交成功后的回执：按主进程写章结果落地 state.meta / state.chapters / state.stats /
+ * state.streak，以及在编辑区载入失败时把 state.index 对齐到实际载入的那一章（LOAD_FAILED 兜底）——
+ * 只改这些既有字段，不新增 state 键（RPAN-A-05）。
  * 浏览器里挂成全局 CWCaptureUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
- * 红线：只读 state / 只走既有 IPC 白名单 / 只改 DOM；不写盘、不改正文、不改数据格式 / config。
+ * 红线：只走既有 IPC 白名单 / 只改 DOM；不写盘、不改正文、不改数据格式 / config。state 只按上面
+ * 声明的写章回执落地点写入，其余一律只读。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {

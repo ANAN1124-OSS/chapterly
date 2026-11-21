@@ -12,7 +12,7 @@ const backupGuardLib = require('../renderer/backup-guard');
 // 失败兜底 / token 作废 / 未保存三选一 / 整组还原跳过提示 / 还原后重载这些分支在 Node 里一步都测不到。
 // 搬出来以后用「假 host + 假 DOM」逐条钉住，再用静态闸门保证渲染层不长回第二份、index.html 顺序不许反。
 //
-// 契约要点：host 9 个成员 = 基础 5（$, state, api, call, toast）+ guard（1.5.0 P0-5 备份指纹核对）
+// 契约要点：host 10 个成员 = 基础 5（$, state, api, call, toast）+ staleGuard + guard（1.5.0 P0-5 备份指纹核对）
 // + 3 个语义分组（collab / menus / fmt，分组内每个真实依赖都单列，见模块头注释）。
 
 const realDocument = globalThis.document;
