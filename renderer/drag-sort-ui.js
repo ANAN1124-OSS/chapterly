@@ -242,6 +242,34 @@
     const hit = rowIndexAt(items, y);
     const hovered = hit >= 0 && y <= items[hit].top + items[hit].height ? items[hit].el : null;
     const chapterOf = (el) => (el && el.classList.contains('chapter-item') ? state.chapters[Number(el.dataset.index)] : null);
+    // REDT-C-03（第五轮审计）：hit < 0 表示指针在首行上方（拖过列表顶边、悬在筛选输入区），
+    // 旧实现与「列表末尾之后」共用同一分支，往上拖反而把章落到全书末尾。这里单独按
+    // 「插到首行之前」处理：首行是章 → 插到它前面；首行是卷头 → 放进该卷开头（卷内第一章之前）。
+    if (hit < 0 && items.length) {
+      const first = items[0].el;
+      const firstChapter = chapterOf(first);
+      if (firstChapter) {
+        return {
+          volumeId: chapterVolumeId(firstChapter),
+          beforeChapterId: firstChapter.id,
+          el: first,
+          mode: 'before'
+        };
+      }
+      if (first.classList.contains('volume-item')) {
+        const volumeId = first.dataset.volumeId || null;
+        let before = null;
+        for (let i = 1; i < items.length; i += 1) {
+          if (items[i].el.classList.contains('volume-item')) break;
+          const chapter = chapterOf(items[i].el);
+          if (chapter) {
+            before = chapter;
+            break;
+          }
+        }
+        return { volumeId, beforeChapterId: before ? before.id : null, el: first, mode: 'header' };
+      }
+    }
     if (!hovered) {
       // 指针在列表末尾之后：落到最后一组的末尾
       for (let i = count - 1; i >= 0; i -= 1) {
@@ -277,18 +305,10 @@
     if (y < top + height / 2) {
       return { volumeId, beforeChapterId: chapter.id, el: hovered, mode: 'before' };
     }
-    const start = hit;
-    let next = null;
-    for (let i = start + 1; i < count; i += 1) {
-      const el = items[i].el;
-      if (el.classList.contains('volume-item')) break;
-      const candidate = chapterOf(el);
-      if (candidate) {
-        if (chapterVolumeId(candidate) === volumeId) next = candidate;
-        break;
-      }
-    }
-    return { volumeId, beforeChapterId: next ? next.id : null, el: hovered, mode: 'after' };
+    // REDT-C-02（第五轮审计）：「插到这一章之后」的落点必须来自**全书顺序**，不能从渲染行里
+    // 找下一行——筛选生效时渲染行会跳过被隐藏的章，找不到就返回 null（= 卷末），落点标记与
+    // 实际落点不一致。nextChapterIdInVolume 按 state.chapters 找同卷下一章（末章返回 null）。
+    return { volumeId, beforeChapterId: nextChapterIdInVolume(chapter), el: hovered, mode: 'after' };
   }
 
   function nextChapterIdInVolume(chapter) {

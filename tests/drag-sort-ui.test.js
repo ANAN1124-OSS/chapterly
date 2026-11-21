@@ -239,6 +239,41 @@ test('computeDropTarget：指针在列表末尾之后 → 落到最后一组的�
   assert.equal(ui.computeDropTarget(event(120)), null);
 });
 
+// REDT-C-02（第五轮审计）：筛选只渲染命中行时，「插到某章之后」仍要按全书顺序找同卷下一章，
+// 不能因为渲染行里没有下一行就把落点算成卷末。
+test('REDT-C-02：筛选隐藏了后面的同卷章时，「插到这一章后」仍按全书顺序落点', () => {
+  const { ui, list, state } = makeWorld();
+  // 状态里 c2、c3 都在第一卷；筛选只把 c1、c2 渲染出来（c3 被隐藏）。
+  // 拖到 c2 的下半：旧实现从渲染行往后找不到同卷章 → beforeChapterId=null（卷末）。
+  const c1 = chapterEl(0, 100);
+  const c2 = chapterEl(1, 140);
+  list.children = [c1, c2];
+  const target = ui.computeDropTarget(event(170));
+  assert.deepEqual([target.mode, target.volumeId, target.beforeChapterId], ['after', 'v1', 'c3']);
+  assert.equal(state.chapters[2].id, 'c3');
+  // 卷末章（c3）后面没有同卷章：仍是 null（卷末），不误标成别的章
+  const c3 = chapterEl(2, 180);
+  list.children = [c1, c2, c3];
+  const last = ui.computeDropTarget(event(210));
+  assert.deepEqual([last.mode, last.beforeChapterId], ['after', null]);
+});
+
+// REDT-C-03（第五轮审计）：指针拖过列表顶边时旧实现与「列表末尾之后」共用分支，
+// 往上拖反而把章落到书尾。首行是章 → 插到它之前；首行是卷头 → 落进该卷开头。
+test('REDT-C-03：指针拖过列表顶边 → 插到首行之前，不再落到全书末尾', () => {
+  const { ui, list } = makeWorld();
+  const c2 = chapterEl(1, 100);
+  list.children = [c2];
+  const top = ui.computeDropTarget(event(60));
+  assert.deepEqual([top.mode, top.volumeId, top.beforeChapterId], ['before', 'v1', 'c2']);
+
+  const hood = volumeEl('v1', 100);
+  const c3 = chapterEl(2, 140);
+  list.children = [hood, c3];
+  const header = ui.computeDropTarget(event(60));
+  assert.deepEqual([header.mode, header.volumeId, header.beforeChapterId], ['header', 'v1', 'c3']);
+});
+
 // ---------- 键盘上下移动（Phase D / D1） ----------
 
 test('stepMoveTarget：同卷相邻一格才给目标；跨卷交给 core 的 crossVolumeTarget（这里只算卷内），到头 / 坏参数一律 null', () => {
