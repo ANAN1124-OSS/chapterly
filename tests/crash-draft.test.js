@@ -11,7 +11,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fsSync = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 
 const draftLib = require('../core/crash-draft');
@@ -21,7 +20,7 @@ const BOOK = path.join('C:\\', '书库 有空格', '测试 书');
 const roots = [];
 
 async function newRoot() {
-  const dir = tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-crash-draft-')));
+  const dir = await tmpCleanup.mkTmp('cw-crash-draft-');
   roots.push(dir);
   return dir;
 }

@@ -37,9 +37,8 @@ function makeHarness(overrides = {}) {
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function tempDir(prefix) {
-  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js（不再本地复制 mkdtemp + track）。
+const tempDir = (prefix = 'cw-e2e-harness-') => tmpCleanup.mkTmp(prefix);
 
 test('harness.check：失败累计、不中断后一条；两条失败都记进 failures，summary 返回非零退出码', () => {
   const { harness } = makeHarness();
