@@ -174,6 +174,31 @@ test('R4f 变异负控：删装配标记 / 块内手改 script → renderer-asse
   assert.match(blockHit.detail, /undo-ui\.js/, '违规详情要点名块内缺的脚本');
 });
 
+// RPAN-C07：依赖先于消费者。模块之间靠 window.CW 全局名引用，装载期是空安全解引用 ——
+// 把被依赖模块在清单里挪到消费者之后，原来的四重防护全绿，只有 Electron 里 create 时才炸。
+// 这条变异负控钉住新契约：挪位之后必须点名「谁依赖谁、在第几项」。
+test('R4g 变异负控：把 core/assert-host.js 挪到消费者之后 → renderer-dependency-order', () => {
+  const dir = makeFixture();
+  mutate(dir, 'renderer/assembly-manifest.js', (text) => {
+    const lines = text.split(/\r?\n/);
+    const at = lines.findIndex((line) => line.includes("'../core/assert-host.js'"));
+    assert.notEqual(at, -1, '夹具里找不到 assert-host 的清单行');
+    const [entry] = lines.splice(at, 1);
+    // 挪到 shelf-view-ui（stdout 消费者之一）之后
+    const after = lines.findIndex((line) => line.includes("'shelf-view-ui.js'"));
+    assert.notEqual(after, -1, '夹具里找不到 shelf-view-ui 的清单行');
+    lines.splice(after + 1, 0, entry);
+    return lines.join('\n');
+  });
+  const result = wiring.auditWiring(dir);
+  const hits = result.violations.filter((item) => item.id === 'renderer-dependency-order');
+  assert.ok(hits.length > 0, '依赖在消费者之后必须命中 renderer-dependency-order，实际：' + ids(result).join(','));
+  // 报错要点名「谁依赖谁、两边各在第几项」——不再是一句不指名的运行时 TypeError
+  assert.match(hits[0].detail, /renderer\/[a-z0-9-]+\.js 依赖 CWAssertHost/);
+  assert.match(hits[0].detail, /排第 \d+ 项/);
+  assert.match(hits[0].detail, /必须先加载/);
+});
+
 test('R4d 等价重构不假红：CRLF + 注释 + script 标签单引号 / 多余空白仍零违规', () => {
   const dir = makeFixture();
   const textFiles = [

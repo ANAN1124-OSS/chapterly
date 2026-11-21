@@ -55,6 +55,25 @@ test('上一处 / 下一处：正常前进后退，停在第几处都对得上',
   assert.deepEqual(logic.stepMatch(single, 0, -1), { index: 0, total: 1, wrapped: false });
 });
 
+test('RPAN-A-08：null / 空串 / 布尔的 index 不算 0，坏命中不许被挪到章首', () => {
+  // Number(null) === 0、Number('') === 0：旧 toCount 会把这两种脏值当合法下标 0 收下，
+  // 一条坏命中就被画到章首（高亮层错位、导航跳错位置）。
+  for (const bad of [null, undefined, '', true, false]) {
+    assert.deepEqual(
+      logic.normalizeMatches([{ index: bad, length: 3 }, { index: 5, length: 1 }]),
+      [{ index: 5, length: 1 }],
+      'index = ' + String(bad)
+    );
+    assert.deepEqual(logic.highlightRuns('abcdef', [{ index: bad, length: 2 }]), [
+      { text: 'abcdef', hit: false, ordinal: -1 }
+    ]);
+  }
+  // 数字字符串仍按数字收（主进程 / 旧快照里可能序列化成字符串），不会被误杀
+  assert.deepEqual(logic.normalizeMatches([{ index: '2', length: '2' }]), [{ index: 2, length: 2 }]);
+  // 命中计数同理：null 总数仍显示短横线，不会变成 0 之外的奇怪值
+  assert.equal(logic.formatCounter(0, null), '—');
+});
+
 test('上一处 / 下一处：到两端默认绕回，wrap: false 时返回 null', () => {
   const matches = matchesOf('阿明阿明阿明', '阿明');
   assert.deepEqual(logic.stepMatch(matches, 2, 1), { index: 0, total: 3, wrapped: true });

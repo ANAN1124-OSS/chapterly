@@ -280,6 +280,32 @@ test('C-05 中段：章节位置与标题栏同一口径（第N章），没书 /
 
 // RPAN-C02（审计）：4580 行单文件的补丁式增长留下四组成串冗余 —— 这类规则「改了不生效 / 改两处
 // 漏一处」，最容易在换主题 / 调顶栏时误判。用源码闸门钉住「只留一条事实来源」。
+test('RPAN-C03：七个零消费的设计令牌已删除，不许再回潮', () => {
+  // 这些令牌在 :root / 夜间主题里各写一份，但全仓 var() 消费为 0（菜单 / 主按钮换代后的迁移残留）。
+  // 留着的害处是「改它看起来有效、实际没有任何效果」，所以整条删除；回潮即红。
+  const dead = [
+    '--btn-primary-hover',
+    '--btn-primary-press',
+    '--menu-radius',
+    '--menu-shadow',
+    '--menu-hover',
+    '--menu-item-radius',
+    '--chapter-hover'
+  ];
+  for (const token of dead) {
+    assert.equal(CSS.includes(token + ':'), false, `${token} 已删除，不该再定义`);
+    assert.equal(
+      new RegExp(token.replace(/-/g, '\\-') + '\\s*:').test(CSS),
+      false,
+      `${token} 的值定义不该回潮（注释里记录删除原因可以保留）`
+    );
+  }
+  // 同段里仍在用的令牌必须保留（防「一起删干净」误伤）
+  for (const token of ['--btn-press', '--btn-danger-hover', '--hover-tint']) {
+    assert.ok(CSS.includes(token + ':'), `${token} 仍在消费，必须保留定义`);
+  }
+});
+
 test('RPAN-C02：styles.css 的四组冗余规则已合并 / 删除', () => {
   // ① 夜间覆盖与基础规则同值（var(--warn) 本就随主题解析）——整条删除
   assert.equal(/body\.theme-night \.long-para-bar/.test(CSS), false, '同值夜间覆盖不该回潮');

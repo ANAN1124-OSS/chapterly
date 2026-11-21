@@ -12,6 +12,11 @@
  *     `--check`（tests/wp17-refactor.test.js R9）与 scripts/wiring-check.js 的
  *     renderer-assembly-generated 契约会拦住「手改块内文本 / 块外再插脚本」；
  *   · renderer.js 启动时调用 assertInstalled(window)，一次报全所有缺失模块；
+ *   · **顺序约束（RPAN-C07）**：模块之间只用 window.CW 全局名互相引用，被依赖的模块必须排在
+ *     消费者之前。装载期是空安全解引用（依赖没加载只是传 undefined、不抛），所以顺序写反不会
+ *     在 Node 闸门 / 启动时报错，只会在 Electron 里 create 时变成「xxx is not a function」——
+ *     为此 scripts/wiring-check.js 的 renderer-dependency-order 契约按源码里的 root.CW… 解引用
+ *     反推依赖并核对本清单的位次（例如 core/assert-host.js 必须先于全部 37 个消费者）。
  *   · tests/assembly-manifest.test.js 拿这份清单核对每个模块真的挂出了 window.CW 全局名、
  *     renderer.js 的每个引用都在清单内；
  *   · 新增「按域下沉」的模块时仍按现有模式：纯逻辑进 core/ 单测覆盖，面板进 renderer/*-ui.js，

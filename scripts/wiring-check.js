@@ -10,6 +10,7 @@
 //   renderer-assembly-order      index.html 的 <script> 顺序 = renderer/assembly-manifest.js 的 MODULES；
 //   renderer-assembly-generated  index.html 的装配块标记唯一、块内脚本 = 清单生成结果（无块外脚本）；
 //   renderer-module-globals      每个模块文件真的挂出了清单声明的 window.CWxxx；
+//   renderer-dependency-order    被依赖的模块排在消费者之前（按源码里的 root.CW… 解引用反推）；
 //   renderer-module-refs         renderer.js 的 const 本地名 / 所有 window.CWxxx 引用都在清单内；
 //   preload-api-exposed          renderer 用到的每个 api.<键> 都在 preload 暴露；
 //   ipc-invoke-registered        preload 的每个 invoke('频道') 都有主进程 handle / handleBook；
@@ -28,6 +29,7 @@ const CHECK_IDS = [
   'renderer-assembly-order',
   'renderer-assembly-generated',
   'renderer-module-globals',
+  'renderer-dependency-order',
   'renderer-module-refs',
   'preload-api-exposed',
   'ipc-invoke-registered',
@@ -291,6 +293,32 @@ function auditWiring(root) {
         });
       }
     }
+
+    // RPAN-C07：依赖必须先于消费者。37 个模块在 UMD 浏览器分支里空安全解引用 root.CW…
+    // （缺了只是传 undefined，装载期不抛），所以把 assert-host.js 之类被依赖模块在清单里挪到
+    // 消费者之后，原来的四重防护全绿，故障要等 Electron 里 create 调用才以
+    // 「assertHost is not a function」出现，且不指名是哪两个文件次序错了。
+    // 这里按源码里的 root.CW… 解引用反推依赖，与清单位次比对，一次点名两边。
+    const positionOf = new Map();
+    modules.forEach((entry, index) => positionOf.set(entry[1], index));
+    modules.forEach(([file, ownGlobal], index) => {
+      const source = read(`renderer/${file}`);
+      if (source === null) return;
+      const deps = new Set();
+      for (const match of stripJsComments(source).matchAll(/\broot\.(CW[A-Za-z0-9_$]+)/g)) deps.add(match[1]);
+      for (const dep of deps) {
+        if (dep === ownGlobal || !positionOf.has(dep)) continue; // 清单外的全局由 renderer-module-refs 管
+        const depIndex = positionOf.get(dep);
+        if (depIndex >= index) {
+          violations.push({
+            id: 'renderer-dependency-order',
+            detail:
+              `renderer/${file} 依赖 ${dep}，但 ${dep} 在装配清单里排第 ${depIndex + 1} 项、` +
+              `消费者排第 ${index + 1} 项：被依赖的模块必须先加载（改 renderer/assembly-manifest.js 的 MODULES 顺序）`
+          });
+        }
+      }
+    });
   }
 
   // ---- renderer 对模块的引用 ----

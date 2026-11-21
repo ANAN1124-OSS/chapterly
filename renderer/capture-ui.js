@@ -146,6 +146,21 @@
     // 但要连着失败 200 次以上才触发、失败路径本身罕见，故只注明不改实现（主进程登记会动 IPC 契约）。
     const MAX_CONSUMED_IDS = 200;
 
+    // RPAN-A-04：busy 期间（正文插入 / 新建章节 / 清空，两次 IPC 往返可达数百毫秒）到达的
+    // clipboard:recorded 会让 refreshQueue 早退丢弃，而且事后没有任何补拉——作者刚复制的一段
+    // 不在列表里，看起来像「没记上」，可能重复复制。这里登记「忙完后要补一次刷新」，收尾统一补拉。
+    let pendingQueueRefresh = false;
+
+    // 动作收尾：复位 busy → 重画 → 若有被丢弃的刷新请求则补拉一次（refreshSeq 已能防旧快照盖回）。
+    function endBusy() {
+      panel.busy = false;
+      render();
+      if (pendingQueueRefresh) {
+        pendingQueueRefresh = false;
+        void refreshQueue();
+      }
+    }
+
     function markConsumed(id) {
       if (id == null) return;
       panel.consumedIds.add(id);
@@ -462,6 +477,8 @@
       panel.pendingText = null;
       panel.tooLarge = false;
       panel.position = 'end';
+      // RPAN-A-04：面板关掉后 busy 期攒下的补拉请求作废（下次打开本来就会重取队列）。
+      pendingQueueRefresh = false;
       const backdrop = $('capture-backdrop');
       if (backdrop) backdrop.classList.add('hidden');
       // 列表内容只在 render 里重建；关掉时顺手清空，避免下次打开前旧记录还挂在隐藏 DOM 上。
@@ -490,7 +507,11 @@
     // 再拉一次队列元数据：单列表视图，面板开着就原地重画（新复制的那条直接出现）。
     async function refreshQueue() {
       if (!panel.open) return panel.queue;
-      if (panel.busy) return panel.queue;
+      if (panel.busy) {
+        // RPAN-A-04：忙期间到达的刷新请求不丢，收尾 endBusy() 补拉一次。
+        pendingQueueRefresh = true;
+        return panel.queue;
+      }
       // WP-15（C36）：只有最后一次刷新算数；期间关面板 / 开始清空 / 又刷了一次，
       // 旧回执整段丢掉（不能把清空前的列表快照盖回来）。
       const token = refreshSeq.next();
@@ -532,8 +553,7 @@
       } finally {
         // WP-16（C14）：成功与失败都要重画——失败时按钮不能停在 busy 期的禁用画面，
         // 记录也得跟着 busy 复位回到可点状态（对照同模块 applyBody / createChapter 的 finally）。
-        panel.busy = false;
-        render();
+        endBusy();
       }
       toast('已清空本次运行的捕获队列');
       return { ok: true, cleared: true };
@@ -634,8 +654,7 @@
         focusList();
         return { ok: true, chars, consumed: true };
       } finally {
-        panel.busy = false;
-        render();
+        endBusy();
       }
     }
 
@@ -759,8 +778,7 @@
           queueRemoved: Boolean(data.queueRemoved)
         };
       } finally {
-        panel.busy = false;
-        render();
+        endBusy();
       }
     }
 

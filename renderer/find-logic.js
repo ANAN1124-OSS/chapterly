@@ -36,6 +36,9 @@
   }
 
   function toCount(value) {
+    // RPAN-A-08：null / '' / undefined / 布尔不能被 Number() 悄悄当成 0 收下 —— 那会把一条
+    // {index: null, length: 3} 的坏命中挪到章首，变成一个看起来合法的下标。
+    if (value == null || value === '' || typeof value === 'boolean') return null;
     const n = Math.floor(Number(value));
     return Number.isFinite(n) && n >= 0 ? n : null;
   }
