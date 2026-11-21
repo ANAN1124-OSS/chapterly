@@ -1876,6 +1876,36 @@ test('configVersion 与高版本未知键透传（V110 / D-7）', async () => {
   assert.equal(({}).polluted, undefined, '全局原型没被污染');
 });
 
+// CSTO-B-01（第五轮审计）：config:set 是不可信通道（渲染层可被注入）。旧实现把 patch 直接并进
+// sanitize 的 source，于是 patch 带 configVersion:999999 就能触发 D-7 的「高版本未知键透传」，
+// 把本版不认识的键写进 config.json 并永久保留。版本号只允许由读盘归一产生，未知键只认磁盘上
+// 已经存在的那份（current）。
+test('CSTO-B-01：config:set 不许升版本号，也不许把 patch 里的新未知键写进配置', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, 'config.json');
+  const store = createConfigStore(dir);
+  await store.set({ dailyGoal: 700, configVersion: 999999, 注入键: { a: 1 } });
+  const disk = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(disk.configVersion, 1, '版本号只由读盘归一产生，patch 不许升');
+  assert.equal('注入键' in disk, false, 'patch 新带进来的未知键必须丢弃（S4 防注入不松）');
+  assert.equal(disk.dailyGoal, 700, '正常字段照常保存');
+
+  // 磁盘上本来就有的高版本未知键仍按 D-7 保留（前向兼容通道不被误伤）
+  await fs.writeFile(
+    file,
+    JSON.stringify({ configVersion: 2, dailyGoal: 800, 未来功能: { on: true } }),
+    'utf8'
+  );
+  const upgraded = createConfigStore(dir);
+  const cfg = await upgraded.set({ dailyGoal: 900, 另一个注入键: 1 });
+  assert.equal(cfg.configVersion, 2);
+  assert.equal('另一个注入键' in cfg, false);
+  const disk2 = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(disk2.configVersion, 2);
+  assert.deepEqual(disk2.未来功能, { on: true }, '磁盘上已存在的高版本未知键原样保留');
+  assert.equal('另一个注入键' in disk2, false);
+});
+
 // C7 接线静态闸门：读失败闸门只有靠 main.js 把三条自动写标成 auto 才生效；显式保存必须先重试读
 // 再算目标书架目录 / 建目录 / 写盘（顺序错了就会出现「先建一个错目录再报失败」）。
 test('C7 / V110 接线静态闸门：自动写带 auto 标记、config:set 先重试读', () => {

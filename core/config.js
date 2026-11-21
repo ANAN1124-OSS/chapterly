@@ -384,10 +384,17 @@ function sanitizeUnknownTopKeys(source) {
   return Object.fromEntries(entries);
 }
 
-function sanitize(raw) {
+// CSTO-B-01（2026-11-21 第五轮审计）：sanitize 可选 { unknownKeysFrom }。
+// 默认（读盘归一）保留「这份配置里」的未知键；config:set 这种不可信输入通道必须传 current ——
+// 只保留磁盘上本来就有、且版本本来就更高的未知键，patch 新带进来的未知键一律丢弃。
+function sanitize(raw, options = {}) {
   // S4（审计 S4）：只认 DEFAULTS 里登记过的键——未知键丢弃（以前是原样透传）。
   // 旧配置缺新键不受影响：下面各字段清洗时会从 DEFAULTS 补默认值。
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const unknownSource =
+    options && options.unknownKeysFrom && typeof options.unknownKeysFrom === 'object'
+      ? options.unknownKeysFrom
+      : source;
   const cfg = { ...DEFAULTS };
   for (const key of KNOWN_KEYS) {
     if (Object.prototype.hasOwnProperty.call(source, key)) cfg[key] = source[key];
@@ -399,7 +406,7 @@ function sanitize(raw) {
   // 只有更高版本的配置才保留未知顶层键，而且必须过类型 / 深度 / 大小闸门；同版本 / 低版本的
   // 未知键仍按 S4 丢弃。普通旧配置（没有 configVersion）的行为与以前逐字一致。
   if (cfg.configVersion > CONFIG_VERSION) {
-    Object.assign(cfg, sanitizeUnknownTopKeys(source));
+    Object.assign(cfg, sanitizeUnknownTopKeys(unknownSource));
   }
 
   if (typeof cfg.booksRoot !== 'string' || !cfg.booksRoot.trim() || cfg.booksRoot.length > 1000) {
@@ -789,13 +796,22 @@ function createConfigStore(userDataDir, deps = {}) {
     return enqueue(async () => {
       await gateWrite(auto);
       const current = await get();
-      const next = sanitize({
-        ...current,
-        ...(patch || {}),
-        ...(bookDisplayPatch
-          ? { bookDisplay: { ...(current.bookDisplay || {}), ...bookDisplayPatch } }
-          : {})
-      });
+      // CSTO-B-01（中）：config:set 的 patch 来自渲染层（威胁模型见 S4），两条不可信入口都要封：
+      //   ① configVersion 只允许由 load() 读盘归一产生（或磁盘上本来就更高的版本）——
+      //      patch 带 999999 不能把本版配置「升」到 D-7 的前向兼容通道；
+      //   ② 未知顶层键只看 current（磁盘上已经存在的高版本键），patch 新带进来的未知键一律丢弃。
+      // 这样渲染层无论传什么，config.json 都不会多出本版不认识的键，也不会留下假版本号。
+      const next = sanitize(
+        {
+          ...current,
+          ...(patch || {}),
+          configVersion: current.configVersion,
+          ...(bookDisplayPatch
+            ? { bookDisplay: { ...(current.bookDisplay || {}), ...bookDisplayPatch } }
+            : {})
+        },
+        { unknownKeysFrom: current }
+      );
       if (beforeWrite) await beforeWrite({ current, next });
       // 先写盘：失败就抛出，cache 保持旧值（内存不再「假装已保存」）
       await writeJson(file, next);
