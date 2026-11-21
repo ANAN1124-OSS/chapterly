@@ -206,6 +206,34 @@ test('敏感词：sanitizeWords 去重 / 去空 / 限长 / 限量，sanitizeOpti
   assert.equal(sensitive.sanitizeOptions({ maxIssues: 'abc' }).maxIssues, sensitive.DEFAULT_OPTIONS.maxIssues);
 });
 
+test('CTXT-B-01：wordsSanitized 直通——整本预检不再每章重洗词表，自动机按引用命中', () => {
+  const wordscan = require('../core/wordscan');
+  // 默认路径会把词条 trim 后匹配；声明已清洗（直通）时原样使用，证明没有重洗。
+  assert.equal(sensitive.scanText('色情', [' 色情 ']).total, 1);
+  assert.equal(sensitive.scanText('色情', [' 色情 '], { wordsSanitized: true }).total, 0);
+  // 非数组仍兜底成空词表，不会因直通标志抛错。
+  assert.equal(sensitive.scanText('色情', '色情', { wordsSanitized: true }).total, 0);
+
+  // 整本链路：同一个已清洗数组连续扫多章 → 只建图一次，且第二次起走引用直通。
+  wordscan.resetAutomatonCache();
+  const words = ['色情', '暴力'];
+  sensitive.scanText('色情正文', words, { wordsSanitized: true });
+  sensitive.scanText('暴力正文', words, { wordsSanitized: true });
+  const stats = wordscan.automatonCacheStats();
+  assert.equal(stats.builds, 1, '同一词表只建图一次');
+  assert.equal(stats.referenceHits, 1, '第二章起走引用直通，跳过指纹重算');
+
+  // 静态闸门：整本预检的循环内必须声明 wordsSanitized，且不许再手工清洗 list.words。
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const ipcSrc = fs.readFileSync(path.join(__dirname, '..', 'ipc', 'proofread.js'), 'utf8');
+  const bookAt = ipcSrc.indexOf("handleBook('book:sensitive-check'");
+  const scanAt = ipcSrc.indexOf('sensitiveLib.scanText(', bookAt);
+  assert.ok(bookAt > 0 && scanAt > bookAt, '整本预检必须逐章调 scanText');
+  assert.match(ipcSrc.slice(scanAt, scanAt + 500), /wordsSanitized: true/, '循环内要声明词表已清洗');
+  assert.equal(/sanitizeWords\(list\.words\)/.test(ipcSrc), false, '循环里不许再洗一遍词表');
+});
+
 test('敏感词：明细按 maxIssues 截断，但 total / byWord 照实统计', () => {
   const text = '色情'.repeat(30);
   const result = sensitive.scanText(text, ['色情'], { maxIssues: 20 });

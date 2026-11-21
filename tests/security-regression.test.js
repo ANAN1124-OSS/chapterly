@@ -245,9 +245,9 @@ test('preload：主进程抛错只在渲染层得到 {ok:false, code:IPC_ERROR}�
   // 逐字段比即可（断言的语义不变）。
   assert.equal(result.ok, false);
   assert.equal(result.code, 'IPC_ERROR');
-  // C4（WP18 / 审计中 #23）：传输层兜底文案也要过脱敏 —— 绝对路径只留最后一节（用户名 / 目录不再出去）。
-  // 「不把异常抛进页面」与 code=IPC_ERROR 的语义不变，只是文案口径与主进程 fail() 对齐。
-  assert.equal(result.message, '拒绝：…\\章节.txt');
+  // CTXT-A-01：传输层不再自带第二份脱敏实现（与 core/error-text 漂移过），只回固定文案；
+  // 「不把异常抛进页面」与 code=IPC_ERROR 的语义不变，路径 / 控制字符不再有泄漏面。
+  assert.equal(result.message, '主进程通道不可用（IPC_ERROR）');
 });
 
 // ---------- 主进程安全加固接线（C-1 / C-3） ----------

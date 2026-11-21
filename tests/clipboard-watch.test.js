@@ -187,6 +187,44 @@ test('在飞读数跨过 stop→start 边界就作废：不记新队列、不提
   assert.equal(watcher.evaluate(STALE, beforeStop).reason, 'stale', '关掉监听也推进 token');
 });
 
+// CTXT-B-02：大文本自适应降频（主进程不再每 300ms 读整串 + 全文哈希）。
+test('CTXT-B-02：大文本自适应降频——同长度大文本跳过若干拍，长度一变立即恢复', () => {
+  const pacer = watchLib.createLargeTextPacer({ threshold: 100, skipTicks: 3 });
+  // 第一次见到大文本：当拍正常读，还没安排跳过；下一拍发现长度没变 → 安排 3 拍
+  assert.equal(pacer.shouldSkip(), false);
+  assert.equal(pacer.observe(150), 0);
+  assert.equal(pacer.shouldSkip(), false);
+  assert.equal(pacer.observe(150), 3);
+  for (let i = 0; i < 3; i += 1) assert.equal(pacer.shouldSkip(), true, `第 ${i + 1} 拍应跳过`);
+  assert.equal(pacer.shouldSkip(), false, '跳过额度用完就恢复读');
+  // 长度变短：不再降频
+  assert.equal(pacer.observe(50), 0);
+  assert.equal(pacer.shouldSkip(), false);
+  // 再来一段同样长度的大文本：重新安排（同长度换内容最晚 skipTicks 拍后发现）
+  assert.equal(pacer.observe(150), 0);
+  assert.equal(pacer.shouldSkip(), false);
+  assert.equal(pacer.observe(150), 3);
+  // 跳过额度里被读到的长度一变，立即清掉额度（新复制的一段不被压进降频窗口）
+  assert.equal(pacer.shouldSkip(), true);
+  assert.equal(pacer.observe(300), 0);
+  assert.equal(pacer.shouldSkip(), false);
+  // reset：关闭监听后不再带着旧长度
+  pacer.observe(500);
+  assert.equal(pacer.observe(500), 3);
+  pacer.reset();
+  assert.deepEqual(pacer.state(), { lastLength: -1, remaining: 0 });
+  assert.equal(pacer.shouldSkip(), false);
+
+  // 默认阈值 30 万字 / 10 拍（约 3 秒）：低于阈值的整章复制（30 万字以下）不降频。
+  const defaults = watchLib.createLargeTextPacer();
+  defaults.observe(200000);
+  assert.equal(defaults.shouldSkip(), false);
+  assert.equal(defaults.observe(200000), 0, '低于阈值不降频');
+  defaults.observe(300001);
+  assert.equal(defaults.shouldSkip(), false);
+  assert.equal(defaults.observe(300001), 10, '大文本没换长度 → 跳 10 拍');
+});
+
 // 隐私红线（不落盘 / 不写日志 / 不存正文）在 main.js 里靠「只发 { chars, queued }」守住，这里静态钉住。
 test('静态闸门：主进程轮询只在开关打开时跑，只发字数，随配置启停、随退出停止（b8）', () => {
   const fs = require('node:fs');
@@ -211,6 +249,14 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.match(main, /setInterval\(pollClipboardWatch, CLIPBOARD_WATCH_INTERVAL_MS\)/, '按固定间隔轮询');
   // 2026-11-07：900ms 太稀（快速连续复制漏拍）→ 300ms
   assert.match(main, /const CLIPBOARD_WATCH_INTERVAL_MS = 300;/, '轮询间隔 300ms');
+  // CTXT-B-02：大文本降频必须先于读剪贴板（否则整串副本已经分配完，降频失去意义），关闭时要 reset。
+  assert.match(main, /const clipboardPacer = clipboardWatchLib\.createLargeTextPacer\(\);/, '主进程使用共享降频器');
+  const skipAt = main.indexOf('if (clipboardPacer.shouldSkip()) return;');
+  const readAt = main.indexOf('const text = await readClipboardForWatch();', skipAt);
+  assert.notEqual(skipAt, -1, '轮询开始必须先问降频器');
+  assert.ok(skipAt < readAt, '降频判断必须先于读剪贴板');
+  assert.match(main, /clipboardPacer\.observe\(text\.length\);/, '读过之后登记长度');
+  assert.match(main, /clipboardPacer\.reset\(\);/, '关闭监听时清掉降频状态');
   // 2026-11-06 捕获队列：自动通知仍然只发「字数 + 已记条数」，绝不发正文
   assert.match(main, /const payload = \{ chars: decision\.chars, queued: captureQueue\.size\(\) \}/, '通知只带字数与队列条数');
   assert.match(main, /broadcast\('clipboard:changed', payload\)/, '用不含正文的 payload 经 broadcast 发通知（A1 单点发送）');

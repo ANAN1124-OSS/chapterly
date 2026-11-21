@@ -233,7 +233,40 @@ test('P2：代理对词条 / 正文的等价性与旧实现一致（紧凑 trie 
   }
 });
 
-// P2（审计修复 #18）：紧凑 trie 的规模上界见上；缓存仍是 4 份（内存不再按词表数量长）
+// CTXT-B-01（审计）：整本预检每章传的是同一个已清洗词表数组；声明 stableReference 后
+// 同引用直接命中缓存，不再每章重算 64 位指纹、也不再做全量词表等值比对。
+test('CTXT-B-01：stableReference 同引用直通自动机缓存，未声明稳定的调用方仍走指纹 + 快照核对', () => {
+  wordscan.resetAutomatonCache();
+  const terms = ['色情', '暴力', '赌博'];
+  wordscan.scanTerms('色情暴力', terms, { stableReference: true });
+  assert.equal(wordscan.automatonCacheStats().builds, 1);
+  wordscan.scanTerms('赌博', terms, { stableReference: true });
+  const stats = wordscan.automatonCacheStats();
+  assert.equal(stats.builds, 1, '同一稳定引用只建图一次');
+  assert.equal(stats.referenceHits, 1, '第二次必须走引用直通（跳过指纹 / 等值核对）');
+
+  // 未声明稳定的调用方：引用变了但内容相同 → 走指纹 + 快照等值命中，不重建、也不进直通计数。
+  wordscan.resetAutomatonCache();
+  const plain = ['甲', '甲乙'];
+  wordscan.scanTerms('甲乙', plain);
+  wordscan.scanTerms('甲乙', plain.slice());
+  const plainStats = wordscan.automatonCacheStats();
+  assert.equal(plainStats.builds, 1);
+  assert.equal(plainStats.referenceHits, 0, '未声明 stableReference 不许走引用直通');
+
+  // 原地改动数组：未声明稳定 → 指纹键变了，必须重建（旧快照保护仍在）。
+  plain.push('乙');
+  wordscan.scanTerms('乙', plain);
+  assert.equal(wordscan.automatonCacheStats().builds, 2, '内容变了必须重建');
+
+  // 缓存淘汰后同引用也不能命中旧图（引用表条目必须与缓存条目同一份）。
+  wordscan.resetAutomatonCache();
+  const keep = ['词'];
+  wordscan.scanTerms('词', keep, { stableReference: true });
+  for (let i = 0; i < 6; i += 1) wordscan.scanTerms('正文', [`表${i}`], { stableReference: true });
+  wordscan.scanTerms('词', keep, { stableReference: true });
+  assert.equal(wordscan.automatonCacheStats().builds, 8, '被淘汰的词表要重新建图');
+});
 test('P2：自动机缓存条数上界仍是 4（紧凑结构下常驻内存有上限）', () => {
   wordscan.resetAutomatonCache();
   for (let i = 0; i < 8; i += 1) wordscan.scanTerms('正文', [`词表${i}`, `甲${i}`]);

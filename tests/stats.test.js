@@ -85,6 +85,62 @@ test('每日统计：sanitizeStats 丢弃坏日期 / 坏条目 / 非正数，并
   assert.equal(capped.days[statsLib.localDayKey(new Date(2025, 0, 1, 12))], undefined, '最早的日期被截掉');
 });
 
+test('CTXT-B-03：未来日期读取时丢弃（不挤占 500 天名额），三个聚合出口口径一致', () => {
+  const anchor = '2026-11-20';
+  // 501 个真实日 + 1 个未来键：旧行为未来键按字符串排序排在最后，会挤掉一条真实历史日。
+  const days = {};
+  for (let i = 0; i < 501; i += 1) {
+    const d = new Date(2020, 0, 1, 12);
+    d.setDate(d.getDate() + i);
+    days[statsLib.localDayKey(d)] = { books: { b: 1 } };
+  }
+  days['2099-01-01'] = { books: { b: 999 } };
+  const cleaned = statsLib.sanitizeStats({ days }, { anchor });
+  assert.equal(cleaned.days['2099-01-01'], undefined, '未来键必须丢弃');
+  assert.equal(Object.keys(cleaned.days).length, 500, '真实历史日不会被未来键挤掉');
+  assert.equal(cleaned.days[statsLib.localDayKey(new Date(2020, 0, 1, 12))], undefined, '仍按 500 天上限截最早');
+
+  // 默认 anchor = 本机今天：明天丢弃、昨天保留。
+  const today = statsLib.localDayKey();
+  const tomorrow = statsLib.shiftDayKey(today, 1);
+  const yesterday = statsLib.shiftDayKey(today, -1);
+  const near = statsLib.sanitizeStats({
+    days: { [yesterday]: { books: { b: 1 } }, [today]: { books: { b: 2 } }, [tomorrow]: { books: { b: 3 } } }
+  });
+  assert.deepEqual(Object.keys(near.days).sort(), [yesterday, today].sort());
+
+  // aggregate：未来日不计入 totals / days / months / 下拉选项。
+  const aggStats = {
+    days: {
+      '2026-11-18': { books: { a: 100 } },
+      '2026-11-19': { books: { a: 200 } },
+      '2026-11-21': { books: { a: 400 } }
+    }
+  };
+  const agg = statsLib.aggregate(aggStats, {}, { sanitized: true, now: new Date(2026, 10, 20, 12) });
+  assert.equal(agg.totals.totalChars, 300, '未来日 11-21 不计入');
+  assert.equal(agg.totals.writtenDays, 2);
+  assert.deepEqual(agg.months, [{ month: '2026-11', chars: 300, writtenDays: 2 }]);
+  assert.deepEqual(agg.options.books, [{ id: 'a', chars: 300, writtenDays: 2 }]);
+
+  // monthView（未来月）：即便文件里残留未来日数据，格子标 future 且 chars 记为 0，聚合不含它。
+  const futureMonth = statsLib.monthView(
+    { days: { '2026-12-01': { books: { a: 500 } } } },
+    { year: 2026, month: 12, now: new Date(2026, 10, 20, 12), sanitized: true }
+  );
+  assert.equal(futureMonth.total, 0);
+  assert.equal(futureMonth.writtenDays, 0);
+  assert.equal(futureMonth.average, 0);
+  assert.equal(futureMonth.days[0].future, true);
+  assert.equal(futureMonth.days[0].chars, 0, '未来日残留数据不显示、不聚合');
+
+  // 记录侧：晚于今天的 day 归到今天，不再往文件里写未来键（下一次读取会被丢）。
+  const recorded = statsLib.recordChars({ days: {} }, { day: '2099-01-01', bookId: 'a', delta: 5 });
+  assert.equal(recorded.day, statsLib.localDayKey(), '未来日归到今天');
+  assert.equal(recorded.added, 5);
+  assert.equal(recorded.stats.days['2099-01-01'], undefined);
+});
+
 test('每日统计：recordChars 只累计正增量，删字/没变都不倒扣', () => {
   const base = statsWith({
     '2026-10-30': { books: { bookA: 80 } }
@@ -382,11 +438,12 @@ test('码字日历：月视图按周一起始，汇总每日字数 / 达标 / �
   assert.deepEqual(view.weekdayLabels, ['一', '二', '三', '四', '五', '六', '日']);
   assert.equal(view.today, '2026-11-03');
   assert.equal(view.isCurrentMonth, true);
-  assert.equal(view.total, 350);
-  assert.equal(view.writtenDays, 3);
-  assert.equal(view.goalDays, 2);
-  assert.equal(view.average, 117);
-  assert.deepEqual(view.bestDay, { day: '2026-11-05', chars: 200 });
+  // CTXT-B-03：未来日期（11-05 相对 now=11-03）不再计入任何聚合，只保留 future 标记。
+  assert.equal(view.total, 150);
+  assert.equal(view.writtenDays, 2);
+  assert.equal(view.goalDays, 1);
+  assert.equal(view.average, 75);
+  assert.deepEqual(view.bestDay, { day: '2026-11-01', chars: 100 });
 
   const day1 = view.days[0];
   assert.deepEqual(
@@ -399,7 +456,8 @@ test('码字日历：月视图按周一起始，汇总每日字数 / 达标 / �
   assert.equal(view.days[2].level, 0);
   assert.equal(view.days[2].today, true);
   assert.equal(view.days[3].future, true, '今天之后的日期标 future');
-  assert.equal(view.days[4].level, 4, '超过目标也是满格');
+  assert.equal(view.days[4].level, 0, '未来日的残留数据不参与色阶 / 聚合');
+  assert.equal(view.days[4].chars, 0, '未来日的残留数据不显示');
   assert.equal(JSON.stringify(stats), before, '月视图只读，不改原统计');
 });
 

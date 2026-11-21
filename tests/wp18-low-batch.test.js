@@ -754,54 +754,25 @@ function extractFunctionSource(source, name) {
   throw new Error(`函数 ${name} 的大括号不配对`);
 }
 
-test('R13 C4：preload 传输层异常文案过脱敏（盘符 / UNC / file URL / 控制字符 / 限长）', () => {
+test('R13 C4 / CTXT-A-01：preload 传输层异常只回固定文案，不再手抄第二份脱敏实现', () => {
   const preloadSrc = readSource('preload.js');
-  const body = extractFunctionSource(preloadSrc, 'sanitizeTransportMessage');
-  const sanitize = new Function(`${body}; return sanitizeTransportMessage;`)();
-
-  // 盘符路径只留最后一节，路径上的用户名 / 书名不出去
-  assert.equal(
-    sanitize('Error invoking remote method \'book:open\': Error: ENOENT: C:\\Users\\zhang\\我的小说\\第1章.txt'),
-    'Error invoking remote method \'book:open\': Error: ENOENT: …\\第1章.txt'
-  );
-  // UNC 共享路径同样收口
-  assert.equal(sanitize('打开失败 \\\\server\\share\\书\\ch1.txt 不存在'), '打开失败 …\\ch1.txt 不存在');
-  // file:// URL
-  assert.equal(sanitize('file:///D:/写书/导出/书.epub 打不开'), '…\\书.epub 打不开');
-  // 五-L20（MC-1）：传输层与 core/error-text 的现行口径对齐 —— 旧实现「遇空白就断」，
-  // 含空格的路径只遮住前半截（用户名 / 书名原样漏出），正斜杠 UNC / 设备前缀 / 编码盘符整条漏出。
-  assert.equal(
-    sanitize("Error invoking remote method 'book:open': ENOENT: D:\\Users\\Zhang San\\Documents\\我的小说\\书\\001-第 1 章.txt"),
-    "Error invoking remote method 'book:open': ENOENT: …\\001-第 1 章.txt",
-    '含空格的本机路径必须整条遮住，只留最后一节'
-  );
-  assert.equal(sanitize('打开失败 //server/share/书/ch1.txt 不存在'), '打开失败 …\\ch1.txt 不存在', '正斜杠 UNC 同样收口');
-  assert.equal(
-    sanitize('打开失败 C%3A%5CUsers%5CZhang%5C我的小说%5C书%5Cch1.txt 不存在'),
-    '打开失败 …\\ch1.txt 不存在',
-    '编码盘符（%3A / %5C）同样收口'
-  );
-  assert.equal(
-    sanitize('\\\\?\\D:\\写书\\导出\\书.epub 打不开'),
-    '…\\书.epub 打不开',
-    '设备前缀 \\\\?\\ 同样收口'
-  );
-  // 控制字符清掉；没有本机路径的文案一个字节不动
-  assert.equal(sanitize('通道\u0000未注册\u001f'), '通道未注册');
-  assert.equal(sanitize("Error invoking remote method 'chapter:save': Error: 磁盘空间不足"), "Error invoking remote method 'chapter:save': Error: 磁盘空间不足");
-  // 超长消息截断（传输异常偶尔会把整个参数带回来）
-  const long = sanitize('x'.repeat(1200));
-  assert.equal(long.length, 400);
-  assert.equal(long.endsWith('…'), true);
-  // 非字符串安全化，绝不抛
-  assert.equal(sanitize(null), '');
-  assert.equal(sanitize(undefined), '');
-  assert.equal(typeof sanitize({ name: 'x' }), 'string');
-
-  // 静态：invoke 的 catch 必须走脱敏（不是原来的 err.message）
-  const invokeBody = sliceFrom(preloadSrc, 'async function invoke(channel, ...args) {');
-  assert.match(invokeBody, /sanitizeTransportMessage\(/, 'invoke 兜底文案必须过 sanitizeTransportMessage');
-  assert.equal(/message: \(err && err\.message\) \|\| String\(err\)/.test(invokeBody), false, '不许再原样回 err.message');
+  // 全仓只剩 core/error-text 一份脱敏口径：preload 里不许再有路径解析 / 遮罩实现
+  // （旧副本与 core 已实际漂移：URL 被误遮、引号 POSIX 漏遮、MAX_CHARS 400 对 300）。
+  for (const pattern of [
+    /sanitizeTransportMessage/,
+    /\btailOf\b/,
+    /\breadPathEnd\b/,
+    /\bPATH_STOP_RE\b/,
+    /MAX_CHARS/
+  ]) {
+    assert.equal(pattern.test(preloadSrc), false, `preload 不许再带脱敏副本：${pattern}`);
+  }
+  // 固定文案 + 不引用原始异常：路径 / 控制字符 / 超长内容从机制上不可能泄漏。
+  assert.match(preloadSrc, /const TRANSPORT_ERROR_MESSAGE = '主进程通道不可用（IPC_ERROR）';/);
+  const invokeBody = extractFunctionSource(preloadSrc, 'invoke');
+  assert.match(invokeBody, /code: 'IPC_ERROR'/);
+  assert.match(invokeBody, /message: TRANSPORT_ERROR_MESSAGE/);
+  assert.equal(/err\.message|String\(err\)/.test(invokeBody), false, '传输层兜底文案不许引用原始异常');
 });
 
 // ---------- R14 / R15：台账 #3 preload 死监听 / 暴露未用 api ----------

@@ -243,6 +243,9 @@ function setupPowerMonitor() {
 // 2026-11-07：900ms 太稀，连续快速复制会漏拍；缩到 300ms（每拍只读一次纯文本，开销可忽略）。
 const CLIPBOARD_WATCH_INTERVAL_MS = 300;
 const clipboardWatcher = clipboardWatchLib.createWatcher();
+// CTXT-B-02（审计）：30 万字级的大文本躺在剪贴板时，300ms 全文读 + 哈希会持续占用主进程。
+// 长度 ≥30 万且与上一拍相同 → 降频（约每 3 秒读一次）；长度一变立即恢复逐拍读。
+const clipboardPacer = clipboardWatchLib.createLargeTextPacer();
 // 2026-11-06（捕获队列）：开关打开后每次复制各记一条，逐条捕获、各自成章。
 // 只驻主进程内存：不落盘、不写日志；关闭监听 / 退出应用即清空（隐私口径见 README）。
 const captureQueue = captureQueueLib.createCaptureQueue();
@@ -274,11 +277,14 @@ let clipboardWatchPriming = false;
 
 async function pollClipboardWatch() {
   if (clipboardWatchPriming || clipboardWatchBusy) return;
+  // CTXT-B-02：大文本没换长度时，这几拍不读剪贴板（读取本身也会分配整串副本）。
+  if (clipboardPacer.shouldSkip()) return;
   clipboardWatchBusy = true;
   // V39（审计）：记下这一拍的启动 token；读数在飞时被 stop→start 跨过，返回后整拍作废。
   const watchToken = clipboardWatcher.token();
   try {
     const text = await readClipboardForWatch();
+    clipboardPacer.observe(text.length);
     const decision = clipboardWatcher.evaluate(text, watchToken);
     // 记录与提示拆开：连续复制的几段都要各留一条（record），冷却只压轻提示（notify）。
     if (decision.record) {
@@ -333,6 +339,7 @@ function stopClipboardWatch() {
   }
   clipboardWatchPriming = false;
   clipboardWatchBusy = false;
+  clipboardPacer.reset();
   clipboardWatcher.disable();
   // 关掉监听 = 不再看剪贴板：本次运行的捕获队列一并清空（隐私口径，不留内存残影）。
   captureQueue.clear();

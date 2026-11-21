@@ -26,6 +26,43 @@ function fingerprint(text) {
   return `${source.length}:${hash.toString(36)}`;
 }
 
+// CTXT-B-02（审计）：大文本（整章 / 整本复制，产品上限 30 万字）躺在剪贴板时，主进程每 300ms
+// 读整串 + 全文哈希，是一直持续的底噪。这里给主进程轮询一个自适应降频器：
+//   · 上一次读到的长度 ≥ threshold 且这一拍长度相同 → 接下来 skipTicks 拍「连读都不读」；
+//   · 长度一变（新复制的一段）立即恢复逐拍读，下一次 observe 再决定是否继续降频。
+// 代价：大文本之后 3 秒内的新复制最晚 3 秒后才进捕获队列（只影响捕获队列，不影响正文）。
+// 纯逻辑、无定时器；主进程负责调用时机。
+function createLargeTextPacer(options = {}) {
+  const threshold = positiveInt(options.threshold, 300000);
+  const skipTicks = positiveInt(options.skipTicks, 10);
+  let lastLength = -1;
+  let remaining = 0;
+  return {
+    // 本拍要不要完全跳过：为 true 时调用方不必读剪贴板、不必哈希、不必评估。
+    shouldSkip() {
+      if (remaining <= 0) return false;
+      remaining -= 1;
+      return true;
+    },
+    // 读完一次真实文本后登记长度；大文本且长度与上一次相同 → 安排后续跳过；
+    // 长度一变（新复制的一段）就清掉跳过额度，立刻恢复逐拍读。
+    observe(chars) {
+      const length = Number.isFinite(Number(chars)) ? Math.max(0, Math.round(Number(chars))) : 0;
+      if (length === lastLength && length >= threshold) remaining = skipTicks;
+      else remaining = 0;
+      lastLength = length;
+      return remaining;
+    },
+    reset() {
+      lastLength = -1;
+      remaining = 0;
+    },
+    state() {
+      return { lastLength, remaining };
+    }
+  };
+}
+
 function positiveInt(value, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -109,5 +146,6 @@ function createWatcher(options = {}) {
 
 module.exports = {
   fingerprint,
-  createWatcher
+  createWatcher,
+  createLargeTextPacer
 };

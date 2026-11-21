@@ -160,14 +160,24 @@ function publicWordListInfo(list) {
 // 5000 词 × 500 万字要 19–20 秒）。重叠取最长 / RAW_MATCH_LIMIT / 区分大小写 / 位置排序语义不变。
 function scanText(text, rawWords, rawOptions) {
   const options = sanitizeOptions(rawOptions);
-  const words = sanitizeWords(rawWords);
+  // CTXT-B-01（审计）：整本预检在循环外已经按同一口径清洗过词表（parseWordList 同样 trim / 去重 /
+  // 限长限数），每章重洗是幂等白跑，还让 wordscan 的自动机缓存拿不到同一个数组引用。调用方
+  // 明确声明 wordsSanitized 时直接复用原数组（不 slice、不改写），引用稳定 → 自动机按引用命中。
+  const wordsSanitized =
+    rawOptions && typeof rawOptions === 'object' && rawOptions.wordsSanitized === true;
+  const words = wordsSanitized && Array.isArray(rawWords) ? rawWords : sanitizeWords(rawWords);
   // B5（审计 #14）：整本预检的明细预算（1500 条）用尽后，后面的章只需要 total / byWord ——
   // details:false 时一条明细都不建（行号列号 / 上下文片段 / issues 对象全部跳过），
   // 扫描本身照跑，命中数一条不少。只从入口 raw options 读，不进 sanitizeOptions：
   // 单章频道（text:sensitive-check）的公开 options 口径因此不变。
   const detailsWanted = !(rawOptions && typeof rawOptions === 'object' && rawOptions.details === false);
   const source = normalizeText(text);
-  const scan = wordscan.scanTerms(source, words, { rawMatchLimit: RAW_MATCH_LIMIT });
+  const scan = wordscan.scanTerms(source, words, {
+    rawMatchLimit: RAW_MATCH_LIMIT,
+    // CTXT-B-01：wordsSanitized 同时意味着词表引用在整本循环里稳定（parseWordList 每次新建、
+    // 循环内只读），可以走自动机缓存的同引用直通，跳过每章重算指纹。
+    stableReference: wordsSanitized
+  });
   // A4 / P-03：一边遍历命中一边聚合，不再先物化一份「全部命中」的中间数组；
   // 明细只给前 maxIssues 条算行号 / 拼上下文，超出的只计数——
   // 「的」这类高频词命中上万条时，不会再为被截掉的条目白拼片段。

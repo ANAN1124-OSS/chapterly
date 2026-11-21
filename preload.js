@@ -1,101 +1,23 @@
 // 渲染层唯一可用的主进程能力：白名单 IPC，不暴露 Node。
 const { contextBridge, ipcRenderer } = require('electron');
 
-// C4（WP18 / 审计中 #23）：传输层异常（通道没注册 / 参数序列化失败）以前把原始 err.message
-// 直接回渲染层，是「错误文案全脱敏」口径里唯一没走过的口子。业务错误仍由主进程 fail() 用
-// core/error-text 脱敏；这里只兜传输层，口径对齐：本机绝对路径只留最后一节、去控制字符、限长。
-// 为什么不在 core/error-text 里复用：sandbox preload 只能 require electron（拿不到本地模块），
-// 这层实现刻意保持小而有界；行为由 tests/wp18-low-batch.test.js › R13 逐条钉住。
-// （函数刻意自包含：R13 的锚点从 preload.js 里抽出这一只函数直接跑行为，不希望它依赖模块级常量。）
-function sanitizeTransportMessage(value) {
-  // 五-L20（MC-1）：传输层脱敏与 core/error-text 的现行口径对齐 —— 旧实现「遇空白就断」：
-  // `C:\Users\Zhang San\Documents\我的小说\书\001-第 1 章.txt` 只遮到 `…\Zhang`，用户名 / 书名
-  // 原样漏进渲染层；正斜杠 UNC `//server/share/x`、`\\?\` 设备前缀、编码盘符 `C%3A%5C…` 整条漏出。
-  // sandbox preload 只能 require electron，这里自包含一份同语义实现（找起点 → 逐字符判结尾 → 只留
-  // 最后一节）；行为由 tests/wp18-low-batch.test.js › R13 逐条钉住（含这些形状）。
-  const MAX_CHARS = 400;
-  // 控制字符（含 DEL）；保留 \t \n 之外的一律清掉，和 core/error-text 同口径。
-  const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
-  // 路径里遇到这些字符就结束（ASCII 括号保留：`Program Files (x86)` 是真实目录名）。
-  const PATH_STOP_RE = /[\u0000-\u001f<>|*?'"\[\]{}「」『』（）【】《》，。；：、！？,;=]/;
-  const ASCII_PATH_TOKEN_RE = /^[A-Za-z0-9_.~%+-]+$/;
-  const EXT_PATH_TOKEN_RE = /^[^\s'"<>|*?/\\]+\.[A-Za-z0-9]{1,8}$/;
-  const FILE_SEGMENT_RE = /\.[A-Za-z0-9]{1,8}(?=$|[:)])/;
-  const ABSOLUTE_START_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/|\/[^\s/])/;
-  const TOKEN_STOP_RE = /[\s'"<>|*?\[\]{}「」『』（）【】《》，。；：、！？,;=]/;
-  // 绝对路径起点：盘符 / 编码盘符（%3A + %5C|%2F）/ `\\?\` 设备前缀 / 反斜杠 UNC / 正斜杠 UNC / file URL。
-  const START_PATTERN = String.raw`(?:[A-Za-z]:[\\/]|[A-Za-z](?:%3A|%3a)(?:%5C|%5c|%2F|%2f)|\\\\\?\\|\\\\[^\s\\]+\\|file:\/{1,3}|\/{2}[^\s\\/]+\/)`;
-  const tailOf = (pathText) => {
-    const parts = String(pathText)
-      .replace(/^file:\/{0,3}/i, '')
-      .split(/(?:%5C|%5c|%2F|%2f|[\\/])+/)
-      .filter(Boolean);
-    return parts.length ? `…\\${parts[parts.length - 1]}` : '…';
-  };
-  // 空格之后的下一个「词」（到界面标点 / 引号 / 空白为止）
-  function nextPathToken(text) {
-    let i = 0;
-    while (i < text.length && /\s/.test(text[i])) i += 1;
-    if (i >= text.length) return null;
-    let end = i;
-    while (end < text.length && !TOKEN_STOP_RE.test(text[end])) end += 1;
-    const token = text.slice(i, end);
-    return token ? { token, rest: text.slice(end) } : null;
-  }
-  // 空格后面这个词还算不算同一条路径的一段：另一条绝对路径 → 不算；自带分隔符 / 带 ASCII 扩展名 →
-  // 算；纯 ASCII 词（Zhang / San / 1）→ 算（用户名里的空格不能被当成路径结束）；中文正文 → 不算。
-  function isPathContinuationToken(token, previousSegment) {
-    if (!token) return false;
-    if (ABSOLUTE_START_RE.test(token)) return false;
-    if (token[0] === '/' || token[0] === '\\') return false;
-    if (token.includes('\\') || token.includes('/')) return true;
-    if (EXT_PATH_TOKEN_RE.test(token)) return true;
-    if (FILE_SEGMENT_RE.test(String(previousSegment || ''))) return false;
-    return ASCII_PATH_TOKEN_RE.test(token);
-  }
-  function readPathEnd(text, from) {
-    let end = from;
-    while (end < text.length) {
-      const ch = text[end];
-      if (PATH_STOP_RE.test(ch)) break;
-      if (ch === ' ' || ch === '\t') {
-        const next = nextPathToken(text.slice(end + 1));
-        const lastSegment = text.slice(from, end).split(/[\\/]/).pop() || '';
-        if (!next || !isPathContinuationToken(next.token, lastSegment)) break;
-        end += 1;
-        continue;
-      }
-      end += 1;
-    }
-    return end;
-  }
-  const text = typeof value === 'string' ? value : value == null ? '' : String(value);
-  if (!text) return '';
-  let out = text.replace(CONTROL_RE, '');
-  const startRe = new RegExp(START_PATTERN, 'gi');
-  let masked = '';
-  let cursor = 0;
-  for (const match of out.matchAll(startRe)) {
-    const start = match.index;
-    if (start < cursor) continue;
-    // `\\?\` 里的 `?` 是 PATH_STOP 字符：剥掉设备前缀再往后读（与 core/error-text 的 maskDevicePaths 同口径）
-    const scanFrom = match[0].startsWith('\\\\?\\') ? start + 4 : start;
-    const end = Math.max(readPathEnd(out, scanFrom), start + match[0].length);
-    masked += out.slice(cursor, start) + tailOf(out.slice(start, end));
-    cursor = end;
-  }
-  out = masked + out.slice(cursor);
-  // POSIX 单斜杠路径：保留前缀（行首 / 空白 / 括号），只把中间段遮掉
-  out = out.replace(new RegExp(String.raw`(^|[\s(（「【])(\/[^\s\/]+\/[^\s]*)`, 'g'), (_matched, prefix, pathText) => prefix + tailOf(pathText));
-  if (out.length > MAX_CHARS) out = `${out.slice(0, MAX_CHARS - 1)}…`;
-  return out;
-}
+// C4（WP18 / 审计中 #23）/ CTXT-A-01：传输层异常（通道没注册 / 参数序列化失败）以前把原始
+// err.message 回渲染层，是「错误文案全脱敏」口径里唯一没走过的口子。这里**不再自带第二份
+// 路径脱敏实现**：业务错误一律由主进程 handle() 的 fail() 走 core/error-text 脱敏后作为
+// { ok:false } 返回，preload 的 catch 只兜基础设施异常（这些消息里没有作者本机路径），
+// 回固定文案即可。此前 preload 手抄的那份实现与 core/error-text 已经漂移（URL 被误遮、
+// 引号包裹的 POSIX 路径漏遮、长度 400 对 300），修一处漏一处只会让分叉继续扩大。
+// sandbox preload 只能 require electron，无法 require core/error-text —— 删掉副本是唯一
+// 能保证「全仓只有一份脱敏口径」且不需要在 preload 里同步演进的做法。
+// 行为由 tests/wp18-low-batch.test.js › R13 与 tests/security-regression.test.js 钉住。
+const TRANSPORT_ERROR_MESSAGE = '主进程通道不可用（IPC_ERROR）';
 
 async function invoke(channel, ...args) {
   try {
     return await ipcRenderer.invoke(channel, ...args);
-  } catch (err) {
-    return { ok: false, code: 'IPC_ERROR', message: sanitizeTransportMessage((err && err.message) || String(err)) };
+  } catch {
+    // 不引用原始异常信息：路径 / 控制字符 / 超长内容从机制上不可能从这里泄漏。
+    return { ok: false, code: 'IPC_ERROR', message: TRANSPORT_ERROR_MESSAGE };
   }
 }
 

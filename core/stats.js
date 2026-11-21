@@ -79,14 +79,23 @@ function emptyStats() {
 }
 
 // 读取时清洗：坏日期 / 坏条目 / 负数 / 超大数全部丢弃或夹住；不抛错。
-function sanitizeStats(raw) {
+// CTXT-B-03（审计）：晚于 anchor（默认今天）的键是系统时钟回拨 / 手改 stats.json 的产物。
+// 以前只丢「格式非法」的键，未来键被完整保留：aggregate / monthView 照常计入（总字数虚高），
+// 还会在下面「只留最近 500 天」的按字符串排序里排到最后，提前挤掉一条真实历史日。
+// 现在统一在读取时按「未来日期不计入」丢弃——三个聚合出口与 streak 的口径因此一致。
+// options.anchor 只给需要固定基准的调用方 / 单测用；不传就是本机今天。
+function sanitizeStats(raw, options) {
+  const opt = options && typeof options === 'object' ? options : {};
+  const anchor = isValidDayKey(opt.anchor) ? opt.anchor : localDayKey();
   const out = emptyStats();
   const rawDays =
     raw && typeof raw === 'object' && !Array.isArray(raw) && raw.days && typeof raw.days === 'object' && !Array.isArray(raw.days)
       ? raw.days
       : {};
-  // ISO 日期键按字符串排序就是时间顺序；只留最近的 MAX_DAYS 天，避免超大文件。
-  const keys = Object.keys(rawDays).filter(isValidDayKey).sort();
+  // ISO 日期键按字符串排序就是时间顺序；未来键丢弃，只留最近的 MAX_DAYS 天，避免超大文件。
+  const keys = Object.keys(rawDays)
+    .filter((key) => isValidDayKey(key) && key <= anchor)
+    .sort();
   const keep = keys.slice(-MAX_DAYS);
   for (const key of keep) {
     const entry = rawDays[key];
@@ -216,9 +225,12 @@ function monthView(rawStats, { year, month, now = new Date(), goal = DEFAULT_GOA
 
   for (let dayOfMonth = 1; dayOfMonth <= count; dayOfMonth += 1) {
     const day = `${targetYear}-${pad2(targetMonth)}-${pad2(dayOfMonth)}`;
-    const entry = stats.days[day];
-    const chars = totalOfEntry(entry);
-    const seconds = secondsOfEntry(entry);
+    // CTXT-B-03：未来日期不计入任何聚合（total / average / writtenDays / goalDays / bestDay），
+    // 日历格子仍标 future；时钟回拨留下的未来数据不再让本月统计虚高。
+    const future = day > anchor;
+    const entry = future ? null : stats.days[day];
+    const chars = future ? 0 : totalOfEntry(entry);
+    const seconds = future ? 0 : secondsOfEntry(entry);
     const written = chars > 0;
     totalSeconds += seconds;
     if (written) {
@@ -239,7 +251,7 @@ function monthView(rawStats, { year, month, now = new Date(), goal = DEFAULT_GOA
       goalMet: dailyGoal > 0 && chars >= dailyGoal,
       level: 0, // 下面按整月最高值 / 目标统一算，避免逐天口径不一致
       today: day === anchor,
-      future: day > anchor
+      future
     });
   }
   for (const item of days) {
@@ -316,7 +328,10 @@ function pruneDays(stats, key) {
 // 返回新 stats 与真正记下的 added（调用方据此决定要不要写盘）。
 function recordChars(rawStats, { day, bookId, delta } = {}) {
   const stats = sanitizeStats(rawStats);
-  const key = isValidDayKey(day) ? day : localDayKey();
+  // CTXT-B-03：不写「晚于今天」的键（时钟回拨期间的调用 / 坏参数）。未来键下一次读取会被丢弃，
+  // 写进去只会白丢一次增量；归到本机今天，与 streak / aggregate 的口径一致。
+  const today = localDayKey();
+  const key = isValidDayKey(day) && day <= today ? day : today;
   const amount = Math.round(Number(delta));
   if (!Number.isFinite(amount) || amount <= 0) return { stats, added: 0, day: key };
   const id = sanitizeBookId(bookId);
@@ -363,7 +378,9 @@ async function recordSaveChars(store, payload) {
 // 时长和字数是同一天的两种记录：这里也保留当天已有的按书字数。
 function recordDuration(rawStats, { day, seconds } = {}) {
   const stats = sanitizeStats(rawStats);
-  const key = isValidDayKey(day) ? day : localDayKey();
+  // 与 recordChars 同一条时钟回拨保护：未来键不落盘。
+  const today = localDayKey();
+  const key = isValidDayKey(day) && day <= today ? day : today;
   const amount = Math.round(Number(seconds));
   if (!Number.isFinite(amount) || amount <= 0) return { stats, added: 0, day: key };
   const existing = stats.days[key];
@@ -436,6 +453,9 @@ function sanitizeStatsFilter(raw) {
 function aggregate(rawStats, filter, options) {
   const stats = statsFor(rawStats, options);
   const safe = sanitizeStatsFilter(filter);
+  // CTXT-B-03：与 streak / monthView 同口径——未来日期不计入任何汇总与下拉选项。
+  const opt = options && typeof options === 'object' ? options : {};
+  const anchor = localDayKey(opt.now instanceof Date ? opt.now : undefined);
   const days = [];
   const monthIndex = new Map();
   const bookTotals = new Map();
@@ -443,6 +463,9 @@ function aggregate(rawStats, filter, options) {
   let totalChars = 0;
   let writtenDays = 0;
   for (const day of Object.keys(stats.days).sort()) {
+    // 只过滤「合法但晚于今天」的日期键；sanitized:true 的调用方保证数据已清洗，
+    // 非法键的处置由调用方那次清洗负责（P9/#54 的「跳过重复清洗」契约不变）。
+    if (isValidDayKey(day) && day > anchor) continue;
     const entry = stats.days[day];
     const dayChars = totalOfEntry(entry);
     const dayYear = Number(day.slice(0, 4));

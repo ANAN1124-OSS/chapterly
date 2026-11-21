@@ -60,8 +60,17 @@ function automatonFingerprint(patterns) {
   return `${patterns.length}:${(low >>> 0).toString(16)}:${(high >>> 0).toString(16)}`;
 }
 
-const automatonCache = new Map(); // fingerprint -> { patterns, automaton }（LRU：命中时移到末尾）
-const automatonStats = { builds: 0, hits: 0, collisions: 0 };
+const automatonCache = new Map(); // fingerprint -> entry（LRU：命中时移到末尾）
+// CTXT-B-01（审计）：整本链路每章传的是同一个已清洗词表数组。只按 64 位指纹查缓存仍需
+// 每章重算一遍指纹（遍历全部词条字符）。这里按数组引用直通：同引用 = 同一份词表，直接复用。
+// WeakMap 不阻止词表被回收；条目被 LRU 淘汰后（cache.get 不再是它）仍会回落到指纹路径。
+let automatonByPatterns = new WeakMap(); // patterns（原数组引用）-> entry
+const automatonStats = { builds: 0, hits: 0, collisions: 0, referenceHits: 0 };
+
+function touchAutomatonEntry(entry) {
+  automatonCache.delete(entry.fingerprint);
+  automatonCache.set(entry.fingerprint, entry); // 触碰：淘汰时先丢最久没用的
+}
 
 // X6（v1.8.0 WP-40，审计 X6）：缓存键只有 64 位滚动指纹，碰撞概率极低但一旦碰撞会静默复用错误
 // 自动机（命中词张冠李戴）。缓存条目同时留一份「建图时词表快照」，命中后先做等值核对再复用；
@@ -77,21 +86,47 @@ function samePatterns(a, b) {
 }
 
 // fingerprint 参数只给单测注入（模拟指纹碰撞），产品调用一律走 automatonFingerprint。
-function automatonFor(patterns, fingerprintOf) {
-  const fingerprint = typeof fingerprintOf === 'function' ? fingerprintOf : automatonFingerprint;
+// options.stableReference = true：调用方承诺这个数组在缓存生命周期内不会被原地修改
+// （整本预检的 list.words 就是这种稳定引用），于是同引用可以直通缓存、跳过指纹与全量比对。
+function automatonFor(patterns, fingerprintOf, options) {
+  const injected = typeof fingerprintOf === 'function';
+  const stableReference = Boolean(options && options.stableReference);
+  // CTXT-B-01：同一数组引用（整本预检循环里的 list.words）直接复用，不再每章重算指纹 / 全量比对。
+  if (!injected && stableReference && patterns && typeof patterns === 'object') {
+    const direct = automatonByPatterns.get(patterns);
+    if (direct && automatonCache.get(direct.fingerprint) === direct) {
+      automatonStats.hits += 1;
+      automatonStats.referenceHits += 1;
+      touchAutomatonEntry(direct);
+      return direct.automaton;
+    }
+  }
+  const fingerprint = injected ? fingerprintOf : automatonFingerprint;
   const key = fingerprint(patterns);
   const cached = automatonCache.get(key);
-  if (cached && samePatterns(cached.patterns, patterns)) {
+  if (cached && (cached.source === patterns || samePatterns(cached.patterns, patterns))) {
     automatonStats.hits += 1;
-    automatonCache.delete(key);
-    automatonCache.set(key, cached); // 触碰：淘汰时先丢最久没用的
+    if (!injected && stableReference && patterns && typeof patterns === 'object') {
+      automatonByPatterns.set(patterns, cached);
+    }
+    touchAutomatonEntry(cached);
     return cached.automaton;
   }
   if (cached) automatonStats.collisions += 1;
   const auto = buildAutomaton(patterns);
   automatonStats.builds += 1;
   automatonCache.delete(key); // 碰撞时旧条目让位；正常新增时本来就不存在
-  automatonCache.set(key, { patterns: patterns.slice(), automaton: auto });
+  const entry = {
+    fingerprint: key,
+    patterns: patterns.slice(),
+    // 原数组引用只用于「同引用直通」；调用方没有声明稳定时不登记，避免原地改动串用旧图。
+    source: injected || !stableReference ? null : patterns,
+    automaton: auto
+  };
+  automatonCache.set(key, entry);
+  if (!injected && stableReference && patterns && typeof patterns === 'object') {
+    automatonByPatterns.set(patterns, entry);
+  }
   if (automatonCache.size > MAX_CACHED_AUTOMATONS) {
     const oldest = automatonCache.keys().next();
     if (!oldest.done) automatonCache.delete(oldest.value);
@@ -244,7 +279,7 @@ function scanTerms(text, terms, options = {}) {
   const rawMatchLimit = Number.isFinite(limitValue) && limitValue > 0
     ? Math.max(1, Math.floor(limitValue))
     : DEFAULT_RAW_MATCH_LIMIT;
-  const auto = automatonFor(patterns, options.fingerprint);
+  const auto = automatonFor(patterns, options.fingerprint, options);
   if (!auto.maxLen) return { hits: [], rawCount: 0, truncated: false };
   const source = typeof text === 'string' ? text : '';
 
@@ -343,15 +378,24 @@ function scanTerms(text, terms, options = {}) {
 // collisions = 指纹撞车后按等值核对发现不一致、改为重建的次数（X6；正常恒为 0）。
 // 产品代码不读它，只有单测用它证明「同一词表 1000 章只建图 1 次」。
 function automatonCacheStats() {
-  return { builds: automatonStats.builds, hits: automatonStats.hits, size: automatonCache.size, collisions: automatonStats.collisions };
+  return {
+    builds: automatonStats.builds,
+    hits: automatonStats.hits,
+    size: automatonCache.size,
+    collisions: automatonStats.collisions,
+    referenceHits: automatonStats.referenceHits
+  };
 }
 
 // 单测用：清空缓存并归零计数（避免不同用例之间互相污染计数）。
 function resetAutomatonCache() {
   automatonCache.clear();
+  // 引用直通表也换一份：清缓存后的同引用必须重新走指纹 / 等值路径，不能命中旧条目。
+  automatonByPatterns = new WeakMap();
   automatonStats.builds = 0;
   automatonStats.hits = 0;
   automatonStats.collisions = 0;
+  automatonStats.referenceHits = 0;
 }
 
 // 单测用：按给定词表真建一张图（不碰缓存），回图的规模。P2（审计修复 #18）的锚点：

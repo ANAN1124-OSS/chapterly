@@ -355,7 +355,12 @@ function registerProofreadIpc(host) {
     // scanText 走 details:false（不建明细 / 不算行号 / 不拼片段），计数口径完全不变。
     let detailsWanted = true;
     const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
-      const result = sensitiveLib.scanText(text, list.words, detailsWanted ? limits : { ...limits, details: false });
+      // CTXT-B-01：list.words 是 parseWordList 已清洗过的词表，整本循环里只该洗一次。
+      const result = sensitiveLib.scanText(
+        text,
+        list.words,
+        detailsWanted ? { ...limits, wordsSanitized: true } : { ...limits, details: false, wordsSanitized: true }
+      );
       total += result.total;
       for (const item of result.byWord) {
         byWordMap.set(item.word, (byWordMap.get(item.word) || 0) + item.count);
