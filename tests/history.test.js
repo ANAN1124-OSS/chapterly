@@ -1,16 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const history = require('../core/history');
 const storage = require('../core/storage');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp(prefix = 'cw-history-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-history-') => tmpCleanup.mkTmp(prefix);
 
 async function makeBook(root, title = '历史测试书') {
   return storage.createBook(root, title);

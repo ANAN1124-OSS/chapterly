@@ -11,7 +11,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 
 const tmpCleanup = require('./tmp-cleanup');
@@ -41,9 +40,8 @@ const sliceFunction = (source, marker) => {
 const RULES_OFF = {};
 for (const rule of proofreadLib.RULE_ORDER) RULES_OFF[rule] = false;
 
-async function mkTmp(prefix = 'cw-wp12-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-wp12-') => tmpCleanup.mkTmp(prefix);
 
 // 最小 host 装配真实 ipc/proofread.js：频道名 → 处理函数（handle / handleBook 不做副作用）。
 function makeHost({ config, proofreadModule = proofreadLib, sensitiveModule = sensitiveLib }) {

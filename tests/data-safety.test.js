@@ -14,16 +14,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const repair = require('../core/repair');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-data-safety-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-data-safety-') => tmpCleanup.mkTmp(prefix);
 
 // 临时让 rename 失败（模拟「文件被杀软 / 同步盘占住」）；返回 restore()，必须放 finally。
 function patchRename(impl) {

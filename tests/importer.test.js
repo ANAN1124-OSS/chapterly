@@ -9,9 +9,8 @@ const importer = require('../core/importer');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-import-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-import-') => tmpCleanup.mkTmp(prefix);
 
 test('导入现成的章回书：整本复制、内容一致、源文件夹保留', async () => {
   const base = await mkTmp();

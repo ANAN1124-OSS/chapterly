@@ -1,16 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const snapshot = require('../core/snapshot');
 const storage = require('../core/storage');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp(prefix = 'cw-snapshot-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-snapshot-') => tmpCleanup.mkTmp(prefix);
 
 const DAY = (year, month, day, hour = 12, minute = 0) =>
   new Date(year, month - 1, day, hour, minute, 0);

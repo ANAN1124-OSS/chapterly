@@ -21,9 +21,8 @@ const ipcLimits = require('../core/ipc-limits');
 const atomic = require('../core/atomic');
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-export-shared-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-export-shared-') => tmpCleanup.mkTmp(prefix);
 
 function makeHost({ targetPath, canceled = false, readHook = null, docxLib: docxLibOverride = null } = {}) {
   const channels = new Map();

@@ -11,7 +11,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const exporter = require('../core/exporter');
@@ -21,9 +20,8 @@ const s2tLib = require('../core/s2t');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp(prefix = 'cw-batch-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-batch-') => tmpCleanup.mkTmp(prefix);
 
 const CHAPTERS = 70; // 32 章/批 → 3 批，批边界在 31/32/63 前后
 const FORMAT_OPTIONS = { indent: '2', blankLines: 'keep', trimTrailing: true, normalizePunct: true };

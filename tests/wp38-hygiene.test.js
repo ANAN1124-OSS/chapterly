@@ -170,10 +170,10 @@ test('X15：start-logic 的退出码 / 缺依赖提示语义', () => {
   assert.equal(startLogic.missingElectronHint(undefined), null, 'err 为 undefined 不抛');
 });
 
-test('R19 F2：tests/**/*.js 的 mkdtemp 必须经 tmpCleanup.track 登记（静态闸门）', () => {
+test('R19 F2（TB-02/TB-06）：mkdtemp 只许在 tests/tmp-cleanup.js 出现，测试统一用 mkTmp/mkTmpSync', () => {
   const testsRoot = path.join(__dirname);
-  // TEST-D-03：递归扫 tests/**（不只 tests/*.test.js）——fixtures/ 等共享文件也会 mkdtemp；
-  // 排除 tmp-cleanup.js 自身（它按定义不登记自己回收的目录集合之外的东西）。
+  // TEST-D-03：递归扫 tests/**（不只 tests/*.test.js）——fixtures/ 等共享文件也在范围内；
+  // 排除 tmp-cleanup.js 自身（它按定义是唯一允许直接 mkdtemp 的地方）。
   const walk = (dir) => {
     const out = [];
     for (const entry of require('node:fs').readdirSync(dir, { withFileTypes: true })) {
@@ -186,36 +186,44 @@ test('R19 F2：tests/**/*.js 的 mkdtemp 必须经 tmpCleanup.track 登记（静
   const files = walk(testsRoot).sort();
   // TEST-D-03：不复用「当前仓库规模」当阈值（测试文件增减即误红）；只要求真的扫到了东西。
   assert.ok(files.length > 0, `闸门要扫到测试目录下的 .js（实际 ${files.length} 个）：${testsRoot}`);
+  // TB-06：fixtures/ 必须在扫描范围内（共享构造器里的临时目录同样要经共享 helper）。
+  assert.ok(
+    files.some((full) => full.includes(`${path.sep}fixtures${path.sep}`)),
+    '扫描范围必须包含 tests/fixtures/**'
+  );
 
-  const callRe = /\bmkdtemp\s*\(/;
   const stripLineComment = (line) => {
     const at = line.indexOf('//');
     return at === -1 ? line : line.slice(0, at);
   };
-  // TEST-D-03：合法的两步写法（mkdtemp 一行、下一行 const tracked = tmpCleanup.track(dir)）也要认。
-  const TRACK_WINDOW = 2;
-  const untracked = [];
-  let scannedCalls = 0;
+  // TB-02 之后口径收紧：测试里的 mkdtemp 全部经 tests/tmp-cleanup.js 的 mkTmp / mkTmpSync，
+  // 任何测试文件再直接调 mkdtemp 都算回潮（以前是「必须紧跟 track」的两步写法）。
+  const offenders = [];
   for (const full of files) {
     const name = path.relative(testsRoot, full);
-    const source = require('node:fs').readFileSync(full, 'utf8');
-    const lines = source.split('\n');
-    let fileCalls = 0;
+    // 闸门自身要写 mkdtemp 正则字面量：跳过本文件（其余文件一律不许出现直接调用）。
+    if (name === 'wp38-hygiene.test.js') continue;
+    const lines = require('node:fs').readFileSync(full, 'utf8').split('\n');
     for (let index = 0; index < lines.length; index += 1) {
-      const line = stripLineComment(lines[index]);
-      if (!callRe.test(line)) continue;
-      fileCalls += 1;
-      scannedCalls += 1;
-      const window = line + '\n' + lines
-        .slice(index + 1, index + 1 + TRACK_WINDOW)
-        .map(stripLineComment)
-        .join('\n');
-      if (!window.includes('tmpCleanup.track(')) untracked.push(`${name}:${index + 1}`);
-    }
-    if (fileCalls > 0) {
-      assert.match(source, /require\('[^']*tmp-cleanup'\)/, `${name} 用了 mkdtemp 但没 require tmp-cleanup`);
+      if (/\bmkdtemp(Sync)?\s*\(/.test(stripLineComment(lines[index]))) offenders.push(`${name}:${index + 1}`);
     }
   }
-  assert.ok(scannedCalls >= 50, `闸门必须真的扫到 mkdtemp 调用（实际 ${scannedCalls}）`);
-  assert.deepEqual(untracked, [], '这些 mkdtemp 没登记 tmp-cleanup.track（退出时不会回收）：\n' + untracked.join('\n'));
+  assert.deepEqual(
+    offenders,
+    [],
+    '这些位置直接调了 mkdtemp（临时目录只许经 tests/tmp-cleanup.js 的 mkTmp / mkTmpSync）：\n' + offenders.join('\n')
+  );
+  // 共享 helper 本体：唯一实现 + 两种形态（异步 / 同步）+ 都登记回收。
+  const shared = require('node:fs').readFileSync(path.join(testsRoot, 'tmp-cleanup.js'), 'utf8');
+  assert.equal((shared.match(/\.mkdtemp(Sync)?\s*\(/g) || []).length, 2, 'tmp-cleanup.js 里应只有 mkTmp / mkTmpSync 两处 mkdtemp');
+  assert.match(shared, /async function mkTmp\(/, 'tmp-cleanup.js 要导出共享的 mkTmp');
+  assert.match(shared, /function mkTmpSync\(/, 'tmp-cleanup.js 要导出共享的 mkTmpSync');
+  assert.match(shared, /module\.exports = \{ track, mkTmp, mkTmpSync \}/, '两个 helper 都要导出');
+  // 用武之地：仓库里确实有大量文件走共享 helper（不是把调用点全删光的假绿）。
+  let using = 0;
+  for (const full of files) {
+    const source = require('node:fs').readFileSync(full, 'utf8');
+    if (/tmpCleanup\.(mkTmp|mkTmpSync)\(/.test(source)) using += 1;
+  }
+  assert.ok(using >= 40, `用共享 helper 的测试文件太少（${using}），可能没迁移完`);
 });

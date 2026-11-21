@@ -26,9 +26,8 @@ const MAIN_SRC = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-function tempDir(prefix = 'cw-bench-test-') {
-  return tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js（同步版 mkTmpSync）。
+const tempDir = (prefix = 'cw-bench-test-') => tmpCleanup.mkTmpSync(prefix);
 
 function smallOpts(overrides = {}) {
   return {

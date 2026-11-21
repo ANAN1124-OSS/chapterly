@@ -125,9 +125,8 @@ function textsOf() {
   ];
 }
 
-function mkTmp(prefix) {
-  return fsp.mkdtemp(path.join(os.tmpdir(), prefix)).then((dir) => tmpCleanup.track(dir));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js（不再本地复制 mkdtemp + track）。
+const mkTmp = (prefix = 'cw-export-stream-') => tmpCleanup.mkTmp(prefix);
 
 // ---------- R1 ----------
 

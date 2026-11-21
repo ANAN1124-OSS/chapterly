@@ -24,9 +24,8 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp(prefix = 'cw-wp40-') {
-  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-wp40-') => tmpCleanup.mkTmp(prefix);
 
 // ---------- X6：自动机缓存等值兜底 ----------
 

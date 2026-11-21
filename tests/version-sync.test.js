@@ -7,7 +7,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const tmpCleanup = require('./tmp-cleanup');
@@ -152,7 +151,7 @@ function guaranteeSampleReadme() {
 }
 
 function makeGuaranteeRoot() {
-  const root = tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-version-sync-')));
+  const root = tmpCleanup.mkTmpSync('cw-version-sync-');
   fs.mkdirSync(path.join(root, 'core'));
   fs.writeFileSync(path.join(root, 'core', 'one.js'), 'function one() {}\nconst ONE_FLAG = true;\n');
   fs.writeFileSync(path.join(root, 'core', 'two.js'), 'function two() {}\nconst TWO_FLAG = true;\n');
@@ -199,7 +198,7 @@ test('#26 M1/V309：保证清单每条都要有代码锚点，且锚点真的落
 });
 
 test('#26 M1：E2E 组文件数量 / 编号与 README 两处描述一致', () => {
-  const root = tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-e2e-groups-')));
+  const root = tmpCleanup.mkTmpSync('cw-e2e-groups-');
   const dir = path.join(root, 'scripts', 'e2e', 'groups');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, '00-a.js'), '');

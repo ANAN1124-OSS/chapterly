@@ -15,9 +15,8 @@ const exporter = require('../core/exporter');
 const atomic = require('../core/atomic');
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-chapter-rescue-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-chapter-rescue-') => tmpCleanup.mkTmp(prefix);
 
 function makeHost(options = {}) {
   const channels = new Map();

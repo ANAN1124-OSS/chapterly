@@ -13,7 +13,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const ipcPaths = require('../core/ipc-paths');
@@ -24,9 +23,8 @@ const tmpCleanup = require('./tmp-cleanup');
 // Windows 用 junction（不需要管理员权限）；其它平台退化成普通目录符号链接，只为本地可跑。
 const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
 
-async function mkTmp(prefix) {
-  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix) => tmpCleanup.mkTmp(prefix);
 
 // 先删联接本身、再删临时根目录：绝不 recursive 地穿过联接去动目标。
 async function cleanup(base, links = []) {

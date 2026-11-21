@@ -10,7 +10,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 
 const wordlist = require('../core/wordlist');
@@ -22,9 +21,8 @@ const tmpCleanup = require('./tmp-cleanup');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-wordlist-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-wordlist-') => tmpCleanup.mkTmp(prefix);
 
 // 一份合成读取器：错误码 / 文案 / 字段名全部可注入，用来证明共享核心不是写死敏感词那套。
 function createDemoReader(overrides = {}) {

@@ -17,6 +17,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const tmpCleanup = require('./tmp-cleanup');
 const { spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
@@ -117,8 +118,7 @@ test('已纳入门禁：package.json 登记 npm run lint，脚本对当前仓库
 // 绝不允许输出「0 个 js / 0 ERROR（通过）」的假绿。
 test('TOOL-A01：扫描面残缺（目录缺失 / 下限不足）→ 明确报错，不许静默通过', () => {
   const lintGate = require('../scripts/lint-gate.js');
-  const os = require('node:os');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-lint-scan-'));
+  const tmp = tmpCleanup.mkTmpSync('cw-lint-scan-');
   try {
     assert.throws(() => lintGate.collectFiles(tmp), /扫描目录读不了/, '缺 core 等扫描目录要报错');
     // 目录齐全但没有任何 js（main.js / preload.js 也缺）→ 先报缺文件；补上空文件后报下限不足

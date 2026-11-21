@@ -12,7 +12,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const previewCacheLib = require('../core/preview-cache');
@@ -24,9 +23,8 @@ const tmpCleanup = require('./tmp-cleanup');
 const FORMAT_OPTIONS = { indent: '2', blankLines: 'keep', trimTrailing: true, normalizePunct: true };
 const NOOP_FORMAT_OPTIONS = { indent: 'none', blankLines: 'keep', trimTrailing: false, normalizePunct: false };
 
-async function mkTmp(prefix = 'cw-preview-cache-') {
-  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-preview-cache-') => tmpCleanup.mkTmp(prefix);
 
 // 造一本 count 章的书；textFor(index) 决定每章正文。
 async function makeBook(textFor, count = 5) {

@@ -17,7 +17,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -118,7 +117,7 @@ test('跨实现一致：fragments 的 chars 跟 core 同数（清洗只动空白
 });
 
 test('跨实现一致：search-index 建索引时写进 chapters[].chars 的值跟 core 同数', async () => {
-  const base = tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-charcount-')));
+  const base = await tmpCleanup.mkTmp('cw-charcount-');
   try {
     const booksRoot = path.join(base, 'books');
     const bookPath = path.join(booksRoot, '口径书');

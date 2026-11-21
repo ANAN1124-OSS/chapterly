@@ -7,16 +7,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const common = require('../core/common');
 const { createConfigStore, DEFAULTS } = require('../core/config');
 const { writeJsonAtomic } = require('../core/atomic');
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp(prefix) {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix) => tmpCleanup.mkTmp(prefix);
 
 test('M7：config.get() 返回深拷贝——嵌套对象逐个不共享引用', async () => {
   const dir = await mkTmp('cw-config-deep-');

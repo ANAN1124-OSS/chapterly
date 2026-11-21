@@ -8,7 +8,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const importer = require('../core/importer');
@@ -18,9 +17,8 @@ const tmpCleanup = require('./tmp-cleanup');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fsSync.readFileSync(path.join(ROOT, rel), 'utf8');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-import-conc-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-import-conc-') => tmpCleanup.mkTmp(prefix);
 
 // 造一个「一本书的章节目录」来源：文件夹名可以同名（模拟两个窗口各自选到同名文件夹）
 async function makeChapterSource(parent, folderName, files) {

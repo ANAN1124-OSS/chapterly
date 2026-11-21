@@ -13,7 +13,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const atomic = require('../core/atomic');
 
@@ -22,9 +21,8 @@ const NON_RETRY_CODES = ['ENOENT', 'ENOSPC', 'EXDEV', 'EISDIR'];
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-atomic-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-atomic-') => tmpCleanup.mkTmp(prefix);
 
 // 临时替换 fs/promises 的 rename（atomic.js 调用时查表，所以替换模块对象上的属性就能生效）。
 // 返回 restore()，**必须**放在 finally 里调用，否则会把后面所有用例的写盘弄坏。

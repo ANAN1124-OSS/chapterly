@@ -10,7 +10,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 
 const tmpCleanup = require('./tmp-cleanup');
@@ -24,9 +23,8 @@ const between = (source, start, end) => {
   return source.slice(at, to > at ? to : undefined);
 };
 
-async function mkTmp(prefix = 'cw-wp29-') {
-  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-wp29-') => tmpCleanup.mkTmp(prefix);
 
 // ---------------------------------------------------------------- B8
 

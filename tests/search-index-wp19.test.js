@@ -27,7 +27,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 
 const search = require('../core/search-index');
@@ -37,9 +36,8 @@ const tmpCleanup = require('./tmp-cleanup');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => require('node:fs').readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 
-async function mkTmp(prefix = 'cw-wp19-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-wp19-') => tmpCleanup.mkTmp(prefix);
 
 function pad3(n) {
   return String(n).padStart(3, '0');

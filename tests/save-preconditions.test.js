@@ -13,7 +13,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const fss = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const storage = require('../core/storage');
@@ -29,9 +28,8 @@ const RENDERER_SOURCE = read('renderer/renderer.js');
 // WP17 A3 第二刀：保存热路径整段迁到 save-chain-ui.js；saveCurrent 的源码闸门改读模块（同一条断言）。
 const SAVE_CHAIN_SOURCE = read('renderer/save-chain-ui.js');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-save-precond-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-save-precond-') => tmpCleanup.mkTmp(prefix);
 
 // 与生产同形的演练书：书文件夹名含空格、一章正文已落盘。
 async function makeBook(root, title = '保存 前置 空格') {

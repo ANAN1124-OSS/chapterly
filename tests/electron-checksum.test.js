@@ -6,7 +6,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const fss = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -19,9 +18,8 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fss.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
 
-async function mkTmp(prefix = 'cw-electron-checksum-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-electron-checksum-') => tmpCleanup.mkTmp(prefix);
 
 test('parseShasums：认官方清单格式（两空格 / * 标记 / CRLF），坏行与同名冲突如实登记', () => {
   const text = [

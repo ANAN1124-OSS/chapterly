@@ -19,7 +19,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const chaptersLib = require('../core/chapters');
@@ -33,9 +32,8 @@ const CHAPTER_OPS_SOURCE = readSource(path.join('renderer', 'chapter-ops-ui.js')
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-destructive-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-destructive-') => tmpCleanup.mkTmp(prefix);
 
 // 只让「目标路径匹配」的 rename 失败，其它 rename 走真实实现；返回 restore()，必须放 finally。
 function patchRename(select) {

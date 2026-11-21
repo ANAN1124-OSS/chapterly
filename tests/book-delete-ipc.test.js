@@ -4,7 +4,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 const pathUtils = require('../core/path-utils');
@@ -12,9 +11,8 @@ const bookIpc = require('../ipc/book');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-book-delete-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-book-delete-') => tmpCleanup.mkTmp(prefix);
 
 // 装配真实的 ipc/book.js，只把 Electron / 窗口 / 配置这些宿主替换成最小桩：
 // handle / handleBook 收到的频道函数按名字存进 Map，测试直接调 book:delete。

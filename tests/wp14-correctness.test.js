@@ -16,7 +16,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 
 const proofread = require('../core/proofread');
@@ -33,9 +32,8 @@ const tmpCleanup = require('./tmp-cleanup');
 const ROOT = path.join(__dirname, '..');
 const readUtf8 = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 
-async function mkTmp(prefix) {
-  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix) => tmpCleanup.mkTmp(prefix);
 
 // ---------- C6 重复用词窗口 ----------
 

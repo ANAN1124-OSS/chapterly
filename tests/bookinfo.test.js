@@ -1,16 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const bookInfo = require('../core/bookinfo');
 const storage = require('../core/storage');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp(prefix = 'cw-bookinfo-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-bookinfo-') => tmpCleanup.mkTmp(prefix);
 
 test('书籍信息：作者单行化、去首尾空白、限长；非字符串当空', () => {
   assert.equal(bookInfo.sanitizeAuthor('  张三  '), '张三');

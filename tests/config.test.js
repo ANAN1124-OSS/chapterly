@@ -2,7 +2,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { createConfigStore, sanitize, sanitizeLastBook, DEFAULTS, BOOK_DISPLAY_MAX } = require('../core/config');
 const { writeJsonAtomic } = require('../core/atomic');
@@ -16,9 +15,8 @@ const MAIN_SOURCE = fsSync
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-config-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-config-') => tmpCleanup.mkTmp(prefix);
 
 test('配置默认值：书架在「文档\\我的小说」，窗口 1200x760', async () => {
   const dir = await mkTmp();

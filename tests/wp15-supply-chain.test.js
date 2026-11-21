@@ -8,7 +8,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const fss = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -30,9 +29,8 @@ function supplyModule() {
   }
 }
 
-async function mkTmp(prefix = 'cw-supply-chain-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-supply-chain-') => tmpCleanup.mkTmp(prefix);
 
 function electronVersions() {
   const installed = JSON.parse(read('node_modules/electron/package.json')).version;

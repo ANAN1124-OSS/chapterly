@@ -41,4 +41,14 @@ function track(dir) {
   return dir;
 }
 
-module.exports = { track };
+// TB-02：临时目录的唯一入口。测试文件以前各自复制一份「mkdtemp + track」，49 份实现 / 签名不一；
+// 现在统一 `mkTmp(prefix)` / `mkTmpSync(prefix)`（默认前缀仍可由调用方给），并保证登记回收。
+async function mkTmp(prefix = 'cw-test-') {
+  return track(await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix)));
+}
+
+function mkTmpSync(prefix = 'cw-test-') {
+  return track(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
+module.exports = { track, mkTmp, mkTmpSync };

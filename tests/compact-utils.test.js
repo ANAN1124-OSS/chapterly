@@ -16,7 +16,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 const tmpCleanup = require('./tmp-cleanup');
 
 const common = require('../core/common');
@@ -250,7 +249,7 @@ test('A9 闸门：「同一路径 / 同一目录」判定统一走 core/path-uti
   assert.ok(read('core/ipc-paths.js').includes('pathUtils.pathKey(path.dirname(target))'), 'assertBookPath 应走 pathKey');
   assert.ok(read('ipc/book.js').includes('pathUtils.pathKey(path.dirname(target))'), 'book:delete 应走 pathKey');
   // 行为不变：大小写 / 末尾分隔符 / 相对写法都算同一个目录，越界照旧拒绝
-  const root = path.join(tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-compact-utils-'))), '书架');
+  const root = path.join(tmpCleanup.mkTmpSync('cw-compact-utils-'), '书架');
   const book = path.join(root, '某本书');
   assert.equal(ipcPaths.assertBookPath(book, root), book);
   assert.equal(ipcPaths.assertBookPath(book + path.sep, root), book);

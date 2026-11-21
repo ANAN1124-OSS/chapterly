@@ -29,9 +29,8 @@ const atomic = require('../core/atomic');
 const exportIpc = require('../ipc/export');
 const tmpCleanup = require('./tmp-cleanup');
 
-async function makeTmpDir(prefix) {
-  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js（不再本地复制 mkdtemp + track）。
+const makeTmpDir = (prefix = 'cw-export-order-') => tmpCleanup.mkTmp(prefix);
 
 // 真实 ipc/export.js 的 host：只替换「可观察的边界」（对话框、时钟、剪贴板、原子写），
 // 存储 / 格式 / 范围解析全部走真实 core（与 WP13 R7/R8 同一套装配口径）。

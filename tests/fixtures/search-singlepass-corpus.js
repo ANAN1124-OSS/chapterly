@@ -2,7 +2,6 @@
 // P3（V5 单遍扫描）：等价语料的共享构造器。
 // 单遍改造前后都跑同一份语料，导出的 JSON 必须逐字一致（tests/search-index-singlepass.test.js）。
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const search = require('../../core/search-index');
 const tmpCleanup = require('../tmp-cleanup');
@@ -11,9 +10,8 @@ function pad3(n) {
   return String(n).padStart(3, '0');
 }
 
-async function mkTmp(prefix = 'cw-singlepass-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-singlepass-') => tmpCleanup.mkTmp(prefix);
 
 async function makeBook(booksRoot, folder, title, chapters) {
   const bookPath = path.join(booksRoot, folder);

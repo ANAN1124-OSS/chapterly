@@ -25,9 +25,8 @@ const exportIpc = require('../ipc/export');
 const { readZip } = require('../scripts/export-check');
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp(prefix = 'cw-wp18-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-wp18-') => tmpCleanup.mkTmp(prefix);
 
 function readSource(rel) {
   return require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');

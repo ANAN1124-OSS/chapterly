@@ -15,7 +15,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const fss = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 
@@ -28,9 +27,8 @@ const SAVE_CHAIN_SOURCE = fss.readFileSync(path.join(ROOT, 'renderer', 'save-cha
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-partial-save-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-partial-save-') => tmpCleanup.mkTmp(prefix);
 
 function channelBody(source, channel) {
   const start = source.indexOf(`handleBook('${channel}'`);

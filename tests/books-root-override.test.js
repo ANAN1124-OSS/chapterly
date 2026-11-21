@@ -12,7 +12,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const { createConfigStore, withBooksRootOverride, DEFAULTS } = require('../core/config');
 
@@ -49,7 +48,7 @@ test('行为：--books-root 有值时只覆盖 booksRoot，不改原对象、不
 });
 
 test('行为：覆盖只影响进程内视图，config.json 里存的书架目录不变', async () => {
-  const dir = tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-books-root-override-')));
+  const dir = await tmpCleanup.mkTmp('cw-books-root-override-');
   const store = createConfigStore(dir);
   const stored = await store.get();
   assert.equal(stored.booksRoot, DEFAULTS.booksRoot, '配置仓库按默认书架目录加载');

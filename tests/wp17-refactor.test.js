@@ -18,7 +18,6 @@ const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 
@@ -78,9 +77,8 @@ function count(haystack, needle) {
   return haystack.split(needle).length - 1;
 }
 
-async function mkTmp() {
-  return tmpCleanup.track(await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-wp17-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-wp17-') => tmpCleanup.mkTmp(prefix);
 
 function manyLines(prefix, amount) {
   return Array.from({ length: amount }, (_value, index) => prefix + index).join('\n') + '\n';
@@ -412,7 +410,7 @@ test('R9 M-N1：index.html 装配块由清单生成（--write 幂等；--check �
   assert.equal(sync.applyBlock(html, sync.buildBlock(manifest, eol)), html, '--write 必须幂等');
 
   // ② 夹具：手改块 / 块外插脚本 / 标记缺失都要红；--write 能修回
-  const dir = tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-assembly-')));
+  const dir = tmpCleanup.mkTmpSync('cw-assembly-');
   fs.mkdirSync(path.join(dir, 'renderer'));
   fs.copyFileSync(path.join(ROOT, 'renderer', 'assembly-manifest.js'), path.join(dir, 'renderer', 'assembly-manifest.js'));
   fs.copyFileSync(path.join(ROOT, 'renderer', 'index.html'), path.join(dir, 'renderer', 'index.html'));

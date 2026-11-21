@@ -13,7 +13,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const wiring = require('../scripts/wiring-check.js');
@@ -25,7 +24,7 @@ const SCRIPT = path.join(ROOT, 'scripts', 'wiring-check.js');
 // 临时树：只复制接线检查要读的四个来源（renderer/、ipc/、main.js、preload.js），
 // 不动真实仓库；变异都在副本上做，跑完由 tmp-cleanup 统一回收。
 function makeFixture() {
-  const dir = tmpCleanup.track(fs.mkdtempSync(path.join(os.tmpdir(), 'cw-wiring-')));
+  const dir = tmpCleanup.mkTmpSync('cw-wiring-');
   fs.cpSync(path.join(ROOT, 'renderer'), path.join(dir, 'renderer'), { recursive: true });
   fs.cpSync(path.join(ROOT, 'core'), path.join(dir, 'core'), { recursive: true });
   fs.cpSync(path.join(ROOT, 'ipc'), path.join(dir, 'ipc'), { recursive: true });

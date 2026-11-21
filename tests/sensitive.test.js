@@ -1,16 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const sensitive = require('../core/sensitive');
 const chapters = require('../core/chapters');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-sensitive-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-sensitive-') => tmpCleanup.mkTmp(prefix);
 
 test('敏感词：parseWordList 每行一个词，去空白 / 空行 / 重复，超长行跳过', () => {
   const parsed = sensitive.parseWordList(

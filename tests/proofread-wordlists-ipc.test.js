@@ -5,7 +5,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fsPromises = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const pathUtils = require('../core/path-utils');
 const glossary = require('../core/glossary');
@@ -32,9 +31,8 @@ function sliceFrom(source, startMarker) {
 
 const matchesOf = (source, pattern) => [...source.matchAll(pattern)].map((m) => m[1]);
 
-async function mkTmp() {
-  return tmpCleanup.track(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'cw-wordlists-d2-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-wordlists-d2-') => tmpCleanup.mkTmp(prefix);
 
 test('行为：单份旧配置（proofreadWordsPath）保持原样单表读取，公开信息是旧形状（V60）', async () => {
   const dir = await mkTmp();

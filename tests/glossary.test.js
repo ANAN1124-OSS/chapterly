@@ -1,16 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const glossary = require('../core/glossary');
 const { WORDLIST_MAX } = require('../core/config');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp() {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), 'cw-glossary-')));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-glossary-') => tmpCleanup.mkTmp(prefix);
 
 test('校对词表：每行一个词，可选「错词 → 建议」，三种箭头都认', () => {
   const parsed = glossary.parseGlossary(
