@@ -1070,3 +1070,21 @@ test('删除备份（B6）：绝不自动删 —— 列历史 / 扫描备份不�
     '删除备份只有一个显式 IPC 入口'
   );
 });
+
+// CSTO-B-03：预览按字节截断时，截断点必须回退到 UTF-8 字符边界 ——
+// 否则以 3 字节汉字为主的中文正文会在预览结尾吐一个 U+FFFD，让人误以为备份本身坏了。
+test('CSTO-B-03：字节截断落在多字节字符中间时回退到字符边界，预览结尾不出 U+FFFD', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '书');
+  await fs.mkdir(bookPath, { recursive: true });
+  const charBytes = Buffer.byteLength('中', 'utf8'); // 3
+  const fullChars = Math.floor(history.PREVIEW_MAX_BYTES / charBytes);
+  // 至少多一个汉字：截断点必然落在这个汉字的中间（512 KB 不是 3 的整数倍）
+  const bigText = '中'.repeat(fullChars + 2);
+  await writeBackupDir(bookPath, '整理备份-2026-10-31-210000', { '001-mb.txt': bigText });
+  const preview = await history.readHistoryFile(bookPath, 'dir:整理备份-2026-10-31-210000', '001-mb.txt');
+  assert.equal(preview.truncated, true);
+  assert.equal(preview.text.includes('\uFFFD'), false, '截断处不许留替换字符');
+  assert.equal(/^中+$/.test(preview.text), true, '预览只含完整汉字');
+  assert.equal(preview.text.length, fullChars, '只去掉残尾（不足一个字符的那几个字节），不额外丢字');
+});

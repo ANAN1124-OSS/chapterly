@@ -546,6 +546,31 @@ function resolveHistoryPath(bookPath, groupId, fileName) {
   return path.join(group.dirPath, name);
 }
 
+// CSTO-B-03（审计低批）：预览按字节截断，截断点可能落在 UTF-8 多字节序列中间。
+// 中文正文以 3 字节汉字为主，边界落在字符中间的概率约 2/3，直接 toString('utf8') 会在预览结尾
+// 吐一个 U+FFFD 伪像，让作者以为备份本身坏了。这里把截断点向前回退到合法的字符边界：
+// 从末尾数连续的后继字节（10xxxxxx），再看它前面的前导字节要求几个字节；不够就整段尾巴去掉。
+// 非法前导（11111xxx 等）原样交回 —— 那是备份内容本身的问题，不该由预览伪装成正常。
+function trimIncompleteUtf8(buffer) {
+  const end = buffer.length;
+  let lead = end - 1;
+  let continuation = 0;
+  while (lead >= 0 && continuation < 3 && (buffer[lead] & 0xc0) === 0x80) {
+    lead -= 1;
+    continuation += 1;
+  }
+  if (lead < 0) return buffer; // 整段都是后继字节：不是本函数能判的，原样交回
+  const first = buffer[lead];
+  let need = 0;
+  if ((first & 0x80) === 0x00) need = 1;
+  else if ((first & 0xe0) === 0xc0) need = 2;
+  else if ((first & 0xf0) === 0xe0) need = 3;
+  else if ((first & 0xf8) === 0xf0) need = 4;
+  else return buffer;
+  const have = end - lead;
+  return have < need ? buffer.subarray(0, lead) : buffer;
+}
+
 // 预览一个备份文件（只读）。大文件只读开头，返回值里用 truncated 标出来。
 async function readHistoryFile(bookPath, groupId, fileName) {
   const group = resolveGroup(bookPath, groupId);
@@ -565,7 +590,7 @@ async function readHistoryFile(bookPath, groupId, fileName) {
     try {
       const buffer = Buffer.alloc(readBytes);
       const { bytesRead } = await handle.read(buffer, 0, readBytes, 0);
-      text = stripBom(buffer.subarray(0, bytesRead).toString('utf8'));
+      text = stripBom(trimIncompleteUtf8(buffer.subarray(0, bytesRead)).toString('utf8'));
     } finally {
       await handle.close();
     }
