@@ -44,20 +44,27 @@ test('静态闸门：主进程用 session.dirty + 最近保存回执交叉判定
   assert.match(dirtySrc, /if \(!next\) session\.dirtyAt = 0;/, '回到干净要清零');
   // close-ready：allowed 之外还要看 dirty / 回执
   const closeSrc = between(MAIN, "ipcMain.on('app:close-ready'", '\n  });');
-  assert.match(closeSrc, /const savedAfterDirty = session\.lastSaveAt > 0 && session\.lastSaveAt > session\.dirtyAt;/);
-  assert.match(closeSrc, /const okToClose = Boolean\(allowed\) && \(!session\.dirty \|\| savedAfterDirty\);/);
-  assert.match(closeSrc, /code: 'CLOSE_DIRTY'/, '被拦下要留一条日志，方便排查「关不掉窗」');
+  // CGRD-03：主进程这一处只调 close-guard.js 的唯一判据，不再内联复算比较表达式。
+  assert.match(closeSrc, /const decision = closeGuard\.closeReleaseDecision\(\{/, '放行判定必须走唯一判据');
+  assert.match(closeSrc, /const okToClose = decision\.okToClose;/, 'okToClose 从判据结果取');
+  assert.equal(
+    /const savedAfterDirty = session\.lastSaveAt > 0/.test(closeSrc),
+    false,
+    'main.js 不许再内联一份 savedAfterDirty（规则只写一份）'
+  );
+  assert.equal(/const okToClose = Boolean\(allowed\)/.test(closeSrc), false, 'main.js 不许再内联 okToClose 复算');
+  assert.match(closeSrc, /decision\.code === 'CLOSE_DIRTY'/, '被拦下要留一条日志，方便排查「关不掉窗」');
   // e2eCloseReady 记录的必须是主进程判定后的结果（E2E 用它断言，语义不能退化成 allowed）
   assert.match(closeSrc, /session\.e2eCloseReady = okToClose;/);
   assert.match(closeSrc, /e2eLastCloseReady = okToClose;/);
 });
 
 test('静态闸门 + 时序：同毫秒的保存回执不放行关窗（N3：宁可多拦一次）', () => {
+  // CGRD-03：比较表达式只有 core/close-guard.js 一份；main.js 只调判据。
   const closeSrc = between(MAIN, "ipcMain.on('app:close-ready'", '\n  });');
-  const m = closeSrc.match(
-    /const savedAfterDirty = session\.lastSaveAt > 0 && session\.lastSaveAt (>=|>) session\.dirtyAt;/
-  );
-  assert.ok(m, '找不到关窗交叉判定的比较表达式');
+  const m = read('core/close-guard.js').match(/const savedAfterDirty = lastSaveAt > 0 && lastSaveAt (>=|>) dirtyAt;/);
+  assert.ok(m, '找不到关窗交叉判定的比较表达式（close-guard.js）');
+  assert.match(closeSrc, /closeGuard\.closeReleaseDecision\(/, 'main.js 必须走同一判据');
   assert.equal(m[1], '>', '必须严格晚于：同毫秒时宁可多拦一次，不能按「可能丢几毫秒编辑」放行');
   // 用源码里的运算符复算三种时序（不是把语义再抄一遍）：同毫秒 → 拦；确实晚于 → 放行；无回执 → 拦。
   const decide = (lastSaveAt, dirtyAt) => lastSaveAt > 0 && (m[1] === '>' ? lastSaveAt > dirtyAt : lastSaveAt >= dirtyAt);

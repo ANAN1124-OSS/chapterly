@@ -1253,9 +1253,16 @@ function setupCloseIpc() {
     // 这几毫秒内的编辑；改成 > 把方向翻成「宁可多拦一次」——多拦只影响这一次关窗（再点一次关闭即可），
     // 而正常「保存成功后关闭」路径里渲染层会先把 app:dirty(false) 报上来（session.dirty 为 false），
     // 不依赖这条回执，所以不受影响。
-    const savedAfterDirty = session.lastSaveAt > 0 && session.lastSaveAt > session.dirtyAt;
-    const okToClose = Boolean(allowed) && (!session.dirty || savedAfterDirty);
-    if (Boolean(allowed) && !okToClose) {
+    // CGRD-03：放行判定只走 core/close-guard.js 的同一份规则（closeReleaseDecision），这里不再内联复算——
+    // 否则日后调 dirtyAt / 保存回执的边界只改 close-guard.js 时，第一道判定不随动。
+    const decision = closeGuard.closeReleaseDecision({
+      allowed,
+      dirty: session.dirty,
+      lastSaveAt: session.lastSaveAt,
+      dirtyAt: session.dirtyAt
+    });
+    const okToClose = decision.okToClose;
+    if (decision.code === 'CLOSE_DIRTY') {
       logError(
         'close-blocked',
         {
