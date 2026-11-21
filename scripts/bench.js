@@ -30,8 +30,8 @@ const os = require('node:os');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
 
+const electronRun = require('./electron-run');
 const { atomicWriteFile } = require('../core/atomic');
 const { clampInt } = require('../core/common');
 const storage = require('../core/storage');
@@ -372,11 +372,7 @@ function machineInfo() {
 function spawnBench({ base, fixtures, plan, opts }) {
   const userData = path.join(base, 'userdata');
   fs.mkdirSync(userData, { recursive: true });
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
-  delete env.ELECTRON_NO_ATTACH_CONSOLE;
   const args = [
-    path.join(ROOT, 'scripts', 'start.js'),
     '--bench',
     `--user-data=${userData}`,
     `--books-root=${fixtures.booksRoot}`,
@@ -389,35 +385,24 @@ function spawnBench({ base, fixtures, plan, opts }) {
     `--bench-long-chars=${fixtures.longChars}`,
     `--bench-search-query=${plan.shelfQuery}`
   ];
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, args, { cwd: ROOT, env });
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill();
-      } catch {
-        /* 忽略 */
-      }
-    }, opts.timeout);
-    timer.unref();
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
-    });
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({ code: 1, stdout, stderr: `${stderr}\n${err && err.message}`, timedOut });
-    });
-  });
+  // TOOL-BX-01：直接跑真正的 Electron（不经 scripts/start.js 包装层），超时由 electron-run
+  // 杀掉整棵进程树——否则孤儿持有的 stdout 管道让 close 永不触发，超时被吞成假绿。
+  return electronRun.runElectron(args, { timeout: opts.timeout, cwd: ROOT });
+}
+
+// TOOL-BX-02：marker 只做 JSON.parse 不够——ok 不是 true、scenarios 为空、某场景 0 采样
+// 都是「跑起来了但没量到东西」，必须判失败，不能产出假绿报告。返回 null = 结构有效，
+// 否则返回一句人能看懂的原因。
+function resultProblem(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return 'marker 不是对象';
+  if (result.ok !== true) return `场景失败：${result.error || '未知错误'}`;
+  if (!Array.isArray(result.scenarios) || result.scenarios.length === 0) return 'scenarios 为空';
+  for (const scenario of result.scenarios) {
+    if (!scenario || !Array.isArray(scenario.samples) || scenario.samples.length === 0) {
+      return `场景「${(scenario && scenario.name) || '未命名'}」没有采样`;
+    }
+  }
+  return null;
 }
 
 function pickResult(stdout) {
@@ -462,17 +447,36 @@ async function main(argv = process.argv.slice(2)) {
   console.log(`[bench] 夹具建好（${buildMs} ms），启动 Electron 跑场景…`);
 
   const run = await spawnBench({ base, fixtures, plan, opts });
+  // TOOL-BX-01 / BX-04：超时与启动失败先判，绝不把「超时之后才到的 marker」当成功样本；
+  // 子进程非零退出同样按失败处理（退出码纪律不能断在包装层）。
+  if (run.timedOut) {
+    console.error(`[bench] 超时（${opts.timeout} ms）：已终止整棵 Electron 进程树。`);
+    console.error(tail(run.stdout));
+    console.error(tail(run.stderr));
+    return 1;
+  }
+  if (run.spawnError) {
+    console.error(`[bench] 启动 Electron 失败：${(run.spawnError && run.spawnError.message) || run.spawnError}`);
+    console.error(tail(run.stderr));
+    return 1;
+  }
   const result = pickResult(run.stdout);
   if (!result) {
     console.error('[bench] 没有拿到结果，应用可能启动失败。');
     console.error(tail(run.stdout));
     console.error(tail(run.stderr));
-    if (run.timedOut) console.error(`[bench] 超时（${opts.timeout} ms）`);
+    if (typeof run.code === 'number' && run.code !== 0) console.error(`[bench] 子进程退出码 ${run.code}`);
     return 1;
   }
-  if (!result.ok) {
-    console.error(`[bench] 场景失败：${result.error || '未知错误'}`);
+  const problem = resultProblem(result);
+  if (problem) {
+    console.error(`[bench] 结果不可用：${problem}`);
     console.error(tail(run.stdout));
+    console.error(tail(run.stderr));
+    return 1;
+  }
+  if (typeof run.code === 'number' && run.code !== 0) {
+    console.error(`[bench] 子进程退出码 ${run.code}，本次结果判失败（不产出报告）。`);
     console.error(tail(run.stderr));
     return 1;
   }
@@ -542,5 +546,6 @@ module.exports = {
   machineInfo,
   reportPath,
   pickResult,
+  resultProblem,
   main
 };

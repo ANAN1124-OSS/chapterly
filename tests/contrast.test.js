@@ -322,6 +322,13 @@ test('审计脚本：临时目录闸门 / 参数 / 结果解析 / 打表', () =>
   assert.equal(contrast.pickResult('nothing'), null);
   assert.equal(contrast.pickResult('CONTRAST_RESULT not-json'), null);
 
+  // TOOL-BX-02：marker 能 parse 不等于结果可用——0 采样 / ok 非 true 都必须判失败（不许假绿）。
+  assert.equal(contrast.resultProblem({ ok: true, samples: [{ key: 'x' }] }), null);
+  assert.match(contrast.resultProblem({ ok: true, samples: [] }), /samples 为空/);
+  assert.match(contrast.resultProblem({ ok: true }), /samples 为空/);
+  assert.match(contrast.resultProblem({ ok: false, error: '采样炸了' }), /采样炸了/);
+  assert.match(contrast.resultProblem(null), /不是对象/);
+
   const report = {
     env: { windowSize: '1187×717', dpr: 2, visibility: 'visible' },
     fixtures: { booksRoot: 'D:\\Temp\\x' },

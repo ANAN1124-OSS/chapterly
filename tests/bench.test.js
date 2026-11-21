@@ -322,6 +322,15 @@ test('结果解析：从带噪声的 stdout 里挑 BENCH_RESULT，坏 JSON 返�
   assert.strictEqual(bench.pickResult(''), null);
 });
 
+test('TOOL-BX-02：结果结构校验——ok 非 true / 0 场景 / 0 采样都是假绿，不许产出报告', () => {
+  assert.strictEqual(bench.resultProblem({ ok: true, scenarios: [{ name: '书架', samples: [1] }] }), null);
+  assert.match(bench.resultProblem(null), /不是对象/);
+  assert.match(bench.resultProblem({ ok: true }), /scenarios 为空/);
+  assert.match(bench.resultProblem({ ok: true, scenarios: [] }), /scenarios 为空/);
+  assert.match(bench.resultProblem({ ok: true, scenarios: [{ name: '空转', samples: [] }] }), /没有采样/);
+  assert.match(bench.resultProblem({ ok: false, error: '场景炸了' }), /场景炸了/);
+});
+
 // ---------- 静态闸门 ----------
 
 test('静态闸门：脚本零运行时依赖，只 require node 内建或仓库内相对路径', () => {
