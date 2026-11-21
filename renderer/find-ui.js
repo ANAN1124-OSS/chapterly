@@ -17,6 +17,7 @@
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（state.find）/ IPC 白名单 / IPC 包装 / 提示
  *     recordFallbackWrite,                 // 审计残留修复 #39（V402）：兜底整串赋值后由渲染层统一记账 + 提示
  *     imeGuard,                            // 输入法组字守卫（ime-guard.js）：查找 / 替换两条 Enter 提交键的判据
+ *     backdropRegistry,                    // 可选（RPAN-A-02）：弹层清单唯一事实源；缺省时退回 find↔proofread 互关
  *     longOpLogic,                         // 长操作收尾判定（long-op-logic.js，WP-02/C2）：整本替换回执到达时书换没换
  *     find: {                               // 查找纯逻辑与编辑区
  *       findLogic,                          //   renderer/find-logic.js：计数 / 步进 / 高亮窗口 / 行号
@@ -83,6 +84,10 @@
     for (const key of ['askUnsaved', 'saveCurrent', 'openModal', 'registerUndo', 'refreshShelf', 'renderChapterList', 'reloadAfterPartialFailure', 'closeProofreadPanel', 'runReplaceOne', 'renderFindBookmarks', 'refreshFindBookmarks', 'refreshReplaceBackups']) {
       if (collab[key] === undefined || collab[key] === null) throw new TypeError('createFindUi 的 host.collab 缺少 ' + key);
     }
+    // RPAN-A-02（第五轮审计）：弹层清单的唯一事实源（backdrop-registry.js，17 层）。
+    // 可选成员：旧宿主 / 单测没有它时退回「只和校对面板成对互关」的旧口径。
+    const backdropRegistry =
+      host.backdropRegistry && typeof host.backdropRegistry.isBlocked === 'function' ? host.backdropRegistry : null;
     const { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput } = find;
     const { chapterTitle, switchChapter, loadChapterAt, currentChapterLabel, hideHeaderMenus } = nav;
     const { askUnsaved, saveCurrent, registerUndo, refreshShelf, renderChapterList, reloadAfterPartialFailure, closeProofreadPanel, runReplaceOne, renderFindBookmarks, refreshFindBookmarks, refreshReplaceBackups } = collab;
@@ -308,7 +313,19 @@
       return;
     }
     hideHeaderMenus();
-    if (!$('proofread-backdrop').classList.contains('hidden')) closeProofreadPanel();
+    // RPAN-A-02（第五轮审计）：键盘路径（Ctrl+F）以前完全不查弹层，查找面板能叠到任意已开
+    // 弹层上（鼠标路径被 .backdrop 挡住）——捕获 / 历史 / 设置等开着时按 Ctrl+F 会出现两层
+    // 遮罩、焦点归属混乱。这里与 capture-ui 接同一份 backdrop-registry 清单；「开查找先收
+    // 校对」是既有成对互关，保留，其余层一律提示后返回。
+    if (backdropRegistry) {
+      if (backdropRegistry.isOpen($, 'proofread')) closeProofreadPanel();
+      if (backdropRegistry.isBlocked($, { except: 'find' })) {
+        toast('先关闭当前弹窗，再打开查找替换', 'warn');
+        return;
+      }
+    } else if (!$('proofread-backdrop').classList.contains('hidden')) {
+      closeProofreadPanel();
+    }
     // 编辑器里选中了一段短文本时，直接带进查找框
     // V32（1.6.1 R7）：<textarea> 的选区不体现在 window.getSelection() 里（对 textarea 恒为空字符串），
     // 所以先读编辑器自身的 selectionStart / selectionEnd 取选区文本；编辑器没有选区（光标收起）时

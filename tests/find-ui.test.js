@@ -227,6 +227,8 @@ function build(options = {}) {
     imeGuard,
     longOpLogic,
     staleGuard,
+    // RPAN-A-02：可选 —— 弹层遮挡检查走同一份 backdrop-registry（旧宿主不传时退回旧口径）
+    backdropRegistry: options.backdropRegistry || null,
     find: {
       findLogic,
       editorEl,
@@ -536,6 +538,37 @@ test('openFindPanel：没书警告；有书 → 收菜单、关校对框、带�
   longSel.dom.map.get('find-query').value = '旧词';
   longSel.ui.openFindPanel();
   assert.equal(longSel.dom.map.get('find-query').value, '旧词');
+});
+
+// RPAN-A-02（第五轮审计）：Ctrl+F 走的是键盘路径，没有被 .backdrop 挡住 —— 旧实现只和校对
+// 面板成对互关，捕获 / 历史 / 设置等任一弹层开着都能把查找面板叠上去。现在统一问注册表。
+test('RPAN-A-02：任意弹层开着时 openFindPanel 被挡；校对保持既有成对互关', () => {
+  const registry = {
+    open: new Set(['history']),
+    isOpen($, name) {
+      return this.open.has(name);
+    },
+    isBlocked($, opts) {
+      const except = (opts && opts.except) || '';
+      // 校对层由「开查找先收校对」的成对互关负责，不算「别的弹窗挡着」
+      return [...this.open].some((name) => name !== except && name !== 'proofread');
+    }
+  };
+  const blocked = build({ backdropRegistry: registry });
+  blocked.ui.openFindPanel();
+  assert.equal(blocked.dom.map.get('find-backdrop').classList.contains('hidden'), true, '有弹层开着不许叠上来');
+  assert.deepEqual(blocked.calls.toast, [['先关闭当前弹窗，再打开查找替换', 'warn']]);
+  assert.equal(blocked.calls.hideHeaderMenus, 1, '先收顶栏菜单再判定（旧行为不变）');
+  assert.equal(blocked.calls.renderFindBookmarks, 0, '被挡时不许刷书签 / 备份入口');
+
+  // 只有校对开着：保持「开查找先收校对」的既有互关，不算被挡
+  registry.open.clear();
+  registry.open.add('proofread');
+  const swap = build({ backdropRegistry: registry });
+  swap.ui.openFindPanel();
+  assert.equal(swap.calls.closeProofreadPanel, 1);
+  assert.equal(swap.dom.map.get('find-backdrop').classList.contains('hidden'), false, '收掉校对后查找面板正常打开');
+  assert.equal(swap.calls.toast.length, 0);
 });
 
 test('openFindPanel：编辑器 textarea 选中 3 个字 → 查找框带入这 3 个字且选区不被清掉（V32 / 1.6.1 R7）', () => {
