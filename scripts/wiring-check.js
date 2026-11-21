@@ -192,6 +192,9 @@ function auditWiring(root) {
   const manifestSource = read('renderer/assembly-manifest.js');
   if (manifestSource !== null) {
     try {
+      // TOOL-A04：与 assembly-sync.loadManifest 同一防御 —— auditWiring 会被单测大量 in-process 驱动，
+      // 同一进程里对多个 root 反复检查时 require 缓存会让后一个 root 读到前一个的清单（变异负控会静默假绿）。
+      delete require.cache[require.resolve(manifestPath)];
       manifest = require(manifestPath);
     } catch (err) {
       violations.push({ id: 'source-missing', detail: `assembly-manifest.js 不能 require：${err.message}` });

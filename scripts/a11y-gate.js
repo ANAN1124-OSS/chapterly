@@ -1426,6 +1426,12 @@ async function main(argv = process.argv.slice(2)) {
       log(`[a11y] 状态失败：${stateLabel}：${record.error}`);
       continue;
     }
+    // TOOL-A05：收尾（teardown）失败以前既不判红也不进 JSON 报告 —— 弹层没收掉会污染后续状态，
+    // 必须与「状态自己没测到」同等看待（测量本身仍有效，所以只记失败、不跳过判定）。
+    if (record.teardownError) {
+      failedStates.push(`${stateLabel}：收尾失败（${record.teardownError}）`);
+      log(`[a11y] 状态收尾失败：${stateLabel}：${record.teardownError}`);
+    }
     const targetVerdict = evaluateTargets((record.targets && record.targets.items) || [], {
       min: MIN_TARGET,
       allow: TARGET_ALLOW
@@ -1518,7 +1524,9 @@ async function main(argv = process.argv.slice(2)) {
       ok: record.ok,
       targetCount: record.targets ? record.targets.items.length : 0,
       focusCount: record.focus ? record.focus.entries.length : 0,
-      error: record.error || null
+      error: record.error || null,
+      // TOOL-A05：收尾失败要进报告（否则人工实测的留档看不出「这屏弹层没收掉」）。
+      teardownError: record.teardownError || null
     })),
     summary,
     manual: [

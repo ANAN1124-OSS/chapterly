@@ -30,9 +30,22 @@ const storage = require('../core/storage');
 const chaptersLib = require('../core/chapters');
 const search = require('../core/search-index');
 const { argValue, stringArg } = require('./bench-common');
+const { clampInt } = require('../core/common');
 const { tableLines } = require('./table');
 
 const DEFAULTS = { chapters: 3000, runs: 4, hashInterval: 300000, out: null };
+// TOOL-BX-07：与 bench.js 同一套口径 —— 参数走 core/common.js 的 clampInt（不在这里抄第二份夹紧），
+// 上限与 bench.js 的 chapters 同量级（20000）。误输入多打一个零不再变成数小时 / 磁盘级失控。
+const LIMITS = { chapters: [1, 20000], runs: [1, 50], hashInterval: [0, 86400000] };
+
+function clampArg(argv, name, fallback, range) {
+  const raw = argValue(argv, name, fallback);
+  const value = clampInt(raw, fallback, range);
+  if (value !== raw) {
+    console.warn(`[bench] --${name}=${raw} 超出 ${range[0]}–${range[1]}，已夹到 ${value}`);
+  }
+  return value;
+}
 
 async function buildFixture(base, count) {
   const booksRoot = path.join(base, 'books');
@@ -70,13 +83,13 @@ async function measure(runOnce) {
 
 async function main() {
   const argv = process.argv.slice(2);
-  const chapters = argValue(argv, 'chapters', DEFAULTS.chapters);
-  const runs = argValue(argv, 'runs', DEFAULTS.runs);
+  const chapters = clampArg(argv, 'chapters', DEFAULTS.chapters, LIMITS.chapters);
+  const runs = clampArg(argv, 'runs', DEFAULTS.runs, LIMITS.runs);
   // 产品默认的内容指纹复核间隔（core/search-index.js 的 HASH_RECHECK_INTERVAL_MS = 5 分钟）。
   // 夹具用 validateIntervalMs=0 让每趟都进全量校验；这里显式给同一个 5 分钟，模拟生产口径
   // 「每 10 秒回一次书架 = 每趟全量校验，但同一本书 5 分钟才复核一次内容指纹」。
   // （改前代码没有这个选项，但它的行为等价于「每趟全复核」，因此 before 数据仍可比。）
-  const hashInterval = argValue(argv, 'hash-interval', DEFAULTS.hashInterval);
+  const hashInterval = clampArg(argv, 'hash-interval', DEFAULTS.hashInterval, LIMITS.hashInterval);
   const out = stringArg(argv, 'out', DEFAULTS.out);
   const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'cw-bench-index-'));
   const fixture = await buildFixture(base, chapters);

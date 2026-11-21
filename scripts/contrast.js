@@ -33,6 +33,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 
 const { clampInt } = require('../core/common');
+const { atomicWriteFile } = require('../core/atomic');
 const storage = require('../core/storage');
 const chaptersLib = require('../core/chapters');
 const { tableLines } = require('./table');
@@ -469,14 +470,23 @@ async function main(argv = process.argv.slice(2)) {
     themes: result.themes || opts.themes,
     env: result.env || {},
     fixtures: { ...fixtures, buildMs },
-    options: { themes: opts.themes, out: opts.out },
+    options: {
+      // TOOL-BX-08：留档要能复现当次口径（与 bench.js 的 `options: opts` 同义；这里显式列全，
+      // 免得把内部大对象整包写进报告）。
+      themes: opts.themes,
+      views: opts.views,
+      timeoutMs: opts.timeoutMs,
+      failOnLow: opts.failOnLow,
+      out: opts.out,
+      json: opts.json
+    },
     rows: buildRows(rows),
     samples: rows,
     summary: summarize(rows)
   };
   const outPath = reportPath(opts, new Date());
-  await fsp.mkdir(path.dirname(outPath), { recursive: true });
-  await fsp.writeFile(outPath, JSON.stringify(report, null, 2), 'utf8');
+  // TOOL-BX-08：与 bench.js 同一套原子写（报告是长报文，写入中途被杀不能留半截 JSON）。
+  await atomicWriteFile(outPath, JSON.stringify(report, null, 2), 'utf8', { ensureDir: true });
   console.log('');
   console.log(formatLines(report).join('\n'));
   console.log('');
