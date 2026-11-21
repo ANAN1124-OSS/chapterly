@@ -129,8 +129,12 @@ test('isoTimestamp：Date 原样、字符串可解析、坏值退回现在、iso
   assert.equal(xml.isoTimestamp(0).iso, '1970-01-01T00:00:00Z');
 });
 
-test('两个导出共用同一份实现：EPUB 再导出的 paragraphsFromText 就是 core/xml.js 的那一个', () => {
-  assert.equal(epub.paragraphsFromText, xml.paragraphsFromText, 'EPUB 的 paragraphsFromText 必须是同一份');
+test('两个导出共用同一份实现：EPUB 不再转发 paragraphsFromText，内部直接用 core/xml.js 那一份', () => {
+  // CIO-B04：epub 的导出面收掉了对 zip / xml 的三项原样转发（生产零消费），
+  // 所以不再有「两份函数引用相等」可断言；改为钉住「epub 就是从 core/xml.js 解构取了它」。
+  assert.equal(epub.paragraphsFromText, undefined, 'epub 不许再转发 paragraphsFromText（直接 require 产生方）');
+  const wired = /const \{[^}]*\}\s*=\s*require\('\.\/xml'\)/.exec(read('core/epub.js'));
+  assert.ok(wired && /\bparagraphsFromText\b/.test(wired[0]), 'epub 必须从 core/xml.js 取 paragraphsFromText');
 });
 
 test('静态闸门：docx / epub 从 core/xml.js 取，仓库里不许再长出第二份实现', () => {

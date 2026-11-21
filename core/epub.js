@@ -20,7 +20,7 @@
 const crypto = require('node:crypto');
 const chaptersLib = require('./chapters');
 const exporter = require('./exporter');
-const { buildZip, streamZip, crc32 } = require('./zip');
+const { buildZip, streamZip } = require('./zip');
 // XML 字符清洗 / 转义 / 切段只有一份实现（和 DOCX 导出共用，见 core/xml.js）；
 // 导出时间戳也在那里（经 core/exporter.normalizeExportInput 统一取，本文件不再直接引用）。
 const { escapeXml, paragraphsFromText } = require('./xml');
@@ -489,10 +489,10 @@ function epubFileName(meta, range) {
   return exporter.exportFileName(meta, range, 'epub');
 }
 
+// CIO-B04：只导出本模块真正产出的东西。buildZip / crc32 / paragraphsFromText 是对 core/zip.js 与
+// core/xml.js 的原样转发，生产路径（main.js / ipc/export.js / core 内部）一律直接 require 产生方，
+// 转发面只多一层「谁负责」的疑问。测试已改为直接 require 产生方。
 module.exports = {
-  buildZip,
-  crc32,
-  paragraphsFromText,
   epubFiles,
   buildEpub,
   streamEpub,

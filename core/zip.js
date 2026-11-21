@@ -48,17 +48,11 @@ function assertEntryName(raw) {
   return raw;
 }
 
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let i = 0; i < 256; i += 1) {
-    let c = i;
-    for (let k = 0; k < 8; k += 1) {
-      c = c & 1 ? (0xedb88320 ^ (c >>> 1)) >>> 0 : c >>> 1;
-    }
-    table[i] = c >>> 0;
-  }
-  return table;
-})();
+// CIO-B03：CRC32 直接用 Node 22.2+ 内置的 zlib.crc32（增量语义：入参是上一次的最终值、返回值即
+// 无符号 32 位）。对外三件套（Start 0xffffffff / Update / Finish 取反）原样保留 —— zlib 只看
+// 「最终值」，所以这里在调用前后各做一次取反映射。老运行时（<22.2）退回逐位实现（同一
+// IEEE 802.3 多项式，结果逐字节一致），不再维护那份 256 项查表。
+const HAS_BUILTIN_CRC32 = typeof zlib.crc32 === 'function';
 
 function crc32Start() {
   return 0xffffffff;
@@ -66,11 +60,17 @@ function crc32Start() {
 
 // 增量 CRC：流式打包时逐块更新（B1 / WP13），不额外物化整条载荷。
 function crc32Update(crc, buffer) {
+  if (HAS_BUILTIN_CRC32) {
+    return (zlib.crc32(buffer, (crc ^ 0xffffffff) >>> 0) ^ 0xffffffff) >>> 0;
+  }
   let value = crc >>> 0;
   for (let i = 0; i < buffer.length; i += 1) {
-    value = (CRC_TABLE[(value ^ buffer[i]) & 0xff] ^ (value >>> 8)) >>> 0;
+    value = (value ^ buffer[i]) >>> 0;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? (0xedb88320 ^ (value >>> 1)) >>> 0 : value >>> 1;
+    }
   }
-  return value;
+  return value >>> 0;
 }
 
 function crc32Finish(crc) {

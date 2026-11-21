@@ -1,7 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const epub = require('../core/epub');
-const { entryNameProblem } = require('../core/zip');
+const { entryNameProblem, crc32 } = require('../core/zip');
+const { paragraphsFromText } = require('../core/xml');
 const { readZip, crc32: checkCrc32, assertWellFormedXml } = require('../scripts/export-check');
 
 const FIXED = '2026-10-31T12:00:00Z';
@@ -39,7 +40,7 @@ function textOf(byName, name) {
 }
 
 test('CRC32：和标准校验值一致（zip 写坏会在这里先暴露）', async () => {
-  assert.equal(epub.crc32(Buffer.from('123456789')), 0xcbf43926);
+  assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926);
   assert.equal(checkCrc32(Buffer.from('123456789')), 0xcbf43926);
 });
 
@@ -107,13 +108,13 @@ test('章节 XHTML：标题沿用 formatTitle，正文按段拆、CRLF 归一、
 });
 
 test('段落切分：CRLF / CR / 纯空白行 / 首尾空白', async () => {
-  assert.deepEqual(epub.paragraphsFromText('\r\n第一段\r第二段\n\n  \n第三段  \n'), [
+  assert.deepEqual(paragraphsFromText('\r\n第一段\r第二段\n\n  \n第三段  \n'), [
     '第一段',
     '第二段',
     '第三段'
   ]);
-  assert.deepEqual(epub.paragraphsFromText(''), []);
-  assert.deepEqual(epub.paragraphsFromText(null), []);
+  assert.deepEqual(paragraphsFromText(''), []);
+  assert.deepEqual(paragraphsFromText(null), []);
 });
 
 test('章名和正文里的 XML 特殊字符全部转义', async () => {

@@ -320,9 +320,26 @@ function createLogStore(baseDir, options = {}) {
   let lastSignatureAt = 0;
   const counters = { written: 0, failed: 0, suppressed: 0, pruned: 0, dropped: 0 };
 
-  async function append(text, time) {
+  // CTXT-B-04：目录只建一次、清单在内存里维护。以前每条日志都 mkdir + readdir + 逐文件 stat
+  //（日志越积越多时每次写都要把整个日志目录 stat 一遍）。清单只由本进程写日志，所以「自己写进去的
+  // 字节 / 自己裁掉的份数」在内存里同步即可；目录被外部删掉时（open ENOENT）重置缓存、下次重建。
+  let dirReady = false;
+  let filesCache = null;
+
+  async function ensureDir() {
+    if (dirReady) return;
     await fs.mkdir(dir, { recursive: true });
-    const files = await listLogFiles(dir);
+    dirReady = true;
+  }
+
+  async function currentFiles() {
+    if (!filesCache) filesCache = await listLogFiles(dir);
+    return filesCache;
+  }
+
+  async function append(text, time) {
+    await ensureDir();
+    const files = await currentFiles();
     const name = chooseLogFile(files, { now: time, maxFileBytes: limits.maxFileBytes });
     // V105：当天 999 份全满 → 丢弃这一条（不让 999 号文件继续长），计数后交给 write 如实回报。
     if (!name) {
@@ -330,23 +347,38 @@ function createLogStore(baseDir, options = {}) {
       return { dropped: true, file: null, pruned: [] };
     }
     const filePath = path.join(dir, name);
+    const bytes = Buffer.byteLength(text, 'utf8');
+    let handle;
+    try {
+      handle = await fs.open(filePath, 'a');
+    } catch (err) {
+      // 目录被外部清掉：缓存作废，下一次写重新 mkdir + 重扫（不吞错误，交给上层如实回报）
+      if (err && err.code === 'ENOENT') {
+        dirReady = false;
+        filesCache = null;
+      }
+      throw err;
+    }
     // 追加：一次 write + fsync，已有条目不会被截断 / 重写。
-    const handle = await fs.open(filePath, 'a');
     try {
       await handle.writeFile(text, 'utf8');
       await handle.sync();
     } finally {
       try { await handle.close(); } catch { /* 忽略 */ }
     }
-    const after = files.some((file) => file.name === name)
-      ? files
-      : files.concat([{ ...(parseLogFileName(name) || { day: localDayKey(time), index: 1 }), name, size: 0 }]);
+    // 内存清单同步：刚写成功的这一份 +bytes；新开的一份补进清单（day/index 从文件名解析）。
+    const known = files.find((file) => file.name === name);
+    if (known) known.size += bytes;
+    else files.push({ ...(parseLogFileName(name) || { day: localDayKey(time), index: 1 }), name, size: bytes });
     // 五-L10（PM-2）：刚写成功的这一份不许被同一次裁剪删掉（时钟回拨时它会排在最旧）
-    const remove = planPrune(after, { maxFiles: limits.maxFiles, protect: name });
+    const remove = planPrune(files, { maxFiles: limits.maxFiles, protect: name });
     for (const old of remove) {
       try {
         await fs.unlink(path.join(dir, old));
         counters.pruned += 1;
+        // 删成功才从内存清单移除；删不掉（被占用）保持原样，下次再试
+        const at = files.findIndex((file) => file.name === old);
+        if (at >= 0) files.splice(at, 1);
       } catch { /* 删不掉就留着，下次再试 */ }
     }
     return { file: name, pruned: remove };
@@ -397,9 +429,13 @@ function createLogStore(baseDir, options = {}) {
   }
 
   // 设置弹层 / 自检用：日志目录、文件清单（新→旧）、总大小；读失败也不抛。
+  // CTXT-B-04：这里仍以磁盘为准（外部可能删过文件），读回来的清单同时刷新缓存。
   async function info() {
     try {
-      const files = (await listLogFiles(dir)).sort(compareLogFiles).reverse();
+      const onDisk = await listLogFiles(dir);
+      filesCache = onDisk;
+      dirReady = true;
+      const files = onDisk.sort(compareLogFiles).reverse();
       return {
         dir,
         files: files.map((file) => ({ name: file.name, day: file.day, index: file.index, bytes: file.size })),

@@ -186,22 +186,21 @@ function queryBigrams(query) {
 }
 
 // CRC32（IEEE 802.3，多项式 0xEDB88320）：每本书 Bloom 位图的校验和（E5 / 审计修复 #8）。
-// 零依赖表驱动实现：core 层不引第三方包，zlib.crc32 在项目支持的各 Electron 版本上不保证有。
-const CRC32_TABLE = (() => {
-  const table = new Int32Array(256);
-  for (let i = 0; i < 256; i += 1) {
-    let value = i;
-    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-    table[i] = value;
-  }
-  return table;
-})();
+// CIO-B03：engines>=22 起 zlib.crc32 可用（Node 22.2+，Electron 内置的 Node 也满足），直接用它；
+// 老运行时退回逐位实现（同一多项式，值逐字节一致），不再维护 256 项查表。
+const zlib = require('node:zlib');
 
 function crc32(buffer) {
   if (!Buffer.isBuffer(buffer) || !buffer.length) return 0;
-  let crc = -1;
-  for (let i = 0; i < buffer.length; i += 1) crc = CRC32_TABLE[(crc ^ buffer[i]) & 0xff] ^ (crc >>> 8);
-  return (crc ^ -1) >>> 0;
+  if (typeof zlib.crc32 === 'function') return zlib.crc32(buffer) >>> 0;
+  let crc = 0xffffffff;
+  for (let i = 0; i < buffer.length; i += 1) {
+    crc = (crc ^ buffer[i]) >>> 0;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = crc & 1 ? (0xedb88320 ^ (crc >>> 1)) >>> 0 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 // E4：章文件内容指纹 = 字节数 + 首 4 KB 哈希 + 尾 4 KB 哈希。
