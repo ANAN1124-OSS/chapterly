@@ -1,8 +1,8 @@
 const test = require('node:test');
+const { beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const storage = require('../core/storage');
 
@@ -21,9 +21,15 @@ const { atomicWriteFile } = require('../core/atomic');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp(prefix = 'cw-test-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-05：打开登记（openBookRegistry）是模块级单例。多窗口那批用例以前各自在开头手工
+// resetRegistry()（11 处，漏一处就跨 test 污染），现在由文件级 beforeEach 统一重置；
+// 单个用例要预置登记时仍可自己 register，测试之间互不影响。
+beforeEach(() => {
+  storage.openBookRegistry.reset();
+});
+
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-test-') => tmpCleanup.mkTmp(prefix);
 
 test('createBook：建文件夹、初始空章、合法书目', async () => {
   const root = await mkTmp();
@@ -708,15 +714,12 @@ test('拖拽排序：只改书目顺序，章节文件一个都不改名', async
 
 test('全书查找：跨章统计命中，返回上下文；只读不写盘', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '查找书');
-  let meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[0].file, '阿明走进屋里。\n阿明坐下。');
-  await storage.createChapter(bookPath, 1, '第二章');
-  meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[1].file, '这里没有那个人。');
-  await storage.createChapter(bookPath, 2, '第三章');
-  meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[2].file, '阿明抬头看了看天。');
+  // TB-03：多章夹具统一走 makeBook
+  const { bookPath } = await makeBook(root, '查找书', [
+    { text: '阿明走进屋里。\n阿明坐下。' },
+    { name: '第二章', text: '这里没有那个人。' },
+    { name: '第三章', text: '阿明抬头看了看天。' }
+  ]);
 
   const res = await storage.searchBook(bookPath, { query: '阿明' });
   assert.equal(res.totalMatches, 3);
@@ -733,13 +736,13 @@ test('全书查找：跨章统计命中，返回上下文；只读不写盘', as
 
 test('全书替换：先备份原文件到 _trash，再原子写盘并更新字数缓存', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '替换书');
-  let meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[0].file, '阿明说：阿明走了。');
-  await storage.createChapter(bookPath, 1, '第二章');
-  meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[1].file, '阿明回头。');
-  meta = await storage.readBookMeta(bookPath);
+  // TB-03：多章夹具统一走 makeBook
+  const made = await makeBook(root, '替换书', [
+    { text: '阿明说：阿明走了。' },
+    { name: '第二章', text: '阿明回头。' }
+  ]);
+  const bookPath = made.bookPath;
+  const meta = made.meta;
   const firstFile = meta.chapters[0].file;
   const secondFile = meta.chapters[1].file;
 
@@ -809,12 +812,13 @@ test('C4 / WP-05：单章命中超过上限时，整本查找 / 整本替换都�
 
 test('替换备份：列出最近一次整本替换的备份（最近在前）', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '备份列表书');
-  let meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[0].file, '阿明来了。');
-  await storage.createChapter(bookPath, 1, '第二章');
-  meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[1].file, '阿明走了。');
+  // TB-03：多章夹具统一走 makeBook
+  const made = await makeBook(root, '备份列表书', [
+    { text: '阿明来了。' },
+    { name: '第二章', text: '阿明走了。' }
+  ]);
+  const bookPath = made.bookPath;
+  const meta = made.meta;
 
   assert.deepEqual(await storage.listReplaceBackups(bookPath), [], '没替换过时没有备份');
 
@@ -894,12 +898,10 @@ test('替换备份：还原回替换前正文，并把当前内容再备份一�
 
 test('替换备份：非法目录名 / 不存在的备份 / 已删章节都被安全处理', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '安全书');
-  let meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[0].file, '阿明一。');
-  await storage.createChapter(bookPath, 1, '第二章');
-  meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[1].file, '阿明二。');
+  // TB-03：多章夹具统一走 makeBook
+  const made = await makeBook(root, '安全书', [{ text: '阿明一。' }, { name: '第二章', text: '阿明二。' }]);
+  const bookPath = made.bookPath;
+  const meta = made.meta;
   const replaced = await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' });
   const backupName = path.basename(replaced.backupDir);
 
@@ -986,12 +988,14 @@ test('替换备份还原（C19）：系统保留名不会被写进书，书目�
 
 test('替换备份还原（C19）：坏章记录被跳过，正常章照常还原，书目不被伪造内容覆盖', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '混合坏书目');
-  await storage.createChapter(bookPath, 1, '第二章');
-  const baseMeta = await storage.readBookMeta(bookPath);
+  // TB-03：多章夹具统一走 makeBook
+  const made = await makeBook(root, '混合坏书目', [
+    { text: '阿明一。' },
+    { name: '第二章', text: '这里没有那个人。' }
+  ]);
+  const bookPath = made.bookPath;
+  const baseMeta = made.meta;
   const [file0, file1] = baseMeta.chapters.map((chapter) => chapter.file);
-  await storage.saveChapterText(bookPath, file0, '阿明一。');
-  await storage.saveChapterText(bookPath, file1, '这里没有那个人。');
   const replaced = await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' });
   const backupName = path.basename(replaced.backupDir);
 
@@ -1019,15 +1023,14 @@ test('替换备份还原（C19）：坏章记录被跳过，正常章照常还�
 
 test('整本排版：预检查只算不写，正式整理逐章写盘并备份原文', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '整本排版书');
-  let meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[0].file, '他说,"第一段。"');
-  await storage.createChapter(bookPath, 1, '第二章');
-  meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[1].file, '第二段');
-  await storage.createChapter(bookPath, 2, '第三章');
-  meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[2].file, '　　已经整理好的。');
+  // TB-03：多章夹具统一走 makeBook
+  const made = await makeBook(root, '整本排版书', [
+    { text: '他说,"第一段。"' },
+    { name: '第二章', text: '第二段' },
+    { name: '第三章', text: '　　已经整理好的。' }
+  ]);
+  const bookPath = made.bookPath;
+  const meta = made.meta;
 
   const options = { indent: '2', blankLines: 'single', trimTrailing: true, normalizePunct: true };
 
@@ -1072,12 +1075,10 @@ test('整本排版：预检查只算不写，正式整理逐章写盘并备份�
 
 test('整本排版：缺文件的章节跳过，不中断整本整理', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '缺文件排版书');
-  let meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[0].file, '第一段');
-  await storage.createChapter(bookPath, 1, '第二章');
-  meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[1].file, '第二段');
+  // TB-03：多章夹具统一走 makeBook
+  const made = await makeBook(root, '缺文件排版书', [{ text: '第一段' }, { name: '第二章', text: '第二段' }]);
+  const bookPath = made.bookPath;
+  const meta = made.meta;
   await fs.unlink(path.join(bookPath, meta.chapters[1].file));
 
   const res = await storage.formatBook(bookPath, {
@@ -1330,12 +1331,9 @@ test('listBooks：损坏书目的书也带冲突副本提示（方便先修书�
 });
 
 // ---------- 多窗口：打开登记 + 保存前校验 + 跨窗口拦截 ----------
-function resetRegistry() {
-  storage.openBookRegistry.reset();
-}
+// TB-05：重置由文件级 beforeEach 统一负责（见文件头），用例里不再逐条手工 reset。
 
 test('保存前校验：正常书 / 章返回 meta 与章节，允许保存', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '保存校验');
   const meta = await storage.readBookMeta(bookPath);
@@ -1346,7 +1344,6 @@ test('保存前校验：正常书 / 章返回 meta 与章节，允许保存', as
 });
 
 test('保存前校验：章节文件被删掉 → CHAPTER_MISSING，绝不重建影子 txt', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '缺章书');
   const meta = await storage.readBookMeta(bookPath);
@@ -1362,7 +1359,6 @@ test('保存前校验：章节文件被删掉 → CHAPTER_MISSING，绝不重建
 });
 
 test('保存前校验：书文件夹被删掉 → BOOK_MISSING，绝不 mkdir 重建目录', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '整本没了');
   const meta = await storage.readBookMeta(bookPath);
@@ -1375,7 +1371,6 @@ test('保存前校验：书文件夹被删掉 → BOOK_MISSING，绝不 mkdir �
 });
 
 test('保存前校验：章节从书目里删掉 → CHAPTER_NOT_FOUND', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '章没了');
   const meta = await storage.readBookMeta(bookPath);
@@ -1388,7 +1383,6 @@ test('保存前校验：章节从书目里删掉 → CHAPTER_NOT_FOUND', async (
 });
 
 test('保存前校验：书目损坏 → 明确报错，不写盘', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '书目坏了');
   const meta = await storage.readBookMeta(bookPath);
@@ -1400,7 +1394,6 @@ test('保存前校验：书目损坏 → 明确报错，不写盘', async () => 
 });
 
 test('跨窗口拦截：别的窗口开着的书拒绝保存 / 删除 / 改名 / 整理', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '跨窗口书');
   const meta = await storage.readBookMeta(bookPath);
@@ -1423,7 +1416,6 @@ test('跨窗口拦截：别的窗口开着的书拒绝保存 / 删除 / 改名 /
 });
 
 test('跨窗口拦截：删除书后按路径清掉登记', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '删掉的书');
   storage.registerOpenBook(3, bookPath);
@@ -1435,7 +1427,6 @@ test('跨窗口拦截：删除书后按路径清掉登记', async () => {
 });
 
 test('ensureDir:false：目录不在时原子写直接失败，不会创建目录 / 临时文件', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const targetDir = path.join(root, '不存在的书');
   const target = path.join(targetDir, '001-未命名.txt');
@@ -1445,7 +1436,6 @@ test('ensureDir:false：目录不在时原子写直接失败，不会创建目�
 });
 
 test('ensureDir:false：目录存在时照常原子写（保存校验通过后的正常路径）', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '正常写');
   const meta = await storage.readBookMeta(bookPath);
@@ -1454,7 +1444,6 @@ test('ensureDir:false：目录存在时照常原子写（保存校验通过后�
 });
 
 test('章号编号方式：按卷独立写进书目.json，改回连续删字段；旧书没有字段 = 连续', async () => {
-  resetRegistry();
   const chapters = require('../core/chapters');
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '编号演练');
@@ -1512,12 +1501,9 @@ test('章节加载：超过 128 MB 的章节明确报 CHAPTER_TOO_LARGE，且不
   } finally {
     await handle.close();
   }
-  const realReadFile = fs.readFile;
-  let readCalls = 0;
-  fs.readFile = async (...args) => {
-    readCalls += 1;
-    return realReadFile(...args);
-  };
+  // TB-04：读盘计数器统一走 countReadFileFor（超限章一旦真被读就立刻抛错，不在断言失败路径
+  // 真分配 129 MB）。以前这里另抄了一份「只计数、不拦截」的简版。
+  const counter = countReadFileFor(hugePath);
   try {
     await assert.rejects(
       () => storage.loadChapterText(bookPath, file),
@@ -1530,13 +1516,13 @@ test('章节加载：超过 128 MB 的章节明确报 CHAPTER_TOO_LARGE，且不
         return true;
       }
     );
-    assert.equal(readCalls, 0, '超限章节必须在 stat 之后就拒绝，不能走进 readFile');
+    assert.equal(counter.hugeReads(), 0, '超限章节必须在 stat 之后就拒绝，不能走进 readFile');
     await assert.rejects(
       () => storage.statChapter(bookPath, file),
       (err) => err.code === 'CHAPTER_TOO_LARGE'
     );
   } finally {
-    fs.readFile = realReadFile;
+    counter.restore();
   }
 });
 
@@ -1696,9 +1682,43 @@ async function makeSparseHuge(filePath) {
   }
 }
 
-// 读盘计数器：记录每一次真 readFile；超限章一旦被读就直接失败（不真分配 129 MB）
-function countReadFileFor(hugePath) {
-  const realReadFile = fs.readFile;
+// TB-03：多章夹具的唯一构造器 —— 建书 → 按顺序追加章节 → 逐章写正文，返回最终书目。
+// 以前「createBook → createChapter ×N → 每步 readBookMeta → saveChapterText」手抄了十余处；
+// chapters = [{ name?, text? }, …]（第 0 条对应 createBook 自动建的那一章）。
+async function makeBook(root, title, chapters = []) {
+  const created = await storage.createBook(root, title);
+  const bookPath = created.path;
+  let meta = created.meta || (await storage.readBookMeta(bookPath));
+  for (let index = 0; index < chapters.length; index += 1) {
+    const spec = chapters[index] || {};
+    if (index > 0) {
+      ({ meta } = await storage.createChapter(bookPath, index, spec.name || ''));
+    } else if (spec.name) {
+      await storage.renameChapter(bookPath, meta.chapters[0].id, spec.name);
+      meta = await storage.readBookMeta(bookPath);
+    }
+    if (spec.text !== undefined) {
+      await storage.saveChapterText(bookPath, meta.chapters[index].file, spec.text);
+    }
+  }
+  return { bookPath, meta };
+}
+
+
+async function withFsPatch(target, key, impl, fn) {
+  const real = target[key];
+  Object.defineProperty(target, key, { configurable: true, writable: true, value: impl(real) });
+  try {
+    return await fn(real);
+  } finally {
+    Object.defineProperty(target, key, { configurable: true, writable: true, value: real });
+  }
+}
+
+// 读盘计数器：记录每一次真 readFile；超限章一旦被读就直接失败（不真分配 129 MB）。
+// TB-04：本文件所有「拦截 fs 读」的用例都走这一份（以前失败路径上还有一份只计数、不拦截的简版，
+// 断言一旦回归就会真的把 129 MB 读进内存）。
+function countReadFileFor(hugePath) {  const realReadFile = fs.readFile;
   const paths = [];
   fs.readFile = async (...args) => {
     const target = String(args[0]);
@@ -1999,13 +2019,15 @@ test('书架扫描：1000 章并发峰值不超过全局上限 8（注入 reader
 // refreshChapterChars，还原 1 章会把 1000 章正文全读一遍（白读盘、还原变慢）。
 test('替换备份还原：还原 1 章只重算这 1 章（注入 reader 计数）', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '还原只读书');
-  let meta = await storage.readBookMeta(bookPath);
+  // TB-03：多章夹具统一走 makeBook
+  const made = await makeBook(root, '还原只读书', [
+    { text: '阿明来了。' },
+    { name: '第二章' },
+    { name: '第三章' }
+  ]);
+  const bookPath = made.bookPath;
+  const meta = made.meta;
   const firstFile = meta.chapters[0].file;
-  await storage.saveChapterText(bookPath, firstFile, '阿明来了。');
-  await storage.createChapter(bookPath, 1, '第二章');
-  await storage.createChapter(bookPath, 2, '第三章');
-  meta = await storage.readBookMeta(bookPath);
   assert.equal(meta.chapters.length, 3, '书里有 3 章，还原只碰 1 章');
 
   // 手工造一个只含 1 章的替换备份（真实备份目录只放被替换的那些章）
@@ -2030,13 +2052,14 @@ test('替换备份还原：还原 1 章只重算这 1 章（注入 reader 计数
 
 test('整本操作：一章 129 MB 超限章 + 两章正常 → 查找 / 替换跳过超限章、skippedTooLarge=1、正常章结果逐字不变', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '整本超限');
-  await storage.createChapter(bookPath, 1, '第二章');
-  await storage.createChapter(bookPath, 2, '第三章');
-  const meta = await storage.readBookMeta(bookPath);
-  await storage.saveChapterText(bookPath, meta.chapters[0].file, '阿明走进灯下。\n阿明抬头。');
-  await storage.saveChapterText(bookPath, meta.chapters[1].file, '阿明转身离开。');
-  await storage.saveChapterText(bookPath, meta.chapters[2].file, '这里没有那个人。');
+  // TB-03：多章夹具统一走 makeBook
+  const made = await makeBook(root, '整本超限', [
+    { text: '阿明走进灯下。\n阿明抬头。' },
+    { name: '第二章', text: '阿明转身离开。' },
+    { name: '第三章', text: '这里没有那个人。' }
+  ]);
+  const bookPath = made.bookPath;
+  const meta = made.meta;
 
   // 对照组：三章都正常读完
   const control = await storage.searchBook(bookPath, { query: '阿明' });
@@ -2072,18 +2095,15 @@ test('读盘失败脱敏：readBookMeta / listBooks 不回完整本机路径（E
   const root = await mkTmp();
   const bookPath = path.join(root, '读失败的书');
   await fs.mkdir(bookPath);
-  const realOpen = fs.open;
-  Object.defineProperty(fs, 'open', {
-    configurable: true,
-    writable: true,
-    value: async (file, ...rest) => {
-      if (String(file).endsWith('书目.json')) {
-        throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' });
-      }
-      return realOpen(file, ...rest);
+  // TB-04：fs 猴子补丁统一走 withFsPatch（defineProperty 安装 + finally 还原）；
+  // 只对 书目.json 抛 EACCES，其余文件照常打开。
+  const openImpl = (realOpen) => async (file, ...rest) => {
+    if (String(file).endsWith('书目.json')) {
+      throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' });
     }
-  });
-  try {
+    return realOpen(file, ...rest);
+  };
+  await withFsPatch(fs, 'open', openImpl, async () => {
     await assert.rejects(
       () => storage.readBookMeta(bookPath),
       (err) => {
@@ -2103,15 +2123,12 @@ test('读盘失败脱敏：readBookMeta / listBooks 不回完整本机路径（E
     assert.equal(corrupt.reason.includes(root), false, '损坏书卡 reason 不许带完整书架路径');
     assert.equal(/[A-Za-z]:[\\/]/.test(corrupt.reason), false, '损坏书卡 reason 不许带盘符路径');
     assert.match(corrupt.reason, /没有访问权限/);
-  } finally {
-    Object.defineProperty(fs, 'open', { configurable: true, writable: true, value: realOpen });
-  }
+  });
 });
 
 
 // ---------- 审计修复 #5（V301）：保存前校验带 expectedMtimeMs ----------
 test('保存前校验（V301）：expectedMtimeMs 与磁盘一致 → 放行；被外部改过 → EXTERNAL_CHANGE 且一个字节都不写', async () => {
-  resetRegistry();
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '外部改动');
   const meta = await storage.readBookMeta(bookPath);

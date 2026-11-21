@@ -1,15 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const search = require('../core/search-index');
 
 const tmpCleanup = require('./tmp-cleanup');
 
-async function mkTmp(prefix = 'cw-search-') {
-  return tmpCleanup.track(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-}
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const mkTmp = (prefix = 'cw-search-') => tmpCleanup.mkTmp(prefix);
 
 function pad3(n) {
   return String(n).padStart(3, '0');
@@ -59,6 +57,16 @@ function makeStore(userData, options = {}) {
     validateIntervalMs: 0, // 单测里每次 ensure 都做全量校验，外部改 txt 能立刻发现
     ...options
   });
+}
+
+// TESTC-06：搜索索引夹具的「userData + booksRoot 双目录」唯一构造器。
+// 以前每个用例手抄 4 行（36 处、约 200 行）；目录名 / 是否建目录这类细节只在这一点。
+async function makeWorld(base) {
+  const userData = path.join(base, 'userdata');
+  const booksRoot = path.join(base, 'books');
+  await fs.mkdir(userData);
+  await fs.mkdir(booksRoot);
+  return { userData, booksRoot };
 }
 
 test('正文索引：查询归一化（去首尾空白 + 小写）与双字哈希稳定', () => {
@@ -115,10 +123,8 @@ test('正文索引：空书不误报（全零位图）', () => {
 // 保留时间戳的同大小改写会漏检 → Bloom 缺新内容的双字 → 静默漏报。每章指纹补首尾 4 KB 内容哈希。
 test('正文索引（E4）：保留 mtime / size 的同大小改写也会被首尾内容指纹发现并重建', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const { bookPath, meta } = await makeBook(booksRoot, '指纹书', '指纹书', [
     { name: '章一', text: '旧车站的雨伞是灰色的。' }
   ]);
@@ -160,10 +166,8 @@ test('正文索引（E4）：保留 mtime / size 的同大小改写也会被首�
 // 同长度位翻转也查不出。现在 bits 必须 === 字节数 × 8 且落在合法区间，另加每书 CRC32。
 test('正文索引（E5）：位图 CRC / bits 校验不过 → 当候选逐章核对（不漏报）并在下一次校验重建自愈', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '坏位图书', '坏位图书', [{ name: '章一', text: '青柠色的雨伞挂在门口。' }]);
   const indexPath = path.join(userData, search.INDEX_FILE_NAME);
   const warmStore = makeStore(userData);
@@ -263,10 +267,8 @@ test('正文索引：索引文件解析只认当前版本，坏 JSON / 坏条目
 
 test('正文索引：建索引落在 userData（不进书库），只存指纹与位图、不存正文', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const marker = '这是一整段绝对不该被写进索引文件里面的正文';
   await makeBook(booksRoot, '测试书', '测试书', [
     { name: '旧车站', text: `雨还在下。${marker}。他撑着一把青柠色的雨伞。` },
@@ -302,10 +304,8 @@ test('正文索引：建索引落在 userData（不进书库），只存指纹�
 // 被外部程序换成 2 GB 文件时（误放的视频 / 坏同步盘）会把主进程内存打爆。
 test('正文索引：索引文件超限 → 记 INDEX_TOO_LARGE 且一次都不读，随后按空索引重建覆盖', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '测试书', '测试书', [{ name: '旧车站', text: '雨还在下，他在旧车站等谁。' }]);
   const indexPath = path.join(userData, search.INDEX_FILE_NAME);
   await fs.writeFile(indexPath, '{"version":1,"books":[]}', 'utf8');
@@ -344,10 +344,8 @@ test('正文索引：索引文件超限 → 记 INDEX_TOO_LARGE 且一次都不�
 
 test('正文索引：搜正文返回章名 / 上下文 / 命中位置，大小写不敏感，搜不到的返回空', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const text = '雨还在下。他撑着一把青柠色的雨伞，站在旧车站的月台上。\n风很轻。';
   await makeBook(booksRoot, '测试书', '测试书', [
     { name: '旧车站', text },
@@ -386,10 +384,8 @@ test('正文索引：搜正文返回章名 / 上下文 / 命中位置，大小�
 
 test('正文索引：结果按 limit 截断并标记 truncated（分页 / 限量）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const chapters = [];
   for (let i = 0; i < 5; i += 1) {
     chapters.push({ name: `第${i + 1}节`, text: `青柠色的雨伞每天都出现（第${i + 1}章）。` });
@@ -408,10 +404,8 @@ test('正文索引：结果按 limit 截断并标记 truncated（分页 / 限量
 
 test('正文索引：改章名只更新元数据（不重读正文、不重建位图）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const { bookPath } = await makeBook(booksRoot, '测试书', '测试书', [
     { name: '旧名字', text: '青柠色的雨伞。' }
   ]);
@@ -612,10 +606,8 @@ test('V107/WP-21：lastModified 改循环取最大（20 万章不展开实参）
 
 test('正文索引：外部改 txt（mtime / size 变了）会被发现并更新索引', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const { bookPath, meta } = await makeBook(booksRoot, '测试书', '测试书', [
     { name: '旧车站', text: '旧车站的雨伞是灰色的。' }
   ]);
@@ -636,10 +628,8 @@ test('正文索引：外部改 txt（mtime / size 变了）会被发现并更新
 
 test('正文索引：章节文件被删 / 章被删，索引跟着剔除，不会崩也不会再命中', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const { bookPath, meta } = await makeBook(booksRoot, '测试书', '测试书', [
     { name: '旧车站', text: '青柠色的雨伞。' },
     { name: '夜雨', text: '灰蓝色的雨伞。' }
@@ -664,10 +654,8 @@ test('正文索引：章节文件被删 / 章被删，索引跟着剔除，不�
 
 test('正文索引：整本书被删掉后从索引消失', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '要删掉的书', '要删掉的书', [{ name: '章', text: '青柠色的雨伞。' }]);
   await makeBook(booksRoot, '留下的书', '留下的书', [{ name: '章', text: '普通的一段。' }]);
   const store = makeStore(userData);
@@ -682,10 +670,8 @@ test('正文索引：整本书被删掉后从索引消失', async () => {
 
 test('正文索引：索引文件坏了 / 版本不对 → 自动重建，不抛错', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '测试书', '测试书', [{ name: '章', text: '青柠色的雨伞。' }]);
   await fs.writeFile(path.join(userData, search.INDEX_FILE_NAME), '{"version":999,"books":[]}', 'utf8');
   const store = makeStore(userData);
@@ -718,10 +704,8 @@ test('正文索引：书架目录换了 → 旧索引作废、按新目录重建
 
 test('正文索引：markDirty 让最近保存过的书立即重建（不必等外部校验）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const { bookPath } = await makeBook(booksRoot, '测试书', '测试书', [{ name: '章', text: '青柠色的雨伞。' }]);
   const store = makeStore(userData);
   await store.ensure({ booksRoot });
@@ -733,10 +717,8 @@ test('正文索引：markDirty 让最近保存过的书立即重建（不必等�
 
 test('正文索引：索引写盘失败（位置被目录占住）时搜索照常，恢复后 flush 成功', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '测试书', '测试书', [{ name: '章', text: '青柠色的雨伞。' }]);
   const indexPath = path.join(userData, search.INDEX_FILE_NAME);
   await fs.mkdir(indexPath); // 用同名目录占住索引文件的位置
@@ -753,10 +735,8 @@ test('正文索引：索引写盘失败（位置被目录占住）时搜索照�
 
 test('正文索引：旧书目（v0.4.1 形状，没有 schemaVersion）照常建索引与搜索', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const { bookPath } = await makeBook(
     booksRoot,
     '旧书',
@@ -779,10 +759,8 @@ test('正文索引：旧书目（v0.4.1 形状，没有 schemaVersion）照常�
 
 test('正文索引：空书架 / 不存在的书架目录不崩', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const store = makeStore(userData);
   const status = await store.ensure({ booksRoot });
   assert.equal(status.books, 0);
@@ -797,10 +775,8 @@ test('正文索引：空书架 / 不存在的书架目录不崩', async () => {
 
 test('正文索引：一本书里多个命中按章返回，最多每章 3 条（列表不会炸）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const repeated = Array.from({ length: 6 }, (_, i) => `青柠色第${i + 1}次。`).join('');
   await makeBook(booksRoot, '重复书', '重复书', [{ name: '多命中', text: repeated }]);
   const store = makeStore(userData);
@@ -826,10 +802,8 @@ function nthIndex(text, needle, n) {
 
 test('正文索引（P22-4）：单章 10 处命中仍只列 3 条，但 chapterMatchCount / totalMatches 是真命中数', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const text10 = Array.from({ length: 10 }, (_, i) => `灯芯第${i + 1}次亮起。`).join('');
   const text2 = '灯芯又亮了一次。灯芯最后暗了下去。';
   const { bookPath, meta } = await makeBook(booksRoot, '章内计数书', '章内计数书', [
@@ -866,10 +840,8 @@ test('正文索引（P22-4）：单章 10 处命中仍只列 3 条，但 chapter
 
 test('正文索引（P22-4）：focus 只读目标一章，返回该章全部命中（按位置、带上下文片段）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const text10 = Array.from({ length: 10 }, (_, i) => `灯芯第${i + 1}次亮起。`).join('');
   const book = await makeBook(booksRoot, '聚焦书', '聚焦书', [
     { name: '灯芯章', text: text10 },
@@ -911,10 +883,8 @@ test('正文索引（P22-4）：focus 只读目标一章，返回该章全部命
 
 test('正文索引（P22-4）：focus 的书 / 章不在索引里、或路径越权 → 空结果 + focusError（不读任意路径）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const book = await makeBook(booksRoot, '聚焦书', '聚焦书', [{ name: '灯芯章', text: '灯芯亮着。' }]);
   const outside = await makeBook(base, '库外书', '库外书', [{ name: '库外章', text: '灯芯在库外。' }]);
   const store = makeStore(userData);
@@ -976,10 +946,8 @@ test('正文索引（P22-4）：focus 的书 / 章不在索引里、或路径越
 
 test('正文索引（P22-4）：focus 片段上限 200 条 + truncated，totalMatches 仍是真命中数', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const text = Array.from({ length: 260 }, (_, i) => `灯芯${i + 1}。`).join('');
   const book = await makeBook(booksRoot, '很多命中', '很多命中', [{ name: '灯芯章', text }]);
   const store = makeStore(userData);
@@ -997,10 +965,8 @@ test('正文索引（P22-4）：focus 片段上限 200 条 + truncated，totalMa
 
 test('正文索引（P22-4）：单章计数硬上限 10000，超过后 chapterCountCapped 显示 N+', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const total = search.MAX_CHAPTER_MATCH_COUNT + 3;
   const text = '灯芯。'.repeat(total);
   const book = await makeBook(booksRoot, '超多命中', '超多命中', [{ name: '灯芯章', text }]);
@@ -1025,10 +991,8 @@ test('正文索引（P22-4）：单章计数硬上限 10000，超过后 chapterC
 
 test('正文索引：200 章规模的书建索引 / 搜索可用（不要求速度，只要求不出错）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const chapters = [];
   for (let i = 0; i < 200; i += 1) {
     const filler = '风从海面吹来，带着咸味。'.repeat(20);
@@ -1059,10 +1023,8 @@ async function exists(p) {
 // 口径：预热后连续两次 search 合计只发生 1 次 stat（根目录签名），逐书 书目.json 的 stat 必须是 0。
 test('正文索引（P-01）：连续两次 search 只做一次根签名 stat、逐书 书目.json stat 为 0', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
 
   let clockMs = Date.parse('2026-11-11T20:00:00.000Z');
@@ -1101,10 +1063,8 @@ test('正文索引（P-01）：连续两次 search 只做一次根签名 stat、
 // 小写化长度变了就回退原文扫描（宁可少一次大小写不敏感匹配，也不许把片段指到别的字上）。
 test('正文索引（V76）：toLowerCase 改变长度时回退原文，matchIndex / 片段不错位', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const text = 'İİ青柠色的雨伞挂在门口。';
   assert.equal(text.toLowerCase().length, text.length + 2, '前提：这个字符小写后长度变了（否则本用例不成立）');
   await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text }]);
@@ -1123,10 +1083,8 @@ test('正文索引（V76）：toLowerCase 改变长度时回退原文，matchInd
 // 以前写字面量 false：界面上正显示「正在建索引」，搜索结果却自称 ready，进度条 / 重试提示判断错。
 test('正文索引（V92）：indexInfo.building 透传 state.building（后台重建在飞时为 true）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const { bookPath } = await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
 
   const clockMs = Date.parse('2026-11-11T20:00:00.000Z');
@@ -1179,10 +1137,8 @@ test('正文索引（V92）：indexInfo.building 透传 state.building（后台�
 // 现在加上界（32 条 LRU）：淘汰的只是缓存，命中的结果不许少。
 test('正文索引（V93）：bloomCache 有上界 32 条（LRU），长书架不把位图全留在内存', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const TOTAL = 40;
   for (let i = 0; i < TOTAL; i += 1) {
     await makeBook(booksRoot, `书${pad3(i)}`, `书${pad3(i)}`, [
@@ -1212,10 +1168,8 @@ test('正文索引（V93）：bloomCache 有上界 32 条（LRU），长书架�
 // 真要去读正文」的候选登记进缓存，让 32 条上界覆盖注释所说的候选热区。
 test('五-L4（CI-7）：只有通过位图筛选的候选进 bloomCache，非候选不再冲刷整架热区', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const TOTAL = 40;
   for (let i = 0; i < TOTAL; i += 1) {
     const text = i === TOTAL - 1 ? '第 40 本：青柠色的雨伞挂在门口。' : `第 ${i} 本：窗外的雨下了一夜。`;
@@ -1258,10 +1212,8 @@ test('正文索引（P3）：双字集合到上限就放弃位图（bloomOmitted
 
 test('正文索引（P3）：放弃位图的书照常可搜、下次校验不重读正文（复用放弃结论）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const text = '青柠色的雨伞挂在门口，林婉儿站在旧车站的月台上。';
   const { bookPath } = await makeBook(booksRoot, '巨书', '巨书', [{ name: '第一章', text }]);
 
@@ -1298,10 +1250,8 @@ test('正文索引（P3）：放弃位图的书照常可搜、下次校验不重
 // P3（审计修复 #19）：条数上界（32）不等于字节上界 —— 32 条 × 单本最大 8 MB 位图 ≈ 256 MB。
 test('正文索引（P3）：位图缓存除条数外还有字节预算（超预算按 LRU 淘汰，结果不丢）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const TOTAL = 6;
   for (let i = 0; i < TOTAL; i += 1) {
     await makeBook(booksRoot, `书${pad3(i)}`, `书${pad3(i)}`, [
@@ -1326,10 +1276,8 @@ test('正文索引（P3）：位图缓存除条数外还有字节预算（超预
 
 test('正文索引（P-01）：窗口过期 / 根目录签名变化后仍会重新校验并重建', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
 
   let clockMs = Date.parse('2026-11-11T20:00:00.000Z');
@@ -1362,10 +1310,8 @@ test('正文索引（P-01）：窗口过期 / 根目录签名变化后仍会重�
 // 搜索直接回 building:true + 空结果；建完后由渲染层的进度事件按原查询自动重搜。
 test('正文索引（P1）：首建期搜索立即回 building + 空结果，建完后同一查询立即可用', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
 
   // 卡门闸：首建的根目录签名 stat 停在这里，保证搜索发生时「构建确实在飞」。
@@ -1500,10 +1446,8 @@ test('正文索引（#33）：总量预算超限时淘汰最旧书目的位图�
 
 test('正文索引（#33）：预算淘汰落盘后可读回、搜索仍命中被淘汰的书、重载后不每轮重建', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '旧书', '旧书', [{ name: '章一', text: '旧书的青柠色雨伞挂在门口。' }]);
   await makeBook(booksRoot, '新书', '新书', [{ name: '章一', text: '新书的琥珀色路灯亮着。' }]);
   // lastModified = 书目 mtime 与全部章节 mtime 的最大值：把两本书的时间拉开，淘汰顺序才是确定的
@@ -1586,10 +1530,8 @@ test('E21（#46）：解析索引时不静默截断章节文件名 —— 真实
 
 test('E21（#46）：书架根读不了 → status / search 都透传错误码（不再静默空结果），且旧索引不被提前清空', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   await makeBook(booksRoot, '旧书', '旧书', [{ name: '旧车站', text: '雨还在下，他在旧车站等谁。' }]);
   const { normalizePath } = require('../core/path-utils');
   const store = makeStore(userData);
@@ -1643,10 +1585,8 @@ test('E21（#46）：落盘只有一条串行链 —— doEnsure / load 不再�
 // 现在尾部只在脏集为空时重开窗口，复用判据也要求脏集为空 —— 标脏必校验。
 test('五-M27（CI-1）：ensure 在途时才标脏的书，ensure 结束后搜索仍会先校验（不静默漏报）', async () => {
   const base = await mkTmp();
-  const userData = path.join(base, 'userdata');
-  const booksRoot = path.join(base, 'books');
-  await fs.mkdir(userData);
-  await fs.mkdir(booksRoot);
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
   const { bookPath: bookAPath, meta: bookAMeta } = await makeBook(booksRoot, 'A书', 'A书', [
     { name: '第一章', text: '青柠色的雨伞挂在门口。' }
   ]);
