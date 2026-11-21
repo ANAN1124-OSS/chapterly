@@ -159,15 +159,25 @@ function resolveExportRange(meta, range) {
 //   · texts 不是数组时按空串数组处理（与两处旧实现逐字一致）。
 // 返回 { meta, chapters, texts, title, plan, stamp }；各格式自己的字段（epub 的 lang / identifier、
 // docx 的 author）仍留在各自模块，不塞进公共层。
+// 审计修复 #24（R1）：EPUB / DOCX 共用的导出入参归一。
+// 错误一律带 code（ASCII 冒号分隔，core/error-text 的 inferCodeFromMessage 能回收）：
+// 生产 IPC 路径由 ipc/export 的 StorageError 预检兜住，这里是直调构建器（测试 / 未来新调用方）的旁路，
+// 但口径必须和别的模块一致 —— 不再是「全角冒号拼进 message」的伪码（CIO-A-07）。
+function exportInputError(code, message) {
+  const err = new Error(`${code}: ${message}`);
+  err.code = code;
+  return err;
+}
+
 function normalizeExportInput(input) {
   const meta = (input && input.meta) || {};
   const chapters = chapterList(meta);
-  if (!chapters.length) throw new Error('EMPTY_BOOK：这本书里还没有章节');
+  if (!chapters.length) throw exportInputError('EMPTY_BOOK', '这本书里还没有章节');
   const texts = Array.isArray(input && input.texts) ? input.texts : [];
   const title = String(meta.title == null ? '' : meta.title).trim() || '未命名书籍';
   // 范围解析和 TXT / EPUB / DOCX 导出共用同一份纯逻辑：只读，不改 meta。
   const plan = resolveExportRange(meta, input && input.range);
-  if (!plan.count) throw new Error('EMPTY_EXPORT_RANGE：所选范围里没有章节');
+  if (!plan.count) throw exportInputError('EMPTY_EXPORT_RANGE', '所选范围里没有章节');
   const stamp = isoTimestamp(input && input.modified);
   return { meta, chapters, texts, title, plan, stamp };
 }
@@ -241,6 +251,8 @@ function exportBufferFromText(text) {
   return Buffer.from(`${BOM}${String(text == null ? '' : text)}`, 'utf8');
 }
 
+// 【仅测试字节基准，生产零调用】（CIO-A-06）TXT 生产链是 streamTxtExport（逐章流式），
+// 整本物化路径只留作 oracle：改动它必须与流式链逐字节一致。
 function exportBuffer(meta, texts) {
   return exportBufferFromText(composeBook(meta, texts));
 }
@@ -250,6 +262,8 @@ function exportBuffer(meta, texts) {
 // 上一份引用（内存吃紧时 GC 能先回收），峰值从约 4 份降到约 2 份。
 // texts 数组会被**就地清空**：调用方传进来的都是本次刚读出来的数组，导出返回后不再需要它。
 // 输出与 exportBufferFromText(convertText(composeBook(meta, texts, range), conversion)) 逐字节一致。
+// 【仅测试字节基准，生产零调用】（CIO-A-06）TXT 生产链是 streamTxtExport；这条整本链保留作
+// oracle：流式实现的字节必须与它逐字节一致。texts 数组会被**就地清空**，只给测试用。
 function buildTxtExport(meta, texts, range, conversion, convertText) {
   const source = Array.isArray(texts) ? texts : [];
   let composed = composeBook(meta, source, range);

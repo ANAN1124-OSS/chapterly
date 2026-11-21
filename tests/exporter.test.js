@@ -591,17 +591,18 @@ test('#24 R1：normalizeExportInput 是 EPUB / DOCX 唯一的入参归一（书�
   const noTexts = normalizeExportInput({ meta: metaOf('起风') });
   assert.deepEqual(noTexts.texts, [], 'texts 不是数组按空数组处理（旧实现同一口径）');
 
+  // CIO-A-07：伪码不再用全角冒号拼进 message —— ERROR.code 走统一链路，message 用 ASCII 冒号
   assert.throws(
     () => normalizeExportInput({ meta: { title: '空书', chapters: [] } }),
-    /EMPTY_BOOK：这本书里还没有章节/
+    (err) => err.code === 'EMPTY_BOOK' && /^EMPTY_BOOK: 这本书里还没有章节$/.test(err.message)
   );
   assert.throws(
     () => normalizeExportInput({ meta: metaOf('一', '二', '三', '四', '五'), range: { mode: 'range', from: 4, to: 2 } }),
-    /EMPTY_EXPORT_RANGE：所选范围里没有章节/
+    (err) => err.code === 'EMPTY_EXPORT_RANGE' && /^EMPTY_EXPORT_RANGE: 所选范围里没有章节$/.test(err.message)
   );
   assert.throws(
     () => normalizeExportInput({ meta: metaOf('起风'), range: { mode: 'volume', volumeId: 'nope' } }),
-    /EMPTY_EXPORT_RANGE/
+    (err) => err.code === 'EMPTY_EXPORT_RANGE'
   );
 });
 
@@ -612,12 +613,12 @@ test('#24 R1：epub / docx 不再各抄一份 chapterList / 空范围检查（�
     assert.match(source, /exporter\.normalizeExportInput\(/, `${rel} 必须走共享归一`);
     assert.equal(source.includes('function chapterList('), false, `${rel} 不许再抄 chapterList`);
     assert.equal(
-      source.includes('EMPTY_BOOK：这本书里还没有章节'),
+      source.includes('EMPTY_BOOK: 这本书里还没有章节'),
       false,
       `${rel} 不许再自己判空书（唯一实现在 core/exporter.normalizeExportInput）`
     );
     // 空范围检查也只剩共享层一份：各自文件里不许再出现这条抛错
-    assert.equal(source.includes('EMPTY_EXPORT_RANGE：所选范围里没有章节'), false, `${rel} 不许再自己判空范围`);
+    assert.equal(source.includes('EMPTY_EXPORT_RANGE: 所选范围里没有章节'), false, `${rel} 不许再自己判空范围`);
   }
   const epub = read('core/epub.js');
   assert.equal(epub.includes('isoTimestamp(input && input.modified)'), false, 'epub 不再自己算时间戳');
