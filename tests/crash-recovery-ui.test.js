@@ -179,6 +179,48 @@ test('U2 打开后只在「写作页 + dirty + 空闲 + 有正文」时写；内
   assert.equal(calls.save.length, 1, '这些分支都不写盘');
 });
 
+// RPAN-B01（第五轮审计）：旧跳过条件把「内容没变」和「距上次写入不足 30 秒」用 AND 组合，
+// 而定时器每 30000ms 才触发（只会晚到）——时间条件在周期路径上恒假，静止写作照样每 30 秒
+// 整篇重写一次草稿，并把 at 时间戳刷成最后一次重写时刻。
+test('RPAN-B01：内容没变时，超过 30 秒周期也不再重写草稿（时间条件不许卡住跳过）', async () => {
+  const { host, calls } = makeHost({ enabled: true, text: '未保存的正文' });
+  const ui = crashRecoveryUi.create(host);
+  const realNow = Date.now;
+  try {
+    assert.equal((await ui.snapshotNow()).ok, true);
+    assert.equal(calls.save.length, 1);
+    const t0 = realNow();
+    Date.now = () => t0 + 31000; // 30 秒周期触发时 now - lastSnapshotAt ≥ 30000（旧条件恒假）
+    const repeat = await ui.snapshotNow();
+    assert.equal(repeat.skipped, true, '内容没变就必须跳过，与距离上次多久无关');
+    assert.equal(calls.save.length, 1, '静止写作期不许每 30 秒重写一遍（写放大 + 刷新 at 时间戳）');
+    // 内容一变就必须写：跳过只看内容，不是把整章永久冻结
+    host.editorEl.value = '未保存的正文（补一句）';
+    const changed = await ui.snapshotNow();
+    assert.equal(changed.ok, true);
+    assert.equal(calls.save.length, 2);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('RPAN-B01：换了一章但正文恰好相同 → 必须写新草稿（身份键含书 + 章）', async () => {
+  const chapters = [
+    { id: 'ch_001', name: '第一章', file: '0001-第一章.txt' },
+    { id: 'ch_002', name: '第二章', file: '0002-第二章.txt' }
+  ];
+  const { host, state, calls } = makeHost({ enabled: true, text: '同样的正文', chapters });
+  const ui = crashRecoveryUi.create(host);
+  await ui.snapshotNow();
+  state.index = 1;
+  state.loadedChapterId = 'ch_002';
+  const second = await ui.snapshotNow();
+  assert.equal(second.ok, true);
+  assert.equal(second.skipped, undefined, '换章后不许沿用上一章「内容没变」的结论');
+  assert.equal(calls.save.length, 2);
+  assert.equal(calls.save[1].chapterId, 'ch_002');
+});
+
 test('U3 恢复提示：读全文 → 载章 → 正文只进编辑区 → 删草稿（同书不重开 / 换书先开书）', async () => {
   // 同书同章：不重开书，直接载章
   const same = makeHost({ enabled: true, dirty: false, drafts: [draftMeta()], answers: ['restore'] });

@@ -60,6 +60,7 @@
     let writing = false;
     let recoveryChecking = false;
     let lastSnapshotText = '';
+    let lastSnapshotKey = '';
     let lastSnapshotAt = 0;
     let lastDraftId = '';
 
@@ -87,7 +88,13 @@
       const text = editorEl.value;
       if (!text) return { ok: false, code: 'EMPTY' };
       const now = Date.now();
-      if (text === lastSnapshotText && now - lastSnapshotAt < SNAPSHOT_INTERVAL_MS) {
+      // RPAN-B01（第五轮审计）：「内容没变就不重复写」只看内容（+ 书/章身份）。
+      // 旧条件是 `text === lastSnapshotText && now - lastSnapshotAt < 30000`，而定时器本来就
+      // 每 30000ms 触发、只会晚到 —— 时间条件在周期路径下恒假，静止写作时每 30 秒仍整篇重写
+      // 一次草稿，还把 at 时间戳刷成「最后一次重写时刻」，恢复提示显示的新鲜度失真。
+      // 身份键必须带上书 / 章：换了一章而正文恰好相同，不能沿用上一章的草稿结论。
+      const snapshotKey = `${state.bookPath}\u0000${chapter.id}`;
+      if (text === lastSnapshotText && snapshotKey === lastSnapshotKey) {
         return { ok: true, skipped: true, draftId: lastDraftId };
       }
       writing = true;
@@ -108,6 +115,7 @@
         const data = result.data || {};
         if (data.saved !== true) return { ok: false, code: data.code || 'DRAFT_NOT_SAVED' };
         lastSnapshotText = text;
+        lastSnapshotKey = snapshotKey;
         lastSnapshotAt = now;
         lastDraftId = data.draftId || '';
         return { ok: true, draftId: data.draftId, chars: data.chars };
