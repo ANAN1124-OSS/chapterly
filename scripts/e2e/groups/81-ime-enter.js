@@ -144,6 +144,9 @@ module.exports = async function group81ImeEnter(t) {
   );
 
   // ---------- ① 书籍信息弹层（bookinfo-ui.js 的 #bookinfo-backdrop Enter）：组字中的 Enter 不许保存 ----------
+  // RSHE-B-01（第 5 轮审计）：只有「焦点在输入框里」的 Enter 才提交表单；焦点在按钮 / 弹层背景上的
+  // Enter 不再触发保存。真实作者的 Enter 一定来自正在打字的 author 输入框，所以这里也派发在
+  // #bookinfo-author 上（冒泡到 backdrop 的监听），而不是直接派发在 backdrop 上。
   await exec('window.__cwTest.save()');
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
@@ -152,7 +155,8 @@ module.exports = async function group81ImeEnter(t) {
   await exec(`window.__cwTest.openBookInfoForPath(${JSON.stringify(bookPath)})`);
   await waitFor('window.__cwTest.bookInfoDialogOpen() === true');
   await exec(`window.__cwTest.setBookInfoField('author', ${JSON.stringify(AUTHOR_COMPOSING)})`);
-  await exec(keyOn('bookinfo-backdrop', true));
+  await exec("document.getElementById('bookinfo-author').focus()");
+  await exec(keyOn('bookinfo-author', true));
   const infoSavedWhileComposing = await exec(pollFor('window.__cwTest.bookInfoDialogOpen() === false'));
   check(
     '输入法组字中按 Enter 不保存书籍信息',
@@ -161,7 +165,8 @@ module.exports = async function group81ImeEnter(t) {
   );
   // 组字结束（普通 Enter）：旧行为不变 —— 真的保存并关窗（写进书目的是这一版作者）
   await exec(`window.__cwTest.setBookInfoField('author', ${JSON.stringify(AUTHOR_CONFIRM)})`);
-  await exec(keyOn('bookinfo-backdrop', false));
+  await exec("document.getElementById('bookinfo-author').focus()");
+  await exec(keyOn('bookinfo-author', false));
   const infoSaved = await exec(
     pollFor(
       `window.__cwTest.bookInfoDialogOpen() === false && Boolean(window.__cwTest.shelfBookInfo(${JSON.stringify(BOOK)})) && window.__cwTest.shelfBookInfo(${JSON.stringify(BOOK)}).author === ${JSON.stringify(AUTHOR_CONFIRM)}`
