@@ -808,9 +808,14 @@
     syncChapterBatchBar();
     if (done.length) {
       // 一条撤销：按原顺序逐条插回原来的下一章前面（跨卷移动撤销的同一口径）。
+      // REDT-C-01（高）：必须**从后往前**插回。beforeId 记的是「原顺序里的下一章」；同批相邻章
+      // 全在移动集合里时，从前往后插会让锚点还留在目标卷，splice 到的是锚点现位（目标卷）里，
+      // normalize 后除最后一段外都被排到原卷末尾（例：[X,A,B,C] 选 A、B 移到卷 W 后撤销得
+      // [X,B,C,A]）。倒序保证每一章的锚点已经先回原位，段内相对顺序与位置才能逐字还原。
       undoUi.activate(`已把 ${done.length} 章移到「${targetName}」`, async () => {
         if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
-        for (const move of done) {
+        for (let i = done.length - 1; i >= 0; i -= 1) {
+          const move = done[i];
           const at = state.chapters.findIndex(
             (chapter) => chapter && String(chapter.id) === String(move.chapter.id)
           );

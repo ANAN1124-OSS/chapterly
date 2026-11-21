@@ -26,6 +26,7 @@ const MODULE_REL = 'renderer/chapter-ops-ui.js';
 const MODULE_ABS = path.join(ROOT, MODULE_REL);
 const MODULE_SRC = fs.existsSync(MODULE_ABS) ? fs.readFileSync(MODULE_ABS, 'utf8') : '';
 const moduleApi = fs.existsSync(MODULE_ABS) ? require('../renderer/chapter-ops-ui') : null;
+const chaptersLib = require('../core/chapters');
 
 // 从源码切一个「  [async] function 名字( ... ) { ... }」的真身（形参 / 函数体都按括号配对）。
 function extractFunction(source, name) {
@@ -775,13 +776,13 @@ test('A3-Cβ / B6：批量移到卷 / 批量改状态——已在该卷跳过、
   assert.deepEqual(rt.counts.load, [], '批量移卷不切章');
   assert.equal(rt.counts.undo.length, 1);
   assert.equal(rt.counts.undo[0].title, '已把 2 章移到「第二卷」');
-  // 撤销：按原顺序插回原来的下一章前面。
+  // 撤销：从后往前插回（REDT-C-01：正序插回会把段内其余章排到原卷末尾）。
   rt.host.api.moveChapterByDrop = async (chapter, target) => {
     rt.counts.drop.push([chapter.id, target.volumeId, target.beforeChapterId]);
     return { ok: true };
   };
   await rt.counts.undo[0].run();
-  assert.deepEqual(rt.counts.drop.map((item) => item[1].volumeId), ['v1', null]);
+  assert.deepEqual(rt.counts.drop.map((item) => item[1].volumeId), [null, 'v1']);
   // 全都在目标卷：明确提示，不假装成功。
   const rtSame = makeHost({ state: { selectedIds: new Set([0, 1]) } });
   const same = await rtSame.ui.moveSelectedChaptersToVolume('v1');
@@ -823,6 +824,62 @@ test('A3-Cβ / B6：批量移到卷 / 批量改状态——已在该卷跳过、
   assert.equal(one.code, 'EACCES');
   assert.equal(rtOne.state.selectedIds.size, 0);
   assert.match(rtOne.counts.toast[0][0], /^保存章节信息失败：只读/);
+});
+
+// REDT-C-01（高）：批量「移到卷」的撤销把相邻选中章错排到原卷末尾。
+// 这里不用打桩返回值，而是按 core/storage.moveChapterToVolume / moveChapterTo 的真实语义
+// （改 volumeId → 追加 / 按 beforeId 的**现位** splice → normalizeChapterOrder 归组）
+// 维护 state.chapters，才能量出撤销后的章序而不只是调用顺序。
+test('REDT-C-01：相邻多选移卷后撤销，逐字还原原章序（不把段内其余章排到原卷末尾）', async () => {
+  let rt = null;
+  const normalizeState = () => {
+    rt.state.chapters = chaptersLib.normalizeChapterOrder(rt.state.meta).chapters;
+    rt.state.meta.chapters = rt.state.chapters;
+  };
+  // 撤销走的是宿主级 moveChapterByDrop（不是 api），必须在 create 之前就把真实语义的实现交进去。
+  const simulateDrop = async (chapter, target) => {
+    const moved = { ...chapter, volumeId: target.volumeId || null };
+    const rest = rt.state.chapters.filter((item) => item.id !== chapter.id).map((item) => ({ ...item }));
+    const restMeta = { ...rt.state.meta, chapters: rest };
+    const beforeIndex = target.beforeChapterId
+      ? rest.findIndex((item) => item.id === target.beforeChapterId)
+      : -1;
+    const at = beforeIndex >= 0 ? beforeIndex : chaptersLib.insertIndexForVolume(restMeta, target.volumeId);
+    const next = rest.slice();
+    next.splice(Math.max(0, Math.min(at, next.length)), 0, moved);
+    rt.state.meta.chapters = next;
+    normalizeState();
+    return { ok: true, meta: rt.state.meta };
+  };
+  rt = makeHost({
+    state: {
+      index: 0,
+      selectedIds: new Set([1, 2]),
+      chapters: [
+        { id: 'X', name: '序', file: '000.md', volumeId: 'v1' },
+        { id: 'A', name: '甲', file: '001.md', volumeId: 'v1' },
+        { id: 'B', name: '乙', file: '002.md', volumeId: 'v1' },
+        { id: 'C', name: '丙', file: '003.md', volumeId: 'v1' }
+      ],
+      meta: { title: '测试书', volumes: [{ id: 'v1', name: '第一卷' }, { id: 'v2', name: '第二卷' }] }
+    },
+    host: { moveChapterByDrop: simulateDrop }
+  });
+  rt.state.meta.chapters = rt.state.chapters;
+  rt.host.api.moveChapterToVolume = async (bookPath, id, volumeId) => {
+    const chapter = rt.state.chapters.find((item) => item.id === id);
+    const rest = rt.state.chapters.filter((item) => item.id !== id).map((item) => ({ ...item }));
+    rt.state.meta.chapters = rest.concat([{ ...chapter, volumeId: volumeId || null }]);
+    normalizeState();
+    return { ok: true, data: { index: rt.state.chapters.findIndex((item) => item.id === id), meta: rt.state.meta } };
+  };
+  const moved = await rt.ui.moveSelectedChaptersToVolume('v2');
+  assert.equal(moved.ok, true);
+  assert.deepEqual(rt.state.chapters.map((item) => item.id), ['X', 'C', 'A', 'B']);
+  assert.equal(rt.counts.undo.length, 1);
+  await rt.counts.undo[0].run();
+  assert.deepEqual(rt.state.chapters.map((item) => item.id), ['X', 'A', 'B', 'C'], '撤销必须还原原章序');
+  assert.deepEqual(rt.state.chapters.map((item) => item.volumeId), ['v1', 'v1', 'v1', 'v1']);
 });
 
 test('A3-Cβ / B7：导出 / 复制 / 备注——非连续明确拒绝、复制含未保存正文、备注清空 = 删除', async () => {
