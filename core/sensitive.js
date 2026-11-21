@@ -27,8 +27,9 @@ const MAX_FILE_BYTES = wordlist.MAX_FILE_BYTES;
 const MAX_WORDS = 5000;
 // 单行超过 100 字基本是误粘进来的正文，跳过并统计，不参与匹配
 const MAX_WORD_LENGTH = 100;
-// 单次扫描最多收集多少条原始命中（防止词表里混进「的」这类超高频字把内存打爆）
-const RAW_MATCH_LIMIT = 100000;
+// 单次扫描最多收集多少条原始命中（防止词表里混进「的」这类超高频字把内存打爆）。
+// CTXT-B-09：引用 wordscan 的同一份默认值，不在两处各写一个 100000（引用不复制）。
+const RAW_MATCH_LIMIT = wordscan.DEFAULT_RAW_MATCH_LIMIT;
 // 结果列表里显示的上下文半径（和校对 / 查找一致）
 const SNIPPET_RADIUS = 18;
 // 摘要里最多列多少个词的命中数（明细里每一条仍会列出具体词）
