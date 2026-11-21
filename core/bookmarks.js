@@ -31,10 +31,17 @@
   const MAX_ID_LENGTH = 200;
   const MAX_CHAPTER_INDEX = 1000000;
 
-  // 只保留字符串、去掉首尾空白并限长；非字符串一律当空（坏配置不抛错）
+  // CSTO-B-04（审计低批）：与 core/bookinfo.js 的 WP14 C10 同一份清洗标准 ——
+  // 配置里用户可编辑的文本不许带 C0 控制字符（\s 不匹配 U+0000，旧实现会让 NUL 原样进 query / 书名）
+  // 与 bidi 格式控制（U+202E 等会把书签列表的显示排版倒过来）。
+  // 书签的键拼接另见 keyOf：它只 trim，id 由应用生成、字符集不含这些字符。
+  const CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+  const BIDI_CONTROL_RE = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+
+  // 只保留字符串、剔控制字符 / bidi、去掉首尾空白并限长；非字符串一律当空（坏配置不抛错）
   function cleanText(value, max) {
     if (typeof value !== 'string') return '';
-    const trimmed = value.trim();
+    const trimmed = value.replace(CONTROL_CHARS_RE, '').replace(BIDI_CONTROL_RE, '').trim();
     return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
   }
 

@@ -195,3 +195,25 @@ test('查找书签：位置文案与「几本书」统计', () => {
   assert.equal(countBooks(list), 2);
   assert.equal(countBooks(null), 0);
 });
+
+// CSTO-B-04：书签的展示字段与书籍信息走同一份清洗标准（C10）——
+// C0 控制字符（\s 不匹配 U+0000）与 bidi 格式控制不许进配置。
+test('CSTO-B-04：展示字段剔掉控制字符与 bidi 格式控制，与 core/bookinfo 的 C10 同一口径', () => {
+  const bookmark = normalizeBookmark(
+    sample({
+      bookId: 'b_\u0000book1',
+      chapterId: 'ch_00\u00071',
+      bookTitle: '测\u0000试\u202E书',
+      chapterName: '雨\u0007夜\u2066',
+      bookPath: 'D:\\书库\\测\u200F试书'
+    }),
+    { now: 5000 }
+  );
+  assert.equal(bookmark.bookId, 'b_book1');
+  assert.equal(bookmark.chapterId, 'ch_001');
+  assert.equal(bookmark.bookTitle, '测试书');
+  assert.equal(bookmark.chapterName, '雨夜');
+  assert.equal(bookmark.bookPath, 'D:\\书库\\测试书');
+  // 制表 / 换行不在剔除范围内（各自字段另有口径），别把正文里的空白误伤
+  assert.equal(normalizeBookmark(sample({ bookTitle: 'A\tB' }), { now: 5000 }).bookTitle, 'A\tB');
+});
