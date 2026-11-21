@@ -32,6 +32,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { lineStartsOf, positionOf } = require('../core/common');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -42,8 +43,10 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'shots', '.git', 'build', 'te
 const PRODUCT_DIRS = ['core', 'renderer'];
 const PRODUCT_FILES = ['main.js', 'preload.js'];
 // 测试侧（只用来区分「仅测试引用」）
-const TEST_FILES = ['scripts/e2e-scenario.js'];
-const TEST_DIRS = ['tests'];
+const TEST_FILES = ['scripts/e2e-scenario.js', 'scripts/screenshot-driver.js'];
+// TOOL-C-06：E2E 组文件（scripts/e2e/**）已在拆组后承担大量 DOM 引用（点击 / 断言 id / class），
+// 以前既不在产品侧也不在测试侧，只会被标「真死，可删」。现在至少落到「只被测试引用」档。
+const TEST_DIRS = ['tests', 'scripts/e2e'];
 
 function listFiles(dir, out = []) {
   let entries;
@@ -71,10 +74,19 @@ function readText(abs) {
   return fs.readFileSync(abs, 'utf8');
 }
 
-function lineOf(text, index) {
-  let line = 1;
-  for (let i = 0; i < index && i < text.length; i++) if (text.charCodeAt(i) === 10) line++;
-  return line;
+// TOOL-C-07：同一份文本要算几百个行号时，逐次从文首线性回扫是平方级开销。
+// 行首数组与二分查行号都走 core/common.js 的共享实现（lineStartsOf / positionOf），不在这里抄第二份。
+function lineAt(starts, index) {
+  return positionOf(starts, index).line;
+}
+
+// TOOL-C-07：countWord 的口径（`$`/`-` 算词内字符、只认完整词）可以用「按 [\w$-]+ 分词再计数」
+// 等价实现；一次全文分词建一张表，后面几百个定义 / 导出直接查表（以前每个名字扫三份全文）。
+function wordCounts(text) {
+  const map = new Map();
+  const re = /[\w$-]+/g;
+  for (const match of text.matchAll(re)) map.set(match[0], (map.get(match[0]) || 0) + 1);
+  return map;
 }
 
 // ---------------------------------------------------------------- CSS 解析
@@ -91,6 +103,7 @@ function stripCssComments(css) {
 // 后者看着重复，其实是窄窗口的另一套值，删了就破版（v0.9 B-4 踩过）。
 function parseCssRules(css) {
   const text = stripCssComments(css);
+  const starts = lineStartsOf(text);
   const rules = [];
   const frames = [];
   let buf = '';
@@ -107,7 +120,7 @@ function parseCssRules(css) {
       } else {
         const rule = {
           selector: prelude,
-          line: lineOf(text, i - prelude.length),
+          line: lineAt(starts, i - prelude.length),
           media: '',
           props: [],
           bodyStart: i + 1,
@@ -241,13 +254,14 @@ function duplicateSelectors(rules) {
 // HTML 里的 id 定义（`id="x"`），返回 [{ id, line }]
 function htmlIds(html) {
   const out = [];
+  const starts = lineStartsOf(html);
   for (const m of html.matchAll(/\sid\s*=\s*"([^"]*)"/g)) {
     const id = m[1].trim();
-    if (id) out.push({ id, line: lineOf(html, m.index) });
+    if (id) out.push({ id, line: lineAt(starts, m.index) });
   }
   for (const m of html.matchAll(/\sid\s*=\s*'([^']*)'/g)) {
     const id = m[1].trim();
-    if (id) out.push({ id, line: lineOf(html, m.index) });
+    if (id) out.push({ id, line: lineAt(starts, m.index) });
   }
   return out;
 }
@@ -645,6 +659,10 @@ function gather() {
   const allProductText = productTexts.map((t) => t.text).join('\n');
   const allTestText = testTexts.map((t) => t.text).join('\n');
   const allCssText = cssTexts.map((t) => t.text).join('\n');
+  // TOOL-C-07：三份全文各分词一次，后面按词查表（以前每个定义 / 导出都重扫三份全文）。
+  const productWordCounts = wordCounts(allProductText);
+  const testWordCounts = wordCounts(allTestText);
+  const cssWordCounts = wordCounts(allCssText);
   const defs = [];
   for (const { rel, text } of productTexts) {
     for (const def of jsTopLevelDefs(rel, text)) defs.push(def);
@@ -652,10 +670,10 @@ function gather() {
   const deadDefs = [];
   for (const def of defs) {
     // 扣除定义行本身：在同一文件里，`function name` 那次算 1 次
-    const prodCount = countWord(allProductText, def.name) - 1;
-    const testCount = countWord(allTestText, def.name);
-    const cssCount = countWord(allCssText, def.name);
-    // 名字可能出现在对象键 / 导出表里（那也是引用），countWord 已覆盖
+    const prodCount = (productWordCounts.get(def.name) || 0) - 1;
+    const testCount = testWordCounts.get(def.name) || 0;
+    const cssCount = cssWordCounts.get(def.name) || 0;
+    // 名字可能出现在对象键 / 导出表里（那也是引用），分词计数已覆盖
     if (prodCount <= 0) {
       deadDefs.push({ ...def, testCount, cssCount, prodCount });
     }
@@ -667,15 +685,14 @@ function gather() {
   const deadExports = [];
   const testOnlyExports = [];
   for (const { rel, text } of productTexts) {
-    const others = productTexts
-      .filter((t) => t.rel !== rel)
-      .map((t) => t.text)
-      .join('\n');
+    // 这份文件自己的词表（「别的文件里出现几次」= 全量计数 - 本文件计数）
+    const ownWordCounts = wordCounts(text);
     for (const exp of moduleExports(text)) {
-      const prodCount = countWord(others, exp.exported);
+      const prodCount =
+        (productWordCounts.get(exp.exported) || 0) - (ownWordCounts.get(exp.exported) || 0);
       if (prodCount > 0) continue;
-      const ownCount = countWord(text, exp.internal) - 1; // 自身内部用到几次（0 = 连自己都没用）
-      const testCount = countWord(allTestText, exp.exported);
+      const ownCount = (ownWordCounts.get(exp.internal) || 0) - 1; // 自身内部用到几次（0 = 连自己都没用）
+      const testCount = testWordCounts.get(exp.exported) || 0;
       if (ownCount > 0) continue; // 内部自用 = 活的（导出只是给测试 / 将来用）
       if (testCount > 0) testOnlyExports.push({ file: rel, name: exp.exported, testCount });
       else deadExports.push({ file: rel, name: exp.exported, ownCount, testCount });
@@ -790,6 +807,9 @@ function gather() {
     unnecessaryExports,
     dupes,
     mediaOverrides,
+    // TOOL-C-05：--verbose 的「全部动态拼名形状」读的就是这个键；以前 gather() 不返回它，
+    // verbose 分支永远输出空数组（`result.dynamicPatterns || []`）。计数在 counts.dynamicPatterns。
+    dynamicPatterns: dynPatterns,
   };
 }
 
@@ -921,6 +941,8 @@ module.exports = {
   moduleExports,
   exportsWithoutConsumer,
   countWord,
+  wordCounts,
+  lineAt,
   gather,
   formatReport,
 };

@@ -171,7 +171,7 @@ def ico_bytes(items):
     return head + entries + body
 
 
-def blit(dst, dw, dh, src, sw, sh, ox, oy, bg=None):
+def blit(dst, dw, dh, src, sw, sh, ox, oy):
     """把 RGBA 源图合成到目标行列表上（alpha over）。"""
     for y in range(sh):
         ty = oy + y
@@ -206,7 +206,7 @@ def sheet(sizes, bg, gap, margin, path):
     x = margin
     for s in sizes:
         img = render(s)
-        blit(rows, w, h, img, s, s, x, h - margin - s, bg)
+        blit(rows, w, h, img, s, s, x, h - margin - s)
         x += s + gap
     with open(path, "wb") as f:
         f.write(png_bytes(w, h, [bytes(r) for r in rows]))
@@ -256,16 +256,19 @@ def main():
     out = args[0] if args else default_out
     os.makedirs(out, exist_ok=True)
 
+    # TOOL-C-09：cache 里存 render(s) 的行列表，PNG / DIB 按需编码。
+    # 旧实现一律先编码 PNG 存进 cache，--ico-only 时 16–128 的 PNG 编码没人用、且 <256 的 6 个尺寸
+    # 还要再 render 一遍做 DIB（同一份图算两遍）。
     cache = {}
     for s in sorted(set(ICO_SIZES + PNG_SIZES)):
-        cache[s] = png_bytes(s, s, render(s))
+        cache[s] = render(s)
         if s in PNG_SIZES and not ico_only:
             with open(os.path.join(out, "章回-%d.png" % s), "wb") as f:
-                f.write(cache[s])
+                f.write(png_bytes(s, s, cache[s]))
 
     ico = ico_bytes(
         [
-            (s, cache[s] if s >= 256 else dib_bytes(s, render(s)))
+            (s, png_bytes(s, s, cache[s]) if s >= 256 else dib_bytes(s, cache[s]))
             for s in ICO_SIZES
         ]
     )
@@ -275,7 +278,7 @@ def main():
             f.write(ico)
 
     with open(os.path.join(out, "icon.png"), "wb") as f:
-        f.write(cache[512])
+        f.write(png_bytes(512, 512, cache[512]))
     if ico_only:
         print("[ok] 已生成:", os.path.join(out, "icon.ico"), os.path.join(out, "icon.png"))
         return

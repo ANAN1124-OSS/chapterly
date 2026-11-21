@@ -134,7 +134,9 @@ async function run(host) {
     const win = host.getWin();
     // 审计修复 #53（R7）：注入统一走 driver-poll 的 execInRenderer，run 内只留一个 exec(code) 别名
     // （以前 80+ 处逐字重复 win.webContents.executeJavaScript(..., true)）。
-    const exec = (code) => execInRenderer(win, code);
+    // TOOL-C-08：84 处调用都带着第二个实参（userGesture，旧 executeJavaScript 的手势口径）；
+    // 别名以前只收一个参数、第二个被静默丢弃。现在显式接住并转传（默认 true 与旧行为一致）。
+    const exec = (code, userGesture = true) => execInRenderer(win, code, userGesture);
     // E2E 专用（2026-11-04）：Electron 文档写明 sendInputEvent 只在窗口**有焦点**时投递；
     // 自动化在后台跑时窗口会被别的程序抢走焦点，于是真实键盘 / 悬停断言偶发假红（组 69 / 70）。
     // 同理，窗口被别的窗口盖住时 Chromium 会把渲染层当后台页暂停，程序化 win.setSize 改的是
