@@ -117,7 +117,9 @@
     // 1.6.0 A5/P-09：输入路径（options.typing）的本章字数走 200ms 防抖；切章 / 保存 / 套用等
     // 非输入路径不传 typing，仍然同步算（切过来就要看见字数）。
     renderCharCount({ defer: Boolean(options && options.typing) });
-    $('btn-save').disabled = !state.dirty || state.saving;
+    // REDT-B-05：与 undo-ui 的按钮访问同一口径（先判空再动），假 host 少给一个节点时不再 TypeError。
+    const saveBtn = $('btn-save');
+    if (saveBtn) saveBtn.disabled = !state.dirty || state.saving;
     // 把未保存状态同步给主进程，供 Windows 关机拦截使用
     if (state.dirty !== state.reportedDirty) {
       state.reportedDirty = state.dirty;
@@ -279,7 +281,8 @@
       return { ok: true, skipped: true };
     }
     const chapter = state.chapters[state.index];
-    if (!chapter) return { ok: false, message: '章节不存在' };
+    // REDT-B-06：与同函数其余失败返回（BUSY / NO_CHAPTER / CHAPTER_MISMATCH）形状对齐，带 code。
+    if (!chapter) return { ok: false, code: 'NO_CHAPTER', message: '章节不存在' };
     // WP-03（V101）：保存只认「编辑区里真正载入的那一章」。索引可能已经被另一次开书 / 切章推着走，
     // 但编辑区还是别处的内容——这种情况拒绝写盘并从磁盘重载，绝不把别书 / 别章的正文写进来。
     if (state.loadedChapterId !== chapter.id) {

@@ -53,6 +53,9 @@
       if (statsUi[key] === undefined || statsUi[key] === null) throw new TypeError('createWriteTimerUi 的 host.statsUi 缺少 ' + key);
     }
     const { formatStopwatch, formatDuration, WRITE_TIMER_FLUSH_MS } = common;
+    // RPAN-B03：可选宿主成员 —— 有 toast 就把「没计入统计的秒数」说给作者听；老宿主 / 单测没有
+    // 这个成员时退回控制台说明（不改变 REQUIRED_HOST 与装配契约）。
+    const toast = typeof host.toast === 'function' ? host.toast : null;
     const { renderStatsUi } = statsUi;
     // 五-L12（ES-3）：日期键补零用 core/common.js 的唯一实现（不在这里再抄一份 pad2 / padStart）
     if (!commonLib || typeof commonLib.pad2 !== 'function') {
@@ -338,6 +341,17 @@
   async function resetWriteTimer({ flush = true } = {}) {
     if (flush) await flushWriteTimer();
     const t = state.writeTimer;
+    // RPAN-B03：flush 失败（stats.json 写不进去等）时 unsentDays 里还压着整秒余额，它们在下面被
+    // 清零就真的没了 —— 与 flushWriteTimerNow「放回下次再试」的承诺矛盾。秒表必须结束（回书架 /
+    // 换书 / 关窗），但至少把「有 X 秒没能计入统计」说清楚再清（旧宿主没有 toast 时退回控制台说明）。
+    const lostSeconds = Math.floor(
+      Object.keys(t.unsentDays || {}).reduce((sum, day) => sum + Math.max(0, Number(t.unsentDays[day]) || 0), 0) / 1000
+    );
+    if (lostSeconds > 0) {
+      const message = `有 ${formatDuration(lostSeconds)} 没能计入写作统计（统计文件写入失败），这次秒表已结束`;
+      if (typeof toast === 'function') toast(message, 'warn');
+      else console.warn(message);
+    }
     t.running = false;
     t.segmentStart = 0;
     t.awaitingResume = false;

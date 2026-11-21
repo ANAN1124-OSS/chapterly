@@ -38,8 +38,10 @@
 
   // 键盘上下移动（Phase D / D1）：Alt+↑/↓ 把这一章在本卷内上移 / 下移一格，等价于「拖一行」。
   // 章节数组顺序 = 界面显示顺序，且按卷分组连续（core/chapters.js 的顺序约定），所以同卷的
-  // 相邻下标就是界面上的相邻两行。跨卷（卷首往上 / 卷尾往下）返回 null —— 换卷归属是显式的
-  // 拖拽 /「移到卷…」动作，键盘不偷偷改；调用方据此停住，不写盘。
+  // 相邻下标就是界面上的相邻两行。
+  // 卷边界（卷首往上 / 卷尾往下）返回 null —— 本函数只算**同卷相邻**，不跨卷、不写盘；
+  // 跨卷由渲染层 moveChapterStep 接手：它对 null 再走 chaptersLib.crossVolumeTarget + moveChapterByDrop，
+  // 把这一章挪到相邻卷并登记 10 秒撤销（U-D1 的显式键盘跨卷能力）。两处注释同口径（REDT-C-07）。
   // 返回 { kind: 'index', toIndex } 或 null；纯逻辑，不碰 DOM / 不 require。
   function stepMoveTarget(chapters, index, direction, volumeOf) {
     const list = Array.isArray(chapters) ? chapters : [];

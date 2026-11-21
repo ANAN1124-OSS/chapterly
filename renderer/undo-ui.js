@@ -22,21 +22,27 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../core/assert-host').assertHost);
+    module.exports = factory(require('./undo-action'), require('../core/assert-host').assertHost);
   } else if (root) {
-    root.CWUndoUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
+    root.CWUndoUi = factory(root.CWUndoAction, root.CWAssertHost && root.CWAssertHost.assertHost);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (undoAction, assertHost) {
   'use strict';
 
+  // REDT-B-06：10 秒 TTL 只有 undo-action.js 一份；浏览器里 index.html 保证它先加载。
+  if (!undoAction || !Number.isFinite(undoAction.TTL_MS)) {
+    throw new Error('CWUndoUi：renderer/undo-action.js 没有先加载');
+  }
+  const TTL_MS = undoAction.TTL_MS;
+
   const REQUIRED_HOST = ['$', 'slot', 'toast'];
-  const TTL_MS = 10000;
 
   function createUndoUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
     assertHost('createUndoUi', host, REQUIRED_HOST);
     const { $, slot, toast } = host;
-    // 停留时长以 slot 的 TTL 为准（单测会传很小的值；生产是 undo-action.js 的 10s）
+    // REDT-B-06：TTL 只有 undo-action.js 一份（它导出的 TTL_MS），不再各持一份 10 秒常量靠人肉对齐。
+    // 停留时长以 slot 的 TTL 为准（单测会传很小的值；生产就是 undoAction.TTL_MS）。
     const ttlMs = Number.isFinite(slot.ttlMs) && slot.ttlMs > 0 ? slot.ttlMs : TTL_MS;
     let timer = null;
     let bound = false;
@@ -151,13 +157,15 @@
     function activate(label, run, meta) {
       rememberFocus();
       const action = meta && typeof meta === 'object' ? { label, run, ...meta } : { label, run };
-      const entry = slot.push(action);
+      // REDT-B-06：push 返回本次压入的条目（label 已按「上次操作」归一，at=now() 不会过期），
+      // 直接用它当「当前这条」；以前压完再 peek 一次再给 label 兜底，兜底分支不可达。
+      const current = slot.push(action);
       // H-1：栈满时最旧那一步的退路会被顶掉 —— 明说一句，别让作者以为它还在。
-      if (entry && entry.evicted && typeof toast === 'function') {
-        toast(`上一步（${entry.evicted.label}）的撤销已被新动作替换`, 'info');
+      if (current && current.evicted && typeof toast === 'function') {
+        toast(`上一步（${current.evicted.label}）的撤销已被新动作替换`, 'info');
       }
-      const current = slot.peek();
-      show(current ? current.label : String(label || ''));
+      // 兜底只对「push 不返回条目的旧槽实现」生效（生产 / 单测都是 undo-action 的槽，必返回条目）。
+      show(current && current.label != null ? current.label : String(label || ''));
       return current;
     }
 

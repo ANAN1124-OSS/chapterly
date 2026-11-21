@@ -130,6 +130,30 @@ test('host 契约：6 个成员 + 分组内每个真实依赖；缺任何一个�
   assert.throws(() => writeTimerUi.create(brokenStats), /host\.statsUi 缺少 renderStatsUi/);
 });
 
+test('RPAN-B03：flush 失败后 reset 不许静默清零未上报秒数，要如实提示', async () => {
+  const ctx = build({ addError: '磁盘只读', timer: { running: true, segmentStart: Date.now() - 65000, sessionMs: 65000 } });
+  const toasts = [];
+  // 可选宿主成员：有 toast 就把「没计入统计的秒数」说给作者听
+  ctx.host.toast = (message, kind) => toasts.push({ message, kind });
+  const ui = writeTimerUi.create(ctx.host);
+  await ui.flushWriteTimer();
+  assert.equal(ctx.state.writeTimer.unsentMs >= 60000, true, '上报失败时秒数放回待重试');
+  await ui.resetWriteTimer();
+  assert.equal(ctx.state.writeTimer.unsentMs, 0, '秒表结束，余额清零（当前行为）');
+  assert.equal(toasts.length, 1, '清零前必须提示一次「没能计入统计」');
+  assert.equal(toasts[0].kind, 'warn');
+  assert.match(toasts[0].message, /没能计入写作统计/);
+  assert.match(toasts[0].message, /1 分钟/, '文案带上真实时长');
+
+  // 没有失败余额时不许打扰
+  const ok = build();
+  const quietToasts = [];
+  ok.host.toast = (message, kind) => quietToasts.push({ message, kind });
+  const okUi = writeTimerUi.create(ok.host);
+  await okUi.resetWriteTimer({ flush: false });
+  assert.deepEqual(quietToasts, [], '没有未上报余额时不提示');
+});
+
 test('create() 只建表：不碰 DOM / 不建定时器，交出 14 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });

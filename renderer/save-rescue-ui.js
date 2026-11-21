@@ -92,7 +92,9 @@
     // WP1（E-N1）：META_CHANGED 走同一组出口，但说明不同（正文已落盘、书目没同步）。
     // WP6（N2）：BAD_PATH 也走同一组出口，并点明最常见的两种原因（书架根被换 / 章节路径被拒）。
     // 走完这里编辑区与 dirty 一个字节都不动：救稿只是「另外存一份」，书库仍然是被阻断的状态。
-    async function rescueBlockedSave({ message, silent, code }) {
+    // REDT-B-06：没有 silent 形参 —— handleSaveFailure 在 195 行对 silent 提前 return，
+    // 本函数永远只在「非静默」路径被调用（以前带着一个恒真的 `if (!silent)`）。
+    async function rescueBlockedSave({ message, code }) {
       const metaChanged = code === 'META_CHANGED';
       const badPath = code === 'BAD_PATH';
       const res = await openModal({
@@ -117,8 +119,8 @@
       try {
         await rescueCopy(action === 'copy' ? 'copy' : 'save');
       } catch (err) {
-        // 救稿本身失败不能把作者晾在原地：明确说一声（silent 保存不打扰，但仍写回状态栏）
-        if (!silent) toast(`救稿出口失败：${(err && err.message) || String(err)}`, 'error');
+        // 救稿本身失败不能把作者晾在原地：明确说一声（走到这里是可交互路径，静默保存已被上游拦掉）
+        toast(`救稿出口失败：${(err && err.message) || String(err)}`, 'error');
       }
     }
 
@@ -207,7 +209,7 @@
       }
       if (plan === 'rescue') {
         // code 一起透传：META_CHANGED 的说明是「正文已落盘、书目没同步」，与书 / 章文件没了不同。
-        await rescueBlockedSave({ message, silent, code });
+        await rescueBlockedSave({ message, code });
         return { ok: false, code, message };
       }
       return null;

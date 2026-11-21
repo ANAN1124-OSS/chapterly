@@ -633,7 +633,12 @@
       state.marks.resizeObserver = new ResizeObserver(() => scheduleMarksRender(40));
       state.marks.resizeObserver.observe(editorEl);
     }
-    $('status-long-para').addEventListener('click', () => jumpToNextLongParagraph());
+    // REDT-B-05：与 renderLongParaChip 同一口径 —— 同一元素一处判空一处裸用会让假 host 的
+    // 失败形态不一致（一处 TypeError、一处静默跳过）。
+    const longParaChip = $('status-long-para');
+    if (longParaChip && typeof longParaChip.addEventListener === 'function') {
+      longParaChip.addEventListener('click', () => jumpToNextLongParagraph());
+    }
     renderMarksMenu();
   }
 

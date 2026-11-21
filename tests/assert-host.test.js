@@ -178,9 +178,12 @@ test('静态闸门：四个嵌套分组模块改用 REQUIRED_GROUPS（分组样�
   }
 });
 
-test('浏览器链：先加载 core/assert-host.js 后，模块的 create 缺成员仍逐字报错', () => {  const win = {};
+test('浏览器链：先加载 core/assert-host.js 后，模块的 create 缺成员仍逐字报错', () => {
+  const win = {};
   const context = vm.createContext(win);
   vm.runInContext(ASSET_HOST_SOURCE, context, { filename: 'core/assert-host.js' });
+  // REDT-B-06 起 undo-ui 还依赖 renderer/undo-action.js（TTL 单一来源），按 index.html 的顺序先加载它。
+  vm.runInContext(read('renderer/undo-action.js'), context, { filename: 'renderer/undo-action.js' });
   for (const file of ['bookinfo-ui.js', 'undo-ui.js']) {
     vm.runInContext(read(`renderer/${file}`), context, { filename: `renderer/${file}` });
   }
@@ -194,12 +197,17 @@ test('浏览器链：先加载 core/assert-host.js 后，模块的 create 缺成
     () => win.CWUndoUi.create({ slot: {} }),
     /createUndoUi 的 host 缺少 \$/
   );
-  // 没先加载 assert-host.js：create 直接报错，不会带着 undefined 静默放行
+  // 没先加载依赖：模块装载期直接报错，不会带着 undefined 静默放行
   // （vm 沙箱里的 TypeError 与主 realm 不同原型，所以按文案断言，不按构造函数断言）
-  const bare = vm.createContext({});
-  vm.runInContext(read('renderer/undo-ui.js'), bare, { filename: 'renderer/undo-ui.js' });
   assert.throws(
-    () => bare.CWUndoUi.create({ $: () => {}, slot: {}, toast: () => {} }),
+    () => vm.runInContext(read('renderer/undo-ui.js'), vm.createContext({}), { filename: 'renderer/undo-ui.js' }),
+    /undo-action\.js 没有先加载/
+  );
+  const noAssertHost = vm.createContext({});
+  vm.runInContext(read('renderer/undo-action.js'), noAssertHost, { filename: 'renderer/undo-action.js' });
+  vm.runInContext(read('renderer/undo-ui.js'), noAssertHost, { filename: 'renderer/undo-ui.js' });
+  assert.throws(
+    () => noAssertHost.CWUndoUi.create({ $: () => {}, slot: {}, toast: () => {} }),
     /assertHost is not a function/
   );
 });

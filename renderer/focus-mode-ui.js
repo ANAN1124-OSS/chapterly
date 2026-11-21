@@ -105,11 +105,14 @@
   // 全文（同时刷新 baseTop），结果与全文测量逐像素一致。
   let caretMeasureCache = null;
 
+  // 样式像素解析（"18px" / "1.95" → 数字；量不出来算 0）。RPAN-B05：prepareFocusMirror 与
+  // measureCaretTop 以前各抄一份，两条测量路径的解析口径靠人肉同步，现在闭包内只有这一份。
+  function px(value) {
+    const n = parseFloat(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+
   function prepareFocusMirror(mirror, styles, width) {
-    const px = (value) => {
-      const n = parseFloat(value);
-      return Number.isFinite(n) ? n : 0;
-    };
     mirror.style.width = `${width}px`;
     mirror.style.fontFamily = styles.fontFamily;
     mirror.style.fontSize = styles.fontSize;
@@ -117,7 +120,6 @@
     mirror.style.fontStyle = styles.fontStyle;
     mirror.style.lineHeight = styles.lineHeight;
     mirror.style.letterSpacing = styles.letterSpacing;
-    return px;
   }
 
   // 把 content 塞进 mirror、量 zero-width 标记相对 mirror 顶部的偏移（量完清空）
@@ -146,10 +148,6 @@
     const text = editorEl.value;
     if (text.length > focusLogic.MAX_TYPEWRITER_CHARS) return null;
     const styles = getComputedStyle(editorEl);
-    const px = (value) => {
-      const n = parseFloat(value);
-      return Number.isFinite(n) ? n : 0;
-    };
     const width = Math.max(0, editorEl.clientWidth - px(styles.paddingLeft) - px(styles.paddingRight));
     if (width <= 0) return null;
     const pos = Math.max(0, Math.min(Math.floor(Number(position) || 0), text.length));
