@@ -60,6 +60,18 @@ function isWhitespaceCode(code) {
   );
 }
 
+// CTXT-B-05（审计低批）：预览按码元截断，截断点落在代理对中间时会把 emoji 切成孤立高代理
+// （界面显示成 �）。与 core/common.js 的 truncateSafe / core/capture.js 的 boundedPreviewPrefix
+// 同一口径：截到高位代理就回退一个码元。预览只用于列表识别，数据本身不截断。
+function slicePreview(line, max) {
+  let end = Math.max(0, max);
+  if (end > 0) {
+    const code = line.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  }
+  return line.slice(0, end);
+}
+
 // 首行预览：跳空行、把连续空白折成一个空格、超长截断加省略号；空文本返回空串。
 // 2026-11-17（审计 B4）：原来对全文 split(/\r?\n/) 再对首个非空行整行 replace(/\s+/g,' ')；
 // 队列 50 条 × 300 万字时 list() 每次都重扫全文。改成单趟按行推进、只看首个非空行，折叠结果
@@ -74,7 +86,7 @@ function previewOf(text, limit = PREVIEW_LIMIT) {
     const code = source.charCodeAt(i);
     if (code === 10) {
       // 行尾：这一行有内容就返回（跳空行的口径不变）；没有就接着看下一行
-      if (line) return line.length > max ? `${line.slice(0, max)}…` : line;
+      if (line) return line.length > max ? `${slicePreview(line, max)}…` : line;
       pendingSpace = false;
       i += 1;
       continue;
@@ -102,11 +114,11 @@ function previewOf(text, limit = PREVIEW_LIMIT) {
       pendingSpace = false;
     }
     line += ch;
-    if (line.length > max) return `${line.slice(0, max)}…`; // 折叠后已超 limit → 截断口径确定，立即返回
+    if (line.length > max) return `${slicePreview(line, max)}…`; // 折叠后已超 limit → 截断口径确定，立即返回
     i += width;
   }
   if (!line) return '';
-  return line.length > max ? `${line.slice(0, max)}…` : line;
+  return line.length > max ? `${slicePreview(line, max)}…` : line;
 }
 
 function createCaptureQueue(options = {}) {

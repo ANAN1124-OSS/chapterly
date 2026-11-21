@@ -54,8 +54,13 @@ function findMatchesAll(text, query, options = {}) {
   return scanMatches(text, query, options);
 }
 
+// CTXT-B-10（审计低批）：以前这个出口只回一个数字，底层到了 MAX_MATCHES 就静默截断 ——
+// 名字承诺「计数」，实际可能只是一个下限。现在如实回 { count, truncated, limit }，
+// 与 findMatchesAll / replaceAllLiteral 的 C4 契约同一口径：调用方必须看 truncated，
+// 不能把截断值当精确总数（需要命中位置时直接用 findMatchesAll）。
 function countMatches(text, query, options) {
-  return findMatches(text, query, options).length;
+  const found = findMatchesAll(text, query, options);
+  return { count: found.matches.length, truncated: found.truncated, limit: found.limit };
 }
 
 // 纯字面量替换；返回替换后的文本、**实际替换次数**与是否被单章上限截断（C4 / WP-05）。

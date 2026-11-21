@@ -182,6 +182,9 @@ function createCollector(maxIssues) {
       // 只给真有命中的规则分额度；规则数（≤10）永远小于预算下限（maxIssues ≥ 20），
       // 所以每条规则至少能分到 1 条明细 —— 这正是「有计数没条目」不再发生的条件。
       const rules = RULE_ORDER.filter((rule) => kept.has(rule));
+      // CTXT-B-08：没有任何规则命中时直接给空结果 —— 不再靠 cap / 0 = Infinity、cap % 0 = NaN
+      // 这两个「上游不消费所以看不出问题」的巧合兜住。
+      if (!rules.length) return { issues: [], total, byRule };
       const base = Math.floor(cap / rules.length);
       const extra = cap % rules.length;
       const quota = new Map();
@@ -224,19 +227,23 @@ function createCollector(maxIssues) {
 // 如果仍按折叠单位数（2）就会被漏报。
 // 纯 ASCII 连排（「...」「---」「?!」）一律返回 0：它们分别由省略号 / 破折号规则负责，
 // 旧行为也不把它们算进「连续标点」，不能为了混排把纯 ASCII 文本变成新的误报。
-function countPunctUnits(run) {
+// CTXT-B-07：可选 start / end 直接数 source 的一段，不物化子串 —— 病态输入（百万字连排标点）
+// 要在「额度还有没有」的预检通过之后才允许生成字符串。
+function countPunctUnits(run, start = 0, end) {
+  const from = Math.max(0, Math.floor(Number(start) || 0));
+  const to = Math.min(run.length, end === undefined ? run.length : Math.floor(Number(end) || 0));
   let units = 0;
   let hasAscii = false;
   let hasCjk = false;
-  for (let i = 0; i < run.length; i += 1) {
+  for (let i = from; i < to; i += 1) {
     const ch = run[i];
     if (ASCII_RUN_PUNCT.has(ch)) hasAscii = true;
     else if (CJK_RUN_PUNCT.has(ch)) hasCjk = true;
-    if ((ch === '…' || ch === '—') && i > 0 && run[i - 1] === ch) continue;
+    if ((ch === '…' || ch === '—') && i > from && run[i - 1] === ch) continue;
     units += 1;
   }
   if (!hasCjk) return 0;
-  return hasAscii ? run.length : units;
+  return hasAscii ? Math.max(0, to - from) : units;
 }
 
 // 中文句读（破折号判定的「中文侧」基础集合）。不含「——」「……」——
@@ -491,10 +498,18 @@ function proofreadText(text, rawOptions, rawGlossary) {
       }
       let j = i + 1;
       while (j < source.length && RUN_PUNCT.has(source[j])) j += 1;
-      const run = source.slice(i, j);
-      const units = countPunctUnits(run);
+      // CTXT-B-07：先在不物化子串的前提下数单位；额度已满时只 countOnly，绝不先拼整段。
+      const units = countPunctUnits(source, i, j);
       if (units >= 3) {
-        addIssue('punct-run', i, run.length, run, `连续 ${units} 个标点「${run}」`);
+        if (!collector.wants('punct-run')) {
+          collector.countOnly('punct-run');
+        } else {
+          // match / message 与超长段落同口径截到 PARAGRAPH_PREFIX：单条 issue 体积有硬上限，
+          // 百万字连排标点也不会整段跨 IPC 进面板。
+          const run = source.slice(i, j);
+          const shown = run.length > PARAGRAPH_PREFIX ? run.slice(0, PARAGRAPH_PREFIX) : run;
+          addIssue('punct-run', i, run.length, shown, `连续 ${units} 个标点「${shown}」`);
+        }
       }
       i = j;
     }

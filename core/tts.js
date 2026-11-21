@@ -181,6 +181,10 @@ function normalizedLength(source) {
 }
 
 // 归一后的前 limit 个字符（limit 是归一后坐标，不是原始下标）
+// CTXT-B-06（审计低批）：两处都要按「字」处理，不能让代理对从中间切开 ——
+//   · 无 CR 快路径切片前若截到高位代理，回退一个码元（与 core/common.truncateSafe 同一口径）；
+//   · 有 CR 的超限分支按码点推进（代理对整对算 1 个产出），否则同一段文本在 CR / 非 CR
+//     两条路径下「第 N 个字」的位置不一致，极限长度文本末尾还会留下孤立代理。
 function normalizePrefix(source, limit) {
   const s = String(source == null ? '' : source);
   const start = s.charCodeAt(0) === 0xfeff ? 1 : 0;
@@ -188,16 +192,26 @@ function normalizePrefix(source, limit) {
   if (start >= s.length || max === 0) return '';
   // 常见路径：没有 CR（不用做替换）→ 直接 slice；有 CR 但整段都没超限 → 一次原生 replace。
   const firstCr = s.indexOf('\r', start);
-  if (firstCr < 0) return s.length - start <= max ? s.slice(start) : s.slice(start, start + max);
+  if (firstCr < 0) {
+    if (s.length - start <= max) return s.slice(start);
+    let end = start + max;
+    const last = s.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1; // 截断点在高位代理上：整个码点都不要
+    return s.slice(start, end);
+  }
   if (s.length - start <= max) return s.slice(start).replace(/\r\n?/g, '\n');
   // 超限 + 有 CR：先数到「产出 max 个归一字」需要多少原始字符，再只对这段前缀做替换。
   let produced = 0;
   let cursor = start;
   let hasCr = false;
   while (cursor < s.length && produced < max) {
-    if (s.charCodeAt(cursor) === 0x0d) {
+    const code = s.charCodeAt(cursor);
+    if (code === 0x0d) {
       hasCr = true;
       cursor += s.charCodeAt(cursor + 1) === 0x0a ? 2 : 1;
+    } else if (code >= 0xd800 && code <= 0xdbff && cursor + 1 < s.length) {
+      const low = s.charCodeAt(cursor + 1);
+      cursor += low >= 0xdc00 && low <= 0xdfff ? 2 : 1; // 代理对整对算一个字
     } else {
       cursor += 1;
     }

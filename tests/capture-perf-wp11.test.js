@@ -66,13 +66,20 @@ function referenceRecordPreview(text, options = {}) {
 }
 
 // 参考实现：审计前 core/capture-queue.js previewOf 的原文（split 全文 + 首个非空行整行折叠）。
+// 参考实现：与改前逐字节等价的整行写法 + CTXT-B-05 的「不切开代理对」口径。
 function referencePreviewOf(text, limit = queueLib.PREVIEW_LIMIT) {
   const source = typeof text === 'string' ? text : '';
   const max = positiveInt(limit, queueLib.PREVIEW_LIMIT);
+  const safeSlice = (line) => {
+    let end = max;
+    const code = line.charCodeAt(end - 1);
+    if (end > 0 && code >= 0xd800 && code <= 0xdbff) end -= 1;
+    return line.slice(0, end);
+  };
   for (const raw of source.split(/\r?\n/)) {
     const line = raw.replace(/\s+/g, ' ').trim();
     if (!line) continue;
-    return line.length > max ? `${line.slice(0, max)}${ELLIPSIS}` : line;
+    return line.length > max ? `${safeSlice(line)}${ELLIPSIS}` : line;
   }
   return '';
 }

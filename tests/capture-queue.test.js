@@ -248,3 +248,18 @@ test('单条原文比队列总量还大：直接按 too-large 拒（不许 added
   assert.equal(queue.add('字'.repeat(10)).added, true);
   assert.equal(queue.size(), 1);
 });
+
+// CTXT-B-05：预览截断不许把代理对切成孤立高代理（与 capture.js 的码点截断同一口径）。
+test('CTXT-B-05：首行预览恰好跨代理对时不产生孤立代理', () => {
+  const emoji = '\u{1F600}'; // 代理对（2 个码元）
+  // 39 个 BMP 字符 + emoji：limit=40 时第 40 个码元正好是高代理
+  const text = '字'.repeat(39) + emoji + '后续文字';
+  const preview = queueLib.previewOf(text, 40);
+  assert.equal(preview.endsWith('…'), true, '超限要带省略号');
+  const body = preview.slice(0, -1);
+  assert.equal(body.length, 39, '截到高代理就回退一个码元（不会留下 40 个码元含半个 emoji）');
+  assert.equal(/[\uD800-\uDBFF]$/.test(body), false, '结尾不许是孤立高代理');
+  assert.equal(body, '字'.repeat(39));
+  // 边界恰好落在完整 emoji 之后：整对保留
+  assert.equal(queueLib.previewOf('字'.repeat(38) + emoji + '尾巴', 40), '字'.repeat(38) + emoji + '…', '边界落在完整代理对之后：整对保留');
+});

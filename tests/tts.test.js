@@ -218,3 +218,24 @@ test('朗读切分：纯函数——同样输入多次切分结果一致，不�
   const b = tts.buildChunks(text, { caret: 3 });
   assert.deepEqual(a, b);
 });
+
+// CTXT-B-06：前缀归一按「字」处理，代理对不从中间切开；CR / 非 CR 两条路径同口径。
+test('CTXT-B-06：极限长度前缀归一不产生孤立代理（无 CR 快路径 + 有 CR 慢路径）', () => {
+  const ttsLib = require('../core/tts');
+  const max = ttsLib.MAX_SOURCE_CHARS;
+  const emoji = '\u{1F600}';
+  const options = { maxChunkChars: 1200, maxChunks: 20000 };
+  const bodyOf = (text) => ttsLib.buildChunks(text, options).chunks.map((chunk) => chunk.text).join('');
+
+  // 无 CR 快路径：第 MAX 个码元正好是 emoji 的高代理 → 整个码点不要，正文止于 MAX-1 个 a
+  const noCrBody = bodyOf('a'.repeat(max - 1) + emoji + 'b');
+  assert.equal(noCrBody.length, max - 1, '截到高位代理时回退一个码元');
+  assert.equal(/[\uD800-\uDBFF]$/.test(noCrBody), false, '无 CR 快路径不许留孤立高代理');
+  assert.equal(noCrBody, 'a'.repeat(max - 1));
+
+  // 有 CR 慢路径：代理对整对算一个字，emoji 完整保留在边界的最后一个字
+  const crBody = bodyOf('a'.repeat(max - 1) + emoji + '\r\n尾巴');
+  assert.equal(/[\uD800-\uDBFF]$/.test(crBody), false, '有 CR 慢路径同样不许留孤立高代理');
+  assert.equal(crBody.includes('\r'), false, 'CR 已归一成 LF');
+  assert.equal(crBody, 'a'.repeat(max - 1) + emoji, '代理对整对算 1 个产出，不被拆开也不被多算一格');
+});

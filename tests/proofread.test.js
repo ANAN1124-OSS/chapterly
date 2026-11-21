@@ -897,3 +897,42 @@ test('B4/WP-27：MAX_SOURCE_CHARS 规模闸——超限只扫前 100 万字，�
 });
 
 
+
+// CTXT-B-07：连续标点规则在额度已满时只计数、不物化整段；单条 issue 的 match / message 有硬上限。
+test('CTXT-B-07：百万级连排标点不会整段进 match（额度预检 + PARAGRAPH_PREFIX 截断）', () => {
+  const huge = '，'.repeat(200000);
+  const result = proofread.proofreadText(huge, { maxIssues: 20 });
+  const first = result.issues.find((issue) => issue.rule === 'punct-run');
+  assert.ok(first, '仍有这条命中');
+  assert.equal(first.match.length, 24, 'match 截到 PARAGRAPH_PREFIX（24）');
+  assert.equal(first.match, '，'.repeat(24));
+  assert.match(first.message, /^连续 200000 个标点「，{24}」$/);
+  assert.equal(result.total >= 1, true);
+});
+
+test('CTXT-B-08：没有任何规则命中时 finish 早退（不靠 cap / 0 的 Infinity 巧合）', () => {
+  const fsLib = require('node:fs');
+  const pathLib = require('node:path');
+  // 行为面：空结果仍是空数组 / total 0
+  const empty = proofread.proofreadText('', { maxIssues: 20 });
+  assert.deepEqual(empty.issues, []);
+  assert.equal(empty.total, 0);
+  assert.equal(empty.truncated, false);
+  assert.deepEqual(empty.byRule, {
+    'halfwidth-punct': 0,
+    'long-paragraph': 0,
+    'repeat-word': 0,
+    'punct-run': 0,
+    'blank-lines': 0,
+    'cjk-latin-spacing': 0,
+    ellipsis: 0,
+    dash: 0,
+    'fullwidth-digit': 0,
+    'custom-word': 0
+  });
+  // 代码面：早退必须排在除法之前，避免以后有人消费 base / extra 时踩 NaN
+  const src = fsLib.readFileSync(pathLib.join(__dirname, '..', 'core', 'proofread.js'), 'utf8');
+  const earlyAt = src.indexOf('if (!rules.length) return { issues: [], total, byRule };');
+  const divideAt = src.indexOf('const base = Math.floor(cap / rules.length);');
+  assert.ok(earlyAt > 0 && divideAt > earlyAt, '空规则集必须先早退，再算配额');
+});

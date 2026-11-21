@@ -12,7 +12,7 @@ const {
 
 test('查找：字面量匹配、多个结果、中文与英文', () => {
   assert.deepEqual(findMatches('阿明说：阿明走了', '阿明').map((m) => m.index), [0, 4]);
-  assert.equal(countMatches('aaa', 'aa'), 1, '不重叠匹配');
+  assert.deepEqual(countMatches('aaa', 'aa'), { count: 1, truncated: false, limit: 5000 }, '不重叠匹配（CTXT-B-10：回包带 truncated）');
   assert.deepEqual(findMatches('Hello World', 'world'), [{ index: 6, length: 5 }], '默认不区分大小写');
   assert.deepEqual(findMatches('Hello World', 'world', { caseSensitive: true }), []);
   assert.deepEqual(findMatches('Hello World', 'World', { caseSensitive: true }), [{ index: 6, length: 5 }]);
@@ -22,11 +22,11 @@ test('查找：字面量匹配、多个结果、中文与英文', () => {
 
 test('查找：不搞正则，特殊字符按字面量处理', () => {
   const text = '价格 3.14 元 (含税) [备注] a*b';
-  assert.equal(countMatches(text, '3.14'), 1);
-  assert.equal(countMatches(text, '(含税)'), 1);
-  assert.equal(countMatches(text, '[备注]'), 1);
-  assert.equal(countMatches(text, 'a*b'), 1);
-  assert.equal(countMatches(text, '.*'), 0, '正则元字符不能当通配符');
+  assert.equal(countMatches(text, '3.14').count, 1);
+  assert.equal(countMatches(text, '(含税)').count, 1);
+  assert.equal(countMatches(text, '[备注]').count, 1);
+  assert.equal(countMatches(text, 'a*b').count, 1);
+  assert.equal(countMatches(text, '.*').count, 0, '正则元字符不能当通配符');
 });
 
 test('替换：全部替换、保留原文其余内容、次数正确', () => {
@@ -242,4 +242,11 @@ test('B3/WP-27 静态闸门：findNextMatch 不许再物化全量命中，5000 �
   assert.match(code, /indexOf\(needle, from2\)/, '必须用 indexOf 增量推进');
   assert.match(code, /while \(total < MAX_MATCHES\)/, '命中上限必须保留在增量循环里');
   assert.ok(!/\.push\(/.test(code), '不许把命中物化成数组');
+});
+
+// CTXT-B-10：countMatches 不再静默截断，超限时如实回 truncated。
+test('CTXT-B-10：countMatches 在 MAX_MATCHES 上限如实回报 truncated', () => {
+  const text = 'x'.repeat(5001);
+  assert.deepEqual(countMatches(text, 'x'), { count: 5000, truncated: true, limit: 5000 });
+  assert.deepEqual(countMatches('xxx', 'x'), { count: 3, truncated: false, limit: 5000 });
 });
