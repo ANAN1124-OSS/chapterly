@@ -138,6 +138,43 @@
     'settings-update-status': 'about'
   };
 
+  // RSHE-A-02（第五轮审计）：按书作用域里必须隐藏的「全局设置」项。
+  // 数据 / 内容 / 关于这些分区在按书作用域里本来就不显示；这里列的是会与「显示」分区
+  // 同屏出现的全局字段（书架根 / 每日快照 / 写作统计 / 词表 / 模板 / 导出 / 日志 / 更新）。
+  // 与 FIELD_SECTION 同源维护：新增一个全局设置组时先加进 FIELD_SECTION，再决定是否属于这里。
+  // 消费方是 renderer/settings-ui.js 的 updateSettingsScopeUi（一条单循环，不再手写八段样板）。
+  const GLOBAL_ONLY_FIELDS = Object.freeze([
+    // 数据：书架目录 / 每日快照（按书覆盖没有意义）
+    'settings-root-field',
+    'settings-snapshot-field',
+    'settings-snapshot-days-field',
+    // 写作统计 / 每日目标 / 写作时长 / 后台剪贴板监听（一个应用一套）
+    'settings-stats-group',
+    'settings-daily-goal-field',
+    'settings-duration-field',
+    'settings-clipboard-field',
+    'settings-stats-chart-field',
+    'settings-stats-totals-field',
+    'settings-calendar-field',
+    'settings-stats-hint',
+    // 内容：敏感词 / 校对词表 / 章节模板（所有书共用一套）
+    'settings-sensitive-group',
+    'settings-sensitive-field',
+    'settings-proofread-group',
+    'settings-proofread-field',
+    'settings-template-group',
+    'settings-template-field',
+    // 数据：导出简繁转换 / 崩溃恢复草稿
+    'settings-export-group',
+    'settings-export-field',
+    'settings-crash-draft-field',
+    // 关于：诊断日志 / 检查更新（一个应用一份 / 一个版本）
+    'settings-logs-group',
+    'settings-logs-field',
+    'settings-update-group',
+    'settings-update-field'
+  ]);
+
   // 深链：入口指定 section 时切到哪个分区、定位到哪个字段（U-D4 只有码字日历一个入口）
   const DEEP_LINKS = {
     calendar: { tab: 'writing', field: 'settings-calendar-field' }
@@ -273,6 +310,7 @@
     TAB_ID_PREFIX,
     SECTION_ID_PREFIX,
     FIELD_SECTION,
+    GLOBAL_ONLY_FIELDS,
     DEEP_LINKS,
     isTabId,
     sectionForField,
