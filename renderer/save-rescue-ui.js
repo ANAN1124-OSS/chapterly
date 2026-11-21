@@ -20,12 +20,15 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../core/assert-host').assertHost);
+    module.exports = factory(require('../core/assert-host').assertHost, require('./long-op-logic'));
   } else if (root) {
-    root.CWSaveRescueUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
+    root.CWSaveRescueUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost, root.CWLongOpLogic);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost, longOpLogic) {
   'use strict';
+  // REDT-B-04：书路径比较只用 long-op-logic 的同一份口径（Windows 大小写不敏感），
+  // 不再和 long-op-logic / undo-action 各写一套。
+  const { sameBookPath } = longOpLogic;
 
   const REQUIRED_HOST = [
     'state',
@@ -154,7 +157,7 @@
         const targetId = conflictChapterId || state.loadedChapterId;
         const chapters = Array.isArray(state.chapters) ? state.chapters : [];
         const targetIndex = chapters.findIndex((chapter) => chapter && chapter.id === targetId);
-        const sameBook = !conflictBookPath || conflictBookPath === state.bookPath;
+        const sameBook = !conflictBookPath || sameBookPath(conflictBookPath, state.bookPath);
         if (!sameBook) {
           state.dirty = true;
           toast('已经换了书，未重载；正文仍未保存，可先另存一份', 'warn');

@@ -405,7 +405,7 @@ test('接线：index.html 在 renderer.js 之前加载 save-rescue-ui.js 且只�
 });
 
 test('接线：renderer.js 与模块按全局名装配，只 create 一次，缺失成员走 assert-host', () => {
-  assert.match(moduleSrc, /root\.CWSaveRescueUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost\);/);
+  assert.match(moduleSrc, /root\.CWSaveRescueUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost, root\.CWLongOpLogic\);/);
   assert.match(rendererCode, /const saveRescueUiModule = window\.CWSaveRescueUi;/);
   assert.equal((rendererCode.match(/saveRescueUiModule\.create\(/g) || []).length, 1, '只 create 一次');
   assert.match(rendererCode, /const saveRescueUi = saveRescueUiModule\.create\(\{/);
@@ -418,7 +418,9 @@ test('接线：renderer.js 与模块按全局名装配，只 create 一次，缺
   }
   assert.ok(moduleCode.includes("assertHost('createSaveRescueUi', host, REQUIRED_HOST);"), 'host 校验走共享实现');
   // UMD 的 Node 分支只取 assert-host，运行时代码不 await 文件系统 / IPC
-  const runtimeCode = moduleCode.split("module.exports = factory(require('../core/assert-host').assertHost);").join('');
+  const runtimeCode = moduleCode
+    .split("module.exports = factory(require('../core/assert-host').assertHost, require('./long-op-logic'));")
+    .join('');
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'fetch(', 'document.']) {
     assert.equal(runtimeCode.includes(forbidden), false, forbidden);
   }

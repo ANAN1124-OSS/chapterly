@@ -90,7 +90,7 @@ const RUNTIME_BODY = [
   '  saveStatusUi, syncChapterCharsAfterSave, renderChapterList,',
   '  renderStatsUi, flushWriteTimer, restoreFindBookmarkForCurrentChapter,',
   '  verifyBookInBackground, loadChapterAt, openModal, chapterTitle,',
-  '  saveRescueUiModule, counts',
+  '  saveRescueUiModule, counts, sameBookPath',
   '} = deps;',
   'let savingWaiters = [];',
   'let saveDepth = 0;',
@@ -194,6 +194,8 @@ function makeRuntime(options = {}) {
     },
     chapterTitle: (index, name) => `第${index + 1}章：${name}`,
     saveRescueUiModule,
+    // REDT-B-04：save-chain-ui 的书路径比较改用 long-op-logic 的同一份口径，eval 沙箱也要注入。
+    sameBookPath: require('../renderer/long-op-logic').sameBookPath,
     counts
   };
   const runtime = createRuntime(deps);

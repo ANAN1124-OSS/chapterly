@@ -94,7 +94,9 @@ test('静态闸门：37 个 host 消费者都只调共享 assertHost（清单与
     // 依赖接线：Node 分支 require、浏览器分支取 window.CWAssertHost、工厂参数收得进来
     assert.ok(raw.includes("require('../core/assert-host')"), `${file} 的 UMD Node 分支必须 require('../core/assert-host')`);
     assert.ok(raw.includes('root.CWAssertHost'), `${file} 的 UMD 浏览器分支必须取 root.CWAssertHost`);
-    assert.ok(raw.includes('assertHost) {'), `${file} 的工厂签名必须收 assertHost 参数`);
+    // 工厂签名首参必须是 assertHost（其余依赖允许追加，如 save-rescue / save-chain 的 longOpLogic）。
+    // 工厂签名里必须有 assertHost（位置不限：有的模块 assertHost 在首位，有的从 UMD 依赖末尾传入）。
+    assert.match(raw, /function \([^)]*\bassertHost\b[^)]*\) \{/, `${file} 的工厂签名必须收 assertHost 参数`);
   }
 });
 

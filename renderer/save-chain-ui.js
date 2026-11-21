@@ -18,12 +18,15 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../core/assert-host').assertHost);
+    module.exports = factory(require('../core/assert-host').assertHost, require('./long-op-logic'));
   } else if (root) {
-    root.CWSaveChainUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
+    root.CWSaveChainUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost, root.CWLongOpLogic);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost, longOpLogic) {
   'use strict';
+  // REDT-B-04：书路径比较统一走 long-op-logic 的 sameBookPath（Windows 大小写不敏感），
+  // 与历史面板 / undo-action / 长操作收尾判定同一份口径。
+  const { sameBookPath } = longOpLogic;
 
   const REQUIRED_HOST = [
     'state', 'api', 'call', 'editorEl', 'toast', 'chaptersLib', 'saveLogic', 'openModal',
@@ -311,7 +314,7 @@
       const data = await (getTestSaveChapter() || call)(api.saveChapter, bookPath, chapterId, text, expectedMtimeMs);
       // WP-03（C10）：保存在途时作者可能已经切章 / 换书。回执按快照章身份完成——
       // 快照那一章的字数缓存该更新，但当前章的 mtime / baseText / dirty / 状态栏一个字都不许回写。
-      const sameBook = bookPath === state.bookPath;
+      const sameBook = sameBookPath(bookPath, state.bookPath);
       const sameChapter = sameBook && state.loadedChapterId === chapterId;
       const snapshotAt = sameBook
         ? state.chapters.findIndex((item) => item && item.id === chapterId)
@@ -373,7 +376,7 @@
       return { ok: true, data };
     } catch (err) {
       // 失败回执同样只认快照章身份：切走了就别把错误写到眼前这一章的状态栏上。
-      const sameChapter = bookPath === state.bookPath && state.loadedChapterId === chapterId;
+      const sameChapter = sameBookPath(bookPath, state.bookPath) && state.loadedChapterId === chapterId;
       // A7（审计 E4）：部分成功——正文已落盘、只有书目更新失败。不能按「保存失败」提示：
       // 正文不会丢，dirty 保持（再按一次保存会重写正文并重试书目），字数缓存先用主进程回的值更新。
       if (err.code === 'META_SAVE_FAILED' && err.bodySaved === true) {
@@ -399,9 +402,11 @@
       if (err.code === 'META_CHANGED') state.loadedMtimeMs = saveLogic.retryMtimeMs(err, state.loadedMtimeMs);
       state.saveError = err.message;
       updateStatus();
-      // 审计修复 #5 / #6（V301 / V302）：两个「救稿出口」只在这两个码上出现——
+      // 审计修复 #5 / #6（V301 / V302）：救稿出口的覆盖范围与 save-rescue-ui 的 RESCUE_CODES 一致——
       //   ① EXTERNAL_CHANGE：外部改动三选（覆盖 / 先另存一份 / 放弃我的修改并重载）；
-      //   ② BOOK_MISSING / CHAPTER_MISSING：另存这一章为 txt… / 复制正文 / 留在这里。
+      //   ② BOOK_MISSING / CHAPTER_MISSING：另存这一章为 txt… / 复制正文 / 留在这里；
+      //   ③ META_CHANGED / BAD_PATH（WP1 / WP6 扩充）：正文已落盘但书目写失败 / 书架根被换过，
+      //      同样给「另存 / 复制」出口。
       // 其余失败照旧只写状态栏 + 一条 toast；救稿出口自己弹完对话框后原样上抛失败结果。
       if (saveRescueUi.rescuePlanFor(err.code)) {
         return await saveRescueUi.handleSaveFailure(err, { silent, conflictBookPath: bookPath, conflictChapterId: chapterId });
@@ -442,8 +447,7 @@
     // 询问期间可能换书（弹窗不阻塞其它入口）：脏标记属于哪本书必须按发起时这一本来判，
     // 绝不拿 A 书的「放弃修改」去清 B 书的脏标记。
     const startBookPath = state.bookPath;
-    const sameStartBook = () =>
-      String(state.bookPath == null ? '' : state.bookPath) === String(startBookPath == null ? '' : startBookPath);
+    const sameStartBook = () => sameBookPath(state.bookPath, startBookPath);
     let silent = silentFirst === true;
     for (;;) {
       if (!state.dirty) return { ok: true };

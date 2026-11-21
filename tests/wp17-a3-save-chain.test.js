@@ -75,7 +75,7 @@ function extractFunction(source, name) {
 
 test('A3-A / C1：新模块交出 create + REQUIRED_HOST，UMD 双分支与共享 assertHost 与既有模块同口径', () => {
   assert.ok(MODULE_SRC, `${MODULE_REL} 不存在：保存链还没搬出编排器`);
-  assert.match(MODULE_SRC, /root\.CWSaveChainUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost\)/, '浏览器分支必须挂 CWSaveChainUi');
+  assert.match(MODULE_SRC, /root\.CWSaveChainUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost, root\.CWLongOpLogic\)/, '浏览器分支必须挂 CWSaveChainUi（long-op-logic 在同一批加载）');
   assert.match(MODULE_SRC, /require\('\.\.\/core\/assert-host'\)/, 'Node 分支必须 require ../core/assert-host');
   assert.match(MODULE_SRC, /function createSaveChainUi\(host\)/, '模块必须交出 createSaveChainUi(host)');
   assert.match(MODULE_SRC, /assertHost\('createSaveChainUi', host, REQUIRED_HOST\);/, '必须走共享 host 校验');
