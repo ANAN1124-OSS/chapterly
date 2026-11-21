@@ -318,6 +318,26 @@ test('参数解析：--static / --report / --widths / --json；非法宽度不�
   assert.strictEqual(gate.parseArgs(['--help']).help, true);
 });
 
+// TOOL-A03（第五轮审计）：未知参数 / 非法值不再静默吞掉 —— 与 verify-electron-checksum /
+// wiring-check 同口径记 opts.error，由 main 打用法并退 2。空格形式（--json 路径）必须报错，
+// 否则报告会静默落到默认时间戳路径，CI 产物收集悄悄失效。
+test('TOOL-A03：parseArgs 对未知参数 / 非法值 / 空格形式记 opts.error', () => {
+  assert.equal(gate.parseArgs([]).error, undefined, '正常参数不记错误');
+  assert.match(gate.parseArgs(['--json']).error, /--json 需要 =路径/);
+  assert.match(gate.parseArgs(['--json', 'shots/x.json']).error, /--json 需要 =路径/, '空格形式必须报错');
+  assert.match(gate.parseArgs(['--widths=abc']).error, /--widths 的值不合法/);
+  assert.match(gate.parseArgs(['--timeout=100']).error, /--timeout 的值不合法/);
+  assert.match(gate.parseArgs(['--sttaic']).error, /未知参数：--sttaic/, '拼错 --static 不许静默跑全量');
+  assert.match(gate.parseArgs(['positional']).error, /无法识别的参数/);
+  // 合法参数不误报
+  const ok = gate.parseArgs(['--static', '--report', '--widths=1440,900', '--json=shots/x.json', '--timeout=60000']);
+  assert.equal(ok.error, undefined);
+  assert.equal(ok.staticOnly, true);
+  assert.deepStrictEqual(ok.widths, [1440, 900]);
+  assert.equal(ok.json, 'shots/x.json');
+  assert.equal(ok.timeout, 60000);
+});
+
 test('临时目录守卫：只肯在系统临时目录里建夹具 / userData', () => {
   const inside = path.join(os.tmpdir(), 'cw-a11y-test');
   assert.strictEqual(gate.assertTempDir(inside), path.resolve(inside));

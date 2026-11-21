@@ -791,6 +791,13 @@ function usageText() {
 
 function parseArgs(argv) {
   const opts = { ...DEFAULTS, widths: DEFAULTS.widths.slice() };
+  // TOOL-A03（第五轮审计）：未知参数 / 非法值不再静默 continue —— 以前把 `--json shots/x.json`
+  // 写成空格形式时报告会静默落到默认时间戳路径，CI 产物收集悄悄失效；拼错 `--static` 还会
+  // 意外跑起全量实测。对齐同仓 verify-electron-checksum / wiring-check 的 opts.error 口径：
+  // 记下第一处错误，由 main 打用法并退 2。
+  const fail = (message) => {
+    if (!opts.error) opts.error = message;
+  };
   for (const raw of argv || []) {
     if (raw === '--help' || raw === '-h') {
       opts.help = true;
@@ -805,7 +812,10 @@ function parseArgs(argv) {
       continue;
     }
     const hit = /^--([a-z-]+)(?:=(.*))?$/.exec(String(raw));
-    if (!hit) continue;
+    if (!hit) {
+      fail(`无法识别的参数：${raw}`);
+      continue;
+    }
     const key = hit[1];
     const value = hit[2];
     if (key === 'widths') {
@@ -813,12 +823,19 @@ function parseArgs(argv) {
         .split(',')
         .map((item) => Number(item.trim()))
         .filter((item) => Number.isFinite(item) && item >= 320 && item <= 4096);
-      if (widths.length) opts.widths = widths;
-    } else if (key === 'json' && value) {
-      opts.json = value;
+      if (!value) fail('--widths 需要 =宽,宽 形式的值');
+      else if (!widths.length) fail(`--widths 的值不合法：${value}（要求 320–4096 的数字，逗号分隔）`);
+      else opts.widths = widths;
+    } else if (key === 'json') {
+      if (!value) fail('--json 需要 =路径 形式的值（空格形式会让报告静默落到默认路径）');
+      else opts.json = value;
     } else if (key === 'timeout') {
       const ms = Number(value);
-      if (Number.isFinite(ms) && ms >= 5000) opts.timeout = ms;
+      if (!value) fail('--timeout 需要 =毫秒 形式的值');
+      else if (!Number.isFinite(ms) || ms < 5000) fail(`--timeout 的值不合法：${value}（至少 5000 毫秒）`);
+      else opts.timeout = ms;
+    } else {
+      fail(`未知参数：--${key}`);
     }
   }
   return opts;
@@ -1332,6 +1349,12 @@ async function main(argv = process.argv.slice(2)) {
   if (opts.help) {
     console.log(usageText());
     return 0;
+  }
+  // TOOL-A03：参数错误按用法问题处理（退出码 2），与其它闸门 CLI 一致。
+  if (opts.error) {
+    console.error(`[a11y] ${opts.error}`);
+    console.error(usageText());
+    return 2;
   }
   const log = (line) => console.log(line);
   const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
