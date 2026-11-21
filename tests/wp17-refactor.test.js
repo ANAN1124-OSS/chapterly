@@ -592,3 +592,19 @@ test('R10 A3：章节目录显示层整段迁出 renderer.js（模块 / 装配 /
   for (const group of groups) assert.equal(typeof group.run, 'function', `E2E 组 ${group.id} 的 runner 丢了`);
   assert.ok(read('scripts/run-e2e.js').includes('${item.name}'), 'PASS / FAIL 行仍按 item.name 逐行打印');
 });
+// RSHE-B-03（第五轮审计）：折叠 / 展开单卷走整表重建后，旧实现无条件 scrollIntoView(当前章)，
+// 会把在远处浏览的视口拉回当前章。现在两条折叠入口传 keepScroll，重建后按记录位置恢复。
+test('RSHE-B-03：折叠 / 展开传 keepScroll，重建后按记录位置恢复而非拉回当前章', () => {
+  const source = read('renderer/chapter-directory-ui.js');
+  assert.match(source, /function renderChapterList\(options = \{\}\)/);
+  const start = source.indexOf('function renderChapterList(');
+  const body = source.slice(start, source.indexOf('\n  }', start));
+  const keepAt = body.indexOf('keepScroll');
+  const intoAt = body.indexOf('scrollIntoView');
+  assert.ok(keepAt > -1 && intoAt > keepAt, 'keepScroll 分支必须在 scrollIntoView 之前拦截');
+  for (const fn of ['toggleVolumeCollapse', 'toggleAllVolumes']) {
+    const at = source.indexOf('function ' + fn + '(');
+    const fnBody = source.slice(at, source.indexOf('\n  }', at));
+    assert.match(fnBody, /renderChapterList\(\{ keepScroll: true \}\)/, fn + ' 重建后要保持浏览位置');
+  }
+});

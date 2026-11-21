@@ -242,7 +242,7 @@
       if (allCollapsed) state.collapsedVolumes.delete(key);
       else state.collapsedVolumes.add(key);
     });
-    renderChapterList();
+    renderChapterList({ keepScroll: true });
   }
 
 
@@ -587,7 +587,7 @@
     const key = volumeId || '';
     if (state.collapsedVolumes.has(key)) state.collapsedVolumes.delete(key);
     else state.collapsedVolumes.add(key);
-    renderChapterList();
+    renderChapterList({ keepScroll: true });
   }
 
   // 卷头（吸顶）：左侧折叠箭头 + 宋体卷名；右侧「6 章 · 1.1万字」。
@@ -854,11 +854,16 @@
     return item;
   }
 
-  function renderChapterList() {
+  // RSHE-B-03（第五轮审计）：可选 { keepScroll }。折叠 / 展开只影响显隐，不改变「当前章」，
+  // 旧实现复用整表重建后又无条件 scrollIntoView(当前章) —— 用户滚到离当前章很远处折叠一卷，
+  // 视口会被拉回当前章、浏览位置丢失。传 keepScroll 时重建后恢复原 scrollTop（夹到新范围）。
+  function renderChapterList(options = {}) {
+    const keepScroll = Boolean(options && options.keepScroll);
     markCommandsDirty(); // 章节列表是命令面板「章节」条目的源：这里一变就作废缓存（1.5.0 P0-6）
     // 1.5.0 功能-1：建表前先把多选收口 —— 已删的章 / 换了书以后，选中集合里不能留下幽灵 id。
     pruneChapterSelection();
     const list = $('chapter-list');
+    const scrollTopBefore = keepScroll && list ? Number(list.scrollTop) || 0 : 0;
     // 先离线拼好整条列表，再一次性挂上去：千章书一次重建 1000 条时，逐条 appendChild
     // 会让容器反复失效（实测能省掉几毫秒）；配合 CSS 的 content-visibility，屏幕外的
     // 条目连布局都跳过。
@@ -956,6 +961,12 @@
     if (filtering) {
       // 筛选结果从第一条读起：不把当前章滚到底部，免得用户输一个词只看得到最后一条
       list.scrollTop = 0;
+    } else if (keepScroll) {
+      // RSHE-B-03：折叠 / 展开后保持浏览位置；行数变少时夹到新的可滚动范围，别停在越界空白。
+      let restored = scrollTopBefore;
+      const max = Number(list.scrollHeight) - Number(list.clientHeight);
+      if (Number.isFinite(max) && max >= 0) restored = Math.min(restored, max);
+      list.scrollTop = restored;
     } else {
       const active = getCachedActiveChapterItem();
       if (active) active.scrollIntoView({ block: 'nearest' });
