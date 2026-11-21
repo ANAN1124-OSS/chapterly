@@ -14,15 +14,14 @@ test('R1 渲染崩溃首次 → 自动重载（视图自己恢复）', () => {
       reason: 'crashed',
       nowMs: 100000,
       lastReloadAtMs: 0,
-      reloadCount: 0,
       quitting: false
     }),
-    { action: 'reload', reason: 'first-crash', nextLastReloadAtMs: 100000, nextReloadCount: 1 }
+    { action: 'reload', reason: 'first-crash', nextLastReloadAtMs: 100000 }
   );
   // 其它非正常原因同样恢复：OOM / killed / 异常退出
   for (const reason of ['oom', 'killed', 'abnormal-exit', 'launch-failed', 'integrity-failure']) {
     assert.equal(
-      crashRecovery.decideRenderCrash({ reason, nowMs: 5, lastReloadAtMs: 0, reloadCount: 0, quitting: false }).action,
+      crashRecovery.decideRenderCrash({ reason, nowMs: 5, lastReloadAtMs: 0, quitting: false }).action,
       'reload',
       `${reason} 也应自动重载`
     );
@@ -34,42 +33,39 @@ test('R2 60 秒内重复崩溃 → 对话框出口，不进重载环；过了保
     reason: 'crashed',
     nowMs: 100000,
     lastReloadAtMs: 0,
-    reloadCount: 0,
     quitting: false
   });
   const again = crashRecovery.decideRenderCrash({
     reason: 'crashed',
     nowMs: 100000 + crashRecovery.RELOAD_GUARD_MS - 1,
     lastReloadAtMs: first.nextLastReloadAtMs,
-    reloadCount: first.nextReloadCount,
     quitting: false
   });
   assert.equal(again.action, 'ask', '保护窗内重复崩溃不再自动重载（避免重载成环）');
   assert.equal(again.reason, 'reload-loop');
   assert.equal(again.nextLastReloadAtMs, first.nextLastReloadAtMs, '对话框出口不改「上次重载」时刻');
-  assert.equal(again.nextReloadCount, 2);
 
   const later = crashRecovery.decideRenderCrash({
     reason: 'crashed',
     nowMs: 100000 + crashRecovery.RELOAD_GUARD_MS + 1,
     lastReloadAtMs: first.nextLastReloadAtMs,
-    reloadCount: first.nextReloadCount,
     quitting: false
   });
   assert.equal(later.action, 'reload', '过了保护窗重新允许自动恢复');
-  assert.equal(later.nextReloadCount, 1);
+  // CGRD-04：防环只按 60 秒时间窗，不再有 reloadCount 字段（以前两端各维护一份却从不参与判定）
+  assert.equal('nextReloadCount' in later, false, '不再回写从不参与判定的 reloadCount');
 });
 
 test('R3 正常退出 / 关窗不误重载', () => {
   for (const reason of ['clean-exit']) {
     assert.deepEqual(
-      crashRecovery.decideRenderCrash({ reason, nowMs: 1, lastReloadAtMs: 0, reloadCount: 0, quitting: false }),
+      crashRecovery.decideRenderCrash({ reason, nowMs: 1, lastReloadAtMs: 0, quitting: false }),
       { action: 'none', reason: 'clean' }
     );
   }
   for (const reason of ['crashed', 'oom', 'killed']) {
     assert.deepEqual(
-      crashRecovery.decideRenderCrash({ reason, nowMs: 1, lastReloadAtMs: 0, reloadCount: 0, quitting: true }),
+      crashRecovery.decideRenderCrash({ reason, nowMs: 1, lastReloadAtMs: 0, quitting: true }),
       { action: 'none', reason: 'quitting' },
       '退出中不重载'
     );
@@ -110,7 +106,6 @@ test('R5 决策输入容错：坏 reason / 坏数字不抛、按最保守分支�
     reason: null,
     nowMs: 1,
     lastReloadAtMs: 0,
-    reloadCount: 0,
     quitting: false
   });
   assert.equal(badReason.action, 'reload', '未知原因按崩溃处理（至少给恢复机会）');
@@ -119,12 +114,11 @@ test('R5 决策输入容错：坏 reason / 坏数字不抛、按最保守分支�
     reason: 'crashed',
     nowMs: NaN,
     lastReloadAtMs: 'x',
-    reloadCount: 'y',
     quitting: false
   });
   assert.equal(badNumbers.action, 'reload');
   assert.equal(typeof badNumbers.nextLastReloadAtMs, 'number');
-  assert.equal(badNumbers.nextReloadCount, 1);
+  assert.equal(badNumbers.nextLastReloadAtMs >= 0, true, '坏数字不抛：lastReloadAtMs 回落 0 后按「首次崩溃」给时刻');
 
   assert.equal(crashRecovery.decideRenderCrash().action, 'reload', '无参数也不抛');
 });

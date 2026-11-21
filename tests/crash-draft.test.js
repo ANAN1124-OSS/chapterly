@@ -126,6 +126,23 @@ test('R2 异常退出标记：别的 pid 留下的标记 = 上次异常退出；
   await third.endSession();
 });
 
+test('CGRD-02：pid 复用的残留标记仍判异常退出（主判据 = 标记还在）', async () => {
+  const root = await newRoot();
+  // 第一次启动后不 endSession = 模拟崩溃，标记留在盘上
+  const first = storeAt(root, { pid: 4242 });
+  const began = await first.beginSession();
+  assert.equal(began.abnormal, false, '没有旧标记 = 上次干净退出');
+  // 下一次启动恰巧分到同一个 pid（Windows pid 空间小，复用不罕见）
+  const second = storeAt(root, { pid: 4242 });
+  const next = await second.beginSession();
+  assert.equal(next.abnormal, true, '标记还在就说明上次没走完退出流程，pid 是否相同无关');
+  assert.equal(next.previous && next.previous.pid, 4242, 'pid 仍保留在回包里（日志辅助）');
+  await second.endSession();
+  const third = storeAt(root, { pid: 4242 });
+  assert.equal((await third.beginSession()).abnormal, false, '干净退出（标记已删）后不报异常');
+  await third.endSession();
+});
+
 test('CGRD-01：写草稿只读元数据缓存，不再把全部草稿正文读回解析（写放大）', async () => {
   const root = await newRoot();
   let draftReads = 0;

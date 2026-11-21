@@ -30,18 +30,20 @@ function cleanText(value) {
     .join('');
 }
 
-// 崩溃处置计划。返回的 nextLastReloadAtMs / nextReloadCount 由调用方写回自己的崩溃状态。
+// 崩溃处置计划。返回的 nextLastReloadAtMs 由调用方写回自己的崩溃状态。
+// CGRD-04：防环只按「60 秒时间窗」——以前还维护一个 reloadCount，两端各存一份却从不参与判定
+// （既没有次数上限，还让人误以为有），已删。崩溃间隔超过 60 秒时仍会自动 reload，这是刻意取舍：
+// 远离上一次重载的崩溃更像一次性故障，直接自动恢复比每次都弹框更不打扰。
 function decideRenderCrash(input = {}) {
   const reason = normalizedReason(input.reason);
   if (input.quitting === true) return { action: 'none', reason: 'quitting' };
   if (CLEAN_REASONS.has(reason)) return { action: 'none', reason: 'clean' };
   const nowMs = finiteNumber(input.nowMs, Date.now());
   const lastReloadAtMs = Math.max(0, finiteNumber(input.lastReloadAtMs, 0));
-  const reloadCount = Math.max(0, Math.round(finiteNumber(input.reloadCount, 0)));
   if (!lastReloadAtMs || nowMs - lastReloadAtMs > RELOAD_GUARD_MS) {
-    return { action: 'reload', reason: 'first-crash', nextLastReloadAtMs: nowMs, nextReloadCount: 1 };
+    return { action: 'reload', reason: 'first-crash', nextLastReloadAtMs: nowMs };
   }
-  return { action: 'ask', reason: 'reload-loop', nextLastReloadAtMs: lastReloadAtMs, nextReloadCount: reloadCount + 1 };
+  return { action: 'ask', reason: 'reload-loop', nextLastReloadAtMs: lastReloadAtMs };
 }
 
 // 保护窗内再次崩溃：不再自动重载，给「重载界面 / 打开日志文件夹 / 关闭这个窗口」三个出口。

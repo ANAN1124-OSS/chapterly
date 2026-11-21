@@ -319,9 +319,17 @@ function createCrashDraftStore(baseDir, options = {}) {
       let previous = null;
       try {
         const raw = JSON.parse(await io.readFile(markerPath, 'utf8'));
-        if (raw && typeof raw === 'object' && Number.isFinite(Number(raw.pid))) {
-          previous = { version: Number(raw.version) || 0, pid: Number(raw.pid), startedAt: String(raw.startedAt || '') };
-          abnormal = previous.pid !== pid;
+        if (raw && typeof raw === 'object') {
+          previous = {
+            version: Number(raw.version) || 0,
+            pid: Number(raw.pid) || 0,
+            startedAt: String(raw.startedAt || '')
+          };
+          // CGRD-02：主判据是「标记还在」——干净退出必走 endSession 删标记，应用又带单实例锁
+          //（抢锁失败的第二个实例在 whenReady 前就退出），所以标记能留到下次启动就说明上次没走完
+          // 退出流程。旧实现用 `previous.pid !== pid` 判异常，Windows pid 复用（pid 空间小、复用常见）
+          // 会让一次真崩溃漏报，界面整轮不弹恢复提示、草稿 7 天后被静默清掉。pid 仅作日志辅助。
+          abnormal = true;
         } else {
           abnormal = true;
         }
