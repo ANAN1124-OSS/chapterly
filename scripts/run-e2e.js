@@ -139,6 +139,23 @@ child.on('close', (code) => {
         '真实剪贴板集成未被验证；解锁后重跑即可走真实剪贴板。'
     );
   }
+  // REPO-03：把实测 E2E 项数与文档锚点对一次（以前只剩「README 与验收清单互相对得上」，
+  // 没有任何东西证明这个数字是实测值）。只告警、不改文件：同步仍由维护者跑 version-sync --write。
+  const measured = Number(result.checks) || details.length;
+  if (measured > 0) {
+    try {
+      const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+      const anchor = /真实启动 Electron 走 (\d+) 项主流程/.exec(readme);
+      if (anchor && Number(anchor[1]) !== measured) {
+        console.warn(
+          `[e2e] 文档计数与实测不一致：README 写 ${anchor[1]} 项，本轮实测 ${measured} 项。` +
+            `同步：node scripts/version-sync.js --write --unit <单测实测> --e2e ${measured}`
+        );
+      }
+    } catch {
+      /* 文档读不到不影响自检结果 */
+    }
+  }
   if (result.ok) {
     console.log(`端到端自检通过：${result.checks} 项全部通过。`);
     finish({ ok: true, code: 0 });
