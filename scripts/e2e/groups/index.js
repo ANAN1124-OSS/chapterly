@@ -4,12 +4,12 @@
 // 上下翻。现在按组拆到本目录：**只拆文件、不改断言**，顺序等于原文件里的执行顺序。
 //
 // 加一组：在本目录新建 `NN-名字.js`（NN = 原场景里的组号），导出 async (t) => {...}，
-// 再在下面的数组里按组号插进去（数组顺序 = 执行顺序）；断言口径与 e2e-scenario.js 保持一致。
+// 再在下面的数组里按组号登记（**数组只负责登记**；执行位置由 e2e-scenario.js 的 runGroups 调用决定）。
 //
 // 为什么每项带 id：拆出来的组不一定都落在场景的同一个位置。第 52 组在原场景第 52 组的位置跑，
 // 60 起的那批在原来 60–62 的循环位置跑（后面才是第 55 多窗口组）——顺序必须与原文件一致，
 // 否则 FAIL 时不好对照场景。所以场景里用 runGroups(t, [52]) / runGroups(t, idsFrom(60))
-// 明确指定「在哪一段跑哪几组」，索引本身只负责登记与组号排序。
+// 明确指定「在哪一段跑哪几组」；索引本身只负责登记与组号排序（idsFrom(60) 自动带上当前全部尾部组，现到 83）。
 const groups = [
   // 第 0–51 组：2026-11-04 窗口从 e2e-scenario.js 整段搬出来（只搬文件、不改断言），
   // 场景里按「原位」一组一次 runGroups(groupContext(), [N]) 调用。
@@ -117,8 +117,9 @@ const groups = [
 // 1.6.0 G2：一组跑到一半抛了（check 累计失败后带着坏状态接着跑出的 TypeError / waitFor 超时）
 // 只记一条「场景异常」失败就继续下一组，不把整轮 E2E 停在这里；调用方没有 recordFailure
 // （旧用法 / 单测）时仍按原语义把异常抛出去。
-// 1.6.0 A6：每组的边界统一经过 runGroupWithPoliteness —— 只有键盘组（69/70/71）运行期间
-// 才允许主进程抢焦点（真实 sendInputEvent 需要窗口聚焦），其余组一律不抢。
+// 1.6.0 A6 / TEST-A-02：每组的边界统一经过 runGroupWithPoliteness —— 只有「发真实键盘事件、
+// 依赖窗口焦点」的组（68 / 69 / 70 / 71 / 75 / 79，见 e2e-politeness.js）运行期间才允许主进程
+// 抢焦点，其余组一律不抢。清单与 group 文件里的 sendInputEvent 由单测静态对齐。
 const politeness = require('../../e2e-politeness');
 
 async function runGroups(t, ids) {
@@ -134,7 +135,7 @@ async function runGroups(t, ids) {
   }
 }
 
-// 从某一组号起的所有组（给「场景尾部那一批」用：idsFrom(60) = 60 → 82）。
+// 从某一组号起的所有组（给「场景尾部那一批」用：idsFrom(60) = 60 → 83）。
 const idsFrom = (from) => groups.filter((group) => group.id >= from).map((group) => group.id);
 
 module.exports = { groups, runGroups, idsFrom };

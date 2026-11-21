@@ -3,7 +3,7 @@
 // E2E 跑 2 分钟左右，之前有两处对用户不太礼貌：
 //   1. 剪贴板探针把用户自己的剪贴板内容冲掉，跑完也不还原；
 //   2. 为了 sendInputEvent / resize 断言，每 600 ms 把窗口抢到前台——全程都在抢。
-// 现在：探针前先存原文、收尾写回；只有真的发真实键盘事件的组（69 / 70 / 71）前后才开抢焦点。
+// 现在：探针前先存原文、收尾写回；只有真的发真实键盘事件的组（68 / 69 / 70 / 71 / 75 / 79）前后才开抢焦点。
 //
 // 为什么单独一个文件：driver（scripts/screenshot-driver.js）和组索引（scripts/e2e/groups/index.js）
 // 是同一个进程里的两个模块，需要共享「现在允不允许抢焦点」这一个开关；放这里两边都 require
@@ -11,8 +11,13 @@
 //
 // 边界：scripts/ 不进安装包（build.files 不含），这里不 require 任何产品代码。
 
-// 只有这三组发真实键盘事件、依赖窗口焦点；组边界在 runGroups 里开关（见 groups/index.js）。
-const FOCUS_STEAL_GROUPS = Object.freeze([69, 70, 71]);
+// TEST-A-02（审计）：只有「发真实键盘事件 / 依赖窗口焦点」的组才在前后开抢焦点。
+// 68（Tab 遍历）/ 70 / 71 / 75（Ctrl+K 等）/ 79（? 快捷键）会 sendInputEvent 发 keyDown/keyUp/char；
+// 69 是像素级动效采样（窗口失焦时 Chromium 会暂停渲染，逐帧对比会假失败），也需要焦点。
+// 旧清单只列了 69/70/71，68 只靠开场一次性 grab，75/79 完全裸奔——工作站被别的窗口抬起时会
+// 出现该机制本可防止的偶发红。
+// 静态闸门在 tests/screenshot-driver.test.js：groups/*.js 里发键盘事件的组必须在本清单里。
+const FOCUS_STEAL_GROUPS = Object.freeze([68, 69, 70, 71, 75, 79]);
 
 function focusStealWindow(groupId) {
   return FOCUS_STEAL_GROUPS.includes(Number(groupId));

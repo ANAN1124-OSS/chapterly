@@ -243,6 +243,46 @@ test('harness.deleteBookWithRetry：失败按 200ms 重试，成功即返回；�
   assert.equal(failing.sleeps.length, 3);
 });
 
+test('TEST-A-04：deleteBookWithRetry 把 exec 瞬态失败也当一次失败重试，不再穿出循环', async () => {
+  let calls = 0;
+  const { harness } = makeHarness({
+    exec: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('页面正在 reload');
+      return JSON.stringify({ ok: true });
+    }
+  });
+  const result = await harness.deleteBookWithRetry('D:/tmp/书C');
+  assert.deepEqual(result, { ok: true });
+  assert.equal(calls, 2, '第一次 exec 抛错也要重试');
+  const alwaysThrow = makeHarness({
+    exec: async () => {
+      throw new Error('页面还没就绪');
+    }
+  });
+  const failed = await alwaysThrow.harness.deleteBookWithRetry('D:/tmp/书D', 2);
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /页面还没就绪/);
+  assert.equal(alwaysThrow.sleeps.length, 2);
+  // 静态：循环体内必须有 try/catch（异常不许绕开重试直接上抛）。
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const harnessSrc = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'e2e', 'harness.js'), 'utf8');
+  const body = harnessSrc.slice(harnessSrc.indexOf('const deleteBookWithRetry'), harnessSrc.indexOf('// ---------- 场景前导工具'));
+  assert.match(body, /} catch \(err\) \{[\s\S]*?last = \{ ok: false, error:/, 'exec 失败要转成一次失败并重试');
+});
+
+test('TEST-A-03/05/06：单实例锁探针消费 stderr、组索引注释与现状一致', () => {
+  const group56 = fs.readFileSync(path.join(GROUPS_DIR, '56-security-switches.js'), 'utf8');
+  assert.match(group56, /secondInstance\.stderr\.on\('data'/, 'stderr 必须有消费者（防止管道写满卡住探针）');
+  assert.match(group56, /stderr: secondStderr\.slice\(-400\)/, '失败 detail 要带 stderr 尾部现场');
+  assert.equal(group56.includes('不在 harness'), false, 'TEST-A-06：ensureWindowFocus 的出处注释要与现状一致');
+  assert.ok(group56.includes('公共工具在 harness.js，经 groupContext 传入'));
+  assert.equal(INDEX_SOURCE.includes('idsFrom(60) = 60 → 82'), false, 'TEST-A-05：范围注释要覆盖到 83');
+  assert.ok(INDEX_SOURCE.includes('idsFrom(60) 自动带上当前全部尾部组，现到 83'));
+  assert.equal(INDEX_SOURCE.includes('（数组顺序 = 执行顺序）'), false, '数组只负责登记，顺序由 runGroups 调用点决定');
+});
+
 test('harness.fileExists：文件 / 目录都算存在，不存在（含父目录不存在）返回 false，不抛错', async () => {
   const dir = await tempDir('cw-harness-exists-');
   const file = path.join(dir, '书目.json');

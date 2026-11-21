@@ -138,10 +138,16 @@ function createHarness(ctx) {
   const deleteBookWithRetry = async (bookPath, attempts = 10) => {
     let last = null;
     for (let i = 0; i < attempts; i += 1) {
-      last = JSON.parse(
-        await exec(`window.api.deleteBook(${JSON.stringify(bookPath)}).then((r) => JSON.stringify(r))`)
-      );
-      if (last && last.ok === true) return last;
+      // TEST-A-04（审计）：exec 本身也有瞬态失败（页面切换 / reload 间隙，waitFor 同口径会重试），
+      // 旧实现让异常直接穿出循环，把「带重试的删书」放大成整组场景异常、演练书残留在书架。
+      try {
+        last = JSON.parse(
+          await exec(`window.api.deleteBook(${JSON.stringify(bookPath)}).then((r) => JSON.stringify(r))`)
+        );
+        if (last && last.ok === true) return last;
+      } catch (err) {
+        last = { ok: false, error: String((err && err.message) || err) };
+      }
       await sleep(200);
     }
     return last;

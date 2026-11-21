@@ -22,7 +22,7 @@ module.exports = async function group56SecuritySwitches(t) {
     securityPolicy,
     // 单实例锁那条按仓库根目录启动第二个进程（场景里的 __dirname = scripts，组文件在 groups/ 下更深一层）。
     appRoot,
-    // 本组最后要把自动化窗口重新拿回系统焦点（场景里的本地 helper，不在 harness）。
+    // 本组最后要把自动化窗口重新拿回系统焦点（公共工具在 harness.js，经 groupContext 传入）。
     ensureWindowFocus
   } = t;
 
@@ -228,8 +228,15 @@ module.exports = async function group56SecuritySwitches(t) {
     { cwd: appRoot, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
   );
   let secondStdout = '';
+  let secondStderr = '';
   secondInstance.stdout.on('data', (chunk) => {
     secondStdout += chunk.toString();
+  });
+  // TEST-A-03（审计）：stderr 也必须消费 —— 锁失效的回归里 Chromium/GPU 告警可能写满 OS
+  // 管道缓冲把子进程卡住，失败会从「stdout 快速出现 [screenshot] 判死」退化成 30s 超时；
+  // 同时把 stderr 尾部带进失败 detail，排查时有现场可看。
+  secondInstance.stderr.on('data', (chunk) => {
+    secondStderr += chunk.toString();
   });
   const secondExit = await new Promise((resolve) => {
     let settled = false;
@@ -245,11 +252,11 @@ module.exports = async function group56SecuritySwitches(t) {
       } catch {
         /* 已经退了 */
       }
-      finish({ timedOut: true, code: null, stdout: secondStdout });
+      finish({ timedOut: true, code: null, stdout: secondStdout, stderr: secondStderr });
     }, 30000);
-    secondInstance.on('close', (code) => finish({ timedOut: false, code, stdout: secondStdout }));
+    secondInstance.on('close', (code) => finish({ timedOut: false, code, stdout: secondStdout, stderr: secondStderr }));
     secondInstance.on('error', (err) =>
-      finish({ error: String(err && err.message), stdout: secondStdout })
+      finish({ error: String(err && err.message), stdout: secondStdout, stderr: secondStderr })
     );
   });
   check(
@@ -259,7 +266,7 @@ module.exports = async function group56SecuritySwitches(t) {
       !secondExit.error &&
       !secondStdout.includes('[screenshot]') &&
       !secondStdout.includes('E2E_RESULT'),
-    { ...secondExit, stdout: secondStdout.slice(0, 200) }
+    { ...secondExit, stdout: secondStdout.slice(0, 200), stderr: secondStderr.slice(-400) }
   );
   check(
     '安全开关：第二个实例没有多开窗口 / 没有动窗口登记',

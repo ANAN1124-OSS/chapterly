@@ -357,13 +357,35 @@ test('restoreE2EClipboard：替身模式不碰系统剪贴板；原文没读到�
   }
 });
 
-test('focusStealWindow：只有键盘组（69/70/71）前后允许抢焦点', () => {
-  for (const id of [69, 70, 71]) {
+test('TEST-A-02：focusStealWindow 覆盖所有发真实键盘事件的组，且清单与组文件一一对应', () => {
+  for (const id of [68, 69, 70, 71, 75, 79]) {
     assert.equal(driver.focusStealWindow(id), true, `第 ${id} 组需要抢焦点`);
   }
-  for (const id of [0, 33, 50, 68, 72, 75, 80]) {
+  for (const id of [0, 33, 50, 72, 80]) {
     assert.equal(driver.focusStealWindow(id), false, `第 ${id} 组不该抢焦点`);
   }
+  // 静态闸门：groups/*.js 里发 keyDown / keyUp / char 的组必须全在白名单里（防新增键盘组漏登记）。
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const groupsDir = path.join(__dirname, '..', 'scripts', 'e2e', 'groups');
+  const keyboardGroups = [];
+  for (const name of fs.readdirSync(groupsDir)) {
+    if (!name.endsWith('.js') || name === 'index.js') continue;
+    const source = fs.readFileSync(path.join(groupsDir, name), 'utf8');
+    if (/sendInputEvent\(\s*\{[^}]*type:\s*'(?:keyDown|keyUp|char)'/.test(source)) {
+      keyboardGroups.push(Number(name.slice(0, 2)));
+    }
+  }
+  assert.deepEqual(keyboardGroups.sort((a, b) => a - b), [68, 70, 71, 75, 79]);
+  // 69 是像素级动效采样（窗口失焦会暂停渲染），与键盘组一起保留在焦点名单里。
+  const whitelist = [];
+  for (let id = 0; id <= 100; id += 1) {
+    if (driver.focusStealWindow(id)) whitelist.push(id);
+  }
+  assert.deepEqual(whitelist, [68, 69, 70, 71, 75, 79]);
+  for (const id of keyboardGroups) assert.equal(driver.focusStealWindow(id), true, `第 ${id} 组发真实键盘事件却不在清单里`);
+  // 只发 mouseMove 的组（50）不需要抢焦点。
+  assert.equal(driver.focusStealWindow(50), false);
 });
 
 test('runGroupWithPoliteness：键盘组内开启、组外关闭，组里抛异常也会关掉', async () => {
