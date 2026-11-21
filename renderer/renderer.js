@@ -1147,7 +1147,9 @@
     // WP-03（C9 / C10）：切章前等「载章 / 保存在途」落定（可选成员，旧宿主 / 单测没有也能跑）
     waitForSavingIdle, waitForLoadingIdle,
     // B2（WP18）：书架增量刷新（可选；renderShelf / refreshStats 装配点后才落定，惰性转发）
-    api, call, renderShelf: () => renderShelf(), refreshShelf: () => refreshShelf(), refreshStats: () => refreshStats(), markCommandsDirty
+    api, call, renderShelf: () => renderShelf(), refreshShelf: () => refreshShelf(), refreshStats: () => refreshStats(), markCommandsDirty,
+    // RSHE-C-01：单卡 DOM 增量（惰性转发；返回 false 时 shelf-ui 退回整表渲染）
+    patchShelfCard: (bookPath) => renderShelfCard(bookPath)
   });
   const { renderContinueWriting, openContinueBook, openConflictDialog, closeConflictDialog } = shelfUi;
 
@@ -1168,7 +1170,7 @@
     openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,
     openGroupManageDialog, closeGroupManageDialog, moveBookToGroup,
     openBookGroupChooser, closeBookGroupChooser, newGroupForBook,
-    renderShelf, createBookWithTitle, onNewBookClick, maybeShowFirstRunTip
+    renderShelf, renderShelfCard, createBookWithTitle, onNewBookClick, maybeShowFirstRunTip
   } = bookinfoUi;
 
   // ---------- 开书 / 载章状态机（v1.8.0 WP-03 / 审计 V101、V102、C9、C10） ----------

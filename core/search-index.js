@@ -1337,7 +1337,12 @@ function createSearchStore(options = {}) {
     // 建完后按进度事件自动重搜（renderer.js 的 onSearchProgress）—— 结果不会丢，只是晚一步。
     // 已经有本根可用索引时（改名 / 脏书触发的后台校验）仍走原路径：旧结果比空结果有用。
     const hasUsableIndex = index.root === searchRoot && index.books.length > 0;
-    if (ensurePromise && ensureRoot === searchRoot && !forceEnsure && !hasUsableIndex) {
+    // CTXT-A-02：ensure 队列是**全局单链**（1270-1273 行）。跨根时「在飞的校验根本不是自己这个根」，
+    // 旧实现会 await 别根分钟级的建索引，再排上自己这趟——跨书架切换后的搜索彻底无响应。
+    // 与同根首建同口径：没有本根可用索引时直接回 building:true，界面按进度事件自动重搜。
+    // 已经有本根可用索引时仍走原路径（旧结果比空结果有用）。
+    const waitingOnOtherRoot = Boolean(ensurePromise) && ensureRoot !== searchRoot;
+    if (ensurePromise && (ensureRoot === searchRoot || waitingOnOtherRoot) && !forceEnsure && !hasUsableIndex) {
       const state = status();
       const buildingInfo = {
         books: state.books,

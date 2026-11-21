@@ -290,7 +290,7 @@ test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个�
   }
 });
 
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 17 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 18 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0, 'create() 一次 $ 都不该调');
@@ -298,7 +298,7 @@ test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交�
     'closeBookGroupChooser', 'closeBookInfoDialog', 'closeGroupManageDialog', 'createBookWithTitle',
     'maybeShowFirstRunTip', 'mergeShelfGroup', 'moveBookToGroup', 'newGroupForBook',
     'onNewBookClick', 'openBookGroupChooser', 'openBookInfoDialog', 'openGroupManageDialog',
-    'readBookInfoForm', 'renameShelfGroup', 'renderShelf', 'saveBookInfoDialog', 'setupBookinfoUi'
+    'readBookInfoForm', 'renameShelfGroup', 'renderShelf', 'renderShelfCard', 'saveBookInfoDialog', 'setupBookinfoUi'
   ]);
   for (const name of Object.keys(ctx.ui)) assert.equal(typeof ctx.ui[name], 'function', name);
   assert.equal(moduleCode.includes('setInterval'), false);
@@ -1051,8 +1051,8 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
   assert.ok(openBookGuardSrc.includes('chapterIndex < chapters.length'), 'chapterIndex 要按本书章节数校验');
   assert.match(
     rendererSrc,
-    /const \{\r?\n    openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,\r?\n    openGroupManageDialog, closeGroupManageDialog, moveBookToGroup,\r?\n    openBookGroupChooser, closeBookGroupChooser, newGroupForBook,\r?\n    renderShelf, createBookWithTitle, onNewBookClick, maybeShowFirstRunTip\r?\n  \} = bookinfoUi;/,
-    '14 个入口按原名解构（renameShelfGroup / mergeShelfGroup 只在模块内部菜单用；setupBookinfoUi 由模块限定调用一次）'
+    /const \{\r?\n    openBookInfoDialog, closeBookInfoDialog, readBookInfoForm, saveBookInfoDialog,\r?\n    openGroupManageDialog, closeGroupManageDialog, moveBookToGroup,\r?\n    openBookGroupChooser, closeBookGroupChooser, newGroupForBook,\r?\n    renderShelf, renderShelfCard, createBookWithTitle, onNewBookClick, maybeShowFirstRunTip\r?\n  \} = bookinfoUi;/,
+    '15 个入口按原名解构（renameShelfGroup / mergeShelfGroup 只在模块内部菜单用；setupBookinfoUi 由模块限定调用一次；renderShelfCard 是 RSHE-C-01 的单卡增量）'
   );
   assert.ok(rendererSrc.includes('await maybeShowFirstRunTip();'), '首屏书架刷新后调一次首次运行提示');
   for (const id of [

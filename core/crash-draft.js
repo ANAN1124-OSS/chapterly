@@ -183,6 +183,11 @@ function createCrashDraftStore(baseDir, options = {}) {
     : MAX_TEXT_CHARS;
   const staleMs = Number.isFinite(Number(options.staleMs)) ? Math.max(0, Number(options.staleMs)) : STALE_MS;
   const markerPath = path.join(dir, SESSION_FILE_NAME);
+  // CGRD-01（审计）：writeDraft 每次落盘后原本都要 prune() → scan()：把目录里**所有**草稿
+  // 全量读回并解析（最多 8 份 × 32MB），写放大与草稿总大小成正比。但 prune 只需要
+  // 「draftId + at」两份元数据。这里缓存每份草稿的元数据（scan / 写入 / 删除时维护），
+  // 写路径只 readdir + 查缓存；目录里出现缓存没有的文件（另一窗口 / 手工放入）才读一次补。
+  const metaCache = new Map(); // draftId -> { at } | { invalid: true }
 
   function draftPath(draftId) {
     return path.join(dir, `${FILE_PREFIX}${draftId}.json`);
@@ -227,7 +232,13 @@ function createCrashDraftStore(baseDir, options = {}) {
         if (Number.isFinite(Number(stat.size)) && Number(stat.size) > MAX_STORED_BYTES) continue;
         const raw = JSON.parse(await io.readFile(file, 'utf8'));
         const entry = storedEntryFrom(raw, draftId, maxTextChars);
-        if (entry) entries.push(entry);
+        if (entry) {
+          entries.push(entry);
+          metaCache.set(draftId, { at: entry.at });
+        } else {
+          // 形状稳定地不合法（不是读到一半）：记成 invalid，后续 prune 不必再读它，也不删它。
+          metaCache.set(draftId, { invalid: true });
+        }
       } catch {
         /* 正在被写 / 坏 JSON / 读不到：当这次没有这一条 */
       }
@@ -236,9 +247,45 @@ function createCrashDraftStore(baseDir, options = {}) {
     return entries;
   }
 
+  // 只取草稿的元数据（draftId + at），不解析正文 —— prune 的唯一数据来源。
+  // 正常情况下全部命中 metaCache；缓存没有的文件才读一次（读不到 / 坏 JSON 跳过且不缓存）。
+  async function metaEntries() {
+    let names = [];
+    try {
+      names = await io.readdir(dir);
+    } catch {
+      return [];
+    }
+    const out = [];
+    const seen = new Set();
+    for (const name of names) {
+      const draftId = parseDraftFileName(name);
+      if (!draftId) continue;
+      let meta = metaCache.get(draftId);
+      if (!meta) {
+        try {
+          const raw = JSON.parse(await io.readFile(path.join(dir, name), 'utf8'));
+          const entry = storedEntryFrom(raw, draftId, maxTextChars);
+          meta = entry ? { at: entry.at } : { invalid: true };
+        } catch {
+          continue;
+        }
+        metaCache.set(draftId, meta);
+      }
+      seen.add(draftId);
+      if (!meta.invalid) out.push({ draftId, at: meta.at });
+    }
+    for (const key of Array.from(metaCache.keys())) {
+      if (!seen.has(key)) metaCache.delete(key); // 文件已被手工删掉：缓存跟着清
+    }
+    out.sort(compareByAtNewestFirst);
+    return out;
+  }
+
   async function unlinkDraft(draftId) {
     try {
       await io.unlink(draftPath(draftId));
+      metaCache.delete(draftId);
       return true;
     } catch {
       return false;
@@ -246,18 +293,20 @@ function createCrashDraftStore(baseDir, options = {}) {
   }
 
   // 只留最近 maxDrafts 份；beginSession 时顺带清 >7 天的过期草稿。
-  async function prune({ nowMs = null } = {}) {
-    const entries = await scan();
+  // entries 可传入已扫描 / 已缓存元数据的列表（写路径走 metaEntries，不再全量读回正文）；
+  // 不传则退回一次完整 scan。返回被删掉的 draftId 数组（beginSession 据此过滤列表）。
+  async function prune({ nowMs = null, entries = null } = {}) {
+    const list = Array.isArray(entries) ? entries.slice().sort(compareByAtNewestFirst) : await scan();
     const remove = [];
-    for (const entry of entries) {
+    for (const entry of list) {
       if (nowMs != null && Number.isFinite(nowMs) && Date.parse(entry.at) < nowMs - staleMs) {
         remove.push(entry.draftId);
       }
     }
-    const kept = entries.filter((entry) => !remove.includes(entry.draftId));
+    const kept = list.filter((entry) => !remove.includes(entry.draftId));
     for (let index = maxDrafts; index < kept.length; index += 1) remove.push(kept[index].draftId);
     for (const draftId of remove) await unlinkDraft(draftId);
-    return remove.length;
+    return remove;
   }
 
   return {
@@ -290,8 +339,10 @@ function createCrashDraftStore(baseDir, options = {}) {
       }
       let drafts = [];
       try {
-        await prune({ nowMs: normalizeDate(clock(), new Date()).getTime() });
-        drafts = (await scan()).map(publicDraft);
+        const entries = await scan();
+        const removed = await prune({ nowMs: normalizeDate(clock(), new Date()).getTime(), entries });
+        const gone = new Set(removed);
+        drafts = entries.filter((entry) => !gone.has(entry.draftId)).map(publicDraft);
       } catch {
         drafts = [];
       }
@@ -337,8 +388,10 @@ function createCrashDraftStore(baseDir, options = {}) {
       } catch (err) {
         return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err) };
       }
+      // CGRD-01：写入前先登记元数据，prune 只需 readdir + 缓存，不再把所有草稿正文读回解析。
+      metaCache.set(draftId, { at: entry.at });
       try {
-        await prune({ nowMs: Date.parse(entry.at) });
+        await prune({ nowMs: Date.parse(entry.at), entries: await metaEntries() });
       } catch {
         /* 清理失败不影响这一份草稿 */
       }

@@ -126,8 +126,42 @@ test('R2 异常退出标记：别的 pid 留下的标记 = 上次异常退出；
   await third.endSession();
 });
 
-test('R3 写入 / 列表 / 读取 / 删除：同书同章只留最新一条，列表不回正文', async () => {
+test('CGRD-01：写草稿只读元数据缓存，不再把全部草稿正文读回解析（写放大）', async () => {
   const root = await newRoot();
+  let draftReads = 0;
+  const countingFs = {
+    ...failingFs(),
+    readFile: async (file, ...rest) => {
+      if (/draft-[a-f0-9]{16}\.json$/.test(String(file))) draftReads += 1;
+      return fsp.readFile(file, ...rest);
+    }
+  };
+  const store = storeAt(root, { fs: countingFs });
+  // 每份正文 1000 字；旧实现第二次起每次写都会把所有草稿正文读回并 JSON.parse。
+  for (let i = 1; i <= 3; i += 1) {
+    const written = await store.writeDraft(
+      draft({ chapterId: `ch_${String(i).padStart(3, '0')}`, at: `2026-11-17T20:0${i}:00.000Z` })
+    );
+    assert.equal(written.ok, true);
+  }
+  assert.equal(draftReads, 0, '连续写三份草稿不应读回任何草稿正文');
+  assert.equal((await store.listDrafts()).length, 3, '三份都在，元数据缓存不影响列表');
+
+  // 超过 maxDrafts（8）后仍按 at 删最旧；写路径同样不读正文。
+  // （listDrafts 自己是一条完整扫描，会把三份读回来；从下面开始重新计数。）
+  draftReads = 0;
+  for (let i = 4; i <= 10; i += 1) {
+    await store.writeDraft(
+      draft({ chapterId: `ch_${String(i).padStart(3, '0')}`, at: `2026-11-17T20:${String(i).padStart(2, '0')}:00.000Z` })
+    );
+  }
+  assert.equal(draftReads, 0, '清理按元数据排序，不读正文');
+  const kept = await store.listDrafts();
+  assert.equal(kept.length, 8, '只留最近 8 份');
+  assert.equal(kept.some((item) => item.chapterId === 'ch_001'), false, '最旧的被清掉');
+});
+
+test('R3 写入 / 列表 / 读取 / 删除：同书同章只留最新一条，列表不回正文', async () => {  const root = await newRoot();
   const store = storeAt(root);
   const one = await store.writeDraft(draft({ at: '2026-11-17T20:00:00.000Z', text: '第一次正文' }));
   assert.equal(one.ok, true);

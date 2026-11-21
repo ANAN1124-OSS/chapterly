@@ -16,7 +16,8 @@
  *     openBookByPath, askUnsaved, saveCurrent, loadChapterAt,
  *     waitForSavingIdle, waitForLoadingIdle,  // 可选：切章前等「保存在途 / 载章在途」落定（WP-03）
  *     // 可选（B2 / WP18）：shelf:changed 增量刷新。缺任何一个 → handleShelfChanged 退回整表刷新。
- *     api, call, renderShelf, refreshShelf, refreshStats, markCommandsDirty
+ *     api, call, renderShelf, refreshShelf, refreshStats, markCommandsDirty,
+ *     patchShelfCard                           // 可选（RSHE-C-01）：单卡 DOM 增量；false 时退回整表
  *   }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到点书架 / 切章时 ReferenceError）。
  * host 成员全是一次性解构的稳定引用；它们在渲染层都是函数声明（会提升）或先于装配点的
@@ -64,6 +65,8 @@
     const api = host.api || null;
     const callApi = typeof host.call === 'function' ? host.call : null;
     const renderShelfNow = typeof host.renderShelf === 'function' ? host.renderShelf : null;
+    // RSHE-C-01：单卡 DOM 增量（可选）。返回 false = 顺序 / 筛选集变了，退回 renderShelf 整表。
+    const patchShelfCard = typeof host.patchShelfCard === 'function' ? host.patchShelfCard : null;
     const refreshShelfAll = typeof host.refreshShelf === 'function' ? host.refreshShelf : null;
     const refreshShelfStats = typeof host.refreshStats === 'function' ? host.refreshStats : null;
     const markCommandsDirty = typeof host.markCommandsDirty === 'function' ? host.markCommandsDirty : null;
@@ -209,7 +212,9 @@
     }
     applyShelfCard(card, bookPath);
     if (typeof markCommandsDirty === 'function') markCommandsDirty(); // 书名可能变，命令面板「书」条目要重建
-    renderShelfNow();
+    // RSHE-C-01：优先只换这一张书卡的 DOM；顺序 / 筛选集变了（或宿主没给增量入口）再整表渲染。
+    const patched = patchShelfCard ? patchShelfCard(bookPath) : false;
+    if (!patched) renderShelfNow();
     // 字数 / 今日统计：只读 stats.json，不重扫全书架（与 refreshShelf 的统计刷新同口径）
     if (typeof refreshShelfStats === 'function') Promise.resolve(refreshShelfStats()).catch(() => {});
     return { mode: 'card' };

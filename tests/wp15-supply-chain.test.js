@@ -13,6 +13,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const logic = require('../scripts/electron-checksum-logic');
+const { buildZip } = require('../core/zip');
 const tmpCleanup = require('./tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
@@ -279,6 +280,73 @@ test('R6 发版门禁接线 + 闸门不打包：维护者文档 / package.json /
   assert.equal(/\bspawn\s*\(/.test(source), false, '闸门不许 spawn');
   assert.equal(source.includes('electron-builder'), false, '闸门绝不打包');
   assert.equal(/\brequire\(['"]node:https?['"]\)/.test(source), false, '闸门不许联网');
+});
+
+// R7（M-N3 复核缺口）：发版门禁不能只活在文档里——npm 生命周期 pre 脚本把校验接成打包前置门禁。
+// 失败注入（静态）：predist / predist:dir 缺失、改名或指向 echo 等别的命令 → 下面两条精确相等断言直接红。
+test('R8 TOOL-A02：发版门禁（不带 --zip）核对 dist 与缓存 zip 的 electron.exe 条目；dist 被换即非 0', async () => {
+  const supply = supplyModule();
+  const { installed } = electronVersions();
+  const artifact = logic.artifactNameFor(installed);
+  const binaryName = process.platform === 'win32' ? 'electron.exe' : 'electron';
+  const payload = 'fake-electron-binary-for-dist-check';
+  const zipBytes = await buildZip([
+    { name: binaryName, data: payload },
+    { name: 'version', data: installed }
+  ]);
+  const dir = await mkTmp('cw-supply-dist-');
+  const cache = path.join(dir, 'cache');
+  await fs.mkdir(cache, { recursive: true });
+  await fs.writeFile(path.join(cache, artifact), zipBytes);
+  const root = path.join(dir, 'root');
+  const distDir = path.join(root, 'node_modules', 'electron', 'dist');
+  await fs.mkdir(distDir, { recursive: true });
+  const distFile = path.join(distDir, binaryName);
+  await fs.writeFile(distFile, payload);
+  const manifest = path.join(dir, 'SHASUMS256.txt');
+  await fs.writeFile(manifest, `${sha256(zipBytes)}  ${artifact}\n`);
+
+  // 纯逻辑：读中央目录拿条目 CRC / 大小，与 dist 文件比对。
+  const entry = await logic.readZipEntryMeta(path.join(cache, artifact), binaryName);
+  assert.equal(entry.size, Buffer.byteLength(payload));
+  assert.equal(entry.crc32, logic.crc32OfBuffer(Buffer.from(payload)));
+  const unit = await logic.verifyDistAgainstZip({ zipPath: path.join(cache, artifact), distFile });
+  assert.equal(unit.ok, true, unit.message);
+
+  const { io, stdout, stderr } = collectIo();
+  io.root = root;
+  io.env = { ELECTRON_CACHE: cache };
+  const ok = await supply.run(['--shasums', manifest, '--version', installed], io);
+  assert.equal(ok, 0, stderr.join('\n'));
+  assert.ok(stdout.some((line) => line.includes('内容一致')), stdout.join('\n'));
+
+  // dist 被换（zip 仍是官方那份）：门禁必须拦住，且点名 dist 与 zip 不一致。
+  await fs.writeFile(distFile, 'tampered-binary');
+  stdout.length = 0;
+  stderr.length = 0;
+  const bad = await supply.run(['--shasums', manifest, '--version', installed], io);
+  assert.equal(bad, 1, stderr.join('\n'));
+  assert.ok(
+    stderr.some((line) => line.includes('dist') && line.includes('不一致')),
+    stderr.join('\n')
+  );
+
+  // dist 缺失：状态问题也要拦住（先重新安装依赖）。
+  await fs.rm(distFile, { force: true });
+  stderr.length = 0;
+  const missing = await supply.run(['--shasums', manifest, '--version', installed], io);
+  assert.equal(missing, 1, stderr.join('\n'));
+  assert.ok(stderr.some((line) => line.includes('dist') && line.includes('不一致')), stderr.join('\n'));
+
+  // 显式 --zip（排查单个文件）只校验该文件本身，不要求 dist 存在。
+  const { io: io2, stderr: stderr2 } = collectIo();
+  io2.root = root;
+  io2.env = { ELECTRON_CACHE: cache };
+  const explicit = await supply.run(
+    ['--shasums', manifest, '--version', installed, '--zip', path.join(cache, artifact)],
+    io2
+  );
+  assert.equal(explicit, 0, stderr2.join('\n'));
 });
 
 // R7（M-N3 复核缺口）：发版门禁不能只活在文档里——npm 生命周期 pre 脚本把校验接成打包前置门禁。

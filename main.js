@@ -2305,8 +2305,7 @@ function registerIpc() {
       booksRoot: cfg.booksRoot,
       query: safeQuery,
       limit: options && options.limit,
-      ...(focus ? { focus } : {}),
-      onProgress: sendSearchProgress
+      ...(focus ? { focus } : {})
     });
   });
 

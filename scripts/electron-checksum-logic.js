@@ -171,6 +171,165 @@ async function verifyArtifact({ zipPath, shasumsText, hashFile = sha256OfFile } 
   };
 }
 
+// TOOL-A02（审计）：上面的校验只证明「缓存里的 zip 是官方发布」，但打包实际消费的是
+// node_modules/electron/dist/ 里已经解压出来的二进制。如果解压被中断 / 被杀软替换 / 被别的
+// 工具改写，zip 校验照样通过，打包却用了另一份 electron.exe。这里从 zip 的**中央目录**读出
+// electron.exe 条目的 CRC32 与未压缩大小（不解压整包），再对 dist 里的文件流式算 CRC32 比对。
+// 不解压的代价是没法逐字节内容比对，但 CRC32 + 大小足以发现「不是从这份 zip 解出来的」。
+const EOCD_SIGNATURE = 0x06054b50;
+const CENTRAL_SIGNATURE = 0x02014b50;
+const ZIP_MAX_COMMENT = 0xffff;
+const CRC_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c;
+  }
+  return table;
+})();
+
+// 流式 CRC32（与 zip 中央目录里的 CRC-32 同口径）。Node 22.2+ 有 zlib.crc32 就直接用，
+// 更老的 22.x 退回查表实现（项目 engines 是 >=22，不能假定一定有内置实现）。
+function crc32Update(value, chunk) {
+  const zlib = require('node:zlib');
+  if (typeof zlib.crc32 === 'function') return zlib.crc32(chunk, value) >>> 0;
+  let crc = (value ^ -1) >>> 0;
+  for (let i = 0; i < chunk.length; i += 1) crc = CRC_TABLE[(crc ^ chunk[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ -1) >>> 0;
+}
+
+function crc32OfBuffer(buffer) {
+  return crc32Update(0, buffer);
+}
+
+// 从 zip 中央目录读一个条目的 { crc32, size }。找不到 / 不是 zip 都抛带 code 的错误。
+async function readZipEntryMeta(zipPath, entryName) {
+  const handle = await fsp.open(zipPath, 'r');
+  try {
+    const stat = await handle.stat();
+    const tailSize = Math.min(stat.size, EOCD_SIGNATURE + ZIP_MAX_COMMENT + 4);
+    const tail = Buffer.alloc(tailSize);
+    await handle.read(tail, 0, tailSize, stat.size - tailSize);
+    let eocd = -1;
+    for (let i = tail.length - 22; i >= 0; i -= 1) {
+      if (tail.readUInt32LE(i) === EOCD_SIGNATURE) {
+        eocd = i;
+        break;
+      }
+    }
+    if (eocd < 0) {
+      throw Object.assign(new Error('不是有效的 zip（找不到中央目录结束记录）'), { code: 'ZIP_INVALID' });
+    }
+    const entries = tail.readUInt16LE(eocd + 10);
+    const cdSize = tail.readUInt32LE(eocd + 12);
+    const cdOffset = tail.readUInt32LE(eocd + 16);
+    if (!entries || cdSize <= 0 || cdOffset + cdSize > stat.size) {
+      throw Object.assign(new Error('zip 中央目录缺失或越界'), { code: 'ZIP_INVALID' });
+    }
+    const cd = Buffer.alloc(cdSize);
+    await handle.read(cd, 0, cdSize, cdOffset);
+    const wanted = String(entryName).replace(/\\/g, '/');
+    let at = 0;
+    for (let index = 0; index < entries && at + 46 <= cd.length; index += 1) {
+      if (cd.readUInt32LE(at) !== CENTRAL_SIGNATURE) {
+        throw Object.assign(new Error('zip 中央目录条目损坏'), { code: 'ZIP_INVALID' });
+      }
+      const crc = cd.readUInt32LE(at + 16);
+      const uncompressed = cd.readUInt32LE(at + 24);
+      const nameLen = cd.readUInt16LE(at + 28);
+      const extraLen = cd.readUInt16LE(at + 30);
+      const commentLen = cd.readUInt16LE(at + 32);
+      const name = cd.slice(at + 46, at + 46 + nameLen).toString('utf8');
+      if (name === wanted) return { crc32: crc >>> 0, size: uncompressed };
+      at += 46 + nameLen + extraLen + commentLen;
+    }
+    return null;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function crc32OfFile(filePath) {
+  return new Promise((resolve, reject) => {
+    let crc = 0;
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => {
+      crc = crc32Update(crc, chunk);
+    });
+    stream.on('end', () => {
+      resolve(crc >>> 0);
+    });
+  });
+}
+
+// 核对「打包实际消费的 dist 二进制」与缓存 zip 里的同名条目是否同一份内容。
+// 注入点（单测用）：statFile / crc32File / readEntryMeta。
+async function verifyDistAgainstZip({
+  zipPath,
+  distFile,
+  entryName = 'electron.exe',
+  statFile = (file) => fsp.stat(file),
+  crc32File = crc32OfFile,
+  readEntryMeta = readZipEntryMeta
+} = {}) {
+  const zip = String(zipPath == null ? '' : zipPath).trim();
+  const dist = String(distFile == null ? '' : distFile).trim();
+  if (!zip) return { ok: false, code: 'NO_ARTIFACT', message: '没有给出缓存 zip 路径' };
+  if (!dist) return { ok: false, code: 'DIST_MISSING', message: '没有给出 dist 二进制路径' };
+  let size = null;
+  try {
+    const stat = await statFile(dist);
+    size = Number(stat && stat.size);
+  } catch (err) {
+    const reason = (err && (err.code || err.message)) || '未知错误';
+    return { ok: false, code: 'DIST_MISSING', message: `找不到打包要用的 ${path.basename(dist)}（${reason}）：先重新安装依赖` };
+  }
+  let entry;
+  try {
+    entry = await readEntryMeta(zip, entryName);
+  } catch (err) {
+    const reason = (err && (err.code || err.message)) || '未知错误';
+    return { ok: false, code: 'ZIP_INVALID', message: `读不了缓存 zip 的中央目录（${reason}）` };
+  }
+  if (!entry) {
+    return { ok: false, code: 'ZIP_ENTRY_MISSING', message: `缓存 zip 里没有 ${entryName}` };
+  }
+  if (entry.size !== size) {
+    return {
+      ok: false,
+      code: 'DIST_SIZE_MISMATCH',
+      message:
+        `${path.basename(dist)} 大小 ${size} 与 zip 条目 ${entryName} 的 ${entry.size} 不一致：` +
+        'dist 不是从这份已校验的 zip 解出来的'
+    };
+  }
+  let actual;
+  try {
+    actual = await crc32File(dist);
+  } catch (err) {
+    const reason = (err && (err.code || err.message)) || '未知错误';
+    return { ok: false, code: 'DIST_READ_FAILED', message: `读不了 ${path.basename(dist)}：${reason}` };
+  }
+  if ((actual >>> 0) !== (entry.crc32 >>> 0)) {
+    return {
+      ok: false,
+      code: 'DIST_CRC_MISMATCH',
+      message:
+        `${path.basename(dist)} 的 CRC32 与 zip 条目 ${entryName} 不一致` +
+        `（期望 ${(entry.crc32 >>> 0).toString(16)}，实际 ${(actual >>> 0).toString(16)}）：dist 可能被替换 / 解压不完整`
+    };
+  }
+  return {
+    ok: true,
+    code: 'OK',
+    size,
+    crc32: actual >>> 0,
+    message: `${path.basename(dist)} 与缓存 zip 的 ${entryName} 内容一致（CRC32 + 大小）`
+  };
+}
+
 // 把「镜像从哪来」如实列出来：镜像只是加速，不是来源证明（README 构建供应链一节同口径）。
 function mirrorSources({ npmrcText = '', packageJson = null } = {}) {
   const sources = [];
@@ -196,5 +355,9 @@ module.exports = {
   defaultCacheRoots,
   findArtifact,
   verifyArtifact,
+  crc32OfBuffer,
+  readZipEntryMeta,
+  crc32OfFile,
+  verifyDistAgainstZip,
   mirrorSources
 };

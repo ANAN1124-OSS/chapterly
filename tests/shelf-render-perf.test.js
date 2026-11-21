@@ -104,3 +104,16 @@ test('静态闸门：书架 grid 按渲染签名复用，签名覆盖会改卡�
   }
   assert.ok(signature.includes('chapterHits'), '章节命中行也要进签名（搜索命中的章名会变）');
 });
+
+// RSHE-C-01（审计）：shelf:changed 的单卡增量不许再落到「整块重建 grid」——DOM 只换那一张卡。
+test('RSHE-C-01：单卡 DOM 增量（renderShelfCard）存在且整表渲染只在顺序 / 筛选集变了时兜底', () => {
+  assert.match(BOOKINFO, /function renderShelfCard\(bookPath\)/);
+  assert.match(BOOKINFO, /domCards\[at\]\.replaceWith\(fresh\)/, '只替换目标书卡，不重建整个 grid');
+  assert.match(BOOKINFO, /function buildSingleCard\(book, info\)/, '单卡复用同一条建卡代码');
+  assert.match(BOOKINFO, /buildShelfGrid\(holder, shelfQueryText\(\), \[\{ book, info \}\]/, '单卡也走 buildShelfGrid，避免第二份建卡逻辑');
+  const SHELF_UI = read('renderer/shelf-ui.js');
+  assert.match(SHELF_UI, /const patchShelfCard = typeof host\.patchShelfCard === 'function'/, '宿主可选单卡增量');
+  assert.match(SHELF_UI, /const patched = patchShelfCard \? patchShelfCard\(bookPath\) : false;/);
+  assert.match(SHELF_UI, /if \(!patched\) renderShelfNow\(\);/, '增量不可用 / 返回 false 才整表');
+  assert.match(RENDERER, /patchShelfCard: \(bookPath\) => renderShelfCard\(bookPath\)/, 'renderer 把单卡增量接进 shelf-ui');
+});

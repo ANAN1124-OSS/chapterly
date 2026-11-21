@@ -881,6 +881,51 @@
     return JSON.stringify({ query, group: state.shelfGroup, tag: state.shelfTag, books: state.books.length, cards });
   }
 
+  // RSHE-C-01（审计）：只建一张书卡 —— 复用 buildShelfGrid 的同一条建卡代码（不另写第二份），
+  // 建在离屏容器里再取出来。书卡的内联事件 / aria / 结构因此与整表渲染逐字一致。
+  function buildSingleCard(book, info) {
+    const holder = document.createElement('div');
+    buildShelfGrid(holder, shelfQueryText(), [{ book, info }], () => info);
+    return holder.querySelector('.book-card[data-path]');
+  }
+
+  // RSHE-C-01：shelf:changed 的单卡增量以前只更新数据层，书卡 DOM 仍由 renderShelf 整块重建
+  // （书多时白建 N 张卡，焦点 / 滚动位置也会丢）。这里只换那一张卡：筛选集与顺序都没变时
+  // 返回 true；书被筛掉 / 排序改变 / 当前是空态时返回 false，调用方退回整表渲染。
+  function renderShelfCard(bookPath) {
+    const grid = $('book-grid');
+    if (!grid || !bookPath) return false;
+    if (!state.books.length) return false;
+    const rows = shelfSearchResults();
+    if (!rows.length) return false;
+    const infos = new Map();
+    for (const { book } of rows) {
+      if (!infos.has(book)) infos.set(book, bookInfoLib.readBookInfo(book));
+    }
+    const infoOf = (book) => infos.get(book) || bookInfoLib.readBookInfo(book);
+    const paths = rows.map((row) => row.book.path);
+    const at = paths.indexOf(bookPath);
+    if (at < 0) return false; // 不在当前筛选 / 搜索结果里：整表渲染负责移除 / 空态
+    const domCards = Array.from(grid.querySelectorAll('.book-card[data-path]'));
+    const domPaths = domCards.map((node) => node.dataset.path);
+    if (domPaths.length !== paths.length || domPaths.some((path, index) => path !== paths[index])) {
+      return false; // 顺序变了（最后修改时间把它挪了位）：整表渲染才能摆正
+    }
+    const row = rows[at];
+    const fresh = buildSingleCard(row.book, row.info || infoOf(row.book));
+    if (!fresh) return false;
+    domCards[at].replaceWith(fresh);
+    grid.dataset.renderSignature = shelfRenderSignature(shelfQueryText(), rows, infoOf);
+    // 继续写作卡 / 分组条 / 搜索命中数 / 窗口标题都跟这一本书有关，单卡路径也要刷新
+    // （它们不是书卡网格，刷新成本与书数无关）。
+    renderContinueWriting();
+    renderShelfGroupBar();
+    updateShelfSearchUi(rows.length);
+    updateWindowTitle();
+    renderShelfContent();
+    return true;
+  }
+
   async function onNewBookClick() {
     const title = await promptText({
       title: '新建一本书',
@@ -959,6 +1004,8 @@
       newGroupForBook,
       moveBookToGroup,
       renderShelf,
+      // RSHE-C-01：shelf:changed 的单卡 DOM 增量入口（返回 false 时调用方整表渲染）
+      renderShelfCard,
       createBookWithTitle,
       onNewBookClick,
       setupBookinfoUi,

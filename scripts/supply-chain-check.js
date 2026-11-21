@@ -4,9 +4,11 @@
 //   node scripts/supply-chain-check.js [--zip <zip>] [--cache <目录>] [--version <x.y.z>] [--shasums <清单>]
 //
 // 默认用仓库内置的官方 SHASUMS256.txt（build/electron/SHASUMS256.txt，来源与文件哈希见同目录
-// SHASUMS256.provenance.json），核对 Electron 下载缓存里的 electron-v<版本>-win32-x64.zip。
+// SHASUMS256.provenance.json），核对 Electron 下载缓存里的 electron-v<版本>-win32-x64.zip；
+// 不显式给 --zip 时（发版门禁路径）再核对打包实际消费的 node_modules/electron/dist 二进制与
+// 该 zip 的 electron.exe 条目一致（CRC32 + 大小，TOOL-A02）。
 // 只核对、不联网、不下载、不打包、不发版：
-//   0 = 通过；1 = 校验未通过（被篡改 / 读不了 / 缓存里找不到 zip）；
+//   0 = 通过；1 = 校验未通过（被篡改 / 读不了 / 缓存里找不到 zip / dist 与 zip 不一致）；
 //   2 = 用法或仓库状态问题（清单缺失 / 清单与本地 Electron 版本对不上 / 版本号坏）。
 //
 // 判定与哈希只复用 scripts/verify-electron-checksum.js + electron-checksum-logic.js，不复制第二份。
@@ -91,9 +93,34 @@ async function run(argv, io = {}) {
   if (opts.zip) args.push('--zip', opts.zip);
   for (const cache of opts.caches) args.push('--cache', cache);
   const code = await verify.run(args, io);
-  if (code === 0) out('[供应链闸门] 通过：Electron 二进制与内置官方清单一致；本命令不发版、不打包。');
-  else fail('[供应链闸门] 未通过：不得继续打包 / 发版（先按上面的提示定位清单或缓存 zip）。');
-  return code;
+  if (code !== 0) {
+    fail('[供应链闸门] 未通过：不得继续打包 / 发版（先按上面的提示定位清单或缓存 zip）。');
+    return code;
+  }
+
+  // TOOL-A02（审计）：上面只证明「缓存 zip 是官方发布」，打包真正消费的是 node_modules/electron/dist
+  // 里已解压的二进制。--zip 显式指定（排查单个文件）时只校验该文件；发版门禁（不带 --zip）必须
+  // 再核对 dist 与这份 zip 是同一份内容，否则「zip 是好的、dist 被换了」会静默通过。
+  if (!opts.zip) {
+    const env = io.env && typeof io.env === 'object' ? io.env : process.env;
+    const roots = opts.caches.length ? opts.caches : logic.defaultCacheRoots(env);
+    const findArtifact = typeof io.findArtifact === 'function' ? io.findArtifact : logic.findArtifact;
+    const verifyDist = typeof io.verifyDistAgainstZip === 'function' ? io.verifyDistAgainstZip : logic.verifyDistAgainstZip;
+    const zipPath = await findArtifact(artifact, roots);
+    const binaryName = process.platform === 'win32' ? 'electron.exe' : 'electron';
+    const verdict = await verifyDist({
+      zipPath,
+      distFile: path.join(root, 'node_modules', 'electron', 'dist', binaryName)
+    });
+    if (!verdict || verdict.ok !== true) {
+      fail(`[供应链闸门] 打包实际消费的 dist 与缓存 zip 不一致：${(verdict && verdict.message) || '未知原因'}`);
+      fail('[供应链闸门] 先清缓存重新 pnpm install（让 dist 从已校验的 zip 重新解压），再跑本命令。');
+      return 1;
+    }
+    out(`[供应链闸门] ${verdict.message}`);
+  }
+  out('[供应链闸门] 通过：Electron 二进制与内置官方清单一致；本命令不发版、不打包。');
+  return 0;
 }
 
 if (require.main === module) {

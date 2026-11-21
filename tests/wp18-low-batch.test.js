@@ -591,7 +591,7 @@ test('R10 B2 数据面：readBookCard 与 listBooks 同书卡片逐字段一致�
 const shelfUiModule = require('../renderer/shelf-ui');
 
 function makeShelfChangedHost(options = {}) {
-  const calls = { read: [], rendered: 0, refreshed: 0, marked: 0, stats: 0 };
+  const calls = { read: [], rendered: 0, refreshed: 0, marked: 0, stats: 0, patched: 0 };
   const state = options.state || {
     view: 'shelf',
     books: [],
@@ -624,10 +624,43 @@ function makeShelfChangedHost(options = {}) {
     renderShelf: () => { calls.rendered += 1; },
     refreshShelf: async () => { calls.refreshed += 1; },
     refreshStats: async () => { calls.stats += 1; },
-    markCommandsDirty: () => { calls.marked += 1; }
+    markCommandsDirty: () => { calls.marked += 1; },
+    // RSHE-C-01：宿主可选提供单卡 DOM 增量；patchResult 控制返回 true / false。
+    ...(typeof options.patchResult === 'boolean'
+      ? { patchShelfCard: () => { calls.patched += 1; return options.patchResult; } }
+      : {})
   });
   return { shelfUi, state, calls };
 }
+
+test('RSHE-C-01：宿主给了单卡 DOM 增量就不再整表重绘；增量返回 false 时整表兜底', async () => {
+  const bookA = { path: 'C:\\书架\\甲书', title: '甲书', lastModified: 100, chapterCount: 1 };
+  const bookB = { path: 'C:\\书架\\乙书', title: '乙书', lastModified: 300, chapterCount: 2 };
+  const updatedA = { path: 'C:\\书架\\甲书', title: '甲书（改名）', lastModified: 120, chapterCount: 3 };
+  const state = {
+    view: 'shelf',
+    books: [bookA, bookB],
+    importing: false,
+    formatBookRunning: false,
+    chapters: [],
+    index: 0,
+    dirty: false,
+    recentBook: null
+  };
+  const viaPatch = makeShelfChangedHost({ state, cards: { [bookA.path]: updatedA }, patchResult: true });
+  const result = await viaPatch.shelfUi.handleShelfChanged({ reason: 'chapter:save', bookPath: bookA.path });
+  assert.equal(result.mode, 'card');
+  assert.equal(viaPatch.calls.patched, 1, '单卡增量入口要走一次');
+  assert.equal(viaPatch.calls.rendered, 0, '增量成功时不许整表重绘（书多时白建 N 张卡）');
+  assert.equal(viaPatch.calls.marked, 1);
+  assert.equal(viaPatch.calls.stats, 1);
+
+  const fallback = makeShelfChangedHost({ state: { ...state, books: [bookA, bookB] }, cards: { [bookA.path]: updatedA }, patchResult: false });
+  const fell = await fallback.shelfUi.handleShelfChanged({ reason: 'chapter:save', bookPath: bookA.path });
+  assert.equal(fell.mode, 'card');
+  assert.equal(fallback.calls.patched, 1);
+  assert.equal(fallback.calls.rendered, 1, '增量说「顺序 / 筛选集变了」时必须整表兜底');
+});
 
 test('R11 B2 渲染层：单书增量 / 删除删卡 / 无路径整表 / 读失败整表兜底 / 非书架跳过', async () => {
   assert.throws(

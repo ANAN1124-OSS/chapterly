@@ -1387,7 +1387,61 @@ test('正文索引（P1）：首建期搜索立即回 building + 空结果，建
   assert.equal((await store.status()).building, false, '这一轮校验结束后不再是 building');
 });
 
-// 审计修复 #33（▲V307）：索引是单文件，写盘前必须有总量预算 —— 超限按书目最后修改时间从旧到新
+// CTXT-A-02（审计）：ensure 队列是全局单链；跨书架根时搜索不能再排到别根的分钟级校验后面。
+test('正文索引（CTXT-A-02）：跨根在途校验不阻塞搜索，回 building 并立即返回', async () => {
+  const base = await mkTmp();
+  const userData = path.join(base, 'userdata');
+  const rootA = path.join(base, 'books-a');
+  const rootB = path.join(base, 'books-b');
+  await fs.mkdir(userData);
+  await fs.mkdir(rootA);
+  await fs.mkdir(rootB);
+  await makeBook(rootA, '甲书', '甲书', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
+  await makeBook(rootB, '乙书', '乙书', [{ name: '第一章', text: '旧车站的钟停在四点。' }]);
+
+  // 卡门闸：B 根的首建停在根目录签名 stat 上，保证搜索 A 时「B 的校验确实在飞」。
+  let released = false;
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const store = makeStore(userData, {
+    stat: (target) => {
+      const resolved = path.resolve(String(target));
+      if (!released && resolved === path.resolve(rootB)) return gate.then(() => fs.stat(target));
+      return fs.stat(target);
+    }
+  });
+  const buildingB = store.ensure({ booksRoot: rootB }); // 故意不 await：B 的首建在飞
+  const startedAt = Date.now();
+  const during = await Promise.race([
+    store.search({ booksRoot: rootA, query: '青柠色' }),
+    new Promise((_resolve, reject) => setTimeout(() => reject(new Error('跨根搜索被别根的校验阻塞')), 3000))
+  ]);
+  const elapsed = Date.now() - startedAt;
+  assert.equal(during.index.building, true, '别根校验在飞：本根还没有可用索引，必须标 building');
+  assert.deepEqual(during.results, [], '先回空结果，不冒充「没找到」');
+  assert.equal(during.truncated, true);
+  assert.ok(elapsed < 1000, `跨根搜索必须立即返回（实际 ${elapsed} ms）`);
+
+  released = true;
+  release();
+  await buildingB;
+  const after = await store.search({ booksRoot: rootA, query: '青柠色' });
+  assert.equal(after.results.length, 1, '本根自己的索引建好后同一查询能拿到结果（不漏结果）');
+});
+
+// CTXT-A-03（低）：search() 从未消费 onProgress，调用点却传了它 —— 静默吞参误导维护者。
+test('正文索引（CTXT-A-03）：main.js 不再给 search() 传无人消费的 onProgress，ensure 通道仍保留', async () => {
+  const mainSrc = await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const searchAt = mainSrc.indexOf('getSearchIndexStore().search({');
+  assert.ok(searchAt > 0, '找不到 search:content 的调用点');
+  const callBody = mainSrc.slice(searchAt, searchAt + 500);
+  assert.equal(/onProgress/.test(callBody), false, 'search() 不支持 onProgress，调用点不许再传');
+  const ensureAt = mainSrc.indexOf('getSearchIndexStore().ensure({');
+  assert.ok(ensureAt > 0);
+  assert.match(mainSrc.slice(ensureAt, ensureAt + 500), /onProgress: sendSearchProgress/, 'ensure 通道的进度上报保留');
+});
 // 丢掉整本书的位图（章节指纹保留），被丢的书搜索时永远当候选、逐章核对：只降速、不漏结果。
 test('正文索引（#33）：总量预算超限时淘汰最旧书目的位图（纯函数，字节上界 + 指纹保留）', () => {
   // 写盘预算必须明显小于读盘上限：自己写出的索引一定读得回来
