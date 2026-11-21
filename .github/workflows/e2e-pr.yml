@@ -39,14 +39,25 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-
+      # REPO-01：pnpm 先于 setup-node（cache: 'pnpm' 需要现场有 pnpm 才能定位 store）。
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 12.11.2
           run_install: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+
+      # REPO-01：Electron zip 按版本固定 key 缓存；命中后仍由下一步逐字节核对 SHASUMS，
+      # 坏缓存照样红，供应链门禁不因缓存而放松。
+      - name: 缓存 Electron 下载（按版本固定 key）
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LOCALAPPDATA }}\electron\Cache
+          key: electron-45.1.0-win32-x64
 
       - name: 安装依赖（含 Electron 二进制：E2E 要真实窗口）
         run: pnpm install --frozen-lockfile

@@ -121,15 +121,19 @@ test('runs-on 固定 windows-2022（Windows 桌面工具的路径 / GBK / UNC �
   }
 });
 
-test('步骤按序齐全：checkout → setup-node（22/24 矩阵）→ pnpm 12.11.2（run_install: false）→ frozen-lockfile → node --check → npm test → eslint → a11y --static', () => {
+// REPO-01（2026-11-21 第五轮审计）：三步顺序里 pnpm 必须在 setup-node 之前 ——
+// setup-node 的 cache: 'pnpm' 要现场执行 `pnpm store path`，pnpm 还没装就报
+// 「Unable to locate executable file: pnpm」。
+test('步骤按序齐全：checkout → pnpm 12.11.2（run_install: false）→ setup-node（22/24 矩阵 + pnpm 缓存）→ frozen-lockfile → node --check → npm test → eslint → a11y --static', () => {
   const text = readVerify();
   const order = [
     'actions/checkout@',
-    'actions/setup-node@',
-    'node-version: ${{ matrix.node }}',
     'pnpm/action-setup@',
     'version: 12.11.2',
     'run_install: false',
+    'actions/setup-node@',
+    'node-version: ${{ matrix.node }}',
+    'cache-dependency-path: pnpm-lock.yaml',
     'pnpm install --frozen-lockfile',
     'node --check "$f"',
     'git ls-files',
@@ -144,6 +148,25 @@ test('步骤按序齐全：checkout → setup-node（22/24 矩阵）→ pnpm 12.
     assert.ok(at > last, '步骤顺序不对：' + token + ' 出现在上一段之前');
     last = at;
   }
+});
+
+test('REPO-01：三个工作流都缓存 pnpm store，E2E 两个再按版本缓存 Electron zip', () => {
+  const verify = readVerify();
+  assert.match(verify, /cache: 'pnpm'/, 'verify 要缓存 pnpm store');
+  assert.match(verify, /cache-dependency-path: pnpm-lock\.yaml/, 'pnpm 缓存按锁文件哈希命中');
+  const pnpmAt = verify.indexOf('pnpm/action-setup@');
+  const setupAt = verify.indexOf('actions/setup-node@');
+  assert.ok(
+    pnpmAt > 0 && setupAt > 0 && pnpmAt < setupAt,
+    'pnpm/action-setup 必须排在 setup-node 之前（否则 cache 定位不到 store）'
+  );
+  for (const [name, text] of [['e2e-weekly.yml', readE2e()], ['e2e-pr.yml', readE2ePr()]]) {
+    assert.match(text, /cache: 'pnpm'/, name + ' 要缓存 pnpm store');
+    assert.match(text, /uses: actions\/cache@[0-9a-f]{40} # v4\.3\.0/, name + ' 要按 SHA pin actions/cache');
+    assert.match(text, /key: electron-45\.1\.0-win32-x64/, name + ' 的 Electron 缓存 key 要按版本固定');
+  }
+  // verify 跳过 Electron 二进制下载：不引入用不上的 Electron 缓存。
+  assert.equal(verify.includes('electron-45.1.0-win32-x64'), false);
 });
 
 // 审计修复 #56（O4）：engines 声明 node >=22，CI 必须真跑 22（不能只测开发机的 24）。
