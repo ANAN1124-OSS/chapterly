@@ -17,7 +17,7 @@ const chaptersLib = require('../core/chapters');
 // 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ recordFallbackWrite（审计修复 #39 / V402：
 // 兜底整串赋值后由渲染层统一记快照 + 提示）+ format{formatUi,MAX_FORMAT_UNDO,
 // readFormatOptions,writeFormatOptions,editorEl,onEditorInput,chaptersLib,caretColorLib} +
-// menus{hideBookMenu,hideExportMenu,hideMenu,renderMarksMenu} + peers{openSettings,toggleMarks,
+// menus{hideExportMenu,hideMenu,renderMarksMenu} + peers{openSettings,toggleMarks,
 // setDisplayPreset,applyCaretColor,setCaretParagraphPersisted,setCaretColorPersisted,runFormatBook,scrollCaretIntoView}。
 
 const realDocument = globalThis.document;
@@ -123,7 +123,7 @@ function build(options = {}) {
   editorEl.value = options.text === undefined ? '第一段  文字' : options.text;
   editorEl.selectionStart = options.caret === undefined ? 0 : options.caret;
   const calls = {
-    formatText: [], setConfig: [], toast: [], hideExportMenu: 0, hideBookMenu: 0, hideMenu: [],
+    formatText: [], setConfig: [], toast: [], hideExportMenu: 0, hideMenu: [],
     renderMarksMenu: 0, openSettings: 0, toggleMarks: [], setDisplayPreset: [], applyCaretColor: [],
     setCaretParagraphPersisted: [], setCaretColorPersisted: [], runFormatBook: 0, scrollCaretIntoView: [],
     onEditorInput: 0, fallbackWrites: []
@@ -160,7 +160,6 @@ function build(options = {}) {
       caretColorLib
     },
     menus: {
-      hideBookMenu() { calls.hideBookMenu += 1; },
       hideExportMenu() { calls.hideExportMenu += 1; },
       hideMenu(sel) { calls.hideMenu.push(sel); const el = dom.map.get(sel); if (el) el.classList.add('hidden'); },
       renderMarksMenu() { calls.renderMarksMenu += 1; }
@@ -204,7 +203,7 @@ test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个�
     delete broken.format[key];
     assert.throws(() => tidyCardUi.create(broken), new RegExp('host\\.format 缺少 ' + key));
   }
-  for (const key of ['hideBookMenu', 'hideExportMenu', 'hideMenu', 'renderMarksMenu']) {
+  for (const key of ['hideExportMenu', 'hideMenu', 'renderMarksMenu']) {
     const broken = { ...ctx.host, menus: { ...ctx.host.menus } };
     delete broken.menus[key];
     assert.throws(() => tidyCardUi.create(broken), new RegExp('host\\.menus 缺少 ' + key));
@@ -692,7 +691,7 @@ test('静态闸门：renderer.js 不再内嵌整理卡 / 显示菜单实现，�
   for (const line of [
     '    $, state, api, call, toast,',
     '    format: { formatUi, MAX_FORMAT_UNDO, readFormatOptions, writeFormatOptions, editorEl, onEditorInput, chaptersLib, caretColorLib },',
-    '    menus: { hideBookMenu, hideExportMenu, hideMenu, renderMarksMenu },',
+    '    menus: { hideExportMenu, hideMenu, renderMarksMenu },',
     '    peers: { openSettings: () => openSettings(), toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView, effectiveConfig }'
   ]) {
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);

@@ -23,7 +23,7 @@
  *       caretColorLib                       //   core/caret-color.js：取色器预览的颜色清洗
  *     },
  *     menus: {                              // 顶栏菜单互斥 / 标记菜单
- *       hideBookMenu, hideExportMenu, hideMenu,
+ *       hideExportMenu, hideMenu,
  *       renderMarksMenu                     //   显示菜单开关状态文案
  *     },
  *     peers: {                              // 跨域动作
@@ -69,7 +69,7 @@
       if (format[key] === undefined || format[key] === null) throw new TypeError('createTidyCardUi 的 host.format 缺少 ' + key);
     }
     if (typeof menus !== 'object') throw new TypeError('createTidyCardUi 的 host.menus 必须是对象');
-    for (const key of ['hideBookMenu', 'hideExportMenu', 'hideMenu', 'renderMarksMenu']) {
+    for (const key of ['hideExportMenu', 'hideMenu', 'renderMarksMenu']) {
       if (menus[key] === undefined || menus[key] === null) throw new TypeError('createTidyCardUi 的 host.menus 缺少 ' + key);
     }
     if (typeof peers !== 'object') throw new TypeError('createTidyCardUi 的 host.peers 必须是对象');

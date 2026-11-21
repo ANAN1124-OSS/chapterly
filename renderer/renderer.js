@@ -3210,7 +3210,7 @@
   const tidyCardUi = tidyCardUiModule.create({
     $, state, api, call, toast, recordFallbackWrite,
     format: { formatUi, MAX_FORMAT_UNDO, readFormatOptions, writeFormatOptions, editorEl, onEditorInput, chaptersLib, caretColorLib },
-    menus: { hideBookMenu, hideExportMenu, hideMenu, renderMarksMenu },
+    menus: { hideExportMenu, hideMenu, renderMarksMenu },
     peers: { openSettings: () => openSettings(), toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView, effectiveConfig }
   });
   const { formatCardOpen, displayMenuOpen, showFormatCard, hideFormatMenu, showDisplayMenu, hideDisplayMenu, openFormatDialog, closeFormatDialog, formatUndoSteps, canUndoFormat, undoFormat, formatCurrentChapterFromConfig, applyFormatToEditor, setupTidyCardUi } = tidyCardUi;
