@@ -635,14 +635,24 @@ test('五-H4 静态闸门：renderer.js 的 insertIntoBody 先过 insertGuard，
   const rendererSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   const body = rendererSrc.match(/function insertIntoBody\([^)]*\) \{[\s\S]*?\n  \}/);
   assert.ok(body, '找不到 insertIntoBody()');
-  assert.match(body[0], /editorLogic\.insertGuard\(\{/);
-  assert.match(body[0], /bookPath: state\.bookPath/);
-  assert.match(body[0], /chapterCount: state\.chapters\.length/);
-  assert.match(body[0], /index: state\.index/);
-  assert.match(body[0], /loadedChapterId: state\.loadedChapterId/);
-  assert.match(body[0], /openingBook,/);
-  assert.match(body[0], /longOpLocked: longOpLocked\(\)/);
-  assert.match(body[0], /readOnly: editorEl\.readOnly === true/);
+  // REDT-A-04：闸的构造抽成共享的 insertGate()（插入正文与崩溃恢复过同一道判定），
+  // insertIntoBody 仍必须先调它、再碰编辑区。
+  assert.match(body[0], /const gate = insertGate\(\);/);
+  const helper = rendererSrc.match(/function insertGate\(\) \{[\s\S]*?\n  \}/);
+  assert.ok(helper, '找不到共享的 insertGate()');
+  assert.match(helper[0], /editorLogic\.insertGuard\(\{/);
+  assert.match(helper[0], /bookPath: state\.bookPath/);
+  assert.match(helper[0], /chapterCount: state\.chapters\.length/);
+  assert.match(helper[0], /index: state\.index/);
+  assert.match(helper[0], /loadedChapterId: state\.loadedChapterId/);
+  assert.match(helper[0], /openingBook,/);
+  assert.match(helper[0], /longOpLocked: longOpLocked\(\)/);
+  assert.match(helper[0], /readOnly: editorEl\.readOnly === true/);
+  // 崩溃恢复（applyRecoveredText）与插入正文同一道闸：两条程序化写入路径不许各留一套
+  assert.match(
+    rendererSrc,
+    /applyRecoveredText: \(text\) => \{[\s\S]*?const gate = insertGate\(\);[\s\S]*?if \(!gate\.ok\) return \{ ok: false, code: gate\.code, message: gate\.message \};/
+  );
   assert.equal(
     body[0].includes("if (!state.bookPath || state.view !== 'editor' || !state.chapters.length)"),
     false,

@@ -110,7 +110,8 @@ test('换书入口闸门：openBookByPath 先过守卫、再 api.openBook', () =
   // 守卫复用现成的三选一与保存：取消 / 保存失败都 return，不许落到 api.openBook
   assert.match(body, /askUnsaved\(/, '守卫要复用 askUnsaved 三选一');
   assert.match(body, /saveCurrent\(/, '选「保存并继续」要走 saveCurrent');
-  assert.match(body, /if \(guard\.action !== 'proceed'\) return;/, '守卫不通过必须原地返回');
+  // 守卫不通过必须原地返回（REDT-A-05 起是可判定的 { ok:false, canceled:true }，不再是裸 return）
+  assert.match(body, /if \(guard\.action !== 'proceed'\) return \{ ok: false, canceled: true \};/, '守卫不通过必须原地返回');
 });
 
 test('换书入口闸门：四个入口（命令面板 / 书签跨书 / 章节命中 / 书架点书）都走 openBookByPath', () => {

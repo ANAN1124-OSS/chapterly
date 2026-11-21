@@ -156,51 +156,79 @@
         toast('当前编辑区还有未保存修改，先处理它再恢复崩溃草稿', 'warn');
         return false;
       }
-      if (state.bookPath !== meta.bookPath) {
-        let opened;
+      // RPAN-B04：开书是「验证草稿的章还在这本书里」的前置副作用 —— 失败出口必须把它退回去，
+      // 否则作者被留在与本轮写作无关的书里（多条草稿连续失败还会连环换书）。
+      const fromBookPath = state.bookPath;
+      async function rollbackBook() {
+        if (!fromBookPath || state.bookPath === fromBookPath) return;
+        let back;
         try {
-          opened = await openBookByPath(meta.bookPath);
+          back = await openBookByPath(fromBookPath);
         } catch (err) {
-          opened = { ok: false, message: (err && err.message) || String(err) };
+          back = { ok: false, message: (err && err.message) || String(err) };
         }
-        if (!opened || opened.ok === false) {
-          toast('草稿所属的书打不开（可能被移走或删除），这份草稿先留着', 'error');
-          return false;
+        if (!back || back.ok === false || state.bookPath !== fromBookPath) {
+          toast(`没能切回原来的书（${fromBookPath}），当前停在草稿所属的书`, 'warn');
         }
+      }
+      let restored = false;
+      try {
         if (state.bookPath !== meta.bookPath) {
-          toast('打开的不是草稿所属的那本书，未恢复', 'error');
+          let opened;
+          try {
+            opened = await openBookByPath(meta.bookPath);
+          } catch (err) {
+            opened = { ok: false, message: (err && err.message) || String(err) };
+          }
+          if (!opened || opened.ok === false) {
+            toast('草稿所属的书打不开（可能被移走或删除），这份草稿先留着', 'error');
+            return false;
+          }
+          if (state.bookPath !== meta.bookPath) {
+            toast('打开的不是草稿所属的那本书，未恢复', 'error');
+            return false;
+          }
+        }
+        const chapters = Array.isArray(state.chapters) ? state.chapters : [];
+        const index = chapters.findIndex((chapter) => chapter && chapter.id === meta.chapterId);
+        if (index < 0) {
+          toast('草稿所属的章节已不在这本书里，未恢复', 'warn');
           return false;
         }
+        let loaded;
+        try {
+          loaded = await loadChapterAt(index);
+        } catch (err) {
+          loaded = { ok: false, message: (err && err.message) || String(err) };
+        }
+        if (!loaded || loaded.ok === false) {
+          toast('载入章节失败，未恢复草稿；可稍后重试', 'error');
+          return false;
+        }
+        if (state.loadedChapterId !== meta.chapterId) {
+          toast('载入的不是草稿所属的章节，未恢复', 'error');
+          return false;
+        }
+        let applied;
+        try {
+          applied = applyRecoveredText(text);
+        } catch (err) {
+          toast(`恢复草稿失败：${(err && err.message) || String(err)}`, 'error');
+          return false;
+        }
+        // REDT-A-04：applyRecoveredText 现在与 insertIntoBody 过同一道写入闸，闸不过时回 { ok:false }；
+        // 草稿保留，不 discard。
+        if (applied && applied.ok === false) {
+          toast(applied.message || '当前状态不能恢复草稿，请稍后再试；这份草稿先留着', 'warn');
+          return false;
+        }
+        await discardOne(meta.draftId);
+        toast('已恢复上次崩溃前的正文（仍是未保存状态，Ctrl+S 才会写盘）');
+        restored = true;
+        return true;
+      } finally {
+        if (!restored) await rollbackBook();
       }
-      const chapters = Array.isArray(state.chapters) ? state.chapters : [];
-      const index = chapters.findIndex((chapter) => chapter && chapter.id === meta.chapterId);
-      if (index < 0) {
-        toast('草稿所属的章节已不在这本书里，未恢复', 'warn');
-        return false;
-      }
-      let loaded;
-      try {
-        loaded = await loadChapterAt(index);
-      } catch (err) {
-        loaded = { ok: false, message: (err && err.message) || String(err) };
-      }
-      if (!loaded || loaded.ok === false) {
-        toast('载入章节失败，未恢复草稿；可稍后重试', 'error');
-        return false;
-      }
-      if (state.loadedChapterId !== meta.chapterId) {
-        toast('载入的不是草稿所属的章节，未恢复', 'error');
-        return false;
-      }
-      try {
-        applyRecoveredText(text);
-      } catch (err) {
-        toast(`恢复草稿失败：${(err && err.message) || String(err)}`, 'error');
-        return false;
-      }
-      await discardOne(meta.draftId);
-      toast('已恢复上次崩溃前的正文（仍是未保存状态，Ctrl+S 才会写盘）');
-      return true;
     }
 
     // 问一条草稿：返回 'continue'（继续问下一条）/ 'stop'（先留着，等下次）。

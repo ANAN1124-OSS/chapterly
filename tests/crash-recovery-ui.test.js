@@ -115,8 +115,11 @@ function makeHost(options = {}) {
     },
     applyRecoveredText(text) {
       calls.applied = text;
+      // REDT-A-04：写入闸拒绝时回 { ok:false }（真实 renderer 的 applyRecoveredText 现在这样返回）
+      if (options.appliedResult) return options.appliedResult;
       editorEl.value = text;
       state.dirty = options.baseText == null ? true : text !== options.baseText;
+      return { ok: true };
     }
   };
   return { host, state, editorEl, calls, api };
@@ -286,6 +289,44 @@ test('U4 丢弃 / 先留着：只删草稿或什么都不删，绝不碰编辑�
   assert.deepEqual(later.calls.read, []);
 });
 
+test('REDT-A-04：写入闸拒绝（开书在途 / 载章中）时保留草稿并提示稍后再试', async () => {
+  const { host, calls } = makeHost({
+    enabled: true,
+    dirty: false,
+    drafts: [draftMeta()],
+    answers: ['restore'],
+    appliedResult: { ok: false, code: 'LOCKED', message: '正在切换书籍或章节，请稍候再试' }
+  });
+  const ui = crashRecoveryUi.create(host);
+  await ui.checkRecovery();
+  assert.equal(calls.applied, '上次崩溃前的正文', '仍然尝试写入（闸在渲染层判定）');
+  assert.deepEqual(calls.discard, [], '闸拒绝时草稿必须保留');
+  assert.equal(
+    calls.toasts.some((item) => item.kind === 'warn' && /正在切换书籍或章节/.test(item.message)),
+    true,
+    '要如实转述闸的拒绝原因'
+  );
+});
+
+test('RPAN-B04：恢复失败时把「已被换成的书」切回原书（不把作者留在草稿所属的书里）', async () => {
+  const { host, state, calls } = makeHost({
+    enabled: true,
+    dirty: false,
+    bookPath: OTHER_BOOK,
+    chapters: [{ id: 'ch_other', name: '另一章', file: '0001-另一章.txt' }],
+    loadedChapterId: 'ch_other',
+    afterOpenChapters: [], // 打开草稿所属书后书目里没有目标章 → 恢复中止
+    drafts: [draftMeta()],
+    answers: ['restore']
+  });
+  const ui = crashRecoveryUi.create(host);
+  await ui.checkRecovery();
+  assert.deepEqual(calls.open, [BOOK, OTHER_BOOK], '先开草稿的书，失败后回切原来的书');
+  assert.equal(state.bookPath, OTHER_BOOK, '失败后作者仍停在自己原来的书上');
+  assert.deepEqual(calls.discard, [], '失败不删草稿');
+  assert.deepEqual(calls.load, [], '失败时不许载入别的章');
+});
+
 test('U5 失败路径：读草稿 / 开书 / 载章 / 写盘失败都只提示并保留草稿，不抛', async () => {
   const readFail = makeHost({
     enabled: true,
@@ -409,7 +450,12 @@ test('接线：renderer.js / index.html / 装配清单 / preload / main / E2E �
   assert.match(scenario, /idsFrom\(60\)/, '第 83 组随 idsFrom(60) 在组尾跑');
 
   const settingsUi = read('renderer/settings-ui.js');
-  assert.match(settingsUi, /crashDraftEnabled: \$\('settings-crash-draft-enabled'\)\.checked === true/, '设置保存带上开关');
+  // RSHE-A-07：保存 payload 的 DOM 读取统一「先判空再取值」（与相邻的 clipboardWatchEnabled 同口径）。
+  assert.match(
+    settingsUi,
+    /crashDraftEnabled: \$\('settings-crash-draft-enabled'\) \? \$\('settings-crash-draft-enabled'\)\.checked === true : false/,
+    '设置保存带上开关'
+  );
   assert.match(settingsUi, /cfg\.crashDraftEnabled === true/, '设置回填只认真正的 true');
   const settingsIa = read('renderer/settings-ia.js');
   assert.match(settingsIa, /'settings-crash-draft-enabled': 'data'/, '开关归「数据安全」分区');

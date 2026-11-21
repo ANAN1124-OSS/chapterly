@@ -5,7 +5,18 @@
 (() => {
   'use strict';
 
+  // REDT-A-03：装配期就校验唯一的主进程桥。preload 注入失败时 window.api 是 undefined，
+  // 首个报错会远在 init 的 call(api.getConfig)（TypeError: fn is not a function），
+  // 没有错误码也没有指向；这里抛与 RENDERER_MODULE_MISSING 同结构的聚合错（点名 preload.js）。
   const api = window.api;
+  if (!api || typeof api !== 'object') {
+    const missingPreload = new TypeError(
+      '渲染层装配缺少模块：window.api（preload.js 没有注入，检查 preload.js 是否加载成功 / 路径是否正确）'
+    );
+    missingPreload.code = 'RENDERER_PRELOAD_MISSING';
+    missingPreload.missing = ['window.api'];
+    throw missingPreload;
+  }
   const $ = (id) => document.getElementById(id);
   const editorEl = $('editor');
   // WP-03：编辑区遮罩解除时把占位提示恢复成 index.html 里那句（只读一次，避免两处文案漂移）
@@ -1259,7 +1270,8 @@
       if (stale()) return { ok: false, code: 'STALE' };
       const guard = openBookGuard.decideOpenBook({ dirty: dirtyBeforeSwitch, choice, saveResult });
       // 失败提示 saveCurrent 已经弹过（与还原 / 删除前拦截同口径），这里只负责别继续换。
-      if (guard.action !== 'proceed') return;
+      // REDT-A-05：取消也是可判定的形状（以前裸 return → undefined，调用方按 result.ok 判定会分叉）。
+      if (guard.action !== 'proceed') return { ok: false, canceled: true };
     }
     // 从「决定换书」这一刻起锁住编辑区：api.openBook 的 IPC 往返期间作者可能还在上一本里敲字。
     // 开成功就整块换成新书（这些字不能静默消失），开失败 / 取消则原样留在上一本（编辑区没动过）。
@@ -1308,7 +1320,9 @@
           selectEditorRange(Number(target.matchIndex), Number(target.matchLength) || 0);
         }
       }
-      return data;
+      // REDT-A-05：成功也带 ok:true（回执字段原样展开，不破坏任何现有消费点）；以前裸 data 没有
+      // ok 字段，任何按 result.ok === true 判成功的调用都会把成功开书误判成失败。
+      return Object.assign({ ok: true }, data);
     } finally {
       // 只有「还是当前这次开书」才允许解自己的锁；过期响应不能把后一次开书的锁解掉。
       if (!committed && seq === openSeq) {
@@ -1900,15 +1914,10 @@
   // preventScroll：只借焦点执行原生输入，别让编辑区把页面滚到别处（面板是 fixed 弹层）。
   // 只改编辑区、只标脏，不自动保存（与「插入碎片」/「替换这一处」的既有口径一致）；
   // 面板保持打开；插入成功后由 capture-ui 消费这一条记录（2026-11-08：正文也「用过就消失」）。
-  function insertIntoBody(text) {
-    // 五-H4（BP-01 / L-F5）：程序化插入先过「有效章节 / 可编辑态」闸（纯逻辑在 editor-logic）。
-    // readOnly 挡得住键盘，挡不住这里的 `.value` 赋值 / execCommand 失败后的兜底赋值：
-    //   · 遮罩态（开书目标章读取失败：index=-1 + loadedChapterId=null）插入 = 「存不了、退不出、
-    //     记录已消费、崩溃草稿也不写」的幽灵脏正文；
-    //   · 开书在途插入会被 commitOpenBook 的 `editorEl.value=''` 静默抹掉；
-    //   · 长操作锁定期间插入会在随后按备份重载时被覆盖。
-    // 拒绝时捕获面板按回执保留记录（applyBody 只在 ok 时消费）。
-    const gate = editorLogic.insertGuard({
+  // 程序化写编辑区的统一身份闸（REDT-A-04）：插入正文 / 崩溃恢复两条路径过同一道判定。
+  // 纯逻辑（有效章节 / 可编辑态 / 遮罩态）在 editor-logic.js，这里只把渲染层的活状态喂进去。
+  function insertGate() {
+    return editorLogic.insertGuard({
       bookPath: state.bookPath,
       view: state.view,
       chapterCount: state.chapters.length,
@@ -1919,6 +1928,17 @@
       longOpLocked: longOpLocked(),
       readOnly: editorEl.readOnly === true
     });
+  }
+
+  function insertIntoBody(text) {
+    // 五-H4（BP-01 / L-F5）：程序化插入先过「有效章节 / 可编辑态」闸（纯逻辑在 editor-logic）。
+    // readOnly 挡得住键盘，挡不住这里的 `.value` 赋值 / execCommand 失败后的兜底赋值：
+    //   · 遮罩态（开书目标章读取失败：index=-1 + loadedChapterId=null）插入 = 「存不了、退不出、
+    //     记录已消费、崩溃草稿也不写」的幽灵脏正文；
+    //   · 开书在途插入会被 commitOpenBook 的 `editorEl.value=''` 静默抹掉；
+    //   · 长操作锁定期间插入会在随后按备份重载时被覆盖。
+    // 拒绝时捕获面板按回执保留记录（applyBody 只在 ok 时消费）。
+    const gate = insertGate();
     if (!gate.ok) return { ok: false, code: gate.code, message: gate.message };
     const value = String(text == null ? '' : text);
     if (!value.trim()) return { ok: false, message: '这一条没有可插入的内容' };
@@ -2085,7 +2105,7 @@
   // ---------- 写作时长（状态栏秒表） ----------
   // 第 4 步九刀·补刀 11：实现在 renderer/write-timer-ui.js（模块头有契约），这里只装配与接线；
   const writeTimerUi = writeTimerUiModule.create({
-    $, state, api, call,
+    $, state, api, call, toast,
     common: { formatStopwatch, formatDuration, WRITE_TIMER_FLUSH_MS },
     statsUi: { renderStatsUi }
   });
@@ -3896,8 +3916,13 @@
   crashRecoveryUi = crashRecoveryUiModule.create({
     state, api, editorEl, toast, openModal, chapterTitle, openBookByPath, loadChapterAt,
     applyRecoveredText: (text) => {
-      editorEl.value = text;
+      // REDT-A-04：崩溃恢复是第三条「程序化写编辑区」的路径，与 insertIntoBody 过同一道闸。
+      // 闸不过就回 { ok:false }，由 crash-recovery-ui 保留草稿并提示稍后再试。
+      const gate = insertGate();
+      if (!gate.ok) return { ok: false, code: gate.code, message: gate.message };
+      editorEl.value = String(text == null ? '' : text);
       onEditorInput();
+      return { ok: true };
     }
   });
   crashRecoveryUi.start();
@@ -4133,6 +4158,10 @@
 
     window.addEventListener('resize', () => {
       hideContextMenu();
+      // REDT-A-06：与 document click 同一套菜单收敛。hideHeaderMenus 只收顶栏四张下拉，
+      // 卷右键菜单（volume-menu）不在其中：窗口缩小时它以绝对定位滞留在原坐标、可能整块落在窗外，
+      // state.contextVolumeId 也会继续残留。
+      hideVolumeMenu();
       hideHeaderMenus();
       applySidebarWidth(state.sidebarWidth);
       scheduleMarksRender(40);
@@ -4419,7 +4448,9 @@
       container: $('chapter-list'),
       itemSelector: '.chapter-item',
       arrows: true,
-      // Phase D / D1：Alt+↑/↓ 在本卷内上移 / 下移这一章（跨卷不接管，仍用拖拽 /「移到卷…」）
+      // Phase D / D1：Alt+↑/↓ 先把这一章在本卷内上移 / 下移一格；到卷边界时 moveChapterStep
+      // 经 chaptersLib.crossVolumeTarget 把它挪到相邻卷（moveChapterByDrag，带 10 秒撤销）。
+      // REDT-C-07：以前这里写「跨卷不接管」，与实际接线相反。
       // 五-H1（ES-5）：position 是**渲染行位置**（筛选 / 折叠会跳行），moveChapterStep 吃的是
       // **书内下标**；dataset.index 才是书内下标（与 onActivate / onExtend 同口径）。
       onAltMove: (item, position, direction) => {
