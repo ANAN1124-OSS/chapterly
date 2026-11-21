@@ -792,7 +792,8 @@ test('P-08 接线闸门：整本校对明细预算用完后，后续章节只算
   const main = fs.readFileSync(path.join(__dirname, '..', 'ipc', 'proofread.js'), 'utf8').replace(/\r\n/g, '\n');
   const start = main.indexOf("handleBook('book:proofread'");
   assert.ok(start > 0, 'ipc/proofread.js 里找不到 book:proofread');
-  const end = main.indexOf('\n  });', start);
+  // MAIN-01 起这两个 handleBook 显式传 READ_ONLY，收尾是 `}, READ_ONLY);`
+  const end = main.indexOf('\n  }, READ_ONLY);', start);
   assert.ok(end > start, 'book:proofread 的处理函数没有按预期结束');
   const region = main.slice(start, end);
   assert.match(region, /issues\.length >= BOOK_ISSUE_LIMIT/, '整本校对仍按 1500 条明细预算收口');

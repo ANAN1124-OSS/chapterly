@@ -19,6 +19,9 @@
  * （activeClipboard 由自检宿主替换、configStore 在 getConfig 里懒建），快照会过期。
  */
 const { assertHost } = require('../core/assert-host');
+// MAIN-01：本域 2 个 handleBook 都是只读（校对 / 敏感词预检只读正文与书目，全程不写盘），
+// 显式传 READ_ONLY —— 不再靠「省略第三个参数」碰巧只读。
+const { READ_ONLY } = require('./book-mutations');
 
 const REQUIRED_HOST = [
   'handle',
@@ -332,7 +335,7 @@ function registerProofreadIpc(host) {
       customWordCount: customEntries.length,
       options: limits
     };
-  });
+  }, READ_ONLY);
 
   // 敏感词预检整本（提案 5.2）：逐章只读磁盘，按作者词表列出命中；全程不写盘。
   // 当前章未保存的内容用 override 传进来（只参与这一次检查，和导出 / 校对同一个惯例）。
@@ -409,7 +412,7 @@ function registerProofreadIpc(host) {
       wordList,
       options: limits
     };
-  });
+  }, READ_ONLY);
 }
 
 module.exports = { register: registerProofreadIpc };

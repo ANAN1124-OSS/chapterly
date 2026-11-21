@@ -39,8 +39,10 @@ test('静态闸门：打包版不认 --e2e/--bench/--contrast/--screenshot（S2�
     const guard = SOURCE.lastIndexOf('if (automation) {', at);
     assert.ok(guard > 0 && at - guard < 600, `${channel} 必须在 if (automation) 分支里注册`);
   }
-  // 打包版即使带了 --e2e，渲染层的 ?test=1 也不该开（避免加载 test-hooks）
-  assert.match(SOURCE, /if \(automation \|\| isE2E\) query\.test = '1';/, '测试钩子开关跟着 automation 走');
+  // 打包版即使带了 --e2e，渲染层的 ?test=1 也不该开（避免加载 test-hooks）。
+  // MAIN-02：automation 已包含 isE2E，旧的 `automation || isE2E` 第二项是恒真死条件，已收成单条件。
+  assert.match(SOURCE, /if \(automation\) query\.test = '1';/, '测试钩子开关跟着 automation 走');
+  assert.equal(/if \(automation \|\| isE2E\)/.test(SOURCE), false, 'automation 已含 isE2E，不许再写恒真合取');
   // 安装版冒烟用的隔离参数不能被误伤
   assert.match(SOURCE, /const userDataArg = argValue\('user-data'\);/, '--user-data 必须保留');
   assert.match(SOURCE, /app\.setPath\('userData', userDataArg\);/, '--user-data 仍要生效');

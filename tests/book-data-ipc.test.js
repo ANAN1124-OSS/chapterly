@@ -154,6 +154,44 @@ test('ipc/book-data.js：14 个频道的清单 / 顺序 / 注册器 / mutation �
   }
 });
 
+test('MAIN-01：导出 / 校对域的 8 个 handleBook 也显式标 READ_ONLY（不再靠省略第三个参数）', () => {
+  // 用与 registerBookCrudSpies 同一套 Proxy 装配：只记录 handleBook 的频道与第三个参数。
+  const spyChannels = (moduleRel, registerName) => {
+    const channels = new Map();
+    const host = new Proxy(
+      {},
+      {
+        get(target, key) {
+          if (key === 'handle') return () => {};
+          if (key === 'handleBook') return (channel, fn, options) => channels.set(channel, options);
+          return () => {};
+        },
+        has: () => true
+      }
+    );
+    const mod = require(moduleRel);
+    assert.equal(typeof mod[registerName], 'function', `${moduleRel} 要导出 ${registerName}`);
+    mod[registerName](host);
+    return channels;
+  };
+  const exportChannels = spyChannels('../ipc/export', 'register');
+  const proofreadChannels = spyChannels('../ipc/proofread', 'register');
+  const all = [...exportChannels.keys()].map((name) => ({ file: 'ipc/export.js', name, options: exportChannels.get(name) }))
+    .concat([...proofreadChannels.keys()].map((name) => ({ file: 'ipc/proofread.js', name, options: proofreadChannels.get(name) })));
+  // 导出 6 条（plan / txt / epub / docx / 整本复制 / 复制本章）+ 校对 2 条（校对 / 敏感词预检）= 8
+  assert.equal(all.length, 8, `导出 / 校对域 handleBook 数异常：${all.length}（应是 8）`);
+  for (const item of all) {
+    assert.ok(
+      item.options && Object.prototype.hasOwnProperty.call(item.options, 'mutation'),
+      `${item.file} 的 ${item.name} 没显式选 mutation / READ_ONLY`
+    );
+    assert.equal(item.options.mutation, null, `${item.file} 的 ${item.name} 只读正文 / 书目，应标 READ_ONLY`);
+  }
+  for (const channel of ['book:export-plan', 'book:export', 'book:proofread']) {
+    assert.ok(all.some((item) => item.name === channel), `频道清单里缺少 ${channel}`);
+  }
+});
+
 test('书域两个模块：每条 handleBook 都显式选 MUTATION.X 或 READ_ONLY（新增频道漏选就红）', () => {
   const dataChannels = makeBookDataHost().channels;
   const crudChannels = registerBookCrudSpies();

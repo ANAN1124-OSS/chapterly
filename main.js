@@ -1272,9 +1272,11 @@ function setupCloseIpc() {
         { level: 'warn' }
       );
     }
-    session.e2eCloseReady = okToClose;
-    e2eLastCloseReady = okToClose;
     if (isE2E) {
+      // MAIN-02：E2E 自检状态只在 --e2e 下写（读取点 e2eSelfCheckScope 也只在 ?test=1 时存在）；
+      // 生产路径以前无条件写 session.e2eCloseReady / e2eLastCloseReady，属死状态污染。
+      session.e2eCloseReady = okToClose;
+      e2eLastCloseReady = okToClose;
       // 默认只记回执、不真的关窗（既有 E2E 项都依赖窗口继续存在；不写死项数，加组就会过时）；
       // 多窗口用例显式打开「真实关窗」模式再关。
       e2eCloseReadyByWindow.set(String(session.id), okToClose);
@@ -1297,9 +1299,12 @@ function setupCloseIpc() {
     });
     if (!recheck.okToClose) {
       // E2E 记录的是「主进程最终放行了吗」，复查翻盘也要如实回写（组 10 用它断言被拦下）。
-      session.e2eCloseReady = false;
-      e2eLastCloseReady = false;
-      if (isE2E) e2eCloseReadyByWindow.set(String(session.id), false);
+      // MAIN-02：同样只在 --e2e 下写（生产路径不产生 E2E 状态）。
+      if (isE2E) {
+        session.e2eCloseReady = false;
+        e2eLastCloseReady = false;
+        e2eCloseReadyByWindow.set(String(session.id), false);
+      }
       logError(
         'close-blocked',
         {
@@ -2575,7 +2580,8 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
   // 决策在 core/crash-recovery.js（纯函数、单测覆盖）：首次崩溃自动 reload 恢复视图；
   // 60 秒内重复崩溃改成「重载 / 打开日志 / 关闭窗口」对话框，避免「崩 → 重载 → 再崩」的环。
   // 自检同样走 reload（原生对话框会把自动化挂住）；生产里对话框默认停在最安全的选项。
-  const crashState = { lastReloadAtMs: 0, reloadCount: 0 };
+  // CGRD-04：只剩「上次自动重载时刻」——防环按 60 秒时间窗，不再维护从不参与判定的 reloadCount。
+  const crashState = { lastReloadAtMs: 0 };
   const reloadWindow = () => {
     if (browserWin.isDestroyed()) return false;
     try {
@@ -2604,18 +2610,15 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
       reason,
       nowMs: Date.now(),
       lastReloadAtMs: crashState.lastReloadAtMs,
-      reloadCount: crashState.reloadCount,
       quitting: appQuitting
     });
     if (plan.action === 'reload') {
       crashState.lastReloadAtMs = plan.nextLastReloadAtMs;
-      crashState.reloadCount = plan.nextReloadCount;
       // 崩溃后的 reload 要等当前事件派发完，避免在 gone 回调里同步重入 webContents。
       setImmediate(() => reloadWindow());
       return;
     }
     if (plan.action !== 'ask') return;
-    crashState.reloadCount = plan.nextReloadCount;
     if (isE2E) {
       setImmediate(() => reloadWindow());
       return;
@@ -2626,7 +2629,6 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
         const action = planDialog.actions[response.response];
         if (action === 'reload') {
           crashState.lastReloadAtMs = Date.now();
-          crashState.reloadCount = 0;
           reloadWindow();
         } else if (action === 'logs') {
           void openLogFolderForRecovery();
@@ -2662,7 +2664,9 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
   });
 
   const query = {};
-  if (automation || isE2E) query.test = '1';
+  // MAIN-02：automation 已包含 isE2E（见文件头 automation = isE2E || …），旧写法 `automation || isE2E`
+  // 的第二项是恒真死条件。
+  if (automation) query.test = '1';
   if (bookPath) query.open = bookPath;
   const loadOptions = Object.keys(query).length ? { query } : undefined;
   try {

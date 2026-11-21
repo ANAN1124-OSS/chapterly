@@ -12,6 +12,9 @@
  * 配置仓库句柄按 getter 现取（两者都是可变绑定，快照会过期）。
  */
 const { assertHost } = require('../core/assert-host');
+// MAIN-01：本域 8 个 handleBook 全部是只读（导出 / 复制只读正文与书目，写的是用户选定的外部文件 /
+// 剪贴板），显式传 READ_ONLY —— 不再靠「省略第三个参数」碰巧只读，与 ipc/book-data.js 同一纪律。
+const { READ_ONLY } = require('./book-mutations');
 
 const REQUIRED_HOST = [
   'handle',
@@ -140,7 +143,7 @@ function registerExportIpc(host) {
       docxFileName: docxLib.docxFileName(meta, safeRange),
       includedUnsaved: overrideIndex >= 0 && plan.indexes.includes(overrideIndex)
     };
-  });
+  }, READ_ONLY);
 
   // 目录是否存在（导出默认目录兜底用）：读不到就当不存在
   function isDirectory(dir) {
@@ -326,7 +329,7 @@ function registerExportIpc(host) {
       rangeLabel: plan.label,
       conversion
     };
-  });
+  }, READ_ONLY);
 
   // 导出 EPUB（提案 6.3 / v0.8 P0 N8）：整本或按卷 / 按章节范围 → 一本 EPUB 3
   // （分卷做目录级、一章一个 XHTML、没有封面图就生成纯文字封面页）。排版沿用「段首缩进 + 空一行」，
@@ -339,8 +342,7 @@ function registerExportIpc(host) {
       filters: [{ name: 'EPUB 电子书', extensions: ['epub'] }],
       defaultName: (prepared) => epubLib.epubFileName(prepared.meta, prepared.range),
       stream: (input, write) => epubLib.streamEpub(input, write)
-    })
-  );
+    }), READ_ONLY);
 
   // 导出 DOCX（v0.8 P0 N9）：整本或按卷 / 按章节范围 → 一份 Word 能直接打开的书稿。
   // 和 EPUB 导出同一套规则：范围解析复用 exporter.resolveExportRange，只读选中的章，
@@ -351,8 +353,7 @@ function registerExportIpc(host) {
       filters: [{ name: 'Word 文档', extensions: ['docx'] }],
       defaultName: (prepared) => docxLib.docxFileName(prepared.meta, prepared.range),
       stream: (input, write) => docxLib.streamDocx(input, write)
-    })
-  );
+    }), READ_ONLY);
 
   handleBook('book:copy', async (bookPath, override, indexes) => {
     const meta = await storage.readBookMeta(bookPath);
@@ -379,7 +380,7 @@ function registerExportIpc(host) {
       chars,
       includedUnsaved
     };
-  });
+  }, READ_ONLY);
 
   // 复制本章（平台格式）：只取这一章的正文，段首缩进两个全角空格、段间空一行（空行也带缩进），
   // 直接进剪贴板；不写盘。ref = { chapterId?, chapterFile?, text? }：
@@ -408,7 +409,7 @@ function registerExportIpc(host) {
       chars: result.chars,
       includedUnsaved: fromEditor
     };
-  });
+  }, READ_ONLY);
 
   // 审计修复 #6（V302）：保存被 BOOK_MISSING / CHAPTER_MISSING 阻断时的救稿出口。
   // 书文件夹 / 章节文件可能已经在应用外被删 / 移走 —— 这条通道因此**完全不碰书库**：正文由渲染层
