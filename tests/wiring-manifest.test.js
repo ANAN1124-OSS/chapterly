@@ -199,6 +199,21 @@ test('R4g 变异负控：把 core/assert-host.js 挪到消费者之后 → rende
   assert.match(hits[0].detail, /必须先加载/);
 });
 
+test('TOOL-A04：同一进程对同一 root 改清单后再审计，读到的是新清单（不接受 require 缓存）', () => {
+  const dir = makeFixture();
+  assert.deepEqual(wiring.auditWiring(dir).violations, [], '夹具初始应零违规');
+  // 从清单里删掉 undo-ui → index.html 与清单不再一致。若 wiring-check 仍拿 require 缓存里的旧清单，
+  // 这次审计会静默通过（变异负控就假绿了）。
+  mutate(dir, 'renderer/assembly-manifest.js', (text) =>
+    text.replace(/\s*\['undo-ui\.js'[^\n]*\n/, '\n')
+  );
+  const after = wiring.auditWiring(dir);
+  assert.ok(
+    violation(after, 'renderer-assembly-order'),
+    '第二次审计必须读到改后的清单，实际：' + ids(after).join(',')
+  );
+});
+
 test('R4d 等价重构不假红：CRLF + 注释 + script 标签单引号 / 多余空白仍零违规', () => {
   const dir = makeFixture();
   const textFiles = [

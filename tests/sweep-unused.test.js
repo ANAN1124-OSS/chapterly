@@ -269,6 +269,50 @@ test('动态拼名：matchesDynamicPattern 能命中真正拼出来的名字，�
   assert.strictEqual(sweep.matchesDynamicPattern('state-row', suffixPatterns), null);
 });
 
+test('TOOL-C-05：--verbose 的「全部动态拼名形状」读得到数据（gather 返回 dynamicPatterns）', () => {
+  // 以前 gather() 不返回 dynamicPatterns，verbose 分支 `result.dynamicPatterns || []` 永远空输出。
+  assert.ok(Array.isArray(result.dynamicPatterns), 'gather() 必须返回 dynamicPatterns 数组');
+  assert.strictEqual(
+    result.dynamicPatterns.length,
+    result.counts.dynamicPatterns,
+    '清单长度要和 counts.dynamicPatterns 同一份'
+  );
+  const verbose = sweep.formatReport(result, { verbose: true });
+  assert.ok(verbose.includes('== 附：全部动态拼名形状 =='), 'verbose 报表要有这一段');
+  if (result.dynamicPatterns.length) {
+    const sample = result.dynamicPatterns[0];
+    assert.ok(
+      verbose.includes(JSON.stringify(sample.prefix) + '+*+'),
+      'verbose 报表要真的列出形状（不是只有标题的空段）'
+    );
+  }
+});
+
+test('TOOL-C-07：行号走共享的核心实现；词频加速与逐次线性算法结果逐字一致', () => {
+  const common = require('../core/common');
+  const text = 'a\n\nfunction pad2(x) {}\npad2(1); pad2-2; $pad2;\n';
+  // 行号：共享 lineStartsOf + positionOf == 旧的逐字符回扫（sweep 内部就用这一份）
+  const starts = common.lineStartsOf(text);
+  for (let i = 0; i < text.length; i += 1) {
+    assert.strictEqual(common.positionOf(starts, i).line, text.slice(0, i).split('\n').length, '位置 ' + i);
+  }
+  // 词频：wordCounts 的完整词口径与 countWord 一致（`$` / `-` 算词内字符）
+  const counts = sweep.wordCounts(text);
+  for (const word of ['pad2', 'x', 'function', 'a', '$pad2', '2']) {
+    assert.strictEqual(counts.get(word) || 0, sweep.countWord(text, word), word);
+  }
+  // 反门禁：sweep-unused 里不许再长回第二份行首数组 / 线性回扫实现
+  const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'sweep-unused.js'), 'utf8');
+  assert.equal(/function (lineStartsOf|newlineStartsOf|lineOf)\(/.test(src), false, '行首数组要复用 core/common.js');
+  assert.match(src, /const \{ lineStartsOf, positionOf \} = require\('\.\.\/core\/common'\)/);
+});
+
+test('TOOL-C-06：E2E 组文件与截图驱动计入测试侧（不再被标「真死，可删」）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'sweep-unused.js'), 'utf8');
+  assert.match(src, /const TEST_DIRS = \['tests', 'scripts\/e2e'\]/, 'E2E 组目录要算测试侧');
+  assert.match(src, /TEST_FILES = \[[^\]]*'scripts\/screenshot-driver\.js'/, '截图驱动要算测试侧');
+});
+
 // ---------------------------------------------------------------- ② 真仓库闸门
 
 const result = sweep.gather();

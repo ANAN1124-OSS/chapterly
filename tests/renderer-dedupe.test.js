@@ -34,9 +34,12 @@ test('C2：章节 / 分卷写盘后统一 applyMetaAndRelocate，不再散落 9 
   assert.equal(countOf(EDITOR_DOMAIN_SRC, 'state.chapters = data.meta.chapters;'), 2, '散落的换章节数组应已收进 helper');
   // 兜底语义留在调用点：删卷找不到当前章回第 1 章；删章（非当前章）找不到回「原下标与末章取小」
   assert.ok(/const at = applyMetaAndRelocate\(data, currentId\);\s*\n\s*if \(at < 0\) state\.index = 0;/.test(EDITOR_DOMAIN_SRC), '删卷的兜底不见了');
+  // 删非当前章的异常兜底（REDT-C-04）：回原下标 + 清脏 + 重载编辑区，不再只改下标
   assert.ok(
-    /if \(at < 0\) state\.index = Math\.min\(index, state\.chapters\.length - 1\);/.test(EDITOR_DOMAIN_SRC),
-    '删非当前章的下标兜底不见了'
+    /\} else if \(at < 0\) \{[\s\S]{0,360}state\.index = Math\.min\(index, state\.chapters\.length - 1\);[\s\S]{0,200}state\.dirty = false;[\s\S]{0,120}await loadChapterAt\(state\.index\);/.test(
+      EDITOR_DOMAIN_SRC
+    ),
+    '删非当前章的异常兜底必须回下标 + 清脏 + 重载编辑区'
   );
   // helper 本身：不传 id 只换书目，传了才重定位（新建 / 重命名 / 改信息这些顺序不变的场景不重定位）
   assert.ok(/function applyMetaAndRelocate\(data, currentId\) \{[\s\S]{0,400}if \(!currentId\) return -1;/.test(EDITOR_DOMAIN_SRC));
