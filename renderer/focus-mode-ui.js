@@ -94,11 +94,15 @@
 
   // 光标所在行的顶端（相对正文内容顶部、含 padding，px）；量不出来返回 null（就这次不对齐）
   // B15（v1.8.0 WP-29）：打字机模式 30ms 防抖一次，旧实现每次都把「光标前全文」塞进 mirror
-  // 强制重排，成本随章长线性。现在按「硬段落」做增量：
-  //   · 段落起点（上一个 \n 之后）不同 / 正文变了 / 宽度或字体样式变了 → 仍做一次全文测量；
-  //   · 同一段落内移动 → 只把「本段从段首到光标」放进 mirror，量出段内相对行位，
-  //     再用上次的段首绝对位置求差（段落从行首开始，段内换行与全文布局一致，结果与全文测量等价）。
-  // 段落通常只有一两行，大章里连续输入不再每次重排整章。
+  // 强制重排，成本随章长线性。现在按「硬段落」做增量：段首绝对位置（baseTop）只取决于
+  // **段首之前的正文 + 版式**，所以缓存里记下段首前缀（prefixText）：
+  //   · 段首之前的正文 / 宽度 / 字体样式 / 段首下标任一变了 → 全文测量；
+  //   · 同一段落内输入或移动（前缀不变）→ 只把「本段从段首到光标」放进 mirror，量出段内
+  //     相对行位，再用缓存的段首绝对位置求和（段落从行首重新排版，段内布局与全文布局一致）。
+  // RPAN-B02（第五轮审计）：旧缓存键是「全文严格相等」，打字每敲一个字符就失效 —— 只在
+  // 「正文不变、仅移光标」命中，增量优化声称的主场景（连续输入）反而永不命中，慢路径还
+  // 多量一次段内基准。现在键改成「段首前缀 + 版式」：连续输入走快路径，慢路径仍完整量一次
+  // 全文（同时刷新 baseTop），结果与全文测量逐像素一致。
   let caretMeasureCache = null;
 
   function prepareFocusMirror(mirror, styles, width) {
@@ -160,15 +164,18 @@
     ].join('\u0000');
     const mirror = ensureFocusMirror();
     const cached = caretMeasureCache;
-    // 快速路径：同一份正文 / 宽度 / 字体，且在同一段（段首下标相同）——只量段内相对位置。
+    // 快速路径：段首之前的正文没变（前缀逐字相同）、宽度 / 字体 / 段首下标相同 —— 段首的绝对
+    // 位置（baseTop）仍然有效，只需量「段首到光标」这一小段。连续输入时正文每敲一字都变，
+    // 但只要没跨段，前缀照旧成立，打字场景也命中（RPAN-B02）。
     if (
       cached &&
-      cached.text === text &&
       cached.width === width &&
       cached.styleKey === styleKey &&
-      cached.paragraphStart === paragraphStart
+      cached.paragraphStart === paragraphStart &&
+      typeof cached.prefixText === 'string' &&
+      text.startsWith(cached.prefixText)
     ) {
-      if (cached.pos === pos) return cached.caretTop;
+      if (cached.text === text && cached.pos === pos) return cached.caretTop;
       prepareFocusMirror(mirror, styles, width);
       const relOffset = measureMirrorOffset(mirror, text.slice(paragraphStart, pos));
       if (!Number.isFinite(relOffset)) return null;
@@ -178,6 +185,7 @@
         width,
         styleKey,
         paragraphStart,
+        prefixText: text.slice(0, paragraphStart),
         pos,
         baseTop: cached.baseTop,
         relTop: relOffset,
@@ -197,7 +205,17 @@
     }
     const baseTop = px(styles.paddingTop) + offsetTop - relTop;
     const caretTop = roundCaretTop(baseTop + relTop);
-    caretMeasureCache = { text, width, styleKey, paragraphStart, pos, baseTop, relTop, caretTop };
+    caretMeasureCache = {
+      text,
+      width,
+      styleKey,
+      paragraphStart,
+      prefixText: text.slice(0, paragraphStart),
+      pos,
+      baseTop,
+      relTop,
+      caretTop
+    };
     return caretTop;
   }
 

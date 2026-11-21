@@ -489,41 +489,45 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFocusModeU
 });
 
 // ---------- B15（v1.8.0 WP-29）：打字机光标测量按段落增量 ----------
-test('B15：同一段落内移动只量段内相对位置（不再把整章前缀塞进 mirror），结果与全文测量一致', () => {
-  const text = '甲'.repeat(70) + '\n' + '乙'.repeat(400);
-  const paragraphStart = 71;
+// 假 mirror：offsetTop 按「每个硬段落从行首重新排版」计算（每行 40 字、行高 32px），
+// 用来验证「全文测量」与「段内相对测量」结果等价。
+function makeWrappedMeasurement(text) {
   const visualOffset = (value) => {
     let lines = 0;
     for (const line of String(value).split('\n')) lines += Math.max(1, Math.ceil(line.length / 40));
     return (lines - 1) * 32;
   };
-  const buildWrapped = () => {
-    const ctx = build({ text });
-    const mirror = makeEl('div', 'focus-mirror');
-    let mirrorText = '';
-    const writes = [];
-    Object.defineProperty(mirror, 'textContent', {
-      get() { return mirrorText; },
-      set(value) { mirrorText = String(value); writes.push(mirrorText); mirror.children.length = 0; }
-    });
-    Object.defineProperty(mirror, 'offsetTop', { get: () => 0 });
-    ctx.dom.map.set('focus-mirror', mirror);
-    ctx.dom.doc.createElement = (tag) => {
-      const el = makeEl(tag);
-      if (tag === 'span') {
-        Object.defineProperty(el, 'offsetTop', {
-          get() {
-            // 每个硬段落从行首重新排版：视觉行数 = 各段 ceil(段长/40) 之和
-            return el.parentNode === mirror ? visualOffset(mirrorText) : 0;
-          }
-        });
-      }
-      return el;
-    };
-    return { ctx, writes };
+  const ctx = build({ text });
+  const mirror = makeEl('div', 'focus-mirror');
+  let mirrorText = '';
+  const writes = [];
+  Object.defineProperty(mirror, 'textContent', {
+    get() { return mirrorText; },
+    set(value) { mirrorText = String(value); writes.push(mirrorText); mirror.children.length = 0; }
+  });
+  Object.defineProperty(mirror, 'offsetTop', { get: () => 0 });
+  ctx.dom.map.set('focus-mirror', mirror);
+  ctx.dom.doc.createElement = (tag) => {
+    const el = makeEl(tag);
+    if (tag === 'span') {
+      Object.defineProperty(el, 'offsetTop', {
+        get() {
+          return el.parentNode === mirror ? visualOffset(mirrorText) : 0;
+        }
+      });
+    }
+    return el;
   };
+  return { ctx, writes, visualOffset };
+}
+
+test('B15：同一段落内移动只量段内相对位置（不再把整章前缀塞进 mirror），结果与全文测量一致', () => {
+  const text = '甲'.repeat(70) + '\n' + '乙'.repeat(400);
+  const paragraphStart = 71;
+  const buildWrapped = () => makeWrappedMeasurement(text);
 
   const first = buildWrapped();
+  const visualOffset = first.visualOffset;
   const p1 = paragraphStart + 200;
   const p2 = paragraphStart + 320;
   const topAtP1 = first.ctx.ui.measureCaretTop(p1);
@@ -545,12 +549,50 @@ test('B15：同一段落内移动只量段内相对位置（不再把整章前�
   assert.equal(first.writes.length, againBefore, '同一位置不再重排');
   assert.equal(topAtP1, 20 + visualOffset(text.slice(0, p1)));
 
-  // 正文变了 → 退回全文测量（缓存自动失效）。注意 build() 会把全局 document 换成新 ctx 的假 DOM，
-  // 这里先切回 first 的 document 再量（同一测试里有两个 ctx）。
+  // 正文在段后追加（段首前缀没变）：仍走增量，但结果必须与全文测量一致。
+  // 注意 build() 会把全局 document 换成新 ctx 的假 DOM，这里先切回 first 的 document 再量。
   globalThis.document = first.ctx.dom.doc;
   first.ctx.editorEl.value = text + '\n' + '丙'.repeat(80);
   const changed = first.ctx.ui.measureCaretTop(p2);
-  assert.equal(changed, 20 + visualOffset(first.ctx.editorEl.value.slice(0, p2)), '正文变了就重新量全文，不用旧偏移');
+  assert.equal(
+    changed,
+    20 + visualOffset(first.ctx.editorEl.value.slice(0, p2)),
+    '段后追加不改变光标行，增量结果与全文测量一致'
+  );
+});
+
+// RPAN-B02（第五轮审计）：旧缓存键要求「全文严格相等」，连续输入时每敲一个字就失效 ——
+// 增量优化声称的主场景（打字）永不命中，每次还全文重排 + 多量一次段内基准。现在键改成
+// 「段首前缀 + 版式」：同一段内输入/移动都走增量；前缀一变就退回全文测量。
+test('RPAN-B02：连续输入（同一段内每敲一个字）也走增量快路径，不再每次全文重排', () => {
+  const base = '甲'.repeat(70) + '\n' + '乙'.repeat(400);
+  const paragraphStart = 71;
+  const unit = makeWrappedMeasurement(base);
+  const ctx = unit.ctx;
+  const pos = paragraphStart + 200;
+  unit.ctx.ui.measureCaretTop(pos);
+  const before = unit.writes.length;
+  // 打字：在光标处插入一个字（同段、段首前缀不变），光标随之后移
+  const typed = base.slice(0, pos) + '丙' + base.slice(pos);
+  ctx.editorEl.value = typed;
+  globalThis.document = ctx.dom.doc;
+  const top = ctx.ui.measureCaretTop(pos + 1);
+  assert.equal(unit.writes.length, before + 2, '连续输入只写一次内容（+ 一次量完清空），不许全文重排');
+  assert.equal(
+    unit.writes[unit.writes.length - 2].length,
+    pos + 1 - paragraphStart,
+    '只量本段从段首到光标（远小于全章前缀）'
+  );
+  // 与独立全文测量逐像素一致
+  const reference = makeWrappedMeasurement(typed);
+  assert.equal(top, reference.ctx.ui.measureCaretTop(pos + 1));
+  // 段首之前的正文变了（前缀失效）→ 必须重新全文测量
+  globalThis.document = ctx.dom.doc;
+  ctx.editorEl.value = '丁'.repeat(70) + '\n' + typed.slice(paragraphStart);
+  const beforeFull = unit.writes.length;
+  ctx.ui.measureCaretTop(pos + 1);
+  assert.equal(unit.writes.length, beforeFull + 4, '前缀变了：全文测量 + 段内基准各写一次');
+  assert.equal(unit.writes[beforeFull].length, pos + 1, '第一次写的是整段前缀（全文测量）');
 });
 
 test('B15：显示设置（字体 / 字号 / 行距）应用后作废段内基准，下一次重新全文测量', () => {
