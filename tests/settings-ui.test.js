@@ -19,11 +19,8 @@ const chaptersLib = require('../core/chapters');
 // 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ chaptersLib + display{12} +
 // peers{stats,writeTimer,editor,words,refreshShelf} + texts{commonLib,formatBytes}；分组内每个真实依赖都写进模块头注释。
 
-const realDocument = globalThis.document;
-test.after(() => {
-  if (realDocument === undefined) delete globalThis.document;
-  else globalThis.document = realDocument;
-});
+const preambles = require('./ui-test-preambles');
+preambles.restoreGlobalsAfter(test, ['document']);
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -35,64 +32,29 @@ const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'settings-ui.js'),
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 // ---------- 假 DOM ----------
+// 本体用共享基线（TEST-D-02）：本域只注入 style 桩（--swatch 变量）与 [data-*] 领域选择器。
 function makeStyle() {
   return { _props: {}, setProperty(k, v) { this._props[k] = v; }, removeProperty(k) { delete this._props[k]; } };
 }
-function makeEl(tag = 'div', id = '') {
-  const classes = new Set();
-  const listeners = [];
-  const el = {
-    tagName: tag, id, className: '', textContent: '', title: '', value: '', checked: false, disabled: false,
-    dataset: {}, children: [], parentNode: null, style: makeStyle(),
-    _classes: classes, _listeners: listeners, _attrs: {},
-    classList: {
-      add: (...n) => n.forEach((x) => classes.add(x)),
-      remove: (...n) => n.forEach((x) => classes.delete(x)),
-      contains: (n) => classes.has(n),
-      toggle(n, on) {
-        const next = on === undefined ? !classes.has(n) : Boolean(on);
-        if (next) classes.add(n);
-        else classes.delete(n);
+const SETTINGS_EL_SPEC = {
+  style: makeStyle,
+  query(selector, el) {
+    const out = [];
+    const m = /^\[data-([\w-]+)\]$/.exec(selector);
+    const camel = m ? m[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase()) : null;
+    const visit = (node) => {
+      for (const c of node.children || []) {
+        if (m && Object.prototype.hasOwnProperty.call(c.dataset, camel)) out.push(c);
+        visit(c);
       }
-    },
-    get className() { return [...classes].join(' '); },
-    set className(v) { classes.clear(); String(v || '').split(/\s+/).filter(Boolean).forEach((x) => classes.add(x)); },
-    append(...n) { n.forEach((x) => el.appendChild(x)); },
-    appendChild(child) { child.parentNode = el; el.children.push(child); return child; },
-    removeChild(child) {
-      const at = el.children.indexOf(child);
-      if (at >= 0) el.children.splice(at, 1);
-      child.parentNode = null;
-      return child;
-    },
-    // 正文宽度历史值 option 的回填清理用（1.3.0 T-06）：真实 DOM 的原生 remove()
-    remove() { if (el.parentNode) el.parentNode.removeChild(el); },
-    addEventListener(type, fn) { listeners.push({ type, fn }); },
-    setAttribute(k, v) { el._attrs[k] = v; },
-    getAttribute(k) { return Object.prototype.hasOwnProperty.call(el._attrs, k) ? el._attrs[k] : null; },
-    focus() { el._focus = (el._focus || 0) + 1; },
-    querySelectorAll(selector) {
-      const out = [];
-      const m = /^\[data-([\w-]+)\]$/.exec(selector);
-      const camel = m ? m[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase()) : null;
-      const visit = (node) => {
-        for (const c of node.children || []) {
-          if (m && Object.prototype.hasOwnProperty.call(c.dataset, camel)) out.push(c);
-          visit(c);
-        }
-      };
-      visit(el);
-      return out;
-    },
-    _fire(type, event) {
-      let result;
-      for (const l of listeners) if (l.type === type) result = l.fn(event);
-      return result;
-    }
-  };
-  Object.defineProperty(el, 'innerHTML', { get() { return ''; }, set() { el.children.length = 0; } });
-  return el;
-}
+    };
+    visit(el);
+    return out;
+  }
+};
+const makeEl = (tag = 'div', id = '') => preambles.makeEl(tag, id, SETTINGS_EL_SPEC);
+
+
 function makeDocument() {
   const map = new Map();
   let lookups = 0;

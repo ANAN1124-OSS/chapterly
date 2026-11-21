@@ -15,11 +15,9 @@ const backupGuardLib = require('../renderer/backup-guard');
 // 契约要点：host 10 个成员 = 基础 5（$, state, api, call, toast）+ staleGuard + guard（1.5.0 P0-5 备份指纹核对）
 // + 3 个语义分组（collab / menus / fmt，分组内每个真实依赖都单列，见模块头注释）。
 
-const realDocument = globalThis.document;
-test.after(() => {
-  if (realDocument === undefined) delete globalThis.document;
-  else globalThis.document = realDocument;
-});
+// 假 DOM：本体用 tests/ui-test-preambles.js 的共享基线（TEST-D-02），本域没有额外变体。
+const preambles = require('./ui-test-preambles');
+preambles.restoreGlobalsAfter(test, ['document']);
 
 const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
@@ -28,53 +26,8 @@ const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'history-ui.js'), 
 // 纯边界闸门只看代码：注释里提 document / state 是在解释契约，不算越界
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-// ---------- 假 DOM：只实现本模块真正用到的几样 ----------
-function makeEl(tag = 'div', id = '') {
-  const classes = new Set();
-  const listeners = [];
-  const el = {
-    tagName: tag,
-    id,
-    className: '',
-    textContent: '',
-    title: '',
-    type: '',
-    dataset: {},
-    attributes: {},
-    children: [],
-    parentNode: null,
-    _classes: classes,
-    _listeners: listeners,
-    classList: {
-      add: (...names) => names.forEach((n) => classes.add(n)),
-      remove: (...names) => names.forEach((n) => classes.delete(n)),
-      contains: (n) => classes.has(n),
-      toggle(n, on) {
-        const next = on === undefined ? !classes.has(n) : Boolean(on);
-        if (next) classes.add(n);
-        else classes.delete(n);
-      }
-    },
-    setAttribute(name, value) { el.attributes[name] = String(value); },
-    getAttribute(name) {
-      return Object.prototype.hasOwnProperty.call(el.attributes, name) ? el.attributes[name] : null;
-    },
-    append(...nodes) { nodes.forEach((n) => el.appendChild(n)); },
-    appendChild(child) { child.parentNode = el; el.children.push(child); return child; },
-    addEventListener(type, fn) { listeners.push({ type, fn }); },
-    _fire(type, event) {
-      let result;
-      for (const l of listeners) if (l.type === type) result = l.fn(event);
-      return result;
-    }
-  };
-  // renderHistory / 空态会 `list.innerHTML = ''` 清清单：假 DOM 也要真的清
-  Object.defineProperty(el, 'innerHTML', {
-    get() { return ''; },
-    set() { el.children.length = 0; }
-  });
-  return el;
-}
+// 假 DOM 本体：共享基线（TEST-D-02），本域没有额外变体，直接复用。
+const makeEl = preambles.makeEl;
 
 function makeDom(ids) {
   const map = new Map();

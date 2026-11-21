@@ -19,14 +19,8 @@ const chaptersLib = require('../core/chapters');
 // 契约：host 10 个成员 = 基础 5（$, state, api, call, toast）+ imeGuard（输入法组字守卫，WP-04）+
 // longOpLogic（整本替换回执的书身份判定，WP-13/C2）+ find{...} + nav{...} + collab{...11 个跨域回调，其中 4 个惰性转发}。
 
-const realDocument = globalThis.document;
-const realWindow = globalThis.window;
-test.after(() => {
-  if (realDocument === undefined) delete globalThis.document;
-  else globalThis.document = realDocument;
-  if (realWindow === undefined) delete globalThis.window;
-  else globalThis.window = realWindow;
-});
+const preambles = require('./ui-test-preambles');
+preambles.restoreGlobalsAfter(test, ['document', 'window']);
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -38,71 +32,26 @@ const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'find-ui.js'), 'ut
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 // ---------- 假 DOM ----------
-function makeEl(tag = 'div', id = '') {
-  const classes = new Set();
-  const listeners = [];
-  const el = {
-    tagName: tag, id, className: '', textContent: '', title: '', value: '', checked: false, disabled: false,
-    dataset: {}, children: [], parentNode: null, scrollTop: 0, scrollLeft: 0,
-    _classes: classes, _listeners: listeners, _attrs: {}, _focus: 0, selectionStart: 0, selectionEnd: 0,
-    classList: {
-      add: (...n) => n.forEach((x) => classes.add(x)),
-      remove: (...n) => n.forEach((x) => classes.delete(x)),
-      contains: (n) => classes.has(n),
-      toggle(n, on) {
-        const next = on === undefined ? !classes.has(n) : Boolean(on);
-        if (next) classes.add(n);
-        else classes.delete(n);
+// 本体用共享基线（TEST-D-02）：本域只注入编辑器命中层的选择器（.find-hit / [data-ordinal]）。
+const FIND_EL_SPEC = {
+  query(selector, el) {
+    const out = [];
+    const ordinal = /^\.find-hit\[data-ordinal="(\d+)"\]$/.exec(selector);
+    const cls = /^\.([\w-]+)$/.exec(selector);
+    const visit = (node) => {
+      for (const c of node.children || []) {
+        if (ordinal && c.dataset.ordinal === ordinal[1]) out.push(c);
+        else if (cls && String(c.className).split(/\s+/).includes(cls[1])) out.push(c);
+        visit(c);
       }
-    },
-    get className() { return [...classes].join(' '); },
-    set className(v) { classes.clear(); String(v || '').split(/\s+/).filter(Boolean).forEach((x) => classes.add(x)); },
-    append(...n) { n.forEach((x) => el.appendChild(x)); },
-    appendChild(child) {
-      if (child && child._isFragment) {
-        child.children.slice().forEach((c) => el.appendChild(c));
-        child.children.length = 0;
-        return child;
-      }
-      child.parentNode = el;
-      el.children.push(child);
-      return child;
-    },
-    addEventListener(type, fn) { listeners.push({ type, fn }); },
-    setAttribute(k, v) { el._attrs[k] = v; },
-    getAttribute(k) { return Object.prototype.hasOwnProperty.call(el._attrs, k) ? el._attrs[k] : null; },
-    focus() { el._focus += 1; },
-    select() { el._selected = true; },
-    setSelectionRange(start, end) { el.selectionStart = start; el.selectionEnd = end; },
-    querySelectorAll(selector) {
-      const out = [];
-      const ordinal = /^\.find-hit\[data-ordinal="(\d+)"\]$/.exec(selector);
-      const cls = /^\.([\w-]+)$/.exec(selector);
-      const visit = (node) => {
-        for (const c of node.children || []) {
-          if (ordinal && c.dataset.ordinal === ordinal[1]) out.push(c);
-          else if (cls && String(c.className).split(/\s+/).includes(cls[1])) out.push(c);
-          visit(c);
-        }
-      };
-      visit(el);
-      return out;
-    },
-    querySelector(selector) { return el.querySelectorAll(selector)[0] || null; },
-    _fire(type, event) {
-      let result;
-      for (const l of listeners) if (l.type === type) result = l.fn(event);
-      return result;
-    }
-  };
-  Object.defineProperty(el, 'innerHTML', { get() { return ''; }, set() { el.children.length = 0; } });
-  let textValue = '';
-  Object.defineProperty(el, 'textContent', {
-    get() { return el.children.length ? '' : textValue; },
-    set(value) { textValue = String(value); el.children.length = 0; }
-  });
-  return el;
-}
+    };
+    visit(el);
+    return out;
+  }
+};
+const makeEl = (tag = 'div', id = '') => preambles.makeEl(tag, id, FIND_EL_SPEC);
+
+
 function makeDocument() {
   const map = new Map();
   let lookups = 0;

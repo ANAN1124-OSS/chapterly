@@ -204,6 +204,7 @@ test('R6 共享假 DOM 基线行为：classList / 事件 / 子节点 / 属性 / 
   el.innerHTML = '';
   assert.deepEqual(el.children, [], 'innerHTML = "" 要真的清空子节点（列表重渲染靠它）');
   assert.equal(el.childElementCount, 0);
+  assert.equal(el.textContent, '', 'innerHTML = "" 与真 DOM 一样把文本一起清掉');
   el.focus();
   el.focus();
   assert.equal(el._focus, 2);
@@ -214,6 +215,71 @@ test('R6 共享假 DOM 基线行为：classList / 事件 / 子节点 / 属性 / 
   const byId = preambles.makeIdEl('status-text');
   assert.equal(byId.id, 'status-text');
   assert.equal(byId.tagName, 'div');
+});
+
+// TEST-D-02：基线本体只有一份，各域的差异走 spec 注入点。
+// 这段把注入语义钉住——textContent 统一成真 DOM 口径（有子节点读整棵子树），文本只有 tree / own 两档，
+// 不再允许各文件自己发明第三套。
+test('R6a 假 DOM 基线：textContent 真 DOM 口径 / fragment 搬运 / spec 注入点', () => {
+  // 1) textContent 默认就是真 DOM 口径：有子节点读整棵子树的文本
+  const row = preambles.makeEl('div', 'row');
+  const head = preambles.makeEl('span');
+  head.textContent = '第二章';
+  const tail = preambles.makeEl('span');
+  tail.textContent = ' · 2 处';
+  row.append(head, tail);
+  assert.equal(row.textContent, '第二章 · 2 处', '容器读整棵子树，与浏览器一致');
+  assert.equal(head.textContent, '第二章');
+  // 写 textContent 会清掉既有子节点（真 DOM 语义），旧值不残留
+  row.textContent = '换成一段文本';
+  assert.deepEqual(row.children, [], '写 textContent 清空子节点');
+  assert.equal(row.textContent, '换成一段文本');
+
+  // 2) text:'own' 保留「有子节点时读自身字符串」的旧变体，供真需要该口径的文件显式声明
+  const own = preambles.makeEl('div', '', { text: 'own' });
+  own.textContent = '自身文本';
+  own.appendChild(preambles.makeEl('span'));
+  assert.equal(own.textContent, '', "text:'own' 有子节点时返回空串");
+
+  // 3) fragment：默认 move（真 DOM 把碎片子节点搬走、碎片清空）
+  const host = preambles.makeEl('div');
+  const fragment = preambles.makeEl('fragment');
+  fragment._isFragment = true;
+  fragment.appendChild(preambles.makeEl('i', 'moved'));
+  host.appendChild(fragment);
+  assert.equal(host.children.length, 1);
+  assert.equal(fragment.children.length, 0, '搬运后碎片自身清空（真 DOM）');
+  const copied = preambles.makeEl('fragment');
+  copied._isFragment = true;
+  copied.appendChild(preambles.makeEl('i'));
+  preambles.makeEl('div').appendChild(copied); // 默认 move：清空
+  assert.equal(copied.children.length, 0);
+  const keep = preambles.makeEl('div', '', { fragment: 'copy' });
+  const copiedFrag = preambles.makeEl('fragment');
+  copiedFrag._isFragment = true;
+  copiedFrag.appendChild(preambles.makeEl('i'));
+  keep.appendChild(copiedFrag);
+  assert.equal(copiedFrag.children.length, 1, "fragment:'copy' 是旧口径，只有显式声明才保留碎片内容");
+
+  // 4) spec 注入点：attrs style query extra 都由调用方给，基线不再猜
+  const styleStub = { _props: {}, setProperty(k, v) { this._props[k] = v; }, removeProperty(k) { delete this._props[k]; } };
+  const scored = preambles.makeEl('div', '', {
+    attrs: 'map',
+    style: styleStub,
+    extra: () => ({ getBoundingClientRect: () => ({ top: 5, height: 7 }) }),
+    query: (selector, root) => (selector === '.hit' ? root.children.filter((c) => c.className === 'hit') : [])
+  });
+  scored.setAttribute('data-y', 9);
+  assert.equal(scored.getAttribute('data-y'), '9');
+  assert.equal(scored._attrs instanceof Map, true, "attrs:'map' 用 Map 版 _attrs");
+  assert.equal(scored.style, styleStub, 'style 桩由文件注入');
+  assert.deepEqual(scored.getBoundingClientRect(), { top: 5, height: 7 });
+  const hit = preambles.makeEl('b');
+  hit.className = 'hit';
+  scored.append(hit);
+  assert.deepEqual(scored.querySelectorAll('.hit'), [hit], '领域选择器由文件注入');
+  assert.equal(scored.querySelector('.hit'), hit);
+  assert.equal(scored.querySelector('.miss'), null);
 });
 
 test('R6b 迁移名单：真的复用基线，不再保留本地 makeEl 副本（边界变体不在此名单）', () => {

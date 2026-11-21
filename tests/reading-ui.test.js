@@ -16,7 +16,7 @@ const chaptersLib = require('../core/chapters');
 // view{showView,hideContextMenu,hideVolumeMenu,hideHeaderMenus,editorEl,scheduleMarksRender,updateWindowTitle}
 // + chapterTitle（updateWindowTitle 是 Phase D / D8 为「标题带章号」加的）。
 
-const realDocument = globalThis.document;
+const preambles = require('./ui-test-preambles');
 const ALL_CTX = [];
 function stopReading(ctx) {
   if (ctx && ctx.state && ctx.state.reading.timer) {
@@ -26,9 +26,8 @@ function stopReading(ctx) {
 }
 test.after(() => {
   for (const ctx of ALL_CTX) stopReading(ctx);
-  if (realDocument === undefined) delete globalThis.document;
-  else globalThis.document = realDocument;
 });
+preambles.restoreGlobalsAfter(test, ['document']);
 
 const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
@@ -38,79 +37,17 @@ const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'reading-ui.js'), 
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 // ---------- 假 DOM ----------
-function makeEl(tag = 'div', id = '') {
-  const classes = new Set();
-  const listeners = [];
-  const el = {
-    tagName: tag,
-    id,
-    className: '',
-    textContent: '',
-    title: '',
-    value: '',
-    disabled: false,
-    dataset: {},
-    children: [],
-    parentNode: null,
-    scrollTop: 0,
+// 本体用共享基线（TEST-D-02）：本域只注入章节区块的选择器、按块记的几何值。
+const READING_EL_SPEC = {
+  extra: (el) => ({
+    _top: 0,
+    _height: 0,
     scrollHeight: 0,
     clientHeight: 0,
     clientWidth: 0,
-    _top: 0,
-    _height: 0,
-    _classes: classes,
-    _listeners: listeners,
-    _attrs: {},
-    _focus: 0,
-    classList: {
-      add: (...names) => names.forEach((n) => classes.add(n)),
-      remove: (...names) => names.forEach((n) => classes.delete(n)),
-      contains: (n) => classes.has(n),
-      toggle(n, on) {
-        const next = on === undefined ? !classes.has(n) : Boolean(on);
-        if (next) classes.add(n);
-        else classes.delete(n);
-      }
-    },
-    append(...nodes) { nodes.forEach((n) => el.appendChild(n)); },
-    appendChild(child) {
-      if (child && child._isFragment) {
-        child.children.slice().forEach((c) => el.appendChild(c));
-        child.children.length = 0;
-        return child;
-      }
-      child.parentNode = el;
-      el.children.push(child);
-      return child;
-    },
-    insertBefore(node, before) {
-      const at = before ? el.children.indexOf(before) : -1;
-      node.parentNode = el;
-      if (at < 0) el.children.push(node);
-      else el.children.splice(at, 0, node);
-      return node;
-    },
-    remove() {
-      if (!el.parentNode) return;
-      const at = el.parentNode.children.indexOf(el);
-      if (at >= 0) el.parentNode.children.splice(at, 1);
-      el.parentNode = null;
-    },
-    get firstChild() { return el.children[0] || null; },
-    setAttribute(name, value) { el._attrs[name] = value; },
-    getAttribute(name) { return Object.prototype.hasOwnProperty.call(el._attrs, name) ? el._attrs[name] : null; },
-    getBoundingClientRect() { return { top: el._top, height: el._height }; },
-    focus() { el._focus += 1; },
-    addEventListener(type, fn, options) { listeners.push({ type, fn, options }); },
-    _fire(type, event) {
-      let result;
-      for (const l of listeners) if (l.type === type) result = l.fn(event);
-      return result;
-    }
-  };
-  // 章节区块里的文本节点 / option 也用同一套假 DOM；querySelectorAll 只匹配真实的类选择器
-  // （.reading-chapter 取直接子块，其它类名按后代替节点递归查 —— 阅读位置记忆要查 .reading-chapter-error）
-  el.querySelectorAll = (selector) => {
+    getBoundingClientRect() { return { top: el._top, height: el._height }; }
+  }),
+  query(selector, el) {
     if (selector === '.reading-chapter') return el.children.filter((c) => String(c.className).split(' ').includes('reading-chapter'));
     const cls = typeof selector === 'string' && selector.startsWith('.') ? selector.slice(1) : '';
     if (!cls) return [];
@@ -123,14 +60,10 @@ function makeEl(tag = 'div', id = '') {
     };
     walk(el);
     return out;
-  };
-  el.querySelector = (selector) => el.querySelectorAll(selector)[0] || null;
-  Object.defineProperty(el, 'innerHTML', {
-    get() { return ''; },
-    set() { el.children.length = 0; }
-  });
-  return el;
-}
+  }
+};
+const makeEl = (tag = 'div', id = '') => preambles.makeEl(tag, id, READING_EL_SPEC);
+
 
 function makeDoc() {
   const map = new Map();

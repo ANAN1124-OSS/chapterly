@@ -18,11 +18,8 @@ const chaptersLib = require('../core/chapters');
 // 契约：host 9 个成员 = 基础 5（$, state, api, call, toast）+ imeGuard（输入法组字守卫，WP-04）+
 // render{bookInfoLib,bookGroupOf,chapterTitle,formatChars,formatRelativeTime} + shelf{...} + actions{...}。
 
-const realDocument = globalThis.document;
-test.after(() => {
-  if (realDocument === undefined) delete globalThis.document;
-  else globalThis.document = realDocument;
-});
+const preambles = require('./ui-test-preambles');
+preambles.restoreGlobalsAfter(test, ['document']);
 
 const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
@@ -35,83 +32,9 @@ const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'bookinfo-ui.js'),
 const openBookGuardSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'open-book-guard.js'), 'utf8');
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-// ---------- 假 DOM ----------
-function makeEl(tag = 'div', id = '') {
-  const classes = new Set();
-  const listeners = [];
-  const el = {
-    tagName: tag,
-    id,
-    className: '',
-    _text: '',
-    title: '',
-    value: '',
-    type: '',
-    tabIndex: -1,
-    dataset: {},
-    children: [],
-    parentNode: null,
-    _classes: classes,
-    _listeners: listeners,
-    _attrs: {},
-    _focus: 0,
-    classList: {
-      add: (...names) => names.forEach((n) => classes.add(n)),
-      remove: (...names) => names.forEach((n) => classes.delete(n)),
-      contains: (n) => classes.has(n),
-      toggle(n, on) {
-        const next = on === undefined ? !classes.has(n) : Boolean(on);
-        if (next) classes.add(n);
-        else classes.delete(n);
-      }
-    },
-    get className() { return [...classes].join(' '); },
-    set className(value) {
-      classes.clear();
-      String(value || '').split(/\s+/).filter(Boolean).forEach((n) => classes.add(n));
-    },
-    append(...nodes) { nodes.forEach((n) => el.appendChild(n)); },
-    appendChild(child) {
-      if (child && child._isFragment) {
-        child.children.slice().forEach((c) => el.appendChild(c));
-        child.children.length = 0;
-        return child;
-      }
-      child.parentNode = el;
-      el.children.push(child);
-      return child;
-    },
-    addEventListener(type, fn) { listeners.push({ type, fn }); },
-    focus() { el._focus += 1; },
-    setAttribute(name, value) { el._attrs[name] = value; },
-    getAttribute(name) { return Object.prototype.hasOwnProperty.call(el._attrs, name) ? el._attrs[name] : null; },
-    getBoundingClientRect() { return { right: 400, bottom: 300, top: 0, left: 0 }; },
-    _fire(type, event) {
-      let result;
-      for (const l of listeners) if (l.type === type) result = l.fn(event);
-      return result;
-    }
-  };
-  Object.defineProperty(el, 'textContent', {
-    // 真实 DOM 的口径：有子节点时读整棵子树的文本（命中行 = 文本前缀 + 每个章名按钮 + 分隔符）；
-    // 没有子节点时读自己写入的字符串。setter 与浏览器一样会清空子节点。
-    get() {
-      if (el.children.length) {
-        return el.children.map((child) => (child && child.textContent != null ? child.textContent : '')).join('');
-      }
-      return el._text;
-    },
-    set(value) {
-      el._text = String(value == null ? '' : value);
-      el.children.length = 0;
-    }
-  });
-  Object.defineProperty(el, 'innerHTML', {
-    get() { return ''; },
-    set() { el.children.length = 0; }
-  });
-  return el;
-}
+// 假 DOM 本体：共享基线（TEST-D-02），本域只注入书卡菜单定位用的固定 getBoundingClientRect。
+const BOOKINFO_EL_SPEC = { extra: () => ({ getBoundingClientRect: () => ({ right: 400, bottom: 300, top: 0, left: 0 }) }) };
+const makeEl = (tag = 'div', id = '') => preambles.makeEl(tag, id, BOOKINFO_EL_SPEC);
 
 function makeDocument() {
   const map = new Map();
