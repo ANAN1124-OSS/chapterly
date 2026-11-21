@@ -295,7 +295,10 @@ function makeHost(overrides = {}) {
     syncChapterCharsAfterSave: () => { counts.syncChars += 1; return true; },
     renderStatsUi: () => { counts.stats += 1; },
     flushWriteTimer: async () => { counts.flush += 1; },
-    restoreFindBookmarkForCurrentChapter: async () => { counts.restore += 1; },
+    restoreFindBookmarkForCurrentChapter: async () => {
+      counts.restore += 1;
+      if (overrides.restoreBookmarkThrows) throw new Error('书签恢复失败（模拟）');
+    },
     scheduleMarksRender: () => {},
     scheduleTypewriterAlign: () => {},
     longOpLocked: () => false,
@@ -574,6 +577,20 @@ test('A3-A / B5：载章状态机——大章软提示 / 在途过期回执不�
   });
   await live.ui.loadChapterAt(0);
   assert.equal(injected, 1, '测试钩子 setter 之后，载章必须走注入的延迟包装');
+});
+
+test('REDT-B-02：载章成功后的书签恢复抛错，不许把载章回执翻成「读取章节失败」', async () => {
+  const rt = makeHost({ restoreBookmarkThrows: true });
+  rt.state.chapters = [{ id: 'c1', name: '第一章', file: '001.txt', chars: 0 }];
+  rt.editorEl.value = '';
+  const res = await rt.ui.loadChapterAt(0);
+  assert.equal(res.ok, true, '书签只是显示增强，失败不许翻转成功载章');
+  assert.equal(rt.editorEl.value, '正文-001.txt');
+  assert.equal(rt.state.loadedChapterId, 'c1');
+  assert.equal(rt.state.baseText, '正文-001.txt');
+  assert.equal(rt.state.dirty, false, '编辑区=磁盘版=baseText，脏标记不许被假错误置脏');
+  assert.equal(rt.counts.restore, 1, '书签恢复确实跑过（失败发生在它内部）');
+  assert.equal(rt.counts.toast.length, 0, '不许弹「读取章节失败」');
 });
 
 test('A3-A / B6：关窗三选——模态框打开先放行 false；保存失败后选「放弃修改退出」要清脏再放行', async () => {

@@ -215,8 +215,15 @@
         });
       } catch { /* 记不住也无所谓 */ }
       // 这一章有查找书签的话，按刚从磁盘读到的正文自动高亮（打开书签所在章就有；
-      // 书签只存查询条件，命中位置仍按当前正文现算，正文改过也能重新定位）
-      await restoreFindBookmarkForCurrentChapter();
+      // 书签只存查询条件，命中位置仍按当前正文现算，正文改过也能重新定位）。
+      // REDT-B-02（第五轮审计）：书签高亮是可丢弃的显示增强（与上面的 setLastOpenChapter
+      // 同一纪律）——它内部读 IPC 之后还有一段同步 DOM 更新，任一抛错都不能把「章、正文、
+      // 光标都已经载入成功」的载章回执翻转成「读取章节失败」。
+      try {
+        await restoreFindBookmarkForCurrentChapter();
+      } catch (err) {
+        console.warn('[查找书签] 载章后恢复高亮失败（不影响载章）', err);
+      }
       return { ok: true, data };
     } catch (err) {
       if (!stale()) {
