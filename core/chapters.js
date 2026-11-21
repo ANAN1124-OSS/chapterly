@@ -451,10 +451,19 @@
     const volumes = sanitizeVolumes(meta && meta.volumes);
     const rank = volumeRankMap(meta);
     const list = Array.isArray(meta && meta.chapters) ? meta.chapters.slice() : [];
-    // 卷没了 / 卷 id 不认识的章节一律回「未分卷」，避免界面里出现指向不存在卷的章
+    // 卷没了 / 卷 id 不认识的章节一律回「未分卷」，避免界面里出现指向不存在卷的章。
+    // CSTO-B-05：回未分卷就**删掉** volumeId 字段（与 cleanChapterMeta「空值不留字段」同一口径），
+    // 不再写成 `"volumeId": null` 留在书目里。
     const decorated = list.map((chapter, index) => {
-      const volumeId = chapter && chapter.volumeId && rank.has(chapter.volumeId) ? chapter.volumeId : null;
-      const next = volumeId === (chapter && chapter.volumeId) ? chapter : { ...chapter, volumeId };
+      const hasVolumeField = Boolean(chapter) && Object.prototype.hasOwnProperty.call(chapter, 'volumeId');
+      const raw = hasVolumeField && typeof chapter.volumeId === 'string' ? chapter.volumeId : null;
+      const volumeId = raw && rank.has(raw) ? raw : null;
+      let next = chapter;
+      if (raw !== volumeId || (hasVolumeField && !volumeId)) {
+        next = { ...chapter };
+        if (volumeId) next.volumeId = volumeId;
+        else delete next.volumeId;
+      }
       return { chapter: next, index, r: rank.get(volumeId) || 0 };
     });
     decorated.sort((a, b) => (a.r - b.r) || (a.index - b.index));

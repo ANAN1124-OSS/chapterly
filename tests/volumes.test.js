@@ -51,7 +51,9 @@ test('分卷：指向不存在卷的章节回落到「未分卷」', () => {
   ]);
   const normalized = chaptersLib.normalizeChapterOrder(meta);
   assert.equal(normalized.chapters[0].id, 'c1');
-  assert.equal(normalized.chapters[0].volumeId, null);
+  // CSTO-B-05：回未分卷时删掉字段，不再留下 `volumeId: null`（与 cleanChapterMeta 口径一致）
+  assert.equal(Object.prototype.hasOwnProperty.call(normalized.chapters[0], 'volumeId'), false);
+  assert.equal((normalized.chapters[0].volumeId || null), null);
   assert.equal(normalized.chapters[1].id, 'c2');
 });
 
