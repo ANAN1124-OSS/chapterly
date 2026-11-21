@@ -121,7 +121,16 @@ function convertPunct(text, onConvert, rawOptions) {
       if (report) report(i, ch, full);
       continue;
     }
-    const nearHan = HAN_RE.test(prev) || HAN_RE.test(next) || FULL_PUNCT.has(prev) || FULL_PUNCT.has(next);
+    // CIO-B01（2026-11-21）：闭引号后紧随的 ! ? , ; : 与句点同一口径 —— 旧实现只有句点分支认
+    // CLOSE_QUOTE，`他说：“你好”！` 的 `！` 永远漏转（同位置 `.` 却会转）。闭引号两侧都放宽，
+    // 覆盖句尾（`“完了”？`）与行首（`！“你好”`）两种排布。
+    const nearHan =
+      HAN_RE.test(prev) ||
+      HAN_RE.test(next) ||
+      FULL_PUNCT.has(prev) ||
+      FULL_PUNCT.has(next) ||
+      CLOSE_QUOTE.has(prev) ||
+      CLOSE_QUOTE.has(next);
     if (!nearHan) {
       if (parts) parts.push(ch);
       prev = ch;

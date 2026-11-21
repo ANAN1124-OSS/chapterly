@@ -256,6 +256,23 @@ test('E16/#51：闭引号后紧挨的半角句点转全角（二次整理稳定�
   assert.equal(twice.changed, false, '第二次整理不再有变化');
 });
 
+// CIO-B01（第五轮审计）：E16 只把「闭引号 + 句点」补进规则，! ? , ; : 五种仍只看汉字 / 全角标点，
+// 于是「他说：“你好”！ 」的感叹号永远漏转。六种标点在闭引号语境必须同一口径。
+test('CIO-B01：闭引号后的 ! ? , ; : 与句点同口径转全角（行首闭引号也覆盖）', () => {
+  assert.equal(convertPunct('他说：“你好”!').text, '他说：“你好”！');
+  assert.equal(convertPunct('“完了”?').text, '“完了”？');
+  assert.equal(convertPunct('“完了”,他走了').text, '“完了”，他走了');
+  assert.equal(convertPunct('“慢着”;他停下').text, '“慢着”；他停下');
+  assert.equal(convertPunct('“记住”:别回头').text, '“记住”：别回头');
+  // 下一侧是闭引号（引文收尾紧贴在标点之后、标点位于行首的碎片）也认
+  assert.equal(convertPunct('?”').text, '？”');
+  // 直引号 / 英文仍是半角（CLOSE_QUOTE 只收中文收引号，英文 He said "hi"! 不许转）
+  assert.equal(convertPunct('He said "hi"!').text, 'He said "hi"!');
+  // 二次整理稳定：转过的全角标点不再变
+  const once = convertPunct('他说：“你好”!').text;
+  assert.deepEqual(convertPunct(once), { text: once, count: 0 });
+});
+
 // C42（v1.8.0 WP-26）：汉字范围必须含 CJK 扩展 B（U+20000+，如「𠮷」）。这些字在 JS 里是
 // 代理对：旧正则只认 BMP，生僻字人名旁边的半角标点不转、中文之间空格也不删。
 test('C42/WP-26：扩展 B 汉字（代理对）参与标点 / 空格判定，BMP 行为不变', () => {
@@ -313,8 +330,14 @@ function referenceConvertPunct(text, onConvert) {
       if (report) report(i, ch, full);
       continue;
     }
+    // CIO-B01：引用实现同步「闭引号后 / 前的 ! ? , ; : 也转全角」——与 core/format.js 一致。
     const nearHan =
-      REF_HAN_RE.test(prev) || REF_HAN_RE.test(next) || REF_FULL_PUNCT.has(prev) || REF_FULL_PUNCT.has(next);
+      REF_HAN_RE.test(prev) ||
+      REF_HAN_RE.test(next) ||
+      REF_FULL_PUNCT.has(prev) ||
+      REF_FULL_PUNCT.has(next) ||
+      REF_CLOSE_QUOTE.has(prev) ||
+      REF_CLOSE_QUOTE.has(next);
     if (!nearHan) {
       out += ch;
       continue;
