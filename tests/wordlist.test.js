@@ -314,7 +314,7 @@ test('E13：真实消费者（校对 / 敏感词）的兜底用各自错误码�
     // 多份合并路径的 per-list 提示走 glossaryErrorText 的新分支（不是落到「读不了这份词表」）
     const bundle = await glossary.readGlossaryFiles([file]);
     assert.equal(bundle.ok, false);
-    assert.equal(bundle.lists[0].error, '词表内容解析失败（文件可能不是纯文本），请检查后重试');
+    assert.equal(bundle.lists[0].error, '词表内容解析失败（文件可能不是「每行一个词」的纯文本），请检查后重试');
 
     const sensitiveFail = await sensitive.readWordListFile(file);
     assert.equal(sensitiveFail.ok, false);

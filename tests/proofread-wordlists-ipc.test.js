@@ -123,7 +123,7 @@ test('行为：双表（坏份 / 超上限 / 重复词）合并与校对结果�
       configured: true,
       total: 5000,
       lists: [
-        { ok: false, count: 0, error: '词表编码认不出来，请存成 UTF-8 或 GBK 的 txt', truncated: false },
+        { ok: false, count: 0, error: '词表编码无法识别（不是 UTF-8 / UTF-16 / GBK 文本），请另存为 UTF-8 的 txt', truncated: false },
         { ok: true, count: 5000, error: '', truncated: true }
       ],
       count: 5000,

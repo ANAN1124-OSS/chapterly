@@ -508,3 +508,15 @@ test('校对词表：proofreadWordListInfo 单份补齐旧字段 ok/count/error/
   assert.equal(empty.error, '');
   assert.equal(empty.message, '校对词表读取失败', '完全没有 bundle 时也补齐旧字段，不抛错');
 });
+
+// CIO-B02：同一个错误码只维护一处文案 —— 坏编码词表在「单份」与「多份」两个入口给同一句话。
+test('CIO-B02：坏编码词表在单份 / 多份入口的提示逐字一致', async () => {
+  const dir = await mkTmp();
+  const bad = path.join(dir, '坏编码.txt');
+  await fs.writeFile(bad, Buffer.from([0xff, 0xff, 0x0a, 0x41]));
+  const single = await glossary.readGlossaryFile(bad);
+  assert.equal(single.code, 'GLOSSARY_BAD_ENCODING');
+  assert.equal(single.message, '词表编码无法识别（不是 UTF-8 / UTF-16 / GBK 文本），请另存为 UTF-8 的 txt');
+  const multi = await glossary.readProofreadWordlistForRequest({ proofreadWordlists: [bad] }, {});
+  assert.equal(multi.wordList.lists[0].error, single.message, '多份入口的每份提示必须与单份入口逐字一致');
+});
