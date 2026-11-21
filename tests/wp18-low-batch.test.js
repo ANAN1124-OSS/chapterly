@@ -1031,23 +1031,35 @@ test('R18 C5=F3：e2e-weekly 与 verify 同口径补 Node 22 / 24 矩阵', () =>
   assert.equal(weekly.includes('ELECTRON_SKIP_BINARY_DOWNLOAD'), false, 'E2E 仍要装 Electron 二进制');
 });
 
-test('R19 F2：tests/*.test.js 的 mkdtemp 必须经 tmpCleanup.track 登记（静态闸门）', () => {
-  const testsDir = path.join(__dirname);
-  const files = require('node:fs')
-    .readdirSync(testsDir)
-    .filter((name) => name.endsWith('.test.js'))
-    .sort();
-  assert.ok(files.length >= 200, `要扫到全部测试文件（实际 ${files.length}）`);
+test('R19 F2：tests/**/*.js 的 mkdtemp 必须经 tmpCleanup.track 登记（静态闸门）', () => {
+  const testsRoot = path.join(__dirname);
+  // TEST-D-03：递归扫 tests/**（不只 tests/*.test.js）——fixtures/ 等共享文件也会 mkdtemp；
+  // 排除 tmp-cleanup.js 自身（它按定义不登记自己回收的目录集合之外的东西）。
+  const walk = (dir) => {
+    const out = [];
+    for (const entry of require('node:fs').readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...walk(full));
+      else if (entry.name.endsWith('.js') && entry.name !== 'tmp-cleanup.js') out.push(full);
+    }
+    return out;
+  };
+  const files = walk(testsRoot).sort();
+  // TEST-D-03：不复用「当前仓库规模」当阈值（测试文件增减即误红）；只要求真的扫到了东西。
+  assert.ok(files.length > 0, `闸门要扫到测试目录下的 .js（实际 ${files.length} 个）：${testsRoot}`);
 
   const callRe = /\bmkdtemp\s*\(/;
   const stripLineComment = (line) => {
     const at = line.indexOf('//');
     return at === -1 ? line : line.slice(0, at);
   };
+  // TEST-D-03：合法的两步写法（mkdtemp 一行、下一行 const tracked = tmpCleanup.track(dir)）也要认。
+  const TRACK_WINDOW = 2;
   const untracked = [];
   let scannedCalls = 0;
-  for (const name of files) {
-    const source = require('node:fs').readFileSync(path.join(testsDir, name), 'utf8');
+  for (const full of files) {
+    const name = path.relative(testsRoot, full);
+    const source = require('node:fs').readFileSync(full, 'utf8');
     const lines = source.split('\n');
     let fileCalls = 0;
     for (let index = 0; index < lines.length; index += 1) {
@@ -1055,13 +1067,14 @@ test('R19 F2：tests/*.test.js 的 mkdtemp 必须经 tmpCleanup.track 登记（�
       if (!callRe.test(line)) continue;
       fileCalls += 1;
       scannedCalls += 1;
-      const next = stripLineComment(lines[index + 1] || '');
-      const sameLine = line.includes('tmpCleanup.track(');
-      const chained = /^\s*\.then\(/.test(next) && next.includes('tmpCleanup.track(');
-      if (!sameLine && !chained) untracked.push(`${name}:${index + 1}`);
+      const window = line + '\n' + lines
+        .slice(index + 1, index + 1 + TRACK_WINDOW)
+        .map(stripLineComment)
+        .join('\n');
+      if (!window.includes('tmpCleanup.track(')) untracked.push(`${name}:${index + 1}`);
     }
     if (fileCalls > 0) {
-      assert.match(source, /require\('\.\/tmp-cleanup'\)/, `${name} 用了 mkdtemp 但没 require ./tmp-cleanup`);
+      assert.match(source, /require\('[^']*tmp-cleanup'\)/, `${name} 用了 mkdtemp 但没 require tmp-cleanup`);
     }
   }
   assert.ok(scannedCalls >= 50, `闸门必须真的扫到 mkdtemp 调用（实际 ${scannedCalls}）`);

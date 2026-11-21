@@ -20,11 +20,9 @@ const chaptersLib = require('../core/chapters');
 // peers{stats,writeTimer,editor,words,refreshShelf} + texts{commonLib,formatBytes}；分组内每个真实依赖都写进模块头注释。
 
 const realDocument = globalThis.document;
-const realDateNow = Date.now;
 test.after(() => {
   if (realDocument === undefined) delete globalThis.document;
   else globalThis.document = realDocument;
-  Date.now = realDateNow;
 });
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -170,16 +168,16 @@ function build(options = {}) {
     marks: { caretParagraph: false, caretLine: 0 },
     writeTimer: { running: false }
   };
+  // TEST-D-04：只留真的会被断言的记账旋钮；无断言的（hideHeaderMenus / showView / closeSettings /
+  // openSettings / setTimeoutCalls / pickFont）已删，避免读者误以为那些路径有 Node 层覆盖。
   const calls = {
     setConfig: [], setBookDisplay: [], setChapterNumbering: [], resetBookDisplay: [], toast: [], getConfig: 0, refreshStats: 0, renderStatsChart: 0,
     renderDurationSettings: 0, renderWriteTimer: 0, applyWriteTimerConfig: 0, flushWriteTimer: 0,
     renderEditorMarks: 0, renderMarksMenu: 0, refreshShelf: 0,
     refreshSensitiveWordList: 0, refreshProofreadWordList: 0, pickSensitiveWords: [], pickProofreadWords: [],
     applyEditorStyle: [], syncCaretParagraphFromConfig: 0, applySidebarWidth: [], loadCustomFont: [], applyChapterNumbering: [],
-    hideHeaderMenus: 0, showView: [],
-    logInfo: 0, sensitiveWordsInfo: 0, proofreadWordsInfo: 0, checkUpdate: 0, openUpdateDownload: 0, pickFolder: 0, pickFont: 0,
-    closeSettings: 0, openSettings: 0, previewSettings: [],
-    setTimeoutCalls: []
+    logInfo: 0, sensitiveWordsInfo: 0, proofreadWordsInfo: 0, checkUpdate: 0, openUpdateDownload: 0, pickFolder: 0,
+    previewSettings: []
   };
   const api = {
     async setConfig(patch) { calls.setConfig.push(patch); if (options.setConfigGate) await options.setConfigGate; if (options.saveError) throw new Error(options.saveError); return { ...state.globalConfig, ...patch }; },
@@ -219,7 +217,7 @@ function build(options = {}) {
     async checkUpdate() { calls.checkUpdate += 1; if (options.updateError) throw new Error(options.updateError); return options.updateResult || { status: 'latest', currentVersion: '0.10.0' }; },
     async openUpdateDownload() { calls.openUpdateDownload += 1; return options.downloadResult === undefined ? { opened: true } : options.downloadResult; },
     async pickFolder() { calls.pickFolder += 1; return options.folder === undefined ? '/新书库' : options.folder; },
-    async pickFont() { calls.pickFont += 1; return options.fontPick === undefined ? { canceled: true } : options.fontPick; },
+    async pickFont() { return options.fontPick === undefined ? { canceled: true } : options.fontPick; },
     async pickSensitiveWords() { return options.sensitivePick || { canceled: true }; },
     async pickProofreadWords() { return options.proofreadPick || { canceled: true }; }
   };
