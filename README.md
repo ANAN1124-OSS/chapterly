@@ -35,7 +35,7 @@
 - pnpm ≥ 12（实测 12.11.2；`pnpm-workspace.yaml` 的 `allowBuilds` 是 v12 字段，旧版兼容性未实测，按实测下限写）
 - Python ≥ 3.7（只有重新生成图标 `pnpm run icon` 用到；纯标准库，不需要 Pillow，不参与运行与打包）
 
-> **CI**：GitHub Actions 三套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；**Node 用 22 / 24 两档矩阵**（`fail-fast: false`，与 engines 的 ≥22 对齐，v1.8.0 审计 O4 / #56）；② `.github/workflows/e2e-pr.yml` 在 **PR 改动 `renderer/**` / `core/**` / `ipc/**` / `main.js` / `preload.js`（以及 E2E 基建与依赖清单）时整跑一次全量 E2E**——把 UI 时序 / 真实 DOM 的回归窗口从「每周」缩到「每个 PR」（WP16 / 审计中 #19 / F1）；触发路径的唯一事实源是 `scripts/e2e-scope.js`（工作流的 `paths:` 与它逐项一致，本地可用 `node scripts/e2e-scope.js --changed <文件…>` 自查）；③ `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29）。②③ 都在装完依赖后先跑 `node scripts/supply-chain-check.js` 核对 Electron 二进制（WP15 / 审计 E1=O-N2）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
+> **CI**：GitHub Actions 三套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；**Node 用 22 / 24 两档矩阵**（`fail-fast: false`，与 engines 的 ≥22 对齐，v1.8.0 审计 O4 / #56）；② `.github/workflows/e2e-pr.yml` 在 **PR 改动 `renderer/**` / `core/**` / `ipc/**` / `main.js` / `preload.js`（以及 E2E 基建与依赖清单）时整跑一次全量 E2E**——把 UI 时序 / 真实 DOM 的回归窗口从「每周」缩到「每个 PR」（WP16 / 审计中 #19 / F1）；触发路径的唯一事实源是 `scripts/e2e-scope.js`（工作流的 `paths:` 与它逐项一致，本地可用 `node scripts/e2e-scope.js --changed <文件…>` 自查）（E2E 档**只跑 Node 24**：全量 E2E 约 60 分钟，PR 上双档会把预算翻倍；Node 22 的 E2E 由 ③ 的 22/24 矩阵兜底，静态 / 单测的 22 档由 ① 兜底）；③ `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29）。②③ 都在装完依赖后先跑 `node scripts/supply-chain-check.js` 核对 Electron 二进制（WP15 / 审计 E1=O-N2）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
 
 ## 安装与启动
 
@@ -396,7 +396,7 @@ pnpm start          # 启动应用
 > 其余开发自检细节（bench / contrast / sweep-unused / lint-gate / a11y-gate 的完整参数说明、截图命令）与完整目录结构已归档到内部文档（`内部文档/归档-2026-11-15/README-开发自检细节.md`，`.gitignore` 整目录忽略、不进公开仓库）。
 
 ```bash
-pnpm test          # 单元测试（node:test，3195 项）
+pnpm test          # 单元测试（node:test，3199 项）
 pnpm run e2e       # 端到端自检：真实启动 Electron 走 1916 项主流程（场景与 84 个组文件共用一份 harness；**84 个组文件（00–83）** 按组号派发）
 pnpm run demo      # 生成演示书库到 shots/demo-library（截图/演示用）
 ```

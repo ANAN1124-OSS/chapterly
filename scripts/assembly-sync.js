@@ -75,11 +75,18 @@ function applyBlock(html, block) {
   return html.slice(0, bodyStart) + block + eol + html.slice(bodyEnd);
 }
 
+// 先剥 HTML 注释（TOOL-A07）：与 scripts/wiring-check.js 的 parseScriptSrcs 同一口径 ——
+// 注释里写 `<script src=…>` 示例不算模块脚本，不能因此让发版闸门误红。
+function stripHtmlComments(html) {
+  return String(html).replace(/<!--[\s\S]*?-->/g, '');
+}
+
 // 块外不允许再出现 <script src>（标记块之外的模块脚本 = 绕过清单的手工装配）。
 function outsideScripts(html) {
   const { bodyStart, bodyEnd } = locateBlock(html);
-  const outside = html.slice(0, bodyStart - BEGIN_MARKER.length) + html.slice(bodyEnd + END_MARKER.length);
-  return [...outside.matchAll(/<script\b[^>]*\bsrc\s*=/gi)].length;
+  const outside =
+    html.slice(0, bodyStart - BEGIN_MARKER.length) + html.slice(bodyEnd + END_MARKER.length);
+  return [...stripHtmlComments(outside).matchAll(/<script\b[^>]*\bsrc\s*=/gi)].length;
 }
 
 function checkHtml(html, manifest) {

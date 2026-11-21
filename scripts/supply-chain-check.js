@@ -76,6 +76,15 @@ async function run(argv, io = {}) {
   }
 
   const parsed = logic.parseShasums(shasumsText);
+  // TOOL-A06（审计）：parseShasums 把认不出的行收进 invalid 并声明「如实回报」，但以前没有调用方消费。
+  // 清单里出现无法解析的行 = 清单可能被动过 / 上游格式变了；不静默跳过，直接挡住打包与发版。
+  if (parsed.invalid.length) {
+    fail(
+      `[供应链闸门] 内置清单有 ${parsed.invalid.length} 行无法解析（清单可能被动过）：` +
+        parsed.invalid.slice(0, 3).join(' ｜ ')
+    );
+    return 2;
+  }
   if (parsed.conflicts.length) {
     fail(`[供应链闸门] 清单自相矛盾（同名文件出现不同哈希）：${parsed.conflicts.join('、')}；清单不可信。`);
     return 2;

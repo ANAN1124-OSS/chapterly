@@ -1303,7 +1303,8 @@ async function measure(opts, fixtures, log) {
       }
     }
 
-    // 焦点归还（2.4.11「关闭后归还」/ I-04）：设置从书架按钮开、查找从写作页按钮开。
+    // 焦点归还（2.4.11「关闭后归还」/ I-04）**不在这里测** —— 见文件头的决策：
+    // 由 tests/dialog-focus.test.js（纯决策）与 E2E 钉住；本门禁只测目标尺寸 / 焦点不被遮挡 / 主题令牌。
     return { target, results, stderr: stderr.slice(-800) };
   } finally {
     clearTimeout(timer);

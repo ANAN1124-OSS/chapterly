@@ -316,3 +316,13 @@ test('R18 C5=F3：e2e-weekly 与 verify 同口径补 Node 22 / 24 矩阵', () =>
   assert.match(weekly, /tzutil \/s "China Standard Time"/);
   assert.equal(weekly.includes('ELECTRON_SKIP_BINARY_DOWNLOAD'), false, 'E2E 仍要装 Electron 二进制');
 });
+
+// REPO-02（审计）：e2e-pr 只跑 Node 24 是「PR 时长」取舍，必须在工作流注释与 README 里写明，
+// 不能再是「口径不一但无声明」的配置遗漏。
+test('REPO-02：PR 级 E2E 的单 Node 版本取舍有声明，且与 weekly / verify 的口径分工写清楚', () => {
+  const pr = readE2ePr();
+  assert.match(pr, /只跑 Node 24/, 'e2e-pr.yml 必须写明 PR 档只跑 Node 24 的取舍');
+  assert.match(pr, /e2e-weekly\.yml 的 22\/24 矩阵兜底/, '写明 Node 22 的 E2E 由 weekly 矩阵兜底');
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  assert.match(readme, /E2E 档\*\*只跑 Node 24\*\*/, 'README 的 CI 一节要带同一句声明');
+});

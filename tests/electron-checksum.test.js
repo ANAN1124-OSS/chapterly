@@ -218,3 +218,22 @@ test('静态锚点：维护者文档的构建供应链一节 + 脚本不进 dist
     assert.equal(/\bfetch\s*\(/.test(source), false, '校验脚本不许 fetch');
   }
 });
+// TOOL-A06：内置清单里出现无法解析的行 = 清单可能被动过，必须报红（退出码 2），不再静默跳过。
+test('TOOL-A06：SHASUMS 清单里无法解析的行让供应链闸门失败', async () => {
+  const supply = require('../scripts/supply-chain-check');
+  const out = [];
+  const err = [];
+  const code = await supply.run(['--version', '45.1.0'], {
+    root: path.join(__dirname, '..'),
+    readFile: async (file) => {
+      if (String(file).includes('SHASUMS')) {
+        return 'e3b0c44298fc1c149afbf4c8996fb924  electron-v45.1.0-win32-x64.zip\n这一行根本不是清单格式\n';
+      }
+      return fs.readFile(file, 'utf8');
+    },
+    stdout: (line) => out.push(String(line)),
+    stderr: (line) => err.push(String(line))
+  });
+  assert.equal(code, 2, '清单被污染时不得继续打包 / 发版');
+  assert.match(err.join('\n'), /有 2 行无法解析/);
+});
