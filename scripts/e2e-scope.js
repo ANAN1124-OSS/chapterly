@@ -30,6 +30,15 @@ const E2E_TRIGGER_PATHS = [
   'scripts/run-e2e.js',
   'scripts/start.js',
   'scripts/e2e-runner-logic.js',
+  // TOOL-C-01（第五轮审计）：下面 6 个脚本直接构成 E2E 行为（窗口驱动 / 轮询 / 礼让 / 夹具 /
+  // 导出校验 / 启动退出码），旧清单只收了 run-e2e / e2e-scenario / start 三个入口 —— 改了它们
+  // 的 PR 不触发 E2E，「PR 看起来绿了，其实根本没跑窗口」。
+  'scripts/screenshot-driver.js',
+  'scripts/driver-poll.js',
+  'scripts/e2e-politeness.js',
+  'scripts/e2e-stats-seed.js',
+  'scripts/export-check.js',
+  'scripts/start-logic.js',
   '.github/workflows/e2e-pr.yml',
   'package.json',
   'pnpm-lock.yaml'

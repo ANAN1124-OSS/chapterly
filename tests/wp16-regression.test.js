@@ -227,3 +227,19 @@ test('R6b 迁移名单：真的复用基线，不再保留本地 makeEl 副本�
     assert.match(source, /\bmake(?:Id)?El\b/, `${file} 没有用共享 makeEl / makeIdEl`);
   }
 });
+// TOOL-C-01（第五轮审计）：直接构成 E2E 行为的 6 个脚本以前不在 trigger paths 里 ——
+// 改窗口驱动 / 轮询 / 礼让 / 夹具 / 导出校验 / 启动退出码的 PR 不会触发 E2E（假绿）。
+test('TOOL-C-01：直接构成 E2E 行为的脚本都命中 PR 级 E2E 触发路径', () => {
+  const required = [
+    'scripts/screenshot-driver.js',
+    'scripts/driver-poll.js',
+    'scripts/e2e-politeness.js',
+    'scripts/e2e-stats-seed.js',
+    'scripts/export-check.js',
+    'scripts/start-logic.js'
+  ];
+  for (const file of required) {
+    const hit = scope.touchesE2EScope([file]);
+    assert.equal(hit.required, true, file + ' 改动必须触发 E2E');
+  }
+});
