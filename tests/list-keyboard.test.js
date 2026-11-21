@@ -716,13 +716,18 @@ test('静态闸门：Alt+↑/↓ 章节上移 / 下移接线（列表接管、�
 
 test('静态闸门：模块只碰键盘 / 焦点，不许碰鼠标事件、定时器、文件与 Electron', () => {
   const source = read('renderer/list-keyboard.js');
-  for (const forbidden of ['setTimeout', 'setInterval', 'requestAnimationFrame', 'require(', 'electron', 'node:fs', 'innerHTML']) {
-    assert.equal(source.includes(forbidden), false, `list-keyboard.js 不许出现 ${forbidden}`);
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  for (const forbidden of ['setTimeout', 'setInterval', 'requestAnimationFrame', 'electron', 'node:fs', 'innerHTML']) {
+    assert.equal(code.includes(forbidden), false, `list-keyboard.js 不许出现 ${forbidden}`);
   }
+  // REDT-C-06：唯一允许的 require 是取共享的焦点助手（focus-nav）。
+  const requires = code.match(/require\s*\(/g) || [];
+  assert.equal(requires.length, 1, '只许 require 共享的 renderer/focus-nav.js');
+  assert.match(code, /require\('\.\/focus-nav'\)/, '必须从 ./focus-nav 取共享助手');
   for (const mouse of ["'click'", "'mousedown'", "'dblclick'", "'contextmenu'", "'pointerdown'", "'pointerup'"]) {
-    assert.equal(source.includes(mouse), false, `键盘模块不许接管鼠标事件（${mouse}）`);
+    assert.equal(code.includes(mouse), false, `键盘模块不许接管鼠标事件（${mouse}）`);
   }
-  assert.ok(source.includes("addEventListener('keydown'"), '唯一的入口是容器的 keydown');
+  assert.ok(code.includes("addEventListener('keydown'"), '唯一的入口是容器的 keydown');
 });
 
 test('静态闸门：17 个弹层都有无障碍名称（标题 id + aria-labelledby），且指向真标题', () => {

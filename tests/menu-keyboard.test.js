@@ -460,12 +460,17 @@ test('静态闸门：渲染层走模块接线，不自己再抄一套菜单键�
 
 test('静态闸门：模块只管焦点，不碰文件 / Electron / 定时器 / innerHTML', () => {
   const source = read('renderer/menu-keyboard.js');
-  for (const forbidden of ['setTimeout', 'setInterval', 'requestAnimationFrame', 'require(', 'electron', 'node:fs', 'innerHTML']) {
-    assert.equal(source.includes(forbidden), false, `menu-keyboard.js 不许出现 ${forbidden}`);
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  for (const forbidden of ['setTimeout', 'setInterval', 'requestAnimationFrame', 'electron', 'node:fs', 'innerHTML']) {
+    assert.equal(code.includes(forbidden), false, `menu-keyboard.js 不许出现 ${forbidden}`);
   }
-  assert.ok(source.includes("addEventListener('keydown'"), '菜单里的键盘入口');
-  assert.ok(source.includes("addEventListener('contextmenu'"), '右键只记「谁打开的」，不拦默认行为');
-  assert.equal(source.includes('preventDefault'), true, '方向键 / Esc 要拦住滚动与默认行为（只对键盘事件）');
+  // REDT-C-06：唯一允许的 require 是取共享的焦点助手（focus-nav），别的依赖一律不许。
+  const requires = code.match(/require\s*\(/g) || [];
+  assert.equal(requires.length, 1, '只许 require 共享的 renderer/focus-nav.js');
+  assert.match(code, /require\('\.\/focus-nav'\)/, '必须从 ./focus-nav 取共享助手');
+  assert.ok(code.includes("addEventListener('keydown'"), '菜单里的键盘入口');
+  assert.ok(code.includes("addEventListener('contextmenu'"), '右键只记「谁打开的」，不拦默认行为');
+  assert.equal(code.includes('preventDefault'), true, '方向键 / Esc 要拦住滚动与默认行为（只对键盘事件）');
 });
 
 test('静态闸门：模块里的菜单 id 与 index.html 一一对上', () => {

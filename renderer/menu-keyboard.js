@@ -21,10 +21,16 @@
  * 与 E2E（真实 Electron + 真实按键）。边界：只管这 6 个菜单，弹层归 dialog-focus.js。
  */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else if (root) root.CWMenuKeyboard = factory();
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./focus-nav'));
+  else if (root) root.CWMenuKeyboard = factory(root.CWFocusNav);
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (focusNav) {
   'use strict';
+
+  // REDT-C-06：可达性判定与聚焦助手收进 renderer/focus-nav.js（与 dialog-focus / list-keyboard 共用）。
+  if (!focusNav || typeof focusNav.isUsableFacts !== 'function') {
+    throw new Error('CWMenuKeyboard：renderer/focus-nav.js 没有先加载');
+  }
+  const { isUsableFacts, factsOf, focusElement } = focusNav;
 
   // 菜单清单：右键菜单「谁打开的」由事件目标决定；顶栏下拉由固定按钮决定。
   // kind = 'context' 的才在打开时把焦点带进去（顶栏下拉保持浏览器原生 Tab 顺序）。
@@ -76,16 +82,11 @@
     return Boolean(state.hidden);
   }
 
-  // 菜单条目能不能拿焦点：禁用、aria-hidden、负 tabindex、.hidden、0 尺寸都排除。
-  // 做成吃「事实」的纯函数，单测不用搭 DOM。
+  // 菜单条目能不能拿焦点：禁用、aria-hidden、负 tabindex、.hidden、inert、0 尺寸、display/visibility
+  // 都排除。判定本体在 renderer/focus-nav.js（REDT-C-06：与弹层可 Tab 元素同一份口径）。
+  // 对外仍导出这个吃「事实」的纯函数名，单测不用搭 DOM。
   function isUsableItem(facts) {
-    if (!facts) return false;
-    if (facts.disabled) return false;
-    if (facts.ariaHidden) return false;
-    if (Number.isFinite(facts.tabIndex) && facts.tabIndex < 0) return false;
-    if (facts.hiddenClass) return false;
-    if (facts.hasRects === false) return false;
-    return true;
+    return isUsableFacts(facts);
   }
 
   let installed = null;
@@ -111,15 +112,9 @@
     }
     if (!entries.length) return null;
 
-    const doFocus = (el) => {
-      if (!el || typeof el.focus !== 'function') return false;
-      try {
-        el.focus({ preventScroll: true });
-      } catch {
-        try { el.focus(); } catch { return false; }
-      }
-      return true;
-    };
+    // 聚焦助手：与弹层同一份（preventScroll + nearest 滚入视图）—— REDT-C-06 之前这里不滚、
+    // 弹层那种会滚，同一族行为两套口径。
+    const doFocus = (el) => focusElement(el, { scroll: true });
 
     const activeOf = () => doc.activeElement || null;
     const isBody = (el) => !el || el === doc.body || el === doc.documentElement;
@@ -131,15 +126,7 @@
     };
     const usableItems = (menu) => {
       const all = Array.from(menu.querySelectorAll(ITEM_SELECTOR));
-      return all.filter((el) =>
-        isUsableItem({
-          disabled: Boolean(el.disabled),
-          ariaHidden: el.getAttribute && el.getAttribute('aria-hidden') === 'true',
-          tabIndex: typeof el.tabIndex === 'number' ? el.tabIndex : 0,
-          hiddenClass: Boolean(el.classList && el.classList.contains('hidden')),
-          hasRects: typeof el.getClientRects !== 'function' ? true : el.getClientRects().length > 0
-        })
-      );
+      return all.filter((el) => isUsableItem(factsOf(el, view)));
     };
     const focusItem = (menu, index) => {
       const items = usableItems(menu);

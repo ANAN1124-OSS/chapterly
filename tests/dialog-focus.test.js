@@ -430,7 +430,10 @@ test('静态闸门：头注释写明「弹层必须静态 DOM」契约（V88）'
 test('静态闸门：焦点模块不碰定时器 / 文件 / Electron，也不许给背景加 inert', () => {
   const code = MODULE_SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   assert.equal(/setTimeout|setInterval/.test(code), false, '焦点不该靠定时器兜（窗口被遮挡时定时器会被节流）');
-  assert.equal(/require\s*\(/.test(code), false, '焦点模块不 require 任何东西');
+  // REDT-C-06：唯一允许的依赖是共享的 renderer/focus-nav.js（可达性判定与聚焦助手）
+  const requires = code.match(/require\s*\(/g) || [];
+  assert.equal(requires.length, 1, '焦点模块只许 require 共享的 focus-nav');
+  assert.match(code, /require\('\.\/focus-nav'\)/, '必须从 ./focus-nav 取共享助手');
   assert.equal(/electron|node:fs|\bfs\./.test(code), false, '焦点模块不许碰 Electron / 文件系统');
   // 只用「拉回焦点」的思路：不给背景元素加 inert（会连带禁掉背景的读屏与程序化点击）
   assert.equal(/setAttribute\(\s*['"]inert/.test(code), false, '不许给背景加 inert');

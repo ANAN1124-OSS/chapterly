@@ -28,12 +28,18 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./focus-nav'));
   } else if (root) {
-    root.CWDialogFocus = factory();
+    root.CWDialogFocus = factory(root.CWFocusNav);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (focusNav) {
   'use strict';
+
+  // REDT-C-06：可达性判定与聚焦助手收进 renderer/focus-nav.js（与 menu-keyboard / list-keyboard 共用）。
+  if (!focusNav || typeof focusNav.isUsable !== 'function') {
+    throw new Error('CWDialogFocus：renderer/focus-nav.js 没有先加载');
+  }
+  const { isUsable, focusElement } = focusNav;
 
   // Tab 能到的地方：与浏览器默认遍历的口径一致（负 tabindex 由 isTabbable 再筛掉）。
   const FOCUSABLE_SELECTOR = [
@@ -88,16 +94,11 @@
     return Boolean(state.hidden);
   }
 
-  // 当前能不能 Tab 到：禁用 / aria-hidden / 负 tabindex / 不可见（含祖先 display:none）都排除。
+  // 当前能不能 Tab 到：禁用 / aria-hidden / 负 tabindex / .hidden 类 / 祖先 inert / 不可见
+  //（含祖先 display:none）都排除。判定本体在 renderer/focus-nav.js（REDT-C-06：与菜单条目同一份口径）。
+  // 对外保留 isTabbable(el, view) 这个名字（单测与 E2E 按名取）。
   function isTabbable(el, view) {
-    if (!el || el.disabled) return false;
-    if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return false;
-    if (typeof el.tabIndex === 'number' && el.tabIndex < 0) return false;
-    if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) return false;
-    if (typeof el.closest === 'function' && el.closest('[inert]')) return false;
-    const style = view && typeof view.getComputedStyle === 'function' ? view.getComputedStyle(el) : null;
-    if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
-    return true;
+    return isUsable(el, view);
   }
 
   // 弹层里可 Tab 的元素，顺序 = DOM 顺序 = 浏览器的 Tab 顺序。
@@ -129,25 +130,8 @@
     const topIndex = () => pickTopIndex(states());
     const boxAt = (index) => (index < 0 ? null : backdrops[index].querySelector('.modal') || backdrops[index]);
 
-    // 聚焦 + 把控件滚进可视区（拍板 #16c）。
-    // 原来只 preventScroll：Tab 在弹层里绕回第一个 / 最后一个控件时，焦点环常常落在滚动容器
-    // 视口外（设置弹层内容比弹层高），用户看不到焦点去哪了。这里显式按 nearest 滚一次 ——
-    // 已经可见时浏览器不会动，所以不会出现「每次 Tab 都整页跳」。
-    // scrollIntoView 缺失 / 抛错都不影响聚焦本身（老 Chromium 与假 DOM 里只跳过这一步）。
-    const doFocus = (el) => {
-      if (!el) return false;
-      let ok = false;
-      try {
-        el.focus({ preventScroll: true });
-        ok = true;
-      } catch {
-        try { el.focus(); ok = true; } catch { return false; }
-      }
-      if (ok && typeof el.scrollIntoView === 'function') {
-        try { el.scrollIntoView({ block: 'nearest' }); } catch { /* 滚不动就算了，焦点已经到位 */ }
-      }
-      return ok;
-    };
+    // 聚焦 + 把控件滚进可视区（拍板 #16c）——与菜单同一份助手（renderer/focus-nav.js）。
+    const doFocus = (el) => focusElement(el, { scroll: true });
 
     const focusFirst = (box) => {
       const list = tabbablesIn(box, view);

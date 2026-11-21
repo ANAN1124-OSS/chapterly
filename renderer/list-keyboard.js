@@ -14,9 +14,14 @@
 // 相邻条目、把「从哪到哪」回报给宿主（选中范围怎么算在选择模型里）；没装 onExtend（书架书卡）
 // 时 Shift+方向键一个字都不碰，keyAction 的「带修饰键一律不管」也不变。
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.CWListKeyboard = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./focus-nav'));
+  else root.CWListKeyboard = factory(root.CWFocusNav);
+})(typeof self !== 'undefined' ? self : this, function (focusNav) {
+  // REDT-C-06：聚焦助手与可达性判定收进 renderer/focus-nav.js（与菜单 / 弹层共用一份）。
+  if (!focusNav || typeof focusNav.focusElement !== 'function') {
+    throw new Error('CWListKeyboard：renderer/focus-nav.js 没有先加载');
+  }
+  const { focusElement } = focusNav;
   // 空格在旧 Chromium / 某些输入法里报 'Spacebar'，两个都认
   const ACTIVATE_KEYS = ['Enter', ' ', 'Spacebar'];
   const PREV_KEYS = ['ArrowUp', 'ArrowLeft'];
@@ -196,10 +201,7 @@
           event.preventDefault();
           applyTabStops(items, target);
           const targetItem = items[target];
-          if (targetItem && typeof targetItem.focus === 'function') targetItem.focus();
-          if (targetItem && typeof targetItem.scrollIntoView === 'function') {
-            targetItem.scrollIntoView({ block: 'nearest' });
-          }
+          if (targetItem) focusElement(targetItem, { scroll: true });
           opts.onExtend(item, position, targetItem, target);
         }
         return;
@@ -228,8 +230,8 @@
       if (!target || target === item) return;
       event.preventDefault();
       applyTabStops(items, action.index);
-      if (typeof target.focus === 'function') target.focus();
-      if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
+      focusElement(target, { scroll: true });
+
       if (typeof opts.onMove === 'function') opts.onMove(target, action.index);
     };
     container.addEventListener('keydown', handler);
@@ -268,10 +270,7 @@
       const key = pendingKey;
       pendingKey = null;
       const row = rowsOf().find((el) => (el.dataset ? el.dataset.volumeId || '' : '') === key);
-      if (row && typeof row.focus === 'function') {
-        row.focus();
-        return true;
-      }
+      if (row) return focusElement(row, { scroll: true });
       return false;
     };
 

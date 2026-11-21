@@ -63,6 +63,7 @@
     ['../core/assert-host.js', 'CWAssertHost', '', 'host 契约缺成员时显式报错'],
     ['font-logic.js', 'CWFontLogic', 'fontLogic', '自定义字体 base64 解码'],
     ['stats-logic.js', 'CWStatsLogic', 'statsLogic', '码字日历 / 统计数据换算'],
+    ['focus-nav.js', 'CWFocusNav', '', '焦点可达性判定与聚焦助手（REDT-C-06 唯一实现）'],
     ['list-keyboard.js', 'CWListKeyboard', 'listKeyboard', '章节列表 / 书卡的键盘可达'],
     ['dialog-focus.js', 'CWDialogFocus', '', '弹层焦点圈定（启动时 install）'],
     ['menu-keyboard.js', 'CWMenuKeyboard', '', '菜单键盘导航（启动时 install）'],
