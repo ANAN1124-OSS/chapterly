@@ -428,10 +428,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // M1 第三刀（第 11 轮）：「一键整理本书」的整段编排（runFormatBook：预检查 / 长操作锁 / 收尾三路
   //   分流 / 10 秒撤销）搬进 renderer/format-book-ui.js（行为锚点 tests/format-book-ui.test.js）→ 4355。
   // M1 第四刀（第 11 轮）：「替换这一处」的整段入口（runReplaceOne：两次 findNext 回执复核 /
-  //   兜底拼接后记一次性快照）搬进 renderer/replace-one-ui.js（行为锚点 tests/replace-one-ui.test.js）→ 4261。
+  //   兜底拼接后记一次性快照）搬进 renderer/replace-one-ui.js（行为锚点 tests/replace-one-ui.test.js）→ 4262。
   //   注：这里比的是 rendererSrc.split(/\r?\n/).length（文件末尾换行会多算一个空段），
   //   所以数值比「内容行数」大 1；余量 2 行的语义不变。
-  const RENDERER_LINE_MEASURED = 4261; // 2026-11-22 实测（第 11 轮 M1 第四刀拆出 replace-one-ui 之后）
+  const RENDERER_LINE_MEASURED = 4262; // 2026-11-22 实测（第 11 轮 M1 第四刀拆出 replace-one-ui 之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(
