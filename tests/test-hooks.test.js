@@ -450,7 +450,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   剪贴板入队 / 关窗 / 强制退出 / 命令面板 / 书架变更，74 行）整段搬进 renderer/notify-events-ui.js
   //   （行为锚点 tests/notify-events-ui.test.js）。注册点仍在 bindEvents 原位（订阅顺序不变），
   //   编排器只留一次 create + 一行 bind() → 3845。
-  const RENDERER_LINE_MEASURED = 3845; // 2026-11-22 实测（第 14 轮 M1 第八刀拆出 notify-events-ui 之后；split 口径）
+  // M1 第九刀（第 14 轮）：朗读条事件接线（6 个按钮 / 3 个下拉 / voiceschanged，21 行）从 bindEvents
+  //   整段搬进 renderer/tts-ui.js 的 bindBarEvents()（行为锚点 tests/tts-ui.test.js 的 M1 第九刀用例）。
+  //   注册点仍在原位（同层监听器顺序不变），编排器只留一行 bindBarEvents() → 3827。
+  const RENDERER_LINE_MEASURED = 3827; // 2026-11-22 实测（第 14 轮 M1 第九刀拆出朗读条接线之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(

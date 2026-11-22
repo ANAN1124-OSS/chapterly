@@ -468,6 +468,37 @@
     });
   }
 
+
+  // 朗读条的事件接线（M1 第一轮·低 第九刀：从 renderer.js 的 bindEvents 整段搬进来）。
+  // 注册点仍由渲染层决定（bindEvents 里与原来同一位置）；挂的仍是本模块既有入口，
+  // 文案 / 判据与搬前逐字一致。幂等：宿主重入时不会挂出第二份（一次点击开合两次的经典坑）。
+  let barEventsBound = false;
+  function bindBarEvents() {
+    if (barEventsBound) return;
+    barEventsBound = true;
+    // 朗读本章（只读正文；悬浮小条：播放 / 暂停 / 停止 / 上一段 / 下一段 / 语速 / 语音 / 跟随高亮）
+    $('btn-tts').addEventListener('click', () => {
+      if (state.tts.open) closeTtsBar();
+      else openTtsBar();
+    });
+    $('btn-tts-play').addEventListener('click', () => toggleTtsPlay());
+    $('btn-tts-stop').addEventListener('click', () => {
+      if (state.tts.open && state.tts.chunks.length) stopTts();
+    });
+    $('btn-tts-prev').addEventListener('click', () => ttsStep(-1));
+    $('btn-tts-next').addEventListener('click', () => ttsStep(1));
+    $('btn-tts-close').addEventListener('click', closeTtsBar);
+    $('tts-rate').addEventListener('change', () => setTtsRate($('tts-rate').value));
+    $('tts-voice').addEventListener('change', () => setTtsVoice($('tts-voice').value));
+    $('tts-follow').addEventListener('change', () => setTtsFollow($('tts-follow').checked));
+    // 系统语音列表是异步加载的：加载完刷新一下下拉框（只在朗读条开着的时候）
+    if (typeof window.speechSynthesis !== 'undefined' && window.speechSynthesis.addEventListener) {
+      window.speechSynthesis.addEventListener('voiceschanged', () => {
+        if (state.tts.open) renderTtsVoices();
+      });
+    }
+  }
+
     // 渲染层只拿走这些；渲染 / 总结这类内部函数不外露（E2E 用 DOM 断言，不用钩子）。
     return {
       renderTtsBar,
@@ -481,6 +512,7 @@
       setTtsVoice,
       setTtsFollow,
       stopTtsForChapterChange,
+      bindBarEvents,
       ttsSummaryText,
       currentTtsChunk,
       speechEngine,

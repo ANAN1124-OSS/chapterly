@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const ttsUi = require('../renderer/tts-ui');
 const { loadSourceGate, restoreGlobalsAfter, stripAssertHostBranch } = require('./ui-test-preambles');
 
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
 // v0.9 B-6：朗读的播放状态机 / 朗读条从 renderer.js 整段搬到 renderer/tts-ui.js。
 // 搬之前这一域只有 E2E 第 49 组（真实 Electron + 假语音引擎）覆盖，状态机在 Node 里一步都测不到；
 // 搬出来以后用「假 host + 假引擎」把状态机、光标起点、步进边界、文案逐字钉住。
@@ -50,6 +52,17 @@ function makeEl(id) {
     appendChild(child) {
       this.options.push(child);
       return child;
+    },
+    // M1 第九刀：bindBarEvents 的接线测试用（记录哪个元素挂了哪些监听）
+    listeners: {},
+    addEventListener(type, fn) {
+      (this.listeners[type] = this.listeners[type] || []).push(fn);
+    },
+    dispatch(type, event = {}) {
+      for (const fn of this.listeners[type] || []) fn(event);
+    },
+    listenerCount(type) {
+      return (this.listeners[type] || []).length;
     },
     // M4：渲染下拉的焦点恢复用（真浏览器里 focus 会把 activeElement 挪过来）
     focus() {
@@ -665,3 +678,142 @@ test('R4：旧宿主 / 假 api 没有 onWindowMinimized 时照常创建（可选
   assert.equal(typeof tts.openTtsBar, 'function');
 });
 
+// ---------- M1（第一轮·低）第九刀：朗读条接线（bindBarEvents） ----------
+// 10 个监听（6 个按钮 + 3 个下拉 + voiceschanged）从 renderer.js 的 bindEvents 整段搬进 tts-ui.js；
+// 这里用假 DOM / 假 window 把「哪个元素 → 哪个模块入口」逐条钉住，并钉幂等与「语音列表只在开着的
+// 朗读条里刷新」。行为锚点只覆盖接线；播放状态机本身由上面的用例覆盖。
+function makeSynth() {
+  const listeners = {};
+  return {
+    listeners,
+    addEventListener(type, fn) {
+      (listeners[type] = listeners[type] || []).push(fn);
+    },
+    dispatch(type) {
+      for (const fn of listeners[type] || []) fn();
+    }
+  };
+}
+
+function bindBarWith(options = {}) {
+  const h = makeHost(options);
+  const synth = makeSynth();
+  const realWindow = globalThis.window;
+  globalThis.window = { speechSynthesis: synth };
+  try {
+    const tts = ttsUi.create(h.host);
+    tts.setSpeechEngine(makeEngine());
+    tts.bindBarEvents();
+    return {
+      ...h,
+      tts,
+      synth,
+      restore() {
+        if (realWindow === undefined) delete globalThis.window;
+        else globalThis.window = realWindow;
+      }
+    };
+  } catch (err) {
+    if (realWindow === undefined) delete globalThis.window;
+    else globalThis.window = realWindow;
+    throw err;
+  }
+}
+
+test('M1 第九刀：朗读条接线（6 个按钮 / 3 个下拉都挂到模块既有入口）', async () => {
+  const h = bindBarWith();
+  try {
+    // 开 / 合：同一个按钮
+    h.get('btn-tts').dispatch('click');
+    await flush();
+    assert.equal(h.state.tts.open, true, '闭合状态点开朗读条');
+    assert.equal(h.state.tts.status, 'playing');
+    h.get('btn-tts').dispatch('click');
+    assert.equal(h.state.tts.open, false, '开着再点一次收起');
+
+    // 播放 / 暂停：同一个按钮
+    h.get('btn-tts').dispatch('click');
+    await flush();
+    h.get('btn-tts-play').dispatch('click');
+    assert.equal(h.state.tts.status, 'paused', '播放中按播放键 = 暂停');
+
+    // 停止：只有「开着且有分段」才停；条子保持打开（作者还能接着念）
+    h.get('btn-tts-stop').dispatch('click');
+    assert.equal(h.state.tts.status, 'idle', '停止按钮走 stopTts');
+    assert.equal(h.state.tts.open, true, '停止不收起朗读条');
+
+    // 上一段 / 下一段（停止态只挪指针、不发声）
+    h.state.tts.index = 1;
+    h.get('btn-tts-prev').dispatch('click');
+    assert.equal(h.state.tts.index, 0, '上一段');
+    h.get('btn-tts-next').dispatch('click');
+    assert.equal(h.state.tts.index, 1, '下一段');
+
+    // 收起按钮
+    h.get('btn-tts-close').dispatch('click');
+    assert.equal(h.state.tts.open, false, '收起按钮走 closeTtsBar');
+
+    // 语速 / 语音 / 跟随
+    h.get('tts-rate').value = '1.5';
+    h.get('tts-rate').dispatch('change');
+    assert.equal(h.state.tts.rate, 1.5, '语速下拉走 setTtsRate');
+    h.get('tts-voice').value = 'fake-voice-b';
+    h.get('tts-voice').dispatch('change');
+    assert.equal(h.state.tts.voiceURI, 'fake-voice-b', '语音下拉走 setTtsVoice');
+    h.get('tts-follow').checked = true;
+    h.get('tts-follow').dispatch('change');
+    assert.equal(h.state.tts.follow, true, '跟随勾选走 setTtsFollow');
+  } finally {
+    h.restore();
+  }
+});
+
+test('M1 第九刀：bindBarEvents 幂等；voiceschanged 只在朗读条开着时重建语音下拉', async () => {
+  const h = bindBarWith();
+  try {
+    h.tts.bindBarEvents(); // 宿主重入：不许挂出第二份
+    for (const id of ['btn-tts', 'btn-tts-play', 'btn-tts-stop', 'btn-tts-prev', 'btn-tts-next', 'btn-tts-close']) {
+      assert.equal(h.get(id).listenerCount('click'), 1, id + ' 的点击监听只许一份');
+    }
+    for (const id of ['tts-rate', 'tts-voice', 'tts-follow']) {
+      assert.equal(h.get(id).listenerCount('change'), 1, id + ' 的变更监听只许一份');
+    }
+    assert.equal(h.synth.listeners.voiceschanged.length, 1, 'voiceschanged 只挂一次');
+
+    // 朗读条开着：语音列表异步加载完要重建下拉（1 个「系统默认」+ 2 个假语音）
+    h.get('btn-tts').dispatch('click');
+    await flush();
+    h.get('tts-voice').options = [];
+    h.synth.dispatch('voiceschanged');
+    assert.equal(h.get('tts-voice').options.length, 3, '开着时 voiceschanged 要重建语音下拉');
+
+    // 朗读条收起：不重建
+    h.get('btn-tts-close').dispatch('click');
+    h.get('tts-voice').options = [];
+    h.synth.dispatch('voiceschanged');
+    assert.equal(h.get('tts-voice').options.length, 0, '关着时 voiceschanged 什么都不做');
+  } finally {
+    h.restore();
+  }
+});
+
+test('M1 第九刀 静态闸门：接线只在 tts-ui.js，编排器只剩一次 bindBarEvents()', () => {
+  assert.equal(rendererSrc.includes("$('btn-tts')"), false, '朗读条按钮监听必须整段搬出编排器');
+  assert.match(rendererSrc, /tts\.bindBarEvents\(\);/, '编排器要在原位置调用 bindBarEvents()');
+  assert.equal((rendererSrc.match(/tts\.bindBarEvents\(\);/g) || []).length, 1, 'bindBarEvents() 只许调用一次');
+  for (const id of [
+    'btn-tts',
+    'btn-tts-play',
+    'btn-tts-stop',
+    'btn-tts-prev',
+    'btn-tts-next',
+    'btn-tts-close',
+    'tts-rate',
+    'tts-voice',
+    'tts-follow'
+  ]) {
+    assert.ok(moduleSrc.includes("$('" + id + "')"), '模块里缺接线：' + id);
+  }
+  assert.match(moduleSrc, /function bindBarEvents\(\)/, '模块要提供 bindBarEvents()');
+  assert.match(moduleSrc, /window\.speechSynthesis\.addEventListener\('voiceschanged'/, '语音列表异步加载的刷新留在模块里');
+});

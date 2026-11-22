@@ -3134,27 +3134,9 @@
     // 查找书签（v0.8-11b）：把当前章的词 + 大小写存进 config；只写配置，不碰正文 / 书目
     setupFindBookmarkUi();
     setupProofreadUi();
-    // 朗读本章（只读正文；悬浮小条：播放 / 暂停 / 停止 / 上一段 / 下一段 / 语速 / 语音 / 跟随高亮）
-    $('btn-tts').addEventListener('click', () => {
-      if (state.tts.open) closeTtsBar();
-      else openTtsBar();
-    });
-    $('btn-tts-play').addEventListener('click', () => toggleTtsPlay());
-    $('btn-tts-stop').addEventListener('click', () => {
-      if (state.tts.open && state.tts.chunks.length) stopTts();
-    });
-    $('btn-tts-prev').addEventListener('click', () => ttsStep(-1));
-    $('btn-tts-next').addEventListener('click', () => ttsStep(1));
-    $('btn-tts-close').addEventListener('click', closeTtsBar);
-    $('tts-rate').addEventListener('change', () => setTtsRate($('tts-rate').value));
-    $('tts-voice').addEventListener('change', () => setTtsVoice($('tts-voice').value));
-    $('tts-follow').addEventListener('change', () => setTtsFollow($('tts-follow').checked));
-    // 系统语音列表是异步加载的：加载完刷新一下下拉框（只在朗读条开着的时候）
-    if (typeof window.speechSynthesis !== 'undefined' && window.speechSynthesis.addEventListener) {
-      window.speechSynthesis.addEventListener('voiceschanged', () => {
-        if (state.tts.open) renderTtsVoices();
-      });
-    }
+    // 朗读条接线（M1 第一轮·低 第九刀）：10 个监听整段在 renderer/tts-ui.js 的 bindBarEvents()；
+    // 注册点保持原位（同层监听器追加顺序不变），点击 / 变更仍按原名走模块既有入口。
+    tts.bindBarEvents();
     $('btn-restore-replace').addEventListener('click', () => restoreReplaceBackupFlow());
     setupSensitiveUi();
     setupChapterDrag();
