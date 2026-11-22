@@ -95,12 +95,27 @@
     // 前移（O(n²)）——「290 万个前导换行 + 10 万字正文」是队列合法条目，点「章节」进来会冻住
     // 主进程数十分钟。改成 findIndex 找首个非空行 + 一次 slice（同文件 stripLeadingBlankLines
     // 早就是这个写法）；末尾空行从尾部收指针，同样只 slice 一次，收敛口径与原来逐行 pop 一致。
-    const lines = value.split('\n').map((line) => line.replace(/[ \t\u3000]+$/g, ''));
-    const first = lines.findIndex((line) => Boolean(line.trim()));
-    if (first < 0) return '';
+    // P7（一轮·低）：先按行指针走到首个非空行，再 split 剩余部分 —— 大段前导换行不再先 split 成
+    // 几百万空串、再逐行跑 replace 正则（整表 map 的峰值内存与 GC 都在这一步）。
+    let start = 0;
+    for (;;) {
+      const nl = value.indexOf('\n', start);
+      const lineEnd = nl < 0 ? value.length : nl;
+      if (value.slice(start, lineEnd).trim()) break;
+      if (nl < 0) {
+        start = value.length;
+        break;
+      }
+      start = nl + 1;
+    }
+    if (start >= value.length) return '';
+    const lines = value.slice(start).split('\n');
     let end = lines.length;
-    while (end > first && !lines[end - 1].trim()) end -= 1;
-    return lines.slice(first, end).join('\n');
+    while (end > 0 && !lines[end - 1].trim()) end -= 1;
+    if (!end) return '';
+    const out = [];
+    for (let i = 0; i < end; i += 1) out.push(lines[i].replace(/[ \t\u3000]+$/g, ''));
+    return out.join('\n');
   }
 
   // 一行是不是章节标题：先按 NFKC 归一（全角数字 / 日文「第１話」），再走 core/txt.js 的 parseHeading。

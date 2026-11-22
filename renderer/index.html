@@ -129,7 +129,10 @@
           <button id="btn-new-volume" class="btn ghost" type="button" title="新建卷（侧栏按卷分组，章号不变）" aria-label="新建卷">＋ 新建卷</button>
         </div>
       </aside>
-      <div id="sidebar-resizer" class="sidebar-resizer" title="拖动调整章节栏宽度（双击恢复默认）"></div>
+      <!-- A2（三审）：分隔条可聚焦、可键盘调整（←/→ 步进、Shift 大步、Enter/空格复位），读屏能报当前宽度 -->
+      <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical"
+           aria-label="调整章节栏宽度（方向键微调，回车恢复默认）" aria-valuemin="180" aria-valuemax="800"
+           aria-valuenow="250" tabindex="0" title="拖动调整章节栏宽度（双击或按回车恢复默认；聚焦后可用方向键微调）"></div>
       <main class="editor-main">
         <header class="editor-header">
           <div class="chapter-title" id="chapter-title"></div>
@@ -230,9 +233,11 @@
         <footer class="statusbar">
           <!-- 左段：保存状态（1.3.0 T7 = 规范 C-05 / I-01）。四态文案与 4 色圆点沿用 1.2.0，
                只加「失败态可点重试」与「成功 2s 后淡到 60%」。保存成功不再弹 toast。 -->
+          <!-- A1（三审）：保存成功不弹 toast（1.3.0 T7 收敛到状态栏），但读屏必须有播报通道：
+               live region 只包 #status-text（不带 #status-retry 按钮，避免按钮被反复朗读 / 抢焦点）。 -->
           <span id="status-save" class="status-save">
             <span class="dot ok" id="status-dot"></span>
-            <span id="status-text">已保存</span>
+            <span id="status-text" role="status" aria-live="polite">已保存</span>
             <button id="status-retry" class="status-retry hidden" type="button"
                     title="重新保存这一章（Ctrl+S 也可以）">重试</button>
           </span>
@@ -386,7 +391,7 @@
         <span class="find-nav-label">当前章定位</span>
         <button id="btn-find-prev" class="btn ghost tiny" type="button" title="上一处（Shift+Enter / Shift+F3；到开头会绕到最后一处）">↑ 上一处</button>
         <button id="btn-find-next" class="btn ghost tiny" type="button" title="下一处（Enter / F3；到末尾会绕到第一处）">↓ 下一处</button>
-        <span class="find-nav-count" id="find-nav-count">—</span>
+        <span class="find-nav-count" id="find-nav-count" role="status" aria-live="polite">—</span>
         <span class="muted small find-nav-hint">Enter / F3 下一处 · Shift+Enter / Shift+F3 上一处；关掉面板后也能按</span>
       </div>
       <!-- 查找书签（v0.8-11b，提案 N11b）：只把查询词与大小写选项存进 config.json，
@@ -403,8 +408,10 @@
           正文改过就按新正文重新扫描定位。<strong>不存正文</strong>，也不写书库 / 书目 / 章节文件。
         </p>
       </div>
-      <div class="find-summary muted small" id="find-summary"></div>
-      <div class="find-results" id="find-results"></div>
+      <!-- A6（三审）：异步更新的「命中 N 处 / 命中 i/N」用 live region 播报；结果列表本身带按钮，
+           不整体设为 live（否则每次更新会把整张清单重念一遍），清单照旧用 Tab / 方向键逐条访问。 -->
+      <div class="find-summary muted small" id="find-summary" role="status" aria-live="polite"></div>
+      <div class="find-results" id="find-results" role="group" aria-label="查找结果"></div>
       <div class="find-backup hidden" id="find-backup-row">
         <span id="find-backup-text"></span>
         <button id="btn-restore-replace" class="btn ghost tiny" type="button" title="把书内最近一次整本替换的原文还原回来">还原到替换前…</button>
@@ -573,8 +580,10 @@
         输入章号（如 12、第12章）或章名的一部分，回车跳到那一章。跳章只切换当前章节，不改正文；有未保存内容时会照常先问你。
       </p>
       <input id="jump-input" class="modal-input" type="text" autocomplete="off" placeholder="章号，或章名关键词" />
-      <div class="jump-summary" id="jump-summary"></div>
-      <div class="jump-results" id="jump-results"></div>
+      <!-- A6（三审）：跳章结果的异步摘要也要播报（「找到 N 章匹配」是读屏按回车后唯一的反馈；
+           下面的 #jump-results 是一串按钮，不整体设为 live，避免整张清单被重念）。 -->
+      <div class="jump-summary" id="jump-summary" role="status" aria-live="polite"></div>
+      <div class="jump-results" id="jump-results" role="group" aria-label="跳章结果"></div>
       <div class="modal-buttons">
         <button id="btn-jump-cancel" class="btn ghost" type="button">取消</button>
         <button id="btn-jump-confirm" class="btn primary" type="button" disabled>跳转</button>

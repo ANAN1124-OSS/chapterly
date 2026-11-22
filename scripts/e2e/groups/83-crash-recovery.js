@@ -130,26 +130,34 @@ module.exports = async function group83CrashRecovery(t) {
     const tick = await exec('window.__cwTest.crashDraftTick()');
     const draftNames = await listDraftFiles();
     let draft = null;
+    let draftText = '';
     try {
+      // P2（一轮·中）：草稿拆成「元数据 .json + 正文 .txt」——列表 / 启动恢复只读元数据，
+      // 正文单独存，readDraft 才读那一个文件。这里按新布局逐字核对正文。
       draft = JSON.parse(await fs.readFile(path.join(crashDraftsDir, draftNames[0]), 'utf8'));
+      draftText = draft && typeof draft.body === 'string'
+        ? await fs.readFile(path.join(crashDraftsDir, draft.body), 'utf8')
+        : String((draft && draft.text) || '');
     } catch {
       draft = null;
     }
     const statusOn = await exec('window.__cwTest.crashRecoveryStatus()');
     check(
-      '崩溃草稿：crashDraftTick 后草稿只在 userData\\crash-drafts，正文与编辑区逐字一致',
+      '崩溃草稿：crashDraftTick 后草稿只在 userData\\crash-drafts，正文与编辑区逐字一致（P2：元数据与正文分文件）',
       tick &&
         tick.ok === true &&
         /^[a-f0-9]{16}$/.test(String(tick.draftId || '')) &&
         draftNames.length === 1 &&
         draft &&
-        draft.text === DRAFT_TEXT &&
+        draft.text === undefined &&
+        draft.body === `draft-${draft.draftId}.txt` &&
+        draftText === DRAFT_TEXT &&
         draft.bookPath === bookPath &&
         draft.chapterId === chapter.id &&
         statusOn &&
         statusOn.lastDraftId === tick.draftId &&
         statusOn.lastSnapshotChars === DRAFT_TEXT.length,
-      { tick, draftNames, draft: draft && { ...draft, text: draft.text.slice(0, 20) }, statusOn }
+      { tick, draftNames, draft: draft && { ...draft, text: undefined }, draftTextLen: draftText.length, statusOn }
     );
     const bookEntriesAfter = await fs.readdir(bookPath);
     check(

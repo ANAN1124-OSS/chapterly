@@ -329,6 +329,44 @@ test('undoFormat：没有可撤销返回 false；有则把 before 写回编辑�
   assert.deepEqual(ctx.calls.fallbackWrites, [], '撤销整理的回退不该记兜底快照');
 });
 
+// ---------- R1（三审）：整理本章的整章级大段写入走渲染层统一 bulk 通道 ----------
+test('R1（三审）：整理本章 >2 万字走统一 bulk 通道（不再 execCommand）；撤销整理的回退传 record:false', async () => {
+  const before = '字'.repeat(20001);
+  const after = '整'.repeat(20001);
+  const ctx = build({ text: before, formatText: () => ({ changed: true, text: after, stats: { paragraphs: 1 } }) });
+  const bulk = [];
+  const ui = tidyCardUi.create({
+    ...ctx.host,
+    writeEditorBulk(text, opts) {
+      bulk.push({ text, opts });
+      return true;
+    }
+  });
+  const result = await ui.formatCurrentChapterFromConfig();
+  assert.equal(result.ok, true);
+  assert.equal(bulk.length, 1, '大章必须走 bulk 通道');
+  assert.equal(bulk[0].text, after);
+  assert.equal(bulk[0].opts.label, '整理本章');
+  assert.equal(bulk[0].opts.record, true, '正常整理仍登记一次性撤销快照');
+  assert.equal(ctx.calls.fallbackWrites.length, 0, 'bulk 通道不再记「兜底写入」');
+
+  // 撤销整理：模块自己的回退传 record:false（与本文件上一处 recordFallback:false 同口径）
+  ctx.state.formatUndo = [{ bookPath: ctx.state.bookPath, chapterId: 'c1', before, after }];
+  ctx.editorEl.value = after;
+  const bulkUndo = [];
+  const undoUi = tidyCardUi.create({
+    ...ctx.host,
+    writeEditorBulk(text, opts) {
+      bulkUndo.push({ text, opts });
+      return true;
+    }
+  });
+  assert.equal(undoUi.undoFormat(), true);
+  assert.equal(bulkUndo.length, 1);
+  assert.equal(bulkUndo[0].text, before);
+  assert.equal(bulkUndo[0].opts.record, false, '撤销整理自身的回退不再包装成新的可撤销写入');
+});
+
 // ---------- 点「整理」 ----------
 test('formatCurrentChapterFromConfig：没书 / 空正文 早退，不改撤销栈', async () => {
   const noBook = build({ bookPath: null });

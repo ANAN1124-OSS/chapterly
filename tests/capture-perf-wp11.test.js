@@ -135,13 +135,16 @@ test('R2：归一化等价表（BOM / CRLF / 孤立 CR / 行尾空白 / 全角�
 
 // ---------------------------------------------------------------- R3
 
-test('R3：静态线化闸——首部空行改 findIndex + slice，不再 lines.shift()', () => {
+test('R3 / P7：静态线化闸——首部空行用行指针前进，不再整表 split + map / lines.shift()', () => {
   // 注释里说明旧写法不算回流：先剔掉行注释再判代码。
   const codeOnly = CAPTURE_SOURCE.replace(/\/\/[^\n]*/g, '');
   assert.equal(/lines\.shift\s*\(/.test(codeOnly), false, 'lines.shift() 每次 O(n)，不许回流');
   const body = sliceFunction(codeOnly, 'normalizeCaptureText');
-  assert.ok(body.includes('findIndex'), '首部空行判定走 findIndex');
-  assert.ok(body.includes('lines.slice('), '一次 slice 取代逐行搬移');
+  // P7（一轮·低）：旧实现先对全文 split + map（290 万前导换行 = 290 万个空串 + 逐行正则）；
+  // 现在先用 indexOf 指针走到首个非空行，只对剩余部分 split。
+  assert.ok(body.includes("indexOf('\\n'"), '首部空行判定用逐行指针前进，不整表 split');
+  assert.ok(body.includes('value.slice(start)'), '只对首个非空行之后的部分 split');
+  assert.equal(/\.split\([^)]*\)\s*\.map\s*\(/.test(body), false, '不许再对全文 split + map');
 });
 
 // ---------------------------------------------------------------- R4
@@ -355,4 +358,17 @@ test('R9：list() 不重算预览；空行重型队列 list() < 60 ms', () => {
     1,
     'recordPreview(entry.text) 只出现在入队处一次（既有静态闸门口径不变）'
   );
+});
+// ---------- P7（一轮·低）：前导空行不再整表 split + map ----------
+test('P7（一轮·低）：290 万前导换行只扫到首个非空行，再 split 剩余部分（线性、不物化几百万空串）', () => {
+  const body = '正'.repeat(1000);
+  const text = `${'\n'.repeat(2900000)}${body}`;
+  let normalized = '';
+  const ms = elapsedMs(() => {
+    normalized = capture.normalizeCaptureText(text);
+  });
+  assert.equal(normalized, body, '前导空行去干净、正文一字不动');
+  assert.ok(ms < 500, `290 万前导换行必须线性完成，实测 ${ms.toFixed(1)} ms（旧实现整表 split + map）`);
+  // 内部空行 / 行尾空白口径不变（只对首个非空行之后的部分 split）
+  assert.equal(capture.normalizeCaptureText('\n\n甲  \n\n乙\t\n'), '甲\n\n乙');
 });

@@ -61,6 +61,35 @@ test('导入一堆 txt：按文件名重建书目、内容完整、书名取文�
   assert.equal(books[0].folder, '旧稿');
 });
 
+test('P6（一轮·低）：章节目录逐文件复制限并发并回报进度（不再串行 1/1 干等）', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '大目录');
+  await fs.mkdir(src);
+  const TOTAL = 210;
+  for (let i = 1; i <= TOTAL; i += 1) {
+    await fs.writeFile(path.join(src, `${String(i).padStart(3, '0')}-第${i}章.txt`), `第 ${i} 章正文`, 'utf8');
+  }
+  const booksRoot = path.join(base, '书架');
+  const progress = [];
+  const res = await importer.importFolders(booksRoot, [src], { onProgress: (p) => progress.push(p) });
+  assert.equal(res.imported.length, 1);
+  assert.equal(res.imported[0].chapters, TOTAL);
+  const fileProgress = progress.filter((p) => p.files);
+  assert.ok(fileProgress.length >= 2, '目录复制要逐文件回报进度（节流后仍至少两条）');
+  assert.equal(fileProgress[0].files.done, 0, '复制开始先报 0 进度');
+  assert.equal(fileProgress.at(-1).files.done, TOTAL, '最后一个文件复制完报满');
+  assert.equal(fileProgress.at(-1).files.total, TOTAL);
+  // 静态闸门：复制是限并发 + 节流回报，不许退回 `for ... await copyFile` 的串行写法
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'importer.js'), 'utf8');
+  assert.match(source, /const COPY_FILE_CONCURRENCY = 8;/, '限并发常量必须在');
+  assert.equal(
+    /for \(const file of txtFiles\)[\s\S]{0,200}?await fs\.copyFile/.test(source),
+    false,
+    '不许退回串行逐文件 await'
+  );
+  assert.match(source, /done % 100 === 0/, '逐文件进度要节流（20,000 章不许发 20,000 条 IPC）');
+});
+
 test('重复导入同名文件夹自动加 -2', async () => {
   const base = await mkTmp();
   const src = path.join(base, '旧稿');

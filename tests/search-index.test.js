@@ -1638,3 +1638,41 @@ test('五-M27（CI-1）：ensure 在途时才标脏的书，ensure 结束后搜�
   assert.ok(found.results.length >= 1, '刚保存的内容不许在复用窗口里静默漏报');
   assert.equal(store.dirtyList().length, 0, '搜索前的那趟校验要消费掉脏标记');
 });
+
+// ---------- P4（一轮·低）：同根并发的「最近一次胜出」 ----------
+// 渲染层已有 320ms 防抖 + 查询令牌丢弃旧回执，但主进程旧查询的全文扫描仍会跑完（CPU / 磁盘白费）。
+// search() 现在领票：更新的搜索一到，旧查询在 await 边界提前收工，返回 { superseded: true }。
+test('P4（一轮·低）：同根并发搜索「最近一次胜出」，旧查询提前收工不再扫完', async () => {
+  const base = await mkTmp('cw-search-p4-');
+  const { userData, booksRoot } = await makeWorld(base);
+  await makeBook(booksRoot, '书甲', '书甲', [
+    { name: '一', text: '青柠色的段落'.repeat(200) },
+    { name: '二', text: '灰蓝色的段落'.repeat(200) }
+  ]);
+  const store = makeStore(userData);
+  // 先建好索引（首建期搜索按设计只回 building:true，不参与本项竞态）
+  await store.search({ booksRoot, query: '预热' });
+  // 让旧查询在读盘上停 60ms：期间新查询发车，旧查询恢复后必须发现票过期。
+  const storage = require('../core/storage');
+  const realLoad = storage.loadChapterText;
+  let delayed = false;
+  storage.loadChapterText = async (...args) => {
+    if (!delayed) {
+      delayed = true;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    return realLoad(...args);
+  };
+  try {
+    const older = store.search({ booksRoot, query: '青柠色' });
+    await new Promise((resolve) => setImmediate(resolve));
+    const newer = store.search({ booksRoot, query: '灰蓝色' });
+    const [oldResult, newResult] = await Promise.all([older, newer]);
+    assert.equal(oldResult.superseded, true, '旧查询必须被新查询顶掉并提前收工');
+    assert.deepEqual(oldResult.results, [], '旧查询不再交出结果（渲染层反正按令牌丢弃）');
+    assert.equal(newResult.superseded, undefined, '最新查询不受影响');
+    assert.ok(newResult.results.length >= 1, '最新查询照常返回结果');
+  } finally {
+    storage.loadChapterText = realLoad;
+  }
+});

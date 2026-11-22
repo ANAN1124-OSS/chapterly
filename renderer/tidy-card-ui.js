@@ -67,6 +67,9 @@
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）；嵌套分组见 REQUIRED_GROUPS。
     assertHost('createTidyCardUi', host, REQUIRED_HOST, REQUIRED_GROUPS);
     const { $, state, api, call, toast, recordFallbackWrite, format, menus, peers } = host;
+    // R1（三审）：整章级大段整理用的统一快写通道（renderer.js 的 writeEditorBulk）。可选成员：
+    // 旧宿主 / 单测没有它时退回原来的 execCommand 路径（行为与修复前一致，只是大章更慢）。
+    const writeEditorBulk = typeof host.writeEditorBulk === 'function' ? host.writeEditorBulk : null;
     // 审计修复 #39（V402）：兜底整串赋值要由渲染层统一记快照 + 提示（模块自己没有编辑器级拦截器）
     if (typeof recordFallbackWrite !== 'function') {
       throw new TypeError('createTidyCardUi 的 host.recordFallbackWrite 必须是函数');
@@ -252,6 +255,11 @@
     const caret = hint && typeof hint.text === 'string'
       ? mapCaretPosition(hint.text, text, pos)
       : Math.min(pos, text.length);
+    // R1（三审）：整章级大段整理改走渲染层统一快写通道（与剪贴板插入 / 全部替换同阈值、同撤销快照）；
+    // 小章仍走 execCommand 保住原生 Ctrl+Z。返回 true = 已写入，不要再进原生输入路径。
+    if (writeEditorBulk && writeEditorBulk(text, { caret, label: '整理本章', record: opts.recordFallback !== false })) {
+      return true;
+    }
     editorEl.focus();
     editorEl.setSelectionRange(0, editorEl.value.length);
     let inserted = false;

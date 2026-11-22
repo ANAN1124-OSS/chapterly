@@ -175,6 +175,9 @@
     if (!select) return;
     const voices = Array.from(speechEngine().voices() || []);
     const wanted = state.tts.voiceURI;
+    // M4（一轮·低）：全量重建 option 会把焦点从下拉里踢回 body（读屏用户每换一次系统语音就丢一次焦点）。
+    // 只有「重建前焦点本来就在这个下拉里」才恢复焦点，别把焦点从正文 / 别的控件抢过来。
+    const hadFocus = typeof document !== 'undefined' && document.activeElement === select;
     select.innerHTML = '';
     const def = document.createElement('option');
     def.value = '';
@@ -193,6 +196,14 @@
       state.tts.voiceURI = '';
     }
     select.disabled = !voices.length;
+    // M4：重建后把焦点还回去（选中项已经按 wanted 重新设过，option 列表也回来了）。
+    if (hadFocus && typeof select.focus === 'function') {
+      try {
+        select.focus({ preventScroll: true });
+      } catch {
+        select.focus();
+      }
+    }
   }
 
   // 跟随高亮：只改编辑区选区，不 focus、不改文字；编辑区有焦点时才看得见高亮

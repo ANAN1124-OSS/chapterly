@@ -92,6 +92,9 @@
     const { findLogic, editorEl, syncEditorOverlay, scrollCaretIntoView, onEditorInput } = find;
     const { chapterTitle, switchChapter, loadChapterAt, currentChapterLabel, hideHeaderMenus } = nav;
     const { askUnsaved, saveCurrent, registerUndo, refreshShelf, renderChapterList, reloadAfterPartialFailure, closeProofreadPanel, runReplaceOne, renderFindBookmarks, refreshFindBookmarks, refreshReplaceBackups } = collab;
+    // R1（三审）：整章级大段写入的统一通道（renderer.js 的 writeEditorBulk）。可选成员：旧宿主 /
+    // 单测没有它时退回原来的 execCommand 路径（行为与修复前一致，只是大章更慢）。
+    const writeEditorBulk = typeof host.writeEditorBulk === 'function' ? host.writeEditorBulk : null;
 
   // ---------- 查找会话（v0.8-11，提案 N11）----------
   // 当前章的「上一处 / 下一处」+「结果持续高亮」：
@@ -547,9 +550,14 @@
     }
   }
 
-  // 当前章替换：走原生输入，保住 Ctrl+Z 撤销链；只改编辑区（未保存）
-  function replaceEditorText(text) {
+  // 当前章替换：小段走原生输入，保住 Ctrl+Z 撤销链；整章级大段改走渲染层的统一快写通道
+  // （R1：execCommand 对十几万字是逐行强制布局的秒级路径，剪贴板「正文」插入早已是同口径；
+  // 两条通道共用 shouldBulkWrite 阈值 + bulkWriteUndo 一次性撤销快照，撤销条保留）。
+  // R3（三审）：全部替换成功后光标落到**第一处替换点**并滚动到位，不再强制回到章首。
+  function replaceEditorText(text, firstIndex) {
+    const caret = Number.isFinite(firstIndex) ? Math.max(0, Math.min(Math.round(firstIndex), text.length)) : 0;
     editorEl.focus();
+    if (writeEditorBulk && writeEditorBulk(text, { caret, label: '全部替换' })) return;
     editorEl.setSelectionRange(0, editorEl.value.length);
     const before = editorEl.value;
     let inserted = false;
@@ -563,7 +571,8 @@
     // 不再静默清栈。按结果判断，原生输入成功（值就是 text）不记账。
     const fallbackUsed = !inserted || editorEl.value !== text;
     if (fallbackUsed) editorEl.value = text;
-    editorEl.setSelectionRange(0, 0);
+    editorEl.setSelectionRange(caret, caret);
+    scrollCaretIntoView(caret);
     onEditorInput();
     // 记账必须在 onEditorInput() 之后（输入处理会作废旧快照）；值没变时 recordFallbackWrite 自己跳过。
     if (fallbackUsed) recordFallbackWrite({ before, after: text, start: 0, label: '全部替换' });
@@ -613,7 +622,7 @@
           $('find-summary').textContent = `本章没有找到「${options.query}」，未做替换`;
           return;
         }
-        replaceEditorText(res.text);
+        replaceEditorText(res.text, res.firstIndex);
         // C4（v1.8.0 WP-05）：超过单章上限时只替换了前 N 处，必须如实说清楚，
         // 不能把「只替换了前 5000 处」报成「本章已替换完成」。
         if (res.truncated) {

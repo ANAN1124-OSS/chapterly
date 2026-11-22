@@ -164,7 +164,7 @@ test('CGRD-01：写草稿只读元数据缓存，不再把全部草稿正文读�
   assert.equal((await store.listDrafts()).length, 3, '三份都在，元数据缓存不影响列表');
 
   // 超过 maxDrafts（8）后仍按 at 删最旧；写路径同样不读正文。
-  // （listDrafts 自己是一条完整扫描，会把三份读回来；从下面开始重新计数。）
+  // （listDrafts 自己是一条完整扫描：P2 起草稿拆了元数据 / 正文，它只读元数据，正文一个字节都不碰。）
   draftReads = 0;
   for (let i = 4; i <= 10; i += 1) {
     await store.writeDraft(
@@ -474,4 +474,97 @@ test('S2：draftVisibleTo 纯函数——无令牌 / 别进程 / 无窗口归属
   assert.equal(draftLib.draftVisibleTo({ ownerToken: 'tok-a', ownerWindowId: 8 }, null), true);
   // 窗口 id 归一化：数字 / 数字字符串等价
   assert.equal(draftLib.draftVisibleTo({ ownerToken: 'tok-a', ownerWindowId: 7 }, { ownerToken: 'tok-a', ownerWindowId: '7' }), true);
+});
+
+// ---------- P2（一轮·中）：草稿拆「元数据 .json + 正文 .txt」 ----------
+// 旧实现 scan() 对每份草稿都 readFile + JSON.parse 整份正文（8 份 500 万字草稿 ≈ 80–120MB / 4000 万
+// 元素的数组），启动恢复与列表都跟着正文大小线性变慢。现在列表 / prune / info 只读元数据，
+// readDraft 才读那一份正文；字数是增量码点计数（不再 Array.from）。
+test('P2：草稿拆元数据 + 正文文件；列表 / info 不读正文，readDraft 只读一次', async () => {
+  const root = await newRoot();
+  const reads = [];
+  const countingFs = {
+    ...failingFs(),
+    readFile: async (file, ...rest) => {
+      reads.push(String(file));
+      return fsp.readFile(file, ...rest);
+    }
+  };
+  const store = storeAt(root, { fs: countingFs });
+  const text = '正文'.repeat(10);
+  const written = await store.writeDraft(draft({ text }));
+  assert.equal(written.ok, true);
+  assert.equal(written.chars, 20, '字数在入口只算一次（旧实现 writeDraft 里算三遍）');
+  const names = await fsp.readdir(store.dir);
+  assert.ok(names.includes(`draft-${written.draftId}.json`), '元数据文件');
+  assert.ok(names.includes(`draft-${written.draftId}.txt`), '正文文件');
+  const meta = JSON.parse(await fsp.readFile(path.join(store.dir, `draft-${written.draftId}.json`), 'utf8'));
+  assert.equal(meta.version, 2);
+  assert.equal(meta.text, undefined, '正文不再进 JSON');
+  assert.equal(meta.body, `draft-${written.draftId}.txt`);
+  assert.equal(meta.chars, 20);
+  assert.equal(await fsp.readFile(path.join(store.dir, meta.body), 'utf8'), text);
+
+  reads.length = 0;
+  const list = await store.listDrafts();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].chars, 20);
+  assert.deepEqual(reads.filter((file) => file.endsWith('.txt')), [], '列表不许读正文');
+
+  reads.length = 0;
+  assert.equal((await store.info()).chars, 20);
+  assert.deepEqual(reads.filter((file) => file.endsWith('.txt')), [], 'info 不许读正文');
+
+  reads.length = 0;
+  const full = await store.readDraft(written.draftId);
+  assert.equal(full.ok, true);
+  assert.equal(full.draft.text, text);
+  assert.equal(full.draft.chars, 20);
+  assert.equal(reads.filter((file) => file.endsWith('.txt')).length, 1, 'readDraft 只读这一份正文');
+});
+
+test('P2：旧版本单文件草稿（text 在 JSON 里）仍能读；chars 按码点算（不把代理对当两个字）', async () => {
+  const root = await newRoot();
+  const store = storeAt(root);
+  const legacyId = 'aaaaaaaaaaaaaaaa';
+  await fsp.mkdir(store.dir, { recursive: true });
+  await fsp.writeFile(
+    path.join(store.dir, `draft-${legacyId}.json`),
+    JSON.stringify({
+      version: 1,
+      draftId: legacyId,
+      bookPath: BOOK,
+      chapterId: 'ch_legacy',
+      chapterTitle: '旧章',
+      at: '2026-11-17T20:00:00.000Z',
+      text: '旧版正文😀'
+    })
+  );
+  const list = await store.listDrafts();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].chars, 5, '😀 只算一个字');
+  const full = await store.readDraft(legacyId);
+  assert.equal(full.ok, true);
+  assert.equal(full.draft.text, '旧版正文😀');
+  // 同书同章的下一次写入覆盖成 v2：JSON 里不再有 text，字数按码点
+  const rewritten = await store.writeDraft({ bookPath: BOOK, chapterId: 'ch_001', text: '新正文😀' });
+  assert.equal(rewritten.ok, true);
+  const meta = JSON.parse(await fsp.readFile(path.join(store.dir, `draft-${rewritten.draftId}.json`), 'utf8'));
+  assert.equal(meta.text, undefined);
+  assert.equal(meta.chars, 4, '新正文😀 = 4 个字');
+  assert.equal((await store.readDraft(rewritten.draftId)).draft.text, '新正文😀');
+});
+
+test('P2：无元数据的孤儿正文在 prune 时回收；坏 JSON 的正文保留（坏文件一律不删）', async () => {
+  const root = await newRoot();
+  const store = storeAt(root);
+  await store.writeDraft(draft({ chapterId: 'ch_keep', at: '2026-11-17T20:00:00.000Z' }));
+  await fsp.writeFile(path.join(store.dir, 'draft-bbbbbbbbbbbbbbbb.txt'), '没有元数据的孤儿正文');
+  await fsp.writeFile(path.join(store.dir, 'draft-cccccccccccccccc.json'), '{bad');
+  await fsp.writeFile(path.join(store.dir, 'draft-cccccccccccccccc.txt'), '坏元数据但正文还在');
+  await store.beginSession();
+  const names = await fsp.readdir(store.dir);
+  assert.equal(names.includes('draft-bbbbbbbbbbbbbbbb.txt'), false, '无元数据的孤儿正文被回收');
+  assert.equal(names.includes('draft-cccccccccccccccc.txt'), true, '坏 JSON 的正文保留（坏文件一律不删）');
+  await store.endSession();
 });

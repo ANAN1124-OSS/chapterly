@@ -15,6 +15,8 @@ const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
 restoreGlobalsAfter(test, ['document']);
 const bodyStyle = new Map();
 globalThis.document = {
+  // M4（一轮·低）：渲染语音下拉时用 activeElement 判断「重建前焦点是否就在下拉里」
+  activeElement: null,
   createElement: (tag) => ({ tag, value: '', textContent: '' }),
   body: {
     style: {
@@ -48,6 +50,11 @@ function makeEl(id) {
     appendChild(child) {
       this.options.push(child);
       return child;
+    },
+    // M4：渲染下拉的焦点恢复用（真浏览器里 focus 会把 activeElement 挪过来）
+    focus() {
+      this.focusCalls = (this.focusCalls || 0) + 1;
+      globalThis.document.activeElement = this;
     },
     // 朗读条高度由 syncToastLift 量（拍板 #6）：假元素给一个稳定高度 132（≈ 假语音的两行状态文案），
     // 需要验「条子变高要重算」的测试自己覆盖这一项。
@@ -480,6 +487,25 @@ test('换引擎：setSpeechEngine 换进来 / 传空换回真实引擎；语音�
   assert.equal(select.options[2].textContent, '测试语音 B（zh-CN）');
   assert.equal(select.value, '');
   assert.equal(select.disabled, false);
+});
+
+// M4（一轮·低）：全量重建 option 会把焦点踢回 body；重建后只把「原本就在下拉里」的焦点还回去。
+test('M4（一轮·低）：重建语音下拉后恢复焦点与选中项；焦点在别处时不抢焦点', () => {
+  const { host, get } = makeHost();
+  const tts = ttsUi.create(host);
+  tts.setSpeechEngine(makeEngine());
+  const select = get('tts-voice');
+  host.state.tts.voiceURI = 'fake-voice-b';
+
+  globalThis.document.activeElement = select;
+  tts.renderTtsVoices();
+  assert.equal(globalThis.document.activeElement, select, '重建 option 后焦点回到语音下拉（读屏不丢焦点）');
+  assert.equal(select.focusCalls, 1);
+  assert.equal(select.value, 'fake-voice-b', '选中项按 state.tts.voiceURI 原样恢复');
+
+  globalThis.document.activeElement = null;
+  tts.renderTtsVoices();
+  assert.equal(select.focusCalls, 1, '焦点在正文 / 别的控件时绝不许抢焦点');
 });
 
 test('静态闸门：renderer.js 不再内嵌朗读状态机，只剩接线与假引擎', () => {

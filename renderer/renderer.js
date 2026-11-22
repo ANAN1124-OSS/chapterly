@@ -777,8 +777,7 @@
   // 函数声明会提升，saveChainUi 在启动装配段才 create —— 调用都发生在用户动作里，不存在 TDZ 问题。
   async function saveForTransition(options) { return saveChainUi.saveForTransition(options); }
 
-  // 「还原前」的未保存拦截：整本替换备份还原（本文件）与历史备份还原（renderer/history-ui.js）流程相同，
-  // 只有文案不同 —— 取消 / 放弃修改并还原 / 保存修改后再还原，保存失败就停在原地不继续还原。
+  // 「还原前」的未保存拦截：整本替换备份还原（本文件）与历史备份还原（history-ui.js）流程相同、只有文案不同。
   // 调用方各自判 state.dirty（历史弹层还能看别的书，不能拿当前书的脏标记去拦别的书）。
   // 五-H2/H3（BP-02 / BP-03 / L-F1）：三选一的语义收进 saveForTransition —— 保存成功后复核 dirty，
   // 仍脏（保存期间又敲了字）就再问一轮；作者选「放弃」时当场清脏，下游 reloadOpenBookFromDisk 的脏闸
@@ -1059,6 +1058,7 @@
   function applySidebarWidth(width) {
     state.sidebarWidth = clampSidebarWidth(width);
     document.documentElement.style.setProperty('--sidebar-width', `${state.sidebarWidth}px`);
+    const resizerEl = $('sidebar-resizer'); if (resizerEl) resizerEl.setAttribute('aria-valuenow', String(state.sidebarWidth));
     return state.sidebarWidth;
   }
 
@@ -1124,6 +1124,17 @@
     resizer.addEventListener('dblclick', () => {
       applySidebarWidth(250);
       persistSidebarWidth(250).catch(() => {});
+    });
+
+    // A2（三审）：分隔条可聚焦后必须有键盘通道 —— ←/→ 步进（Shift 加倍）、Enter/空格复位默认宽，
+    // 与拖拽 / 双击同一份 apply + persist（键盘用户此前完全无法调整章节栏宽度）。
+    resizer.addEventListener('keydown', (event) => {
+      const step = event.shiftKey ? 48 : 16;
+      const width = { ArrowLeft: state.sidebarWidth - step, ArrowRight: state.sidebarWidth + step, Enter: 250, ' ': 250 }[event.key];
+      if (width === undefined) return;
+      event.preventDefault();
+      applySidebarWidth(width);
+      persistSidebarWidth(state.sidebarWidth).catch(() => {});
     });
   }
 
@@ -1192,15 +1203,11 @@
   } = bookinfoUi;
 
   // ---------- 开书 / 载章状态机（v1.8.0 WP-03 / 审计 V101、V102、C9、C10） ----------
-  // 这一族问题的共同根源是「异步回执到达时，现场已经不是发起时的现场」：
-  //   · 连开两本书：先点的那本后返回，会把后点的书盖掉（V102）；
-  //   · 开书后目标章读取失败（缺文件 / >128MB / 权限）：编辑区还留着上一本的正文、state.index 还是旧下标，
-  //     作者接着输入并 Ctrl+S 就把上一本正文写进新书同下标章节（V101，后果接近高）；
-  //   · loadChapterAt 没有令牌：连点两章时后返回的旧加载覆盖后点的目标，加载途中输入也会被静默覆盖（C9）；
-  //   · 保存在途时切章：回执按「现在」的 index 回写 mtime / 字数，作者刚选的「不保存」被在途写入违背（C10）。
-  // 这里集中收口：模块级 openSeq 开书世代令牌（载章令牌与编辑区「载章中 / 没有有效章节」只读态
-  // 随 renderer/save-chain-ui.js 走）；回执到达后先核令牌与书路径，过期一律丢弃；保存回执只认发起时
-  // 捕获的 (bookPath, chapterId)。
+  // 共同根源是「异步回执到达时，现场已经不是发起时的现场」：连开两本书时先点的后返回会盖掉后点的（V102）；
+  // 开书后目标章读取失败时编辑区还留着上一本正文、index 还是旧下标，接着 Ctrl+S 会写进新书同下标章（V101）；
+  // loadChapterAt 没有令牌时旧加载会覆盖后点的目标（C9）；保存在途切章时回执按「现在」的 index 回写（C10）。
+  // 这里集中收口：模块级 openSeq 开书世代令牌（载章令牌 / 只读态随 save-chain-ui.js）；回执到达后先核
+  // 令牌与书路径，过期一律丢弃；保存回执只认发起时捕获的 (bookPath, chapterId)。
   let openSeq = 0;
   let openingBook = false;
   // WP20（R-N2）的保存深度守卫、载章令牌、等待者队列与编辑区遮罩态都随保存链模块走；
@@ -1516,15 +1523,10 @@
     return true;
   }
 
-  // A7（WP-32 / 审计 A7）：focusChapterById / AfterDelete / AfterSwitch 三份约 80% 重复的
-  // 「把焦点放回章节列表」实现合并成这一份，差异只在落点怎么算（locator.mode）：
-  //   'id'       —— 拖拽 / Alt+↑↓ 移动后列表整表重建，按章 id 找回来（否则连按 Alt+↓，
-  //                 按一次焦点就丢到 body），roving 停留点也跟着这一条（与方向键移焦点同口径）；
-  //   'position' —— U-D9：键盘 Delete 删除整表重建后按位置落回（删的是最后一条就落到新的
-  //                 最后一条；主进程给的下一章下标正好是同一位置），连按 Delete 才删得动；
-  //   'switch'   —— U-D12：Ctrl+PageUp/Dn / 命令面板切章走的是「只改高亮 / tabIndex」的快路径，
-  //                 只有焦点原本就在章节列表里才把它带到新当前章；焦点在编辑区 / 工具栏时
-  //                 一个字都不动 —— 绝不把焦点从正文抢走（这一路也不滚动）。
+  // A7（WP-32 / 审计 A7）：focusChapterById / AfterDelete / AfterSwitch 三份重复实现合并成这一份，
+  // 差异只在落点怎么算（locator.mode）：'id' = 拖拽 / Alt+↑↓ 后按章 id 找回（含 roving 停留点）；
+  // 'position' = U-D9 键盘 Delete 后按位置落回（主进程给的下一章下标正好是同一位置，连按才删得动）；
+  // 'switch' = U-D12 切章快路径只改高亮 / tabIndex，只有焦点原本在章节列表里才带过去（绝不从正文抢焦点）。
   function focusChapterItem(locator) {
     const list = $('chapter-list');
     if (!list) return false;
@@ -1583,13 +1585,11 @@
     return count;
   }
 
-  // 切章只改「当前章」高亮，不重建整条列表（v0.9 A-2）。
-  // 大书 1000 条整表重建一次十几毫秒，而切章时章节没增删、顺序没变、折叠状态也没变——
-  // 唯一要变的就是 active / dirty 两个 class。
-  // 正确性优先，两道核对都对得上才走快路径：
-  //   ① 列表里的条目数 == 当前应该显示的条数（新建 / 删除章节会让它变）；
-  //   ② 当前章那一条的 chapter id == state.chapters[state.index].id（换书 / 重排会变）。
-  // 任一对不上、或当前章在折叠的卷里（列表里没有这一条）就退回整表重建，和旧行为一致。
+  // 切章只改「当前章」高亮，不重建整条列表（v0.9 A-2）：大书 1000 条整表重建十几毫秒，
+  // 而切章时章节没增删、顺序与折叠状态都没变，唯一要变的就是 active / dirty 两个 class。
+  // 正确性优先，两道核对都对得上才走快路径：① 条目数 == 当前应显示的条数（增删章会变）；
+  // ② 当前章的 chapter id == state.chapters[state.index].id（换书 / 重排会变）；
+  // 任一对不上、或当前章在折叠卷里（列表里没有这一条）就退回整表重建，和旧行为一致。
   function syncActiveChapterItem() {
     const list = $('chapter-list');
     if (!list) return;
@@ -1830,7 +1830,7 @@
   // ---------- 查找 / 替换核心 ----------
   // 第 4 步九刀·补刀 9a：实现在 renderer/find-ui.js（模块头有契约），这里只装配与接线；
   const findUi = findUiModule.create({
-    $, state, api, call, toast, recordFallbackWrite,
+    $, state, api, call, toast, recordFallbackWrite, writeEditorBulk,
     longOpLogic,
     staleGuard,
     imeGuard,
@@ -1895,28 +1895,20 @@
   const { applyStatsFilter, buildStatsCsv, setupStatsUi } = statsUi;
 
   // 大段插入（试用分支 B）的一次性撤销快照：{ before, after, start, end, bookPath, chapterId }。
-  // 只有「这次插入走了 .value 整串赋值、没进原生撤销栈」时才存在；下一次真实输入 / 切换章节立刻作废，
-  // 免得点「撤销」把作者后来打的字一起退掉。审计修复 #7（V401）：bookPath / chapterId 是设置快照
-  // 那一刻的身份——执行撤销时逐字核对，换书 / 换章（含载章失败后的遮罩态）一律作废，绝不跨书串台。
+  // 只有「这次插入走了 .value 整串赋值、没进原生撤销栈」时才存在；下一次真实输入 / 切换章节立刻作废。
+  // 审计修复 #7（V401）：bookPath / chapterId 是快照那一刻的身份，撤销前逐字核对，换书 / 换章一律作废。
   let bulkWriteUndo = null;
 
-  // 审计修复 #39（V402）：兜底「整串赋值」的一次性快照，形状与 bulkWriteUndo 相同（多一个 label 用于文案）。
-  // 触发面：execCommand('insertText') 失败 / 结果不符时，各处都退回 `editorEl.value = 期望值` —— 这与
-  // bulk 分支是同一种「清空浏览器撤销栈（连带之前整章的编辑历史）」的副作用，以前却只有 bulk 有快照与
-  // 提示。现在 insertIntoBody / applyChapterTemplate / runReplaceOne 三处直接记这里；fragments-ui /
-  // tidy-card-ui 两个模块通过 host.recordFallbackWrite() 汇报，用的是同一份快照（同一套身份核对与 Ctrl+Z）。
-  // 下一次真实输入 / 换章 / 换书一律作废；执行撤销时核对 bookPath / chapterId，绝不跨书串台。
+  // 审计修复 #39（V402）：兜底「整串赋值」的一次性快照（形状同 bulkWriteUndo，多一个 label 用于文案）。
+  // execCommand 失败 / 结果不符时退回 `editorEl.value = 期望值`，与 bulk 是同一种「清空撤销栈」副作用：
+  // insertIntoBody / applyChapterTemplate / runReplaceOne 直接记这里，fragments / tidy / find 三个模块
+  // 经 host.recordFallbackWrite() 汇报同一份快照（同一套身份核对与 Ctrl+Z）；换书 / 换章即作废。
   let fallbackWriteUndo = null;
 
-  // 剪贴板面板「正文」按钮：把一条记录插到**当前打开章节**的光标处（有选区就替换选区）。
-  // 为什么先把焦点交给编辑区：原生 insertText 只对真正拿到焦点的文本框生效，
-  // 而面板是模态弹层、点按钮后焦点在弹层里；renderer/dialog-focus.js 明确「不抢程序化焦点」，
-  // 所以这里可以临时 focus 编辑区、插完再 blur 回去——与「替换这一处」/ 灵感碎片插入同一条路。
-  // preventScroll：只借焦点执行原生输入，别让编辑区把页面滚到别处（面板是 fixed 弹层）。
-  // 只改编辑区、只标脏，不自动保存（与「插入碎片」/「替换这一处」的既有口径一致）；
-  // 面板保持打开；插入成功后由 capture-ui 消费这一条记录（2026-11-08：正文也「用过就消失」）。
-  // 程序化写编辑区的统一身份闸（REDT-A-04）：插入正文 / 崩溃恢复两条路径过同一道判定。
-  // 纯逻辑（有效章节 / 可编辑态 / 遮罩态）在 editor-logic.js，这里只把渲染层的活状态喂进去。
+  // 剪贴板面板「正文」按钮：把记录插到当前章光标处（有选区就替换）；只改编辑区、不写盘、面板不关。
+  // 先 focus 编辑区是因为原生 insertText 只对真正拿到焦点的文本框生效，而面板是模态弹层（不抢程序化焦点）；
+  // preventScroll 只借焦点、不让编辑区把页面滚走；插入成功后由 capture-ui 消费该条（正文也「用过就消失」）。
+  // 程序化写编辑区的统一身份闸（REDT-A-04）：插入正文 / 崩溃恢复过同一道判定（纯逻辑在 editor-logic.js）。
   function insertGate() {
     return editorLogic.insertGuard({
       bookPath: state.bookPath,
@@ -1932,12 +1924,8 @@
   }
 
   function insertIntoBody(text) {
-    // 五-H4（BP-01 / L-F5）：程序化插入先过「有效章节 / 可编辑态」闸（纯逻辑在 editor-logic）。
-    // readOnly 挡得住键盘，挡不住这里的 `.value` 赋值 / execCommand 失败后的兜底赋值：
-    //   · 遮罩态（开书目标章读取失败：index=-1 + loadedChapterId=null）插入 = 「存不了、退不出、
-    //     记录已消费、崩溃草稿也不写」的幽灵脏正文；
-    //   · 开书在途插入会被 commitOpenBook 的 `editorEl.value=''` 静默抹掉；
-    //   · 长操作锁定期间插入会在随后按备份重载时被覆盖。
+    // 五-H4（BP-01 / L-F5）：程序化插入先过「有效章节 / 可编辑态」闸（readOnly 挡不住 .value 赋值）：
+    // 遮罩态插入 = 存不了、退不出的幽灵脏正文；开书在途会被 commitOpenBook 抹掉；长操作期间会被重载覆盖。
     // 拒绝时捕获面板按回执保留记录（applyBody 只在 ok 时消费）。
     const gate = insertGate();
     if (!gate.ok) return { ok: false, code: gate.code, message: gate.message };
@@ -1954,33 +1942,11 @@
     const expected = before.slice(0, start) + value + before.slice(end);
     // 字数只算一次（两条写入通道共用同一口径；静态闸门钉住全库字数调用都走 core/chapters.js 的 countChars）。
     const chars = chaptersLib.countChars(value);
-    // 试用分支 B（粘贴大段优化）：长串插入不走 Chromium 的编辑管线。execCommand('insertText') /
-    // 原生粘贴对十几万字是逐行强制布局的秒级路径（Chromium issue 341564372）；直接把整串赋给
-    // .value 只排一次版。代价是浏览器会把撤销栈整个清空（不只是这一步，之前的编辑历史也没了），
-    // 所以留一次性快照 + 可点的「撤销」+ 正文上的第一下 Ctrl+Z 拦截；下一次真实输入时快照作废
-    // （onEditorInput 里清）。阈值以下的行为一个字节都不变。
-    if (editorLogic.shouldBulkWrite(value)) {
-      try {
-        editorEl.focus({ preventScroll: true });
-      } catch {
-        editorEl.focus(); // 个别实现不认 options：退回无参 focus（最多多滚一下）
-      }
-      editorEl.setSelectionRange(start, end);
-      editorEl.value = expected;
-      // 统一走 onEditorInput：标脏 / 字数 / 状态栏 / 标记层全按正常输入刷新（不写盘）。
-      onEditorInput();
-      const caret = start + value.length;
-      editorEl.setSelectionRange(caret, caret);
-      // 整串赋值不会像原生输入那样把光标滚进视野：自己滚一下，插完就能看到开头 / 光标位置。
-      scrollCaretIntoView(caret);
-      // 焦点还给面板（面板保持打开）；blur 不改内容，也不会触发保存。
-      editorEl.blur();
-      bulkWriteUndo = { before, after: expected, start, end, bookPath: state.bookPath, chapterId: state.loadedChapterId };
-      toastActionable(
-        `已插入 ${formatCount(chars)} 字（大段插入会清掉撤销历史：Ctrl+Z 或「撤销」退回到插入前）`,
-        '撤销',
-        undoBulkWrite
-      );
+    // 试用分支 B（粘贴大段优化）：长串插入不走 Chromium 的编辑管线，统一交给 writeEditorBulk
+    // （R1 起与「全部替换 / 整理本章」同一条通道：直赋 .value 只排一次版，代价是浏览器撤销栈
+    // 整个清空 → 一次性快照 + 可点的「撤销」+ 正文上的第一下 Ctrl+Z 拦截；下一次真实输入时作废）。
+    // 阈值以下的行为一个字节都不变。
+    if (writeEditorBulk(expected, { caret: start + value.length, undoCaret: start, chars, label: '插入正文', blur: true })) {
       return { ok: true, chars, bulk: true, undoable: true };
     }
     try {
@@ -2089,6 +2055,34 @@
     editorEl.setSelectionRange(caret, caret);
     scrollCaretIntoView(caret);
     toast(`已撤销${snapshot.label}（仍是未保存）`);
+    return true;
+  }
+
+  // R1（三审）：整章级大段写入的唯一通道（剪贴板「正文」插入 / 全部替换 / 整理本章共用）：
+  // 与 shouldBulkWrite 同阈值、bulkWriteUndo 同快照；返回 true = 已写，调用方别再走原生输入。
+  // execCommand('insertText') 对十几万字是逐行强制布局的秒级路径，大章必须直赋整串。
+  function writeEditorBulk(fullText, options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const value = String(fullText == null ? '' : fullText);
+    if (!editorLogic.shouldBulkWrite(value)) return false;
+    const before = editorEl.value;
+    const clamp = (n, max) => Math.max(0, Math.min(Number.isFinite(n) ? Math.round(n) : 0, max));
+    const caret = clamp(opts.caret, value.length);
+    const undoCaret = clamp(opts.undoCaret === undefined ? caret : opts.undoCaret, before.length);
+    try { editorEl.focus({ preventScroll: true }); } catch { editorEl.focus(); }
+    editorEl.value = value;
+    onEditorInput();
+    editorEl.setSelectionRange(caret, caret);
+    scrollCaretIntoView(caret);
+    if (opts.blur === true) editorEl.blur();
+    if (opts.record === false) return true;
+    bulkWriteUndo = { before, after: value, start: undoCaret, end: undoCaret, bookPath: state.bookPath, chapterId: state.loadedChapterId };
+    const chars = Number.isFinite(opts.chars) ? opts.chars : chaptersLib.countChars(value);
+    toastActionable(
+      `${opts.label || '写入'} ${formatCount(chars)} 字：整串写入（大段写入会清掉撤销历史；Ctrl+Z 或「撤销」可退回写入前）`,
+      '撤销',
+      undoBulkWrite
+    );
     return true;
   }
 
@@ -3236,7 +3230,7 @@
   // ---------- 「整理」按钮的悬浮选择卡 + 「显示」菜单 ----------
   // 第 4 步九刀·第八刀：实现在 renderer/tidy-card-ui.js（模块头有契约），这里只装配与接线；
   const tidyCardUi = tidyCardUiModule.create({
-    $, state, api, call, toast, recordFallbackWrite,
+    $, state, api, call, toast, recordFallbackWrite, writeEditorBulk,
     format: { formatUi, MAX_FORMAT_UNDO, readFormatOptions, writeFormatOptions, editorEl, onEditorInput, chaptersLib, caretColorLib },
     menus: { hideExportMenu, hideMenu, renderMarksMenu },
     peers: { openSettings: () => openSettings(), toggleMarks, setDisplayPreset, applyCaretColor, setCaretParagraphPersisted, setCaretColorPersisted, runFormatBook, scrollCaretIntoView, effectiveConfig }
@@ -3815,9 +3809,9 @@
         setImportProgressText(`正在收尾（共 ${progress.total} 项）…`);
         return;
       }
-      setImportProgressText(
-        `正在导入 ${Math.min(progress.done + 1, progress.total)}/${progress.total}：${progress.current || ''}`
-      );
+      // P6：章节目录形态带上「第几个文件」（主进程节流后回报），20,000 章的目录导入看得出在走。
+      const files = progress.files && progress.files.total ? `（已复制 ${Math.min(progress.files.done, progress.files.total)}/${progress.files.total} 个文件）` : '';
+      setImportProgressText(`正在导入 ${Math.min(progress.done + 1, progress.total)}/${progress.total}：${progress.current || ''}${files}`);
     });
 
     // 主进程拦截到关窗/退出时，由这里决定「保存并退出 / 不保存退出 / 取消」
@@ -3922,8 +3916,13 @@
       // 闸不过就回 { ok:false }，由 crash-recovery-ui 保留草稿并提示稍后再试。
       const gate = insertGate();
       if (!gate.ok) return { ok: false, code: gate.code, message: gate.message };
+      // R2（三审）：这条路径是唯一绕过 replaceEditorTextNative 又不记撤销快照的程序化全文写入。
+      // 补一次性快照（与兜底写入同口径）：现在栈是空的、无用户损失，但以后做成「编辑中途可手动重扫」
+      // 时不能静默清空整章撤销历史。
+      const before = editorEl.value;
       editorEl.value = String(text == null ? '' : text);
       onEditorInput();
+      recordFallbackWrite({ before, after: editorEl.value, start: 0, label: '恢复崩溃草稿' });
       return { ok: true };
     }
   });

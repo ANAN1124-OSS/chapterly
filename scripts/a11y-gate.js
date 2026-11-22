@@ -87,7 +87,16 @@ const TARGET_SELECTOR = [
 // 每行 = 选择器（id / class 列表 / path）+ 原因 + 允许条数上限（实测多了就报红，防止悄悄新增）。
 // 空数组也行：全部靠间距例外过。加行必须有原因，且写进 验收清单 · V42。
 // 1.4.0 P1：原来的唯一一条（书架搜索清除键 20×20）已经做到 24×24，清单回归空数组。
-const TARGET_ALLOW = Object.freeze([]);
+// B5 / A2（三审）：章节栏分隔条是 5px 宽的拖拽条 —— 视觉上必须是细线（加宽会遮挡正文边缘），
+// 但 A2 起它可聚焦（role=separator）并有完整键盘通道（←/→ 步进、Shift 大步、Enter / 空格复位），
+// 属于 WCAG 2.5.8 的「尺寸是功能本身所必需」例外；上限 1 条，防止新增同类小目标。
+const TARGET_ALLOW = Object.freeze([
+  {
+    id: 'sidebar-resizer',
+    max: 1,
+    reason: '5px 拖拽分隔条：加宽会遮挡编辑区边缘；A2 起可聚焦并支持方向键步进 / Enter 复位（等价操作路径）'
+  }
+]);
 
 // 焦点检查的允许清单（默认空：先报告模式，测出来再决定要不要登记）。
 const FOCUS_ALLOW = Object.freeze([]);

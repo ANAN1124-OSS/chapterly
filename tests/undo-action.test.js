@@ -397,11 +397,12 @@ test('静态闸门（V402）：兜底整串赋值统一配一次性快照 + 提�
   assert.match(rendererCode, /function undoFallbackWrite\(\) \{/);
   assert.match(rendererCode, /toastActionable\(\n\s+`\$\{label\}没能走原生输入[\s\S]{0,200}?'撤销',\n\s+undoFallbackWrite\n\s+\);/);
   // 编辑域的三处兜底（剪贴板正文 / 章节模板 / 替换这一处）都要记账，且禁掉「整串赋值」静默清栈；
-  // 章节模板随 A3-Cβ 搬进 chapter-ops-ui.js，按两个文件合并计数（总数仍 3）。
+  // 章节模板随 A3-Cβ 搬进 chapter-ops-ui.js，按两个文件合并计数。
+  // R2（三审）起多了一处：崩溃草稿恢复（applyRecoveredText）也补了同一份一次性快照 → 总数 4。
   const rendererCalls = rendererCode.match(/recordFallbackWrite\(\{/g) || [];
   const opsCalls = chapterOpsCode.match(/recordFallbackWrite\(\{/g) || [];
-  assert.equal(rendererCalls.length + opsCalls.length, 3, '编辑域的三处兜底赋值都要记账');
-  for (const label of ['插入正文', '套用章节模板', '替换这一处']) {
+  assert.equal(rendererCalls.length + opsCalls.length, 4, '编辑域的四处兜底赋值都要记账（含崩溃恢复 R2）');
+  for (const label of ['插入正文', '套用章节模板', '替换这一处', '恢复崩溃草稿']) {
     assert.ok(editorDomainCode.includes(`label: '${label}'`), '兜底调用点少了一条：' + label);
   }
   // 正文上的第一下 Ctrl+Z 与 bulk 共用拦截口；兜底快照也要能被它接住

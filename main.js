@@ -234,10 +234,18 @@ function registerCaptureShortcut() {
 // 五-M32（PM-3）：系统睡眠 / 唤醒广播给渲染层。写作计时按墙钟差累计，睡眠数小时会被整段算进
 // 「写作时长」（派生统计，不碰正文 / 保存）。主进程只如实通知，冻结 / 续算由渲染层的秒表决定
 // （手动暂停中的计时器不会被自动拉起）。powerMonitor 在部分平台 / 无桌面会话时不发事件，忽略即可。
+// F3（三审·中/低）：Windows 锁屏不发 suspend —— 只挂 suspend/resume 时「睡眠剔除、锁屏照记」，
+// 与同为「人不在」的口径不一致。Electron 45 的 powerMonitor 在 darwin / win32 都提供
+// lock-screen / unlock-screen（electron.d.ts 的 @platform 标注），这里复用同一对广播事件，
+// 渲染层沿用已有 handleSystemSuspend / handleSystemResume（重复通知幂等：已在冻结态再 suspend 是空操作）。
+// 没做 visibilitychange 兜底：最小化 / 切到别的窗口也会 hidden，那会把「秒表 = 实际经过时间」的自由
+// 计时口径改成「最小化就暂停」，超出本项范围（最小化停朗读另有 R4）。
 function setupPowerMonitor() {
   try {
     powerMonitor.on('suspend', () => broadcast('power:suspend', {}));
     powerMonitor.on('resume', () => broadcast('power:resume', {}));
+    powerMonitor.on('lock-screen', () => broadcast('power:suspend', {}));
+    powerMonitor.on('unlock-screen', () => broadcast('power:resume', {}));
   } catch (err) {
     logError('power-monitor', err, { level: 'warn' });
   }

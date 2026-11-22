@@ -44,18 +44,26 @@
       applySidebarWidth, CONTENT_SEARCH_MIN_CHARS, CONTENT_PAGE_SIZE
     } = host;
 
+  // 旧M5（一轮·中/低）：开书 / 刷新书架的世代令牌。异步回执到达时先核令牌，旧的一律丢弃 ——
+  // 快速连开两本书时 A 的字体 / 纸色 / 侧栏不许盖到 B；换根 / 多窗口广播并发时不许显示旧列表。
+  let displaySeq = 0;
+  let shelfSeq = 0;
+
   // 打开一本书后套用这本书的显示设置（没有单独设置过就沿用全局）
   async function applyBookDisplay(bookId) {
+    const seq = ++displaySeq;
     let display = {};
     try {
       display = (await call(api.getBookDisplay, bookId)) || {};
     } catch {
       display = {};
     }
+    if (seq !== displaySeq) return; // 更新的一次开书在飞：这份回执属于上一本书，整份丢弃
     state.bookDisplay = display;
     state.config = effectiveConfig();
     if (state.config.editorFont === 'custom' && state.config.editorCustomFontPath) {
       await loadCustomFont(state.config.editorCustomFontPath, { silent: true });
+      if (seq !== displaySeq) return;
     }
     applyEditorStyle();
     // 当前段落高亮的开关 / 颜色按这本书的覆盖（没有覆盖就用全局默认）
@@ -65,20 +73,28 @@
 
   // 回书架时重取「上次写作位置 / 今日统计 / 书目」并重画（原「---------- 书架 ----------」段）。
   async function refreshShelf() {
+    const seq = ++shelfSeq;
     // 上次写作位置每次回书架都重新取：在编辑页切章 / 保存后主进程已经更新了配置
+    let recent = null;
     try {
-      state.recentBook = await call(api.getRecentBook);
+      recent = await call(api.getRecentBook);
     } catch {
-      state.recentBook = null;
+      recent = null;
     }
+    if (seq !== shelfSeq) return; // 旧M5：更新的一次刷新已经发起，这份回执整份丢弃（含下面的统计 / 书目）
+    state.recentBook = recent;
     // 今日字数 / 近 30 天统计（主进程算本地日期，界面不自己算）
     await refreshStats();
+    if (seq !== shelfSeq) return;
+    let books = [];
     try {
-      state.books = await call(api.listBooks);
+      books = await call(api.listBooks);
     } catch (err) {
-      state.books = [];
-      toast(`读取书架失败：${err.message}`, 'error');
+      books = [];
+      if (seq === shelfSeq) toast(`读取书架失败：${err.message}`, 'error');
     }
+    if (seq !== shelfSeq) return;
+    state.books = books;
     markCommandsDirty(); // 书架变了：命令面板里的「书」条目要重建（1.5.0 P0-6）
     renderShelf();
     // 正文索引：回书架时顺手让主进程校验 / 增量更新（后台，不 await、不挡书架显示）。

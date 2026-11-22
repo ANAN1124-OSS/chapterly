@@ -712,6 +712,64 @@ test('replaceEditorText（残留 #39 / V402）：原生输入成功（execComman
   assert.deepEqual(ctx.calls.fallbackWrites, [], '原生路径保住了撤销链，不该报「兜底写入」');
 });
 
+// ---------- R1 / R3（三审）：整章级大段替换与第一处替换点定位 ----------
+test('R3（三审）：全部替换后光标落到第一处替换点并滚动到位（不再强制回章首）', () => {
+  const ctx = build({ text: '旧正文' });
+  ctx.dom.doc.execCommand = (command, _ui, text) => {
+    ctx.editorEl.value = text;
+    return true;
+  };
+  ctx.ui.replaceEditorText('李四说张三笑了', 3);
+  assert.equal(ctx.editorEl.selectionStart, 3, '光标落在第一处替换点（C13 之前的 0,0 是旧行为）');
+  assert.equal(ctx.editorEl.selectionEnd, 3);
+  assert.equal(ctx.calls.scrollCaretIntoView.at(-1), 3, '滚动到第一处替换点');
+
+  const clamped = build({ text: '旧正文' });
+  clamped.dom.doc.execCommand = (command, _ui, text) => {
+    clamped.editorEl.value = text;
+    return true;
+  };
+  clamped.ui.replaceEditorText('abc', 99);
+  assert.equal(clamped.editorEl.selectionStart, 3, '坏下标钳到正文末尾，不许越界');
+});
+
+test('R1（三审）：当前章「全部替换」走渲染层统一 bulk 通道；小章仍走原生输入', async () => {
+  const bulkText = '李四'.repeat(10001); // > 2 万字：生产 helper 的 shouldBulkWrite 返回 true
+  const large = build({ query: '张三', replace: '李四', replaceInText: { count: 1, firstIndex: 2, text: bulkText } });
+  const bulk = [];
+  const largeUi = findUi.create({
+    ...large.host,
+    writeEditorBulk(text, opts) {
+      bulk.push({ text, opts });
+      return true; // 模拟 renderer.js 的 writeEditorBulk：大段写入成功、调用方不要再写编辑区
+    }
+  });
+  await largeUi.runReplaceAll();
+  assert.equal(bulk.length, 1, '大章必须走 bulk 通道（execCommand 对十几万字是秒级路径）');
+  assert.equal(bulk[0].text, bulkText);
+  assert.equal(bulk[0].opts.label, '全部替换');
+  assert.equal(bulk[0].opts.caret, 2, 'R3：bulk 通道同样把光标放到第一处替换点');
+  assert.deepEqual(large.calls.fallbackWrites, [], 'bulk 通道不再记「兜底写入」快照');
+
+  const smallText = '李四说张三笑了';
+  const small = build({ query: '张三', replace: '李四', replaceInText: { count: 1, firstIndex: 3, text: smallText } });
+  let nativeUsed = false;
+  small.dom.doc.execCommand = (command, _ui, text) => {
+    nativeUsed = true;
+    small.editorEl.value = text;
+    return true;
+  };
+  const smallUi = findUi.create({
+    ...small.host,
+    // 与真实 helper 同口径：阈值以下返回 false，调用方继续走原生输入
+    writeEditorBulk() { return false; }
+  });
+  await smallUi.runReplaceAll();
+  assert.equal(nativeUsed, true, '小章仍走原生输入（保住浏览器撤销链）');
+  assert.equal(small.editorEl.value, smallText);
+  assert.equal(small.editorEl.selectionStart, 3);
+});
+
 test('runReplaceAll（当前章）：空查询提示 / 无命中不替换 / 成功写回编辑区并提示未保存', async () => {
   const empty = build({ query: ' ' });
   await empty.ui.runReplaceAll();
@@ -991,7 +1049,7 @@ test('静态闸门：当前章替换不再把活值 editorEl.value 交给 replac
   assert.match(moduleCode, /editorEl\.value === snapshot/);
   const callAt = moduleCode.indexOf('call(api.replaceInText, snapshot');
   const staleAt = moduleCode.indexOf('!stillSameText()');
-  const writeAt = moduleCode.indexOf('replaceEditorText(res.text)');
+  const writeAt = moduleCode.indexOf('replaceEditorText(res.text');
   assert.ok(callAt >= 0, '当前章替换要把快照交给 replaceInText');
   assert.ok(staleAt > callAt, '回执到达后先过快照校验');
   assert.ok(writeAt > staleAt, '校验通过才允许写回编辑区');

@@ -864,6 +864,10 @@ function createSearchStore(options = {}) {
   let loadProblem = null;
   let indexBytes = 0;
   let ensurePromise = null;
+  // P4（一轮·低）：搜索的「最近一次胜出」票号。渲染层已有 320ms 防抖 + 查询令牌丢弃旧回执，
+  // 但主进程这一侧旧查询的全文扫描仍会把 CPU / 磁盘跑完；同根下每次 search 领一张新票，
+  // 在 await / 逐书扫描的边界核票，票过期就提前收工，把资源留给最新查询。
+  let searchTicket = 0;
   // P1（审计修复 #9）：当前在途 / 排队校验对应的书架根（归一化后）。搜索靠它判断
   // 「同一个根已经有校验在飞」，避免首建期再排到它后面等一遍完整校验。
   let ensureRoot = '';
@@ -1284,6 +1288,8 @@ function createSearchStore(options = {}) {
 
   async function search(opts = {}) {
     const booksRoot = String(opts.booksRoot == null ? '' : opts.booksRoot);
+    // P4：领票（见 searchTicket 声明处的口径）。
+    const ticket = (searchTicket += 1);
     const normalized = normalizeQuery(opts.query);
     const requestedLimit = Number(opts.limit);
     const limit = Math.max(
@@ -1396,6 +1402,10 @@ function createSearchStore(options = {}) {
     }
     if (normalizePath(booksRoot) !== index.root) {
       return { ...makeBase(indexInfo), truncated: true, index: { ...indexInfo, books: 0, chapters: 0 } };
+    }
+    // P4：等 ensure / 签名探测期间又来了更新的搜索 → 这一趟直接收工（旧回执渲染层本来就按令牌丢弃）。
+    if (ticket !== searchTicket) {
+      return { ...makeBase(indexInfo), superseded: true, truncated: true, elapsedMs: 0 };
     }
 
     const startedAt = Date.now();
@@ -1552,9 +1562,15 @@ function createSearchStore(options = {}) {
     let scannedChapters = 0;
     let skippedChapters = 0;
     let stoppedByTime = false;
+    // P4：被更新的搜索顶掉时提前收工（结果返回给已经按令牌丢弃它的旧调用方，不影响最新查询）。
+    let supersededSearch = false;
 
     for (const book of scanTarget) {
       if (results.length >= limit) break;
+      if (ticket !== searchTicket) {
+        supersededSearch = true;
+        break;
+      }
       if (Date.now() - startedAt > timeBudgetMs) {
         stoppedByTime = true;
         break;
@@ -1584,6 +1600,12 @@ function createSearchStore(options = {}) {
             return { ok: false, text: '' };
           }
         });
+        // P4：这批读盘完成时票已过期 → 不再扫描 / 拼结果（读盘本身无法中途取消，能省的是后半程）。
+        if (ticket !== searchTicket) {
+          supersededSearch = true;
+          stopBook = true;
+          break;
+        }
         for (let k = 0; k < batch.length; k += 1) {
           if (results.length >= limit) {
             stopBook = true;
@@ -1646,6 +1668,9 @@ function createSearchStore(options = {}) {
 
     const truncated =
       results.length >= limit || stoppedByTime || candidates.length > scanTarget.length;
+    if (supersededSearch) {
+      return { ...makeBase(indexInfo), superseded: true, truncated: true, elapsedMs: Date.now() - startedAt };
+    }
     return {
       ...makeBase({
         books: index.books.length,

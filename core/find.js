@@ -80,7 +80,10 @@ function replaceAllLiteral(text, query, replacement, options = {}) {
     cursor = match.index + match.length;
   }
   out += source.slice(cursor);
-  return { text: out, count: matches.length, truncated, limit };
+  // R3（三审）：把「第一处替换点」一起带回给渲染层 —— 全部替换完成后光标要落到这里并滚动到位，
+  // 不再像旧实现那样强制 setSelectionRange(0, 0) 把作者的阅读 / 编辑位置踢回章首。
+  // 非空分支才带这个字段：空查询 / 无命中的旧返回形状（deepEqual 锚点）保持不变。
+  return { text: out, count: matches.length, truncated, limit, firstIndex: matches[0].index };
 }
 
 // 结果列表里显示的一小段上下文（去掉换行，避免列表被撑开）

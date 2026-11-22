@@ -635,6 +635,18 @@ test('五-M32 静态闸门：主进程 powerMonitor 广播 → preload 订阅 �
   assert.equal((rendererSrc.match(/api\.onPowerResume\(/g) || []).length, 1, 'resume 只订阅一次');
   assert.match(rendererSrc, /api\.onPowerSuspend\(\(\) => writeTimerUi\.handleSystemSuspend\(\)\)/);
   assert.match(rendererSrc, /api\.onPowerResume\(\(\) => writeTimerUi\.handleSystemResume\(\)\)/);
+  // F3（三审·中/低）：Windows 锁屏不发 suspend —— lock-screen / unlock-screen 复用同一对冻结 / 续算
+  // 事件（Electron 45 的 powerMonitor 在 darwin / win32 都提供这两个事件）。
+  assert.match(
+    mainSrc,
+    /powerMonitor\.on\('lock-screen',[\s\S]{0,80}broadcast\('power:suspend'/,
+    '锁屏要复用 power:suspend（写作计时冻结）'
+  );
+  assert.match(
+    mainSrc,
+    /powerMonitor\.on\('unlock-screen',[\s\S]{0,80}broadcast\('power:resume'/,
+    '解锁要复用 power:resume（写作计时续算）'
+  );
 });
 
 test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWWriteTimerUi，且不乱造别的全局', () => {

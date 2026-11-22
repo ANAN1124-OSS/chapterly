@@ -367,19 +367,49 @@ async function copyAsBook(sourceDir, target, oversized, keepFiles = null) {
   });
 }
 
-async function copyAsTexts(sourceDir, target, txtFiles, oversized) {
+// P6（一轮·低）：章节目录形态逐文件复制。以前是 `for ... await fs.copyFile` 串行 —— 20,000 章目录
+// 只有整源级进度，用户长时间只看「正在导入 1/1」，体感接近卡死。现在限并发复制（8 路），
+// 并按文件回报进度（节流：每 100 个 / 最后一个才回调一次，别把 IPC 打爆）。
+const COPY_FILE_CONCURRENCY = 8;
+async function copyAsTexts(sourceDir, target, txtFiles, oversized, onFileProgress = null) {
   await fs.mkdir(target, { recursive: true });
   const skip = new Set((oversized || []).map((entry) => entry.file));
-  for (const file of txtFiles) {
-    if (skip.has(file)) continue;
-    // X-N6：章节目录形态没有书目可引用，冲突副本一律不进新书（与 rebuildFromFiles 同口径）
-    if (isCopyExcludedName(path.basename(file))) continue;
-    await fs.copyFile(path.join(sourceDir, file), path.join(target, file));
+  // X-N6：章节目录形态没有书目可引用，冲突副本一律不进新书（与 rebuildFromFiles 同口径）
+  const files = (txtFiles || []).filter((file) => !skip.has(file) && !isCopyExcludedName(path.basename(file)));
+  const total = files.length;
+  let done = 0;
+  let next = 0;
+  let failure = null;
+  const report = () => {
+    if (onFileProgress) onFileProgress({ done, total });
+  };
+  if (total && onFileProgress) report();
+  async function copyWorker() {
+    for (;;) {
+      if (failure) return;
+      const index = next;
+      next += 1;
+      if (index >= total) return;
+      const file = files[index];
+      try {
+        await fs.copyFile(path.join(sourceDir, file), path.join(target, file));
+      } catch (err) {
+        if (!failure) failure = err;
+        return;
+      }
+      done += 1;
+      // 节流：每 100 个 / 全部完成时汇报一次（20,000 章不会产生 20,000 条 IPC 消息）
+      if (onFileProgress && (done === total || done % 100 === 0)) report();
+    }
   }
+  const workers = Math.min(COPY_FILE_CONCURRENCY, total);
+  await Promise.all(Array.from({ length: workers }, () => copyWorker()));
+  if (failure) throw failure;
+  if (total && onFileProgress && done === total) report();
 }
 
 // 现成的书 / 一本书的章节目录
-async function importBookFolder(booksRoot, sourceDir, analysis) {
+async function importBookFolder(booksRoot, sourceDir, analysis, options = {}) {
   const desiredFolder = desiredFolderName(sourceDir, analysis);
 
   // 审计修复 #56（S7）：整目录复制前先扫符号链接 / 目录联接；有链接就整源跳过（见 listSourceLinks）。
@@ -509,7 +539,7 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
       );
     }
 
-    await copyAsTexts(sourceDir, staging, copyFiles, oversized);
+    await copyAsTexts(sourceDir, staging, copyFiles, oversized, options.onFileProgress);
     // 五-M25（TC-7）：fs.copyFile 之后按暂存副本的实际字节复核，间隙里被换大的文件删掉并记 skipped
     const copiedOversized = await removeOversizedCopies(staging, copyFiles);
     const skippedEntries = oversized.concat(copiedOversized);
@@ -1021,7 +1051,11 @@ async function importFolders(booksRoot, sources, options = {}) {
       }
     } else {
       try {
-        const result = await importBookFolder(root, plan.sourceDir, plan.analysis);
+        // P6：章节目录形态把「第几个文件」一起报给界面（节流后的 done/total），整源级进度语义不变。
+        const onFileProgress = onProgress
+          ? (files) => onProgress({ done, total, current: relativeSourceLabel(plan.sourceDir), files })
+          : null;
+        const result = await importBookFolder(root, plan.sourceDir, plan.analysis, { onFileProgress });
         // V45：单个文件的跳过记录与整源跳过同形（source 相对 / reason / code / tooLarge），
         // 一次摊进 skipped —— 不再从 skippedFiles / skippedTooLarge 两处各转一份。
         for (const entry of result.skipped || []) skipped.push(entry);

@@ -1115,6 +1115,15 @@ select:focus-visible {
 .sidebar-resizer.dragging::after {
   background: var(--accent);
 }
+/* A2（三审）：分隔条可聚焦（role=separator）：焦点用与按钮同一个焦点环令牌；
+   5px 宽的拖拽条放不下外扩环，改为内嵌环 + 整条竖线点亮，键盘用户能一眼看到焦点在哪。 */
+.sidebar-resizer:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.sidebar-resizer:focus-visible::after {
+  background: var(--accent);
+}
 body.resizing {
   cursor: col-resize;
   user-select: none;
