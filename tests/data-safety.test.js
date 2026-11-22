@@ -8,7 +8,7 @@
 //   3. 写盘失败不留半成品：书目 / 章节写盘失败时，磁盘上还是完整的上一个版本。
 //   4. 原子写是唯一写盘通道（见 tests/atomic.test.js）。
 //
-// 已有用例（不在本文件里重复）：storage.test.js 的替换 / 整理 / 还原备份往返、
+// 已有用例（不在本文件里重复）：storage-chapter.test.js 的替换 / 整理 / 还原备份往返、
 // repair.test.js 的重建与 .bak 恢复主流程、conflict.test.js 的同步副本识别。
 
 const test = require('node:test');

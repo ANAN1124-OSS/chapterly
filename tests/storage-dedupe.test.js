@@ -5,7 +5,7 @@
 //     （移到卷 / 拖到某卷某位置 / 重命名 / 改章节信息 / 删除章节 / 拖拽排序）；
 //   · 单文件还原与整组还原各写一遍「书里已有同名文件 → 先复制进 _trash/还原前备份-* →
 //     读备份 → 原子写回」。
-// 行为由 tests/storage.test.js 的还原 / 删除 / 拖拽用例覆盖；这里只钉「不许再长出第二份」，
+// 行为由 tests/storage-chapter.test.js 的还原 / 删除 / 拖拽用例覆盖；这里只钉「不许再长出第二份」，
 // 以及两个容易被顺手改坏的点：错误码 / 文案不变、单文件还原仍然先建好带时间戳的反向备份目录。
 const test = require('node:test');
 const assert = require('node:assert/strict');

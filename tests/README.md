@@ -29,7 +29,7 @@
 
 - 临时目录一律 `require('./tmp-cleanup').mkTmp(prefix)`（同步场景用 `mkTmpSync`）；测试里不再直接
   `fs.mkdtemp`（R19 静态闸门会拦）。
-- 多章书夹具用 `tests/storage.test.js` 的 `makeBook(root, title, [{ name, text }…])` 或
+- 多章书夹具用 `tests/storage-fixtures.js` 的 `makeBook(root, title, [{ name, text }…])`（storage 两个测试文件共用）或
   `tests/search-index.test.js` 的 `makeWorld(base)`，不再手抄建目录 / 逐章写正文。
-- fs 猴子补丁（计数、拦截 EACCES）统一走本文件的 `countReadFileFor` / `withFsPatch` 门，且在
+- fs 猴子补丁（计数、拦截 EACCES）统一走 `tests/storage-fixtures.js` 的 `countReadFileFor` / `withFsPatch` 门，且在
   `finally` 里还原；不要在断言失败路径上真的读入大文件。
