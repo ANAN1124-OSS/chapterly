@@ -23,6 +23,9 @@ const chrome = require('../core/window-chrome');
 const MAIN = read('main.js');
 const PRELOAD = read('preload.js');
 const RENDERER = read('renderer/renderer.js');
+// M1 第 14 轮第八刀（断言跟错）：通知订阅整段搬进 renderer/notify-events-ui.js（行为锚点
+// tests/notify-events-ui.test.js）。
+const NOTIFY = read('renderer/notify-events-ui.js');
 const CHANNEL = 'app:command-palette';
 
 /** 在 vm 里跑真 preload：记录 exposeInMainWorld 暴露面与 ipcRenderer.on 订阅的频道 */
@@ -91,17 +94,18 @@ test('preload：onCommandPalette 只订阅 app:command-palette，非函数回调
   assert.equal(calls.subscribed.length, 1, '非函数回调不该注册成第二条监听');
 });
 
-test('renderer.js：订阅命令面板通知并走同一个 openCommandPalette 入口', () => {
+test('renderer/notify-events-ui.js：订阅命令面板通知并走同一个 openCommandPalette 入口', () => {
   assert.match(
-    RENDERER,
+    NOTIFY,
     /api\.onCommandPalette\(\(\) => [\s\S]{0,60}?openCommandPalette\(\)/,
     '渲染层要订阅 onCommandPalette 并调用现成的 openCommandPalette()'
   );
   assert.equal(
-    (RENDERER.match(/api\.onCommandPalette\(/g) || []).length,
+    (NOTIFY.match(/api\.onCommandPalette\(/g) || []).length,
     1,
     '只接线一处，重复订阅会让一次点击开两次'
   );
+  assert.equal(RENDERER.includes('api.onCommandPalette('), false, '订阅不许回流编排器');
 });
 
 test('频道名：发送侧与订阅侧只有 app:command-palette 这一份', () => {

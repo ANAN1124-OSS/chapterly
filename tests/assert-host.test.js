@@ -79,11 +79,11 @@ test('assertHost：缺成员（undefined / null）都抛「的 host 缺少 key�
   );
 });
 
-test('静态闸门：44 个 host 消费者都只调共享 assertHost（清单与文案留在模块里）', () => {
+test('静态闸门：45 个 host 消费者都只调共享 assertHost（清单与文案留在模块里）', () => {
   const files = consumers();
   // M1 第 13 轮第七刀：全局 keydown 分流链搬进 renderer/global-keys-ui.js，它也是 host 消费者
-  // （43 → 44）。新增 / 删除模块请同步本闸门。
-  assert.equal(files.length, 44, 'host 消费者数量变了（新增 / 删除模块请同步本闸门）');
+  // （43 → 44 → 45）。新增 / 删除模块请同步本闸门。
+  assert.equal(files.length, 45, 'host 消费者数量变了（新增 / 删除模块请同步本闸门）');
   for (const file of files) {
     const raw = read(`renderer/${file}`);
     const src = stripComments(raw);

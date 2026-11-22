@@ -339,10 +339,14 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   // M1（第 9 轮）：实现搬到 renderer/toast-ui.js（行为锚点 tests/toast-ui.test.js），编排器只剩同名转发。
   assert.match(renderer, /\{ toast, toastActionable \} = toastUi;/, '可点提示仍从编排器可达（转发到 toast-ui）');
   assert.match(read('renderer/toast-ui.js'), /function toastActionable\(/, '可点提示实现在 toast-ui.js');
-  assert.match(renderer, /api\.onClipboardChanged\(\(payload\) => \{/, '渲染层订阅剪贴板变化');
-  assert.match(renderer, /api\.onClipboardRecorded\(\(\) => \{/, '渲染层订阅「已记进队列」事件（面板即时刷新）');
-  assert.match(renderer, /void captureUi\.open\(\)/, '点提示才打开捕获面板');
-  assert.match(renderer, /新复制 \$\{formatCount\(chars\)\} 字/, '提示文案只含字数');
+  // M1 第 14 轮第八刀（断言跟错）：这 4 条订阅 / 文案整段搬进 renderer/notify-events-ui.js，
+  // 闸门改读模块（行为锚点 tests/notify-events-ui.test.js）；编排器只留装配与一次 bind()。
+  const notifySrc = read('renderer/notify-events-ui.js');
+  assert.match(notifySrc, /api\.onClipboardChanged\(\(payload\) => \{/, '渲染层订阅剪贴板变化');
+  assert.match(notifySrc, /api\.onClipboardRecorded\(\(\) => \{/, '渲染层订阅「已记进队列」事件（面板即时刷新）');
+  assert.match(notifySrc, /void captureUi\.open\(\)/, '点提示才打开捕获面板');
+  assert.match(notifySrc, /新复制 \$\{formatCount\(chars\)\} 字/, '提示文案只含字数');
+  assert.equal(renderer.includes('api.onClipboardChanged('), false, '订阅不许回流编排器（模块只有一份）');
 
   const html = read('renderer/index.html');
   assert.match(html, /id="settings-clipboard-watch"/, '设置里有开关');

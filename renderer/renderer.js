@@ -158,6 +158,10 @@
   // 全局键盘接线（M1 第一轮·低 第七刀）：document keydown 的整条有序分流链在
   // renderer/global-keys-ui.js 里；这里只装配，注册点仍在 bindEvents 的原位。
   const globalKeysUiModule = window.CWGlobalKeysUi;
+  // 通知接线（M1 第一轮·低 第八刀）：主进程 → 渲染层的订阅（导入进度 / 捕获触发 / 剪贴板变化 /
+  // 剪贴板入队 / 关窗 / 强制退出 / 命令面板 / 书架变更）整段在 renderer/notify-events-ui.js 里；
+  // 这里只装配，注册点仍在 bindEvents 的原位（订阅顺序 = 原 api.on 的调用顺序）。
+  const notifyEventsUiModule = window.CWNotifyEventsUi;
   // 书架正文搜索（v0.9 B-5 第八刀）：防抖调度 / 主进程查询 / 索引状态 / 打开命中在 shelf-search-ui.js 里；
   const shelfSearchUiModule = window.CWShelfSearchUi;
   // 书架搜索（v0.9 B-5 第九刀）：内存过滤 / 分组筛选 / 正文结果区渲染在 shelf-filter-ui.js 里；
@@ -2974,6 +2978,14 @@
     reportChainFailure, openJumpDialog, openFindPanel, undoUi, undoActionModule, undoFormat,
     saveCurrent, createChapterAt
   });
+  // 通知接线（M1 第一轮·低 第八刀）：host 里全是已经初始化的 const / 提升函数——每条订阅仍按原名调用
+  // 既有入口（捕获面板 / 书架刷新 / 关窗询问 / 保存 / 提示条），这里只装配一次；
+  // bind() 在 bindEvents 的原位置调用（订阅顺序不变）。
+  const notifyEventsUi = notifyEventsUiModule.create({
+    api, state, toast, toastActionable, formatCount, hasImportProgress, setImportProgressText,
+    captureUi, hideHeaderMenus, handleCloseRequest, saveCurrent, shelfUi, openCommandPalette
+  });
+
   // ---------- 事件绑定 ----------
   function bindEvents() {
     // B16：弹层开合观察器（17 层 class 变化 → 缓存；没有 MutationObserver 时模块内部退回现算）
@@ -3270,80 +3282,11 @@
     $('btn-shortcuts-close').addEventListener('click', closeShortcutsPage);
     $('btn-shortcuts-ok').addEventListener('click', closeShortcutsPage);
 
-    // 导入进度（大书库导入可能要几十秒，分章/复制逐项汇报）
-    api.onImportProgress((progress) => {
-      if (!hasImportProgress()) return;
-      if (!progress || !progress.total) {
-        setImportProgressText('正在分析要导入的内容…');
-        return;
-      }
-      if (progress.done >= progress.total) {
-        setImportProgressText(`正在收尾（共 ${progress.total} 项）…`);
-        return;
-      }
-      // P6：章节目录形态带上「第几个文件」（主进程节流后回报），20,000 章的目录导入看得出在走。
-      const files = progress.files && progress.files.total ? `（已复制 ${Math.min(progress.files.done, progress.files.total)}/${progress.files.total} 个文件）` : '';
-      setImportProgressText(`正在导入 ${Math.min(progress.done + 1, progress.total)}/${progress.total}：${progress.current || ''}${files}`);
-    });
+    // 通知接线（M1 第一轮·低 第八刀）：导入进度 / 捕获触发 / 剪贴板变化 / 剪贴板入队 / 关窗 /
+    // 强制退出 / 命令面板 / 书架变更这 8 条订阅整段在 renderer/notify-events-ui.js；注册点保持原位
+    //（订阅顺序 = 原 api.on 的调用顺序，同一位置上的监听器追加顺序不变）。
+    notifyEventsUi.bind();
 
-    // 主进程拦截到关窗/退出时，由这里决定「保存并退出 / 不保存退出 / 取消」
-    // 全局快捷键 Ctrl+Alt+V / 主进程触发：剪贴板原文已经读好，这里先看本次运行的捕获队列
-    // （queued=true 表示这一段刚入队；队列为空且这段没入队 → openTriggered 落成列表里的 pending 一条）
-    api.onCaptureTriggered((payload) => {
-      hideHeaderMenus();
-      void captureUi.openTriggered(
-        payload && typeof payload.text === 'string' ? payload.text : undefined,
-        Boolean(payload && payload.queued)
-      );
-    });
-
-    // b8（剪贴板联动）：后台监听发现「新复制的一段文字」→ 只给一条轻提示（带「捕获」按钮），
-    // 点了才打开捕获面板（不自动弹）；提示里只有字数，没有正文。面板 / 询问框开着时不打扰。
-    // 2026-11-07（列表视图）：面板开着就整表刷新列表（新复制的那条直接作为新记录出现），
-    // 不再区分「队列视图 / 表单视图」；面板没开才弹轻提示。
-    api.onClipboardChanged((payload) => {
-      const chars = Number(payload && payload.chars) || 0;
-      if (!Number.isFinite(chars) || chars <= 0) return;
-      // 单条超限（主进程 captureQueue.add 拒了）：明说原因，别让作者以为「复制了却没记上」是灵异事件。
-      if (payload && payload.tooLarge === true) {
-        toast(
-          `这段 ${formatCount(chars)} 字超过单条上限（30 万字），没有自动记录；` +
-            '按 Ctrl+Alt+V 可直接捕获，或用「导入小说…」按章节拆',
-          'warn'
-        );
-        return;
-      }
-      if (captureUi.isOpen()) {
-        void captureUi.refreshQueue();
-        return;
-      }
-      if (state.modal) return;
-      toastActionable(`新复制 ${formatCount(chars)} 字，要捕获吗？`, '捕获', () => {
-        hideHeaderMenus();
-        void captureUi.open();
-      });
-    });
-
-    // 每次记进队列都来一条（短复制没有上一条轻提示）：面板开着就刷新列表，
-    // 否则忽略（不弹提示、不打扰）。事件只带条数，不带正文。
-    api.onClipboardRecorded(() => {
-      if (captureUi.isOpen()) void captureUi.refreshQueue();
-    });
-
-    // 主进程拦截到关窗/退出时，由这里决定「保存并退出 / 不保存退出 / 取消」
-    api.onCloseRequested(handleCloseRequest);
-    // 1.6.1 P-01：强制退出前主进程给的最后一次落盘机会（500 ms 后 destroy）：失败静默、不再弹框。
-    api.onForceClose(() => {
-      void saveCurrent({ silent: true })
-        .catch(() => ({ ok: false }))
-        .then((saved) => api.closeReady(Boolean(saved && saved.ok)));
-    });
-    // 1.6.0 F4b：顶栏右键「命令面板」——和 Ctrl+K 同一个入口（弹层 / 锁键层开着时不抢）
-    api.onCommandPalette(() => openCommandPalette());
-  // 别的窗口改了书架数据（新建 / 删除 / 保存 / 导入 / 整理）：停在书架就刷新；
-  // 写作页里的窗口不打断作者，回书架时会统一刷新（backToShelf 里本来就会刷新）。
-  // B2（WP18）：载荷带 bookPath 只增量换那张书卡；book:delete 删卡；无路径 / 读卡失败才整表（守卫与兜底在 shelf-ui）。
-  api.onShelfChanged((payload) => shelfUi.handleShelfChanged(payload).catch(() => {}));
   // WP6（N2）：别的窗口换了书架根 → 本窗口刷新成新目录的书架；开着旧根的书则一次性提示 +
   // 救稿出口（同一个根只提示一次，去重在模块闭包里；救稿 / 回书架都复用既有入口）。
   // 五-M14（SS-11）：本窗口的全局配置快照刷新（config:changed 的两种 reason 共用同一份实现）。

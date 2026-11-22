@@ -118,7 +118,8 @@
     ['command-palette-ui.js', 'CWCommandPaletteUi', 'commandPaletteModule', '命令面板界面'],
     ['command-items-ui.js', 'CWCommandItemsUi', 'commandItemsUiModule', '命令面板条目表与数据版本缓存（M1 第 10 轮从编排器搬出）'],
     ['shortcuts-ui.js', 'CWShortcutsUi', 'shortcutsUiModule', '快捷键提示面板'],
-    ['global-keys-ui.js', 'CWGlobalKeysUi', 'globalKeysUiModule', '全局键盘分流链（Esc 链 / 快捷键 / 撤销 / 保存，M1 第 13 轮从编排器搬出）']
+    ['global-keys-ui.js', 'CWGlobalKeysUi', 'globalKeysUiModule', '全局键盘分流链（Esc 链 / 快捷键 / 撤销 / 保存，M1 第 13 轮从编排器搬出）'],
+    ['notify-events-ui.js', 'CWNotifyEventsUi', 'notifyEventsUiModule', '主进程 → 渲染层通知接线（导入进度 / 捕获 / 剪贴板 / 关窗 / 强制退出 / 命令面板 / 书架变更，M1 第 14 轮从编排器搬出）']
   ];
 
   // 取一份「清单驱动的模块表」：全部必需（index.html 无条件加载）；缺一个就把所有缺的名字

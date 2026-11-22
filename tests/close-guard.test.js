@@ -23,6 +23,9 @@ const SAVE = read('ipc/save.js');
 const RENDERER = read('renderer/renderer.js');
 // WP17 A3 第二刀：关窗拦截与「不保存退出」清脏整段迁到 save-chain-ui.js（源码闸门改读模块）。
 const SAVE_CHAIN = read('renderer/save-chain-ui.js');
+// M1 第 14 轮第八刀（断言跟错）：强制退出订阅整段搬进 renderer/notify-events-ui.js
+// （行为锚点 tests/notify-events-ui.test.js）。
+const NOTIFY = read('renderer/notify-events-ui.js');
 const PRELOAD = read('preload.js');
 
 test('静态闸门：主进程用 session.dirty + 最近保存回执交叉判定关窗（E5/S5）', () => {
@@ -234,8 +237,9 @@ test('P-01：main 实发频道 ⊆ preload 订阅频道（force-close 字面量�
 });
 
 test('P-01：renderer 收到 app:force-close 后先 saveCurrent 再 closeReady 交回主进程', () => {
-  assert.ok(RENDERER.includes('api.onForceClose('), 'renderer 必须订阅 app:force-close');
-  const seg = extractBlock(RENDERER, 'api.onForceClose(');
+  assert.ok(NOTIFY.includes('api.onForceClose('), 'notify-events-ui 必须订阅 app:force-close');
+  assert.equal(RENDERER.includes('api.onForceClose('), false, '订阅不许回流编排器（模块只有一份）');
+  const seg = extractBlock(NOTIFY, 'api.onForceClose(');
   const saveAt = seg.indexOf('saveCurrent(');
   const readyAt = seg.indexOf('api.closeReady(');
   assert.ok(saveAt > 0, '收到强制退出通知要先调现成的 saveCurrent()');

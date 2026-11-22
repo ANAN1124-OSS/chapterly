@@ -446,7 +446,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   F11·F3·F2 / 段落导航 / 复制本章 / Ctrl+A / 切章 / 跳章 / 查找 / 撤销 / Ctrl+S·Ctrl+N，178 行）
   //   整段搬进 renderer/global-keys-ui.js（行为锚点 tests/global-keys-ui.test.js）。注册点仍在
   //   bindEvents 原位（同层监听器顺序不变），编排器只留一次 create + 一行 bind() → 3902。
-  const RENDERER_LINE_MEASURED = 3902; // 2026-11-22 实测（第 13 轮 M1 第七刀拆出 global-keys-ui 之后；split 口径）
+  // M1 第八刀（第 14 轮）：bindEvents 里最后的 8 条 api.on* 通知订阅（导入进度 / 捕获触发 / 剪贴板变化 /
+  //   剪贴板入队 / 关窗 / 强制退出 / 命令面板 / 书架变更，74 行）整段搬进 renderer/notify-events-ui.js
+  //   （行为锚点 tests/notify-events-ui.test.js）。注册点仍在 bindEvents 原位（订阅顺序不变），
+  //   编排器只留一次 create + 一行 bind() → 3845。
+  const RENDERER_LINE_MEASURED = 3845; // 2026-11-22 实测（第 14 轮 M1 第八刀拆出 notify-events-ui 之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(

@@ -366,7 +366,14 @@ test('R12 B2 接线：books:card IPC + preload.readBookCard + 广播载荷带 bo
   assert.match(mainSrc, /function notifyShelfChanged\(session, reason = '', bookPath = null\)/, '广播函数必须收 bookPath');
   assert.match(mainSrc, /broadcast\('shelf:changed', \{ reason, bookPath:/, 'shelf:changed 载荷必须带 bookPath');
   assert.match(mainSrc, /notifyShelfChanged\(session, channel, target\)/, 'handleBook 的广播要传这次变更的书路径');
-  assert.match(readSource('renderer/renderer.js'), /shelfUi\.handleShelfChanged\(payload\)/, '渲染层事件要交给增量处理器');
+  // M1 第 14 轮第八刀（断言跟错）：通知订阅整段搬进 renderer/notify-events-ui.js，闸门改读模块
+  // 并补「编排器不许再长第二份」（行为锚点 tests/notify-events-ui.test.js）。
+  assert.match(readSource('renderer/notify-events-ui.js'), /shelfUi\.handleShelfChanged\(payload\)/, '渲染层事件要交给增量处理器');
+  assert.equal(
+    readSource('renderer/renderer.js').includes('shelfUi.handleShelfChanged(payload)'),
+    false,
+    '订阅实现不许回流编排器'
+  );
 });
 
 // ---------- R13：C4 preload 传输层异常脱敏 ----------

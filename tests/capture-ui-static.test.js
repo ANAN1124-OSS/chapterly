@@ -6,7 +6,7 @@
 // 面板实现只在 renderer/capture-ui.js、test-hooks 列表版钩子、模块只走白名单 IPC。
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { moduleSrc, rendererSrc, moduleCode, indexSrc, stylesSrc, rendererCode, hooksSrc } = require('./capture-ui-fixtures');
+const { moduleSrc, rendererSrc, moduleCode, indexSrc, stylesSrc, rendererCode, hooksSrc, notifyEventsSrc } = require('./capture-ui-fixtures');
 
 // ---------- 静态闸门 ----------
 
@@ -154,11 +154,14 @@ test('静态闸门：renderer.js 只接线（9 成员 host / 列表委托 / 插�
   assert.match(escCapture[1], /captureUi\.cancel\(\)/, 'Esc 要走 cancel');
   assert.equal(/captureUi\.close\(\)/.test(escCapture[1]), false, 'Esc 不许再直接 close');
   // 剪贴板变化：面板开着就刷新（单列表视图不再区分 view）
+  // M1 第 14 轮第八刀（断言跟错）：订阅整段搬进 renderer/notify-events-ui.js —— 闸门改读模块，
+  // 并补「编排器里不许再长第二份」的反向断言（行为锚点 tests/notify-events-ui.test.js）。
   assert.match(
-    rendererSrc,
+    notifyEventsSrc,
     /if \(captureUi\.isOpen\(\)\) \{[\s\S]{0,200}?captureUi\.refreshQueue\(\)/,
     '面板开着时新复制要原地刷新列表'
   );
+  assert.equal(rendererSrc.includes('api.onClipboardChanged('), false, '订阅实现不许回流编排器');
   assert.equal(rendererSrc.includes('captureUi.view() ==='), false, '单列表视图不该再判断 view');
   // 旧表单绑定全删
   for (const old of [

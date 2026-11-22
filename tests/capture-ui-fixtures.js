@@ -36,6 +36,9 @@ const indexSrc = read('renderer/index.html');
 const stylesSrc = read('renderer/styles.css');
 const rendererSrc = read('renderer/renderer.js');
 const rendererCode = stripComments(rendererSrc);
+// M1 第 14 轮第八刀（断言跟错）：剪贴板变化 / 入队的订阅整段搬进 renderer/notify-events-ui.js，
+// 「面板开着原地刷新」的闸门改读模块（行为锚点 tests/notify-events-ui.test.js）。
+const notifyEventsSrc = read('renderer/notify-events-ui.js');
 const hooksSrc = read('renderer/test-hooks.js');
 
 // ---------- 极简假 DOM ----------
@@ -459,6 +462,7 @@ module.exports = {
   backdropRegistry,
   moduleSrc,
   rendererSrc,
+  notifyEventsSrc,
   recordEls,
   actionButtons,
   QUEUE_A,

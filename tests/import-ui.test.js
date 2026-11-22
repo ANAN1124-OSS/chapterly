@@ -14,7 +14,7 @@ const { loadSourceGate, restoreGlobalsAfter, makeEl: makeBaseEl, stripAssertHost
 // 模块运行时会摸 document：真身由共享前导存下，test.after 放回。
 restoreGlobalsAfter(test, ['document']);
 
-const { rendererSrc, rendererCode, indexSrc, moduleSrc, moduleCode } = loadSourceGate('import-ui.js');
+const { rendererCode, indexSrc, moduleSrc, moduleCode } = loadSourceGate('import-ui.js');
 
 const HOST_KEYS = ['$', 'api', 'call', 'openModal', 'refreshShelf', 'state', 'toast'];
 
@@ -527,7 +527,7 @@ test('deleteBookFlow：IPC 失败时只报错、不刷新书架', async () => {
   assert.equal(renders.shelf, 0);
 });
 
-test('静态闸门：renderer.js 不再内嵌这 6 个名字，只剩接线；进度监听的三句文案还在', () => {
+test('静态闸门：renderer.js 不再内嵌这 6 个名字，只剩接线；进度监听的接线在 notify-events-ui.js', () => {
   for (const name of ['setImportProgressText', 'summarizeImport', 'importBooksFlow', 'onImportClick', 'deleteBookFlow']) {
     assert.equal(
       new RegExp('^  (?:async )?function ' + name + '\\b', 'm').test(rendererCode),
@@ -543,15 +543,19 @@ test('静态闸门：renderer.js 不再内嵌这 6 个名字，只剩接线；�
     assert.match(rendererCode, new RegExp('^  const ' + name + ' = importUi\\.' + name + ';$', 'm'), '接线少了 ' + name);
   }
   assert.match(rendererCode, /^  const importUiModule = window\.CWImportUi;$/m);
-  // 事件绑定的导入进度监听：问 hasImportProgress()，三句文案原样还在（没跟着搬迁走样）
-  assert.match(rendererCode, /^ {6}if \(!hasImportProgress\(\)\) return;$/m);
+  // 事件绑定的导入进度监听：M1 第 14 轮第八刀（断言跟错）——订阅整段搬进
+  // renderer/notify-events-ui.js；这里钉「模块里仍问 hasImportProgress()，三句文案原样还在」，
+  // 并补「编排器不许再长第二份」（行为锚点 tests/notify-events-ui.test.js）。
+  const notifySrc = loadSourceGate('notify-events-ui.js').moduleSrc;
+  assert.match(notifySrc, /^ {8}if \(!hasImportProgress\(\)\) return;$/m);
   for (const text of [
     '正在分析要导入的内容…',
     '正在收尾（共 ${progress.total} 项）…',
     '正在导入 ${Math.min(progress.done + 1, progress.total)}/${progress.total}：${progress.current || \'\'}'
   ]) {
-    assert.ok(rendererSrc.includes(text), '进度监听少了文案：' + text);
+    assert.ok(notifySrc.includes(text), '进度监听少了文案：' + text);
   }
+  assert.equal(/^ {4,8}if \(!hasImportProgress\(\)\) return;$/m.test(rendererCode), false, '进度监听实现不许回流编排器（注释里提到名字不算）');
   // 测试钩子的 host 契约照旧（renderer/test-hooks.js 按名字解构，scope 是 shorthand 6 空格）
   for (const name of ['deleteBookFlow', 'importBooksFlow']) {
     assert.match(rendererCode, new RegExp('^ {6}' + name + ',$', 'm'), 'testHooksScope 少了 ' + name);
