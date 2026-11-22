@@ -94,6 +94,15 @@ test('clampInt(null / undefined) 回落 fallback（V82）', () => {
   assert.equal(common.clampInt(false, 42, [0, 100]), 0);
 });
 
+// 复验残留（2026-11-22 / CIO-A-04 同型收编）：newBookId 是 storage.createBook / repair 重建 /
+// importer 导入三条「造新 id」路径的单一实现——形状与导入路径旧修法逐字同形，随机后缀防同毫秒撞 id。
+test('newBookId：形状 b_时间戳_随机后缀、以 b_ 开头、两次调用互不相同', () => {
+  const id1 = common.newBookId();
+  const id2 = common.newBookId();
+  assert.match(id1, /^b_[0-9a-z]+_[0-9a-z]{4,8}$/, '与导入路径的既有修法逐字同形');
+  assert.notEqual(id1, id2, '随机后缀保证跨窗口同毫秒不撞 id');
+});
+
 test('sleep：返回 Promise，真的等够时间才 resolve，且永远是 undefined', async () => {
   const started = Date.now();
   const pending = common.sleep(30);
@@ -355,7 +364,8 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
   // stripBom / normalizeText / lineStartsOf / positionOf / mapLimit / nowIso 是 B6 收编进来的；
   // caseFoldForMatch / normalizeForMatch 是 v1.8.0 WP-25 收编的大小写归一，X7 / V205；
   // toHalfWidth / HAN_RANGES / formatByteSize / MAX_TEXT_BYTES 是 v1.8.0 WP-31 收编的 A2/A3；
-  // contentGroupKey 是 RSHE-C-03 收编的「书 + 章」搜索组键，书架两个模块共用）
+  // contentGroupKey 是 RSHE-C-03 收编的「书 + 章」搜索组键，书架两个模块共用；
+  // newBookId 是 2026-11-22 复验残留收编的新书 id（CIO-A-04 同型，storage/repair/importer 三路同源））
   assert.deepEqual(Object.keys(common).sort(), [
     'HAN_RANGES',
     'MAX_TEXT_BYTES',
@@ -370,6 +380,7 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
     'isValidDayKey',
     'lineStartsOf',
     'mapLimit',
+    'newBookId',
     'normalizeForMatch',
     'normalizeText',
     'nowIso',

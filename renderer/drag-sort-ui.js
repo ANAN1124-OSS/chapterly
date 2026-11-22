@@ -260,16 +260,8 @@
       }
       if (first.classList.contains('volume-item')) {
         const volumeId = first.dataset.volumeId || null;
-        let before = null;
-        for (let i = 1; i < items.length; i += 1) {
-          if (items[i].el.classList.contains('volume-item')) break;
-          const chapter = chapterOf(items[i].el);
-          if (chapter) {
-            before = chapter;
-            break;
-          }
-        }
-        return { volumeId, beforeChapterId: before ? before.id : null, el: first, mode: 'header' };
+        // 复验残留（REDT-C-02 同型）：卷头落点按全书取该卷第一章（firstChapterIdInVolume）。
+        return { volumeId, beforeChapterId: firstChapterIdInVolume(volumeId), el: first, mode: 'header' };
       }
     }
     if (!hovered) {
@@ -286,18 +278,9 @@
     }
     if (hovered.classList.contains('volume-item')) {
       const volumeId = hovered.dataset.volumeId || null;
-      const start = hit;
-      let before = null;
-      for (let i = start + 1; i < count; i += 1) {
-        const el = items[i].el;
-        if (el.classList.contains('volume-item')) break;
-        const chapter = chapterOf(el);
-        if (chapter) {
-          before = chapter;
-          break;
-        }
-      }
-      return { volumeId, beforeChapterId: before ? before.id : null, el: hovered, mode: 'header' };
+      // 复验残留（REDT-C-02 同型）：拖到卷头 = 插到该卷开头，按全书顺序取该卷第一章——
+      // 筛选隐藏了卷首章时不能取「第一个可见章」，卷里一章都看不见时也不能落到卷末。
+      return { volumeId, beforeChapterId: firstChapterIdInVolume(volumeId), el: hovered, mode: 'header' };
     }
     const chapter = chapterOf(hovered);
     if (!chapter) return null;
@@ -319,6 +302,16 @@
     for (let i = index + 1; i < state.chapters.length; i += 1) {
       if (chapterVolumeId(state.chapters[i]) !== volumeId) return null;
       return state.chapters[i].id;
+    }
+    return null;
+  }
+
+  // 复验残留（2026-11-22，REDT-C-02 同型）：两个卷头落点分支以前从**可见行**里找该卷第一章——
+  // 筛选隐藏了卷首章时会取到后面的章、卷里一章都看不见时落到卷末。卷头语义是「插到该卷开头」，
+  // 必须按全书顺序取该卷真正的第一章，落点标记与实际落点才始终一致。
+  function firstChapterIdInVolume(volumeId) {
+    for (const chapter of state.chapters) {
+      if (chapterVolumeId(chapter) === volumeId) return chapter.id;
     }
     return null;
   }

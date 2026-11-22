@@ -2,7 +2,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { stripBom, writeJsonAtomic, renameWithRetry } = require('./atomic');
-const { pad2 } = require('./common');
+const { pad2, newBookId } = require('./common');
 const chapterFilename = require('./chapter-filename');
 const chaptersLib = require('./chapters');
 const schemaLib = require('./schema');
@@ -135,7 +135,9 @@ async function rebuildFromFiles(bookPath, io = {}) {
   const meta = {
     version: 1,
     schemaVersion: schemaLib.CURRENT_SCHEMA_VERSION,
-    id: `b_${Date.now().toString(36)}`,
+    // 复验残留（2026-11-22 / CIO-A-04 同型）：重建书目的新 id 收进 common.newBookId，
+    // 与导入 / 建书同源，不再纯时间戳。
+    id: newBookId(),
     title: path.basename(bookPath),
     titleTemplate: chaptersLib.TITLE_TEMPLATE,
     fileSeq,

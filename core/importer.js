@@ -23,7 +23,7 @@ const {
   splitLongUntitled,
   LONG_UNTITLED_THRESHOLD
 } = require('./txt');
-const { normalizeText, formatByteSize, MAX_TEXT_BYTES } = require('./common');
+const { normalizeText, formatByteSize, MAX_TEXT_BYTES, newBookId } = require('./common');
 const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
 
@@ -759,7 +759,9 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
       version: 1,
       // CIO-A-04（审计低批）：纯毫秒时间戳跨窗口可能撞 id（两窗口同时导入且恰落在同一毫秒）。
       // 追加随机后缀，形状仍以 b_ 开头；已存在的旧 id 不受影响。
-      id: `b_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      // 复验残留（2026-11-22）：同形实现收成 common.newBookId 一份——storage.createBook 与
+      // repair 重建也造新 id，三处同源防口径漂移，输出与旧实现逐字同形。
+      id: newBookId(),
       title: baseName,
       titleTemplate: chaptersLib.TITLE_TEMPLATE,
       fileSeq: chapterList.length,

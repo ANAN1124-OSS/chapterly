@@ -353,7 +353,13 @@
       // 保存后：这一章有查找书签的话，按刚写盘的新正文重新扫描定位。
       // 只在没有手动查找会话、或高亮本来就来自书签时做，免得覆盖作者正在看的其它查找结果。
       if (state.find.total === 0 || state.find.fromBookmark) {
-        await restoreFindBookmarkForCurrentChapter();
+        // REDT-B-02 同型（复验残留 2026-11-22）：保存路径的书签重扫与载章路径同是显示增强——
+        // 它抛错不许把成功保存翻成失败回执，也不许卡断后面的状态栏收尾；同一隔离口径。
+        try {
+          await restoreFindBookmarkForCurrentChapter();
+        } catch (err) {
+          console.warn('保存后书签重扫失败（不影响保存结果）', err);
+        }
       }
       // 保存热路径（代码审计 F2）：保存一成功就先刷新状态栏——章数直接用书目里的章节数
       // （保存不会增减章节，和以前 report.chapterCount 是同一个值），不再为了拿这个数字去等

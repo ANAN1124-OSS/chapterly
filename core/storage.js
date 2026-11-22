@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { atomicWriteFile, atomicCopyFile, stripBom, cleanupOrphanTmpFiles, renameWithRetry } = require('./atomic');
-const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, MAX_TEXT_BYTES } = require('./common');
+const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, MAX_TEXT_BYTES, newBookId } = require('./common');
 const chaptersLib = require('./chapters');
 const findLib = require('./find');
 const formatLib = require('./format');
@@ -950,7 +950,9 @@ async function createBook(booksRoot, title, options = {}) {
     const meta = {
       version: 1,
       schemaVersion: schemaLib.CURRENT_SCHEMA_VERSION,
-      id: `b_${Date.now().toString(36)}`,
+      // 复验残留（2026-11-22 / CIO-A-04 同型）：建书 id 收进 common.newBookId（时间戳 + 随机后缀），
+      // 与导入 / 重建同源，不再纯时间戳（跨窗口同毫秒不撞 id）。
+      id: newBookId(),
       title: displayTitle,
       titleTemplate: chaptersLib.TITLE_TEMPLATE,
       fileSeq: seq,

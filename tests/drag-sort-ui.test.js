@@ -271,7 +271,24 @@ test('REDT-C-03：指针拖过列表顶边 → 插到首行之前，不再落到
   const c3 = chapterEl(2, 140);
   list.children = [hood, c3];
   const header = ui.computeDropTarget(event(60));
-  assert.deepEqual([header.mode, header.volumeId, header.beforeChapterId], ['header', 'v1', 'c3']);
+  // 复验残留（REDT-C-02 同型）修掉后：v1 的第一章是 c2（本视图里被隐藏），卷头落点按全书取 c2。
+  assert.deepEqual([header.mode, header.volumeId, header.beforeChapterId], ['header', 'v1', 'c2']);
+});
+
+// 复验残留（2026-11-22，REDT-C-02 同型）：拖到卷头 = 插到该卷开头，落点必须按全书顺序取
+// 该卷第一章——筛选隐藏了卷首章时不能取「第一个可见章」，卷里一章都看不见时也不能落到卷末。
+test('复验残留：筛选隐藏卷首章 / 卷里无可见章时，卷头落点仍按全书取该卷第一章', () => {
+  const { ui, list } = makeWorld();
+  // makeWorld 默认：c1 未分卷，c2/c3 在 v1；筛选把 c2 隐藏，卷头下只渲染 c3。
+  const hood = volumeEl('v1', 100);
+  const c3 = chapterEl(2, 140);
+  list.children = [hood, c3];
+  const t = ui.computeDropTarget(event(120));
+  assert.deepEqual([t.mode, t.volumeId, t.beforeChapterId], ['header', 'v1', 'c2']);
+  // 卷里一章都看不见：仍按全书给卷首，不是卷末
+  list.children = [hood];
+  const t2 = ui.computeDropTarget(event(120));
+  assert.deepEqual([t2.mode, t2.volumeId, t2.beforeChapterId], ['header', 'v1', 'c2']);
 });
 
 // ---------- 键盘上下移动（Phase D / D1） ----------

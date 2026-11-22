@@ -346,6 +346,15 @@
     return bookPath + '\u0000' + chapterFile;
   }
 
+  // 新书的书 id（复验残留 2026-11-22 / CIO-A-04 同型收编）：毫秒时间戳 + 6 位随机后缀，形状仍以
+  // b_ 开头。为什么放这里：storage.createBook、repair 重建、importer 导入三条路径都要造新 id，
+  // 此前修复只改了导入一处，另两处仍是纯时间戳（跨窗口同毫秒撞 id，config 的 bookDisplay /
+  // 查找书签键都按 id 记）；「两个以上模块都要用的纯计算」按本文件收纳原则收一份，输出与
+  // importer 的既有修法逐字同形（旧 id 不受影响；回归见 tests/common.test.js 与 importer.test.js）。
+  function newBookId() {
+    return `b_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
   return {
     pad2,
     clampInt,
@@ -369,6 +378,7 @@
     dayKeyOf,
     createKeyedWriteQueue,
     createWriteQueue,
-    contentGroupKey
+    contentGroupKey,
+    newBookId
   };
 });

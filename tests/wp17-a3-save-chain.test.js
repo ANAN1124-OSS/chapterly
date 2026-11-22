@@ -593,6 +593,17 @@ test('REDT-B-02：载章成功后的书签恢复抛错，不许把载章回执�
   assert.equal(rt.counts.toast.length, 0, '不许弹「读取章节失败」');
 });
 
+test('REDT-B-02 同型（复验残留）：保存成功后的书签重扫抛错，不许把保存回执翻成失败', async () => {
+  const rt = makeHost({ restoreBookmarkThrows: true });
+  rt.state.dirty = true;
+  rt.editorEl.value = '改了一笔';
+  const res = await rt.ui.saveCurrent();
+  assert.equal(res.ok, true, '书签只是显示增强，失败不许翻转成功保存');
+  assert.equal(rt.state.dirty, false, '保存成功照常清脏');
+  assert.equal(rt.counts.restore, 1, '书签重扫确实跑过（失败发生在它内部）');
+  assert.equal(rt.counts.toast.length, 0, '不许弹「保存失败」');
+});
+
 test('A3-A / B6：关窗三选——模态框打开先放行 false；保存失败后选「放弃修改退出」要清脏再放行', async () => {
   // ① 已有模态框：先拒绝关窗（不许把询问压在弹层下面）。
   const modal = makeHost();
