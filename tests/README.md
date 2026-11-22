@@ -30,7 +30,12 @@
 - 临时目录一律 `require('./tmp-cleanup').mkTmp(prefix)`（同步场景用 `mkTmpSync`）；测试里不再直接
   `fs.mkdtemp`（R19 静态闸门会拦）。
 - 多章书夹具用 `tests/storage-fixtures.js` 的 `makeBook(root, title, [{ name, text }…])`（storage 两个测试文件共用）或
-  `tests/search-index.test.js` 的 `makeWorld(base)`，不再手抄建目录 / 逐章写正文。
+  `tests/search-index-fixtures.js` 的 `makeBook` / `makeWorld(base)`（搜索索引四个测试文件共用，
+  T9 起从 `search-index.test.js` 拆出），不再手抄建目录 / 逐章写正文。
+- 搜索索引夹具（临时目录 / 手写书目 makeBook、readMeta、writeMeta / 双目录 makeWorld / store 构造器
+  makeStore / nthIndex、exists）用 `tests/search-index-fixtures.js`（`search-index-core` / `-build` /
+  `-search` / `-static` 四个文件共用，T9 第 10 轮从 `search-index.test.js` 拆出）；新增用例请加进对应性质的
+  文件，别再开第五份。
 - 剪贴板面板夹具（极简假 DOM / 假 host 工厂 build / withFakeDocument / 三份源码常量）用
   `tests/capture-ui-fixtures.js`（`capture-ui` / `capture-ui-static` / `capture-ui-refresh` 三个文件共用，
   T9 起从 `capture-ui.test.js` 拆出）；新增用例请加进对应性质的文件，别再开第四份。

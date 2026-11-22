@@ -123,7 +123,7 @@ const SEARCH_SIGNATURE_INTERVAL_MS = 2000;
 const PROGRESS_INTERVAL_MS = 150;
 // P2-1（作业卡 1.5.0）：整本建位图时按批读正文的批大小，对齐 core/storage.js 的 32 章批。
 // 以前是「全书 texts 一次进数组」，1000 章 × 1 MB ≈ 1 GB 常驻主进程；现在一批处理完就丢引用。
-// 分批只改「什么时候读」，不改章的顺序、字数统计口径与位图字节（tests/search-index.test.js 钉住）。
+// 分批只改「什么时候读」，不改章的顺序、字数统计口径与位图字节（tests/search-index-build.test.js 钉住）。
 const BLOOM_BUILD_BATCH = 32;
 // V93（1.7.2 D6）：解码后的位图缓存条数上界（LRU）。以前 bloomCache 只增不减、只在换书架根时清空：
 // 长书架上「搜过一遍」就等于把整架书的位图全留在主进程里（位图按字数增长，几十 KB / 本）。
