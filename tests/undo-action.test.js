@@ -342,10 +342,27 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   assert.match(chapterOpsCode, /function activateDeleteUndo\(info\)/);
   assert.match(chapterOpsCode, /api\.restoreDeletedChapter/);
   assert.match(rendererCode, /if \(view !== 'editor'\) undoUi\.clear\(\)/);
-  // 审计修复 #7（V401）：换书时撤销条与大段插入快照必须一起作废（快照跨书会串台）
+  // 审计修复 #7（V401）/ #39（V402）：换书时撤销条与大段插入快照必须一起作废（快照跨书会串台）。
+  // M1 第 12 轮第六刀：这两行随 commitOpenBook 搬进 renderer/open-book-flow-ui.js；快照清理在那边是
+  // 一次 host 调用（clearEditorUndoSnapshots），编排器只提供写回函数。行为锚点见
+  // tests/open-book-flow-ui.test.js「干净换书」用例（undoClear=1 / clearSnapshots=1）。
+  const openBookFlowCode = fs
+    .readFileSync(path.join(ROOT, 'renderer', 'open-book-flow-ui.js'), 'utf8')
+    .replace(/\r\n/g, '\n');
+  assert.match(
+    openBookFlowCode,
+    /undoUi\.clear\(\);\n(?:[^\n]*\n){0,6}?      clearEditorUndoSnapshots\(\);\n/,
+    '换书时撤销条与一次性快照必须一起作废（清撤销条 → 清快照）'
+  );
+  assert.match(
+    openBookFlowCode,
+    /clearEditorUndoSnapshots\(\);\n      \/\/ 换书前先停掉上一本的写作计时/,
+    '清快照要排在换书前停写作计时之前'
+  );
   assert.match(
     rendererCode,
-    /undoUi\.clear\(\);\n    \/\/ 审计修复 #7（V401）：[\s\S]{0,260}?bulkWriteUndo = null;\n    fallbackWriteUndo = null; \/\/ 审计修复 #39（V402）[^\n]*\n    \/\/ 换书前先停掉上一本的写作计时/
+    /clearEditorUndoSnapshots: \(\) => \{ bulkWriteUndo = null; fallbackWriteUndo = null; \},/,
+    '编排器要把两个快照变量的清空写回函数注入模块'
   );
   // 1.5.0 P0-4（E4 / H-1 / H-2 / H-5 / H-9）的接线不许丢：手动关闭、长按不抖、撤销按 id / 邻居重算落点
   assert.match(rendererCode, /'close-undo-bar': \(\) => undoUi\.dismiss\(\)/);

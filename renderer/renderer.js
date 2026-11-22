@@ -210,6 +210,9 @@
   // 「整本替换」的备份列表与还原（M1 第 12 轮第五刀）：列表横幅 / 未保存拦截 / 长操作锁 / 10 秒撤销
   // 在 replace-backup-ui.js；这里只装配 + 同名转发（查找面板按钮 / E2E 测试钩子按原名取用）。
   const replaceBackupUiModule = window.CWReplaceBackupUi;
+  // 换书入口 + 「提交新书」整段（M1 第 12 轮第六刀）：世代令牌复核 / 未保存拦截 / 交易前清空遮罩
+  // 在 open-book-flow-ui.js；这里只装配 + 同名转发（四个换书入口 / 测试钩子按原名取用）。
+  const openBookFlowUiModule = window.CWOpenBookFlowUi;
   // 查找书签（第 4 步九刀·补刀 9b）：「书签」面板整段在 find-bookmark-ui.js 里；这里只接线
   const findBookmarkUiModule = window.CWFindBookmarkUi;
   // 灵感箱 / 碎片速记（第 4 步九刀·补刀 10）：两个弹层整段在 fragments-ui.js 里；这里只接线
@@ -1204,156 +1207,13 @@
     }
   }
 
+  // 换书入口与「提交新书」整段在 renderer/open-book-flow-ui.js（M1 第 12 轮第六刀）：世代令牌复核 /
+  // 未保存拦截 / 提交前清空遮罩也在那边。下面只留同名转发（命令面板 / 书架 / 书签 / 章节命中 / 测试钩子
+  // 都按原名取用）；模块装配点在 bindEvents 之前（host 依赖装配较晚的 const，见那处注释）。
+  let openBookFlowUi = null;
   async function openBookByPath(bookPath, target = null) {
-    // WP-03（V102）：每次开书一个世代号。await 回来先核对；过期响应一个字都不许写进界面——
-    // 以前快速连开两本时，「响应最后返回」的那本会盖掉最后点击的那本（还可能把 index / chapters /
-    // bookPath 带进不一致的中间态）。
-    const seq = ++openSeq;
-    const stale = () => seq !== openSeq;
-    // 1.6.0 H1（审计 E-01，丢稿）：换书前先处理当前章节的未保存修改 —— 保存并继续 / 丢弃 / 取消。
-    // 「取消」或「保存失败」都停在原地（正文、dirty、撤销条全不动）；决策是 open-book-guard.js
-    // 里的纯函数（Node 单测覆盖），这里只负责弹窗与保存。四个换书入口都走这一个函数。
-    // C10 同族：保存在途时先等它按快照章身份完成，再按「剩下真正没保存的字」询问——
-    // 否则作者刚选的「不保存」会被在途写入违背。
-    if (state.saving && state.dirty) {
-      await waitForSavingIdle();
-      if (stale()) return { ok: false, code: 'STALE' };
-    }
-    const dirtyBeforeSwitch = state.dirty === true;
-    if (openBookGuard.decideOpenBook({ dirty: dirtyBeforeSwitch }).action === 'prompt') {
-      const choice = await askUnsaved({
-        title: '换书前先处理未保存的修改',
-        message: `「${currentChapterLabel()}」还有未保存的修改。换到另一本书后，编辑区里这些字不会跟着过去。`
-      });
-      if (stale()) return { ok: false, code: 'STALE' };
-      let saveResult = null;
-      if (choice === 'save') saveResult = await saveCurrent();
-      if (stale()) return { ok: false, code: 'STALE' };
-      const guard = openBookGuard.decideOpenBook({ dirty: dirtyBeforeSwitch, choice, saveResult });
-      // 失败提示 saveCurrent 已经弹过（与还原 / 删除前拦截同口径），这里只负责别继续换。
-      // REDT-A-05：取消也是可判定的形状（以前裸 return → undefined，调用方按 result.ok 判定会分叉）。
-      if (guard.action !== 'proceed') return { ok: false, canceled: true };
-    }
-    // 从「决定换书」这一刻起锁住编辑区：api.openBook 的 IPC 往返期间作者可能还在上一本里敲字。
-    // 开成功就整块换成新书（这些字不能静默消失），开失败 / 取消则原样留在上一本（编辑区没动过）。
-    openingBook = true;
-    applyEditorEditable();
-    let committed = false;
-    try {
-      let data;
-      try {
-        // WP-03 验收锚点：?test=1 下 E2E 用 setTestOpenBookDelay 包一层延迟制造「响应乱序」窗口；
-        // 正常启动 testOpenBook 恒为 null，直接走生产同一条开书 IPC。
-        data = testOpenBook
-          ? await testOpenBook(api.openBook, bookPath)
-          : await call(api.openBook, bookPath);
-      } catch (err) {
-        if (stale()) return { ok: false, code: 'STALE' };
-        if (err.code === 'BOOK_OPEN_IN_OTHER_WINDOW') {
-          // 同一本书只允许一个窗口：主进程已经聚焦了那个窗口
-          toast(err.message || '这本书已经在另一个窗口打开，已切换到那个窗口', 'warn');
-          return { ok: false, code: err.code };
-        }
-        if (err.code === 'PARSE_ERROR' || err.code === 'INVALID_META' || err.code === 'NO_BOOK') {
-          const known = (state.books || []).find((b) => b.path === bookPath);
-          await openRepair(
-            known || { path: bookPath, title: '这本书', status: 'corrupt', reason: err.message }
-          );
-          return { ok: false, code: err.code };
-        }
-        toast(`打开失败：${err.message}`, 'error');
-        return { ok: false, code: err.code || 'OPEN_FAILED', message: err.message };
-      }
-      if (stale()) return { ok: false, code: 'STALE' };
-      if (data.missing && data.missing.length) {
-        toast(`注意：${data.missing.length} 个章节文件缺失，可在「导出 → 打开本书文件夹」里检查`, 'warn');
-      }
-      // 提交新书：清空 / 遮罩 / 换书目 / 载本章。提交完成后即使载章失败也停在新书的遮罩态（V101）。
-      committed = await commitOpenBook(bookPath, data, target, stale);
-      if (!committed) return { ok: false, code: 'STALE' };
-      if (stale()) return { ok: false, code: 'STALE' };
-      if (target && Number.isFinite(Number(target.matchIndex))) {
-        // 五-M3（SS-07）：目标章在打开前被删（chapterId 没命中）时，绝不把属于旧章的命中下标
-        // 套到回落章正文上（越界还会夹到文末）；明确提示作者，让他重新搜索。
-        if (committed.targetMissing) {
-          toast('查找命中的章节已经不在了（可能刚被删除），已打开上次阅读的章节；请重新搜索', 'warn');
-        } else {
-          selectEditorRange(Number(target.matchIndex), Number(target.matchLength) || 0);
-        }
-      }
-      // REDT-A-05：成功也带 ok:true（回执字段原样展开，不破坏任何现有消费点）；以前裸 data 没有
-      // ok 字段，任何按 result.ok === true 判成功的调用都会把成功开书误判成失败。
-      return Object.assign({ ok: true }, data);
-    } finally {
-      // 只有「还是当前这次开书」才允许解自己的锁；过期响应不能把后一次开书的锁解掉。
-      if (!committed && seq === openSeq) {
-        openingBook = false;
-        applyEditorEditable();
-      }
-    }
-  }
-
-  // 新书提交（WP-03 / V101）：调用方已确认这次响应属于当前世代。返回 false = 提交前又被新的开书取代，
-  // 什么都没提交（调用方按过期处理）；返回 true = 书目已换成本书（即使后面载章失败也不回滚）。
-  async function commitOpenBook(bookPath, data, target, isStale) {
-    // 五-M21（MP-03）：换书先停朗读。朗读条 / 语音属于「上一本书的那一章」，commitOpenBook 全程
-    // 不切视图（showView('editor') 时本来就是 editor，走不到 closeTtsBar），旧书正文会继续念，
-    // 段末 advanceTts → selectTtsChunk 还会把旧书分段的偏移套进新书已清空 / 遮罩的编辑区；
-    // 若新书载章失败，载章成功路径上的 stopTtsForChapterChange 永不执行，旧书朗读无限期继续。
-    // 放在清任何状态之前：这时 chunks 还是旧书的，toast 文案才对。
-    stopTtsForChapterChange();
-    // 换书：撤销条不跨书（撤销闭包里还会再核对一次 state.bookPath）
-    undoUi.clear();
-    // 审计修复 #7（V401）：大段插入的一次性快照也必须跟着换书作废 —— 以前这里只清 undoUi，
-    // bulkWriteUndo 会跨书活到「新书载章失败」的遮罩态：那时编辑区只是 readOnly（仍可聚焦），
-    // 一下 Ctrl+Z 就把上一本整章正文写进新书空编辑区 + 假脏态。快照自身也带身份核对（见 undoBulkWrite）。
-    bulkWriteUndo = null;
-    fallbackWriteUndo = null; // 审计修复 #39（V402）：兜底写入的一次性快照同样不跨书
-    // 换书前先停掉上一本的写作计时：把没上报的整秒记下，新书从 0 开始
-    await resetWriteTimer({ flush: true });
-    if (isStale()) return false;
-    // WP-03（V101）：提交新书状态前先清空 / 遮罩编辑区并置 index=-1、loadedChapterId=null。
-    // 目标章读取失败时界面已经属于新书，编辑区绝不能还留着上一本的正文（否则输入 + Ctrl+S
-    // 会把上一本正文写进新书同下标章节，且保存不备份正文）。
-    state.bookPath = bookPath;
-    state.meta = data.meta;
-    state.bookId = data.meta.id;
-    state.chapters = data.meta.chapters;
-    state.collapsedVolumes = new Set(); // 换书重置折叠状态
-    state.chapterFilter = ''; // 换书清空目录筛选（否则新书会带着上一本的筛选词，看起来像丢章）
-    state.selectedIds = new Set(); // 换书清空多选（1.5.0 功能-1：多选不跨书）
-    state.selectAnchorId = null;
-    state.batchMenu = false;
-    state.index = -1;
-    state.loadedChapterId = null;
-    state.dirty = false;
-    state.saveError = null;
-    state.baseText = '';
-    editorEl.value = '';
-    if (state.find.total) clearFindSession(); // 上一本的高亮位置不属于新书
-    setChapterMask(true, '正在载入章节…');
-    $('book-title').textContent = data.meta.title;
-    $('book-title').title = data.meta.title;
-    showView('editor');
-    renderChapterList();
-    // 套用这本书自己的显示设置（没有单独设置过就沿用全局）
-    await applyBookDisplay(data.meta.id);
-    // applyBookDisplay 期间可能有更晚的一次开书已经提交了自己的书：界面归它，这里不再载章，
-    // 也不许解它的锁（openingBook 仍归那一次）。
-    if (state.bookPath !== bookPath) return { ok: true, targetMissing: false };
-    if (!isStale()) {
-      openingBook = false;
-      applyEditorEditable();
-    }
-    // 五-M3（SS-07）：起点章与「目标章是否命中」收进 open-book-guard 纯逻辑——目标章被删时
-    // 回落上次阅读章并标记 targetMissing，调用方据此提示 + 不套旧命中下标。
-    const resolved = openBookGuard.resolveOpenTarget({
-      chapters: state.chapters,
-      target,
-      lastOpenChapterId: data.meta.lastOpenChapterId
-    });
-    await loadChapterAt(resolved.startIndex);
-    return { ok: true, targetMissing: resolved.targetMissing };
+    if (!openBookFlowUi) return { ok: false, code: 'STALE' };
+    return openBookFlowUi.openBookByPath(bookPath, target);
   }
 
   // 把编辑区选区放到命中位置（正文命中点进来用）：只改光标 / 选区与滚动，不改内容
@@ -3025,6 +2885,26 @@
     texts: { commonLib, formatBytes }
   });
   const { setSelectValue, renderSettingsCaretColors, renderChapterTemplatePreview, renderSensitiveSettings, renderProofreadSettings, checkUpdate, openUpdateDownload, previewSettings, openSettings, openStatsCalendar, closeSettings, handleExternalConfigChange, resetBookDisplay, saveSettings, setupSettingsUi } = settingsUi;
+
+  // ---------- M1 第六刀：换书入口装配 ----------
+  // 为什么放这里：host 依赖 renderChapterList / clearFindSession / currentChapterLabel / resetWriteTimer /
+  // stopTtsForChapterChange 这些装配点较晚的 const，统一在 bindEvents 之前一次装配；包装是函数声明，
+  // 调用点零改动。openSeq / openingBook 仍归编排器（保存链只读出口 / 插入闸 / 测试钩子都读它），
+  // 这里按取值函数与写回函数注入。
+  openBookFlowUi = openBookFlowUiModule.create({
+    state, editorEl, $, openBookGuard, askUnsaved, saveCurrent, currentChapterLabel,
+    applyEditorEditable, waitForSavingIdle,
+    // 活绑定：E2E 用 setTestOpenBookDelay 在开书 IPC 外包一层延迟，create 时传值会绕过注入（WP-03）。
+    openBookOp: (bookPath) => (testOpenBook ? testOpenBook(api.openBook, bookPath) : call(api.openBook, bookPath)),
+    toast, openRepair, selectEditorRange,
+    nextOpenSeq: () => ++openSeq,
+    currentOpenSeq: () => openSeq,
+    setOpeningBook: (value) => { openingBook = value; },
+    stopTtsForChapterChange, undoUi,
+    clearEditorUndoSnapshots: () => { bulkWriteUndo = null; fallbackWriteUndo = null; },
+    resetWriteTimer, clearFindSession, setChapterMask, showView, renderChapterList,
+    applyBookDisplay, loadChapterAt
+  });
 
   // ---------- A3 第二刀：保存链模块装配（host 里全是已绑定的 const / 提升函数） ----------
   // 为什么放这里：本刀 host 依赖 saveStatusUi / saveRescueUi / renderStatsUi / flushWriteTimer /

@@ -101,12 +101,14 @@ test('换书守卫：纯函数 —— 不改入参，同样输入两次结果一
 // ---------- ② 源码闸门 ----------
 
 test('换书入口闸门：openBookByPath 先过守卫、再 api.openBook', () => {
-  const source = read('renderer/renderer.js');
+  // M1 第 12 轮第六刀：openBookByPath / commitOpenBook 整段搬进 renderer/open-book-flow-ui.js；
+  // 源码闸门按「闸门跟着实现搬家」改读新模块（行为断言一条没放宽）；真实开书 IPC 走注入的 openBookOp。
+  const source = read('renderer/open-book-flow-ui.js');
   const body = sliceFunction(source, 'async function openBookByPath(');
   const guardAt = body.indexOf('openBookGuard.decideOpenBook');
-  const openAt = body.indexOf('call(api.openBook');
+  const openAt = body.indexOf('openBookOp(');
   assert.ok(guardAt >= 0, 'openBookByPath 里没有调用换书守卫');
-  assert.ok(openAt > guardAt, '换书守卫必须在 call(api.openBook) 之前');
+  assert.ok(openAt > guardAt, '换书守卫必须在真正发开书 IPC（注入的 openBookOp）之前');
   // 守卫复用现成的三选一与保存：取消 / 保存失败都 return，不许落到 api.openBook
   assert.match(body, /askUnsaved\(/, '守卫要复用 askUnsaved 三选一');
   assert.match(body, /saveCurrent\(/, '选「保存并继续」要走 saveCurrent');
@@ -224,7 +226,8 @@ test('五-M3：resolveOpenTarget —— chapterId 命中用目标章；没命中
 });
 
 test('五-M3 静态闸门：commitOpenBook 用 resolveOpenTarget；目标章没命中时不许把旧命中下标套到回落章', () => {
-  const source = read('renderer/renderer.js');
+  // M1 第 12 轮第六刀：两段实现一起搬进 renderer/open-book-flow-ui.js，闸门跟着实现走（断言不变）。
+  const source = read('renderer/open-book-flow-ui.js');
   const commitBody = sliceFunction(source, 'async function commitOpenBook(');
   assert.match(commitBody, /openBookGuard\.resolveOpenTarget\(\{/);
   assert.match(commitBody, /return \{ ok: true, targetMissing: resolved\.targetMissing \};/);

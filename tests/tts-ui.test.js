@@ -543,10 +543,18 @@ test('静态闸门：index.html 在 renderer.js 之前加载 tts-ui.js，且模�
 // editor，L773 的 closeTtsBar 不触发。正常路径要等新书载章成功（save-chain-ui.js:185）才停；
 // 载章失败（遮罩态）时永不执行，旧书朗读无限期继续。修法：commitOpenBook 开头（清任何状态之前）就停。
 // 这一段必须留在 renderer.js（编排器闭包），所以用静态闸门钉住接线与顺序。
+// 换书入口与 commitOpenBook 在 M1 第 12 轮第六刀搬进 renderer/open-book-flow-ui.js；
+// 这条静态闸门跟着实现搬家（只换读取文件，停朗读与清状态的先后断言一条没改）。
 test('M21（MP-03）：commitOpenBook 在清空书状态之前先停朗读（换书不再跨书继续念）', () => {
-  const start = rendererSrc.indexOf('async function commitOpenBook(');
+  const openBookFlowSrc = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'renderer', 'open-book-flow-ui.js'),
+    'utf8'
+  );
+  const start = openBookFlowSrc.indexOf('async function commitOpenBook(');
   assert.ok(start > 0, '找不到 commitOpenBook');
-  const body = rendererSrc.slice(start, rendererSrc.indexOf('\n  async function ', start + 1));
+  const end = openBookFlowSrc.indexOf('\n    // 只暴露换书入口', start);
+  assert.ok(end > start, 'commitOpenBook 的函数体没找到结尾');
+  const body = openBookFlowSrc.slice(start, end);
   const stopAt = body.indexOf('stopTtsForChapterChange();');
   assert.ok(stopAt > -1, '换书必须先停朗读（commitOpenBook 里找不到 stopTtsForChapterChange）');
   const clearUndoAt = body.indexOf('undoUi.clear();');

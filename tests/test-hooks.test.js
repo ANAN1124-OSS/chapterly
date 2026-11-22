@@ -436,7 +436,13 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   （行为锚点 tests/replace-backup-ui.test.js）→ 4181。上面 1.8.0 WP-02 ②「restoreReplaceBackupFlow 约 30 行
   //   搬不出去」的判断本轮被推翻：它的依赖都能按 host 成员注入（editorEl 压根不需要），搬走后渲染层只剩
   //   一次 create + 两个同名转发。还原 IPC 的 E2E 延迟注入改由 restoreBookOp 活绑定承接（testBookOp 仍在编排器）。
-  const RENDERER_LINE_MEASURED = 4181; // 2026-11-22 实测（第 12 轮 M1 第五刀拆出 replace-backup-ui 之后；split 口径）
+  // M1 第六刀（第 12 轮）：换书入口 + 「提交新书」整段（openBookByPath + commitOpenBook：世代号复核 /
+  //   未保存拦截 / 提交前清空遮罩 / 目标章解析）搬进 renderer/open-book-flow-ui.js（行为锚点
+  //   tests/open-book-flow-ui.test.js）→ 4061。上面 1.8.0 WP-03 ③④ 的判断同样被推翻：openSeq / openingBook
+  //   留在编排器，但按「nextOpenSeq / currentOpenSeq / setOpeningBook」活绑定注入即可，模块不碰 DOM 之外的状态；
+  //   开书 IPC 的 E2E 延迟注入由 openBookOp 承接（testOpenBook 仍在编排器）。装配点放在 bindEvents 之前
+  //   （host 依赖 renderChapterList / clearFindSession / stopTtsForChapterChange 等装配较晚的 const）。
+  const RENDERER_LINE_MEASURED = 4061; // 2026-11-22 实测（第 12 轮 M1 第六刀拆出 open-book-flow-ui 之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(

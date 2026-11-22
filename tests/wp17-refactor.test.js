@@ -213,12 +213,12 @@ test('R5 A2：共享 host 校验器归 core/assert-host.js，renderer 不留 shi
     );
   }
 
-  // ③ renderer 侧 42 个消费者统一 Node 分支；条件分支（crash-recovery / shelf-filter）也走同一份
+  // ③ renderer 侧 43 个消费者统一 Node 分支；条件分支（crash-recovery / shelf-filter）也走同一份
   // （A3 第一刀 +chapter-directory-ui.js / 第二刀 +save-chain-ui.js：新模块同样只调共享 assertHost；
   //   M1 第 9 轮 +toast-ui.js：toast 出口搬出编排器后新增的 host 消费者；
-  //   M1 第 11 / 12 轮 +replace-one-ui.js / +replace-backup-ui.js）
+  //   M1 第 11 / 12 轮 +replace-one-ui.js / +replace-backup-ui.js / +open-book-flow-ui.js）
   const consumers = hostConsumers();
-  assert.equal(consumers.length, 42, `host 消费者数量变了：${consumers.length}`);
+  assert.equal(consumers.length, 43, `host 消费者数量变了：${consumers.length}`);
   for (const file of consumers) {
     const src = stripComments(read(`renderer/${file}`));
     assert.equal(src.includes("require('./assert-host')"), false, `${file} 不许再 require('./assert-host')`);

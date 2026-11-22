@@ -984,8 +984,12 @@ test('静态闸门：renderer.js 不再内嵌书籍信息 / 书架渲染实现�
   }
   // 「章节命中」直达：openBookByPath 认 target.chapterIndex（0 起、只在本书范围内生效）
   // 五-M3（SS-07）：起点解析（含 chapterIndex 范围校验 / 目标章缺失标记）收进
-  // open-book-guard.resolveOpenTarget；renderer.js 只剩调用。
-  assert.ok(rendererSrc.includes('openBookGuard.resolveOpenTarget('), '开书要走起点解析');
+  // open-book-guard.resolveOpenTarget；M1 第 12 轮第六刀起调用点随 commitOpenBook 搬进
+  // renderer/open-book-flow-ui.js（闸门跟着实现搬家），renderer.js 只剩同名转发。
+  assert.ok(
+    fs.readFileSync(path.join(ROOT, 'renderer', 'open-book-flow-ui.js'), 'utf8').includes('openBookGuard.resolveOpenTarget('),
+    '开书要走起点解析'
+  );
   assert.ok(openBookGuardSrc.includes('target.chapterIndex !== undefined'), 'resolveOpenTarget 要认 chapterIndex');
   assert.ok(openBookGuardSrc.includes('chapterIndex < chapters.length'), 'chapterIndex 要按本书章节数校验');
   assert.match(

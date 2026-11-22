@@ -81,7 +81,7 @@ test('assertHost：缺成员（undefined / null）都抛「的 host 缺少 key�
 
 test('静态闸门：37 个 host 消费者都只调共享 assertHost（清单与文案留在模块里）', () => {
   const files = consumers();
-  assert.equal(files.length, 42, 'host 消费者数量变了（新增 / 删除模块请同步本闸门）');
+  assert.equal(files.length, 43, 'host 消费者数量变了（新增 / 删除模块请同步本闸门）');
   for (const file of files) {
     const raw = read(`renderer/${file}`);
     const src = stripComments(raw);
