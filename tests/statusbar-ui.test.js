@@ -6,7 +6,7 @@ const staleGuard = require('../renderer/stale-guard');
 const editorLogic = require('../renderer/editor-logic');
 const chaptersLib = require('../core/chapters');
 const commonLib = require('../core/common');
-const { loadSourceGate, restoreGlobalsAfter, makeIdEl } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, makeIdEl, stripAssertHostBranch } = require('./ui-test-preambles');
 
 // v0.9 B-5 第七刀：两个小分区（「状态栏」79 行 +「外部修改检测」32 行，合计 111 行）从
 // renderer.js 搬到 renderer/statusbar-ui.js。搬之前这两块只有 E2E 黑盒覆盖（打字看本章字数 /
@@ -534,9 +534,8 @@ test('静态闸门：index.html 在 renderer.js 之前加载 statusbar-ui.js，�
 test('静态闸门：模块只读 state / 只碰 DOM 与 window，不摸文件系统与 IPC', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'document.']) {
     assert.equal(runtimeCode.includes(forbidden), false, forbidden);
   }

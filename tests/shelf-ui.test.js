@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const shelfUi = require('../renderer/shelf-ui');
-const { loadSourceGate, restoreGlobalsAfter, makeEl: makeBaseEl } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, makeEl: makeBaseEl, stripAssertHostBranch } = require('./ui-test-preambles');
 
 // v0.9 B-5 第六刀：三个小分区（「继续上次写作」42 行 +「同步冲突副本提示」27 行 +
 // 「切换 / 新建 / 重命名 / 删除」27 行，合计 96 行）从 renderer.js 搬到 renderer/shelf-ui.js。
@@ -485,9 +485,8 @@ test('静态闸门：index.html 在 renderer.js 之前加载 shelf-ui.js，且�
 test('静态闸门：模块只读 state / 只碰 DOM，不摸文件系统与 IPC', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(']) {
     assert.equal(runtimeCode.includes(forbidden), false, forbidden);
   }

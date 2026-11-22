@@ -77,6 +77,24 @@ function loadSourceGate(moduleFile) {
   };
 }
 
+// T8（三审·低）：UMD 的 Node 分支那几行只在这里写一次。
+// 以前 22+ 个 UI 测试文件各抄一份「module.exports = factory(require('../core/assert-host').assertHost);」
+// 再各自断言一次 —— 口径调整要同步改二十几处、漏改即假红。集中闸门（require / 浏览器全局名 /
+// 工厂签名三件事）只在 tests/assert-host.test.js 里做；各模块自己的用途只有一个：
+// 把 Node 分支那几行剥掉，剩下的算「运行时代码」，再去扫「运行时代码不许 require 任何东西」。
+const ASSERT_HOST_NODE_BRANCH = "module.exports = factory(require('../core/assert-host').assertHost);";
+// shelf-search-ui 的 Node 分支多取一个 core/common.js（组键算法唯一一份，RSHE-C-03）。
+const ASSERT_HOST_COMMON_NODE_BRANCH =
+  "module.exports = factory(require('../core/common'), require('../core/assert-host').assertHost);";
+
+function stripAssertHostBranch(source) {
+  return String(source)
+    .split(ASSERT_HOST_NODE_BRANCH)
+    .join('')
+    .split(ASSERT_HOST_COMMON_NODE_BRANCH)
+    .join('');
+}
+
 // 共享最小假 DOM 基线：一个元素 + 它真正会被用到的行为。
 // 只给「所有 UI 模块共同需要」的部分；领域里额外的怪癖（options 追加、getBoundingClientRect 固定值、
 // createElement(tag) 的 tagName 语义、Map 版 _attrs）留在各用例文件里，别在基线里猜。
@@ -277,6 +295,9 @@ module.exports = {
   makeIdEl,
   FAKE_DOM_MIGRATED,
   loadSourceGate,
+  ASSERT_HOST_NODE_BRANCH,
+  ASSERT_HOST_COMMON_NODE_BRANCH,
+  stripAssertHostBranch,
   restoreGlobalsAfter,
   withoutGlobals
 };

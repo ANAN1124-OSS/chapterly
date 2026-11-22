@@ -15,7 +15,7 @@ const path = require('node:path');
 
 const configChangeUi = require('../renderer/config-change-ui');
 const manifest = require('../renderer/assembly-manifest');
-const { loadSourceGate } = require('./ui-test-preambles');
+const { loadSourceGate, stripAssertHostBranch } = require('./ui-test-preambles');
 
 const ROOT = path.join(__dirname, '..');
 const { rendererCode, indexSrc, moduleSrc, moduleCode } = loadSourceGate('config-change-ui.js');
@@ -320,7 +320,8 @@ test('R1c（SS-08）：currentRoot 只认 state.config.booksRoot 的字符串值
 test('R8（N2）：装配接线——index 顺序 / 清单 / renderer 订阅 / preload 通道 / main 换根广播', () => {
   // 模块在浏览器里挂全局名、Node 里只取 assert-host（不碰 fs / IPC / document）
   assert.match(moduleSrc, /root\.CWConfigChangeUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost\);/);
-  const runtimeCode = moduleCode.split("module.exports = factory(require('../core/assert-host').assertHost);").join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处；这里只要「剥掉 Node 分支后的运行时代码」
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'fetch(', 'document.']) {
     assert.equal(runtimeCode.includes(forbidden), false, `换根提示模块不该依赖 ${forbidden}`);
   }

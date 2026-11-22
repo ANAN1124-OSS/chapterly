@@ -7,6 +7,10 @@ const editorMarksUi = require('../renderer/editor-marks-ui');
 const editorLogic = require('../renderer/editor-logic');
 const commonLib = require('../core/common');
 const caretColorLib = require('../core/caret-color');
+// T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处；这里只用共用的「剥掉 Node 分支」helper。
+const { stripAssertHostBranch } = require('./ui-test-preambles');
+// T8（三审·低）：跨层共用的夹紧口径用例表（配置层 / 编辑器标记层 / 设置面板回填同一份契约）
+const { LONG_PARAGRAPH_THRESHOLD_CASES } = require('./clamp-contracts');
 
 // 第 4 步 renderer 九刀·第三刀：编辑器小件（原 renderer.js 1519–1951，433 行）搬到 renderer/editor-marks-ui.js。
 // 搬之前这一域只有 E2E 第 65 组黑盒覆盖（建标记层 / 超长段落黄线 / 当前段落高亮 / 菜单开关）；
@@ -717,11 +721,13 @@ test('超长段落阈值（1.1.0）：菜单 / 标签 / 气泡 / 黄线判定都
   assert.match(chip.title, /超过 520 字的段落/);
   assert.equal(long.textContent, '✓ 超长段落提示（>520 字左侧黄线）');
 
-  // 坏值 / 越界：与 editor-logic 的 LONG_PARAGRAPH_DEFAULT / LIMITS 同口径（49→50 / 20001→20000 / NaN→500）
-  for (const [raw, expected] of [[49, 50], [20001, 20000], [NaN, editorLogic.LONG_PARAGRAPH_DEFAULT]]) {
+  // 坏值 / 越界：与 editor-logic 的 LONG_PARAGRAPH_DEFAULT / LIMITS 同口径。
+  // T8（三审·低）：用例表与配置层 / 设置面板共用 tests/clamp-contracts.js 的一份（49→50 /
+  // 20001→20000 / NaN 与坏类型→500），改口径只改那一处，不再三处各抄一张表。
+  for (const { raw, expected, note } of LONG_PARAGRAPH_THRESHOLD_CASES) {
     threshold = raw;
     ctx.ui.renderMarksMenu();
-    assert.equal(long.textContent, `✓ 超长段落提示（>${expected} 字左侧黄线）`, String(raw));
+    assert.equal(long.textContent, `✓ 超长段落提示（>${expected} 字左侧黄线）`, `${note}（${String(raw)}）`);
   }
 });
 
@@ -1035,9 +1041,8 @@ test('静态闸门：index.html 在 renderer.js 之前加载 editor-marks-ui.js�
 test('静态闸门：模块不 require / 不摸 Electron·fs·网络；事件与定时器位置可控', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'process.']) {
     assert.equal(runtimeCode.includes(forbidden), false, 'editor-marks-ui.js 不许出现 ' + forbidden);
   }

@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const saveStatusUi = require('../renderer/save-status-ui');
-const { loadSourceGate, restoreGlobalsAfter, makeIdEl } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, makeIdEl, stripAssertHostBranch } = require('./ui-test-preambles');
 
 restoreGlobalsAfter(test, ['document', 'window']);
 
@@ -301,9 +301,8 @@ test('静态闸门：渲染层只剩接线——保存成功不弹 toast、四�
 test('静态闸门：模块只读 state / 只碰 DOM 与一个 2s 定时器，不摸文件系统与 IPC', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'document.']) {
     assert.equal(runtimeCode.includes(forbidden), false, forbidden);
   }

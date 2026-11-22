@@ -14,6 +14,11 @@ const MAIN_SOURCE = fsSync
   .replace(/\r\n/g, '\n');
 
 const tmpCleanup = require('./tmp-cleanup');
+// T8（三审·低）：跨层共用的夹紧口径用例表（配置层 / 编辑器标记层 / 设置面板回填同一份契约）
+const {
+  LONG_PARAGRAPH_THRESHOLD_CASES,
+  LONG_PARAGRAPH_THRESHOLD_CORE_ONLY_CASES
+} = require('./clamp-contracts');
 
 // TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
 const mkTmp = (prefix = 'cw-config-') => tmpCleanup.mkTmp(prefix);
@@ -550,12 +555,11 @@ test('首次运行提示（1.3.0 T5）：默认未提示、只有真正的 true 
 
 test('超长段落阈值（1.1.0）：默认 500、夹紧 50–20000、非法值回落；全局默认与按书覆盖分开', async () => {
   // core 不能 require 渲染层，所以 core 侧留了同口径常量；这里用 editor-logic 的真实常量 / 边界
-  // 钉住两边一致（默认值与 49→50 / 20001→20000 的行为必须同口径）。
+  // 钉住两边一致（默认值与 49→50 / 20001→20000 的行为必须同口径，用例表在 tests/clamp-contracts.js）。
   const editorLogic = require('../renderer/editor-logic');
-  const [limitMin, limitMax] = editorLogic.LONG_PARAGRAPH_LIMITS;
   assert.equal(DEFAULTS.longParagraphThreshold, editorLogic.LONG_PARAGRAPH_DEFAULT, '默认值必须两处一致');
   assert.equal(DEFAULTS.longParagraphThreshold, 500);
-  assert.deepEqual(editorLogic.LONG_PARAGRAPH_LIMITS, [50, 20000]);
+  assert.deepEqual(editorLogic.LONG_PARAGRAPH_LIMITS, [50, 20000], '夹紧区间必须两处一致');
 
   // 全局默认：旧配置没有这个键 = 500，别的字段照常读
   assert.equal(sanitize({}).longParagraphThreshold, 500);
@@ -564,14 +568,14 @@ test('超长段落阈值（1.1.0）：默认 500、夹紧 50–20000、非法值
   assert.equal(old.booksRoot, 'D:\\旧书架');
   assert.equal(old.editorPaper, 'night');
 
-  // 边界：49→50 / 20001→20000 / 正好 50 / 20000 保留 / NaN 与坏类型回落 500
-  assert.equal(sanitize({ longParagraphThreshold: 49 }).longParagraphThreshold, limitMin);
-  assert.equal(sanitize({ longParagraphThreshold: 50 }).longParagraphThreshold, 50);
-  assert.equal(sanitize({ longParagraphThreshold: 20000 }).longParagraphThreshold, 20000);
-  assert.equal(sanitize({ longParagraphThreshold: 20001 }).longParagraphThreshold, limitMax);
-  assert.equal(sanitize({ longParagraphThreshold: NaN }).longParagraphThreshold, 500);
-  for (const bad of ['abc', null, undefined, {}, [], Infinity, -Infinity]) {
-    assert.equal(sanitize({ longParagraphThreshold: bad }).longParagraphThreshold, 500, String(bad));
+  // 边界：夹紧口径只有一份（tests/clamp-contracts.js 的 LONG_PARAGRAPH_THRESHOLD_CASES），
+  // 配置层 / 编辑器标记层 / 设置面板回填三层共用（T8：以前三个文件各抄一张同样的表）。
+  for (const { raw, expected, note } of LONG_PARAGRAPH_THRESHOLD_CASES) {
+    assert.equal(sanitize({ longParagraphThreshold: raw }).longParagraphThreshold, expected, `${note}（${String(raw)}）`);
+  }
+  // 配置层独有的一条：null / [] 算坏类型 → 500（clampInt 走 Number() 会得 0 → 50，见 clamp-contracts 文件头）
+  for (const { raw, expected, note } of LONG_PARAGRAPH_THRESHOLD_CORE_ONLY_CASES) {
+    assert.equal(sanitize({ longParagraphThreshold: raw }).longParagraphThreshold, expected, `${note}（${String(raw)}）`);
   }
   // 可输入小数：和配置层其它整数字段一样四舍五入（620.4→620 / 620.6→621）
   assert.equal(sanitize({ longParagraphThreshold: 620.4 }).longParagraphThreshold, 620);

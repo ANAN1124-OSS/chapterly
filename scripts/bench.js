@@ -7,8 +7,11 @@
 // 改前改后都用同一份脚本取数，才有可比性。
 //
 // 为什么单独一个文件：这些数字必须能反复量，而不是「感觉快了」。脚本本身**只读产品代码**、
-// 零运行时依赖（只 require node: 内建 + 仓库里的 core/*），书库与配置全在临时目录，
-// 跑完只留下临时目录（与 pnpm run e2e 一样，不自动删——删除动作一律不进这个项目）。
+// 零运行时依赖（只 require node: 内建 + 仓库里的 core/*），书库与配置全在临时目录。
+//
+// T10（三审·低）：临时目录的回收口径与 `node scripts/run-e2e.js` 统一 —— **成功跑完即回收，
+// 失败 / 超时留现场**（路径会打印出来，供排查）。判定在 scripts/e2e-runner-logic.js 的
+// cleanupDecision（纯函数、单测覆盖），三个脚本共用同一份，不再各写一句「不自动删」。
 //
 // 用法：
 //   node scripts/bench.js                              # 默认：书架 280 本 × 3 章 + 千章大书，每项 5 次样本
@@ -105,7 +108,7 @@ function usageText() {
     '  --out=路径        结果 JSON 落点（默认 shots/bench-<时间>.json）',
     '  --help            打这份说明',
     '',
-    '说明：书库与配置全部建在系统临时目录（绝不碰真实书库），跑完只留临时目录。'
+    '说明：书库与配置全部建在系统临时目录（绝不碰真实书库）；成功跑完即回收，失败留现场（路径会打出来）。'
   ].join('\n');
 }
 
@@ -470,7 +473,19 @@ async function main(argv = process.argv.slice(2)) {
   console.log(formatLines(report).join('\n'));
   console.log('');
   console.log(`结果 JSON：${outPath}`);
-  console.log(`临时书库（可保留 / 可手动删）：${base}`);
+  // T10（三审·低）：回收口径与 run-e2e / a11y-gate 共用一份（成功即回收、失败留现场）。
+  // 这里能走到这一行 = 本次基准完整跑完，所以按成功处理；中途抛错会走下面的 catch，目录原样留下。
+  const decision = require('./e2e-runner-logic').cleanupDecision({ ok: true });
+  if (decision.remove) {
+    try {
+      await fsp.rm(base, { recursive: true, force: true });
+      console.log('临时书库已回收（成功跑完）。');
+    } catch (err) {
+      console.error(`[bench] 临时目录回收失败：${err.message}（路径 ${base}）`);
+    }
+  } else {
+    console.log(`临时书库保留（${decision.reason}，供排查）：${base}`);
+  }
   return 0;
 }
 

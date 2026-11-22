@@ -178,6 +178,43 @@ test('静态闸门：四个嵌套分组模块改用 REQUIRED_GROUPS（分组样�
   }
 });
 
+// ---------- T8（三审 4.3）：UMD 分支闸门只许有一处 ----------
+// 以前 22 个 UI 测试文件各抄一份「module.exports = factory(require('../core/assert-host').assertHost);」
+// 再各自断言一次：口径调整要同步改 22 处、漏改即假红。现在那条字面量只在 tests/ui-test-preambles.js
+// 里出现一次（stripAssertHostBranch），集中闸门就在本文件上面那条用例里。
+test('T8：各 UI 测试不许再自己抄一份 UMD 分支闸门（只留 ui-test-preambles + 本文件）', () => {
+  const preambles = require('./ui-test-preambles');
+  // helper 行为：只剥 UMD 的 Node 分支那一行，其它 require 原样留下
+  const sample = [
+    "const a = 1;",
+    "module.exports = factory(require('../core/assert-host').assertHost);",
+    "const fs = require('node:fs');",
+    "require('./other');"
+  ].join('\n');
+  const stripped = preambles.stripAssertHostBranch(sample);
+  assert.equal(stripped.includes('../core/assert-host'), false, 'helper 要真的剥掉那一行');
+  assert.match(stripped, /require\('node:fs'\)/, '别的 require 不许被连带剥掉');
+  assert.match(stripped, /require\('\.\/other'\)/);
+  assert.equal(preambles.ASSERT_HOST_NODE_BRANCH, "module.exports = factory(require('../core/assert-host').assertHost);");
+
+  // 反门禁：任何测试文件（除 helper 与本文件）都不许再出现本地那份 assertHostBranch 抄写
+  const offenders = [];
+  for (const name of fs.readdirSync(__dirname).filter((file) => file.endsWith('.js')).sort()) {
+    if (name === 'ui-test-preambles.js' || name === 'assert-host.test.js') continue;
+    const raw = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    if (raw.includes('const assertHostBranch =')) offenders.push(name);
+    // 也不许把那条字面量再写一遍（各文件只需要 helper；重复写会让口径再次分叉）
+    if (raw.includes(preambles.ASSERT_HOST_NODE_BRANCH)) offenders.push(`${name}（字面量重复）`);
+  }
+  assert.deepEqual(offenders, [], `这些测试还在自己抄 UMD 分支：${offenders.join(' / ')}`);
+  // 至少还有多处在用 helper（不是把调用点全删光的假绿）
+  const users = fs
+    .readdirSync(__dirname)
+    .filter((file) => file.endsWith('.js') && file !== 'ui-test-preambles.js')
+    .filter((file) => fs.readFileSync(path.join(__dirname, file), 'utf8').includes('stripAssertHostBranch'));
+  assert.ok(users.length >= 20, `用共享 helper 的测试文件太少（${users.length}）——是不是又各自抄回去了？`);
+});
+
 test('浏览器链：先加载 core/assert-host.js 后，模块的 create 缺成员仍逐字报错', () => {
   const win = {};
   const context = vm.createContext(win);

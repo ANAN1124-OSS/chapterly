@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const shelfNavUi = require('../renderer/shelf-nav-ui');
+// T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处；这里只用共用的「剥掉 Node 分支」helper。
+const { stripAssertHostBranch } = require('./ui-test-preambles');
 
 // v0.9 B-5 第十刀：「返回书架」+「改名」两个相邻小分区（62 行）从 renderer.js 搬到
 // renderer/shelf-nav-ui.js。搬出来以后用「假 host + 假 state + 调用顺序日志」逐条钉住
@@ -370,9 +372,8 @@ test('静态闸门：index.html 顺序（shelf-filter-ui → shelf-search-ui →
 test('静态闸门：模块不 require / 不摸 Electron·fs·网络·window，state 只写回书架那 12 个既有字段', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'document.']) {
     assert.equal(runtimeCode.includes(forbidden), false, 'shelf-nav-ui.js 不许出现 ' + forbidden);
   }

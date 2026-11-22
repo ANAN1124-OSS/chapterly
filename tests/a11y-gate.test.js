@@ -347,7 +347,19 @@ test('临时目录守卫：只肯在系统临时目录里建夹具 / userData', 
 test('脚本自己是只读的：不写产品 / 源码，报告只落在 shots/ 或 --json 指定的地方', () => {
   const source = read('scripts', 'a11y-gate.js');
   assert.ok(!/writeFileSync\(/.test(source), '报告一律走 fsp.writeFile，不用同步写');
-  assert.ok(!/rmSync\(/.test(source), '不删任何东西');
+  // T10（三审·低）：旧口径是「不删任何东西」；现在与 run-e2e / bench 统一成
+  // 「实测通过即回收、失败留现场」。断言跟错：改钉共享判定 + 只在通过时回收。
+  assert.ok(!/rmSync\(/.test(source), '回收走异步 fsp.rm，不用同步删除');
+  assert.match(
+    source,
+    /require\('\.\/e2e-runner-logic'\)\.cleanupDecision\(\{ ok: summary\.ok \}\)/,
+    '回收判定必须用 scripts/e2e-runner-logic.js 的共享实现（成功即回收、失败留现场）'
+  );
+  const decisionAt = source.indexOf('cleanupDecision({ ok: summary.ok })');
+  const rmAt = source.indexOf('await fsp.rm(base, { recursive: true, force: true })');
+  assert.ok(decisionAt > 0 && rmAt > decisionAt, '先判定再回收（顺序反了等于无条件删）');
+  assert.match(source, /if \(cleanup\.remove\) \{/, '只有判定为「该回收」时才删');
+  assert.match(source, /临时目录保留（\$\{cleanup\.reason\}，供排查）/, '没通过要把临时目录留下来并打印路径');
   assert.ok(!/require\('electron'\)/.test(source), '不需要 electron 模块本身（用 start.js 起进程）');
   assert.ok(source.includes("path.join(ROOT, 'shots', 'a11y-gate')"), '默认报告目录固定在 shots/a11y-gate');
   assert.ok(source.includes('assertTempDir('), '临时目录守卫必须在');

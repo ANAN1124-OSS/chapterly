@@ -404,9 +404,20 @@ test('静态闸门：脚本零运行时依赖，只 require node 内建或仓库
   }
 });
 
-test('静态闸门：基准脚本不删任何东西（删除动作不进这个项目）', () => {
-  for (const pattern of [/\bfsp?\.rm(Sync)?\s*\(/, /\bunlink(Sync)?\s*\(/, /\brmdir(Sync)?\s*\(/]) {
-    assert.ok(!pattern.test(BENCH_SRC), `bench.js 不许删除文件 / 目录：${pattern}`);
+test('静态闸门：基准脚本的临时目录回收走共享口径（成功即回收、失败留现场）', () => {
+  // T10（三审·低）：旧口径是「基准脚本不删任何东西」；现在与 run-e2e / a11y-gate 统一成
+  // 「跑完即回收、失败留现场」。断言跟错：改钉共享判定 + 只在成功时回收 + 仍不许 unlink/rmdir。
+  assert.match(
+    BENCH_SRC,
+    /require\('\.\/e2e-runner-logic'\)\.cleanupDecision\(\{ ok: true \}\)/,
+    'bench 必须用 scripts/e2e-runner-logic.js 的共享判定（与 e2e / a11y-gate 同一份）'
+  );
+  const decisionAt = BENCH_SRC.indexOf('cleanupDecision({ ok: true })');
+  const rmAt = BENCH_SRC.indexOf('await fsp.rm(base, { recursive: true, force: true })');
+  assert.ok(decisionAt > 0 && rmAt > decisionAt, '先判定再回收');
+  assert.match(BENCH_SRC, /if \(decision\.remove\) \{/, '只有判定为「该回收」时才删');
+  for (const pattern of [/\bunlink(Sync)?\s*\(/, /\brmdir(Sync)?\s*\(/, /\brmSync\s*\(/]) {
+    assert.ok(!pattern.test(BENCH_SRC), `bench.js 不许用别的删除手段：${pattern}`);
   }
 });
 

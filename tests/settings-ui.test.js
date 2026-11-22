@@ -20,6 +20,8 @@ const chaptersLib = require('../core/chapters');
 // peers{stats,writeTimer,editor,words,refreshShelf} + texts{commonLib,formatBytes}；分组内每个真实依赖都写进模块头注释。
 
 const preambles = require('./ui-test-preambles');
+// T8（三审·低）：跨层共用的夹紧口径用例表（配置层 / 编辑器标记层 / 设置面板回填同一份契约）
+const { LONG_PARAGRAPH_THRESHOLD_CASES } = require('./clamp-contracts');
 preambles.restoreGlobalsAfter(test, ['document']);
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -1206,15 +1208,16 @@ test('saveSettings（全局）：关闭写作时长前 flush、setConfig payload
 });
 
 test('超长段落阈值（1.1.0）：回填按同一夹紧口径，保存 payload 两种作用域都带阈值，取消不写盘', async () => {
-  // 回填：越界 / 坏值按 editor-logic 同一口径（20001→20000 / 49→50 / 缺字段→500）
-  for (const [raw, expected] of [[20001, '20000'], [49, '50'], [undefined, '500']]) {
+  // 回填：按 editor-logic 同一口径。T8（三审·低）：用例表与配置层 / 编辑器标记层共用
+  // tests/clamp-contracts.js 的一份（越界夹到端点、坏值回落 500）。
+  for (const { raw, expected, note } of LONG_PARAGRAPH_THRESHOLD_CASES) {
     const ctx = build({
       view: 'shelf',
       bookId: null,
       config: { booksRoot: '/书库', longParagraphThreshold: raw }
     });
     await ctx.ui.openSettings();
-    assert.equal(ctx.dom.map.get('settings-long-para-threshold').value, expected, String(raw));
+    assert.equal(ctx.dom.map.get('settings-long-para-threshold').value, String(expected), `${note}（${String(raw)}）`);
   }
 
   // 表单里的阈值原样进按书保存路径（真正读输入框的 readDisplayForm 在 renderer.js，E2E 覆盖）
@@ -1378,9 +1381,8 @@ test('静态闸门：index.html 在 renderer.js 之前加载 settings-ui.js，�
 test('静态闸门：模块不 require / 不摸 Electron·fs·网络；无全局监听 / 无定时器', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = preambles.stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'process.']) {
     assert.equal(runtimeCode.includes(forbidden), false, 'settings-ui.js 不许出现 ' + forbidden);
   }

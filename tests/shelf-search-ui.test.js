@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const shelfSearchUi = require('../renderer/shelf-search-ui');
-const { loadSourceGate, withoutGlobals } = require('./ui-test-preambles');
+const { loadSourceGate, withoutGlobals, stripAssertHostBranch } = require('./ui-test-preambles');
 
 // v0.9 B-5 第八刀：「书架正文搜索」分区（85 行）从 renderer.js 搬到 renderer/shelf-search-ui.js。
 // 搬出来以后用「假 host + 假 state」逐条钉住正文搜索的异步链路：320ms 防抖、令牌旧响应丢弃、
@@ -597,10 +597,9 @@ test('静态闸门：index.html 在 renderer.js 之前加载 shelf-search-ui.js�
 test('静态闸门：模块不摸文件系统 / IPC / DOM / 存储，只读写 state.shelfContent', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // RSHE-C-03 起同一条分支还取 core/common.js（组键算法唯一一份）。
-  const assertHostBranch =
-    "module.exports = factory(require('../core/common'), require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须取 core/common.js 与 core/assert-host.js');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支的具体形状只由 tests/assert-host.test.js 核对；这里只剥掉那条 Node 分支
+  // （本模块多取 core/common.js，helper 两种形状都认）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'document.', 'addEventListener', 'window.']) {
     assert.equal(runtimeCode.includes(forbidden), false, forbidden);
   }

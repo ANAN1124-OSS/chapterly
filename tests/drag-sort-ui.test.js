@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const dragSort = require('../renderer/drag-sort-ui');
-const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, stripAssertHostBranch } = require('./ui-test-preambles');
 
 // v0.9 B-5 第五刀：「章节拖拽排序」一段（原 renderer.js 1539–1745 行，207 行）
 // 搬到 renderer/drag-sort-ui.js。搬之前这段只有 E2E 的黑盒覆盖
@@ -1014,9 +1014,8 @@ test('静态闸门：index.html 顺序 + 模块不摸 Electron / fs / require + 
   assert.equal((indexSrc.match(/drag-sort-ui\.js/g) || []).length, 1, 'index.html 只该加载一次');
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const banned of ['require(', 'electron', 'process.', 'fs.', 'ipcRenderer']) {
     assert.equal(runtimeCode.includes(banned), false, '模块不该出现：' + banned);
   }

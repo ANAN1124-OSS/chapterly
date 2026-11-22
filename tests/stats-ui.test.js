@@ -6,7 +6,7 @@ const statsLogic = require('../renderer/stats-logic');
 const staleGuard = require('../renderer/stale-guard');
 const editorLogic = require('../renderer/editor-logic');
 const commonLib = require('../core/common');
-const { loadSourceGate, restoreGlobalsAfter, makeEl: makeBaseEl } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, makeEl: makeBaseEl, stripAssertHostBranch } = require('./ui-test-preambles');
 
 // v0.9 B-5 第三刀：「每日字数统计」+「码字日历 / 连续写作天数 / 月度汇总」两个相邻分区
 // （原 renderer.js 3609–3715 + 3717–3720 + 3725–3817 行，205 行）搬到 renderer/stats-ui.js。
@@ -683,9 +683,8 @@ test('静态闸门：index.html 在 renderer.js 之前加载 stats-ui.js，模�
   assert.ok(indexSrc.indexOf('src="stats-logic.js"') < moduleIdx, '排在 stats-logic.js 之后');
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   assert.equal(/\brequire\s*\(/.test(runtimeCode), false, 'stats-ui.js 不许 require');
   assert.equal(/ipcRenderer|node:fs|\bwindow\s*\.\s*cwApi/.test(moduleCode), false, '不许自己摸 Electron / 文件系统');
   assert.equal(/^ {2}\$\(/m.test(moduleCode), false, '模块顶层不许直接查 DOM');

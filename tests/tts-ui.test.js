@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const ttsUi = require('../renderer/tts-ui');
-const { loadSourceGate, restoreGlobalsAfter } = require('./ui-test-preambles');
+const { loadSourceGate, restoreGlobalsAfter, stripAssertHostBranch } = require('./ui-test-preambles');
 
 // v0.9 B-6：朗读的播放状态机 / 朗读条从 renderer.js 整段搬到 renderer/tts-ui.js。
 // 搬之前这一域只有 E2E 第 49 组（真实 Electron + 假语音引擎）覆盖，状态机在 Node 里一步都测不到；
@@ -528,9 +528,8 @@ test('静态闸门：index.html 在 renderer.js 之前加载 tts-ui.js，且模�
   assert.ok(ttsIdx < rendererIdx, 'tts-ui.js 必须排在 renderer.js 之前');
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleSrc.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeSrc = moduleSrc.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处；这里只要剥掉它的运行时代码。
+  const runtimeSrc = stripAssertHostBranch(moduleSrc);
   assert.ok(!/\brequire\s*\(/.test(runtimeSrc), 'tts-ui.js 不许 require');
   assert.ok(!/window\.cwApi|\bipcRenderer\b|node:fs/.test(moduleSrc), 'tts-ui.js 不许自己摸 Electron / 文件系统');
   // 模块顶层（2 空格缩进的语句）不许直接查 DOM（Node 里 require 成功已经证明「加载时不碰 DOM」）

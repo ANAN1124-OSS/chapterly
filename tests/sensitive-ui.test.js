@@ -6,6 +6,8 @@ const vm = require('node:vm');
 const sensitiveUi = require('../renderer/sensitive-ui');
 const staleGuard = require('../renderer/stale-guard');
 const chaptersLib = require('../core/chapters');
+// T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处；这里只用共用的「剥掉 Node 分支」helper。
+const { stripAssertHostBranch } = require('./ui-test-preambles');
 
 // 第 4 步 renderer 九刀·第五刀：敏感词预检（原 renderer.js 4005–4327，323 行）搬到 renderer/sensitive-ui.js。
 // 搬之前这一域只有 E2E 黑盒覆盖（选词表 → 预检 → 点命中跳过去）；词表状态文案 / 摘要各分支 /
@@ -635,9 +637,8 @@ test('静态闸门：index.html 在 renderer.js 之前加载 sensitive-ui.js，�
 test('静态闸门：模块不 require / 不摸 Electron·fs·网络，也不注册全局监听 / 不建定时器', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'process.']) {
     assert.equal(runtimeCode.includes(forbidden), false, 'sensitive-ui.js 不许出现 ' + forbidden);
   }

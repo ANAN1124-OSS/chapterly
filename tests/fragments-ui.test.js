@@ -7,6 +7,8 @@ const fragmentsUi = require('../renderer/fragments-ui');
 const staleGuard = require('../renderer/stale-guard');
 const chaptersLib = require('../core/chapters');
 const commonLib = require('../core/common');
+// T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处；这里只用共用的「剥掉 Node 分支」helper。
+const { stripAssertHostBranch } = require('./ui-test-preambles');
 
 // 第 4 步 renderer 九刀·补刀 10：灵感箱 / 碎片速记（原 renderer.js 2747–2978，232 行）搬到 renderer/fragments-ui.js。
 // 搬之前只有 E2E 黑盒覆盖（书架记碎片 / 写作页插入）；保存防重 / 空内容 / 插入位置按打开面板前的选区 /
@@ -898,9 +900,8 @@ test('静态闸门：index.html 在 renderer.js 之前加载 fragments-ui.js，�
 test('静态闸门：模块不 require / 不摸 Electron·fs / 不注册全局监听；只用 1 个聚焦定时器', () => {
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js（浏览器走 window.CWAssertHost）；
   // 运行时代码仍不许 require 任何东西。
-  const assertHostBranch = "module.exports = factory(require('../core/assert-host').assertHost);";
-  assert.ok(moduleCode.includes(assertHostBranch), 'UMD 的 Node 分支必须从 ./assert-host 取共享 host 校验');
-  const runtimeCode = moduleCode.split(assertHostBranch).join('');
+  // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
+  const runtimeCode = stripAssertHostBranch(moduleCode);
   for (const forbidden of ['require(', 'ipcRenderer', 'node:fs', 'child_process', 'localStorage', 'fetch(', 'window.', 'process.']) {
     assert.equal(runtimeCode.includes(forbidden), false, 'fragments-ui.js 不许出现 ' + forbidden);
   }

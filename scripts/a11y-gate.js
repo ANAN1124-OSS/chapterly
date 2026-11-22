@@ -17,7 +17,10 @@
 //
 // 口径（改脚本前先读）：
 //   * 实测用**真实 Electron + 真实渲染层**（DevTools Protocol 连上去，页面里 ?test=1 的钩子只用来摆状态），
-//     书库与 userData 全在**系统临时目录**，跑完只留临时目录；绝不读写真实书架 / 真实配置。
+//     书库与 userData 全在**系统临时目录**，绝不读写真实书架 / 真实配置。
+//     T10（三审·低）：临时目录回收口径与 `node scripts/run-e2e.js` 统一 —— 实测通过即回收，
+//     失败 / 超时 / 拿不到结果**留现场**（路径打印出来供排查）；判定在
+//     scripts/e2e-runner-logic.js 的 cleanupDecision（纯函数、单测覆盖），三个脚本共用同一份。
 //   * 目标尺寸看的是**有效目标盒**：checkbox / radio 套在 <label> 里时量 label 的盒子（点 label 也算点它）。
 //   * 小目标两条出路：间距例外（WCAG 2.5.8 原文口径）或允许清单（带原因 + 条数上限，多一条就报红）。
 //   * 允许清单只收「确实改不了 / 有替代路径」的，不收「懒得改」的；产品代码一行不改（T8 只做工具侧）。
@@ -794,7 +797,8 @@ function usageText() {
     '',
     '口径：2.5.8 目标 ≥24×24（间距例外 + 允许清单）；2.4.11 弹层里逐个聚焦、量遮不遮；',
     '      2.5.7 章节排序的 Alt+↑/↓ 键盘替代（静态 + E2E 断言）；3.3.7 人工走查；',
-    '      6 套主题令牌键齐全；APCA 影子参考只算不判。只读：书库与 userData 全在临时目录。'
+    '      6 套主题令牌键齐全；APCA 影子参考只算不判。只读：书库与 userData 全在临时目录，',
+    '      实测通过即回收、失败留现场（与 pnpm run e2e 同一口径）。'
   ].join('\n');
 }
 
@@ -1552,6 +1556,19 @@ async function main(argv = process.argv.slice(2)) {
   log('');
   log(`A11Y ${summary.ok ? 'OK' : 'FAIL'} :: 静态 ${staticChecks.length} 项 / 目标 ${targetVerdict.total} 条 / 焦点 ${focusVerdict.total} 条 / 违规 ${summary.problems.length}`);
   log(`报告 JSON：${outPath}`);
+  // T10（三审·低）：临时目录回收与 run-e2e / bench 同一口径 —— 实测通过即回收，失败留现场。
+  // 回收动作只有一处、只在「本次实测真的通过」时执行；--report 降级不退 1，但**没通过就照旧留现场**。
+  const cleanup = require('./e2e-runner-logic').cleanupDecision({ ok: summary.ok });
+  if (cleanup.remove) {
+    try {
+      await fsp.rm(base, { recursive: true, force: true });
+      log('临时目录已回收（实测通过）。');
+    } catch (err) {
+      log(`[a11y] 临时目录回收失败：${err.message}（路径 ${base}）`);
+    }
+  } else {
+    log(`[a11y] 临时目录保留（${cleanup.reason}，供排查）：${base}`);
+  }
   if (!summary.ok) {
     for (const problem of summary.problems) log(`  - ${problem}`);
   }
