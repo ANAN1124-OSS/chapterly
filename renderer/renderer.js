@@ -2066,7 +2066,9 @@
   // renderer/export-ui.js（v0.9 B-5 第一刀：只搬不改行为）。这里只剩接线：
   //   - exportFormat 是模块级 let，模块通过 host 的 get / set 读写它（testHooksScope 的
   //     get exportFormat() 与 E2E 的 __cwTest.exportFormat() 口径一字未变）；
-  //   - 9 个入口在这里绑成模块级 const，事件绑定 / Esc 注册表 / 测试钩子照旧按名字取。
+  //   - 5 个入口在这里绑成模块级 const（Esc 注册表 / 章节菜单 / 测试钩子照旧按名字取）；
+  //     第十刀把导出菜单与范围对话框接线搬进模块后，refreshExportSummary / scheduleExportSummary /
+  //     confirmExportDialog / copyBookFlow 只在模块内部用，编排器不再需要这 4 个别名。
   let exportFormat = 'txt';
   const exportUi = exportUiModule.create({
     api,
@@ -2081,6 +2083,11 @@
     chapterVolumeId,
     hideExportMenu,
     formatCount,
+    // M1 第一轮·低 第十刀：导出菜单里两个跨域入口是后段解构的 const（historyUi / sensitiveUi），
+    // create 时直接取值会撞 TDZ → 一律箭头转发（见账本 §8 第 10 轮「晚解构的依赖」）。
+    document,
+    openSensitivePanel: () => openSensitivePanel(),
+    openHistoryForCurrentBook: () => openHistoryForCurrentBook(),
     get exportFormat() {
       return exportFormat;
     },
@@ -2089,12 +2096,8 @@
     }
   });
   const readExportRange = exportUi.readExportRange;
-  const refreshExportSummary = exportUi.refreshExportSummary;
-  const scheduleExportSummary = exportUi.scheduleExportSummary;
   const openExportDialog = exportUi.openExportDialog;
   const closeExportDialog = exportUi.closeExportDialog;
-  const confirmExportDialog = exportUi.confirmExportDialog;
-  const copyBookFlow = exportUi.copyBookFlow;
   const copyChapterPlatformFlow = exportUi.copyChapterPlatformFlow;
   const openBookFolderFlow = exportUi.openBookFolderFlow;
 
@@ -3145,28 +3148,9 @@
       toggleExportMenu();
     });
 
-    $('export-menu').addEventListener('click', async (event) => {
-      const btn = event.target.closest('button[data-action]');
-      if (!btn) return;
-      hideExportMenu();
-      if (btn.dataset.action === 'copy') await copyBookFlow();
-      else if (btn.dataset.action === 'txt') openExportDialog('txt');
-      else if (btn.dataset.action === 'epub') openExportDialog('epub');
-      else if (btn.dataset.action === 'docx') openExportDialog('docx');
-      else if (btn.dataset.action === 'sensitive') await openSensitivePanel();
-      else if (btn.dataset.action === 'folder') await openBookFolderFlow();
-      else if (btn.dataset.action === 'history') await openHistoryForCurrentBook();
-    });
-
-    // 导出范围对话框
-    document.querySelectorAll('input[name="export-scope"]').forEach((radio) => {
-      radio.addEventListener('change', () => refreshExportSummary());
-    });
-    $('export-volume').addEventListener('change', () => refreshExportSummary());
-    $('export-from').addEventListener('input', () => scheduleExportSummary(120));
-    $('export-to').addEventListener('input', () => scheduleExportSummary(120));
-    $('btn-export-cancel').addEventListener('click', closeExportDialog);
-    $('btn-export-confirm').addEventListener('click', () => confirmExportDialog());
+    // 导出菜单 + 范围对话框接线（M1 第一轮·低 第十刀）：整段搬进 renderer/export-ui.js 的
+    // bindDialogEvents()；注册点保持原位（导出菜单分流 → 范围输入 → 取消 / 确认）。
+    exportUi.bindDialogEvents();
 
     // 跳章（Ctrl+G）
     $('jump-input').addEventListener('input', () => scheduleJumpMatches());

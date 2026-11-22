@@ -453,7 +453,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // M1 第九刀（第 14 轮）：朗读条事件接线（6 个按钮 / 3 个下拉 / voiceschanged，21 行）从 bindEvents
   //   整段搬进 renderer/tts-ui.js 的 bindBarEvents()（行为锚点 tests/tts-ui.test.js 的 M1 第九刀用例）。
   //   注册点仍在原位（同层监听器顺序不变），编排器只留一行 bindBarEvents() → 3827。
-  const RENDERER_LINE_MEASURED = 3827; // 2026-11-22 实测（第 14 轮 M1 第九刀拆出朗读条接线之后；split 口径）
+  // M1 第十刀（第 15 轮）：导出菜单 7 个分流 + 导出范围对话框 5 个输入 + 取消 / 确认（22 行）从 bindEvents
+  //   整段搬进 renderer/export-ui.js 的 bindDialogEvents()（行为锚点 tests/export-ui.test.js 的 M1 第十刀用例）。
+  //   注册点仍在原位（同层监听器顺序不变），编排器只留一行 bindDialogEvents()；四个只被模块内部
+  //   用到的入口别名同时从编排器删掉（eslint no-unused-vars）→ 3811。
+  const RENDERER_LINE_MEASURED = 3811; // 2026-11-22 实测（第 15 轮 M1 第十刀拆出导出菜单 / 范围对话框接线之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(

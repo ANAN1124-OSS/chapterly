@@ -1,14 +1,17 @@
 /* 导出 / 复制（v0.9 B-5 第一刀：从 renderer.js 按分区整段搬出来）。
  *
  * 为什么搬这一块：renderer.js 已到 9600 行闸门（搬前 9259 行），而「导出 / 复制」这一域的
- * 输入输出最清楚——整块只碰 10 个渲染层成员（api / $ / editorEl / s2tLib / call / state /
- * toast / volumeList / chapterVolumeId / hideExportMenu）+ 1 个活绑定（当前导出格式），
+ * 输入输出最清楚——整块只碰 13 个渲染层成员（api / $ / editorEl / s2tLib / call / state /
+ * toast / volumeList / chapterVolumeId / hideExportMenu / document / openSensitivePanel /
+ * openHistoryForCurrentBook）+ 1 个活绑定（当前导出格式），
  * 不碰 IPC 白名单、不碰存储、不碰 Esc 优先级；外部只有 10 个入口被别处按名字取
- * （事件绑定 8 处、Esc 注册表的 closeExportDialog、测试钩子 3 处）。
+ * （第十刀起 8 处事件绑定由模块的 bindDialogEvents() 自己挂、Esc 注册表的 closeExportDialog、
+ * 测试钩子 3 处）。
  *
  * 契约：createExportUi(host) 由渲染层调用一次，host 提供：
  *   host = {
  *     api, $, editorEl, s2tLib, call, state, toast, volumeList, chapterVolumeId, hideExportMenu,
+ *     document, openSensitivePanel, openHistoryForCurrentBook,
  *     get exportFormat() / set exportFormat(value)   // 活绑定：'txt' | 'epub' | 'docx'
  *   }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到点「导出」时才 ReferenceError）。
@@ -35,7 +38,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
-  const REQUIRED_HOST = ['api', '$', 'editorEl', 's2tLib', 'call', 'state', 'toast', 'volumeList', 'chapterVolumeId', 'hideExportMenu', 'formatCount', 'staleGuard'];
+  const REQUIRED_HOST = ['api', '$', 'editorEl', 's2tLib', 'call', 'state', 'toast', 'volumeList', 'chapterVolumeId', 'hideExportMenu', 'formatCount', 'staleGuard', 'document', 'openSensitivePanel', 'openHistoryForCurrentBook'];
 
   function createExportUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
@@ -43,7 +46,7 @@
     if (typeof host.exportFormat !== 'string') {
       throw new TypeError('createExportUi 的 host 缺少 exportFormat（当前导出格式的活绑定）');
     }
-    const { api, $, editorEl, s2tLib, call, state, toast, volumeList, chapterVolumeId, hideExportMenu, formatCount, staleGuard } = host;
+    const { api, $, editorEl, s2tLib, call, state, toast, volumeList, chapterVolumeId, hideExportMenu, formatCount, staleGuard, document, openSensitivePanel, openHistoryForCurrentBook } = host;
     if (!staleGuard || typeof staleGuard.sameIdentity !== 'function') {
       throw new TypeError('createExportUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
     }
@@ -440,11 +443,44 @@
     }
   }
 
+  // 导出菜单 + 范围对话框的事件接线（M1 第一轮·低 第十刀：从 renderer.js 的 bindEvents 整段搬进来）。
+  // 注册点仍由渲染层决定（bindEvents 里与原位置同一处）；挂的仍是本模块既有入口 +
+  // host 注入的两个跨域入口（敏感词预检 / 本书历史），文案 / 判据 / 顺序与搬前逐字一致。
+  // 幂等：宿主重入时不会挂出第二份（一次点击分流两次的经典坑）。
+  let dialogEventsBound = false;
+  function bindDialogEvents() {
+    if (dialogEventsBound) return;
+    dialogEventsBound = true;
+    $('export-menu').addEventListener('click', async (event) => {
+      const btn = event.target.closest('button[data-action]');
+      if (!btn) return;
+      hideExportMenu();
+      if (btn.dataset.action === 'copy') await copyBookFlow();
+      else if (btn.dataset.action === 'txt') openExportDialog('txt');
+      else if (btn.dataset.action === 'epub') openExportDialog('epub');
+      else if (btn.dataset.action === 'docx') openExportDialog('docx');
+      else if (btn.dataset.action === 'sensitive') await openSensitivePanel();
+      else if (btn.dataset.action === 'folder') await openBookFolderFlow();
+      else if (btn.dataset.action === 'history') await openHistoryForCurrentBook();
+    });
+
+    // 导出范围对话框
+    document.querySelectorAll('input[name="export-scope"]').forEach((radio) => {
+      radio.addEventListener('change', () => refreshExportSummary());
+    });
+    $('export-volume').addEventListener('change', () => refreshExportSummary());
+    $('export-from').addEventListener('input', () => scheduleExportSummary(120));
+    $('export-to').addEventListener('input', () => scheduleExportSummary(120));
+    $('btn-export-cancel').addEventListener('click', closeExportDialog);
+    $('btn-export-confirm').addEventListener('click', () => confirmExportDialog());
+  }
+
     return {
       readExportRange,
       validateExportRange,
       refreshExportSummary,
       scheduleExportSummary,
+      bindDialogEvents,
       openExportDialog,
       exportConversionMode,
       closeExportDialog,

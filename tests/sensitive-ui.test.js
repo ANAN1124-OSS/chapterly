@@ -32,6 +32,9 @@ const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 
 const indexSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'sensitive-ui.js'), 'utf8');
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+// M1 第十刀（第 15 轮）：导出菜单的分流从 bindEvents 搬进 renderer/export-ui.js 的 bindDialogEvents()，
+// 「sensitive 项调本模块入口」这条接线断言跟着实现搬到模块（断言内容不变）。
+const exportUiSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'export-ui.js'), 'utf8');
 
 // ---------- 假 DOM ----------
 function makeEl(tag = 'div', id = '') {
@@ -617,7 +620,9 @@ test('静态闸门：renderer.js 不再内嵌敏感词预检实现，只剩装�
   }
   assert.equal(rendererSrc.split('setupSensitiveUi();').length - 1, 1, 'setup 只调一次');
   assert.match(rendererSrc, /'close-sensitive': \(\) => closeSensitivePanel\(\),/);
-  assert.match(rendererSrc, /else if \(btn\.dataset\.action === 'sensitive'\) await openSensitivePanel\(\);/);
+  assert.match(exportUiSrc, /else if \(btn\.dataset\.action === 'sensitive'\) await openSensitivePanel\(\);/);
+  // 反向：编排器里不许再留第二份导出菜单分流（实现搬走后两份都能跑的回归抓不到）
+  assert.equal(rendererSrc.includes("btn.dataset.action === 'sensitive'"), false, '导出菜单分流不许回流编排器');
   assert.ok(rendererSrc.includes('sensitiveWordListText'), '设置域仍按名字用 sensitiveWordListText');
   assert.ok(rendererSrc.includes('refreshSensitiveWordList'), '设置域仍按名字用 refreshSensitiveWordList');
   assert.ok(rendererSrc.includes('pickSensitiveWords'), '设置面板按钮仍按名字用 pickSensitiveWords');

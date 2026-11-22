@@ -42,6 +42,19 @@ function makeEl(id) {
     appendChild(child) {
       this.options.push(child);
       return child;
+    },
+    // M1 第十刀：bindDialogEvents 的接线测试要记录「哪个元素挂了哪些监听」
+    listeners: {},
+    addEventListener(type, fn) {
+      (this.listeners[type] = this.listeners[type] || []).push(fn);
+    },
+    listenerCount(type) {
+      return (this.listeners[type] || []).length;
+    },
+    dispatch(type, event) {
+      let result;
+      for (const fn of this.listeners[type] || []) result = fn(event);
+      return result;
     }
   };
 }
@@ -52,6 +65,7 @@ function makeHost(options = {}) {
   const toasts = [];
   const calls = [];
   const menus = [];
+  const sensitivePanels = [];
   const state = {
     bookPath: options.bookPath === undefined ? 'C:/tmp/books/测试书' : options.bookPath,
     chapters: options.chapters || [
@@ -86,6 +100,14 @@ function makeHost(options = {}) {
     volumeList: () => volumes,
     chapterVolumeId: (chapter) => (chapter && chapter.volumeId) || null,
     hideExportMenu: () => { menus.push('hide'); },
+    // M1 第十刀：导出菜单里的两个跨域入口由渲染层按箭头转发注入（真实来源是 historyUi / sensitiveUi）
+    document: installedDoc,
+    openSensitivePanel: () => {
+      sensitivePanels.push('sensitive');
+    },
+    openHistoryForCurrentBook: () => {
+      sensitivePanels.push('history');
+    },
     formatCount: commonLib.formatCount,
     // WP-15（C37）：计划范围键比较用（生产由 renderer.js 注入 window.CWStaleGuard）
     staleGuard,
@@ -110,13 +132,17 @@ function makeHost(options = {}) {
       };
     }
   };
-  return { host, state, els, toasts, calls, menus, box };
+  return { host, state, els, toasts, calls, menus, box, sensitivePanels };
 }
 
 // 范围选择靠 document.querySelector 的两个选择器：checked 的 radio + 「全书」那个 radio。
+// M1 第十刀：bindDialogEvents 通过 document.querySelectorAll('input[name="export-scope"]')
+// 挂三个范围单选的 change 监听；这里用一个可换的数组喂它（每个用例自己决定放几个）。
 let checkedScope = 'all';
+let scopeRadios = [];
+let installedDoc = null;
 function installDom() {
-  globalThis.document = {
+  installedDoc = {
     querySelector(selector) {
       if (selector === 'input[name="export-scope"]:checked') {
         return checkedScope ? { value: checkedScope } : null;
@@ -126,12 +152,17 @@ function installDom() {
       }
       return null;
     },
+    querySelectorAll(selector) {
+      return selector === 'input[name="export-scope"]' ? scopeRadios : [];
+    },
     createElement: (tag) => ({ tag, value: '', textContent: '' })
   };
+  globalThis.document = installedDoc;
 }
 installDom();
 test.beforeEach(() => {
   checkedScope = 'all';
+  scopeRadios = [];
   installDom();
 });
 
@@ -164,9 +195,10 @@ test('create() 只建表：不碰 DOM、不读 state（Node 里能直接调）',
   try {
     const { host } = makeHost();
     const ui = exportUi.create(host);
-    // 9 个入口 + 校验 / 摘要 / 覆盖三组给单测直接调的内部件（拿不到 DOM 也照样建得出来）
+    // 9 个入口 + 接线 + 校验 / 摘要 / 覆盖三组给单测直接调的内部件（拿不到 DOM 也照样建得出来）
     assert.deepEqual(Object.keys(ui).sort(), [
       'archiveSummaryParts',
+      'bindDialogEvents',
       'closeExportDialog',
       'confirmExportDialog',
       'conversionTag',
@@ -630,6 +662,126 @@ test('scheduleExportSummary：连续改动只跑最后一次（clearTimeout 防�
   assert.equal(calls.length, 1, '三次改动只算最后一次');
 });
 
+// ---------- M1（第一轮·低）第十刀：导出菜单 / 范围对话框接线（bindDialogEvents） ----------
+// 22 行接线（导出菜单 7 个分流 + 范围对话框 5 个输入 + 取消 / 确认）从 renderer.js 的 bindEvents
+// 整段搬进 export-ui.js 的 bindDialogEvents()；这里用假 DOM 把「哪个元素 → 哪个入口」逐条钉住。
+function bindDialogs(options = {}) {
+  const h = makeHost(options);
+  scopeRadios = [makeEl('scope-all'), makeEl('scope-volume'), makeEl('scope-range')];
+  const ui = exportUi.create(h.host);
+  ui.bindDialogEvents();
+  return { ...h, ui };
+}
+
+function makeMenuClick(action) {
+  return {
+    target: {
+      closest: (selector) =>
+        selector === 'button[data-action]' ? { dataset: { action } } : null
+    }
+  };
+}
+
+test('M1 第十刀：导出菜单七个分流走模块既有入口（copy / txt / epub / docx / sensitive / folder / history）', async () => {
+  const h = bindDialogs();
+  const menu = h.els.get('export-menu');
+  assert.equal(menu.listenerCount('click'), 1, '导出菜单只挂一份点击监听');
+
+  // 复制整本：先收菜单，再走 copyBookFlow
+  await menu.dispatch('click', makeMenuClick('copy'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.menus.length, 1, '点动作先收菜单');
+  assert.deepEqual(h.calls.map((call) => call.channel), ['book:copy']);
+  assert.match(h.toasts.at(-1).message, /^已复制整本/);
+
+  // 三种格式都从模块自己的 openExportDialog 开框（标题跟着格式换）
+  const titles = { txt: '导出 TXT', epub: '导出 EPUB', docx: '导出 DOCX' };
+  for (const format of ['txt', 'epub', 'docx']) {
+    await menu.dispatch('click', makeMenuClick(format));
+    assert.equal(h.box.format, format, format + ' 菜单项要开对应格式的导出框');
+    assert.equal(h.els.get('export-title').textContent, titles[format]);
+  }
+
+  // 敏感词预检 / 本书历史：两个跨域入口按注入的箭头转发
+  await menu.dispatch('click', makeMenuClick('sensitive'));
+  await menu.dispatch('click', makeMenuClick('history'));
+  assert.deepEqual(h.sensitivePanels, ['sensitive', 'history'], '导出菜单要按动作调注入的跨域入口');
+
+  // 打开书文件夹
+  await menu.dispatch('click', makeMenuClick('folder'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.calls.some((call) => call.channel === 'book:open-folder'), true, 'folder 项要打开书文件夹');
+
+  // 不是 data-action 按钮 / 未知动作：只收菜单，什么都不做
+  const realCalls = h.calls.filter((call) => call.channel !== 'book:export-plan').length;
+  const panelsBefore = h.sensitivePanels.length;
+  await menu.dispatch('click', { target: { closest: () => null } });
+  await menu.dispatch('click', makeMenuClick('unknown-action'));
+  assert.equal(h.calls.filter((call) => call.channel !== 'book:export-plan').length, realCalls, '非动作点击不许打 IPC');
+  assert.equal(h.sensitivePanels.length, panelsBefore, '未知动作不许碰跨域入口');
+});
+
+test('M1 第十刀：范围对话框的 5 个输入各挂一份监听；改范围立刻作废旧计划并重算', async () => {
+  const h = bindDialogs();
+  for (const radio of scopeRadios) assert.equal(radio.listenerCount('change'), 1, '三个范围单选各挂一份 change');
+  assert.equal(h.els.get('export-volume').listenerCount('change'), 1);
+  assert.equal(h.els.get('export-from').listenerCount('input'), 1);
+  assert.equal(h.els.get('export-to').listenerCount('input'), 1);
+  assert.equal(h.els.get('btn-export-cancel').listenerCount('click'), 1);
+  assert.equal(h.els.get('btn-export-confirm').listenerCount('click'), 1);
+
+  // 三个单选触发的是模块自己的 refreshExportSummary（打 book:export-plan）
+  scopeRadios[0].dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(h.calls.map((call) => call.channel), ['book:export-plan']);
+  h.els.get('export-volume').dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.calls.length, 2);
+
+  // 范围输入是 120ms 防抖：两次输入只算最后一次，防抖窗口里不打 IPC
+  h.els.get('export-from').dispatch('input');
+  h.els.get('export-to').dispatch('input');
+  assert.equal(h.calls.length, 2, '防抖窗口里不许打 IPC');
+  await new Promise((resolve) => setTimeout(resolve, 160));
+  assert.equal(h.calls.length, 3, '两次输入只算最后一次');
+
+  // 取消：收起弹层（模块自己的 closeExportDialog）
+  const backdrop = h.host.$('export-backdrop');
+  backdrop.classList.remove('hidden');
+  h.els.get('btn-export-cancel').dispatch('click');
+  assert.equal(backdrop.classList.contains('hidden'), true, '取消要收起导出范围弹层');
+
+  // 确认：没有计划时只提示、一条导出都不发起
+  await h.els.get('btn-export-confirm').dispatch('click');
+  assert.deepEqual(h.toasts.at(-1), { message: '所选范围里没有章节，换个范围试试', kind: 'warn' });
+  assert.equal(h.calls.some((call) => call.channel !== 'book:export-plan'), false, '没有计划不许发起导出');
+});
+
+test('M1 第十刀：bindDialogEvents 幂等；静态闸门——接线只在 export-ui.js，编排器只剩一次调用', () => {
+  const h = bindDialogs();
+  h.ui.bindDialogEvents();
+  assert.equal(h.els.get('export-menu').listenerCount('click'), 1, '重入不许挂出第二份菜单监听');
+  for (const radio of scopeRadios) assert.equal(radio.listenerCount('change'), 1, '重入不许挂出第二份范围监听');
+  for (const [id, type] of [
+    ['export-volume', 'change'],
+    ['export-from', 'input'],
+    ['export-to', 'input'],
+    ['btn-export-cancel', 'click'],
+    ['btn-export-confirm', 'click']
+  ]) {
+    assert.equal(h.els.get(id).listenerCount(type), 1, id + ' 的监听只许一份');
+  }
+
+  assert.match(rendererSrc, /exportUi\.bindDialogEvents\(\);/, '编排器要在原位置调用 bindDialogEvents()');
+  assert.equal((rendererSrc.match(/exportUi\.bindDialogEvents\(\);/g) || []).length, 1, '只许调用一次');
+  assert.equal(/\$\('export-menu'\)\.addEventListener/.test(rendererSrc), false, '导出菜单监听必须整段搬出编排器');
+  assert.equal(/querySelectorAll\('input\[name="export-scope"\]'\)/.test(rendererSrc), false, '范围单选接线不许回流编排器');
+  assert.match(moduleSrc, /function bindDialogEvents\(\)/, '模块要提供 bindDialogEvents()');
+  for (const id of ['export-menu', 'export-volume', 'export-from', 'export-to', 'btn-export-cancel', 'btn-export-confirm']) {
+    assert.ok(moduleSrc.includes("$('" + id + "')"), '模块里缺接线：' + id);
+  }
+});
+
 test('静态闸门：renderer.js 不再内嵌导出 / 复制的实现，只剩接线', () => {
   for (const name of [
     'currentChapterOverride', 'outputSummary', 'archiveSummaryParts', 'readExportRange',
@@ -648,17 +800,22 @@ test('静态闸门：renderer.js 不再内嵌导出 / 复制的实现，只剩�
   for (const name of ['EXPORT_UNVOLUMED', 'EXPORT_MESSAGES', 'EXPORT_TITLES', 'exportPlanTimer', 'exportPlanToken', 'lastExportPlan']) {
     assert.equal(rendererSrc.includes(name), false, 'renderer.js 里不该再有 ' + name);
   }
-  // 接线：模块只 create 一次，10 个成员 + exportFormat 的 get / set 都传进去
+  // 接线：模块只 create 一次，13 个成员 + exportFormat 的 get / set 都传进去
   assert.match(rendererSrc, /const exportUi = exportUiModule\.create\(\{/);
-  for (const key of ['api', '$', 'editorEl', 's2tLib', 'call', 'state', 'toast', 'volumeList', 'chapterVolumeId', 'hideExportMenu']) {
+  for (const key of ['api', '$', 'editorEl', 's2tLib', 'call', 'state', 'toast', 'volumeList', 'chapterVolumeId', 'hideExportMenu', 'document']) {
     assert.match(rendererSrc, new RegExp('^    ' + key.replace(/\$/g, '\\$') + ',$', 'm'), 'host 少了 ' + key);
   }
+  // 两个跨域入口是后段解构的 const（historyUi / sensitiveUi），只能按箭头转发（直接取值会撞 TDZ）
+  assert.match(rendererSrc, /^    openSensitivePanel: \(\) => openSensitivePanel\(\),$/m, 'host 少了 openSensitivePanel');
+  assert.match(rendererSrc, /^    openHistoryForCurrentBook: \(\) => openHistoryForCurrentBook\(\),$/m, 'host 少了 openHistoryForCurrentBook');
   assert.match(rendererSrc, /get exportFormat\(\) \{\r?\n      return exportFormat;\r?\n    \},/);
   assert.match(rendererSrc, /set exportFormat\(value\) \{\r?\n      exportFormat = value;\r?\n    \}/);
   // 「当前导出格式」这个活绑定必须还是渲染层的模块级 let（testHooksScope / E2E 按名字读它）
   assert.match(rendererSrc, /^  let exportFormat = 'txt';$/m);
-  // 9 个入口是模块级 const（事件绑定 / Esc 注册表 / 测试钩子照旧按名字取）
-  for (const name of ['openExportDialog', 'closeExportDialog', 'confirmExportDialog', 'copyBookFlow', 'copyChapterPlatformFlow', 'openBookFolderFlow', 'readExportRange', 'refreshExportSummary', 'scheduleExportSummary']) {
+  // 5 个入口是模块级 const（Esc 注册表 / 章节菜单 / 测试钩子照旧按名字取）。M1 第十刀把导出菜单
+  // 与范围对话框接线搬进模块后，refreshExportSummary / scheduleExportSummary / confirmExportDialog /
+  // copyBookFlow 只在模块内部用，编排器不再需要这 4 个别名（删除后 eslint no-unused-vars 才绿）。
+  for (const name of ['openExportDialog', 'closeExportDialog', 'copyChapterPlatformFlow', 'openBookFolderFlow', 'readExportRange']) {
     assert.match(
       rendererSrc,
       new RegExp('^  const ' + name + ' = exportUi\\.' + name + ';$', 'm'),
