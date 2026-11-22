@@ -3503,7 +3503,8 @@
     updateStatus, loadChapterAt, saveCurrent, refreshShelf, flushWriteTimer,
     undoUi, moveChapterByDrop, openExportDialog,
     replaceEditorTextNative, onEditorInput, recordFallbackWrite, scrollCaretIntoView,
-    placeMenuAt
+    placeMenuAt,
+    saveForTransition // H1（三审）：建章 / 删当前章 / 批量删统一走「过渡前保存」原语（可选成员）
   });
 
   // ---------- 事件绑定 ----------

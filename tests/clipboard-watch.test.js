@@ -285,8 +285,8 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.match(main, /handle\('capture:queue-remove'/, '正文插入成功后消费该条的 IPC');
   assert.match(
     main,
-    /handle\('capture:queue-remove'[\s\S]{0,300}?captureQueue\.remove\(Math\.round\(numeric\)\)/,
-    '队列删除只按数字 id，非数字不猜'
+    /handle\('capture:queue-remove'[\s\S]{0,900}?if \(!Number\.isFinite\(numeric\)\) return \{ removed: false \};[\s\S]{0,400}?captureQueue\.remove\(round\)/,
+    '队列删除只按数字 id，非数字不猜（S1：先过窗口归属校验再删）'
   );
   assert.match(
     main,
@@ -344,3 +344,59 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.match(settingsUi, /clipboardWatchEnabled: \$\('settings-clipboard-watch'\)/, '保存设置带上开关');
   assert.match(settingsUi, /cfg\.clipboardWatchEnabled === true/, '回填只认真正的 true');
 });
+
+// S1（一轮·中）/ T6（三审·中）：剪贴板捕获的跨窗口归属与一次性触发凭证。
+// main.js 不可在 Node 里 require（需要 electron），所以这里用「机器清单」钉住四个强制点 ——
+// 行为本身由 core/capture-queue.js 的归属用例（capture-queue.test.js 的 S1 / T6）覆盖。
+test('S1 / T6 接线闸门：读剪贴板要一次性凭证；队列按窗口归属；关窗回收', () => {
+  const fsMod = require('node:fs');
+  const pathMod = require('node:path');
+  const readMain = (rel) => fsMod.readFileSync(pathMod.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
+  const mainSrc = readMain('main.js');
+  const preloadSrc = readMain('preload.js');
+  const captureSrc = readMain('renderer/capture-ui.js');
+
+  // ① 凭证签发 / 消费各只有一份实现，且都只在主进程内存里。
+  assert.match(mainSrc, /function issueCaptureGesture\(windowId\)/, '主进程签发一次性读剪贴板凭证');
+  assert.match(mainSrc, /function consumeCaptureGesture\(windowId, token\)/, '主进程消费凭证（用掉即废）');
+  assert.match(mainSrc, /const CAPTURE_GESTURE_TTL_MS = 60 \* 1000;/, '凭证 60 秒过期');
+  assert.match(
+    mainSrc,
+    /handle\('capture:clipboard'[\s\S]{0,400}?consumeCaptureGesture\(session\.id, token\)/,
+    'capture:clipboard 必须先验本窗口的一次性凭证（注入的渲染层不能再随时读作者剪贴板）'
+  );
+  assert.match(
+    mainSrc,
+    /handle\('capture:flush'[\s\S]{0,600}?issueCaptureGesture\(session\.id\)/,
+    '打开捕获面板（capture:flush）就是主进程侧的触发手势，顺手签发凭证'
+  );
+
+  // ② 队列按窗口归属：list 先认领无主记录并只列本窗口的；get / remove / clear 都验归属。
+  assert.match(mainSrc, /captureQueue\.claim\(windowId\)/, '打开面板的窗口认领无主记录');
+  assert.match(mainSrc, /captureQueue\.listFor\(windowId\)/, '队列列表只给本窗口可见的记录');
+  assert.match(
+    mainSrc,
+    /handle\('capture:queue-get'[\s\S]{0,400}?!captureQueue\.canAccess\(round, windowId\)/,
+    'queue-get 非 owner 直接拒（读不到别人的剪贴板历史）'
+  );
+  assert.match(mainSrc, /captureQueue\.removeFor|QUEUE_FOREIGN_WINDOW/, 'queue-remove 非 owner 不删');
+  assert.match(mainSrc, /captureQueue\.clearFor\(/, 'queue-clear 只清本窗口的');
+
+  // ③ 发布路径：绑定到具体窗口的复制直接归它；后台监听拍记进来的等面板认领。
+  assert.match(mainSrc, /captureQueue\.add\(text, \{ ownerWindowId: target\.id \}\)/, '全局快捷键的这次复制归要弹面板的窗口');
+
+  // ④ 关窗回收：这一扇窗口的记录与凭证随窗口一起丢弃。
+  assert.match(
+    mainSrc,
+    /browserWin\.on\('closed'[\s\S]{0,1800}?captureQueue\.releaseOwner\(session\.id\)/,
+    '关窗要回收该窗口的捕获队列记录（隐私口径「关窗即弃」）'
+  );
+  assert.match(mainSrc, /captureGestures\.delete\(String\(session\.id\)\)/, '关窗要作废该窗口的凭证');
+
+  // ⑤ preload / 渲染层：凭证必须原样带过去（签名改了，调用点不能漏传）。
+  assert.match(preloadSrc, /captureClipboard: \(token\) => invoke\('capture:clipboard', token\)/, 'preload 透传凭证');
+  assert.match(captureSrc, /panel\.gesture = \(flushed && flushed\.gesture\) \|\| null;/, '面板打开时收下凭证');
+  assert.match(captureSrc, /await call\(api\.captureClipboard, panel\.gesture\)/, '读剪贴板必须带凭证');
+  assert.match(captureSrc, /panel\.gesture = null;/, '关面板即作废凭证');
+});
+

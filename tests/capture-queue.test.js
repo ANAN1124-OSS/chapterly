@@ -263,3 +263,55 @@ test('CTXT-B-05：首行预览恰好跨代理对时不产生孤立代理', () =>
   // 边界恰好落在完整 emoji 之后：整对保留
   assert.equal(queueLib.previewOf('字'.repeat(38) + emoji + '尾巴', 40), '字'.repeat(38) + emoji + '…', '边界落在完整代理对之后：整对保留');
 });
+
+// ---------- S1（一轮·中）/ T6（三审·中）：多窗口归属 ----------
+// 捕获队列是「本次运行复制过的几段」。以前任何窗口都能列 / 取 / 删全部记录；现在每条记 ownerWindowId，
+// 打开面板的窗口先认领无主记录，之后只有它能看到 / 取走 / 清空，关窗时它的记录一起丢弃。
+test('S1 / T6：捕获队列按窗口归属——认领无主记录、非 owner 看不到取不到也删不掉、关窗回收', () => {
+  const queue = queueLib.createCaptureQueue();
+  queue.add(A); // 后台监听拍记进来的：还没有窗口上下文
+  queue.add(B, { ownerWindowId: 11 }); // 全局快捷键：直接归要弹面板的窗口
+  queue.add(C);
+  const idOf = (text) => queue.list().find((entry) => entry.preview === queueLib.previewOf(text)).id;
+  const idA = idOf(A);
+  const idB = idOf(B);
+  const idC = idOf(C);
+  assert.equal(queue.size(), 3);
+
+  // 另一扇窗口（22）打开面板：把剩下的无主记录认领掉（不抢 11 的）。
+  assert.equal(queue.claim(22), 2, '无主记录归打开面板的窗口');
+  assert.equal(queue.claim(22), 0, '重复认领幂等');
+  assert.equal(queue.claim(null), 0, '没有窗口上下文时不认领');
+  assert.deepEqual(queue.listFor(22).map((entry) => entry.id), [idA, idC], '只能看到自己的 + 无主的');
+  assert.deepEqual(queue.listFor(11).map((entry) => entry.id), [idB]);
+  assert.equal(queue.listFor(33).length, 0, '别的窗口拿不到任何记录');
+  assert.equal(queue.sizeFor(22), 2);
+  assert.equal(queue.size(), 3, '归属不影响底层条目数');
+
+  // 非 owner 拒绝：看不到、取不到、删不掉、清不了。
+  assert.equal(queue.canAccess(idA, 33), false);
+  assert.equal(queue.removeFor(idA, 33), false, '非 owner 不许删别人的记录');
+  assert.equal(queue.size(), 3, '被拒绝的删除不留副作用');
+  assert.equal(queue.clearFor(33), 0, '非 owner 清空是空操作');
+  assert.equal(queue.clearFor(22), 2, '只清自己的（认领到 22 的 A / C）');
+  assert.deepEqual(queue.listFor(11).map((entry) => entry.id), [idB], '11 的记录不受 22 清空影响');
+  assert.deepEqual(queue.listFor(22), []);
+  assert.equal(queue.removeFor(idB, 11), true, 'owner 自己能删');
+  assert.equal(queue.size(), 0);
+
+  // 关窗回收：只丢这一扇窗口的记录，别的窗口的不动。
+  queue.add(A, { ownerWindowId: 44 });
+  queue.add(C);
+  queue.claim(55);
+  assert.equal(queue.size(), 2);
+  assert.equal(queue.releaseOwner(44), 1);
+  assert.equal(queue.releaseOwner(44), 0, '重复回收幂等');
+  assert.equal(queue.releaseOwner(null), 0);
+  assert.equal(queue.size(), 1, '只剩 55 认领的那条');
+  assert.equal(queue.listFor(55).length, 1);
+  // 非法 owner 归一成无主：不会被当成任何一扇窗口的
+  queue.add(A, { ownerWindowId: 'not-a-number' });
+  const unowned = queue.listFor(99).find((entry) => entry.preview === queueLib.previewOf(A));
+  assert.ok(unowned, '非法归属按「还没有主」处理（下一次打开面板认领）');
+});
+

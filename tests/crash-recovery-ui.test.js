@@ -79,7 +79,11 @@ function makeHost(options = {}) {
     },
     async discardCrashDraft(target) {
       calls.discard.push(target);
-      return { ok: true, data: { removed: 1 } };
+      // 与主进程 IPC 的真实回执同形：删文件回 { ok:true, removed:N }；
+      // S2 / 旧M4：consumed = 只标记「已交给某窗口的编辑区」，文件保留（removed 恒 0）。
+      if (target && target.consumed === true) return { ok: true, consumed: true, removed: 0 };
+      if (options.discardResult) return options.discardResult;
+      return { ok: true, removed: 1 };
     }
   };
   const host = {
@@ -224,7 +228,7 @@ test('RPAN-B01：换了一章但正文恰好相同 → 必须写新草稿（身�
   assert.equal(calls.save[1].chapterId, 'ch_002');
 });
 
-test('U3 恢复提示：读全文 → 载章 → 正文只进编辑区 → 删草稿（同书不重开 / 换书先开书）', async () => {
+test('U3 恢复提示：读全文 → 载章 → 正文只进编辑区 → 只标记已恢复（旧M4：不删草稿）', async () => {
   // 同书同章：不重开书，直接载章
   const same = makeHost({ enabled: true, dirty: false, drafts: [draftMeta()], answers: ['restore'] });
   const uiSame = crashRecoveryUi.create(same.host);
@@ -246,7 +250,13 @@ test('U3 恢复提示：读全文 → 载章 → 正文只进编辑区 → 删�
   assert.deepEqual(same.calls.load, [0]);
   assert.equal(same.calls.applied, '上次崩溃前的正文');
   assert.equal(same.state.dirty, true, '恢复后仍是未保存状态（Ctrl+S 才写盘）');
-  assert.deepEqual(same.calls.discard, [{ draftId: 'd1' }], '恢复成功后删草稿');
+  // 旧M4（一轮·中）：恢复成功**不许**删草稿文件 —— 恢复出来的正文只在编辑区（仍未保存），
+  // 草稿是它唯一的磁盘兜底。只标记「本窗口已恢复」（其它窗口不再重复提示）。
+  assert.deepEqual(
+    same.calls.discard,
+    [{ draftId: 'd1', consumed: true }],
+    '恢复成功只标记已恢复，不删草稿（删了再崩一次就没兜底了）'
+  );
 
   // 换书：先 openBookByPath 再载章
   const cross = makeHost({
@@ -265,7 +275,7 @@ test('U3 恢复提示：读全文 → 载章 → 正文只进编辑区 → 删�
   assert.deepEqual(cross.calls.open, [BOOK], '草稿属于另一本书时先打开那本书');
   assert.deepEqual(cross.calls.load, [0]);
   assert.equal(cross.calls.applied, '上次崩溃前的正文');
-  assert.deepEqual(cross.calls.discard, [{ draftId: 'd1' }]);
+  assert.deepEqual(cross.calls.discard, [{ draftId: 'd1', consumed: true }]);
 });
 
 test('U4 丢弃 / 先留着：只删草稿或什么都不删，绝不碰编辑区', async () => {
@@ -460,3 +470,99 @@ test('接线：renderer.js / index.html / 装配清单 / preload / main / E2E �
   const settingsIa = read('renderer/settings-ia.js');
   assert.match(settingsIa, /'settings-crash-draft-enabled': 'data'/, '开关归「数据安全」分区');
 });
+
+// 旧M4（一轮·中）/ L1（一轮·低）：草稿的删除时机与失败提示。
+// 恢复出来的正文只在编辑区（仍是未保存状态）——恢复当下删草稿，下一次崩溃就彻底没兜底了。
+// 现在的口径：恢复只标记「本窗口已恢复」（主进程别的窗口不再重复提示），文件保留到
+// 「成功 Ctrl+S」（noteSaved 按书 + 章删）或「下一次周期草稿落盘覆盖同一草稿位」。
+test('旧M4：恢复后草稿仍在（只标记已恢复）；成功保存才按书 + 章删掉', async () => {
+  const ctx = makeHost({ enabled: true, dirty: false, drafts: [draftMeta()], answers: ['restore'] });
+  const ui = crashRecoveryUi.create(ctx.host);
+  await ui.checkRecovery();
+  assert.deepEqual(ctx.calls.discard, [{ draftId: 'd1', consumed: true }], '恢复只标记，不删文件');
+  assert.ok(
+    ctx.calls.discard.every((target) => target.consumed === true),
+    '恢复路径一条删文件的请求都不许发'
+  );
+
+  // 恢复后编辑区是未保存状态：下一拍周期草稿用新正文覆盖同一草稿位（服务崩溃兜底）。
+  ctx.state.dirty = true;
+  ctx.editorEl.value = '上次崩溃前的正文 + 恢复后又写的一句';
+  const snapped = await ui.snapshotNow();
+  assert.equal(snapped.ok, true);
+  assert.equal(ctx.calls.save.length, 1);
+  assert.equal(ctx.calls.save[0].text, '上次崩溃前的正文 + 恢复后又写的一句', '草稿位被最新正文覆盖');
+
+  // 成功保存回执（保存链的干净分支）：按快照身份删掉这一章的草稿。
+  await ui.noteSaved(BOOK, 'ch_001');
+  assert.deepEqual(ctx.calls.discard.at(-1), { bookPath: BOOK, chapterId: 'ch_001' });
+});
+
+test('L1：丢弃草稿失败要如实提示（不许假装已经丢掉了）', async () => {
+  const ctx = makeHost({
+    enabled: true,
+    dirty: false,
+    drafts: [draftMeta()],
+    answers: ['discard'],
+    discardResult: { ok: false, code: 'EPERM', message: '草稿被占用' }
+  });
+  const ui = crashRecoveryUi.create(ctx.host);
+  await ui.checkRecovery();
+  assert.deepEqual(ctx.calls.discard, [{ draftId: 'd1' }], '仍然要尝试删');
+  const warn = ctx.calls.toasts.find((toast) => toast.kind === 'warn');
+  assert.ok(warn, '删不掉必须有一条 warn');
+  assert.match(warn.message, /没能删掉/);
+  assert.match(warn.message, /下次启动会再提示/);
+
+  // 主进程回 { ok:true, removed:0 }（文件已经不在了）也算没删掉？—— 不算失败：removed=0 只说明
+  // 本来就没了，别再打扰作者。这里用默认假宿主（removed:1）覆盖成功分支。
+  const okCtx = makeHost({ enabled: true, dirty: false, drafts: [draftMeta()], answers: ['discard'] });
+  await crashRecoveryUi.create(okCtx.host).checkRecovery();
+  assert.equal(okCtx.calls.toasts.filter((toast) => toast.kind === 'warn').length, 0, '删成功不打扰');
+});
+
+// S2（一轮·中/低）/ T6（三审·中）：崩溃草稿的跨窗口归属。main.js 不能 require（依赖 electron），
+// 这里用机器清单钉住强制点；归属规则本身由 core/crash-draft.js 的 S2 / T6 用例覆盖。
+test('S2 / T6 接线闸门：归属由主进程注入、crash:* 只对本窗口放行、discard 统一看开关', () => {
+  const mainSrc = read('main.js');
+
+  // ① 归属只由主进程注入（渲染层 payload 里的 owner 字段不采信），令牌每进程一枚。
+  assert.match(mainSrc, /const crashOwnerToken = `p\$\{process\.pid\}-/, '本进程一次性归属令牌');
+  assert.match(
+    mainSrc,
+    /handle\('crash:draft'[\s\S]{0,900}?store\.writeDraft\(payload, \{\s*\n\s*ownerToken: crashOwnerToken,\s*\n\s*ownerWindowId: session \? session\.id : null/,
+    '写草稿时由主进程注入 ownerToken / ownerWindowId'
+  );
+
+  // ② 列表 / 读 / 删都带查看者，非本窗口的草稿一律拒绝。
+  assert.match(
+    mainSrc,
+    /crash:recovery[\s\S]{0,900}?store\.listDrafts\(\{ ownerToken: crashOwnerToken, ownerWindowId: windowId \}\)/,
+    'crash:recovery 只列本窗口可见的草稿'
+  );
+  assert.match(mainSrc, /crashConsumedByOtherWindow\(draft\.draftId, windowId\)/, '别的窗口恢复过的草稿不再重复提示');
+  assert.match(
+    mainSrc,
+    /handle\('crash:read-draft'[\s\S]{0,1200}?crashDraftVisibleTo\(result\.draft, windowId\)/,
+    'crash:read-draft 校验归属（不把别的窗口的未保存正文交给注入的渲染层）'
+  );
+  assert.match(mainSrc, /code: 'DRAFT_FOREIGN_WINDOW'/, '跨窗口读 / 删要回明确错误码');
+  assert.match(
+    mainSrc,
+    /handle\('crash:discard-draft'[\s\S]{0,600}?crashDraftEnabled !== true/,
+    'discard 与其它 crash 频道统一检查开关（关着不许按 id 删草稿）'
+  );
+  assert.match(
+    mainSrc,
+    /handle\('crash:discard-draft'[\s\S]{0,1600}?if \(target\.consumed === true\) \{\s*\n\s*crashConsumed\.set\(target\.draftId, windowId\);/,
+    'consumed = 只标记「已交给某窗口的编辑区」，不删文件（旧M4）'
+  );
+
+  // ③ 关窗：这扇窗口的「已恢复」标记一起清（草稿文件保留，别的窗口还能看到）。
+  assert.match(
+    mainSrc,
+    /browserWin\.on\('closed'[\s\S]{0,2200}?crashConsumed\.delete\(draftId\)/,
+    '关窗清掉该窗口的 consumed 标记'
+  );
+});
+

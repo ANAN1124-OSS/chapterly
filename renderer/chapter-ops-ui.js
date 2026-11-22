@@ -122,6 +122,36 @@
       placeMenuAt
     } = host;
 
+  // H1（三审 / 一轮·高）：统一「过渡前保存」原语（可选 host 成员，与捕获 / 回书架 / 切章同口径）。
+  // 宿主没给（旧宿主 / 单测）时退回「一问一存」，行为不更差。
+  const saveForTransition = typeof host.saveForTransition === 'function' ? host.saveForTransition : null;
+
+  // H1（三审）：建章 / 删章 / 批量删都是「保存成功后立刻重载编辑区」的过渡入口。
+  // 旧实现只看 saveCurrent 的 saved.ok 就继续——保存 IPC 往返（fsync / 书目 / 统计写盘，
+  // 冷盘 / 杀软下可达数百 ms）期间敲入的字不在磁盘上，dirty 会重新为真，随后的 loadChapterAt
+  // 把编辑区整段换成新章，这段输入被静默覆盖且无法撤销。
+  // 现在统一走 saveForTransition：保存回执落地后**按发起时的正文快照复核 dirty**，仍脏就再问一次，
+  // 绝不带着未保存输入继续删 / 建 / 载；作者明确选「不保存，丢弃修改」才放行。
+  // 返回 { ok:true } / { ok:true, discarded:true } / { ok:false, canceled:true } / { ok:false, saved }。
+  async function guardUnsavedForTransition(options) {
+    if (saveForTransition) return saveForTransition(options);
+    // 旧宿主兜底：silentFirst 保持 createChapterAt 原来的「脏章先静默保存、不弹窗」体验；
+    // 其余入口照旧先问。两种情况都用「保存回执后复核 dirty」收口。
+    if (options && options.silentFirst === true) {
+      const saved = await saveCurrent();
+      if (!saved || saved.ok === false) return { ok: false, saved };
+      if (state.dirty) return { ok: false, dirty: true };
+      return { ok: true };
+    }
+    const action = await askUnsaved(options);
+    if (action === 'cancel') return { ok: false, canceled: true };
+    if (action !== 'save') return { ok: true, discarded: true };
+    const saved = await saveCurrent();
+    if (!saved || saved.ok === false) return { ok: false, saved };
+    if (state.dirty) return { ok: false, dirty: true };
+    return { ok: true };
+  }
+
   // ---------- 章节模板（v0.8 P0 N5） ----------
   // 模板只存在全局配置 chapterTemplate（旧配置没有 = 不套用）；这里只负责把展开后的
   // 文字填进编辑区——不写盘、不改书目、不动章节文件，Ctrl+S 才保存，可 Ctrl+Z 撤销。
@@ -179,10 +209,19 @@
 
   async function createChapterAt(insertIndex, nameOverride, volumeIdOverride) {
     if (!state.bookPath) return { ok: false };
-    // 作者要求（2026-10-31）：新建 / 插入章节前，当前章有未保存修改就自动保存，不再弹窗
+    // 作者要求（2026-10-31）：新建 / 插入章节前，当前章有未保存修改就自动保存，不再弹窗。
+    // H1（三审）：但「保存成功 ≠ 编辑区干净」——保存往返期间又敲的字必须由作者决定，
+    // 不能直接建新章把它覆盖掉。silentFirst 保留原来的「先静默保存」体验；
+    // 回执后仍脏（原语内部复核）才弹一次询问。
     if (state.dirty) {
-      const saved = await saveCurrent();
-      if (!saved.ok) return saved; // 保存失败会弹错误提示并停在这里，不建新章
+      const guard = await guardUnsavedForTransition({
+        title: '新建章节前保存',
+        message: '当前章节有未保存的修改，建新章会切换编辑区。',
+        saveLabel: '保存后新建',
+        discardLabel: '不保存，丢弃修改',
+        silentFirst: true
+      });
+      if (!guard.ok) return guard.saved ? guard.saved : guard;
     }
     const appending = insertIndex >= state.chapters.length;
     // 新章默认落在「当前章所在的卷」；从卷菜单进来时用指定的卷
@@ -208,7 +247,18 @@
         state.chapterFilter = '';
         syncChapterFilterUi();
       }
-      await loadChapterAt(data.index);
+      const loaded = await loadChapterAt(data.index);
+      // 旧M1（一轮·中）：载章失败时绝不能继续套模板 / 报成功——编辑区还是上一章正文，
+      // 套上去的模板会写进那一章（再 Ctrl+S 就污染了别人的章）。新章已经建好，
+      // 如实告诉作者并刷新目录，让他自己点开那一章。
+      if (!loaded || loaded.ok === false) {
+        renderChapterList();
+        renderEditorHeader();
+        updateStatus();
+        const message = `新章已建好，但载入失败${loaded && loaded.message ? `：${loaded.message}` : ''}；请到目录里点开它`;
+        toast(message, 'error');
+        return { ok: false, code: 'CREATE_LOAD_FAILED', message };
+      }
       // 章节模板：只填进编辑区（未保存、可 Ctrl+Z），绝不自动写盘
       const templateResult = applyChapterTemplate(data.index, data.chapter.name);
       const where = volumeId ? `（${volumeDisplayName(volumeId)}）` : '';
@@ -485,7 +535,9 @@
     const neighborBeforeId = index > 0 && state.chapters[index - 1] ? state.chapters[index - 1].id : '';
     const neighborAfterId = state.chapters[index + 1] ? state.chapters[index + 1].id : '';
     if (!skipConfirm && wasCurrent && state.dirty) {
-      const action = await askUnsaved({
+      // H1（三审）：删当前章要重载编辑区 —— 与建章 / 批量删同一个「过渡前保存」原语。
+      // 保存回执后复核 dirty：保存期间又敲的字由作者决定，绝不静默覆盖。
+      const guard = await guardUnsavedForTransition({
         title: '删除前先处理未保存的修改',
         message:
           `「${currentChapterLabel()}」还有未保存的修改。\n` +
@@ -493,11 +545,7 @@
         saveLabel: '保存后删除',
         discardLabel: '不保存，直接删除'
       });
-      if (action === 'cancel') return false;
-      if (action === 'save') {
-        const saved = await saveCurrent();
-        if (!saved.ok) return false;
-      }
+      if (!guard.ok) return false;
     }
     try {
       const data = await call(api.deleteChapter, bookPath, chapter.id);
@@ -508,15 +556,22 @@
       const undoToken = typeof data.undoToken === 'string' ? data.undoToken : '';
       if (data.newChapter) toast('最后一章被删除，已自动补一个空章');
       if (wasCurrent) {
-        state.dirty = false;
-        await loadChapterAt(data.index);
+        // 旧M2（一轮·中）：删除成功后**不要**先清脏 —— 只有新章真的载入成功才清（loadChapterAt
+        // 成功分支自己会清）。载章失败时编辑区还留着被删那一章的正文，先清脏会让界面进入
+        // 「正文在、状态栏已保存」的矛盾态：关窗不再提醒，这段没写盘的字就真没了。
+        const loaded = await loadChapterAt(data.index);
+        if (!loaded || loaded.ok === false) {
+          toast('章节已删除，但新章节载入失败：编辑区内容尚未保存，请重试或换一章', 'warn');
+        }
       } else if (at < 0) {
         // REDT-C-04：删的虽不是当前章，但回包书目里当前章也不见了（书目被外部改坏等异常）。
         // 只改下标不重载会让编辑区留着已消失章的文字、dirty 原样保留，接着 Ctrl+S 就把旧章正文
         // 写进新下标指向的章文件 —— 与批量删除同一口径：回落下标、清脏、重载编辑区。
         state.index = Math.min(index, state.chapters.length - 1);
-        state.dirty = false;
-        await loadChapterAt(state.index);
+        const loaded = await loadChapterAt(state.index);
+        if (!loaded || loaded.ok === false) {
+          toast('章节已删除，但新章节载入失败：编辑区内容尚未保存，请重试或换一章', 'warn');
+        }
       } else {
         renderChapterList();
         renderEditorHeader();
@@ -652,8 +707,9 @@
     const currentSelected = indexes.includes(state.index);
     const keepCurrentId = currentSelected ? '' : currentChapterId();
     // 「当前章有未保存修改」只问一次（和单章删除同一条拦截；批量里只问当前章，别的章没有编辑区内容）
+    // H1（三审）：与单章删除同一个过渡前保存原语（回执后复核 dirty，仍脏就再问）。
     if (currentSelected && state.dirty) {
-      const action = await askUnsaved({
+      const guard = await guardUnsavedForTransition({
         title: '删除前先处理未保存的修改',
         message:
           `选中的章里有正在写的「${currentChapterLabel()}」，它还有未保存的修改。\n` +
@@ -661,11 +717,7 @@
         saveLabel: '保存后删除',
         discardLabel: '不保存，直接删除'
       });
-      if (action === 'cancel') return false;
-      if (action === 'save') {
-        const saved = await saveCurrent();
-        if (!saved.ok) return false;
-      }
+      if (!guard.ok) return false;
     }
     // 从后往前删：前面还没删的章下标不会被后来的删除挤动，收集到的 index 就是**原始位置**；
     // 撤销时反过来从前往后按原下标插回，章序才和删除前一致。
@@ -699,12 +751,19 @@
     state.selectAnchorId = null;
     if (currentSelected) {
       state.index = Math.min(firstIndex, Math.max(0, state.chapters.length - 1));
-      state.dirty = false;
-      await loadChapterAt(state.index);
+      // 旧M2（一轮·中）：与单章删除同一口径 —— 载章成功才清脏（loadChapterAt 成功分支自己清），
+      // 失败保持脏并提示，不进「正文在、状态栏已保存」的矛盾态。
+      const loaded = await loadChapterAt(state.index);
+      if (!loaded || loaded.ok === false) {
+        toast('章节已删除，但新章节载入失败：编辑区内容尚未保存，请重试或换一章', 'warn');
+      }
     } else if (!state.chapters[state.index]) {
       // 当前章在书目里找不到了（极端情况：书目被外部改坏）：回第一处原下标，别停在一个空下标上
       state.index = Math.min(firstIndex, Math.max(0, state.chapters.length - 1));
-      await loadChapterAt(state.index);
+      const loaded = await loadChapterAt(state.index);
+      if (!loaded || loaded.ok === false) {
+        toast('章节已删除，但新章节载入失败：编辑区内容尚未保存，请重试或换一章', 'warn');
+      }
     } else {
       renderChapterList();
       renderEditorHeader();

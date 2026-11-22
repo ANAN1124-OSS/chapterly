@@ -370,3 +370,78 @@ test('R7 过期清理与干净退出：超过 7 天的草稿在 beginSession 清
   assert.equal(closed.ok, true, 'endSession 尽力而为：删不掉也不抛、不影响退出');
   assert.ok(closed.cleared >= 0);
 });
+
+// ---------- S2（一轮·中/低）/ T6（三审·中）：多窗口归属 ----------
+// 草稿以前是全局的：任何窗口都能列 / 读全文 / 删。现在写的时候记「进程令牌 + 窗口 id」，
+// 列 / 读 / 删只对写它的那扇窗口放行；上次运行留下的草稿（令牌不同 / 没有令牌）仍然谁先打开谁处理，
+// 否则崩溃重启后所有草稿都会变成不可见 = 丢稿。
+test('S2 / T6：草稿记 owner 元数据，listDrafts 只给写它的窗口；上次运行的草稿仍然可见', async () => {
+  const root = await newRoot();
+  const store = storeAt(root);
+
+  // 渲染层 payload 里自带 owner 字段也不采信：归属只由主进程注入。
+  const mine = await store.writeDraft(
+    draft({ chapterId: 'ch_mine', bookPath: path.join(BOOK, '我 的'), ownerWindowId: 999 }),
+    { ownerToken: 'tok-a', ownerWindowId: 7 }
+  );
+  assert.equal(mine.ok, true);
+  const legacy = await store.writeDraft(draft({ chapterId: 'ch_legacy', bookPath: path.join(BOOK, '旧 的') }));
+
+  const asWindow7 = await store.listDrafts({ ownerToken: 'tok-a', ownerWindowId: 7 });
+  assert.deepEqual(asWindow7.map((entry) => entry.chapterId).sort(), ['ch_legacy', 'ch_mine'], '本窗口写的 + 上次运行的都可见');
+  const asWindow8 = await store.listDrafts({ ownerToken: 'tok-a', ownerWindowId: 8 });
+  assert.deepEqual(asWindow8.map((entry) => entry.chapterId), ['ch_legacy'], '别的窗口只看到没有主 / 上次运行的草稿');
+  const asOtherProcess = await store.listDrafts({ ownerToken: 'tok-next', ownerWindowId: 7 });
+  assert.equal(asOtherProcess.length, 2, '换了进程令牌 = 上次运行的草稿，谁先打开谁能处理（否则重启后永远看不到）');
+  assert.equal((await store.listDrafts()).length, 2, '不传 viewer = 全部（诊断 / info 口径不变）');
+
+  // 元数据里带着归属（主进程用它做 read / discard 的归属校验）
+  const mineMeta = asWindow7.find((entry) => entry.chapterId === 'ch_mine');
+  assert.equal(mineMeta.ownerToken, 'tok-a');
+  assert.equal(mineMeta.ownerWindowId, 7, '渲染层传的 ownerWindowId 999 不许覆盖主进程注入的 7');
+  const legacyMeta = asWindow7.find((entry) => entry.chapterId === 'ch_legacy');
+  assert.equal(legacyMeta.ownerToken, '', '没有归属的老草稿 ownerToken 为空串');
+  assert.equal(legacyMeta.ownerWindowId, null);
+
+  // draftOwner()：只读归属元数据，不返回正文；非法 id 回 null。
+  const owner = await store.draftOwner(mine.draftId);
+  assert.deepEqual(owner, { draftId: mine.draftId, ownerToken: 'tok-a', ownerWindowId: 7 });
+  assert.ok(!('text' in owner), '归属查询不返回正文');
+  assert.equal(await store.draftOwner('../../etc/passwd'), null, '非法 draftId 直接拒绝');
+  assert.equal(await store.draftOwner('0123456789abcdef'), null, '不存在的草稿回 null');
+
+  // 同一草稿位被新正文覆盖：归属跟着新写入走（同进程另一扇窗口立刻看不到它）。
+  await store.writeDraft(
+    draft({ chapterId: 'ch_legacy', bookPath: path.join(BOOK, '旧 的'), text: '新一版正文' }),
+    { ownerToken: 'tok-a', ownerWindowId: 9 }
+  );
+  const window7Again = await store.listDrafts({ ownerToken: 'tok-a', ownerWindowId: 7 });
+  assert.deepEqual(window7Again.map((entry) => entry.chapterId), ['ch_mine'], '同进程另一扇窗口看不到被覆盖的草稿');
+  const window9 = await store.listDrafts({ ownerToken: 'tok-a', ownerWindowId: 9 });
+  assert.deepEqual(window9.map((entry) => entry.chapterId), ['ch_legacy']);
+  assert.equal(window9[0].ownerWindowId, 9);
+  assert.equal(await store.draftOwner(legacy.draftId).then((meta) => meta.ownerWindowId), 9);
+  assert.equal((await store.readDraft(legacy.draftId)).draft.text, '新一版正文', '覆盖后读回的是新正文');
+
+  // readDraft 的元数据同样带归属（主进程按它拒绝别的窗口读全文）
+  const read = await store.readDraft(mine.draftId);
+  assert.equal(read.ok, true);
+  assert.equal(read.draft.ownerWindowId, 7);
+  assert.equal(read.draft.ownerToken, 'tok-a');
+  assert.equal(read.draft.text, '草稿正文');
+});
+
+test('S2：draftVisibleTo 纯函数——无令牌 / 别进程 / 无窗口归属都算可见，本进程别窗口算不可见', () => {
+  const viewer = { ownerToken: 'tok-a', ownerWindowId: 7 };
+  assert.equal(draftLib.draftVisibleTo(null, viewer), true);
+  assert.equal(draftLib.draftVisibleTo({}, viewer), true, '没有 ownerToken 的老草稿谁都可见');
+  assert.equal(draftLib.draftVisibleTo({ ownerToken: 'tok-old', ownerWindowId: 3 }, viewer), true, '上次运行留下的大可见');
+  assert.equal(draftLib.draftVisibleTo({ ownerToken: 'tok-a', ownerWindowId: null }, viewer), true, '没有窗口归属的大可见');
+  assert.equal(draftLib.draftVisibleTo({ ownerToken: 'tok-a', ownerWindowId: 7 }, viewer), true, '写它的窗口可见');
+  assert.equal(draftLib.draftVisibleTo({ ownerToken: 'tok-a', ownerWindowId: 8 }, viewer), false, '本进程别的窗口不可见');
+  // 没有查看者上下文（更早调用方 / 拿不到进程令牌）：按「别的进程」处理 —— 宁可多显示一次，
+  // 也不能让崩溃重启后的草稿变成不可见（看不到 = 丢稿）。
+  assert.equal(draftLib.draftVisibleTo({ ownerToken: 'tok-a', ownerWindowId: 8 }, null), true);
+  // 窗口 id 归一化：数字 / 数字字符串等价
+  assert.equal(draftLib.draftVisibleTo({ ownerToken: 'tok-a', ownerWindowId: 7 }, { ownerToken: 'tok-a', ownerWindowId: '7' }), true);
+});

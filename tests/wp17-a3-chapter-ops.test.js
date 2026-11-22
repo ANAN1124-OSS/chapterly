@@ -376,10 +376,28 @@ function makeHost(overrides = {}) {
     syncChapterBatchBar: () => { counts.status += 1; },
     markCommandsDirty: () => { counts.commandsDirty += 1; },
     updateStatus: () => { counts.status += 1; },
-    loadChapterAt: async (index) => { counts.load.push(index); state.index = index; },
+    // H1（三审）：假 loadChapterAt 与真实现同口径 —— 成功才回 { ok:true } 并清脏（失败时返回
+    // { ok:false } 且不动 dirty）；「载章失败后保持脏」的用例在同文件 T1 里显式覆盖。
+    loadChapterAt: async (index) => {
+      counts.load.push(index);
+      if (overrides.loadResult) return overrides.loadResult;
+      state.index = index;
+      state.dirty = false;
+      state.baseText = editorEl.value;
+      return { ok: true };
+    },
     saveCurrent: async (opts) => {
       counts.save.push(opts);
       if (overrides.saveResult) return overrides.saveResult;
+      // 与真 saveCurrent 同口径：成功回执落地后基线换成快照、dirty 按快照重算（没人在保存期间
+      // 敲字就是干净）。要模拟「保存期间又敲了字」，用例在 saveCurrent 里自己把 dirty 置回 true。
+      if (overrides.saveMutatesDuringSave) {
+        state.baseText = editorEl.value;
+        state.dirty = true;
+        return { ok: true };
+      }
+      state.baseText = editorEl.value;
+      state.dirty = false;
       return { ok: true };
     },
     refreshShelf: async () => { counts.refreshShelf += 1; },
@@ -1068,3 +1086,186 @@ test('五-M7：备注 prompt 在途时章节数组被换掉——按 prompt 前�
   assert.equal(rt2.counts.toast.at(-1)[1], 'warn');
   assert.match(rt2.counts.toast.at(-1)[0], /已经不在书里/);
 });
+
+// ---------- T1（三审·高）/ H1（一轮·高）：保存期间输入 → 删当前章 / 批量删 / 建章 ----------
+// 三个入口都是「保存成功后立刻重载编辑区」。旧实现只看 saved.ok 就继续，于是保存 IPC 往返
+// （fsync / 书目 / 统计写盘，冷盘 / 杀软下可达数百 ms）期间敲入的字不在磁盘上，随后的
+// loadChapterAt 把编辑区整段换成新章 —— 这段输入被静默覆盖且无法撤销。
+// 现在统一走 saveForTransition：保存回执落地后按发起时的快照复核 dirty，仍脏就再问，
+// 绝不带着未保存输入继续删 / 建 / 载。
+test('T1 / H1：三个过渡入口都走 saveForTransition——回执后仍脏就停，绝不静默覆盖保存期间输入的字', async () => {
+  // ① 删当前章
+  const del = makeHost();
+  del.state.index = 1;
+  del.state.dirty = true;
+  del.editorEl.value = '第二章正文';
+  const delCalls = [];
+  del.host.api.deleteChapter = async (bookPath, chapterId) => {
+    delCalls.push(chapterId);
+    return { ok: true, data: { index: 0, meta: { chapters: del.state.chapters, volumes: del.state.meta.volumes }, trashPath: 'x/002.md', undoToken: 't' } };
+  };
+  const delGuards = [];
+  del.host.saveForTransition = async (options) => {
+    delGuards.push(options);
+    // 模拟「保存在途作者又敲了一句」：原语保存回执后复核 dirty，回来的是取消。
+    del.editorEl.value = '第二章正文\n保存期间又敲的一句';
+    del.state.dirty = true;
+    return { ok: false, canceled: true };
+  };
+  const delUi = moduleApi.create(del.host);
+  assert.equal(await delUi.deleteChapterAt(1), false);
+  assert.equal(delGuards.length, 1, '删当前章必须先走统一「过渡前保存」原语');
+  assert.equal(delGuards[0].saveLabel, '保存后删除');
+  assert.deepEqual(delCalls, [], '原语回取消 → 绝不调 deleteChapter');
+  assert.equal(del.state.dirty, true, '未落盘的输入仍标脏（关窗 / 切章照常拦截）');
+  assert.equal(del.editorEl.value, '第二章正文\n保存期间又敲的一句', '编辑区里的字一个不许少');
+  assert.deepEqual(del.counts.load, []);
+
+  // ② 批量删除（当前章在选中集合里）
+  const batch = makeHost();
+  batch.state.index = 1;
+  batch.state.dirty = true;
+  batch.state.selectedIds = new Set([0, 1, 2]);
+  batch.editorEl.value = '第二章正文';
+  const batchDeletes = [];
+  batch.host.api.deleteChapter = async (bookPath, chapterId) => {
+    batchDeletes.push(chapterId);
+    return { ok: true, data: { index: 0, meta: { chapters: batch.state.chapters, volumes: batch.state.meta.volumes }, trashPath: `x/${chapterId}.md`, undoToken: 't' } };
+  };
+  let batchGuard = 0;
+  batch.host.saveForTransition = async () => {
+    batchGuard += 1;
+    batch.editorEl.value = '第二章正文 + 保存期间敲的字';
+    batch.state.dirty = true;
+    return { ok: false, canceled: true };
+  };
+  const batchUi = moduleApi.create(batch.host);
+  assert.equal(await batchUi.deleteSelectedChapters(), false);
+  assert.equal(batchGuard, 1, '批量删除也必须走统一原语');
+  assert.deepEqual(batchDeletes, [], '取消时不删任何一章');
+  assert.equal(batch.state.dirty, true);
+  assert.equal(batch.state.chapters.length, 3, '书目一章不许少');
+  assert.equal(batch.editorEl.value, '第二章正文 + 保存期间敲的字');
+
+  // ③ 建章
+  const create = makeHost();
+  create.state.dirty = true;
+  create.editorEl.value = '当前章正文';
+  create.state.globalConfig.chapterTemplate = '第{章号}章 {章名}';
+  const created = [];
+  create.host.api.createChapter = async (...args) => {
+    created.push(args);
+    return { ok: true, data: { index: 3, chapter: { name: '新章' }, meta: { chapters: create.state.chapters, volumes: create.state.meta.volumes } } };
+  };
+  let createGuard = null;
+  create.host.saveForTransition = async (options) => {
+    createGuard = options;
+    create.state.dirty = true;
+    return { ok: false, canceled: true };
+  };
+  const createUi = moduleApi.create(create.host);
+  const createResult = await createUi.createChapterAt(3, '新章');
+  assert.equal(createResult.ok, false);
+  assert.equal(createResult.canceled, true);
+  assert.deepEqual(created, [], '原语回取消 → 绝不建新章');
+  assert.equal(createGuard && createGuard.silentFirst, true, '建章保留原来的「先静默保存」体验');
+  assert.equal(create.counts.input, 0, '模板一个字都不许套进旧章');
+  assert.equal(create.editorEl.value, '当前章正文');
+
+  // ④ 干净放行：原语说「已经保存干净」→ 三个入口照常继续。
+  const clean = makeHost();
+  clean.state.index = 1;
+  clean.state.dirty = true;
+  const cleanDeletes = [];
+  clean.host.api.deleteChapter = async (bookPath, chapterId) => {
+    cleanDeletes.push(chapterId);
+    const chapters = clean.state.chapters.filter((chapter) => chapter.id !== chapterId);
+    return { ok: true, data: { index: 1, meta: { chapters, volumes: clean.state.meta.volumes }, trashPath: 'x/002.md', undoToken: 't' } };
+  };
+  clean.host.saveForTransition = async () => {
+    clean.state.dirty = false; // 与真原语一致：回执落地后按快照复核，干净才返回 ok
+    return { ok: true };
+  };
+  const cleanUi = moduleApi.create(clean.host);
+  assert.equal(await cleanUi.deleteChapterAt(1), true);
+  assert.deepEqual(cleanDeletes, ['c2']);
+  assert.equal(clean.counts.load.length, 1, '删完照常载入新章');
+});
+
+test('T1 / H1：宿主没给 saveForTransition 时的兜底——保存成功但回执时仍脏，也绝不动手', async () => {
+  // 旧宿主（单测 / 老装配）没有统一原语：deleteSelectedChapters 走「一问一存」，但保存回执后
+  // 仍脏时同样必须停下（与统一原语同一纪律），不许只看 saved.ok。
+  const del = makeHost({ askQueue: ['save'], saveMutatesDuringSave: true });
+  del.state.index = 1;
+  del.state.dirty = true;
+  del.editorEl.value = '第二章正文';
+  const deleted = [];
+  del.host.api.deleteChapter = async (bookPath, chapterId) => {
+    deleted.push(chapterId);
+    return { ok: true, data: { index: 0, meta: { chapters: del.state.chapters, volumes: del.state.meta.volumes }, trashPath: 'x/002.md', undoToken: 't' } };
+  };
+  assert.equal(await del.ui.deleteChapterAt(1), false);
+  assert.deepEqual(deleted, [], '保存成功但仍有未落盘输入 → 不删');
+  assert.equal(del.state.dirty, true);
+
+  const create = makeHost({ saveMutatesDuringSave: true });
+  create.state.dirty = true;
+  const created = [];
+  create.host.api.createChapter = async () => {
+    created.push(1);
+    return { ok: true, data: { index: 0, chapter: { name: 'x' }, meta: { chapters: create.state.chapters, volumes: create.state.meta.volumes } } };
+  };
+  const createResult = await create.ui.createChapterAt(3, '新章');
+  assert.equal(createResult.ok, false);
+  assert.equal(createResult.dirty, true);
+  assert.deepEqual(created, [], '建章同样不许带着未落盘输入继续');
+});
+
+// ---------- 旧M1 / 旧M2（一轮·中）----------
+test('旧M1：建章后载章失败 → 不套模板、不报成功（绝不把模板写进旧章）', async () => {
+  const rt = makeHost({ loadResult: { ok: false, code: 'LOAD_FAILED', message: '读取章节失败：文件缺失' } });
+  rt.state.dirty = false;
+  rt.state.chapterFilter = '目录';
+  rt.state.globalConfig.chapterTemplate = '第{章号}章 {章名}';
+  rt.editorEl.value = '旧章正文';
+  const result = await rt.ui.createChapterAt(3, '新章');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'CREATE_LOAD_FAILED');
+  assert.equal(rt.counts.input, 0, '载章失败不许套模板（onEditorInput 一次都不许走）');
+  assert.equal(rt.editorEl.value, '旧章正文', '编辑区仍是旧章正文');
+  assert.equal(rt.counts.toast.at(-1)[1], 'error');
+  assert.match(rt.counts.toast.at(-1)[0], /载入失败/);
+  assert.ok(rt.counts.renderList >= 1, '目录要重画（新章已经建好，作者要能看到它）');
+});
+
+test('旧M2：删除后载章失败 → 保持脏 + 提示，不进「正文在、状态栏已保存」矛盾态', async () => {
+  // 单章（skipConfirm 自动化钩子）+ 保存期间仍有输入：删除成功但新章载入失败。
+  const del = makeHost({ loadResult: { ok: false, code: 'LOAD_FAILED', message: '读取章节失败' } });
+  del.state.index = 1;
+  del.state.dirty = true;
+  del.editorEl.value = '第二章正文（没落盘）';
+  del.host.api.deleteChapter = async () => {
+    const chapters = del.state.chapters.filter((chapter) => chapter.id !== 'c2');
+    return { ok: true, data: { index: 1, meta: { chapters, volumes: del.state.meta.volumes }, trashPath: 'x/002.md', undoToken: 't' } };
+  };
+  assert.equal(await del.ui.deleteChapterAt(1, true), true);
+  assert.equal(del.state.dirty, true, '载章失败必须保持脏（关窗要照常拦截）');
+  assert.match(del.counts.toast.at(-1)[0], /载入失败/);
+
+  // 批量删除的当前章分支同一口径。
+  const batch = makeHost({ loadResult: { ok: false, code: 'LOAD_FAILED', message: '读取章节失败' }, askQueue: ['discard'] });
+  batch.state.index = 1;
+  batch.state.dirty = true;
+  batch.state.selectedIds = new Set([0, 1, 2]);
+  batch.editorEl.value = '第二章正文（没落盘）';
+  batch.host.api.deleteChapter = async (bookPath, chapterId) => {
+    const chapters = batch.state.chapters.filter((chapter) => chapter.id !== chapterId);
+    batch.state.chapters = chapters;
+    batch.state.meta.chapters = chapters;
+    return { ok: true, data: { index: 1, meta: { chapters, volumes: batch.state.meta.volumes }, trashPath: `x/${chapterId}.md`, undoToken: 't' } };
+  };
+  assert.equal(await batch.ui.deleteSelectedChapters(), true);
+  assert.equal(batch.state.dirty, true, '批量删后载章失败同样保持脏');
+  assert.ok(batch.counts.toast.some(([message]) => /载入失败/.test(message)));
+});
+

@@ -133,7 +133,10 @@
       queue: [], // [{ id, chars, at, previewText }] 主进程队列元数据，不含正文
       pendingText: null, // 直捕：当前剪贴板原文（未入队，只有这一条在渲染层内存里）
       tooLarge: false, // 直捕正文 >30 万字点「章节」后置位：显示「去导入小说…」
-      consumedIds: new Set() // 审计修复 #42（V405）：正文已插入、但 queue-remove 失败的 id
+      consumedIds: new Set(), // 审计修复 #42（V405）：正文已插入、但 queue-remove 失败的 id
+      // S1（一轮·中）：主进程在「面板打开」那一刻签发的一次性读剪贴板凭证（用掉即废）。
+      // 读系统剪贴板必须带上它 —— 注入的渲染层不能再随时把作者剪贴板拉进页面。
+      gesture: null
     };
 
     // 审计修复 #42（V405）：正文插入成功但 capture:queue-remove 失败（主进程忙 / 这条已被别处消费）时，
@@ -410,11 +413,14 @@
       }
       // 打开前补一拍监听（2026-11-07 修「复制 4 次只记 2 次」）：轮询已缩到 300ms，
       // 但「刚复制就点捕获」仍可能落在两拍之间；先让主进程主动读一次，队列里才不会有缺口。
+      // S1（一轮·中）：这一次补拍同时向主进程换一张本窗口的一次性读剪贴板凭证。
+      panel.gesture = null;
       if (api && typeof api.captureFlushWatch === 'function') {
         try {
-          await call(api.captureFlushWatch);
+          const flushed = await call(api.captureFlushWatch);
+          panel.gesture = (flushed && flushed.gesture) || null;
         } catch {
-          /* 补拍失败不影响打开面板 */
+          /* 补拍失败不影响打开面板（下面的读取会被主进程拒绝并提示） */
         }
       }
       let entries = [];
@@ -430,7 +436,8 @@
       }
       let text = '';
       try {
-        const data = await call(api.captureClipboard);
+        // S1（一轮·中）：带上「面板打开」换来的本窗口一次性凭证；没有它主进程会拒绝读剪贴板。
+        const data = await call(api.captureClipboard, panel.gesture);
         text = (data && data.text) || '';
       } catch (err) {
         toast(`读取剪贴板失败：${err.message}`, 'error');
@@ -477,6 +484,8 @@
       panel.pendingText = null;
       panel.tooLarge = false;
       panel.position = 'end';
+      // S1（一轮·中）：关闭即作废未用掉的读剪贴板凭证（下次打开重新换一张）。
+      panel.gesture = null;
       // RPAN-A-04：面板关掉后 busy 期攒下的补拉请求作废（下次打开本来就会重取队列）。
       pendingQueueRefresh = false;
       const backdrop = $('capture-backdrop');

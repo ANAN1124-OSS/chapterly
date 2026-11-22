@@ -328,18 +328,30 @@
         // B5（审计 P5）：千章书不再整表重建，只改这一条（+ 下一章的对比提示）；失配才退回整表。
         if (!syncChapterCharsAfterSave(snapshotAt)) renderChapterList();
       }
+      // H2（三审）：保存成功 ≠ 编辑区干净。**先**按发起时的正文快照算出「编辑区里这一章的字
+      // 是不是都落盘了」，再决定删不删崩溃草稿——旧顺序先 noteSaved 删草稿、后算 dirty：
+      // 保存往返期间又敲的字当时唯一的兜底（草稿）已经被删掉，紧接着崩溃就只剩磁盘上那份旧快照。
+      const stillDirty = saveLogic.isDirtyAgainstSnapshot(text, editorEl.value);
       if (!sameChapter) {
-        // 书换了 = 这次保存属于上一本；章切了 = 回执属于快照那一章：都不碰眼前这一章。
+        // 书换了 = 这次保存属于上一本；章切了 = 回执属于快照那一章：都不碰眼前这一章的任何状态。
+        // H2（三审）：但快照那一章的字确实已经落盘了——按**快照身份**（书 + 章）把它的旧草稿清掉，
+        // 否则下次启动还会拿「已保存的旧草稿」提示作者去覆盖更新的正文。顺序上必须先决断
+        // （不落当前章状态）再清理，绝不能在「当前章」上删草稿。
+        if (getCrashRecoveryUi()) void getCrashRecoveryUi().noteSaved(bookPath, chapterId).catch(() => {});
         return { ok: true, data };
       }
       state.baseText = text;
       state.loadedMtimeMs = data.mtimeMs;
-      // WP5（N1）：这一章已经落盘——旧崩溃草稿（只服务「未保存」状态）顺手删掉。
-      if (getCrashRecoveryUi()) void getCrashRecoveryUi().noteSaved(bookPath, chapterId).catch(() => {});
       state.savedAt = new Date();
       state.saveError = null;
       // 保存期间作者又敲了字：磁盘里只有快照，编辑区多出来的内容必须保持未保存（C1 的核心）
-      state.dirty = saveLogic.isDirtyAgainstSnapshot(text, editorEl.value);
+      state.dirty = stillDirty;
+      // H2（三审）：只有编辑区真的干净了才删这一章的崩溃草稿。仍脏就保留——草稿是这段
+      // 「没写盘的字」的唯一兜底；下一次 30 秒草稿落盘会用新正文覆盖同一份草稿位（更安全），
+      // 成功 Ctrl+S 落地后由这里的干净分支删掉。
+      if (!stillDirty && getCrashRecoveryUi()) {
+        void getCrashRecoveryUi().noteSaved(bookPath, chapterId).catch(() => {});
+      }
       // 主进程已经把「这次保存带来的新增字数」记进 stats.json，返回的摘要直接显示，
       // 不再多跑一次 IPC（统计失败时 data.stats 为 null，界面保留旧数字）。
       if (data.stats) {

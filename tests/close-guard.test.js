@@ -301,12 +301,16 @@ test('C6 / WP-09：closeReleaseDecision 用同一判据算关窗放行（allowed
   assert.equal(decide({ allowed: true }).okToClose, true);
 });
 
-test('C6 / WP-09：主进程在 await 写窗口位置之后、forceClose 之前用同一判据复查（静态闸门）', () => {
+test('C6 / WP-09：主进程在写窗口位置之后、forceClose 之前用同一判据复查（静态闸门）', () => {
   const closeSrc = between(MAIN, "ipcMain.on('app:close-ready'", '\n  });');
-  const awaitAt = closeSrc.indexOf('await saveRecentWindowBounds(session);');
-  assert.ok(awaitAt > 0, '关窗前仍要先记窗口位置');
+  // 旧M3（一轮·中）：写窗口位置不再是裸 await —— 配置写队列挂起时它可能永远不回来，而 8 秒看门狗
+  // 在回执进门时已经解除。现在包在 closeGuard.withDeadline（2.5 秒）里：到点照常关窗。
+  const awaitAt = closeSrc.indexOf('await closeGuard.withDeadline(() => saveRecentWindowBounds(session)');
+  assert.ok(awaitAt > 0, '关窗前仍要先记窗口位置（带截止时间，不许无限等配置写队列）');
+  assert.match(closeSrc, /bounds\.timedOut/, '超时要有明确分支（不许静默当成写成功）');
+  assert.match(closeSrc, /CLOSE_BOUNDS_TIMEOUT/, '超时要留一条日志，方便排查「窗口位置没记住」');
   const recheckAt = closeSrc.indexOf('closeGuard.closeReleaseDecision(', awaitAt);
-  assert.ok(recheckAt > awaitAt, '复查必须在 await 之后（await 前算等于没修）');
+  assert.ok(recheckAt > awaitAt, '复查必须在写窗口位置之后（之前算等于没修）');
   const forceAt = closeSrc.indexOf('session.forceClose = true;');
   assert.ok(forceAt > recheckAt, '复查必须在 forceClose = true 之前');
   const seg = closeSrc.slice(recheckAt, forceAt);
@@ -348,4 +352,53 @@ test('C6 / WP-09：自检注入的写盘延迟只认 --e2e，场景把开关交�
   assert.match(group10, /setRealClose\(true\)/, '组 10 要开「真实关窗」才能走到复查 / forceClose 那一段');
   assert.match(group10, /setRealClose\(false\)/, '组 10 跑完必须关掉真实关窗（后面的组依赖窗口继续存在）');
 });
+
+// 旧M3（一轮·中）：关窗前写窗口位置是一次真写盘 —— 配置写队列被同步盘 / 杀软 / 网络 userData
+// 挂起时它可能永远不回来，而 8 秒看门狗在回执进门那一刻已经 clearTimeout。withDeadline 给它
+// 2.5 秒上限：到点照常关窗，工作本身继续在后台做完（写盘不取消）。
+test('旧M3：withDeadline——到点如实回 timedOut，先完成则用结果且清掉计时器（不许漏悬挂句柄）', async () => {
+  assert.equal(closeGuardLib.BOUNDS_WRITE_TIMEOUT_MS, 2500, '关窗写窗口位置的截止时间是 2.5 秒');
+
+  // ① 工作先完成：用它的结果，计时器要被清掉一次。
+  let cleared = 0;
+  const fast = await closeGuardLib.withDeadline(async () => 'ok', {
+    ms: 1000,
+    setTimeoutFn: () => ({ unref() {} }),
+    clearTimeoutFn: () => {
+      cleared += 1;
+    }
+  });
+  assert.deepEqual(fast, { timedOut: false, value: 'ok' });
+  assert.equal(cleared, 1, '先完成也要清计时器');
+
+  // ② 工作永远不回来：到点（注入的计时器手动触发）如实回 timedOut，不吊死关窗流程。
+  let fire = null;
+  let timedOutCleared = 0;
+  const pending = closeGuardLib.withDeadline(() => new Promise(() => {}), {
+    ms: 2500,
+    setTimeoutFn: (fn) => {
+      fire = fn;
+      return { unref() {} };
+    },
+    clearTimeoutFn: () => {
+      timedOutCleared += 1;
+    }
+  });
+  fire();
+  const slow = await pending;
+  assert.equal(slow.timedOut, true);
+  assert.equal(timedOutCleared, 1, '超时后同样清计时器（不给退出流程留悬挂句柄）');
+
+  // ③ 工作抛错不抛给调用方：关窗流程不许被写盘异常打断（错误原样带回去给日志侧）。
+  const failed = await closeGuardLib.withDeadline(async () => {
+    throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+  }, { ms: 1000 });
+  assert.equal(failed.timedOut, false);
+  assert.equal(failed.error.code, 'EPERM');
+  assert.equal(failed.value, undefined);
+
+  // ④ 非函数任务（直接给值）也照常工作；非法 ms 退回默认值。
+  assert.deepEqual(await closeGuardLib.withDeadline('v', { ms: 0 }), { timedOut: false, value: 'v' });
+});
+
 

@@ -79,6 +79,7 @@ function makeHost(options = {}) {
     },
     async loadChapterAt(index) {
       loaded.push(index);
+      if (options.onLoadChapterAt) return options.onLoadChapterAt(index);
       state.index = index;
       return { ok: true };
     }
@@ -421,6 +422,28 @@ test('REDT-B-01：显式 dirtyAction="save" 只授权调用时那一份脏，保
   });
   assert.equal(ctx.asked.length, 1, '强制 save 不弹第一轮询问，但保存后又脏必须问');
   assert.deepEqual(ctx.loaded, []);
+});
+
+test('T5 / 旧M1：loadChapterAt 失败 → switchChapter 回 ok:false 并带原因（不再无条件 ok:true）', async () => {
+  // 以前 switchChapter 无条件回 { ok:true }：校对 / 敏感词「点结果跳章」在载章失败（章文件缺失 /
+  // 超限 / 权限）时照常继续，按**旧正文**算命中位置并选中 —— 操作落在另一章上。
+  const failed = makeHost({
+    onLoadChapterAt: async () => ({ ok: false, code: 'LOAD_FAILED', message: '读取章节失败：文件缺失' })
+  });
+  const failedResult = await shelfUi.create(failed.host).switchChapter(2);
+  assert.deepEqual(failedResult, { ok: false, code: 'LOAD_FAILED', message: '读取章节失败：文件缺失' });
+  assert.equal(failed.state.index, 0, '载章失败不改当前章下标');
+
+  // 旧宿主 / 旧口径回 undefined：同样按失败处理（不许当成成功）。
+  const bare = makeHost({ onLoadChapterAt: async () => undefined });
+  const bareResult = await shelfUi.create(bare.host).switchChapter(2);
+  assert.equal(bareResult.ok, false);
+  assert.equal(bareResult.code, 'LOAD_FAILED');
+
+  // 成功路径照旧是 { ok:true }（调用方只认 ok === true 才继续定位）。
+  const okCtx = makeHost();
+  assert.deepEqual(await shelfUi.create(okCtx.host).switchChapter(2), { ok: true });
+  assert.deepEqual(okCtx.loaded, [2]);
 });
 
 test('静态闸门：三段实现已经不在 renderer.js 里，渲染层只剩接线', () => {

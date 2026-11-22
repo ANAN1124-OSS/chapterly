@@ -75,6 +75,36 @@ function draftIdFor(bookPath, chapterId) {
   return crypto.createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16);
 }
 
+// S2（一轮·中/低 + 三审）：草稿记「谁写的」。
+// ownerToken 是主进程每进程生成一次的随机令牌（区分「本进程的窗口」与「上次运行留下的草稿」）；
+// ownerWindowId 是本进程内的窗口 id。两者都不参与草稿 id 派生（书 + 章仍是唯一草稿位），
+// 只用于「多窗口下只给写它的那扇窗口看 / 读 / 删」。单测可以完全不给（= 老草稿，谁都能看）。
+function normalizeOwnerToken(value) {
+  return typeof value === 'string' ? value.slice(0, 64) : '';
+}
+
+function normalizeOwnerWindowId(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+// 一份草稿（publicDraft / readDraft 的 draft）对某个查看者可见吗？
+//   · 没有 ownerToken，或 ownerToken 不是本进程 → 上次运行（或旧版本）留下的：谁先打开谁处理；
+//   · 本进程写的 → 只有它自己那扇窗口可见（多窗口不重复提示同一份草稿）。
+function draftVisibleTo(draft, viewer) {
+  if (!draft) return true;
+  const self = viewer && typeof viewer === 'object' ? viewer : {};
+  const token = normalizeOwnerToken(self.ownerToken);
+  const windowId = normalizeOwnerWindowId(self.ownerWindowId);
+  const ownerToken = normalizeOwnerToken(draft.ownerToken);
+  if (!ownerToken) return true;
+  if (!token || ownerToken !== token) return true;
+  const ownerWindowId = normalizeOwnerWindowId(draft.ownerWindowId);
+  if (ownerWindowId == null) return true;
+  return windowId != null && ownerWindowId === windowId;
+}
+
 function parseDraftFileName(name) {
   const match = DRAFT_FILE_RE.exec(String(name == null ? '' : name));
   return match ? match[1] : null;
@@ -144,6 +174,8 @@ function storedEntryFrom(raw, draftId, maxTextChars) {
     chapterIndex: normalizeChapterIndex(raw.chapterIndex),
     at: isoAt(raw.at, () => new Date(0)),
     chars: codePointLength(raw.text),
+    ownerToken: normalizeOwnerToken(raw.ownerToken),
+    ownerWindowId: normalizeOwnerWindowId(raw.ownerWindowId),
     text: raw.text
   };
 }
@@ -158,7 +190,10 @@ function publicDraft(entry) {
     chapterName: entry.chapterName,
     chapterIndex: entry.chapterIndex,
     at: entry.at,
-    chars: entry.chars
+    chars: entry.chars,
+    // S2：归属信息跟着元数据走（渲染层不消费它；主进程用它校验多窗口归属）。
+    ownerToken: entry.ownerToken || '',
+    ownerWindowId: entry.ownerWindowId == null ? null : entry.ownerWindowId
   };
 }
 
@@ -374,11 +409,14 @@ function createCrashDraftStore(baseDir, options = {}) {
       return { ok: true, cleared, markerCleared };
     },
 
-    async writeDraft(raw) {
+    async writeDraft(raw, options = {}) {
       const clean = sanitizeDraftInput(raw, { maxTextChars, now: clock });
       if (!clean.ok) return clean;
       const entry = clean.entry;
       const draftId = draftIdFor(entry.bookPath, entry.chapterId);
+      // S2：归属只由主进程注入（渲染层传进来的 payload 里就算带 ownerWindowId 也不采信）。
+      const ownerToken = normalizeOwnerToken(options && options.ownerToken);
+      const ownerWindowId = normalizeOwnerWindowId(options && options.ownerWindowId);
       try {
         await writeJsonAtomic(draftPath(draftId), {
           version: DRAFT_VERSION,
@@ -391,6 +429,8 @@ function createCrashDraftStore(baseDir, options = {}) {
           chapterIndex: entry.chapterIndex,
           at: entry.at,
           chars: codePointLength(entry.text),
+          ownerToken,
+          ownerWindowId,
           text: entry.text
         });
       } catch (err) {
@@ -406,8 +446,28 @@ function createCrashDraftStore(baseDir, options = {}) {
       return { ok: true, draftId, chars: codePointLength(entry.text) };
     },
 
-    async listDrafts() {
-      return (await scan()).map(publicDraft);
+    // S2（一轮）：按查看者过滤的列表。不传 viewer = 全部（测试 / 诊断 / info 用）。
+    async listDrafts(viewer = null) {
+      const entries = await scan();
+      if (!viewer) return entries.map(publicDraft);
+      return entries.map(publicDraft).filter((draft) => draftVisibleTo(draft, viewer));
+    },
+
+    // S2：只读归属元数据（校验 foreign 用），不返回正文；不存在 / 坏文件回 null。
+    async draftOwner(draftId) {
+      const id = parseDraftFileName(`${FILE_PREFIX}${draftId}.json`);
+      if (!id || id !== String(draftId == null ? '' : draftId)) return null;
+      try {
+        const raw = JSON.parse(await io.readFile(draftPath(id), 'utf8'));
+        if (!raw || typeof raw !== 'object') return null;
+        return {
+          draftId: id,
+          ownerToken: normalizeOwnerToken(raw.ownerToken),
+          ownerWindowId: normalizeOwnerWindowId(raw.ownerWindowId)
+        };
+      } catch {
+        return null;
+      }
     },
 
     async readDraft(draftId) {
@@ -471,5 +531,6 @@ module.exports = {
   MAX_TEXT_CHARS,
   MAX_TITLE_CHARS,
   MAX_PATH_CHARS,
+  draftVisibleTo,
   createCrashDraftStore
 };

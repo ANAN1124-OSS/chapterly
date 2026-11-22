@@ -177,7 +177,8 @@ const api = {
   createFragment: (text) => invoke('fragments:create', text),
   readFragment: (name) => invoke('fragments:read', name),
   // 剪贴板捕获（P0）：捕获必须显式触发；主进程读系统剪贴板 → 一条记录一次新建章节 + 写正文
-  captureClipboard: () => invoke('capture:clipboard'),
+  // S1（一轮·中）：读系统剪贴板要带上「面板打开」换来的一次性凭证（主进程签发、用掉即废）。
+  captureClipboard: (token) => invoke('capture:clipboard', token),
   captureCommitRecord: (bookPath, payload) => invoke('capture:commit-record', bookPath, payload),
   // 2026-11-06 捕获队列：本次运行复制过的几段——列表只回元数据 + 首行预览，正文按条目显式取。
   captureQueueList: () => invoke('capture:queue-list'),

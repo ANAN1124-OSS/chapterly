@@ -96,6 +96,46 @@ test('没打开书：直接 ok:false，不动面板', async () => {
   assert.deepEqual(log, []);
 });
 
+test('旧M1：切章回执任何非成功形态都停下（ok:false / 缺 ok 的旧口径 / undefined），不再按旧正文定位', async () => {
+  // switchChapter 以前无条件回 { ok:true }，这里只认 switched.ok === false —— 回 {} / undefined
+  // 的旧口径会被当成成功继续往下走：命中位置按旧正文算，选中区落在另一章上。
+  const loadFailed = makeCtx({
+    patch: {
+      host: {
+        nav: {
+          editorEl: { value: '甲乙丙丁', focus: () => {}, setSelectionRange: () => {} },
+          switchChapter: async () => ({ ok: false, message: '读取章节失败：文件缺失' })
+        }
+      }
+    }
+  });
+  assert.deepEqual(await loadFailed.ui.jumpToResult({ chapterId: 'c2', chapterIndex: 1 }, loadFailed.close), {
+    ok: false,
+    canceled: false
+  });
+  assert.deepEqual(loadFailed.log, ['close', 'toast:warn:读取章节失败：文件缺失'], '失败要如实提示，且不定位');
+
+  const bare = makeCtx({
+    patch: {
+      host: {
+        nav: {
+          editorEl: { value: '甲乙丙丁', focus: () => {}, setSelectionRange: () => {} },
+          switchChapter: async () => ({})
+        }
+      }
+    }
+  });
+  const bareResult = await bare.ui.jumpToResult({ chapterId: 'c2', chapterIndex: 1 }, bare.close);
+  assert.equal(bareResult.ok, false, '缺 ok 的旧口径按失败处理');
+  assert.deepEqual(bare.log, ['close', 'toast:warn:章节没能打开，先停在当前章']);
+
+  const missing = makeCtx({
+    patch: { host: { nav: { editorEl: { value: '', focus: () => {}, setSelectionRange: () => {} }, switchChapter: async () => undefined } } }
+  });
+  assert.equal((await missing.ui.jumpToResult({ chapterId: 'c2', chapterIndex: 1 }, missing.close)).ok, false);
+  assert.deepEqual(missing.log, ['close', 'toast:warn:章节没能打开，先停在当前章']);
+});
+
 test('host 校验：缺 peers.matchRangeAt 直接抛 TypeError', () => {
   assert.throws(
     () => resultJump.create({ state: {}, toast: () => {}, peers: {}, nav: {}, view: {} }),

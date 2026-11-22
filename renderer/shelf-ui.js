@@ -262,7 +262,17 @@
         if (!saved || saved.ok !== true) return saved;
       }
     }
-    await loadChapterAt(index);
+    // 旧M1（一轮·中）：载章结果必须原样传播。以前这里无条件回 { ok:true }，于是校对 / 搜索命中
+    // 「点结果跳章」在 loadChapterAt 失败时照常定位 —— 位置按**旧正文**算，后续操作全落在旧章上。
+    // 失败时编辑区仍是被删 / 缺文件那一章的正文，调用方必须能停下来。
+    const loaded = await loadChapterAt(index);
+    if (!loaded || loaded.ok === false) {
+      return {
+        ok: false,
+        code: (loaded && loaded.code) || 'LOAD_FAILED',
+        message: (loaded && loaded.message) || '章节载入失败'
+      };
+    }
     return { ok: true };
   }
 

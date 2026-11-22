@@ -206,18 +206,14 @@ module.exports = async function group83CrashRecovery(t) {
       dialog
     );
 
-    // ---------- 83f. 点「恢复」→ 正文回来且 dirty=true → 草稿删除 ----------
+    // ---------- 83f. 点「恢复」→ 正文回来且 dirty=true → 草稿**保留**（旧M4） ----------
     await exec("window.__cwTest.answerModal('restore')");
     await waitFor(`window.__cwTest.text() === ${JSON.stringify(DRAFT_TEXT)}`, 20000);
     await waitFor('window.__cwTest.dirty() === true', 5000);
-    let draftsGone = false;
-    for (let i = 0; i < 50; i += 1) {
-      if ((await listDraftFiles()).length === 0) {
-        draftsGone = true;
-        break;
-      }
-      await sleep(120);
-    }
+    // 旧M4（一轮·中）：恢复只把草稿标记成「本窗口已恢复」，**不删文件** —— 恢复出来的正文只在
+    // 编辑区（仍未保存），草稿是它唯一的磁盘兜底；删掉再崩一次就彻底没救了。
+    // 草稿只会在「成功 Ctrl+S」（保存链干净回执 → noteSaved）或「下一次周期草稿落盘覆盖」后消失。
+    const draftsKept = (await listDraftFiles()).length === 1;
     const restored = await exec(`(() => ({
       text: window.__cwTest.text(),
       dirty: window.__cwTest.dirty(),
@@ -226,32 +222,42 @@ module.exports = async function group83CrashRecovery(t) {
       view: window.__cwTest.view()
     }))()`);
     check(
-      '崩溃恢复：点「恢复」→ 正文逐字回到编辑区且 dirty=true（Ctrl+S 才写盘），草稿随即删除',
+      '崩溃恢复：点「恢复」→ 正文逐字回到编辑区且 dirty=true（Ctrl+S 才写盘），草稿保留（旧M4：恢复当下不删）',
       restored &&
         restored.text === DRAFT_TEXT &&
         restored.dirty === true &&
         restored.view === 'editor' &&
         restored.bookPath === bookPath &&
         restored.loaded === chapter.id &&
-        draftsGone === true,
-      { restored, draftsGone, draftsLeft: await listDraftFiles() }
+        draftsKept === true,
+      { restored, draftsKept, draftsLeft: await listDraftFiles() }
     );
 
-    // ---------- 83g. 关开关 → 清标记与草稿，之后不再写盘 ----------
+    // ---------- 83g. 成功保存 → 草稿删除；关开关 → 清标记与草稿，之后不再写盘 ----------
+    // 旧M4：草稿的删除时机挪到「成功 Ctrl+S」（保存链按快照身份调 noteSaved）之后。
     await exec('window.__cwTest.save()');
     await waitFor("window.__cwTest.dirty() === false");
+    let draftsGoneAfterSave = false;
+    for (let i = 0; i < 50; i += 1) {
+      if ((await listDraftFiles()).length === 0) {
+        draftsGoneAfterSave = true;
+        break;
+      }
+      await sleep(120);
+    }
     const disabled = await exec('window.__cwTest.setCrashDraftEnabled(false)');
     const filesAfterOff = await fs.readdir(crashDraftsDir).catch(() => []);
     const tickAfterOff = await exec('window.__cwTest.crashDraftTick()');
     const configAfterOff = JSON.parse(await fs.readFile(path.join(userData, 'config.json'), 'utf8'));
     check(
-      '崩溃草稿：关开关后清空标记与草稿（目录里一个文件都不剩），tick 回到 DISABLED 不再写盘',
-      disabled === false &&
+      '崩溃草稿：成功保存后才删草稿；关开关后清空标记与草稿（目录里一个文件都不剩），tick 回到 DISABLED 不再写盘',
+      draftsGoneAfterSave === true &&
+        disabled === false &&
         filesAfterOff.length === 0 &&
         tickAfterOff &&
         tickAfterOff.code === 'DISABLED' &&
         configAfterOff.crashDraftEnabled === false,
-      { disabled, filesAfterOff, tickAfterOff, crashDraftEnabled: configAfterOff.crashDraftEnabled }
+      { draftsGoneAfterSave, disabled, filesAfterOff, tickAfterOff, crashDraftEnabled: configAfterOff.crashDraftEnabled }
     );
 
     // ---------- 收尾：删临时书 ----------

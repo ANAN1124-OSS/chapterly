@@ -23,6 +23,10 @@
 const CLOSE_TIMEOUT_MS = 8000;
 const FORCE_CLOSE_CHANNEL = 'app:force-close';
 const FORCE_CLOSE_GRACE_MS = 500;
+// 旧M3（一轮·中）：关窗前写「最近窗口位置」的截止时间。configStore.get/set 内部是真写盘，
+// 配置写队列被同步盘 / 杀软 / 网络 userData 挂起时可能永远不回来；8 秒看门狗在回执进门那一刻
+// 就被 clearTimeout 解除了，以前会无限等、作者只能强杀进程。超时照常关窗（位置没记住是小事）。
+const BOUNDS_WRITE_TIMEOUT_MS = 2500;
 // 顺序即语义：先通知、再等、最后才 destroy。测试直接钉这个数组。
 const FORCE_CLOSE_STEPS = ['send', 'wait', 'destroy'];
 
@@ -100,12 +104,42 @@ function timeoutPrompt() {
   };
 }
 
+// 旧M3（一轮·中）：给一段异步工作加截止时间。先完成 → { timedOut:false, value }；到点 →
+// { timedOut:true }。工作本身**不取消**（配置写盘让它继续在后台做完更好，只是不再压着关窗）。
+// 计时器用完即清（失败 / 超时两条路都清），不会给退出流程留悬挂句柄。
+// 纯逻辑：计时器可注入，单测直接跑，不需要真的等 2.5 秒。
+async function withDeadline(task, options = {}) {
+  const raw = Number(options && options.ms);
+  const ms = Number.isFinite(raw) && raw > 0 ? raw : BOUNDS_WRITE_TIMEOUT_MS;
+  const setTimer = typeof (options && options.setTimeoutFn) === 'function' ? options.setTimeoutFn : setTimeout;
+  const clearTimer =
+    typeof (options && options.clearTimeoutFn) === 'function' ? options.clearTimeoutFn : clearTimeout;
+  let handle = null;
+  const deadline = new Promise((resolve) => {
+    handle = setTimer(() => resolve({ timedOut: true, value: undefined }), ms);
+    if (handle && typeof handle.unref === 'function') handle.unref();
+  });
+  const work = Promise.resolve()
+    .then(() => (typeof task === 'function' ? task() : task))
+    .then(
+      (value) => ({ timedOut: false, value }),
+      (error) => ({ timedOut: false, value: undefined, error })
+    );
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (handle) clearTimer(handle);
+  }
+}
+
 module.exports = {
   CLOSE_TIMEOUT_MS,
+  BOUNDS_WRITE_TIMEOUT_MS,
   FORCE_CLOSE_CHANNEL,
   FORCE_CLOSE_GRACE_MS,
   forceClosePlan,
   runForceCloseSteps,
   closeReleaseDecision,
+  withDeadline,
   timeoutPrompt
 };

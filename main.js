@@ -196,7 +196,8 @@ async function triggerClipboardCapture() {
   // 否则面板里会少掉「刚复制的这一条」。判定与轮询同一套规则，重复调用是幂等的。
   if (clipboardWatchEnabledNow()) {
     const decision = clipboardWatcher.evaluate(text);
-    if (decision.record) captureQueue.add(text);
+    // S1（一轮·中）：这次捕获面板会在 target 窗口里打开 —— 记录直接归它，别的窗口看不到。
+    if (decision.record) captureQueue.add(text, { ownerWindowId: target.id });
   }
   const queued = captureQueue.hasText(text);
   focusSession(target);
@@ -249,6 +250,35 @@ const clipboardPacer = clipboardWatchLib.createLargeTextPacer();
 // 2026-11-06（捕获队列）：开关打开后每次复制各记一条，逐条捕获、各自成章。
 // 只驻主进程内存：不落盘、不写日志；关闭监听 / 退出应用即清空（隐私口径见 README）。
 const captureQueue = captureQueueLib.createCaptureQueue();
+// S1（一轮·中 / 隐私）：捕获面板的一次性「读剪贴板」凭证 + 队列归属。
+// capture:clipboard 是唯一会把系统剪贴板原文交给渲染层的频道（注入的渲染层以前随时能读）；
+// 现在必须先由「打开捕获面板」这个动作换一张本窗口的一次性凭证（用掉即废、60 秒过期），
+// 凭证只存在主进程内存里，渲染层伪造不出来。队列记录按窗口归属（关窗即弃）。
+const CAPTURE_GESTURE_TTL_MS = 60 * 1000;
+const captureGestures = new Map(); // windowId(String) -> { token, at, used }
+let captureGestureSeq = 0;
+
+function issueCaptureGesture(windowId) {
+  if (windowId == null) return null;
+  const token = `g-${Date.now().toString(36)}-${(captureGestureSeq += 1).toString(36)}`;
+  captureGestures.set(String(windowId), { token, at: Date.now(), used: false });
+  return token;
+}
+
+// 用掉一张凭证（一次性）：窗口对得上、没过期、没用过、令牌逐字相等才放行。
+function consumeCaptureGesture(windowId, token) {
+  if (windowId == null) return false;
+  const key = String(windowId);
+  const gesture = captureGestures.get(key);
+  if (!gesture || gesture.used) return false;
+  if (Date.now() - gesture.at > CAPTURE_GESTURE_TTL_MS) {
+    captureGestures.delete(key);
+    return false;
+  }
+  if (typeof token !== 'string' || !token || token !== gesture.token) return false;
+  gesture.used = true;
+  return true;
+}
 let clipboardWatchTimer = null;
 // 仅 automation（E2E）：工作站锁屏 / 无交互桌面时 Windows 会拒绝 clipboard.readText()（恒空），
 // 和现有「复制整本 / 复制本章」E2E 的进程内剪贴板兜底是同一个已知限制。E2E 用 clipboard:test-set
@@ -631,6 +661,25 @@ let crashDraftStore = null;
 let crashSessionStarted = false;
 let crashPreviousAbnormal = false;
 let appQuitting = false;
+
+// S2（一轮·中/低）：草稿的窗口归属。
+//   · crashOwnerToken 是本进程一次性令牌：用它区分「本进程某扇窗口写的草稿」与「上次运行留下的草稿」
+//     （后者必须谁先打开谁能恢复，否则崩溃重启后所有草稿都会变成不可见 = 丢稿）；
+//   · crashConsumed 记「这份草稿已经交给哪扇窗口的编辑区」（旧M4：只标记、**不删文件**，
+//     恢复出来的正文还没落盘，文件是它唯一的磁盘兜底）。主进程据此让别的窗口不再重复提示。
+const crashOwnerToken = `p${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+const crashConsumed = new Map(); // draftId -> windowId
+
+function crashDraftVisibleTo(draft, windowId) {
+  return crashDraftLib.draftVisibleTo(draft, { ownerToken: crashOwnerToken, ownerWindowId: windowId });
+}
+
+// 别的窗口已经恢复过的草稿：本窗口的 crash:recovery 不再列它（本窗口自己仍可再看一次——
+// 渲染进程崩溃重载后编辑区是空白的，那份正文只有草稿里还有）。
+function crashConsumedByOtherWindow(draftId, windowId) {
+  if (!crashConsumed.has(draftId)) return false;
+  return String(crashConsumed.get(draftId)) !== String(windowId);
+}
 
 function getCrashDraftStore() {
   if (!crashDraftStore) {
@@ -1285,7 +1334,19 @@ function setupCloseIpc() {
       return;
     }
     // 只记「最近使用的窗口」的位置 / 大小；关一个非最近窗口不覆盖它
-    await saveRecentWindowBounds(session);
+    // 旧M3（一轮·中）：看门狗已在上面 clearTimeout —— 如果配置写队列被同步盘 / 杀软 / 网络
+    // userData 挂起，saveRecentWindowBounds 的内部 await 可能永远不回来，作者只能强杀进程。
+    // 这里给它 2.5 秒截止时间：到点照常关窗（位置没记住是小事，关不掉是大事）。
+    const bounds = await closeGuard.withDeadline(() => saveRecentWindowBounds(session), {
+      ms: closeGuard.BOUNDS_WRITE_TIMEOUT_MS
+    });
+    if (bounds.timedOut) {
+      logError(
+        'close-bounds-timeout',
+        { code: 'CLOSE_BOUNDS_TIMEOUT', message: '关窗前保存窗口位置超时（配置写队列可能被占用），已放行关窗' },
+        { level: 'warn' }
+      );
+    }
     if (session.win.isDestroyed()) return;
     // WP-09（C6）：上面这次写盘是一次真实 await（配置整份写，慢盘上可达几十毫秒）。这段时间
     // 渲染层还能继续输入并上报 app:dirty；若只按回执那一刻的判定 forceClose，setupCloseFlow 的
@@ -1701,7 +1762,13 @@ function registerIpc() {
   // 剪贴板捕获（P0）：显式触发才读系统剪贴板；clipboard.readText() 天然是纯文本，
   // 网页的字体 / 颜色 / 图片都不会带进来。渲染层列表里点「章节」时整条文本原样传回来，
   // 章名规则 / 正文在 capture:commit-record 里统一算，渲染层不采信算好的正文。
-  handle('capture:clipboard', async () => {
+  // S1（一轮·中）：读系统剪贴板必须带「打开面板」换来的本窗口一次性凭证 —— 注入的渲染层
+  // 不能再随时把作者剪贴板（可能是密码 / 验证码）拉进页面。
+  handle('capture:clipboard', async (token) => {
+    const session = flowSession();
+    if (!session || !consumeCaptureGesture(session.id, token)) {
+      throw new storage.StorageError('CAPTURE_NOT_ALLOWED', '请先打开捕获面板再读取剪贴板');
+    }
     const text = String((await activeClipboard.readText()) || '');
     assertText(text);
     return { text, chars: captureLib.countChars(text) };
@@ -1709,29 +1776,59 @@ function registerIpc() {
 
   // 2026-11-06（捕获队列）：本次运行复制过的几段——只回元数据 + 首行预览 + 截断正文预览，不回正文；
   // 正文只在用户显式点开某一条时经 capture:queue-get 取回（自动通知仍然只发字数）。
-  handle('capture:queue-list', async () => ({ entries: captureQueue.list(), total: captureQueue.size() }));
+  // S1（一轮·中）：按窗口归属。打开面板的窗口先把「还没有主」的记录认领掉（都是本进程里复制进来的），
+  // 以后只有它能看到 / 取走；别的窗口打开面板看到的是空的（不会读到对方的剪贴板历史）。
+  handle('capture:queue-list', async () => {
+    const session = flowSession();
+    const windowId = session ? session.id : null;
+    if (windowId != null) captureQueue.claim(windowId);
+    return { entries: captureQueue.listFor(windowId), total: captureQueue.sizeFor(windowId) };
+  });
 
   handle('capture:queue-get', async (id) => {
     const numeric = Number(id);
-    const entry = Number.isFinite(numeric) ? captureQueue.get(Math.round(numeric)) : null;
+    const session = flowSession();
+    const windowId = session ? session.id : null;
+    const round = Number.isFinite(numeric) ? Math.round(numeric) : NaN;
+    if (Number.isFinite(round) && !captureQueue.canAccess(round, windowId)) {
+      throw new storage.StorageError('QUEUE_FOREIGN_WINDOW', '这条复制记录属于另一个窗口');
+    }
+    const entry = Number.isFinite(round) ? captureQueue.get(round) : null;
     if (!entry) {
       throw Object.assign(new Error('这条复制记录已经不在了（可能刚被捕获或队列已清空）'), { code: 'QUEUE_MISSING' });
     }
     return { id: entry.id, text: entry.text, chars: entry.chars, at: entry.at };
   });
 
-  handle('capture:queue-clear', async () => ({ cleared: captureQueue.clear() }));
+  handle('capture:queue-clear', async () => {
+    const session = flowSession();
+    return { cleared: captureQueue.clearFor(session ? session.id : null) };
+  });
 
   // 面板「正文」插入成功后消费这一条（2026-11-08 作者要求：正文也消失，与「章节」口径一致）。
   // 只删内存队列里的这一条，不碰章节 / 文件；id 不合法或已经不在队列里返回 removed:false（不报错）。
+  // S1（一轮·中）：非 owner 不删（返回 removed:false + code，不假装成功）。
   handle('capture:queue-remove', async (id) => {
     const numeric = Number(id);
-    return { removed: Number.isFinite(numeric) ? captureQueue.remove(Math.round(numeric)) : false };
+    const session = flowSession();
+    const windowId = session ? session.id : null;
+    if (!Number.isFinite(numeric)) return { removed: false };
+    const round = Math.round(numeric);
+    if (!captureQueue.canAccess(round, windowId)) {
+      return { removed: false, code: 'QUEUE_FOREIGN_WINDOW' };
+    }
+    return { removed: captureQueue.remove(round) };
   });
 
   // 打开面板前补一拍监听（2026-11-07 修「复制 4 次只记 2 次」）：轮询已缩到 300ms，
   // 但「复制完立刻点捕获」仍可能落在两拍之间；面板打开前主动读一次，不漏掉刚复制的那条。
-  handle('capture:flush', async () => flushClipboardWatchOnce());
+  // S1（一轮·中）：补拍的同时签发本窗口的一次性读剪贴板凭证 —— 「面板打开」就是主进程侧的触发手势。
+  handle('capture:flush', async () => {
+    const session = flowSession();
+    const flushed = await flushClipboardWatchOnce();
+    const gesture = session ? issueCaptureGesture(session.id) : null;
+    return { ...flushed, gesture };
+  });
 
   // 一条复制记录 → 新建一章（v0.13.2 单列表面板的「章节」按钮）。storage.createChapterWithText
   // 先写正文再写书目，书目写失败会删掉刚建的文件，绝不留下有记录没正文的空章。
@@ -2120,8 +2217,15 @@ function registerIpc() {
     const store = getCrashDraftStore();
     if (!store) return { saved: false, code: 'DRAFT_UNAVAILABLE' };
     // 正文上限 / 形状都在 core/crash-draft 里统一清洗（与正文 500 万字同口径），不抛给 IPC 层。
-    const result = await store.writeDraft(payload);
+    // S2（一轮）：归属由主进程注入（书 + 章仍是唯一草稿位），渲染层 payload 里带的 owner 一律不采信。
+    const session = flowSession();
+    const result = await store.writeDraft(payload, {
+      ownerToken: crashOwnerToken,
+      ownerWindowId: session ? session.id : null
+    });
     if (!result.ok) return { saved: false, code: result.code, message: result.message };
+    // 同一个草稿位被新正文覆盖：它重新有主了，「已恢复」的标记作废（渲染进程崩溃重载后要能再提示）。
+    crashConsumed.delete(result.draftId);
     return { saved: true, draftId: result.draftId, chars: result.chars };
   });
   handle('crash:recovery', async () => {
@@ -2130,25 +2234,63 @@ function registerIpc() {
     if (!enabled) return { enabled: false, previousExitAbnormal: false, drafts: [] };
     const store = getCrashDraftStore();
     if (!store) return { enabled: true, previousExitAbnormal: crashPreviousAbnormal, drafts: [] };
-    return { enabled: true, previousExitAbnormal: crashPreviousAbnormal, drafts: await store.listDrafts() };
+    const session = flowSession();
+    const windowId = session ? session.id : null;
+    // S2（一轮）：只列本窗口可见的草稿（别的窗口正在处理的不再重复提示），
+    // 并且跳过「已经被另一扇窗口恢复进编辑区」的那些。
+    const drafts = (await store.listDrafts({ ownerToken: crashOwnerToken, ownerWindowId: windowId })).filter(
+      (draft) => !crashConsumedByOtherWindow(draft.draftId, windowId)
+    );
+    return { enabled: true, previousExitAbnormal: crashPreviousAbnormal, drafts };
   });
   handle('crash:read-draft', async (draftId) => {
     const cfg = await getConfig();
     if (!cfg || cfg.crashDraftEnabled !== true) return { draft: null, code: 'DISABLED' };
     const store = getCrashDraftStore();
     if (!store) return { draft: null, code: 'DRAFT_UNAVAILABLE' };
+    const session = flowSession();
+    const windowId = session ? session.id : null;
     const result = await store.readDraft(draftId);
     if (!result.ok) return { draft: null, code: result.code, message: result.message };
+    // S2（一轮）：归属校验 —— 别的窗口写的草稿不许在这里读（正文全文只给写它的窗口 / 崩溃重启后的先来者）。
+    if (!crashDraftVisibleTo(result.draft, windowId)) {
+      return { draft: null, code: 'DRAFT_FOREIGN_WINDOW', message: '这份草稿属于另一个窗口，不能在这里恢复' };
+    }
+    if (crashConsumedByOtherWindow(result.draft.draftId, windowId)) {
+      return { draft: null, code: 'DRAFT_CONSUMED', message: '这份草稿已经在另一个窗口恢复过了' };
+    }
     return { draft: result.draft };
   });
   handle('crash:discard-draft', async (target) => {
+    const cfg = await getConfig();
+    // S2（一轮）：与其它 crash 频道统一检查开关 —— 以前 discard 不看开关，关着也能按 id 删草稿。
+    if (!cfg || cfg.crashDraftEnabled !== true) return { ok: false, removed: 0, code: 'DISABLED' };
     const store = getCrashDraftStore();
-    if (!store || !target || typeof target !== 'object') return { removed: 0 };
-    if (typeof target.draftId === 'string' && target.draftId) return store.removeDraft(target.draftId);
-    if (typeof target.bookPath === 'string' && typeof target.chapterId === 'string') {
-      return store.removeFor({ bookPath: target.bookPath, chapterId: target.chapterId });
+    if (!store || !target || typeof target !== 'object') {
+      return { ok: false, removed: 0, code: 'DRAFT_UNAVAILABLE' };
     }
-    return { removed: 0 };
+    const session = flowSession();
+    const windowId = session ? session.id : null;
+    if (typeof target.draftId === 'string' && target.draftId) {
+      // 归属校验：只有写它的窗口（或崩溃重启后的先来者）能删 / 标记。
+      const owner = await store.draftOwner(target.draftId);
+      if (owner && !crashDraftVisibleTo(owner, windowId)) {
+        return { ok: false, removed: 0, code: 'DRAFT_FOREIGN_WINDOW', message: '这份草稿属于另一个窗口' };
+      }
+      // 旧M4（一轮）：consumed = 「已经交给某扇窗口的编辑区」——只标记、不删文件。
+      if (target.consumed === true) {
+        crashConsumed.set(target.draftId, windowId);
+        return { ok: true, consumed: true, removed: 0 };
+      }
+      const result = await store.removeDraft(target.draftId);
+      crashConsumed.delete(target.draftId);
+      return result;
+    }
+    if (typeof target.bookPath === 'string' && typeof target.chapterId === 'string') {
+      const result = await store.removeFor({ bookPath: target.bookPath, chapterId: target.chapterId });
+      return result;
+    }
+    return { ok: false, removed: 0, code: 'BAD_TARGET' };
   });
 
   // 正文全文搜索（提案 7.3）：书架搜索升级成能搜正文。
@@ -2418,6 +2560,18 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
     // B18（v1.8.0 WP-29）：字体路径登记同属「只在内存里、按窗口」的临时值；以前只在 font:read
     // 时清，选了字体但没读就关窗会残留一条（窗口 id 可能被系统复用）。与 pickedConfigPaths 同步清理。
     pickedFontPaths.delete(session.id);
+    // S1（一轮·中）：这扇窗口的捕获队列记录与「读剪贴板」凭证随窗口一起丢弃（隐私口径：
+    // 剪贴板历史只在本进程内存里、只在本窗口可见、关窗即弃）。别的窗口的记录不受影响。
+    try {
+      captureQueue.releaseOwner(session.id);
+    } catch {
+      /* 清理失败不影响关窗 */
+    }
+    captureGestures.delete(String(session.id));
+    // S2（一轮）：这扇窗口标记过的「已恢复」草稿记录也一起清（草稿文件本身保留，别的窗口还能看到）。
+    for (const [draftId, ownerWindowId] of Array.from(crashConsumed.entries())) {
+      if (String(ownerWindowId) === String(session.id)) crashConsumed.delete(draftId);
+    }
     try {
       storage.openBookRegistry.unregisterWindow(session.id);
     } catch {

@@ -127,9 +127,61 @@ function createCaptureQueue(options = {}) {
   const maxTotalChars = positiveInt(options.maxTotalChars, DEFAULT_MAX_TOTAL_CHARS);
   const now = typeof options.now === 'function' ? options.now : Date.now;
 
-  let entries = []; // 旧 → 新：[{ id, text, chars, rawLength, at }]
+  let entries = []; // 旧 → 新：[{ id, text, chars, rawLength, at, ownerWindowId }]
   let nextId = 1;
   let totalChars = 0; // 各条 rawLength 之和（内存口径；上限按它淘汰）
+
+  // S1（一轮·中）：每条记录记「哪扇窗口的捕获面板拥有它」。
+  // 记录本身由后台剪贴板监听 / 全局快捷键写进来（那时还没有窗口上下文），所以入队时可以是 null；
+  // 打开捕获面板的窗口（capture:queue-list）通过 claim() 认领这批无主记录，此后只有它能看到 / 取走。
+  // 归属只在本进程内存里：窗口关掉即清（隐私口径「只在本窗口可见、关窗即弃」）。
+  function ownerIdOf(entry) {
+    if (!entry || entry.ownerWindowId == null) return null;
+    const n = Number(entry.ownerWindowId);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  // 归一化窗口 id：非法值一律 null（= 还没有归属）。
+  function normalizeOwner(value) {
+    if (value == null) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  // 某一扇窗口能不能操作这一条：无主（等待认领）或归属它自己。
+  function canAccess(id, ownerWindowId) {
+    const at = entries.findIndex((entry) => entry.id === Number(id));
+    if (at < 0) return false;
+    const owner = ownerIdOf(entries[at]);
+    const self = normalizeOwner(ownerWindowId);
+    if (owner == null) return true;
+    return self != null && owner === self;
+  }
+
+  // 无主记录归给打开面板的窗口；已经有主的记录不动（不许抢别的窗口的记录）。
+  function claim(ownerWindowId) {
+    const self = normalizeOwner(ownerWindowId);
+    if (self == null) return 0;
+    let claimed = 0;
+    for (const entry of entries) {
+      if (entry.ownerWindowId == null) {
+        entry.ownerWindowId = self;
+        claimed += 1;
+      }
+    }
+    return claimed;
+  }
+
+  // 本窗口可见的条目：自己的 + 还没有主的（旧版本 / 监听器刚写进来还没认领）。
+  function listFor(ownerWindowId) {
+    const self = normalizeOwner(ownerWindowId);
+    return entries.filter((entry) => entry.ownerWindowId == null || ownerIdOf(entry) === self).map(metaOf);
+  }
+
+  function sizeFor(ownerWindowId) {
+    const self = normalizeOwner(ownerWindowId);
+    return entries.filter((entry) => entry.ownerWindowId == null || ownerIdOf(entry) === self).length;
+  }
 
   // 入队时算一次预览就挂在条目上（2026-11-17 审计 B4）：正文在队列里不可变，list() 不该对每条
   // 原文重算。面板开着时每记一条新复制就 refreshQueue（renderer/renderer.js:5772/5785），
@@ -167,7 +219,7 @@ function createCaptureQueue(options = {}) {
   //   added=true  / entry 是该条的元数据（id / chars / rawLength / at / preview / previewText）。
   // chars 是去空白正文字数（V108：与插入后状态栏同一口径），maxEntryChars 按它挡（2026-11-15 放宽）；
   // maxTotalChars / 淘汰仍按 rawLength（内存口径）。
-  function add(text) {
+  function add(text, addOptions = {}) {
     const source = typeof text === 'string' ? text : '';
     const rawLength = source.length;
     if (!source.trim()) return { added: false, reason: 'empty' };
@@ -180,7 +232,15 @@ function createCaptureQueue(options = {}) {
     if (newest && newest.text === source) {
       return { added: false, reason: 'duplicate', entry: metaOf(newest) };
     }
-    const entry = { id: nextId, text: source, chars, rawLength, at: now() };
+    const entry = {
+      id: nextId,
+      text: source,
+      chars,
+      rawLength,
+      at: now(),
+      // S1：全局快捷键触发时知道是哪扇窗口要弹面板；后台监听拍记进来的先留空，等面板打开时 claim。
+      ownerWindowId: normalizeOwner(addOptions && addOptions.ownerWindowId)
+    };
     // 预览只在入队时算这一次（list() 读缓存）：条目被删除 / 淘汰时预览跟着走，不另留引用。
     Object.assign(entry, previewFieldsOf(entry));
     nextId += 1;
@@ -230,6 +290,48 @@ function createCaptureQueue(options = {}) {
     return count;
   }
 
+  // S1：带归属的删除 / 清空 / 关窗回收（主进程的 capture:queue-* 走这一组）。
+  // 非 owner 一律拒绝（返回 false / 0），不删别人的记录。
+  function removeFor(id, ownerWindowId) {
+    if (!canAccess(id, ownerWindowId)) return false;
+    return remove(id);
+  }
+
+  function clearFor(ownerWindowId) {
+    const self = normalizeOwner(ownerWindowId);
+    const keep = [];
+    let removed = 0;
+    for (const entry of entries) {
+      const owner = ownerIdOf(entry);
+      if (owner == null || (self != null && owner === self)) {
+        totalChars -= entry.rawLength;
+        removed += 1;
+      } else {
+        keep.push(entry);
+      }
+    }
+    entries = keep;
+    return removed;
+  }
+
+  // 窗口关闭：这一扇窗口的记录全部丢弃（隐私口径），别的窗口的不动。
+  function releaseOwner(ownerWindowId) {
+    const self = normalizeOwner(ownerWindowId);
+    if (self == null) return 0;
+    const keep = [];
+    let removed = 0;
+    for (const entry of entries) {
+      if (ownerIdOf(entry) === self) {
+        totalChars -= entry.rawLength;
+        removed += 1;
+      } else {
+        keep.push(entry);
+      }
+    }
+    entries = keep;
+    return removed;
+  }
+
   return {
     add,
     list,
@@ -238,6 +340,14 @@ function createCaptureQueue(options = {}) {
     remove,
     clear,
     size: () => entries.length,
+    // S1（一轮·中）：按窗口归属的视图与操作
+    claim,
+    listFor,
+    sizeFor,
+    canAccess,
+    removeFor,
+    clearFor,
+    releaseOwner,
     // 队列总原始长度（各条 rawLength 之和，含空白）：maxTotalChars 的淘汰口径，不是显示字数。
     totalChars: () => totalChars,
     maxEntries,

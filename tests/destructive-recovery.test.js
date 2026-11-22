@@ -537,8 +537,15 @@ test('静态闸门：三个批次操作的中途失败都要带「改了几章 +
 
 test('静态闸门：渲染层删「当前章」前必须先问未保存的修改', () => {
   const body = functionBody(CHAPTER_OPS_SOURCE, 'async function deleteChapterAt(', '  ');
-  const askAt = body.indexOf('askUnsaved(');
+  // H1（三审）：删当前章的未保存拦截统一走 guardUnsavedForTransition（内部就是 askUnsaved +
+  // saveCurrent，且保存回执后复核 dirty）。这里认「过渡前保存原语」这一层，不再钉具体函数名。
+  const askAt = body.search(/guardUnsavedForTransition\(|askUnsaved\(/);
   assert.ok(askAt >= 0, '删当前章前必须问未保存的修改（不能静默丢编辑区里的字）');
+  assert.match(
+    body,
+    /guardUnsavedForTransition\(\{/,
+    'H1：必须走统一「过渡前保存」原语（保存回执后复核 dirty，仍脏就再问）'
+  );
   // 1.4.0 P0-2（撤销优先）：删除不再弹「删除章节」确认框，改成直接执行 + 10 秒撤销；
   // 未保存拦截是保留的两处确认之一，顺序与文案都不许变。
   assert.equal(body.indexOf("title: '删除章节'"), -1, 'P0-2 起删除直接执行，不许再加回删除确认框');

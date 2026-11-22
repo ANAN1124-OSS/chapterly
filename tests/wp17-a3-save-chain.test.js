@@ -377,6 +377,67 @@ test('A3-A / B1：保存成功——正文快照 + 保存期间打的字仍算�
   assert.equal(rt.counts.restore, 1, '保存后按新正文重扫书签');
 });
 
+test('T2 / H2：保存回执时编辑区仍脏 → 不许删崩溃草稿（那段没写盘的字只剩它是兜底）', async () => {
+  const notes = [];
+  const crashUi = { noteSaved: async (bookPath, chapterId) => { notes.push([bookPath, chapterId]); } };
+  const rt = makeHost({ crashRecoveryUi: crashUi });
+  const gate = deferred();
+  rt.host.api.saveChapter = (...args) => {
+    rt.counts.saveCalls.push(args);
+    return gate.promise;
+  };
+  rt.state.dirty = true;
+  rt.editorEl.value = '第一版正文';
+  const pending = rt.ui.saveCurrent();
+  await flush();
+  // IPC 往返期间作者又敲了字：回执落地时编辑区比快照多一句。
+  rt.editorEl.value = '第一版正文 + 保存期间敲的字';
+  gate.release({ ok: true, data: { chars: 7, mtimeMs: 333, snapshot: { taken: true } } });
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(rt.state.dirty, true);
+  assert.deepEqual(notes, [], 'H2（旧顺序先删草稿后算 dirty）：仍脏时草稿必须还在');
+  // 下一拍周期草稿落盘会用新正文覆盖同一份草稿位（crash-recovery-ui 的 30 秒上报），
+  // 成功 Ctrl+S 落地后由干净分支删掉 —— 这里不清 lastSnapshot 记录，交给它自己按内容判断。
+
+  // 干净回执（编辑区 == 快照）：草稿可以删，且按**快照身份**（书 + 章）删。
+  const cleanNotes = [];
+  const clean = makeHost({ crashRecoveryUi: { noteSaved: async (bookPath, chapterId) => { cleanNotes.push([bookPath, chapterId]); } } });
+  clean.state.dirty = true;
+  clean.editorEl.value = '干净的正文';
+  const cleanResult = await clean.ui.saveCurrent();
+  assert.equal(cleanResult.ok, true);
+  assert.equal(clean.state.dirty, false);
+  assert.deepEqual(cleanNotes, [['C:/tmp/books/测试书', 'c1']], '干净回执才删草稿，且按快照身份删');
+
+  // 保存在途换书 / 换章（!sameChapter）：回执绝不回写眼前这一章的状态，但旧章的草稿按快照身份清掉
+  // （否则下次启动拿「已保存的旧草稿」诱导作者覆盖更新后的正文）。
+  const switchNotes = [];
+  const switching = makeHost({ crashRecoveryUi: { noteSaved: async (bookPath, chapterId) => { switchNotes.push([bookPath, chapterId]); } } });
+  const switchGate = deferred();
+  switching.host.api.saveChapter = (...args) => {
+    switching.counts.saveCalls.push(args);
+    return switchGate.promise;
+  };
+  switching.state.dirty = true;
+  switching.editorEl.value = 'A 章正文';
+  const switchPending = switching.ui.saveCurrent();
+  await flush();
+  switching.state.bookPath = 'C:/tmp/books/另一本书';
+  switching.state.chapters = [{ id: 'c-other', name: '另一章', file: 'x.txt' }];
+  switching.state.index = 0;
+  switching.state.loadedChapterId = 'c-other';
+  switching.state.baseText = '另一本书的正文';
+  switching.state.dirty = true;
+  switchGate.release({ ok: true, data: { chars: 5, mtimeMs: 444 } });
+  const switchResult = await switchPending;
+  assert.equal(switchResult.ok, true);
+  assert.deepEqual(switchNotes, [['C:/tmp/books/测试书', 'c1']], '旧章草稿按快照身份清掉');
+  assert.equal(switching.state.baseText, '另一本书的正文', '旧章回执不许回写眼前这一章的基线');
+  assert.equal(switching.state.loadedMtimeMs, 111, '旧章 mtime 不许回写到眼前这一章');
+  assert.equal(switching.state.dirty, true, '眼前这一章的脏标记不受旧回执影响');
+});
+
 test('A3-A / B2（极值 × IO 失败注入）：ENOSPC / EPERM 写盘失败——dirty 保持、正文快照不动、只失败一次收尾', async () => {
   for (const code of ['ENOSPC', 'EPERM']) {
     const rt = makeHost();

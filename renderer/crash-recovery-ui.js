@@ -127,11 +127,30 @@
       }
     }
 
+    // L1（一轮·低）：删草稿失败不许吞。返回是否真的删掉了，调用方据此给作者如实提示
+    // （删不掉 → 下次启动还会再问一次，别让作者以为「已经丢掉了」）。
     async function discardOne(draftId) {
       try {
-        await api.discardCrashDraft({ draftId });
+        const result = await api.discardCrashDraft({ draftId });
+        if (!result || result.ok === false) return false;
+        return Number(result.removed) > 0;
       } catch {
-        /* 删不掉就留给下一次启动再问，不影响眼前流程 */
+        return false;
+      }
+    }
+
+    // 旧M4（一轮·中）/ S2（三审）：恢复草稿后**不删**草稿文件——恢复出来的正文只在编辑区里
+    // （仍是未保存状态）。以前这里立刻 discardOne：恢复后编辑区再崩一次 / 作者没保存就退出，
+    // 这段字就只剩编辑区那一份、彻底没了。现在先把草稿标记成「本窗口已恢复」（主进程只对它
+    // 自己那扇窗口放行，别的窗口不再重复提示），正文保留到：
+    //   · 成功 Ctrl+S（保存链的干净回执走 noteSaved → 按书 + 章删掉）；
+    //   · 或下一次周期草稿落盘（同一个草稿位被新正文覆盖）。
+    async function markConsumed(draftId) {
+      try {
+        const result = await api.discardCrashDraft({ draftId, consumed: true });
+        return Boolean(result && result.ok !== false && result.consumed === true);
+      } catch {
+        return false;
       }
     }
 
@@ -222,8 +241,12 @@
           toast(applied.message || '当前状态不能恢复草稿，请稍后再试；这份草稿先留着', 'warn');
           return false;
         }
-        await discardOne(meta.draftId);
-        toast('已恢复上次崩溃前的正文（仍是未保存状态，Ctrl+S 才会写盘）');
+        // 旧M4（一轮·中）：恢复成功**不删草稿**，只标记本窗口已恢复（保留这段字的唯一磁盘兜底）。
+        const consumed = await markConsumed(meta.draftId);
+        toast(
+          '已恢复上次崩溃前的正文（仍是未保存状态，Ctrl+S 才会写盘）' +
+            (consumed ? '' : '；草稿没标记掉，下次启动可能再提示一次')
+        );
         restored = true;
         return true;
       } finally {
@@ -252,7 +275,10 @@
       });
       const action = (answer && answer.action) || 'later';
       if (action === 'discard') {
-        await discardOne(meta.draftId);
+        // L1（一轮·低）：删失败必须如实说 —— 否则作者以为已经丢掉，下次启动又弹同一份草稿，
+        // 可能重复恢复并把更新过的编辑区覆盖回去。
+        const removed = await discardOne(meta.draftId);
+        if (!removed) toast('这份草稿没能删掉（可能正被占用），下次启动会再提示一次', 'warn');
         return 'continue';
       }
       if (action === 'restore') {

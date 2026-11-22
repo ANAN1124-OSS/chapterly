@@ -56,7 +56,14 @@
       closePanel();
       if (index !== state.index) {
         const switched = await switchChapter(index);
-        if (!switched || switched.ok === false) {
+        // 旧M1（一轮·中）：任何非成功都停在这里。以前只认 switched.ok === false，
+        // switchChapter 回 {} / 不带 ok 的旧口径时会被当成成功继续往下走——命中位置按旧正文算，
+        // 选中区落在旧章上（校对 / 敏感词的「跳过去」就成了跳到别处）。
+        if (!switched || switched.ok !== true) {
+          // 作者自己取消（未保存三选一里点「取消」）不额外打扰；其它失败如实告诉他没跳过去。
+          if (!(switched && switched.canceled)) {
+            toast((switched && switched.message) || '章节没能打开，先停在当前章', 'warn');
+          }
           return { ok: false, canceled: Boolean(switched && switched.canceled) };
         }
       }
