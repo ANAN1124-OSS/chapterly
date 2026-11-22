@@ -544,8 +544,13 @@ test('静态闸门（B6/WP-28）：四处备份撤销都带 groupId + bookPath�
     /\{ groupId: 'dir:' \+ backupName, bookPath \}/,
     '整本替换的撤销要记下替换备份组 + 书路径'
   );
-  // 还原到替换前（renderer.js）/ 整理全书（M1 第 11 轮第三刀起在 renderer/format-book-ui.js）
-  assert.match(rendererCode, /\{ groupId: 'dir:' \+ undoName, bookPath \}/, '还原到替换前的撤销要记下还原前备份组');
+  // 还原到替换前（M1 第 12 轮第五刀起在 renderer/replace-backup-ui.js）/ 整理全书（M1 第 11 轮第三刀起在
+  // renderer/format-book-ui.js）
+  assert.match(
+    fs.readFileSync(path.join(ROOT, 'renderer', 'replace-backup-ui.js'), 'utf8'),
+    /\{ groupId: 'dir:' \+ undoName, bookPath \}/,
+    '还原到替换前的撤销要记下还原前备份组'
+  );
   assert.match(
     fs.readFileSync(path.join(ROOT, 'renderer', 'format-book-ui.js'), 'utf8'),
     /\{ groupId: 'dir:' \+ backupName, bookPath \}/,

@@ -162,9 +162,11 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
 // M1 第 11 轮第三刀：整本整理的撤销随实现搬进 renderer/format-book-ui.js；
+// M1 第 12 轮第五刀：整本替换备份还原的撤销随实现搬进 renderer/replace-backup-ui.js；
 // 两条撤销仍各核一次 / 各记一次指纹（下面两个计数合并读取范围，总数断言不变）。
 const formatBookSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'format-book-ui.js'), 'utf8');
-const undoJoin = rendererSrc + formatBookSrc;
+const replaceBackupSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'replace-backup-ui.js'), 'utf8');
+const undoJoin = rendererSrc + formatBookSrc + replaceBackupSrc;
 const historySrc = fs.readFileSync(path.join(ROOT, 'renderer', 'history-ui.js'), 'utf8');
 const indexSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 

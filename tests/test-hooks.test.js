@@ -431,7 +431,12 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   兜底拼接后记一次性快照）搬进 renderer/replace-one-ui.js（行为锚点 tests/replace-one-ui.test.js）→ 4262。
   //   注：这里比的是 rendererSrc.split(/\r?\n/).length（文件末尾换行会多算一个空段），
   //   所以数值比「内容行数」大 1；余量 2 行的语义不变。
-  const RENDERER_LINE_MEASURED = 4262; // 2026-11-22 实测（第 11 轮 M1 第四刀拆出 replace-one-ui 之后；split 口径）
+  // M1 第五刀（第 12 轮）：「整本替换的备份还原」整段（refreshReplaceBackups + restoreReplaceBackupFlow：
+  //   列备份横幅 / 未保存拦截 / 长操作锁 / 还原 IPC / 10 秒撤销登记）搬进 renderer/replace-backup-ui.js
+  //   （行为锚点 tests/replace-backup-ui.test.js）→ 4181。上面 1.8.0 WP-02 ②「restoreReplaceBackupFlow 约 30 行
+  //   搬不出去」的判断本轮被推翻：它的依赖都能按 host 成员注入（editorEl 压根不需要），搬走后渲染层只剩
+  //   一次 create + 两个同名转发。还原 IPC 的 E2E 延迟注入改由 restoreBookOp 活绑定承接（testBookOp 仍在编排器）。
+  const RENDERER_LINE_MEASURED = 4181; // 2026-11-22 实测（第 12 轮 M1 第五刀拆出 replace-backup-ui 之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(

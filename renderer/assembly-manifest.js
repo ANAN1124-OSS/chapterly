@@ -94,6 +94,7 @@
     ['find-bookmark-ui.js', 'CWFindBookmarkUi', 'findBookmarkUiModule', '查找书签面板'],
     ['find-ui.js', 'CWFindUi', 'findUiModule', '查找替换面板'],
     ['replace-one-ui.js', 'CWReplaceOneUi', 'replaceOneUiModule', '「替换这一处」入口：身份快照 / 两次回执复核 / 兜底快照（M1 第 11 轮从编排器搬出）'],
+    ['replace-backup-ui.js', 'CWReplaceBackupUi', 'replaceBackupUiModule', '整本替换的备份列表与还原：未保存拦截 / 长操作锁 / 10 秒撤销（M1 第 12 轮从编排器搬出）'],
     ['tidy-card-ui.js', 'CWTidyCardUi', 'tidyCardUiModule', '整理悬浮卡 / 显示菜单'],
     ['format-book-ui.js', 'CWFormatBookUi', 'formatBookUiModule', '一键整理本书的编排：预检查 / 长操作锁 / 收尾分流 / 撤销（M1 第 11 轮从编排器搬出）'],
     ['settings-ia.js', 'CWSettingsIa', 'settingsIaModule', '设置面板的分区 / 搜索 / 深链'],

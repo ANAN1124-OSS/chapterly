@@ -207,6 +207,9 @@
   // 「替换这一处」的整段入口（M1 第 11 轮第四刀）：身份快照 / 两次 findNext 回执复核 / 兜底拼接
   // 后记一次性快照在 replace-one-ui.js；这里只装配 + 同名转发（查找面板按钮按原名取用）。
   const replaceOneUiModule = window.CWReplaceOneUi;
+  // 「整本替换」的备份列表与还原（M1 第 12 轮第五刀）：列表横幅 / 未保存拦截 / 长操作锁 / 10 秒撤销
+  // 在 replace-backup-ui.js；这里只装配 + 同名转发（查找面板按钮 / E2E 测试钩子按原名取用）。
+  const replaceBackupUiModule = window.CWReplaceBackupUi;
   // 查找书签（第 4 步九刀·补刀 9b）：「书签」面板整段在 find-bookmark-ui.js 里；这里只接线
   const findBookmarkUiModule = window.CWFindBookmarkUi;
   // 灵感箱 / 碎片速记（第 4 步九刀·补刀 10）：两个弹层整段在 fragments-ui.js 里；这里只接线
@@ -2600,30 +2603,28 @@
   }
 
   // ---------- 整本替换的备份还原 ----------
-  // 备份都在书内 _trash/替换备份-时间戳/（storage 负责读写），这里只负责展示和确认。
+  // 整段实现在 renderer/replace-backup-ui.js（M1 第 12 轮第五刀）：备份列表横幅 + 未保存拦截 +
+  // 长操作锁 + 还原后的 10 秒撤销登记。这里只装配 + 同名转发（查找面板按钮 / E2E 测试钩子按原名取用）。
+  let replaceBackupUi = null;
   async function refreshReplaceBackups() {
-    const row = $('find-backup-row');
-    if (!state.bookPath) {
-      state.replaceBackups = [];
-      row.classList.add('hidden');
-      return state.replaceBackups;
-    }
-    try {
-      const backups = await call(api.listReplaceBackups, state.bookPath);
-      state.replaceBackups = Array.isArray(backups) ? backups : [];
-    } catch {
-      state.replaceBackups = [];
-    }
-    if (!state.replaceBackups.length) {
-      row.classList.add('hidden');
-      return state.replaceBackups;
-    }
-    const latest = state.replaceBackups[0];
-    $('find-backup-text').textContent =
-      `最近一次整本替换的备份：${latest.name}（${latest.fileCount} 个文件，${formatBytes(latest.totalBytes)}）`;
-    row.classList.remove('hidden');
-    return state.replaceBackups;
+    if (!replaceBackupUi) return [];
+    return replaceBackupUi.refreshReplaceBackups();
   }
+  // 返回值契约与搬前一致（{ ok } / { ok:false, busy } / { ok:false, canceled } / { ok:false, message }）。
+  async function restoreReplaceBackupFlow(backupName) {
+    if (!replaceBackupUi) return { ok: false };
+    return replaceBackupUi.restoreReplaceBackupFlow(backupName);
+  }
+  replaceBackupUi = replaceBackupUiModule.create({
+    $, state, api, call, toast, formatBytes,
+    longOpLocked, beginLongOpLock, endLongOpLock,
+    showFormatBookProgress, hideFormatBookProgress,
+    confirmRestoreWithUnsaved,
+    // 活绑定：E2E 用 setTestBookOpDelay 在还原 IPC 外包一层延迟，create 时传值会绕过注入（WP-02/C2）。
+    restoreBookOp: (bookPath, backupName) => (testBookOp || call)(api.restoreReplaceBackup, bookPath, backupName),
+    reloadOpenBookFromDisk, refreshShelf, reloadAfterPartialFailure,
+    backupGuard, undoUi, longOpLogic
+  });
 
   // 整段实现在 renderer/replace-one-ui.js；这里只装配 + 同名转发（查找面板的按钮 / 测试钩子按原名取用）。
   let replaceOneUi = null;
@@ -2637,88 +2638,6 @@
     getTestFindNext: () => testFindNext,
     replaceEditorTextNative, onEditorInput, recordFallbackWrite, scrollCaretIntoView
   });
-
-  // 从最近的「整本替换」备份还原；还原前二次确认，并由 storage 把当前内容再备份一份。
-  // WP-02/C2：入口先捕获 bookPath，之后每个 await（列备份 / 未保存询问 / 还原 / 重载）回来
-  // 都核对还是不是这本书——期间换了书就取消，绝不把回执用到另一本书上。
-  async function restoreReplaceBackupFlow(backupName) {
-    const bookPath = state.bookPath;
-    if (!bookPath) {
-      toast('还没有打开一本书', 'warn');
-      return { ok: false };
-    }
-    if (longOpLocked()) {
-      toast('正在执行另一个长操作，请稍候', 'warn');
-      return { ok: false, busy: true };
-    }
-    await refreshReplaceBackups();
-    if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) {
-      toast('已经换了书，取消还原', 'warn');
-      return { ok: false };
-    }
-    const target =
-      state.replaceBackups.find((item) => item.name === backupName) || state.replaceBackups[0];
-    if (!target) {
-      toast('这本书里没有可还原的替换备份', 'warn');
-      return { ok: false };
-    }
-    if (state.dirty) {
-      const guard = await confirmRestoreWithUnsaved(
-        '还原会用备份覆盖磁盘上的章节，并从磁盘重新载入正文；当前章的未保存修改会丢失。'
-      );
-      if (!guard.ok) return guard.canceled ? { ok: false, canceled: true } : guard.saved;
-      // 询问期间也可能切了书（弹窗不阻塞其它入口）：这时的 target 属于原来那本，不能还原。
-      if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) {
-        toast('已经换了书，取消还原', 'warn');
-        return { ok: false };
-      }
-    }
-    const others = state.replaceBackups.length - 1;
-    // 1.4.0 P0-2（撤销优先于确认）：还原到替换前不再弹二次确认 —— 直接还原
-    // （storage 会先把当前内容备份到 _trash/还原前备份-*），10 秒内可撤销（= 用那份还原前备份再还原一次）。
-    // 未保存拦截仍在前一步：这个动作会从磁盘重载正文，编辑区没写盘的字找不回来。
-    beginLongOpLock();
-    showFormatBookProgress('正在从备份还原…（编辑区已暂锁）');
-    try {
-      // WP-02/C2：还原只针对发起时捕获的那本书；延迟注入只包 IPC，不改变还原链路本身。
-      const data = await (testBookOp || call)(api.restoreReplaceBackup, bookPath, target.name);
-      // 期间换了书 / 又敲了字时，reloadOpenBookFromDisk 内部会拒绝重载（正文优先），
-      // 这里的刷新与撤销登记仍然按捕获的 bookPath 走。
-      await reloadOpenBookFromDisk(bookPath);
-      await refreshShelf();
-      await refreshReplaceBackups();
-      const undoName = data.restoreBackupDir ? String(data.restoreBackupDir).split(/[\\/]/).pop() : '';
-      if (undoName) {
-        // 1.5.0 P0-5（审计 V-2）：登记撤销时记下这份「还原前备份」的指纹；撤销前核对它还是不是那一份。
-        const expectedBackup = await backupGuard.fingerprint(bookPath, undoName);
-        undoUi.activate(`已还原到「${target.name}」前的正文`, async () => {
-          if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) throw new Error('已经换了书，不能撤销');
-          // 五-H3（L-F1）：撤销会拿备份整组覆盖磁盘 + 从磁盘重载。编辑区有未保存的字时执行，
-          // 等于把作者刚写的正文连磁盘带编辑区一起盖掉（reload 的脏闸也拦不住已经发生的写盘）。
-          if (state.dirty) throw new Error('编辑区有未保存的修改，请先保存后再撤销');
-          await backupGuard.assertUnchanged(bookPath, expectedBackup);
-          const back = await call(api.restoreHistoryDir, bookPath, `dir:${undoName}`);
-          if (!back || !Number(back.restored)) throw new Error('还原前备份里没有可还原的章节');
-          await reloadOpenBookFromDisk(bookPath);
-          await refreshShelf();
-          await refreshReplaceBackups();
-        }, { groupId: 'dir:' + undoName, bookPath });
-      }
-      toast(
-        `已还原 ${data.restored} 个章节${
-          data.skipped ? `（跳过 ${data.skipped} 个已不存在的章节）` : ''
-        }，当前内容已备份到 _trash${others > 0 ? `（还有 ${others} 次更早的替换备份）` : ''}`
-      );
-      return { ok: true, data };
-    } catch (err) {
-      toast(`还原失败：${err.message}`, 'error');
-      await reloadAfterPartialFailure(bookPath); // 可能已经还原了几章，界面回到磁盘的真相
-      return { ok: false, message: err.message };
-    } finally {
-      endLongOpLock();
-      hideFormatBookProgress();
-    }
-  }
 
   // 还原 / 外部改动后从磁盘重载当前书（章节列表、字数、当前章）。
   // 章节 id 保持不变就回到原来那一章；章节被删/书目重建时回到第 1 章。

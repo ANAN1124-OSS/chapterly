@@ -28,6 +28,9 @@ const RENDERER_SRC = read('renderer/renderer.js');
 const CHAPTER_OPS_SRC = read('renderer/chapter-ops-ui.js');
 const SAVE_CHAIN_SRC = read('renderer/save-chain-ui.js');
 const HISTORY_SRC = read('renderer/history-ui.js');
+// M1 第 12 轮第五刀：整本替换的备份还原随实现搬进 replace-backup-ui.js；两处「还原前拦截」
+// 的调用点计数按合并域读取（总数断言不变，只改读取范围）。
+const REPLACE_BACKUP_SRC = read('renderer/replace-backup-ui.js');
 
 const countOf = (source, needle) => source.split(needle).length - 1;
 
@@ -65,7 +68,11 @@ test('C3：编辑区原生插入只留一份 replaceEditorTextNative（机器清
 
 test('C3：「还原前」未保存拦截只留一份，历史备份还原与整本替换备份还原共用（机器清单）', () => {
   assert.equal(definitionCount('confirmRestoreWithUnsaved'), 1, '拦截只该定义一次');
-  assert.ok(countOf(RENDERER_SRC, 'confirmRestoreWithUnsaved(') > 1, '整本替换备份还原要走共享拦截');
+  // M1 第 12 轮第五刀：整本替换备份还原那段搬进 renderer/replace-backup-ui.js；合并计数（总数不变）。
+  assert.ok(
+    countOf(RENDERER_SRC + REPLACE_BACKUP_SRC, 'confirmRestoreWithUnsaved(') > 1,
+    '整本替换备份还原要走共享拦截'
+  );
   // 历史弹层不再自己拼三选一：连 askUnsaved / saveCurrent 都不该再出现在这个模块里。
   assert.equal(/askUnsaved/.test(HISTORY_SRC), false, 'history-ui.js 不该再依赖 askUnsaved（三选一在共享拦截里）');
   assert.equal(/saveCurrent/.test(HISTORY_SRC), false, 'history-ui.js 不该再依赖 saveCurrent（保存动作在共享拦截里）');
@@ -99,10 +106,13 @@ test('C3：拦截的三态形状（ok / canceled / saved）由共享原语产出
 
 test('C3 / 五-H3：还原型撤销闭包执行前核编辑区脏状态（不许拿备份盖掉未保存的字）', () => {
   const guardLine = /if \(state\.dirty\) throw new Error\('编辑区有未保存的修改，请先保存后再撤销'\);/;
-  // M1 第 11 轮第三刀：整本整理那处随实现搬进 renderer/format-book-ui.js；两处合并计数（总数断言不变）。
+  // M1 第 11 轮第三刀：整本整理那处随实现搬进 renderer/format-book-ui.js；
+  // M1 第 12 轮第五刀：整本替换备份还原那处随实现搬进 renderer/replace-backup-ui.js；三处合并计数（总数断言不变）。
   const FORMAT_BOOK_SRC = require('node:fs').readFileSync(path.join(__dirname, '..', 'renderer', 'format-book-ui.js'), 'utf8');
   assert.equal(
-    ((RENDERER_SRC + FORMAT_BOOK_SRC).match(/if \(state\.dirty\) throw new Error\('编辑区有未保存的修改，请先保存后再撤销'\);/g) || []).length,
+    ((RENDERER_SRC + FORMAT_BOOK_SRC + REPLACE_BACKUP_SRC).match(
+      /if \(state\.dirty\) throw new Error\('编辑区有未保存的修改，请先保存后再撤销'\);/g
+    ) || []).length,
     2,
     '渲染层两处还原型撤销（整本替换还原 / 整本整理）都要先核脏'
   );

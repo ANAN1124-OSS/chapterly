@@ -558,12 +558,15 @@ test('静态闸门：渲染层删「当前章」前必须先问未保存的修�
   // 批次操作失败后界面要回到磁盘的真相（三个失败分支都调了重载 helper）
   // 第 4 步九刀·补刀 9a：整本替换那段搬到 renderer/find-ui.js；两边合并计数（总数不变，只改读取范围）。
   // M1 第 11 轮第三刀：整本整理那段搬到 renderer/format-book-ui.js；同样并入合并计数。
+  // M1 第 12 轮第五刀：整本替换备份还原那段搬到 renderer/replace-backup-ui.js；同样并入合并计数。
   const FIND_UI_SOURCE = require('node:fs').readFileSync(path.join(__dirname, '..', 'renderer', 'find-ui.js'), 'utf8');
   const FORMAT_BOOK_SOURCE = require('node:fs').readFileSync(path.join(__dirname, '..', 'renderer', 'format-book-ui.js'), 'utf8');
+  const REPLACE_BACKUP_SOURCE = require('node:fs').readFileSync(path.join(__dirname, '..', 'renderer', 'replace-backup-ui.js'), 'utf8');
   const reloadCalls = [
     ...(RENDERER_SOURCE.match(/await reloadAfterPartialFailure\(/g) || []),
     ...(FIND_UI_SOURCE.match(/await reloadAfterPartialFailure\(/g) || []),
-    ...(FORMAT_BOOK_SOURCE.match(/await reloadAfterPartialFailure\(/g) || [])
+    ...(FORMAT_BOOK_SOURCE.match(/await reloadAfterPartialFailure\(/g) || []),
+    ...(REPLACE_BACKUP_SOURCE.match(/await reloadAfterPartialFailure\(/g) || [])
   ];
   assert.ok(reloadCalls.length >= 3, '整理 / 替换 / 还原失败后都要按磁盘重载当前书');
   assert.match(RENDERER_SOURCE, /async function reloadAfterPartialFailure\(bookPath = null\)/);
