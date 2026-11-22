@@ -72,7 +72,7 @@
   // RPAN-C08 / RSHE-A-05：嵌套分组的契约规格。以前六个分组各写一段「判对象 + for 循环判键」的
   // 同构样板（约 25 行），现在交给 core/assert-host.js 的第四个参数统一校验（文案逐字不变：
   // `host.<path> 必须是对象` / `host.<path> 缺少 key`）。顶层成员仍留在 REQUIRED_HOST 里。
-  // display 的键单独抽一份常量：tests/settings-ui.test.js 的结构闸门按它核对头注释的成员清单。
+  // display 的键单独抽一份常量：tests/settings-ui-static.test.js 的结构闸门按它核对头注释的成员清单。
   const DISPLAY_HOST_KEYS = [
     'applyEditorStyle', 'syncCaretParagraphFromConfig', 'effectiveConfig', 'applySidebarWidth',
     'loadCustomFont', 'readDisplayForm', 'displaySettingsIds', 'caretColorLib', 's2tLib', 'templateLib',
@@ -116,7 +116,7 @@
   const DEFAULT_SETTINGS_TAB = ia ? ia.DEFAULT_TAB : 'display';
   // RSHE-A-02（第五轮审计）：按书作用域要隐藏的全局设置项。首选 settings-ia 的
   // GLOBAL_ONLY_FIELDS（与 FIELD_SECTION 同源维护）；ia 不可用时回落到这份逐字相同的清单
-  // （单测 / 旧宿主）。tests/settings-ui.test.js 有静态闸门对账两处，防漂移。
+  // （单测 / 旧宿主）。tests/settings-ui-static.test.js 有静态闸门对账两处，防漂移。
   const GLOBAL_ONLY_FIELDS_FALLBACK = [
     'settings-root-field',
     'settings-snapshot-field',

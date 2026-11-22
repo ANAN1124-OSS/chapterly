@@ -42,5 +42,9 @@
 - 配置层夹具（临时配置目录 / createConfigStore / sanitize / DEFAULTS / MAIN_SOURCE / 夹紧用例表）用
   `tests/config-fixtures.js`（`config-store` / `config-corruption` / `config-keys` / `config-write-safety` 四个文件共用，
   T9 起从 `config.test.js` 拆出）；新增配置用例请加进对应域的文件，别再开第五份。
+- 设置面板夹具（假 DOM makeEl / makeDocument / SETTINGS_EL_SPEC / host 工厂 build / BASE_IDS / DISPLAY_IDS /
+  formatBytes / 示例源码常量 / flush）用 `tests/settings-ui-fixtures.js`（`settings-ui` / `-save` / `-render` /
+  `-static` 四个文件共用，T9 第 10 轮从 `settings-ui.test.js` 拆出；`ui-test-preambles.js` 的
+  `FAKE_DOM_MIGRATED` 登记项也指向它）；新增设置用例请加进对应性质的文件，别再开第五份。
 - fs 猴子补丁（计数、拦截 EACCES）统一走 `tests/storage-fixtures.js` 的 `countReadFileFor` / `withFsPatch` 门，且在
   `finally` 里还原；不要在断言失败路径上真的读入大文件。

@@ -283,7 +283,9 @@ const FAKE_DOM_MIGRATED = [
   'shelf-ui.test.js',
   'import-ui.test.js',
   // TEST-D-02：五个带变体的大文件改为「基线本体 + 本域 spec」，不再整段抄核心。
-  'settings-ui.test.js',
+  // T9（第 10 轮）：settings-ui 的假 DOM / host 工厂按性质拆进夹具文件，登记项跟着搬家
+  // （R6b 核对的是「共享基线只在这一点上用了什么」，不是还非得叫 .test.js）。
+  'settings-ui-fixtures.js',
   'bookinfo-ui.test.js',
   'find-ui.test.js',
   'reading-ui.test.js',
