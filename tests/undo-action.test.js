@@ -20,7 +20,10 @@ const { rendererCode, indexSrc } = loadSourceGate('undo-action.js');
 const saveChainCode = fs.readFileSync(path.join(ROOT, 'renderer', 'save-chain-ui.js'), 'utf8').replace(/\r\n/g, '\n');
 // WP17 A3 第四刀：删除章 / 撤销登记 / 章节模板的兜底记账随编辑域搬到 chapter-ops-ui.js。
 const chapterOpsCode = fs.readFileSync(path.join(ROOT, 'renderer', 'chapter-ops-ui.js'), 'utf8').replace(/\r\n/g, '\n');
-const editorDomainCode = rendererCode + '\n/* ---- chapter-ops-ui.js ---- */\n' + chapterOpsCode;
+// M1 第 11 轮第四刀：「替换这一处」的兜底记账随实现搬进 renderer/replace-one-ui.js（仍未跳出编辑域）。
+const replaceOneCode = fs.readFileSync(path.join(ROOT, 'renderer', 'replace-one-ui.js'), 'utf8').replace(/\r\n/g, '\n');
+const editorDomainCode =
+  rendererCode + '\n/* ---- chapter-ops-ui.js ---- */\n' + chapterOpsCode + '\n/* ---- replace-one-ui.js ---- */\n' + replaceOneCode;
 const storageSrc = fs.readFileSync(path.join(ROOT, 'core', 'storage.js'), 'utf8');
 const stylesSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
 
@@ -401,7 +404,8 @@ test('静态闸门（V402）：兜底整串赋值统一配一次性快照 + 提�
   // R2（三审）起多了一处：崩溃草稿恢复（applyRecoveredText）也补了同一份一次性快照 → 总数 4。
   const rendererCalls = rendererCode.match(/recordFallbackWrite\(\{/g) || [];
   const opsCalls = chapterOpsCode.match(/recordFallbackWrite\(\{/g) || [];
-  assert.equal(rendererCalls.length + opsCalls.length, 4, '编辑域的四处兜底赋值都要记账（含崩溃恢复 R2）');
+  const replaceOneCalls = replaceOneCode.match(/recordFallbackWrite\(\{/g) || [];
+  assert.equal(rendererCalls.length + opsCalls.length + replaceOneCalls.length, 4, '编辑域的四处兜底赋值都要记账（含崩溃恢复 R2）');
   for (const label of ['插入正文', '套用章节模板', '替换这一处', '恢复崩溃草稿']) {
     assert.ok(editorDomainCode.includes(`label: '${label}'`), '兜底调用点少了一条：' + label);
   }

@@ -12,6 +12,7 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const guard = require('../renderer/replace-one-guard');
+const { extractFunctionSource } = require('./source-probe');
 
 const BOOK = 'D:\\书库\\测试书';
 const OTHER_BOOK = 'D:\\书库\\另一本书';
@@ -153,14 +154,12 @@ test('R7（E-N4）：locateNext —— 同章在界内才选中；期间切章 /
   );
 });
 
-test('R8（E-N4）：renderer.js runReplaceOne 必须在两个 await 之后复核身份 / 边界（静态闸门）', () => {
-  const source = read('renderer/renderer.js');
-  const start = source.indexOf('async function runReplaceOne()');
-  assert.ok(start > 0, '找不到 runReplaceOne');
-  const rest = source.slice(start);
-  const nextFnAt = rest.indexOf('async function restoreReplaceBackupFlow(');
-  assert.ok(nextFnAt > 0, '找不到 runReplaceOne 之后的下一个函数');
-  const body = rest.slice(0, nextFnAt);
+test('R8（E-N4）：runReplaceOne 必须在两个 await 之后复核身份 / 边界（静态闸门）', () => {
+  // M1 第 11 轮第四刀：实现搬进 renderer/replace-one-ui.js；按 T7 口径用 source-probe 切函数真身
+  // （不再靠「下一个函数叫什么」定边界，闸门跟着实现走、覆盖范围不变）。
+  const source = read('renderer/replace-one-ui.js');
+  const body = extractFunctionSource(source, 'runReplaceOne');
+  assert.ok(body.length > 0, '找不到 runReplaceOne');
 
   // ① 入口：载章在途直接拒绝，不许进入 findNext
   const loadingGuardAt = body.search(/if \(state\.loading\) \{/);

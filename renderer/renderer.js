@@ -204,6 +204,9 @@
   const formatBookUiModule = window.CWFormatBookUi;
   // 查找 / 替换核心（第 4 步九刀·补刀 9a）：查找会话 + 查找替换面板整段在 find-ui.js 里；这里只接线
   const findUiModule = window.CWFindUi;
+  // 「替换这一处」的整段入口（M1 第 11 轮第四刀）：身份快照 / 两次 findNext 回执复核 / 兜底拼接
+  // 后记一次性快照在 replace-one-ui.js；这里只装配 + 同名转发（查找面板按钮按原名取用）。
+  const replaceOneUiModule = window.CWReplaceOneUi;
   // 查找书签（第 4 步九刀·补刀 9b）：「书签」面板整段在 find-bookmark-ui.js 里；这里只接线
   const findBookmarkUiModule = window.CWFindBookmarkUi;
   // 灵感箱 / 碎片速记（第 4 步九刀·补刀 10）：两个弹层整段在 fragments-ui.js 里；这里只接线
@@ -2622,114 +2625,18 @@
     return state.replaceBackups;
   }
 
-  // 「只替换这一处」：只改编辑区（未保存），替换完自动选中下一处，方便连续按。
-  // 用 execCommand 替换当前选中文本，保住原生 Ctrl+Z 撤销链。
+  // 整段实现在 renderer/replace-one-ui.js；这里只装配 + 同名转发（查找面板的按钮 / 测试钩子按原名取用）。
+  let replaceOneUi = null;
   async function runReplaceOne() {
-    const options = readFindOptions();
-    if (!options.query.trim()) {
-      $('find-summary').textContent = '先在查找框里输入内容';
-      return { ok: false };
-    }
-    if (options.scope !== 'current') {
-      $('find-summary').textContent = '「替换这一处」只用于当前章；整本替换请用「全部替换」。';
-      return { ok: false };
-    }
-    const text = editorEl.value;
-    const from = editorEl.selectionStart || 0;
-    // 审计 E-N4（WP3）：载章在途时编辑区马上要被新章覆盖，这次替换会静默丢失——入口直接拒绝。
-    if (state.loading) {
-      $('find-summary').textContent = replaceOneGuard.staleHint('loading');
-      return { ok: false, code: 'STALE_TARGET', reason: 'loading' };
-    }
-    // 发起查找时拍下「这本书 + 这一章 + 这版正文」：findNext 回执迟到（切章 / 换书 / 改正文）就整段作废。
-    const target = replaceOneGuard.captureTarget({
-      bookPath: state.bookPath,
-      chapterId: state.loadedChapterId,
-      text
-    });
-    let picked;
-    try {
-      picked = await (testFindNext || call)(api.findNext, text, options.query, from, {
-        caseSensitive: options.caseSensitive
-      });
-    } catch (err) {
-      $('find-summary').textContent = `查找失败：${err.message}`;
-      return { ok: false };
-    }
-    if (!picked || !picked.match) {
-      // 审计修复 #10（E6）：命中超过单章 5000 处上限时，光标之后的位置已不在命中列表里，
-      // 要说清是「被上限截断」而不是「本章没有下一处」。
-      $('find-summary').textContent =
-        picked && picked.truncated
-          ? '本章命中超过单章上限 5000 处，光标之后的位置不再定位；换个更具体的词或先用「全部替换」'
-          : `光标之后没有找到「${options.query}」了`;
-      return { ok: false, truncated: Boolean(picked && picked.truncated) };
-    }
-    const match = picked.match;
-    const replacement = options.replacement;
-    // 回执可能迟到：这期间切了书 / 切了章 / 改了正文——旧下标绝不能套到眼前的正文上，越界也不拼接。
-    const verdict = replaceOneGuard.checkTarget(target, {
-      bookPath: state.bookPath,
-      chapterId: state.loadedChapterId,
-      text: editorEl.value,
-      loading: state.loading
-    });
-    if (!verdict.same || !replaceOneGuard.matchInBounds(match, text.length)) {
-      $('find-summary').textContent = replaceOneGuard.staleHint(verdict.same ? 'stale' : verdict.reason);
-      return { ok: false, code: 'STALE_TARGET', reason: verdict.same ? 'out-of-bounds' : verdict.reason };
-    }
-    editorEl.focus();
-    editorEl.setSelectionRange(match.index, match.index + match.length);
-    const inserted = replaceEditorTextNative(replacement);
-    let fallbackUsed = false;
-    if (!inserted) {
-      // 极端兜底：execCommand 不可用时手动拼接（会丢原生撤销链，但不会丢内容）
-      const current = editorEl.value;
-      editorEl.value =
-        current.slice(0, match.index) + replacement + current.slice(match.index + match.length);
-      fallbackUsed = true;
-    }
-    onEditorInput();
-    // 审计修复 #39（V402）：兜底拼接会清空浏览器撤销栈 —— 记一次性快照并提示（放在输入处理之后）
-    if (fallbackUsed) {
-      recordFallbackWrite({ before: text, after: editorEl.value, start: match.index, label: '替换这一处' });
-    }
-
-    // 选中下一处，方便连续替换
-    let next = null;
-    try {
-      const after = match.index + replacement.length;
-      next = await (testFindNext || call)(api.findNext, editorEl.value, options.query, after, {
-        caseSensitive: options.caseSensitive
-      });
-    } catch { /* 找下一处失败不影响已经替换的内容 */ }
-    // 第二个回执也可能迟到：旧章命中只用来定位，切章后绝不把下标套到新章（只改选中，不改正文）。
-    const locate = replaceOneGuard.locateNext(next && next.match, target, {
-      bookPath: state.bookPath,
-      chapterId: state.loadedChapterId,
-      textLength: editorEl.value.length,
-      loading: state.loading
-    });
-    if (locate.index != null) {
-      editorEl.setSelectionRange(locate.index, locate.index + locate.length);
-      scrollCaretIntoView(locate.index);
-    } else if (!locate.stale) {
-      const caret = match.index + replacement.length;
-      editorEl.setSelectionRange(caret, caret);
-      scrollCaretIntoView(caret);
-    }
-    const nextHint = locate.stale
-      ? '；期间章节已变，不再定位下一处'
-      : locate.index != null
-        ? `；已选中下一处（第 ${next.index + 1} 处）`
-        : '；本章后面没有下一处了';
-    const truncated = Boolean(picked.truncated);
-    const totalLabel = truncated ? `${picked.total}+` : String(picked.total);
-    const truncatedHint = truncated ? '（本章命中超过单章上限 5000 处，只统计 / 处理前 5000 处）' : '';
-    $('find-summary').textContent =
-      `已替换第 ${picked.index + 1}/${totalLabel} 处（未保存：Ctrl+S 写盘，Ctrl+Z 可撤销）${nextHint}${truncatedHint}`;
-    return { ok: true, index: picked.index, total: picked.total, truncated, hasNext: locate.index != null };
+    if (!replaceOneUi) return { ok: false };
+    return replaceOneUi.runReplaceOne();
   }
+  replaceOneUi = replaceOneUiModule.create({
+    $, state, editorEl, api, call, readFindOptions, replaceOneGuard,
+    // 活绑定：测试钩子会把 findNext 换成带延迟的实现，create 时传值会拿到 null 的旧快照。
+    getTestFindNext: () => testFindNext,
+    replaceEditorTextNative, onEditorInput, recordFallbackWrite, scrollCaretIntoView
+  });
 
   // 从最近的「整本替换」备份还原；还原前二次确认，并由 storage 把当前内容再备份一份。
   // WP-02/C2：入口先捕获 bookPath，之后每个 await（列备份 / 未保存询问 / 还原 / 重载）回来
