@@ -222,7 +222,7 @@ test('RSHE-C-06：? 页全部键帽无重复（系统键不许与命令表的 kb
   assert.equal(rows.filter((row) => row.group === 'system').length, catalog.SYSTEM_KEYS.length);
 });
 
-test('命令目录：README 快捷键表由系统键表生成，与 README 里的表逐字一致（漂移即红）', () => {
+test('命令目录：README 与使用手册的快捷键表都由系统键表生成，逐字一致（漂移即红）', () => {
   const catalog = require(path.join(ROOT, 'renderer', 'command-catalog.js'));
   const doc = require(path.join(ROOT, 'scripts', 'gen-shortcut-doc.js'));
   assert.equal(typeof doc.renderSystemKeyTable, 'function', '文档生成器要导出 renderSystemKeyTable');
@@ -234,6 +234,24 @@ test('命令目录：README 快捷键表由系统键表生成，与 README 里�
   const expected = doc.renderSystemKeyTable(catalog.SYSTEM_KEYS);
   assert.equal(actual, expected, 'README 系统键表漂移了：改表请跑 node scripts/gen-shortcut-doc.js --write');
   assert.ok(actual.includes('Ctrl+K') && actual.includes('Ctrl+Z'), 'README 表要含 Ctrl+K / Ctrl+Z');
+
+  // 三审 D14：使用手册的「系统键」标题以前只有一句说明、下面没有表（「冒号后无表」），
+  // 而且文档承诺「下面系统键表与 ? 页逐字同源、单测会校验」。这里把手册也纳入同一份生成表，
+  // 两份文档与 SYSTEM_KEYS 三处漂移都会在单测里报红。
+  const manual = read('docs/使用手册.md');
+  assert.ok(manual.includes(doc.START_MARK), `docs/使用手册.md 缺系统键表起始标记 ${doc.START_MARK}`);
+  assert.ok(manual.includes(doc.END_MARK), `docs/使用手册.md 缺系统键表结束标记 ${doc.END_MARK}`);
+  assert.equal(
+    doc.readTableFromFile(manual, 'docs/使用手册.md'),
+    expected,
+    '使用手册系统键表漂移了：改表请跑 node scripts/gen-shortcut-doc.js --write'
+  );
+  // 手表也要真的把「?」与 Ctrl+Shift+I 这两条以前漏掉/被点名的系统键列出来（D14）。
+  assert.ok(doc.readTableFromFile(manual, 'docs/使用手册.md').includes('| `?` |'), '使用手册系统键表要含 ?');
+  assert.ok(
+    doc.readTableFromFile(manual, 'docs/使用手册.md').includes('Ctrl+Shift+I'),
+    '使用手册系统键表要含 Ctrl+Shift+I'
+  );
 });
 // 五-M5（SS-01）：命令面板章节条目的 run 闭包不许捕获构建时下标——面板开着时删章 / 移卷会整体
 // 换掉 state.chapters，而 markCommandsDirty 只作废快照、不重画已渲染行；旧下标会切到错位那一章。

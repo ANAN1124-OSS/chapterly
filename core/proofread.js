@@ -382,7 +382,7 @@ function repeatWordIssues(line, options) {
 }
 
 // rawGlossary 可选：作者自己的校对词表（[{ term, suggestion }]，建议可为空）。
-// 不传 / 传空数组时只有前五条内置规则，行为与以前完全一样。
+// 不传 / 传空数组时只有九条内置规则在跑（「自定义词表」这一条命中数为 0），其余行为与不传词表一致。
 function proofreadText(text, rawOptions, rawGlossary) {
   const options = sanitizeOptions(rawOptions);
   const rules = sanitizeRules(rawOptions && rawOptions.rules);

@@ -1473,8 +1473,9 @@
 
   // 键盘上下移动（Phase D / D1）：Alt+↑/↓ 在章节列表里把这一章挪一格，等价「拖一行」。
   // 卷内相邻走现成的 moveChapterByDrag；已经在卷边界上再按一次，就跨到相邻的那一个卷
-  // （U-D1：先弹一次确认，再走拖拽那条 moveChapterByDrop → api.moveChapterTo）。两条路都只改
-  // 书目顺序与卷归属，章节文件 / 正文一个字不动；未分卷 / 到头 / 坏卷 id 由 core 返回 null（停住）。
+  // （U-D1 原始行为是先弹一次确认；1.4.0 P0-2 起改为直接挪 + 10 秒撤销条，走拖拽那条
+  // moveChapterByDrop → api.moveChapterTo）。两条路都只改书目顺序与卷归属，章节文件 / 正文
+  // 一个字不动；未分卷 / 到头 / 坏卷 id 由 core 返回 null（停住）。
   async function moveChapterStep(index, direction) {
     if (!state.bookPath || state.saving || state.loading) return false;
     const chapter = state.chapters[index];
@@ -3259,7 +3260,7 @@
     formatBookProgressEl = null;
   }
 
-  // 一键整理本书：复用上次「整理本章」的规则 → 预检查 → 确认 → 整本整理（写前备份）
+  // 一键整理本书：复用上次「整理本章」的规则 → 预检查 → 直接整理（1.4.0 P0-2 起不再弹确认框，写前备份）
   async function runFormatBook() {
     if (!state.bookPath || !state.meta) {
       toast('先打开一本书再整理', 'warn');

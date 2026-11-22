@@ -180,7 +180,7 @@ const READER = wordlist.createReader({
     binary: '词表不像是纯文本（检测到 NUL 空字节，可能是无 BOM 的 UTF-16，也可能是二进制文件），请用 UTF-8 / UTF-16（带 BOM）/ GBK 编码的 txt',
     badEncoding: CODE_TEXT.GLOSSARY_BAD_ENCODING,
     // 整份配置级的提示（多份词表里单份的提示见 glossaryErrorText，措辞更短）
-    notConfigured: '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的五条规则）',
+    notConfigured: '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的九条规则）',
     publicEmpty: '还没有指定校对词表',
     notFile: CODE_TEXT.GLOSSARY_NOT_FILE,
     parseFailed: CODE_TEXT.GLOSSARY_PARSE_FAILED

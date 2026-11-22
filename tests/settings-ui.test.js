@@ -500,7 +500,7 @@ test('renderSensitiveSettings / renderProofreadSettings：未设置 / 读取中 
 
   ctx.state.proofreadWordsDraft = '';
   ctx.ui.renderProofreadSettings();
-  assert.match(ctx.dom.map.get('settings-proofread-status').textContent, /^未设置：校对时只跑内置的五条规则/);
+  assert.match(ctx.dom.map.get('settings-proofread-status').textContent, /^未设置：校对时只跑内置的九条规则/);
   ctx.state.proofreadWordsDraft = '/词表/校对.txt';
   ctx.ui.renderProofreadSettings();
   assert.equal(ctx.dom.map.get('settings-proofread-status').textContent, '正在读取词表…');

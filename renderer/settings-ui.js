@@ -593,7 +593,7 @@
       return;
     }
     if (!state.proofreadWordsDraft) {
-      status.textContent = '未设置：校对时只跑内置的五条规则（词表是可选的）';
+      status.textContent = '未设置：校对时只跑内置的九条规则（词表是可选的）';
       status.className = 'muted small';
       return;
     }

@@ -280,7 +280,7 @@ module.exports = async function group46Proofread(t) {
   await exec('window.__cwTest.closeProofreadPanel()');
 
   // 46i. 校对词表（v0.8-6，提案 N6）：作者自己的错别字 / 禁用词，可选「错词 → 建议」。
-  // 只报告、不改动、不写盘；词表独立一份，和敏感词表互不覆盖；没有词表时照常跑内置五条规则。
+  // 只报告、不改动、不写盘；词表独立一份，和敏感词表互不覆盖；没有词表时照常跑内置九条规则。
   const pfWordsDir = path.join(userData, '校对词表');
   await fs.mkdir(pfWordsDir, { recursive: true });
   const pfWordsPath = path.join(pfWordsDir, '我的校对词表.txt');
@@ -456,7 +456,7 @@ module.exports = async function group46Proofread(t) {
   await exec("window.__cwTest.switchTo(0, 'discard')");
   await waitFor("window.__cwTest.currentTitle().includes('开端')");
 
-  // 46i-5. 词表出问题要说清楚，而且不能挡住内置五条规则
+  // 46i-5. 词表出问题要说清楚，而且不能挡住内置九条规则
   const pfWordsMoved = `${pfWordsPath}.moved`;
   await fs.rename(pfWordsPath, pfWordsMoved);
   await exec('window.__cwTest.openProofreadPanel()');
@@ -1605,7 +1605,7 @@ module.exports = async function group46Proofread(t) {
   check(
     '校对：词表全部移除后回到旧文案，多份列表不再显示',
     (await exec('window.__cwTest.proofreadWordListText()')) ===
-      '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的五条规则）' &&
+      '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的九条规则）' &&
       (await exec("document.getElementById('proofread-wordlists').classList.contains('hidden')")) === true &&
       (await exec("document.querySelectorAll('#proofread-wordlists .proofread-wordlist-row').length")) === 0 &&
       (await exec("window.__cwTest.proofreadPayload().byRule['custom-word']")) === 0,

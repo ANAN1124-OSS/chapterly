@@ -402,7 +402,7 @@ module.exports = async function group43DailySnapshot(t) {
     foldKeyboard
   );
 
-  // 清空当天快照：二次确认 → 只把这个目录移入回收站 → 清单 / 汇总刷新
+  // 清空当天快照：直接清空（1.4.0 P0-2 起不再二次确认）→ 只把这个目录移入回收站 → 清单 / 汇总刷新
   await exec('window.__cwTest.clearToasts()');
   check(
     '每日快照（清空某天）：快照组有「清空这天的快照」按钮',

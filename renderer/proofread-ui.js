@@ -104,12 +104,12 @@
   for (const meta of PROOFREAD_RULE_META) PROOFREAD_RULE_LABELS[meta.id] = meta.label;
 
   // 校对词表状态文案（面板 / 设置共用）：未设置、文件没了、编码坏了都直说。
-  // 词表是**可选**的：没有词表照样跑内置五条规则。
+  // 词表是**可选**的：没有词表照样跑内置九条规则。
   function proofreadWordListText(info) {
     if (!info) return '正在读取校对词表…';
     if (!info.ok) {
       if (info.code === 'GLOSSARY_NOT_CONFIGURED') {
-        return '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的五条规则）';
+        return '还没有指定校对词表（应用不内置词表；没有词表时只跑内置的九条规则）';
       }
       return info.message || '校对词表读取失败';
     }

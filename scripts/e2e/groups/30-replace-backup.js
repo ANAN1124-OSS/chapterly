@@ -9,7 +9,7 @@ module.exports = async function group30ReplaceBackup(t) {
   const { exec, check, waitFor, sleep, storage } = t;
   const { sortBookPath } = t.state;
 
-  // 30. 整本替换的备份还原：列出备份 → 二次确认 → 正文回到替换前（当前内容再备份一份）
+  // 30. 整本替换的备份还原：列出备份 → 直接还原（1.4.0 P0-2 起不再二次确认）→ 正文回到替换前（当前内容再备份一份）
   await exec('window.__cwTest.openFindPanel()');
   const backups = await exec('window.__cwTest.refreshReplaceBackups()');
   check(

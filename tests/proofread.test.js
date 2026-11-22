@@ -477,7 +477,7 @@ test('校对：自定义词表——命中位置 / 建议 / 行号列号 / 按�
   assert.equal(text, '他做为旁观者。\n他决定做为见证人。\n这里有两个禁词和禁词。');
 });
 
-test('校对：没有校对词表时只有内置五条规则，行为与以前一致', () => {
+test('校对：没有校对词表时内置九条规则照常跑，行为与以前一致', () => {
   const text = '他说,好。突然，突然，突然。';
   const withNothing = proofread.proofreadText(text);
   const withEmpty = proofread.proofreadText(text, {}, []);
