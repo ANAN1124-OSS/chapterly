@@ -32,7 +32,7 @@ jobs:
       matrix:
         node: [22, 24]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # REPO-01（2026-11-21 第五轮审计）：pnpm 必须先于 setup-node —— setup-node 的
       # cache: 'pnpm' 要现场执行 `pnpm store path` 才能定位缓存目录，顺序反了会直接报
