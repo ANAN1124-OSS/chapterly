@@ -523,6 +523,7 @@
     sensitiveWordsInfo: null, // 设置弹层里显示的词表状态（读取当前草稿对应的词表）
     logInfo: null, // 设置弹层「诊断日志」显示的日志目录清单（只读；不含正文）
     lastInternalError: null, // 主进程最近一次内部错误的固定提示（只用于提示 + 自检断言）
+    internalErrorKey: '', // E5：最近一次已提示的内部错误 kind|code（同一错误在本窗口只提示一次）
     appVersion: '', // package.json 的版本号（主进程回报；设置 →「检查更新」显示用）
     // 检查更新（提案 7.1）：只在点按钮时联网；不下载、不安装、不写配置，结果只记在内存里
     update: {
@@ -600,11 +601,9 @@
   };
 
   // ---------- 命令面板条目缓存（1.5.0 P0-6 / 审计 O-1） ----------
-  // 以前 buildCommandItems() 每次 input 都全量重建：千章书 = 1000+ 个对象 + 每章一次章号计算，
-  // 敲一个字就做一遍。这里缓存「条目数组 + 构建时算好的归一文本」，只在数据变了时作废。
-  // 只缓存数据，不缓存 DOM：面板照旧每次从条目重画（分批 / 选中态不受影响）。
-  //   · markCommandsDirty() 由 state.chapters / state.books / state.meta 变化的同一处调用；
-  //   · 取用前再比一次几样东西的引用（视图 / 书 / 书目 / 章节数组 / 当前章），漏掉一处也兜得住。
+  // 以前 buildCommandItems() 每次 input 都全量重建（千章书 = 1000+ 个对象 + 每章一次章号计算）。
+  // 这里只缓存数据、不缓存 DOM：markCommandsDirty() 由 state.chapters / books / meta 变化的同一处调用；
+  // 取用前再比一次几样东西的引用（视图 / 书 / 书目 / 章节数组 / 当前章），漏掉一处也兜得住。
   const commandItemsCache = { items: null, key: null, invalidate: null };
   function markCommandsDirty() {
     commandItemsCache.items = null;
@@ -2699,14 +2698,11 @@
   }
 
   // ---------- 长操作编辑区保护（v1.8.0 WP-02 / 审计 C2） ----------
-  // 整本整理 / 还原备份会写盘、完成后再从磁盘重载正文。以前操作入口查一次 dirty 就开始跑，
-  // 进度期间编辑区照常能输入，完成时 loadChapterAt 无条件覆盖正文并把 dirty 清成 false——
-  // 期间敲的字静默消失。现在长操作期间把编辑区设为只读（进度提示里会说明），完成时再按
-  // 「书没换 / 期间有没有新输入」复核（long-op-logic.js）；输入法补字、程序化写入这类漏网输入
-  // 一律正文优先：保留编辑区，不拿磁盘结果盖掉。
+  // 整本整理 / 还原备份会写盘并重载正文：长操作期间把编辑区设为只读，完成时再按「书没换 / 期间
+  // 有没有新输入」复核（long-op-logic.js）；输入法补字、程序化写入这类漏网输入一律正文优先。
   let longOpLockCount = 0;
-  // ?test=1 时 E2E 用 setTestBookOpDelay 给「整本整理 / 还原备份」的 IPC 外面包一层延迟，
-  // 制造「操作还在进行」的窗口；正常启动恒为 null，两个入口直接走 call(api.formatBook / api.restoreReplaceBackup)。
+  // ?test=1 时 E2E 用 setTestBookOpDelay 给「整本整理 / 还原备份」的 IPC 外包一层延迟，制造「还在进行」
+  // 的窗口；正常启动恒为 null，两个入口直接走 call(api.formatBook / api.restoreReplaceBackup)。
   let testBookOp = null;
 
   function beginLongOpLock() {
@@ -3928,10 +3924,14 @@
   });
   crashRecoveryUi.start();
 
-    // 主进程内部错误（崩溃 / 未处理的 Promise）：只弹一句固定提示，细节留在日志里。
-    // 应用不退出，作者可以先 Ctrl+S 保存再重启。
+    // 主进程内部错误（崩溃 / 未处理的 Promise）：只弹一句固定提示，细节留在日志里（应用不退出，
+    // 作者可以先 Ctrl+S 保存再重启）。E5（一轮·低）：同一错误只提示一次 —— 主进程已按 kind 节流，
+    // 这里是渲染层第二道幂等（同一个 kind|code 在本窗口重出时不再刷 toast）。
     api.onInternalError((info) => {
+      const key = info ? `${info.kind}|${info.code}` : '';
       state.lastInternalError = info || null;
+      if (key && key === state.internalErrorKey) return;
+      state.internalErrorKey = key;
       toast((info && info.message) || '程序遇到一个内部错误，已写进日志。', 'error');
     });
 

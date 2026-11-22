@@ -268,10 +268,34 @@ test('错误脱敏静态闸门：notifyInternalError 的控制台输出走 descr
   // 广播仍只用 INTERNAL_ERROR_TEXT 的固定文案（细节只进日志）。
   assert.match(body, /logError\(kind, err\)/, '日志侧仍走原始错误，由 core/logs.js 脱敏');
   assert.match(body, /message: INTERNAL_ERROR_TEXT\[kind\]/, '界面广播仍是固定文案，不回传错误细节');
+  // E5（一轮·低）：界面广播按 kind 节流 —— 判定在 core/logs.js 的纯函数（tests/logs.test.js 有行为用例），
+  // 这里只钉「main.js 真的接线了、且被压掉时不再 broadcast」。日志侧不受影响（上面两行）。
+  assert.match(body, /logsLib\.internalErrorBudget\(/, 'main.js 要用 core/logs.js 的节流判定');
+  assert.match(body, /if \(!budget\.allowed\) return;/, '被节流掉的错误不再广播');
+  const budgetAt = body.indexOf('internalErrorBudget(');
+  const broadcastAt = body.indexOf("broadcast('app:internal-error'");
+  assert.ok(budgetAt > 0 && broadcastAt > budgetAt, '先判节流再广播（顺序反了等于没节流）');
 });
 
-test('错误脱敏：含空格的本机路径整条收掉（S-01 / 1.6.0 H4）', () => {
-  // 旧口径 `[A-Za-z]:[\\/][^\s'"<>|*?]*` 遇到空格就断：只遮住 `C:\Users\Zhang`，
+// E5（一轮·低）的渲染层那一半：同一个 kind|code 在本窗口重出时不再刷 toast（第二道幂等）。
+// 主进程节流按时间窗（30 秒），这里按「本窗口见过没有」——两次报错隔着窗口但同一个错，也只提示一次。
+test('错误脱敏静态闸门：渲染层对同一内部错误只提示一次（E5 第二道幂等）', () => {
+  const rendererText = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
+  const start = rendererText.indexOf('api.onInternalError(');
+  assert.notEqual(start, -1, 'renderer.js 必须有 api.onInternalError 订阅');
+  const body = rendererText.slice(start, rendererText.indexOf('});', start) + 3);
+  // 幂等键是 kind + code（不含 message / 时间戳：同一个错误每次的时间戳都不一样）
+  assert.match(body, /info\.kind\}?\|?\$\{info\.code\}|\$\{info\.kind\}\|\$\{info\.code\}/, '幂等键要用 kind|code');
+  assert.match(body, /state\.internalErrorKey/, '幂等键要存在 state 上（本窗口内有效）');
+  assert.match(body, /return;/, '已提示过的同一个错误要早退，不再 toast');
+  const guardAt = body.indexOf('state.internalErrorKey');
+  const toastAt = body.indexOf('toast(');
+  assert.ok(guardAt > 0 && toastAt > guardAt, '先判幂等再 toast（顺序反了等于没做）');
+  // 状态栏 / 其它 UI 仍要拿到最近一次内部错误的信息（细节不丢，只是不重复弹）
+  assert.match(body, /state\.lastInternalError = info \|\| null;/, '仍要记录最近一次内部错误');
+});
+
+test('错误脱敏：含空格的本机路径整条收掉（S-01 / 1.6.0 H4）', () => {  // 旧口径 `[A-Za-z]:[\\/][^\s'"<>|*?]*` 遇到空格就断：只遮住 `C:\Users\Zhang`，
   // 后面的 `San\Documents\我的小说\书\001-第 1 章.txt` 原样漏出去（用户名 / 书名全暴露）。
   const listed = "ENOENT: no such file or directory, open 'C:\\Users\\Zhang San\\Documents\\我的小说\\书\\001-第 1 章.txt'";
   const masked = redactPaths(listed);

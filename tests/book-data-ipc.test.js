@@ -521,6 +521,9 @@ function loadHandleBookWrapper() {
           'storage',
           'notifyShelfChanged',
           'ok',
+          // S3（一轮·低）：handleBook 多了一道 realpath 复核（core/ipc-paths.assertRealBookPath）。
+          // 断言跟错：这段源码是 new Function 现拼的，新增的自由变量必须同时出现在参数表里。
+          'ipcPaths',
           `${source}\nreturn handleBook;`
         );
         const handlers = new Map();
@@ -535,7 +538,9 @@ function loadHandleBookWrapper() {
           (value) => value,
           { assertBookNotBusy: () => true },
           (givenSession, reason) => broadcasts.push({ sessionId: givenSession && givenSession.id, reason }),
-          (value) => ({ ok: true, data: value })
+          (value) => ({ ok: true, data: value }),
+          // ipcPaths：文本判定由参数里的 assertBookPath 顶替，realpath 复核这里只记一笔（不碰真盘）
+          { assertRealBookPath: async () => {} }
         );
         return { wrapper, handlers, broadcasts };
       }

@@ -1,9 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const ipcPaths = require('../core/ipc-paths');
+// TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
+const tmpCleanup = require('./tmp-cleanup');
 
 // v0.9 C-2：IPC 路径入口审计。
 // 这里锁两件事：
@@ -94,6 +97,67 @@ test('导入目录：自检 / 截图模式才认显式路径，且统一 resolve
   );
   // 相对路径按主进程 cwd 解析（自检脚本传绝对路径，这里只锁行为）
   assert.deepEqual(ipcPaths.importSourceDirs(['rel-dir'], { allowExplicit: true }), [path.resolve('rel-dir')]);
+});
+
+// ---------- S3（一轮·低）：书目录的 realpath 复核 ----------
+// assertBookPath 是文本判定，「书架里预先存在的目录联接 / 符号链接指到库外」它拦不住。
+// 这里钉住新加的 assertRealBookPath 的四条口径（全部在系统临时目录里造，绝不碰真实书库）：
+//   ① 普通书目录放行；② 书目录是联接到库外 → BAD_PATH（中文、不含本机路径）；
+//   ③ 书库根本身是联接照常放行（v0.13 U-C3 的联接书库场景）；④ realpath 解析不出来时放行。
+const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
+
+test('S3：书目录联接到书架之外 → BAD_PATH；联接书库根本身、普通书、解析不出路径都照常放行', async () => {
+  const base = await tmpCleanup.mkTmp('cw-realpath-');
+  const links = [];
+  try {
+    const booksRoot = path.join(base, '书架');
+    const book = path.join(booksRoot, '正常书');
+    await fsp.mkdir(book, { recursive: true });
+    assert.equal(
+      await ipcPaths.assertRealBookPath(book, booksRoot),
+      book,
+      '普通书目录照常放行（返回值与传入同形）'
+    );
+
+    // ② 书目录是联接到库外：文本判定过得去，realpath 复核必须拦住
+    const outside = path.join(base, '库外', '搬出去的正文');
+    await fsp.mkdir(outside, { recursive: true });
+    const linkedBook = path.join(booksRoot, '联接的书');
+    await fsp.symlink(outside, linkedBook, LINK_TYPE);
+    links.push(linkedBook);
+    assert.equal(ipcPaths.assertBookPath(linkedBook, booksRoot), linkedBook, '文本判定照旧通过（这是它拦不住的）');
+    await assert.rejects(
+      () => ipcPaths.assertRealBookPath(linkedBook, booksRoot),
+      (err) =>
+        err instanceof ipcPaths.IpcPathError &&
+        err.code === 'BAD_PATH' &&
+        /指向书架目录之外/.test(err.message) &&
+        !err.message.includes(base) // 文案不带本机路径
+    );
+
+    // ③ 书库根本身是目录联接（v0.13 U-C3 支持）：两边都 realpath 后仍在同一棵树下 → 放行
+    const realRoot = path.join(base, '另一处', '真实书库');
+    await fsp.mkdir(path.join(realRoot, '联接书'), { recursive: true });
+    const rootLink = path.join(base, '书架联接');
+    await fsp.symlink(realRoot, rootLink, LINK_TYPE);
+    links.push(rootLink);
+    const viaLink = path.join(rootLink, '联接书');
+    assert.equal(await ipcPaths.assertRealBookPath(viaLink, rootLink), viaLink, '联接书库里的书要能打开');
+    assert.equal(await ipcPaths.assertRealBookPath(viaLink, realRoot), viaLink, '真实根 + 联接书路径也要能打开');
+
+    // ④ 解析不出来（书还没建出来 / 刚被删 / 网络盘离线）→ 放行，不把正常读写挡在门外
+    const missing = path.join(booksRoot, '还没建的书');
+    assert.equal(await ipcPaths.assertRealBookPath(missing, booksRoot), missing);
+    // 网络盘 / UNC 形状不做路径形状判断（解析失败也是放行路径，绝不按 \\ 前缀拒）
+    const unc = '\\\\127.0.0.1\\不存在的共享\\某本书';
+    assert.equal(await ipcPaths.assertRealBookPath(unc, booksRoot), unc);
+    // 空根 / 空书路径不在这里判（交给 assertBookPath，避免两处报不同文案）
+    assert.equal(await ipcPaths.assertRealBookPath('', booksRoot), '');
+    assert.equal(await ipcPaths.assertRealBookPath(book, ''), book);
+  } finally {
+    for (const link of links) await fsp.unlink(link).catch(() => {});
+    await fsp.rm(base, { recursive: true, force: true });
+  }
 });
 
 // ---------- IPC 入口清单（静态闸门） ----------

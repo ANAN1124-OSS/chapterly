@@ -789,6 +789,10 @@ const INTERNAL_ERROR_TEXT = {
     '程序有一项后台操作失败了，已写进日志。写作和保存不受影响；如果反复出现，可在设置 → 诊断日志里查看。'
 };
 
+// E5（一轮·低）：界面广播按 kind 节流。判定是 core/logs.js 的纯函数 internalErrorBudget
+// （单测覆盖），这里只保存桶表并接线。日志照旧每次都写：被压掉的只是「再给每个窗口弹一次固定提示」。
+const internalErrorBuckets = Object.create(null);
+
 function notifyInternalError(kind, err) {
   try {
     const described = logsLib.describeError(err);
@@ -798,6 +802,10 @@ function notifyInternalError(kind, err) {
     const shown = errorText.describeForUi(err);
     console.error(`[${kind}]`, shown.code || '', shown.message);
     logError(kind, err);
+    // E5：同一个 kind 在 30 秒窗口内只广播一次（主进程侧节流）；渲染层还有一道「同一错误只提示一次」。
+    const budget = logsLib.internalErrorBudget(internalErrorBuckets, kind, Date.now());
+    internalErrorBuckets[kind] = { windowStartMs: budget.windowStartMs, count: budget.count };
+    if (!budget.allowed) return;
     // 所有窗口都提示一句固定文案（哪个窗口都可能正开着稿子）
     broadcast('app:internal-error', {
       kind,
@@ -1002,6 +1010,9 @@ function handleBook(channel, fn, { mutation = null } = {}) {
       try {
         const cfg = await getConfig();
         const target = assertBookPath(bookPath, cfg.booksRoot);
+        // S3（一轮·低）：文本判定之后再走一道 realpath 复核（库里预先存在的目录联接指到库外 → 拒绝）。
+        // 放行规则见 core/ipc-paths.js：联接书库根、网络盘、realpath 失败都照常通过。
+        await ipcPaths.assertRealBookPath(target, cfg.booksRoot);
         if (mutation) storage.assertBookNotBusy(target, session.id, mutation);
         const result = await fn(target, ...args);
         // 书架数据可能变了（字数 / 章节 / 书名）：其它窗口的书架跟着刷新。
@@ -1512,6 +1523,8 @@ function registerIpc() {
     const session = flowSession();
     const cfg = await getConfig();
     const target = assertBookPath(bookPath, cfg.booksRoot);
+    // S3（一轮·低）：与 handleBook 同口径的 realpath 复核（「在新窗口打开」也是书入口）
+    await ipcPaths.assertRealBookPath(target, cfg.booksRoot);
     // B3：新窗口打开同一本书前，先把防抖中的「上次打开章节」落盘
     await flushLastOpenBeforeRead(target);
     const owner = storage.findOpenBookWindow(target);

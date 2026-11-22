@@ -625,3 +625,53 @@ test('崩溃日志：listLogFiles 只挑本应用的日志文件，坏目录当�
     await fs.rm(base, { recursive: true, force: true });
   }
 });
+
+// E5（一轮·低）：主进程内部异常的**界面广播**节流（纯函数）。日志照旧每次都写，被压掉的只是
+// 「给每个窗口再弹一次固定提示」；一个后台异常循环触发时不再刷屏 toast / 反复读屏播报。
+test('E5：internalErrorBudget 按 kind 节流，窗口到期后重新放行', () => {
+  const keep = (buckets, kind, result) => {
+    buckets[kind] = { windowStartMs: result.windowStartMs, count: result.count };
+  };
+  assert.equal(logsLib.INTERNAL_ERROR_WINDOW_MS, 30 * 1000);
+  assert.equal(logsLib.INTERNAL_ERROR_LIMIT, 1);
+
+  const buckets = {};
+  let r = logsLib.internalErrorBudget(buckets, 'uncaughtException', 1000);
+  assert.deepEqual({ allowed: r.allowed, windowStartMs: r.windowStartMs, count: r.count }, {
+    allowed: true,
+    windowStartMs: 1000,
+    count: 1
+  });
+  keep(buckets, 'uncaughtException', r);
+  // 同一窗口内第二次：压掉，且不把窗内计数涨上去
+  r = logsLib.internalErrorBudget(buckets, 'uncaughtException', 1000 + 30 * 1000 - 1);
+  assert.equal(r.allowed, false);
+  assert.equal(r.count, 1);
+  assert.equal(r.windowStartMs, 1000, '窗口起点不变（到期判断按它算）');
+  // 别的 kind 有自己的桶，不受影响
+  r = logsLib.internalErrorBudget(buckets, 'unhandledRejection', 2000);
+  assert.equal(r.allowed, true, '不同 kind 各算各的');
+  keep(buckets, 'unhandledRejection', r);
+  // 窗口一过重新放行（窗口起点翻新）
+  r = logsLib.internalErrorBudget(buckets, 'uncaughtException', 1000 + 30 * 1000);
+  assert.equal(r.allowed, true);
+  assert.equal(r.windowStartMs, 1000 + 30 * 1000);
+  assert.equal(r.count, 1);
+  // 可注入窗口 / 上限（单测与将来调参用）；坏值回默认
+  const custom = {};
+  r = logsLib.internalErrorBudget(custom, 'k', 0, { windowMs: 10, limit: 2 });
+  assert.equal(r.allowed, true);
+  keep(custom, 'k', r);
+  r = logsLib.internalErrorBudget(custom, 'k', 5, { windowMs: 10, limit: 2 });
+  assert.equal(r.allowed, true, 'limit=2：窗口内第二次仍放行');
+  keep(custom, 'k', r);
+  r = logsLib.internalErrorBudget(custom, 'k', 6, { windowMs: 10, limit: 2 });
+  assert.equal(r.allowed, false, 'limit=2：第三次压掉');
+  r = logsLib.internalErrorBudget(custom, 'k', 11, { windowMs: 10, limit: 2 });
+  assert.equal(r.allowed, true, '窗口到期重新计数');
+  const fallback = logsLib.internalErrorBudget({}, 'k', 0, { windowMs: -1, limit: 0 });
+  assert.equal(fallback.allowed, true);
+  // 空 kind / 非数字时间不炸（内部错误路径本身不许再抛）
+  assert.equal(logsLib.internalErrorBudget(null, null, NaN).allowed, true);
+  assert.equal(logsLib.internalErrorBudget({}, '', undefined).allowed, true);
+});

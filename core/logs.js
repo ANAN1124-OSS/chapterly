@@ -462,6 +462,34 @@ function createLogStore(baseDir, options = {}) {
   };
 }
 
+// E5（一轮·低）：主进程内部异常的**界面广播**节流（纯函数，单测覆盖）。
+// 背景：某个后台异常循环触发时，每次 uncaughtException / unhandledRejection 都会给每个窗口广播
+// 一次固定提示，toast 在 3.6 秒内不断累积、读屏也被反复播报；日志侧的去重只能压住相同签名。
+// 这里按 kind 做令牌桶：同一个 kind 在 windowMs 内最多放行 limit 次。
+// 日志照旧每次都写（诊断信息一条不少），被压掉的只是「再弹一次固定提示」。
+// 返回 { allowed, windowStartMs, count }，调用方负责把 windowStartMs / count 存回自己的桶表。
+const INTERNAL_ERROR_WINDOW_MS = 30 * 1000;
+const INTERNAL_ERROR_LIMIT = 1;
+
+function internalErrorBudget(buckets, kind, nowMs, options = {}) {
+  const windowMs =
+    Number.isFinite(options.windowMs) && Number(options.windowMs) > 0
+      ? Number(options.windowMs)
+      : INTERNAL_ERROR_WINDOW_MS;
+  const limit =
+    Number.isFinite(options.limit) && Number(options.limit) > 0
+      ? Math.floor(Number(options.limit))
+      : INTERNAL_ERROR_LIMIT;
+  const key = String(kind == null ? '' : kind) || 'unknown';
+  const now = Number.isFinite(nowMs) ? Number(nowMs) : Date.now();
+  const bucket = buckets && typeof buckets === 'object' ? buckets[key] : null;
+  const fresh = !bucket || !Number.isFinite(bucket.windowStartMs) || now - bucket.windowStartMs >= windowMs;
+  const windowStartMs = fresh ? now : bucket.windowStartMs;
+  const count = fresh ? 0 : Math.max(0, Math.floor(Number(bucket.count) || 0));
+  if (count >= limit) return { allowed: false, windowStartMs, count };
+  return { allowed: true, windowStartMs, count: count + 1 };
+}
+
 module.exports = {
   DEFAULT_MAX_FILE_BYTES,
   DEFAULT_MAX_FILES,
@@ -470,6 +498,9 @@ module.exports = {
   MAX_PATH_CHARS,
   MAX_STACK_LINE_CHARS,
   MAX_STACK_LINES,
+  INTERNAL_ERROR_WINDOW_MS,
+  INTERNAL_ERROR_LIMIT,
+  internalErrorBudget,
   localDayKey,
   isValidDayKey,
   formatTime,
