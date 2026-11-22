@@ -25,8 +25,11 @@ const ROOT = path.join(__dirname, '..');
 // 再等这么久就按超时失败结算，把控制权交回调用方。
 const FORCE_SETTLE_MS = 15000;
 
-function electronBinary() {
-  const pkgDir = path.join(ROOT, 'node_modules', 'electron');
+// root 可注入（默认仓库根）：单测用临时夹具钉「依赖未装 / 二进制未下载」两种提示契约——
+// CI 以 ELECTRON_SKIP_BINARY_DOWNLOAD=1 安装，node_modules/electron 里可能既没有 path.txt
+// 也没有 dist，「开发机已装好」不能被测试当成唯一形态（首版测试因此在 CI 假红）。
+function electronBinary(root = ROOT) {
+  const pkgDir = path.join(root, 'node_modules', 'electron');
   const pathFile = path.join(pkgDir, 'path.txt');
   let rel = '';
   try {

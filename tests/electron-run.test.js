@@ -97,11 +97,30 @@ test('TOOL-BX-01 静态闸门：外壳直接跑 Electron 二进制，不再经 s
   }
 });
 
-test('TOOL-BX-01：electronBinary 找不到依赖时给「先 pnpm install」的可读提示', () => {
-  const original = electronRun.electronBinary;
-  assert.equal(typeof original, 'function');
-  // 真实仓库里依赖已装好：能解析出可执行文件，且路径位于 node_modules/electron/dist 下。
-  const binary = electronRun.electronBinary();
-  assert.match(binary, /node_modules[\\/]electron[\\/]dist[\\/]/);
+test('TOOL-BX-01：electronBinary 三种环境形态都如实应对（夹具钉住，CI 无二进制也稳定）', () => {
+  // CI 用 ELECTRON_SKIP_BINARY_DOWNLOAD=1 安装，node_modules/electron 可能既没有 path.txt 也没有
+  // dist——「本机已装好」不能当测试前提（首版直接断言真实仓库，verify 在 CI 假红）。这里用
+  // 可注入的根目录 + 临时夹具把三条真实契约钉死，任何机器上结果一致。
+  const tmpCleanup = require('./tmp-cleanup');
+  const electronDir = (root) => path.join(root, 'node_modules', 'electron');
+
+  // 形态一：path.txt + dist 二进制都在（开发机）→ 返回 dist 下的可执行路径
+  const okRoot = tmpCleanup.mkTmpSync('cw-erun-ok-');
+  fs.mkdirSync(path.join(electronDir(okRoot), 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(electronDir(okRoot), 'path.txt'), 'electron.exe');
+  fs.writeFileSync(path.join(electronDir(okRoot), 'dist', 'electron.exe'), '');
+  const binary = electronRun.electronBinary(okRoot);
+  assert.match(binary, /node_modules[\\/]electron[\\/]dist[\\/]electron\.exe$/);
   assert.ok(fs.existsSync(binary));
+
+  // 形态二：path.txt 都没有（依赖未装 / postinstall 被跳过）→ 抛「先 pnpm install」的可读提示
+  const bareRoot = tmpCleanup.mkTmpSync('cw-erun-bare-');
+  fs.mkdirSync(electronDir(bareRoot), { recursive: true });
+  assert.throws(() => electronRun.electronBinary(bareRoot), /pnpm install/);
+
+  // 形态三：path.txt 在、dist 未下载（CI 的 ELECTRON_SKIP_BINARY_DOWNLOAD 形态）→ 同样给可读提示
+  const skipRoot = tmpCleanup.mkTmpSync('cw-erun-skip-');
+  fs.mkdirSync(electronDir(skipRoot), { recursive: true });
+  fs.writeFileSync(path.join(electronDir(skipRoot), 'path.txt'), 'electron.exe');
+  assert.throws(() => electronRun.electronBinary(skipRoot), /pnpm install/);
 });
