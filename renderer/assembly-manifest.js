@@ -112,6 +112,7 @@
     ['command-catalog.js', 'CWCommandCatalog', 'commandCatalog', '命令面板条目目录'],
     ['command-registry.js', 'CWCommandRegistry', 'commandRegistryModule', '命令注册 / 最近使用'],
     ['command-palette-ui.js', 'CWCommandPaletteUi', 'commandPaletteModule', '命令面板界面'],
+    ['command-items-ui.js', 'CWCommandItemsUi', 'commandItemsUiModule', '命令面板条目表与数据版本缓存（M1 第 10 轮从编排器搬出）'],
     ['shortcuts-ui.js', 'CWShortcutsUi', 'shortcutsUiModule', '快捷键提示面板']
   ];
 

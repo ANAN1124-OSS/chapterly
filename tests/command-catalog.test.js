@@ -16,6 +16,9 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const RENDERER = read('renderer/renderer.js');
+// M1 第 10 轮第二刀：章节 / 书条目表的构建段搬进 renderer/command-items-ui.js（行为锚点
+// tests/command-items-ui.test.js），这条静态闸门跟着实现走（断言文本不变，只换读取的文件）。
+const COMMAND_ITEMS = read('renderer/command-items-ui.js');
 const INDEX = read('renderer/index.html');
 
 // 搬家前的现役命令表（顺序也要一致：`?` 页按声明顺序排、命令面板空查询按组权重排）。
@@ -256,9 +259,9 @@ test('命令目录：README 与使用手册的快捷键表都由系统键表生�
 // 五-M5（SS-01）：命令面板章节条目的 run 闭包不许捕获构建时下标——面板开着时删章 / 移卷会整体
 // 换掉 state.chapters，而 markCommandsDirty 只作废快照、不重画已渲染行；旧下标会切到错位那一章。
 test('五-M5 静态闸门：章节条目 run 按 chapter.id 现场解析下标，章已删则提示而不切章', () => {
-  const body = RENDERER.slice(
-    RENDERER.indexOf('const chapterId = chapter && chapter.id != null ? chapter.id : null;'),
-    RENDERER.indexOf('for (const book of state.books || [])')
+  const body = COMMAND_ITEMS.slice(
+    COMMAND_ITEMS.indexOf('const chapterId = chapter && chapter.id != null ? chapter.id : null;'),
+    COMMAND_ITEMS.indexOf('for (const book of state.books || [])')
   );
   assert.ok(body.length > 0, '找不到章节条目构建段');
   assert.match(body, /const chapterId = chapter && chapter\.id != null \? chapter\.id : null;/, '要先记下 chapter.id');

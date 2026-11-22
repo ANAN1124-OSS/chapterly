@@ -152,6 +152,9 @@
   // 命令目录（1.6.0 F4a）：命令表的数据只有 command-catalog.js 一份，渲染层只装配（见 commandDefs）。
   const commandCatalog = window.CWCommandCatalog;
   const commandPaletteModule = window.CWCommandPaletteUi;
+  // 命令面板条目表 + 数据版本缓存（M1 第 10 轮第二刀）：构建 / 缓存 / 失效整段在 command-items-ui.js；
+  // 这里只装配（命令数据仍走 commandDefs()，切章 / 开书 / 提示按箭头转发，避开晚一步的解构）。
+  const commandItemsUiModule = window.CWCommandItemsUi;
   // 书架正文搜索（v0.9 B-5 第八刀）：防抖调度 / 主进程查询 / 索引状态 / 打开命中在 shelf-search-ui.js 里；
   const shelfSearchUiModule = window.CWShelfSearchUi;
   // 书架搜索（v0.9 B-5 第九刀）：内存过滤 / 分组筛选 / 正文结果区渲染在 shelf-filter-ui.js 里；
@@ -603,16 +606,12 @@
     testMode: new URLSearchParams(location.search).get('test') === '1' // E6（审计 WP-11）：?test=0/false 不算测试模式，只认 ?test=1
   };
 
-  // ---------- 命令面板条目缓存（1.5.0 P0-6 / 审计 O-1） ----------
-  // 以前 buildCommandItems() 每次 input 都全量重建（千章书 = 1000+ 个对象 + 每章一次章号计算）。
-  // 这里只缓存数据、不缓存 DOM：markCommandsDirty() 由 state.chapters / books / meta 变化的同一处调用；
-  // 取用前再比一次几样东西的引用（视图 / 书 / 书目 / 章节数组 / 当前章），漏掉一处也兜得住。
-  const commandItemsCache = { items: null, key: null, invalidate: null };
+  // ---------- 命令面板条目缓存（1.5.0 P0-6 / 审计 O-1；M1 第二刀搬进 command-items-ui.js） ----------
+  // 构建 / 「数据版本」缓存 / 失效通知都在模块里；这里只留一个同名转发 —— 下面几处 host 接线
+  // （章节目录 / 章节动作 / syncChapterItemInfo）仍按原名调用，调用点一个字不改。
+  let commandItemsUi = null;
   function markCommandsDirty() {
-    commandItemsCache.items = null;
-    commandItemsCache.key = null;
-    // 面板自己也有快照：数据变了就作废，下次重画（或下次打开）重新取一次。
-    if (typeof commandItemsCache.invalidate === 'function') commandItemsCache.invalidate();
+    if (commandItemsUi) commandItemsUi.markCommandsDirty();
   }
 
   // ---------- Toast ----------
@@ -1757,8 +1756,23 @@
       if (main && typeof main.focus === 'function') main.focus();
     }
   });
-  // 数据一变就同时作废面板里的快照（面板只在打开 / 失效后的下一次重画时再取一次）。
-  commandItemsCache.invalidate = () => commandPalette.invalidateItems();
+  // 条目表 + 数据版本缓存（1.5.0 P0-6 / O-1）在 command-items-ui.js；这里只装配。
+  // 数据一变（markCommandsDirty）就同时作废面板里的快照（面板只在打开 / 失效后的下一次重画时再取一次）。
+  commandItemsUi = commandItemsUiModule.create({
+    state, chaptersLib, chapterTitle,
+    defs: () => commandDefs(),
+    prepare: (items) => commandRegistryModule.prepare(items),
+    switchChapter: (index) => switchChapter(index),
+    focusChapterItem,
+    sameBookPath: (a, b) => sameBookPath(a, b),
+    openBookByPath: (bookPath) => openBookByPath(bookPath),
+    toast,
+    focusEditor: () => {
+      if (state.view === 'editor' && editorEl && typeof editorEl.focus === 'function') editorEl.focus();
+    },
+    invalidate: () => commandPalette.invalidateItems()
+  });
+  const { commandItemsForPalette } = commandItemsUi;
 
   // ---------- 编辑器小件 ----------
   // 第 4 步九刀·第三刀：实现在 renderer/editor-marks-ui.js（模块头有契约），这里只装配与接线；
@@ -2375,93 +2389,6 @@
       getView: () => ({ view: state.view, bookPath: state.bookPath }),
       handlers: commandHandlers
     });
-  }
-
-  // 命令面板的条目快照（1.5.0 P0-6 / 审计 O-1）：构建一次，按「数据版本」复用。
-  // 缓存键只放 buildCommandItems 读的东西 —— 视图 / 书 / 书目 / 章节数组 / 当前章；
-  // 数组里的对象被原地改（章节改名、书名字数变化）时由 renderChapterList /
-  // applyMetaAndRelocate / refreshShelf 里的 markCommandsDirty() 兜住。
-  // prepare() 顺手把归一文本算好，之后每次输入只做粗筛 + 少量打分。
-  function commandItemsForPalette() {
-    const key = [state.view, state.bookPath, state.meta, state.chapters, state.books, state.index];
-    const cachedKey = commandItemsCache.key;
-    if (
-      commandItemsCache.items &&
-      cachedKey &&
-      cachedKey.length === key.length &&
-      key.every((value, index) => cachedKey[index] === value)
-    ) {
-      return commandItemsCache.items;
-    }
-    const items = commandRegistryModule.prepare(buildCommandItems());
-    commandItemsCache.items = items;
-    commandItemsCache.key = key;
-    return items;
-  }
-
-  // 动态条目：章节（当前书）+ 书（书架）。点一条就等于「切到那一章 / 打开那一本」。
-  function buildCommandItems() {
-    const out = [];
-    for (const def of commandDefs()) {
-      if (typeof def.when === 'function' && !def.when()) continue;
-      out.push({
-        id: def.id,
-        title: def.title,
-        group: 'command',
-        kbd: def.kbd || '',
-        hint: '',
-        keywords: def.keywords || [],
-        run: def.run
-      });
-    }
-    if (state.view === 'editor' && state.bookPath) {
-      state.chapters.forEach((chapter, index) => {
-        const chapterId = chapter && chapter.id != null ? chapter.id : null;
-        out.push({
-          id: `chapter:${chapter.id}`,
-          title: chapterTitle(index, chapter.name),
-          group: 'chapter',
-          hint: index === state.index ? '当前章' : `第 ${chaptersLib.chapterNumber(state.meta, index)} 章`,
-          keywords: [chapter.name || '', `ch${chaptersLib.chapterNumber(state.meta, index)}`, `ch${index + 1}`],
-          run: () => {
-            // 五-M5（SS-01）：面板开着时删章 / 移卷会整体换掉章节数组，而 markCommandsDirty 只作废
-            // 快照、不重画已渲染行；run 闭包里捕获的 index 会指到错位的那一章。这里按 chapter.id
-            // 现场解析，章已删就明确提示，绝不按旧下标切到别的章。
-            const at = chapterId == null
-              ? -1
-              : state.chapters.findIndex((item) => item && String(item.id) === String(chapterId));
-            if (at < 0) {
-              toast('这一章已经不存在了（可能在面板打开期间被删除），请重新打开面板', 'warn');
-              return;
-            }
-            void switchChapter(at).then((result) => {
-              if (!result || result.ok !== true) return;
-              focusChapterItem({ mode: 'switch', index: at });
-            });
-          }
-        });
-      });
-    }
-    for (const book of state.books || []) {
-      out.push({
-        id: `book:${book.path}`,
-        title: `打开《${book.title || '未命名'}》`,
-        group: 'book',
-        hint: `${book.chapterCount || 0} 章`,
-        keywords: [book.title || '', 'book', '书'],
-        run: () => {
-          // H-3（1.5.0 P0-6）：当前这本书已经打开时，不要再走一次 api.openBook ——
-          // 那会从磁盘重载正文，编辑区里没保存的字就白丢了。提示 + 把焦点还给编辑区。
-          if (sameBookPath(book.path, state.bookPath)) {
-            toast('这本书已经打开了');
-            if (state.view === 'editor' && editorEl && typeof editorEl.focus === 'function') editorEl.focus();
-            return;
-          }
-          void openBookByPath(book.path);
-        }
-      });
-    }
-    return out;
   }
 
   function runCommandItem(item) {

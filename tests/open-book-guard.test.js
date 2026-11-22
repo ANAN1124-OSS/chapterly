@@ -116,8 +116,9 @@ test('换书入口闸门：openBookByPath 先过守卫、再 api.openBook', () =
 
 test('换书入口闸门：四个入口（命令面板 / 书签跨书 / 章节命中 / 书架点书）都走 openBookByPath', () => {
   const renderer = read('renderer/renderer.js');
-  // 命令面板「打开《书》」
-  assert.match(renderer, /void openBookByPath\(book\.path\);/, '命令面板换书要走 openBookByPath');
+  // 命令面板「打开《书》」：M1 第 10 轮第二刀起条目表在 renderer/command-items-ui.js
+  // （行为锚点 tests/command-items-ui.test.js「书 run」两例），静态闸门跟着实现走。
+  assert.match(read('renderer/command-items-ui.js'), /void openBookByPath\(book\.path\);/, '命令面板换书要走 openBookByPath');
   // 书架书卡（书籍信息模块渲染的那张卡也是这个动作）
   assert.match(renderer, /openBookByPath\(card\.dataset\.path\)/, '书架点书要走 openBookByPath');
   // 「章节命中」：openBookAtChapter 就是带 chapterIndex 的 openBookByPath

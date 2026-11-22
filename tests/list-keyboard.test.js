@@ -479,8 +479,8 @@ test('静态闸门：Ctrl+PageUp/PageDown 切章接线（复用 switchChapter，
   assert.equal(seg.includes('askUnsaved('), false, '不许自己再写一套未保存询问');
   assert.equal(seg.includes('loadChapterAt('), false, '不许绕过 switchChapter 直接加载正文');
   assert.ok(
-    RENDERER.includes("focusChapterItem({ mode: 'switch', index: at })"),
-    '切章后焦点归位走合并后的落点入口（命令面板按 chapter.id 现场解析出的 at）'
+    (RENDERER + read('renderer/command-items-ui.js')).includes("focusChapterItem({ mode: 'switch', index: at })"),
+    '切章后焦点归位走合并后的落点入口（命令面板按 chapter.id 现场解析出的 at；M1 第 10 轮起该条目表在 command-items-ui.js）'
   );
   // A7（WP-32）：三种焦点归位合并成一个 focusChapterItem；'switch' 这一路仍只看
   // activeElement 是否在章节列表里（不许从编辑区抢走）。

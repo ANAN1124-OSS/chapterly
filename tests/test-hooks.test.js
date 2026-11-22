@@ -422,9 +422,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   · 余量本身有上限断言（≤ 5）：要加业务代码请搬进独立模块，调大余量不是解法。
   // M1（第一轮·低，2026-11-22 第 9 轮）：toast() + toastActionable() 一对整段搬进
   //   renderer/toast-ui.js（行为锚点 tests/toast-ui.test.js），编排器只留同名转发 → 4546。
-  //   注：这里比的是 rendererSrc.split(/\r?\n/).length（文件末尾换行会多算一个空段），
+  // M1 第二刀（第 10 轮）：命令面板条目表 + 数据版本缓存（commandItemsForPalette / buildCommandItems /
+  //   markCommandsDirty）整段搬进 renderer/command-items-ui.js（行为锚点 tests/command-items-ui.test.js）
+  //   → 4473。注：这里比的是 rendererSrc.split(/\r?\n/).length（文件末尾换行会多算一个空段），
   //   所以数值比「内容行数」大 1；余量 2 行的语义不变。
-  const RENDERER_LINE_MEASURED = 4546; // 2026-11-22 实测（第 9 轮 M1 拆出 toast-ui 之后）
+  const RENDERER_LINE_MEASURED = 4473; // 2026-11-22 实测（第 10 轮 M1 第二刀拆出 command-items-ui 之后）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(
