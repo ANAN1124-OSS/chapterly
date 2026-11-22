@@ -1102,6 +1102,43 @@ test('CIO-A-01：复制后章节全被剔光 → 按整源跳过，不抛 TypeEr
   assert.deepEqual(await fs.readdir(booksRoot).catch(() => []), [], '暂存已清，书架里不留空书');
 });
 
+// C1（一轮·低）：三种导入模式（chapters / split / raw）共用同一个章节记录构造器。
+// 以前三处各拼一份同样的字段，新增字段要改三处。这里从**行为面**钉住「形状与口径只有一份」：
+// 三种模式产出的记录字段集合完全相同、id 补零规则相同、chars 严格等于真正写盘的正文。
+test('C1：chapters / split / raw 三种模式的章节记录形状与字数口径一致', async () => {
+  const base = await mkTmp();
+  const text = '第1章 开端\n\n正文一。\n\n第2章 继续\n\n正文二。';
+  const KEYS = ['id', 'file', 'name', 'chars', 'createdAt'];
+  const books = {};
+  for (const mode of ['chapters', 'split', 'raw']) {
+    const file = path.join(base, `${mode}.txt`);
+    await fs.writeFile(file, text, 'utf8');
+    const res = await importer.importNovelFile(path.join(base, `书架-${mode}`), file, { mode });
+    books[mode] = { path: res.path, chapters: (await storage.readBookMeta(res.path)).chapters };
+  }
+  for (const [mode, book] of Object.entries(books)) {
+    assert.ok(book.chapters.length >= 1, `${mode} 至少要导入一章`);
+    for (const chapter of book.chapters) {
+      // 字段集合逐字相同：多一个 / 少一个都说明又有人自己拼了一份记录
+      assert.deepEqual(Object.keys(chapter).sort(), KEYS.slice().sort(), `${mode} 的章节记录字段不一致`);
+      assert.match(chapter.id, /^ch_\d{3}$/, `${mode} 的 id 要用 pad3 补零`);
+      // 字数只算写盘的正文（标题行在 name 里，不重复计字；C25 口径由同一处保证）
+      const disk = await fs.readFile(path.join(book.path, chapter.file), 'utf8');
+      assert.equal(chapter.chars, chapters.countChars(disk), `${mode}:${chapter.file} 的 chars 与正文不符`);
+    }
+  }
+  // 三种模式的 id 序列都从 ch_001 起、按顺序递增
+  assert.deepEqual(
+    books.chapters.chapters.map((chapter) => chapter.id),
+    ['ch_001', 'ch_002']
+  );
+  assert.deepEqual(
+    books.raw.chapters.map((chapter) => chapter.id),
+    ['ch_001']
+  );
+  assert.equal(books.raw.chapters[0].name, '全文');
+});
+
 // CIO-A-03：暂存残留判据取「树内最新 mtime」+ 跳过仍存活的 pid。
 // 暂存根只会有一个书子目录、其后写入都在更深一层，根目录 mtime 停在创建时刻——
 // 只看根目录会把超过 1 小时的在途长导入误删。
@@ -1133,13 +1170,23 @@ test('CIO-A-03：长导入的暂存目录不被误删（看树内活动 + 跳过
   await fs.mkdir(path.join(mine, '书'), { recursive: true });
   await fs.writeFile(path.join(mine, '书', '001.txt'), '本进程在写', 'utf8');
   await fs.utimes(mine, old, old);
+  // 4) E3（一轮·低）：pid 判活降级为辅助条件 —— pid 复用到旧名字时，暂存目录不能再永久残留。
+  //    规则：1 小时没有写入 = 候选；名字里的 pid 还活着只把宽限延长到 24 小时；超过 24 小时照旧回收。
+  const veryOld = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  const reused = path.join(booksRoot, `.import-${process.pid}-${tag}-reuse1`);
+  await fs.mkdir(path.join(reused, '书'), { recursive: true });
+  await fs.writeFile(path.join(reused, '书', '001.txt'), '两天前就没写过', 'utf8');
+  await fs.utimes(path.join(reused, '书', '001.txt'), veryOld, veryOld);
+  await fs.utimes(path.join(reused, '书'), veryOld, veryOld);
+  await fs.utimes(reused, veryOld, veryOld);
 
   const res = await importer.importFolders(booksRoot, [created.path]);
   assert.equal(res.imported.length, 1);
   const left = (await fs.readdir(booksRoot)).filter((name) => name.startsWith('.import-'));
   assert.ok(left.includes(path.basename(live)), '树内刚写过 → 不许当残留删');
   assert.ok(!left.includes(path.basename(stale)), '全树超 1 小时 + pid 已死 → 回收');
-  assert.ok(left.includes(path.basename(mine)), 'pid 仍存活 → 不许动');
+  assert.ok(left.includes(path.basename(mine)), 'pid 仍存活且 24 小时内有过写入 → 不许动（宽限期内）');
+  assert.ok(!left.includes(path.basename(reused)), 'pid 仍存活但 24 小时没写一个字 → 判 pid 复用，回收');
 });
 
 // CIO-A-04：书 id 不再只靠毫秒时间戳（跨窗口同毫秒会撞 id），追加随机后缀。

@@ -712,6 +712,22 @@ function assertImportChapterLimits(baseName, parts, { pick = 'body' } = {}) {
   if (tooMany) throw new storage.StorageError(tooMany.code, tooMany.message);
 }
 
+// C1（一轮·低）：三种导入模式（chapters / split / raw）共用同一个章节记录构造器。
+// 以前三处各拼一份同样的字段（id 补零 / file / name / chars / createdAt），新增章节字段时要改三处、
+// 极易漂移。这里只负责「一条章节记录长什么样」，写盘与切分仍留在各自分支。
+// C25（v1.8.0 WP-24）的字数口径也收在这里：写盘文件只有 body（标题行在 name 里，不重复计字），
+// 所以 chars 只算正文 —— 与编辑区 / 状态栏 / 首次保存后 storage 的重算同一口径。
+// 以前把标题行一起算进去，导入后书架字数系统性虚高、第一次保存又回落。
+function importedChapterRecord({ seq, file, name, text, now }) {
+  return {
+    id: `ch_${chaptersLib.pad3(seq)}`,
+    file,
+    name,
+    chars: chaptersLib.countChars(text),
+    createdAt: now
+  };
+}
+
 // 一个完整小说 txt → 一本书。
 // mode='chapters'（默认）：按原文标题行切章，章名照抄原文标题，正文原样保留（只切分、不改字）。
 // mode='raw'：整本作为一章「全文」；UTF-8 源文件按字节原样复制。
@@ -780,16 +796,9 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
         // 正文按原文写入（不 trim、不改换行内容），只切分
         await fs.writeFile(path.join(staging, file), parts[i].body, 'utf8');
         usedFiles.push(file);
-        chapterList.push({
-          id: `ch_${chaptersLib.pad3(seq)}`,
-          file,
-          name: title,
-          // C25（v1.8.0 WP-24）：写盘文件只有 body（标题行在 name 里，不重复计字），所以 chars
-          // 也只算 body —— 与编辑区 / 状态栏 / 首次保存后 storage 的重算同一口径。以前把标题行
-          // 一起算进去，导入后书架字数系统性虚高、第一次保存又回落。
-          chars: chaptersLib.countChars(parts[i].body),
-          createdAt: now
-        });
+        chapterList.push(
+          importedChapterRecord({ seq, file, name: title, text: parts[i].body, now })
+        );
       }
     } else if (mode === 'split') {
       const text = normalizeText(decoded).trim();
@@ -814,13 +823,9 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
         // 导入的是「源文件仍在的副本」，这里用普通写入换取速度；崩溃最多丢这次导入，可从源文件重来
         await fs.writeFile(path.join(staging, file), chaptersLib.toDiskNewlines(parts[i].text), 'utf8');
         usedFiles.push(file);
-        chapterList.push({
-          id: `ch_${chaptersLib.pad3(seq)}`,
-          file,
-          name: parts[i].title || '',
-          chars: chaptersLib.countChars(parts[i].text),
-          createdAt: now
-        });
+        chapterList.push(
+          importedChapterRecord({ seq, file, name: parts[i].title || '', text: parts[i].text, now })
+        );
       }
     } else {
       // 原封不动整本模式：整篇作为一章「全文」
@@ -835,15 +840,7 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
         // 非 UTF-8（如 GBK）必须转成 UTF-8 应用才能读；只转编码，文字内容不变
         await fs.writeFile(path.join(staging, file), decoded, 'utf8');
       }
-      chapterList = [
-        {
-          id: 'ch_001',
-          file,
-          name: '全文',
-          chars: chaptersLib.countChars(decoded),
-          createdAt: now
-        }
-      ];
+      chapterList = [importedChapterRecord({ seq: 1, file, name: '全文', text: decoded, now })];
     }
 
     const meta = {
@@ -943,6 +940,15 @@ async function latestMtimeMs(target) {
   return latest;
 }
 
+// E3（一轮·低）：判残留的两道时间闸门。以前只有「进程活着就永远跳过」一条 —— Windows 会复用 pid，
+// 复用到旧 pid 时那个 `.import-*` 永远不会被清（长期占盘，每次导入还要递归 stat 判龄）。
+// 现在 pid 判活**降级为辅助条件**：
+//   ① 没有任何写入超过 1 小时 → 基本可以确定是上次崩溃留下的；
+//   ② 若名字里的 pid 还活着，只把宽限从 1 小时延长到 24 小时（真的还在导入就会持续写盘，
+//      mtime 一直在动；24 小时一个字都没写的暂存树不可能是活的导入）。
+const STALE_STAGING_MS = 3600 * 1000;
+const STALE_STAGING_PID_GRACE_MS = 24 * 3600 * 1000;
+
 async function cleanupStaleStaging(booksRoot) {
   let entries = [];
   try {
@@ -953,13 +959,16 @@ async function cleanupStaleStaging(booksRoot) {
   const now = Date.now();
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith('.import-')) continue;
-    if (pidAlive(stagingPidOf(entry.name))) continue; // 另一个窗口的导入还在跑：绝不碰
     const full = path.join(booksRoot, entry.name);
+    let activeAt = 0;
     try {
-      const activeAt = await latestMtimeMs(full);
-      if (now - activeAt > 3600 * 1000) {
-        await fs.rm(full, { recursive: true, force: true });
-      }
+      activeAt = await latestMtimeMs(full);
+    } catch { /* 抢不到就跳过：只影响这一个目录的判龄 */ continue; }
+    const idleMs = now - activeAt;
+    if (idleMs <= STALE_STAGING_MS) continue; // 最近一小时内还有写入：活的（或刚崩的那次还在收尾）
+    if (pidAlive(stagingPidOf(entry.name)) && idleMs <= STALE_STAGING_PID_GRACE_MS) continue;
+    try {
+      await fs.rm(full, { recursive: true, force: true });
     } catch { /* 忽略 */ }
   }
 }
