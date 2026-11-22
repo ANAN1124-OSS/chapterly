@@ -107,6 +107,25 @@ test('查找书签：缺书 / 缺章 / 空查询词的坏条目直接丢弃（�
   assert.equal(capped.chapterIndex, 1000000);
 });
 
+// C4（一轮·低）：字段限长改走 core/common.js 的 truncateSafe —— 截断点落在高位代理上时回退一个
+// 单元，不许留下孤立代理（配置被手改成 emoji / 扩展 B 汉字结尾时，书签列表不再显示成乱码）。
+test('C4：字段截断不切开代理对（emoji / 扩展 B 汉字结尾不出现孤立代理）', () => {
+  // 200 长的书名字段：前 199 个 ASCII + 一个 emoji（占 2 个码元）→ 按 200 截会切在 emoji 中间
+  const title = 'a'.repeat(199) + '😀' + '尾';
+  const bookmark = normalizeBookmark(sample({ bookTitle: title }), { now: 1 });
+  assert.equal(bookmark.bookTitle.length, 199, '高位代理被回退，长度少一个码元');
+  assert.equal(/[\uD800-\uDBFF]$/.test(bookmark.bookTitle), false, '结尾不许是孤立高位代理');
+  assert.equal(bookmark.bookTitle, 'a'.repeat(199));
+
+  // 查询词同一份实现（MAX_QUERY_LENGTH = 200）
+  const query = '长'.repeat(MAX_QUERY_LENGTH - 1) + '😀' + '尾';
+  const byQuery = normalizeBookmark(sample({ query }), { now: 1 });
+  assert.equal(byQuery.query.length, MAX_QUERY_LENGTH - 1, '查询词也走同一个截断口径');
+  assert.equal(/[\uD800-\uDBFF]$/.test(byQuery.query), false);
+  // 正好落在合法边界时照常截到上限（不多切）
+  assert.equal(normalizeBookmark(sample({ bookTitle: 'a'.repeat(300) }), { now: 1 }).bookTitle.length, 200);
+});
+
 test('查找书签：查询词超长截断、大小写只认真正的 true', () => {
   const long = normalizeBookmark(sample({ query: '长'.repeat(MAX_QUERY_LENGTH + 50) }), { now: 1 });
   assert.equal(long.query.length, MAX_QUERY_LENGTH);

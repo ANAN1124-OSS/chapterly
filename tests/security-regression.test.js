@@ -252,6 +252,26 @@ test('preload：主进程抛错只在渲染层得到 {ok:false, code:IPC_ERROR}�
 
 // ---------- 主进程安全加固接线（C-1 / C-3） ----------
 
+// F2（三审·低）：第二个实例的 argv / additionalData 当前**有意忽略**（应用没有注册文件关联），
+// 但必须显式接住并留一条「带了几项」的诊断日志，不写 argv 原文（可能是本机路径）。
+test('F2：second-instance 显式接住 argv / additionalData 并留诊断日志（不写原文）', () => {
+  const match = /app\.on\('second-instance',\s*\(_event, argv, _workingDirectory, additionalData\)\s*=>\s*\{/.exec(MAIN);
+  assert.ok(match, 'second-instance 处理器必须显式接收 event / argv / workingDirectory / additionalData');
+  const start = match.index;
+  const body = MAIN.slice(start, MAIN.indexOf('\n  });', start));
+  assert.match(body, /argv\.slice\(1\)/, 'argv 从第 2 项起才是参数（第 1 项是可执行文件）');
+  assert.match(body, /ARGV_IGNORED/, '有意忽略要留一条可诊断的错误码');
+  assert.match(body, /当前无文件关联，有意忽略/, '日志文案要写清「有意忽略」的当前口径');
+  assert.equal(body.includes('argv.join'), false, '不许把 argv 原文写进日志（可能是作者的本机路径）');
+  // 语义不变：仍然只聚焦最近窗口 / 没有窗口就开一个
+  assert.match(body, /mostRecentSession\(\)/);
+  assert.match(body, /focusSession\(session\)/);
+  assert.match(body, /createWindow\(\{ runAutomationFlow: false \}\)/);
+  // 单实例锁不传 additionalData：本应用没有要多实例之间传递的启动参数（有意，不是忘记）
+  const lockSrc = MAIN.slice(MAIN.indexOf('app.requestSingleInstanceLock('));
+  assert.match(lockSrc.slice(0, 200), /requestSingleInstanceLock\(\)/, '单实例锁保持无参：当前没有要传的启动参数');
+});
+
 test('main.js：窗口安全开关只有 core/security-policy.js 一个来源，且只建一种窗口', () => {
   assert.equal((MAIN.match(/new BrowserWindow\(/g) || []).length, 1, 'main.js 只应有一个建窗口的地方');
   assert.equal((MAIN.match(/webPreferences\s*:/g) || []).length, 1, 'webPreferences 只许写一次');

@@ -899,6 +899,25 @@ function createConfigStore(userDataDir, deps = {}) {
     });
   }
 
+  // E2（一轮·低）：删书成功后按 bookId 清掉属于这本书的全部查找书签。书签全局上限 200 条，
+  // 旧实现只清 bookDisplay，删掉的书签会继续占配额并出现在查找面板（点开必然失败）。
+  // 返回实际删掉的条数（0 = 没有条目，不写盘）。只写 userData/config.json，绝不碰书库。
+  function resetFindBookmarksForBook(bookId) {
+    return enqueue(async () => {
+      await gateWrite(false);
+      const key = String(bookId == null ? '' : bookId).trim();
+      if (!key) return 0;
+      const cfg = await get();
+      const list = Array.isArray(cfg.findBookmarks) ? cfg.findBookmarks : [];
+      const kept = list.filter((item) => !(item && String(item.bookId || '').trim() === key));
+      if (kept.length === list.length) return 0;
+      const next = sanitize({ ...cfg, findBookmarks: kept });
+      await writeJson(file, next);
+      cache = next;
+      return list.length - kept.length;
+    });
+  }
+
   // C28（v1.8.0 WP-26）：最近书（lastBook）的「读旧值 → 去重 / at 守卫 → 写盘」必须全部在
   // 同一个写队列里完成。以前 main.js 在 configStore.set 之前单独 get 一次：两个窗口并发时
   // 都看到同一份旧值、都通过 at 守卫，迟到的旧切章记录能把更晚的「上次写作」盖掉。
@@ -954,6 +973,7 @@ function createConfigStore(userDataDir, deps = {}) {
     listFindBookmarks,
     upsertFindBookmark,
     removeFindBookmark,
+    resetFindBookmarksForBook,
     defaults: DEFAULTS
   };
 }

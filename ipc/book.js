@@ -393,10 +393,21 @@ function registerBookIpc(host) {
       // 五-L1（CI-2）：显示覆盖随书一起作废（config.json 不再随「曾经调过显示设置的书数」单调增长）。
       // 清不掉只留一条 warn：书已经删掉了，配置收尾失败不许把删除结果改判成失败。
       if (displayBookId) {
+        const configStore = getConfigStore();
         try {
-          await getConfigStore().resetBookDisplay(displayBookId);
+          await configStore.resetBookDisplay(displayBookId);
         } catch (err) {
           logError('book-delete', err, { level: 'warn', code: 'BOOK_DISPLAY_RESET_FAILED' });
+        }
+        // E2（一轮·低）：这本书的查找书签也一并清掉 —— 书签全局上限 200 条，旧实现只清
+        // bookDisplay，已删的书签会继续占配额、出现在查找面板里点开必然失败。
+        // 旧宿主 / 单测的假 store 没有这个方法时跳过（与 resetBookDisplay 同一套可选注入口径）。
+        if (configStore && typeof configStore.resetFindBookmarksForBook === 'function') {
+          try {
+            await configStore.resetFindBookmarksForBook(displayBookId);
+          } catch (err) {
+            logError('book-delete', err, { level: 'warn', code: 'BOOK_BOOKMARKS_RESET_FAILED' });
+          }
         }
       }
       return result;

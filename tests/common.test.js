@@ -60,6 +60,39 @@ test('pad2：补零到两位，超过两位原样返回（和 String#padStart �
   assert.equal(common.pad2(null), 'null');
 });
 
+// C3（一轮·低）：positiveInt 原先在 capture / capture-queue / clipboard-watch 三处各写一份逐字
+// 相同的实现（非有限值或 ≤0 退回 fallback，再 round 到 ≥1）。收进 core/common.js 后行为逐字不变，
+// 这里把边界值钉住，并加机器清单防回潮。
+test('positiveInt：非有限值 / ≤0 退回 fallback，其余四舍五入到 ≥1（C3）', () => {
+  assert.equal(common.positiveInt(5, 10), 5);
+  assert.equal(common.positiveInt('7', 10), 7, '数字字符串照旧按 Number() 走');
+  assert.equal(common.positiveInt(1.4, 10), 1);
+  assert.equal(common.positiveInt(1.5, 10), 2, '四舍五入（不是 clampInt 的向下取整）');
+  assert.equal(common.positiveInt(0.2, 10), 1, '正小数进 1，不会退回 fallback');
+  assert.equal(common.positiveInt(0, 10), 10);
+  assert.equal(common.positiveInt(-3, 10), 10);
+  assert.equal(common.positiveInt(NaN, 10), 10);
+  assert.equal(common.positiveInt(Infinity, 10), 10);
+  assert.equal(common.positiveInt('abc', 10), 10);
+  assert.equal(common.positiveInt(undefined, 10), 10);
+  assert.equal(common.positiveInt(null, 10), 10, 'null 当 0：退回 fallback（与 clampInt 的 V82 口径一致）');
+});
+
+test('C3 机器清单：三处曾各自实现 positiveInt 的模块不再写第二份，都从 core/common.js 拿', () => {
+  for (const rel of ['core/capture.js', 'core/capture-queue.js', 'core/clipboard-watch.js']) {
+    const source = read(rel);
+    assert.equal(/function positiveInt\s*\(/.test(source), false, `${rel} 里还留着第二份 positiveInt 实现`);
+    assert.ok(
+      /positiveInt\s*\}/.test(source) || /positiveInt/.test(source),
+      `${rel} 应该从 core/common.js 取 positiveInt`
+    );
+  }
+  // core/capture.js 是 UMD：浏览器分支从 window.CWCommon 解构（同一个对象），不能退回本地副本
+  assert.match(read('core/capture.js'), /const \{ stripBom, positiveInt \} = commonLib;/);
+  assert.match(read('core/capture-queue.js'), /const \{ positiveInt \} = require\('\.\/common'\);/);
+  assert.match(read('core/clipboard-watch.js'), /const \{ positiveInt \} = require\('\.\/common'\);/);
+});
+
 test('clampInt：先向下取整，非有限数退回 fallback，其余夹到 range 两端（含端点）', () => {
   assert.equal(common.clampInt(3.9, 0, [0, 100]), 3);
   assert.equal(common.clampInt(-3.9, 0, [0, 100]), 0);
@@ -387,6 +420,7 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
     'pad2',
     'parseDayKey',
     'positionOf',
+    'positiveInt',
     'sleep',
     'stripBom',
     'toHalfWidth',

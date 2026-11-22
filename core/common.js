@@ -355,9 +355,19 @@
     return `b_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
+  // C3（一轮·低）：正整数参数的统一夹紧。``capture.js`` / ``capture-queue.js`` /
+  // ``clipboard-watch.js`` 各写过一份逐字相同的实现（非有限值或 ≤0 退回 fallback，再 round 到 ≥1）；
+  // 三份一旦漂移，同一个坏配置在「队列上限 / 预览长度 / 监听阈值」上会得到不同结果。收一份到这里。
+  function positiveInt(value, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.max(1, Math.round(n));
+  }
+
   return {
     pad2,
     clampInt,
+    positiveInt,
     truncateSafe,
     sleep,
     formatCount,

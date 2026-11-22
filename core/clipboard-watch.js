@@ -63,11 +63,8 @@ function createLargeTextPacer(options = {}) {
   };
 }
 
-function positiveInt(value, fallback) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.max(1, Math.round(n));
-}
+// C3（一轮·低）：positiveInt 收进 core/common.js 唯一实现（原先三个模块各写一份逐字相同的）。
+const { positiveInt } = require('./common');
 
 function createWatcher(options = {}) {
   const minChars = positiveInt(options.minChars, 20);

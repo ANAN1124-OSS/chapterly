@@ -109,6 +109,46 @@ test('五-L1（CI-2）：删书成功后按书目 id 清掉这本书的显示覆
   assert.deepEqual(resets, [created.meta.id], '删掉的是哪本书，就清哪个 id 的显示覆盖');
 });
 
+// E2（一轮·低）：删书成功后这本书的查找书签也要一并清掉（书签全局上限 200 条，已删的书不许
+// 继续占配额）。假 store 两个清理入口都提供，钉住「用哪个 id」与「不抢删除结果」。
+test('E2：删书成功后按书目 id 清掉这本书的查找书签（与显示覆盖同一份 id）', async () => {
+  const root = await mkTmp();
+  const cleared = [];
+  const channels = makeHost(root, {
+    configStore: {
+      resetBookDisplay: async () => true,
+      resetFindBookmarksForBook: async (id) => {
+        cleared.push(id);
+        return 3;
+      }
+    }
+  });
+  const created = await storage.createBook(root, '带书签的书');
+  const result = await channels.get('book:delete')(created.path);
+  assert.equal(result.method, 'move');
+  assert.deepEqual(cleared, [created.meta.id], '按书目 meta.id 清，与 bookDisplay 同一份 id');
+
+  // 清理失败只留 warn，删除结果不变
+  const failingRoot = await mkTmp();
+  const failing = makeHost(failingRoot, {
+    configStore: {
+      resetBookDisplay: async () => true,
+      resetFindBookmarksForBook: async () => {
+        throw new Error('EACCES: 配置只读');
+      }
+    }
+  });
+  const failingBook = await storage.createBook(failingRoot, '书签清不掉的书');
+  const failingResult = await failing.get('book:delete')(failingBook.path);
+  assert.equal(failingResult.method, 'move', '书签没清掉也不许把删除报成失败');
+  assert.deepEqual(
+    failing.logs.map((item) => item[2]),
+    ['BOOK_BOOKMARKS_RESET_FAILED'],
+    '清不掉要留一条可诊断的 warn'
+  );
+  assert.equal(failing.logs[0][3], 'warn');
+});
+
 test('五-L1（CI-2）：清理失败 / 书目已坏都不影响删书本身（收尾不许盖住删除结果）', async () => {
   const root = await mkTmp();
   const channels = makeHost(root, {

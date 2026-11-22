@@ -54,6 +54,30 @@ test('createBook：同名自动加后缀，空书名兜底', async () => {
   assert.equal(c.meta.title, '我的新书');
 });
 
+// C2（一轮·低）：撞名后缀到 999 就明确报错，不再无限探测；报错时磁盘上不许多出任何东西。
+test('createBook：同名后缀到 999 上限 → NAME_CONFLICT 中文提示，零副作用', async () => {
+  const root = await mkTmp();
+  const base = '同名书';
+  const folders = [base];
+  for (let i = 2; i <= 999; i += 1) folders.push(`${base}-${i}`);
+  for (const folder of folders) await fs.mkdir(path.join(root, folder));
+  const before = (await fs.readdir(root)).sort();
+
+  await assert.rejects(
+    () => storage.createBook(root, base),
+    (err) => {
+      assert.equal(err.code, 'NAME_CONFLICT', '错误码要能让上层区分「书架满了」而不是写盘失败');
+      // 用户可见文案：中文结论 + 两条出路（整理书架 / 换书名），不带本机路径
+      assert.match(err.message, /同类文件夹太多了/);
+      assert.match(err.message, /999/);
+      assert.match(err.message, /请先整理书架或换一个书名/);
+      assert.equal(/[A-Za-z]:\\/.test(err.message), false, '不许把本机绝对路径写进提示');
+      return true;
+    }
+  );
+  assert.deepEqual((await fs.readdir(root)).sort(), before, '报错时一个目录都没多建');
+});
+
 test('章节保存/读取往返：落盘 CRLF、无 BOM，读回 LF', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '测试书');

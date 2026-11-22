@@ -42,6 +42,10 @@ const CHAPTER_BATCH_SIZE = 32;
 // B6（v1.8.0 WP-28）：_trash 备份目录扫描 / 清理时 stat 的并发上限（与 core/history.js
 // 的 HISTORY_STAT_CONCURRENCY 同值）。备份多的时候串行 stat 会按文件数累加。
 const TRASH_STAT_CONCURRENCY = 8;
+// C2（一轮·低）：建书撞名后缀上限。旧 `for(;;)` 没有上界——书架里同名文件夹多到 999 个以上时
+// 会一直探测 1000、1001…（每次一次 mkdir syscall），最后仍可能失败得莫名其妙。999 与
+// core/chapters.js 的 uniqueFileName / core/importer.js 的 uniqueFolderName 同档；到顶给中文结论。
+const MAX_NAME_SUFFIX = 999;
 // C2（审计 #2 / P2）：「预览 → 执行」正文快照（只存在主进程内存里，见 core/preview-cache.js）。
 // 预览（整本查找 / 整理预检查）把读到的正文连同当时的 mtime / size 记进快照；执行（整本替换 /
 // 整本整理）命中且文件没变就直接复用，不再读第二遍。有 TTL 与容量上界，超了照旧读盘。
@@ -968,6 +972,13 @@ async function createBook(booksRoot, title, options = {}) {
       break;
     } catch (err) {
       if (err.code === 'EEXIST') {
+        // C2（一轮·低）：后缀到顶就明确报错，不再无限探测（此目录没建成，磁盘上什么都没留下）
+        if (i > MAX_NAME_SUFFIX) {
+          throw new StorageError(
+            'NAME_CONFLICT',
+            `同类文件夹太多了：从「${base}」到「${base}-${MAX_NAME_SUFFIX}」都已被占用，请先整理书架或换一个书名`
+          );
+        }
         folder = `${base}-${i}`;
         i += 1;
         continue;

@@ -1643,7 +1643,10 @@ function registerIpc() {
       // WP6（N2，审计中 #7）：换书架根要广播给所有窗口 —— 别的窗口里停在旧根下的书，继续保存只会
       // 被 assertBookPath 拦成 BAD_PATH。渲染层收到后：停在书架就刷新成新目录；开着旧根的书给一次性
       // 提示 + 救稿出口。只带生效根（装饰层后的值）：--books-root 覆盖时判据同上，覆盖目录不算换根。
-      broadcast('config:changed', { reason: 'booksRoot', booksRoot: nextConfig.booksRoot });
+      // E4（一轮·低）：与普通配置广播同一口径 —— 用 except 跳过发起窗口。旧实现不排除发送方，
+      // 发起窗口会收到自己引起的换根通知：写作页弹「另一个窗口把书架目录改成了…」的归属错误提示，
+      // 停在书架时还会重复刷新一次书架 / 多一条 toast。
+      broadcast('config:changed', { reason: 'booksRoot', booksRoot: nextConfig.booksRoot }, { except: session ? session.id : null });
     } else {
       // 五-M14（SS-11）：非换根的全局设置变更也要广播。旧实现只在换根时通知，别的窗口的
       // state.globalConfig 就停在它上一次读到的旧值——作者在那边点一次保存，config:set 带的是
@@ -2830,7 +2833,26 @@ if (!gotLock) {
   app.on('web-contents-created', (_event, contents) => hardenWebContents(contents));
   app.on('session-created', (ses) => hardenSession(ses));
 
-  app.on('second-instance', () => {
+  // F2（三审·低）：本应用**没有注册文件关联 / 命令行打开功能**，第二个实例带进来的 argv 与
+  // additionalData 一律有意忽略（不打开文件、不改窗口内容、只聚焦已有窗口）。但参数必须显式接住
+  // 并留一条诊断日志：旧实现 handler 不接参数，第二次启动到底带了什么谁也不知道；将来真加文件
+  // 关联时也不会静默漏接。日志只记「带了几项」，不写 argv 原文（可能是作者的本机路径）。
+  app.on('second-instance', (_event, argv, _workingDirectory, additionalData) => {
+    const extraArgs = Array.isArray(argv) ? argv.slice(1) : [];
+    const hasAdditionalData = Boolean(
+      additionalData && typeof additionalData === 'object' && Object.keys(additionalData).length
+    );
+    if (extraArgs.length || hasAdditionalData) {
+      logError(
+        'second-instance',
+        { code: 'ARGV_IGNORED' },
+        {
+          level: 'warn',
+          code: 'ARGV_IGNORED',
+          message: `第二个实例带了 ${extraArgs.length} 个命令行参数${hasAdditionalData ? ' 与 additionalData' : ''}（当前无文件关联，有意忽略）`
+        }
+      );
+    }
     const session = mostRecentSession();
     if (session) {
       focusSession(session);

@@ -36,11 +36,8 @@ const DEFAULT_MAX_TOTAL_CHARS = captureLib.MAX_RAW_CHARS;
 // 队列列表只显示首行预览（不是全文）：够认出是哪一段，又不把正文多发一份到渲染层。
 const PREVIEW_LIMIT = 40;
 
-function positiveInt(value, fallback) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.max(1, Math.round(n));
-}
+// C3（一轮·低）：positiveInt 收进 core/common.js 唯一实现（原先三个模块各写一份逐字相同的）。
+const { positiveInt } = require('./common');
 
 // JS 的 \s（String#trim / /\s/ 正则）判定的空白码位：逐码位判定，比整行 replace 少一次分配，
 // 也不会漏掉全角空格 / 不换行空格 / 行分隔符这些「看着不是空格、trim 却算空白」的码位。

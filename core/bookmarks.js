@@ -15,12 +15,20 @@
 
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./common'));
   } else if (root) {
-    root.CWBookmarks = factory();
+    root.CWBookmarks = factory(root.CWCommon);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (commonLib) {
   'use strict';
+
+  // C4（一轮·低）：字段限长改走 core/common.js 的 truncateSafe（按 UTF-16 截断但不切开代理对）。
+  // 以前 bookmarks 自己 slice(0, max)：配置被手改成 emoji / 扩展 B 汉字结尾时，截断会留下孤立代理，
+  // 书签列表显示成乱码。浏览器里 core/common.js 必须排在 core/bookmarks.js 之前（index.html 已是这个顺序）。
+  if (!commonLib || typeof commonLib.truncateSafe !== 'function') {
+    throw new TypeError('core/bookmarks.js 需要 core/common.js 的 truncateSafe（加载顺序：common 在前）');
+  }
+  const { truncateSafe } = commonLib;
 
   // 一台机器最多记多少条书签：够作者给每本书标几个重点，又不至于让配置无限膨胀。
   const MAX_BOOKMARKS = 200;
@@ -42,7 +50,7 @@
   function cleanText(value, max) {
     if (typeof value !== 'string') return '';
     const trimmed = value.replace(CONTROL_CHARS_RE, '').replace(BIDI_CONTROL_RE, '').trim();
-    return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
+    return truncateSafe(trimmed, max);
   }
 
   // 「书 + 章」才是书签的唯一键：同一章重复保存 = 更新那一条，不是新增。
@@ -85,7 +93,7 @@
           ? Math.min(Math.round(chapterIndex), MAX_CHAPTER_INDEX)
           : 0,
       // 查询词按作者输入的原文保存（不去空白，和查找口径一致），只限长
-      query: queryRaw.length > MAX_QUERY_LENGTH ? queryRaw.slice(0, MAX_QUERY_LENGTH) : queryRaw,
+      query: truncateSafe(queryRaw, MAX_QUERY_LENGTH),
       caseSensitive: raw.caseSensitive === true,
       createdAt: createdFallback,
       updatedAt: normalizeTimestamp(raw.updatedAt, createdFallback)

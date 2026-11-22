@@ -859,8 +859,12 @@ test('静态闸门（M14/SS-11）：config:set 非换根也广播；渲染层刷
   const start = mainSrc.indexOf("handle('config:set'");
   assert.ok(start > 0, 'main.js 里找不到 config:set');
   const body = mainSrc.slice(start, mainSrc.indexOf('\n  handle(', start + 1));
-  // 换根分支原样保留（payload 只带 reason / booksRoot，现有 WP6 闸门仍盯这行）
-  assert.match(body, /broadcast\('config:changed', \{ reason: 'booksRoot', booksRoot: nextConfig\.booksRoot \}\)/);
+  // 换根分支原样保留（payload 只带 reason / booksRoot），E4 起与普通广播一样用 except 跳过发起窗口
+  assert.match(
+    body,
+    /broadcast\(\s*'config:changed',\s*\{ reason: 'booksRoot', booksRoot: nextConfig\.booksRoot \},\s*\{ except: session \? session\.id : null \}\s*\)/,
+    '换根广播要跳过发起窗口（E4）'
+  );
   // 写盘成功之后：非换根变更也广播，带顶层键摘要，并跳过发起窗口（自己已拿到回包，不自回声）
   // 五-L2（CI-4）：bookDisplay 的合并挪进写队列后，摘要改由局部变量 changed 收（补上 bookDisplay 键），
   // 广播行仍是同一形状（reason: config + changed + except 发起窗口）。

@@ -32,7 +32,12 @@
   if (!headingLib || typeof headingLib.anchorRe !== 'function') {
     throw new TypeError('CWCapture：core/heading.js 没有先加载');
   }
-  const { stripBom } = commonLib;
+  const { stripBom, positiveInt } = commonLib;
+  // C3（一轮·低）：positiveInt 收进 core/common.js 唯一实现（原先 capture / capture-queue /
+  // clipboard-watch 三处各写一份逐字相同的）。缺了直接报错，不退回本地副本。
+  if (typeof positiveInt !== 'function') {
+    throw new TypeError('CWCapture：core/common.js 缺少 positiveInt');
+  }
 
   // 章名上限：与 core/chapters.js 同一常量（40）。文件名由 storage 再截一次，章名字段本身不改。
   const MAX_NAME_LENGTH = chaptersLib.MAX_NAME_LENGTH;
@@ -75,12 +80,6 @@
   const countChars = chaptersLib.countChars;
 
   // 选项里的正整数兜底：坏值（0 / 负数 / 非数字）一律回默认，免得调用方手误把阈值设成 0。
-  function positiveInt(value, fallback) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n <= 0) return fallback;
-    return Math.max(1, Math.round(n));
-  }
-
   // 归一化：去 BOM / CRLF→LF / 去 NUL / 去每行行尾空白 / 去掉整段首尾空行。
   // 不 trim 行首：中文段落的全角缩进要保留。
   function normalizeCaptureText(text) {

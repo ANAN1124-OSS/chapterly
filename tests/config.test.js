@@ -1392,6 +1392,35 @@ test('查找书签配置：主进程按「书 + 章」原子增删，只写 conf
   assert.equal('text' in finalRaw.findBookmarks[0], false);
 });
 
+// E2（一轮·低）：删书成功后按 bookId 清掉这本书的全部查找书签 —— 书签全局上限 200 条，
+// 已删的书不能继续占配额、也不能留在查找面板里（点开必然失败）。
+test('E2：resetFindBookmarksForBook 只按 bookId 清这本书的书签，其它书 / 其它字段不动', async () => {
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+  await store.set({ editorFont: 'kai', dailyGoal: 1200 });
+  const seed = async (bookId, chapterId) =>
+    store.upsertFindBookmark({ bookId, chapterId, bookTitle: bookId, query: '查' });
+  await seed('b_book1', 'ch_001');
+  await seed('b_book1', 'ch_002');
+  await seed('b_book2', 'ch_001');
+
+  assert.equal(await store.resetFindBookmarksForBook('b_book1'), 2, '返回实际删掉的条数');
+  const list = await store.listFindBookmarks();
+  assert.deepEqual(list.map((item) => item.bookId), ['b_book2'], '只删这本书的，别的书的书签原样保留');
+  const saved = await store.get();
+  assert.equal(saved.editorFont, 'kai', '其它配置字段不受影响');
+  assert.equal(saved.dailyGoal, 1200);
+
+  // 没有该书书签 / 空 id：返回 0，且不写盘（重新读到的内容与写盘前一致）
+  assert.equal(await store.resetFindBookmarksForBook('b_book2'), 1);
+  assert.equal(await store.resetFindBookmarksForBook('b_book2'), 0, '再清一次没有条目 → 0');
+  assert.equal(await store.resetFindBookmarksForBook(''), 0);
+  assert.equal(await store.resetFindBookmarksForBook(null), 0);
+  assert.deepEqual(await store.listFindBookmarks(), []);
+  // 重启后仍然是清的（写盘成功，不是只在内存里删）
+  assert.deepEqual(await createConfigStore(dir).listFindBookmarks(), []);
+});
+
 // A1（审计 E1 / P0-1）：5 条写通道统一「先构造 next → 写盘成功 → 再 cache = next」。
 // 写盘失败时内存 cache 必须保持旧值、错误必须抛给调用方、磁盘上仍是旧版本；
 // 失败还不能堵死写队列（同一 store 的后续写要照常成功）。

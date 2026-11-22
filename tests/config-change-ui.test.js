@@ -360,19 +360,24 @@ test('R8（N2）：装配接线——index 顺序 / 清单 / renderer 订阅 / p
   const preload = read('preload.js');
   assert.match(preload, /onConfigChanged: \(cb\) => on\('config:changed', cb\)/, 'preload 要暴露 config:changed 订阅');
 
-  // main.js：换书架根要广播（只带 reason / booksRoot），且判据与清锁同一个 booksRootChanged
+  // main.js：换书架根要广播（只带 reason / booksRoot），且判据与清锁同一个 booksRootChanged。
+  // E4（一轮·低）：换根广播与普通配置广播同口径 —— 第三个参数 except 发起窗口（自己已拿到回包，
+  // 旧实现不排除发送方会让本窗口弹「另一个窗口改了书架目录」的归属错误提示）。闸门跟着改成新形状。
   const main = read('main.js');
   const start = main.indexOf("handle('config:set'");
   assert.ok(start > 0, 'main.js 里找不到 config:set');
   const body = main.slice(start, main.indexOf('\n  handle(', start + 1));
   assert.match(
     body,
-    /broadcast\('config:changed', \{ reason: 'booksRoot', booksRoot: nextConfig\.booksRoot \}\)/,
-    '换根要广播 config:changed（payload 只带 reason / booksRoot）'
+    /broadcast\(\s*'config:changed',\s*\{ reason: 'booksRoot', booksRoot: nextConfig\.booksRoot \},\s*\{ except: session \? session\.id : null \}\s*\)/,
+    '换根要广播 config:changed（payload 只带 reason / booksRoot，并跳过发起窗口）'
   );
   const branchAt = body.indexOf('if (configGate.booksRootChanged(previousRoot, nextConfig.booksRoot))');
   const lockAt = body.indexOf('storage.clearBookLocks();', branchAt);
-  const broadcastAt = body.indexOf("broadcast('config:changed'", branchAt);
+  // E4 起换根广播带第三个参数（except），调用会换行：按「broadcast( 空白 'config:changed'」匹配位置
+  const branchBody = body.slice(branchAt);
+  const broadcastOffset = branchBody.search(/broadcast\(\s*'config:changed'/);
+  const broadcastAt = broadcastOffset < 0 ? -1 : branchAt + broadcastOffset;
   const syncAt = body.indexOf('syncClipboardWatch();');
   assert.ok(
     branchAt > -1 && lockAt > branchAt && broadcastAt > lockAt && syncAt > broadcastAt,
