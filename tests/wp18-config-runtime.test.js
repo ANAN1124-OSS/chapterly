@@ -374,7 +374,7 @@ test('R22 A4：saveRecentWindowBounds 只构造一次 nextBounds 并复用到写
     /await configStore\.set\(\{ windowBounds: nextBounds \}, \{ auto: true \}\);\s*return true;/,
     '写盘必须复用同一份 nextBounds'
   );
-  assert.match(body, /catch \{\s*return false;/, '写盘失败仍被吞掉返回 false（自动写不阻塞关窗；注入锚点见 config.test.js 的 EPERM 队列用例）');
+  assert.match(body, /catch \{\s*return false;/, '写盘失败仍被吞掉返回 false（自动写不阻塞关窗；注入锚点见 config-write-safety.test.js 的 EPERM 队列用例）');
   const checkAt = body.indexOf('sameWindowBounds(current.windowBounds, nextBounds)');
   const writeAt = body.indexOf('await configStore.set({ windowBounds: nextBounds }');
   assert.ok(checkAt > 0 && writeAt > checkAt, '先比对磁盘现状、再写盘（B10 口径不变）');

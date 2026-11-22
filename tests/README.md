@@ -31,5 +31,8 @@
   `fs.mkdtemp`（R19 静态闸门会拦）。
 - 多章书夹具用 `tests/storage-fixtures.js` 的 `makeBook(root, title, [{ name, text }…])`（storage 两个测试文件共用）或
   `tests/search-index.test.js` 的 `makeWorld(base)`，不再手抄建目录 / 逐章写正文。
+- 配置层夹具（临时配置目录 / createConfigStore / sanitize / DEFAULTS / MAIN_SOURCE / 夹紧用例表）用
+  `tests/config-fixtures.js`（`config-store` / `config-corruption` / `config-keys` / `config-write-safety` 四个文件共用，
+  T9 起从 `config.test.js` 拆出）；新增配置用例请加进对应域的文件，别再开第五份。
 - fs 猴子补丁（计数、拦截 EACCES）统一走 `tests/storage-fixtures.js` 的 `countReadFileFor` / `withFsPatch` 门，且在
   `finally` 里还原；不要在断言失败路径上真的读入大文件。

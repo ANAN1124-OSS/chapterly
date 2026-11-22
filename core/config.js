@@ -21,7 +21,8 @@ const FONTS = ['serif', 'sans', 'kai', 'custom'];
 const PAPER_THEMES = ['paper', 'cream', 'green', 'night', 'kraft', 'grid'];
 // 超长段落阈值（1.1.0）：单位 = 字（去空白后的字数），默认 500，允许 50–20000。
 // core 不能 require 渲染层的 renderer/editor-logic.js，所以这里留一份同口径常量；
-// tests/config.test.js 用 editor-logic 导出的 LONG_PARAGRAPH_DEFAULT / LONG_PARAGRAPH_LIMITS 钉住两边一致。
+// tests/config-store.test.js（T9 起从 config.test.js 拆出）用 editor-logic 导出的
+// LONG_PARAGRAPH_DEFAULT / LONG_PARAGRAPH_LIMITS 钉住两边一致。
 // 全局默认写 config.longParagraphThreshold，按书覆盖写 config.bookDisplay[本书].longParagraphThreshold。
 const LONG_PARAGRAPH_DEFAULT = 500;
 const LONG_PARAGRAPH_LIMITS = [50, 20000];

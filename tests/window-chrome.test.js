@@ -189,7 +189,7 @@ test('main.js：窗口用 titleBarStyle hidden + titleBarOverlay，底色 / 失�
 });
 
 // V89（1.7.2 D6）：窗口位置记忆多记一个「上次是最大化」。主进程只能在真实 Electron 里跑，
-// 所以这里钉两端的接线（保存时读 isMaximized()、恢复时补 maximize()），真往返在 tests/config.test.js
+// 所以这里钉两端的接线（保存时读 isMaximized()、恢复时补 maximize()），真往返在 tests/config-store.test.js
 // 的「windowBounds 带 maximized：清洗放行布尔、缺省 false、真文件往返不丢」里。
 test('窗口位置记忆带最大化：保存记 isMaximized()、启动恢复补 maximize()，windowBounds 往返带 maximized（V89）', () => {
   // 保存端：windowBounds 里除四个标量外再写 maximized（写进 windowBounds，不新增顶层字段）。
