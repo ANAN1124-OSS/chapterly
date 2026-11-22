@@ -21,6 +21,30 @@ const HARNESS_SOURCE = fs.readFileSync(path.join(ROOT, 'scripts', 'e2e', 'harnes
 const GROUPS_DIR = path.join(ROOT, 'scripts', 'e2e', 'groups');
 const INDEX_SOURCE = fs.readFileSync(path.join(GROUPS_DIR, 'index.js'), 'utf8');
 
+// T7（三审·低）：两个机器抽取器，取代「手抄注释串 / 手抄断言名」的静态锚点。
+//   · plannedGroupOrder：从场景源码抽出**实际会跑哪些组、按什么顺序**。
+//     runGroup([n,...]) 直接展开；runGroup(e2eGroups.idsFrom(n)) 交给注册表展开（语义只一处）。
+//   · checkLiterals：抽 check('…') 的字面断言名。组文件与场景共用同一抽取器 = 机器清单不手抄。
+function plannedGroupOrder(source, registry) {
+  const re = /runGroup\(\s*(?:\[([^\]]*)\]|e2eGroups\.idsFrom\(\s*(\d+)\s*\))\s*\)/g;
+  const plan = [];
+  for (const match of source.matchAll(re)) {
+    if (match[1] !== undefined) {
+      plan.push(...match[1].split(',').map((n) => Number(n.trim())).filter((n) => Number.isFinite(n)));
+    } else {
+      plan.push(...registry.idsFrom(Number(match[2])));
+    }
+  }
+  return plan;
+}
+
+function checkLiterals(source) {
+  const out = [];
+  const re = /\bcheck\(\s*(['"])((?:[^\\]|\\.)*?)\1/g;
+  for (const match of source.matchAll(re)) out.push(match[2]);
+  return out;
+}
+
 // 最小 ctx：只给 harness 真正用到的三个能力，sleep 立即返回（测试不真的等）。
 function makeHarness(overrides = {}) {
   const sleeps = [];
@@ -345,103 +369,38 @@ test('静态闸门：场景里不许再定义第二份 harness 工具，必须�
     /const \{ checks, check, waitFor, logDir, logNamePattern, readLogs, waitForLog, deleteBookWithRetry, fileExists \} =\s*\n\s*harness;/
   );
   assert.match(SCENARIO_SOURCE, /const e2eGroups = require\('\.\/e2e\/groups'\);/);
-  // 组按「在哪一段」两处跑：第 52 / 53 / 54 / 55 / 56 / 57 / 58 / 59 组在原位，60 起的那批在原 60–62 的循环位置
-  assert.match(SCENARIO_SOURCE, /await runGroup\(\[52\]\);/);
-  assert.match(SCENARIO_SOURCE, /await runGroup\(\[53\]\);/);
-  assert.match(SCENARIO_SOURCE, /await runGroup\(\[54\]\);/);
-  assert.match(SCENARIO_SOURCE, /await runGroup\(\[55\]\);/);
-  assert.match(SCENARIO_SOURCE, /await runGroup\(\[56\]\);/);
-  assert.match(SCENARIO_SOURCE, /await runGroup\(\[57\]\);/);
-  assert.match(SCENARIO_SOURCE, /await runGroup\(\[58\]\);/);
-  assert.match(SCENARIO_SOURCE, /await runGroup\(\[59\]\);/);
-  assert.match(SCENARIO_SOURCE, /await runGroup\(e2eGroups\.idsFrom\(60\)\);/);
-  // 顺序：52 → 53 → 54 → 56 → 57 → 58 → 59 → … → 60 起那批 → 多窗口（55）——与拆分前的执行顺序一致
-  const groupContext = SCENARIO_SOURCE.indexOf('const groupContext = () => ({');
-  const run52 = SCENARIO_SOURCE.indexOf('await runGroup([52]);');
-  const group53 = SCENARIO_SOURCE.indexOf('// 53. 正文全文搜索索引');
-  const run53 = SCENARIO_SOURCE.indexOf('await runGroup([53]);');
-  const group54 = SCENARIO_SOURCE.indexOf('// 54. 检查更新');
-  const run54 = SCENARIO_SOURCE.indexOf('await runGroup([54]);');
-  const group56 = SCENARIO_SOURCE.indexOf('// 56. Electron 安全开关与窗口行为');
-  const run56 = SCENARIO_SOURCE.indexOf('await runGroup([56]);');
-  const group57 = SCENARIO_SOURCE.indexOf('// 57. IPC 路径入口审计');
-  const run57 = SCENARIO_SOURCE.indexOf('await runGroup([57]);');
-  const group58 = SCENARIO_SOURCE.indexOf('// 58. 配置来源校验');
-  const run58 = SCENARIO_SOURCE.indexOf('await runGroup([58]);');
-  const group59 = SCENARIO_SOURCE.indexOf('// 59. 导入 / 导出边界');
-  const run59 = SCENARIO_SOURCE.indexOf('await runGroup([59]);');
-  const run60 = SCENARIO_SOURCE.indexOf('await runGroup(e2eGroups.idsFrom(60));');
-  const multiWindow = SCENARIO_SOURCE.indexOf('// 55. 多窗口');
-  const run55 = SCENARIO_SOURCE.indexOf('await runGroup([55]);');
-  assert.ok(groupContext > 0 && groupContext < run52, 'groupContext 要先定义再交出去');
-  assert.ok(run52 > 0 && group53 > run52, '52 组的调用点必须在 53 组之前（顺序不变）');
-  assert.ok(run53 > group53 && group54 > run53, '53 组要在 54 组之前跑（顺序不变）');
-  assert.ok(run54 > group54 && group56 > run54, '54 组要在 56 组之前跑（顺序不变）');
-  assert.ok(run56 > group56 && group57 > run56, '56 组要在 57 组之前跑（顺序不变）');
-  assert.ok(run57 > group57 && run58 > run57, '57 组要在 58 组之前跑（顺序不变）');
-  assert.ok(run58 > group58 && run59 > run58, '58 组要在 59 组之前跑（顺序不变）');
-  assert.ok(run59 > group59 && run60 > run59, '59 组要在 60 起那批之前跑（顺序不变）');
-  assert.ok(run60 > group53 && multiWindow > run60, '60 起那批要在 55 多窗口之前跑完');
-  assert.ok(multiWindow > 0 && run55 > multiWindow, '55 多窗口组的调用点要在它自己的段注释之后');
-  assert.ok(run55 > run60, '55 多窗口仍在 60 起那批之后跑（拆分不改变执行顺序）');
+  // T7（三审·低）：分组顺序不再用「源码注释串 / 调用点下标」钉——含日期与提案号的注释一改就假红。
+  // 机器事实源 = scripts/e2e/groups/index.js 的注册顺序：抽出场景里所有 runGroup(...) 调用点，
+  // 按注册表的 idsFrom 展开成**实际执行计划**，再与注册表推出的期望顺序逐项比。
+  const registry = require('../scripts/e2e/groups');
+  const plan = plannedGroupOrder(SCENARIO_SOURCE, registry);
+  const ids = registry.groups.map((group) => group.id);
+  // 唯一有意例外：第 55 组（多窗口）最后跑——它要开 / 关额外窗口，跑在中间会破坏后面各组
+  // 「只有一个窗口」的前提（历史顺序，理由见 e2e-scenario.js 里 55 组的段注释）。
+  const expected = [...ids.filter((id) => id !== 55), 55];
+  assert.deepEqual(plan, expected, '场景的 runGroup 计划必须与组索引一一对上（顺序 = 注册顺序，55 多窗口最后）');
+  assert.equal(new Set(plan).size, plan.length, '同一组不许在场景里跑两次');
 });
 
-test('静态闸门：搬走的组不许在场景里留副本（文案只在 groups 下出现一次）', () => {
-  const movedBeyond = [
-    '// 52. 崩溃与错误日志（提案 7.4）',
-    '// 53. 正文全文搜索索引（提案 7.3）：书架搜索升级成能搜正文。',
-    '// 54. 检查更新（提案 7.1）：手动检查 GitHub Release',
-    '// 56. Electron 安全开关与窗口行为（v0.9 C-1）：',
-    '// 57. IPC 路径入口审计（v0.9 C-2）：',
-    '// 58. 配置来源校验（v0.9 C-2b，安全审计 C1 的延伸）：',
-    '// 59. 导入 / 导出边界（v0.9 C-3，安全审计 C6）：',
-    '// 55. 多窗口（提案 7.2，作者 2026-11-01 03:45 拍板）：',
-    '// 60. 日志与错误脱敏',
-    '// 61. IPC 参数边界与 DoS',
-    '// 62. 公共小工具收编'
-  ];
-  for (const marker of movedBeyond) {
-    assert.equal(SCENARIO_SOURCE.includes(marker), false, `场景里还留着 ${marker}`);
-  }
+test('静态闸门：搬走的断言只留在 groups 下（机器清单：场景零 check、组文件各 ≥1 条）', () => {
+  // T7（三审·低）：原来手抄了 11 个含日期 / 提案号的注释串 + 27 条断言名，注释一改写就假红。
+  // 现在两个方向都从源码机器抽：
+  //   · 场景只负责派发 —— check('…') 字面量出现即视为「断言回流」；
+  //   · 组文件里的断言名不许在场景里留副本，且每个组文件至少还有一条 check（防整组被搬空）。
+  const scenarioChecks = checkLiterals(SCENARIO_SOURCE);
+  assert.deepEqual(scenarioChecks, [], `场景里不该再有 check(...) 断言（回流了：${scenarioChecks.slice(0, 3).join(' / ')}）`);
   const groupFiles = fs.readdirSync(GROUPS_DIR).filter((name) => name.endsWith('.js') && name !== 'index.js');
   assert.ok(groupFiles.length >= 20, '至少应有 52–55 / 56–59 / 60–71 二十个组文件');
-  const joined = groupFiles.map((name) => fs.readFileSync(path.join(GROUPS_DIR, name), 'utf8')).join('\n');
-  for (const marker of movedBeyond) {
-    assert.equal(joined.includes(marker), true, `groups 下找不到 ${marker}`);
+  const groupChecks = new Set();
+  for (const name of groupFiles) {
+    const source = fs.readFileSync(path.join(GROUPS_DIR, name), 'utf8');
+    assert.ok((source.match(/\bcheck\(/g) || []).length >= 1, `${name} 里一条 check(...) 都没有（组被搬空了？）`);
+    for (const item of checkLiterals(source)) groupChecks.add(item);
   }
-  // 断言名（check 的字符串）同样只该留在组文件里，场景里出现就说明留了副本
-  for (const needle of [
-    '诊断日志：日志目录是 userData\\\\logs，文件按天命名（chapter-writer-YYYY-MM-DD.log）',
-    '诊断日志：保存失败记一条（错误码 + 章节文件路径 + 频道），绝不含正文',
-    '错误脱敏：演练书已移入书架 _trash',
-    'IPC 边界：演练书已移入书架 _trash',
-    '公共小工具：渲染层真的加载了 core/common.js',
-    '正文搜索：索引里只有哈希位图和文件指纹，不存正文（正文句子不在索引文件里）',
-    '正文搜索：搜索过程只读（config.json / 书目.json / 章节 txt 一个字节都没变）',
-    '正文搜索：结果分页显示（先 8 条，「显示更多」展开剩下的）',
-    '检查更新：发现新版本时显示「新版本 + 当前版本」，并出现「打开下载页」',
-    '检查更新：配置不新增任何更新字段（检查只存在内存里，不需要作者配置）',
-    '标题统一：打开书 / 切章只改书目的 lastOpenChapterId——书目录文件列表与四章 txt 逐字节不变',
-    '安全开关：真实窗口的 webPreferences 与 core/security-policy 逐项一致',
-    "安全开关：CSP 再收紧（object-src / base-uri / frame-src 一律 'none'）",
-    '安全开关：再启动一个实例会立刻退出（单实例锁生效，没有真的再开一个窗口）',
-    '路径审计：读章节不能带 .. 跳到书外（BAD_PATH）',
-    '路径审计：替换备份目录名只能是带前缀的基名（BAD_BACKUP）',
-    '路径审计：被拒的调用没有改书目 / 章节文件（逐字节一致）',
-    '配置来源：伪造的书架目录没有被创建（主进程没往那儿 mkdir / 写文件）',
-    '配置来源：别的窗口没选过 → A 窗口选过的路径在 B 窗口不生效（按窗口记账）',
-    '配置来源：演练结束后敏感词表与每日目标恢复原样（没有改动前面的测试状态）',
-    '导入导出边界：EPUB zip 条目名全是白名单形状，不含书名 / 卷名 / 章名与路径片段',
-    '导入导出边界：DOCX zip 条目名只有固定七部位（不含书名 / 章名）',
-    '导入边界：被拒的文件没有建书、没有留下临时导入目录（正常书建了且只有一本）',
-    '多窗口：开始时只有一个窗口（前面 646 项仍是单窗口语义）',
-    '多窗口：书卡右键菜单有「在新窗口打开」',
-    '多窗口：被拒绝的删改没有动书 / 章 / 书目 / 回收目录',
-    '多窗口：最后一个窗口关闭后应用才退出（window-all-closed）'
-  ]) {
-    assert.equal(SCENARIO_SOURCE.includes(needle), false, `场景里还留着断言「${needle}」`);
-    assert.equal(joined.includes(needle), true, `组文件里找不到断言「${needle}」`);
-  }
+  // 兜底：断言名合计低于 1000 说明有一批组被删空（2026-11-22 实测 1738 条字面断言名）。
+  assert.ok(groupChecks.size >= 1000, `groups 下的断言名合计 ${groupChecks.size} 条，低于 1000 说明有一批被删了`);
+  const backflow = [...groupChecks].filter((name) => SCENARIO_SOURCE.includes(name));
+  assert.deepEqual(backflow, [], `场景里还留着这些断言：${backflow.join(' / ')}`);
 });
 
 test('静态闸门：组索引能单独 require（不依赖 Electron），组号唯一有序，runGroups 按参数顺序跑', async () => {

@@ -416,11 +416,21 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // WP17 A3（四刀：保存链 → 书架视图 → 章节目录 → 编辑域剩余）：6500 → 4600。
   // 四域函数体全部搬出后 renderer.js = 4441 行（≤ 手册 §6.1-3 的 4,500 判据）；
   // 预算按「实际值 + 少量余量」收紧，防以后再靠新增行回流（新代码请搬进独立模块）。
-  const RENDERER_LINE_BUDGET = 4600;
+  // T7（三审·低，2026-11-22）：预算改成「实测行数 + 明确余量」两段式，不再用一个没有出处的整数卡：
+  //   · 实测值取第 7 轮收尾（3551625 把一处新逻辑与两处可合并旧注释相抵后回到 4598）；
+  //   · 余量只留 2 行，够「只能在编排器里改一行」的接线（state 字段声明 / 装配多一行）；
+  //   · 余量本身有上限断言（≤ 5）：要加业务代码请搬进独立模块，调大余量不是解法。
+  const RENDERER_LINE_MEASURED = 4598; // 2026-11-22 实测（第 7 轮 E5 收尾）
+  const RENDERER_LINE_MARGIN = 2;
+  const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
+  assert.ok(
+    RENDERER_LINE_MARGIN >= 0 && RENDERER_LINE_MARGIN <= 5,
+    '行数余量只留给「必须留在编排器的一行接线」（≤5）；要加代码请搬进独立模块'
+  );
   const lines = rendererSrc.split(/\r?\n/).length;
   assert.ok(
     lines <= RENDERER_LINE_BUDGET,
-    `renderer.js 行数涨了：${lines} > ${RENDERER_LINE_BUDGET}（新代码请搬进独立模块，别回流 renderer.js）`
+    `renderer.js 行数涨了：${lines} > ${RENDERER_LINE_BUDGET}（实测 ${RENDERER_LINE_MEASURED} + 余量 ${RENDERER_LINE_MARGIN}；新代码请搬进独立模块，别回流 renderer.js）`
   );
 });
 

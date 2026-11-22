@@ -12,6 +12,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+// T7（三审·低）：源码切片改走公共探针（按大括号配对，不依赖「收尾那行长什么样」）。
+const { extractFunctionSource, extractBlock } = require('./source-probe');
 
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
@@ -23,29 +25,19 @@ const RENDERER = read('renderer/renderer.js');
 const SAVE_CHAIN = read('renderer/save-chain-ui.js');
 const PRELOAD = read('preload.js');
 
-function between(source, from, to) {
-  const start = source.indexOf(from);
-  assert.ok(start >= 0, `找不到：${from}`);
-  const end = source.indexOf(to, start + 1);
-  assert.ok(end > start, `找不到结尾：${to}`);
-  return source.slice(start, end);
-}
-
 test('静态闸门：主进程用 session.dirty + 最近保存回执交叉判定关窗（E5/S5）', () => {
-  const sessionSrc = between(MAIN, 'function createSession(browserWin) {', '\n}');
+  const sessionSrc = extractFunctionSource(MAIN, 'createSession');
   assert.match(sessionSrc, /dirtyAt: 0/, 'session 要记「这次变脏」的时间');
   assert.match(sessionSrc, /lastSaveAt: 0/, 'session 要记最近一次保存成功回执');
   // 保存成功回执：chapter:save 成功尾部写 lastSaveAt
-  const saveAt = SAVE.indexOf("handleBook('chapter:save'");
-  assert.ok(saveAt > 0);
-  const saveBody = SAVE.slice(saveAt, SAVE.indexOf('\n  }, { mutation: MUTATION.SAVE });', saveAt));
+  const saveBody = extractBlock(SAVE, "handleBook('chapter:save'");
   assert.match(saveBody, /session\.lastSaveAt = Date\.now\(\);/, '章节保存成功要留回执时间');
   // app:dirty：变脏时记时间，干净时清零
-  const dirtySrc = between(MAIN, "ipcMain.on('app:dirty'", '\n  });');
+  const dirtySrc = extractBlock(MAIN, "ipcMain.on('app:dirty'");
   assert.match(dirtySrc, /session\.dirtyAt = Date\.now\(\)/, '变脏要记时间');
   assert.match(dirtySrc, /if \(!next\) session\.dirtyAt = 0;/, '回到干净要清零');
   // close-ready：allowed 之外还要看 dirty / 回执
-  const closeSrc = between(MAIN, "ipcMain.on('app:close-ready'", '\n  });');
+  const closeSrc = extractBlock(MAIN, "ipcMain.on('app:close-ready'");
   // CGRD-03：主进程这一处只调 close-guard.js 的唯一判据，不再内联复算比较表达式。
   assert.match(closeSrc, /const decision = closeGuard\.closeReleaseDecision\(\{/, '放行判定必须走唯一判据');
   assert.match(closeSrc, /const okToClose = decision\.okToClose;/, 'okToClose 从判据结果取');
@@ -62,30 +54,29 @@ test('静态闸门：主进程用 session.dirty + 最近保存回执交叉判定
 });
 
 test('静态闸门 + 时序：同毫秒的保存回执不放行关窗（N3：宁可多拦一次）', () => {
-  // CGRD-03：比较表达式只有 core/close-guard.js 一份；main.js 只调判据。
-  const closeSrc = between(MAIN, "ipcMain.on('app:close-ready'", '\n  });');
-  const m = read('core/close-guard.js').match(/const savedAfterDirty = lastSaveAt > 0 && lastSaveAt (>=|>) dirtyAt;/);
-  assert.ok(m, '找不到关窗交叉判定的比较表达式（close-guard.js）');
+  // T7：不再从源码抓比较运算符复算（那是实现形状）。语义直接用纯函数算三种时序——
+  // 「必须严格晚于」这条纪律由这里的 > 边界钉住，规则本体仍然只有 core/close-guard.js 一份。
+  const closeSrc = extractBlock(MAIN, "ipcMain.on('app:close-ready'");
   assert.match(closeSrc, /closeGuard\.closeReleaseDecision\(/, 'main.js 必须走同一判据');
-  assert.equal(m[1], '>', '必须严格晚于：同毫秒时宁可多拦一次，不能按「可能丢几毫秒编辑」放行');
-  // 用源码里的运算符复算三种时序（不是把语义再抄一遍）：同毫秒 → 拦；确实晚于 → 放行；无回执 → 拦。
-  const decide = (lastSaveAt, dirtyAt) => lastSaveAt > 0 && (m[1] === '>' ? lastSaveAt > dirtyAt : lastSaveAt >= dirtyAt);
-  assert.equal(decide(1000, 1000), false, '同一毫秒的保存回执与再次变脏 → 不放行');
-  assert.equal(decide(1001, 1000), true, '保存回执确实晚于变脏 → 放行');
-  assert.equal(decide(0, 0), false, '没有保存回执 → 不放行');
+  const decide = closeGuardLib.closeReleaseDecision;
+  assert.equal(decide({ allowed: true, dirty: true, lastSaveAt: 1000, dirtyAt: 1000 }).okToClose, false, '同一毫秒的保存回执与再次变脏 → 不放行（宁可多拦一次）');
+  assert.equal(decide({ allowed: true, dirty: true, lastSaveAt: 1001, dirtyAt: 1000 }).okToClose, true, '保存回执确实晚于变脏 → 放行');
+  assert.equal(decide({ allowed: true, dirty: true, lastSaveAt: 0, dirtyAt: 0 }).okToClose, false, '没有保存回执 → 不放行');
 });
 
 test('静态闸门：渲染层「不保存退出」先如实清掉脏状态，再放行关窗（E5/S5）', () => {
-  const helperSrc = between(SAVE_CHAIN, 'function discardUnsavedForClose() {', '\n  }');
+  // T7：三条分支的行为由 wp17-a3-save-chain.test.js 的 B6（模态框先拒 / 干净放行 / 放弃退出清脏 /
+  // 保存失败后放弃 / 返回保存保持脏）与 E2E 第 10 组（取消不关窗）覆盖，这里只留机器清单：
+  // 清脏原语只许一份、关窗流程的两条放弃分支都确实调它。
+  assert.equal((SAVE_CHAIN.match(/function discardUnsavedForClose\(/g) || []).length, 1, '清脏原语只许定义一次');
+  const helperSrc = extractFunctionSource(SAVE_CHAIN, 'discardUnsavedForClose');
   assert.match(helperSrc, /state\.dirty = false;/, '主动丢弃要清脏状态');
   assert.match(helperSrc, /updateStatus\(\);/, '清完要上报主进程（app:dirty）');
-  const discardSrc = between(SAVE_CHAIN, "if (action === 'discard') {", 'return;');
-  assert.match(discardSrc, /discardUnsavedForClose\(\);[\s\S]{0,80}api\.closeReady\(true\);/, 'discard 分支要先清脏再放行');
-  // 保存失败后选「放弃修改退出」这条也要清
-  const failedDiscardSrc = between(SAVE_CHAIN, "if (again.action !== 'discard') {", 'api.closeReady(true);');
-  assert.match(failedDiscardSrc, /discardUnsavedForClose\(\);/, '保存失败后放弃退出也要先清脏');
-  // 取消分支仍然明确拒绝关窗
-  assert.match(SAVE_CHAIN, /if \(action === 'cancel'\) \{[\s\S]{0,80}api\.closeReady\(false\);/, '取消仍要拒绝关窗');
+  const closeFlow = extractFunctionSource(SAVE_CHAIN, 'handleCloseRequest');
+  assert.ok(
+    (closeFlow.match(/discardUnsavedForClose\(\);/g) || []).length >= 2,
+    '关窗流程的放弃分支都要先清脏再放行（现 3 处调用点）'
+  );
 });
 
 // ---------- A1（审计 E-03）：关窗看门狗阈值与强制退出顺序 ----------
@@ -148,23 +139,19 @@ test('A1 静态闸门：主进程改走 8 秒 + plan / 执行器；提示文案�
   assert.deepEqual(prompt.buttons, ['继续等待', '强制退出']);
   assert.equal(prompt.defaultId, 0, '默认停在「继续等待」');
   assert.equal(prompt.cancelId, 0, 'Esc / 关弹窗也停在「继续等待」');
-  const closeFlow = between(MAIN, 'function setupCloseFlow(session) {', '\n}\n');
-  assert.equal(closeFlow.includes('}, 3000);'), false, '3 秒看门狗必须已经改掉');
-  assert.equal(closeFlow.includes('3 秒内完成'), false, '旧文案也要一起换掉');
-  assert.match(closeFlow, /closeGuard\.CLOSE_TIMEOUT_MS/, '超时时刻由 core/close-guard.js 给');
+  const closeFlow = extractFunctionSource(MAIN, 'setupCloseFlow');
+  // T7：不再用「旧字面量不存在」当通过条件（那是拿缺席当证据），改成正面钉「看门狗延时就是那个常量」。
+  assert.match(closeFlow, /setTimeout\([\s\S]*, closeGuard\.CLOSE_TIMEOUT_MS\);/, '看门狗延时由 core/close-guard.js 给（不许再写字面量）');
   assert.match(closeFlow, /closeGuard\.timeoutPrompt\(\)/, '提示文案由纯函数给（单测能钉住）');
-  const forceAt = closeFlow.indexOf('closeGuard.runForceCloseSteps(');
-  assert.ok(forceAt > 0, '强制退出必须走执行器（顺序可测）');
-  // WP18（台账 #3）：send 分支里多了「字面量 / close-guard 常量互钉」的注释与漂移守卫，
-// 片段窗口相应放宽（只截取源码片段，断言本身不变）。
-  const forceSeg = closeFlow.slice(forceAt, forceAt + 1600);
+  assert.ok(closeFlow.includes('closeGuard.runForceCloseSteps('), '强制退出必须走执行器（顺序可测）');
   // 台账 #3（WP18）：发送改成字面量（接线清单才看得见 app:force-close 有发送方）；
   // 动态 plan.channel 必须下线，否则静态清单会把它误判成死监听（见 tests/wp18-shelf-ipc.test.js › R14）。
-  assert.match(forceSeg, /send:[\s\S]*webContents\.send\('app:force-close'\)/, '先 send app:force-close（字面量）');
-  assert.equal(/webContents\.send\(plan\.channel\)/.test(forceSeg), false, '不许再用动态 plan.channel 发送');
-  assert.match(forceSeg, /closeGuard\.FORCE_CLOSE_CHANNEL !== 'app:force-close'/, '字面量要与 close-guard 常量互钉');
-  assert.match(forceSeg, /destroy:[\s\S]*destroy\(\)/, '最后才 destroy');
-  assert.equal(forceSeg.indexOf('webContents.send') < forceSeg.indexOf('destroy:'), true, '源码顺序也必须是先通知');
+  // 「先 send → 等 500 ms → 再 destroy」的顺序由 close-guard.js 的 forceClosePlan / runForceCloseSteps
+  // 行为用例钉住，这里只留「三个步骤都在」。
+  assert.match(closeFlow, /send:[\s\S]*webContents\.send\('app:force-close'\)/, '步骤一：先 send app:force-close（字面量）');
+  assert.equal(/webContents\.send\(plan\.channel\)/.test(closeFlow), false, '不许再用动态 plan.channel 发送');
+  assert.match(closeFlow, /closeGuard\.FORCE_CLOSE_CHANNEL !== 'app:force-close'/, '字面量要与 close-guard 常量互钉');
+  assert.match(closeFlow, /destroy:[\s\S]*destroy\(\)/, '步骤三：最后才 destroy');
 });
 
 // ---------- P-01（1.6.1 R5）：app:force-close 是「谁发 / 谁收」两头都要钉的频道 ----------
@@ -248,7 +235,7 @@ test('P-01：main 实发频道 ⊆ preload 订阅频道（force-close 字面量�
 
 test('P-01：renderer 收到 app:force-close 后先 saveCurrent 再 closeReady 交回主进程', () => {
   assert.ok(RENDERER.includes('api.onForceClose('), 'renderer 必须订阅 app:force-close');
-  const seg = between(RENDERER, 'api.onForceClose(', '\n    });');
+  const seg = extractBlock(RENDERER, 'api.onForceClose(');
   const saveAt = seg.indexOf('saveCurrent(');
   const readyAt = seg.indexOf('api.closeReady(');
   assert.ok(saveAt > 0, '收到强制退出通知要先调现成的 saveCurrent()');
@@ -302,33 +289,37 @@ test('C6 / WP-09：closeReleaseDecision 用同一判据算关窗放行（allowed
 });
 
 test('C6 / WP-09：主进程在写窗口位置之后、forceClose 之前用同一判据复查（静态闸门）', () => {
-  const closeSrc = between(MAIN, "ipcMain.on('app:close-ready'", '\n  });');
+  const closeSrc = extractBlock(MAIN, "ipcMain.on('app:close-ready'");
   // 旧M3（一轮·中）：写窗口位置不再是裸 await —— 配置写队列挂起时它可能永远不回来，而 8 秒看门狗
   // 在回执进门时已经解除。现在包在 closeGuard.withDeadline（2.5 秒）里：到点照常关窗。
-  const awaitAt = closeSrc.indexOf('await closeGuard.withDeadline(() => saveRecentWindowBounds(session)');
-  assert.ok(awaitAt > 0, '关窗前仍要先记窗口位置（带截止时间，不许无限等配置写队列）');
+  assert.match(
+    closeSrc,
+    /withDeadline\(\s*\(\)\s*=>\s*saveRecentWindowBounds\(session\)/,
+    '关窗前仍要先记窗口位置（带截止时间，不许无限等配置写队列）'
+  );
+  assert.match(closeSrc, /closeGuard\.BOUNDS_WRITE_TIMEOUT_MS/, '截止时间由 close-guard 常量给');
   assert.match(closeSrc, /bounds\.timedOut/, '超时要有明确分支（不许静默当成写成功）');
   assert.match(closeSrc, /CLOSE_BOUNDS_TIMEOUT/, '超时要留一条日志，方便排查「窗口位置没记住」');
-  const recheckAt = closeSrc.indexOf('closeGuard.closeReleaseDecision(', awaitAt);
-  assert.ok(recheckAt > awaitAt, '复查必须在写窗口位置之后（之前算等于没修）');
-  const forceAt = closeSrc.indexOf('session.forceClose = true;');
-  assert.ok(forceAt > recheckAt, '复查必须在 forceClose = true 之前');
-  const seg = closeSrc.slice(recheckAt, forceAt);
-  assert.match(seg, /if \(!recheck\.okToClose\)/, '复查不通过要拦下');
-  assert.match(seg, /code: 'CLOSE_DIRTY'/, '拦下要留一条日志，方便排查「关不掉窗」');
-  assert.match(seg, /return;/, '拦下就不许继续 forceClose / close');
-  assert.match(seg, /dirty: session\.dirty/, '复查读的是主进程自己的脏状态');
-  assert.match(seg, /lastSaveAt: session\.lastSaveAt/);
-  assert.match(seg, /dirtyAt: session\.dirtyAt/);
-  // E2E 记录的是「主进程最终放行了吗」：复查翻盘也要如实回写
-  assert.match(seg, /session\.e2eCloseReady = false;/);
-  assert.match(seg, /e2eLastCloseReady = false;/);
-  // 判据本体只许有一份（core/close-guard.js），main.js 不许再手搓一套比较
+  // T7：不再用源码下标钉「复查在写盘之后、forceClose 之前」——那段时序由 E2E 第 10 组真跑
+  // （拖慢写盘、期间输入 → 本次关窗作废、窗口与刚敲的字都还在）覆盖。这里只留机器清单：
+  // 同一判据算两次、复查读主进程自己的脏状态、拦下要有日志并 return、E2E 回写如实。
+  assert.equal(
+    (closeSrc.match(/closeGuard\.closeReleaseDecision\(/g) || []).length,
+    2,
+    '回执判定 + 写盘后复查各一次（判据本体只在 core/close-guard.js）'
+  );
+  assert.match(closeSrc, /dirty: session\.dirty/, '复查读的是主进程自己的脏状态');
+  assert.match(closeSrc, /lastSaveAt: session\.lastSaveAt/);
+  assert.match(closeSrc, /dirtyAt: session\.dirtyAt/);
+  assert.match(closeSrc, /if \(!recheck\.okToClose\)/, '复查不通过要拦下');
+  assert.match(closeSrc, /code: 'CLOSE_DIRTY'/, '拦下要留一条日志，方便排查「关不掉窗」');
+  assert.match(closeSrc, /session\.e2eCloseReady = false;/, '复查翻盘要如实回写 E2E 记录');
+  assert.match(closeSrc, /e2eLastCloseReady = false;/);
   assert.match(read('core/close-guard.js'), /function closeReleaseDecision\(/, '判据本体在 close-guard.js');
 });
 
 test('C6 / WP-09：自检注入的写盘延迟只认 --e2e，场景把开关交给组 10', () => {
-  const saveSrc = between(MAIN, 'async function saveRecentWindowBounds(session) {', '\n}');
+  const saveSrc = extractFunctionSource(MAIN, 'saveRecentWindowBounds');
   assert.match(
     saveSrc,
     /if \(isE2E && e2eCloseBoundsDelayMs > 0\) \{/,
@@ -339,7 +330,7 @@ test('C6 / WP-09：自检注入的写盘延迟只认 --e2e，场景把开关交�
     /await new Promise\(\(resolve\) => setTimeout\(resolve, e2eCloseBoundsDelayMs\)\)/,
     '延迟必须真的拖慢这次写盘（否则复现不了回执后的窗口）'
   );
-  const hostSrc = between(MAIN, 'function automationHost() {', '\n}\n');
+  const hostSrc = extractFunctionSource(MAIN, 'automationHost');
   assert.match(hostSrc, /setCloseBoundsDelay: \(ms\) =>/, '自检宿主要暴露开关');
   assert.match(
     read('scripts/screenshot-driver.js'),

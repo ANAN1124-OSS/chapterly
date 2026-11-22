@@ -11,6 +11,12 @@
 // 为什么这样测：renderer.js 是浏览器 IIFE，Node 里不能整体 require；loadChapterAt 是函数声明、
 // 被切章 / 书架 / 测试钩子多处调用，搬不出去。这里按大括号配对从源码精确切出 loadChapterAt 真身，
 // 注入假 host 执行——阈值常量本身也从 renderer.js 源码读，测试不另抄一份数字。
+//
+// T7（三审·低）：原来那条静态闸门还钉了 toast 文案逐字 + 「提交 / 软提示 / return」三处源码下标。
+// 这三件事其实都是行为：文案由 R1 的 toast[0] 断言钉住、边界（500000 本身不提示）由 R2、
+// 失败 / stale / 无书不提示由 R3，而「软提示块不写 state / 不动遮罩与只读态」由 R1 的
+// mask / editable 计数钉住。所以静态那条只留**机器清单**：阈值常量只许有一份、住在保存链模块、
+// 不许回流编排器，载章成功路径确实按它判定。换行 / 注释 / 相邻代码顺序都不再影响它。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -18,6 +24,7 @@ const path = require('node:path');
 
 const chaptersLib = require('../core/chapters');
 const captureLib = require('../core/capture');
+const { extractFunctionSource } = require('./source-probe');
 
 const ROOT = path.join(__dirname, '..');
 const RENDERER_SRC = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
@@ -26,62 +33,7 @@ const SAVE_CHAIN_SRC = fs.readFileSync(path.join(ROOT, 'renderer', 'save-chain-u
 const CAPTURE_UI_SRC = fs.readFileSync(path.join(ROOT, 'renderer', 'capture-ui.js'), 'utf8');
 const CAPTURE_SRC = fs.readFileSync(path.join(ROOT, 'core', 'capture.js'), 'utf8');
 
-// 从源码切一个顶层「  [async] function 名字( ... ) { ... }」的真身：先按括号配对跳过形参
-// （loadChapterAt 的形参简单，但同一把尺子继续用），再从函数体起始的大括号按配对切到收尾。
-function extractFunction(source, name) {
-  const marker = new RegExp(`(?:^|\\n)  (async )?function ${name}\\(`);
-  const match = marker.exec(source);
-  assert.ok(match, `renderer.js 里找不到 function ${name}(`);
-  const start = match.index + (match[0].startsWith('\n') ? 1 : 0);
-  const parenStart = source.indexOf('(', start);
-  assert.ok(parenStart > start, `function ${name} 没有形参表`);
-  let parenDepth = 0;
-  let cursor = parenStart;
-  for (; cursor < source.length; cursor += 1) {
-    if (source[cursor] === '(') parenDepth += 1;
-    if (source[cursor] === ')') {
-      parenDepth -= 1;
-      if (parenDepth === 0) break;
-    }
-  }
-  const bodyStart = source.indexOf('{', cursor);
-  assert.ok(bodyStart > cursor, `function ${name} 没有函数体`);
-  let depth = 0;
-  let mode = 'code';
-  for (let i = bodyStart; i < source.length; i += 1) {
-    const ch = source[i];
-    if (mode === 'code') {
-      if (ch === '/' && source[i + 1] === '/') { mode = 'line'; i += 1; continue; }
-      if (ch === '/' && source[i + 1] === '*') { mode = 'block'; i += 1; continue; }
-      if (ch === "'") { mode = 'single'; continue; }
-      if (ch === '"') { mode = 'double'; continue; }
-      if (ch === '`') { mode = 'template'; continue; }
-      if (ch === '{') { depth += 1; continue; }
-      if (ch === '}') {
-        depth -= 1;
-        if (depth === 0) return source.slice(start, i + 1);
-      }
-      continue;
-    }
-    if (mode === 'line') { if (ch === '\n') mode = 'code'; continue; }
-    if (mode === 'block') { if (ch === '*' && source[i + 1] === '/') { mode = 'code'; i += 1; } continue; }
-    if (mode === 'single') {
-      if (ch === '\\') { i += 1; continue; }
-      if (ch === "'") mode = 'code';
-      continue;
-    }
-    if (mode === 'double') {
-      if (ch === '\\') { i += 1; continue; }
-      if (ch === '"') mode = 'code';
-      continue;
-    }
-    if (ch === '\\') { i += 1; continue; }
-    if (ch === '`') mode = 'code';
-  }
-  throw new Error(`function ${name} 的大括号没有配对`);
-}
-
-const loadChapterAtSrc = extractFunction(SAVE_CHAIN_SRC, 'loadChapterAt');
+const loadChapterAtSrc = extractFunctionSource(SAVE_CHAIN_SRC, 'loadChapterAt');
 // 阈值只许有一份：渲染层模块级常量。测试从源码读，不硬编码第二份数字。
 const softCharsMatch = /const LARGE_CHAPTER_SOFT_CHARS = (\d+);/.exec(SAVE_CHAIN_SRC);
 const sourceSoftChars = softCharsMatch ? Number(softCharsMatch[1]) : undefined;
@@ -239,6 +191,9 @@ test('R1（N3·红→绿）：载入 chars=600000 的章 → 恰好一条 info �
   assert.equal(rt.state.loading, false, '载章锁必须落回');
   assert.equal(rt.calls.loadingIdle, 1);
   assert.deepEqual(rt.calls.mask[rt.calls.mask.length - 1], [false, undefined], '成功载入要解除遮罩');
+  // T7：软提示块不写 state / 不动遮罩 / 不动只读态，用计数钉住（不抓源码块形状）。
+  assert.equal(rt.calls.mask.length, 1, '软提示不得额外动遮罩（成功路径只解除一次）');
+  assert.equal(rt.calls.editable, 2, '软提示不得额外动只读态（进 / 出各一次）');
   assert.equal(rt.calls.loadCalls.length, 1);
   // 同一章再载一次：每次成功载入各一条，同一次载入内不重复。
   const second = await rt.loadChapterAt(0);
@@ -371,24 +326,23 @@ test('R4（保护·已覆盖证据）：捕获 raw 超限提示沿用 capture �
   // 这一条在修复前就该是绿的——证明 N3 的 raw 半早已覆盖，本轮不需要也不许改 capture。
 });
 
-test('静态闸门：软提示只一条、严格大于阈值、位置在成功提交之后且在 return 之前、不写 state', () => {
-  assert.match(SAVE_CHAIN_SRC, /\n    const LARGE_CHAPTER_SOFT_CHARS = 500000;/, 'save-chain-ui.js 需要模块级 LARGE_CHAPTER_SOFT_CHARS = 500000');
-  assert.equal((SAVE_CHAIN_SRC.match(/const LARGE_CHAPTER_SOFT_CHARS/g) || []).length, 1, '阈值只许定义一份');
+test('静态闸门：大章阈值只有一份实现（T7：文案 / 边界 / 时序由行为用例钉住）', () => {
+  // 机器清单：阈值常量在 renderer/ 下只能住一个文件、只能出现一份声明；编排器里不许回流。
+  const rendererDir = path.join(ROOT, 'renderer');
+  const owners = fs.readdirSync(rendererDir)
+    .filter((name) => name.endsWith('.js'))
+    .filter((name) => fs.readFileSync(path.join(rendererDir, name), 'utf8').includes('LARGE_CHAPTER_SOFT_CHARS'));
+  assert.deepEqual(owners.sort(), ['save-chain-ui.js'], '阈值只许有一份，且住在保存链模块（不许回流 renderer.js）');
+  assert.equal(
+    (SAVE_CHAIN_SRC.match(/const LARGE_CHAPTER_SOFT_CHARS\s*=/g) || []).length,
+    1,
+    '阈值只许定义一份'
+  );
   assert.equal(/LARGE_CHAPTER_SOFT_CHARS/.test(RENDERER_SRC), false, '编排器不许再留第二份阈值');
-  assert.match(SAVE_CHAIN_SRC, /载入大章软告知阈值[\s\S]{0,600}30 万[\s\S]{0,400}raw/, '常量注释要写明区别于标记层 30 万 / 捕获 raw 3M');
-  assert.equal((loadChapterAtSrc.match(/本章超过 50 万字/g) || []).length, 1, '一次载入路径只许一条大章提示');
-  assert.match(loadChapterAtSrc, /if \(loadedChars > LARGE_CHAPTER_SOFT_CHARS\)/, '阈值必须严格大于（500000 本身不提示）');
-  assert.match(loadChapterAtSrc, /toast\('本章超过 50 万字，编辑\/查找可能较慢，可考虑拆分章节', 'info'\)/, '非阻塞 info 软提示');
-  const commitAt = loadChapterAtSrc.indexOf('editorEl.value = data.text;');
-  const hintAt = loadChapterAtSrc.indexOf('LARGE_CHAPTER_SOFT_CHARS');
-  const returnAt = loadChapterAtSrc.indexOf('return { ok: true, data };');
-  assert.ok(commitAt >= 0, '成功路径必须仍提交编辑区');
-  assert.ok(hintAt > commitAt, '软提示必须在成功提交之后才判定（失败 / stale 提前返回不提示）');
-  assert.ok(returnAt > hintAt, '软提示必须在成功 return 之前');
-  // 软提示块不写 state / dirty / baseText / 遮罩（只读判定 + 一条 toast）。
-  const block = loadChapterAtSrc.slice(loadChapterAtSrc.lastIndexOf('// N3', hintAt), returnAt);
-  assert.ok(block.length > 0, '找不到软提示代码块');
-  assert.doesNotMatch(block, /state\.[A-Za-z0-9_]+\s*=(?!=)/, '软提示块不许写 state');
-  assert.doesNotMatch(block, /setChapterMask\(/, '软提示块不许动遮罩');
-  assert.doesNotMatch(block, /applyEditorEditable\(/, '软提示块不许动只读态');
+  assert.match(loadChapterAtSrc, /LARGE_CHAPTER_SOFT_CHARS/, '载章成功路径要按同一阈值判定');
+  // 文案逐字 / 「严格大于」/ 「提示在提交之后」都不再抓源码：
+  //   · 文案 = R1 的 toast[0] 断言；
+  //   · 严格大于 = R2 的「恰好 500000 不提示」；
+  //   · 只有成功路径才提示 = R3 的 stale / 读盘失败 / 无书早退；
+  //   · 提示块不写 state / 遮罩 / 只读态 = R1 的 mask 计数与 editable 计数。
 });
