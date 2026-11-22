@@ -81,8 +81,8 @@ test('D12 / M3：README 只留当前文档，版本沿革 / 防丢稿逐轮记�
   assert.ok(readme.includes('## 许可'), 'README 许可段仍在');
   assert.match(
     readme,
-    /公开文档[^\n]*README\.md[^\n]*验收清单\.md[^\n]*LICENSE[^\n]*docs\//,
-    'README 的公开文档清单要列当前公开文档（README / 验收清单 / LICENSE / docs/；M-N3 拆出 docs/）'
+    /公开文档[^\n]*README\.md[^\n]*LICENSE[^\n]*docs\/[^\n]*验收清单/,
+    'README 的公开文档清单要列当前公开文档（README / LICENSE / docs/，验收清单在 docs/ 下；M-N3 / 2026-11-22 迁入 docs）'
   );
 });
 
@@ -99,7 +99,7 @@ test('D12 / M3：README 的开发自检细节（目录树 / 截图命令）移�
 });
 
 test('D12 / M3：验收清单只留当前手工步骤，历史增量归档到内部文档', () => {
-  const checklist = read('验收清单.md');
+  const checklist = read('docs/验收清单.md');
   for (const legacy of ['## 版本沿革', '## 1.1.0 内容增量', '## 1.6.0 内容增量', '## 1.8.0 试用分支增量']) {
     assert.ok(!checklist.includes(legacy), `验收清单不许再放历史增量：${legacy}`);
   }
@@ -119,7 +119,7 @@ test('X13：公开文档不再含开发机绝对路径（README / 验收清单�
     assert.ok(!readme.includes(leaked), `README 不许出现开发机路径 ${leaked}`);
   }
   assert.ok(readme.includes('cd <仓库目录>'), '开发版安装步骤改用占位目录');
-  const checklist = read('验收清单.md');
+  const checklist = read('docs/验收清单.md');
   assert.ok(!checklist.includes('D:\\AI工作区'), '验收清单不许引用内部工作区路径');
 });
 
@@ -218,7 +218,7 @@ test('R24 M-N3：维护者内容迁出 README（打包 / 供应链 / 静态闸�
   const readme = read('README.md');
   const maintain = read('docs/维护与自检.md');
   const limits = read('docs/已知限制.md');
-  const checklist = read('验收清单.md');
+  const checklist = read('docs/验收清单.md');
 
   // 1) 打包 / 构建供应链 / 静态闸门策略整体迁到维护者文档（内容不丢，只是换文件）。
   assert.match(maintain, /## 打包（开发者\/维护用）/, '维护者文档要收打包手册');
@@ -231,7 +231,7 @@ test('R24 M-N3：维护者内容迁出 README（打包 / 供应链 / 静态闸�
   assert.equal(readme.includes('### 测试与静态闸门策略'), false, 'README 不再承载静态闸门策略');
   assert.equal(checklist.includes('## 自检纪律（2026-11-11 起 · 硬要求）'), false, '验收清单不再混维护者纪律');
   assert.match(readme, /docs\/维护与自检\.md/, 'README 要有维护者文档指针');
-  assert.match(checklist, /docs\/维护与自检\.md/, '验收清单要有维护者文档指针');
+  assert.match(checklist, /\[维护与自检\]\(维护与自检\.md\)/, '验收清单（docs/ 内）要相对链接到维护者文档');
 
   // 2) 完整已知限制迁出：README 只留要点 + fuse 声明（version-sync 的 checkFuseDocs 仍从 README 读）。
   assert.match(readme, /## 已知限制（要点/, 'README 保留「已知限制（要点）」摘要');
@@ -247,5 +247,5 @@ test('R24 M-N3：维护者内容迁出 README（打包 / 供应链 / 静态闸�
   // 3) 拆分要有可验收的「变短」：README 回落到使用者文档体量，且公开文档清单包含 docs/。
   assert.ok(readme.length < 90000, `README 要明显变短（现在 ${readme.length} 字符，拆分前 106496）`);
   assert.ok(readme.split('\n').length < 620, `README 行数要降到 620 以内（现在 ${readme.split('\n').length}）`);
-  assert.match(readme, /公开文档[^\n]*README\.md[^\n]*验收清单\.md[^\n]*LICENSE[^\n]*docs\//, '公开文档清单要包含 docs/');
+  assert.match(readme, /公开文档[^\n]*README\.md[^\n]*LICENSE[^\n]*docs\/[^\n]*验收清单/, '公开文档清单要包含 docs/ 与 docs/ 下的验收清单');
 });

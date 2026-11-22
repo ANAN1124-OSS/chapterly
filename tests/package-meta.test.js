@@ -38,7 +38,7 @@ test('version 是合法 x.y.z，且与界面 / 文档版本锚点一致（发版
   );
   const problems = versionSync.checkDocs({
     readme: readText('README.md'),
-    checklist: readText('验收清单.md'),
+    checklist: readText('docs/验收清单.md'),
     indexHtml: readText('renderer/index.html'),
     version: pkg.version
   });

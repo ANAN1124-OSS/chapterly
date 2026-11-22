@@ -29,7 +29,7 @@ const { pad2 } = require('../core/common');
 const ROOT = path.join(__dirname, '..');
 const PACKAGE_JSON = path.join(ROOT, 'package.json');
 const README = path.join(ROOT, 'README.md');
-const CHECKLIST = path.join(ROOT, '验收清单.md');
+const CHECKLIST = path.join(ROOT, 'docs', '验收清单.md');
 const INDEX_HTML = path.join(ROOT, 'renderer', 'index.html');
 
 const VERSION_RE = /^\d+\.\d+\.\d+$/;

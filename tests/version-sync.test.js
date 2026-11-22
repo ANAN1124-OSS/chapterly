@@ -17,7 +17,7 @@ const versionSync = require(path.join(ROOT, 'scripts', 'version-sync.js'));
 const readText = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const PKG = JSON.parse(readText('package.json'));
 const README = readText('README.md');
-const CHECKLIST = readText('验收清单.md');
+const CHECKLIST = readText('docs/验收清单.md');
 const INDEX_HTML = readText('renderer/index.html');
 const RENDERER = readText('renderer/renderer.js');
 const PRELOAD = readText('preload.js');
