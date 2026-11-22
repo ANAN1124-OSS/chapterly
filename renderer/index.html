@@ -11,6 +11,10 @@
   <div id="app">
     <!-- ============ 书架 ============ -->
     <section id="shelf-view" class="view shelf-view">
+      <!-- A5（三审）：整个应用此前没有任何 heading，读屏的 H 键导航在主界面失效。
+           三个视图各放一个视觉隐藏的一级标题：视图容器切 .hidden 时整棵子树退出无障碍树，
+           所以任意时刻只有当前视图这一条 h1 —— 不用 JS 跟着视图切换改文字。 -->
+      <h1 class="visually-hidden">章回 · 书架</h1>
       <header class="topbar">
         <div class="brand">
           <span class="brand-mark">章</span>
@@ -20,8 +24,10 @@
         </div>
         <div class="topbar-right">
           <div class="shelf-search">
-            <input id="shelf-search" class="text-input" type="text" placeholder="搜索书名/作者/标签/正文（Ctrl+F）" autocomplete="off" />
-            <button id="btn-shelf-search-clear" class="shelf-search-clear hidden" type="button" title="清除搜索（Esc）">×</button>
+            <!-- A3（三审）：书架搜索是全局高频入口，输入框不能只靠 placeholder 当控件名 -->
+            <input id="shelf-search" class="text-input" type="text" placeholder="搜索书名/作者/标签/正文（Ctrl+F）" autocomplete="off" aria-label="搜索书名、作者、标签或正文" />
+            <!-- A7（三审）：只显示「×」的按钮要有可访问名（同 #btn-clear-filter 的口径） -->
+            <button id="btn-shelf-search-clear" class="shelf-search-clear hidden" type="button" title="清除搜索（Esc）" aria-label="清除搜索">×</button>
           </div>
           <span id="books-root-label" class="muted small"></span>
           <div class="topbar-actions">
@@ -85,6 +91,8 @@
 
     <!-- ============ 编辑器 ============ -->
     <section id="editor-view" class="view editor-view hidden">
+      <!-- A5（三审）：写作页的视觉隐藏一级标题（见书架那段的说明） -->
+      <h1 class="visually-hidden">章回 · 写作页</h1>
       <aside class="sidebar" id="sidebar">
         <!-- 卷章目录（2026-11-10 重设计）：顶部书名 + 全书概览，中部筛选 + 卷章树，底部一行操作。
              只用现有 id / class 之外的新容器，拖拽、右键、键盘、快捷键都不动。 -->
@@ -222,7 +230,8 @@
           <button id="btn-focus-typewriter" class="focus-btn" type="button" data-on="0">打字机</button>
           <button id="btn-focus-exit" class="focus-btn" type="button" title="退出专注模式（Esc / F11）">退出专注 <span class="focus-kbd">Esc</span><span class="focus-kbd">F11</span></button>
         </div>
-        <textarea id="editor" class="editor" spellcheck="false"
+        <!-- A3（三审）同族：正文编辑区也不能只靠 placeholder 当控件名（报告只点了 5 处，这一处更要紧） -->
+        <textarea id="editor" class="editor" spellcheck="false" aria-label="正文编辑区"
                   placeholder="开始写作…（只有按 Ctrl+S 或点「保存」才会写盘）"></textarea>
         <!-- 只读标记层：不可见字符 / 超长段落只画在这里，正文一个字节都不改（和编辑区同排版，跟着滚动） -->
         <div id="editor-marks" class="editor-marks hidden" aria-hidden="true"></div>
@@ -271,6 +280,8 @@
 
     <!-- ============ 阅读模式（v0.8-4，提案 N4）：整本只读通读，纯显示层，不写盘 ============ -->
     <section id="reading-view" class="view reading-view hidden">
+      <!-- A5（三审）：阅读模式的视觉隐藏一级标题（见书架那段的说明） -->
+      <h1 class="visually-hidden">章回 · 阅读模式</h1>
       <header class="reading-header">
         <div class="reading-head-left">
           <button id="btn-reading-exit" class="btn ghost" type="button" title="退出阅读模式，回到写作页（Esc）">← 退出阅读</button>
@@ -357,7 +368,7 @@
       <label class="check-row inline" title="把编辑区选区移到正在读的段落（只改选区，不改文字）">
         <input id="tts-follow" type="checkbox" /> 跟随高亮
       </label>
-      <button id="btn-tts-close" class="btn ghost tiny tts-close" type="button" title="收起朗读条（Esc）">×</button>
+      <button id="btn-tts-close" class="btn ghost tiny tts-close" type="button" title="收起朗读条（Esc）" aria-label="收起朗读条">×</button>
     </div>
     <div class="tts-status" id="tts-status">未开始</div>
     <div class="tts-preview" id="tts-preview"></div>
@@ -368,11 +379,12 @@
     <div class="modal find-modal" role="dialog" aria-modal="true" aria-labelledby="find-title">
       <h2 class="modal-title" id="find-title">查找替换</h2>
       <div class="find-row">
-        <input id="find-query" class="text-input" type="text" placeholder="要查找的内容（字面量，不是正则）" />
+        <!-- A3（三审）：查找 / 替换输入框补控件名（对照 #chapter-filter / #settings-search 的正确做法） -->
+        <input id="find-query" class="text-input" type="text" placeholder="要查找的内容（字面量，不是正则）" aria-label="要查找的内容" />
         <label class="check-row inline"><input type="checkbox" id="find-case" /> 区分大小写</label>
       </div>
       <div class="find-row">
-        <input id="find-replace" class="text-input" type="text" placeholder="替换为（留空 = 删除）" />
+        <input id="find-replace" class="text-input" type="text" placeholder="替换为（留空 = 删除）" aria-label="替换为" />
       </div>
       <div class="find-row">
         <label class="field inline">
@@ -579,7 +591,8 @@
       <p class="modal-message">
         输入章号（如 12、第12章）或章名的一部分，回车跳到那一章。跳章只切换当前章节，不改正文；有未保存内容时会照常先问你。
       </p>
-      <input id="jump-input" class="modal-input" type="text" autocomplete="off" placeholder="章号，或章名关键词" />
+      <!-- A3（三审）：跳章输入框补控件名 -->
+      <input id="jump-input" class="modal-input" type="text" autocomplete="off" placeholder="章号，或章名关键词" aria-label="章号或章名关键词" />
       <!-- A6（三审）：跳章结果的异步摘要也要播报（「找到 N 章匹配」是读屏按回车后唯一的反馈；
            下面的 #jump-results 是一串按钮，不整体设为 live，避免整张清单被重念）。 -->
       <div class="jump-summary" id="jump-summary" role="status" aria-live="polite"></div>
@@ -783,7 +796,8 @@
       <div class="modal-scroll">
         <h2 id="modal-title" class="modal-title"></h2>
         <p id="modal-message" class="modal-message"></p>
-        <input id="modal-input" class="modal-input hidden" type="text" />
+        <!-- A3（三审）：通用询问框的输入框没有固定占位文案，名字跟着当前这框的标题走（如「重命名章节」） -->
+        <input id="modal-input" class="modal-input hidden" type="text" aria-labelledby="modal-title" />
       </div>
       <div id="modal-buttons" class="modal-buttons"></div>
     </div>

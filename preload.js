@@ -248,6 +248,9 @@ const api = {
   // 不把睡眠时段算进写作时长。只发空通知，秒表状态留在渲染层。
   onPowerSuspend: (cb) => on('power:suspend', cb),
   onPowerResume: (cb) => on('power:resume', cb),
+  // R4（三审·待作者拍板）：窗口最小化（主进程 win.on('minimize')）—— 渲染层收到后停朗读，
+  // 避免误触最小化后声音还在响。只发空通知，是否在朗读由朗读状态机自己判。
+  onWindowMinimized: (cb) => on('app:window-minimized', cb),
   reportDirty: (dirty) => ipcRenderer.send('app:dirty', Boolean(dirty)),
   closeReady: (allowed) => ipcRenderer.send('app:close-ready', Boolean(allowed))
 };

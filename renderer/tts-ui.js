@@ -453,6 +453,21 @@
     toast('已切换章节，朗读已停止');
   }
 
+  // R4（三审·待作者拍板）：窗口最小化就停朗读 —— 误触最小化后声音不该还在响。
+  // 订阅放在本模块而不是 renderer.js：编排器的行数预算已无余量（4598/4600，见
+  // tests/test-hooks.test.js 的 RENDERER_LINE_BUDGET），而「什么时候停朗读」本来就该跟着
+  // 朗读状态机走。**不自动续读**：恢复窗口后要不要接着念由作者再点一次决定（与「切章自动停」
+  // 同一个取舍，避免人不在时声音突然接上）。停在「已停止 · 第 N 段」，朗读条保持打开。
+  // 旧宿主 / 单测的假 api 没有这个订阅成员时直接跳过（可选注入口径，与 E2 的
+  // resetFindBookmarksForBook 同风格）。
+  if (api && typeof api.onWindowMinimized === 'function') {
+    api.onWindowMinimized(() => {
+      // 只有真的在出声（playing / paused）才需要停：个别系统会连发两次 minimize，
+      // 已经在停的状态再 cancel 一次是白做；朗读条收着 / 本来没念时这条通知完全是 no-op。
+      if (state.tts.status === 'playing' || state.tts.status === 'paused') stopTts({ keepOpen: true });
+    });
+  }
+
     // 渲染层只拿走这些；渲染 / 总结这类内部函数不外露（E2E 用 DOM 断言，不用钩子）。
     return {
       renderTtsBar,

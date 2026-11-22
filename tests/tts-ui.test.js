@@ -612,3 +612,49 @@ test('watchdog：暂停超时后再「继续」要重新挂计时器，恢复无
     else globalThis.window = realWindow;
   }
 });
+
+// ---------- R4（三审·待作者拍板）：窗口最小化 → 停朗读 ----------
+// 主进程多了一条 browserWin.on('minimize') → app:window-minimized 通知（只发给那扇窗口）。
+// 这里钉住渲染层这一侧的行为：真的 cancel 语音、朗读条保留（不收起）、不自动续读、不弹提示，
+// 以及「本来就没在念」时收到通知不炸。
+test('R4：收到「窗口最小化」通知就停朗读（朗读条保留、不自动续读、不弹提示）', async () => {
+  const { host, state, toasts } = makeHost();
+  let onMinimized = null;
+  host.api.onWindowMinimized = (cb) => {
+    onMinimized = cb;
+  };
+  const engine = makeEngine();
+  const { tts, result } = await openWith(host, engine);
+  assert.equal(result.ok, true);
+  assert.equal(state.tts.status, 'playing');
+  assert.equal(typeof onMinimized, 'function', 'tts-ui 必须自己订阅 app:window-minimized（别往 renderer.js 加）');
+
+  const cancelBefore = engine.log.cancelled;
+  onMinimized();
+  assert.equal(state.tts.status, 'idle', '最小化后必须落回「已停止」');
+  assert.equal(engine.log.cancelled, cancelBefore + 1, '必须真的 cancel 系统中的语音（只 cancel 一次）');
+  assert.equal(state.tts.open, true, '最小化只停朗读：朗读条保留，不被顺手收起');
+  assert.equal(state.tts.chunks.length, 3, '分段保留：恢复窗口后作者直接点播放就能接着念');
+  assert.equal(state.tts.index, 0, '不自动续读——不在这里推进段落指针');
+  assert.deepEqual(toasts, [], '最小化是常见动作，不弹提示');
+  assert.equal(tts.ttsSummaryText().text, '已停止 · 第 1/3 段', '状态栏文案是「已停止」，不是「已读完」');
+
+  // 重复通知（个别系统会连发两次 minimize）：本来就没在念，什么都不该变
+  onMinimized();
+  assert.equal(state.tts.status, 'idle');
+  assert.equal(engine.log.cancelled, cancelBefore + 1, '已经在停的朗读不许再 cancel 一次');
+
+  // 恢复到前台不会自己重新开念（没有 restore 通知，也没有定时器）
+  const spokenAfterOpen = engine.log.spoken.length;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(state.tts.status, 'idle');
+  assert.equal(engine.log.spoken.length, spokenAfterOpen, '恢复窗口后不自动续读（要不要接着念由作者再点一次）');
+});
+
+test('R4：旧宿主 / 假 api 没有 onWindowMinimized 时照常创建（可选注入口径）', () => {
+  const { host } = makeHost();
+  assert.equal(typeof host.api.onWindowMinimized, 'undefined');
+  const tts = ttsUi.create(host);
+  assert.equal(typeof tts.openTtsBar, 'function');
+});
+

@@ -817,7 +817,11 @@
       const more = document.createElement('button');
       more.type = 'button';
       more.className = 'book-card-more';
-      more.title = '更多操作（打开文件夹 / 删除）';
+      // A4（三审）：accessible name 以前取内容文本「⋯」（读屏只念「⋯ 按钮」），title 又只写了
+      // 「打开文件夹 / 删除」两项、与菜单实际的 7 项不符。名字给「更多操作」+ 书名，
+      // title 覆盖真实菜单（打开 / 新窗口 / 书籍信息 / 移到分组 / 打开文件夹 / 本书历史 / 删除）。
+      more.setAttribute('aria-label', `更多操作：《${book.title}》`);
+      more.title = '更多操作（打开 / 新窗口 / 书籍信息 / 移到分组 / 打开文件夹 / 本书历史 / 删除）';
       more.textContent = '⋯';
       more.addEventListener('click', (event) => {
         event.stopPropagation();

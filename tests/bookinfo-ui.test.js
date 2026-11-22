@@ -531,7 +531,11 @@ test('renderShelf 书卡：冲突徽标 / 章节命中行 / 损坏书的修复�
   assert.equal(hitLine.textContent, '章节命中：第二章');
   const more = card.children.find((c) => c.className === 'book-card-more');
   assert.equal(more.textContent, '⋯');
-  assert.equal(more.title, '更多操作（打开文件夹 / 删除）');
+  // A4（三审 / B6）：title 与 accessible name 都改了 —— 以前 title 只写「打开文件夹 / 删除」两项，
+  // 名字是「⋯」本身。口径：title 覆盖菜单真实的 7 项，aria-label 带书名（书架里分得清是哪本书）。
+  // 断言跟错：这里不再钉那一句旧文案。
+  assert.equal(more.title, '更多操作（打开 / 新窗口 / 书籍信息 / 移到分组 / 打开文件夹 / 本书历史 / 删除）');
+  assert.equal(more.getAttribute('aria-label'), '更多操作：《书甲》');
   more._fire('click', { stopPropagation() {} });
   assert.deepEqual(withHits.calls.showBookMenu[0][1], 400 - 186);
   assert.deepEqual(withHits.calls.showBookMenu[0][2], 300 + 4);

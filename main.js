@@ -2626,6 +2626,12 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
   // 失焦降级（规范 I-07）：纸色 -2%、朱红降灰（网页侧在 styles.css 的 body.window-inactive 里），
   // 系统按钮区跟着换成暗一档的纸色 + 淡一档的字形色。
   browserWin.on('blur', () => applyWindowChrome(session));
+  // R4（三审·待作者拍板）：窗口最小化 = 人离开屏幕，朗读立刻停。与切章 / 换书 / 回书架 / 收起
+  // 朗读条四条停止路径同口径（渲染层收到通知后走同一个 stopTts，不自动续读——恢复窗口后要不要
+  // 接着念由作者自己再点一次）。只发给这扇窗口（sendToSession），别的窗口在念的正文不受影响。
+  browserWin.on('minimize', () => {
+    sendToSession(session, 'app:window-minimized');
+  });
   setupCloseFlow(session);
 
   // 渲染进程崩溃 / 窗口无响应（v1.8.2 WP5 / 审计 N1）：先记一条日志，再给恢复出口。

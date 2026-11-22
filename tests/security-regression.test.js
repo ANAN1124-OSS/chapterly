@@ -221,8 +221,29 @@ test('preload：单向通知 / 上报频道与 main.js 一一对应（14 条通�
   // 1.6.1 P-01 新增 app:force-close（强制退出前的收尾通知；没有接收端那 500 ms 就是空转）
   // WP6（N2）新增 config:changed（换书架根 → 各窗口刷新 / 孤岛提示）
   // 五-M32（PM-3）新增 power:suspend / power:resume（系统睡眠 / 唤醒 → 写作计时冻结 / 续算）
-  assert.equal(calls.subscribed.length, 14);
+  // 三审 R4 新增 app:window-minimized（窗口最小化 → 停朗读；只发给发起窗口）
+  assert.equal(calls.subscribed.length, 15);
   assert.equal(calls.sent.length, 2);
+});
+
+test('R4（三审）：app:window-minimized 三头到位（最小化时发 → preload 订阅 → tts-ui 停朗读）', () => {
+  // 发：只发给最小化的那扇窗口。**不许 broadcast**——别的窗口正在念的正文不该被牵连停掉。
+  assert.match(
+    MAIN,
+    /browserWin\.on\('minimize', \(\) => \{[\s\S]{0,240}?sendToSession\(session, 'app:window-minimized'\)/,
+    'main.js 的 browserWin.on(\'minimize\') 里要 sendToSession(session, \'app:window-minimized\')'
+  );
+  assert.equal(/broadcast\('app:window-minimized'/.test(MAIN), false, '最小化通知不许广播给所有窗口');
+  // 收：preload 的命名与既有 onCloseRequested / onPowerSuspend 一致
+  assert.match(
+    PRELOAD,
+    /onWindowMinimized:\s*\(cb\)\s*=>\s*on\('app:window-minimized',\s*cb\)/,
+    'preload 要用 onWindowMinimized 暴露这条通知'
+  );
+  // 处理：订阅放进 tts-ui（renderer.js 的行数预算没有余量），且走同一个 stopTts
+  const TTS = fs.readFileSync(path.join(ROOT, 'renderer', 'tts-ui.js'), 'utf8');
+  assert.match(TTS, /api\.onWindowMinimized\(/, 'tts-ui 要自己订阅 app:window-minimized');
+  assert.match(TTS, /！?[\s\S]{0,80}stopTts\(\{ keepOpen: true \}\)/, '最小化只停朗读：条子保持打开（keepOpen）');
 });
 
 test('preload：4 个自检 API 只在自动化模式暴露（E5 / WP-11）', () => {
