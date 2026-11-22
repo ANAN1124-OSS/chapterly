@@ -767,22 +767,25 @@
       }
 
       // 书名没命中、靠章名命中时，把命中的章名列出来。
-      // 每个章名是一枚原生 button（1.1.0）：点它直接打开这本书并定位到那一章；文案前缀与「、」
-      // 分隔符仍是文本节点，所以整行的 textContent 与旧版逐字一致（E2E 第 33 组按 textContent 断言）。
+      // 每个章名是一枚原生 button（1.1.0）：点它直接打开这本书并定位到那一章。
+      // 2026-11-22：「、」不再单独建文本节点，而是写在上一枚章名按钮的末尾（分隔符留在原位置，
+      // 整行的 textContent 仍是「章节命中：A、B」，单测与 E2E 第 33 组按这一串断言）。原因是
+      // button 是原子行内盒，独立的分隔符会被浏览器单独折到下一行：231px 的 5 列书卡里会多出
+      // 一条只有「、」的空行，把卡撑高、读起来也断句。放进按钮里，它就跟章名的最后一行在一起。
       if (info.chapterHits && info.chapterHits.length) {
         const hitLine = document.createElement('div');
         hitLine.className = 'book-card-match';
         hitLine.appendChild(document.createTextNode('章节命中：'));
         info.chapterHits.forEach((hit, i) => {
-          if (i) hitLine.appendChild(document.createTextNode('、'));
           const chapterIndex = Number(hit.index);
+          const label = chapterTitle(chapterIndex, hit.name);
           const link = document.createElement('button');
           link.type = 'button';
           link.className = 'book-card-match-chapter';
           link.dataset.chapterIndex = String(chapterIndex);
-          link.textContent = chapterTitle(chapterIndex, hit.name);
-          link.title = `打开《${book.title}》并定位到${link.textContent}`;
-          link.setAttribute('aria-label', `打开《${book.title}》并定位到${link.textContent}`);
+          link.textContent = i < info.chapterHits.length - 1 ? `${label}、` : label;
+          link.title = `打开《${book.title}》并定位到${label}`;
+          link.setAttribute('aria-label', `打开《${book.title}》并定位到${label}`);
           link.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();

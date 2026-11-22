@@ -753,7 +753,16 @@ html, body {
   cursor: pointer;
   transition: background-color var(--motion-quick) ease, border-color var(--motion-quick) ease;
 
-  height: 198px;}
+  /* 书架书卡溢出（2026-11-22）：以前这里写死 height: 198px，而卡里的「章节命中」最多列 3 条
+   * 章名（shelf-filter-ui 的 chapterHits 上限 3），长章名在 5 列的 231px 卡里每条折 2–3 行；
+   * 加上作者 / 两行简介 / 底部的「章数 · 字数」「最后修改」，内容轻松超过 198px。卡框高度
+   * 固定、overflow 默认 visible，超出的文字就画到卡外：上一行卡片的「章节命中」压到下一行
+   * 卡片标题上，桌面截图里能直接看到两行书卡的字叠在一起。
+   * 现在高度由内容决定、198px 只作下限（没有章节命中的普通书卡仍正好 198px，网格照旧齐）；
+   * 搜索命中行多时卡片自己长高，整行跟最高的一张对齐。overflow: hidden 只是兜底：以后
+   * 再往卡里加东西，也不可能画到邻居头上。 */
+  height: auto;
+  overflow: hidden;}
 .book-card:hover {
   border-color: var(--line-strong);
   box-shadow: none;
