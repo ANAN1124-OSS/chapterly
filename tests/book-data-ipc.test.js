@@ -62,6 +62,8 @@ function makeBookDataHost(overrides = {}) {
       planHistoryBackupDeletion: async () => ({ cleanable: [], skipped: [], groupCount: 0, totalBytes: 0 }),
       deleteHistoryBackups: async () => ({ ok: true }),
       snapshotDirForClear: () => path.join('D:\\书库\\书', '_trash', '快照-20260101'),
+      // I3（三审）：清快照也包进书锁（同域删除 / 还原走 lockedWriteEntry 的同一把锁）
+      withBookLock: (bookPath, task) => task(),
       StorageError: class StorageError extends Error {
         constructor(code, message) {
           super(message);
@@ -128,6 +130,28 @@ test('mutation 常量表：六个写值 + READ_ONLY（null），全部冻结', (
   assert.equal(Object.isFrozen(MUTATION), true, 'MUTATION 要冻结（防止运行期被改）');
   assert.equal(Object.isFrozen(READ_ONLY), true, 'READ_ONLY 要冻结');
   assert.equal(READ_ONLY.mutation, null, 'READ_ONLY 的语义仍是「不写、不广播」');
+});
+
+// I6（三审·低）：main.js 的 capture:commit-record 是产品代码里最后一个手写 mutation 字面量的
+// handleBook 注册点。收编常量表后「改表漏改一处」不再可能静默发生 —— 这里用机器清单钉住：
+//   · main.js 必须 require 常量表，注册点必须用 MUTATION.WRITE；
+//   · 所有产品代码（main + 5 个 ipc 域模块）不许再出现 mutation 字面量。
+test('I6（三审）：capture:commit-record 也走 MUTATION 常量表，产品代码不再有 mutation 字面量', () => {
+  assert.ok(
+    MAIN.includes("const { MUTATION } = require('./ipc/book-mutations');"),
+    'main.js 要引用 ipc/book-mutations 的常量表'
+  );
+  const start = MAIN.indexOf("handleBook('capture:commit-record'");
+  assert.ok(start > 0, 'main.js 里找不到 capture:commit-record');
+  assert.ok(
+    MAIN.indexOf('}, { mutation: MUTATION.WRITE });', start) > start,
+    'capture:commit-record 的收尾必须是 { mutation: MUTATION.WRITE }（不许回到字面量）'
+  );
+  const LITERAL = /mutation: '(save|write|rename|delete|replace|format)'/;
+  assert.equal(LITERAL.test(MAIN), false, 'main.js 不许再写 mutation 字面量');
+  for (const file of ['ipc/book.js', 'ipc/book-data.js', 'ipc/save.js', 'ipc/export.js', 'ipc/proofread.js']) {
+    assert.equal(LITERAL.test(read(file)), false, `${file} 不许再写 mutation 字面量（取值只从常量表来）`);
+  }
 });
 
 test('ipc/book-data.js：14 个频道的清单 / 顺序 / 注册器 / mutation 与搬前一致（WP4 增清理计划频道）', () => {
@@ -301,6 +325,8 @@ test('行为：清空某日快照只认快照目录、拒绝联接、回收站�
   const target = path.join('D:\\书库\\书', '_trash', '快照-20260101');
   const baseStore = {
     snapshotDirForClear: () => target,
+    // I3（三审）：清快照包进书锁 —— 下面每个场景都要能过这一层（锁语义本身在最后一条用例里钉）
+    withBookLock: (bookPath, task) => task(),
     StorageError: class StorageError extends Error {
       constructor(code, message) {
         super(message);
@@ -349,6 +375,27 @@ test('行为：清空某日快照只认快照目录、拒绝联接、回收站�
   assert.deepEqual(await ok.channels.get('book:clear-snapshot-day').fn('D:\\书库\\书', '快照-20260101'), {
     dir: '快照-20260101'
   });
+
+  // 5) I3（三审）：回收站动作必须在书锁内执行 —— 否则 chapter:save 在锁内往
+  //    `_trash/快照-YYYYMMDD/` 复制上一版期间，本频道能把该目录整个移进回收站。
+  const order = [];
+  const lockedHost = makeBookDataHost({
+    storage: {
+      ...baseStore,
+      withBookLock: async (bookPath, task) => {
+        order.push(`lock:${bookPath}`);
+        const result = await task();
+        order.push('unlock');
+        return result;
+      }
+    },
+    fs: { lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }) },
+    shell: { trashItem: async () => { order.push('trash'); }, openPath: async () => '' }
+  });
+  assert.deepEqual(await lockedHost.channels.get('book:clear-snapshot-day').fn('D:\\书库\\书', '快照-20260101'), {
+    dir: '快照-20260101'
+  });
+  assert.deepEqual(order, ['lock:D:\\书库\\书', 'trash', 'unlock'], '删除动作必须在 withBookLock 内（I3）');
 });
 
 // WP4（审计 S-N1）：清理备份拆两步 —— 计划频道只读解析 + 发一次性令牌；删除频道不带令牌一律拒绝。
@@ -510,6 +557,43 @@ test('O6：chapter:save 带 MUTATION.SAVE（保存成功要广播 shelf:changed�
     assert.equal(MAIN.includes(`handleBook('${channel}'`), false, `main.js 里又出现了被搬走的频道：${channel}`);
   }
   assert.ok(read('ipc/book-data.js').includes('module.exports = { register: '), 'book-data 只导出 register');
+});
+
+// N2（二轮·低）：书名限长的唯一入口在 storage（core/limits.js），book:rename 只负责把
+// 「这次被截短了」如实带回渲染层（渲染层据此提示作者，不静默改名）。
+test('N2：book:rename 回包带 titleTruncated（与请求名比对，空请求 / 未截短都 false）', async () => {
+  const channels = new Map();
+  const MAX = require('../core/limits').MAX_BOOK_TITLE_CHARS;
+  const storageStub = {
+    // 与真实 storage.renameBook 同口径：写盘前按 core/limits 截断
+    renameBook: async (bookPath, title) => ({ title: require('../core/limits').limitBookTitle(title) })
+  };
+  const host = new Proxy(
+    {},
+    {
+      get(target, key) {
+        if (key === 'handleBook') return (channel, fn, options) => channels.set(channel, { fn, options });
+        if (key === 'handle') return () => {};
+        if (key === 'storage') return storageStub;
+        return () => {};
+      },
+      has: () => true
+    }
+  );
+  bookIpc.register(host);
+  const rename = channels.get('book:rename').fn;
+
+  const long = await rename('D:\\书库\\书', '书'.repeat(MAX + 40));
+  assert.equal(long.titleTruncated, true, '超长书名被截短 → true');
+  assert.equal(long.title.length, MAX, '书名截到唯一上限');
+
+  const normal = await rename('D:\\书库\\书', '新书名');
+  assert.equal(normal.titleTruncated, false, '未截短 → false');
+  assert.equal(normal.title, '新书名');
+
+  const blank = await rename('D:\\书库\\书', '   ');
+  assert.equal(blank.titleTruncated, false, '空请求 = 保持原书名（旧行为），不算截断');
+  assert.equal(blank.title, '');
 });
 
 test('O6：handleBook 的广播语义（有 mutation 才广播；book:set-last 是唯一例外）', async () => {

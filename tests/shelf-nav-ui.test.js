@@ -65,7 +65,8 @@ function build(options = {}) {
         calls.rename.push(title);
         log.push('api.renameBook');
         if (options.renameFails) throw new Error('书目只读');
-        return { title, folder: state.meta.folder };
+        // N2（二轮·低）：书名超限被截短时主进程回 titleTruncated（限长唯一源在 core/limits.js）。
+        return { title, folder: state.meta.folder, ...(options.renameTitleTruncated ? { titleTruncated: true } : {}) };
       }
     },
     async askUnsaved(opts) {
@@ -309,6 +310,16 @@ test('renameBookFlow：成功 → 只改书目 title，顶栏 / 窗口标题 / t
   assert.equal(ctx.calls.windowTitle, 1);
   assert.deepEqual(ctx.calls.toast, [['书名已更新', undefined]]);
   assert.deepEqual(ctx.log.slice(0, 2), ['promptText', 'call']);
+});
+
+// N2（二轮·低）：书名超限被主进程截短时回 titleTruncated，界面要明确说明「已截短」，
+// 不能静默显示一个更短的书名（限长唯一事实源在 core/limits.js）。
+test('renameBookFlow：书名被截短 → toast 明确说明（titleTruncated 由主进程回报）', async () => {
+  const ctx = build({ promptValue: '书'.repeat(120), renameTitleTruncated: true });
+  await ctx.ui.renameBookFlow();
+  assert.deepEqual(ctx.calls.toast, [['书名已更新（超过上限的部分已截短）', undefined]]);
+  assert.equal(ctx.dom.map.get('book-title').textContent, '书'.repeat(120));
+  assert.equal(ctx.calls.windowTitle, 1);
 });
 
 test('renameBookFlow：meta.title 为空时输入框初值是空串（不是 undefined）', async () => {

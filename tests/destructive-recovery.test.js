@@ -466,7 +466,9 @@ test('还原到替换前：备份文件超过读取上限时整批拒绝，书�
 test('静态闸门：删章必须「先移文件 → 再写书目」，失败分支必须回滚', () => {
   const body = functionBody(STORAGE_SOURCE, 'async function deleteChapter(', '');
   const moveAt = body.indexOf('moveToTrash(');
-  const metaAt = body.indexOf('writeBookMeta(');
+  // I2（三审，断言跟错）：写书目现在走 writeBookMetaChecked（读时拍身份、写前核对）——
+  // 锚点跟着换，「先移文件 → 再写书目」的判据与顺序要求一字不变。
+  const metaAt = body.indexOf('writeBookMetaChecked(');
   assert.ok(moveAt >= 0 && metaAt >= 0, '删章必须既移文件又写书目');
   assert.ok(moveAt < metaAt, '顺序不许反过来：先写书目再移文件会留下「书目里没有了、文件还在」的孤儿');
   assert.match(body, /batchFailure\(/, '书目写盘失败必须走统一报错（带现场）');

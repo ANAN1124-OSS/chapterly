@@ -285,8 +285,10 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.match(main, /handle\('capture:queue-remove'/, '正文插入成功后消费该条的 IPC');
   assert.match(
     main,
-    /handle\('capture:queue-remove'[\s\S]{0,900}?if \(!Number\.isFinite\(numeric\)\) return \{ removed: false \};[\s\S]{0,400}?captureQueue\.remove\(round\)/,
-    '队列删除只按数字 id，非数字不猜（S1：先过窗口归属校验再删）'
+    // I7（三审，断言跟错）：坏 id / 非 owner 的软错误收编成 { ok:false, code, message }（removed:false
+    // 作为附加字段保留），锚点从「返回一个光秃秃的 { removed:false }」换成 softFailure + 两种拒绝码。
+    /handle\('capture:queue-remove'[\s\S]{0,900}?softFailure\('QUEUE_BAD_ID'[\s\S]{0,400}?softFailure\('QUEUE_FOREIGN_WINDOW'[\s\S]{0,400}?captureQueue\.remove\(round\)/,
+    '队列删除只按数字 id，非数字不猜（S1：先过窗口归属校验再删；软错误统一包络）'
   );
   assert.match(
     main,
@@ -303,9 +305,11 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.equal(/handle\('capture:analyze'/.test(main), false, 'capture:analyze 已随逐行表单删除');
   assert.equal(/handleBook\('capture:commit'/.test(main), false, 'capture:commit 已改名 capture:commit-record');
   assert.match(main, /handleBook\('capture:commit-record'/, '一条记录 → 新建一章的写盘 IPC');
+  // I6（三审，断言跟错）：mutation 取值收编 ipc/book-mutations.js 的常量表 —— 这里钉的锚点从
+  // 字面量 'write' 换成 MUTATION.WRITE（值仍是 'write'，跨窗口拦截 / 书架刷新语义不变）。
   assert.match(
     main,
-    /handleBook\('capture:commit-record'[\s\S]{0,4000}?\{ mutation: 'write' \}/,
+    /handleBook\('capture:commit-record'[\s\S]{0,4000}?\{ mutation: MUTATION\.WRITE \}/,
     '新建章节是写书操作，必须走 mutation:write（跨窗口拦截 / 书架刷新）'
   );
   assert.match(main, /captureLib\.splitRecordTitle\(text\)/, '章名 / 正文规则由主进程 core/capture.js 统一算');

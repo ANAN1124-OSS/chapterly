@@ -120,6 +120,13 @@ const ipcBookData = require('./ipc/book-data');
 const ipcProofread = require('./ipc/proofread');
 const ipcExport = require('./ipc/export');
 const ipcSave = require('./ipc/save');
+// I6（三审）：书域 mutation 的取值只有 ipc/book-mutations.js 一份常量表。capture:commit-record 以前
+// 是全仓唯一手写 mutation 字面量的注册点（口径分叉而不是漏标）—— 现在与各域模块同源，
+// 新增 / 改名词条时只改表，不会再出现「一处字面量对不上表」的静默漂移。
+const { MUTATION } = require('./ipc/book-mutations');
+// I7（三审）：软错误包络的唯一构造器 + 频道清单（成功回包里的「这次没做成」统一成
+// { ok:false, code, message }，既有 saved / draft / removed / added 判别字段作为附加字段保留）。
+const { softFailure } = require('./ipc/soft-error');
 
 // ---------- 启动参数：隔离用的 --user-data ----------
 // A2（审计 #8 / E3）：这段从文件顶部（原来的 :31-40）挪到 core 模块 require 之后、app ready 之前。
@@ -1812,10 +1819,14 @@ function registerIpc() {
     const numeric = Number(id);
     const session = flowSession();
     const windowId = session ? session.id : null;
-    if (!Number.isFinite(numeric)) return { removed: false };
+    // I7（三审）：软错误统一成 { ok:false, code, message }（removed:false 作为附加字段保留）。
+    // 以前坏 id 连 code 都没有，调用方只能靠「removed 不是 true」猜。
+    if (!Number.isFinite(numeric)) {
+      return softFailure('QUEUE_BAD_ID', '这条复制记录的编号不合法，没有删除', { removed: false });
+    }
     const round = Math.round(numeric);
     if (!captureQueue.canAccess(round, windowId)) {
-      return { removed: false, code: 'QUEUE_FOREIGN_WINDOW' };
+      return softFailure('QUEUE_FOREIGN_WINDOW', '这条复制记录属于另一个窗口，没有删除', { removed: false });
     }
     return { removed: captureQueue.remove(round) };
   });
@@ -1909,7 +1920,7 @@ function registerIpc() {
       statsError,
       queueRemoved
     };
-  }, { mutation: 'write' });
+  }, { mutation: MUTATION.WRITE });
 
   // 每本书的显示设置覆盖（写作页里改的字体/背景/间距/章节栏宽度只影响这本书）
   handle('book:get-display', async (bookId) => {
@@ -2213,9 +2224,14 @@ function registerIpc() {
   // 开关没开时 crash:draft 直接回 { saved:false }，目录 / 标记 / 草稿一个字节都不写。
   handle('crash:draft', async (payload) => {
     const cfg = await getConfig();
-    if (!cfg || cfg.crashDraftEnabled !== true) return { saved: false, code: 'DISABLED' };
+    // I7（三审）：软错误统一成 { ok:false, code, message }（saved:false 作为附加字段保留）。
+    if (!cfg || cfg.crashDraftEnabled !== true) {
+      return softFailure('DISABLED', '崩溃草稿是关着的（可以在设置里打开），这次没有写草稿', { saved: false });
+    }
     const store = getCrashDraftStore();
-    if (!store) return { saved: false, code: 'DRAFT_UNAVAILABLE' };
+    if (!store) {
+      return softFailure('DRAFT_UNAVAILABLE', '草稿目录暂时不可用，这次没有写草稿', { saved: false });
+    }
     // 正文上限 / 形状都在 core/crash-draft 里统一清洗（与正文 500 万字同口径），不抛给 IPC 层。
     // S2（一轮）：归属由主进程注入（书 + 章仍是唯一草稿位），渲染层 payload 里带的 owner 一律不采信。
     const session = flowSession();
@@ -2223,7 +2239,8 @@ function registerIpc() {
       ownerToken: crashOwnerToken,
       ownerWindowId: session ? session.id : null
     });
-    if (!result.ok) return { saved: false, code: result.code, message: result.message };
+    // I1（三审）：result.message 已在 core/crash-draft 里过 core/error-text 脱敏（本机路径只留最后一节）。
+    if (!result.ok) return softFailure(result.code, result.message, { saved: false });
     // 同一个草稿位被新正文覆盖：它重新有主了，「已恢复」的标记作废（渲染进程崩溃重载后要能再提示）。
     crashConsumed.delete(result.draftId);
     return { saved: true, draftId: result.draftId, chars: result.chars };
@@ -2245,29 +2262,36 @@ function registerIpc() {
   });
   handle('crash:read-draft', async (draftId) => {
     const cfg = await getConfig();
-    if (!cfg || cfg.crashDraftEnabled !== true) return { draft: null, code: 'DISABLED' };
+    // I7（三审）：软错误统一成 { ok:false, code, message }（draft:null 作为附加字段保留）。
+    if (!cfg || cfg.crashDraftEnabled !== true) {
+      return softFailure('DISABLED', '崩溃草稿是关着的（可以在设置里打开）', { draft: null });
+    }
     const store = getCrashDraftStore();
-    if (!store) return { draft: null, code: 'DRAFT_UNAVAILABLE' };
+    if (!store) return softFailure('DRAFT_UNAVAILABLE', '草稿目录暂时不可用', { draft: null });
     const session = flowSession();
     const windowId = session ? session.id : null;
     const result = await store.readDraft(draftId);
-    if (!result.ok) return { draft: null, code: result.code, message: result.message };
+    if (!result.ok) return softFailure(result.code, result.message, { draft: null });
     // S2（一轮）：归属校验 —— 别的窗口写的草稿不许在这里读（正文全文只给写它的窗口 / 崩溃重启后的先来者）。
     if (!crashDraftVisibleTo(result.draft, windowId)) {
-      return { draft: null, code: 'DRAFT_FOREIGN_WINDOW', message: '这份草稿属于另一个窗口，不能在这里恢复' };
+      return softFailure('DRAFT_FOREIGN_WINDOW', '这份草稿属于另一个窗口，不能在这里恢复', { draft: null });
     }
     if (crashConsumedByOtherWindow(result.draft.draftId, windowId)) {
-      return { draft: null, code: 'DRAFT_CONSUMED', message: '这份草稿已经在另一个窗口恢复过了' };
+      return softFailure('DRAFT_CONSUMED', '这份草稿已经在另一个窗口恢复过了', { draft: null });
     }
     return { draft: result.draft };
   });
   handle('crash:discard-draft', async (target) => {
     const cfg = await getConfig();
     // S2（一轮）：与其它 crash 频道统一检查开关 —— 以前 discard 不看开关，关着也能按 id 删草稿。
-    if (!cfg || cfg.crashDraftEnabled !== true) return { ok: false, removed: 0, code: 'DISABLED' };
+    // I7（三审）：早退分支以前没有 ok 键（同频道两种形状），现在与其它软错误一样走 softFailure，
+    // removed:0 作为附加字段保留。
+    if (!cfg || cfg.crashDraftEnabled !== true) {
+      return softFailure('DISABLED', '崩溃草稿是关着的（可以在设置里打开），没有删草稿', { removed: 0 });
+    }
     const store = getCrashDraftStore();
     if (!store || !target || typeof target !== 'object') {
-      return { ok: false, removed: 0, code: 'DRAFT_UNAVAILABLE' };
+      return softFailure('DRAFT_UNAVAILABLE', '草稿目录暂时不可用，没有删草稿', { removed: 0 });
     }
     const session = flowSession();
     const windowId = session ? session.id : null;
@@ -2275,7 +2299,7 @@ function registerIpc() {
       // 归属校验：只有写它的窗口（或崩溃重启后的先来者）能删 / 标记。
       const owner = await store.draftOwner(target.draftId);
       if (owner && !crashDraftVisibleTo(owner, windowId)) {
-        return { ok: false, removed: 0, code: 'DRAFT_FOREIGN_WINDOW', message: '这份草稿属于另一个窗口' };
+        return softFailure('DRAFT_FOREIGN_WINDOW', '这份草稿属于另一个窗口，没有删', { removed: 0 });
       }
       // 旧M4（一轮）：consumed = 「已经交给某扇窗口的编辑区」——只标记、不删文件。
       if (target.consumed === true) {
@@ -2290,7 +2314,7 @@ function registerIpc() {
       const result = await store.removeFor({ bookPath: target.bookPath, chapterId: target.chapterId });
       return result;
     }
-    return { ok: false, removed: 0, code: 'BAD_TARGET' };
+    return softFailure('BAD_TARGET', '没有可删除的草稿目标，没有删草稿', { removed: 0 });
   });
 
   // 正文全文搜索（提案 7.3）：书架搜索升级成能搜正文。

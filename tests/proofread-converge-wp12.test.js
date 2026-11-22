@@ -44,12 +44,14 @@ for (const rule of proofreadLib.RULE_ORDER) RULES_OFF[rule] = false;
 const mkTmp = (prefix = 'cw-wp12-') => tmpCleanup.mkTmp(prefix);
 
 // 最小 host 装配真实 ipc/proofread.js：频道名 → 处理函数（handle / handleBook 不做副作用）。
-function makeHost({ config, proofreadModule = proofreadLib, sensitiveModule = sensitiveLib }) {
+// storageOverrides：只覆盖 storage 的个别方法（I4 的租约 / BOOK_GONE 用例注入「读盘期间删书」），
+// 其余方法仍来自真实 core/storage.js —— 租约表是模块级单例，覆盖层调用的就是同一份。
+function makeHost({ config, proofreadModule = proofreadLib, sensitiveModule = sensitiveLib, storageOverrides = null }) {
   const channels = new Map();
   const host = {
     handle: (channel, handler) => channels.set(channel, handler),
     handleBook: (channel, handler) => channels.set(channel, handler),
-    storage,
+    storage: storageOverrides ? { ...storage, ...storageOverrides } : storage,
     exporter,
     proofreadLib: proofreadModule,
     glossaryLib,
@@ -672,4 +674,76 @@ test('R10：既有 #54 / P-08 静态口径不回退（两处源码闸门同时�
   assert.match(region, /issues\.length >= BOOK_ISSUE_LIMIT/, 'P-08：整本仍按 1500 条明细预算收口');
   assert.match(region, /snippets: false/, 'P-08：预算用完后仍传 snippets:false');
   assert.match(region, /snippetsWanted/, 'P-08：跨章状态仍在');
+});
+
+// I4（三审·低）：整本检查以前没有只读租约 —— 同窗口「校对在飞 → 回书架 → 删书」会把源文件夹
+// 整个搬走，walkChapterTexts 把随后所有 ENOENT 记成「跳过 N 章」，面板给出「完成、0 命中」的
+// 失真完成态。现在与三导出 / 整本复制同一份 beginReadLease：期间删书被拒 READ_LEASE_BUSY，
+// 成功 / 失败都释放；整本书真没了则 BOOK_GONE 整体失败（不再冒充「跳过」）。
+test('I4（三审）：整本检查持只读租约（期间删书被拒），结束即释放', async () => {
+  const dir = await mkTmp();
+  const bookPath = await makeBook(dir, '租约检查 书', ['他说,好。', '他说,好。']);
+  const seen = [];
+  let blocked = null;
+  const channels = makeHost({
+    config: {},
+    storageOverrides: {
+      loadChapterText: async (targetPath, file) => {
+        if (!blocked) {
+          seen.push(storage.isBookReadLeased(targetPath));
+          try {
+            // 读盘期间模拟同窗口「回书架 → 删同书」：删除闸门必须被在途租约拦下
+            storage.assertBookNotBusy(targetPath, 'win-any', 'delete');
+          } catch (err) {
+            blocked = err;
+          }
+        }
+        return storage.loadChapterText(targetPath, file);
+      }
+    }
+  });
+
+  const result = await channels.get('book:proofread')(bookPath, {}, null);
+  assert.equal(result.scope, 'book');
+  assert.ok(blocked, '逐章读盘期间删除必须被拦下');
+  assert.equal(blocked.code, 'READ_LEASE_BUSY');
+  assert.match(blocked.message, /正在被只读长流程使用/);
+  assert.deepEqual(seen, [true], '读盘时租约确实在途');
+  assert.equal(storage.isBookReadLeased(bookPath), false, '检查结束（成功 / 失败）都要释放租约');
+  assert.doesNotThrow(() => storage.assertBookNotBusy(bookPath, 'win-any', 'delete'), '结束后删除闸门恢复');
+
+  // 敏感词整本走同一份租约
+  const wordsPath = path.join(dir, '敏感词.txt');
+  await fs.writeFile(wordsPath, '色情\n', 'utf8');
+  const sensitiveChannels = makeHost({ config: { sensitiveWordsPath: wordsPath } });
+  const sensitive = await sensitiveChannels.get('book:sensitive-check')(bookPath, {}, null);
+  assert.equal(sensitive.scope, 'book');
+  assert.equal(storage.isBookReadLeased(bookPath), false);
+});
+
+test('I4（三审）：整本书在检查途中被删 → BOOK_GONE 整体失败，不再记成「跳过 N 章」', async () => {
+  const dir = await mkTmp();
+  const bookPath = await makeBook(dir, '删书检查 书', ['他说,好。', '他说,好。']);
+  let gone = false;
+  const channels = makeHost({
+    config: {},
+    storageOverrides: {
+      loadChapterText: async (targetPath, file) => {
+        if (!gone) {
+          gone = true;
+          await fs.rm(targetPath, { recursive: true, force: true });
+        }
+        throw Object.assign(new Error(`章节文件不存在：${file}`), { code: 'CHAPTER_MISSING' });
+      }
+    }
+  });
+  await assert.rejects(
+    () => channels.get('book:proofread')(bookPath, {}, null),
+    (err) => {
+      assert.equal(err.code, 'BOOK_GONE', '书没了是整体失败，不是「跳过一章」');
+      assert.match(err.message, /文件夹已经不在了/);
+      return true;
+    }
+  );
+  assert.equal(storage.isBookReadLeased(bookPath), false, '失败路径同样释放租约');
 });

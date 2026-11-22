@@ -123,32 +123,38 @@ function registerBookDataIpc(host) {
   // 清空某一天的每日快照（P22-5）：只把这个目录**移入 Windows 回收站**，绝不硬删。
   // 参数只认快照目录名（storage.snapshotDirForClear 严格校验「快照-YYYYMMDD」+ 日期真实存在 +
   // 必须落在本书 _trash 下），不接受任意路径；校验不过 / 回收站不可用都只报错返回，一个文件都不动。
-  handleBook('book:clear-snapshot-day', async (bookPath, groupName) => {
-    const dir = storage.snapshotDirForClear(bookPath, groupName);
-    let stat;
-    try {
-      stat = await fs.lstat(dir);
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        throw new storage.StorageError('HISTORY_GROUP_MISSING', '这个快照目录已经不存在了');
+  //
+  // I3（三审·低）：书域 mutation 里**唯一**在书锁外执行删除的频道，现在也包进 withBookLock。
+  // 反例：chapter:save 在锁内往 `_trash/快照-YYYYMMDD/` 复制上一版期间，本频道能把该目录整个
+  // 移进回收站 —— 那一次快照复制半途失败 / 新快照随目录被回收。同域删除 / 还原都走 lockedWriteEntry，
+  // 这里补上同一把锁（lstat 校验也在锁内，回收站动作与保存的「复制上一版」不再交错）。
+  handleBook('book:clear-snapshot-day', async (bookPath, groupName) =>
+    storage.withBookLock(bookPath, async () => {
+      const dir = storage.snapshotDirForClear(bookPath, groupName);
+      let stat;
+      try {
+        stat = await fs.lstat(dir);
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          throw new storage.StorageError('HISTORY_GROUP_MISSING', '这个快照目录已经不存在了');
+        }
+        throw err;
       }
-      throw err;
-    }
-    // 联接 / 符号链接不是普通文件夹：宁可不清，也不要把书库外面的东西卷进来
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      throw new storage.StorageError('SNAPSHOT_NOT_DIR', '这个快照不是一个普通文件夹，没有清空');
-    }
-    try {
-      await shell.trashItem(dir);
-    } catch (err) {
-      // 回收站不可用（被策略禁用 / 磁盘问题…）：报错返回，不重试、不降级成硬删
-      throw new storage.StorageError(
-        'SNAPSHOT_TRASH_FAILED',
-        `移入回收站失败，快照没有动：${errorText.describeForUi(err).message}`
-      );
-    }
-    return { dir: path.basename(dir) };
-  }, { mutation: MUTATION.WRITE });
+      // 联接 / 符号链接不是普通文件夹：宁可不清，也不要把书库外面的东西卷进来
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new storage.StorageError('SNAPSHOT_NOT_DIR', '这个快照不是一个普通文件夹，没有清空');
+      }
+      try {
+        await shell.trashItem(dir);
+      } catch (err) {
+        // 回收站不可用（被策略禁用 / 磁盘问题…）：报错返回，不重试、不降级成硬删
+        throw new storage.StorageError(
+          'SNAPSHOT_TRASH_FAILED',
+          `移入回收站失败，快照没有动：${errorText.describeForUi(err).message}`
+        );
+      }
+      return { dir: path.basename(dir) };
+    }), { mutation: MUTATION.WRITE });
 
   // 整本智能排版：预检查只算不写；正式整理逐章写盘（写前把原章节备份到 _trash/整理备份-*）
   // 1.7.2 D4（V40）：同 book:search / book:replace，core 结果里的 skippedTooLarge 原样透传。

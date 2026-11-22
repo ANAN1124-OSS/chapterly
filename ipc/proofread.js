@@ -22,6 +22,8 @@ const { assertHost } = require('../core/assert-host');
 // MAIN-01：本域 2 个 handleBook 都是只读（校对 / 敏感词预检只读正文与书目，全程不写盘），
 // 显式传 READ_ONLY —— 不再靠「省略第三个参数」碰巧只读。
 const { READ_ONLY } = require('./book-mutations');
+// I7（三审）：软错误包络的唯一构造器（成功回包里的「这次没做成」统一成 { ok:false, code, message }）。
+const { softFailure } = require('./soft-error');
 
 const REQUIRED_HOST = [
   'handle',
@@ -148,13 +150,13 @@ function registerProofreadIpc(host) {
     const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
     const stat = await fs.stat(picked).catch(() => null);
     if (!stat || !stat.isFile()) {
-      return { canceled: false, added: false, code: 'WORDLIST_MISSING', message: '这个词表文件不存在（可能被移动或删除了）', ...(await proofreadWordlistInfoNow()) };
+      return { ...softFailure('WORDLIST_MISSING', '这个词表文件不存在（可能被移动或删除了）'), canceled: false, added: false, ...(await proofreadWordlistInfoNow()) };
     }
     if (current.some((item) => pathUtils.pathKey(item) === pathUtils.pathKey(picked))) {
-      return { canceled: false, added: false, code: 'WORDLIST_DUPLICATE', message: '这份词表已经在列表里了', ...(await proofreadWordlistInfoNow()) };
+      return { ...softFailure('WORDLIST_DUPLICATE', '这份词表已经在列表里了'), canceled: false, added: false, ...(await proofreadWordlistInfoNow()) };
     }
     if (current.length >= WORDLIST_MAX) {
-      return { canceled: false, added: false, code: 'WORDLIST_LIMIT', message: `最多 ${WORDLIST_MAX} 份校对词表`, ...(await proofreadWordlistInfoNow()) };
+      return { ...softFailure('WORDLIST_LIMIT', `最多 ${WORDLIST_MAX} 份校对词表`), canceled: false, added: false, ...(await proofreadWordlistInfoNow()) };
     }
     const next = await getConfigStore().set({ proofreadWordlists: [...current, picked] });
     applyConfig(next);
@@ -169,13 +171,13 @@ function registerProofreadIpc(host) {
     // 非 number 一律记 -1（走同一条 WORDLIST_NOT_FOUND，不新增错误码，界面文案不变）。
     const at = typeof index === 'number' && Number.isInteger(index) ? index : -1;
     if (at < 0 || at >= current.length) {
-      return { canceled: false, removed: false, code: 'WORDLIST_NOT_FOUND', message: '这一份词表不在列表里，可能已经被移除了', ...(await proofreadWordlistInfoNow()) };
+      return { ...softFailure('WORDLIST_NOT_FOUND', '这一份词表不在列表里，可能已经被移除了'), canceled: false, removed: false, ...(await proofreadWordlistInfoNow()) };
     }
     // 五-M12（PR-02）：索引只是渲染时看到的列表位置。两次移除交叠（快速连点 / 双窗口）时配置已经
     // 前移，仅判边界会删到下一份。渲染层把「点击时看到的份数」一起发来；对不上就明确拒绝并回最新
     // 列表（渲染层据此重画），绝不再按错位索引 splice。旧调用不带份数时保持既有行为。
     if (Number.isInteger(expectedCount) && expectedCount >= 0 && expectedCount !== current.length) {
-      return { canceled: false, removed: false, code: 'WORDLIST_CHANGED', message: '词表列表已经变了（可能在另一个窗口改过），请确认后再移除', ...(await proofreadWordlistInfoNow()) };
+      return { ...softFailure('WORDLIST_CHANGED', '词表列表已经变了（可能在另一个窗口改过），请确认后再移除'), canceled: false, removed: false, ...(await proofreadWordlistInfoNow()) };
     }
     current.splice(at, 1);
     const next = await getConfigStore().set({ proofreadWordlists: current });
@@ -205,7 +207,8 @@ function registerProofreadIpc(host) {
     const cfg = await getConfig();
     const list = await sensitiveLib.readWordListFile(cfg.sensitiveWordsPath);
     const wordList = sensitiveLib.publicWordListInfo(list);
-    if (!list.ok) return { ok: false, code: list.code, message: list.message, wordList };
+    // I7（三审）：软错误统一成 { ok:false, code, message }（wordList 作为附加字段保留）。
+    if (!list.ok) return softFailure(list.code, list.message, { wordList });
     // 审计修复 #47（E22）：单章预检也先过 core/sensitive.sanitizeOptions（maxIssues 夹紧），
     // 与整本版同一入口口径；scanText 内部还会再兜一次，不依赖调用方。
     const result = sensitiveLib.scanText(text, list.words, sensitiveLib.sanitizeOptions(options));
@@ -231,7 +234,18 @@ function registerProofreadIpc(host) {
         try {
           return { text: (await storage.loadChapterText(bookPath, chapter.file)).text };
         } catch (err) {
-          if (err.code === 'CHAPTER_MISSING') return { missing: true };
+          if (err.code === 'CHAPTER_MISSING') {
+            // I4（三审）：缺一章并跳过是既有语义（书里本来就没有这一章的 txt）；但**整本书都不在了**
+            // 不是「跳过一章」—— 旧实现把删书后的全部 ENOENT 记成 skipped，面板拿到「完成、0 命中、
+            // N 章跳过」的失真完成态。书文件夹没了就整体失败，由面板如实报错。
+            if (!(await storage.exists(bookPath))) {
+              throw new storage.StorageError(
+                'BOOK_GONE',
+                '这本书的文件夹已经不在了（可能刚被删除或移走），这次整本检查已中止'
+              );
+            }
+            return { missing: true };
+          }
           throw err;
         }
       });
@@ -250,168 +264,184 @@ function registerProofreadIpc(host) {
   // 校对整本（提案 5.1）：逐章只读正文，按 core/proofread.js 的规则列出可疑位置；
   // 全程不写盘。当前章未保存的内容用 override 传进来（和导出同一个惯例：只参与这一次检查）。
   // 每章最多保留 maxIssues 条明细，整本明细上限 1500 条，但总数 / 各规则条数照实统计。
+  // I4（三审·低）：整本检查是「逐章读盘」的只读长流程，与三导出 / 整本复制同一份在途租约：
+  // 期间同窗口「回书架 → 删同书」会被 storage.assertBookNotBusy(action=delete) 拒 READ_LEASE_BUSY，
+  // 不再出现「删书后读到一半、面板给出 0 命中 + N 章跳过」的失真完成态。成功 / 失败都在 finally 释放。
   handleBook('book:proofread', async (bookPath, options, override) => {
-    const meta = await storage.readBookMeta(bookPath);
-    // v0.9 C-5：当前章未保存内容（override）先过边界（坏形状当没有；正文超 500 万字拒绝）
-    const safeOverride = ipcLimits.sanitizeOverride(override);
-    const limits = proofreadLib.sanitizeOptions(options);
-    // 1.5.0：规则开关（只在这份请求里生效，不落配置）。sanitizeOptions 只管阈值，
-    // 把清洗后的 rules 拼回去，整本每章用同一份开关。
-    const bookRules = proofreadLib.sanitizeRules(options && options.rules);
-    // 1.7.2 D2（V44）：整本每章共用同一份已清洗词条，proofreadText 不再逐章 sanitize。
-    const chapterOptions = { ...limits, rules: bookRules, entriesSanitized: true };
-    // 校对词表只读一次，整本每章共用（没设置 / 读不了 = 只跑内置规则，面板会提示）
-    // 1.7.0 F3b2：多份词表合并读取；options.enabledLists 只让勾选的那几份参与（缺省全开）。
-    // 1.7.2 D2（V46）：一次读完配置里的全部词表，勾选子集在 core 里内存过滤。
-    const cfg = await getConfig();
-    const words = await glossaryLib.readProofreadWordlistForRequest(cfg, options);
-    const wordList = words.wordList;
-    const customEntries = words.entries;
-    const BOOK_ISSUE_LIMIT = 1500;
-    const byRule = {};
-    for (const rule of proofreadLib.RULE_ORDER) byRule[rule] = 0;
-    const chapters = [];
-    const issues = [];
-    let total = 0;
-    let truncated = false;
-    // B4（v1.8.0 WP-27）：某一章正文超过校对规模闸（core/proofread.js 的 MAX_SOURCE_CHARS）时，
-    // 该章只扫了前缀；整本回包要把「有章节没查全」如实带给面板，不能只说「总数照实统计」。
-    let tooLarge = false;
-    // P-08（1.6.0 A5）：明细预算（1500 条）用完后，后面的章只需要条数 / 各规则计数——
-    // 传 snippets:false 就不再为每条命中拼上下文片段（那些明细反正会被丢掉）。
-    let snippetsWanted = true;
-    // B5（审计 #14）：预算用尽后每章的单章明细额度也降到下限（core 的唯一事实源）——
-    // snippets:false 只省了片段，旧实现仍按默认 maxIssues 为每条规则建 issue 对象再整批丢弃；
-    // 降到下限后每章只建「规则数 × 下限」个对象（多出来的只计数）。
-    const chapterIssueFloor = proofreadLib.OPTION_LIMITS.maxIssues[0];
-    const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
-      const result = proofreadLib.proofreadText(
-        text,
-        snippetsWanted ? chapterOptions : { ...chapterOptions, snippets: false, maxIssues: chapterIssueFloor },
-        customEntries
-      );
-      total += result.total;
-      for (const rule of proofreadLib.RULE_ORDER) byRule[rule] += result.byRule[rule] || 0;
-      if (result.total) {
-        chapters.push({
-          chapterId: chapter.id,
-          chapterIndex: index,
-          name: chapter.name,
-          total: result.total,
-          byRule: result.byRule,
-          truncated: result.truncated
-        });
-      }
-      if (result.truncated) truncated = true;
-      if (result.tooLarge) tooLarge = true;
-      for (const issue of result.issues) {
-        if (issues.length >= BOOK_ISSUE_LIMIT) {
-          truncated = true;
-          break;
+    const releaseLease = storage.beginReadLease(bookPath);
+    try {
+      const meta = await storage.readBookMeta(bookPath);
+      // v0.9 C-5：当前章未保存内容（override）先过边界（坏形状当没有；正文超 500 万字拒绝）
+      const safeOverride = ipcLimits.sanitizeOverride(override);
+      const limits = proofreadLib.sanitizeOptions(options);
+      // 1.5.0：规则开关（只在这份请求里生效，不落配置）。sanitizeOptions 只管阈值，
+      // 把清洗后的 rules 拼回去，整本每章用同一份开关。
+      const bookRules = proofreadLib.sanitizeRules(options && options.rules);
+      // 1.7.2 D2（V44）：整本每章共用同一份已清洗词条，proofreadText 不再逐章 sanitize。
+      const chapterOptions = { ...limits, rules: bookRules, entriesSanitized: true };
+      // 校对词表只读一次，整本每章共用（没设置 / 读不了 = 只跑内置规则，面板会提示）
+      // 1.7.0 F3b2：多份词表合并读取；options.enabledLists 只让勾选的那几份参与（缺省全开）。
+      // 1.7.2 D2（V46）：一次读完配置里的全部词表，勾选子集在 core 里内存过滤。
+      const cfg = await getConfig();
+      const words = await glossaryLib.readProofreadWordlistForRequest(cfg, options);
+      const wordList = words.wordList;
+      const customEntries = words.entries;
+      const BOOK_ISSUE_LIMIT = 1500;
+      const byRule = {};
+      for (const rule of proofreadLib.RULE_ORDER) byRule[rule] = 0;
+      const chapters = [];
+      const issues = [];
+      let total = 0;
+      let truncated = false;
+      // B4（v1.8.0 WP-27）：某一章正文超过校对规模闸（core/proofread.js 的 MAX_SOURCE_CHARS）时，
+      // 该章只扫了前缀；整本回包要把「有章节没查全」如实带给面板，不能只说「总数照实统计」。
+      let tooLarge = false;
+      // P-08（1.6.0 A5）：明细预算（1500 条）用完后，后面的章只需要条数 / 各规则计数——
+      // 传 snippets:false 就不再为每条命中拼上下文片段（那些明细反正会被丢掉）。
+      let snippetsWanted = true;
+      // B5（审计 #14）：预算用尽后每章的单章明细额度也降到下限（core 的唯一事实源）——
+      // snippets:false 只省了片段，旧实现仍按默认 maxIssues 为每条规则建 issue 对象再整批丢弃；
+      // 降到下限后每章只建「规则数 × 下限」个对象（多出来的只计数）。
+      const chapterIssueFloor = proofreadLib.OPTION_LIMITS.maxIssues[0];
+      const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
+        const result = proofreadLib.proofreadText(
+          text,
+          snippetsWanted ? chapterOptions : { ...chapterOptions, snippets: false, maxIssues: chapterIssueFloor },
+          customEntries
+        );
+        total += result.total;
+        for (const rule of proofreadLib.RULE_ORDER) byRule[rule] += result.byRule[rule] || 0;
+        if (result.total) {
+          chapters.push({
+            chapterId: chapter.id,
+            chapterIndex: index,
+            name: chapter.name,
+            total: result.total,
+            byRule: result.byRule,
+            truncated: result.truncated
+          });
         }
-        issues.push({
-          ...issue,
-          chapterId: chapter.id,
-          chapterIndex: index,
-          chapterName: chapter.name
-        });
-      }
-      if (issues.length >= BOOK_ISSUE_LIMIT) snippetsWanted = false;
-    });
-    return {
-      scope: 'book',
-      total,
-      byRule,
-      issues,
-      chapters,
-      chapterCount: meta.chapters.length,
-      // 有问题的章数（chapters 只收有问题的章）
-      chapterHitCount: chapters.length,
-      skippedChapters,
-      truncated: truncated || total > issues.length,
-      // B4（WP-27）：有章节超出校对规模闸（只扫了前缀）→ 面板说明「只校对了前 100 万字」
-      tooLarge,
-      wordList,
-      customWordCount: customEntries.length,
-      options: limits
-    };
+        if (result.truncated) truncated = true;
+        if (result.tooLarge) tooLarge = true;
+        for (const issue of result.issues) {
+          if (issues.length >= BOOK_ISSUE_LIMIT) {
+            truncated = true;
+            break;
+          }
+          issues.push({
+            ...issue,
+            chapterId: chapter.id,
+            chapterIndex: index,
+            chapterName: chapter.name
+          });
+        }
+        if (issues.length >= BOOK_ISSUE_LIMIT) snippetsWanted = false;
+      });
+      return {
+        scope: 'book',
+        total,
+        byRule,
+        issues,
+        chapters,
+        chapterCount: meta.chapters.length,
+        // 有问题的章数（chapters 只收有问题的章）
+        chapterHitCount: chapters.length,
+        skippedChapters,
+        truncated: truncated || total > issues.length,
+        // B4（WP-27）：有章节超出校对规模闸（只扫了前缀）→ 面板说明「只校对了前 100 万字」
+        tooLarge,
+        wordList,
+        customWordCount: customEntries.length,
+        options: limits
+      };
+    } finally {
+      releaseLease();
+    }
   }, READ_ONLY);
 
   // 敏感词预检整本（提案 5.2）：逐章只读磁盘，按作者词表列出命中；全程不写盘。
   // 当前章未保存的内容用 override 传进来（只参与这一次检查，和导出 / 校对同一个惯例）。
   // 每章明细上限由 core/sensitive.js 的 maxIssues 控制，整本明细上限 1500 条，但总数照实统计。
+  // I4（三审·低）：与 book:proofread 同一份在途租约 —— 校对 / 敏感词都是逐章读整本的长流程，
+  // 期间「回书架 → 删同书」必须被 book:delete 的 READ_LEASE_BUSY 闸门拦下。
   handleBook('book:sensitive-check', async (bookPath, options, override) => {
-    const cfg = await getConfig();
-    const list = await sensitiveLib.readWordListFile(cfg.sensitiveWordsPath);
-    const wordList = sensitiveLib.publicWordListInfo(list);
-    if (!list.ok) return { ok: false, code: list.code, message: list.message, wordList };
-    const meta = await storage.readBookMeta(bookPath);
-    // v0.9 C-5：override 与上面校对同一条边界（坏形状当没有；正文超 500 万字拒绝）
-    const safeOverride = ipcLimits.sanitizeOverride(override);
-    const limits = sensitiveLib.sanitizeOptions(options);
-    const matches = [];
-    const chapters = [];
-    const byWordMap = new Map();
-    let total = 0;
-    let truncated = false;
-    // B5（审计 #14）：整本明细预算（1500 条）用完后，后面的章只需要 total / byWord ——
-    // scanText 走 details:false（不建明细 / 不算行号 / 不拼片段），计数口径完全不变。
-    let detailsWanted = true;
-    const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
-      // CTXT-B-01：list.words 是 parseWordList 已清洗过的词表，整本循环里只该洗一次。
-      const result = sensitiveLib.scanText(
-        text,
-        list.words,
-        detailsWanted ? { ...limits, wordsSanitized: true } : { ...limits, details: false, wordsSanitized: true }
-      );
-      total += result.total;
-      for (const item of result.byWord) {
-        byWordMap.set(item.word, (byWordMap.get(item.word) || 0) + item.count);
-      }
-      if (result.total) {
-        chapters.push({
-          chapterId: chapter.id,
-          chapterIndex: index,
-          name: chapter.name,
-          total: result.total,
-          truncated: result.truncated
-        });
-      }
-      if (result.truncated) truncated = true;
-      for (const match of result.issues) {
-        if (matches.length >= sensitiveLib.BOOK_ISSUE_LIMIT) {
-          truncated = true;
-          break;
+    const releaseLease = storage.beginReadLease(bookPath);
+    try {
+      const cfg = await getConfig();
+      const list = await sensitiveLib.readWordListFile(cfg.sensitiveWordsPath);
+      const wordList = sensitiveLib.publicWordListInfo(list);
+      // I7（三审）：软错误统一成 { ok:false, code, message }（wordList 作为附加字段保留）。
+      if (!list.ok) return softFailure(list.code, list.message, { wordList });
+      const meta = await storage.readBookMeta(bookPath);
+      // v0.9 C-5：override 与上面校对同一条边界（坏形状当没有；正文超 500 万字拒绝）
+      const safeOverride = ipcLimits.sanitizeOverride(override);
+      const limits = sensitiveLib.sanitizeOptions(options);
+      const matches = [];
+      const chapters = [];
+      const byWordMap = new Map();
+      let total = 0;
+      let truncated = false;
+      // B5（审计 #14）：整本明细预算（1500 条）用完后，后面的章只需要 total / byWord ——
+      // scanText 走 details:false（不建明细 / 不算行号 / 不拼片段），计数口径完全不变。
+      let detailsWanted = true;
+      const skippedChapters = await walkChapterTexts(bookPath, meta, safeOverride, (text, chapter, index) => {
+        // CTXT-B-01：list.words 是 parseWordList 已清洗过的词表，整本循环里只该洗一次。
+        const result = sensitiveLib.scanText(
+          text,
+          list.words,
+          detailsWanted ? { ...limits, wordsSanitized: true } : { ...limits, details: false, wordsSanitized: true }
+        );
+        total += result.total;
+        for (const item of result.byWord) {
+          byWordMap.set(item.word, (byWordMap.get(item.word) || 0) + item.count);
         }
-        matches.push({
-          ...match,
-          chapterId: chapter.id,
-          chapterIndex: index,
-          chapterName: chapter.name
-        });
-      }
-      if (matches.length >= sensitiveLib.BOOK_ISSUE_LIMIT) detailsWanted = false;
-    });
-    const byWord = Array.from(byWordMap, ([word, count]) => ({ word, count }))
-      .sort((a, b) => b.count - a.count || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0))
-      .slice(0, sensitiveLib.BY_WORD_LIMIT);
-    return {
-      ok: true,
-      scope: 'book',
-      total,
-      matches,
-      byWord,
-      wordHitCount: byWordMap.size,
-      wordCount: list.words.length,
-      chapters,
-      chapterCount: meta.chapters.length,
-      // 有命中的章数（chapters 只收有命中的章）
-      chapterHitCount: chapters.length,
-      skippedChapters,
-      truncated: truncated || total > matches.length,
-      wordList,
-      options: limits
-    };
+        if (result.total) {
+          chapters.push({
+            chapterId: chapter.id,
+            chapterIndex: index,
+            name: chapter.name,
+            total: result.total,
+            truncated: result.truncated
+          });
+        }
+        if (result.truncated) truncated = true;
+        for (const match of result.issues) {
+          if (matches.length >= sensitiveLib.BOOK_ISSUE_LIMIT) {
+            truncated = true;
+            break;
+          }
+          matches.push({
+            ...match,
+            chapterId: chapter.id,
+            chapterIndex: index,
+            chapterName: chapter.name
+          });
+        }
+        if (matches.length >= sensitiveLib.BOOK_ISSUE_LIMIT) detailsWanted = false;
+      });
+      const byWord = Array.from(byWordMap, ([word, count]) => ({ word, count }))
+        .sort((a, b) => b.count - a.count || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0))
+        .slice(0, sensitiveLib.BY_WORD_LIMIT);
+      return {
+        ok: true,
+        scope: 'book',
+        total,
+        matches,
+        byWord,
+        wordHitCount: byWordMap.size,
+        wordCount: list.words.length,
+        chapters,
+        chapterCount: meta.chapters.length,
+        // 有命中的章数（chapters 只收有命中的章）
+        chapterHitCount: chapters.length,
+        skippedChapters,
+        truncated: truncated || total > matches.length,
+        wordList,
+        options: limits
+      };
+    } finally {
+      releaseLease();
+    }
   }, READ_ONLY);
 }
 

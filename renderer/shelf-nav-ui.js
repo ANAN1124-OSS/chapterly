@@ -144,7 +144,9 @@
       $('book-title').textContent = meta.title;
       $('book-title').title = meta.title;
       updateWindowTitle();
-      toast('书名已更新');
+      // N2（二轮·低）：书名超限被截短时明确说明（主进程回包带 titleTruncated，
+      // 限长的唯一事实源在 core/limits.js —— 渲染层不自己算长度）。
+      toast(meta.titleTruncated === true ? '书名已更新（超过上限的部分已截短）' : '书名已更新');
     } catch (err) {
       toast(`改名失败：${err.message}`, 'error');
     }

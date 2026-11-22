@@ -10,6 +10,8 @@ const pathUtils = require('../core/path-utils');
 const glossary = require('../core/glossary');
 const proofread = require('../core/proofread');
 const tmpCleanup = require('./tmp-cleanup');
+// I7（三审）：软错误包络构造器 —— 用真实实现装配 eval 出来的 handler（与 ipc/proofread.js 同源）。
+const { softFailure } = require('../ipc/soft-error');
 
 const readSource = (rel) =>
   require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
@@ -319,6 +321,8 @@ function loadAddWordlistHandler({ picked, config }) {
     'path',
     'WORDLIST_MAX',
     'wordlistKey',
+    // I7（三审）：handler 里的软错误走真实构造器（与产品同源，不再是自拼形状）
+    'softFailure',
     `return (${arrow});`
   )(
     async () => ({ canceled: false, filePaths: [picked] }),
@@ -335,7 +339,8 @@ function loadAddWordlistHandler({ picked, config }) {
     path,
     8,
     // 只为让「改前」的旧实现也能跑起来；断言的是调用顺序，不是函数名
-    pathUtils.pathKey
+    pathUtils.pathKey,
+    softFailure
   );
   return { handler, calls };
 }
@@ -352,6 +357,7 @@ test('行为：添加词表先 stat / 判重 / 判上限，再读词表；被拒
       const { handler, calls } = loadAddWordlistHandler({ picked: missing, config: { proofreadWordlists: [] } });
       const res = await handler();
       assert.equal(res.code, 'WORDLIST_MISSING');
+      assert.equal(res.ok, false, 'I7：软错误包络恒带 ok:false');
       assert.equal(res.added, false);
       assert.deepEqual(calls, ['stat', 'info'], '缺失文件：stat 必须先于读词表');
     }
@@ -360,6 +366,7 @@ test('行为：添加词表先 stat / 判重 / 判上限，再读词表；被拒
       const { handler, calls } = loadAddWordlistHandler({ picked: existing, config: { proofreadWordlists: [existing] } });
       const res = await handler();
       assert.equal(res.code, 'WORDLIST_DUPLICATE');
+      assert.equal(res.ok, false, 'I7：软错误包络恒带 ok:false');
       assert.deepEqual(calls, ['stat', 'info'], '重复文件：先 stat → 判重 → 再读词表');
     }
     // ③ 8 份上限：stat 通过 → 判重通过 → 判上限 → 再读词表
@@ -368,6 +375,7 @@ test('行为：添加词表先 stat / 判重 / 判上限，再读词表；被拒
       const { handler, calls } = loadAddWordlistHandler({ picked: existing, config: { proofreadWordlists: full } });
       const res = await handler();
       assert.equal(res.code, 'WORDLIST_LIMIT');
+      assert.equal(res.ok, false, 'I7：软错误包络恒带 ok:false');
       assert.equal(res.message, '最多 8 份校对词表');
       assert.deepEqual(calls, ['stat', 'info'], '到上限：先校验再读词表');
     }
@@ -393,12 +401,15 @@ function loadRemoveWordlistHandler({ config }) {
     'getConfigStore',
     'applyConfig',
     'proofreadWordlistInfoNow',
+    // I7（三审）：软错误走真实构造器（与产品同源）
+    'softFailure',
     `return (${arrow});`
   )(
     async () => config,
     () => ({ set: async (patch) => { writes.push(patch); return { ...config, ...patch }; } }),
     () => {},
-    async () => ({ lists: [], total: 0 })
+    async () => ({ lists: [], total: 0 }),
+    softFailure
   );
   return { handler, writes };
 }
@@ -412,6 +423,7 @@ test('行为：wordlists-remove 先判型再动弹，null / \"\" / false / [] / 
     const res = await handler(bad);
     assert.equal(res.removed, false, '坏索引不许移除：' + String(bad));
     assert.equal(res.code, 'WORDLIST_NOT_FOUND', '坏索引走同一条错误码：' + String(bad));
+    assert.equal(res.ok, false, 'I7：软错误包络恒带 ok:false');
     assert.deepEqual(writes, [], '坏索引一个字节都不写配置：' + String(bad));
   }
   // 真索引照旧：删第 1 份（乙）→ 落盘后替换列表 → 回 removed:true
@@ -435,6 +447,7 @@ test('行为：wordlists-remove 带点击时的份数——错位索引不删错
   const res2 = await second.handler(1, 3);
   assert.equal(res2.removed, false);
   assert.equal(res2.code, 'WORDLIST_CHANGED');
+  assert.equal(res2.ok, false, 'I7：软错误包络恒带 ok:false');
   assert.match(res2.message, /列表已经变了/);
   assert.deepEqual(second.writes, [], '错位索引一个字节都不写配置');
 

@@ -289,7 +289,10 @@ test('R8：main.js commit-record 接线——原文闸在标题拆分 / 写盘�
   const mainSource = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
   const start = mainSource.indexOf("handleBook('capture:commit-record'");
   assert.ok(start > 0, '找不到 capture:commit-record 处理器');
-  const end = mainSource.indexOf("}, { mutation: 'write' });", start);
+  // I6（三审，断言跟错）：mutation 取值收编 ipc/book-mutations.js 常量表后，收尾标记从
+  // `{ mutation: 'write' }` 变成 `{ mutation: MUTATION.WRITE }`。这里切块的锚点跟着换，
+  // 「原文闸在标题拆分 / 写盘之前」的语义一字未动。
+  const end = mainSource.indexOf('}, { mutation: MUTATION.WRITE });', start);
   assert.ok(end > start, '找不到 capture:commit-record 的收尾');
   const block = mainSource.slice(start, end);
 

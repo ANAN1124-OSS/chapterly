@@ -93,6 +93,10 @@
       );
       const lossy = lossyImportNote(imported);
       if (lossy) messages.push(lossy);
+      // N2（二轮·低）：书名字段有上限（core/limits.js），超长文件名导入时标题会被截短 ——
+      // 如实告诉作者，不让「书名怎么变短了」变成谜。
+      const truncatedTitles = imported.filter((book) => book && book.titleTruncated === true).length;
+      if (truncatedTitles) messages.push(`有 ${truncatedTitles} 本书名超过上限，已自动截短`);
     }
     if (skipped.length) {
       messages.push(`跳过 ${skipped.length} 个（${uniqueReasons(skipped, 'reason')}）`);

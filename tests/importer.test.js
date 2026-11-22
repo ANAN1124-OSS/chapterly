@@ -1225,3 +1225,35 @@ test('T4：按原文拆出 20,001 章 → 写盘前拒绝，绝不出保存在�
   // 正好 20,000 条是放行的：只钉纯判定，避免真写两万个章节文件
   assert.equal(limits.chapterCountProblem(limits.MAX_META_CHAPTERS), null);
 });
+
+// N2（二轮·低）：小说 txt 导入的书名与建书 / 改名同一套限长（唯一常量在 core/limits.js）。
+// 文件名可以任意长，但进书目的显示名要截到上限；被截短时回包带 titleTruncated（导入汇总提示作者），
+// 文件夹名仍走 safeFolderName 的 40 字清洗。正常短名的回包形状与改前逐字一致（不多字段）。
+test('N2：超长文件名导入 → 书名截到唯一上限并回报 titleTruncated（文件夹名仍 40 字）', async () => {
+  const limits = require('../core/limits');
+  const base = await mkTmp();
+  const src = path.join(base, '长名来源');
+  await fs.mkdir(src);
+  const longStem = '长'.repeat(limits.MAX_BOOK_TITLE_CHARS + 20);
+  await fs.writeFile(path.join(src, `${longStem}.txt`), '第一章\n正文内容\n', 'utf8');
+  const booksRoot = path.join(base, '书架');
+
+  const res = await importer.importFolders(booksRoot, [src]);
+  assert.equal(res.imported.length, 1);
+  const book = res.imported[0];
+  assert.equal(book.kind, 'novel');
+  assert.equal(book.title.length, limits.MAX_BOOK_TITLE_CHARS, '书名截到 N2 同源上限');
+  assert.equal(book.titleTruncated, true, '被截短要如实回报');
+  const meta = await storage.readBookMeta(book.path);
+  assert.equal(meta.title, book.title, '书目里写的就是截断后的书名');
+  assert.ok(path.basename(book.path).length <= 40, '文件夹名另有 40 字清洗（旧口径不变）');
+
+  // 正常短名：回包不多 titleTruncated 字段（常见情况的形状与改前一致）
+  const shortDir = path.join(base, '短名来源');
+  await fs.mkdir(shortDir);
+  const shortFile = path.join(shortDir, '短篇.txt');
+  await fs.writeFile(shortFile, '第一章\n正文\n', 'utf8');
+  const shortBook = await importer.importNovelFile(booksRoot, shortFile);
+  assert.equal(shortBook.title, '短篇');
+  assert.equal(Object.prototype.hasOwnProperty.call(shortBook, 'titleTruncated'), false, '未被截短不额外加字段');
+});

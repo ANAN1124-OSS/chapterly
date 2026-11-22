@@ -306,6 +306,32 @@ test('R5 IO 失败注入：ENOSPC / EPERM / mkdir 失败不抛、不留临时文
   assert.equal((await readBroken.readDraft('whatever')).ok, false);
 });
 
+// I1（三审·中）：写盘失败的 message 以前是「裸 err.message 截 200 码点」—— EACCES / EBUSY 的
+// Node 原文形如 `EACCES: permission denied, open 'C:\Users\<用户名>\...\draft-x.json'`，会带着
+// 本机绝对路径跨 IPC 进渲染层。现在与 fail() 同走 core/error-text.js：错误码原样、路径只留最后一节。
+test('I1（三审）：安全错误文案走 error-text 脱敏，本机绝对路径不许跨 IPC 回包', async () => {
+  const root = await newRoot();
+  const leakyPath = path.join(root, draftLib.DRAFT_DIR_NAME, 'draft-x.json');
+  const leaky = Object.assign(new Error(`EACCES: permission denied, open '${leakyPath}'`), { code: 'EACCES' });
+  const fsSeam = { ...failingFs(), writeFile: () => Promise.reject(leaky) };
+  const store = storeAt(root, { fs: fsSeam });
+
+  const failed = await store.writeDraft(draft());
+  assert.equal(failed.ok, false);
+  assert.equal(failed.code, 'EACCES', '错误码原样保留（界面按 code 分支）');
+  assert.equal(failed.message.includes(root), false, '本机绝对路径不许原样出现在回包里');
+  assert.equal(failed.message.includes('Users'), false);
+  assert.match(failed.message, /没有访问权限/, '常见文件系统错误码换成中文');
+  assert.match(failed.message, /…\\draft-x\.json$/, '路径只留最后一节');
+
+  // beginSession 的标记写失败走同一条口径（同一个 safeMessage）
+  const began = await store.beginSession();
+  assert.equal(began.ok, false);
+  assert.equal(began.code, 'EACCES');
+  assert.equal(began.message.includes(root), false);
+  assert.match(began.message, /没有访问权限/);
+});
+
 test('R6 极值：2 万字正文 / 含空格中文路径往返；500 万字上限；坏形状拒绝', async () => {
   const root = await newRoot();
   const store = storeAt(root);

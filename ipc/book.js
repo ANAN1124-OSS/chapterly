@@ -130,7 +130,14 @@ function registerBookIpc(host) {
     return data;
   }, READ_ONLY);
   handleBook('book:verify', async (bookPath) => storage.verifyBook(bookPath), READ_ONLY);
-  handleBook('book:rename', async (bookPath, title) => storage.renameBook(bookPath, title), {
+  handleBook('book:rename', async (bookPath, title) => {
+    const meta = await storage.renameBook(bookPath, title);
+    // N2（二轮·低）：限长的唯一入口在 storage（core/limits.js），这里只把「书名被截短」如实
+    // 带回渲染层 —— 请求名非空、保存后的 title 与它不同就是超限截断。渲染层据此提示作者，
+    // 不再静默改名。
+    const requested = String(title == null ? '' : title).trim();
+    return { ...meta, titleTruncated: Boolean(requested) && meta.title !== requested };
+  }, {
     mutation: MUTATION.RENAME
   });
   // 书籍信息（v0.8-3）：作者 / 简介 / 分组 / 标签只写 书目.json 的可选字段，不动书文件夹 / 章节文件。

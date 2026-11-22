@@ -81,7 +81,11 @@ function makeHost(options = {}) {
       calls.discard.push(target);
       // 与主进程 IPC 的真实回执同形：删文件回 { ok:true, removed:N }；
       // S2 / 旧M4：consumed = 只标记「已交给某窗口的编辑区」，文件保留（removed 恒 0）。
-      if (target && target.consumed === true) return { ok: true, consumed: true, removed: 0 };
+      // I7（三审）：consumedResult 可注入「真实 IPC 包络」形状（{ ok:true, data:{…} }）。
+      if (target && target.consumed === true) {
+        if (options.consumedResult) return options.consumedResult;
+        return { ok: true, consumed: true, removed: 0 };
+      }
       if (options.discardResult) return options.discardResult;
       return { ok: true, removed: 1 };
     }
@@ -521,6 +525,51 @@ test('L1：丢弃草稿失败要如实提示（不许假装已经丢掉了）', 
   assert.equal(okCtx.calls.toasts.filter((toast) => toast.kind === 'warn').length, 0, '删成功不打扰');
 });
 
+// I7（三审·低）：主进程的成功回包是 { ok:true, data }，软错误包络（{ ok:false, code, message }）在
+// data 里。旧实现读顶层 result.removed / result.consumed —— 恒 undefined：删成功也提示「没能删掉」、
+// 恢复成功也提示「草稿没标记掉」。这条用例用真实 IPC 形状钉住两个消费点。
+test('I7（三审）：按真实 IPC 形状（{ ok:true, data }）消费包络 —— 删成功 / 标记成功都不误报', async () => {
+  // 丢弃成功：data.removed = 1 → 不许弹「没能删掉」
+  const discardCtx = makeHost({
+    enabled: true,
+    dirty: false,
+    drafts: [draftMeta()],
+    answers: ['discard'],
+    discardResult: { ok: true, data: { ok: true, removed: 1 } }
+  });
+  await crashRecoveryUi.create(discardCtx.host).checkRecovery();
+  assert.equal(discardCtx.calls.toasts.filter((toast) => toast.kind === 'warn').length, 0, '删成功不打扰作者');
+
+  // 丢弃失败：data 里是软错误包络 → 必须如实提示
+  const softFailCtx = makeHost({
+    enabled: true,
+    dirty: false,
+    drafts: [draftMeta()],
+    answers: ['discard'],
+    discardResult: {
+      ok: true,
+      data: { ok: false, code: 'DRAFT_UNAVAILABLE', message: '草稿目录暂时不可用', removed: 0 }
+    }
+  });
+  await crashRecoveryUi.create(softFailCtx.host).checkRecovery();
+  const warn = softFailCtx.calls.toasts.find((toast) => toast.kind === 'warn');
+  assert.ok(warn, 'data.ok === false 是软错误，必须如实提示');
+  assert.match(warn.message, /没能删掉/);
+
+  // 恢复标记成功：data.consumed = true → 恢复提示里不许出现「草稿没标记掉」
+  const restoreCtx = makeHost({
+    enabled: true,
+    dirty: false,
+    drafts: [draftMeta()],
+    answers: ['restore'],
+    consumedResult: { ok: true, data: { ok: true, consumed: true, removed: 0 } }
+  });
+  await crashRecoveryUi.create(restoreCtx.host).checkRecovery();
+  const restoredToast = restoreCtx.calls.toasts.find((toast) => toast.message.includes('已恢复上次崩溃前的正文'));
+  assert.ok(restoredToast, '恢复成功要有提示');
+  assert.equal(restoredToast.message.includes('草稿没标记掉'), false, '标记成功却提示没标记掉 = 误报');
+});
+
 // S2（一轮·中/低）/ T6（三审·中）：崩溃草稿的跨窗口归属。main.js 不能 require（依赖 electron），
 // 这里用机器清单钉住强制点；归属规则本身由 core/crash-draft.js 的 S2 / T6 用例覆盖。
 test('S2 / T6 接线闸门：归属由主进程注入、crash:* 只对本窗口放行、discard 统一看开关', () => {
@@ -546,7 +595,9 @@ test('S2 / T6 接线闸门：归属由主进程注入、crash:* 只对本窗口�
     /handle\('crash:read-draft'[\s\S]{0,1200}?crashDraftVisibleTo\(result\.draft, windowId\)/,
     'crash:read-draft 校验归属（不把别的窗口的未保存正文交给注入的渲染层）'
   );
-  assert.match(mainSrc, /code: 'DRAFT_FOREIGN_WINDOW'/, '跨窗口读 / 删要回明确错误码');
+  // I7（三审，断言跟错）：软错误收编 softFailure 后，错误码以 `softFailure('CODE', …)` 形式出现
+  // （不再是 `code: 'CODE'` 对象字面量）—— 判据仍是「跨窗口读 / 删有明确错误码」。
+  assert.match(mainSrc, /softFailure\('DRAFT_FOREIGN_WINDOW'/, '跨窗口读 / 删要回明确错误码');
   assert.match(
     mainSrc,
     /handle\('crash:discard-draft'[\s\S]{0,600}?crashDraftEnabled !== true/,

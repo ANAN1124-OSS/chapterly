@@ -178,7 +178,7 @@ test('五-M33（IE-02）：导出在途时同一本书的删除被租约拦下�
   assert.equal(res.canceled, false);
   assert.ok(blocked, '导出读正文期间删除必须被拦下（而不是让导出打到一半 CHAPTER_MISSING）');
   assert.equal(blocked.code, 'READ_LEASE_BUSY');
-  assert.match(blocked.message, /正在导出/);
+  assert.match(blocked.message, /正在被只读长流程使用/);
   assert.equal(storage.isBookReadLeased(bookPath), false, '导出结束（成功 / 失败）租约都要释放');
   // 结束之后正常删除闸门不再被拦
   assert.doesNotThrow(() => storage.assertBookNotBusy(bookPath, 'win-any', 'delete'));

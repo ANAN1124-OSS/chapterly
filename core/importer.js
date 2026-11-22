@@ -688,6 +688,11 @@ function assertImportChapterLimits(baseName, parts, { pick = 'body' } = {}) {
 // mode='split'：旧版自动分章（会重排编号），保留兼容。
 async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) {
   const baseName = path.basename(filePath, path.extname(filePath)).trim() || '未命名小说';
+  // N2（二轮·低）：书名与建书 / 改名同源限长（唯一常量在 core/limits.js，按码元截断不切开代理对）。
+  // 文件名本身可以任意长，但「进书目的显示名」必须与书籍信息字段同一口径；文件夹名另走
+  // safeFolderName 的 40 字清洗（两层互不替代）。被截断时回包带 titleTruncated，导入汇总会说明。
+  const bookTitle = limits.limitBookTitle(baseName);
+  const titleTruncated = bookTitle !== baseName;
   // 五-M25（TC-7）：先看大小再读内容，但两件事必须落在同一个句柄上 —— 超大文件连 Buffer 都不分配，
   // 句柄打开后再被追加也按实际读到的字节复核（readImportFile）。
   const buffer = await readImportFile(filePath, baseName);
@@ -818,7 +823,8 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
       // 复验残留（2026-11-22）：同形实现收成 common.newBookId 一份——storage.createBook 与
       // repair 重建也造新 id，三处同源防口径漂移，输出与旧实现逐字同形。
       id: newBookId(),
-      title: baseName,
+      // N2（二轮·低）：书名进书目之前已按 core/limits.js 的唯一限长截过（见函数开头的 bookTitle）。
+      title: bookTitle,
       titleTemplate: chaptersLib.TITLE_TEMPLATE,
       fileSeq: chapterList.length,
       chapters: chapterList,
@@ -836,12 +842,15 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
       mode,
       folder: committed.folder,
       path: committed.path,
-      title: baseName,
+      title: bookTitle,
       chapters: chapterList.length,
       // WP7（X-N1）：导入结果报告判定编码；有替换符时才多 replacements 字段（0 不出现，
       // 保持旧回包形状只多 encoding）。
       encoding: decodedInfo.encoding
     };
+    // N2（二轮·低）：只有真的被截短才多这个字段（常见情况下回包形状与改前逐字一致），
+    // 由导入汇总提示作者「书名超过上限，已自动截短」。
+    if (titleTruncated) result.titleTruncated = true;
     if (decodedInfo.replacements) result.replacements = decodedInfo.replacements;
     // 五-H6（TC-1）：严格 GB18030 命中但反向校验判不清方向（坏字符占比与常用字占比都说明不了
     // 「就是 GBK」）时带 encodingSuspect，由导入界面提示作者核对正文；真 GBK 不再误报。

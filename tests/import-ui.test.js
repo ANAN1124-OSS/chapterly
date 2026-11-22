@@ -154,6 +154,29 @@ test('summarizeImport：有损导入在汇总里点名（WP7 / X-N1），无 rep
   );
 });
 
+// N2（二轮·低）：书名字段有上限（core/limits.js），超长文件名导入时书名会被截短 ——
+// 导入汇总要点出这一点（不静默改名）；没被截短时文案与改前逐字一致。
+test('summarizeImport：书名被截短的导入要点名（N2），未截短时文案不变', () => {
+  const ui = importUi.create(makeHost().host);
+  assert.equal(
+    ui.summarizeImport([{ title: '长'.repeat(80), titleTruncated: true }], [], []),
+    `已导入 1 本：${'长'.repeat(80)}。有 1 本书名超过上限，已自动截短`
+  );
+  assert.equal(
+    ui.summarizeImport(
+      [{ title: '甲', titleTruncated: true }, { title: '乙' }],
+      [],
+      []
+    ),
+    '已导入 2 本：甲、乙。有 1 本书名超过上限，已自动截短'
+  );
+  assert.equal(
+    ui.summarizeImport([{ title: '正常' }], [], []),
+    '已导入 1 本：正常',
+    '未截短时与改前逐字一致'
+  );
+});
+
 test('summarizeImport：跳过原因去重且最多 2 条，失败同样最多 2 条，三段用「。」连接', () => {
   const ui = importUi.create(makeHost().host);
   assert.equal(

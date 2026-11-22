@@ -942,7 +942,13 @@
   async function createBookWithTitle(title) {
     try {
       const data = await call(api.createBook, title);
-      toast(`已创建：${data.meta.title}`);
+      // N2（二轮·低）：书名超限被截短时明确说明（限长唯一源在主进程 core/limits.js，
+      // 渲染层不自己算长度，只消费 titleTruncated）。
+      toast(
+        data.titleTruncated
+          ? `已创建：${data.meta.title}（书名太长，已自动截短）`
+          : `已创建：${data.meta.title}`
+      );
       await refreshShelf();
       await openBookByPath(data.path);
     } catch (err) {

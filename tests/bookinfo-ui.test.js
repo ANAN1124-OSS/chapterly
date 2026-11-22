@@ -132,7 +132,8 @@ function build(options = {}) {
     async createBook(title) {
       calls.createBook.push(title);
       if (options.createError) throw new Error(options.createError);
-      return { path: '/书库/新书', meta: { title } };
+      // N2（二轮·低）：主进程在书名被截短时回 titleTruncated（长名 → 上限），渲染层据此提示。
+      return { path: '/书库/新书', meta: { title }, ...(options.createTitleTruncated ? { titleTruncated: true } : {}) };
     },
     async setConfig(patch) {
       calls.setConfig.push(patch);
@@ -688,6 +689,17 @@ test('renderShelf：没有搜索词时显示「＋ 新建一本书」卡；点�
   cancel.ui.renderShelf();
   await cancel.dom.map.get('book-grid').children.find((c) => c.className.includes('new-book'))._fire('click');
   assert.deepEqual(cancel.calls.createBook, []);
+});
+
+// N2（二轮·低）：书名超过上限时主进程回 titleTruncated，渲染层要明确告诉作者「已截短」，
+// 不能静默改成一个更短的书名（限长的唯一事实源在主进程 core/limits.js）。
+test('createBookWithTitle：书名被截短 → toast 明确说明（不静默改名）', async () => {
+  const ctx = build({ createTitleTruncated: true });
+  const longTitle = '书'.repeat(120);
+  await ctx.ui.createBookWithTitle(longTitle);
+  assert.deepEqual(ctx.calls.toast, [[`已创建：${longTitle}（书名太长，已自动截短）`, undefined]]);
+  assert.equal(ctx.calls.refreshShelf, 1);
+  assert.deepEqual(ctx.calls.openBookByPath, ['/书库/新书']);
 });
 
 test('createBookWithTitle：主进程失败 → toast「新建失败：」', async () => {

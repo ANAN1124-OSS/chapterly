@@ -20,6 +20,8 @@ const crypto = require('node:crypto');
 const pathUtils = require('./path-utils');
 // I8（三审）：正文上限的唯一事实源（与 chapter:save 同一条口径）。
 const limits = require('./limits');
+// I1（三审）：错误文案脱敏的唯一出口（与 main.js 的 fail() 同一份 core/error-text.js）。
+const errorText = require('./error-text');
 
 const DRAFT_DIR_NAME = 'crash-drafts';
 const SESSION_FILE_NAME = 'session.json';
@@ -39,9 +41,13 @@ const MAX_CHAPTER_ID_CHARS = 200;
 const MAX_STORED_BYTES = 32 * 1024 * 1024;
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 
+// I1（三审·中）：这里曾经是「裸 err.message 截 200 码点」—— fs 错误的 message 形如
+// `EACCES: permission denied, open 'C:\Users\<用户名>\...\draft-x.json'`，会带着本机绝对路径
+// 跨 IPC 进渲染层，破了 preload.js 头注释里「业务错误文案全脱敏」的红线（渲染层此刻只取 code，
+// 但任何未来消费 message 的改动都会直接暴露路径）。现在走 core/error-text.js 的唯一脱敏出口：
+// 常见文件系统错误码换成中文、路径只留最后一节（`…\draft-x.json`），与 fail() 完全同源。
 function safeMessage(err) {
-  const text = err && typeof err.message === 'string' ? err.message : '';
-  return Array.from(text).slice(0, 200).join('');
+  return errorText.describeForUi(err).message;
 }
 
 function codePointLength(text) {

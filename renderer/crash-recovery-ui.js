@@ -129,11 +129,21 @@
 
     // L1（一轮·低）：删草稿失败不许吞。返回是否真的删掉了，调用方据此给作者如实提示
     // （删不掉 → 下次启动还会再问一次，别让作者以为「已经丢掉了」）。
+    //
+    // I7（三审）：主进程 IPC 的成功回包是 { ok:true, data }，软错误包络（{ ok:false, code, message }）
+    // 在 data 里；旧实现直接读顶层 result.removed —— 恒为 undefined，于是「删不掉」永远被判成失败、
+    // 恢复成功也永远提示「草稿没标记掉」。这里优先读 data，回退扁平形状（自检钩子 / 老宿主仍可用）。
+    function softData(result) {
+      if (!result || typeof result !== 'object') return null;
+      return result.data && typeof result.data === 'object' ? result.data : result;
+    }
+
     async function discardOne(draftId) {
       try {
         const result = await api.discardCrashDraft({ draftId });
         if (!result || result.ok === false) return false;
-        return Number(result.removed) > 0;
+        const data = softData(result);
+        return Number(data && data.removed) > 0;
       } catch {
         return false;
       }
@@ -148,7 +158,10 @@
     async function markConsumed(draftId) {
       try {
         const result = await api.discardCrashDraft({ draftId, consumed: true });
-        return Boolean(result && result.ok !== false && result.consumed === true);
+        if (!result || result.ok === false) return false;
+        // I7（三审）：软错误包络在 data 里（{ ok:false, code, message }）；成功标记是 data.consumed。
+        const data = softData(result);
+        return Boolean(data && data.ok !== false && data.consumed === true);
       } catch {
         return false;
       }

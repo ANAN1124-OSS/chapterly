@@ -24,7 +24,8 @@ function blockOf(marker, endMarker) {
 }
 
 test('MC-2（五-L21）：statsError 只回 describeForUi 的脱敏文案，原始 err.message 不许跨 IPC', () => {
-  const capture = blockOf("handleBook('capture:commit-record'", "}, { mutation: 'write' });");
+  // I6（三审，断言跟错）：mutation 收编常量表后收尾是 `MUTATION.WRITE`（值仍是 'write'）。
+  const capture = blockOf("handleBook('capture:commit-record'", '}, { mutation: MUTATION.WRITE });');
   assert.match(
     capture,
     /statsError = errorText\.describeForUi\(err\)\.message;/,

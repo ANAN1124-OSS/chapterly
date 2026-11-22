@@ -127,7 +127,7 @@ function batchFailure(err, { code, action, notes = [] }) {
 // 补写本身失败（磁盘满 / 书目被外部改）不掩盖原始错误，也不改变错误文案。
 async function persistCharsAfterFailure(bookPath, meta) {
   try {
-    await writeBookMeta(bookPath, meta, { touchUpdatedAt: false, expectedStamp: stampOfMeta(meta) });
+    await writeBookMetaChecked(bookPath, meta, { touchUpdatedAt: false });
   } catch {
     /* 失败路径上尽力而为：原始错误（含已经动了几章、备份在哪）更重要 */
   }
@@ -655,6 +655,22 @@ async function writeBookMeta(
   return next;
 }
 
+// I2（三审·中）：单条 CRUD 的「读时拍身份、写前核对」唯一入口。
+// readBookMeta 返回的 meta 上挂着不可枚举的书目文件身份（BOOK_META_STAMP：size + mtimeMs），
+// 这里把它交给 writeBookMeta 的 expectedStamp —— 与保存链 / 批量类同一条外部改动保护：
+//   · 同步盘 / 记事本 / 另一个实例在「读 meta → 写 meta」的间隙改了书目 → META_CHANGED，
+//     一个字节都不写、.bak 也不轮换，不再用内存快照整份静默覆盖外部那一版；
+//   · .bak 轮换语义不变（structural / rotateBak 原样透传）；
+//   · meta 没有身份（单测直接构造的对象 / 极老调用方）时退回旧行为（expectedStamp:null）。
+// 注意：只有「读-改-写」发生在同一个函数里的单条 CRUD 该走这里；批量 / 整本类在各自的长流程里
+// 显式传 expectedStamp（见 replaceInBook / formatBook / 还原历史），语义相同、入口不同。
+// stamp 只在「要写的 meta 是派生对象」时需要显式给：{ ...meta } / core/chapters 的纯变换
+// （normalizeChapterOrder / updateChapter / insertChapter…）都会新造对象，不可枚举的 Symbol 不会
+// 跟着复制 —— 不显式带过来，写前核对就会退化成「没有身份」（老行为）。
+function writeBookMetaChecked(bookPath, meta, { stamp = null, ...options } = {}) {
+  return writeBookMeta(bookPath, meta, { ...options, expectedStamp: stamp || stampOfMeta(meta) });
+}
+
 async function listTxtFiles(bookPath) {
   let entries;
   try {
@@ -934,7 +950,14 @@ async function listBooks(booksRoot, options = {}) {
 }
 
 async function createBook(booksRoot, title, options = {}) {
-  const displayTitle = String(title == null ? '' : title).trim() || '我的新书';
+  // N2（二轮·低）：书名与作者 / 分组 / 标签等书籍信息字段同一套限长口径（唯一常量在
+  // core/limits.js，按码元截断但不切开代理对）。以前 title 只有 String().trim()，超长书名可以
+  // 原样进 书目.json（32MB 写闸内放行）。被截断时回包带 titleTruncated，渲染层据此明确告诉
+  // 作者「书名太长，已截短」，而不是静默改名。
+  // 注意：文件夹名另有 chapters.safeName 的 40 字清洗（这里只限「书目里的显示名」）。
+  const rawTitle = String(title == null ? '' : title).trim();
+  const displayTitle = limits.limitBookTitle(rawTitle) || '我的新书';
+  const titleTruncated = Boolean(rawTitle) && displayTitle !== rawTitle;
   await ensureDir(booksRoot);
   const base = chaptersLib.safeName(displayTitle);
   let folder = base;
@@ -973,7 +996,7 @@ async function createBook(booksRoot, title, options = {}) {
       createdAt: nowIso()
     };
     const saved = await saveMeta(bookPath, meta, { structural: true });
-    return { path: bookPath, meta: saved };
+    return { path: bookPath, meta: saved, titleTruncated };
   } catch (err) {
     // 1.6.0 A3（审计 E-07）：三步（建目录 / 写空章 / 写书目）任一步失败，把这次刚建的东西收掉，
     // 书架里不留「有文件夹、没书目」的空壳。只删我们自己建的空章 txt 与空目录：
@@ -1133,6 +1156,8 @@ function isBookReadLeased(bookPath) {
 
 // 跨窗口删改拦截：抛出 CROSS_WINDOW_BUSY，由 IPC 统一转成界面提示。
 // 五-M33（IE-02）：删除还要过「只读长流程在途」这一道 —— 导出期间删书会把源文件夹整个搬走。
+// I4（三审）：租约从「三导出 + 整本复制」扩展到整本检查（校对 / 敏感词），所以文案不再写死
+// 「正在导出」——字面上让人以为只有导出会挡删除，正是本批要消除的口径分叉。
 function assertBookNotBusy(bookPath, windowId, action = 'write') {
   const result = openBooksLib.checkMutation({ registry: openBookRegistry, windowId, bookPath, action });
   if (!result.ok) throw new StorageError(result.code, result.message);
@@ -1140,7 +1165,7 @@ function assertBookNotBusy(bookPath, windowId, action = 'write') {
     const label = path.basename(String(bookPath == null ? '' : bookPath)) || '这本书';
     throw new StorageError(
       'READ_LEASE_BUSY',
-      `「${label}」正在导出，已阻止这次删除。请等导出完成后再删。`
+      `「${label}」正在被只读长流程使用（导出 / 整本复制 / 整本检查），已阻止这次删除。请等它完成后再删。`
     );
   }
   return true;
@@ -1241,7 +1266,7 @@ async function createChapterWithText(bookPath, { insertIndex = 0, name = '', tex
     // 指定了卷：插到那一卷的末尾（不按调用方传的下标，避免新章跑到别的卷中间）
     const at = wantedVolume ? chaptersLib.insertIndexForVolume(meta, wantedVolume) : insertIndex;
     const updated = chaptersLib.insertChapter({ ...meta, fileSeq: seq }, at, chapter);
-    const saved = await writeBookMeta(bookPath, chaptersLib.normalizeChapterOrder(updated), { structural: true });
+    const saved = await writeBookMetaChecked(bookPath, chaptersLib.normalizeChapterOrder(updated), { structural: true, stamp: stampOfMeta(meta) });
     return {
       meta: saved,
       chapter,
@@ -1263,7 +1288,7 @@ async function createVolume(bookPath, name) {
   const meta = await readBookMeta(bookPath);
   const volume = { id: chaptersLib.nextVolumeId(meta), name: String(name == null ? '' : name).trim() };
   const updated = chaptersLib.normalizeChapterOrder({ ...meta, volumes: [...meta.volumes, volume] });
-  const saved = await writeBookMeta(bookPath, updated, { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, updated, { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved, volume };
 }
 
@@ -1275,7 +1300,7 @@ async function renameVolume(bookPath, volumeId, name) {
   if (!volumes.some((v) => v.id === volumeId)) {
     throw new StorageError('VOLUME_NOT_FOUND', '卷不存在（可能已被删除）');
   }
-  const saved = await writeBookMeta(bookPath, { ...meta, volumes }, { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, { ...meta, volumes }, { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved };
 }
 
@@ -1289,7 +1314,7 @@ async function deleteVolume(bookPath, volumeId) {
     ...meta,
     volumes: meta.volumes.filter((v) => v.id !== volumeId)
   });
-  const saved = await writeBookMeta(bookPath, updated, { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, updated, { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved, movedChapters: saved.chapters.filter((c) => !c.volumeId).length };
 }
 
@@ -1299,7 +1324,7 @@ async function moveChapterToVolume(bookPath, chapterId, volumeId = null) {
   chapterIndexOrThrow(meta, chapterId);
   const wanted = chaptersLib.sanitizeVolumes(meta.volumes).some((v) => v.id === volumeId) ? volumeId : null;
   const chapters = meta.chapters.map((c) => (c.id === chapterId ? { ...c, volumeId: wanted } : c));
-  const saved = await writeBookMeta(bookPath, chaptersLib.normalizeChapterOrder({ ...meta, chapters }), { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, chaptersLib.normalizeChapterOrder({ ...meta, chapters }), { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved, index: saved.chapters.findIndex((c) => c.id === chapterId) };
 }
 
@@ -1321,7 +1346,7 @@ async function moveChapterTo(bookPath, chapterId, volumeId = null, beforeChapter
   }
   const chapters = rest.slice();
   chapters.splice(Math.max(0, Math.min(at, chapters.length)), 0, chapter);
-  const saved = await writeBookMeta(bookPath, chaptersLib.normalizeChapterOrder({ ...meta, chapters }), { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, chaptersLib.normalizeChapterOrder({ ...meta, chapters }), { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved, index: saved.chapters.findIndex((c) => c.id === chapterId) };
 }
 
@@ -1330,7 +1355,7 @@ async function moveVolume(bookPath, volumeId, toIndex) {
   const meta = await readBookMeta(bookPath);
   const result = chaptersLib.moveVolume(meta, volumeId, toIndex);
   if (!result.moved) return { meta, moved: false, from: result.from, to: result.to };
-  const saved = await writeBookMeta(bookPath, result.meta, { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, result.meta, { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved, moved: true, from: result.from, to: result.to };
 }
 
@@ -1339,7 +1364,7 @@ async function renameChapter(bookPath, chapterId, name) {
   const index = chapterIndexOrThrow(meta, chapterId);
   // I5（三审）：超长章名以前原样进 书目.json（32 MB 写闸内放行）；与建章 / 导入同一条限长。
   const updated = chaptersLib.updateChapter(meta, chapterId, { name: limits.limitChapterName(name) });
-  const saved = await writeBookMeta(bookPath, updated, { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, updated, { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved, chapter: saved.chapters[index] };
 }
 
@@ -1368,7 +1393,7 @@ async function updateChapterMeta(bookPath, chapterId, patch = {}) {
     return { meta, chapter: current, index, changed: false };
   }
   const chapters = meta.chapters.map((c) => (c.id === chapterId ? nextChapter : c));
-  const saved = await writeBookMeta(bookPath, { ...meta, chapters }, { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, { ...meta, chapters }, { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved, chapter: saved.chapters[index], index, changed: true };
 }
 
@@ -1386,7 +1411,7 @@ async function updateBookInfo(bookPath, patch = {}) {
   if (bookInfoLib.sameBookInfo(before, next)) {
     return { meta, info: before, changed: false };
   }
-  const saved = await writeBookMeta(bookPath, bookInfoLib.cleanBookInfo({ ...meta, ...fields }), { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, bookInfoLib.cleanBookInfo({ ...meta, ...fields }), { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved, info: bookInfoLib.readBookInfo(saved), changed: true };
 }
 
@@ -1401,7 +1426,7 @@ async function setChapterNumbering(bookPath, numbering) {
   else delete meta.chapterNumbering;
   // 1.5.0 P0-2：这里就地改了编号方式，卷内章号表的缓存键必须一起失效
   chaptersLib.invalidateChapterNumberCache(meta);
-  const saved = await writeBookMeta(bookPath, meta, { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, meta, { structural: true });
   return { meta: saved, numbering: mode, changed: true };
 }
 
@@ -1507,7 +1532,7 @@ async function deleteChapter(bookPath, chapterId) {
     };
     updated = { ...updated, fileSeq: seq, chapters: [newChapter] };
   }
-  const saved = await writeBookMeta(bookPath, updated, { structural: true }).catch(async (err) => {
+  const saved = await writeBookMetaChecked(bookPath, updated, { structural: true, stamp: stampOfMeta(meta) }).catch(async (err) => {
     // 书目没写成功 = 这次删除没有发生。把刚移走的章节文件放回原处（「不留半成品」）：
     // 不然书目里还有这一章、书文件夹里却没有它，点开就是缺章，作者只能去修书。
     // 「删到空自动补一章」时刚建的那张空章也要先挪走，否则它会占着与原章节同名的位置。
@@ -1662,7 +1687,7 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     const rawIndex = Number(input.index);
     const index = Number.isFinite(rawIndex) ? Math.max(0, Math.min(Math.floor(rawIndex), list.length)) : list.length;
     const updated = chaptersLib.insertChapter({ ...meta, chapters: list }, index, restored);
-    const saved = await writeBookMeta(bookPath, updated, { structural: true });
+    const saved = await writeBookMetaChecked(bookPath, updated, { structural: true, stamp: stampOfMeta(meta) });
     return { meta: saved, index, chapter: restored, autoChapterRemoved: Boolean(autoChapter) };
   } catch (err) {
     // 书目没写成功 = 这次撤销没有发生：刚放回的章节重新移回 _trash，补章也放回原处。
@@ -1706,7 +1731,7 @@ async function moveChapter(bookPath, chapterId, toIndex) {
   const list = meta.chapters.slice();
   const [moved] = list.splice(from, 1);
   list.splice(to, 0, moved);
-  const saved = await writeBookMeta(bookPath, { ...meta, chapters: list }, { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, { ...meta, chapters: list }, { structural: true, stamp: stampOfMeta(meta) });
   return { meta: saved, moved: true, from, to };
 }
 
@@ -2820,7 +2845,7 @@ async function renameBook(bookPath, title) {
   // I5（三审）：书名写盘前与 N2 同源限长（core/limits.js 的 MAX_BOOK_TITLE_CHARS）；
   // 空名 / 全空白仍保持旧行为（不改名），截断只作用于超长名。
   const nextTitle = limits.limitBookTitle(title) || meta.title;
-  const saved = await writeBookMeta(bookPath, { ...meta, title: nextTitle }, { structural: true });
+  const saved = await writeBookMetaChecked(bookPath, { ...meta, title: nextTitle }, { structural: true, stamp: stampOfMeta(meta) });
   return saved;
 }
 
@@ -2873,7 +2898,7 @@ async function setLastOpenChapter(bookPath, chapterId) {
     const index = list.findIndex((chapter) => chapter && chapter.id === chapterId);
     if (index < 0) return { ok: false, code: 'CHAPTER_NOT_FOUND', chapterCount: list.length };
     const changed = meta.lastOpenChapterId !== chapterId;
-    if (changed) await writeBookMeta(bookPath, { ...meta, lastOpenChapterId: chapterId });
+    if (changed) await writeBookMetaChecked(bookPath, { ...meta, lastOpenChapterId: chapterId }, { stamp: stampOfMeta(meta) });
     const chapter = list[index];
     return {
       ok: true,

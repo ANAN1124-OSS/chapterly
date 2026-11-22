@@ -2231,7 +2231,7 @@ test('五-M33（IE-02）：只读长流程租约拦删除不拦保存，释放 /
     () => storage.assertBookNotBusy(bookPath, 'win-1', 'delete'),
     (err) =>
       err.code === 'READ_LEASE_BUSY' &&
-      /正在导出/.test(err.message) &&
+      /正在被只读长流程使用/.test(err.message) &&
       /导出的书/.test(err.message) &&
       !err.message.includes('D:\\书库')
   );
@@ -2386,4 +2386,34 @@ test('I5：书名 / 章名写盘前统一限长（超长截断、空名不改名
   assert.equal(/[\uD800-\uDBFF]$/.test(withEmoji.chapter.name), false, '不能留下孤立高位代理');
   const roundTrip = await storage.readBookMeta(bookPath);
   assert.equal(roundTrip.chapters.some((chapter) => chapter.id === withEmoji.chapter.id), true, '书名 / 章名照样能读回');
+});
+
+// N2（二轮·低）：建书书名与书籍信息字段（作者 80 / 分组 40 / 标签 20 / 简介 1000）同一套限长口径，
+// 唯一常量在 core/limits.js；被截短时回包带 titleTruncated（渲染层据此明确提示，不静默改名）。
+// 文件夹名另有 chapters.safeName 的 40 字清洗，两层互不替代。
+test('N2：建书书名截到唯一上限并回报 titleTruncated；文件夹名仍走 40 字清洗', async () => {
+  const root = await mkTmp();
+  const longTitle = `  ${'书'.repeat(limits.MAX_BOOK_TITLE_CHARS + 20)}  `;
+  const created = await storage.createBook(root, longTitle);
+  assert.equal(created.titleTruncated, true, '超长书名要如实回报被截断');
+  assert.equal(created.meta.title.length, limits.MAX_BOOK_TITLE_CHARS, '书名截到唯一上限');
+  assert.equal(created.meta.title, longTitle.trim().slice(0, limits.MAX_BOOK_TITLE_CHARS));
+  const onDisk = JSON.parse(await fs.readFile(path.join(created.path, '书目.json'), 'utf8'));
+  assert.equal(onDisk.title, created.meta.title, '书目里写的就是截断后的书名');
+  assert.ok(path.basename(created.path).length <= 40, '文件夹名另有 40 字清洗（旧口径不变）');
+
+  const plain = await storage.createBook(root, '  正常书名  ');
+  assert.equal(plain.titleTruncated, false, '正常书名不算截断');
+  assert.equal(plain.meta.title, '正常书名');
+
+  const blank = await storage.createBook(root, '   ');
+  assert.equal(blank.titleTruncated, false, '空名回落「我的新书」，不算截断');
+  assert.equal(blank.meta.title, '我的新书');
+
+  // 截断点落在代理对中间时不留下孤立代理（书目里写进去就再也修不回来）
+  const emoji = `${'字'.repeat(limits.MAX_BOOK_TITLE_CHARS - 1)}𠮷尾`;
+  const emojiBook = await storage.createBook(root, emoji);
+  assert.ok(emojiBook.meta.title.length <= limits.MAX_BOOK_TITLE_CHARS);
+  assert.equal(/[\uD800-\uDBFF]$/.test(emojiBook.meta.title), false, '不能留下孤立高位代理');
+  assert.equal(emojiBook.titleTruncated, true, '代理对回退也算截断');
 });
