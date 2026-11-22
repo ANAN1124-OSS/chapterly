@@ -117,7 +117,8 @@
     ['command-registry.js', 'CWCommandRegistry', 'commandRegistryModule', '命令注册 / 最近使用'],
     ['command-palette-ui.js', 'CWCommandPaletteUi', 'commandPaletteModule', '命令面板界面'],
     ['command-items-ui.js', 'CWCommandItemsUi', 'commandItemsUiModule', '命令面板条目表与数据版本缓存（M1 第 10 轮从编排器搬出）'],
-    ['shortcuts-ui.js', 'CWShortcutsUi', 'shortcutsUiModule', '快捷键提示面板']
+    ['shortcuts-ui.js', 'CWShortcutsUi', 'shortcutsUiModule', '快捷键提示面板'],
+    ['global-keys-ui.js', 'CWGlobalKeysUi', 'globalKeysUiModule', '全局键盘分流链（Esc 链 / 快捷键 / 撤销 / 保存，M1 第 13 轮从编排器搬出）']
   ];
 
   // 取一份「清单驱动的模块表」：全部必需（index.html 无条件加载）；缺一个就把所有缺的名字

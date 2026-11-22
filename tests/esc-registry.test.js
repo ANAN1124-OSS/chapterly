@@ -22,6 +22,9 @@ const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const REGISTRY_SOURCE = read('renderer/esc-registry.js');
 const RENDERER_SOURCE = read('renderer/renderer.js');
+// M1 第 13 轮第七刀：全局 keydown 分流链（Esc 链的调用点 / A5 热路径判据）搬进
+// renderer/global-keys-ui.js；静态闸门跟着实现换读取文件（断言一条没改，计数跨两处）。
+const GLOBAL_KEYS_SOURCE = read('renderer/global-keys-ui.js');
 // WP17 A3 第二刀：关窗清理调用随 handleCloseRequest 迁到 save-chain-ui.js（计数跨两处，总数仍是 1）。
 const SAVE_CHAIN_SOURCE = read('renderer/save-chain-ui.js');
 // WP17 A3 第一刀：章节列表显示层（含筛选框的 Esc 判断）整段迁到 chapter-directory-ui.js。
@@ -413,8 +416,12 @@ test('接线闸门：12 段复制块已收掉，keydown 里不再手写弹层判
     false,
     '卷章目录显示层已整段迁出（A3 第一刀）：renderer.js 不许再留第二份'
   );
-  // Esc 链与关窗清理都必须走注册表，且只调一次
-  assert.equal((RENDERER_SOURCE.match(/escLib\.resolve\(/g) || []).length, 1, 'Esc 链必须只有一处调用注册表');
+  // Esc 链与关窗清理都必须走注册表，且只调一次（Esc 链调用点随 M1 第 13 轮第七刀
+  // 搬进 global-keys-ui.js，计数跨两处，总数仍是 1）
+  assert.equal(
+    ((RENDERER_SOURCE + GLOBAL_KEYS_SOURCE).match(/escLib\.resolve\(/g) || []).length, 1,
+    'Esc 链必须只有一处调用注册表'
+  );
   assert.equal(
     (RENDERER_SOURCE.match(/escLib\.cleanupActions\(/g) || []).length +
       (SAVE_CHAIN_SOURCE.match(/escLib\.cleanupActions\(/g) || []).length,
@@ -485,9 +492,21 @@ test('renderer/esc-registry.js 是纯逻辑：不 require 任何模块，也不�
 // classList 读），打字 / 输入法组字时纯属浪费。改成「Esc 键 / 有锁键层」才现算：非 Esc 键只有锁键层
 // 开着才会被注册表接走（锁键层吞所有键），没有锁键层时 resolve 一定不命中。
 test('热路径闸门（A5/P-09）：非 Esc 键且没有锁键层时不再现算整份 escProbe', () => {
-  const start = RENDERER_SOURCE.indexOf("document.addEventListener('keydown'");
-  assert.ok(start > 0, 'renderer.js 里找不到全局 keydown 监听');
-  const keydown = RENDERER_SOURCE.slice(start);
+  // M1 第 13 轮第七刀：全局 keydown 监听随分流链搬进 renderer/global-keys-ui.js，
+  // 闸门跟着实现读模块源码（判据 / 顺序两条断言一字未改）。
+  assert.equal(
+    RENDERER_SOURCE.includes("document.addEventListener('keydown'"),
+    false,
+    '全局 keydown 只许在 renderer/global-keys-ui.js 里注册'
+  );
+  const start = GLOBAL_KEYS_SOURCE.indexOf('function onKeyDown(event) {');
+  assert.ok(start > 0, 'global-keys-ui.js 里找不到 keydown 分流链函数');
+  assert.match(
+    GLOBAL_KEYS_SOURCE,
+    /function bind\(\) \{\r?\n      document\.addEventListener\('keydown', onKeyDown\);/,
+    '监听必须由 bind() 挂在 document 上'
+  );
+  const keydown = GLOBAL_KEYS_SOURCE.slice(start);
   assert.equal(
     /const escHit = escLib\.resolve\(escProbe\(\), event\.key\)/.test(keydown),
     false,

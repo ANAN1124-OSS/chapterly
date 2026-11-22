@@ -16,6 +16,13 @@ const { loadSourceGate, makeIdEl } = require('./ui-test-preambles');
 
 const ROOT = path.join(__dirname, '..');
 const { rendererCode, indexSrc } = loadSourceGate('undo-action.js');
+// M1 第 13 轮第七刀：全局 keydown 分流链（撤销 / 整理快照 / Ctrl+K 长按）搬进
+// renderer/global-keys-ui.js；下列接线闸门跟着实现换读取文件（断言一条没改）。
+const globalKeysCode = fs
+  .readFileSync(path.join(ROOT, 'renderer', 'global-keys-ui.js'), 'utf8')
+  .replace(/\r\n/g, '\n')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
 // WP17 A3 第二刀：换章作废快照的注入点随载章链迁到 save-chain-ui.js（源码闸门改读模块）。
 const saveChainCode = fs.readFileSync(path.join(ROOT, 'renderer', 'save-chain-ui.js'), 'utf8').replace(/\r\n/g, '\n');
 // WP17 A3 第四刀：删除章 / 撤销登记 / 章节模板的兜底记账随编辑域搬到 chapter-ops-ui.js。
@@ -338,7 +345,11 @@ test('静态闸门：index.html 有撤销条结构，且两个模块排在 rende
 test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清除）都在', () => {
   assert.match(rendererCode, /undoUiModule\.create\(\{ \$, slot: undoActionModule\.createUndoSlot\(\), toast \}\)/);
   assert.match(rendererCode, /undoUi\.setup\(\)/);
-  assert.match(rendererCode, /undoActionModule\.isUndoKey\(event, undoActionModule\.isTypingTarget\(document\.activeElement\)\)/);
+  assert.match(
+    rendererCode + globalKeysCode,
+    /undoActionModule\.isUndoKey\(event, undoActionModule\.isTypingTarget\(document\.activeElement\)\)/,
+    '全局撤销优先分支（M1 第 13 轮第七刀后随 keydown 分流链在 global-keys-ui.js）'
+  );
   assert.match(chapterOpsCode, /function activateDeleteUndo\(info\)/);
   assert.match(chapterOpsCode, /api\.restoreDeletedChapter/);
   assert.match(rendererCode, /if \(view !== 'editor'\) undoUi\.clear\(\)/);
@@ -366,7 +377,7 @@ test('静态闸门：renderer.js 接线（activate / setup / Ctrl+Z / 切书清�
   );
   // 1.5.0 P0-4（E4 / H-1 / H-2 / H-5 / H-9）的接线不许丢：手动关闭、长按不抖、撤销按 id / 邻居重算落点
   assert.match(rendererCode, /'close-undo-bar': \(\) => undoUi\.dismiss\(\)/);
-  assert.match(rendererCode, /!event\.repeat/, 'Ctrl+K 要判 event.repeat（长按不许开-关抖动）');
+  assert.match(rendererCode + globalKeysCode, /!event\.repeat/, 'Ctrl+K 要判 event.repeat（长按不许开-关抖动）');
   assert.match(
     chapterOpsCode,
     /state\.chapters\.findIndex\(\(item\) => item && item\.id === info\.chapter\.id\)/,
@@ -388,7 +399,7 @@ test('静态闸门（V403）：正文 Ctrl+Z 拦截器执行成功后停止冒�
   );
   // document 级那条「整理快照优先」的分支必须还在（只让位，不删除）
   // 审计残留修复 #40（V403）：补了焦点守卫以后条件多一个 !inOtherInput（见下一条静态闸门）
-  assert.match(rendererCode, /if \(!inOtherInput && state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/);
+  assert.match(rendererCode + globalKeysCode, /if \(!inOtherInput && state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/);
 });
 
 // 审计残留修复 #40（V403）：document 级「整理快照优先」的 Ctrl+Z 以前没有焦点守卫 ——
@@ -396,17 +407,17 @@ test('静态闸门（V403）：正文 Ctrl+Z 拦截器执行成功后停止冒�
 // undoUi 分支同一套 isTypingTarget 判据让位；编辑区自己例外（整理快照撤的就是正文）。
 test('静态闸门（V403 / 残留 #40）：整理快照的 Ctrl+Z 有焦点守卫，编辑区里仍生效', () => {
   assert.match(
-    rendererCode,
+    rendererCode + globalKeysCode,
     /const focusEl = document\.activeElement;\r?\n\s+const inOtherInput = focusEl !== editorEl && undoActionModule\.isTypingTarget\(focusEl\);/,
     '先算「焦点在别的输入控件里」（编辑区例外）'
   );
   assert.match(
-    rendererCode,
+    rendererCode + globalKeysCode,
     /if \(!inOtherInput && state\.view === 'editor' && state\.bookPath && undoFormat\(\)\) \{/,
     '守卫通过才允许整理快照抢 Ctrl+Z'
   );
   // 共享判据来自 undo-action.js（与相邻 undoUi 分支同一份实现，不许各写一套 tag 判定）
-  assert.match(rendererCode, /undoActionModule\.isTypingTarget\(focusEl\)/);
+  assert.match(rendererCode + globalKeysCode, /undoActionModule\.isTypingTarget\(focusEl\)/);
   assert.equal(/function isTypingTarget\(/.test(rendererCode), false, 'renderer.js 里不该再有第二份 isTypingTarget');
 });
 

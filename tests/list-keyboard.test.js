@@ -18,6 +18,9 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const listKeyboard = require(path.join(ROOT, 'renderer', 'list-keyboard.js'));
 const INDEX = read('renderer/index.html');
 const RENDERER = read('renderer/renderer.js');
+// M1 第 13 轮第七刀：全局 keydown 分流链（Ctrl+PageUp/PageDown、F2、Ctrl+A 的接线）搬进
+// renderer/global-keys-ui.js；下列接线闸门跟着实现换读取文件（断言一条没改，计数跨两处）。
+const GLOBAL_KEYS = read('renderer/global-keys-ui.js');
 const STYLES = read('renderer/styles.css');
 // 第 4 步九刀·第六刀：书架书卡整段搬到 renderer/bookinfo-ui.js；书卡的 roving / 无障碍属性
 // 从这里读（只改读取路径，断言一条不改）。
@@ -457,15 +460,15 @@ test('U-D12：Ctrl+PageUp/PageDown 算相邻章，首尾不绕回、坏参数收
 });
 
 test('静态闸门：Ctrl+PageUp/PageDown 切章接线（复用 switchChapter，不新增保存语义；只在写作页）', () => {
-  assert.ok(RENDERER.includes('listKeyboard.chapterSwitchTarget('), '相邻章由 list-keyboard 的纯函数算');
+  assert.ok((RENDERER + GLOBAL_KEYS).includes('listKeyboard.chapterSwitchTarget('), '相邻章由 list-keyboard 的纯函数算');
   assert.equal(
-    (RENDERER.match(/chapterSwitchTarget\(/g) || []).length,
+    ((RENDERER + GLOBAL_KEYS).match(/chapterSwitchTarget\(/g) || []).length,
     1,
     '渲染层只调一次（切章逻辑只有一份，模块里定义）'
   );
-  const at = RENDERER.indexOf("event.key === 'PageUp'");
+  const at = (RENDERER + GLOBAL_KEYS).indexOf("event.key === 'PageUp'");
   assert.ok(at > 0, '全局 keydown 要认 PageUp');
-  const seg = RENDERER.slice(at, at + 1200);
+  const seg = (RENDERER + GLOBAL_KEYS).slice(at, at + 1200);
   assert.ok(seg.includes("event.key === 'PageDown'"), '也要认 PageDown');
   assert.ok(seg.includes('state.view !=='), '只在写作页接管（书架 / 阅读页不切章）');
   assert.ok(seg.includes('state.bookPath'), '没打开书时不接管');
@@ -650,17 +653,19 @@ test('静态闸门：渲染层用模块接线，不许自己再抄一套键盘�
 });
 
 test('静态闸门：F2 重命名接线（全局 keydown + 右键菜单键帽 + 键帽靠右布局）', () => {
-  assert.match(RENDERER, /event\.key === 'F2'/, '渲染层要接 F2');
+  assert.match(RENDERER + GLOBAL_KEYS, /event\.key === 'F2'/, '渲染层要接 F2');
   assert.ok(
-    RENDERER.includes('listKeyboard.isTypingTarget(document.activeElement, editorEl)'),
+    (RENDERER + GLOBAL_KEYS).includes('listKeyboard.isTypingTarget(document.activeElement, editorEl)'),
     '焦点在别的输入框里时不抢（编辑区自己除外）'
   );
   assert.ok(
-    RENDERER.includes('listKeyboard.renameTargetIndex(document.activeElement, state.chapters.length, state.index)'),
+    (RENDERER + GLOBAL_KEYS).includes(
+      'listKeyboard.renameTargetIndex(document.activeElement, state.chapters.length, state.index)'
+    ),
     '改哪一条交给纯逻辑按焦点算'
   );
   assert.ok(
-    RENDERER.includes('void renameChapterAt(target)'),
+    (RENDERER + GLOBAL_KEYS).includes('void renameChapterAt(target)'),
     'F2 必须复用现成的 renameChapterAt（不许抄第二份改名逻辑）'
   );
   assert.match(
@@ -927,9 +932,9 @@ test('静态闸门：Shift 扩选 / Ctrl+A 全选接在纯模型上，批量条�
   assert.ok(extendSeg.includes('chapterSelectionLib.extendFocus('), '扩选必须走纯模型的 extendFocus');
   assert.equal(extendSeg.includes('state.selectedIds.add('), false, '不许在渲染层自己算范围');
   assert.equal(extendSeg.includes('slice('), false, '不许在渲染层自己切片');
-  const ctrlAt = RENDERER.indexOf("String(event.key).toLowerCase() === 'a'");
+  const ctrlAt = (RENDERER + GLOBAL_KEYS).indexOf("String(event.key).toLowerCase() === 'a'");
   assert.ok(ctrlAt > 0, '全局 keydown 要认 Ctrl+A');
-  const ctrlSeg = RENDERER.slice(ctrlAt, ctrlAt + 900);
+  const ctrlSeg = (RENDERER + GLOBAL_KEYS).slice(ctrlAt, ctrlAt + 900);
   assert.ok(ctrlSeg.includes("closest('#chapter-list')"), '只在焦点位于章节列表时接管');
   assert.ok(ctrlSeg.includes('chapterSelectionLib.selectAll('), '全选必须走纯模型的 selectAll');
   assert.ok(

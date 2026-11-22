@@ -69,8 +69,12 @@ test('A6：批量删除后的 missed 死逻辑已删，当前章缺失的兜底�
 test('A7：三种焦点归位合并成唯一实现 focusChapterItem，三个落点分支都在', () => {
   // M1 第 10 轮第二刀：命令面板的条目表搬进 renderer/command-items-ui.js，switch ×2 的调用点
   // 按「renderer + 该模块」合并核对（实现本体仍在 renderer.js，只许一份）。
+  // M1 第 13 轮第七刀：Ctrl+PageUp/PageDown 的 switch 调用点随全局 keydown 分流链进
+  // renderer/global-keys-ui.js，读取范围再加该模块（断言一条没改，计数口径仍是「实现只有一份」）。
   const source = stripComments(
-    read('renderer/renderer.js') + '\n' + read('renderer/command-items-ui.js')
+    read('renderer/renderer.js') + '\n' +
+      read('renderer/command-items-ui.js') + '\n' +
+      read('renderer/global-keys-ui.js')
   );
   assert.equal((source.match(/function focusChapterItem\(/g) || []).length, 1, '只许一份焦点归位实现');
   for (const old of ['function focusChapterById(', 'function focusChapterAfterDelete(', 'function focusChapterAfterSwitch(']) {

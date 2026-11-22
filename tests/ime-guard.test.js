@@ -48,17 +48,24 @@ test('静态闸门：五个消费者都走共享函数，没有第二份 event.i
     'command-palette-ui.js': read('command-palette-ui.js'),
     'bookinfo-ui.js': read('bookinfo-ui.js'),
     // WP17 A3 第三刀：书架搜索框的 Enter 判断随 bindShelfEvents 迁到 shelf-view-ui.js。
-    'shelf-view-ui.js': read('shelf-view-ui.js')
+    'shelf-view-ui.js': read('shelf-view-ui.js'),
+    // M1 第 13 轮第七刀：全局 keydown 分流链（含 Ctrl+K 的取反判据）搬进 global-keys-ui.js。
+    'global-keys-ui.js': read('global-keys-ui.js')
   };
   for (const [file, src] of Object.entries(consumers)) {
     const code = codeOf(src);
     assert.equal(code.includes('event.isComposing'), false, `${file} 里还有手写的 event.isComposing`);
     assert.match(code, /imeGuard\.isImeComposing\(event\)/, `${file} 没接共享守卫`);
   }
-  // renderer.js 的 4 处提交键（目录筛选框已随模块迁走、书架搜索随 A3-B 迁到 shelf-view-ui.js）：
-  // 全局 Enter 兜底 / 跳章 / 书目筛选 / Ctrl+K（其中 Ctrl+K 是取反）；两个模块各 1 处。
+  // renderer.js 的 1 处提交键：跳章输入框（全局 Enter 兜底 / ? / Ctrl+K 随 M1 第 13 轮第七刀
+  // 搬进 global-keys-ui.js，下面按模块计数，断言一条没放宽）；另两个模块各 1 / 2 处。
   const rendererCode = codeOf(consumers['renderer.js']);
-  assert.equal(rendererCode.split('imeGuard.isImeComposing(event)').length - 1, 4, 'renderer.js 的 4 处提交键');
+  assert.equal(rendererCode.split('imeGuard.isImeComposing(event)').length - 1, 1, 'renderer.js 剩跳章输入框 1 处');
+  assert.equal(
+    codeOf(consumers['global-keys-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
+    3,
+    '全局分流链的 3 处提交键（Enter 兜底 / ? / Ctrl+K 取反）随实现搬进 global-keys-ui.js'
+  );
   assert.equal(
     codeOf(consumers['shelf-view-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
     2,
@@ -70,7 +77,13 @@ test('静态闸门：五个消费者都走共享函数，没有第二份 event.i
     2,
     '命令面板的 Enter 与 Esc 都走共享守卫（RSHE-C-02）'
   );
-  assert.equal(rendererCode.split('!imeGuard.isImeComposing(event)').length - 1, 1, 'Ctrl+K 的取反判据');
+  // M1 第 13 轮第七刀：Ctrl+K 的取反判据跟着分流链搬进 global-keys-ui.js（合计仍是 1 处）。
+  assert.equal(
+    codeOf(consumers['global-keys-ui.js']).split('!imeGuard.isImeComposing(event)').length - 1,
+    1,
+    'Ctrl+K 的取反判据（global-keys-ui.js）'
+  );
+  assert.equal(rendererCode.split('!imeGuard.isImeComposing(event)').length - 1, 0, 'renderer.js 不再有取反判据');
   assert.equal(
     codeOf(consumers['chapter-directory-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
     1,

@@ -18,6 +18,9 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (relative) => fs.readFileSync(path.join(ROOT, relative), 'utf8');
 const RENDERER = read(path.join('renderer', 'renderer.js'));
+// M1 第 13 轮第七刀：全局 keydown 分流链（含 Ctrl+PageUp/PageDown 切章）搬进 global-keys-ui.js，
+// 这条静态闸门跟着实现换读取文件（断言一条没改）。
+const GLOBAL_KEYS = read(path.join('renderer', 'global-keys-ui.js'));
 // WP17 A3 第二刀：切章后记「上次打开的章」随载章链迁到 save-chain-ui.js。
 const SAVE_CHAIN = read(path.join('renderer', 'save-chain-ui.js'));
 const DRAG_SORT = read(path.join('renderer', 'drag-sort-ui.js'));
@@ -109,9 +112,9 @@ test('B1 关键链：三处 .then 都有 .catch（回书架 / 切章 / 删章）
     /void backToShelf\(\)\s*\n?\s*\.then\(\(\) => onImportClick\(\)\)\s*\n?\s*\.catch\(\(err\) => reportChainFailure\('返回书架失败', err\)\);/,
     'backToShelf().then(...) 必须补 .catch'
   );
-  // 2) Ctrl+PageUp / PageDown 切章
+  // 2) Ctrl+PageUp / PageDown 切章（M1 第 13 轮第七刀：随全局 keydown 分流链进 global-keys-ui.js）
   assert.match(
-    RENDERER,
+    RENDERER + GLOBAL_KEYS,
     /void switchChapter\(target\)[\s\S]{0,220}?\.catch\(\(err\) => reportChainFailure\('切换章节失败', err\)\)/,
     'switchChapter(target).then(...) 必须补 .catch'
   );

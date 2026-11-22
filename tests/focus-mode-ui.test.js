@@ -30,6 +30,9 @@ test.after(() => {
 
 const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
+// M1 第 13 轮第七刀：全局 keydown 分流链（F11 接线）搬进 renderer/global-keys-ui.js，
+// 这条接线闸门跟着实现换读取文件（断言一条没改）。
+const globalKeysSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'global-keys-ui.js'), 'utf8');
 const indexSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'focus-mode-ui.js'), 'utf8');
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
@@ -430,8 +433,8 @@ test('静态闸门：renderer.js 不再内嵌专注模式实现，只剩装配�
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
   assert.equal(rendererSrc.split('setupFocusModeUi();').length - 1, 1, 'setup 只调一次');
-  // F11 / Esc / 视图切换 / 编辑区事件仍按名字取
-  assert.match(rendererSrc, /event\.key === 'F11'/);
+  // F11 / Esc / 视图切换 / 编辑区事件仍按名字取（F11 随全局 keydown 分流链在 global-keys-ui.js）
+  assert.match(rendererSrc + globalKeysSrc, /event\.key === 'F11'/);
   assert.match(rendererSrc, /'exit-focus': \(\) => setFocusMode\(false\),/);
   assert.match(rendererSrc, /setFocusMode\(false, \{ restore: false \}\)/);
   assert.match(rendererSrc, /if \(focusActive\(\) && state\.focus\.typewriter\) scheduleTypewriterAlign\(30\);/);

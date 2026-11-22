@@ -442,7 +442,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   留在编排器，但按「nextOpenSeq / currentOpenSeq / setOpeningBook」活绑定注入即可，模块不碰 DOM 之外的状态；
   //   开书 IPC 的 E2E 延迟注入由 openBookOp 承接（testOpenBook 仍在编排器）。装配点放在 bindEvents 之前
   //   （host 依赖 renderChapterList / clearFindSession / stopTtsForChapterChange 等装配较晚的 const）。
-  const RENDERER_LINE_MEASURED = 4061; // 2026-11-22 实测（第 12 轮 M1 第六刀拆出 open-book-flow-ui 之后；split 口径）
+  // M1 第七刀（第 13 轮）：全局 keydown 分流链（输入法守卫 / Esc 链 / 快捷键一览 / 命令面板 /
+  //   F11·F3·F2 / 段落导航 / 复制本章 / Ctrl+A / 切章 / 跳章 / 查找 / 撤销 / Ctrl+S·Ctrl+N，178 行）
+  //   整段搬进 renderer/global-keys-ui.js（行为锚点 tests/global-keys-ui.test.js）。注册点仍在
+  //   bindEvents 原位（同层监听器顺序不变），编排器只留一次 create + 一行 bind() → 3902。
+  const RENDERER_LINE_MEASURED = 3902; // 2026-11-22 实测（第 13 轮 M1 第七刀拆出 global-keys-ui 之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(
