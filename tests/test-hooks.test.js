@@ -424,9 +424,12 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   renderer/toast-ui.js（行为锚点 tests/toast-ui.test.js），编排器只留同名转发 → 4546。
   // M1 第二刀（第 10 轮）：命令面板条目表 + 数据版本缓存（commandItemsForPalette / buildCommandItems /
   //   markCommandsDirty）整段搬进 renderer/command-items-ui.js（行为锚点 tests/command-items-ui.test.js）
-  //   → 4473。注：这里比的是 rendererSrc.split(/\r?\n/).length（文件末尾换行会多算一个空段），
+  //   → 4473。
+  // M1 第三刀（第 11 轮）：「一键整理本书」的整段编排（runFormatBook：预检查 / 长操作锁 / 收尾三路
+  //   分流 / 10 秒撤销）搬进 renderer/format-book-ui.js（行为锚点 tests/format-book-ui.test.js）→ 4355。
+  //   注：这里比的是 rendererSrc.split(/\r?\n/).length（文件末尾换行会多算一个空段），
   //   所以数值比「内容行数」大 1；余量 2 行的语义不变。
-  const RENDERER_LINE_MEASURED = 4473; // 2026-11-22 实测（第 10 轮 M1 第二刀拆出 command-items-ui 之后）
+  const RENDERER_LINE_MEASURED = 4355; // 2026-11-22 实测（第 11 轮 M1 第三刀拆出 format-book-ui 之后）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(

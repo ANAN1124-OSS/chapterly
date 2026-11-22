@@ -161,18 +161,22 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
+// M1 第 11 轮第三刀：整本整理的撤销随实现搬进 renderer/format-book-ui.js；
+// 两条撤销仍各核一次 / 各记一次指纹（下面两个计数合并读取范围，总数断言不变）。
+const formatBookSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'format-book-ui.js'), 'utf8');
+const undoJoin = rendererSrc + formatBookSrc;
 const historySrc = fs.readFileSync(path.join(ROOT, 'renderer', 'history-ui.js'), 'utf8');
 const indexSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 
 test('静态闸门：renderer.js 装配 backup-guard，整本替换备份还原 / 整本整理两条撤销都先核对再还原', () => {
   assert.match(rendererSrc, /const backupGuardModule = window\.CWBackupGuard;/, '必须取 backup-guard.js 的全局');
   assert.match(rendererSrc, /const backupGuard = backupGuardModule\.create\(\{ call, api \}\);/, '必须装配 guard');
-  const verifyCalls = rendererSrc.split('backupGuard.assertUnchanged(').length - 1;
+  const verifyCalls = undoJoin.split('backupGuard.assertUnchanged(').length - 1;
   assert.equal(verifyCalls, 2, '整本替换备份还原 + 整本整理两条撤销各核一次');
-  const fingerprintCalls = rendererSrc.split('backupGuard.fingerprint(').length - 1;
+  const fingerprintCalls = undoJoin.split('backupGuard.fingerprint(').length - 1;
   assert.equal(fingerprintCalls, 2, '两条撤销登记时各记一次指纹');
   for (const undoName of ['undoName', 'backupName']) {
-    const at = rendererSrc.indexOf(`backupGuard.fingerprint(bookPath, ${undoName})`);
+    const at = undoJoin.indexOf(`backupGuard.fingerprint(bookPath, ${undoName})`);
     assert.notEqual(at, -1, `${undoName} 的指纹必须在登记撤销时记`);
   }
 });

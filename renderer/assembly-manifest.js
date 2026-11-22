@@ -94,6 +94,7 @@
     ['find-bookmark-ui.js', 'CWFindBookmarkUi', 'findBookmarkUiModule', '查找书签面板'],
     ['find-ui.js', 'CWFindUi', 'findUiModule', '查找替换面板'],
     ['tidy-card-ui.js', 'CWTidyCardUi', 'tidyCardUiModule', '整理悬浮卡 / 显示菜单'],
+    ['format-book-ui.js', 'CWFormatBookUi', 'formatBookUiModule', '一键整理本书的编排：预检查 / 长操作锁 / 收尾分流 / 撤销（M1 第 11 轮从编排器搬出）'],
     ['settings-ia.js', 'CWSettingsIa', 'settingsIaModule', '设置面板的分区 / 搜索 / 深链'],
     ['settings-ui.js', 'CWSettingsUi', 'settingsUiModule', '设置弹层与数据台账'],
     ['bookinfo-ui.js', 'CWBookinfoUi', 'bookinfoUiModule', '书籍信息弹层 / 书架渲染'],

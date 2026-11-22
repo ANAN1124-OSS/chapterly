@@ -99,8 +99,10 @@ test('C3：拦截的三态形状（ok / canceled / saved）由共享原语产出
 
 test('C3 / 五-H3：还原型撤销闭包执行前核编辑区脏状态（不许拿备份盖掉未保存的字）', () => {
   const guardLine = /if \(state\.dirty\) throw new Error\('编辑区有未保存的修改，请先保存后再撤销'\);/;
+  // M1 第 11 轮第三刀：整本整理那处随实现搬进 renderer/format-book-ui.js；两处合并计数（总数断言不变）。
+  const FORMAT_BOOK_SRC = require('node:fs').readFileSync(path.join(__dirname, '..', 'renderer', 'format-book-ui.js'), 'utf8');
   assert.equal(
-    (RENDERER_SRC.match(/if \(state\.dirty\) throw new Error\('编辑区有未保存的修改，请先保存后再撤销'\);/g) || []).length,
+    ((RENDERER_SRC + FORMAT_BOOK_SRC).match(/if \(state\.dirty\) throw new Error\('编辑区有未保存的修改，请先保存后再撤销'\);/g) || []).length,
     2,
     '渲染层两处还原型撤销（整本替换还原 / 整本整理）都要先核脏'
   );
