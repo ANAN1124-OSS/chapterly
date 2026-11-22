@@ -570,10 +570,14 @@ test('静态闸门：5 个实现已经不在 renderer.js 里，渲染层只剩�
   assert.match(rendererSrc, /\r?\n      ensureSearchIndex,\r?\n/);
   // 审计修复 #9（P1）：首建期搜索即时回 building + 空结果后，进度 done 必须按原查询自动重搜
   //（否则界面提示「建好后自动更新结果」就成了一句空话）。
+  // M1 第十三刀（第 16 轮，断言跟错）：onSearchProgress 订阅整段搬进 renderer/notify-events-ui.js，
+  // 这段 findByRegex 改读模块，并补「编排器里不许再长第二份」的反向断言。
+  const notifySrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'notify-events-ui.js'), 'utf8');
   assert.match(
-    rendererSrc,
+    notifySrc,
     /if \(info\.phase === 'done' && content\.meta && content\.meta\.index && content\.meta\.index\.building\) \{\s*scheduleContentSearch\(\);/
   );
+  assert.equal(rendererSrc.includes('api.onSearchProgress('), false, '编排器只装配，不再自己订阅搜索进度');
 });
 
 test('静态闸门：index.html 在 renderer.js 之前加载 shelf-search-ui.js，且只加载一次', () => {

@@ -421,7 +421,11 @@ function read(rel) {
 test('接线：renderer.js / index.html / 装配清单 / preload / main / E2E 组 83 全接上', () => {
   const renderer = read('renderer/renderer.js');
   assert.match(renderer, /const crashRecoveryUiModule = window\.CWCrashRecoveryUi;/, 'renderer.js 要有模块常量');
-  assert.match(renderer, /crashRecoveryUiModule\.create\(\{/, 'bindEvents 里要 create');
+  assert.match(renderer, /crashRecoveryUiModule\.create\(\{/, '装配区里要 create');
+  // M1 第十三刀（第 16 轮）：实例创建从 bindEvents 提前到装配区（notify-events-ui 的订阅段依赖它），
+  // start() 仍在 bindEvents 原位。
+  const createAt = renderer.indexOf('crashRecoveryUi = crashRecoveryUiModule.create({');
+  assert.ok(createAt > 0 && createAt < renderer.indexOf('  function bindEvents() {'), 'create 要早于 bindEvents（装配区内）');
   assert.match(renderer, /crashRecoveryUi\.start\(\)/, '启动时要 start（周期上报 + 恢复检查）');
   // WP17 A3 第二刀：saveCurrent 整段迁到 save-chain-ui.js；noteSaved 的接点在模块里（按 getter 现取）。
   assert.match(read('renderer/save-chain-ui.js'), /getCrashRecoveryUi\(\)\.noteSaved\(/, '保存成功后要删对应草稿');

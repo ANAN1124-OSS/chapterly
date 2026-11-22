@@ -1,11 +1,12 @@
-/* 主进程 → 渲染层的通知接线（M1 第一轮·低 第八刀：从 renderer.js 的 bindEvents 整段搬出来）。
+/* 主进程 → 渲染层的通知接线（M1 第一轮·低 第八刀从 bindEvents 整段搬出来；第 16 轮第十三刀扩到 14 条）。
  *
  * 为什么搬这一块：bindEvents 里紧挨着「快捷键一览」之后是一整排 api.on* 订阅——导入进度 / 捕获触发 /
- * 剪贴板变化 / 剪贴板入队 / 关窗 / 强制退出 / 命令面板 / 书架变更。它们都是「收到一条主进程通知 →
- * 调一个既有入口 / 出一条既有提示」，没有一条自己写盘、改正文或切章，所以整段搬、不拆。
+ * 剪贴板变化 / 剪贴板入队 / 关窗 / 强制退出 / 命令面板 / 书架变更；第十三刀再把配置变更 / 系统睡眠唤醒 /
+ * 内部错误 / 整本排版进度 / 搜索索引进度并入（崩溃草稿实例的 start() 仍留在编排器原位）。它们都是
+ * 「收到一条主进程通知 → 调一个既有入口 / 出一条既有提示」，没有一条自己写盘、改正文或切章，所以整段搬、不拆。
  *
  * 契约：createNotifyEventsUi(host) 由渲染层调用一次；bind() 只做一件事——按原来的顺序调用
- * host.api 的 8 个 on* 订阅（订阅顺序 = 原 bindEvents 里的注册顺序，别在这里重排）。
+ * host.api 的 14 个 on* 订阅（订阅顺序 = 原 bindEvents 里的注册顺序，别在这里重排）。
  * 模块不反向持有大对象；缺任何一个成员直接抛 TypeError（宁可在启动时炸，也不要到通知到达时才
  * ReferenceError）。
  *
@@ -25,7 +26,11 @@
   const REQUIRED_HOST = [
     'api', 'state', 'toast', 'toastActionable', 'formatCount', 'hasImportProgress',
     'setImportProgressText', 'captureUi', 'hideHeaderMenus', 'handleCloseRequest',
-    'saveCurrent', 'shelfUi', 'openCommandPalette'
+    'saveCurrent', 'shelfUi', 'openCommandPalette',
+    // 第 16 轮第十三刀：配置变更 / 睡眠唤醒 / 内部错误 / 排版进度 / 搜索进度（6 条订阅）
+    'configChangeUi', 'refreshGlobalConfigFromMain', 'handleExternalConfigChange', 'writeTimerUi',
+    'showFormatBookProgress', 'shelfQueryText', 'CONTENT_SEARCH_MIN_CHARS', 'scheduleContentSearch',
+    'renderShelfContent'
   ];
 
   function createNotifyEventsUi(host) {
@@ -34,7 +39,10 @@
     const {
       api, state, toast, toastActionable, formatCount, hasImportProgress,
       setImportProgressText, captureUi, hideHeaderMenus, handleCloseRequest,
-      saveCurrent, shelfUi, openCommandPalette
+      saveCurrent, shelfUi, openCommandPalette,
+      configChangeUi, refreshGlobalConfigFromMain, handleExternalConfigChange, writeTimerUi,
+      showFormatBookProgress, shelfQueryText, CONTENT_SEARCH_MIN_CHARS, scheduleContentSearch,
+      renderShelfContent
     } = host;
 
     // 订阅的函数体与搬前逐字一致（只有自由变量改成 host 解构出来的同名常量）。
@@ -113,6 +121,72 @@
       // 写作页里的窗口不打断作者，回书架时会统一刷新（backToShelf 里本来就会刷新）。
       // B2（WP18）：载荷带 bookPath 只增量换那张书卡；book:delete 删卡；无路径 / 读卡失败才整表（守卫与兜底在 shelf-ui）。
       api.onShelfChanged((payload) => shelfUi.handleShelfChanged(payload).catch(() => {}));
+
+      // ---- M1 第十三刀（第 16 轮）：配置变更 / 睡眠唤醒 / 内部错误 / 排版进度 / 搜索索引进度 ----
+      // 五-M14（SS-11）：主进程的 config:set 现在「非换根也广播」（reason:'config'，带改了哪些顶层键）。
+      // 换根仍走 configChangeUi（刷新配置 + 孤岛提示 + 救稿出口）；非换根只刷新本窗口的 globalConfig，
+      // 再把开着的设置表单重定基（settings-ui 自己判「弹层开着 + 全局作用域 + 保存不在途」）。
+      // 通知是尽力而为：任何一步失败都不阻断正在进行的操作，也不冒充成功。
+      api.onConfigChanged((payload) => {
+        if (!payload || payload.reason !== 'config') {
+          void configChangeUi.handleConfigChanged(payload).catch(() => {});
+          // 换根同样要给开着的设置表单重定基：表单里还留着旧根，保存会把 booksRoot 写回旧根（再广播
+          // 一次 → 对面窗口反而收到孤岛提示）。configChangeUi 自己会忽略坏 payload，这里也先判一次。
+          if (payload && payload.reason === 'booksRoot') void handleExternalConfigChange().catch(() => {});
+          return;
+        }
+        void refreshGlobalConfigFromMain()
+          .then(() => handleExternalConfigChange())
+          .catch(() => {});
+      });
+      // 五-M32（PM-3）：系统睡眠 / 唤醒 → 写作计时先结算再冻结 / 唤醒后从当前时刻续算。
+      // 只影响派生统计（写作时长），不碰正文 / 保存；手动暂停中的计时器不会被自动拉起。
+      api.onPowerSuspend(() => writeTimerUi.handleSystemSuspend());
+      api.onPowerResume(() => writeTimerUi.handleSystemResume());
+      // 主进程内部错误（崩溃 / 未处理的 Promise）：只弹一句固定提示，细节留在日志里（应用不退出，
+      // 作者可以先 Ctrl+S 保存再重启）。E5（一轮·低）：同一错误只提示一次 —— 主进程已按 kind 节流，
+      // 这里是渲染层第二道幂等（同一个 kind|code 在本窗口重出时不再刷 toast）。
+      api.onInternalError((info) => {
+        const key = info ? `${info.kind}|${info.code}` : '';
+        state.lastInternalError = info || null;
+        if (key && key === state.internalErrorKey) return;
+        state.internalErrorKey = key;
+        toast((info && info.message) || '程序遇到一个内部错误，已写进日志。', 'error');
+      });
+
+      // 整本排版进度（主进程逐章汇报，显示在右下角进度条上）
+      api.onFormatProgress((progress) => {
+        if (!state.formatBookRunning) return;
+        if (!progress || !progress.total) return;
+        showFormatBookProgress(
+          `正在整理整本书：${Math.min(progress.done, progress.total)}/${progress.total} 章`
+        );
+      });
+
+      // 正文搜索索引的建 / 校验进度：只更新书架搜索提示（不阻塞任何操作）
+      api.onSearchProgress((info) => {
+        if (!info) return;
+        const content = state.shelfContent;
+        content.indexStatus = {
+          ...(content.indexStatus || {}),
+          building: info.phase !== 'done',
+          books: Number.isFinite(info.books) ? info.books : (content.indexStatus && content.indexStatus.books) || 0,
+          chapters: Number.isFinite(info.chapters)
+            ? info.chapters
+            : (content.indexStatus && content.indexStatus.chapters) || 0,
+          ready: Boolean(content.indexStatus && content.indexStatus.ready),
+          progress: info
+        };
+        if (state.view === 'shelf' && shelfQueryText().length >= CONTENT_SEARCH_MIN_CHARS) {
+          // 审计修复 #9（P1）：首建期搜索立即回 building + 空结果（core/search-index.js 的 search 短路），
+          // 这一轮校验结束就按原查询自动重搜，兑现提示里的「建好后自动更新结果」；其他进度只刷新提示。
+          if (info.phase === 'done' && content.meta && content.meta.index && content.meta.index.building) {
+            scheduleContentSearch();
+          } else {
+            renderShelfContent();
+          }
+        }
+      });
     }
 
     // 注册点由渲染层决定（bindEvents 里与原来同一位置）：订阅顺序 = 原 bindEvents 的注册顺序。

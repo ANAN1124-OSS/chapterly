@@ -634,10 +634,15 @@ test('五-M32 静态闸门：主进程 powerMonitor 广播 → preload 订阅 �
   );
   assert.match(preloadSrc, /onPowerSuspend: \(cb\) => on\('power:suspend', cb\)/, 'preload 暴露 suspend 订阅');
   assert.match(preloadSrc, /onPowerResume: \(cb\) => on\('power:resume', cb\)/, 'preload 暴露 resume 订阅');
-  assert.equal((rendererSrc.match(/api\.onPowerSuspend\(/g) || []).length, 1, 'suspend 只订阅一次');
-  assert.equal((rendererSrc.match(/api\.onPowerResume\(/g) || []).length, 1, 'resume 只订阅一次');
-  assert.match(rendererSrc, /api\.onPowerSuspend\(\(\) => writeTimerUi\.handleSystemSuspend\(\)\)/);
-  assert.match(rendererSrc, /api\.onPowerResume\(\(\) => writeTimerUi\.handleSystemResume\(\)\)/);
+  // M1 第十三刀（第 16 轮，断言跟错）：power:suspend / resume 的订阅整段搬进 renderer/notify-events-ui.js
+  // （行为锚点 tests/notify-events-ui.test.js），编排器只把 writeTimerUi 交给它。
+  const notifySrc = fs.readFileSync(path.join(ROOT, 'renderer', 'notify-events-ui.js'), 'utf8');
+  assert.equal((rendererSrc.match(/api\.onPowerSuspend\(/g) || []).length, 0, '编排器只装配，不再自己订阅');
+  assert.equal((rendererSrc.match(/api\.onPowerResume\(/g) || []).length, 0, '编排器只装配，不再自己订阅');
+  assert.equal((notifySrc.match(/api\.onPowerSuspend\(/g) || []).length, 1, 'suspend 只订阅一次');
+  assert.equal((notifySrc.match(/api\.onPowerResume\(/g) || []).length, 1, 'resume 只订阅一次');
+  assert.match(notifySrc, /api\.onPowerSuspend\(\(\) => writeTimerUi\.handleSystemSuspend\(\)\)/);
+  assert.match(notifySrc, /api\.onPowerResume\(\(\) => writeTimerUi\.handleSystemResume\(\)\)/);
   // F3（三审·中/低）：Windows 锁屏不发 suspend —— lock-screen / unlock-screen 复用同一对冻结 / 续算
   // 事件（Electron 45 的 powerMonitor 在 darwin / win32 都提供这两个事件）。
   assert.match(

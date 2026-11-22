@@ -63,19 +63,23 @@ test('静态闸门（M14/SS-11）：config:set 非换根也广播；渲染层刷
     '换根分支在前、非换根分支在后（现有闸门按这个顺序取清锁 / 广播的位置）'
   );
 
-  // 渲染层：只订阅一次；换根仍交给 configChangeUi；reason 'config' → 刷新全局配置 → 设置表单重定基
-  assert.equal((rendererSrc.match(/api\.onConfigChanged\(/g) || []).length, 1, '只订阅一次');
+  // 渲染层：只订阅一次；换根仍交给 configChangeUi；reason 'config' → 刷新全局配置 → 设置表单重定基。
+  // M1 第十三刀（第 16 轮，断言跟错）：config:changed 订阅整段搬进 renderer/notify-events-ui.js，
+  // 编排器只留 configChangeUi 的装配与 refreshGlobalConfigFromMain（写的是 globalConfig 快照）。
+  const notifySrc = fs.readFileSync(path.join(ROOT, 'renderer', 'notify-events-ui.js'), 'utf8');
+  assert.equal((rendererSrc.match(/api\.onConfigChanged\(/g) || []).length, 0, '编排器只装配，不再自己订阅');
+  assert.equal((notifySrc.match(/api\.onConfigChanged\(/g) || []).length, 1, '只订阅一次');
   assert.match(rendererSrc, /refreshConfig: refreshGlobalConfigFromMain/, '换根路径复用同一份配置刷新');
-  assert.match(rendererSrc, /payload\.reason !== 'config'/, '按 reason 分流');
-  assert.match(rendererSrc, /\.then\(\(\) => handleExternalConfigChange\(\)\)/, '非换根变更要把开着的表单重定基');
+  assert.match(notifySrc, /payload\.reason !== 'config'/, '按 reason 分流');
+  assert.match(notifySrc, /\.then\(\(\) => handleExternalConfigChange\(\)\)/, '非换根变更要把开着的表单重定基');
   // 换根子情形同样要重定基（否则表单里的旧 booksRoot 会被保存写回旧根 → 换根乒乓）
   assert.equal(
-    (rendererSrc.match(/handleExternalConfigChange\(\)/g) || []).length,
+    (notifySrc.match(/handleExternalConfigChange\(\)/g) || []).length,
     2,
     '非换根 + 换根两条 reason 都要给开着的表单重定基'
   );
   assert.match(
-    rendererSrc,
+    notifySrc,
     /if \(payload && payload\.reason === 'booksRoot'\) void handleExternalConfigChange\(\)/,
     '换根分支也要重定基'
   );

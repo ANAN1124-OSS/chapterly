@@ -340,7 +340,7 @@ test('R8（N2）：装配接线——index 顺序 / 清单 / renderer 订阅 / p
   assert.equal(entry[1], 'CWConfigChangeUi');
   assert.equal(entry[2], 'configChangeUiModule');
 
-  // renderer.js：只声明一次、只 create 一次、只订阅一次，payload 交给 handleConfigChanged
+  // renderer.js：只声明一次、只 create 一次；订阅在 notify-events-ui.js 里，payload 交给 handleConfigChanged
   assert.equal((rendererCode.match(/const configChangeUiModule = window\.CWConfigChangeUi;/g) || []).length, 1);
   assert.equal((rendererCode.match(/configChangeUiModule\.create\(/g) || []).length, 1, '只 create 一次');
   assert.match(
@@ -350,9 +350,13 @@ test('R8（N2）：装配接线——index 顺序 / 清单 / renderer 订阅 / p
   );
   assert.match(rendererCode, /rescueCopy: \(mode\) => saveRescueUi\.rescueCopy\(mode\)/, '救稿复用同一份实现');
   assert.match(rendererCode, /goBackToShelf: \(\) => backToShelf\(\)/, '回书架走既有 backToShelf（惰性取，避免 TDZ）');
-  assert.equal((rendererCode.match(/api\.onConfigChanged\(/g) || []).length, 1, '只订阅一次换根通知');
+  // M1 第十三刀（第 16 轮，断言跟错）：config:changed 订阅整段搬进 renderer/notify-events-ui.js，
+  // 编排器只留 configChangeUi 的装配（host 的 refreshConfig 仍指向编排器里的 refreshGlobalConfigFromMain）。
+  const notifySrc = read('renderer/notify-events-ui.js');
+  assert.equal((rendererCode.match(/api\.onConfigChanged\(/g) || []).length, 0, '编排器只装配，不再自己订阅');
+  assert.equal((notifySrc.match(/api\.onConfigChanged\(/g) || []).length, 1, '只订阅一次换根通知');
   assert.match(
-    rendererCode,
+    notifySrc,
     /api\.onConfigChanged\(\(payload\) => \{[\s\S]{0,120}configChangeUi\.handleConfigChanged\(payload\)/,
     '订阅回调必须把 payload 交给 handleConfigChanged'
   );

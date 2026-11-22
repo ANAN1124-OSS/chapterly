@@ -2985,12 +2985,57 @@
     reportChainFailure, openJumpDialog, openFindPanel, undoUi, undoActionModule, undoFormat,
     saveCurrent, createChapterAt
   });
-  // 通知接线（M1 第一轮·低 第八刀）：host 里全是已经初始化的 const / 提升函数——每条订阅仍按原名调用
-  // 既有入口（捕获面板 / 书架刷新 / 关窗询问 / 保存 / 提示条），这里只装配一次；
-  // bind() 在 bindEvents 的原位置调用（订阅顺序不变）。
+  // ---------- M1 第十三刀（第 16 轮）：其余 6 条主进程通知的实例装配 ----------
+  // 为什么提前到这里：配置变更 / 系统睡眠唤醒 / 内部错误 / 排版进度 / 搜索进度这 5 组订阅要搬进
+  // renderer/notify-events-ui.js 的 bind()（接在原有 8 条之后，订阅顺序不变），而 config 订阅依赖
+  // configChangeUi、崩溃草稿实例要在订阅段之前创建 —— 它们的 host 全是本文件闭包里的既有入口，
+  // 与其它装配区模块同属「bindEvents 之前一次装配」。crashRecoveryUi.start() 仍在 bindEvents 原位
+  //（启动 / 恢复检查的时机不变）。
+  // WP6（N2）：别的窗口换了书架根 → 本窗口刷新成新目录的书架；开着旧根的书则一次性提示 +
+  // 救稿出口（同一个根只提示一次，去重在模块闭包里；救稿 / 回书架都复用既有入口）。
+  // 五-M14（SS-11）：本窗口的全局配置快照刷新（config:changed 的两种 reason 共用同一份实现）。
+  // 别的窗口改过设置后不刷新的话，本窗口下一次打开设置会按旧值整份写回（含把书架根换回去）。
+  async function refreshGlobalConfigFromMain() {
+    state.globalConfig = await call(api.getConfig);
+    state.config = effectiveConfig();
+  }
+  const configChangeUi = configChangeUiModule.create({
+    state, openModal, toast,
+    rescueCopy: (mode) => saveRescueUi.rescueCopy(mode),
+    goBackToShelf: () => backToShelf(),
+    refreshShelf: () => refreshShelf(),
+    refreshConfig: refreshGlobalConfigFromMain
+  });
+  // WP5（N1）：崩溃恢复。默认关（开关只在设置里打开）；打开后周期上报未保存正文 +
+  // 启动 / 重载后检查上次崩溃草稿。恢复时正文只进编辑区（仍 dirty），Ctrl+S 才写盘。
+  crashRecoveryUi = crashRecoveryUiModule.create({
+    state, api, editorEl, toast, openModal, chapterTitle, openBookByPath, loadChapterAt,
+    applyRecoveredText: (text) => {
+      // REDT-A-04：崩溃恢复是第三条「程序化写编辑区」的路径，与 insertIntoBody 过同一道闸。
+      // 闸不过就回 { ok:false }，由 crash-recovery-ui 保留草稿并提示稍后再试。
+      const gate = insertGate();
+      if (!gate.ok) return { ok: false, code: gate.code, message: gate.message };
+      // R2（三审）：这条路径是唯一绕过 replaceEditorTextNative 又不记撤销快照的程序化全文写入。
+      // 补一次性快照（与兜底写入同口径）：现在栈是空的、无用户损失，但以后做成「编辑中途可手动重扫」
+      // 时不能静默清空整章撤销历史。
+      const before = editorEl.value;
+      editorEl.value = String(text == null ? '' : text);
+      onEditorInput();
+      recordFallbackWrite({ before, after: editorEl.value, start: 0, label: '恢复崩溃草稿' });
+      return { ok: true };
+    }
+  });
+
+  // 通知接线（M1 第一轮·低 第八刀 + 第 16 轮第十三刀）：host 里全是已经初始化的 const / 提升函数——
+  // 14 条订阅仍按原名调用既有入口（捕获面板 / 书架刷新 / 关窗询问 / 保存 / 提示条 / 配置变更 /
+  // 睡眠唤醒 / 内部错误 / 排版进度 / 搜索进度），这里只装配一次；bind() 在 bindEvents 的原位置调用
+  //（订阅顺序不变）。
   const notifyEventsUi = notifyEventsUiModule.create({
     api, state, toast, toastActionable, formatCount, hasImportProgress, setImportProgressText,
-    captureUi, hideHeaderMenus, handleCloseRequest, saveCurrent, shelfUi, openCommandPalette
+    captureUi, hideHeaderMenus, handleCloseRequest, saveCurrent, shelfUi, openCommandPalette,
+    configChangeUi, refreshGlobalConfigFromMain, handleExternalConfigChange, writeTimerUi,
+    showFormatBookProgress, shelfQueryText, CONTENT_SEARCH_MIN_CHARS, scheduleContentSearch,
+    renderShelfContent
   });
 
   // ---------- 事件绑定 ----------
@@ -3236,106 +3281,9 @@
     //（订阅顺序 = 原 api.on 的调用顺序，同一位置上的监听器追加顺序不变）。
     notifyEventsUi.bind();
 
-  // WP6（N2）：别的窗口换了书架根 → 本窗口刷新成新目录的书架；开着旧根的书则一次性提示 +
-  // 救稿出口（同一个根只提示一次，去重在模块闭包里；救稿 / 回书架都复用既有入口）。
-  // 五-M14（SS-11）：本窗口的全局配置快照刷新（config:changed 的两种 reason 共用同一份实现）。
-  // 别的窗口改过设置后不刷新的话，本窗口下一次打开设置会按旧值整份写回（含把书架根换回去）。
-  async function refreshGlobalConfigFromMain() {
-    state.globalConfig = await call(api.getConfig);
-    state.config = effectiveConfig();
-  }
-  const configChangeUi = configChangeUiModule.create({
-    state, openModal, toast,
-    rescueCopy: (mode) => saveRescueUi.rescueCopy(mode),
-    goBackToShelf: () => backToShelf(),
-    refreshShelf: () => refreshShelf(),
-    refreshConfig: refreshGlobalConfigFromMain
-  });
-  // 五-M14（SS-11）：主进程的 config:set 现在「非换根也广播」（reason:'config'，带改了哪些顶层键）。
-  // 换根仍走 configChangeUi（刷新配置 + 孤岛提示 + 救稿出口）；非换根只刷新本窗口的 globalConfig，
-  // 再把开着的设置表单重定基（settings-ui 自己判「弹层开着 + 全局作用域 + 保存不在途」）。
-  // 通知是尽力而为：任何一步失败都不阻断正在进行的操作，也不冒充成功。
-  api.onConfigChanged((payload) => {
-    if (!payload || payload.reason !== 'config') {
-      void configChangeUi.handleConfigChanged(payload).catch(() => {});
-      // 换根同样要给开着的设置表单重定基：表单里还留着旧根，保存会把 booksRoot 写回旧根（再广播
-      // 一次 → 对面窗口反而收到孤岛提示）。configChangeUi 自己会忽略坏 payload，这里也先判一次。
-      if (payload && payload.reason === 'booksRoot') void handleExternalConfigChange().catch(() => {});
-      return;
-    }
-    void refreshGlobalConfigFromMain()
-      .then(() => handleExternalConfigChange())
-      .catch(() => {});
-  });
-  // 五-M32（PM-3）：系统睡眠 / 唤醒 → 写作计时先结算再冻结 / 唤醒后从当前时刻续算。
-  // 只影响派生统计（写作时长），不碰正文 / 保存；手动暂停中的计时器不会被自动拉起。
-  api.onPowerSuspend(() => writeTimerUi.handleSystemSuspend());
-  api.onPowerResume(() => writeTimerUi.handleSystemResume());
-  // WP5（N1）：崩溃恢复。默认关（开关只在设置里打开）；打开后周期上报未保存正文 +
-  // 启动 / 重载后检查上次崩溃草稿。恢复时正文只进编辑区（仍 dirty），Ctrl+S 才写盘。
-  crashRecoveryUi = crashRecoveryUiModule.create({
-    state, api, editorEl, toast, openModal, chapterTitle, openBookByPath, loadChapterAt,
-    applyRecoveredText: (text) => {
-      // REDT-A-04：崩溃恢复是第三条「程序化写编辑区」的路径，与 insertIntoBody 过同一道闸。
-      // 闸不过就回 { ok:false }，由 crash-recovery-ui 保留草稿并提示稍后再试。
-      const gate = insertGate();
-      if (!gate.ok) return { ok: false, code: gate.code, message: gate.message };
-      // R2（三审）：这条路径是唯一绕过 replaceEditorTextNative 又不记撤销快照的程序化全文写入。
-      // 补一次性快照（与兜底写入同口径）：现在栈是空的、无用户损失，但以后做成「编辑中途可手动重扫」
-      // 时不能静默清空整章撤销历史。
-      const before = editorEl.value;
-      editorEl.value = String(text == null ? '' : text);
-      onEditorInput();
-      recordFallbackWrite({ before, after: editorEl.value, start: 0, label: '恢复崩溃草稿' });
-      return { ok: true };
-    }
-  });
-  crashRecoveryUi.start();
-
-    // 主进程内部错误（崩溃 / 未处理的 Promise）：只弹一句固定提示，细节留在日志里（应用不退出，
-    // 作者可以先 Ctrl+S 保存再重启）。E5（一轮·低）：同一错误只提示一次 —— 主进程已按 kind 节流，
-    // 这里是渲染层第二道幂等（同一个 kind|code 在本窗口重出时不再刷 toast）。
-    api.onInternalError((info) => {
-      const key = info ? `${info.kind}|${info.code}` : '';
-      state.lastInternalError = info || null;
-      if (key && key === state.internalErrorKey) return;
-      state.internalErrorKey = key;
-      toast((info && info.message) || '程序遇到一个内部错误，已写进日志。', 'error');
-    });
-
-    // 整本排版进度（主进程逐章汇报，显示在右下角进度条上）
-    api.onFormatProgress((progress) => {
-      if (!state.formatBookRunning) return;
-      if (!progress || !progress.total) return;
-      showFormatBookProgress(
-        `正在整理整本书：${Math.min(progress.done, progress.total)}/${progress.total} 章`
-      );
-    });
-
-    // 正文搜索索引的建 / 校验进度：只更新书架搜索提示（不阻塞任何操作）
-    api.onSearchProgress((info) => {
-      if (!info) return;
-      const content = state.shelfContent;
-      content.indexStatus = {
-        ...(content.indexStatus || {}),
-        building: info.phase !== 'done',
-        books: Number.isFinite(info.books) ? info.books : (content.indexStatus && content.indexStatus.books) || 0,
-        chapters: Number.isFinite(info.chapters)
-          ? info.chapters
-          : (content.indexStatus && content.indexStatus.chapters) || 0,
-        ready: Boolean(content.indexStatus && content.indexStatus.ready),
-        progress: info
-      };
-      if (state.view === 'shelf' && shelfQueryText().length >= CONTENT_SEARCH_MIN_CHARS) {
-        // 审计修复 #9（P1）：首建期搜索立即回 building + 空结果（core/search-index.js 的 search 短路），
-        // 这一轮校验结束就按原查询自动重搜，兑现提示里的「建好后自动更新结果」；其他进度只刷新提示。
-        if (info.phase === 'done' && content.meta && content.meta.index && content.meta.index.building) {
-          scheduleContentSearch();
-        } else {
-          renderShelfContent();
-        }
-      }
-    });
+    // 崩溃恢复：实例已在装配区创建（M1 第十三刀），start() 保持在原位 —— 周期上报与启动恢复检查的
+    // 时机不变（作者可见的恢复提示仍发生在 bindEvents 完成之后）。
+    crashRecoveryUi.start();
 
     document.addEventListener('click', (event) => {
       if (!event.target.closest('#context-menu') && !event.target.closest('.chapter-item')) hideContextMenu();

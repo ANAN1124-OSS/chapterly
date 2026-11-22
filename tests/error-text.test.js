@@ -280,10 +280,12 @@ test('错误脱敏静态闸门：notifyInternalError 的控制台输出走 descr
 // E5（一轮·低）的渲染层那一半：同一个 kind|code 在本窗口重出时不再刷 toast（第二道幂等）。
 // 主进程节流按时间窗（30 秒），这里按「本窗口见过没有」——两次报错隔着窗口但同一个错，也只提示一次。
 test('错误脱敏静态闸门：渲染层对同一内部错误只提示一次（E5 第二道幂等）', () => {
-  const rendererText = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
-  const start = rendererText.indexOf('api.onInternalError(');
-  assert.notEqual(start, -1, 'renderer.js 必须有 api.onInternalError 订阅');
-  const body = rendererText.slice(start, rendererText.indexOf('});', start) + 3);
+  // M1 第十三刀（第 16 轮，断言跟错）：内部错误订阅整段搬进 renderer/notify-events-ui.js
+  // （行为锚点 tests/notify-events-ui.test.js），幂等键与「先判幂等再 toast」的口径不变。
+  const notifyText = fs.readFileSync(path.join(ROOT, 'renderer', 'notify-events-ui.js'), 'utf8');
+  const start = notifyText.indexOf('api.onInternalError(');
+  assert.notEqual(start, -1, 'renderer/notify-events-ui.js 必须有 api.onInternalError 订阅');
+  const body = notifyText.slice(start, notifyText.indexOf('});', start) + 3);
   // 幂等键是 kind + code（不含 message / 时间戳：同一个错误每次的时间戳都不一样）
   assert.match(body, /info\.kind\}?\|?\$\{info\.code\}|\$\{info\.kind\}\|\$\{info\.code\}/, '幂等键要用 kind|code');
   assert.match(body, /state\.internalErrorKey/, '幂等键要存在 state 上（本窗口内有效）');

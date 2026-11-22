@@ -1,8 +1,9 @@
 // M1（第一轮·低，第 14 轮第八刀）：主进程 → 渲染层通知接线的**行为**锚点。
 //
 // 背景：renderer.js 的 bindEvents 里紧挨着「快捷键一览」之后是一整排 api.on* 订阅——导入进度 /
-// 捕获触发 / 剪贴板变化 / 剪贴板入队 / 关窗 / 强制退出 / 命令面板 / 书架变更。它们都是
-// 「收到一条主进程通知 → 调一个既有入口 / 出一条既有提示」，第 14 轮把整段搬进
+// 捕获触发 / 剪贴板变化 / 剪贴板入队 / 关窗 / 强制退出 / 命令面板 / 书架变更；第 16 轮第十三刀再把
+// 配置变更 / 系统睡眠唤醒 / 内部错误 / 整本排版进度 / 搜索索引进度这 6 条并入。它们都是
+// 「收到一条主进程通知 → 调一个既有入口 / 出一条既有提示」，实现整段在
 // renderer/notify-events-ui.js（renderer.js 只留一次装配 + bind()）。
 // 这里用假 api + 假 host 把每条订阅的分流、提前返回与文案逐条钉住，再用机器清单钉
 // 「实现只有一份、index.html 的加载顺序、编排器的接线都到位、订阅顺序没被重排」。
@@ -22,7 +23,14 @@ const CHANNELS = [
   'onCloseRequested',
   'onForceClose',
   'onCommandPalette',
-  'onShelfChanged'
+  'onShelfChanged',
+  // 第 16 轮第十三刀（接在原有 8 条之后，顺序 = 原 bindEvents 的注册顺序）
+  'onConfigChanged',
+  'onPowerSuspend',
+  'onPowerResume',
+  'onInternalError',
+  'onFormatProgress',
+  'onSearchProgress'
 ];
 
 // ------------------------------------------------------------------ 假 host
@@ -81,7 +89,30 @@ function makeHost(options = {}) {
         if (options.shelfRejects) throw new Error('刷新失败');
       }
     },
-    openCommandPalette: record('openCommandPalette')
+    openCommandPalette: record('openCommandPalette'),
+    // 第 16 轮第十三刀：配置变更 / 睡眠唤醒 / 内部错误 / 排版进度 / 搜索进度
+    configChangeUi: {
+      handleConfigChanged: async (payload) => {
+        calls.push(['handleConfigChanged', payload]);
+        if (options.configRejects) throw new Error('配置刷新失败');
+      }
+    },
+    refreshGlobalConfigFromMain: async () => {
+      calls.push(['refreshGlobalConfigFromMain']);
+      if (options.refreshRejects) throw new Error('刷新失败');
+    },
+    handleExternalConfigChange: async () => {
+      calls.push(['handleExternalConfigChange']);
+    },
+    writeTimerUi: {
+      handleSystemSuspend: () => calls.push(['handleSystemSuspend']),
+      handleSystemResume: () => calls.push(['handleSystemResume'])
+    },
+    showFormatBookProgress: record('showFormatBookProgress'),
+    shelfQueryText: () => (options.shelfQuery === undefined ? '关键词' : options.shelfQuery),
+    CONTENT_SEARCH_MIN_CHARS: 2,
+    scheduleContentSearch: record('scheduleContentSearch'),
+    renderShelfContent: record('renderShelfContent')
   };
   Object.assign(host, options.overrides || {});
   const ui = notifyEvents.create(host);
@@ -112,7 +143,7 @@ test('host 契约：缺任何一个成员都当场抛 TypeError（不等到通�
   assert.throws(() => notifyEvents.create(), /createNotifyEventsUi 需要 host 对象/);
   assert.throws(() => notifyEvents.create(null), /createNotifyEventsUi 需要 host 对象/);
   assert.equal(new Set(notifyEvents.REQUIRED_HOST).size, notifyEvents.REQUIRED_HOST.length, '成员清单不许重复');
-  assert.equal(notifyEvents.REQUIRED_HOST.length, 13, '成员清单数量变了（新增 / 删除请同步本闸门）');
+  assert.equal(notifyEvents.REQUIRED_HOST.length, 22, '成员清单数量变了（新增 / 删除请同步本闸门）');
 });
 
 test('create() 只建对象、不订阅；bind() 才订阅（订阅一次、顺序与原来一致）', () => {
@@ -301,8 +332,101 @@ test('书架变更：交给 shelfUi.handleShelfChanged；失败静默（不阻�
   assert.deepEqual(namesOf(rejected.calls), ['handleShelfChanged'], '刷新失败要吞掉（原 .catch(() => {})），否则会变成未处理拒绝');
 });
 
+// ------------------------------------------------------------------ 第 16 轮第十三刀：其余 6 条
+test('配置变更：换根 → configChangeUi + 表单重定基；非换根先刷新快照；坏载荷只交给 configChangeUi', async () => {
+  const root = makeHost();
+  root.emit('onConfigChanged', { reason: 'booksRoot', booksRoot: 'D:/新书架' });
+  await flush();
+  assert.deepEqual(namesOf(root.calls), ['handleConfigChanged', 'handleExternalConfigChange'], '换根：先提示孤岛 / 救稿出口，再给表单重定基');
+
+  const plain = makeHost();
+  plain.emit('onConfigChanged', { reason: 'config', changed: ['theme'] });
+  await flush();
+  assert.deepEqual(namesOf(plain.calls), ['refreshGlobalConfigFromMain', 'handleExternalConfigChange'], '非换根：先刷新 globalConfig 快照再重定基');
+
+  const bad = makeHost();
+  bad.emit('onConfigChanged', null);
+  await flush();
+  assert.deepEqual(namesOf(bad.calls), ['handleConfigChanged'], '坏载荷也交给模块自己忽略（这里不许抛）');
+
+  const rejected = makeHost({ refreshRejects: true });
+  rejected.emit('onConfigChanged', { reason: 'config' });
+  await flush();
+  assert.deepEqual(namesOf(rejected.calls), ['refreshGlobalConfigFromMain'], '刷新失败就到此为止（通知是尽力而为）');
+});
+
+test('系统睡眠 / 唤醒：交给写作计时结算与续算（不碰正文）', () => {
+  const h = makeHost();
+  h.emit('onPowerSuspend');
+  h.emit('onPowerResume');
+  assert.deepEqual(namesOf(h.calls), ['handleSystemSuspend', 'handleSystemResume']);
+});
+
+test('内部错误：同一个 kind|code 只提示一次；不同 kind 各提示一次；负载缺失走固定文案', () => {
+  const h = makeHost();
+  h.emit('onInternalError', { kind: 'unhandled', code: 'E1', message: '主进程内部错误' });
+  assert.deepEqual(h.calls, [['toast', '主进程内部错误', 'error']]);
+  assert.equal(h.host.state.lastInternalError.code, 'E1', '仍要记录最近一次内部错误（细节不丢）');
+  h.emit('onInternalError', { kind: 'unhandled', code: 'E1', message: '第二次' });
+  assert.equal(h.calls.length, 1, '同一个 kind|code 在本窗口不再刷 toast');
+  h.emit('onInternalError', { kind: 'render', code: 'E1', message: '另一类' });
+  assert.equal(h.calls.length, 2, 'kind 不同算不同错误');
+  h.emit('onInternalError', null);
+  assert.deepEqual(h.calls[2], ['toast', '程序遇到一个内部错误，已写进日志。', 'error'], '没有负载时走固定文案');
+});
+
+test('整本排版进度：只在整理进行中显示；done 超过 total 时夹紧；没有 total 不显示', () => {
+  const idle = makeHost({ state: { formatBookRunning: false } });
+  idle.emit('onFormatProgress', { done: 1, total: 3 });
+  assert.deepEqual(idle.calls, [], '没在整理就忽略');
+
+  const running = makeHost({ state: { formatBookRunning: true } });
+  running.emit('onFormatProgress', { done: 1, total: 3 });
+  assert.deepEqual(running.calls, [['showFormatBookProgress', '正在整理整本书：1/3 章']]);
+  running.calls.length = 0;
+  running.emit('onFormatProgress', { done: 9, total: 3 });
+  assert.deepEqual(running.calls, [['showFormatBookProgress', '正在整理整本书：3/3 章']], 'done 超过 total 时夹紧');
+  running.calls.length = 0;
+  running.emit('onFormatProgress', { done: 2 });
+  assert.deepEqual(running.calls, [], '没有 total 不算进度');
+});
+
+test('搜索索引进度：合并 indexStatus；书架 + 查询够长时 done 分支自动重搜，其余只刷新提示', () => {
+  const make = (meta) => makeHost({ state: { view: 'shelf', shelfContent: { indexStatus: { books: 3 }, meta } } });
+  const building = make({ index: { building: true } });
+  building.emit('onSearchProgress', { phase: 'scan', books: 5, chapters: 9 });
+  assert.deepEqual(namesOf(building.calls), ['renderShelfContent'], '普通进度只刷新提示');
+  assert.deepEqual(
+    building.host.state.shelfContent.indexStatus,
+    { books: 5, chapters: 9, building: true, ready: false, progress: { phase: 'scan', books: 5, chapters: 9 } },
+    'indexStatus 要把进度合并进去（旧字段保留）'
+  );
+
+  const done = make({ index: { building: true } });
+  done.emit('onSearchProgress', { phase: 'done' });
+  assert.deepEqual(namesOf(done.calls), ['scheduleContentSearch'], '首建完成 → 按原查询自动重搜');
+  assert.equal(done.host.state.shelfContent.indexStatus.building, false, 'done 要把 building 置回 false');
+  assert.equal(done.host.state.shelfContent.indexStatus.books, 3, '没带数字时保留旧值');
+
+  const refreshed = make({});
+  refreshed.emit('onSearchProgress', { phase: 'done' });
+  assert.deepEqual(namesOf(refreshed.calls), ['renderShelfContent'], '已建好（不是首建中）只刷新提示');
+
+  const short = makeHost({ state: { view: 'shelf', shelfContent: { meta: {} } }, shelfQuery: '关' });
+  short.emit('onSearchProgress', { phase: 'done' });
+  assert.deepEqual(short.calls, [], '查询不到阈值不刷新（不打断作者）');
+
+  const editor = makeHost({ state: { view: 'editor', shelfContent: { meta: {} } } });
+  editor.emit('onSearchProgress', { phase: 'done' });
+  assert.deepEqual(editor.calls, [], '不在书架不刷新');
+
+  const none = makeHost({ state: { view: 'shelf', shelfContent: { meta: {} } } });
+  none.emit('onSearchProgress', null);
+  assert.deepEqual(none.calls, [], '没有负载直接忽略');
+});
+
 // ------------------------------------------------------------------ 机器清单
-test('静态闸门：8 条订阅只有模块一份，编排器只剩装配与 bind()', () => {
+test('静态闸门：14 条订阅只有模块一份，编排器只剩装配与 bind()', () => {
   const { rendererSrc, indexSrc, moduleSrc, moduleCode } = loadSourceGate('notify-events-ui.js');
   for (const channel of CHANNELS) {
     assert.equal(
@@ -320,6 +444,13 @@ test('静态闸门：8 条订阅只有模块一份，编排器只剩装配与 bi
   assert.match(rendererSrc, /const notifyEventsUi = notifyEventsUiModule\.create\(\{/, 'renderer.js 要装配模块');
   assert.match(rendererSrc, /notifyEventsUi\.bind\(\);/, 'renderer.js 要在原位置订阅（bind 只调用一次）');
   assert.equal((rendererSrc.match(/notifyEventsUi\.bind\(\);/g) || []).length, 1, 'bind() 只许调用一次');
+  // 第十三刀：configChangeUi / crashRecoveryUi 的实例要在 bindEvents 之前装配（订阅段依赖它们）
+  const asmAt = rendererSrc.indexOf('const configChangeUi = configChangeUiModule.create(');
+  const crashAt = rendererSrc.indexOf('crashRecoveryUi = crashRecoveryUiModule.create(');
+  const bindEventsAt = rendererSrc.indexOf('  function bindEvents() {');
+  assert.ok(asmAt > 0 && asmAt < bindEventsAt, 'configChangeUi 要在 bindEvents 之前装配');
+  assert.ok(crashAt > 0 && crashAt < bindEventsAt, 'crashRecoveryUi 要在 bindEvents 之前装配');
+  assert.match(rendererSrc, /crashRecoveryUi\.start\(\);/, 'start() 仍在 bindEvents 原位（启动时机不变）');
 
   const moduleAt = indexSrc.indexOf('src="notify-events-ui.js"');
   assert.ok(moduleAt > 0, 'index.html 必须加载 renderer/notify-events-ui.js');

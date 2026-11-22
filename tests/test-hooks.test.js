@@ -462,7 +462,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   scheduleJumpMatches 别名随之从编排器删掉 → 3804。
   // M1 第十二刀（第 15 轮）：码字日历 + 状态栏「今日字数」接线（15 行）从 bindEvents 整段搬进
   //   renderer/stats-ui.js 的 setupCalendarUi()（行为锚点 tests/stats-ui.test.js 的 M1 第十二刀用例）→ 3794。
-  const RENDERER_LINE_MEASURED = 3794; // 2026-11-22 实测（第 15 轮 M1 第十二刀拆出日历 / 状态栏接线之后；split 口径）
+  // M1 第十三刀（第 16 轮）：其余 6 条通知订阅（配置变更 / 睡眠唤醒 / 内部错误 / 排版进度 / 搜索索引进度）
+  //   从 bindEvents 整段搬进 renderer/notify-events-ui.js 的 bind()；configChangeUi / crashRecoveryUi 的
+  //   实例创建提前到装配区（start() 仍在 bindEvents 原位）→ 3742。
+  const RENDERER_LINE_MEASURED = 3742; // 2026-11-22 实测（第 16 轮 M1 第十三刀搬走通知订阅之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(
