@@ -96,17 +96,26 @@ test('契约：REQUIRED_HOST 逐成员校验（缺一个 / null 都当场 TypeEr
   assert.doesNotThrow(() => saveRescueUi.create(host));
 });
 
-test('纯判定：EXTERNAL_CHANGE → conflict；BOOK_MISSING / CHAPTER_MISSING / META_CHANGED / BAD_PATH → 救稿出口，其余失败照旧', () => {
+test('纯判定：EXTERNAL_CHANGE → conflict；BOOK_MISSING / CHAPTER_MISSING / META_CHANGED / BAD_PATH / TEXT_TOO_LARGE → 救稿出口，其余失败照旧', () => {
   assert.equal(saveRescueUi.EXTERNAL_CHANGE, 'EXTERNAL_CHANGE');
   // 项 3=A（WP1）：META_CHANGED 也纳入救稿码集合（书目被外部改过时给「另存 / 复制」出口）
   // 项 3=A（WP6）：BAD_PATH 同样纳入——换了书架根之后旧根里的书保存全被 assertBookPath 拦成
   // BAD_PATH，必须给同一组救稿出口，否则正文留在编辑区却没地方可存。
-  assert.deepEqual([...saveRescueUi.RESCUE_CODES], ['BOOK_MISSING', 'CHAPTER_MISSING', 'META_CHANGED', 'BAD_PATH']);
+  // 三审 P1：TEXT_TOO_LARGE（单章超过 500 万字保存上限）也纳入——老版本 raw 导入的书
+  // 「能打开、Ctrl+S 永远被拒」，没有这一条就没有任何应用内出口。
+  assert.deepEqual([...saveRescueUi.RESCUE_CODES], [
+    'BOOK_MISSING',
+    'CHAPTER_MISSING',
+    'META_CHANGED',
+    'BAD_PATH',
+    'TEXT_TOO_LARGE'
+  ]);
   assert.equal(saveRescueUi.rescuePlanFor('EXTERNAL_CHANGE'), 'conflict');
   assert.equal(saveRescueUi.rescuePlanFor('BOOK_MISSING'), 'rescue');
   assert.equal(saveRescueUi.rescuePlanFor('CHAPTER_MISSING'), 'rescue');
   assert.equal(saveRescueUi.rescuePlanFor('META_CHANGED'), 'rescue');
   assert.equal(saveRescueUi.rescuePlanFor('BAD_PATH'), 'rescue');
+  assert.equal(saveRescueUi.rescuePlanFor('TEXT_TOO_LARGE'), 'rescue');
   for (const code of ['CROSS_WINDOW_BUSY', 'META_SAVE_FAILED', 'NO_CHAPTER', 'CHAPTER_MISMATCH', 'PARSE_ERROR', '', null]) {
     assert.equal(saveRescueUi.rescuePlanFor(code), '', String(code));
   }
@@ -136,6 +145,24 @@ test('V302：弹窗逐字（标题 / 三个出口 / 默认留在这里），且�
   assert.equal(host.editorEl.value, '还没落盘的正文');
   assert.equal(state.dirty, true);
   assert.deepEqual(result, { ok: false, code: 'CHAPTER_MISSING', message: '这一章的正文文件已经不在了，已阻止这次保存。' });
+});
+
+test('P1：TEXT_TOO_LARGE（单章超保存上限）也走救稿出口，说明写清「写不进书库但正文没丢」', async () => {
+  const { host, state, calls } = makeHost({ modalAction: 'copy', text: '六百万字的正文' });
+  const message = '正文太长（6,000,000 字，最多 5,000,000 字）';
+  const result = await create(host).handleSaveFailure({ code: 'TEXT_TOO_LARGE', message });
+  assert.equal(calls.modal.length, 1);
+  const modal = calls.modal[0];
+  assert.equal(modal.title, '保存被阻止：这些字还没落盘');
+  assert.match(modal.message, /6,000,000/);
+  assert.match(modal.message, /超过了单章保存上限/);
+  assert.match(modal.message, /另存成 txt 或复制正文/);
+  assert.equal(modal.buttons[2].label, '另存这一章为 txt…', '救稿出口与其它被阻断的保存同一组按钮');
+  assert.deepEqual(calls.rescue, [['六百万字的正文', 'copy', '第1章：第一章']], '救稿走 chapter:rescue，不是再存一次书库');
+  assert.deepEqual(calls.save, []);
+  assert.equal(host.editorEl.value, '六百万字的正文', '正文仍留在编辑区');
+  assert.equal(state.dirty, true, '没落盘就仍是脏的');
+  assert.deepEqual(result, { ok: false, code: 'TEXT_TOO_LARGE', message });
 });
 
 test('V302：选「另存这一章为 txt…」→ 正文 + 建议文件名交给 chapter:rescue(save)，成功给一次性提示', async () => {

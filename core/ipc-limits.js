@@ -19,12 +19,17 @@
  * 错误信息一律中文、不含任何本机路径；错误码原样回给渲染层（界面按 code 分支，见 v0.9 C-4）。
  */
 
-const MAX_TEXT_CHARS = 5000000;
+// M2（三审）：5000000 / 20000 / 2000 这三个体量数字不再写在这里 —— 唯一事实源是
+// core/limits.js（P1 的保存上限、E1 的书目章数、I5 的章名限长都从它取），这里只保留对外名字
+// （既有 IPC 测试 / sanitize* / 主进程都按 MAX_TEXT_CHARS / MAX_CHAPTER_ITEMS 取值）。
+const limits = require('./limits');
+
+const MAX_TEXT_CHARS = limits.MAX_CHAPTER_SAVE_CHARS;
 const MAX_QUERY_CHARS = 10000;
 const MAX_REPLACEMENT_CHARS = 10000;
 const MAX_REPLACE_OUTPUT_CHARS = 20000000;
-const MAX_CHAPTER_ITEMS = 20000;
-const MAX_CHAPTER_NAME_CHARS = 2000;
+const MAX_CHAPTER_ITEMS = limits.MAX_META_CHAPTERS;
+const MAX_CHAPTER_NAME_CHARS = limits.MAX_CHAPTER_NAME_CHARS;
 const MAX_ID_CHARS = 200;
 // 「继续上次写作」的展示信息（book:set-last 的 info）：与 main.js / config.js 的落盘清洗同一口径。
 // 入口先判型限长，避免渲染层把任意对象 / 超长字符串带进 rememberRecentBook。
@@ -53,16 +58,9 @@ const { formatCount, truncateSafe } = require('./common');
 // 不在 IPC 层再抄一份 CON / COM1 列表。
 const chaptersLib = require('./chapters');
 
-function tooLong(label, length, max) {
-  return `${label}太长（${formatCount(length)} 字，最多 ${formatCount(max)} 字）`;
-}
-
-// 返回 null = 合法；否则 { code, message }（调用方转成错误回包；纯函数便于单测）
-function textProblem(text, { max = MAX_TEXT_CHARS, label = '正文' } = {}) {
-  if (typeof text !== 'string') return { code: 'BAD_TEXT', message: `${label}必须是文本` };
-  if (text.length > max) return { code: 'TEXT_TOO_LARGE', message: tooLong(label, text.length, max) };
-  return null;
-}
+// M2（三审）：超长文案模板与正文校验收进 core/limits.js（与 chapter:save / 导入 / 载入同一份），
+// 这里只保留同名引用 —— 文案逐字不变（`正文太长（5,000,001 字，最多 5,000,000 字）`）。
+const { tooLong, textProblem } = limits;
 
 function queryProblem(query, { max = MAX_QUERY_CHARS, label = '查找内容' } = {}) {
   if (query == null) return null; // 和旧行为一致：没传 = 空查询（找不到，不报错）
@@ -360,6 +358,9 @@ function sanitizeReplaceOptions(options) {
 
 module.exports = {
   MAX_TEXT_CHARS,
+  // P1（三审）：救稿出口（chapter:rescue / chapter:copy-platform）的正文上限 —— 与「能打开」
+  // 同口径（core/limits.js），比保存上限宽，保证超 500 万字的章仍能另存 / 复制出来。
+  MAX_CHAPTER_RESCUE_CHARS: limits.MAX_CHAPTER_RESCUE_CHARS,
   MAX_QUERY_CHARS,
   MAX_REPLACEMENT_CHARS,
   MAX_REPLACE_OUTPUT_CHARS,

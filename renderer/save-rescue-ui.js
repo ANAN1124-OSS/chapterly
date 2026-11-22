@@ -48,7 +48,10 @@
   // 那一章的字数 / 章序元数据没同步，至少要让作者能先把正文另存 / 复制走。
   // WP6（N2，项 3=A）：BAD_PATH 同样进救稿出口——别的窗口换了书架根之后，旧根里的书下一次保存会
   // 被 assertBookPath 拦成 BAD_PATH，正文留在编辑区，必须给「另存 / 复制」出口。
-  const RESCUE_CODES = ['BOOK_MISSING', 'CHAPTER_MISSING', 'META_CHANGED', 'BAD_PATH'];
+  // P1（三审）：TEXT_TOO_LARGE（单章超过 500 万字保存上限）也进救稿出口——老版本 raw 导入的书
+  // 「能打开、Ctrl+S 永远被拒」，没有这一条就没有任何应用内出口（只能手抄）。救稿走
+  // chapter:rescue，上限与「能打开」同口径，不受保存上限约束；正文留在编辑区，本函数不动它。
+  const RESCUE_CODES = ['BOOK_MISSING', 'CHAPTER_MISSING', 'META_CHANGED', 'BAD_PATH', 'TEXT_TOO_LARGE'];
   const EXTERNAL_CHANGE = 'EXTERNAL_CHANGE';
   const CONFLICT_TITLE = '这一章在应用外被改过';
   const RESCUE_TITLE = '保存被阻止：这些字还没落盘';
@@ -97,6 +100,8 @@
     async function rescueBlockedSave({ message, code }) {
       const metaChanged = code === 'META_CHANGED';
       const badPath = code === 'BAD_PATH';
+      // P1（三审）：超长章的说明与「文件没了」不同 —— 正文和书都还在，只是这一章写不进书库。
+      const tooLarge = code === 'TEXT_TOO_LARGE';
       const res = await openModal({
         title: metaChanged ? META_CHANGED_TITLE : RESCUE_TITLE,
         message: metaChanged
@@ -105,8 +110,11 @@
           : badPath
             ? `${message}\n\n${BAD_PATH_HINT}\n\n正文还在编辑区里（未保存）。先另存成 txt 或复制正文，` +
               '再从书架重新打开这本书就不会丢。'
-            : `${message}\n\n正文还在编辑区里（未保存）。先另存成 txt 或复制正文，` +
-              '就不会因为书 / 章文件没了而丢。',
+            : tooLarge
+              ? `${message}\n\n这一章超过了单章保存上限，Ctrl+S 暂时写不进书库（编辑 / 复制都不受影响）。` +
+                '先另存成 txt 或复制正文把这一版救出来，再把内容分成几章粘回去（或回源文件拆章后重新导入）。'
+              : `${message}\n\n正文还在编辑区里（未保存）。先另存成 txt 或复制正文，` +
+                '就不会因为书 / 章文件没了而丢。',
         buttons: [
           { label: '留在这里', value: 'stay' },
           { label: '复制正文', value: 'copy' },

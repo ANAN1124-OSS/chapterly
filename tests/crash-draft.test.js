@@ -310,6 +310,10 @@ test('R6 极值：2 万字正文 / 含空格中文路径往返；500 万字上�
   const root = await newRoot();
   const store = storeAt(root);
   assert.equal(draftLib.MAX_TEXT_CHARS, 5000000, '与 core/ipc-limits 的正文上限同口径');
+  // I8（三审）：草稿正文上限不再自带第二份字面量 —— 直接引用 core/limits.js 的唯一常量，
+  // 现场比较两边（与保存上限同源），改一处不会漏另一处。
+  assert.equal(draftLib.MAX_TEXT_CHARS, require('../core/limits').MAX_CHAPTER_SAVE_CHARS);
+  assert.equal(draftLib.MAX_TEXT_CHARS, require('../core/ipc-limits').MAX_TEXT_CHARS);
 
   const body = '字'.repeat(20000);
   const ok = await store.writeDraft(draft({ bookTitle: '书名'.repeat(300), text: body }));

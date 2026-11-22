@@ -309,6 +309,9 @@
     return { ...meta, chapters: list };
   }
 
+  // 纯 patch 变换（不做字段清洗）：name / note / status 的限长与清洗由唯一落盘边界
+  // core/storage.js 的写入口负责（I5 三审：建章 / 改名 / 导入共用 core/limits.js 的同一份名称限长）。
+  // 这里保持 UMD 可用的薄变换，不引入 Node 专用依赖（chapters.js 也被渲染层 <script> 加载）。
   function updateChapter(meta, chapterId, patch) {
     invalidateChapterNumberCache(meta);
     return {

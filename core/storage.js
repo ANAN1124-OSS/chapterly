@@ -4,7 +4,9 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { atomicWriteFile, atomicCopyFile, stripBom, cleanupOrphanTmpFiles, renameWithRetry } = require('./atomic');
-const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, MAX_TEXT_BYTES, newBookId } = require('./common');
+const { pad2, nowIso, mapLimit, createKeyedWriteQueue, formatByteSize, newBookId } = require('./common');
+// M2（三审）：章节 / 书目的体量上限统一从 core/limits.js 取（唯一事实源），这里只保留对外名字。
+const limits = require('./limits');
 const chaptersLib = require('./chapters');
 const findLib = require('./find');
 const formatLib = require('./format');
@@ -135,9 +137,9 @@ async function persistCharsAfterFailure(bookPath, meta) {
 // 章节文件被外部程序换成超大文件（误放的视频 / 日志 / 数据库导出）时，会直接把主进程内存打爆
 // 而崩掉整个应用。所以读之前先看 stat.size，超限明确拒绝、一个字节都不写。
 // 口径对齐 core/importer.js 的导入上限（1000 万字中文小说约 30 MB，128 MB 有三倍以上余量）。
-// A3（v1.8.0 WP-31）：上限常量与体量文案已收编到 core/common.js（MAX_TEXT_BYTES / formatByteSize），
-// 这里只保留对外名字，注释说「不 require importer」的理由不再成立（common 不依赖任何模块，不会成环）。
-const MAX_CHAPTER_READ_BYTES = MAX_TEXT_BYTES;
+// A3（v1.8.0 WP-31）：体量文案收编到 core/common.js（formatByteSize）；M2（三审）起上限常量
+// 统一从 core/limits.js 取（MAX_CHAPTER_READ_BYTES === common.MAX_TEXT_BYTES，唯一字面量仍在 common）。
+const MAX_CHAPTER_READ_BYTES = limits.MAX_CHAPTER_READ_BYTES;
 // C17/V104（v1.8.0 WP-19）：书目.json / 书目.json.bak 是「整份读进内存 → JSON.parse」的小文件，
 // 以前没有 stat 闸门：被外部程序换成超大文件（误放的视频 / 坏同步盘）时，书架扫描 / 导入分析 /
 // 索引构建都会在 JSON.parse 之前把主进程内存打爆。书目给独立小上限：20000 章 × 最坏一条
@@ -147,7 +149,8 @@ const MAX_META_READ_BYTES = 32 * 1024 * 1024;
 // MAX_CHAPTER_ITEMS）早已按 20000 条截断，读侧以前只校验「是数组、每条有 file」——手改 / 损坏的
 // 书目塞进十万条记录时，书架扫描、排序、逐章 stat、索引构建都会按条数放大开销。超限按「书目坏了」
 // 处理（与 INVALID_META / PARSE_ERROR 同族；文件太大仍走 META_TOO_LARGE），一个字节的正文都不动。
-const MAX_META_CHAPTERS = 20000;
+// M2（三审）：数字收进 core/limits.js（MAX_META_CHAPTERS），读 / 写 / 导入三处同源。
+const MAX_META_CHAPTERS = limits.MAX_META_CHAPTERS;
 
 // 纯逻辑：把一个「整文件读进内存」的尺寸判成 null（放行）或 { code, message }（拒绝）。
 // stat 拿不到 / 坏尺寸（NaN、负数）不在这里拦，交给后面的读盘按原样报错。
@@ -561,6 +564,15 @@ async function writeBookMeta(
   const metaPath = path.join(bookPath, BOOK_FILE);
   const bakPath = path.join(bookPath, BOOK_BAK);
   const next = prepareBookMeta(meta, { touchUpdatedAt });
+  // E1（三审）：写侧也过和读侧同一条章数闸门。旧实现只校验 32 MB 文件大小，内存里的 chapters
+  // 超过 20000 条照样写出去，下一次 readBookMeta 直接判 META_TOO_MANY_CHAPTERS —— 应用自己写出
+  // 一本打不开的书（导入 20,001 章 / 从目录重建都踩过）。超限一个字节都不写（.bak 也不轮换），
+  // 错误码与读侧同族，界面按 code 分支；正常长篇远到不了这个数。
+  const chapterCountProblem = limits.chapterCountProblem(
+    Array.isArray(next.chapters) ? next.chapters.length : 0,
+    { label: `${BOOK_FILE} 的章节记录`, tail: '没有写盘' }
+  );
+  if (chapterCountProblem) throw new StorageError(chapterCountProblem.code, chapterCountProblem.message);
   // 审计修复 #45（E19）：写侧也过和读侧同一道 32 MB 闸门（纵深防御）。IPC 的 500 万字限 ≈15 MB
   // 够不着这条线，但内部构造 / 手改后的书目不该把一份超过单文件上限的 书目.json 写出去 ——
   // 下一次读它会直接 META_TOO_LARGE，书就打不开了。超限一个字节都不写（.bak 也不轮换）。
@@ -1001,7 +1013,7 @@ async function verifyBook(bookPath) {
 
 // E-N2（审计中 #2）：track=true 时记下「编辑器载入这一版」的内容指纹（chapter:load 用）。
 // 只多读首尾 4 KB × 2；正文仍是同一次 readFile。stat 仍在 readFile 之前（预览快照的 mtime 口径不变）。
-async function loadChapterText(bookPath, file, { track = false } = {}) {
+async function loadChapterText(bookPath, file, { track = false, maxChars = limits.MAX_CHAPTER_READ_CHARS } = {}) {
   const p = assertChapterFile(bookPath, file);
   // C2（审计 #2 / P2）：返回的 mtimeMs 必须是「正文被读出来之前」的那一版。
   // 预览快照拿它做执行阶段的复用校验；反过来（读完再 stat）若正文恰好在两次 IO 之间被改，
@@ -1024,12 +1036,23 @@ async function loadChapterText(bookPath, file, { track = false } = {}) {
   }
   const stat = opened.stat;
   const raw = opened.buffer;
+  const text = chaptersLib.normalizeNewlines(stripBom(raw));
+  // P1（三审）：128 MB 字节闸门拦不住字符数 —— 纯 ASCII 的 128 MB 文件解码后是 1.28 亿字符，
+  // 整份经 IPC 塞进编辑区会把渲染层拖到假死。这里补一道与保存 / 救稿同源的字数硬上限
+  // （core/limits.js 的 MAX_CHAPTER_READ_CHARS，比保存上限宽 6 倍：能打开才能救稿）。
+  // maxChars 只给单测注入小上限用（生产调用方一律用默认值）。
+  const tooManyChars = limits.charsProblem(text.length, {
+    max: maxChars,
+    label: `章节文件「${file}」`,
+    tail: '没有载入编辑区'
+  });
+  if (tooManyChars) throw new StorageError(tooManyChars.code, tooManyChars.message);
   if (track) {
     // 读不到（被占用 / 权限）时 chapterContentHashOf 返回空串 → 不记基线，保存守卫回落 mtime 口径。
     rememberChapterFingerprint(bookPath, file, await chapterContentHashOf(p, stat.size), stat.mtimeMs);
   }
   return {
-    text: chaptersLib.normalizeNewlines(stripBom(raw)),
+    text,
     mtimeMs: stat.mtimeMs,
     size: stat.size
   };
@@ -1206,7 +1229,9 @@ async function createChapterWithText(bookPath, { insertIndex = 0, name = '', tex
   const chapter = {
     id: `ch_${Date.now().toString(36)}_${seq}`,
     file,
-    name: String(name == null ? '' : name).trim(),
+    // I5（三审）：章名写盘前统一限长（core/limits.js 的唯一常量，与 N2 的书名限长同源）；
+    // 文件名另有 chapters.safeName 的 40 字清洗，两层互不替代。
+    name: limits.limitChapterName(name),
     volumeId: wantedVolume,
     createdAt: nowIso()
   };
@@ -1312,7 +1337,8 @@ async function moveVolume(bookPath, volumeId, toIndex) {
 async function renameChapter(bookPath, chapterId, name) {
   const meta = await readBookMeta(bookPath);
   const index = chapterIndexOrThrow(meta, chapterId);
-  const updated = chaptersLib.updateChapter(meta, chapterId, { name: String(name == null ? '' : name).trim() });
+  // I5（三审）：超长章名以前原样进 书目.json（32 MB 写闸内放行）；与建章 / 导入同一条限长。
+  const updated = chaptersLib.updateChapter(meta, chapterId, { name: limits.limitChapterName(name) });
   const saved = await writeBookMeta(bookPath, updated, { structural: true });
   return { meta: saved, chapter: saved.chapters[index] };
 }
@@ -2791,7 +2817,9 @@ function snapshotDirForClear(bookPath, groupName) {
 
 async function renameBook(bookPath, title) {
   const meta = await readBookMeta(bookPath);
-  const nextTitle = String(title == null ? '' : title).trim() || meta.title;
+  // I5（三审）：书名写盘前与 N2 同源限长（core/limits.js 的 MAX_BOOK_TITLE_CHARS）；
+  // 空名 / 全空白仍保持旧行为（不改名），截断只作用于超长名。
+  const nextTitle = limits.limitBookTitle(title) || meta.title;
   const saved = await writeBookMeta(bookPath, { ...meta, title: nextTitle }, { structural: true });
   return saved;
 }

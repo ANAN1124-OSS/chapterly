@@ -18,6 +18,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const pathUtils = require('./path-utils');
+// I8（三审）：正文上限的唯一事实源（与 chapter:save 同一条口径）。
+const limits = require('./limits');
 
 const DRAFT_DIR_NAME = 'crash-drafts';
 const SESSION_FILE_NAME = 'session.json';
@@ -26,8 +28,10 @@ const DRAFT_FILE_RE = /^draft-([a-f0-9]{16})\.json$/;
 const MARKER_VERSION = 1;
 const DRAFT_VERSION = 1;
 const MAX_DRAFTS = 8;
-// 与 core/ipc-limits.js 的正文上限同一口径（500 万字）：单章最大就是这么大，草稿不另立小上限。
-const MAX_TEXT_CHARS = 5000000;
+// I8（三审）：这里曾经是第二份 `5000000` 字面量（注释自称「与 ipc-limits 同一口径」但物理上各写各的）。
+// 现在直接引用 core/limits.js 的唯一常量：草稿正文与 chapter:save 的保存上限同源，改一处不会漏另一处。
+// 注意 MAX_STORED_BYTES（32MB）是另一条线（单份草稿 JSON 的读取闸门），不跟着这个数字走。
+const MAX_TEXT_CHARS = limits.MAX_CHAPTER_SAVE_CHARS;
 const MAX_TITLE_CHARS = 200;
 const MAX_PATH_CHARS = 1024;
 const MAX_CHAPTER_ID_CHARS = 200;

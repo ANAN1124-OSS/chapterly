@@ -386,7 +386,10 @@ function registerExportIpc(host) {
   // 直接进剪贴板；不写盘。ref = { chapterId?, chapterFile?, text? }：
   // 带了 text 就用它（编辑区里当前章未保存的最新内容，沿用户导出惯例），没带就读磁盘。
   handleBook('chapter:copy-platform', async (bookPath, ref) => {
-    const safeRef = ipcLimits.sanitizeOverride(ref);
+    // P1（三审）：复制本章也是「救稿出口」的一条 —— 编辑区里那一章可能超过保存上限
+    // （老版本 raw 导入的书 / 外部换进来的大章），复制正文不该被 500 万字挡住；
+    // 上限与「能打开」同口径（core/limits.js 的 MAX_CHAPTER_RESCUE_CHARS）。
+    const safeRef = ipcLimits.sanitizeOverride(ref, { maxText: ipcLimits.MAX_CHAPTER_RESCUE_CHARS });
     const meta = await storage.readBookMeta(bookPath);
     const index = exporter.chapterRefIndex(meta, safeRef);
     if (index < 0) throw new storage.StorageError('CHAPTER_NOT_FOUND', '找不到这一章（可能刚被删除）');
@@ -414,11 +417,16 @@ function registerExportIpc(host) {
   // 审计修复 #6（V302）：保存被 BOOK_MISSING / CHAPTER_MISSING 阻断时的救稿出口。
   // 书文件夹 / 章节文件可能已经在应用外被删 / 移走 —— 这条通道因此**完全不碰书库**：正文由渲染层
   // 从编辑区现取（text），这里只负责选落点并原子写盘（mode='save'），或写进系统剪贴板（mode='copy'）。
-  // 正文仍走 core/ipc-limits.js 的 500 万字上限（与 chapter:save 同一条口径）；文件名只作默认值，
-  // 主进程用 chaptersLib.safeName 清洗后再拼进保存对话框，用户可以在对话框里改成任何路径。
+  // P1（三审）：正文上限改走 core/limits.js 的 MAX_CHAPTER_RESCUE_CHARS（= 单章载入上限，比保存上限宽）——
+  // 老版本 raw 导入的超 500 万字章「能打开但存不回去」，这条通道就是唯一的应用内出口；
+  // 上限仍保留（防止渲染层把无穷字符串塞进保存对话框 / 剪贴板），错误码仍是 TEXT_TOO_LARGE。
+  // 文件名只作默认值，主进程用 chaptersLib.safeName 清洗后再拼进保存对话框，用户可以在对话框里改成任何路径。
   // 写出的 txt 与章节文件同格式（UTF-8 无 BOM、CRLF 换行），落点确认之后才写盘（与三个导出同一时序）。
   handle('chapter:rescue', async (text, mode, suggestedName) => {
-    const body = ipcLimits.assertText(text);
+    const body = ipcLimits.assertText(text, {
+      max: ipcLimits.MAX_CHAPTER_RESCUE_CHARS,
+      label: '救稿正文'
+    });
     if (mode === 'copy') {
       await getClipboard().writeText(body);
       return { copied: true, chars: chaptersLib.countChars(body) };

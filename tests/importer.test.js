@@ -1136,3 +1136,92 @@ test('CIO-A-05：analyzeSource 不再返回只写不读的 reason 死字段', as
   const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   assert.equal(/reason:\s*err\.message/.test(code), false, 'reason 死数据已删');
 });
+
+// ---------- 三审 P1 / E1（T3 / T4）：导入侧体量上限的行为锚点 ----------
+
+// P1（三审·高）的纯判定边界：导入切出来的每一章都必须能保存（chapter:save 的 500 万字上限）。
+// maxChars 只给这里注入小上限；生产调用不传，走 core/limits.js 的唯一常量。
+test('P1：firstOversizedPart 正好上限放行 / 多一个字拒绝（三种导入模式共用同一判定）', () => {
+  const maxChars = 1000;
+  assert.equal(importer.firstOversizedPart([{ title: 'a', body: '字'.repeat(maxChars) }], { maxChars }), null);
+  const over = importer.firstOversizedPart(
+    [
+      { title: 'a', body: '字'.repeat(maxChars) },
+      { title: 'b', body: '字'.repeat(maxChars + 1) }
+    ],
+    { maxChars }
+  );
+  assert.deepEqual(over, { index: 1, length: maxChars + 1, title: 'b' });
+  // split 模式的正文在 text 字段
+  const split = importer.firstOversizedPart([{ title: 'a', text: '字'.repeat(maxChars + 1) }], { maxChars, pick: 'text' });
+  assert.equal(split.index, 0);
+  // 默认值就是 core/limits.js 的保存上限（不另立小上限）
+  assert.equal(require('../core/limits').MAX_CHAPTER_SAVE_CHARS, 5000000);
+});
+
+// T3（三审·高）：raw「整本一章」超 500 万字的整链 —— 以前 128 MB 内的文件会原样导成单章，
+// 导出的书「能打开、Ctrl+S / 救稿全被拒」。现在写盘前明确拒绝，书架里不留半本书；
+// 拒绝文案要给出可操作下一步（拆源文件 / 改用按原文章节导入）。
+test('T3：整本一章超 500 万字 → 写盘前拒绝、不留半本书，并提示改用按原文章节导入（P1）', async () => {
+  const limits = require('../core/limits');
+  const base = await mkTmp();
+  const src = path.join(base, '超长篇');
+  await fs.mkdir(src);
+  const file = path.join(src, '超长篇.txt');
+  await fs.writeFile(file, '字'.repeat(limits.MAX_CHAPTER_SAVE_CHARS + 100), 'utf8');
+  const booksRoot = path.join(base, '书架');
+
+  await assert.rejects(
+    () => importer.importNovelFile(booksRoot, file, { mode: 'raw' }),
+    (err) => {
+      assert.equal(err.code, 'TEXT_TOO_LARGE');
+      assert.match(err.message, /5,000,100 字/);
+      assert.match(err.message, /超过单章上限 5,000,000 字/);
+      assert.match(err.message, /没有导入/);
+      assert.match(err.message, /按原文章节导入/);
+      assert.equal(err.message.includes(file), false, '错误文案不带本机完整路径');
+      return true;
+    }
+  );
+  // 拒绝发生在建暂存目录之前：书架根里一个 .import- 残留都没有
+  const leftovers = await fs.readdir(booksRoot).catch(() => []);
+  assert.deepEqual(leftovers, [], '拒绝导入不产生暂存残留 / 正式书目录');
+
+  // 走 importFolders 的整批路径：失败如实进 failed（界面汇总显示原因），不会静默丢
+  const throughFolders = await importer.importFolders(booksRoot, [src], { mode: 'raw' });
+  assert.equal(throughFolders.imported.length, 0);
+  assert.equal(throughFolders.failed.length, 1);
+  assert.match(throughFolders.failed[0].message, /超过单章上限/);
+  assert.deepEqual((await fs.readdir(booksRoot)).filter((name) => !name.startsWith('.import-')), [], '书架里没有书');
+});
+
+// T4（三审·高）：导入切出的章数在写盘前校验 —— 旧实现有多少标题写多少章，20,001 章的
+// 书目能写盘、读侧直接判损坏（E1「应用自己导入出一本打不开的书」）。
+test('T4：按原文拆出 20,001 章 → 写盘前拒绝，绝不出保存在不了的书目（E1）', async () => {
+  const limits = require('../core/limits');
+  const base = await mkTmp();
+  const src = path.join(base, '超多章');
+  await fs.mkdir(src);
+  const lines = [];
+  for (let i = 1; i <= limits.MAX_META_CHAPTERS + 1; i += 1) {
+    lines.push(`第${i}章 标题${i}\n\n正文${i}`);
+  }
+  const file = path.join(src, '超多章.txt');
+  await fs.writeFile(file, lines.join('\n\n'), 'utf8');
+  const booksRoot = path.join(base, '书架');
+
+  await assert.rejects(
+    () => importer.importNovelFile(booksRoot, file, {}),
+    (err) => {
+      assert.equal(err.code, 'META_TOO_MANY_CHAPTERS');
+      assert.match(err.message, /20,001 条/);
+      assert.match(err.message, /超过单本上限 20,000 条/);
+      assert.match(err.message, /没有导入/);
+      return true;
+    }
+  );
+  const leftovers = await fs.readdir(booksRoot).catch(() => []);
+  assert.deepEqual(leftovers, [], '拒绝时一个章节文件都不写（也没有 .import- 残留）');
+  // 正好 20,000 条是放行的：只钉纯判定，避免真写两万个章节文件
+  assert.equal(limits.chapterCountProblem(limits.MAX_META_CHAPTERS), null);
+});

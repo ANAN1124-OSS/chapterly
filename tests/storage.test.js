@@ -18,6 +18,7 @@ function topLevelBody(name) {
 }
 const { MAX_MATCHES } = require('../core/find');
 const { atomicWriteFile } = require('../core/atomic');
+const limits = require('../core/limits');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -2293,4 +2294,96 @@ test('CSTO-A04：删章 / 删书的 rename 走 renameWithRetry，瞬态 EPERM �
   } finally {
     Object.defineProperty(fs, 'rename', { value: real, configurable: true, writable: true });
   }
+});
+
+// ---------- 三审 P1 / E1 / I5：体量上限的唯一事实源落到 storage 写 / 读边界 ----------
+
+// P1（三审·高）：128 MB 字节闸门拦不住字符数 —— 纯 ASCII 的 128 MB 文件解码后是 1.28 亿字符，
+// 整份经 IPC 塞进编辑区会把渲染层拖到假死。这里补与保存 / 救稿同源的字数硬上限；
+// maxChars 只给单测注入小上限，生产调用一律用 core/limits.js 的默认值。
+test('P1：loadChapterText 单章字数硬上限（CHAPTER_TOO_LARGE，不把超长章带进编辑区）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '载入上限');
+  const meta = await storage.readBookMeta(bookPath);
+  const file = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file, '字'.repeat(40));
+
+  const ok = await storage.loadChapterText(bookPath, file, { maxChars: 40 });
+  assert.equal(ok.text.length, 40, '正好上限放行');
+  await assert.rejects(
+    () => storage.loadChapterText(bookPath, file, { maxChars: 39 }),
+    (err) => {
+      assert.equal(err.code, 'CHAPTER_TOO_LARGE');
+      assert.match(err.message, /40 字/);
+      assert.match(err.message, /39 字/);
+      assert.match(err.message, /没有载入编辑区/);
+      assert.equal(err.message.includes(bookPath), false, '错误文案不能带本机完整路径');
+      return true;
+    }
+  );
+  // 默认值就是 core/limits.js 那条线（比保存上限宽：能打开才能救稿）
+  assert.ok(limits.MAX_CHAPTER_READ_CHARS > limits.MAX_CHAPTER_SAVE_CHARS);
+  const normal = await storage.loadChapterText(bookPath, file);
+  assert.equal(normal.text.length, 40, '正常小章不受影响');
+});
+
+// E1（三审·中）：写侧也过和读侧同一条章数闸门 —— 旧实现只校验 32 MB 文件大小，
+// 20,001 章的书目能写盘、读侧直接判损坏，应用自己写出一本打不开的书。
+test('E1：writeBookMeta 写侧章数闸门（20,001 条拒绝写盘、原书目与 .bak 都不动）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '章数写闸');
+  const metaPath = path.join(bookPath, storage.BOOK_FILE);
+  const bakPath = path.join(bookPath, storage.BOOK_BAK);
+  const before = await fs.readFile(metaPath, 'utf8');
+  const meta = await storage.readBookMeta(bookPath);
+  const makeChapters = (count) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `ch_${String(i + 1).padStart(5, '0')}`,
+      file: `${String(i + 1).padStart(5, '0')}-章${i + 1}.txt`,
+      name: `章${i + 1}`
+    }));
+
+  await assert.rejects(
+    () => storage.writeBookMeta(bookPath, { ...meta, chapters: makeChapters(storage.MAX_META_CHAPTERS + 1) }, { structural: true }),
+    (err) => {
+      assert.equal(err.code, 'META_TOO_MANY_CHAPTERS');
+      assert.match(err.message, /20,001 条/);
+      assert.match(err.message, /20,000 条/);
+      assert.equal(err.message.includes(bookPath), false, '错误文案不能带本机完整路径');
+      return true;
+    }
+  );
+  assert.equal(await fs.readFile(metaPath, 'utf8'), before, '拒绝时一个字节都不写');
+  assert.equal(await storage.exists(bakPath), false, '.bak 也不轮换');
+
+  // 正好到上限放行（闸门是「超过」才拒）—— 写一次真书目确认写侧不会把 20,000 章的正常书判死
+  const saved = await storage.writeBookMeta(bookPath, { ...meta, chapters: makeChapters(storage.MAX_META_CHAPTERS) });
+  assert.equal(saved.chapters.length, storage.MAX_META_CHAPTERS);
+  assert.equal((await storage.readBookMeta(bookPath)).chapters.length, storage.MAX_META_CHAPTERS);
+});
+
+// I5（三审·低）：书名 / 章名写盘前统一 truncateSafe + 与 N2 同源的限长；空名保持旧行为。
+test('I5：书名 / 章名写盘前统一限长（超长截断、空名不改名、不切开代理对）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '名称限长');
+  const longName = '名'.repeat(limits.MAX_CHAPTER_NAME_CHARS + 30);
+
+  const created = await storage.createChapterWithText(bookPath, { insertIndex: 1, name: longName, text: '正文' });
+  assert.equal(created.chapter.name.length, limits.MAX_CHAPTER_NAME_CHARS, '建章：章名截到唯一上限');
+  const renamed = await storage.renameChapter(bookPath, created.chapter.id, longName);
+  assert.equal(renamed.chapter.name.length, limits.MAX_CHAPTER_NAME_CHARS, '改章名：同一条限长');
+
+  const longTitle = '书'.repeat(limits.MAX_BOOK_TITLE_CHARS + 20);
+  const renamedBook = await storage.renameBook(bookPath, longTitle);
+  assert.equal(renamedBook.title.length, limits.MAX_BOOK_TITLE_CHARS, '改名：书名截到 N2 同源上限');
+  const blank = await storage.renameBook(bookPath, '   ');
+  assert.equal(blank.title, renamedBook.title, '空名 / 全空白保持旧行为（不改名）');
+
+  // 截断点落在代理对中间时不能留下孤立代理（书目里存进去就再也修不回来）
+  const emoji = `${'字'.repeat(limits.MAX_CHAPTER_NAME_CHARS - 1)}𠮷尾`;
+  const withEmoji = await storage.createChapterWithText(bookPath, { insertIndex: 0, name: emoji, text: '' });
+  assert.ok(withEmoji.chapter.name.length <= limits.MAX_CHAPTER_NAME_CHARS);
+  assert.equal(/[\uD800-\uDBFF]$/.test(withEmoji.chapter.name), false, '不能留下孤立高位代理');
+  const roundTrip = await storage.readBookMeta(bookPath);
+  assert.equal(roundTrip.chapters.some((chapter) => chapter.id === withEmoji.chapter.id), true, '书名 / 章名照样能读回');
 });

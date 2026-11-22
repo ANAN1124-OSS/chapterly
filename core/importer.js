@@ -23,7 +23,9 @@ const {
   splitLongUntitled,
   LONG_UNTITLED_THRESHOLD
 } = require('./txt');
-const { normalizeText, formatByteSize, MAX_TEXT_BYTES, newBookId } = require('./common');
+const { normalizeText, formatByteSize, formatCount, newBookId } = require('./common');
+// M2（三审）：导入的体量上限统一从 core/limits.js 取（与保存 / 载入 / 书目章数同源）。
+const limits = require('./limits');
 const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
 
@@ -557,8 +559,8 @@ async function importBookFolder(booksRoot, sourceDir, analysis) {
 // 所以先按文件大小设一道闸门：1000 万字中文小说约 30 MB，128 MB 有三倍以上余量；
 // 再大的文件大概率不是小说，读进来会把主进程内存打爆（渲染层只发个 IPC，崩的是主进程）。
 // A3（v1.8.0 WP-31）：上限与体量文案收编到 core/common.js（MAX_TEXT_BYTES / formatByteSize），
-// 与 core/storage.js 的章节读取上限同一条口径；对外名字保留（既有单测与调用方都按它取）。
-const MAX_IMPORT_BYTES = MAX_TEXT_BYTES;
+// 与 core/storage.js 的章节读取上限同一条口径；M2（三审）起从 core/limits.js 转发（唯一事实源）。
+const MAX_IMPORT_BYTES = limits.MAX_CHAPTER_READ_BYTES;
 
 // 给人看的体量（只用于提示，保留 1 位小数直到 10 以上）：实现只有 core/common.js 的 formatByteSize 一份
 const formatImportSize = formatByteSize;
@@ -636,6 +638,50 @@ function isProbablyBinary(buffer) {
   return buffer.includes(0);
 }
 
+// P1（三审）：导入切出来的每一章都必须是能保存的（chapter:save 的 500 万字上限）。旧实现把
+// 128 MB 内的文件照原样写成单章，导出的书「能打开、Ctrl+S / 救稿全被拒」——比拒绝导入更糟。
+// raw 模式不自动拆分：它对作者的承诺是「原样一章」，静默改名成「全文（1/2）」会改变书目结构；
+// 这里在写盘前明确拒绝，并给出可操作的下一步（拆源文件 / 改用按原文章节导入）。
+const MAX_IMPORT_CHAPTER_CHARS = limits.MAX_CHAPTER_SAVE_CHARS;
+
+function oversizedImportError(baseName, label, length) {
+  return new storage.StorageError(
+    'TEXT_TOO_LARGE',
+    `《${baseName}》的${label}有 ${formatCount(length)} 字，超过单章上限 ${formatCount(MAX_IMPORT_CHAPTER_CHARS)} 字，` +
+      '没有导入；请先把源文件里这一部分拆小，或改用「按原文章节导入」再导入'
+  );
+}
+
+// 纯判定：parts 里第一段超长正文（没有就 null）。pick = 正文所在字段（chapters 用 body、split 用 text）。
+// maxChars 只给单测注入小上限用；生产调用不传，走 core/limits.js 的保存上限。
+function firstOversizedPart(parts, { maxChars = MAX_IMPORT_CHAPTER_CHARS, pick = 'body' } = {}) {
+  const list = Array.isArray(parts) ? parts : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const text = list[i] && list[i][pick];
+    if (typeof text === 'string' && text.length > maxChars) {
+      return { index: i, length: text.length, title: String((list[i] && list[i].title) || '') };
+    }
+  }
+  return null;
+}
+
+// 写盘前的两道闸门（P1 单章体量 + E1 章数）：超限一个章节文件都不写，暂存目录由 finally 清掉。
+// 错误码分别是 TEXT_TOO_LARGE / META_TOO_MANY_CHAPTERS，文案由 core/error-text 原样交给界面。
+function assertImportChapterLimits(baseName, parts, { pick = 'body' } = {}) {
+  const oversized = firstOversizedPart(parts, { pick });
+  if (oversized) {
+    const label = oversized.title ? `「${oversized.title}」` : '开头的无标题部分';
+    throw oversizedImportError(baseName, label, oversized.length);
+  }
+  // E1（三审）：切出来的章数也要在写盘前校验 —— 旧实现有多少标题写多少章，20,001 章的书目
+  // 能写盘、读侧直接判损坏，导入回包还显示「已导入 N 章」。
+  const tooMany = limits.chapterCountProblem(parts.length, {
+    label: `《${baseName}》切出的章节`,
+    tail: '没有导入；请先把这本书拆成几本再导入'
+  });
+  if (tooMany) throw new storage.StorageError(tooMany.code, tooMany.message);
+}
+
 // 一个完整小说 txt → 一本书。
 // mode='chapters'（默认）：按原文标题行切章，章名照抄原文标题，正文原样保留（只切分、不改字）。
 // mode='raw'：整本作为一章「全文」；UTF-8 源文件按字节原样复制。
@@ -658,6 +704,11 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
   const decoded = decodedInfo.text;
   if (!normalizeText(decoded).trim()) {
     throw new storage.StorageError('EMPTY_FILE', `《${baseName}》是空文件，跳过`);
+  }
+  // P1（三审）：整本一章写盘前先看这一章能不能保存。放在建暂存目录之前 —— 拒绝时磁盘上
+  // 一个字节都不产生（连 .import- 临时目录都不用建）。
+  if (mode === 'raw' && decoded.length > MAX_IMPORT_CHAPTER_CHARS) {
+    throw oversizedImportError(baseName, '「全文」', decoded.length);
   }
 
   // 审计 WP7（X-N2）：与文件夹形态统一 —— 先写隐藏暂存根里的「书目录」，写完再由
@@ -683,6 +734,9 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
       if (parts.length === 1 && !parts[0].title && parts[0].body.length > LONG_UNTITLED_THRESHOLD) {
         parts = splitLongUntitled(parts[0].body);
       }
+      // P1 / E1（三审）：写第一个章节文件之前把「单章太长」「章数太多」一起拦下，
+      // 不留半本写出去了又回滚的中间态。
+      assertImportChapterLimits(baseName, parts, { pick: 'body' });
       const usedFiles = [];
       for (let i = 0; i < parts.length; i += 1) {
         const seq = i + 1;
@@ -716,6 +770,8 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
       ) {
         parts = splitLongUntitled(parts[0].text).map((part) => ({ title: part.title, text: part.body }));
       }
+      // P1 / E1（三审）：split 分支同样在写盘前过单章体量 + 章数闸门。
+      assertImportChapterLimits(baseName, parts, { pick: 'text' });
       const usedFiles = [];
       for (let i = 0; i < parts.length; i += 1) {
         const seq = i + 1;
@@ -1002,6 +1058,9 @@ module.exports = {
   // C30（v1.8.0 WP-26）：目录包含判定（大小写归一）导出给单测钉口径
   isInside,
   formatImportSize,
+  // P1（三审）：单章体量判定（纯函数）导出给单测钉「正好上限放行 / 多一个字拒绝」的边界；
+  // 生产调用点只有 importNovelFile 的 assertImportChapterLimits 一处。
+  firstOversizedPart,
   // V116（v1.8.0 WP-29）：递归清单导出给单测，钉住「并发 readdir + 排序 / 排除口径不变」。
   // 生产调用点仍只有 importNovelFile 一处（见上）。
   listTxtFilesDeep,

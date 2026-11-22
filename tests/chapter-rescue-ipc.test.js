@@ -118,13 +118,25 @@ test('chapter:rescue（copy）：正文进系统剪贴板，返回字数；不�
   assert.deepEqual(result, { copied: true, chars: chaptersLib.countChars(body) });
 });
 
-test('chapter:rescue：正文仍走 500 万字上限（null / 超限都拒绝，不落一份空文件）', async () => {
+// P1（三审）：这条通道是「能打开但存不进书库」那一类章的唯一应用内出口 —— 上限从保存上限
+// （5,000,000）放宽到「能打开」同口径（ipcLimits.MAX_CHAPTER_RESCUE_CHARS），否则救援入口
+// 和被救的目标一起被 500 万字挡住。断言随之改为：null 仍拒绝；超过**救稿上限**才拒绝；
+// 正好超过保存上限（5,000,001）必须能救出去。
+test('chapter:rescue：正文走救稿上限（比保存上限宽），null / 超过救稿上限仍拒绝', async () => {
   const { channels, calls } = makeHost({ filePath: path.join(os.tmpdir(), 'never.txt') });
   await assert.rejects(() => channels.get('chapter:rescue')(null, 'save', '第1章'), (err) => err.code === 'BAD_TEXT');
-  await assert.rejects(
-    () => channels.get('chapter:rescue')('字'.repeat(ipcLimits.MAX_TEXT_CHARS + 1), 'copy', '第1章'),
-    (err) => err.code === 'TEXT_TOO_LARGE'
+  assert.ok(
+    ipcLimits.MAX_CHAPTER_RESCUE_CHARS > ipcLimits.MAX_TEXT_CHARS,
+    '救稿上限必须比保存上限宽（能打开才能救稿）'
   );
-  assert.deepEqual(calls.clipboard, []);
+  const overSave = '字'.repeat(ipcLimits.MAX_TEXT_CHARS + 1);
+  const rescued = await channels.get('chapter:rescue')(overSave, 'copy', '第1章');
+  assert.deepEqual(calls.clipboard, [overSave], '超 500 万字的章必须能复制出去');
+  assert.equal(rescued.copied, true);
+  assert.equal(rescued.chars, chaptersLib.countChars(overSave));
+  await assert.rejects(
+    () => channels.get('chapter:rescue')('字'.repeat(ipcLimits.MAX_CHAPTER_RESCUE_CHARS + 1), 'copy', '第1章'),
+    (err) => err.code === 'TEXT_TOO_LARGE' && /救稿正文太长/.test(err.message)
+  );
   assert.deepEqual(calls.dialogs, []);
 });

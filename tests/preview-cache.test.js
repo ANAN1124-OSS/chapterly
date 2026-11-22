@@ -319,7 +319,9 @@ test('静态闸门：预览两条记录快照、执行两条消费快照，缓�
   // WP1（E-N2）：签名新增可选 { track }（记录「编辑器载入那一版」的内容指纹）。
   // CSTO-A02（第五轮审计）：stat 与读盘改成同一个文件句柄（open → handle.stat → handle.readFile），
   // 顺序不变 —— 读正文之前先 fstat；同句柄同时封死「按路径 stat 后文件被换成大文件」的上限窗口。
-  const loadStart = storageSource.indexOf('async function loadChapterText(bookPath, file, { track = false } = {}) {');
+  // P1（三审）：签名新增可选 { track, maxChars }（章节载入字数硬上限）—— 这里按「函数名 + 形参前缀」
+  // 定位，不再把整个默认参数串逐字钉死（等价签名调整不该让顺序闸门假红）。
+  const loadStart = storageSource.indexOf('async function loadChapterText(bookPath, file, {');
   assert.notEqual(loadStart, -1);
   const loadEnd = storageSource.indexOf('\nasync function statChapter(', loadStart);
   assert.notEqual(loadEnd, -1);
