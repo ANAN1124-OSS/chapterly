@@ -258,8 +258,44 @@ function createPickedPathStore() {
   return { remember, snapshot, recall, forget, size };
 }
 
+// ---------- N3（二轮·低）：书架根 + 最长子路径的 MAX_PATH 预算 ----------
+// 问题：书名目录 ≤40 字、章名 ≤40 字都已经限长，但 booksRoot 由用户任选（含 UNC 网络盘）。
+// Windows 未开 LongPathsEnabled 时全路径上限 260 字符，booksRoot 自己太长时，建书 / 写章 / 备份会
+// ENAMETOOLONG —— 用户看到的是系统英文错误，而且往往是在「导入一本大部头搬到一半」时才炸。
+// 这里在**换根时**按「根 + 最长可能子路径」做一次预算，超限就用中文说明白，配置一个字都不写。
+//
+// 最长子路径（各项都取代码里的真实上限）：
+//   书文件夹 40（core/chapters.js 的 MAX_NAME_LENGTH；导入侧 safeFolderName 同值）
+//   + `\` 1
+//   + `_trash` 6 + `\` 1 + 备份 / 快照目录名 22（`替换备份-2026-11-01-223000` = 5 + 17）
+//   + `\` 1
+//   + 章节文件名 50（5 位章号 + `-` + 40 字章名 + `.txt`；20,000 章上限下章号最多 5 位）
+//   + 4（`.bak` / `-999` 这类后缀余量）
+// 合计 125；根目录本身再 +1 个分隔符。
+// 判定只看「文本长度」，不做路径形状判断：UNC 共享盘与本地盘同一口径（网络盘更容易撞上限）；
+// 其余平台本应用不发，但仍按同一条数字判定，行为可预测。
+const MAX_WIN_PATH_CHARS = 260;
+const LONGEST_SUBPATH_CHARS = 40 + 1 + 6 + 1 + 22 + 1 + 50 + 4;
+
+// 返回 null = 预算够；否则 { code, max, longest, total, rootChars, over }（不带路径本身）。
+function booksRootPathProblem(booksRoot, options = {}) {
+  const max = Number(options.max) > 0 ? Math.floor(Number(options.max)) : MAX_WIN_PATH_CHARS;
+  const longest =
+    Number(options.longest) >= 0 ? Math.floor(Number(options.longest)) : LONGEST_SUBPATH_CHARS;
+  const raw = typeof booksRoot === 'string' ? booksRoot.trim() : '';
+  // 末尾分隔符不算进根长度（写盘时拼子路径只用一个分隔符）
+  const root = raw.replace(/[\\/]+$/, '');
+  if (!root) return null;
+  const total = root.length + 1 + longest;
+  if (total <= max) return null;
+  return { code: 'ROOT_TOO_DEEP', max, longest, total, rootChars: root.length, over: total - max };
+}
+
 module.exports = {
   GUARDED_PATH_FIELDS,
+  MAX_WIN_PATH_CHARS,
+  LONGEST_SUBPATH_CHARS,
+  booksRootPathProblem,
   samePath,
   booksRootChanged,
   filterPathPatch,

@@ -583,17 +583,29 @@ test('C23：书架根变化判定走全仓唯一 pathKey 口径（无关 patch �
   assert.equal(configGate.booksRootChanged(null, bookRoot), true);
 });
 
-test('静态闸门：config:set 只在书架根变化时 mkdir（C23 / C2）', () => {
+test('静态闸门：config:set 只在书架根变化时 mkdir（C23 / C2 / N3）', () => {
   const start = MAIN_SOURCE.indexOf("handle('config:set'");
   assert.ok(start > 0, 'main.js 里找不到 config:set');
   const body = MAIN_SOURCE.slice(start, MAIN_SOURCE.indexOf('\n  handle(', start + 1));
   // 函数体里只该有一处 mkdir，并且挂在「根真的变化」的分支里
   assert.equal((body.match(/fs\.mkdir\(/g) || []).length, 1, 'config:set 里只该有这一处 mkdir');
-  assert.match(
-    body,
-    /if \(configGate\.booksRootChanged\(previousRoot, targetRoot\)\) \{\s*await fs\.mkdir\(targetRoot, \{ recursive: true \}\);\s*\}/,
-    'mkdir 必须在「书架根真的变化」的分支里（改字号 / 主题这类无关 patch 不碰书架目录）'
+  // N3（二轮·低）：判根变化 → MAX_PATH 预算（超限抛 ROOT_TOO_DEEP、配置一个字都不写）→ mkdir。
+  // 断言跟错：旧闸门钉的是「分支里紧跟着就是 mkdir」，N3 在两者之间插了预算校验，
+  // 所以这里改成钉顺序与各自的语义（分支仍在、mkdir 仍只在这一处、预算在 mkdir 之前）。
+  const branchAt = body.indexOf('if (configGate.booksRootChanged(previousRoot, targetRoot)) {');
+  const depthAt = body.indexOf('configGate.booksRootPathProblem(targetRoot)');
+  const throwAt = body.indexOf('code: deep.code');
+  const mkdirAt = body.indexOf('fs.mkdir(targetRoot, { recursive: true });');
+  assert.ok(branchAt > -1, 'mkdir 必须在「书架根真的变化」的分支里（改字号 / 主题这类无关 patch 不碰书架目录）');
+  assert.ok(
+    depthAt > branchAt && throwAt > depthAt && mkdirAt > throwAt,
+    '顺序必须是：判根变化 → MAX_PATH 预算（超限抛错）→ mkdir'
   );
+  assert.match(body, /if \(deep\) \{[\s\S]{0,600}?code: deep\.code/, '超预算要抛带 ROOT_TOO_DEEP 的错');
+  // 中文提示不含路径本身（只报数字：上限 / 会到多少 / 超出多少）
+  const messageAt = body.indexOf('书架目录太深');
+  assert.ok(messageAt > depthAt && messageAt < mkdirAt, '提示文案要说「书架目录太深」');
+  assert.equal(body.slice(messageAt, mkdirAt).includes('targetRoot'), false, '提示里不回显目录路径');
   // 判变化的两边都要过「sanitize + 装饰层」：--books-root 覆盖时生效根是覆盖目录。
   // C2（审计 #21）：previousRoot 必须取自 configStore.set 钩子里的 freshCurrent（队列内），
   // 不是入队前的 current 快照 —— 并发写配置时快照会过期。
@@ -610,12 +622,7 @@ test('静态闸门：config:set 只在书架根变化时 mkdir（C23 / C2）', (
   // A3 顺序语义不变：判根变化 → mkdir → 写盘；C2 之后前两步在 beforeWrite 里，写盘紧随其后
   // （core/config.js 的 set 契约由 R17 行为锚点钉住：beforeWrite 先于 writeJson）。
   const hookAt = body.indexOf('async beforeWrite({ current: freshCurrent })');
-  const changeAt = body.indexOf('booksRootChanged(previousRoot, targetRoot)');
-  const mkdirAt = body.indexOf('fs.mkdir(');
-  assert.ok(
-    hookAt > -1 && changeAt > hookAt && mkdirAt > changeAt,
-    '顺序必须是：beforeWrite 内判根变化 → mkdir（写盘在钩子之后）'
-  );
+  assert.ok(hookAt > -1 && branchAt > hookAt, '顺序必须是：beforeWrite 内判根变化 → mkdir（写盘在钩子之后）');
   // A4 换根清锁共用同一判据，不许再各写一份 path.resolve(...).toLowerCase() 比较
   assert.match(
     body,
@@ -623,4 +630,36 @@ test('静态闸门：config:set 只在书架根变化时 mkdir（C23 / C2）', (
     '换根后清锁要用同一个「根是否变化」判据'
   );
   assert.ok(!body.includes('path.resolve(nextConfig.booksRoot).toLowerCase()'), '不再各写一份大小写比较');
+});
+
+// N3（二轮·低）：书架根 + 最长子路径的 Windows MAX_PATH 预算（纯函数）。
+// 组成：根 + 1 + [书目录 40 + `\_trash` 7 + 备份目录 22 + 章文件 50 + 后缀余量 4] = 根 + 126。
+// 上限 260 → 根最多 134 字符；再长就换根时明确拒绝（而不是等建书写章时透传 ENAMETOOLONG）。
+test('N3：书架根 MAX_PATH 预算（超限回 ROOT_TOO_DEEP，短根 / 空根放行）', () => {
+  assert.equal(configGate.MAX_WIN_PATH_CHARS, 260);
+  assert.equal(configGate.LONGEST_SUBPATH_CHARS, 125);
+  const rootOf = (length) => 'D:\\' + 'a'.repeat(Math.max(0, length - 3));
+  // 正好 260 字符：放行（不多拦一个字符）
+  assert.equal(configGate.booksRootPathProblem(rootOf(134)), null, '根 134 → 总长 260，正好上限');
+  const over = configGate.booksRootPathProblem(rootOf(135));
+  assert.equal(over && over.code, 'ROOT_TOO_DEEP');
+  assert.equal(over.max, 260);
+  assert.equal(over.rootChars, 135);
+  assert.equal(over.total, 261);
+  assert.equal(over.over, 1);
+  // 末尾分隔符不算进根长度（拼子路径只用一个分隔符）
+  assert.equal(configGate.booksRootPathProblem(rootOf(134) + '\\'), null);
+  assert.equal(configGate.booksRootPathProblem(rootOf(134) + '/'), null);
+  // 空 / 非字符串：没有根，交给别的分支（配置清洗回默认根）——这里不判
+  assert.equal(configGate.booksRootPathProblem(''), null);
+  assert.equal(configGate.booksRootPathProblem('   '), null);
+  assert.equal(configGate.booksRootPathProblem(null), null);
+  assert.equal(configGate.booksRootPathProblem(42), null);
+  // UNC 形状按同一口径数长度（不做路径形状判断：网络盘更容易撞上限，不该反而放行）
+  const unc = '\\\\服务器名\\共享名\\' + 'a'.repeat(140);
+  assert.equal(configGate.booksRootPathProblem(unc).code, 'ROOT_TOO_DEEP');
+  // 可注入上限 / 最长子路径（单测与将来调参用）
+  assert.equal(configGate.booksRootPathProblem('D:\\书库', { max: 200, longest: 100 }), null);
+  assert.equal(configGate.booksRootPathProblem('D:\\书库', { max: 100, longest: 100 }).code, 'ROOT_TOO_DEEP');
+  assert.equal(configGate.booksRootPathProblem('D:\\书库', { max: 5, longest: 0 }).code, 'ROOT_TOO_DEEP');
 });

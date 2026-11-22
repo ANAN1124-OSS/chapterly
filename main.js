@@ -50,6 +50,8 @@ const automation = isE2E || isBench || isContrast || Boolean(screenshotPath);
 
 const { createConfigStore, sanitize: sanitizeConfig, withBooksRootOverride, WORDLIST_MAX, sameWindowBounds } = require('./core/config');
 const { atomicWriteFile, atomicWriteFileStream, cleanupOrphanTmpFiles } = require('./core/atomic');
+// F1（三审）：导出目录清单 —— 回收中断导出留下的孤儿临时文件时，不再只认一个 lastExportDir
+const exportDirsLib = require('./core/export-dirs');
 const storage = require('./core/storage');
 const repair = require('./core/repair');
 const importer = require('./core/importer');
@@ -1142,6 +1144,26 @@ function statsSummaryPayload(stats, cfg, now = new Date()) {
   };
 }
 
+// F1（三审）：最近导出过的目录（有界，最多 10 个）+ userData 里的清单文件。
+// 导出中断会在**导出目标目录**留下 `.名.tmp-pid-…` 隐藏孤儿（core/atomic.js 的原子写），
+// 以前启动只回收 userData 与单一 lastExportDir：换过导出目录以后，旧目录里的孤儿再没人扫。
+// 这里只记「该扫哪儿」——不是导出历史，上限 10 个，判重走 core/path-utils 的 pathKey。
+let recentExportDirs = [];
+
+function exportDirsFilePath() {
+  try {
+    return path.join(app.getPath('userData'), 'export-dirs.json');
+  } catch {
+    return '';
+  }
+}
+
+// 启动时读回清单（坏文件 / 不存在一律空列表，绝不影响启动）
+async function loadRecentExportDirs() {
+  recentExportDirs = await exportDirsLib.readRecentDirs(exportDirsFilePath());
+  return recentExportDirs;
+}
+
 // 记住这次导出保存到的目录（下次导出默认还开在这里）；记不住也绝不影响导出结果。
 async function rememberExportDir(dir) {
   if (!dir) return;
@@ -1149,7 +1171,17 @@ async function rememberExportDir(dir) {
   // 之后同一窗口 config:set 原样回传这个值也能过来源校验（与字体 / 词表同一口径）。
   rememberPickedConfigPath('lastExportDir', dir);
   const cfg = await getConfig();
-  if (dir === cfg.lastExportDir) return;
+  // F1：记进有界清单并落盘；顺手回收「上一个导出目录」与本次目录里上次中断留下的孤儿
+  // （每次导出扫码最多两个目录、单层、只删本应用命名且超 1 小时的，尽力而为不抛错）。
+  const previous = typeof cfg.lastExportDir === 'string' ? cfg.lastExportDir.trim() : '';
+  const merged = exportDirsLib.mergeRecentDirs(recentExportDirs, dir);
+  if (merged.join('\n') !== recentExportDirs.join('\n')) {
+    recentExportDirs = merged;
+    void exportDirsLib.writeRecentDirs(exportDirsFilePath(), recentExportDirs).catch(() => {});
+  }
+  await cleanupOrphanTmpFiles(dir).catch(() => {});
+  if (previous && previous !== dir) await cleanupOrphanTmpFiles(previous).catch(() => {});
+  if (dir === previous) return;
   try {
     const updated = await configStore.set({ lastExportDir: dir }, { auto: true });
     applyConfig(updated);
@@ -1642,6 +1674,19 @@ function registerIpc() {
         previousRoot = decorateConfig(sanitizeConfig(freshCurrent)).booksRoot;
         const targetRoot = decorateConfig(sanitizeConfig({ ...freshCurrent, ...gated.patch })).booksRoot;
         if (configGate.booksRootChanged(previousRoot, targetRoot)) {
+          // N3（二轮·低）：换根前先做 MAX_PATH 预算 —— 根太长时建书 / 写章 / 备份会 ENAMETOOLONG，
+          // 那时才报错往往已经导入到一半。这里在写配置之前就用中文说清楚，配置一个字都不写。
+          const deep = configGate.booksRootPathProblem(targetRoot);
+          if (deep) {
+            throw Object.assign(
+              new Error(
+                `书架目录太深：在它下面放书、章节和备份会超过 Windows 的 ${deep.max} 字符路径上限` +
+                  `（最长会到 ${deep.total} 字符，超出 ${deep.over} 个）。` +
+                  '请换一个更短或更靠上的目录（网络共享盘同样受这条限制），例如直接从盘符根目录下的文件夹开始。'
+              ),
+              { code: deep.code }
+            );
+          }
           await fs.mkdir(targetRoot, { recursive: true });
         }
       }
@@ -2904,8 +2949,17 @@ if (!gotLock) {
     // C3（WP18 / 审计中 #22）：导出目标目录（桌面 / 文档等，上次导出记在 lastExportDir）也会在
     // 崩溃 / 断电时留下同一个 `.名.tmp-pid-时间-随机` 隐藏孤儿 —— 那是用户看得见的目录，顺手
     // 按同一口径回收一次。只清本应用命名 + 非本进程 pid + 超 1 小时；目录不在 / 无权限都只跳过。
+    // F1（三审）：不再只扫**一个** lastExportDir —— 换过导出目录以后，旧目录里的孤儿再没人回收。
+    // 启动时把「最近导出过的目录（有界 10 个）+ 当前 lastExportDir」逐个扫一遍（去重、有界）。
+    await loadRecentExportDirs();
     const exportDir = config && typeof config.lastExportDir === 'string' ? config.lastExportDir.trim() : '';
-    if (exportDir) await cleanupOrphanTmpFiles(exportDir).catch(() => {});
+    const exportCleanupDirs = exportDirsLib.dirsToClean({
+      recent: recentExportDirs,
+      lastExportDir: exportDir
+    });
+    for (const dir of exportCleanupDirs) {
+      await cleanupOrphanTmpFiles(dir).catch(() => {});
+    }
     // b8：按配置决定要不要开始后台监听剪贴板（默认关）
     syncClipboardWatch();
     // 五-M32（PM-3）：睡眠 / 唤醒通知（写作计时排除睡眠时段）

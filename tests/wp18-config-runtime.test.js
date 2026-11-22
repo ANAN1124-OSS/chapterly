@@ -58,15 +58,21 @@ test('R16 C3：启动回收 lastExportDir 的孤儿 tmp（口径与 userData / �
   await fs.writeFile(path.join(dir, '其实是个文件'), 'x', 'utf8');
   assert.deepEqual(await atomic.cleanupOrphanTmpFiles(path.join(dir, '其实是个文件'), { now }), { removed: 0, kept: 0 });
 
-  // 静态：启动链在配置读完（getConfig）之后、建窗之前回收 lastExportDir，且失败不影响启动
+  // 静态：启动链在配置读完（getConfig）之后、建窗之前回收导出目录，且失败不影响启动。
+  // F1（三审）起不再只扫一个 lastExportDir：改成「最近导出目录（有界 10 个）+ 当前 lastExportDir」
+  // 逐个回收（去重、有界）。断言跟错：旧锚点钉的是单次 cleanupOrphanTmpFiles(exportDir)。
   const mainSrc = readSource('main.js');
   const userDataAt = mainSrc.indexOf("cleanupOrphanTmpFiles(app.getPath('userData'))");
-  const exportAt = mainSrc.indexOf('cleanupOrphanTmpFiles(exportDir)');
   assert.ok(userDataAt > 0, 'userData 回收必须仍在');
-  assert.ok(exportAt > userDataAt, '导出目录回收要排在 userData 之后（启动链同一处）');
-  assert.ok(exportAt < mainSrc.indexOf('createWindow({ runAutomationFlow: true })'), '要在建窗之前回收');
-  assert.match(mainSrc, /const exportDir = .*lastExportDir/, '导出目录取自配置的 lastExportDir');
-  assert.match(mainSrc, /cleanupOrphanTmpFiles\(exportDir\)\.catch\(\(\) => \{\}\)/, '尽力而为：失败不影响启动');
+  const loopAt = mainSrc.indexOf('for (const dir of exportCleanupDirs)');
+  assert.ok(loopAt > userDataAt, '导出目录回收要排在 userData 之后（启动链同一处）');
+  const sweepAt = mainSrc.indexOf('await cleanupOrphanTmpFiles(dir)', loopAt);
+  assert.ok(sweepAt > loopAt, '要逐个目录回收（只扫一个目录 = F1 的覆盖面缺口还在）');
+  assert.ok(loopAt < mainSrc.indexOf('createWindow({ runAutomationFlow: true })'), '要在建窗之前回收');
+  assert.match(mainSrc, /const exportDir = .*lastExportDir/, '当前导出目录仍取自配置的 lastExportDir');
+  assert.match(mainSrc, /exportDirsLib\.dirsToClean\(\{/, '要按「最近导出目录 + 当前目录」算该扫哪些目录');
+  assert.match(mainSrc, /await loadRecentExportDirs\(\);/, '启动要读回最近导出目录清单');
+  assert.match(mainSrc, /await cleanupOrphanTmpFiles\(dir\)\.catch\(\(\) => \{\}\)/, '尽力而为：失败不影响启动');
 });
 
 
@@ -163,11 +169,17 @@ test('R17 C2：config:set 的判根 / mkdir 与写盘同一个 enqueue（beforeW
     /targetRoot = decorateConfig\(sanitizeConfig\(\{ \.\.\.freshCurrent, \.\.\.gated\.patch \}\)\)\.booksRoot;/,
     '目标根要按队列内 current + 放行后的 patch 算'
   );
-  assert.match(
-    body,
-    /if \(configGate\.booksRootChanged\(previousRoot, targetRoot\)\) \{\s*await fs\.mkdir\(targetRoot, \{ recursive: true \}\);\s*\}/,
-    'mkdir 仍只在书架根真的变化时做'
+  // N3（二轮·低）：判根变化 → MAX_PATH 预算（超限抛错）→ mkdir。断言跟错：旧闸门钉的是
+  // 「分支里紧跟着就是 mkdir」，预算校验插在中间，这里改成钉顺序 + 各自的语义。
+  const branchAt = body.indexOf('if (configGate.booksRootChanged(previousRoot, targetRoot)) {', setAt);
+  const depthAt = body.indexOf('booksRootPathProblem(targetRoot)', setAt);
+  const targetMkdirAt = body.indexOf('fs.mkdir(targetRoot, { recursive: true });', setAt);
+  assert.ok(branchAt > hookAt, 'mkdir 仍包在「书架根真的变化」的分支里');
+  assert.ok(
+    depthAt > branchAt && targetMkdirAt > depthAt,
+    'mkdir 仍只在书架根真的变化时做（且要先过 MAX_PATH 预算）'
   );
+  assert.match(body, /if \(deep\) \{[\s\S]{0,600}?code: deep\.code/, '超预算要抛 ROOT_TOO_DEEP、不 mkdir');
   assert.match(body, /if \(configGate\.booksRootChanged\(previousRoot, nextConfig\.booksRoot\)\)/, '写后清锁 / 广播仍用同一判据');
   // core 实现的契约：beforeWrite 必须在 writeJson 之前（集合内唯一一处 set(patch, options)）
   const configSrc = readSource('core/config.js');
