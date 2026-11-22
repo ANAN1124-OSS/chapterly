@@ -226,13 +226,51 @@ test('marksPlan：参数缺失 / 坏形状不崩（按干净正文处理）', ()
   assert.deepStrictEqual(editorLogic.marksPlan(undefined), []);
 });
 
-test('静态闸门：renderEditorMarks 走 marksPlan，不再自己逐行建 span', () => {
+test('marksPlan：maxTextLines 把超长文本段切成有界小段，拼回原文仍逐字一致（P3）', () => {
+  const lines = [];
+  for (let i = 0; i < 400; i += 1) lines.push(`第${i + 1}段：普通正文一行，长度和日常章节差不多。`);
+  const text = lines.join('\n');
+  const plan = editorLogic.marksPlan(text, { maxTextLines: 20 });
+  assert.strictEqual(textOf(plan), text, '切段不能改变正文（拼回来必须一字不差）');
+  const texts = plan.filter((item) => item.kind === 'text');
+  assert.ok(texts.length >= 19, `400 行按 20 行一段应当切成多段，实际 ${texts.length} 段`);
+  // 每段最多 maxTextLines 行（行内长度不限；按行切才能让「一行里插字」不影响后续分段）
+  for (const segment of texts) {
+    assert.ok(segment.text.split('\n').length <= 21, `每段最多 maxTextLines 行，实际 ${segment.text.split('\n').length}`);
+  }
+  // 在一行中间插一个字：后续分段边界不挪（P3 前后缀比较能保住后面节点的前提）
+  const inserted = text.replace('第200段：', '第200段：改');
+  const beforeLines = editorLogic.marksPlan(text, { maxTextLines: 20 });
+  const afterLines = editorLogic.marksPlan(inserted, { maxTextLines: 20 });
+  assert.ok(
+    afterLines.filter((item) => item.kind === 'text').length === beforeLines.filter((item) => item.kind === 'text').length,
+    '插字不改变文本段数'
+  );
+  const tail = (plan) => plan[plan.length - 1];
+  assert.deepStrictEqual(tail(afterLines), tail(beforeLines), '最后一模一样（尾部分段不因插字漂移）');
+  // 只有「P3 增量 patch」的渲染层会用这个参数；不传时行为不变（旧闸门仍钉单节点）
+  assert.strictEqual(editorLogic.marksPlan(text, {}).length, 1);
+  assert.deepStrictEqual(editorLogic.marksPlan('abc', { maxTextLines: 2 }).map((item) => item.text), ['abc']);
+});
+
+test('静态闸门：renderEditorMarks 走 marksPlan + 增量 patch，不再自己逐行建 span', () => {
   const code = stripComments(MARKS_UI_SOURCE);
   const renderSrc = functionSource(code, 'renderEditorMarks');
   assert.match(renderSrc, /editorLogic\.marksPlan\(/, 'renderEditorMarks 必须按 marksPlan 建节点');
   assert.doesNotMatch(renderSrc, /text\.split\('\\n'\)/, 'renderEditorMarks 不许再自己 split(换行) 逐行建 span');
-  assert.match(renderSrc, /segment\.kind === 'text'/, '文本段要直接建文本节点');
-  assert.match(renderSrc, /'marks-line'/, '需要样式的行仍然要有 .marks-line span（E2E / 其它逻辑按它定位）');
+  // P3（一轮·低）：建节点搬进 marksSegmentNode（mount / patch 共用），整层重建改成增量 patch。
+  // 「闸门读取位置跟着代码搬家」不影响覆盖：行为由 tests/editor-marks-ui.test.js 的 P3 用例钉住。
+  assert.match(renderSrc, /patchMarksPlan\(/, 'renderEditorMarks 要走增量 patch');
+  assert.doesNotMatch(renderSrc, /overlay\.textContent = ''/, 'renderEditorMarks 不许再整层清空重建');
+  const nodeSrc = functionSource(code, 'marksSegmentNode');
+  assert.match(nodeSrc, /segment\.kind === 'text'/, '文本段要直接建文本节点');
+  assert.match(nodeSrc, /'marks-line'/, '需要样式的行仍然要有 .marks-line span（E2E / 其它逻辑按它定位）');
+  // patch 必须做前后缀比较、复用旧节点，而不是每次重新建
+  const patchSrc = functionSource(code, 'patchMarksPlan');
+  assert.match(patchSrc, /segmentsEqual\(/, 'patch 要比较新旧计划段');
+  assert.match(patchSrc, /removeMarksNode\(/, '只摘掉中间变了的旧节点');
+  assert.match(patchSrc, /insertMarksNodes\(/, '只插入中间新段');
+  assert.match(functionSource(code, 'hideEditorMarks'), /state\.marks\.rendered = null/, '收起整层后镜像要作废');
 });
 
 test('静态闸门：光标移到没有 span 的干净行时能整层重建补上高亮', () => {

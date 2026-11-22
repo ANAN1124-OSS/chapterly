@@ -710,7 +710,10 @@
   // 当前**渲染出来**的章节 id（按 DOM 顺序）：筛选 / 折叠后只含看得见的行。
   // Ctrl+A 与 Shift+↑/↓ 用它当 order —— 键盘只作用于看得见的章，不偷选隐藏的；
   // 按下标取 dataset.chapterId（筛选后 DOM 位置 ≠ 书内下标）。
+  // P5：大书分段渲染期间 DOM 还不完整，直接读 DOM 会漏掉还没挂上的行 —— 改用行计划里记下的
+  // 显示顺序（两者在全部挂完后逐字一致）；没渲染过时（null）仍退回读 DOM。
   function renderedChapterIds() {
+    if (chapterListDisplayIds) return chapterListDisplayIds.slice();
     const list = $('chapter-list');
     if (!list) return [];
     return Array.from(list.querySelectorAll('.chapter-item')).map((row) =>
@@ -865,20 +868,29 @@
     return item;
   }
 
-  // RSHE-B-03（第五轮审计）：可选 { keepScroll }。折叠 / 展开只影响显隐，不改变「当前章」，
-  // 旧实现复用整表重建后又无条件 scrollIntoView(当前章) —— 用户滚到离当前章很远处折叠一卷，
-  // 视口会被拉回当前章、浏览位置丢失。传 keepScroll 时重建后恢复原 scrollTop（夹到新范围）。
-  function renderChapterList(options = {}) {
-    const keepScroll = Boolean(options && options.keepScroll);
-    markCommandsDirty(); // 章节列表是命令面板「章节」条目的源：这里一变就作废缓存（1.5.0 P0-6）
-    // 1.5.0 功能-1：建表前先把多选收口 —— 已删的章 / 换了书以后，选中集合里不能留下幽灵 id。
-    pruneChapterSelection();
-    const list = $('chapter-list');
-    const scrollTopBefore = keepScroll && list ? Number(list.scrollTop) || 0 : 0;
-    // 先离线拼好整条列表，再一次性挂上去：千章书一次重建 1000 条时，逐条 appendChild
-    // 会让容器反复失效（实测能省掉几毫秒）；配合 CSS 的 content-visibility，屏幕外的
-    // 条目连布局都跳过。
-    const frag = document.createDocumentFragment();
+  // P5（一轮·低）：章节目录「分段渲染」。书目最多允许 20,000 章，旧实现一次同步建完 20,000 条
+  // DOM —— 一次几百毫秒的单帧长任务（筛选输入停 250ms 后还要再整表重建一次）。现在把「显示哪些行」
+  // 先算成纯内存的行计划：行数超过 CHAPTER_LIST_SEGMENT_MIN 时第一段同步挂载（首屏立刻可见），
+  // 其余分段在后续任务里追加 —— 主线程在段与段之间交还给输入 / 滚动，不再是一整段长任务。
+  // 分段用世代号取消：新一代渲染开始时旧的一段立即作废（不会把旧书的行追到新列表里）。
+  // 小书（≤ 阈值）仍一次性挂载，行为与旧实现逐字节一致（单测 / E2E 都走这条路径）。
+  const CHAPTER_LIST_SEGMENT_MIN = 1200;
+  const CHAPTER_LIST_FIRST_SEGMENT = 400;
+  const CHAPTER_LIST_SEGMENT = 2000;
+  let chapterListSegmentToken = 0;
+  // 当前显示行的章节 id（按显示顺序）；null = 还没渲染过（renderedChapterIds 退回读 DOM）。
+  let chapterListDisplayIds = null;
+
+  function makeChapterRowFragment(rows, from, to) {
+    const fragment = document.createDocumentFragment();
+    for (let i = from; i < to; i += 1) fragment.appendChild(rows[i]());
+    return fragment;
+  }
+
+  // 行计划：一组「建这一行」的函数（数组顺序 = 显示顺序）。筛选 / 卷折叠 / 空态文案与旧实现一致。
+  function chapterListRowPlan() {
+    const rows = [];
+    const displayIds = [];
     const volumes = volumeList();
     const query = chapterFilterQuery();
     const filtering = query !== '';
@@ -886,29 +898,36 @@
     // 命中为 0 时给一条筛选空态（与书架 / 查找同一套三件套文案口径）。
     const matched = matchingChapterIndexes();
     const matchedSet = new Set(matched);
+    const pushChapter = (chapter, index) => {
+      displayIds.push(chapter.id == null ? '' : String(chapter.id));
+      rows.push(() => makeChapterItem(chapter, index));
+    };
     // 1.3.0 T4（规范 I-06）：章节栏真空（0 章）。正常新建 / 删到空都会自动补一章，这里兜的是
     // 手改书目 / 从外部导入的书；只有「真空」一种状态（打开书是一次性读盘，没有加载中 / 筛选空）。
     // 文案按三件套写：说明状态 + 学习线索（章节模板）+ 直接路径（现有按钮 / Ctrl+N），不加新按钮。
     if (!state.chapters.length) {
-      const empty = document.createElement('div');
-      empty.className = 'chapter-list-empty muted small';
-      empty.dataset.emptyKind = 'vacuum';
-      empty.textContent =
-        '这本书还没有章节。点左下「＋ 新建章节」或按 Ctrl+N 开始写第一章；' +
-        '新章会自动套用设置里的章节模板（填了才生效）。';
-      frag.appendChild(empty);
+      rows.push(() => {
+        const empty = document.createElement('div');
+        empty.className = 'chapter-list-empty muted small';
+        empty.dataset.emptyKind = 'vacuum';
+        empty.textContent =
+          '这本书还没有章节。点左下「＋ 新建章节」或按 Ctrl+N 开始写第一章；' +
+          '新章会自动套用设置里的章节模板（填了才生效）。';
+        return empty;
+      });
     } else if (filtering && !matched.length) {
-      const empty = document.createElement('div');
-      empty.className = 'chapter-list-empty muted small';
-      empty.dataset.emptyKind = 'filtered';
-      empty.textContent =
-        `没有匹配「${query}」的章节。\n换个关键词，或按 Esc 清空筛选。`;
-      frag.appendChild(empty);
+      rows.push(() => {
+        const empty = document.createElement('div');
+        empty.className = 'chapter-list-empty muted small';
+        empty.dataset.emptyKind = 'filtered';
+        empty.textContent = `没有匹配「${query}」的章节。\n换个关键词，或按 Esc 清空筛选。`;
+        return empty;
+      });
     } else if (!volumes.length) {
       // 没分卷的书：平铺章节（筛选时只留命中的那几条）
       state.chapters.forEach((chapter, index) => {
         if (filtering && !matchedSet.has(index)) return;
-        frag.appendChild(makeChapterItem(chapter, index));
+        pushChapter(chapter, index);
       });
     } else {
       const buckets = new Map(volumes.map((v) => [v.id, []]));
@@ -924,21 +943,19 @@
         if (volumeId && buckets.has(volumeId)) buckets.get(volumeId).push({ chapter, index });
         else orphans.push({ chapter, index });
       });
-      const charsOfItems = (items) =>
-        chapterCharsTotal(items.map((item) => item.index)).total;
+      const charsOfItems = (items) => chapterCharsTotal(items.map((item) => item.index)).total;
       if (orphans.length) {
-        frag.appendChild(
-          makeVolumeHeader(
-            null,
-            '未分卷',
-            orphans.length,
-            charsOfItems(orphans),
-            totalOrphans.length,
-            chapterCharsTotal(totalOrphans).total
-          )
-        );
+        const headerArgs = [
+          null,
+          '未分卷',
+          orphans.length,
+          charsOfItems(orphans),
+          totalOrphans.length,
+          chapterCharsTotal(totalOrphans).total
+        ];
+        rows.push(() => makeVolumeHeader(...headerArgs));
         if (filtering || !state.collapsedVolumes.has('')) {
-          orphans.forEach(({ chapter, index }) => frag.appendChild(makeChapterItem(chapter, index)));
+          orphans.forEach(({ chapter, index }) => pushChapter(chapter, index));
         }
       }
       for (const volume of volumes) {
@@ -946,48 +963,105 @@
         // 筛选时整卷没有命中的卷头不占位置；不筛选时空卷也要留着（新建的卷要在侧栏里看得见）
         if (filtering && !items.length) continue;
         const all = totals.get(volume.id) || [];
-        frag.appendChild(
-          makeVolumeHeader(
-            volume.id,
-            volumeDisplayName(volume.id),
-            items.length,
-            charsOfItems(items),
-            all.length,
-            chapterCharsTotal(all).total
-          )
-        );
+        const headerArgs = [
+          volume.id,
+          volumeDisplayName(volume.id),
+          items.length,
+          charsOfItems(items),
+          all.length,
+          chapterCharsTotal(all).total
+        ];
+        rows.push(() => makeVolumeHeader(...headerArgs));
         if (filtering || !state.collapsedVolumes.has(volume.id)) {
-          items.forEach(({ chapter, index }) => frag.appendChild(makeChapterItem(chapter, index)));
+          items.forEach(({ chapter, index }) => pushChapter(chapter, index));
         }
       }
     }
-    list.replaceChildren(frag);
-    // 1.6.0 A5/P-09：整表重建后重算「当前章条目」缓存（旧条目已掉出文档，不能再给它挂 dirty）
-    setCachedActiveChapterItem(list.querySelector('.chapter-item.active'));
-    // 筛选时卷头只作分组标签（折叠箭头收起、不接点击）：见 toggleVolumeCollapse
-    list.classList.toggle('filtering', filtering);
-    syncCurrentVolumeMarker();
-    // 当前章在折叠的卷里时列表里一条 tabIndex 0 都没有：给第一个条目补一个 Tab 停留点
-    listKeyboard.ensureTabStop(list, '.chapter-item');
-    if (filtering) {
-      // 筛选结果从第一条读起：不把当前章滚到底部，免得用户输一个词只看得到最后一条
-      list.scrollTop = 0;
-    } else if (keepScroll) {
-      // RSHE-B-03：折叠 / 展开后保持浏览位置；行数变少时夹到新的可滚动范围，别停在越界空白。
-      let restored = scrollTopBefore;
-      const max = Number(list.scrollHeight) - Number(list.clientHeight);
-      if (Number.isFinite(max) && max >= 0) restored = Math.min(restored, max);
-      list.scrollTop = restored;
-    } else {
-      const active = getCachedActiveChapterItem();
-      if (active) active.scrollIntoView({ block: 'nearest' });
+    return { rows, displayIds, filtering, matched };
+  }
+
+  // 一次性挂载（小书 / 旧口径）：先离线拼好整条列表，再一次性 replaceChildren —— 逐条
+  // appendChild 到 live 容器会让千章书反复失效；配合 CSS 的 content-visibility，屏幕外条目连布局都跳过。
+  function mountChapterRows(list, rows) {
+    list.replaceChildren(makeChapterRowFragment(rows, 0, rows.length));
+  }
+
+  // 分段挂载（P5）：第一段同步、其余按 CHAPTER_LIST_SEGMENT 追加；世代号变了就收工。
+  function mountChapterRowsSegmented(list, rows, onFirstSegment, onDone) {
+    const token = chapterListSegmentToken;
+    const firstEnd = Math.min(rows.length, CHAPTER_LIST_FIRST_SEGMENT);
+    list.replaceChildren(makeChapterRowFragment(rows, 0, firstEnd));
+    onFirstSegment();
+    let mounted = firstEnd;
+    const step = () => {
+      if (token !== chapterListSegmentToken) return; // 新一代渲染已经接管：旧分段作废
+      const to = Math.min(rows.length, mounted + CHAPTER_LIST_SEGMENT);
+      list.appendChild(makeChapterRowFragment(rows, mounted, to));
+      mounted = to;
+      if (mounted < rows.length) setTimeout(step, 0);
+      else onDone();
+    };
+    setTimeout(step, 0);
+  }
+
+  // RSHE-B-03（第五轮审计）：可选 { keepScroll }。折叠 / 展开只影响显隐，不改变「当前章」，
+  // 旧实现复用整表重建后又无条件 scrollIntoView(当前章) —— 用户滚到离当前章很远处折叠一卷，
+  // 视口会被拉回当前章、浏览位置丢失。传 keepScroll 时重建后恢复原 scrollTop（夹到新范围）。
+  function renderChapterList(options = {}) {
+    const keepScroll = Boolean(options && options.keepScroll);
+    markCommandsDirty(); // 章节列表是命令面板「章节」条目的源：这里一变就作废缓存（1.5.0 P0-6）
+    // 1.5.0 功能-1：建表前先把多选收口 —— 已删的章 / 换了书以后，选中集合里不能留下幽灵 id。
+    pruneChapterSelection();
+    const list = $('chapter-list');
+    const scrollTopBefore = keepScroll && list ? Number(list.scrollTop) || 0 : 0;
+    const plan = chapterListRowPlan();
+    chapterListDisplayIds = plan.displayIds;
+    // 与 DOM 行无关的几处刷新（筛选态 / 筛选框 / 批量条 / 概览行 / 卷折叠按钮 / 当前卷胶囊）
+    const refreshChrome = () => {
+      // 筛选时卷头只作分组标签（折叠箭头收起、不接点击）：见 toggleVolumeCollapse
+      if (list) list.classList.toggle('filtering', plan.filtering);
+      syncChapterFilterUi();
+      syncChapterBatchBar();
+      // 命中已由行计划算过，直接传给概览行（RSHE-B-04：不再重跑一遍全表匹配）。
+      renderBookMeta(plan.matched.length);
+      renderVolumeToggle();
+      updateCurrentChapterPill();
+    };
+    if (!list) {
+      refreshChrome();
+      return;
     }
-    syncChapterFilterUi();
-    syncChapterBatchBar();
-    // 命中已由上面算过，直接传给概览行（RSHE-B-04：不再重跑一遍全表匹配）。
-    renderBookMeta(matched.length);
-    renderVolumeToggle();
-    updateCurrentChapterPill();
+    // 全部行挂完后的收尾：当前章条目缓存 / 卷标记 / Tab 停留点 / 滚动位置（旧口径不变）
+    const finish = () => {
+      // 1.6.0 A5/P-09：整表重建后重算「当前章条目」缓存（旧条目已掉出文档，不能再给它挂 dirty）
+      setCachedActiveChapterItem(list.querySelector('.chapter-item.active'));
+      syncCurrentVolumeMarker();
+      // 当前章在折叠的卷里时列表里一条 tabIndex 0 都没有：给第一个条目补一个 Tab 停留点
+      listKeyboard.ensureTabStop(list, '.chapter-item');
+      if (plan.filtering) {
+        // 筛选结果从第一条读起：不把当前章滚到底部，免得用户输一个词只看得到最后一条
+        list.scrollTop = 0;
+      } else if (keepScroll) {
+        // RSHE-B-03：折叠 / 展开后保持浏览位置；行数变少时夹到新的可滚动范围，别停在越界空白。
+        // P5：分段渲染时后面几段的挂载会改变 scrollHeight，所以恢复放在全部挂完之后。
+        let restored = scrollTopBefore;
+        const max = Number(list.scrollHeight) - Number(list.clientHeight);
+        if (Number.isFinite(max) && max >= 0) restored = Math.min(restored, max);
+        list.scrollTop = restored;
+      } else {
+        const active = getCachedActiveChapterItem();
+        if (active) active.scrollIntoView({ block: 'nearest' });
+      }
+    };
+    chapterListSegmentToken += 1; // 作废还在跑的旧分段（换书 / 筛选 / 折叠都会重新进来）
+    if (plan.rows.length <= CHAPTER_LIST_SEGMENT_MIN) {
+      mountChapterRows(list, plan.rows);
+      refreshChrome();
+      finish();
+      return;
+    }
+    // 大书：第一段先挂上，与 DOM 行无关的刷新立刻做；当前章 / Tab 停留点 / 滚动等全部挂完再收尾。
+    mountChapterRowsSegmented(list, plan.rows, refreshChrome, finish);
   }
 
     return {

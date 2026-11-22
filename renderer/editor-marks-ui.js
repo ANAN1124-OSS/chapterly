@@ -203,6 +203,8 @@
       gutter.classList.add('hidden');
       gutter.textContent = '';
     }
+    // P3：整层收起后旧的「计划 → 节点」镜像立刻作废（下一次可见时整层重建）
+    state.marks.rendered = null;
     if (!overlay) return;
     overlay.classList.add('hidden');
     overlay.textContent = '';
@@ -323,6 +325,149 @@
     );
   }
 
+  // P3（一轮·低，编辑器标记层增量渲染）：以前每次输入都 `overlay.textContent=''` 后按 marksPlan
+  // 整章重建 —— 30 万字上限内成本随正文线性增长，每次停顿后都要重排整章镜像。现在把上一次的
+  // 「计划 → DOM 节点」镜像留在 state.marks.rendered 里，新旧计划做前后缀比较，只替换中间真变了
+  // 的那几段；没变的节点原地复用（不重建、不重排）。
+  // 分段上限 MARKS_TEXT_RUN_LINES 决定一次输入最多替换多少行：按行切（不是按字符）才能保证在
+  // 一行里插字时后面的分段边界不挪位（否则每个后续段都差一个字符，截断比较退化成整层重建）。
+  // 大章整层仍只有几十个文本节点（不是退回逐行 span）；镜像在 hideEditorMarks 里随整层收起释放。
+  const MARKS_TEXT_RUN_LINES = 200;
+
+  // 一个计划段 → 一个 DOM 节点（文本段 = 文本节点；样式行 = .marks-line span）。
+  // 抽成函数是为了让 mount / patch 共用同一份建节点逻辑（内容一字不改）。
+  function marksSegmentNode(segment) {
+    if (segment.kind === 'text') return document.createTextNode(segment.text);
+    const lineEl = document.createElement('span');
+    lineEl.className = 'marks-line';
+    lineEl.dataset.line = String(segment.line);
+    if (segment.long) lineEl.classList.add('long-para');
+    if (segment.caret) lineEl.classList.add('caret-para');
+    let cursor = 0;
+    for (const mark of segment.marks) {
+      if (mark.start > cursor) {
+        lineEl.appendChild(document.createTextNode(segment.text.slice(cursor, mark.start)));
+        cursor = mark.start;
+      }
+      const markEl = document.createElement('span');
+      const rawMark = segment.text.slice(mark.start, mark.end);
+      if (mark.type === 'trailing') {
+        markEl.className = 'mark-trail';
+        markEl.appendChild(document.createTextNode(rawMark));
+        const dot = document.createElement('i');
+        dot.textContent = '·';
+        markEl.appendChild(dot);
+      } else {
+        markEl.className = 'mark-fw';
+        markEl.appendChild(document.createTextNode(rawMark));
+        const glyph = document.createElement('i');
+        glyph.textContent = '␣';
+        markEl.appendChild(glyph);
+      }
+      lineEl.appendChild(markEl);
+      cursor = mark.end;
+    }
+    if (cursor < segment.text.length) {
+      lineEl.appendChild(document.createTextNode(segment.text.slice(cursor)));
+    }
+    return lineEl;
+  }
+
+  // 两个计划段能不能共用同一个 DOM 节点：种类 / 正文 / 行号 / 两种样式 / 标记片段全一致才算相同。
+  function segmentsEqual(a, b) {
+    if (!a || !b || a.kind !== b.kind) return false;
+    if (a.kind === 'text') return a.text === b.text;
+    if (a.line !== b.line || a.text !== b.text || a.long !== b.long || a.caret !== b.caret) return false;
+    if (a.marks.length !== b.marks.length) return false;
+    for (let i = 0; i < a.marks.length; i += 1) {
+      const left = a.marks[i];
+      const right = b.marks[i];
+      if (left.start !== right.start || left.end !== right.end || left.type !== right.type) return false;
+    }
+    return true;
+  }
+
+  // 整层清空：真 DOM 有 replaceChildren；单测的极简假 DOM 只有 children 数组，按同一语义兜住。
+  function clearMarksOverlay(overlay) {
+    if (typeof overlay.replaceChildren === 'function') {
+      overlay.replaceChildren();
+      return;
+    }
+    overlay.textContent = '';
+    if (Array.isArray(overlay.children)) overlay.children.length = 0;
+  }
+
+  function removeMarksNode(overlay, node) {
+    if (!node) return;
+    if (node.parentNode === overlay && typeof overlay.removeChild === 'function') {
+      overlay.removeChild(node);
+      return;
+    }
+    if (Array.isArray(overlay.children)) {
+      const at = overlay.children.indexOf(node);
+      if (at >= 0) overlay.children.splice(at, 1);
+    }
+  }
+
+  function insertMarksNodes(overlay, nodes, ref) {
+    if (!nodes.length) return;
+    if (typeof overlay.insertBefore === 'function') {
+      for (const node of nodes) overlay.insertBefore(node, ref || null);
+      return;
+    }
+    for (const node of nodes) overlay.appendChild(node);
+  }
+
+  function mountMarksPlan(overlay, plan) {
+    const fragment = document.createDocumentFragment();
+    const nodes = [];
+    for (const segment of plan) {
+      const node = marksSegmentNode(segment);
+      nodes.push(node);
+      fragment.appendChild(node);
+    }
+    clearMarksOverlay(overlay);
+    overlay.appendChild(fragment);
+    state.marks.rendered = { plan, nodes };
+  }
+
+  function patchMarksPlan(overlay, plan) {
+    const rendered = state.marks.rendered;
+    if (
+      !rendered ||
+      !Array.isArray(rendered.plan) ||
+      !Array.isArray(rendered.nodes) ||
+      rendered.nodes.length !== rendered.plan.length
+    ) {
+      mountMarksPlan(overlay, plan);
+      return;
+    }
+    const oldPlan = rendered.plan;
+    const oldNodes = rendered.nodes;
+    const maxPrefix = Math.min(oldPlan.length, plan.length);
+    let prefix = 0;
+    while (prefix < maxPrefix && segmentsEqual(oldPlan[prefix], plan[prefix])) prefix += 1;
+    let suffix = 0;
+    const maxSuffix = maxPrefix - prefix;
+    while (suffix < maxSuffix && segmentsEqual(oldPlan[oldPlan.length - 1 - suffix], plan[plan.length - 1 - suffix])) {
+      suffix += 1;
+    }
+    const oldEnd = oldPlan.length - suffix;
+    const newEnd = plan.length - suffix;
+    if (prefix === oldEnd && prefix === newEnd) {
+      // 计划完全没变（例如只是重画菜单 / 光标没跨段）：DOM 一个节点都不动
+      state.marks.rendered = { plan, nodes: oldNodes };
+      return;
+    }
+    const ref = oldEnd < oldNodes.length ? oldNodes[oldEnd] : null;
+    const inserted = [];
+    for (let i = prefix; i < newEnd; i += 1) inserted.push(marksSegmentNode(plan[i]));
+    for (let i = prefix; i < oldEnd; i += 1) removeMarksNode(overlay, oldNodes[i]);
+    insertMarksNodes(overlay, inserted, ref);
+    oldNodes.splice(prefix, oldEnd - prefix, ...inserted);
+    state.marks.rendered = { plan, nodes: oldNodes };
+  }
+
   function renderEditorMarks() {
     const overlay = $('editor-marks');
     if (!overlay) return;
@@ -360,57 +505,19 @@
 
     overlay.classList.remove('hidden');
     syncMarksLayout();
-    overlay.textContent = '';
     const longLines = new Set(longResult.items.map((item) => item.line));
-    const marks = invisibleResult.items;
-    const fragment = document.createDocumentFragment();
-    // v0.9 A-3：不再「一行一个 span」。逐行 span 只是 .long-para / .caret-para 的锚点，
-    // 干净行合并成一个文本节点后，10 万字整层重建从 35.1ms 降到 ~7ms（1500 个行内盒太贵）。
-    // 切法由纯逻辑 editorLogic.marksPlan() 决定（单测覆盖），这里只按计划建节点。
-    for (const segment of editorLogic.marksPlan(text, {
-      longLines,
-      caretLine: state.marks.caretLine,
-      marks
-    })) {
-      if (segment.kind === 'text') {
-        fragment.appendChild(document.createTextNode(segment.text));
-        continue;
-      }
-      const lineEl = document.createElement('span');
-      lineEl.className = 'marks-line';
-      lineEl.dataset.line = String(segment.line);
-      if (segment.long) lineEl.classList.add('long-para');
-      if (segment.caret) lineEl.classList.add('caret-para');
-      let cursor = 0;
-      for (const mark of segment.marks) {
-        if (mark.start > cursor) {
-          lineEl.appendChild(document.createTextNode(segment.text.slice(cursor, mark.start)));
-          cursor = mark.start;
-        }
-        const markEl = document.createElement('span');
-        const rawMark = segment.text.slice(mark.start, mark.end);
-        if (mark.type === 'trailing') {
-          markEl.className = 'mark-trail';
-          markEl.appendChild(document.createTextNode(rawMark));
-          const dot = document.createElement('i');
-          dot.textContent = '·';
-          markEl.appendChild(dot);
-        } else {
-          markEl.className = 'mark-fw';
-          markEl.appendChild(document.createTextNode(rawMark));
-          const glyph = document.createElement('i');
-          glyph.textContent = '␣';
-          markEl.appendChild(glyph);
-        }
-        lineEl.appendChild(markEl);
-        cursor = mark.end;
-      }
-      if (cursor < segment.text.length) {
-        lineEl.appendChild(document.createTextNode(segment.text.slice(cursor)));
-      }
-      fragment.appendChild(lineEl);
-    }
-    overlay.appendChild(fragment);
+    // P3（一轮·低）：不再 `overlay.textContent=''` 整层重建 —— 交给 patchMarksPlan 与上次的计划
+    // 做前后缀比较，只替换真正变了的那几段；切法仍由纯逻辑 editorLogic.marksPlan() 决定
+    //（单测覆盖），这里只按计划建 / 复用节点。
+    patchMarksPlan(
+      overlay,
+      editorLogic.marksPlan(text, {
+        longLines,
+        caretLine: state.marks.caretLine,
+        marks: invisibleResult.items,
+        maxTextLines: MARKS_TEXT_RUN_LINES
+      })
+    );
     syncMarksScroll();
     renderLongParagraphBars();
     renderLongParaChip();
@@ -441,8 +548,8 @@
       return;
     }
     // v0.9 A-3：干净行现在合并成文本节点（不再一行一个 span），光标移到这种行时没有现成的
-    // span 可以挂 class —— 整层重建一次（重建后这一行就是 span）。10 万字实测约 8.7ms，
-    // 只在光标跨到「本次没被标记的行」时发生；同一行内继续打字仍然是 O(1) 改 class。
+    // span 可以挂 class —— 重画一次补上（P3 起走 patchMarksPlan，只替换光标行所在的那一段，
+    // 不再整层重建）。只在光标跨到「本次没被标记的行」时发生；同一行内继续打字仍是 O(1) 改 class。
     renderEditorMarks();
   }
 

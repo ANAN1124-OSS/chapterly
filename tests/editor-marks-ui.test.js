@@ -139,6 +139,38 @@ function makeEl(tag = 'div', id = '') {
       el.children.push(child);
       return child;
     },
+    // P3：增量 patch 需要 insertBefore / removeChild / replaceChildren / childNodes（真实 DOM 都有）
+    insertBefore(child, ref) {
+      if (child && child._isFragment) {
+        child.children.slice().forEach((c) => el.insertBefore(c, ref));
+        child.children.length = 0;
+        return child;
+      }
+      const at = ref ? el.children.indexOf(ref) : -1;
+      child.parentNode = el;
+      child.parentElement = el;
+      if (at >= 0) el.children.splice(at, 0, child);
+      else el.children.push(child);
+      return child;
+    },
+    removeChild(child) {
+      const at = el.children.indexOf(child);
+      if (at >= 0) el.children.splice(at, 1);
+      if (child) {
+        child.parentNode = null;
+        child.parentElement = null;
+      }
+      return child;
+    },
+    replaceChildren(...nodes) {
+      for (const child of el.children) {
+        child.parentNode = null;
+        child.parentElement = null;
+      }
+      el.children.length = 0;
+      for (const node of nodes) el.insertBefore(node, null);
+    },
+    get childNodes() { return el.children; },
     focus() { el._focusCount += 1; },
     setSelectionRange(start) { el.selectionStart = start; },
     setAttribute(name, value) { el._attrs[name] = value; },
@@ -387,6 +419,101 @@ test('renderEditorMarks：按 marksPlan 建节点，拼回正文逐字等于原�
   assert.ok(trail.length > 0, '行尾空白要画浅红底');
   assert.match(collectText(trail[0]), /·$/);
   assert.ok(overlay.querySelectorAll('.caret-para').length === 1, '光标所在段要加 caret-para');
+});
+
+// ---------- P3（一轮·低）：标记层增量 patch ----------
+// 以前输入路径每次（80ms 防抖后）都 `overlay.textContent=''` 后按 marksPlan 整章重建；
+// 30 万字上限内成本随正文线性增长。现在留一份「计划 → DOM 节点」镜像，只替换前后缀之间
+// 真正变了的那几段。这里的锚点钉三件事：没变的节点必须原地复用（不是重建后长得一样）、
+// 替换范围有界（不超过光标所在文本段）、收起 / 换章后镜像作废、下一次仍能整层重建。
+function collectNodeRefs(overlay) {
+  return overlay.children.slice();
+}
+
+test('P3：大章改一个字只 patch 光标行那一段，其余节点原地复用（不再整层重建）', () => {
+  const lines = [];
+  for (let i = 0; i < 3000; i += 1) lines.push(`第${i + 1}行：这是一行普通的正文，用来把章节撑到大章体量。`);
+  const text = lines.join('\n');
+  const caretLine = 1500;
+  const caretStart = lines.slice(0, caretLine - 1).join('\n').length + 1;
+  const ctx = build({ text, invisibles: true, caretParagraph: true, selectionStart: caretStart + 2 });
+  ctx.ui.renderEditorMarks();
+  const overlay = ctx.dom.map.get('editor-marks');
+  const before = collectNodeRefs(overlay);
+  assert.ok(before.length >= 8 && before.length <= 40, `大章标记层节点数应当只有几十个（实际 ${before.length}）`);
+  assert.equal(collectSourceText(overlay), text, '整层拼回来仍然等于原文');
+
+  const caretSpan = overlay.querySelector('.caret-para');
+  assert.ok(caretSpan, '光标行是 span');
+  const nextText = `${text.slice(0, caretStart + 2)}改${text.slice(caretStart + 3)}`;
+  assert.notEqual(nextText, text);
+  ctx.editorEl.value = nextText;
+  ctx.ui.renderEditorMarks();
+  const after = collectNodeRefs(overlay);
+  const beforeSet = new Set(before);
+  const reused = after.filter((node) => beforeSet.has(node)).length;
+  assert.equal(collectSourceText(overlay), nextText, 'patch 后拼回来等于新正文');
+  assert.equal(after.length, before.length, '节点数不变（没有退回逐行 span）');
+  assert.ok(reused >= after.length - 2, `除光标行那一段外都应原地复用（复用了 ${reused}/${after.length}）`);
+  assert.equal(after.includes(caretSpan), false, '光标行那一段被替换（正文变了）');
+});
+
+test('P3：在普通文本段里改字只重建那一段（≤ maxTextChars），其它段节点不动', () => {
+  const lines = [];
+  for (let i = 0; i < 3000; i += 1) lines.push(`第${i + 1}行：这是一行普通的正文，用来把章节撑到大章体量。`);
+  const text = lines.join('\n');
+  // 光标停在第 2000 行的行首（这一行没有任何标记 → 被合并进文本段）
+  const editAt = lines.slice(0, 1999).join('\n').length + 1;
+  const ctx = build({ text, invisibles: true, caretParagraph: false, selectionStart: editAt });
+  ctx.ui.renderEditorMarks();
+  const overlay = ctx.dom.map.get('editor-marks');
+  const before = collectNodeRefs(overlay);
+  assert.ok(before.length >= 8, '大章被切成多段（段上限决定 patch 粒度）');
+  const nextText = `${text.slice(0, editAt)}改${text.slice(editAt)}`;
+  ctx.editorEl.value = nextText;
+  ctx.ui.renderEditorMarks();
+  const after = collectNodeRefs(overlay);
+  const beforeSet = new Set(before);
+  const reused = after.filter((node) => beforeSet.has(node)).length;
+  assert.equal(collectSourceText(overlay), nextText);
+  assert.equal(after.length, before.length, '插入一个字符没有改变分段数');
+  assert.ok(reused >= after.length - 2, `只重建被改到的那一段（复用了 ${reused}/${after.length}）`);
+});
+
+test('P3：新打的字变成可见标记时只拆开所在那一段（最多多出 2 个节点）', () => {
+  const lines = [];
+  for (let i = 0; i < 3000; i += 1) lines.push(`第${i + 1}行：这是一行普通的正文，用来把章节撑到大章体量。`);
+  const text = lines.join('\n');
+  const editAt = lines.slice(0, 1999).join('\n').length + 1;
+  const ctx = build({ text, invisibles: true, caretParagraph: false, selectionStart: editAt });
+  ctx.ui.renderEditorMarks();
+  const overlay = ctx.dom.map.get('editor-marks');
+  const before = collectNodeRefs(overlay);
+  // 打一个全角空格：这一行从「合并文本」变成「带标记的行 span」，所在文本段被切开
+  const nextText = `${text.slice(0, editAt)}　${text.slice(editAt)}`;
+  ctx.editorEl.value = nextText;
+  ctx.ui.renderEditorMarks();
+  const after = collectNodeRefs(overlay);
+  const beforeSet = new Set(before);
+  const reused = after.filter((node) => beforeSet.has(node)).length;
+  assert.equal(collectSourceText(overlay), nextText);
+  assert.ok(after.length <= before.length + 2, `分段数最多 +2（实际 ${before.length} → ${after.length}）`);
+  assert.ok(reused >= before.length - 2, `未受影响的段原地复用（复用了 ${reused}/${after.length}）`);
+  assert.equal(overlay.querySelectorAll('.mark-fw').length, 1, '新标记照常画出来');
+});
+
+test('P3：收起标记层后镜像作废（下次可见时整层重建，不拿旧节点拼）', () => {
+  const ctx = build({ text: '第一段。\n第二段。', invisibles: true });
+  ctx.ui.renderEditorMarks();
+  const overlay = ctx.dom.map.get('editor-marks');
+  const first = collectNodeRefs(overlay);
+  assert.equal(ctx.state.marks.rendered.plan.length, first.length, '镜像与 DOM 一一对应');
+  ctx.ui.hideEditorMarks();
+  assert.equal(ctx.state.marks.rendered, null, '收起后镜像必须释放（同时也放掉整章文本引用）');
+  ctx.ui.renderEditorMarks();
+  const rebuilt = collectNodeRefs(overlay);
+  assert.equal(rebuilt.some((node) => first.includes(node)), false, '重建用新节点，不复用收起前的');
+  assert.equal(collectSourceText(overlay), '第一段。\n第二段。');
 });
 
 test('renderEditorMarks：超长正文整层收起 + 只提示一次；回到阈值内重新武装', () => {

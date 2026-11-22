@@ -118,15 +118,37 @@ test('CSS 闸门：章节条目跳过屏幕外渲染，intrinsic 尺寸接近真
   assert.doesNotMatch(chapterItemRule, /content-visibility:\s*hidden/, '隐藏式跳过会让章节列表的键盘 / 查找都失效');
 });
 
-test('列表批量挂载：renderChapterList 先拼 DocumentFragment，再一次性 replaceChildren', () => {
-  assert.match(renderChapterListSrc, /document\.createDocumentFragment\(\)/, 'renderChapterList 应该先离线拼装');
-  assert.match(renderChapterListSrc, /list\.replaceChildren\(frag\)/, 'renderChapterList 应该一次性挂载');
+test('列表批量挂载：行计划先拼 DocumentFragment，再一次 replaceChildren（P5 分段同源）', () => {
+  // P5（一轮·低）：整表拼接拆成「行计划（chapterListRowPlan）→ 分段挂载」。闸门读取位置跟着
+  // 代码搬家（行为由下面的分段用例 + E2E 76 组覆盖）：建节点仍只在一个地方、仍是一次
+  // replaceChildren，不许逐条 appendChild 到 live 容器。
+  const planSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'chapterListRowPlan');
+  assert.ok(planSrc.includes('rows.push('), '行计划要把每一行攒成待建函数');
+  const fragSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'makeChapterRowFragment');
+  assert.match(fragSrc, /document\.createDocumentFragment\(\)/, '拼装仍要先离线建 DocumentFragment');
+  assert.match(fragSrc, /fragment\.appendChild\(/, '每行挂到离屏 fragment 上');
+  const mountSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'mountChapterRows');
+  assert.match(mountSrc, /list\.replaceChildren\(makeChapterRowFragment\(/, '一次性挂载仍走 replaceChildren');
+  assert.equal(
+    CHAPTER_DIRECTORY_CODE.includes('list.replaceChildren(frag)'),
+    false,
+    '旧整表 frag 变量已经拆成行计划 + 分段挂载'
+  );
+  const segmentedSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'mountChapterRowsSegmented');
+  assert.match(segmentedSrc, /chapterListSegmentToken/, '分段必须用世代号取消旧渲染');
+  assert.equal(segmentedSrc.includes('rows.forEach'), false, '分段里不许退回逐条同步建行');
+  assert.match(
+    functionSource(CHAPTER_DIRECTORY_CODE, 'renderChapterList'),
+    /CHAPTER_LIST_SEGMENT_MIN/,
+    '超过阈值才分段（小书行为不变）'
+  );
 });
 
-test('列表批量挂载：renderChapterList 不再逐条 appendChild 到 live 列表上', () => {
-  assert.doesNotMatch(renderChapterListSrc, /list\.appendChild\(/, '逐条 appendChild 到 live 容器会让千章书反复失效');
-  const appends = renderChapterListSrc.match(/frag\.appendChild\(/g) || [];
-  assert.ok(appends.length >= 4, `拼接应当都落在 frag 上（找到 ${appends.length} 处）`);
+test('列表批量挂载：不逐条 appendChild 到 live 列表上（分段每次也只挂一段）', () => {
+  assert.doesNotMatch(renderChapterListSrc, /list\.appendChild\(/, 'renderChapterList 自身不许直接往 live 容器逐段挂');
+  const segmentedSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'mountChapterRowsSegmented');
+  const liveAppends = segmentedSrc.match(/list\.appendChild\(/g) || [];
+  assert.equal(liveAppends.length, 1, `分段挂载每次只许一次 list.appendChild(fragment)（找到 ${liveAppends.length} 处）`);
   // 当前章高亮仍然按 index 计算（整表重建时的行为不能变）——这一句在 makeChapterItem 里
   assert.match(makeChapterItemSrc, /index === state\.index/, '整表重建仍要按 index 标出当前章');
 });

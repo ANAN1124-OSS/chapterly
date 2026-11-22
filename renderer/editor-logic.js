@@ -366,6 +366,11 @@
   // marks 里是**相对本行**的片段：[{ type: 'fullwidth' | 'trailing', start, end }]。
   // 把每个 segment 的正文按顺序拼起来恒等于原正文（单测钉了这条不变量），所以影子层的换行 /
   // 行高与编辑区完全一致——只画底色，不改一个字。
+  //
+  // P3（一轮·低，增量重建）：可选 maxTextLines 把超长文本段切成有界小段（默认 0 = 不切，旧行为）。
+  // 渲染层每敲一个字都会重算计划，段越粗，DOM 增量 patch 一次要替换的文本就越多。按**行数**切
+  //（而不是字符数）是有意的：行边界只随换行变，在一行里插字不会让后续分段整体挪位，
+  // 前后缀比较才能在插入时保住后面的节点（按字符数切会让每个后续段都差一个字符 → 退化成整层重建）。
   function marksPlan(text, options) {
     const source = toText(text);
     const opts = options || {};
@@ -375,9 +380,11 @@
         : new Set(Array.isArray(opts.longLines) ? opts.longLines : []);
     const caretLine = Math.max(0, Math.floor(Number(opts.caretLine) || 0));
     const marks = Array.isArray(opts.marks) ? opts.marks : [];
+    const maxTextLines = Math.max(0, Math.floor(Number(opts.maxTextLines) || 0));
     const lines = source.split('\n');
     const segments = [];
     let pending = ''; // 干净行攒着的正文（含行尾换行），凑够一段再输出一个文本节点
+    let pendingLines = 0;
     let lineStart = 0;
     let markIndex = 0;
     for (let i = 0; i < lines.length; i += 1) {
@@ -404,6 +411,7 @@
         if (pending) {
           segments.push({ kind: 'text', text: pending });
           pending = '';
+          pendingLines = 0;
         }
         segments.push({
           kind: 'line',
@@ -418,16 +426,32 @@
       } else {
         if (raw.length) pending += raw;
         if (hasNewline) pending += '\n';
+        pendingLines += 1;
+        // 有界文本段（P3）：够长就收一段，用一条 gap 标记挡住后面的相邻合并，
+        // 保证「拼回原文等于原正文」不变，只是节点数从 1 变成几十个。
+        if (maxTextLines && pendingLines >= maxTextLines) {
+          segments.push({ kind: 'text', text: pending });
+          segments.push({ kind: 'gap' });
+          pending = '';
+          pendingLines = 0;
+        }
       }
       lineStart = lineEnd + 1;
     }
     if (pending) segments.push({ kind: 'text', text: pending });
-    // 相邻的文本节点合并成一个（干净行、换行、空行都进同一段，少建节点）
+    // 相邻的文本节点合并成一个（干净行、换行、空行都进同一段，少建节点）。
+    // gap 是 P3 的分段边界：不让两侧合并，也不出现在输出里。
     const merged = [];
+    let mergeBarrier = false;
     for (const segment of segments) {
+      if (segment.kind === 'gap') {
+        mergeBarrier = true;
+        continue;
+      }
       const last = merged[merged.length - 1];
-      if (segment.kind === 'text' && last && last.kind === 'text') last.text += segment.text;
+      if (segment.kind === 'text' && last && last.kind === 'text' && !mergeBarrier) last.text += segment.text;
       else merged.push(segment.kind === 'text' ? { kind: 'text', text: segment.text } : segment);
+      mergeBarrier = false;
     }
     return merged;
   }
