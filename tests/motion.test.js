@@ -7,7 +7,7 @@
 //     只是「突然不丝滑了」，肉眼很难发现；
 //   · 位移类过渡（transform / translate / top / left）一条都不许有：那是唯一会连带
 //     移动命中区域、还会额外提升合成层的动效；
-//   · toast 的内联淡出（renderer.js 里写 inline style）也必须走令牌。
+//   · toast 的内联淡出（M1 第 9 轮起在 renderer/toast-ui.js 里）也必须走令牌。
 //
 // 真实浏览器里的计算值由 E2E 第 69 组断言（读 getComputedStyle），这里只管静态文本。
 const test = require('node:test');
@@ -124,8 +124,9 @@ test('动效克制：焦点 / 悬停反馈还在（不是把动效删光换来�
 });
 
 test('动效：toast 淡出由 CSS 类承载，走令牌（以前写死 .25s，比全界面慢一拍）', () => {
-  const renderer = read('renderer/renderer.js');
-  assert.match(renderer, /el\.classList\.add\('leaving'\)/, 'toast 淡出要加 .leaving class');
+  // M1（第 9 轮）：toast() 整段搬到 renderer/toast-ui.js（编排器只留同名转发），实现断言改读模块。
+  const toastUi = read('renderer/toast-ui.js');
+  assert.match(toastUi, /el\.classList\.add\('leaving'\)/, 'toast 淡出要加 .leaving class');
   assert.match(
     STYLES,
     /\.toast\.leaving\s*\{[^}]*opacity:\s*0;[^}]*transition:\s*opacity var\(--motion-overlay\) ease;/,

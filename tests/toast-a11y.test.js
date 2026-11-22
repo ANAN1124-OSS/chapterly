@@ -5,6 +5,8 @@
 // 以前对看不见屏幕的人完全不存在：14 个弹层都有 role=dialog + aria-labelledby，书架书卡有
 // role=button + 无障碍名称，唯独 toast 一个字都没有。
 //
+// M1（第一轮·低，第 9 轮第一刀）：toast 的实现已从 renderer.js 搬进 renderer/toast-ui.js
+// （编排器只保留同名转发）；本文件的实现断言改读模块，区域 / 播报语义一条不放宽。
 // 这里只钉三件事（改法、措辞、行号都不钉）：
 //   ① 容器带 role=status / aria-live=polite / aria-atomic=false —— 读屏空闲时播报新增的这一条，
 //      且不把区域里还在淡出的旧 toast 重念一遍；
@@ -21,7 +23,8 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const HTML = read('renderer/index.html');
 const CSS = read('renderer/styles.css');
-const RENDERER = read('renderer/renderer.js');
+const TOAST_UI = read('renderer/toast-ui.js');
+const { extractFunctionSource } = require('./source-probe');
 
 // 取一个选择器规则块（非贪婪到第一个 `}`；#toast-area 的两条规则都不嵌套花括号）
 function ruleOf(source, selector) {
@@ -64,9 +67,9 @@ test('#toast-area 一直留在渲染树里：CSS 不藏它，朗读条抬起只�
 });
 
 test('toast() 用 textContent 写文案、只往区域里追加一条（不重建播报区）', () => {
-  const at = RENDERER.indexOf('function toast(message, kind = \'info\') {');
-  assert.ok(at > 0, 'renderer.js 里必须有 toast()');
-  const body = RENDERER.slice(at, RENDERER.indexOf('\n  }', at));
+  // 函数真身用公共探针切（tests/source-probe.js）：只钉行为相关几行，不钉排版与邻居代码。
+  const body = extractFunctionSource(TOAST_UI, 'toast');
+  assert.ok(body.includes("function toast(message, kind = 'info') {"), 'toast-ui.js 里必须有 toast()');
   assert.match(body, /const area = \$\('toast-area'\);/, 'toast 必须往 #toast-area 里放');
   assert.match(body, /el\.textContent = message;/, '文案用 textContent 写（插进 DOM 的文本才会被播报）');
   assert.match(body, /area\.appendChild\(el\);/, '只追加一条（清空重建会把播报区一起冲掉）');

@@ -1,7 +1,7 @@
 /* 渲染层装配清单（审计修复 #55 / M4）
  *
  * 背景：渲染层是 index.html 里一串手工排序的 <script>（数量以本文件的 MODULES 条目为准：
- * 当前 75 个模块 + 装配清单自身 + renderer.js = 77 个），模块之间靠 window.CW 全局名串起来。
+ * 当前 76 个模块 + 装配清单自身 + renderer.js = 78 个），模块之间靠 window.CW 全局名串起来。
  * 「加一个模块」要同时改 index.html 的 <script>、renderer.js 的 `const x = window.CW…`、
  * 测试里的静态闸门；漏一处时 Electron 里表现是「某个弹层点不开 / 一片按钮没反应」，只有
  * tests/load-order.test.js 会在 Node 里全链跑一遍才能发现。
@@ -108,6 +108,7 @@
     ['window-chrome-ui.js', 'CWWindowChromeUi', '', '自绘窗口按钮（启动时安装）'],
     ['undo-action.js', 'CWUndoAction', 'undoActionModule', '撤销动作槽（一次性快照）'],
     ['undo-ui.js', 'CWUndoUi', 'undoUiModule', '撤销条界面'],
+    ['toast-ui.js', 'CWToastUi', 'toastUiModule', '提示条出口（toast / 可点提示，M1 第 9 轮从编排器搬出）'],
     ['command-catalog.js', 'CWCommandCatalog', 'commandCatalog', '命令面板条目目录'],
     ['command-registry.js', 'CWCommandRegistry', 'commandRegistryModule', '命令注册 / 最近使用'],
     ['command-palette-ui.js', 'CWCommandPaletteUi', 'commandPaletteModule', '命令面板界面'],

@@ -121,6 +121,9 @@
   // 保存态（1.3.0 T7 = 规范 C-05 / I-01）：状态栏四态渲染 / 成功 2s 淡化 / 失败点重试
   // 在 save-status-ui.js 里；这里只接线（文案仍由 updateStatus 的调用点驱动，见下）。
   const saveStatusUiModule = window.CWSaveStatusUi;
+  // 提示条出口（M1 / 第一轮·低，第 9 轮第一刀）：toast + 可点提示整段在 toast-ui.js 里、
+  // Node 单测覆盖；这里只装配一次并保留同名转发（全部调用点一个字不改）。
+  const toastUiModule = window.CWToastUi;
   // 保存失败的两个救稿出口（审计修复 #5 V301 / #6 V302）：外部改动三选 / 书章文件没了给另存 + 复制。
   // 对话框与动作编排都在 save-rescue-ui.js 里；这里只装配（正文取编辑区现值、写盘仍走 saveCurrent）。
   const saveRescueUiModule = window.CWSaveRescueUi;
@@ -613,66 +616,10 @@
   }
 
   // ---------- Toast ----------
-  function toast(message, kind = 'info') {
-    const area = $('toast-area');
-    const el = document.createElement('div');
-    el.className = `toast ${kind === 'warn' ? 'warn' : kind === 'error' ? 'error' : ''}`.trim();
-    el.textContent = message;
-    area.appendChild(el);
-    // E2E 只在测试模式下读这份记录（生产里 state.toastLog 一直是空数组，不增长）
-    if (state.testMode) {
-      state.toastLog.push({ message: String(message), kind });
-      if (state.toastLog.length > 60) state.toastLog.shift();
-    }
-    setTimeout(() => {
-      // 淡出（0.16s，与全界面动效同一档）与透明度都在 styles.css 的 .toast.leaving 里：
-      // 以前这里写死 .25s 的内联过渡，比别的动效慢一拍；内联简写里也不能写 var()（CSSOM 会丢）。
-      el.classList.add('leaving');
-      setTimeout(() => el.remove(), 300);
-    }, 3600);
-  }
-
-  // b8（剪贴板联动）：可点提示——普通 toast 只自动消失，这条带一个动作按钮，作者点了才执行。
-  // 提示里只出现派生信息（字数），绝不含剪贴板正文（隐私红线：不落盘 / 不写日志 / 不做历史）。
-  function toastActionable(message, actionLabel, onAction, options = {}) {
-    const kind = options.kind || 'info';
-    const durationMs = Number.isFinite(Number(options.durationMs)) ? Number(options.durationMs) : 8000;
-    const area = $('toast-area');
-    const el = document.createElement('div');
-    el.className = `toast actionable ${kind === 'warn' ? 'warn' : kind === 'error' ? 'error' : ''}`.trim();
-    const text = document.createElement('span');
-    text.className = 'toast-text';
-    text.textContent = message;
-    const action = document.createElement('button');
-    action.type = 'button';
-    action.className = 'toast-action';
-    action.textContent = actionLabel;
-    el.appendChild(text);
-    el.appendChild(action);
-    area.appendChild(el);
-    if (state.testMode) {
-      state.toastLog.push({ message: String(message), kind, actionable: true });
-      if (state.toastLog.length > 60) state.toastLog.shift();
-    }
-    let closed = false;
-    let timer = null;
-    const dismiss = () => {
-      if (closed) return;
-      closed = true;
-      if (timer) clearTimeout(timer);
-      el.classList.add('leaving');
-      setTimeout(() => el.remove(), 300);
-    };
-    action.addEventListener('click', () => {
-      dismiss();
-      try {
-        onAction();
-      } catch (err) {
-        console.error('剪贴板提示的动作失败', err);
-      }
-    });
-    timer = setTimeout(dismiss, Math.max(1000, Math.min(durationMs, 30000)));
-  }
+  // M1（第一轮·低，第 9 轮第一刀）：提示条出口整段搬进 renderer/toast-ui.js —— 行为锚点在
+  // tests/toast-ui.test.js（8 秒自消失 / 点按钮先关再回调 / ?test=1 只记元信息）；这里只装配 + 转发。
+  const toastUi = toastUiModule.create({ $, state, document });
+  const { toast, toastActionable } = toastUi;
 
   // ---------- 通用模态 ----------
   // WP-13（审计 C11）：询问框单实例 + 排队（modal-queue.js）。以前这里直接覆盖 state.modal，

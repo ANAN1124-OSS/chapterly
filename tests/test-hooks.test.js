@@ -420,7 +420,11 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   · 实测值取第 7 轮收尾（3551625 把一处新逻辑与两处可合并旧注释相抵后回到 4598）；
   //   · 余量只留 2 行，够「只能在编排器里改一行」的接线（state 字段声明 / 装配多一行）；
   //   · 余量本身有上限断言（≤ 5）：要加业务代码请搬进独立模块，调大余量不是解法。
-  const RENDERER_LINE_MEASURED = 4598; // 2026-11-22 实测（第 7 轮 E5 收尾）
+  // M1（第一轮·低，2026-11-22 第 9 轮）：toast() + toastActionable() 一对整段搬进
+  //   renderer/toast-ui.js（行为锚点 tests/toast-ui.test.js），编排器只留同名转发 → 4546。
+  //   注：这里比的是 rendererSrc.split(/\r?\n/).length（文件末尾换行会多算一个空段），
+  //   所以数值比「内容行数」大 1；余量 2 行的语义不变。
+  const RENDERER_LINE_MEASURED = 4546; // 2026-11-22 实测（第 9 轮 M1 拆出 toast-ui 之后）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(
@@ -438,7 +442,8 @@ test('静态闸门：test-hooks.js 只在 ?test=1 时动态加载（index.html �
   assert.ok(!/<script[^>]+test-hooks\.js/.test(indexSrc), 'index.html 不许静态加载 test-hooks.js');
   assert.match(rendererCode, /function loadTestHooks\s*\(\)/, 'renderer.js 必须有 loadTestHooks()');
   assert.match(rendererCode, /script\.src = 'test-hooks\.js'/, '动态加载必须指向 test-hooks.js');
-  // 加载与装配必须在 init 的 testMode 分支里（文件里还有一处 toast 用的 testMode 判断，取最后一处）
+  // 加载与装配必须在 init 的 testMode 分支里（M1 之后编排器只剩 init 这一处 state.testMode 判断；
+  // toast 的那一处随实现搬进 toast-ui.js，由 tests/toast-ui.test.js 的行为用例覆盖）
   const testModeAt = rendererCode.lastIndexOf('if (state.testMode) {');
   assert.ok(testModeAt > 0, 'init 里的 testMode 分支没了');
   const tail = rendererCode.slice(testModeAt, testModeAt + 800);

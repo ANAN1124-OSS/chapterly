@@ -336,7 +336,9 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   assert.equal(/invoke\('capture:commit'/.test(preload), false, '旧 capture:commit 频道已删除');
 
   const renderer = read('renderer/renderer.js');
-  assert.match(renderer, /function toastActionable\(/, '可点提示');
+  // M1（第 9 轮）：实现搬到 renderer/toast-ui.js（行为锚点 tests/toast-ui.test.js），编排器只剩同名转发。
+  assert.match(renderer, /\{ toast, toastActionable \} = toastUi;/, '可点提示仍从编排器可达（转发到 toast-ui）');
+  assert.match(read('renderer/toast-ui.js'), /function toastActionable\(/, '可点提示实现在 toast-ui.js');
   assert.match(renderer, /api\.onClipboardChanged\(\(payload\) => \{/, '渲染层订阅剪贴板变化');
   assert.match(renderer, /api\.onClipboardRecorded\(\(\) => \{/, '渲染层订阅「已记进队列」事件（面板即时刷新）');
   assert.match(renderer, /void captureUi\.open\(\)/, '点提示才打开捕获面板');

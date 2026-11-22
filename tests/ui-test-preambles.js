@@ -287,7 +287,9 @@ const FAKE_DOM_MIGRATED = [
   'bookinfo-ui.test.js',
   'find-ui.test.js',
   'reading-ui.test.js',
-  'history-ui.test.js'
+  'history-ui.test.js',
+  // M1（第 9 轮）：toast 出口搬出编排器后新增的行为用例（假 DOM + 假定时器）。
+  'toast-ui.test.js'
 ];
 
 module.exports = {
