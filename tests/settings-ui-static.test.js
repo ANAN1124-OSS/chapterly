@@ -12,6 +12,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { ROOT, rendererSrc, indexSrc, moduleSrc, moduleCode, settingsUi } = require('./settings-ui-fixtures');
+// M1 第十二刀：状态栏「今日字数」的点击接线搬进 renderer/stats-ui.js（断言跟着实现搬家）。
+const statsSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'stats-ui.js'), 'utf8');
 const preambles = require('./ui-test-preambles');
 
 test('静态闸门（T-06）：index.html 的正文宽度只剩 4 档，模块的档位表与它一致，表单读的是 select 的值', () => {
@@ -173,8 +175,11 @@ test('静态闸门（U-D4）：状态栏今日字数是按钮、点击只在渲�
   assert.match(indexSrc, /<button id="status-stats" class="status-stats hidden" type="button" aria-haspopup="dialog"/);
   assert.equal(indexSrc.includes('<span id="status-stats"'), false, 'span 已换成 button');
   // renderer.js 只接线：点击 → 模块入口；不自己拼作用域 / 不自己开弹层
-  assert.ok(rendererSrc.includes("$('status-stats').addEventListener('click', () => {"));
-  assert.ok(rendererSrc.includes('void openStatsCalendar();'));
+  assert.equal(rendererSrc.includes("$('status-stats').addEventListener"), false, '状态栏入口绑定该在 stats-ui.js（第十二刀）');
+  assert.ok(statsSrc.includes("$('status-stats').addEventListener('click', () => {"), 'stats-ui.js 要接状态栏入口');
+  assert.ok(statsSrc.includes('void openStatsCalendar();'), 'stats-ui.js 调注入的打开设置入口');
+  // 装配：openStatsCalendar 是后段解构的 const（settings-ui 晚装配），按箭头转发注入
+  assert.ok(rendererSrc.includes('    openStatsCalendar: () => openStatsCalendar()'), 'statsUi 装配少了 openStatsCalendar');
   assert.equal(rendererSrc.includes("openSettings({ scope: 'global'"), false, '作用域口径只在模块里');
   // 模块：一个入口函数，固定「全局 + 日历分区」，复用 openSettings / closeSettings
   assert.equal((moduleSrc.match(/async function openStatsCalendar\(/g) || []).length, 1);

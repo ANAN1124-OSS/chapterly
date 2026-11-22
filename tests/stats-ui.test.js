@@ -52,6 +52,7 @@ function makeHost(options = {}) {
   const els = new Map();
   const calls = [];
   const renders = { durationSettings: 0, writeTimer: 0 };
+  const calendarEntries = [];
   const state = { stats: null, streak: null, calendar: null, config: {} };
   const missing = options.missing || [];
   const host = {
@@ -82,9 +83,11 @@ function makeHost(options = {}) {
     shiftCalendarCursor: (cursor, delta) => statsLogic.shiftCalendarCursor(cursor, delta, NOW),
     calendarStreakLabel: () => statsLogic.calendarStreakLabel(state.streak),
     // 审计修复 #14（E11）：翻月世代令牌（与其它面板同一份实现，生产由 renderer.js 注入）
-    staleGuard
+    staleGuard,
+    // M1 第十二刀：状态栏「今日字数」入口（真实来源 settings-ui 的 openStatsCalendar）
+    openStatsCalendar: () => { calendarEntries.push('open'); }
   };
-  return { host, state, els, calls, renders };
+  return { host, state, els, calls, renders, calendarEntries };
 }
 
 // 一个「本月」的日历视图（月首空格 3 + 2 天 + 月尾空格 2）
@@ -111,11 +114,11 @@ function calendarView(overrides = {}) {
   };
 }
 
-test('host 契约：17 个成员缺任何一个都抛 TypeError，空 host / null 也抛', () => {
+test('host 契约：18 个成员缺任何一个都抛 TypeError，空 host / null 也抛', () => {
   const { host } = makeHost();
   assert.deepEqual([...statsUi.REQUIRED_HOST].sort(), [
     '$', 'api', 'call', 'calendarCells', 'calendarStreakLabel', 'calendarSummaryText',
-    'formatChars', 'formatCount', 'formatDuration', 'renderDurationSettings', 'renderWriteTimer',
+    'formatChars', 'formatCount', 'formatDuration', 'openStatsCalendar', 'renderDurationSettings', 'renderWriteTimer',
     'shiftCalendarCursor', 'staleGuard', 'state', 'statsFormat', 'statsLogic', 'writeDurationEnabled'
   ].sort());
   assert.throws(() => statsUi.create(null), /createStatsUi 需要 host 对象/);
@@ -130,14 +133,14 @@ test('host 契约：17 个成员缺任何一个都抛 TypeError，空 host / nul
   assert.throws(() => statsUi.create(nulled), /createStatsUi 的 host 缺少 call/);
 });
 
-test('create() 只建表：没有 document 也能创建，10 个成员都在', () => {
+test('create() 只建表：没有 document 也能创建，11 个成员都在', () => {
   const { host } = makeHost();
   delete globalThis.document;
   const ui = statsUi.create(host);
   assert.deepEqual(Object.keys(ui).sort(), [
     'applyStatsFilter', 'buildStatsCsv', 'goToCurrentCalendarMonth', 'loadStatsCalendar',
     'refreshStats', 'renderStatsCalendar', 'renderStatsChart', 'renderStatsUi',
-    'setupStatsUi', 'shiftStatsCalendar'
+    'setupCalendarUi', 'setupStatsUi', 'shiftStatsCalendar'
   ].sort());
 });
 
@@ -648,6 +651,60 @@ test('元素缺失也不炸：$ 全返回 null 时 renderStatsUi / renderStatsCa
   assert.doesNotThrow(() => ui.renderStatsChart());
 });
 
+// ---------- M1（第一轮·低）第十二刀：码字日历 + 状态栏「今日字数」接线（setupCalendarUi） ----------
+// 15 行接线（翻月 / 回到本月 / 今日字数入口）从 renderer.js 的 bindEvents 整段搬进 stats-ui.js；
+// 这里用假 DOM 把「哪个按钮 → 哪个模块入口」逐条钉住。
+function fire(el, type, event) {
+  let result;
+  for (const listener of el._listeners.filter((item) => item.type === type)) result = listener.fn(event);
+  return result;
+}
+
+test('M1 第十二刀：日历三按钮 + 状态栏入口各挂一份监听，点击走模块既有入口', async () => {
+  const h = makeHost({ onCall: () => ({}) });
+  const ui = statsUi.create(h.host);
+  ui.setupCalendarUi();
+  for (const id of ['calendar-prev', 'calendar-next', 'calendar-today', 'status-stats']) {
+    assert.equal(h.els.get(id)._listeners.filter((item) => item.type === 'click').length, 1, id + ' 只挂一份点击监听');
+  }
+
+  // 翻月：state.calendar 有视图（本月）才能算出上 / 下一个月，然后走 loadStatsCalendar
+  h.state.calendar = calendarView();
+  fire(h.els.get('calendar-prev'), 'click');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.calls.filter((call) => call.channel === 'stats:calendar').length, 1, '上一月要重新载入日历');
+  // 回执落地会换掉 state.calendar；下一月不能翻到未来（模块的边界口径），所以从 9 月往后翻
+  h.state.calendar = calendarView({ month: 9 }); // 回执落地会换掉 state.calendar，下一次翻月要有视图才能算月份
+  fire(h.els.get('calendar-next'), 'click');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.calls.filter((call) => call.channel === 'stats:calendar').length, 2, '下一月要重新载入日历');
+  fire(h.els.get('calendar-today'), 'click');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.calls.filter((call) => call.channel === 'stats:calendar').length, 3, '回到本月也要重新载入');
+
+  // 状态栏「今日字数」= 打开设置里的日历分区（注入的取值函数）
+  fire(h.els.get('status-stats'), 'click');
+  assert.deepEqual(h.calendarEntries, ['open'], '状态栏今日字数要调注入的 openStatsCalendar');
+});
+
+test('M1 第十二刀：setupCalendarUi 幂等；静态闸门——接线只在 stats-ui.js，编排器只剩一次调用', () => {
+  const h = makeHost();
+  const ui = statsUi.create(h.host);
+  ui.setupCalendarUi();
+  ui.setupCalendarUi();
+  for (const id of ['calendar-prev', 'calendar-next', 'calendar-today', 'status-stats']) {
+    assert.equal(h.els.get(id)._listeners.filter((item) => item.type === 'click').length, 1, id + ' 重入不许挂第二份');
+  }
+
+  assert.match(rendererSrc, /^    setupCalendarUi\(\);$/m, '编排器要在原位置调用 setupCalendarUi()');
+  assert.equal((rendererSrc.match(/setupCalendarUi\(\);/g) || []).length, 1, '只许调用一次');
+  for (const id of ['calendar-prev', 'calendar-next', 'calendar-today', 'status-stats']) {
+    assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '日历 / 状态栏绑定必须整段搬出编排器：' + id);
+    assert.ok(moduleSrc.includes(`$('${id}').addEventListener`), '模块里缺接线：' + id);
+  }
+  assert.match(moduleSrc, /function setupCalendarUi\(\)/, '模块要提供 setupCalendarUi()');
+});
+
 test('静态闸门：renderer.js 不再内嵌两份实现，只剩接线 + 薄封装', () => {
   for (const name of ['refreshStats', 'renderStatsUi', 'renderStatsChart', 'loadStatsCalendar',
     'shiftStatsCalendar', 'goToCurrentCalendarMonth', 'appendCalendarBlank', 'renderStatsCalendar']) {
@@ -657,11 +714,11 @@ test('静态闸门：renderer.js 不再内嵌两份实现，只剩接线 + 薄�
       'renderer.js 里又有 ' + name + ' 的第二份实现（该在 stats-ui.js）'
     );
   }
-  // 接线：模块只 create 一次，17 个 host 成员都传进去
+  // 接线：模块只 create 一次，18 个 host 成员都传进去（第十二刀补 openStatsCalendar）
   assert.match(rendererSrc, /const statsUi = statsUiModule\.create\(\{/);
   for (const key of ['$', 'api', 'call', 'state', 'statsLogic', 'statsFormat', 'formatChars', 'formatCount',
     'formatDuration', 'writeDurationEnabled', 'renderDurationSettings', 'renderWriteTimer',
-    'calendarSummaryText', 'calendarCells', 'shiftCalendarCursor', 'calendarStreakLabel']) {
+    'calendarSummaryText', 'calendarCells', 'shiftCalendarCursor', 'calendarStreakLabel', 'openStatsCalendar']) {
     assert.ok(rendererSrc.includes(key), 'host 少了 ' + key);
   }
   // 5 个入口是模块级 const（视图切换 / 设置 / 事件绑定 / 测试钩子照旧按名字取）

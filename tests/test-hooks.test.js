@@ -460,7 +460,9 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   // M1 第十一刀（第 15 轮）：跳章对话框接线（输入防抖 / Enter（含输入法守卫）/ 取消 / 确认，12 行）从
   //   bindEvents 整段搬进 renderer/jump-ui.js 的 bindDialogEvents()（行为锚点 tests/jump-ui.test.js）；
   //   scheduleJumpMatches 别名随之从编排器删掉 → 3804。
-  const RENDERER_LINE_MEASURED = 3804; // 2026-11-22 实测（第 15 轮 M1 第十一刀拆出跳章对话框接线之后；split 口径）
+  // M1 第十二刀（第 15 轮）：码字日历 + 状态栏「今日字数」接线（15 行）从 bindEvents 整段搬进
+  //   renderer/stats-ui.js 的 setupCalendarUi()（行为锚点 tests/stats-ui.test.js 的 M1 第十二刀用例）→ 3794。
+  const RENDERER_LINE_MEASURED = 3794; // 2026-11-22 实测（第 15 轮 M1 第十二刀拆出日历 / 状态栏接线之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(

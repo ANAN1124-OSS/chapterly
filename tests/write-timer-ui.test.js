@@ -44,6 +44,8 @@ const ROOT = path.join(__dirname, '..');
 const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
 const indexSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 const moduleSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'write-timer-ui.js'), 'utf8');
+// M1 第十二刀：码字日历三个按钮的接线搬进 renderer/stats-ui.js（断言跟着实现搬家）。
+const statsSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'stats-ui.js'), 'utf8');
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 // ---------- 假 DOM ----------
@@ -580,10 +582,11 @@ test('静态闸门：renderer.js 不再内嵌写作时长实现，只剩装配�
   ), '12 个入口按原名解构');
   assert.equal(rendererSrc.includes("$('btn-write-timer').addEventListener"), false, '绑定应该只在模块里');
   assert.equal(rendererSrc.split('setupWriteTimerUi();').length - 1, 1, 'setup 只调一次');
-  // 码字日历的三个按钮绑定不属于本域，仍留在 renderer
-  assert.ok(rendererSrc.includes("$('calendar-prev').addEventListener"));
-  assert.ok(rendererSrc.includes("$('calendar-next').addEventListener"));
-  assert.ok(rendererSrc.includes("$('calendar-today').addEventListener"));
+  // 码字日历的三个按钮绑定不属于本域；第十二刀起随实现搬进 stats-ui.js（编排器里不许回流）
+  for (const id of ['calendar-prev', 'calendar-next', 'calendar-today']) {
+    assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '日历绑定该在 stats-ui.js：' + id);
+    assert.ok(statsSrc.includes(`$('${id}').addEventListener`), 'stats-ui.js 里缺日历绑定：' + id);
+  }
   // stats 装配里的三个写计时依赖改成惰性转发（写作时长在 stats 之后装配）
   assert.ok(rendererSrc.includes(
     '    writeDurationEnabled: () => writeDurationEnabled(), renderDurationSettings: () => renderDurationSettings(), renderWriteTimer: () => renderWriteTimer(), calendarSummaryText,'

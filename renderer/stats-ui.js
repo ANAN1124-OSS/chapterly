@@ -10,7 +10,8 @@
  *   host = {
  *     $, api, call, state, statsLogic, statsFormat, formatChars, formatCount, formatDuration,
  *     writeDurationEnabled, renderDurationSettings, renderWriteTimer, calendarSummaryText,
- *     calendarCells, shiftCalendarCursor, calendarStreakLabel, staleGuard
+ *     calendarCells, shiftCalendarCursor, calendarStreakLabel, staleGuard,
+ *     openStatsCalendar   // 取值函数：状态栏「今日字数」入口在 settings-ui（晚装配）
  *   }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到刷新统计时才 ReferenceError）。
  * statsFormat = { formatChars, formatDuration } 是渲染层的格式化口径（与书架同一套），
@@ -39,7 +40,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'api', 'call', 'state', 'statsLogic', 'statsFormat', 'formatChars', 'formatCount', 'formatDuration', 'writeDurationEnabled', 'renderDurationSettings', 'renderWriteTimer', 'calendarSummaryText', 'calendarCells', 'shiftCalendarCursor', 'calendarStreakLabel', 'staleGuard'];
+  const REQUIRED_HOST = ['$', 'api', 'call', 'state', 'statsLogic', 'statsFormat', 'formatChars', 'formatCount', 'formatDuration', 'writeDurationEnabled', 'renderDurationSettings', 'renderWriteTimer', 'calendarSummaryText', 'calendarCells', 'shiftCalendarCursor', 'calendarStreakLabel', 'staleGuard', 'openStatsCalendar'];
 
   function createStatsUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
@@ -47,7 +48,7 @@
     const {
       $, api, call, state, statsLogic, statsFormat, formatChars, formatCount, formatDuration,
       writeDurationEnabled, renderDurationSettings, renderWriteTimer, calendarSummaryText,
-      calendarCells, shiftCalendarCursor, calendarStreakLabel, staleGuard
+      calendarCells, shiftCalendarCursor, calendarStreakLabel, staleGuard, openStatsCalendar
     } = host;
     // 审计修复 #14（E11）：翻月请求的世代令牌（与其它面板同一份 stale-guard 实现）——
     // 快速连点翻月时可能两个请求同时在途，后到的旧回执不许覆盖 state.calendar。
@@ -293,6 +294,31 @@
     });
   }
 
+  // 码字日历 + 状态栏「今日字数」的事件接线（M1 第一轮·低 第十二刀：从 renderer.js 的 bindEvents
+  // 整段搬进来）。注册点仍由渲染层决定（bindEvents 里与统计筛选同一处之后）；翻月 / 回到本月仍走
+  // 本模块既有入口，「今日字数」入口走 host 注入的取值函数（openStatsCalendar 在 settings-ui，晚装配）。
+  // 幂等：宿主重入时不会挂出第二份。
+  let calendarEventsBound = false;
+  function setupCalendarUi() {
+    if (calendarEventsBound) return;
+    calendarEventsBound = true;
+    // 码字日历：翻月 / 回到本月（只读；点击不会写 stats.json）
+    $('calendar-prev').addEventListener('click', () => {
+      void shiftStatsCalendar(-1);
+    });
+    $('calendar-next').addEventListener('click', () => {
+      void shiftStatsCalendar(1);
+    });
+    $('calendar-today').addEventListener('click', () => {
+      void goToCurrentCalendarMonth();
+    });
+    // v0.13 U-D4：状态栏「今日字数」= 码字日历入口。写作页里点开也走「全局设置」并按全局默认
+    // 回填（日历 / 每日目标 / 统计都是全局项），只滚动定位到日历；取消不写盘、保存语义照旧。
+    $('status-stats').addEventListener('click', () => {
+      void openStatsCalendar();
+    });
+  }
+
   // 设置里的近 30 天柱状图：纯 CSS 高度，不引第三方库。今天那根高亮。
   function renderStatsChart() {
     const chart = $('settings-stats-chart');
@@ -441,6 +467,7 @@
       refreshStats,
       applyStatsFilter,
       buildStatsCsv,
+      setupCalendarUi,
       setupStatsUi,
       renderStatsUi,
       renderStatsChart,

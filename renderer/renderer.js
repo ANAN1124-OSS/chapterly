@@ -1724,11 +1724,13 @@
     writeDurationEnabled: () => writeDurationEnabled(), renderDurationSettings: () => renderDurationSettings(), renderWriteTimer: () => renderWriteTimer(), calendarSummaryText,
     calendarCells: (view) => statsLogic.calendarCells(view, statsFormat),
     shiftCalendarCursor: (cursor, delta) => statsLogic.shiftCalendarCursor(cursor, delta),
-    calendarStreakLabel: () => statsLogic.calendarStreakLabel(state.streak)
+    calendarStreakLabel: () => statsLogic.calendarStreakLabel(state.streak),
+    // M1 第一轮·低 第十二刀：状态栏「今日字数」入口在 settings-ui（晚装配的 const），一律箭头转发。
+    openStatsCalendar: () => openStatsCalendar()
   });
   const { refreshStats, renderStatsUi, renderStatsChart, shiftStatsCalendar, goToCurrentCalendarMonth } = statsUi;
   // 1.6.0 F2：统计筛选 / CSV 是设置页里那一块自己的入口（不进上面那 5 个通用入口）
-  const { applyStatsFilter, buildStatsCsv, setupStatsUi } = statsUi;
+  const { applyStatsFilter, buildStatsCsv, setupStatsUi, setupCalendarUi } = statsUi;
 
   // 大段插入（试用分支 B）的一次性撤销快照：{ before, after, start, end, bookPath, chapterId }。
   // 只有「这次插入走了 .value 整串赋值、没进原生撤销栈」时才存在；下一次真实输入 / 切换章节立刻作废。
@@ -2999,21 +3001,9 @@
     setupWriteTimerUi();
     // 统计筛选（1.6.0 F2）：两个下拉 + 「生成 CSV」（只绑定、不写盘）
     setupStatsUi();
-    // 码字日历：翻月 / 回到本月（只读；点击不会写 stats.json）
-    $('calendar-prev').addEventListener('click', () => {
-      void shiftStatsCalendar(-1);
-    });
-    $('calendar-next').addEventListener('click', () => {
-      void shiftStatsCalendar(1);
-    });
-    $('calendar-today').addEventListener('click', () => {
-      void goToCurrentCalendarMonth();
-    });
-    // v0.13 U-D4：状态栏「今日字数」= 码字日历入口。写作页里点开也走「全局设置」并按全局默认
-    // 回填（日历 / 每日目标 / 统计都是全局项），只滚动定位到日历；取消不写盘、保存语义照旧。
-    $('status-stats').addEventListener('click', () => {
-      void openStatsCalendar();
-    });
+    // 码字日历 + 状态栏「今日字数」接线（M1 第一轮·低 第十二刀）：整段搬进 renderer/stats-ui.js 的
+    // setupCalendarUi()；注册点保持原位（统计筛选之后、导入之前）。
+    setupCalendarUi();
 
 
 
