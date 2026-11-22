@@ -8,7 +8,8 @@
 //
 // 本测试钉住三件事：
 //   ① isImeComposing 的纯逻辑（isComposing / keyCode 229 / 坏入参）；
-//   ② 五个消费者（renderer.js / chapter-directory-ui.js / find-ui / command-palette-ui / bookinfo-ui）
+//   ② 各消费者（chapter-directory-ui.js / find-ui / command-palette-ui / bookinfo-ui / shelf-view-ui.js /
+//      global-keys-ui.js / jump-ui.js）
 //      都只走共享函数，不再各写一份 `event.isComposing`；
 //   ③ index.html 的加载顺序：ime-guard.js 排在所有消费者之前，且只加载一次。
 const test = require('node:test');
@@ -42,7 +43,6 @@ test('isImeComposing：isComposing 是标准判据，keyCode 229 是旧版输入
 test('静态闸门：五个消费者都走共享函数，没有第二份 event.isComposing', () => {
   // WP17 A3 第一刀：章节目录筛选框的 Enter 判断随 setupChapterDirectory 迁到 chapter-directory-ui.js。
   const consumers = {
-    'renderer.js': read('renderer.js'),
     'chapter-directory-ui.js': read('chapter-directory-ui.js'),
     'find-ui.js': read('find-ui.js'),
     'command-palette-ui.js': read('command-palette-ui.js'),
@@ -50,17 +50,24 @@ test('静态闸门：五个消费者都走共享函数，没有第二份 event.i
     // WP17 A3 第三刀：书架搜索框的 Enter 判断随 bindShelfEvents 迁到 shelf-view-ui.js。
     'shelf-view-ui.js': read('shelf-view-ui.js'),
     // M1 第 13 轮第七刀：全局 keydown 分流链（含 Ctrl+K 的取反判据）搬进 global-keys-ui.js。
-    'global-keys-ui.js': read('global-keys-ui.js')
+    'global-keys-ui.js': read('global-keys-ui.js'),
+    // M1 第 15 轮第十一刀：跳章输入框的 Enter（含组字守卫）随接线搬进 jump-ui.js。
+    'jump-ui.js': read('jump-ui.js')
   };
   for (const [file, src] of Object.entries(consumers)) {
     const code = codeOf(src);
     assert.equal(code.includes('event.isComposing'), false, `${file} 里还有手写的 event.isComposing`);
     assert.match(code, /imeGuard\.isImeComposing\(event\)/, `${file} 没接共享守卫`);
   }
-  // renderer.js 的 1 处提交键：跳章输入框（全局 Enter 兜底 / ? / Ctrl+K 随 M1 第 13 轮第七刀
-  // 搬进 global-keys-ui.js，下面按模块计数，断言一条没放宽）；另两个模块各 1 / 2 处。
-  const rendererCode = codeOf(consumers['renderer.js']);
-  assert.equal(rendererCode.split('imeGuard.isImeComposing(event)').length - 1, 1, 'renderer.js 剩跳章输入框 1 处');
+  // M1 第 15 轮第十一刀：跳章输入框的 Enter（含组字守卫）随接线搬进 jump-ui.js——这条计数
+  // 跟着实现搬家；renderer.js 的组字守卫计数从 1 改成 0（反向断言，实现搬走后两份都能跑抓不到）。
+  const rendererCode = codeOf(read('renderer.js'));
+  assert.equal(rendererCode.split('imeGuard.isImeComposing(event)').length - 1, 0, 'renderer.js 不再内嵌组字守卫');
+  assert.equal(
+    codeOf(consumers['jump-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
+    1,
+    '跳章输入框的 Enter 仍走共享守卫（第十一刀随接线搬进 jump-ui.js）'
+  );
   assert.equal(
     codeOf(consumers['global-keys-ui.js']).split('imeGuard.isImeComposing(event)').length - 1,
     3,
@@ -92,7 +99,7 @@ test('静态闸门：五个消费者都走共享函数，没有第二份 event.i
   // 装配：四个模块的 create 都拿到 imeGuard（缺了会在启动时抛 TypeError）。
   // A3-B 后书架视图是第 5 处；它是同行装配（不是独占一行），所以按两种形态分别钉死，
   // 不用裸 'imeGuard,' 计数（那会把注释 / 别的实参也一起数进去，等于放宽）。
-  assert.equal(rendererCode.split('\n    imeGuard,').length - 1, 4, '四处 create 的独占行装配 imeGuard');
+  assert.equal(rendererCode.split('\n    imeGuard,').length - 1, 5, '五处 create 的独占行装配 imeGuard（第十一刀补 jumpUi）');
   assert.equal(
     rendererCode.split('renderShelfContent, imeGuard,').length - 1,
     1,
@@ -104,7 +111,7 @@ test('静态闸门：index.html 在消费者之前加载 ime-guard.js，且只�
   const at = indexSrc.indexOf('<script src="ime-guard.js"></script>');
   assert.notEqual(at, -1, 'index.html 没加载 ime-guard.js');
   assert.equal(indexSrc.split('ime-guard.js').length - 1, 1, 'ime-guard.js 只许加载一次');
-  for (const consumer of ['renderer.js', 'find-ui.js', 'command-palette-ui.js', 'bookinfo-ui.js']) {
+  for (const consumer of ['renderer.js', 'jump-ui.js', 'find-ui.js', 'command-palette-ui.js', 'bookinfo-ui.js']) {
     assert.ok(at < indexSrc.indexOf(`<script src="${consumer}"></script>`), `ime-guard.js 必须排在 ${consumer} 之前`);
   }
 });

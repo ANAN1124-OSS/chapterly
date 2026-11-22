@@ -2022,7 +2022,8 @@
   // ---------- Ctrl+G 跳章 ----------
   // 对话框 / 结果列表 / 「跳过去」整段搬到了 renderer/jump-ui.js（v0.9 B-5 第二刀：只搬不改行为）。
   // 匹配规则仍在主进程的 core/jump.js（单测覆盖）；切章仍走 switchChapter，未保存拦截照常生效。
-  // 这里只剩接线：5 个入口绑成模块级 const，事件绑定 / Esc 动作表 / 测试钩子照旧按名字取。
+  // 这里只剩接线：4 个入口绑成模块级 const（scheduleJumpMatches 只被搬进模块的输入监听取用，
+  // 不再回流），Esc 动作表 / 测试钩子照旧按名字取。
   const jumpUi = jumpUiModule.create({
     api,
     $,
@@ -2032,10 +2033,11 @@
     chaptersLib,
     CHAPTER_STATUS_LABELS,
     chapterStatus,
-    switchChapter
+    switchChapter,
+    imeGuard,
   });
   const refreshJumpMatches = jumpUi.refreshJumpMatches;
-  const scheduleJumpMatches = jumpUi.scheduleJumpMatches;
+  // 第十一刀把跳章对话框接线搬进模块后，scheduleJumpMatches 只在模块内部用，编排器不再需要别名。
   const openJumpDialog = jumpUi.openJumpDialog;
   const closeJumpDialog = jumpUi.closeJumpDialog;
   const confirmJumpFromDialog = jumpUi.confirmJumpFromDialog;
@@ -3152,18 +3154,9 @@
     // bindDialogEvents()；注册点保持原位（导出菜单分流 → 范围输入 → 取消 / 确认）。
     exportUi.bindDialogEvents();
 
-    // 跳章（Ctrl+G）
-    $('jump-input').addEventListener('input', () => scheduleJumpMatches());
-    $('jump-input').addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        // 1.7.1 P1（审计 V73）/ WP-04（V112）：输入法组字中的 Enter 只上屏候选词，不当「跳过去」
-        if (imeGuard.isImeComposing(event)) return;
-        event.preventDefault();
-        confirmJumpFromDialog();
-      }
-    });
-    $('btn-jump-cancel').addEventListener('click', closeJumpDialog);
-    $('btn-jump-confirm').addEventListener('click', () => confirmJumpFromDialog());
+    // 跳章对话框接线（M1 第一轮·低 第十一刀）：整段搬进 renderer/jump-ui.js 的
+    // bindDialogEvents()；注册点保持原位（输入防抖 → 回车 / 取消 / 确认）。
+    jumpUi.bindDialogEvents();
 
     setupTidyCardUi();
 

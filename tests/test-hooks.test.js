@@ -457,7 +457,10 @@ test('静态闸门：renderer.js 不再内嵌测试钩子', () => {
   //   整段搬进 renderer/export-ui.js 的 bindDialogEvents()（行为锚点 tests/export-ui.test.js 的 M1 第十刀用例）。
   //   注册点仍在原位（同层监听器顺序不变），编排器只留一行 bindDialogEvents()；四个只被模块内部
   //   用到的入口别名同时从编排器删掉（eslint no-unused-vars）→ 3811。
-  const RENDERER_LINE_MEASURED = 3811; // 2026-11-22 实测（第 15 轮 M1 第十刀拆出导出菜单 / 范围对话框接线之后；split 口径）
+  // M1 第十一刀（第 15 轮）：跳章对话框接线（输入防抖 / Enter（含输入法守卫）/ 取消 / 确认，12 行）从
+  //   bindEvents 整段搬进 renderer/jump-ui.js 的 bindDialogEvents()（行为锚点 tests/jump-ui.test.js）；
+  //   scheduleJumpMatches 别名随之从编排器删掉 → 3804。
+  const RENDERER_LINE_MEASURED = 3804; // 2026-11-22 实测（第 15 轮 M1 第十一刀拆出跳章对话框接线之后；split 口径）
   const RENDERER_LINE_MARGIN = 2;
   const RENDERER_LINE_BUDGET = RENDERER_LINE_MEASURED + RENDERER_LINE_MARGIN;
   assert.ok(

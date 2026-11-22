@@ -1,15 +1,17 @@
 /* Ctrl+G 跳章（v0.9 B-5 第二刀：从 renderer.js 的「Ctrl+G 跳章」分区整段搬出来）。
  *
  * 为什么搬这一块：它是 B-5 第一刀量测里「出入最清楚」的下一块——147 行（原 renderer.js
- * 4225–4371 行）、只碰 8 个渲染层成员（api / $ / call / state / chapterTitle /
- * CHAPTER_STATUS_LABELS / chapterStatus / switchChapter），不碰 IPC 白名单、不碰存储、
- * 不碰 Esc 优先级表的层顺序；外部只按名字取 5 个入口（事件绑定 5 处、Esc 动作表
- * closeJumpDialog、测试钩子 4 处）。**匹配规则不在这里**——它在主进程的 core/jump.js
+ * 4225–4371 行）、只碰 10 个渲染层成员（api / $ / call / state / chapterTitle / chaptersLib /
+ * CHAPTER_STATUS_LABELS / chapterStatus / switchChapter / imeGuard），不碰 IPC 白名单、不碰存储、
+ * 不碰 Esc 优先级表的层顺序；外部仍按名字取 4 个入口（Esc 动作表 closeJumpDialog、测试钩子
+ * refreshJumpMatches / openJumpDialog / confirmJumpFromDialog）；5 处事件绑定第十一刀起由
+ * 模块自己的 bindDialogEvents() 挂。**匹配规则不在这里**——它在主进程的 core/jump.js
  * （纯逻辑、单测覆盖）；切章仍走渲染层的 switchChapter，未保存拦截照常生效。
  *
  * 契约：createJumpUi(host) 由渲染层调用一次，host 提供：
  *   host = {
- *     api, $, call, state, chapterTitle, CHAPTER_STATUS_LABELS, chapterStatus, switchChapter
+ *     api, $, call, state, chapterTitle, chaptersLib, CHAPTER_STATUS_LABELS, chapterStatus,
+ *     switchChapter, imeGuard
  *   }
  * 缺任何一个直接抛 TypeError（宁可在启动时炸，也不要到点按 Ctrl+G 时才 ReferenceError）。
  * 防抖定时器与「旧响应作废」令牌仍是 state 上的字段（jumpTimer / jumpToken），与改前是同一份
@@ -32,12 +34,12 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
-  const REQUIRED_HOST = ['api', '$', 'call', 'state', 'chapterTitle', 'chaptersLib', 'CHAPTER_STATUS_LABELS', 'chapterStatus', 'switchChapter'];
+  const REQUIRED_HOST = ['api', '$', 'call', 'state', 'chapterTitle', 'chaptersLib', 'CHAPTER_STATUS_LABELS', 'chapterStatus', 'switchChapter', 'imeGuard'];
 
   function createJumpUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）。
     assertHost('createJumpUi', host, REQUIRED_HOST);
-    const { api, $, call, state, chapterTitle, chaptersLib, CHAPTER_STATUS_LABELS, chapterStatus, switchChapter } = host;
+    const { api, $, call, state, chapterTitle, chaptersLib, CHAPTER_STATUS_LABELS, chapterStatus, switchChapter, imeGuard } = host;
   // V206（v1.8.0 WP-29）：跳章 payload 按「书目 / 章节数组的引用」缓存。输入框每 80ms 防抖后都会
   // refreshJumpMatches，千章书以前每次都重建 1000 个对象、逐章算章号再整体过 IPC；章号 / 卷名的
   // 输入只由 state.meta + state.chapters 决定，而每次书目变更都走 applyMetaAndRelocate（换新引用），
@@ -268,12 +270,36 @@
     const first = state.jumpMatches[0];
     return jumpToIndex(resolveMatchIndex(first), first.chapterId);
   }
+  // 跳章对话框的事件接线（M1 第一轮·低 第十一刀：从 renderer.js 的 bindEvents 整段搬进来）。
+  // 注册点仍由渲染层决定（bindEvents 里与原位置同一处）；挂的仍是本模块既有入口，
+  // 回车确认的输入法守卫走 host 注入的 imeGuard，文案 / 判据 / 顺序与搬前逐字一致。
+  // 幂等：宿主重入时不会挂出第二份（回车一次跳两章的经典坑）。
+  let dialogEventsBound = false;
+  function bindDialogEvents() {
+    if (dialogEventsBound) return;
+    dialogEventsBound = true;
+    // 跳章（Ctrl+G）
+    $('jump-input').addEventListener('input', () => scheduleJumpMatches());
+    $('jump-input').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        // 1.7.1 P1（审计 V73）/ WP-04（V112）：输入法组字中的 Enter 只上屏候选词，不当「跳过去」
+        if (imeGuard.isImeComposing(event)) return;
+        event.preventDefault();
+        // 同步键盘回调里没法 await；确认流程自己吞掉失败（jumpToIndex 回执），这里标 fire-and-forget。
+        void confirmJumpFromDialog();
+      }
+    });
+    $('btn-jump-cancel').addEventListener('click', closeJumpDialog);
+    $('btn-jump-confirm').addEventListener('click', () => confirmJumpFromDialog());
+  }
+
     return {
       refreshJumpMatches,
       scheduleJumpMatches,
       openJumpDialog,
       closeJumpDialog,
       confirmJumpFromDialog,
+      bindDialogEvents,
       // 下面 3 个是模块内部的纯逻辑 / 单步动作，导出只为让单测能逐条钉住分支，渲染层按名字取不到也无妨
       jumpChapterPayload,
       renderJumpMatches,

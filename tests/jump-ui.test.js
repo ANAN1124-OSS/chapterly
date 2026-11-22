@@ -123,6 +123,8 @@ function makeHost(options = {}) {
     },
     CHAPTER_STATUS_LABELS: STATUS_LABELS,
     chapterStatus: (chapter) => (chapter && chapter.status) || 'draft',
+    // M1 第十一刀：回车确认的输入法守卫按取值注入（真实来源 window.CWImeGuard）
+    imeGuard: { isImeComposing: (event) => Boolean(event && event.__composing) },
     async switchChapter(index) {
       switches.push(index);
       return { ok: true, index };
@@ -138,10 +140,10 @@ function makeHost(options = {}) {
   return { host, state, els, calls, switches };
 }
 
-test('host 契约：8 个成员缺任何一个都抛 TypeError，空 host / null 也抛', () => {
+test('host 契约：10 个成员缺任何一个都抛 TypeError，空 host / null 也抛', () => {
   const { host } = makeHost();
   assert.deepEqual([...jumpUi.REQUIRED_HOST].sort(), [
-    '$', 'CHAPTER_STATUS_LABELS', 'api', 'call', 'chapterStatus', 'chapterTitle', 'chaptersLib', 'state', 'switchChapter'
+    '$', 'CHAPTER_STATUS_LABELS', 'api', 'call', 'chapterStatus', 'chapterTitle', 'chaptersLib', 'imeGuard', 'state', 'switchChapter'
   ].sort());
   assert.throws(() => jumpUi.create(null), /createJumpUi 需要 host 对象/);
   assert.throws(() => jumpUi.create('x'), /createJumpUi 需要 host 对象/);
@@ -155,11 +157,12 @@ test('host 契约：8 个成员缺任何一个都抛 TypeError，空 host / null
   assert.throws(() => jumpUi.create(nulled), /createJumpUi 的 host 缺少 call/);
 });
 
-test('create() 只建表：没有 document 也能创建，9 个成员都在', () => {
+test('create() 只建表：没有 document 也能创建，10 个成员都在', () => {
   const { host } = makeHost();
   delete globalThis.document;
   const ui = jumpUi.create(host);
   assert.deepEqual(Object.keys(ui).sort(), [
+    'bindDialogEvents',
     'closeJumpDialog', 'confirmJumpFromDialog', 'jumpChapterPayload', 'jumpToIndex',
     'openJumpDialog', 'refreshJumpMatches', 'renderJumpMatches', 'scheduleJumpMatches'
   ].sort());
@@ -500,6 +503,96 @@ test('confirmJumpFromDialog：没有匹配只 warn 不切章；有匹配跳第�
   assert.deepEqual(switches, [1], '只跳第一条');
 });
 
+// ---------- M1（第一轮·低）第十一刀：跳章对话框接线（bindDialogEvents） ----------
+// 12 行接线（#jump-input 的 input 防抖 / Enter 确认（含输入法守卫）/ 取消 / 确认）从 renderer.js 的
+// bindEvents 整段搬进 jump-ui.js；这里用假 DOM 把「哪个元素 → 哪个模块入口」逐条钉住。
+function fire(el, type, event) {
+  const hits = el._listeners.filter((listener) => listener.type === type);
+  let result;
+  for (const listener of hits) result = listener.fn(event);
+  return result;
+}
+
+function bindJumpWith() {
+  const h = makeHost();
+  const ui = jumpUi.create(h.host);
+  ui.bindDialogEvents();
+  return { ...h, ui };
+}
+
+test('M1 第十一刀：输入框 input 走 80ms 防抖，回车确认跳第一条、取消收框、确认按钮同回车', async () => {
+  const h = bindJumpWith();
+  const input = h.els.get('jump-input');
+
+  // 输入：只排一个 80ms 定时器（不立刻打 IPC）
+  input.value = '第二章';
+  fire(input, 'input');
+  assert.notEqual(h.state.jumpTimer, null, '打字要先排防抖');
+  assert.equal(h.calls.length, 0, '防抖窗口里不打 IPC');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(h.calls.length, 1, '防抖到点才查一次');
+  assert.equal(h.calls[0].channel, 'book:jump-match');
+
+  // 回车：有匹配就跳第一条（先收框再切章）
+  h.state.jumpMatches = [{ chapterId: 'c2', name: '第二章' }];
+  const prevented = [];
+  fire(input, 'keydown', { key: 'Enter', preventDefault: () => prevented.push('preventDefault') });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(h.switches, [1], '回车要跳到匹配的第二章');
+  assert.deepEqual(prevented, ['preventDefault'], '回车要自己接管默认行为');
+  assert.equal(h.els.get('jump-backdrop').classList.contains('hidden'), true, '跳过去之前先收框');
+
+  // 非回车键：什么都不做
+  const switchesBefore = h.switches.length;
+  fire(input, 'keydown', { key: 'a', preventDefault: () => prevented.push('不该') });
+  assert.equal(h.switches.length, switchesBefore);
+
+  // 取消按钮：收框 + 清输入
+  h.els.get('jump-backdrop').classList.remove('hidden');
+  input.value = '旧词';
+  fire(h.els.get('btn-jump-cancel'), 'click');
+  assert.equal(h.els.get('jump-backdrop').classList.contains('hidden'), true, '取消要收框');
+  assert.equal(input.value, '', '取消要清空输入');
+
+  // 确认按钮：与回车同一入口
+  h.state.jumpMatches = [{ chapterId: 'c1', name: '第一章' }];
+  fire(h.els.get('btn-jump-confirm'), 'click');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(h.switches, [1, 0], '确认按钮也要跳过去');
+});
+
+test('M1 第十一刀：输入法组字中的 Enter 只上屏候选词（不 preventDefault、不跳章）', () => {
+  const h = bindJumpWith();
+  h.state.jumpMatches = [{ chapterId: 'c2', name: '第二章' }];
+  const prevented = [];
+  fire(h.els.get('jump-input'), 'keydown', {
+    key: 'Enter',
+    __composing: true,
+    preventDefault: () => prevented.push('preventDefault')
+  });
+  assert.deepEqual(h.switches, [], '组字中的回车不许跳章');
+  assert.deepEqual(prevented, [], '组字中的回车不许 preventDefault');
+});
+
+test('M1 第十一刀：bindDialogEvents 幂等；静态闸门——接线只在 jump-ui.js，编排器只剩一次调用', () => {
+  const h = bindJumpWith();
+  h.ui.bindDialogEvents();
+  assert.equal(h.els.get('jump-input')._listeners.filter((listener) => listener.type === 'input').length, 1, '输入监听只许一份');
+  assert.equal(h.els.get('jump-input')._listeners.filter((listener) => listener.type === 'keydown').length, 1, 'keydown 只许一份');
+  for (const id of ['btn-jump-cancel', 'btn-jump-confirm']) {
+    assert.equal(h.els.get(id)._listeners.filter((listener) => listener.type === 'click').length, 1, id + ' 只许一份');
+  }
+
+  assert.match(rendererSrc, /jumpUi\.bindDialogEvents\(\);/, '编排器要在原位置调用 bindDialogEvents()');
+  assert.equal((rendererSrc.match(/jumpUi\.bindDialogEvents\(\);/g) || []).length, 1, '只许调用一次');
+  assert.equal(/\$\('jump-input'\)\.addEventListener/.test(rendererSrc), false, '跳章输入接线必须整段搬出编排器');
+  assert.equal(/btn-jump-cancel/.test(rendererSrc), false, '取消按钮接线不许回流编排器');
+  assert.match(moduleSrc, /function bindDialogEvents\(\)/, '模块要提供 bindDialogEvents()');
+  for (const id of ['jump-input', 'btn-jump-cancel', 'btn-jump-confirm']) {
+    assert.ok(moduleSrc.includes("$('" + id + "')"), '模块里缺接线：' + id);
+  }
+});
+
 test('静态闸门：renderer.js 不再内嵌跳章实现，只剩接线', () => {
   for (const name of ['jumpChapterPayload', 'renderJumpMatches', 'refreshJumpMatches', 'scheduleJumpMatches', 'openJumpDialog', 'closeJumpDialog', 'jumpToIndex', 'confirmJumpFromDialog']) {
     assert.equal(
@@ -509,13 +602,14 @@ test('静态闸门：renderer.js 不再内嵌跳章实现，只剩接线', () =>
     );
   }
   assert.equal(rendererSrc.includes('JUMP_RESULT_LIMIT'), false, '列表上限该在 jump-ui.js');
-  // 接线：模块只 create 一次，8 个成员都传进去
+  // 接线：模块只 create 一次，10 个成员都传进去（第十一刀补 imeGuard）
   assert.match(rendererSrc, /const jumpUi = jumpUiModule\.create\(\{/);
-  for (const key of ['api', '$', 'call', 'state', 'chapterTitle', 'CHAPTER_STATUS_LABELS', 'chapterStatus', 'switchChapter']) {
+  for (const key of ['api', '$', 'call', 'state', 'chapterTitle', 'CHAPTER_STATUS_LABELS', 'chapterStatus', 'switchChapter', 'imeGuard']) {
     assert.match(rendererSrc, new RegExp('^    ' + key.replace(/\$/g, '\\$') + ',?$', 'm'), 'host 少了 ' + key);
   }
-  // 5 个入口是模块级 const（事件绑定 / Esc 动作表 / 测试钩子照旧按名字取）
-  for (const name of ['refreshJumpMatches', 'scheduleJumpMatches', 'openJumpDialog', 'closeJumpDialog', 'confirmJumpFromDialog']) {
+  // 4 个入口是模块级 const（Esc 动作表 / 测试钩子照旧按名字取）。第十一刀把输入 / 回车 / 取消 /
+  // 确认接线搬进模块后，scheduleJumpMatches 只在模块内部用，编排器不再需要这个别名。
+  for (const name of ['refreshJumpMatches', 'openJumpDialog', 'closeJumpDialog', 'confirmJumpFromDialog']) {
     assert.match(rendererSrc, new RegExp('^  const ' + name + ' = jumpUi\\.' + name + ';$', 'm'), name + ' 的接线丢了');
   }
   // 头部从全局拿模块
