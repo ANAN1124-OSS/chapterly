@@ -103,6 +103,8 @@ const restoreTokens = ipcRestoreToken.createStore();
 const captureLib = require('./core/capture');
 // 2026-11-06 捕获队列：后台监听打开后，每次复制在本次运行内各记一条（纯逻辑，只在主进程内存）。
 const captureQueueLib = require('./core/capture-queue');
+// N-15：一次性读剪贴板凭证（签发 / 校验 / 消费三分离，纯内存逻辑）。
+const captureGestureLib = require('./core/capture-gesture');
 const { createKeyedDebouncer } = require('./core/debounce');
 const clipboardWatchLib = require('./core/clipboard-watch');
 const { mapLimit, formatCount } = require('./core/common');
@@ -288,30 +290,20 @@ const captureQueue = captureQueueLib.createCaptureQueue();
 // capture:clipboard 是唯一会把系统剪贴板原文交给渲染层的频道（注入的渲染层以前随时能读）；
 // 现在必须先由「打开捕获面板」这个动作换一张本窗口的一次性凭证（用掉即废、60 秒过期），
 // 凭证只存在主进程内存里，渲染层伪造不出来。队列记录按窗口归属（关窗即弃）。
-const CAPTURE_GESTURE_TTL_MS = 60 * 1000;
-const captureGestures = new Map(); // windowId(String) -> { token, at, used }
-let captureGestureSeq = 0;
+// N-15（二次审查）：签发 / 校验 / 消费拆在 core/capture-gesture.js（纯内存纯逻辑，可单测）——
+// 校验不消费，读到正文并通过长度校验之后才消费，失败可直接重试。
+const captureGestures = captureGestureLib.createCaptureGestures();
 
 function issueCaptureGesture(windowId) {
-  if (windowId == null) return null;
-  const token = `g-${Date.now().toString(36)}-${(captureGestureSeq += 1).toString(36)}`;
-  captureGestures.set(String(windowId), { token, at: Date.now(), used: false });
-  return token;
+  return captureGestures.issue(windowId);
 }
 
-// 用掉一张凭证（一次性）：窗口对得上、没过期、没用过、令牌逐字相等才放行。
+function checkCaptureGesture(windowId, token) {
+  return captureGestures.check(windowId, token);
+}
+
 function consumeCaptureGesture(windowId, token) {
-  if (windowId == null) return false;
-  const key = String(windowId);
-  const gesture = captureGestures.get(key);
-  if (!gesture || gesture.used) return false;
-  if (Date.now() - gesture.at > CAPTURE_GESTURE_TTL_MS) {
-    captureGestures.delete(key);
-    return false;
-  }
-  if (typeof token !== 'string' || !token || token !== gesture.token) return false;
-  gesture.used = true;
-  return true;
+  return captureGestures.consume(windowId, token);
 }
 let clipboardWatchTimer = null;
 // 仅 automation（E2E）：工作站锁屏 / 无交互桌面时 Windows 会拒绝 clipboard.readText()（恒空），
@@ -1859,11 +1851,15 @@ function registerIpc() {
   // 不能再随时把作者剪贴板（可能是密码 / 验证码）拉进页面。
   handle('capture:clipboard', async (token) => {
     const session = flowSession();
-    if (!session || !consumeCaptureGesture(session.id, token)) {
+    // N-15（二次审查）：先校验（不置 used）→ 读剪贴板 → 长度校验 → 成功后才消费。
+    // 以前一进来就消费：剪贴板暂时读不到（锁屏 / 远程桌面）或原文超限时凭证已废，
+    // 作者修好剪贴板后只能关面板再开。现在失败不消费，可以直接重试。
+    if (!session || !checkCaptureGesture(session.id, token)) {
       throw new storage.StorageError('CAPTURE_NOT_ALLOWED', '请先打开捕获面板再读取剪贴板');
     }
     const text = String((await activeClipboard.readText()) || '');
     assertText(text);
+    consumeCaptureGesture(session.id, token);
     return { text, chars: captureLib.countChars(text) };
   });
 
@@ -2692,7 +2688,8 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
     } catch {
       /* 清理失败不影响关窗 */
     }
-    captureGestures.delete(String(session.id));
+    // N-15：凭证 Map 收进 core/capture-gesture.js，关窗走 release（行为与原来的 delete 一致）。
+    captureGestures.release(session.id);
     // S2（一轮）：这扇窗口标记过的「已恢复」草稿记录也一起清（草稿文件本身保留，别的窗口还能看到）。
     for (const [draftId, ownerWindowId] of Array.from(crashConsumed.entries())) {
       if (String(ownerWindowId) === String(session.id)) crashConsumed.delete(draftId);

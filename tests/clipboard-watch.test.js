@@ -372,15 +372,26 @@ test('S1 / T6 接线闸门：读剪贴板要一次性凭证；队列按窗口归
   const preloadSrc = readMain('preload.js');
   const captureSrc = readMain('renderer/capture-ui.js');
 
-  // ① 凭证签发 / 消费各只有一份实现，且都只在主进程内存里。
+  // ① 凭证签发 / 校验 / 消费各只有一份实现，且都只在主进程内存里（N-15：拆成三个动作）。
   assert.match(mainSrc, /function issueCaptureGesture\(windowId\)/, '主进程签发一次性读剪贴板凭证');
+  assert.match(mainSrc, /function checkCaptureGesture\(windowId, token\)/, '主进程校验凭证（不消费）');
   assert.match(mainSrc, /function consumeCaptureGesture\(windowId, token\)/, '主进程消费凭证（用掉即废）');
-  assert.match(mainSrc, /const CAPTURE_GESTURE_TTL_MS = 60 \* 1000;/, '凭证 60 秒过期');
   assert.match(
     mainSrc,
-    /handle\('capture:clipboard'[\s\S]{0,400}?consumeCaptureGesture\(session\.id, token\)/,
-    'capture:clipboard 必须先验本窗口的一次性凭证（注入的渲染层不能再随时读作者剪贴板）'
+    /const captureGestures = captureGestureLib\.createCaptureGestures\(\);/,
+    '凭证状态收进 core/capture-gesture.js（签发 / 校验 / 消费三分离，行为见 tests/capture-gesture.test.js）'
   );
+  // N-15：先校验（不置 used）→ 读剪贴板 → 长度校验 → 成功后才消费。
+  const clipHandleAt = mainSrc.indexOf("handle('capture:clipboard'");
+  assert.notEqual(clipHandleAt, -1, 'capture:clipboard 频道存在');
+  const clipBody = mainSrc.slice(clipHandleAt, clipHandleAt + 900);
+  const checkAt = clipBody.indexOf('checkCaptureGesture(session.id, token)');
+  const readAt = clipBody.indexOf('activeClipboard.readText()');
+  const assertTextAt = clipBody.indexOf('assertText(text)');
+  const consumeAt = clipBody.indexOf('consumeCaptureGesture(session.id, token)');
+  assert.ok(checkAt > 0, 'capture:clipboard 必须先验本窗口的一次性凭证（注入的渲染层不能再随时读作者剪贴板）');
+  assert.ok(checkAt < readAt, '校验在读取剪贴板之前');
+  assert.ok(readAt < assertTextAt && assertTextAt < consumeAt, '读到正文并通过长度校验之后才消费（N-15：失败可重试）');
   assert.match(
     mainSrc,
     /handle\('capture:flush'[\s\S]{0,600}?issueCaptureGesture\(session\.id\)/,
@@ -407,7 +418,7 @@ test('S1 / T6 接线闸门：读剪贴板要一次性凭证；队列按窗口归
     /browserWin\.on\('closed'[\s\S]{0,1800}?captureQueue\.releaseOwner\(session\.id\)/,
     '关窗要回收该窗口的捕获队列记录（隐私口径「关窗即弃」）'
   );
-  assert.match(mainSrc, /captureGestures\.delete\(String\(session\.id\)\)/, '关窗要作废该窗口的凭证');
+  assert.match(mainSrc, /captureGestures\.release\(session\.id\)/, '关窗要作废该窗口的凭证');
 
   // ⑤ preload / 渲染层：凭证必须原样带过去（签名改了，调用点不能漏传）。
   assert.match(preloadSrc, /captureClipboard: \(token\) => invoke\('capture:clipboard', token\)/, 'preload 透传凭证');
