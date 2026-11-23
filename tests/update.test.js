@@ -464,3 +464,94 @@ test('源码闸门：main.js 的更新检查走限长流式读 + 单飞，不再
   const body = source.slice(start, end);
   assert.equal(/await res\.text\(\)/.test(body), false, 'fetchReleaseResponse 里不能再直接 res.text() 整包读');
 });
+
+// T-07（三次审查）：检查更新的 60 秒结果复用窗口 —— 单飞只合并并发，串行连点也要在窗口内复用。
+test('T-07：检查更新结果复用窗口——窗口内不重复发请求，窗口外再发；异常不缓存、自检注入可重置', async () => {
+  let clock = 1_000_000;
+  const window = updateResponseLib.createUpdateCheckWindow({
+    windowMs: 60_000,
+    now: () => clock
+  });
+  let calls = 0;
+  const task = async () => {
+    calls += 1;
+    return { status: 'latest', currentVersion: '2.1.0', seq: calls };
+  };
+
+  const first = await window.run(task);
+  assert.equal(first.reused, false);
+  assert.equal(calls, 1);
+  assert.equal(first.result.status, 'latest');
+
+  clock += 1_000; // 1 秒后连点第二次：窗口内复用，不发请求
+  const second = await window.run(task);
+  assert.equal(calls, 1, '窗口内串行连点不能再发请求（T-07 核心）');
+  assert.equal(second.reused, true);
+  assert.equal(second.result, first.result, '复用的是同一份结果对象');
+  assert.equal(second.ageMs, 1_000);
+
+  // 「产品化的失败结果」（限流等）也复用：短窗口内重试只会继续消耗配额
+  clock += 1_000;
+  const rateLimited = await window.run(async () => {
+    calls += 1;
+    return { status: 'error', code: 'RATE_LIMIT' };
+  });
+  assert.equal(rateLimited.reused, true);
+  assert.equal(calls, 1);
+
+  clock += 60_000; // 窗口过去：真正再发一次
+  const third = await window.run(task);
+  assert.equal(third.reused, false);
+  assert.equal(calls, 2);
+  assert.equal(third.result.seq, 2);
+
+  // 抛错（未预期异常）不写窗口：网络恢复后能立刻重试（先让上一份缓存过期）
+  clock += 60_000;
+  await assert.rejects(() => window.run(async () => {
+    throw new Error('boom');
+  }), /boom/);
+  clock += 1;
+  const retried = await window.run(task);
+  assert.equal(retried.reused, false, '异常不缓存，下一次立刻重试');
+  assert.equal(calls, 3);
+
+  // 自检注入新响应：reset 之后必须真跑（E2E 会连续换 mock）
+  window.reset();
+  clock += 1;
+  const afterReset = await window.run(task);
+  assert.equal(afterReset.reused, false);
+  assert.equal(calls, 4);
+  assert.equal(window.peek().at, clock);
+
+  // 窗口时长非法 / 0 = 不设窗口（老行为：每次都真发）
+  const off = updateResponseLib.createUpdateCheckWindow({ windowMs: 0, now: () => clock });
+  await off.run(task);
+  await off.run(task);
+  assert.equal(calls, 6, 'windowMs=0 时退化成「每次都发」');
+});
+
+test('T-07：main.js 的 update:check 走结果复用窗口；自检注入新 mock 时重置窗口', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs
+    .readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+    .replace(/\r\n/g, '\n');
+  assert.match(
+    source,
+    /const updateCheckWindow = updateResponseLib\.createUpdateCheckWindow\(\);/,
+    '主进程要有 60 秒结果复用窗口（T-07）'
+  );
+  assert.match(
+    source,
+    /const outcome = await updateCheckWindow\.run\(\(\) =>\s*\n\s*updateCheckSingleFlight\(/,
+    'update:check 必须先过复用窗口，再走并发单飞'
+  );
+  const mockAt = source.indexOf("handle('update:test-mock'");
+  assert.ok(mockAt > 0, '找不到自检注入频道');
+  const mockBody = source.slice(mockAt, mockAt + 500);
+  assert.match(
+    mockBody,
+    /updateCheckWindow\.reset\(\)/,
+    '自检注入新响应要清掉复用窗口（否则 E2E 连换 mock 会拿到旧结果）'
+  );
+});

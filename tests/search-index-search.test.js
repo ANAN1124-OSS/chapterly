@@ -620,3 +620,67 @@ test('P4（一轮·低）：同根并发搜索「最近一次胜出」，旧查�
     storage.loadChapterText = realLoad;
   }
 });
+
+// T-06（三次审查）：搜索侧隐式 ensure 加独立短超时 + 转发进度。空闲 60 秒后的首搜不再内联等一整趟
+// 校验（大书架 / 网络盘数秒无反馈）：到点先回 building 快照，校验在后台继续；完成后由 done 进度
+// 驱动界面自动重搜。这里用「书架根 stat 被闸门卡住」模拟慢盘，注入 40ms 超时。
+test('T-06：搜索侧 ensure 有独立短超时——慢盘首搜先回 building 快照，后台完成后照常搜到；进度要转发', async () => {
+  const base = await mkTmp();
+  const { userData, booksRoot } = await makeWorld(base);
+  await makeBook(booksRoot, '慢盘书', '慢盘书', [{ name: '雨夜', text: '他撑着一把青柠色的雨伞。' }]);
+  let openGate = null;
+  const gate = new Promise((resolve) => {
+    openGate = resolve;
+  });
+  let rootStats = 0;
+  const progress = [];
+  let markDone;
+  const backgroundDone = new Promise((resolve) => {
+    markDone = resolve;
+  });
+  const realStat = fs.stat;
+  const store = search.createSearchStore({
+    userDataDir: userData,
+    validateIntervalMs: 0,
+    searchEnsureTimeoutMs: 40,
+    stat: async (target) => {
+      // 只卡书架根目录的 stat（模拟 SMB / 网络盘超时）；其余 stat 照常
+      if (String(target).endsWith(`${path.sep}books`) || String(target) === booksRoot) {
+        rootStats += 1;
+        await gate;
+      }
+      return realStat(target);
+    }
+  });
+
+  const startedAt = Date.now();
+  const quick = await store.search({
+    booksRoot,
+    query: '青柠色',
+    onEnsureProgress: (info) => {
+      progress.push(info);
+      if (info && info.phase === 'done') markDone();
+    }
+  });
+  const elapsed = Date.now() - startedAt;
+  assert.equal(quick.results.length, 0, '校验还没完：先不给空结论冒充搜索结果');
+  assert.equal(quick.index.building, true, '回「正在建索引」快照（界面据此显示建索引提示）');
+  assert.equal(quick.truncated, true);
+  assert.ok(elapsed < 1200, `搜索不再内联等整趟 ensure（实测 ${elapsed}ms，超时 40ms）`);
+
+  // 放行后台校验：等 done 进度（超时后 ensure 仍在后台跑）
+  openGate();
+  await Promise.race([backgroundDone, new Promise((resolve) => setTimeout(resolve, 3000))]);
+  const later = await store.search({ booksRoot, query: '青柠色' });
+  assert.equal(later.results.length, 1, '后台校验完成后照常搜到正文命中');
+  // building 是「有没有 ensure 在飞」的实时快照（第二趟搜索自己也会起一趟），这里改钉索引内容：
+  assert.equal(quick.index.books, 0, '超时快照里还没有可用的书索引');
+  assert.equal(later.index.books, 1, '后台校验完成后索引里已有这本书');
+  assert.ok(rootStats >= 1, '慢的是书架根签名探测（用例前提）');
+  assert.ok(progress.length >= 1, '搜索侧 ensure 的进度要转发给调用方（T-06）');
+  assert.equal(
+    progress.some((info) => info && info.phase === 'done'),
+    true,
+    '完成后有 done 进度（渲染层据此自动重搜）'
+  );
+});

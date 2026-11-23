@@ -89,4 +89,39 @@ function createSingleFlight() {
   };
 }
 
-module.exports = { readResponseTextLimited, createSingleFlight };
+// T-07（三次审查）：检查更新的「结果复用窗口」。单飞只合并并发点击，串行连点仍每次都真发请求
+// （GitHub 匿名配额 60 次/小时按 IP 算，被注入的渲染层可以循环调用把配额耗尽）。
+// 窗口内直接回上一次的结果 —— 成功与「产品化的失败结果」（HTTP 4xx/5xx、限流、超时）都复用：
+// 这些失败多数本来就是配额 / 网络问题，短窗口内重试没有意义；窗口外的下一次调用才真发。
+// 注意只缓存**正常返回**的结果：task 抛错（未预期异常）不写窗口，网络恢复后能立刻重试。
+const UPDATE_CHECK_REUSE_MS = 60000;
+function createUpdateCheckWindow({ windowMs = UPDATE_CHECK_REUSE_MS, now = () => Date.now() } = {}) {
+  const span = Number.isFinite(windowMs) && windowMs > 0 ? Math.floor(windowMs) : 0;
+  let cached = null;
+  return {
+    // 跑一次检查：窗口内回缓存（reused:true），否则跑 task 并记下结果（reused:false）。
+    async run(task) {
+      if (typeof task !== 'function') throw new TypeError('updateCheckWindow 需要一个函数');
+      const at = now();
+      if (span > 0 && cached && at - cached.at < span) {
+        return { result: cached.result, reused: true, ageMs: Math.max(0, at - cached.at) };
+      }
+      const result = await task();
+      cached = { at: now(), result };
+      return { result, reused: false, ageMs: 0 };
+    },
+    // 自检注入新响应（update:test-mock）时清窗口：新响应必须真跑一次，不能被旧结果挡住。
+    reset() {
+      cached = null;
+    },
+    peek() {
+      return cached ? { at: cached.at, result: cached.result } : null;
+    }
+  };
+}
+
+module.exports = {
+  readResponseTextLimited,
+  createSingleFlight,
+  createUpdateCheckWindow
+};

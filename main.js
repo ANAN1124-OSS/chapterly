@@ -957,6 +957,8 @@ let updateMock = null;
 let lastUpdateLaunch = null;
 // 1.6.0 H5（审计 S-02）：in-flight 单飞 —— 连点「检查更新」只发一次请求（GitHub 限流按 IP 算）。
 const updateCheckSingleFlight = updateResponseLib.createSingleFlight();
+// T-07：单飞之外的 60 秒结果复用窗口（串行连点 / 注入循环不再每次真发 GitHub 请求）。
+const updateCheckWindow = updateResponseLib.createUpdateCheckWindow();
 
 async function fetchReleaseResponse({ url, timeoutMs }) {
   if (automation && updateMock) {
@@ -2532,6 +2534,9 @@ function registerIpc() {
       booksRoot: cfg.booksRoot,
       query: safeQuery,
       limit: options && options.limit,
+      // T-06：搜索侧隐式 ensure 也要把「正在校验索引」的进度转给渲染层（与 search:ensure-index
+      // 同一份事件）；大书架 / 网络盘上首搜不再是无声等待，建完后界面自动重搜。
+      onEnsureProgress: sendSearchProgress,
       ...(focus ? { focus } : {})
     });
   });
@@ -2539,12 +2544,16 @@ function registerIpc() {
   // 自动更新轻量版（提案 7.1）：手动检查 GitHub Release → 提示有新版本 → 打开下载页。
   // 不自动下载 / 安装；检查结果只在内存里（lastUpdateLaunch），渲染层不能传任意 URL 进来。
   handle('update:check', async () => {
-    const result = await updateCheckSingleFlight(() =>
-      updateLib.checkForUpdates({
-        currentVersion: app.getVersion(),
-        fetchText: fetchReleaseResponse
-      })
+    // T-07：60 秒内的结果复用窗口（成功 / 产品化失败都复用，异常不缓存）；窗口外才真发请求。
+    const outcome = await updateCheckWindow.run(() =>
+      updateCheckSingleFlight(() =>
+        updateLib.checkForUpdates({
+          currentVersion: app.getVersion(),
+          fetchText: fetchReleaseResponse
+        })
+      )
     );
+    const result = outcome.result;
     const releaseUrl = result && result.status === 'update' ? updateLib.safeReleaseUrl(result.releaseUrl) : '';
     lastUpdateLaunch = releaseUrl
       ? { url: releaseUrl, latestVersion: result.latestVersion, at: Date.now() }
@@ -2574,6 +2583,8 @@ function registerIpc() {
     // 仅自检 / 截图：注入假网络响应（E2E 绝不真连 GitHub；生产环境这个频道不会注册）
     handle('update:test-mock', async (mock) => {
       updateMock = mock && typeof mock === 'object' ? mock : null;
+      // T-07：自检注入了新响应 = 下一次检查必须真跑一遍（不能被 60 秒结果复用窗口挡住）。
+      updateCheckWindow.reset();
       return true;
     });
   }

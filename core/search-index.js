@@ -117,6 +117,11 @@ const SEARCH_DEEP_INTERVAL_MS = 60000;
 // 搜索侧改成「索引就绪 + 同一个书架根 + 版本一致」时直接复用内存索引，60 s 内不再校验；
 // 更快的失效靠根目录签名（书架目录一次 stat，见下）发现新书 / 删书。
 const SEARCH_ENSURE_INTERVAL_MS = 60000;
+// T-06（三次审查）：搜索侧隐式 ensure 的独立短超时。空闲 60 秒后首搜会内联 await 一整趟校验
+// （deep：逐章 stat + 到期书整本指纹复核），大书架 / 网络盘上数秒无结果也无进度说明。
+// 到点先回「正在建索引」快照（与 P1 首建期在飞分支同一形状），校验继续在后台跑；
+// 完成后由 onProgress('done') 驱动渲染层自动重搜 —— 结果不会丢，只是晚一步。
+const SEARCH_ENSURE_TIMEOUT_MS = 3000;
 // 根目录签名探测的节流：书架目录 mtime 只认这一层（新书 / 删书会改它），
 // 2 s 内连打多个键只探一次——这就是「连续两次 search 只 stat 一次」的来源。
 const SEARCH_SIGNATURE_INTERVAL_MS = 2000;
@@ -849,6 +854,13 @@ function createSearchStore(options = {}) {
   const hashOf = typeof options.contentHashOf === 'function' ? options.contentHashOf : chapterContentHashOf;
   // 搜索侧窗口：validateIntervalMs=0（单测里「每次都要看到外部改动」的口径）时退回旧行为。
   const searchEnsureIntervalMs = validateIntervalMs === 0 ? 0 : SEARCH_ENSURE_INTERVAL_MS;
+  // T-06：搜索侧隐式 ensure 的短超时（见 SEARCH_ENSURE_TIMEOUT_MS）；0 = 不设超时（老行为）。
+  const searchEnsureTimeoutMs =
+    options.searchEnsureTimeoutMs === undefined || options.searchEnsureTimeoutMs === null
+      ? SEARCH_ENSURE_TIMEOUT_MS
+      : Number.isFinite(options.searchEnsureTimeoutMs) && options.searchEnsureTimeoutMs >= 0
+        ? Math.floor(options.searchEnsureTimeoutMs)
+        : SEARCH_ENSURE_TIMEOUT_MS;
   const nowMs = () => {
     const date = clock();
     const ms = date instanceof Date ? date.getTime() : NaN;
@@ -1298,6 +1310,24 @@ function createSearchStore(options = {}) {
     return run;
   }
 
+  // T-06：搜索侧隐式 ensure 的短超时包装。到点不等了（后台照常跑完落盘 / 报进度），
+  // 由搜索调用方回 building 快照；0 = 不设超时（老行为）。
+  const SEARCH_ENSURE_TIMED_OUT = Symbol('search-ensure-timed-out');
+  async function ensureWithinSearchWindow(ensureOptions) {
+    if (!(searchEnsureTimeoutMs > 0)) return ensure(ensureOptions);
+    const run = ensure(ensureOptions);
+    let timer = null;
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(SEARCH_ENSURE_TIMED_OUT), searchEnsureTimeoutMs);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+    });
+    try {
+      return await Promise.race([run, deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async function search(opts = {}) {
     const booksRoot = String(opts.booksRoot == null ? '' : opts.booksRoot);
     // P4：领票（见 searchTicket 声明处的口径）。
@@ -1386,13 +1416,40 @@ function createSearchStore(options = {}) {
       lastSignatureCheckAt = now;
       signatureChanged = signature !== rootSignature;
     }
-    const state = reuseIndex && !signatureChanged
-      ? status()
-      : await ensure({
-          booksRoot,
-          deep: nowMs() - lastFullValidateAt >= SEARCH_DEEP_INTERVAL_MS,
-          ...(opts.ensureOptions || {})
-        });
+    let state;
+    if (reuseIndex && !signatureChanged) {
+      state = status();
+    } else {
+      const ensureOptions = {
+        booksRoot,
+        deep: nowMs() - lastFullValidateAt >= SEARCH_DEEP_INTERVAL_MS,
+        ...(opts.ensureOptions || {})
+      };
+      // T-06：搜索侧 ensure 也要转发进度（search:content 传 onEnsureProgress = sendSearchProgress），
+      // 让「空闲 60 秒后首搜」在界面能看到「正在校验索引」而不是只有通用 busy 态；
+      // 调用方显式给了 onProgress（search:ensure-index 通道）就不覆盖。
+      if (!ensureOptions.onProgress && typeof opts.onEnsureProgress === 'function') {
+        ensureOptions.onProgress = opts.onEnsureProgress;
+      }
+      const outcome = await ensureWithinSearchWindow(ensureOptions);
+      if (outcome === SEARCH_ENSURE_TIMED_OUT) {
+        // T-06：到点先回「正在建索引」快照（与 P1 首建期在飞分支同一形状：building + 空结果 +
+        // truncated），校验继续在后台跑；完成后 onProgress('done') 驱动渲染层自动重搜。
+        const snapshot = status();
+        return {
+          ...makeBase({
+            books: snapshot.books,
+            chapters: snapshot.chapters,
+            building: true,
+            problem: snapshot.problem || rootProblem || '',
+            bytes: snapshot.bytes
+          }),
+          truncated: true,
+          elapsedMs: 0
+        };
+      }
+      state = outcome;
+    }
     // V92（1.7.2 D6）：building 透传 state.building（以前写死 false）。state 可能是 status() 的
     // 快照（搜索窗口内直接复用内存索引，后台重建正在飞），界面靠这个字段决定显示「正在建索引」。
     const indexInfo = {
