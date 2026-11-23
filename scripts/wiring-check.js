@@ -12,6 +12,10 @@
 //   renderer-module-globals      每个模块文件真的挂出了清单声明的 window.CWxxx；
 //   renderer-dependency-order    被依赖的模块排在消费者之前（按源码里的 root.CW… 解引用反推）；
 //   renderer-module-refs         renderer.js 的 const 本地名 / 所有 window.CWxxx 引用都在清单内；
+//   renderer-module-orphans      renderer/*.js 反向 ⊆ 装配清单 ∪ {renderer.js, test-hooks.js, assembly-manifest.js}
+//                                （T-24：新建模块忘进清单时 index.html 不会加载它，静态门禁必须红）；
+//   e2e-visual-assertions        scripts/e2e/groups 的每个 checkVisual 调用都在视觉断言静态清单里、清单无过期项、
+//                                数量一致（T-26：E2E_SKIP_VISUAL=1 只许跳过清单内的纯视觉断言）；
 //   preload-api-exposed          renderer 用到的每个 api.<键> 都在 preload 暴露；
 //   ipc-invoke-registered        preload 的每个 invoke('频道') 都有主进程 handle / handleBook；
 //   ipc-send-registered          preload 的每个 ipcRenderer.send('频道') 都有主进程 ipcMain.on；
@@ -24,6 +28,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const assemblySync = require('./assembly-sync');
+const visualAssertions = require('./e2e/visual-assertions.js');
 
 const CHECK_IDS = [
   'renderer-assembly-order',
@@ -31,6 +36,8 @@ const CHECK_IDS = [
   'renderer-module-globals',
   'renderer-dependency-order',
   'renderer-module-refs',
+  'renderer-module-orphans',
+  'e2e-visual-assertions',
   'preload-api-exposed',
   'ipc-invoke-registered',
   'ipc-send-registered',
@@ -322,9 +329,58 @@ function auditWiring(root) {
         }
       }
     });
+    // T-24（renderer-module-orphans）：反向契约——renderer/ 下的每个 .js 都必须被装配清单收进去，
+    // 或者属于三个约定例外（renderer.js 入口、test-hooks.js 仅 ?test=1 动态加载、assembly-manifest.js
+    // 是清单自身）。缺了这条：新建 renderer/xxx-ui.js 忘进清单时 index.html 不加载它，assembly:check /
+    // wiring-check 全绿，只在 Electron 里表现为「点了没反应」，要靠功能 E2E 事后发现。
+    const rendererDir = path.join(base, 'renderer');
+    if (fs.existsSync(rendererDir)) {
+      const declaredRendererFiles = new Set();
+      for (const entry of modules) {
+        const file = String(entry[0]).replace(/^\.\//, '');
+        if (file.startsWith('..')) continue; // 清单里的 core/* 等仓库其它目录，不属于 renderer/ 孤儿判定
+        declaredRendererFiles.add(file);
+      }
+      const orphanAllowed = new Set(['renderer.js', 'test-hooks.js', 'assembly-manifest.js']);
+      const orphanFiles = fs
+        .readdirSync(rendererDir, { withFileTypes: true })
+        .filter((item) => item.isFile() && item.name.endsWith('.js'))
+        .map((item) => item.name)
+        .filter((file) => !declaredRendererFiles.has(file) && !orphanAllowed.has(file))
+        .sort();
+      if (orphanFiles.length) {
+        violations.push({
+          id: 'renderer-module-orphans',
+          detail:
+            `renderer/ 下的模块不在装配清单、也不会被 index.html 加载：${orphanFiles.join(', ')}` +
+            '（修法：加进 renderer/assembly-manifest.js 的 MODULES 并跑 node scripts/assembly-sync.js --write；' +
+            '确实不加载就删掉文件）'
+        });
+      }
+    }
   }
 
-  // ---- renderer 对模块的引用 ----
+  // ---- E2E 视觉断言静态清单（T-26）----
+  // `checkVisual` 在 CI（E2E_SKIP_VISUAL=1）恒真，所以「哪些断言可以被跳过」必须有机器清单：
+  // 代码里有、清单没登记 = 可能把功能断言偷渡进跳过面；清单有、代码没有 = 清单过期（数量漂移）。
+  // 这里逐文件解析 checkVisual 的第一个参数（文件 + 断言名级），两边集合与数量都必须一致。
+  const groupsDir = path.join(base, 'scripts', 'e2e', 'groups');
+  if (!fs.existsSync(groupsDir) || !fs.statSync(groupsDir).isDirectory()) {
+    violations.push({
+      id: 'e2e-visual-assertions',
+      detail: '读不到 scripts/e2e/groups：无法核对视觉断言清单（目录被改名 / 删除？门禁不许静默通过）'
+    });
+  } else {
+    const groupSources = fs
+      .readdirSync(groupsDir)
+      .filter((file) => file.endsWith('.js'))
+      .sort()
+      .map((file) => ({ file, text: read(`scripts/e2e/groups/${file}`) }))
+      .filter((item) => item.text !== null);
+    for (const problem of visualAssertions.compareVisualAssertions(groupSources)) {
+      violations.push({ id: 'e2e-visual-assertions', detail: problem });
+    }
+  }
   const rendererSource = read('renderer/renderer.js');
   if (rendererSource !== null) {
     const code = stripJsComments(rendererSource);
@@ -462,7 +518,9 @@ function auditWiring(root) {
       registeredListeners: ipcMainOnChannels.size,
       notifySent: notifySent.size,
       notifyListened: listenChannels.size,
-      deadListeners
+      deadListeners,
+      // T-26：视觉断言静态清单条数（CI 跳过面 = 这份清单；数量漂移由 e2e-visual-assertions 契约拦）。
+      visualAssertions: visualAssertions.MANIFEST.length
     }
   };
 }

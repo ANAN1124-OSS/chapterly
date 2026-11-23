@@ -47,6 +47,9 @@ function createHarness(ctx) {
   // 在那里必然偏（2026-11-23 实测 30 项：动效时长、夜间底色、边距、标记层字体、阅读字号、菜单位置）。
   // 它们仍参与本地全量 E2E（默认跑）；CI 用 E2E_SKIP_VISUAL=1 跳过——记 skipped、不计失败、总数不变，
   // 供应链与全部功能断言照常阻塞。不许把功能断言挪进这里换绿灯。
+  // 边界不再只靠这句口头约束（2.1.0 三次审查 T-26）：每个 checkVisual 调用点都必须在
+  // scripts/e2e/visual-assertions.js 的静态清单里，scripts/wiring-check.js 的 e2e-visual-assertions
+  // 契约逐项核对（代码 ⊆ 清单、清单 ⊆ 代码、数量一致）；新增 / 删除视觉断言必须同步清单。
   const skipVisual = Boolean(ctx.skipVisual);
   let skippedVisual = 0;
   const checkVisual = (name, cond, detail) => {

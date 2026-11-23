@@ -16,6 +16,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const wiring = require('../scripts/wiring-check.js');
+const visualAssertions = require('../scripts/e2e/visual-assertions.js');
 const tmpCleanup = require('./tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
@@ -30,6 +31,11 @@ function makeFixture() {
   fs.cpSync(path.join(ROOT, 'ipc'), path.join(dir, 'ipc'), { recursive: true });
   fs.copyFileSync(path.join(ROOT, 'main.js'), path.join(dir, 'main.js'));
   fs.copyFileSync(path.join(ROOT, 'preload.js'), path.join(dir, 'preload.js'));
+  // T-26：视觉断言清单契约要读 `scripts/e2e/groups/*.js`（逐文件解析 checkVisual 调用点）。
+  // 夹具复制真实组文件（只当源码文本用，不 require / 不执行），变异都在副本上做。
+  fs.cpSync(path.join(ROOT, 'scripts', 'e2e', 'groups'), path.join(dir, 'scripts', 'e2e', 'groups'), {
+    recursive: true
+  });
   // 临时目录在 D:\Temp 下，而 D:\Temp\package.json 是 `"type": "module"`（宿主工具链的包清单）。
   // 复制仓库自己的 package.json，让夹具里的 .js 仍按 CommonJS 解析（仓库 package.json 没有 type 字段），
   // 否则 assembly-manifest.js 的 UMD 分支会走 window 分支、require 回来是空对象。
@@ -84,6 +90,11 @@ test('R3 真实树：接线清单零违规，事实计数覆盖 invoke / api / �
   assert.deepEqual(facts.deadListeners, [], '真实树不该再有死监听（app:force-close 已有发送方）');
   // 暴露未用的 bridge api 只登记 E2E 自检专用那三条（台账 #3 / WP18），真实树不再有「清理项」提示。
   assert.deepEqual(result.warnings, [], '真实树接线提示要清空：' + JSON.stringify(result.warnings));
+  // T-26：视觉断言静态清单必须真有内容（CI 的跳过面就靠它），且与组文件逐项对得上。
+  assert.ok(
+    facts.visualAssertions > 30,
+    `视觉断言静态清单条数应 > 30（实际 ${facts.visualAssertions}，空清单等于 CI 跳过面无约束）`
+  );
 });
 
 test('R4a 变异负控：删一个 renderer 模块的 <script> → renderer-assembly-order', () => {
@@ -196,6 +207,69 @@ test('R4g 变异负控：把 core/assert-host.js 挪到消费者之后 → rende
   assert.match(hits[0].detail, /renderer\/[a-z0-9-]+\.js 依赖 CWAssertHost/);
   assert.match(hits[0].detail, /排第 \d+ 项/);
   assert.match(hits[0].detail, /必须先加载/);
+});
+
+// T-24：反向契约——新建 renderer 模块忘进装配清单时，index.html 不会加载它，装配检查 / 依赖顺序
+// 全绿，只在 Electron 里表现为「点了没反应」。这里在夹具里放一个孤儿模块，必须点名。
+test('R4h 变异负控：renderer/ 下有孤儿模块（未进装配清单）→ renderer-module-orphans', () => {
+  const dir = makeFixture();
+  fs.writeFileSync(path.join(dir, 'renderer', 'orphan-ui.js'), "'use strict';\n", 'utf8');
+  const result = wiring.auditWiring(dir);
+  const hit = violation(result, 'renderer-module-orphans');
+  assert.ok(hit, '孤儿 renderer 模块必须命中 renderer-module-orphans，实际：' + ids(result).join(','));
+  assert.match(hit.detail, /orphan-ui\.js/, '违规详情要点名孤儿文件');
+  assert.match(hit.detail, /assembly-manifest/, '违规详情要给出修法（进装配清单）');
+
+  // 清单外两个约定文件（renderer.js 入口 / test-hooks.js）不算孤儿：删掉它们才该由别的契约报
+  // （这里只验证孤儿判定不会把它们误报成 orphans）。
+  const allowed = wiring.auditWiring(dir).violations.filter((item) => item.id === 'renderer-module-orphans');
+  assert.equal(allowed.length, 1, '同一个夹具只报一条孤儿违规');
+});
+
+// T-26：checkVisual 的跳过面必须有文件 + 断言名级静态清单；组文件里新增 / 删除 / 注释里的调用
+// 都要按代码事实判定（注释不算接线、未登记要红、清单过期要红）。
+test('R4i 视觉断言静态清单：未登记 / 清单过期要红，注释里的 checkVisual 不算，真实树逐项一致', () => {
+  const realSources = fs
+    .readdirSync(path.join(ROOT, 'scripts', 'e2e', 'groups'))
+    .filter((file) => file.endsWith('.js'))
+    .sort()
+    .map((file) => ({ file, text: fs.readFileSync(path.join(ROOT, 'scripts', 'e2e', 'groups', file), 'utf8') }));
+  assert.deepEqual(
+    visualAssertions.compareVisualAssertions(realSources),
+    [],
+    '真实树每个 checkVisual 调用点都必须登记在 scripts/e2e/visual-assertions.js'
+  );
+  assert.ok(visualAssertions.MANIFEST.length > 30, '清单不能是空壳');
+
+  // ① 未登记：组文件里多一处 checkVisual 调用（静态解析即可，不执行）
+  const unlisted = makeFixture();
+  mutate(unlisted, 'scripts/e2e/groups/03-save-book.js', (text) => `${text}\ncheckVisual('未登记的视觉断言', true);\n`);
+  const unlistedResult = wiring.auditWiring(unlisted);
+  const unlistedHit = violation(unlistedResult, 'e2e-visual-assertions');
+  assert.ok(unlistedHit, '未登记的 checkVisual 必须命中 e2e-visual-assertions，实际：' + ids(unlistedResult).join(','));
+  assert.match(unlistedHit.detail, /未登记的视觉断言/, '违规详情要点名未登记的断言');
+
+  // ② 清单过期：删掉组文件里一处已登记的 checkVisual 调用 → 清单条目找不到落点
+  const stale = makeFixture();
+  mutate(stale, 'scripts/e2e/groups/26-display-options.js', (text) =>
+    text.replace(/\s*checkVisual\(\s*'左右边距可调（24px）'[\s\S]*?\);/, '\n')
+  );
+  const staleResult = wiring.auditWiring(stale);
+  const staleHit = violation(staleResult, 'e2e-visual-assertions');
+  assert.ok(staleHit, '删掉已登记的视觉断言必须命中 e2e-visual-assertions，实际：' + ids(staleResult).join(','));
+  assert.match(staleHit.detail, /左右边距可调/, '违规详情要点名清单里过期的断言');
+
+  // ③ 等价重构不假红：注释里提到 checkVisual(...) 不算调用（清单比对只看真实代码）
+  const commented = makeFixture();
+  mutate(commented, 'scripts/e2e/groups/26-display-options.js', (text) =>
+    `${text}\n// checkVisual('注释里的断言', true)\n`
+  );
+  const commentedResult = wiring.auditWiring(commented);
+  assert.equal(
+    commentedResult.violations.filter((item) => item.id === 'e2e-visual-assertions').length,
+    0,
+    '注释里的 checkVisual 不该被清单判成未登记：' + JSON.stringify(commentedResult.violations)
+  );
 });
 
 test('TOOL-A04：同一进程对同一 root 改清单后再审计，读到的是新清单（不接受 require 缓存）', () => {
