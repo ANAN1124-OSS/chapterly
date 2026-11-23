@@ -21,6 +21,7 @@ const chaptersLib = require('../core/chapters');
 const docxLib = require('../core/docx');
 const ipcLimits = require('../core/ipc-limits');
 const atomic = require('../core/atomic');
+const pathUtils = require('../core/path-utils');
 const exportIpc = require('../ipc/export');
 const { readZip } = require('../scripts/export-check');
 const tmpCleanup = require('./tmp-cleanup');
@@ -356,6 +357,7 @@ function makeExportHost({ targetPath, conversion }) {
     CHAPTER_READ_CONCURRENCY: 4,
     CHAPTER_BATCH_SIZE: 16,
     path,
+    pathUtils,
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
     fsSync: require('node:fs'),
     getConfig: async () => ({ exportConversion: conversion, lastExportDir: '' }),

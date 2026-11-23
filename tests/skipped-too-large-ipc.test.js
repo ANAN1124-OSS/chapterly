@@ -66,13 +66,16 @@ function loadIpcHandler([channel, marker, method, skippedTooLarge]) {
   // 审计修复 #38（▲V306）：注册语句的第三个参数用 ipc/book-mutations.js 的常量（写操作 / READ_ONLY），
   // 假作用域要把这两个名字一起交进去（只是取值，不改变 handler 的行为）。
   const { MUTATION, READ_ONLY } = require('../ipc/book-mutations');
-  new Function('handleBook', 'storage', 'ipcLimits', 'sendToFlow', 'MUTATION', 'READ_ONLY', statement)(
+  // T-08：handler 成功后要调 markDirty(bookPath) 标脏搜索索引（真实实现在 register 作用域里）。
+  // 假作用域给一个空实现即可 —— 本用例只关心 core 结果是否原样透传。
+  new Function('handleBook', 'storage', 'ipcLimits', 'sendToFlow', 'MUTATION', 'READ_ONLY', 'markDirty', statement)(
     fakeHandleBook,
     storage,
     { sanitizeSearchOptions: (value) => value, sanitizeReplaceOptions: (value) => value },
     () => {},
     MUTATION,
-    READ_ONLY
+    READ_ONLY,
+    () => {}
   );
   assert.equal(captured && captured.name, channel, `${channel} 的注册语句没有注册出回调`);
   assert.equal(typeof captured.fn, 'function', `${channel} 的回调必须是函数`);
