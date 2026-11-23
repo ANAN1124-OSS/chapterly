@@ -415,6 +415,19 @@ module.exports = async function group43DailySnapshot(t) {
     '每日快照（清空某天）：不再弹确认框（直接移入回收站）',
     (await exec('window.__cwTest.modalOpen()')) === false
   );
+  // T-26：toast 文案是功能语义（清空成功且写清去向），不是像素 / 几何断言 —— 留在 check 里由 CI 阻塞。
+  // 注意时序：toast 有自动消失（约数秒），CI 慢，必须点击后立刻等它出现；放到后面一串读盘 / 清单断言
+  // 之后再取会赶上它消失（2026-11-23 CI 实红：clearToasts === []）。这里只调整读取时机，断言强度不变。
+  const clearToastSeen = await waitFor(
+    `window.__cwTest.toasts().some((item) => item.message.includes('移入回收站') && item.message.includes(${JSON.stringify(snapshotDay)}))`,
+    5000
+  ).catch(() => false);
+  const clearToasts = await exec('window.__cwTest.toasts()');
+  check(
+    '每日快照（清空某天）：成功 toast 写明已移入回收站',
+    Boolean(clearToastSeen),
+    clearToasts
+  );
   await waitFor(
     `window.__cwTest.historyGroupIndexBySnapshotName(${JSON.stringify(snapshotDay)}) === -1`
   );
@@ -446,13 +459,6 @@ module.exports = async function group43DailySnapshot(t) {
         groupsAfterClear.length &&
       summaryAfterClear.includes(`共 ${groupsAfterClear.length} 组备份`),
     { groups: groupsAfterClear.length, summary: summaryAfterClear }
-  );
-  const clearToasts = await exec('window.__cwTest.toasts()');
-  // T-26：toast 文案是功能语义（清空成功且写清去向），不是像素 / 几何断言——留在 check 里由 CI 阻塞。
-  check(
-    '每日快照（清空某天）：成功 toast 写明已移入回收站',
-    clearToasts.some((item) => item.message.includes('移入回收站') && item.message.includes(snapshotDay)),
-    clearToasts
   );
   await exec('window.__cwTest.closeHistory()');
 };
