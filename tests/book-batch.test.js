@@ -246,13 +246,15 @@ test('静态闸门：整本校对 / 整本导出按 32 章分批读（P2-2）', 
   assert.match(mainSource, /const CHAPTER_BATCH_SIZE = 32;/, '批大小 32 要与 core/storage.js 的 CHAPTER_BATCH_SIZE 同值');
   const targets = [
     ['walkChapterTexts', '  async function walkChapterTexts(bookPath, meta, override, onChapter) {', ipcProofreadSource],
-    ['collectExportTexts', '  async function collectExportTexts(bookPath, meta, override, indexes) {', ipcExportSource]
+    // N-12：整本复制从 collectExportTexts（整本 texts 数组）改成 book:copy 里的逐块拼装 ——
+    // 断言仍是「按批读、批内限并发、不许一次 mapLimit 整本」，只是读取锚点跟着实现走。
+    ['collectCopyBlocks', '  async function collectCopyBlocks(bookPath, meta, override, indexes) {', ipcExportSource]
   ];
   for (const [name, anchor, source] of targets) {
     const body = sliceFrom(source, anchor);
     assert.doesNotMatch(body, /mapLimit\(meta\.chapters,/, `${name} 不许再一次 mapLimit 整本书`);
     assert.match(body, /for \(let start = 0; start < .+; start \+= CHAPTER_BATCH_SIZE\) \{/, `${name} 要按批推进`);
-    assert.match(body, /chapters\.slice\(start, start \+ CHAPTER_BATCH_SIZE\)/, `${name} 每批最多 32 章`);
+    assert.match(body, /\.slice\(start, start \+ CHAPTER_BATCH_SIZE\)/, `${name} 每批最多 32 章`);
     assert.match(body, /mapLimit\(batch, CHAPTER_READ_CONCURRENCY/, `${name} 批内仍限并发（批间串行）`);
   }
   // 两个整本检查（校对 / 敏感词）都走 walkChapterTexts，分批只在它里面做一次

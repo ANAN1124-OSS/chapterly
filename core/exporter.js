@@ -215,14 +215,15 @@ function composeBook(meta, texts, range) {
   return `${blocks.join('\r\n\r\n')}\r\n`;
 }
 
-// 1.5.0 功能-1：复制**选中章**（可跳选）。格式与 composeBook 的章节块一致（标题 + 空行 + 正文，
-// 块之间空一行、末尾一个换行），但只按传入的下标拼，没有卷名行（多选复制是「把这几章正文拿走」，
-// 不是整本导出）。indexes 由调用方（主进程）先按书目长度清洗过；这里仍做一次防御性过滤 + 去重 + 排序，
-// 保证「按目录顺序，不是点击顺序」。
-function composeSelected(meta, texts, indexes) {
-  const chapters = chapterList(meta);
+// N-12（二次审查）：整本复制的「逐块拼装」入口。book:copy 必须把整本书拼成一个字符串交给剪贴板
+// （剪贴板只能收整串，这点无法避免），但旧链路先物化整本 texts 数组、再 composeBook 造整本 blocks
+// 数组、最后 join 出最终串 —— 拼接期间同时压着三份全书量级的字符串。这里把「顺序 + 块格式」抽成
+// 可增量消费的 entries + blockFor：调用方读一章就拼一块、随即丢掉正文，常驻只剩「已拼块 + 最终串」。
+// 输出与 composeBook / composeSelected 逐字节一致（tests/exporter.test.js 对拍）。
+//   · indexes 不传 = 整本（带卷名行，同 composeBook）；
+//   · indexes 传数组 = 只复选中的章（无卷名行、去重升序，同 composeSelected）。
+function pickedChapterIndexes(indexes, total) {
   const picked = [];
-  // B8（v1.8.0 WP-29）：去重换 Set（与 core/ipc-limits.js 同一口径）。输出顺序仍是「去重 + 升序」。
   const seen = new Set();
   for (const raw of Array.isArray(indexes) ? indexes : []) {
     // 只认数字 / 非空纯数字字符串：null / undefined / '' 交给 Number 会变成 0（那会悄悄多复制第 1 章）
@@ -230,20 +231,53 @@ function composeSelected(meta, texts, indexes) {
       typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
     if (!Number.isFinite(value)) continue;
     const index = Math.floor(value);
-    if (index < 0 || index >= chapters.length) continue;
+    if (index < 0 || index >= total) continue;
     if (!seen.has(index)) {
       seen.add(index);
       picked.push(index);
     }
   }
   picked.sort((a, b) => a - b);
+  return picked;
+}
+
+// entries 是有序的「输出片段」：{ name } 是卷名行，{ index } 是一章的块（正文由调用方随后填）。
+function copyEntries(meta, indexes) {
+  const chapters = chapterList(meta);
+  const entries = [];
+  if (Array.isArray(indexes)) {
+    for (const index of pickedChapterIndexes(indexes, chapters.length)) entries.push({ index });
+    return entries;
+  }
+  for (const group of groupByVolume(meta)) {
+    if (group.name) entries.push({ name: group.name });
+    for (const index of group.indexes) entries.push({ index });
+  }
+  return entries;
+}
+
+// 一章的输出块（章标题 + 空行 + 正文），与 composeBook / composeSelected 里的 blockFor 同一份实现。
+function copyBlock(meta, index, text) {
+  const chapters = chapterList(meta);
+  const chapter = chapters[index];
+  const title = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
+  return blockFor(title, text);
+}
+
+// 片段之间空一行、整本末尾一个换行（与 composeBook / composeSelected 的收尾完全一致）。
+function joinCopyBlocks(blocks) {
+  return `${(Array.isArray(blocks) ? blocks : []).join('\r\n\r\n')}\r\n`;
+}
+
+// 1.5.0 功能-1：复制**选中章**（可跳选）。格式与 composeBook 的章节块一致（标题 + 空行 + 正文，
+// 块之间空一行、末尾一个换行），但只按传入的下标拼，没有卷名行（多选复制是「把这几章正文拿走」，
+// 不是整本导出）。indexes 由调用方（主进程）先按书目长度清洗过；这里仍做一次防御性过滤 + 去重 + 排序，
+// 保证「按目录顺序，不是点击顺序」。
+function composeSelected(meta, texts, indexes) {
+  const picked = pickedChapterIndexes(indexes, chapterList(meta).length);
   if (!picked.length) return '';
-  const blocks = picked.map((index) => {
-    const chapter = chapters[index];
-    const title = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
-    return blockFor(title, Array.isArray(texts) ? texts[index] : '');
-  });
-  return `${blocks.join('\r\n\r\n')}\r\n`;
+  const blocks = picked.map((index) => copyBlock(meta, index, Array.isArray(texts) ? texts[index] : ''));
+  return joinCopyBlocks(blocks);
 }
 
 // 导出文件用：UTF-8 带 BOM，方便记事本等老工具识别
@@ -396,6 +430,10 @@ module.exports = {
   BOM,
   composeBook,
   composeSelected,
+  // N-12：整本复制的逐块拼装（entries / 单块 / 收尾），输出与 composeBook / composeSelected 逐字节一致
+  copyEntries,
+  copyBlock,
+  joinCopyBlocks,
   groupByVolume,
   resolveExportRange,
   // 审计修复 #24（R1）：EPUB / DOCX 唯一的导出入参归一

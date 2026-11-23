@@ -12,6 +12,8 @@
  * 配置仓库句柄按 getter 现取（两者都是可变绑定，快照会过期）。
  */
 const { assertHost } = require('../core/assert-host');
+// N-10：导出 / 救稿前的「上次导出目录还在不在」要异步 + 有界等待（见 defaultExportDir）。
+const closeGuard = require('../core/close-guard');
 // MAIN-01：本域 8 个 handleBook 全部是只读（导出 / 复制只读正文与书目，写的是用户选定的外部文件 /
 // 剪贴板），显式传 READ_ONLY —— 不再靠「省略第三个参数」碰巧只读，与 ipc/book-data.js 同一纪律。
 const { READ_ONLY } = require('./book-mutations');
@@ -32,7 +34,7 @@ const REQUIRED_HOST = [
   'path',
   'pathUtils',
   'app',
-  'fsSync',
+  'fs',
   'getConfig',
   'getClipboard',
   'showSaveDialog',
@@ -47,7 +49,7 @@ function registerExportIpc(host) {
     handle, handleBook, storage, exporter,
     chaptersLib, epubLib, docxLib, s2tLib,
     ipcLimits, mapLimit, CHAPTER_READ_CONCURRENCY, CHAPTER_BATCH_SIZE,
-    path, pathUtils, app, fsSync, getConfig,
+    path, pathUtils, app, fs, getConfig,
     getClipboard, showSaveDialog, rememberExportDir, atomicWriteFile,
     atomicWriteFileStream
   } = host;
@@ -69,36 +71,45 @@ function registerExportIpc(host) {
   // core/exporter.js chapterRefIndex 的「有 id 只按 id 结算」）。只有单章动作
   // chapter:copy-platform 找不到章才抛 CHAPTER_NOT_FOUND —— 那一条的语义就是「复制这一章」，
   // 章不在就不能拿别的章冒充。README「已知限制」里写明同一条口径。
-  async function collectExportTexts(bookPath, meta, override, indexes) {
-    const selected = Array.isArray(indexes) ? new Set(indexes) : null;
+  // N-12（二次审查）：整本复制改成「读一批 → 立刻拼成输出块 → 丢掉正文」，不再保留整本 texts 数组；
+  // 最终串仍必须整份给剪贴板（剪贴板只能收整串），峰值从「texts + blocks + 最终串」降到「blocks + 最终串」。
+  async function collectCopyBlocks(bookPath, meta, override, indexes) {
+    const entries = exporter.copyEntries(meta, indexes);
     const overrideIndex = exporter.chapterIndexOf(meta, override);
-    const chapters = meta.chapters;
-    // B4（审计 P4）：选中章的正文并行读；texts 仍按书目下标填，顺序 / 空串占位完全不变
-    const texts = new Array(chapters.length).fill('');
+    // 卷名行直接落在自己那一格；章节格先留空，读完一批立刻填上并丢掉正文。
+    const blocks = new Array(entries.length);
+    const chapterSlots = [];
+    for (let i = 0; i < entries.length; i += 1) {
+      if (entries[i].name !== undefined) blocks[i] = entries[i].name;
+      else chapterSlots.push(i);
+    }
     let chars = 0;
-    for (let start = 0; start < chapters.length; start += CHAPTER_BATCH_SIZE) {
-      const batch = chapters.slice(start, start + CHAPTER_BATCH_SIZE);
-      const loaded = await mapLimit(batch, CHAPTER_READ_CONCURRENCY, async (chapter, offset) => {
-        const index = start + offset;
-        if (selected && !selected.has(index)) return '';
+    for (let start = 0; start < chapterSlots.length; start += CHAPTER_BATCH_SIZE) {
+      const batch = chapterSlots.slice(start, start + CHAPTER_BATCH_SIZE);
+      const loaded = await mapLimit(batch, CHAPTER_READ_CONCURRENCY, async (slot) => {
+        const index = entries[slot].index;
         if (index === overrideIndex) return override.text;
-        return (await storage.loadChapterText(bookPath, chapter.file)).text;
+        return (await storage.loadChapterText(bookPath, meta.chapters[index].file)).text;
       });
-      for (let offset = 0; offset < loaded.length; offset += 1) {
-        texts[start + offset] = loaded[offset];
-        chars += chaptersLib.countChars(loaded[offset]);
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const text = loaded[offset];
+        chars += chaptersLib.countChars(text);
+        blocks[batch[offset]] = exporter.copyBlock(meta, entries[batch[offset]].index, text);
       }
     }
     return {
-      texts,
+      text: exporter.joinCopyBlocks(blocks),
       chars,
-      includedUnsaved: overrideIndex >= 0 && (!selected || selected.has(overrideIndex))
+      chapterCount: chapterSlots.length,
+      includedUnsaved: overrideIndex >= 0 && entries.some((entry) => entry.index === overrideIndex)
     };
   }
 
   // 导出范围预览（只读）：对话框里实时显示「选中几章 / 多少字 / 默认文件名」。
-  // 字数优先用书目里的 chars 缓存求和（审计 F3）；缓存缺失 / 坏值才读盘现算，
-  // 编辑区里当前章的未保存内容（override）永远现算。正式导出仍读全文，不受这里影响。
+  // 字数**只用书目里的 chars 缓存**求和（审计 F3）；编辑区里当前章的未保存内容（override）永远现算。
+  // N-11（二次审查）：缓存缺失的章不再在对话框出现前读盘现算（旧实现 8 路 loadChapterText 读整本），
+  // 否则「点导出」会先读完缺缓存的大书才弹框，与「确认后才读正文」的纪律冲突、网络盘上像假死。
+  // 缺缓存的章回 charsPending，界面标「另有 N 章字数待统计」；正式导出仍在确认后读全文。
   // v0.9 C-5：override / range 先过 core/ipc-limits.js——正文超过 500 万字报 TEXT_TOO_LARGE，
   // 坏形状按旧行为降级（override 当没有、range 当全书 / 越界收紧）。
   handleBook('book:export-plan', async (bookPath, override, range) => {
@@ -108,33 +119,23 @@ function registerExportIpc(host) {
     const plan = exporter.resolveExportRange(meta, safeRange);
     const overrideIndex = exporter.chapterIndexOf(meta, safeOverride);
     let chars = 0;
-    const needDisk = [];
+    let charsPending = 0;
     for (const index of plan.indexes) {
       if (index === overrideIndex) {
         chars += chaptersLib.countChars(safeOverride.text);
         continue;
       }
-      const chapter = meta.chapters[index];
-      const cached = exporter.cachedCharsOf(chapter);
-      if (cached != null) {
-        chars += cached;
-        continue;
-      }
-      needDisk.push(index);
-    }
-    // B4（审计 P4）：缓存缺失的章并行读盘现算（顺序不影响求和；仍只读不写）
-    if (needDisk.length) {
-      const counted = await mapLimit(needDisk, CHAPTER_READ_CONCURRENCY, async (index) => {
-        const text = (await storage.loadChapterText(bookPath, meta.chapters[index].file)).text;
-        return chaptersLib.countChars(text);
-      });
-      for (const value of counted) chars += value;
+      const cached = exporter.cachedCharsOf(meta.chapters[index]);
+      if (cached != null) chars += cached;
+      else charsPending += 1;
     }
     return {
       mode: plan.mode,
       label: plan.label,
       chapterCount: plan.count,
       chars,
+      // N-11：选中范围内「字数还没缓存」的章数（0 = 上面这个字数是精确值；>0 = 只统计了已知部分）
+      charsPending,
       from: plan.from,
       to: plan.to,
       volumeId: plan.volumeId,
@@ -172,13 +173,28 @@ function registerExportIpc(host) {
     }
   }
 
-  // 目录是否存在（导出默认目录兜底用）：读不到就当不存在
-  function isDirectory(dir) {
-    try {
-      return fsSync.statSync(dir).isDirectory();
-    } catch {
-      return false;
-    }
+  // 目录是否存在（导出默认目录兜底用）。N-10（二次审查）：这里原来用 fsSync.statSync 在主线程同步
+  // 探测 lastExportDir —— 它可能是已断开的映射网络盘 / 休眠 USB / 被策略限制的共享目录，SMB 超时
+  // 能让主进程（连同所有窗口）卡住几十秒。现在改异步 stat + 有界等待：到点按「目录不存在」处理，
+  // 保证保存对话框一定能打开（落回「文档」而不是无限等待）。读不到 / 坏路径同样当不存在。
+  const EXPORT_DIR_PROBE_MS = 2000;
+  async function isDirectoryWithinDeadline(dir) {
+    const outcome = await closeGuard.withDeadline(() => fs.stat(dir), { ms: EXPORT_DIR_PROBE_MS });
+    if (outcome.timedOut || outcome.error) return false;
+    const stat = outcome.value;
+    return Boolean(stat && typeof stat.isDirectory === 'function' && stat.isDirectory());
+  }
+
+  // 导出 / 救稿默认落点：上一次导出目录（还存在才用）→ 否则「文档」。
+  // 目录判定的 trim / 空值 / 只认 true 语义仍由 core/exporter.resolveExportDir 唯一决定；
+  // 这里只负责把「异步有界探测」变成那次调用的同步布尔。
+  async function defaultExportDir(cfg) {
+    const remembered = cfg && typeof cfg.lastExportDir === 'string' ? cfg.lastExportDir : '';
+    const fallback = app.getPath('documents');
+    const dir = remembered.trim();
+    if (!dir) return fallback;
+    const exists = await isDirectoryWithinDeadline(dir);
+    return exporter.resolveExportDir(remembered, fallback, () => exists);
   }
 
   // 导出 TXT / EPUB / DOCX 共用的前置：读书目 → 解析范围（空范围明确报错）
@@ -200,8 +216,9 @@ function registerExportIpc(host) {
       );
     }
     const cfg = await getConfig();
-    // 默认落到「上一次导出保存到的目录」；没记过、或那个目录已经不存在了，才退回「文档」
-    const defaultDir = exporter.resolveExportDir(cfg.lastExportDir, app.getPath('documents'), isDirectory);
+    // 默认落到「上一次导出保存到的目录」；没记过、或那个目录已经不存在了，才退回「文档」。
+    // N-10：探测走异步 + 有界等待（不再同步 statSync 卡住主线程）。
+    const defaultDir = await defaultExportDir(cfg);
     return { meta, plan, override: safeOverride, cfg, defaultDir, range: safeRange };
   }
 
@@ -399,18 +416,14 @@ function registerExportIpc(host) {
     const releaseLease = beginReadLease(bookPath);
     let collected;
     try {
-      collected = await collectExportTexts(bookPath, meta, safeOverride, selected);
+      // N-12：逐块拼装（读一章 → 拼一块 → 丢正文），不再先物化整本 texts 数组
+      collected = await collectCopyBlocks(bookPath, meta, safeOverride, selected);
     } finally {
       releaseLease();
     }
-    const { texts, chars, includedUnsaved } = collected;
-    const text = selected ? exporter.composeSelected(meta, texts, selected) : exporter.composeBook(meta, texts);
+    const { text, chars, chapterCount, includedUnsaved } = collected;
     await getClipboard().writeText(text);
-    return {
-      chapterCount: selected ? selected.length : meta.chapters.length,
-      chars,
-      includedUnsaved
-    };
+    return { chapterCount, chars, includedUnsaved };
   }, READ_ONLY);
 
   // 复制本章（平台格式）：只取这一章的正文，段首缩进两个全角空格、段间空一行（空行也带缩进），
@@ -463,7 +476,8 @@ function registerExportIpc(host) {
       return { copied: true, chars: chaptersLib.countChars(body) };
     }
     const cfg = await getConfig();
-    const defaultDir = exporter.resolveExportDir(cfg.lastExportDir, app.getPath('documents'), isDirectory);
+    // N-10：与导出同一份「异步 + 有界等待」的目录探测（救稿也可能在断开的网络盘上）。
+    const defaultDir = await defaultExportDir(cfg);
     const { canceled, filePath } = await showSaveDialog({
       title: '另存这一章为 TXT',
       defaultPath: path.join(defaultDir, `${chaptersLib.safeName(suggestedName)}.txt`),

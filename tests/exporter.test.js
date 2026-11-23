@@ -5,6 +5,9 @@ const path = require('node:path');
 const {
   composeBook,
   composeSelected,
+  copyEntries,
+  copyBlock,
+  joinCopyBlocks,
   resolveExportRange,
   normalizeExportInput,
   exportFileName,
@@ -623,4 +626,38 @@ test('#24 R1：epub / docx 不再各抄一份 chapterList / 空范围检查（�
   const epub = read('core/epub.js');
   assert.equal(epub.includes('isoTimestamp(input && input.modified)'), false, 'epub 不再自己算时间戳');
   assert.equal(read('core/docx.js').includes('isoTimestamp(input && input.modified)'), false, 'docx 不再自己算时间戳');
+});
+
+// N-12：整本复制的逐块拼装（entries + 单块 + 收尾）必须与 composeBook / composeSelected 逐字节一致 ——
+// 这条不变量是「省内存」改动不改变输出格式的唯一保证（卷名行 / 章标题 / 块间空行 / 末尾换行）。
+test('N-12：copyEntries / copyBlock / joinCopyBlocks 与 composeBook、composeSelected 逐字节对拍', () => {
+  const meta = {
+    title: '卷书',
+    titleTemplate: '第{num}章：{name}',
+    volumes: [
+      { id: 'v1', name: '上卷' },
+      { id: 'v2', name: '' }
+    ],
+    chapters: [
+      { id: 'c0', file: '0.txt', name: '楔子' },
+      { id: 'c1', file: '1.txt', name: '卷一', volumeId: 'v1' },
+      { id: 'c2', file: '2.txt', name: '卷二', volumeId: 'v1' },
+      { id: 'c3', file: '3.txt', name: '卷三', volumeId: 'v2' },
+      { id: 'c4', file: '4.txt', name: '' }
+    ]
+  };
+  const texts = ['甲。', '乙。\n第二段。', '', '丁。', '戊。'];
+  const assemble = (indexes) =>
+    copyEntries(meta, indexes).map((entry) =>
+      entry.name !== undefined ? entry.name : copyBlock(meta, entry.index, texts[entry.index])
+    );
+  assert.equal(joinCopyBlocks(assemble(undefined)), composeBook(meta, texts), '整本输出与 composeBook 逐字节一致');
+  assert.equal(joinCopyBlocks(assemble([4, 1, '1', 0, 99])), composeSelected(meta, texts, [0, 1, 4]), '选中章输出与 composeSelected 逐字节一致');
+  // 空选择在 book:copy 里早退（直接回 empty）、不会走到拼装；空书的整本复制仍与 composeBook 同形（一个换行）。
+  assert.equal(joinCopyBlocks(assemble([])), '\r\n', '空片段数组的收尾与 composeBook 空书一致');
+  assert.deepEqual(
+    copyEntries(meta, undefined).map((entry) => (entry.name === undefined ? '#' + entry.index : entry.name)),
+    ['#0', '上卷', '#1', '#2', '#3', '#4'],
+    '整本顺序 = 未分卷章 → 每卷（有名字才插卷名行）→ 卷内章，与 composeBook 的 groupByVolume 同源'
+  );
 });

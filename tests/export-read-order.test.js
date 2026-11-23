@@ -35,10 +35,10 @@ const makeTmpDir = (prefix = 'cw-export-order-') => tmpCleanup.mkTmp(prefix);
 
 // 真实 ipc/export.js 的 host：只替换「可观察的边界」（对话框、时钟、剪贴板、原子写），
 // 存储 / 格式 / 范围解析全部走真实 core（与 WP13 R7/R8 同一套装配口径）。
-function makeHost({ targetPath = '', canceled = false, readThrows = false } = {}) {
+function makeHost({ targetPath = '', canceled = false, readThrows = false, lastExportDir = '' } = {}) {
   const channels = new Map();
   const events = [];
-  const calls = { dialogs: 0, reads: [], writes: 0 };
+  const calls = { dialogs: 0, reads: [], writes: 0, dialogOptions: [] };
   const clipboard = [];
   const host = {
     handle: (name, fn) => channels.set(name, fn),
@@ -70,16 +70,18 @@ function makeHost({ targetPath = '', canceled = false, readThrows = false } = {}
     path,
     pathUtils,
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
+    fs: fsp,
     fsSync: fs,
-    getConfig: async () => ({ exportConversion: '', lastExportDir: '' }),
+    getConfig: async () => ({ exportConversion: '', lastExportDir }),
     getClipboard: () => ({
       writeText: async (text) => {
         clipboard.push(text);
         events.push('clipboard');
       }
     }),
-    showSaveDialog: async () => {
+    showSaveDialog: async (options) => {
       calls.dialogs += 1;
+      calls.dialogOptions.push(options || {});
       events.push('dialog');
       if (canceled) return { canceled: true, filePath: undefined };
       return { canceled: false, filePath: targetPath };
@@ -215,4 +217,135 @@ test('R7-5 前置阶段不读正文：loadChapterText 一调用就抛 EPERM，�
     assert.deepEqual(result, { canceled: true }, `${channel}：前置阶段读正文会把取消路径打挂`);
     assert.equal(calls.reads.length, 0);
   }
+});
+
+// N-10 / N-11 / N-12（二次审查）的导出域行为断言。
+// N-10：默认目录探测改异步 + 有界等待（不再 statSync 卡主线程），目录没了回「文档」；
+// N-11：book:export-plan 只用书目缓存，缺缓存的章不读正文（回 charsPending）；
+// N-12：book:copy 逐块拼装，输出与 composeBook / composeSelected 逐字节一致。
+
+test('N-10：导出默认目录探测不在主线程同步 stat——存在的上次目录照用，没了的回「文档」', async () => {
+  const fsSync = require('node:fs');
+  const dir = await makeTmpDir('cw-export-dir-probe-');
+  const root = path.join(dir, '书库');
+  await fsp.mkdir(root, { recursive: true });
+  const bookPath = await makeBook(root, ['开端', '转折']);
+  const documents = path.join(os.tmpdir(), 'cw-documents');
+  const keep = path.join(dir, '导出 目录');
+  await fsp.mkdir(keep, { recursive: true });
+
+  const kept = makeHost({ targetPath: path.join(dir, '导出.txt'), canceled: true, lastExportDir: keep });
+  await kept.channels.get('book:export')(bookPath, null, null);
+  assert.equal(path.dirname(kept.calls.dialogOptions[0].defaultPath), keep, '上次导出目录还在就继续用它');
+
+  const gone = makeHost({
+    targetPath: path.join(dir, '导出.txt'),
+    canceled: true,
+    lastExportDir: path.join(dir, '已经不存在的盘', '导出')
+  });
+  const canceled = await gone.channels.get('book:export')(bookPath, null, null);
+  assert.deepEqual(canceled, { canceled: true }, '目录探测失败不影响取消路径');
+  assert.equal(
+    path.dirname(gone.calls.dialogOptions[0].defaultPath),
+    documents,
+    '探测不到（断网盘 / 已删除）就退回「文档」，保证对话框一定打得开'
+  );
+
+  // 救稿入口同一份探测（断盘上同样不许阻塞 / 抛错）
+  const rescue = makeHost({ canceled: true, lastExportDir: path.join(dir, '也不存在') });
+  const rescued = await rescue.channels.get('chapter:rescue')('这一段正文。', 'save', '救稿');
+  assert.deepEqual(rescued, { canceled: true });
+  assert.equal(path.dirname(rescue.calls.dialogOptions[0].defaultPath), documents);
+
+  // 静态闸门：主线程同步 statSync 必须消失，改成 withDeadline + 异步 fs.stat
+  const src = fsSync.readFileSync(path.join(__dirname, '..', 'ipc', 'export.js'), 'utf8');
+  assert.equal(src.includes('fsSync.statSync('), false, 'ipc/export 不许再用同步 statSync 探测目录（N-10）');
+  assert.match(
+    src,
+    /const EXPORT_DIR_PROBE_MS = 2000;/,
+    '目录探测要有明确上限（SMB 超时不再拖住主进程）'
+  );
+  assert.match(
+    src,
+    /closeGuard\.withDeadline\(\(\) => fs\.stat\(dir\), \{ ms: EXPORT_DIR_PROBE_MS \}\)/,
+    '异步 stat 必须有界等待；到点按「目录不存在」处理'
+  );
+});
+
+test('N-11：book:export-plan 只用书目字数缓存——缺缓存的章不读正文，回 charsPending 让界面标「待统计」', async () => {
+  const dir = await makeTmpDir('cw-export-plan-cache-');
+  const root = path.join(dir, '书库');
+  await fsp.mkdir(root, { recursive: true });
+  const bookPath = await makeBook(root, ['开端', '转折', '尾声']);
+  const metaPath = path.join(bookPath, '书目.json');
+  // 先把三章字数缓存补齐（真实书在书架扫描 / 保存后都有），再只删第 2 章的缓存
+  const loaded = await storage.readBookMeta(bookPath);
+  for (const chapter of loaded.chapters) {
+    chapter.chars = chaptersLib.countChars((await storage.loadChapterText(bookPath, chapter.file)).text);
+  }
+  await storage.writeBookMeta(bookPath, loaded);
+  const raw = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
+  const knownChars = raw.chapters[0].chars + raw.chapters[2].chars;
+  assert.equal(Number.isFinite(knownChars), true, '用例前提：其余两章有字数缓存');
+  delete raw.chapters[1].chars; // 第 2 章缓存缺失
+  await fsp.writeFile(metaPath, JSON.stringify(raw, null, 2), 'utf8');
+
+  const { channels, calls } = makeHost({ canceled: true });
+  const plan = await channels.get('book:export-plan')(bookPath, null, null);
+  assert.equal(plan.chapterCount, 3);
+  assert.equal(plan.chars, knownChars, '预览字数 = 已有缓存之和（缺缓存的不猜）');
+  assert.equal(plan.charsPending, 1, '缺缓存的章数要如实回给界面');
+  assert.equal(calls.reads.length, 0, '对话框出现之前一个章节正文都不许读（N-11 核心）');
+
+  // 当前章未保存内容（override）仍按编辑区现算；命中的就是缺缓存那章 → 待统计归零
+  const meta = await storage.readBookMeta(bookPath);
+  const override = { chapterId: meta.chapters[1].id, text: '编辑区里这一版。' };
+  const withOverride = await channels.get('book:export-plan')(bookPath, override, null);
+  assert.equal(withOverride.chars, knownChars + 8, '覆盖章按编辑区正文的 countChars 现算（8 字）');
+  assert.equal(withOverride.charsPending, 0, '每一章的字数都有来源了');
+  assert.equal(withOverride.includedUnsaved, true);
+  assert.equal(calls.reads.length, 0, 'override 也一样：预览阶段不读盘');
+});
+
+test('N-12：book:copy 逐块拼装的输出与 composeBook / composeSelected 逐字节一致（读正文后立刻拼块）', async () => {
+  const dir = await makeTmpDir('cw-export-copy-blocks-');
+  const root = path.join(dir, '书库');
+  await fsp.mkdir(root, { recursive: true });
+  const created = await storage.createBook(root, '复制拼装书');
+  const bookPath = created.path;
+  await storage.saveChapterText(bookPath, created.meta.chapters[0].file, '第一章正文。\n第二段。');
+  const volume = await storage.createVolume(bookPath, '上卷');
+  await storage.createChapterWithText(bookPath, {
+    insertIndex: 1,
+    name: '卷内章',
+    text: '卷内正文。',
+    volumeId: volume.volume.id
+  });
+  const meta = await storage.readBookMeta(bookPath);
+  const texts = [];
+  for (const chapter of meta.chapters) {
+    texts.push((await storage.loadChapterText(bookPath, chapter.file)).text);
+  }
+
+  // 整本：卷名行 / 章标题 / 块间空行 / 末尾换行都要与 composeBook 逐字节一致
+  const whole = makeHost();
+  const wholeResult = await whole.channels.get('book:copy')(bookPath, null, null);
+  assert.equal(wholeResult.chapterCount, 2);
+  assert.equal(whole.clipboard.length, 1);
+  assert.equal(whole.clipboard[0], exporter.composeBook(meta, texts), '整本复制与 composeBook 逐字节一致');
+  assert.ok(whole.clipboard[0].includes('上卷'), '有分卷时卷名行还在');
+
+  // 选中章：无卷名行、去重升序，与 composeSelected 逐字节一致
+  const picked = makeHost();
+  const pickedResult = await picked.channels.get('book:copy')(bookPath, null, [1, '0', 1, 99]);
+  assert.equal(pickedResult.chapterCount, 2);
+  assert.equal(picked.clipboard[0], exporter.composeSelected(meta, texts, [0, 1]), '选中章复制与 composeSelected 逐字节一致');
+  assert.equal(picked.clipboard[0].includes('上卷'), false, '选中章复制不带卷名行');
+
+  // 实现闸门：不再物化整本 texts 数组，走 entries + 逐块拼装
+  const src = require('node:fs').readFileSync(path.join(__dirname, '..', 'ipc', 'export.js'), 'utf8');
+  assert.equal(/collectExportTexts\(/.test(src), false, '旧的整本 texts 收集（函数 / 调用）必须删掉（N-12）');
+  assert.match(src, /exporter\.copyEntries\(meta, indexes\)/);
+  assert.match(src, /exporter\.copyBlock\(meta, entries\[batch\[offset\]\]\.index, text\)/);
+  assert.match(src, /exporter\.joinCopyBlocks\(blocks\)/);
 });

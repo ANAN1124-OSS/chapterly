@@ -217,6 +217,9 @@
     lastExportPlan = res;
     lastExportPlanRange = range;
     const bits = [`将导出 ${res.chapterCount} 章`, `${formatCount(res.chars)} 字`];
+    // N-11：预览字数只用书目缓存（不在对话框出现前读正文）；缺缓存的章如实标「待统计」，
+    // 不让「部分章节没算」冒充精确字数。
+    if (Number(res.charsPending) > 0) bits.push(`另有 ${res.charsPending} 章字数待统计`);
     if (res.includedUnsaved) bits.push('含当前章未保存内容');
     // EPUB / DOCX 与 TXT 的范围规则一样，只是默认文件名后缀不同（主进程统一算好）
     const fileName =

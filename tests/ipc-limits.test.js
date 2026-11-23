@@ -538,8 +538,8 @@ test('静态闸门：文本 / 导出 / 查找替换频道都接上了 core/ipc-l
     'book:copy 传空数组时必须早退回 empty（不写剪贴板）'
   );
   assert.ok(
-    bodyOf('book:copy').includes('exporter.composeSelected('),
-    'book:copy 的选中章要用 composeSelected 拼接'
+    bodyOf('book:copy').includes('collectCopyBlocks('),
+    'book:copy 的选中章要走逐块拼装（N-12：内部用 exporter.copyEntries / copyBlock）'
   );
   assert.ok(bodyOf('book:export-plan').includes('sanitizeRange('), 'book:export-plan 必须清洗 range');
   assert.ok(

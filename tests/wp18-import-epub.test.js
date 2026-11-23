@@ -359,6 +359,7 @@ function makeExportHost({ targetPath, conversion }) {
     path,
     pathUtils,
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
+    fs,
     fsSync: require('node:fs'),
     getConfig: async () => ({ exportConversion: conversion, lastExportDir: '' }),
     getClipboard: () => ({ writeText: async () => {} }),

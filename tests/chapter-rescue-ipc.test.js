@@ -48,6 +48,7 @@ function makeHost(options = {}) {
     path,
     pathUtils,
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
+    fs,
     fsSync: require('node:fs'),
     getConfig: async () => ({ lastExportDir: '', booksRoot: options.booksRoot || '' }),
     getClipboard: () => ({

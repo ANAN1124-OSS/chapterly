@@ -291,9 +291,9 @@ module.exports = async function group39RangeExport(t) {
       JSON.stringify(exportMetaAfter.chapters) === JSON.stringify(exportMeta.chapters)
   );
 
-  // 39j. 导出预览字数优先用书目 chars 缓存（v0.8.6 R2 / 审计 F3）：
-  // 故意把第 2 章缓存改成 777、删掉第 3 章缓存 —— 预览应 = 其余章缓存 + 777 + 第 3 章读盘现算；
-  // 同时证明算预览只读：改完书目后打开对话框，全程不再写书目。
+  // 39j. 导出预览字数只用书目 chars 缓存（v0.8.6 R2 / 审计 F3；N-11 起缺缓存的章不再读盘现算）：
+  // 故意把第 2 章缓存改成 777、删掉第 3 章缓存 —— 预览 = 其余章缓存 + 777，第 3 章标「1 章字数待统计」；
+  // 同时证明算预览只读：改完书目后打开对话框，全程不再写书目（对话框出现前不读任何正文）。
   const exportMetaPath = path.join(exportBookPath, '书目.json');
   const exportMetaBytes = await fs.readFile(exportMetaPath, 'utf8');
   const beforeCache = exportMeta.chapters.map((chapter) => chapter.chars);
@@ -307,14 +307,14 @@ module.exports = async function group39RangeExport(t) {
   delete cacheMeta.chapters[2].chars;
   await fs.writeFile(exportMetaPath, JSON.stringify(cacheMeta, null, 2), 'utf8');
   const cachedBytes = await fs.readFile(exportMetaPath, 'utf8');
-  const fallbackChars = chaptersLib.countChars(exportDiskTexts[2]);
-  const expectedCachedChars = beforeCache[0] + 777 + fallbackChars + beforeCache[3];
+  const expectedCachedChars = beforeCache[0] + 777 + beforeCache[3];
   try {
     await openExportDialogFromMenu();
     const cachedSummary = await waitForSummary(`${expectedCachedChars} 字`);
     check(
-      '范围导出：预览字数用书目缓存求和，缓存缺失的章才读盘现算',
-      cachedSummary.includes(`将导出 4 章 · ${expectedCachedChars} 字`),
+      '范围导出：预览字数只用书目缓存求和，缺缓存的章标「字数待统计」、不在对话框前读正文（N-11）',
+      cachedSummary.includes(`将导出 4 章 · ${expectedCachedChars} 字`) &&
+        cachedSummary.includes('另有 1 章字数待统计'),
       cachedSummary
     );
     check(

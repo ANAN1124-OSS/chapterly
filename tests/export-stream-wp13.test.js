@@ -499,6 +499,7 @@ function makeHost({ dir, targetPath, canceled = false, failingStreamAt = 0 } = {
     path,
     pathUtils,
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
+    fs: fsp,
     fsSync: require('node:fs'),
     getConfig: async () => ({ exportConversion: 's2t', lastExportDir: '' }),
     getClipboard: () => ({ writeText: async (text) => { calls.events.push(`copy:${text.length}`); } }),
@@ -710,7 +711,8 @@ test('R9 静态闸门：ipc/export 流式接线 + 三个 core 模块不物化整
   }
   // book:copy 仍是整本读取（不走流式）
   const copy = sliceFrom(ipcSource, "  handleBook('book:copy', async (bookPath, override, indexes) => {");
-  assert.match(copy, /collectExportTexts\(/, 'book:copy 保持整本读取');
+  // N-12：整本复制改成「读一批 → 拼一块 → 丢正文」的逐块拼装（不再物化整本 texts 数组）
+  assert.match(copy, /collectCopyBlocks\(/, 'book:copy 走逐块拼装（N-12）');
   // 旧 readExportTexts 已收掉（它只为整本导出存在）
   assert.equal(ipcSource.includes('async function readExportTexts('), false, '整本读正文的 readExportTexts 应删除');
 
