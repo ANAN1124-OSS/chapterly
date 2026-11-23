@@ -296,10 +296,16 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
     'Ctrl+Alt+V 触发时立刻跑一拍 watcher（刚复制的那段不用等轮询）'
   );
   assert.match(main, /const queued = captureQueue\.hasText\(text\);/, '触发时告诉渲染层这段是否已入队');
+  // N-18（二次审查）：写章成功后的删除必须带窗口归属（以前裸 remove(id)：任一窗口猜 id 就能删别人的记录）。
   assert.match(
     main,
-    /const queueRemoved = Number\.isFinite\(rawQueueId\) \? captureQueue\.remove\(Math\.round\(rawQueueId\)\) : false;/,
-    '写章成功后才删队列条目'
+    /const rawQueueId = Number\(data\.queueId\);[\s\S]{0,500}?captureQueue\.removeFor\(queueRound, queueWindowId\)[\s\S]{0,400}?'QUEUE_FOREIGN_WINDOW'[\s\S]{0,200}?'QUEUE_MISSING'/,
+    '写章成功后才删队列条目，且按窗口归属删（非 owner / 已消失各自回软错误码）'
+  );
+  assert.equal(
+    /captureQueue\.remove\(Math\.round\(rawQueueId\)\)/.test(main),
+    false,
+    'commit-record 不许再用无归属的 remove(id)'
   );
   // v0.13.2 剪贴板面板改造：逐行表单的两个 IPC 删除，改成「整条记录 → 新建一章」
   assert.equal(/handle\('capture:analyze'/.test(main), false, 'capture:analyze 已随逐行表单删除');

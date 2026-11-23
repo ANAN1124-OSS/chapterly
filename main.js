@@ -1995,8 +1995,21 @@ function registerIpc() {
       /* 索引不可用时忽略 */
     }
     // 捕获队列（2026-11-06）：写章真正成功后才删掉这一条；失败 / 取消不删（记录保留可重试）。
+    // N-18（二次审查）：删除必须校验归属 —— 以前直接 remove(id)，任一窗口（含被注入的渲染层）
+    // 只要传一个自增 id 就能删掉别的窗口还没消费的记录，且回执 queueRemoved:true 像成功。
     const rawQueueId = Number(data.queueId);
-    const queueRemoved = Number.isFinite(rawQueueId) ? captureQueue.remove(Math.round(rawQueueId)) : false;
+    const queueWindowId = session ? session.id : null;
+    let queueRemoved = false;
+    let queueRemoveCode = '';
+    if (Number.isFinite(rawQueueId)) {
+      const queueRound = Math.round(rawQueueId);
+      queueRemoved = captureQueue.removeFor(queueRound, queueWindowId);
+      // 失败分两种：这条还在、但归别的窗口（含还没认领的无主条目）→ FOREIGN_WINDOW；
+      // 已经不在了（并发消费 / 过期）→ MISSING。两者都不回滚已写成功的章节。
+      if (!queueRemoved) {
+        queueRemoveCode = captureQueue.get(queueRound) ? 'QUEUE_FOREIGN_WINDOW' : 'QUEUE_MISSING';
+      }
+    }
     return {
       ...saved,
       title: parts.title,
@@ -2004,7 +2017,9 @@ function registerIpc() {
       bodyChars,
       stats,
       statsError,
-      queueRemoved
+      queueRemoved,
+      // 删除失败时的软错误码（章节已经写成功，不回滚、不把成功报成失败）。
+      ...(queueRemoveCode ? { queueRemoveCode } : {})
     };
   }, { mutation: MUTATION.WRITE });
 
