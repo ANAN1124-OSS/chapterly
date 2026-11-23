@@ -5,7 +5,7 @@
 
 ![书架](docs/images/shelf.png)
 
-> 下载：`chapterly-2.1.0-win-x64-setup.exe`（[v2.1.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v2.1.0)，已于 2026-11-22 发布）
+> 下载：`chapterly-2.1.0-win-x64-setup.exe`（[v2.1.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v2.1.0)，已于 2026-11-23 发布）
 > 平台：Windows 10 1809+ / Windows 11 · 安装版不需要 Node · 许可：Apache-2.0 · 当前 v2.1.0
 
 ## 这是什么
