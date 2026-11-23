@@ -612,6 +612,12 @@ test('S2 / T6 接线闸门：归属由主进程注入、crash:* 只对本窗口�
     /handle\('crash:discard-draft'[\s\S]{0,1600}?if \(target\.consumed === true\) \{\s*\n\s*crashConsumed\.set\(target\.draftId, windowId\);/,
     'consumed = 只标记「已交给某窗口的编辑区」，不删文件（旧M4）'
   );
+  // #5（待修清单）：按「书 + 章」删除的分支也要校验归属 —— 以前任何窗口都能删掉别的窗口写的草稿位。
+  assert.match(
+    mainSrc,
+    /if \(typeof target\.bookPath === 'string' && typeof target\.chapterId === 'string'\)[\s\S]{0,600}?store\.ownerFor\(target\)[\s\S]{0,400}?DRAFT_FOREIGN_WINDOW/,
+    '{bookPath, chapterId} 分支删除前校验归属，非 owner 回 DRAFT_FOREIGN_WINDOW'
+  );
 
   // ③ 关窗：这扇窗口的「已恢复」标记一起清（草稿文件保留，别的窗口还能看到）。
   assert.match(

@@ -456,6 +456,23 @@ function createCrashDraftStore(baseDir, options = {}) {
     return remove;
   }
 
+  // #5（待修清单）：按 draftId 读归属元数据（draftOwner / ownerFor 共用，不返回正文）。
+  async function readOwnerMeta(draftId) {
+    const id = parseDraftFileName(`${FILE_PREFIX}${draftId}.json`);
+    if (!id || id !== String(draftId == null ? '' : draftId)) return null;
+    try {
+      const raw = JSON.parse(await io.readFile(draftPath(id), 'utf8'));
+      if (!raw || typeof raw !== 'object') return null;
+      return {
+        draftId: id,
+        ownerToken: normalizeOwnerToken(raw.ownerToken),
+        ownerWindowId: normalizeOwnerWindowId(raw.ownerWindowId)
+      };
+    } catch {
+      return null;
+    }
+  }
+
   return {
     dir,
 
@@ -584,19 +601,16 @@ function createCrashDraftStore(baseDir, options = {}) {
 
     // S2：只读归属元数据（校验 foreign 用），不返回正文；不存在 / 坏文件回 null。
     async draftOwner(draftId) {
-      const id = parseDraftFileName(`${FILE_PREFIX}${draftId}.json`);
-      if (!id || id !== String(draftId == null ? '' : draftId)) return null;
-      try {
-        const raw = JSON.parse(await io.readFile(draftPath(id), 'utf8'));
-        if (!raw || typeof raw !== 'object') return null;
-        return {
-          draftId: id,
-          ownerToken: normalizeOwnerToken(raw.ownerToken),
-          ownerWindowId: normalizeOwnerWindowId(raw.ownerWindowId)
-        };
-      } catch {
-        return null;
-      }
+      return readOwnerMeta(draftId);
+    },
+
+    // #5：按「书 + 章」查归属元数据 —— discard 的 { bookPath, chapterId } 分支删除前要校验归属，
+    // 以前那条分支不看 owner，任何窗口都能删掉别的窗口写的草稿位。目标不合法 / 草稿不存在回 null。
+    async ownerFor(target) {
+      if (!target || typeof target !== 'object') return null;
+      if (typeof target.bookPath !== 'string' || !target.bookPath.trim()) return null;
+      if (typeof target.chapterId !== 'string' || !target.chapterId.trim()) return null;
+      return readOwnerMeta(draftIdFor(target.bookPath, target.chapterId));
     },
 
     async readDraft(draftId) {

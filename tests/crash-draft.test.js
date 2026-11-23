@@ -440,6 +440,15 @@ test('S2 / T6：草稿记 owner 元数据，listDrafts 只给写它的窗口；�
   assert.equal(await store.draftOwner('../../etc/passwd'), null, '非法 draftId 直接拒绝');
   assert.equal(await store.draftOwner('0123456789abcdef'), null, '不存在的草稿回 null');
 
+  // #5（待修清单）：按「书 + 章」查归属（discard 的 { bookPath, chapterId } 分支用），同样不返回正文。
+  const ownerByTarget = await store.ownerFor({ bookPath: path.join(BOOK, '我 的'), chapterId: 'ch_mine' });
+  assert.deepEqual(ownerByTarget, { draftId: mine.draftId, ownerToken: 'tok-a', ownerWindowId: 7 });
+  assert.ok(!('text' in ownerByTarget), '归属查询不返回正文');
+  assert.equal(await store.ownerFor({ bookPath: path.join(BOOK, '我 的'), chapterId: 'ch_missing' }), null, '没有这份草稿回 null');
+  assert.equal(await store.ownerFor({ bookPath: path.join(BOOK, '我 的') }), null, '缺 chapterId 回 null');
+  assert.equal(await store.ownerFor({ bookPath: '', chapterId: 'ch_mine' }), null, '空 bookPath 回 null');
+  assert.equal(await store.ownerFor(null), null, '坏 target 回 null');
+
   // 同一草稿位被新正文覆盖：归属跟着新写入走（同进程另一扇窗口立刻看不到它）。
   await store.writeDraft(
     draft({ chapterId: 'ch_legacy', bookPath: path.join(BOOK, '旧 的'), text: '新一版正文' }),

@@ -2484,6 +2484,12 @@ function registerIpc() {
       return result;
     }
     if (typeof target.bookPath === 'string' && typeof target.chapterId === 'string') {
+      // #5（待修清单）：按「书 + 章」删除同样要过归属校验 —— 以前这条分支不看 owner，
+      // 任何窗口都能删掉别的窗口写的草稿位，与 draftId 分支的 S2 语义不一致。
+      const owner = await store.ownerFor(target);
+      if (owner && !crashDraftVisibleTo(owner, windowId)) {
+        return softFailure('DRAFT_FOREIGN_WINDOW', '这份草稿属于另一个窗口，没有删', { removed: 0 });
+      }
       const result = await store.removeFor({ bookPath: target.bookPath, chapterId: target.chapterId });
       return result;
     }
