@@ -13,7 +13,8 @@ const { readZip } = require('../scripts/export-check');
 const { assertEntryName, entryNameProblem, buildZip, MAX_ENTRY_NAME_BYTES } = zipLib;
 
 // 当前导出允许写进 zip 的条目名形状（白名单：固定部位 + 补零编号，不含任何作者输入）
-const EPUB_NAME_RE = /^(mimetype|META-INF\/container\.xml|OEBPS\/(content\.opf|nav\.xhtml|toc\.ncx|style\.css|cover\.xhtml|text\/(volume|chapter)-\d{4}\.xhtml))$/;
+// T-11：EPUB3-only，包内不再有 toc.ncx
+const EPUB_NAME_RE = /^(mimetype|META-INF\/container\.xml|OEBPS\/(content\.opf|nav\.xhtml|style\.css|cover\.xhtml|text\/(volume|chapter)-\d{4}\.xhtml))$/;
 const DOCX_NAME_RE = /^(\[Content_Types\]\.xml|_rels\/\.rels|word\/(document|styles)\.xml|word\/_rels\/document\.xml\.rels|docProps\/(core|app)\.xml)$/;
 
 // DOCX 的七个部位是固定的（最小 OOXML 包）：清单快照，少一个 / 多一个都要在评审里看到

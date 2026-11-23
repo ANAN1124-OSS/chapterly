@@ -7,12 +7,13 @@
 // 只把选中的章节打进包里；章号、章名仍按全书顺序（和 TXT 范围导出同一规则），
 // 卷名页只生成选中章节所在的卷，封面章数 = 本次导出的章数。
 //
-// EPUB 结构（EPUB 3，另外带一份 EPUB 2 的 toc.ncx 兜底，老阅读器也能认出目录）：
+// EPUB 结构（EPUB 3 only；T-11（三审）：包内不再写 EPUB 2 的 toc.ncx / spine@toc / <guide> ——
+// 这三项在 EPUB 3.0 已 deprecated、3.1 起从规范移除，严格校验链会报 deprecated。目录统一走
+// nav.xhtml（epub:type="toc"）+ 同文件里的 landmarks（取代 guide 的封面 / 目录指引））：
 //   mimetype                        必须第一个、不压缩
 //   META-INF/container.xml          指向 OEBPS/content.opf
-//   OEBPS/content.opf               元数据 + manifest + spine（+ guide 兼容 EPUB2）
-//   OEBPS/nav.xhtml                 EPUB3 目录：分卷 = 二级目录
-//   OEBPS/toc.ncx                   EPUB2 目录兜底（分卷同样嵌套）
+//   OEBPS/content.opf               元数据 + manifest + spine（EPUB3 口径，无 deprecated 项）
+//   OEBPS/nav.xhtml                 EPUB3 目录：分卷 = 二级目录 + landmarks
 //   OEBPS/style.css                 段首缩进 2 字 + 段间空一行（和 TXT 导出的排版规则一致）
 //   OEBPS/cover.xhtml               纯文字封面页（本书没有封面图，按提案生成文字封面）
 //   OEBPS/text/volume-0001.xhtml    有名字的卷各一张卷名页（分卷 → 目录级）
@@ -92,7 +93,7 @@ p {
 `;
 
 // ---------- XML / HTML ----------
-// 字符清洗 / 转义 / 切段在 core/xml.js（和 DOCX 导出共用同一份实现），这里只拼 XHTML / OPF / NCX 标签。
+// 字符清洗 / 转义 / 切段在 core/xml.js（和 DOCX 导出共用同一份实现），这里只拼 XHTML / OPF 标签。
 function xhtmlDocument({ title, lang, cssHref, body }) {
   return [
     '<?xml version="1.0" encoding="utf-8"?>',
@@ -164,59 +165,29 @@ function renderNavList(items, depth) {
   return lines;
 }
 
-function navDocument({ title, lang, items, cssHref, heading = DEFAULT_EPUB_LABELS.nav }) {
+function navDocument({
+  title,
+  lang,
+  items,
+  cssHref,
+  heading = DEFAULT_EPUB_LABELS.nav,
+  labels = DEFAULT_EPUB_LABELS
+}) {
   const body = [
     '<nav epub:type="toc" id="toc">',
     `  <h1>${escapeXml(heading)}</h1>`,
     ...renderNavList(items, 1),
+    '</nav>',
+    // T-11（三审）：EPUB3 不再有 <guide>，封面 / 目录的「地标」指引改由 landmarks 承担
+    // （epub:type 是官方替代；hidden 让它不出现在阅读器的正文流里）。
+    '<nav epub:type="landmarks" id="landmarks" hidden="hidden">',
+    '  <ol>',
+    `    <li><a epub:type="cover" href="cover.xhtml">${escapeXml(labels.cover)}</a></li>`,
+    `    <li><a epub:type="toc" href="nav.xhtml">${escapeXml(labels.toc)}</a></li>`,
+    '  </ol>',
     '</nav>'
   ].join('\n');
   return xhtmlDocument({ title, lang, cssHref, body });
-}
-
-function navDepth(items) {
-  let depth = 1;
-  for (const item of items) {
-    if (item.children && item.children.length) depth = Math.max(depth, 1 + navDepth(item.children));
-  }
-  return depth;
-}
-
-function renderNavPoints(items, depth, counter) {
-  const pad = '  '.repeat(depth);
-  const lines = [];
-  for (const item of items) {
-    counter.value += 1;
-    const order = counter.value;
-    lines.push(`${pad}<navPoint id="np${order}" playOrder="${order}">`);
-    lines.push(`${pad}  <navLabel><text>${escapeXml(item.label)}</text></navLabel>`);
-    lines.push(`${pad}  <content src="${escapeXml(item.href)}"/>`);
-    if (item.children && item.children.length) {
-      lines.push(...renderNavPoints(item.children, depth + 1, counter));
-    }
-    lines.push(`${pad}</navPoint>`);
-  }
-  return lines;
-}
-
-function ncxDocument({ title, identifier, lang, items }) {
-  const depth = navDepth(items);
-  return [
-    '<?xml version="1.0" encoding="utf-8"?>',
-    '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1" xml:lang="' + escapeXml(lang) + '">',
-    '  <head>',
-    `    <meta name="dtb:uid" content="${escapeXml(identifier)}"/>`,
-    `    <meta name="dtb:depth" content="${depth}"/>`,
-    '    <meta name="dtb:totalPageCount" content="0"/>',
-    '    <meta name="dtb:maxPageNumber" content="0"/>',
-    '  </head>',
-    `  <docTitle><text>${escapeXml(title)}</text></docTitle>`,
-    '  <navMap>',
-    ...renderNavPoints(items, 2, { value: 0 }),
-    '  </navMap>',
-    '</ncx>',
-    ''
-  ].join('\n');
 }
 
 function containerDocument() {
@@ -231,7 +202,7 @@ function containerDocument() {
   ].join('\n');
 }
 
-function opfDocument({ title, identifier, modified, lang, manifest, spine, labels = DEFAULT_EPUB_LABELS }) {
+function opfDocument({ title, identifier, modified, lang, manifest, spine }) {
   const manifestLines = manifest.map((item) => {
     const properties = item.properties ? ` properties="${escapeXml(item.properties)}"` : '';
     return `    <item id="${escapeXml(item.id)}" href="${escapeXml(item.href)}" media-type="${escapeXml(item.mediaType)}"${properties}/>`;
@@ -249,13 +220,11 @@ function opfDocument({ title, identifier, modified, lang, manifest, spine, label
     '  <manifest>',
     ...manifestLines,
     '  </manifest>',
-    '  <spine toc="ncx">',
+    // T-11（三审）：这是 EPUB 3 的 spine —— 不带 EPUB2 的 toc="ncx" 属性（3.0 deprecated），
+    // 包内也不再生成 toc.ncx；封面 / 目录指引在 nav.xhtml 的 landmarks 里。
+    '  <spine>',
     ...spineLines,
     '  </spine>',
-    '  <guide>',
-    `    <reference type="cover" title="${escapeXml(labels.cover)}" href="cover.xhtml"/>`,
-    `    <reference type="toc" title="${escapeXml(labels.toc)}" href="nav.xhtml"/>`,
-    '  </guide>',
     '</package>',
     ''
   ].join('\n');
@@ -301,7 +270,7 @@ function normalizeInput(input) {
 }
 
 // B1（审计 #17 / WP13）：文件清单与元数据只有这一份顺序。
-// 非章节文件（mimetype / container / nav / ncx / css / cover / opf）直接给具体字符串；
+// 非章节文件（mimetype / container / nav / css / cover / opf）直接给具体字符串；
 // 章节文件给 { index, title } 描述符 —— buildBundle 用整本 texts 同步填，
 // streamEpub 用 readText 逐章读，两边顺序 / 内容由 R3 的逐字节对拍锁住。
 function bundlePlan(input) {
@@ -318,7 +287,6 @@ function bundlePlan(input) {
   items.push({ name: 'META-INF/container.xml', data: containerDocument() });
 
   manifest.push({ id: 'nav', href: 'nav.xhtml', mediaType: 'application/xhtml+xml', properties: 'nav' });
-  manifest.push({ id: 'ncx', href: 'toc.ncx', mediaType: 'application/x-dtbncx+xml' });
   manifest.push({ id: 'css', href: 'style.css', mediaType: 'text/css' });
   manifest.push({ id: 'cover', href: 'cover.xhtml', mediaType: 'application/xhtml+xml' });
   spine.push('cover');
@@ -358,11 +326,7 @@ function bundlePlan(input) {
 
   items.push({
     name: `${EPUB_DIR}/nav.xhtml`,
-    data: navDocument({ title, lang, items: navItems, cssHref: 'style.css', heading: labels.nav })
-  });
-  items.push({
-    name: `${EPUB_DIR}/toc.ncx`,
-    data: ncxDocument({ title, identifier, lang, items: navItems })
+    data: navDocument({ title, lang, items: navItems, cssHref: 'style.css', heading: labels.nav, labels })
   });
   items.push({ name: `${EPUB_DIR}/style.css`, data: STYLE_CSS });
   items.push({
@@ -384,8 +348,7 @@ function bundlePlan(input) {
       modified: stamp.iso,
       lang,
       manifest,
-      spine,
-      labels
+      spine
     })
   });
 

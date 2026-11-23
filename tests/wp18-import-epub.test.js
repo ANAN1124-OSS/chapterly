@@ -276,8 +276,10 @@ test('R6 X-N11：EPUB 固定文案随 labels 转换，默认不变，流式与�
   const plainNav = plainZip.get('OEBPS/nav.xhtml').toString('utf8');
   const plainOpf = plainZip.get('OEBPS/content.opf').toString('utf8');
   assert.match(plainNav, /<h1>目录<\/h1>/, '默认档位仍是「目录」');
-  assert.match(plainOpf, /<reference type="cover" title="封面" href="cover.xhtml"\/>/, '默认封面 guide');
-  assert.match(plainOpf, /<reference type="toc" title="目录" href="nav.xhtml"\/>/, '默认目录 guide');
+  // T-11：EPUB3 用 nav.xhtml 的 landmarks 取代 <guide>（封面 / 目录两个地标）
+  assert.match(plainNav, /<a epub:type="cover" href="cover\.xhtml">封面<\/a>/, '默认封面 landmarks');
+  assert.match(plainNav, /<a epub:type="toc" href="nav\.xhtml">目录<\/a>/, '默认目录 landmarks');
+  assert.equal(plainOpf.includes('<guide>'), false, 'EPUB3 不写 <guide>');
 
   const converted = await epub.buildEpub({
     meta: epubMeta(),
@@ -288,10 +290,10 @@ test('R6 X-N11：EPUB 固定文案随 labels 转换，默认不变，流式与�
   });
   const convertedZip = zipEntries(converted.buffer);
   const nav = convertedZip.get('OEBPS/nav.xhtml').toString('utf8');
-  const opf = convertedZip.get('OEBPS/content.opf').toString('utf8');
   assert.match(nav, /<h1>目錄<\/h1>/, '繁体档位的目录页大标题必须是「目錄」');
-  assert.match(opf, /<reference type="toc" title="目錄" href="nav.xhtml"\/>/, 'OPF guide 目录标题也要转');
-  assert.match(opf, /<reference type="cover" title="封面" href="cover.xhtml"\/>/, '封面标题繁简同形');
+  // T-11：地标文案也随 labels 转（guide 已移除）
+  assert.match(nav, /<a epub:type="toc" href="nav\.xhtml">目錄<\/a>/, 'landmarks 目录标题也要转');
+  assert.match(nav, /<a epub:type="cover" href="cover\.xhtml">封面<\/a>/, '封面标题繁简同形');
   assert.equal((nav.match(/<h1>/g) || []).length, 1, '目录页只有一个大标题');
 
   // labels 坏值 / 空串回默认，产物与默认逐字节一致
@@ -326,8 +328,10 @@ test('R7 X-N12：删掉 legacy cover meta，guide cover reference 保留', async
   const opf = zip.get('OEBPS/content.opf').toString('utf8');
   assert.equal(opf.includes('<meta name="cover" content="cover"/>'), false, 'EPUB2 封面图片声明必须删掉');
   assert.equal(/<meta name="cover"/.test(opf), false);
-  assert.match(opf, /<reference type="cover" title="封面" href="cover.xhtml"\/>/, 'guide 的正确声明要留着');
-  // 封面页本身仍是文字封面
+  // T-11：guide 换成 nav.xhtml 的 landmarks（封面地标必须还在，封面页本身仍是文字封面）
+  const nav = zip.get('OEBPS/nav.xhtml').toString('utf8');
+  assert.match(nav, /<a epub:type="cover" href="cover\.xhtml">封面<\/a>/, 'landmarks 的封面地标要留着');
+  assert.equal(opf.includes('<guide>'), false, 'EPUB3 不写 <guide>');
   const cover = zip.get('OEBPS/cover.xhtml').toString('utf8');
   assert.match(cover, /class="cover-title"/);
   // 静态：core/epub.js 不再写这行，且固定文案走 labels
@@ -387,11 +391,12 @@ test('R8 X-N11/X-N12 IPC 端到端：s2t 导出 EPUB 的目录页 / guide / cove
   const tradZip = zipEntries(await fs.readFile(tradTarget));
   const tradNav = tradZip.get('OEBPS/nav.xhtml').toString('utf8');
   const tradOpf = tradZip.get('OEBPS/content.opf').toString('utf8');
-  const tradNcx = tradZip.get('OEBPS/toc.ncx').toString('utf8');
   assert.match(tradNav, /<h1>目錄<\/h1>/, '繁体导出的目录页大标题必须是「目錄」');
-  assert.match(tradOpf, /<reference type="toc" title="目錄" href="nav.xhtml"\/>/, 'OPF guide 目录标题也要转');
+  assert.match(tradNav, /<a epub:type="toc" href="nav\.xhtml">目錄<\/a>/, 'landmarks 目录标题也要转');
+  assert.equal(tradZip.has('OEBPS/toc.ncx'), false, 'T-11：EPUB3-only，不再输出 toc.ncx');
   assert.equal(tradOpf.includes('name="cover"'), false, '导出的 OPF 不许再有 legacy cover meta');
-  assert.match(tradNcx, /<docTitle><text>測試書<\/text><\/docTitle>/, '书名照旧转繁（对照）');
+  assert.equal(tradOpf.includes('<guide>'), false, 'EPUB3 不写 <guide>');
+  assert.match(tradOpf, /<dc:title>測試書<\/dc:title>/, '书名照旧转繁（对照，改在 OPF 的 dc:title 上）');
 
   const plainTarget = path.join(base, '简体.epub');
   const plainChannels = makeExportHost({ targetPath: plainTarget, conversion: '' });
@@ -399,9 +404,8 @@ test('R8 X-N11/X-N12 IPC 端到端：s2t 导出 EPUB 的目录页 / guide / cove
   assert.equal(plain.canceled, false);
   const plainZip = zipEntries(await fs.readFile(plainTarget));
   const plainNav = plainZip.get('OEBPS/nav.xhtml').toString('utf8');
-  const plainOpf = plainZip.get('OEBPS/content.opf').toString('utf8');
   assert.match(plainNav, /<h1>目录<\/h1>/);
-  assert.match(plainOpf, /<reference type="toc" title="目录" href="nav.xhtml"\/>/);
+  assert.match(plainNav, /<a epub:type="toc" href="nav\.xhtml">目录<\/a>/);
 
   // 静态接线：共享内核把转换后的固定文案传给格式的流式构建
   const kernel = sliceFrom(readSource('ipc/export.js'), '  async function exportStructured(bookPath, override, range, options) {');

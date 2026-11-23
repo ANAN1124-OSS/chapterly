@@ -139,7 +139,9 @@ module.exports = async function group45ExportEpub(t) {
     epubOpf.includes('<dc:title>EPUB导出测试书</dc:title>') &&
       epubOpf.includes('<dc:language>zh-CN</dc:language>') &&
       /urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/.test(epubOpf) &&
-      epubManifestHrefs.length >= 8 &&
+      // T-11：EPUB3-only 之后 manifest = nav / css / cover + 封面章 + 各章页 + 卷名页（无 ncx），
+      // 这一集是 7 条；下限同步收紧到 7。
+      epubManifestHrefs.length >= 7 &&
       epubManifestHrefs.every((href) => epubEntries.has(`OEBPS/${href}`)),
     { hrefs: epubManifestHrefs }
   );
@@ -148,14 +150,29 @@ module.exports = async function group45ExportEpub(t) {
     JSON.stringify(epubSpine) === JSON.stringify(['cover', 'ch1', 'vol1', 'ch2', 'ch3']),
     epubSpine
   );
+  // T-11：nav.xhtml 里多了一段 landmarks（EPUB3 取代 <guide>），数目录层级只看 toc 那一段。
+  const epubNavText = epubText('OEBPS/nav.xhtml');
+  const epubTocStart = epubNavText.indexOf('<nav epub:type="toc"');
+  const epubTocNav = epubNavText.slice(epubTocStart, epubNavText.indexOf('</nav>', epubTocStart));
   check(
     'EPUB 导出：分卷是二级目录（上卷带两章）',
-    epubText('OEBPS/nav.xhtml').includes('<a href="text/volume-0001.xhtml">上卷</a>') &&
-      epubText('OEBPS/nav.xhtml').includes('<li><a href="text/chapter-0001.xhtml">第1章</a></li>') &&
-      epubText('OEBPS/nav.xhtml').includes('<li><a href="text/chapter-0002.xhtml">第2章：上卷一</a></li>') &&
-      epubText('OEBPS/nav.xhtml').includes('<li><a href="text/chapter-0003.xhtml">第3章：上卷二</a></li>') &&
-      (epubText('OEBPS/nav.xhtml').match(/<ol>/g) || []).length === 2,
-    epubText('OEBPS/nav.xhtml')
+    epubTocNav.includes('<a href="text/volume-0001.xhtml">上卷</a>') &&
+      epubTocNav.includes('<li><a href="text/chapter-0001.xhtml">第1章</a></li>') &&
+      epubTocNav.includes('<li><a href="text/chapter-0002.xhtml">第2章：上卷一</a></li>') &&
+      epubTocNav.includes('<li><a href="text/chapter-0003.xhtml">第3章：上卷二</a></li>') &&
+      (epubTocNav.match(/<ol>/g) || []).length === 2,
+    epubNavText
+  );
+  check(
+    'EPUB 导出：EPUB3-only —— 不再输出 toc.ncx / spine@toc / <guide>，封面与目录指引在 landmarks',
+    !epubEntries.has('OEBPS/toc.ncx') &&
+      !epubOpf.includes('toc.ncx') &&
+      !epubOpf.includes('<spine toc=') &&
+      !epubOpf.includes('<guide>') &&
+      epubNavText.includes('<nav epub:type="landmarks" id="landmarks" hidden="hidden">') &&
+      epubNavText.includes('<a epub:type="cover" href="cover.xhtml">封面</a>') &&
+      epubNavText.includes('<a epub:type="toc" href="nav.xhtml">目录</a>'),
+    { hasNcx: epubEntries.has('OEBPS/toc.ncx') }
   );
   check(
     'EPUB 导出：一章一个 XHTML，章名 / 章号与 TXT 导出一致',
@@ -185,7 +202,7 @@ module.exports = async function group45ExportEpub(t) {
   let epubXmlChecked = 0;
   let epubXmlError = '';
   for (const entry of epubZip.entries) {
-    if (!/\.(xhtml|opf|ncx|xml)$/.test(entry.name)) continue;
+    if (!/\.(xhtml|opf|xml)$/.test(entry.name)) continue;
     try {
       assertWellFormedXml(entry.data.toString('utf8'), entry.name);
       epubXmlChecked += 1;
@@ -197,7 +214,8 @@ module.exports = async function group45ExportEpub(t) {
   }
   check(
     'EPUB 导出：所有 XML 文件都合法（含容器 / OPF / 目录 / 章节页）',
-    epubXmlOk && epubXmlChecked >= 9,
+    // T-11：没有 toc.ncx 之后包内 XML = container / opf / nav / cover + 各章页 + 卷名页 = 8
+    epubXmlOk && epubXmlChecked >= 8,
     { checked: epubXmlChecked, error: epubXmlError }
   );
 

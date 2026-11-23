@@ -300,7 +300,7 @@ function registerExportIpc(host) {
     // 书目与章节 txt 一概不动（chars 仍按原稿字数算）。
     const conversion = s2tLib.normalizeMode(cfg.exportConversion);
     const exportMeta = s2tLib.convertMeta(meta, conversion);
-    // X-N11（WP18）：EPUB 的固定文案（目录页大标题 / OPF guide 的「封面」「目录」）也随档位转换；
+    // X-N11（WP18）：EPUB 的固定文案（目录页大标题 / nav.xhtml landmarks 的「封面」「目录」）也随档位转换；
     // 否则繁体导出的书名 / 目录条目 / 正文都转繁，唯目录页大标题仍「目录」。DOCX / TXT 没有这些
     // 固定文案，多传一个 labels 字段不会影响它们（core/epub 缺省回简体）。
     const labels = conversion

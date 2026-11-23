@@ -39,6 +39,16 @@ function textOf(byName, name) {
   return entry.data.toString('utf8');
 }
 
+// T-11（三审）：nav.xhtml 里除了「目录」还有一段 landmarks（EPUB3 用来取代 <guide>，它自带一个
+// <ol>）。数「目录层级」的断言一律只看 toc 那一段，别把 landmarks 的 ol 算进去。
+function tocNavOf(nav) {
+  const start = nav.indexOf('<nav epub:type="toc"');
+  assert.ok(start >= 0, 'nav.xhtml 必须有 epub:type="toc" 的目录');
+  const end = nav.indexOf('</nav>', start);
+  assert.ok(end > start, '目录 nav 没有闭合');
+  return nav.slice(start, end);
+}
+
 test('CRC32：和标准校验值一致（zip 写坏会在这里先暴露）', async () => {
   assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926);
   assert.equal(checkCrc32(Buffer.from('123456789')), 0xcbf43926);
@@ -162,10 +172,10 @@ test('分卷：有名字的卷生成卷名页 + 二级目录，未分卷章节�
   const opf = textOf(byName, 'OEBPS/content.opf');
   const spine = [...opf.matchAll(/<itemref idref="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(spine, ['cover', 'ch1', 'vol1', 'ch2', 'ch3']);
-  assert.equal((nav.match(/<ol>/g) || []).length, 2, '分卷目录应该有二层 ol');
+  assert.equal((tocNavOf(nav).match(/<ol>/g) || []).length, 2, '分卷目录应该有二层 ol');
 });
 
-test('NCX：playOrder 按文档顺序连续、分卷嵌套、depth = 2', async () => {
+test('T-11：EPUB3-only —— 不再输出 toc.ncx，spine 无 toc 属性，也没有 <guide>', async () => {
   const meta = {
     title: '分卷书',
     volumes: [{ id: 'v1', name: '上卷' }],
@@ -174,22 +184,27 @@ test('NCX：playOrder 按文档顺序连续、分卷嵌套、depth = 2', async (
       { id: 'c2', file: '002.txt', name: '上卷一', volumeId: 'v1' }
     ]
   };
-  const { byName } = await build({ meta, texts: ['甲', '乙'] });
-  const ncx = textOf(byName, 'OEBPS/toc.ncx');
-  const orders = [...ncx.matchAll(/playOrder="(\d+)"/g)].map((match) => Number(match[1]));
-  assert.deepEqual(orders, [1, 2, 3]);
-  assert.ok(ncx.includes('<meta name="dtb:depth" content="2"/>'));
-  // 上卷的 navPoint 里套着章节的 navPoint
-  assert.match(ncx, /<navPoint id="np2" playOrder="2">[\s\S]*?<navPoint id="np3" playOrder="3">/);
-  assertWellFormedXml(ncx, 'toc.ncx');
+  const { zip, byName } = await build({ meta, texts: ['甲', '乙'] });
+  // 弃用项全部消失：toc.ncx 文件 / manifest 里的 ncx 条目 / spine@toc / <guide>
+  assert.equal(zip.names.includes('OEBPS/toc.ncx'), false, 'EPUB3 包内不再有 toc.ncx');
+  const opf = textOf(byName, 'OEBPS/content.opf');
+  assert.equal(opf.includes('toc.ncx'), false, 'manifest 里不再声明 ncx');
+  assert.equal(opf.includes('<spine toc='), false, 'spine 不再带 EPUB2 的 toc 属性');
+  assert.equal(opf.includes('<guide>'), false, 'EPUB3 不写 <guide>');
+  // 目录层级仍由 nav.xhtml 承担（这条是老 NCX depth=2 用例的新落点）
+  const nav = textOf(byName, 'OEBPS/nav.xhtml');
+  assert.equal((tocNavOf(nav).match(/<ol>/g) || []).length, 2, '分卷 = 顶层 ol + 二级 ol');
+  assertWellFormedXml(nav, 'nav.xhtml');
 });
 
-test('没有分卷的书：目录是一层，NCX depth = 1', async () => {
+test('T-11：nav.xhtml 用 landmarks 取代 <guide>（封面 / 目录地标 + labels 跟着转）', async () => {
   const { byName } = await build();
   const nav = textOf(byName, 'OEBPS/nav.xhtml');
-  assert.equal((nav.match(/<ol>/g) || []).length, 1);
-  const ncx = textOf(byName, 'OEBPS/toc.ncx');
-  assert.ok(ncx.includes('<meta name="dtb:depth" content="1"/>'));
+  assert.match(nav, /<nav epub:type="landmarks" id="landmarks" hidden="hidden">/);
+  assert.match(nav, /<a epub:type="cover" href="cover\.xhtml">封面<\/a>/);
+  assert.match(nav, /<a epub:type="toc" href="nav\.xhtml">目录<\/a>/);
+  // 没有分卷的书：目录仍是一层（landmarks 的 ol 不算进目录层级）
+  assert.equal((tocNavOf(nav).match(/<ol>/g) || []).length, 1);
 });
 
 test('封面页：纯文字封面带书名和章数 / 卷数', async () => {
@@ -291,7 +306,7 @@ test('EPUB 按章节范围导出：跨卷时两卷的卷名页都在，范围外
   const spine = [...opf.matchAll(/<itemref idref="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(spine, ['cover', 'vol1', 'ch2', 'ch3', 'vol2', 'ch4']);
   const nav = textOf(byName, 'OEBPS/nav.xhtml');
-  assert.equal((nav.match(/<ol>/g) || []).length, 3, '两卷 = 两个二级 ol + 一个顶层 ol');
+  assert.equal((tocNavOf(nav).match(/<ol>/g) || []).length, 3, '两卷 = 两个二级 ol + 一个顶层 ol');
   assert.ok(nav.includes('上卷') && nav.includes('下卷'));
   assert.ok(!nav.includes('楔子') && !nav.includes('下卷四'), nav);
   const cover = textOf(byName, 'OEBPS/cover.xhtml');
@@ -313,7 +328,7 @@ test('EPUB 按卷导出：未分卷（volumeId=null）只打未分卷章，不�
   const spine = [...opf.matchAll(/<itemref idref="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(spine, ['cover', 'ch1']);
   const nav = textOf(byName, 'OEBPS/nav.xhtml');
-  assert.equal((nav.match(/<ol>/g) || []).length, 1);
+  assert.equal((tocNavOf(nav).match(/<ol>/g) || []).length, 1);
   assert.ok(nav.includes('第1章：楔子') && !nav.includes('上卷'));
   assert.ok(textOf(byName, 'OEBPS/cover.xhtml').includes('未分卷 · 共 1 章'));
 });
@@ -400,7 +415,7 @@ test('章节指向不存在的卷：按未分卷平铺，不生成卷名页', as
   const { byName } = await build({ meta, texts: ['正文'] });
   assert.ok(!byName.has('OEBPS/text/volume-0001.xhtml'));
   const nav = textOf(byName, 'OEBPS/nav.xhtml');
-  assert.equal((nav.match(/<ol>/g) || []).length, 1);
+  assert.equal((tocNavOf(nav).match(/<ol>/g) || []).length, 1);
   assert.ok(nav.includes('第1章：甲'));
 });
 
@@ -418,7 +433,7 @@ test('EPUB 正文含 U+FFFE 导出后产物里没有该字符（V72）', async (
   assert.equal(/[\uFFFE\uFFFF]/.test(html), false, 'chapter-0001.xhtml 里还有 U+FFFE / U+FFFF');
   assert.ok(html.includes('<p>甲乙丙</p>'), html.slice(0, 400));
   for (const entry of zip.entries) {
-    if (!/\.(xhtml|opf|ncx|xml)$/.test(entry.name)) continue;
+    if (!/\.(xhtml|opf|xml)$/.test(entry.name)) continue;
     const text = entry.data.toString('utf8');
     assert.equal(/[\uFFFE\uFFFF]/.test(text), false, `${entry.name} 里还有 U+FFFE / U+FFFF`);
     assertWellFormedXml(text, entry.name);
@@ -429,11 +444,13 @@ test('所有 XML 文件都通过合法性检查（含特殊字符的正文）', 
   const { zip } = await build({ texts: ['第一段 & 第二段。\n\n「引号」<尖括号> "双引号"', '乙'] });
   let checked = 0;
   for (const entry of zip.entries) {
-    if (!/\.(xhtml|opf|ncx|xml)$/.test(entry.name)) continue;
+    if (!/\.(xhtml|opf|xml)$/.test(entry.name)) continue;
     assertWellFormedXml(entry.data.toString('utf8'), entry.name);
     checked += 1;
   }
-  assert.ok(checked >= 7, `XML 文件太少：${checked}`);
+  // T-11：EPUB3-only 之后包里 XML = container.xml + content.opf + nav.xhtml + cover.xhtml +
+  // 两张章页（toc.ncx 已移除），所以下限是 6。
+  assert.ok(checked >= 6, `XML 文件太少：${checked}`);
 });
 
 test('自检工具能发现没转义的 & 和没闭合的标签', async () => {
@@ -466,7 +483,7 @@ test('敌意书名 / 卷名 / 章名只进正文，进不了 zip 条目名（zip
   }
   // 条目名形状固定：只有这一点点部位
   assert.ok(
-    zip.names.every((name) => /^(mimetype|META-INF\/container\.xml|OEBPS\/(content\.opf|nav\.xhtml|toc\.ncx|style\.css|cover\.xhtml|text\/(volume|chapter)-\d{4}\.xhtml))$/.test(name)),
+    zip.names.every((name) => /^(mimetype|META-INF\/container\.xml|OEBPS\/(content\.opf|nav\.xhtml|style\.css|cover\.xhtml|text\/(volume|chapter)-\d{4}\.xhtml))$/.test(name)),
     zip.names.join(', ')
   );
   const byName = new Map(zip.entries.map((entry) => [entry.name, entry]));

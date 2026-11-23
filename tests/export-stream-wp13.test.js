@@ -462,7 +462,7 @@ test('R6b X-N9：自定义模板下 TXT / EPUB / DOCX 章标题逐字节一致�
   assert.ok(documentXml.includes(`<w:t xml:space="preserve">${expectedTitle}</w:t>`), 'DOCX 标题必须与 TXT / EPUB 逐字一致');
 
   // 三格式都不许出现简体模板字 / 简体章名
-  for (const [label, text] of [['TXT', txt], ['EPUB-ncx', nav], ['DOCX', documentXml]]) {
+  for (const [label, text] of [['TXT', txt], ['EPUB-nav', nav], ['DOCX', documentXml]]) {
     assert.ok(!text.includes('第2节'), `${label}：模板没转换（简繁混排）`);
     assert.ok(!text.includes('转折'), `${label}：章名没转换`);
   }
@@ -741,14 +741,15 @@ test('R9 静态闸门：ipc/export 流式接线 + 三个 core 模块不物化整
 test('R10 保护性：buildZip / buildEpub / buildDocx 的固定 sha256 不回退', async () => {
   const meta = metaOf();
   const texts = textsOf();
-  // X-N12（WP18）：buildEpub 删掉 OPF 里语义不符的 EPUB2 `<meta name="cover">`（16 字节），
-  // 产物长度 / 哈希相应更新；其余字节必须保持原样（不允许再漂移）。
+  // X-N12（WP18）：buildEpub 删掉 OPF 里语义不符的 EPUB2 `<meta name="cover">`（16 字节）；
+  // T-11（三审）：EPUB3-only —— 去掉 toc.ncx / spine@toc / <guide>，换成 nav.xhtml 的 landmarks，
+  // 产物长度 / 哈希再次更新；其余字节必须保持原样（不允许再漂移）。
   const epub = await epubLib.buildEpub({ meta, texts: [...texts], modified: FIXED, zipDate: FIXED });
-  assert.equal(epub.buffer.length, 6404, 'buildEpub 产物长度漂移');
+  assert.equal(epub.buffer.length, 5740, 'buildEpub 产物长度漂移');
   assert.equal(
     crypto.createHash('sha256').update(epub.buffer).digest('hex'),
-    '418f24160cd535948c99be207a3ea0f62a066983682431b3960ad77ba07e26be',
-    'buildEpub 逐字节产物漂移（整本构建必须保持原样，X-N12 删 meta 后重新定基线）'
+    '070dd465d929c731fb42c4130391c26d3cedba1c70597403b85d2e5c0ba570a0',
+    'buildEpub 逐字节产物漂移（整本构建必须保持原样，T-11 去 EPUB2 弃用项后重新定基线）'
   );
   const docx = await docxLib.buildDocx({ meta, texts: [...texts], modified: FIXED, zipDate: FIXED });
   assert.equal(docx.buffer.length, 3444, 'buildDocx 产物长度漂移');

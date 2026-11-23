@@ -1158,7 +1158,7 @@ module.exports = async function group46Proofread(t) {
   let epubRangeXmlChecked = 0;
   let epubRangeXmlError = '';
   for (const entry of epubRangeRange.zip.entries) {
-    if (!/\.(xhtml|opf|ncx|xml)$/.test(entry.name)) continue;
+    if (!/\.(xhtml|opf|xml)$/.test(entry.name)) continue;
     try {
       assertWellFormedXml(entry.data.toString('utf8'), entry.name);
       epubRangeXmlChecked += 1;

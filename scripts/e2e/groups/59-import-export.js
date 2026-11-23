@@ -91,7 +91,7 @@ module.exports = async function group59ImportExport(t) {
   const c3EpubNameOk = c3EpubZip.names.every(
     (name) =>
       entryNameProblem(name) === '' &&
-      /^(mimetype|META-INF\/container\.xml|OEBPS\/(content\.opf|nav\.xhtml|toc\.ncx|style\.css|cover\.xhtml|text\/(volume|chapter)-\d{4}\.xhtml))$/.test(
+      /^(mimetype|META-INF\/container\.xml|OEBPS\/(content\.opf|nav\.xhtml|style\.css|cover\.xhtml|text\/(volume|chapter)-\d{4}\.xhtml))$/.test(
         name
       ) &&
       !name.includes('逃逸') &&

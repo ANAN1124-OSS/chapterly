@@ -18,6 +18,8 @@ const epub = require('../core/epub');
 
 // X-N12（WP18）：epub 的 sha256 / bytes 快照按「删掉 OPF 里 legacy `<meta name="cover">`」
 // 重定基线（每个 case 少 16 字节）；txt / docx 快照仍是收编前的逐字节快照，没有重算。
+// T-11（三审）：EPUB3-only —— 去掉 toc.ncx / spine@toc / <guide>、nav.xhtml 补 landmarks，
+// 每个 case 的体积与哈希再次变化，按新产物重定基线（同样只改 epub 快照，txt / docx 不动）。
 const MODIFIED = fixture.modified;
 const ZIP_DATE = new Date(fixture.zipDate);
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
