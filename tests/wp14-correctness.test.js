@@ -297,6 +297,61 @@ test('R6/X-N7：远未来记录不再冻结「继续上次写作」（rememberLa
   assert.equal(older.reason, 'stale');
 });
 
+// T-13（三审）：时钟回拨的镜像防护 —— prev.at 落在「现在 + 容差」之外的未来时，stale / duplicate
+// 两条守卫都不许再采信它，否则「继续上次写作」冻结到时钟追上。
+test('T-13：时钟回拨后 prev.at 处于未来视为病值，切章 / 同章记录都不再被守卫吞掉', async () => {
+  const dir = await mkTmp('cw-t13-lastbook-');
+  const store = config.createConfigStore(dir);
+  const now = Date.now() - 1000;
+  const hour = 60 * 60 * 1000;
+  const base = { path: 'D:\\书架\\书A', title: '书A', chapterIndex: 0, chapterName: '第一章' };
+
+  // 正常时钟写下第一章（prev.at = now）
+  assert.equal((await store.rememberLastBook({ ...base, chapterId: 'ch_1', at: now }, { now })).written, true);
+  // 时钟回拨一小时后再报同一章：prev.at 现在是「未来 1 小时」的病值，不许被负数去重判成 duplicate
+  const rolledBack = now - hour;
+  const sameChapter = await store.rememberLastBook(
+    { ...base, chapterId: 'ch_1', at: rolledBack },
+    { now: rolledBack }
+  );
+  assert.equal(sameChapter.written, true, '回拨后同章记录要能把病值时间戳换回当前时钟');
+  assert.equal((await store.get()).lastBook.at, rolledBack);
+
+  // 再切到第二章：不许被 stale 判掉，「继续上次写作」跟着新章走
+  const ch2 = await store.rememberLastBook(
+    { ...base, chapterId: 'ch_2', chapterIndex: 1, chapterName: '第二章', at: rolledBack + 1000 },
+    { now: rolledBack + 1000 }
+  );
+  assert.equal(ch2.written, true, '回拨后切章不许判 stale');
+  assert.equal((await store.get()).lastBook.chapterId, 'ch_2');
+  assert.equal((await store.get()).lastBook.at, rolledBack + 1000);
+});
+
+test('T-13 对照：容差内的「轻微未来」（多窗口时钟抖动）仍保留原保护', async () => {
+  const dir = await mkTmp('cw-t13-skew-');
+  const store = config.createConfigStore(dir);
+  const now = Date.now() - 1000;
+  const base = { path: 'D:\\书架\\书A', title: '书A', chapterIndex: 0, chapterName: '第一章' };
+  const skew = 10 * 1000;
+  assert.equal((await store.rememberLastBook({ ...base, chapterId: 'ch_1', at: now + skew }, { now })).written, true);
+
+  // prev.at 只比现在晚 10 秒（< T-13 容差）：仍按「更晚的位置」保护，迟到的旧记录不写
+  const older = await store.rememberLastBook(
+    { ...base, chapterId: 'ch_0', at: now - 1000 },
+    { now: now + 1000 }
+  );
+  assert.equal(older.reason, 'stale');
+  // 同章在抖动窗口内重复上报照旧去重（避免 open + set-last 连写两次）
+  const dup = await store.rememberLastBook({ ...base, chapterId: 'ch_1', at: now + 2000 }, { now: now + 2000 });
+  assert.equal(dup.reason, 'duplicate');
+  // 抖动值本身也不许被当成病值改写：等时钟追上后正常写新章
+  const ch2 = await store.rememberLastBook(
+    { ...base, chapterId: 'ch_2', chapterIndex: 1, chapterName: '第二章', at: now + skew + 1000 },
+    { now: now + skew + 1000 }
+  );
+  assert.equal(ch2.written, true);
+});
+
 test('R6/X-N7 极值 × IO 失败：配置写盘 EPERM → reject、内存与磁盘都不动、队列不堵', async () => {
   const dir = await mkTmp('cw-wp14-cfg-');
   let failNext = false;
@@ -340,6 +395,12 @@ test('R7：实现落点静态闸门（C6/C9/X-N7/C7）', () => {
   const configSrc = readUtf8('core/config.js');
   assert.match(configSrc, /MAX_LAST_BOOK_FUTURE_MS\s*=/, 'X-N7：未来容差常量要在 config.js');
   assert.ok(configSrc.includes('sanitizeLastBook(raw, now)'), 'X-N7：rememberLastBook 用同一个 now 清洗');
+  assert.match(configSrc, /LAST_BOOK_CLOCK_SKEW_MS\s*=/, 'T-13：时钟回拨镜像容差常量要在 config.js');
+  assert.match(
+    configSrc,
+    /prevAt <= now \+ LAST_BOOK_CLOCK_SKEW_MS/,
+    'T-13：去重与 stale 两条守卫共用同一条可信判定'
+  );
   const limitsSrc = readUtf8('core/ipc-limits.js');
   assert.ok(limitsSrc.includes("mode = 'all'"), 'C7：坏 volumeId 降级全书');
 });

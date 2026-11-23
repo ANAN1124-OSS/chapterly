@@ -248,6 +248,13 @@ const RECENT_BOOK_DEDUPE_MS = 5000;
 // （正常的多窗口时钟抖动远小于这个窗口，容差内的轻微未来值原样保留）。
 const MAX_LAST_BOOK_FUTURE_MS = 10 * 60 * 1000;
 
+// T-13（三审）：时钟回拨的镜像防护。prev.at 是回拨前写下的正常值，回拨后它会落在「现在」的未来：
+// stale 守卫（prev.at > next.at）与同章去重（now - prev.at < dedupeMs 对负数也成立）会把之后所有
+// 切章记录静默判掉 ——「继续上次写作」冻结到时钟追上，没有提示。超过本容差、仍落在未来的 prev.at
+// 视为病值：两条守卫都不再采信它（X-N7 只管写入远未来，管不到回拨）。容差内（多窗口几秒时钟抖动）
+// 的保护口径不变。
+const LAST_BOOK_CLOCK_SKEW_MS = 30 * 1000;
+
 // 「继续上次写作」：只记书架级的位置，读的时候一律清洗；坏值/空值当作没记过（null），
 // 不影响旧配置文件（没有 lastBook 就显示不出入口，其余功能照常）。
 // now 只用于 X-N7 的未来容差（不传 = 现在）；显式传入让 rememberLastBook 与清洗用同一个时钟。
@@ -962,17 +969,21 @@ function createConfigStore(userDataDir, deps = {}) {
       const next = sanitizeLastBook(raw, now);
       // 缺 path / chapterId 的记录不算「上次写作」（与 main.js 旧入口的守卫一致）
       if (!next || !next.chapterId) return { written: false, reason: 'invalid', config: { ...current } };
+      // T-13：prev.at 是「现在的未来」且超出容差 = 时钟回拨留下的病值，去重与 stale 两条守卫都不采信。
+      const prevAt = prev ? Number(prev.at) : NaN;
+      const prevAtUsable = Number.isFinite(prevAt) && prevAt > 0 && prevAt <= now + LAST_BOOK_CLOCK_SKEW_MS;
       // 打开书时 open + set-last 会连着报同一个位置：5 秒内不重复写盘（换章照常更新）
       if (
         prev &&
+        prevAtUsable &&
         prev.path === next.path &&
         prev.chapterId === next.chapterId &&
-        now - prev.at < dedupeMs
+        now - prevAt < dedupeMs
       ) {
         return { written: false, reason: 'duplicate', config: { ...current } };
       }
       // 迟到的切章记录不许盖掉更晚的「上次写作」位置（多窗口：A 保存得更晚，B 的旧切章不能翻上去）
-      if (prev && Number.isFinite(Number(prev.at)) && Number(prev.at) > next.at) {
+      if (prev && prevAtUsable && prevAt > next.at) {
         return { written: false, reason: 'stale', config: { ...current } };
       }
       const saved = sanitize({ ...current, lastBook: next });
@@ -1034,6 +1045,7 @@ module.exports = {
   WORDLIST_MAX,
   BOOK_DISPLAY_MAX,
   MAX_LAST_BOOK_FUTURE_MS,
+  LAST_BOOK_CLOCK_SKEW_MS,
   sanitize,
   sanitizeLastBook,
   sameWindowBounds,
