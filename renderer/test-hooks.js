@@ -1516,8 +1516,12 @@
       captureCreateChapter: (ref) => captureUi.createChapter(ref),
       // 2026-11-06（v0.13.1 捕获队列）：主进程内存队列的元数据（面板没开也能查，E2E 注入复制后直接断言）/ 清空
       async captureQueue() {
-        // 面板没开也要能看主进程队列（E2E 注入复制后直接断言），所以走 IPC 而不是面板快照
+        // 面板没开也要能看主进程队列（E2E 注入复制后直接断言），所以走 IPC 而不是面板快照。
+        // #3（二次审查）：主进程只把无主记录认领给「打开过捕获面板」的窗口，所以这里先做和面板打开
+        // 一样的握手（capture:flush = 补一拍 + 签发凭证 + 标记面板上下文），再拉列表；
+        // 与产品路径（capture-ui.open）的顺序一致，不是测试后门。
         try {
+          if (api && typeof api.captureFlushWatch === 'function') await call(api.captureFlushWatch);
           const data = await call(api.captureQueueList);
           return data && Array.isArray(data.entries) ? data.entries : [];
         } catch (err) {

@@ -225,10 +225,13 @@ async function triggerClipboardCapture() {
   if (clipboardWatchEnabledNow()) {
     const decision = clipboardWatcher.evaluate(text);
     // S1（一轮·中）：这次捕获面板会在 target 窗口里打开 —— 记录直接归它，别的窗口看不到。
-    if (decision.record) captureQueue.add(text, { ownerWindowId: target.id });
+    // #3：同时记下来源窗口（这段复制发生在这扇窗口），别的窗口连认领都认不走。
+    if (decision.record) captureQueue.add(text, { ownerWindowId: target.id, sourceWindowId: target.id });
   }
   const queued = captureQueue.hasText(text);
   focusSession(target);
+  // #3：主进程马上要在这扇窗口里弹捕获面板 —— 记下面板打开上下文（快捷键这条链路不经过 flush）。
+  markCapturePanelOpen(target.id);
   sendToSession(target, 'capture:triggered', { text, accelerator: CAPTURE_ACCELERATOR, queued });
 }
 
@@ -305,6 +308,62 @@ function checkCaptureGesture(windowId, token) {
 function consumeCaptureGesture(windowId, token) {
   return captureGestures.consume(windowId, token);
 }
+
+// #3（二次审查，中低）：无主捕获记录的读 / 认领边界 —— 「本窗口真的打开过捕获面板」。
+// 以前 queue-get 对无主条目直接放行：任一窗口（含被注入的渲染层）只要按自增 id 猜，就能读到
+// 剪贴板历史正文，不需要先打开面板；queue-list 也会把无主记录直接认领走（抢先认领）。
+// 现在主进程记一份「面板打开」上下文：capture:flush（真正的打开动作）/ 主进程发出 capture:triggered
+// （快捷键会在那扇窗口里弹面板）时标记；queue-list / get / remove / clear 只有带着这份上下文的窗口
+// 才能认领 / 读无主记录。上下文随窗口关闭回收，30 分钟不活动过期（与队列 TTL 同一量级）。
+// 说明：这提高的是门槛、不是强隔离（flush 仍是渲染层可调的一次性握手，见 #1 的注释降级口径）。
+const CAPTURE_PANEL_CONTEXT_TTL_MS = 30 * 60 * 1000;
+const capturePanelContexts = new Map(); // windowId(String) -> 最近一次「面板打开 / 面板交互」的时间
+
+function markCapturePanelOpen(windowId) {
+  if (windowId == null) return false;
+  const key = String(windowId);
+  capturePanelContexts.set(key, Date.now());
+  return true;
+}
+
+// renew=true：这次调用本身就是一次面板交互（拉列表 / 取正文 / 删记录 / 清空），顺手续期。
+function capturePanelOpenFor(windowId, options = {}) {
+  if (windowId == null) return false;
+  const key = String(windowId);
+  const at = capturePanelContexts.get(key);
+  if (at == null) return false;
+  if (Date.now() - at > CAPTURE_PANEL_CONTEXT_TTL_MS) {
+    capturePanelContexts.delete(key);
+    return false;
+  }
+  if (options.renew === true) capturePanelContexts.set(key, Date.now());
+  return true;
+}
+
+function releaseCapturePanelContext(windowId) {
+  if (windowId == null) return false;
+  return capturePanelContexts.delete(String(windowId));
+}
+
+// #3：只有「打开过捕获面板」的窗口才能认领 / 读无主记录（顺带把上下文续期）。
+// 返回 false = 这个窗口没有面板上下文（它只能看到 / 读自己已经认领的记录）。
+function claimCaptureQueueForPanel(windowId) {
+  if (windowId == null) return false;
+  if (!capturePanelOpenFor(windowId, { renew: true })) return false;
+  captureQueue.claim(windowId);
+  return true;
+}
+
+// 后台监听拍没有「作者在哪扇窗口里复制」的直接参数：取当时的聚焦窗口当来源上下文。
+// 拿不到（焦点在别的程序 / 无交互桌面）就是 null = 没有来源，等第一个打开面板的窗口认领。
+function focusedWindowId() {
+  try {
+    const win = BrowserWindow.getFocusedWindow();
+    return win && !win.isDestroyed() ? win.id : null;
+  } catch {
+    return null;
+  }
+}
 let clipboardWatchTimer = null;
 // 仅 automation（E2E）：工作站锁屏 / 无交互桌面时 Windows 会拒绝 clipboard.readText()（恒空），
 // 和现有「复制整本 / 复制本章」E2E 的进程内剪贴板兜底是同一个已知限制。E2E 用 clipboard:test-set
@@ -344,7 +403,9 @@ async function pollClipboardWatch() {
     const decision = clipboardWatcher.evaluate(text, watchToken);
     // 记录与提示拆开：连续复制的几段都要各留一条（record），冷却只压轻提示（notify）。
     if (decision.record) {
-      const added = captureQueue.add(text);
+      // #3：后台监听拍取当时的聚焦窗口当「来源窗口」；拿不到就是 null（复制发生在别的程序 /
+      // 无交互桌面）—— 这种无来源的记录留给第一个打开捕获面板的窗口认领。
+      const added = captureQueue.add(text, { sourceWindowId: focusedWindowId() });
       // 单条超限（字数 > 30 万 / 原文 > 队列总量）：以前是静默丢，作者只会看到「面板刷新了但没东西」。
       // 现在借一次 notify 的机会把原因说清楚（仍只发数字，不发正文）；冷却期内不重复打扰。
       if (!added.added && added.reason === 'too-large') {
@@ -379,7 +440,8 @@ async function flushClipboardWatchOnce() {
   try {
     const text = await readClipboardForWatch();
     const decision = clipboardWatcher.evaluate(text, watchToken);
-    if (decision.record) captureQueue.add(text);
+    // #3：与轮询同一口径（来源窗口 = 当时的聚焦窗口）。
+    if (decision.record) captureQueue.add(text, { sourceWindowId: focusedWindowId() });
     return { enabled: true, recorded: Boolean(decision.record), chars: decision.chars };
   } catch {
     return { enabled: true, recorded: false };
@@ -1860,6 +1922,8 @@ function registerIpc() {
     const text = String((await activeClipboard.readText()) || '');
     assertText(text);
     consumeCaptureGesture(session.id, token);
+    // #3：能读剪贴板说明面板确实开着 —— 记下面板上下文 / 续期（认领无主记录要用）。
+    markCapturePanelOpen(session.id);
     return { text, chars: captureLib.countChars(text) };
   });
 
@@ -1870,8 +1934,9 @@ function registerIpc() {
   handle('capture:queue-list', async () => {
     const session = flowSession();
     const windowId = session ? session.id : null;
-    if (windowId != null) captureQueue.claim(windowId);
-    return { entries: captureQueue.listFor(windowId), total: captureQueue.sizeFor(windowId) };
+    // #3：无主记录只认领给「打开过面板」的窗口；没有上下文的窗口只看到自己已认领的记录。
+    const panelOpen = claimCaptureQueueForPanel(windowId);
+    return { entries: captureQueue.listFor(windowId), total: captureQueue.sizeFor(windowId), panelOpen };
   });
 
   handle('capture:queue-get', async (id) => {
@@ -1879,8 +1944,12 @@ function registerIpc() {
     const session = flowSession();
     const windowId = session ? session.id : null;
     const round = Number.isFinite(numeric) ? Math.round(numeric) : NaN;
-    if (Number.isFinite(round) && !captureQueue.canAccess(round, windowId)) {
-      throw new storage.StorageError('QUEUE_FOREIGN_WINDOW', '这条复制记录属于另一个窗口');
+    if (Number.isFinite(round)) {
+      // #3：先按「面板打开」上下文认领无主记录（没有上下文的窗口认领不到，也读不到）。
+      claimCaptureQueueForPanel(windowId);
+      if (!captureQueue.canAccess(round, windowId)) {
+        throw new storage.StorageError('QUEUE_FOREIGN_WINDOW', '这条复制记录属于另一个窗口');
+      }
     }
     const entry = Number.isFinite(round) ? captureQueue.get(round) : null;
     if (!entry) {
@@ -1891,7 +1960,10 @@ function registerIpc() {
 
   handle('capture:queue-clear', async () => {
     const session = flowSession();
-    return { cleared: captureQueue.clearFor(session ? session.id : null) };
+    const windowId = session ? session.id : null;
+    // #3：先认领（面板里的「清空」清的是面板列表里的记录），再只清本窗口的。
+    claimCaptureQueueForPanel(windowId);
+    return { cleared: captureQueue.clearFor(windowId) };
   });
 
   // 面板「正文」插入成功后消费这一条（2026-11-08 作者要求：正文也消失，与「章节」口径一致）。
@@ -1907,6 +1979,8 @@ function registerIpc() {
       return softFailure('QUEUE_BAD_ID', '这条复制记录的编号不合法，没有删除', { removed: false });
     }
     const round = Math.round(numeric);
+    // #3：先按面板上下文认领无主记录，再验归属（没有上下文的窗口认领不到，也就删不掉）。
+    claimCaptureQueueForPanel(windowId);
     if (!captureQueue.canAccess(round, windowId)) {
       return softFailure('QUEUE_FOREIGN_WINDOW', '这条复制记录属于另一个窗口，没有删除', { removed: false });
     }
@@ -1918,6 +1992,8 @@ function registerIpc() {
   // S1（一轮·中）：补拍的同时签发本窗口的一次性读剪贴板凭证 —— 「面板打开」就是主进程侧的触发手势。
   handle('capture:flush', async () => {
     const session = flowSession();
+    // #3：flush 就是「面板打开」的主进程侧手势 —— 先记下面板上下文，队列认领 / 读无主记录要用。
+    if (session) markCapturePanelOpen(session.id);
     const flushed = await flushClipboardWatchOnce();
     const gesture = session ? issueCaptureGesture(session.id) : null;
     return { ...flushed, gesture };
@@ -2690,6 +2766,8 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
     }
     // N-15：凭证 Map 收进 core/capture-gesture.js，关窗走 release（行为与原来的 delete 一致）。
     captureGestures.release(session.id);
+    // #3：关窗回收「面板打开」上下文（无主记录的认领资格随窗口一起消失）。
+    releaseCapturePanelContext(session.id);
     // S2（一轮）：这扇窗口标记过的「已恢复」草稿记录也一起清（草稿文件本身保留，别的窗口还能看到）。
     for (const [draftId, ownerWindowId] of Array.from(crashConsumed.entries())) {
       if (String(ownerWindowId) === String(session.id)) crashConsumed.delete(draftId);

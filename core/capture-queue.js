@@ -4,6 +4,10 @@
 // 不写日志、不碰 Electron。正文由主进程内存持有，list() 只交元数据 + 首行预览 + 截断正文预览；
 // 应用退出 / 关闭后台监听即清空（隐私口径见 README「剪贴板捕获的边界」）。
 //
+// 归属（S1 / #3）：每条记 ownerWindowId（哪扇窗口的捕获面板拥有它）与 sourceWindowId
+// （这段复制发生在哪扇窗口）。无主记录只给「来源就是本窗口」或「没有来源窗口」的窗口认领；
+// 认领之前对任何窗口都不可见、不可读 —— 仅凭自增 id 猜不到、也读不走剪贴板历史。
+//
 // 上限（默认值，可在 create 时覆盖）：
 //   · maxEntries     最多 50 条，超了淘汰最旧的；
 //   · maxEntryChars  单条最多 30 万字（=捕获正文上限 core/capture.js MAX_BODY_CHARS，直接引用，
@@ -156,8 +160,14 @@ function createCaptureQueue(options = {}) {
 
   // S1（一轮·中）：每条记录记「哪扇窗口的捕获面板拥有它」。
   // 记录本身由后台剪贴板监听 / 全局快捷键写进来（那时还没有窗口上下文），所以入队时可以是 null；
-  // 打开捕获面板的窗口（capture:queue-list）通过 claim() 认领这批无主记录，此后只有它能看到 / 取走。
-  // 归属只在本进程内存里：窗口关掉即清（隐私口径「只在本窗口可见、关窗即弃」）。
+  // 打开捕获面板的窗口（capture:queue-list，主进程先确认这个窗口真的开过面板）通过 claim() 认领，
+  // 此后只有它能看到 / 取走。归属只在本进程内存里：窗口关掉即清（隐私口径「只在本窗口可见、关窗即弃」）。
+  //
+  // #3（二次审查）：无主条目**不再**对任意窗口可见 / 可读 ——
+  //   · canAccess 只认「归属本窗口」；无主返回 false（读之前必须先 claim）；
+  //   · listFor / sizeFor 只列本窗口的已经认领的记录（无主条目不进任何窗口的列表）；
+  //   · claim 只认领「没有来源窗口」或「来源就是本窗口」的无主记录 ——
+  //     A 窗口里复制的正文不会被 B 窗口抢先认领。
   function ownerIdOf(entry) {
     if (!entry || entry.ownerWindowId == null) return null;
     const n = Number(entry.ownerWindowId);
@@ -171,43 +181,53 @@ function createCaptureQueue(options = {}) {
     return Number.isFinite(n) ? n : null;
   }
 
-  // 某一扇窗口能不能操作这一条：无主（等待认领）或归属它自己。
+  // 这条记录「复制发生在哪扇窗口」：#3 的认领边界。后台监听没有窗口上下文时是 null。
+  function sourceIdOf(entry) {
+    if (!entry || entry.sourceWindowId == null) return null;
+    const n = Number(entry.sourceWindowId);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  // 某一扇窗口能不能操作这一条：只有归属它自己才算（无主条目必须先 claim）。
   function canAccess(id, ownerWindowId) {
     sweepExpired();
     const at = entries.findIndex((entry) => entry.id === Number(id));
     if (at < 0) return false;
     const owner = ownerIdOf(entries[at]);
     const self = normalizeOwner(ownerWindowId);
-    if (owner == null) return true;
-    return self != null && owner === self;
+    return owner != null && self != null && owner === self;
   }
 
   // 无主记录归给打开面板的窗口；已经有主的记录不动（不许抢别的窗口的记录）。
+  // #3：只认领「来源就是本窗口」或「没有来源窗口」的记录 —— 别的窗口里复制的那条，谁先开面板都抢不走。
   function claim(ownerWindowId) {
     sweepExpired();
     const self = normalizeOwner(ownerWindowId);
     if (self == null) return 0;
     let claimed = 0;
     for (const entry of entries) {
-      if (entry.ownerWindowId == null) {
-        entry.ownerWindowId = self;
-        claimed += 1;
-      }
+      if (entry.ownerWindowId != null) continue;
+      const source = sourceIdOf(entry);
+      if (source != null && source !== self) continue;
+      entry.ownerWindowId = self;
+      claimed += 1;
     }
     return claimed;
   }
 
-  // 本窗口可见的条目：自己的 + 还没有主的（旧版本 / 监听器刚写进来还没认领）。
+  // 本窗口可见的条目：只有已经认领到本窗口的（#3：无主条目不再默认可见）。
   function listFor(ownerWindowId) {
     sweepExpired();
     const self = normalizeOwner(ownerWindowId);
-    return entries.filter((entry) => entry.ownerWindowId == null || ownerIdOf(entry) === self).map(metaOf);
+    if (self == null) return [];
+    return entries.filter((entry) => ownerIdOf(entry) === self).map(metaOf);
   }
 
   function sizeFor(ownerWindowId) {
     sweepExpired();
     const self = normalizeOwner(ownerWindowId);
-    return entries.filter((entry) => entry.ownerWindowId == null || ownerIdOf(entry) === self).length;
+    if (self == null) return 0;
+    return entries.filter((entry) => ownerIdOf(entry) === self).length;
   }
 
   // 入队时算一次预览就挂在条目上（2026-11-17 审计 B4）：正文在队列里不可变，list() 不该对每条
@@ -267,7 +287,10 @@ function createCaptureQueue(options = {}) {
       rawLength,
       at: now(),
       // S1：全局快捷键触发时知道是哪扇窗口要弹面板；后台监听拍记进来的先留空，等面板打开时 claim。
-      ownerWindowId: normalizeOwner(addOptions && addOptions.ownerWindowId)
+      ownerWindowId: normalizeOwner(addOptions && addOptions.ownerWindowId),
+      // #3：这段复制发生在哪扇窗口（后台监听拍取当时的聚焦窗口；拿不到就是 null = 没有来源上下文）。
+      // claim / 读取都以它做边界：别的窗口里复制的那条，即使还没被认领，也不给别的窗口认领。
+      sourceWindowId: normalizeOwner(addOptions && addOptions.sourceWindowId)
     };
     // 预览只在入队时算这一次（list() 读缓存）：条目被删除 / 淘汰时预览跟着走，不另留引用。
     Object.assign(entry, previewFieldsOf(entry));
@@ -334,9 +357,10 @@ function createCaptureQueue(options = {}) {
     const self = normalizeOwner(ownerWindowId);
     const keep = [];
     let removed = 0;
+    if (self == null) return 0;
     for (const entry of entries) {
-      const owner = ownerIdOf(entry);
-      if (owner == null || (self != null && owner === self)) {
+      // #3：只清已经认领到本窗口的（无主记录先 claim 再清；别的窗口的一律不动）。
+      if (ownerIdOf(entry) === self) {
         totalChars -= entry.rawLength;
         removed += 1;
       } else {
@@ -348,6 +372,7 @@ function createCaptureQueue(options = {}) {
   }
 
   // 窗口关闭：这一扇窗口的记录全部丢弃（隐私口径），别的窗口的不动。
+  // #3：还没被认领、但来源是本窗口的记录也一起丢 —— 窗口关掉后没有别的窗口能认领它。
   function releaseOwner(ownerWindowId) {
     sweepExpired();
     const self = normalizeOwner(ownerWindowId);
@@ -355,7 +380,9 @@ function createCaptureQueue(options = {}) {
     const keep = [];
     let removed = 0;
     for (const entry of entries) {
-      if (ownerIdOf(entry) === self) {
+      const owner = ownerIdOf(entry);
+      const mine = owner === self || (owner == null && sourceIdOf(entry) === self);
+      if (mine) {
         totalChars -= entry.rawLength;
         removed += 1;
       } else {

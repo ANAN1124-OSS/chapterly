@@ -269,7 +269,7 @@ test('静态闸门：主进程轮询只在开关打开时跑，只发字数，�
   // 记录与提示拆开：队列只驻主进程内存，写章成功才删条目；关闭监听 / 退出清空
   assert.match(main, /const captureQueueLib = require\('\.\/core\/capture-queue'\);/);
   assert.match(main, /const captureQueue = captureQueueLib\.createCaptureQueue\(\);/);
-  assert.match(main, /if \(decision\.record\) captureQueue\.add\(text\);/, '轮询里按 record 入队');
+  assert.match(main, /if \(decision\.record\) captureQueue\.add\(text, \{ sourceWindowId: focusedWindowId\(\) \}\);/, '轮询里按 record 入队，并记下来源窗口（#3）');
   // V39：每拍读数前拿启动 token，回写时带上；token 变了整拍作废（不记队列 / 不提示 / 不动基准）
   assert.match(main, /const watchToken = clipboardWatcher\.token\(\);/, '每拍开始先拿启动 token');
   assert.match(main, /const decision = clipboardWatcher\.evaluate\(text, watchToken\);/, '回写前带上 token 校验');
@@ -398,19 +398,58 @@ test('S1 / T6 接线闸门：读剪贴板要一次性凭证；队列按窗口归
     '打开捕获面板（capture:flush）就是主进程侧的触发手势，顺手签发凭证'
   );
 
-  // ② 队列按窗口归属：list 先认领无主记录并只列本窗口的；get / remove / clear 都验归属。
-  assert.match(mainSrc, /captureQueue\.claim\(windowId\)/, '打开面板的窗口认领无主记录');
+  // ② 队列按窗口归属：无主记录只认领给「打开过面板」的窗口；get / remove / clear 都验归属。
+  assert.match(
+    mainSrc,
+    /const CAPTURE_PANEL_CONTEXT_TTL_MS = 30 \* 60 \* 1000;/,
+    '面板上下文有唯一 TTL（30 分钟，与队列 TTL 同量级）'
+  );
+  assert.match(mainSrc, /function markCapturePanelOpen\(windowId\)/, '主进程记录「面板打开」上下文');
+  assert.match(mainSrc, /function claimCaptureQueueForPanel\(windowId\)/, '按面板上下文认领无主记录的唯一入口');
+  assert.match(
+    mainSrc,
+    /function claimCaptureQueueForPanel\(windowId\)[\s\S]{0,400}?capturePanelOpenFor\(windowId, \{ renew: true \}\)[\s\S]{0,200}?captureQueue\.claim\(windowId\)/,
+    '没有面板上下文的窗口不许认领（#3：堵 queue-list 抢认领）'
+  );
+  assert.match(
+    mainSrc,
+    /handle\('capture:queue-list'[\s\S]{0,400}?claimCaptureQueueForPanel\(windowId\)/,
+    'queue-list 认领前必须确认面板上下文'
+  );
   assert.match(mainSrc, /captureQueue\.listFor\(windowId\)/, '队列列表只给本窗口可见的记录');
   assert.match(
     mainSrc,
-    /handle\('capture:queue-get'[\s\S]{0,400}?!captureQueue\.canAccess\(round, windowId\)/,
-    'queue-get 非 owner 直接拒（读不到别人的剪贴板历史）'
+    /handle\('capture:queue-get'[\s\S]{0,600}?claimCaptureQueueForPanel\(windowId\)[\s\S]{0,300}?!captureQueue\.canAccess\(round, windowId\)/,
+    'queue-get 先按面板上下文认领、再验归属（无主条目不再能只凭自增 id 直读）'
   );
   assert.match(mainSrc, /captureQueue\.removeFor|QUEUE_FOREIGN_WINDOW/, 'queue-remove 非 owner 不删');
-  assert.match(mainSrc, /captureQueue\.clearFor\(/, 'queue-clear 只清本窗口的');
+  assert.match(
+    mainSrc,
+    /handle\('capture:queue-remove'[\s\S]{0,900}?claimCaptureQueueForPanel\(windowId\)[\s\S]{0,300}?!captureQueue\.canAccess\(round, windowId\)/,
+    'queue-remove 同样先认领再验归属'
+  );
+  assert.match(mainSrc, /captureQueue\.clearFor\(windowId\)/, 'queue-clear 只清本窗口的');
 
-  // ③ 发布路径：绑定到具体窗口的复制直接归它；后台监听拍记进来的等面板认领。
-  assert.match(mainSrc, /captureQueue\.add\(text, \{ ownerWindowId: target\.id \}\)/, '全局快捷键的这次复制归要弹面板的窗口');
+  // ③ 面板上下文的三处来源：flush（真正的打开动作）/ capture:triggered（快捷键弹面板）/ 读过剪贴板。
+  assert.match(
+    mainSrc,
+    /handle\('capture:flush'[\s\S]{0,400}?markCapturePanelOpen\(session\.id\)/,
+    'flush = 面板打开手势，标上下文'
+  );
+  assert.match(
+    mainSrc,
+    /markCapturePanelOpen\(target\.id\)/,
+    '快捷键捕获会在 target 窗口弹面板，标上下文'
+  );
+  assert.match(mainSrc, /markCapturePanelOpen\(session\.id\);/, '读过剪贴板说明面板确实开着（续期）');
+  assert.match(mainSrc, /releaseCapturePanelContext\(session\.id\)/, '关窗回收面板上下文');
+
+  // ④ 发布路径：全局快捷键的这次复制归要弹面板的窗口，并记下来源窗口（#3：别的窗口抢不走）。
+  assert.match(
+    mainSrc,
+    /captureQueue\.add\(text, \{ ownerWindowId: target\.id, sourceWindowId: target\.id \}\)/,
+    '全局快捷键的这次复制归要弹面板的窗口，来源窗口同窗'
+  );
 
   // ④ 关窗回收：这一扇窗口的记录与凭证随窗口一起丢弃。
   assert.match(

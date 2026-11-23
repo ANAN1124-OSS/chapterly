@@ -309,10 +309,69 @@ test('S1 / T6：捕获队列按窗口归属——认领无主记录、非 owner 
   assert.equal(queue.releaseOwner(null), 0);
   assert.equal(queue.size(), 1, '只剩 55 认领的那条');
   assert.equal(queue.listFor(55).length, 1);
-  // 非法 owner 归一成无主：不会被当成任何一扇窗口的
+  // 非法 owner 归一成无主：不会被当成任何一扇窗口的；#3 起无主记录对任何窗口都不可见，必须先认领。
   queue.add(A, { ownerWindowId: 'not-a-number' });
-  const unowned = queue.listFor(99).find((entry) => entry.preview === queueLib.previewOf(A));
-  assert.ok(unowned, '非法归属按「还没有主」处理（下一次打开面板认领）');
+  const rawIds = queue.list().map((entry) => entry.id);
+  const unownedId = rawIds[rawIds.length - 1];
+  assert.equal(queue.listFor(99).length, 0, '#3：无主记录不进任何窗口的列表（先 claim 再看）');
+  assert.equal(queue.canAccess(unownedId, 99), false, '#3：无主记录不能仅凭自增 id 读 / 删');
+  assert.equal(queue.removeFor(unownedId, 99), false, '#3：无主记录不能仅凭 id 删');
+  assert.equal(queue.claim(99), 1, '认领之后才可见');
+  assert.deepEqual(queue.listFor(99).map((entry) => entry.id), [unownedId]);
+  assert.equal(queue.canAccess(unownedId, 99), true, '认领后 owner 可读');
+  assert.equal(queue.removeFor(unownedId, 99), true);
+});
+
+// ---------- #3（二次审查，中低）：无主条目的读 / 认领边界 ----------
+// 原清单只说「queue-list 抢先认领」，实际 queue-get 对无主条目也直接放行：任一窗口按自增 id 猜就能读
+// 剪贴板历史正文。现在无主记录默认对任何窗口都不可见 / 不可读 / 不可删，必须先以「面板打开」的
+// 上下文认领（上下文归主进程管，见 main.js 的 claimCaptureQueueForPanel）；认领只给来源窗口。
+test('#3：无主记录默认不可见 / 不可读 / 不可删；认领后只对本窗口可见', () => {
+  const queue = queueLib.createCaptureQueue();
+  queue.add(A); // 后台监听拍：没有窗口上下文
+  const idA = queue.list()[0].id;
+  assert.equal(queue.size(), 1, '底层条目还在（只是没归属）');
+  for (const windowId of [11, 22, null]) {
+    assert.deepEqual(queue.listFor(windowId), [], `窗口 ${windowId} 看不到无主记录`);
+    assert.equal(queue.sizeFor(windowId), 0);
+    assert.equal(queue.canAccess(idA, windowId), false, `窗口 ${windowId} 读不到无主记录`);
+    assert.deepEqual(queue.removeFor(idA, windowId), false, `窗口 ${windowId} 删不掉无主记录`);
+    assert.equal(queue.clearFor(windowId), 0, `窗口 ${windowId} 清不掉无主记录`);
+    assert.equal(queue.size(), 1, '被拒绝的操作不留副作用');
+  }
+
+  // 有主之后：只有 owner 能读 / 删；别的窗口照旧什么都看不到。
+  assert.equal(queue.claim(11), 1, '无来源的空上下文记录可被第一个面板窗口认领');
+  assert.deepEqual(queue.listFor(11).map((entry) => entry.id), [idA]);
+  assert.deepEqual(queue.listFor(22), [], '认领后别的窗口看不到');
+  assert.equal(queue.canAccess(idA, 22), false);
+  assert.equal(queue.removeFor(idA, 22), false);
+});
+
+test('#3：来源窗口保护——A 窗口里复制的记录不会被 B 窗口抢先认领', () => {
+  const queue = queueLib.createCaptureQueue();
+  queue.add(A, { sourceWindowId: 11 }); // 在窗口 11 里复制 / 快捷键触发
+  queue.add(B, { sourceWindowId: 11, ownerWindowId: 11 }); // 快捷键：直接归 11
+  queue.add(C); // 在别的程序里复制：没有来源窗口
+  const ids = queue.list().map((entry) => entry.id);
+
+  // B 窗口（22）先开面板：只能认领没有来源的那条，抢不走 11 的。
+  assert.equal(queue.claim(22), 1, '只认领没有来源窗口的记录');
+  assert.deepEqual(queue.listFor(22).map((entry) => entry.id), [ids[2]]);
+  assert.deepEqual(queue.listFor(11).map((entry) => entry.id), [ids[1]], '11 自己的那条还在');
+  assert.equal(queue.canAccess(ids[0], 22), false, 'A 窗口里复制的正文 B 读不到（即使还没认领）');
+  assert.equal(queue.removeFor(ids[0], 22), false);
+
+  // A 窗口（11）打开面板：认领来源是自己的那条。
+  assert.equal(queue.claim(11), 1, '来源窗口自己可以认领');
+  assert.deepEqual(queue.listFor(11).map((entry) => entry.id), [ids[0], ids[1]]);
+  assert.equal(queue.canAccess(ids[0], 11), true);
+
+  // 来源窗口关了：它还没认领的记录一起回收（窗口没了就再也认领不了）。
+  queue.add('关窗后没人能认领的一段' + A, { sourceWindowId: 33 });
+  assert.equal(queue.releaseOwner(33), 1, '关窗回收「来源是本窗口」的未认领记录');
+  assert.equal(queue.releaseOwner(11), 2, '关窗回收本窗口已认领的记录');
+  assert.deepEqual(queue.listFor(22).map((entry) => entry.id), [ids[2]], '别的窗口的记录不受影响');
 });
 
 // ---------- N-17（二次审查，中低）：队列的隐私时间上限 ----------
