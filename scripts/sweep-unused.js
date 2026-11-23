@@ -40,7 +40,9 @@ const ROOT = path.resolve(__dirname, '..');
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'shots', '.git', 'build', 'tests-fixture']);
 
 // 产品侧 JS / HTML（相对路径，正斜杠）
-const PRODUCT_DIRS = ['core', 'renderer'];
+// T-04（三审）：ipc/ 也是产品代码（主进程 IPC 模块）。以前它落在「其它」档，ipc 自己的死代码永不被报；
+// 反过来「只被 ipc 引用的 core 符号」会被算成 deadDefs 误报（照单删码就会删掉在用实现）。
+const PRODUCT_DIRS = ['core', 'renderer', 'ipc'];
 const PRODUCT_FILES = ['main.js', 'preload.js'];
 // 测试侧（只用来区分「仅测试引用」）
 const TEST_FILES = ['scripts/e2e-scenario.js', 'scripts/screenshot-driver.js'];

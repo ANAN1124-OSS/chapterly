@@ -575,8 +575,18 @@ async function importBookFolder(booksRoot, sourceDir, analysis, options = {}) {
   } catch (err) {
     // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 包成 IMPORT_FAILED 会把界面文案
     // 从「…已跳过」改成「复制失败：…」并把错误码一起丢掉。这里原样放行，由 importFolders 记进 skipped。
-    // 审计修复 #56（S7）：含符号链接的来源同理（SOURCE_LINK 也是「跳过」，不是复制失败）。
-    if (err && (err.code === 'FILE_TOO_LARGE' || err.code === 'SOURCE_LINK' || err.code === 'IMPORT_FAILED')) throw err;
+    // 审计修复 #56（S7）：含符号链接的来源同理（SOURCE_LINK 也是「跳过」），不是复制失败。
+    // T-03（三审）：BAD_PATH 来自 commitStagedFolder 的同名重试耗尽 / uniqueFolderName 的路径闸门 ——
+    // 那时复制早已完成、失败发生在原子提交段，包成「复制失败：」会误导排障方向。原码放行。
+    if (
+      err &&
+      (err.code === 'FILE_TOO_LARGE' ||
+        err.code === 'SOURCE_LINK' ||
+        err.code === 'IMPORT_FAILED' ||
+        err.code === 'BAD_PATH')
+    ) {
+      throw err;
+    }
     throw new storage.StorageError('IMPORT_FAILED', `复制失败：${errorText.describeForUi(err).message}`);
   } finally {
     // 只清自己的暂存根：成功时里面已经空了（书目录被 rename 走），失败时连半成品一起清。

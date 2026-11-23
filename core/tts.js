@@ -163,7 +163,11 @@ function chunkIndexAt(chunks, position) {
   return answer;
 }
 
-// 主入口：返回 { chunks, startIndex, paragraphs, chars, totalChars, truncated, options }
+// 主入口：返回 { chunks, startIndex, paragraphs, rawLength, totalChars, truncated, options }
+// T-01（三审）：这个字段原来叫 `chars`，值是「归一后的全文长度（含空白）」—— 与 core/proofread.js /
+// core/sensitive.js 回包里的 `chars`（countChars 去空白字数，X4 / WP-24 口径）同名不同义，谁按名字
+// 复用就会拿到两套「字数」。现在按语义改名 `rawLength`：含空白的长度只适合当坐标 / 内存口径，
+// 界面上显示字数一律用 `totalChars`（= countChars，与状态栏 / 校对 / 预检同一份）。
 // B13（v1.8.0 WP-29）：先按 MAX_SOURCE_CHARS 截断原始正文，再只对截断后的前缀归一 —— 旧实现先把
 // 全文做一遍正文归一（去 BOM / CRLF→LF）再 slice，还要对归一后的全文数字数，病态长文在「只处理
 // 前 100 万字」时仍会做两次全尺寸分配。下面两个助手与 core/common.js 的归一逐字符等价
@@ -257,7 +261,7 @@ function buildChunks(text, rawOptions) {
     chunks,
     startIndex: chunkIndexAt(chunks, options.caret),
     paragraphs: paragraphs.length,
-    chars: fullLength,
+    rawLength: fullLength,
     totalChars: chaptersLib.countChars(source),
     truncated,
     options

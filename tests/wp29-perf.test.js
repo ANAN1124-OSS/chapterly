@@ -273,7 +273,7 @@ test('B13：TTS 先截断再归一 —— 与「先归一全文再 slice」逐�
     assert.deepEqual(actual.chunks, reference.chunks, '非超限文本的 chunks 逐项一致');
     assert.equal(actual.paragraphs, reference.paragraphs);
     assert.equal(actual.startIndex, reference.startIndex);
-    assert.equal(actual.chars, normalized.length, 'chars 仍是归一后全文长度（含被截断部分）');
+    assert.equal(actual.rawLength, normalized.length, 'rawLength 仍是归一后全文长度（含被截断部分）');
     assert.equal(actual.totalChars, chaptersLib.countChars(raw));
     assert.equal(actual.totalChars, chaptersLib.countChars(normalized), 'CRLF / BOM 都是空白，两种口径同数');
     assert.equal(actual.truncated, reference.truncated);
@@ -288,7 +288,7 @@ test('B13：TTS 先截断再归一 —— 与「先归一全文再 slice」逐�
   assert.deepEqual(actual.chunks, reference.chunks, '超限时只处理归一整串的前 MAX_SOURCE_CHARS 个字符');
   assert.equal(actual.paragraphs, reference.paragraphs);
   assert.equal(actual.startIndex, reference.startIndex);
-  assert.equal(actual.chars, normalized.length);
+  assert.equal(actual.rawLength, normalized.length);
   assert.equal(actual.totalChars, chaptersLib.countChars(normalized));
   assert.equal(actual.truncated, true);
   assert.ok(actual.chunks[actual.chunks.length - 1].end <= tts.MAX_SOURCE_CHARS);

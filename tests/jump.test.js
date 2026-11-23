@@ -165,3 +165,17 @@ test('按卷编号跳章：章缺 number 时明确报错（不再回落全书下
   const continuous = jump.findMatches([{ id: 'x', name: '第一章' }], '1');
   assert.deepEqual(continuous.matches, [{ index: 0, chapterId: 'x', name: '第一章', matchType: 'number' }]);
 });
+
+
+test('T-02：(0,1) 的分数 limit 至少取 1 条，不再静默回空', () => {
+  const many = Array.from({ length: 20 }, (_v, i) => ({ id: 'c' + i, name: '夜雨-' + i }));
+  for (const limit of [0.5, 0.9, 0.0001]) {
+    const result = jump.findMatches(many, '夜雨', { limit });
+    assert.equal(result.matches.length, 1, 'limit=' + limit + ' 也要回 1 条（有命中就不许静默回空）');
+    assert.equal(result.total, 20, 'total 仍是命中总数');
+  }
+  // 无效值仍回落默认条数（旧行为不变）
+  for (const limit of [0, -1, NaN, 'x']) {
+    assert.equal(jump.findMatches(many, '夜雨', { limit }).matches.length, jump.DEFAULT_LIMIT);
+  }
+});

@@ -35,7 +35,9 @@ function parseChapterNumber(raw) {
 function sanitizeLimit(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
-  return Math.min(MAX_RESULTS, Math.floor(n));
+  // T-02（三审）：清洗的最低值是 1 条 —— 旧实现只 floor 不比下限，`limit: 0.5` 得 0，
+  // matches.slice(0, 0) 把明明命中的结果静默吞成空数组（total 却 > 0，界面看起来「没找到」）。
+  return Math.min(MAX_RESULTS, Math.max(1, Math.floor(n)));
 }
 
 function chapterNameOf(chapter) {

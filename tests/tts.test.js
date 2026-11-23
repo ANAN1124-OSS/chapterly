@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const tts = require('../core/tts');
+const chaptersLib = require('../core/chapters');
 
 const texts = (result) => result.chunks.map((chunk) => chunk.text);
 const hasLoneSurrogate = (text) =>
@@ -34,7 +35,7 @@ test('朗读切分：一个非空行一段，首尾空白（含全角空格）�
     assert.equal(chunk.text.includes('\n'), false);
   }
   assert.equal(result.paragraphs, 3);
-  assert.equal(result.chars, text.length);
+  assert.equal(result.rawLength, text.length);
   assert.equal(result.totalChars, 12); // 去空白后的字数
 });
 
@@ -127,7 +128,7 @@ test('朗读切分：CRLF / CR 归一后位置与编辑区（LF）一致', () =>
   const raw = '第一段。\r\n\r\n第二段。\r第三段。';
   const result = tts.buildChunks(raw);
   const normalized = '第一段。\n\n第二段。\n第三段。';
-  assert.equal(result.chars, normalized.length);
+  assert.equal(result.rawLength, normalized.length);
   for (const chunk of result.chunks) {
     assert.equal(normalized.slice(chunk.start, chunk.end), chunk.text);
     assert.equal(chunk.text.includes('\r'), false);
@@ -163,7 +164,7 @@ test('朗读切分：超长正文只处理前 MAX_SOURCE_CHARS 个字符并标 t
   const text = 'a'.repeat(tts.MAX_SOURCE_CHARS + 10);
   const result = tts.buildChunks(text, { maxChunks: 20000 });
   assert.equal(result.truncated, true);
-  assert.equal(result.chars, text.length);
+  assert.equal(result.rawLength, text.length);
   assert.ok(result.chunks.length > 0);
   assert.ok(result.chunks[result.chunks.length - 1].end <= tts.MAX_SOURCE_CHARS);
 });
@@ -201,7 +202,7 @@ test('朗读切分：总字数按去空白统计，和状态栏同口径', () =>
   const text = '　甲 乙。\n\n丙　丁！';
   const result = tts.buildChunks(text);
   assert.equal(result.totalChars, 6);
-  assert.equal(result.chars, text.length);
+  assert.equal(result.rawLength, text.length);
 });
 
 test('朗读切分：paragraphRanges 只返回非空行且已 trim', () => {
@@ -238,4 +239,17 @@ test('CTXT-B-06：极限长度前缀归一不产生孤立代理（无 CR 快路�
   assert.equal(/[\uD800-\uDBFF]$/.test(crBody), false, '有 CR 慢路径同样不许留孤立高代理');
   assert.equal(crBody.includes('\r'), false, 'CR 已归一成 LF');
   assert.equal(crBody, 'a'.repeat(max - 1) + emoji, '代理对整对算 1 个产出，不被拆开也不被多算一格');
+});
+
+
+test('T-01：rawLength 含空白、totalChars 去空白（与校对 / 预检同一口径）', () => {
+  const text = '第一段。\r\n\r\n　第二段。';
+  const result = tts.buildChunks(text);
+  // rawLength 是「归一后的全文长度」：CRLF 归一成 LF 后含换行与全角空格，适合当坐标 / 内存口径
+  assert.equal(result.rawLength, '第一段。\n\n　第二段。'.length);
+  // 显示用字数与 core/chapters.countChars 同源（状态栏 / 校对 / 敏感词预检都走它）
+  assert.equal(result.totalChars, chaptersLib.countChars(text));
+  assert.ok(result.rawLength > result.totalChars, '两个口径必须能区分（含空白 vs 去空白）');
+  // 老字段名 chars 不再存在：同名不同义最容易在复用点静默换口径
+  assert.equal(Object.prototype.hasOwnProperty.call(result, 'chars'), false);
 });

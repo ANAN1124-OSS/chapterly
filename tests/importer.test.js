@@ -1333,3 +1333,22 @@ test('N2：超长文件名导入 → 书名截到唯一上限并回报 titleTrun
   assert.equal(shortBook.title, '短篇');
   assert.equal(Object.prototype.hasOwnProperty.call(shortBook, 'titleTruncated'), false, '未被截短不额外加字段');
 });
+
+
+test('T-03：导入提交段的 BAD_PATH 原样上抛，不被改写成「复制失败」IMPORT_FAILED', () => {
+  // 行为侧「撞名重试耗尽 → BAD_PATH」由 import-concurrency.test.js 的 X-N2 C3 覆盖；
+  // 这里钉住上层 catch 的放行清单：BAD_PATH 来自 commitStagedFolder / uniqueFolderName 的原子提交段，
+  // 那时复制早已完成 —— 包成 IMPORT_FAILED 会把排障方向误指向复制环节。
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'importer.js'), 'utf8');
+  const start = source.indexOf('async function importBookFolder');
+  assert.ok(start > 0, '导入文件夹入口还在（改名前请同步本断言）');
+  const block = source.slice(start, source.indexOf('async function importNovelFile', start));
+  const catchAt = block.lastIndexOf('} catch (err) {');
+  assert.ok(catchAt > 0, '提交段必须有 catch 兜底（复制失败要转成 IMPORT_FAILED）');
+  const catchBlock = block.slice(catchAt, catchAt + 900);
+  assert.match(catchBlock, /err\.code === 'BAD_PATH'/, 'BAD_PATH 必须在放行清单里');
+  for (const code of ['FILE_TOO_LARGE', 'SOURCE_LINK', 'IMPORT_FAILED']) {
+    assert.match(catchBlock, new RegExp("code === '" + code + "'"), '既有放行项 ' + code + ' 不许丢');
+  }
+  assert.match(catchBlock, /new storage\.StorageError\('IMPORT_FAILED'/, '真正的复制失败仍包成 IMPORT_FAILED');
+});
