@@ -96,7 +96,7 @@ function makeEl(tag) {
       return out;
     },
     querySelector(selector) { return el.querySelectorAll(selector)[0] || null; },
-    getBoundingClientRect() { return { top: 0, left: 0, bottom: 0, right: 0, width: 0, height: 0 }; },
+    getBoundingClientRect() { return el._rect || { top: 0, left: 0, bottom: 0, right: 0, width: 0, height: 0 }; },
     scrollIntoView() { el.scrolledIntoView = (el.scrolledIntoView || 0) + 1; },
     focus() {},
     addEventListener() {},
@@ -108,7 +108,9 @@ function makeEl(tag) {
 function build(chapters) {
   const list = makeEl('div');
   const bookMeta = makeEl('div');
-  const byId = { 'chapter-list': list, 'book-meta': bookMeta };
+  // #12：目录底部的「回到当前章」浮标（以前只有 refreshChrome 会重算它）
+  const pill = makeEl('button');
+  const byId = { 'chapter-list': list, 'book-meta': bookMeta, 'btn-return-current': pill };
   const state = {
     chapters,
     meta: { volumes: [] },
@@ -169,7 +171,7 @@ function build(chapters) {
     setCachedActiveChapterItem() {}
   };
   const ui = directoryUi.create(host);
-  return { ui, state, list };
+  return { ui, state, list, pill };
 }
 
 const makeChapters = (count) => Array.from({ length: count }, (_, index) => ({ id: `c${index}`, name: `n${index}` }));
@@ -214,6 +216,20 @@ test('P5：20,000 章分段挂载 —— 首段同步可见、其余分段补齐
   }
   assert.ok(ordered, '挂载顺序 = 书内下标顺序（分段追加不能乱序）');
   assert.equal(unique.size, 20000, '没有重复行');
+});
+
+test('#12：全部行挂完（finish）后重算「回到当前章」浮标', async () => {
+  const { ui, state, list, pill } = build(makeChapters(20000));
+  state.index = 15000;
+  // 目录可视区退化成 0 高：当前章的行无论挂在哪一段都「看不见」→ 浮标应当出现。
+  // 首段挂载时当前章的行还没挂上（refreshChrome 只能看到「不在折叠卷里」→ 隐藏），全部挂完后
+  // finish 必须重算一次（keepScroll 恢复 scrollTop 不触发 scroll 事件，没有别的地方会补）。
+  list._rect = { top: 100, left: 0, bottom: 100, right: 800, width: 800, height: 0 };
+  pill.classList.add('hidden');
+  ui.renderChapterList();
+  assert.ok(await waitFor(() => list.children.length === 20000), `分段没有补齐（停在 ${list.children.length}）`);
+  assert.equal(pill.classList.contains('hidden'), false, '挂完后浮标必须重算（当前章在视口外）');
+  assert.match(pill.textContent, /回到第/);
 });
 
 test('P5：新一代渲染开始时旧分段立即作废（旧书的行不会追到新列表里）', async () => {

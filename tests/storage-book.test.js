@@ -1381,3 +1381,20 @@ test('N2：建书书名截到唯一上限并回报 titleTruncated；文件夹名
   assert.equal(/[\uD800-\uDBFF]$/.test(emojiBook.meta.title), false, '不能留下孤立高位代理');
   assert.equal(emojiBook.titleTruncated, true, '代理对回退也算截断');
 });
+
+test('#10：bookStats 的字数缓存写盘走「读时拍身份、写前核对」入口', () => {
+  // 行为面：缓存写出后书目可读、字数落地（既有用例覆盖）。这里钉住「写缓存不再退回不核对身份的
+  // writeBookMeta」——应用内并发由锁内重读 + mergeCharsCache 挡住，外部程序在「读 → 写」窗口的
+  // 改动只能靠 stamp 核对拦住（清单 #10）。
+  const syncFs = require('node:fs');
+  const source = syncFs.readFileSync(path.join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  const start = source.indexOf('async function bookStats(');
+  assert.ok(start > 0, 'bookStats 还在（改名前请同步本断言）');
+  const block = source.slice(start, source.indexOf('\n// 打开书/保存后校验用', start));
+  assert.match(block, /writeBookMetaChecked\(bookPath, merged\.meta, \{ touchUpdatedAt: false \}\)/);
+  assert.equal(
+    /(?<!Checked\()writeBookMeta\(bookPath, merged\.meta/.test(block),
+    false,
+    '缓存写入不许退回不核对身份的 writeBookMeta'
+  );
+});

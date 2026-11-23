@@ -645,3 +645,74 @@ test('N-14：写草稿触发的 prune 用 store 时钟，未来 at 不会删掉�
   const ids = (await store.listDrafts()).map((item) => item.chapterId).sort();
   assert.deepEqual(ids, ['ch_future', 'ch_yesterday'], '未过期的旧草稿必须还在（prune 用 store 时钟）');
 });
+
+test('#11：v1 旁残留的正文与 writeAtomic 的 .tmp- 临时文件按宽限期回收', async () => {
+  const root = await newRoot();
+  const at = (minutesAgo) => new Date(Date.now() - minutesAgo * 60 * 1000).toISOString();
+  const store = storeAt(root, {});
+  const first = await store.writeDraft(
+    draft({ chapterId: 'ch_011', at: at(30), text: 'v1 里的旧正文' })
+  );
+  assert.equal(first.ok, true);
+  const metaPath = path.join(store.dir, `draft-${first.draftId}.json`);
+  const bodyPath = path.join(store.dir, `draft-${first.draftId}.txt`);
+
+  // 把它改写成 v1 形状（正文写在 JSON 的 text 里、没有 body 字段），并把两份文件的时间都拨老：
+  // 这就是「升级时正文已 rename、元数据还没写就崩」留下的现场（下次启动 scan 才看得到）。
+  const oldMeta = JSON.parse(fsSync.readFileSync(metaPath, 'utf8'));
+  fsSync.writeFileSync(
+    metaPath,
+    JSON.stringify({
+      version: 1,
+      draftId: first.draftId,
+      bookPath: oldMeta.bookPath,
+      chapterId: 'ch_011',
+      at: oldMeta.at,
+      chars: 7,
+      text: 'v1 里的旧正文'
+    })
+  );
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  fsSync.utimesSync(metaPath, old, old);
+  fsSync.utimesSync(bodyPath, old, old);
+  // writeAtomic 崩在 rename 前留下的临时文件（正式名正则认不出它）
+  const tmpName = `.draft-${first.draftId}.json.tmp-999-1-abcd`;
+  fsSync.writeFileSync(path.join(store.dir, tmpName), '{"half":');
+  fsSync.utimesSync(path.join(store.dir, tmpName), old, old);
+
+  // 下一次启动（scan 重读元数据）后 prune 才认出这是 v1 残留 → 连同 .tmp- 一起回收
+  const next = storeAt(root, { pid: 33333 });
+  assert.equal((await next.beginSession()).ok, true);
+  const names = fsSync.readdirSync(store.dir);
+  assert.equal(names.includes(`draft-${first.draftId}.txt`), false, 'v1 旁残留的正文要被回收');
+  assert.equal(names.includes(tmpName), false, 'writeAtomic 的 .tmp- 残留要被回收');
+
+  // 宽限期内不删：另一扇窗口的「正文已 rename、元数据还没写」只有几毫秒，绝不能当孤儿删掉
+  const third = await next.writeDraft(draft({ chapterId: 'ch_013', at: at(10), text: '第三份' }));
+  assert.equal(third.ok, true);
+  const freshMetaPath = path.join(next.dir, `draft-${third.draftId}.json`);
+  const freshMeta = JSON.parse(fsSync.readFileSync(freshMetaPath, 'utf8'));
+  fsSync.writeFileSync(
+    freshMetaPath,
+    JSON.stringify({
+      version: 1,
+      draftId: third.draftId,
+      bookPath: freshMeta.bookPath,
+      chapterId: 'ch_013',
+      at: freshMeta.at,
+      text: '升级中'
+    })
+  );
+  const thirdStore = storeAt(root, { pid: 44444 });
+  assert.equal((await thirdStore.beginSession()).ok, true);
+  assert.equal(
+    fsSync.readdirSync(thirdStore.dir).includes(`draft-${third.draftId}.txt`),
+    true,
+    '宽限期内的正文不许删（正是另一窗口正在写的窗口期）'
+  );
+  assert.equal(
+    fsSync.readdirSync(thirdStore.dir).includes(`draft-${third.draftId}.json`),
+    true,
+    '元数据还在（v1 兼容读仍要能恢复）'
+  );
+});

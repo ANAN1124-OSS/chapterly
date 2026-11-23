@@ -1174,6 +1174,11 @@
         const active = getCachedActiveChapterItem();
         if (active) active.scrollIntoView({ block: 'nearest' });
       }
+      // #12（清单）：浮标只在 refreshChrome（首段挂载）算过一次。keepScroll 路径恢复 scrollTop 后
+      // scrollTop 没变就不会触发 scroll 事件，而当前章的行可能刚在后面的分段里挂上、或者刚开始滚动
+      // 到视口外 —— 不在这里重算，浮标会一直滞留在隐藏状态直到用户自己滚一下。放在滚动收尾之后，
+      // 读到的就是最终位置。
+      updateCurrentChapterPill();
     };
     chapterListSegmentToken += 1; // 作废还在跑的旧分段（换书 / 筛选 / 折叠都会重新进来）
     chapterListSegmentPending = false;

@@ -133,6 +133,9 @@
   // 现在统一走 saveForTransition：保存回执落地后**按发起时的正文快照复核 dirty**，仍脏就再问一次，
   // 绝不带着未保存输入继续删 / 建 / 载；作者明确选「不保存，丢弃修改」才放行。
   // 返回 { ok:true } / { ok:true, discarded:true } / { ok:false, canceled:true } / { ok:false, saved }。
+  // H1 取舍（清单 #7）：这里**不**用「把编辑区设成只读」来拦过渡期输入 —— Chromium 在输入法组字中
+  // 改 readOnly 会吞字。拦的是动作（先保存 / 问清是否丢弃），不是文本框；真正的只读只由
+  // save-chain-ui 的 applyEditorEditable 在「内容即将被换掉」时打开（见那处注释）。
   async function guardUnsavedForTransition(options) {
     if (saveForTransition) return saveForTransition(options);
     // 旧宿主兜底：silentFirst 保持 createChapterAt 原来的「脏章先静默保存、不弹窗」体验；

@@ -7,7 +7,8 @@
  *   closeHistoryDialog / closeHistoryPreview（关面板 / 关预览）
  *   renderHistoryPreview / historyFileTag / buildHistoryGroup / renderHistory（预览与分组清单 DOM）
  *   previewHistoryBackup（api.previewHistoryFile）
- *   confirmHistoryRestore（未保存三选一 → openModal 二次确认 → api.restoreHistoryDir/File → 还原后刷新书架 / 重载 / 再拉清单 / toast）
+ *   confirmHistoryRestore（未保存三选一 → 直接 api.restoreHistoryDir/File → 还原后刷新书架 / 重载 / 再拉清单 / toast；
+ *     1.4.0 P0-2 起还原不再二次确认，覆盖型还原由 storage 先备份 + 10 秒撤销兜底）
  *   sameBookPath（纯函数；「整本替换的备份还原」也在用，渲染层按名字转发）
  * **只搬不改行为**：文案 / class / DOM 结构 / 返回值形状 / token 作废逻辑 / 失败兜底全部一字未改
  * （indent / 空行也保持原样）；面板 CSS 与 index.html 的 DOM 一个字节没动。
@@ -45,7 +46,8 @@
  *
  * P22-5（1.1.0 内容批）：每日快照组（core/history.js 严格认出「快照-YYYYMMDD」的组才带 snapshotName）
  * 默认折叠、组头是带 aria-expanded 的原生 button（键盘可达），并多一个「清空这天的快照」——
- * 二次确认后只走 api.clearSnapshotDay 把那一个目录移入 Windows 回收站（绝不硬删），成功刷新清单 / 书架，
+ * 直接走 api.clearSnapshotDay 把那一个目录移入 Windows 回收站（绝不硬删；1.4.0 P0-2 起不再二次确认），
+ * 成功刷新清单 / 书架，
  * 失败只 toast、清单保持原样。折叠状态放在 state.history.collapsed（按组 id，面板关掉即失效，不写盘、不进 config）；
  * 其它来源的组仍然是「默认展开 + 只有还原整组」，折叠开关一个字节没加。
  *
@@ -99,7 +101,8 @@
 
   // ---------- 本书历史（统一查看 / 还原 _trash 备份） ----------
   // 备份来源由 core/history.js 扫描：替换 / 整理 / 还原前 / 快照 / 删章散文件 / 书目.json.bak。
-  // 这里只负责展示、预览和二次确认；真正的写盘在 storage（先备份当前内容再原子写）。
+  // 这里只负责展示与预览（1.4.0 P0-2 起还原 / 清空快照都不再有二次确认）；真正的写盘在 storage
+  // （先备份当前内容再原子写；覆盖型还原的撤销走 10 秒撤销条）。
   function sameBookPath(a, b) {
     return String(a == null ? '' : a).toLowerCase() === String(b == null ? '' : b).toLowerCase();
   }
@@ -637,7 +640,8 @@
     }
   }
 
-  // 清空某一天的每日快照（P22-5）：二次确认 → 只把这一个目录移入 Windows 回收站 → 刷新清单 / 汇总。
+  // 清空某一天的每日快照（P22-5）：只把这一个目录移入 Windows 回收站 → 刷新清单 / 汇总
+  // （1.4.0 P0-2 起不再二次确认；不是硬删，外部回收站可还原）。
   // 只认 core/history.js 严格认出「快照-YYYYMMDD」的组；失败（含回收站不可用）只 toast，清单保持原样。
   // 文案写清「只影响这一组、可以从回收站恢复」——这里不做任何删除降级。
   async function clearSnapshotDay(group) {

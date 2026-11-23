@@ -848,7 +848,13 @@ async function bookStats(bookPath, meta, { writeCache = true, readText, backfill
             ? { meta: fresh, changed: true }
             : mergeCharsCache(fresh, needRead);
           // 只补字数缓存：这不是用户操作，updatedAt 保持原值（审计 E-06）
-          if (merged.changed) await writeBookMeta(bookPath, merged.meta, { touchUpdatedAt: false });
+          // #10（清单）：走「读时拍身份、写前核对」的同一个入口 —— 应用内并发已由锁内重读 +
+          // mergeCharsCache 挡住，但外部程序（同步盘 / 记事本）在「读 → 写」窗口里改过书目时，
+          // 旧实现会拿内存快照整份覆盖那一小改。stamp 从 fresh 上取（readFreshBookMetaForCache
+          // 复用的对象仍挂着书目身份；重读过的是新身份），核对不过就 META_CHANGED 跳过这次缓存。
+          if (merged.changed) {
+            await writeBookMetaChecked(bookPath, merged.meta, { touchUpdatedAt: false });
+          }
         });
       } catch { /* 缓存写不进去不影响书架显示 */ }
     }

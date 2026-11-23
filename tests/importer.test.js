@@ -1386,3 +1386,27 @@ test('T-03：导入提交段的 BAD_PATH 原样上抛，不被改写成「复制
   }
   assert.match(catchBlock, /new storage\.StorageError\('IMPORT_FAILED'/, '真正的复制失败仍包成 IMPORT_FAILED');
 });
+
+test('#8：导入章名与书目其它入口同一口径（limitChapterName）', async () => {
+  const limits = require('../core/limits');
+  // 行为面：现在标题行最长 300 字（core/txt.js MAX_HEADING_LENGTH），所以 2000 字上限碰不到；
+  // 这条用例钉住「导入章名仍在同一口径里」这个不变量（真能到 2000 的组合 / 以后放宽标题长度都不会绕过）。
+  const base = await mkTmp();
+  const booksRoot = path.join(base, '书架');
+  const rawTitle = '第1章 ' + '甲'.repeat(280); // 标题行上限 300 字内，能真的被认成章标题
+  const file = path.join(base, '长标题.txt');
+  await fs.writeFile(file, rawTitle + '\n\n正文。\n\n第2章 正常标题\n\n正文二。', 'utf8');
+  const res = await importer.importNovelFile(booksRoot, file, { mode: 'chapters' });
+  const meta = await storage.readBookMeta(res.path);
+  assert.equal(meta.chapters.length, 2);
+  assert.equal(meta.chapters[0].name, limits.limitChapterName(rawTitle));
+  assert.ok(meta.chapters[0].name.length <= limits.MAX_CHAPTER_NAME_CHARS);
+  assert.equal(meta.chapters[1].name, '第2章 正常标题');
+
+  // 静态：三条导入分支共用的记录构造器必须走 limitChapterName（#8 的修法落点）。
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', 'core', 'importer.js'), 'utf8');
+  const start = source.indexOf('function importedChapterRecord(');
+  assert.ok(start > 0, 'importedChapterRecord 还在（改名前请同步本断言）');
+  const block = source.slice(start, source.indexOf('\n}', start));
+  assert.match(block, /name: limits\.limitChapterName\(name\)/, '章名必须走 limits.limitChapterName');
+});

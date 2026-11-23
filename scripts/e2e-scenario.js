@@ -307,7 +307,7 @@ module.exports = async function runScenario(ctx) {
   // 29. 只替换这一处：只改编辑区、替换后选中下一处、只作用于当前章（正文在 groups/29-replace-one.js）
   await runGroup([29]);
 
-  // 30. 整本替换的备份还原：列出备份 → 二次确认 → 正文回到替换前（当前内容再备份一份）（正文在 groups/30-replace-backup.js）
+  // 30. 整本替换的备份还原：列出备份 → 直接还原（1.4.0 P0-2 起不再二次确认）→ 正文回到替换前（当前内容再备份一份）（正文在 groups/30-replace-backup.js）
   await runGroup([30]);
 
   // 31. 撤销整理：快照上限 10 → 50，菜单显示还能撤销几步（正文在 groups/31-undo-format.js）

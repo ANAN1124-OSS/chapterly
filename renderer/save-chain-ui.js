@@ -69,6 +69,10 @@
 
   // 编辑区只读态的唯一出口：长操作锁 / 正在打开新书 / 正在载章 / 没有有效章节，任一成立就只读。
   // 统一走这里，避免「谁最后解自己的锁」互相覆盖（典型事故：长操作结束把载章中的锁一起解掉）。
+  // H1 取舍（清单 #7）：**保存 / 切章在途不把编辑区设只读** —— Chromium 在输入法组字过程中改
+  // readOnly 会吞掉当前这段组字（候选词不上屏、字直接没了），作者丢的是真实输入。这几个锁定条件
+  // 都只在「编辑区内容本来就要被换掉」时成立（载章 / 开书 / 无有效章节），保存期间仍可继续敲字，
+  // 敲进来的内容会照常参与下一轮 dirty 复核。要加新的锁定条件前先读这一行：别把「在途」当锁。
   function applyEditorEditable() {
     const locked = longOpLocked() || getOpeningBook() || state.loading || editorChapterMasked;
     editorEl.readOnly = locked;

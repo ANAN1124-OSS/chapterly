@@ -733,7 +733,11 @@ function importedChapterRecord({ seq, file, name, text, now }) {
   return {
     id: `ch_${chaptersLib.pad3(seq)}`,
     file,
-    name,
+    // #8（清单）：章名与其它「写进书目的显示名」入口同一条限长（core/storage.js 的建章 / 改名 /
+    // 从目录重建都走 limits.limitChapterName）。以前这里照抄原文标题、不限长 —— 超长标题行会绕过
+    // 2000 字上限直接进书目；pathological 源文件靠 32MB 书目写闸兜底，但那已经是「写不进去」而不是
+    // 「按同一口径截短」。文件名另走 uniqueFileName 的 safeName（40 字），两层互不替代。
+    name: limits.limitChapterName(name),
     chars: chaptersLib.countChars(text),
     createdAt: now
   };

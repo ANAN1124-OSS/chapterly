@@ -32,6 +32,14 @@ const FILE_PREFIX = 'draft-';
 const DRAFT_FILE_RE = /^draft-([a-f0-9]{16})\.json$/;
 const BODY_SUFFIX = '.txt';
 const BODY_FILE_RE = /^draft-([a-f0-9]{16})\.txt$/;
+// #11（清单）：writeAtomic 的临时文件名是 `.<正式名>.tmp-<pid>-<时间>-<随机>`；崩在 rename 之前
+// 会把它留在目录里（以前只按正式名清扫，永远收不回来）。
+const TMP_FILE_RE = /^\.draft-[a-f0-9]{16}\.(?:json|txt)\.tmp-/;
+// #11：孤儿正文 / 临时文件的回收宽限期。正文文件在「rename 完成、元数据还没写」之间会短暂处于
+// 「元数据是 v1、正文已更新」——另一个窗口恰好在这个毫秒级窗口里 prune 到它，不能当成孤儿删掉
+// （删掉 = 正在写的那一次草稿丢正文，而正文是未保存内容的唯一磁盘兜底）。所以只清「已经放了
+// 10 分钟没人认领」的文件；正常写入的正文 / 临时文件都只活几毫秒。
+const ORPHAN_GRACE_MS = 10 * 60 * 1000;
 const MARKER_VERSION = 1;
 const DRAFT_VERSION = 2;
 const MAX_DRAFTS = 8;
@@ -273,7 +281,16 @@ function createCrashDraftStore(baseDir, options = {}) {
   // 全量读回并解析（最多 8 份 × 32MB），写放大与草稿总大小成正比。但 prune 只需要
   // 「draftId + at」两份元数据。这里缓存每份草稿的元数据（scan / 写入 / 删除时维护），
   // 写路径只 readdir + 查缓存；目录里出现缓存没有的文件（另一窗口 / 手工放入）才读一次补。
-  const metaCache = new Map(); // draftId -> { at } | { invalid: true }
+  // #11：缓存里多记一项 claimsBody —— v2 元数据带 body 字段指向 .txt（正文在用）；v1 把正文写在
+  // JSON 里，同名 .txt 是「升级写了一半」的残留。sweepOrphanBodies 只按缓存判断，不再为清理读一遍
+  // 元数据（否则每次写草稿都会把全部元数据读回，CGRD-01 的写放大又回来了）。
+  const metaCache = new Map(); // draftId -> { at, claimsBody } | { invalid: true }
+
+  function claimsBodyOf(raw) {
+    return Boolean(
+      raw && String(raw.version) === String(DRAFT_VERSION) && typeof raw.body === 'string' && raw.body
+    );
+  }
 
   function draftPath(draftId) {
     return path.join(dir, `${FILE_PREFIX}${draftId}.json`);
@@ -343,10 +360,10 @@ function createCrashDraftStore(baseDir, options = {}) {
         const entry = storedEntryFrom(raw, draftId, maxTextChars);
         if (entry) {
           entries.push(entry);
-          metaCache.set(draftId, { at: entry.at });
+          metaCache.set(draftId, { at: entry.at, claimsBody: claimsBodyOf(raw) });
         } else {
           // 形状稳定地不合法（不是读到一半）：记成 invalid，后续 prune 不必再读它，也不删它。
-          metaCache.set(draftId, { invalid: true });
+          metaCache.set(draftId, { invalid: true, claimsBody: false });
         }
       } catch {
         /* 正在被写 / 坏 JSON / 读不到：当这次没有这一条 */
@@ -375,7 +392,7 @@ function createCrashDraftStore(baseDir, options = {}) {
         try {
           const raw = JSON.parse(await io.readFile(path.join(dir, name), 'utf8'));
           const entry = storedEntryFrom(raw, draftId, maxTextChars);
-          meta = entry ? { at: entry.at } : { invalid: true };
+          meta = entry ? { at: entry.at, claimsBody: claimsBodyOf(raw) } : { invalid: true, claimsBody: false };
         } catch {
           continue;
         }
@@ -411,6 +428,12 @@ function createCrashDraftStore(baseDir, options = {}) {
 
   // P2：删元数据失败时留下的「孤儿正文」清理。只删**同 id 的元数据文件都不存在**的 .txt ——
   // 坏 JSON 的元数据仍占着文件名，它的正文照旧保留（坏文件一律不删的模块红线）。
+  // #11（清单）补两处相邻缺口：
+  //   ① v1 元数据把正文写在 JSON 的 text 里，同名的 .txt 是「升级写了半套」的残留（正文已 rename、
+  //      元数据还没写就崩了）。以前只按「有没有同名元数据」判孤儿，这类正文永远不会被读、也不会被收；
+  //   ② writeAtomic 崩在 rename 前留下的 `.draft-<id>.json.tmp-*` / `.txt.tmp-*` 不在清扫范围。
+  // 这两类都要求「文件已经放了 ORPHAN_GRACE_MS 没人动」：另一扇窗口的正文 rename 与元数据写之间只隔
+  // 几毫秒，此刻不能把正在写的正文当孤儿删掉。
   async function sweepOrphanBodies() {
     let names = [];
     try {
@@ -423,16 +446,44 @@ function createCrashDraftStore(baseDir, options = {}) {
       const draftId = parseDraftFileName(name);
       if (draftId) metaIds.add(draftId);
     }
+    const nowMs = normalizeDate(clock(), new Date()).getTime();
     let removed = 0;
-    for (const name of names) {
-      const match = BODY_FILE_RE.exec(String(name));
-      if (!match || metaIds.has(match[1])) continue;
+    const unlinkQuiet = async (name) => {
       try {
         await io.unlink(path.join(dir, name));
         removed += 1;
       } catch {
         /* 下一轮再试 */
       }
+    };
+    const oldEnough = async (name) => {
+      let stat = null;
+      try {
+        stat = await io.stat(path.join(dir, name));
+      } catch {
+        return false; // 读不到：下一轮再试（不猜）
+      }
+      const mtime = Number(stat && stat.mtimeMs);
+      if (!Number.isFinite(mtime)) return false; // 没有时间戳：不删（保守）
+      return nowMs - mtime >= ORPHAN_GRACE_MS;
+    };
+    for (const name of names) {
+      const text = String(name);
+      if (TMP_FILE_RE.test(text)) {
+        if (await oldEnough(text)) await unlinkQuiet(text);
+        continue;
+      }
+      const match = BODY_FILE_RE.exec(text);
+      if (!match) continue;
+      const draftId = match[1];
+      if (metaIds.has(draftId)) {
+        const cached = metaCache.get(draftId);
+        // 缓存里没有条目（元数据还没被 scan / 本次运行没读过）或坏 JSON：不猜、不删（坏文件一律不删）。
+        // 只有缓存明确记着「v1，不引用 .txt」才当孤儿候选，并且要过宽限期（另一窗口的升级写窗口）。
+        if (!cached || cached.invalid || cached.claimsBody !== false) continue;
+        if (!(await oldEnough(text))) continue;
+      }
+      await unlinkQuiet(text);
     }
     return removed;
   }
@@ -581,7 +632,7 @@ function createCrashDraftStore(baseDir, options = {}) {
         return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err) };
       }
       // CGRD-01：写入前先登记元数据，prune 只需 readdir + 缓存，不再把所有草稿正文读回解析。
-      metaCache.set(draftId, { at: entry.at });
+      metaCache.set(draftId, { at: entry.at, claimsBody: true });
       try {
         // N-14：prune 的「现在」用 store 自己的时钟，不再用这份草稿自报的 at
         // （否则一个未来时间戳就会把其它窗口 / 上次运行的草稿全判过期删掉）。

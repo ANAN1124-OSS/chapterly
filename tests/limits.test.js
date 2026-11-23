@@ -56,7 +56,12 @@ test('M2 机器清单：四个入口文件里不许再出现这些上限的定�
     [/const\s+MAX_META_CHAPTERS\s*=\s*20000/, 'MAX_META_CHAPTERS = 20000（改用 limits.MAX_META_CHAPTERS）'],
     [/const\s+MAX_CHAPTER_ITEMS\s*=\s*20000/, 'MAX_CHAPTER_ITEMS = 20000（改用 limits.MAX_META_CHAPTERS）'],
     [/const\s+MAX_CHAPTER_READ_BYTES\s*=\s*MAX_TEXT_BYTES/, 'MAX_CHAPTER_READ_BYTES = MAX_TEXT_BYTES（改用 limits）'],
-    [/const\s+MAX_CHAPTER_NAME_CHARS\s*=\s*2000/, 'MAX_CHAPTER_NAME_CHARS = 2000（改用 limits）']
+    [/const\s+MAX_CHAPTER_NAME_CHARS\s*=\s*2000/, 'MAX_CHAPTER_NAME_CHARS = 2000（改用 limits）'],
+    // #9（清单）：只禁旧名字形式不够 —— 改名后照样能再写一份同数上限。
+    // ① 任何 `MAX_*= 5000000 / 5_000_000` 都算第二份保存上限；② 三万（载入上限）也不许在
+    // 这四个入口自己写（唯一来源是 core/limits.MAX_CHAPTER_READ_CHARS）。
+    [/const\s+MAX_[A-Z0-9_]*\s*=\s*5_?000_?000\b/, '第二份 5000000 字面量（换个常量名也不行，改用 limits）'],
+    [/\b30000000\b/, '30000000 字面量（载入上限只用 limits.MAX_CHAPTER_READ_CHARS）']
   ];
   for (const [rel, source] of Object.entries(sources)) {
     for (const [pattern, why] of forbidden) {
