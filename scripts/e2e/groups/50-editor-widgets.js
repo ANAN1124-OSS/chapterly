@@ -701,7 +701,7 @@ module.exports = async function group50EditorWidgets(t) {
   await waitFor("window.__cwTest.displayStyle().paperClass.includes('theme-night')");
   const caretNightInfo = await exec('window.__cwTest.marksCaretParaInfo()');
   const caretNightColor = await exec('window.__cwTest.editorCaretColor()');
-  check(
+  checkVisual(
     '当前段落高亮：夜间主题有一套单独的高亮色 / 光标色，不会刺眼',
     Boolean(caretNightInfo) &&
       caretNightInfo.line === caretPaperInfo.line &&
@@ -712,7 +712,7 @@ module.exports = async function group50EditorWidgets(t) {
   await waitFor("window.__cwTest.displayStyle().paperClass.includes('theme-kraft')");
   const caretKraftInfo = await exec('window.__cwTest.marksCaretParaInfo()');
   const caretKraftColor = await exec('window.__cwTest.editorCaretColor()');
-  check(
+  checkVisual(
     '当前段落高亮：牛皮纸主题也有自己的高亮色（6 套主题分别调过色）',
     Boolean(caretKraftInfo) &&
       caretKraftInfo.background !== caretPaperInfo.background &&
@@ -956,7 +956,7 @@ module.exports = async function group50EditorWidgets(t) {
   );
   const findStyleCurrent = await exec('window.__cwTest.findHitStyle()');
   const findStyleOther = await exec('window.__cwTest.findHitStyle(1)');
-  check(
+  checkVisual(
     '查找增强：当前命中的底色比其它命中更重',
     Boolean(findStyleCurrent) &&
       Boolean(findStyleOther) &&
@@ -2334,7 +2334,7 @@ module.exports = async function group50EditorWidgets(t) {
   );
   await setWindowSize(uiOrigBounds.width, uiOrigBounds.height, { minInner: 1000 });
   await sleep(300);
-  check(
+  checkVisual(
     '界面优化：窗口尺寸来回变完，顶栏回到原布局（按钮顺序 / 分组没乱）',
     (await exec("document.querySelectorAll('.editor-actions > .action-group').length")) === 4 &&
       (await exec("document.querySelector('.editor-header').getBoundingClientRect().height")) < 90

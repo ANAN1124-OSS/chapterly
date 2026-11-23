@@ -119,7 +119,7 @@ const jsToast = `(() => {
 })()`;
 
 module.exports = async function group69Motion(t) {
-  const { exec, check, checkVisual, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep } = t;
+  const { exec, checkVisual, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep } = t;
 
   const scan = async (label) => {
     const data = JSON.parse(await exec(SCAN));
