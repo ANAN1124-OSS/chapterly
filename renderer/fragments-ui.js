@@ -12,9 +12,10 @@
  * 落点用 document.caretPositionFromPoint（textarea 在 Chromium 里只有它会回字符下标），取不到退回当前光标。
  * 事件绑定随域搬进 setupFragmentsUi()（＋碎片 / 保存 / 取消 / 计数 / Ctrl+Enter / 插入面板 4 个按钮）。
  *
- * 契约：createFragmentsUi(host) 由渲染层调用一次。host 10 个成员（2 个语义分组 + 基础 5 + 3 个胶水）：
+ * 契约：createFragmentsUi(host) 由渲染层调用一次。host 11 个成员（2 个语义分组 + 基础 5 + 组字守卫 + 3 个胶水）：
  *   host = {
  *     $, state, api, call, toast,          // 基础 5：DOM 查询 / 共享状态（fragments、fragmentSelected、fragmentBusy、insertFragmentRange）/ IPC 白名单 / IPC 包装 / 提示
+ *     imeGuard,                            // 输入法组字守卫（ime-guard.js）：灵感箱 Ctrl+Enter 保存键的判据（T-14）
  *     common: {                             // 共享纯逻辑 / 格式化
  *       chaptersLib,                        //   core/chapters.js：正文字数口径 countChars
  *       formatRelativeTime                  //   「3 分钟前」…
@@ -45,7 +46,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
   'use strict';
 
-  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'common', 'editor', 'hideHeaderMenus', 'staleGuard', 'recordFallbackWrite'];
+  const REQUIRED_HOST = ['$', 'state', 'api', 'call', 'toast', 'imeGuard', 'common', 'editor', 'hideHeaderMenus', 'staleGuard', 'recordFallbackWrite'];
   // RPAN-C08：嵌套分组（common / editor）的「判对象 + 逐键判存在」交给共享 assertHost 的第四个参数，
   // 不再逐组手写 for 循环（三张卡 fragments / sensitive / tidy-card 共用同一份实现与文案）。
   const REQUIRED_GROUPS = [
@@ -56,7 +57,7 @@
   function createFragmentsUi(host) {
     // A8（WP-32）：REQUIRED_HOST 逐成员校验走共享实现（文案不变）；嵌套分组见 REQUIRED_GROUPS。
     assertHost('createFragmentsUi', host, REQUIRED_HOST, REQUIRED_GROUPS);
-    const { $, state, api, call, toast, common, editor, hideHeaderMenus, staleGuard, recordFallbackWrite } = host;
+    const { $, state, api, call, toast, imeGuard, common, editor, hideHeaderMenus, staleGuard, recordFallbackWrite } = host;
     if (!staleGuard || typeof staleGuard.createSeq !== 'function') {
       throw new TypeError('createFragmentsUi 的 host.staleGuard 必须是 stale-guard.js 的导出');
     }
@@ -530,6 +531,10 @@
     $('btn-fragment-save').addEventListener('click', () => saveFragment());
     $('fragment-text').addEventListener('input', updateFragmentCounter);
     $('fragment-text').addEventListener('keydown', (event) => {
+      // T-14：组字中的 Ctrl+Enter 是输入法的「上屏候选词」，不是保存。与全仓其它 Enter 提交链路
+      // （find-ui / bookinfo-ui / command-palette / global-keys / jump-ui）同一个判据，别在这里手写
+      // event.isComposing —— 否则拼音残串会被直接存成 _碎片/*.txt。
+      if (imeGuard.isImeComposing(event)) return;
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         event.preventDefault();
         saveFragment();

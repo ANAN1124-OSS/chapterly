@@ -2596,7 +2596,7 @@
   // ---------- 灵感箱（碎片速记） ----------
   // 第 4 步九刀·补刀 10：实现在 renderer/fragments-ui.js（模块头有契约），这里只装配与接线；
   const fragmentsUi = fragmentsUiModule.create({
-    $, state, api, call, toast, staleGuard, recordFallbackWrite,
+    $, state, api, call, toast, imeGuard, staleGuard, recordFallbackWrite,
     common: { chaptersLib, formatRelativeTime, formatCount },
     editor: { editorEl, onEditorInput, scrollCaretIntoView },
     hideHeaderMenus

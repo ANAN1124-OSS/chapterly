@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const fragmentsUi = require('../renderer/fragments-ui');
+const imeGuard = require('../renderer/ime-guard');
 const staleGuard = require('../renderer/stale-guard');
 const chaptersLib = require('../core/chapters');
 const commonLib = require('../core/common');
@@ -14,8 +15,9 @@ const { stripAssertHostBranch } = require('./ui-test-preambles');
 // 搬之前只有 E2E 黑盒覆盖（书架记碎片 / 写作页插入）；保存防重 / 空内容 / 插入位置按打开面板前的选区 /
 // execCommand 失败兜底 / 2 万字预览上限 / 列表空态与元信息在 Node 里几乎测不到。搬出来以后逐条钉住。
 //
-// 契约：host 10 个成员 = 基础 5（$, state, api, call, toast）+ common{chaptersLib,formatRelativeTime} +
-// editor{editorEl,onEditorInput,scrollCaretIntoView} + hideHeaderMenus + staleGuard + recordFallbackWrite
+// 契约：host 11 个成员 = 基础 5（$, state, api, call, toast）+ imeGuard（T-14：Ctrl+Enter 保存键的组字守卫）+
+// common{chaptersLib,formatRelativeTime} + editor{editorEl,onEditorInput,scrollCaretIntoView} + hideHeaderMenus +
+// staleGuard + recordFallbackWrite
 // （最后一个为审计修复 #39 / V402：兜底整串赋值后由渲染层统一记快照 + 提示）。
 
 const realDocument = globalThis.document;
@@ -211,6 +213,8 @@ function build(options = {}) {
     api,
     call: async (fn, ...args) => fn(...args),
     toast(message, kind) { calls.toast.push([message, kind]); },
+    // T-14：Ctrl+Enter 保存键先过 imeGuard（生产由 renderer.js 注入 window.CWImeGuard）
+    imeGuard,
     common: {
       chaptersLib,
       formatRelativeTime: (ms) => (Number(ms) ? '刚才' : '很久以前'),
@@ -232,9 +236,9 @@ function build(options = {}) {
 }
 
 // ---------- host 契约 ----------
-test('host 契约：10 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
-  assert.deepEqual([...fragmentsUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'common', 'editor', 'hideHeaderMenus', 'recordFallbackWrite', 'staleGuard', 'state', 'toast']);
-  assert.equal(fragmentsUi.REQUIRED_HOST.length, 10);
+test('host 契约：11 个成员 + 分组内每个真实依赖；缺任何一个都抛 TypeError', () => {
+  assert.deepEqual([...fragmentsUi.REQUIRED_HOST].sort(), ['$', 'api', 'call', 'common', 'editor', 'hideHeaderMenus', 'imeGuard', 'recordFallbackWrite', 'staleGuard', 'state', 'toast']);
+  assert.equal(fragmentsUi.REQUIRED_HOST.length, 11);
   const ctx = build();
   assert.doesNotThrow(() => fragmentsUi.create(ctx.host));
   assert.throws(() => fragmentsUi.create(null), /createFragmentsUi 需要 host 对象/);
@@ -847,6 +851,45 @@ test('setupFragmentsUi：8 个绑定全部注册；Ctrl+Enter 保存、按钮收
   assert.equal(ctx.calls.api.some((c) => c[0] === 'list'), true);
 });
 
+// ---------- 输入法守卫（T-14） ----------
+test('T-14：组字中的 Ctrl+Enter 不保存（也不 preventDefault），上屏后才走保存', async () => {
+  const ctx = build({ text: 'pinyin-can-ju' });
+  ctx.ui.setupFragmentsUi();
+  let prevented = 0;
+  const fire = (extra) => ctx.dom.map.get('fragment-text')._fire('keydown', {
+    ctrlKey: true, metaKey: false, key: 'Enter', preventDefault() { prevented += 1; }, ...extra
+  });
+
+  // isComposing：微软拼音等组字中按 Ctrl+Enter 只是上屏候选词
+  fire({ isComposing: true });
+  await flush();
+  assert.equal(prevented, 0, '组字中不能拦掉输入法自己的按键');
+  assert.equal(ctx.calls.api.filter((c) => c[0] === 'create').length, 0, '组字中不能把拼音残串存成碎片');
+
+  // keyCode 229：只报「放行键」的旧版 / 第三方输入法（与 ime-guard 同一判据）
+  fire({ keyCode: 229 });
+  await flush();
+  assert.equal(prevented, 0);
+  assert.equal(ctx.calls.api.filter((c) => c[0] === 'create').length, 0);
+
+  // 组字结束（上屏）后的同一次按键才保存
+  fire({ isComposing: false });
+  await flush();
+  assert.equal(prevented, 1);
+  assert.deepEqual(ctx.calls.api.filter((c) => c[0] === 'create'), [['create', 'pinyin-can-ju']]);
+});
+
+test('T-14 静态清单：keydown 先判 imeGuard.isImeComposing，再判 Ctrl+Enter', () => {
+  const keydownAt = moduleSrc.indexOf("$('fragment-text').addEventListener('keydown'");
+  assert.notEqual(keydownAt, -1);
+  const body = moduleSrc.slice(keydownAt, moduleSrc.indexOf('});', keydownAt));
+  const guardAt = body.indexOf('imeGuard.isImeComposing(event)');
+  const ctrlAt = body.indexOf('event.ctrlKey');
+  assert.notEqual(guardAt, -1, '保存键必须过 imeGuard');
+  assert.ok(guardAt < ctrlAt, '先判组字再判 Ctrl+Enter');
+  assert.ok(body.indexOf('return;') < ctrlAt, '组字中直接放行，不走到保存');
+});
+
 // ---------- 静态闸门 ----------
 test('静态闸门：renderer.js 不再内嵌灵感箱实现，只剩装配与转发', () => {
   for (const shape of [
@@ -874,6 +917,8 @@ test('静态闸门：renderer.js 不再内嵌灵感箱实现，只剩装配与�
   ]) {
     assert.ok(rendererSrc.includes(line), '装配少了：' + line);
   }
+  // T-14：组字守卫必须真的接进灵感箱的装配（不是只在模块里要求）
+  assert.ok(rendererSrc.includes('$, state, api, call, toast, imeGuard, staleGuard, recordFallbackWrite,'), '装配少了 imeGuard');
   assert.ok(rendererSrc.includes(
     'const { updateFragmentCounter, openFragmentDialog, closeFragmentDialog, saveFragment, openInsertFragmentDialog, closeInsertFragmentDialog, insertSelectedFragment, selectFragmentByName, refreshFragments, setupFragmentsUi } = fragmentsUi;'
   ), '10 个入口按原名解构');
@@ -915,7 +960,7 @@ test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWFragmentsU
   vm.runInContext(moduleSrc, context, { filename: 'renderer/fragments-ui.js' });
   assert.equal(typeof win.CWFragmentsUi, 'object');
   assert.deepEqual(Object.keys(win.CWFragmentsUi).sort(), ['REQUIRED_HOST', 'create']);
-  assert.equal(win.CWFragmentsUi.REQUIRED_HOST.length, 10);
+  assert.equal(win.CWFragmentsUi.REQUIRED_HOST.length, 11);
   assert.equal(win.CWFindBookmarkUi, undefined);
 });
 
