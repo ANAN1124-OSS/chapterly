@@ -1107,7 +1107,7 @@ module.exports = async function group50EditorWidgets(t) {
   await exec("window.__cwTest.setSelect('settings-paper', 'night')");
   await waitFor("window.__cwTest.displayStyle().paperClass.includes('theme-night')");
   const findNightHit = await exec('window.__cwTest.findHitStyle()');
-  check(
+  checkVisual(
     '查找增强：夜间主题有单独的命中高亮色（暗底上不刺眼，只改显示）',
     Boolean(findNightHit) &&
       findNightHit.background !== findPaperHit.background &&
