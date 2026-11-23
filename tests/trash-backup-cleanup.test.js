@@ -70,7 +70,10 @@ function makeHost({ shell, fs: fsOverride } = {}) {
     path,
     shell: shell || { trashItem: async () => {}, openPath: async () => '' },
     errorText,
-    sendToFlow: () => {}
+    sendToFlow: () => {},
+    // T-08：book-data 的正文改写通道会标脏搜索索引
+    getSearchIndexStore: () => ({ markDirty: () => {} }),
+    logError: () => {}
   };
   bookDataIpc.register(host);
   return { channels };

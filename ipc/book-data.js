@@ -32,12 +32,29 @@ const REQUIRED_HOST = [
   'path',
   'shell',
   'errorText',
-  'sendToFlow'
+  'sendToFlow',
+  // T-08（三次审查）：六个正文改写通道成功后要标脏搜索索引（与 ipc/save.js:109 同口径）。
+  'getSearchIndexStore',
+  'logError'
 ];
+
+// T-08：正文改写通道统一用它标脏搜索索引。根签名探测只 stat 书架根目录 mtime，同名覆写章节文件
+// 探测不到——不标脏时，替换 / 整理 / 还原后 60 秒复用窗口内会拿旧位图：新词搜不到、已删旧文还能命中。
+// 标脏失败绝不能把「正文已经写好」的操作报成失败：只留痕（与保存链的 INDEX_DIRTY_FAILED 同一口径）。
+function markSearchDirty(getSearchIndexStore, logError, bookPath) {
+  try {
+    getSearchIndexStore().markDirty(bookPath);
+  } catch (err) {
+    logError('book-data', err, { level: 'warn', code: 'INDEX_DIRTY_FAILED' });
+  }
+}
 
 function registerBookDataIpc(host) {
   assertHost('ipc/book-data.registerBookDataIpc', host, REQUIRED_HOST);
-  const { handleBook, storage, ipcLimits, fs, path, shell, errorText, sendToFlow } = host;
+  const {
+    handleBook, storage, ipcLimits, fs, path, shell, errorText, sendToFlow, getSearchIndexStore, logError
+  } = host;
+  const markDirty = (bookPath) => markSearchDirty(getSearchIndexStore, logError, bookPath);
   // WP4（审计 S-N1）：清理备份的一次性计划令牌（进程内、只在主进程）。每次 register 一份 ——
   // 模块本身不缓存全局状态（单测各自装配，互不串令牌）。
   const deletePlanTokens = deletePlanToken.createStore();
@@ -51,8 +68,12 @@ function registerBookDataIpc(host) {
   handleBook('book:search', async (bookPath, options) =>
     storage.searchBook(bookPath, ipcLimits.sanitizeSearchOptions(options)), READ_ONLY
   );
-  handleBook('book:replace', async (bookPath, options) =>
-    storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options)), {
+  handleBook('book:replace', async (bookPath, options) => {
+    const result = await storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options));
+    // T-08：整本替换逐章重写 txt，成功后标脏索引（否则 60 秒内搜索仍拿旧位图）。
+    markDirty(bookPath);
+    return result;
+  }, {
     mutation: MUTATION.REPLACE
   });
 
@@ -60,21 +81,27 @@ function registerBookDataIpc(host) {
   handleBook('book:list-replace-backups', async (bookPath) =>
     storage.listReplaceBackups(bookPath), READ_ONLY
   );
-  handleBook('book:restore-replace-backup', async (bookPath, backupName) =>
-    storage.restoreReplaceBackup(bookPath, backupName), { mutation: MUTATION.REPLACE }
-  );
+  handleBook('book:restore-replace-backup', async (bookPath, backupName) => {
+    const result = await storage.restoreReplaceBackup(bookPath, backupName);
+    markDirty(bookPath); // T-08
+    return result;
+  }, { mutation: MUTATION.REPLACE });
 
   // 本书历史：统一列出 / 预览 / 还原书内 _trash 的各种备份（替换/整理/还原前/快照/删章 + 书目.json.bak）
   handleBook('book:list-history', async (bookPath) => storage.listBookHistory(bookPath), READ_ONLY);
   handleBook('book:preview-history-file', async (bookPath, groupId, fileName) =>
     storage.previewHistoryFile(bookPath, groupId, fileName), READ_ONLY
   );
-  handleBook('book:restore-history-file', async (bookPath, groupId, fileName) =>
-    storage.restoreHistoryFile(bookPath, groupId, fileName), { mutation: MUTATION.WRITE }
-  );
-  handleBook('book:restore-history-dir', async (bookPath, groupId) =>
-    storage.restoreHistoryGroup(bookPath, groupId), { mutation: MUTATION.WRITE }
-  );
+  handleBook('book:restore-history-file', async (bookPath, groupId, fileName) => {
+    const result = await storage.restoreHistoryFile(bookPath, groupId, fileName);
+    markDirty(bookPath); // T-08
+    return result;
+  }, { mutation: MUTATION.WRITE });
+  handleBook('book:restore-history-dir', async (bookPath, groupId) => {
+    const result = await storage.restoreHistoryGroup(bookPath, groupId);
+    markDirty(bookPath); // T-08
+    return result;
+  }, { mutation: MUTATION.WRITE });
   // B6（v1.8.0 WP-28 / D-5）：手动清理三类备份（替换 / 整理 / 还原前）—— 只有历史面板的两步确认
   // 才会调到这里；存储层只认 `dir:<三类备份目录>`、再校验落在本书 _trash 下，并跳过仍被
   // 10 秒撤销条引用的组（protectedGroupIds 由渲染层按 TTL 现算）。绝不自动调用、绝不碰快照 / 散文件。
@@ -161,11 +188,14 @@ function registerBookDataIpc(host) {
   handleBook('book:format-preview', async (bookPath, options) =>
     storage.previewFormatBook(bookPath, options), READ_ONLY
   );
-  handleBook('book:format', async (bookPath, options) =>
-    storage.formatBook(bookPath, options, (progress) => {
+  handleBook('book:format', async (bookPath, options) => {
+    const result = await storage.formatBook(bookPath, options, (progress) => {
       sendToFlow('format:progress', progress);
-    }), { mutation: MUTATION.FORMAT }
-  );
+    });
+    // T-08：整理会逐章重写正文，成功后标脏索引。
+    markDirty(bookPath);
+    return result;
+  }, { mutation: MUTATION.FORMAT });
 
   handleBook('shell:open-book-folder', async (bookPath) => {
     // C6（审计 E13）：先 stat 确认目标是目录，再交给系统默认程序打开——书架根下的直接子文件

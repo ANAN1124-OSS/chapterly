@@ -55,6 +55,8 @@ const REQUIRED_HOST = [
   'notifyShelfChanged',
   'sendToFlow',
   'logError',
+  // T-08（三次审查）：撤销删除会把章节正文放回书里，成功后必须标脏搜索索引（同 chapter:save 口径）。
+  'getSearchIndexStore',
   'showOpenDialog',
   'automation',
   'isE2E'
@@ -70,7 +72,7 @@ function registerBookIpc(host) {
     flowSession, sessionById, focusSession, flushLastOpenBeforeRead,
     lastOpenWrites, bookKeyOf, rememberRecentBook, notifyShelfChanged,
     sendToFlow, logError, showOpenDialog, automation,
-    isE2E
+    isE2E, getSearchIndexStore
   } = host;
 
   handle('books:list', async () => {
@@ -233,7 +235,15 @@ function registerBookIpc(host) {
     });
     if (!claim.ok) throw ipcRestoreToken.errorFor(claim.reason);
     try {
-      return await storage.restoreDeletedChapterFromTrash(bookPath, clean);
+      const result = await storage.restoreDeletedChapterFromTrash(bookPath, clean);
+      // T-08：撤销删除把正文放回书里——标脏搜索索引，否则 60 秒复用窗口里搜索还拿旧位图。
+      // 与保存链同口径：标脏失败只留痕，不能把已经完成的还原报成失败。
+      try {
+        getSearchIndexStore().markDirty(bookPath);
+      } catch (err) {
+        logError('book', err, { level: 'warn', code: 'INDEX_DIRTY_FAILED' });
+      }
+      return result;
     } catch (err) {
       // 五-M31（IPC-01）：回滚也失败（唯一副本留在书文件夹、_trash 已无备份）时不要把凭证放回去 ——
       // 那种现场原地重试必然撞 RESTORE_MISSING / RESTORE_TARGET_EXISTS，给出与恢复指引矛盾的

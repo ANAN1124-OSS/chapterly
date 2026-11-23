@@ -53,6 +53,8 @@ function makeHost(root, options = {}) {
     notifyShelfChanged: () => {},
     sendToFlow: () => {},
     logError: (kind, err, meta) => { logs.push([kind, err && err.message, meta && meta.code, meta && meta.level]); },
+    // T-08：chapter:restore-deleted 成功后标脏搜索索引
+    getSearchIndexStore: () => ({ markDirty: () => {} }),
     showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
     automation: { enabled: false },
     isE2E: true

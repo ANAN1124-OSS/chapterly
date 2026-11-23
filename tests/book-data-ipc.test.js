@@ -47,6 +47,8 @@ const DATA_CHANNELS = [
 function makeBookDataHost(overrides = {}) {
   const channels = new Map();
   const sent = [];
+  const dirty = [];
+  const logs = [];
   const host = {
     handleBook: (channel, fn, options) => channels.set(channel, { fn, options }),
     storage: {
@@ -89,10 +91,13 @@ function makeBookDataHost(overrides = {}) {
       redactPaths: (text) => String(text == null ? '' : text)
     },
     sendToFlow: (channel, payload) => sent.push({ channel, payload }),
+    // T-08：正文改写通道成功后标脏搜索索引（真实 getSearchIndexStore 由 main.js 注入）
+    getSearchIndexStore: () => ({ markDirty: (bookPath) => dirty.push(bookPath) }),
+    logError: (kind, err, meta) => logs.push({ kind, code: meta && meta.code, message: err && err.message }),
     ...overrides
   };
   bookDataIpc.register(host);
-  return { channels, sent };
+  return { channels, sent, dirty, logs };
 }
 
 function optionsOf(channels, channel) {

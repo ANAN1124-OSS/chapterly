@@ -68,6 +68,8 @@ function makeDeleteHost(root, { isE2E = false, trashItem } = {}) {
     notifyShelfChanged: () => {},
     sendToFlow: () => {},
     logError: () => {},
+    // T-08：chapter:restore-deleted 成功后标脏搜索索引（这本测试只跑删书分支，桩即可）
+    getSearchIndexStore: () => ({ markDirty: () => {} }),
     showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
     automation: { enabled: false },
     isE2E
