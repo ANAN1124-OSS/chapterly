@@ -57,6 +57,22 @@ jobs:
       - name: 安装依赖（含 Electron 二进制：E2E 要真实窗口）
         run: pnpm install --frozen-lockfile
 
+      # REPO-03（发版 2.1.0 发现）：setup-node 的 pnpm store 缓存命中时，pnpm install 直接从 store
+      # 解压 electron，**不会**把 electron-vX.zip 落到 %LOCALAPPDATA%\electron\Cache；而 supply-chain
+      # 闸门要求清单里能找到 zip，于是「pnpm 缓存命中 + electron 缓存未命中」这一组合下首次运行必红
+      # （2026-11-23 00:56 的 e2e-weekly 就是这条）。这里在闸门之前补下载，不放宽闸门本身。
+      - name: 确保 Electron 压缩包在缓存里（pnpm store 命中时补下载）
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).devDependencies.electron
+          $zip = Join-Path $env:LOCALAPPDATA "electron\Cache\electron-v$version-win32-x64.zip"
+          if (Test-Path $zip) { Write-Host "已在缓存：$zip"; exit 0 }
+          Write-Host "缓存里没有 zip（pnpm store 命中时不会下载），重跑 electron 安装脚本补下载。"
+          Remove-Item -Recurse -Force node_modules\electron\dist -ErrorAction SilentlyContinue
+          node node_modules\electron\install.js
+          if (-not (Test-Path $zip)) { throw "Electron 压缩包没有落到缓存：$zip" }
+          Write-Host "已补下载：$zip"
+
       # WP15 / 审计 E1=O-N2：官方 SHASUMS256.txt 已随仓库入库，这里在跑 E2E 前先核对刚下载的
       # Electron 二进制。镜像被替换 / 构建机被投毒时这一步直接红，不给「坏二进制先跑半小时 E2E」。
       - name: 供应链校验（内置官方 SHASUMS256.txt 核对刚下载的 Electron 二进制）

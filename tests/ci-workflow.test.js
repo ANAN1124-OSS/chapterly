@@ -229,7 +229,14 @@ test('依赖安装以锁文件为准：pnpm-lock.yaml 入库且三个工作流�
   assert.ok(fs.existsSync(path.join(ROOT, 'pnpm-lock.yaml')), 'pnpm-lock.yaml 必须入库');
   for (const file of [VERIFY_PATH, E2E_PATH, E2E_PR_PATH]) {
     const text = readUtf8(file);
-    assert.doesNotMatch(text, /pnpm install(?! --frozen-lockfile)/, path.basename(file) + ' 的安装步骤只能带 --frozen-lockfile');
+    // T7 方向：只扫真正会执行的命令（commandsOf 去掉 # 注释行）。发版 2.1.0 修 e2e-weekly 的
+    // Electron 缓存缺口时，注释里「pnpm install 直接从 store 解压」被这条全文断言误判成违规；
+    // 注释不是命令，收紧到命令面即可，强度不降（run: 行仍然逐条查）。
+    assert.doesNotMatch(
+      commandsOf(text),
+      /pnpm install(?! --frozen-lockfile)/,
+      path.basename(file) + ' 的安装步骤只能带 --frozen-lockfile'
+    );
   }
 });
 
