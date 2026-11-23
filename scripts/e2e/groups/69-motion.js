@@ -119,7 +119,7 @@ const jsToast = `(() => {
 })()`;
 
 module.exports = async function group69Motion(t) {
-  const { exec, checkVisual, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep } = t;
+  const { exec, check, checkVisual, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep } = t;
 
   const scan = async (label) => {
     const data = JSON.parse(await exec(SCAN));
@@ -147,7 +147,8 @@ module.exports = async function group69Motion(t) {
   await storage.createChapter(bookPath, 1, '第二章');
   await exec('window.__cwTest.refreshShelf()');
   await sleep(300);
-  checkVisual('动效：演练书造好（2 章）', (await storage.readBookMeta(bookPath)).chapters.length === 2);
+  // T-26：造书 / 删书 / 书架数量是存储层事实，不是动效测量——用 check 留在 CI，别被 E2E_SKIP_VISUAL 吞掉。
+  check('动效：演练书造好（2 章）', (await storage.readBookMeta(bookPath)).chapters.length === 2);
 
   // ---------- 书架 ----------
   const shelfScan = await scan('动效-书架');
@@ -324,7 +325,7 @@ module.exports = async function group69Motion(t) {
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
   const removed = await deleteBookWithRetry(bookPath);
-  checkVisual('动效：演练书已删掉（走 _trash）', removed && removed.ok === true, removed);
+  check('动效：演练书已删掉（走 _trash）', removed && removed.ok === true, removed);
   const shelfAfter = (await storage.listBooks(booksRoot)).length;
-  checkVisual('动效：书架数量回到演练前', shelfAfter === shelfBefore, { before: shelfBefore, after: shelfAfter });
+  check('动效：书架数量回到演练前', shelfAfter === shelfBefore, { before: shelfBefore, after: shelfAfter });
 };

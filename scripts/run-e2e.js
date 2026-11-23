@@ -146,6 +146,10 @@ child.on('close', (code) => {
   }
   // REPO-03：把实测 E2E 项数与文档锚点对一次（以前只剩「README 与验收清单互相对得上」，
   // 没有任何东西证明这个数字是实测值）。只告警、不改文件：同步仍由维护者跑 version-sync --write。
+  // 计数口径（T-25 ③）：README / 验收清单里的项数是**机器实测锚点**，只由维护者在完整跑完后用
+  // `node scripts/version-sync.js --write --unit <单测实测> --e2e <本处实测>` 同步；这里刻意不自动改
+  // 文档、也不在 E2E 里判红——E2E 的职责是跑功能，文档计数失真由每批门禁的 `version-sync --check
+  // --unit … --e2e …`（显式传期望值）阻塞。告警保留是为了让「改了断言数量但忘了同步」当场可见。
   const measured = Number(result.checks) || details.length;
   if (measured > 0) {
     try {

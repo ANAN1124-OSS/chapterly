@@ -284,16 +284,22 @@ module.exports = async function group3SaveBook(t) {
     "window.__cwTest.dirty() === false && document.getElementById('status-text').textContent.startsWith('已保存') ? document.getElementById('status-text').textContent : null",
     8000
   );
-  checkVisual(
-    '状态栏（1.3.0 T7）：保存失败时朱红显示原因并出现「重试」，点重试真的重新保存成功',
+  // T-26：功能部分（失败回执 + 点重试真的重新落盘）留在 check，CI 的 E2E 里照常阻塞；
+  // 只有「朱红 / 可见 / 高度」这类像素与布局断言留在 checkVisual。
+  check(
+    '状态栏（1.3.0 T7）：保存失败后点重试真的重新保存成功（磁盘内容与正文一致）',
     Boolean(retryFailedSave && retryFailedSave.ok === false) &&
       retryState.text.startsWith('保存失败：') &&
-      retryState.retryVisible === true &&
-      retryState.retryHeight >= 24 &&
-      retryState.color === retryState.danger &&
       Boolean(retryRecovered) &&
       (await diskText('001-未命名.txt')) === retryBody,
-    { retryFailedSave, retryState, retryRecovered, disk: await diskText('001-未命名.txt') }
+    { retryFailedSave, retryRecovered, disk: await diskText('001-未命名.txt') }
+  );
+  checkVisual(
+    '状态栏（1.3.0 T7）：保存失败时朱红显示原因并出现「重试」',
+    retryState.retryVisible === true &&
+      retryState.retryHeight >= 24 &&
+      retryState.color === retryState.danger,
+    retryState
   );
 
   // ③c. 窄窗（1.3.0 T7）：960（最小窗口宽）时中段「第 N 章 · 本章字数」整段让位，

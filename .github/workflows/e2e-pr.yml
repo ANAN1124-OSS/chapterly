@@ -4,11 +4,35 @@ name: e2e-pr
 # 背景：UI 时序 / 真实 DOM 行为过去只有每周定时的 e2e-weekly.yml 兜底，回归窗口最长 7 天。
 # 这里在 PR 改动 renderer/** / core/** / ipc/** / main.js / preload.js（以及 E2E 基建与依赖清单）时，
 # 立刻在真实 Electron 窗口里整跑一次全量 E2E；每周全量仍由 e2e-weekly.yml 保留。
-# 触发路径的唯一事实源是 scripts/e2e-scope.js 的 E2E_TRIGGER_PATHS —— 改这里必须同步改那里
-# （tests/wp16-regression.test.js 会逐项核对，漏一处就是假拦截）。
+# T-27（三次审查）：**push 到 main 也触发**（同一份 paths 过滤）——此前直推 main 的产品改动只过
+# verify（无 E2E），只有 PR 路径有门禁，直推等于裸奔；回归窗口最长 7 天。
+# 触发路径的唯一事实源是 scripts/e2e-scope.js 的 E2E_TRIGGER_PATHS（push 分支的唯一事实源是同文件的
+# E2E_PUSH_BRANCHES）—— 改这里必须同步改那里（tests/wp16-regression.test.js 会逐项核对，漏一处就是假拦截）。
 # 供应链 / 镜像 / action pin 口径与 e2e-weekly.yml 一致：不跟浮动标签，镜像固定 windows-2022。
 on:
   pull_request:
+    paths:
+      - 'renderer/**'
+      - 'core/**'
+      - 'ipc/**'
+      - 'main.js'
+      - 'preload.js'
+      - 'scripts/e2e/**'
+      - 'scripts/e2e-scenario.js'
+      - 'scripts/run-e2e.js'
+      - 'scripts/start.js'
+      - 'scripts/e2e-runner-logic.js'
+      - 'scripts/screenshot-driver.js'
+      - 'scripts/driver-poll.js'
+      - 'scripts/e2e-politeness.js'
+      - 'scripts/e2e-stats-seed.js'
+      - 'scripts/export-check.js'
+      - 'scripts/start-logic.js'
+      - '.github/workflows/e2e-pr.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  push:
+    branches: [main]
     paths:
       - 'renderer/**'
       - 'core/**'
@@ -112,6 +136,19 @@ jobs:
         run: pnpm run e2e
         env:
           TZ: Asia/Shanghai
-          # 与 e2e-weekly 同口径：hosted runner 无交互式桌面会话，43 处 checkVisual（动效 / 主题 / 几何
-          # 测量）在 CI 跳过；功能与供应链断言仍全部阻塞。
+          # 与 e2e-weekly 同口径：hosted runner 无交互式桌面会话，44 处 checkVisual（动效 / 主题 / 几何
+          # 测量）在 CI 跳过（运行时展开 50 项）；功能与供应链断言仍全部阻塞。跳过面由
+          # scripts/e2e/visual-assertions.js 的静态清单约束（wiring-check 的 e2e-visual-assertions 契约）。
           E2E_SKIP_VISUAL: '1'
+
+      # T-25（三次审查 · 低）：hosted runner 用后即毁，E2E 失败时只留一行临时目录路径等于没法排查。
+      # 失败时把本次 E2E 的临时目录（userdata 日志 / 演练书库）传成 artifact；数据全是自造的，无泄露面。
+      # 动作与其余 action 一样 SHA pin（Dependabot 每周提更新）。
+      - name: 失败现场（E2E 临时目录 / 日志）
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-pr-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cw-e2e-*
+          if-no-files-found: warn
+          retention-days: 7

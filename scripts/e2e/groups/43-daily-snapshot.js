@@ -6,7 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 module.exports = async function group43DailySnapshot(t) {
-  const { exec, check, checkVisual, waitFor, storage, userData, fileExists } = t;
+  const { exec, check, waitFor, storage, userData, fileExists } = t;
   const { historyBookPath, historyMetaPath } = t.state;
 
   // 43. 可选每日快照（v0.6-2，默认关）：Ctrl+S 时当天首次留上一版，按天数清理
@@ -448,7 +448,8 @@ module.exports = async function group43DailySnapshot(t) {
     { groups: groupsAfterClear.length, summary: summaryAfterClear }
   );
   const clearToasts = await exec('window.__cwTest.toasts()');
-  checkVisual(
+  // T-26：toast 文案是功能语义（清空成功且写清去向），不是像素 / 几何断言——留在 check 里由 CI 阻塞。
+  check(
     '每日快照（清空某天）：成功 toast 写明已移入回收站',
     clearToasts.some((item) => item.message.includes('移入回收站') && item.message.includes(snapshotDay)),
     clearToasts

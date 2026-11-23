@@ -956,13 +956,16 @@ module.exports = async function group50EditorWidgets(t) {
   );
   const findStyleCurrent = await exec('window.__cwTest.findHitStyle()');
   const findStyleOther = await exec('window.__cwTest.findHitStyle(1)');
+  const findHighlightCount = await exec('window.__cwTest.findHighlightCount()');
+  // T-26：高亮条数是功能不变量（4 处命中全画出来），留 check；底色深浅是视觉断言。
+  check('查找增强：4 处命中全部画出高亮', findHighlightCount === 4, findHighlightCount);
   checkVisual(
     '查找增强：当前命中的底色比其它命中更重',
     Boolean(findStyleCurrent) &&
       Boolean(findStyleOther) &&
       findStyleCurrent.background !== 'rgba(0, 0, 0, 0)' &&
-      findStyleCurrent.background !== findStyleOther.background &&
-      (await exec('window.__cwTest.findHighlightCount()')) === 4
+      findStyleCurrent.background !== findStyleOther.background,
+    { current: findStyleCurrent, other: findStyleOther }
   );
 
   // 50k-2. 面板里的「上一处 / 下一处」按钮：只移动选区与当前高亮，命中总数不变

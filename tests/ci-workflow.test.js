@@ -209,9 +209,24 @@ test('e2e-weekly.yml 每周定时整跑 E2E，且装 Electron 二进制', () => 
   assert.match(text, /timeout-minutes: ([3-9]\d|[1-9]\d{2,})/, 'E2E 是长场景，超时要给足（≥ 30 分钟）');
   assert.match(text, /tzutil \/s "China Standard Time"/, 'E2E 要固定时区（统计 / 日期断言按 +08）');
   // 发版 2.1.0 的 CI 适配：hosted runner 无交互式桌面会话，动效 / 主题 / 几何断言必然偏。
-  // CI 必须显式设 E2E_SKIP_VISUAL=1（跳过 43 处 checkVisual），功能与供应链断言仍阻塞；
+  // CI 必须显式设 E2E_SKIP_VISUAL=1（跳过 44 处 checkVisual，运行时展开 50 项），功能与供应链断言仍阻塞；
+  // 跳过面由 scripts/e2e/visual-assertions.js 的静态清单约束（wiring-check 逐项核对）。
   // 本地 / 发版前的全量 E2E 不带这个开关（run-e2e 默认全跑）。
   assert.match(text, /E2E_SKIP_VISUAL: '1'/, 'CI 必须显式跳过视觉断言（否则 hosted runner 必红）');
+});
+
+// T-25（三次审查 · 低）：E2E 失败时 hosted runner 用后即毁，必须把临时目录（日志 / 演练书库）传成
+// artifact 才能排查；动作沿用全仓 SHA pin 风格（PINNED_USES_RE 已在上面统一核对）。
+test('T-25：两个 E2E 工作流在失败时上传临时目录 artifact（SHA pin + if: failure）', () => {
+  for (const [name, text] of [['e2e-weekly.yml', readE2e()], ['e2e-pr.yml', readE2ePr()]]) {
+    assert.match(
+      text,
+      /- name: 失败现场[^\r\n]*\r?\n\s+if: failure\(\)\r?\n\s+uses: actions\/upload-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+/,
+      name + ' 失败时必须上传 E2E 现场（if: failure + SHA pin 的 upload-artifact）'
+    );
+    assert.match(text, /path: \$\{\{ runner\.temp \}\}\/cw-e2e-\*/, name + ' 上传 run-e2e 的临时目录（cw-e2e-*）');
+    assert.match(text, /if-no-files-found: warn/, name + ' 没留下现场时不要额外把任务判红');
+  }
 });
 
 // C5=F3（审计 #24）：engines 声明 node >=22，每周 E2E 不能只测开发机的 24 —— 与 verify 同口径补矩阵。

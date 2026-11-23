@@ -106,6 +106,18 @@ jobs:
           TZ: Asia/Shanghai
           # 发版 2.1.0 的 CI 适配（REPO-03 后续）：hosted runner 没有交互式桌面会话，Chromium 对不可见
           # 窗口节流合成 / 动画 / 布局，动效 / 主题 / 几何测量类断言在那里必然偏（2026-11-23 实测 30 项）。
-          # 这些断言（43 处 checkVisual）在本地与发版前的全量 E2E 里照常跑；CI 只跳过它们，
-          # 功能断言与供应链闸门仍全部阻塞。不许把功能断言挪进 checkVisual 换绿灯。
+          # 这些断言（44 处 checkVisual，运行时展开 50 项）在本地与发版前的全量 E2E 里照常跑；CI 只跳过它们，
+          # 功能断言与供应链闸门仍全部阻塞。跳过面由 scripts/e2e/visual-assertions.js 的静态清单约束
+          # （wiring-check 的 e2e-visual-assertions 契约）：不许把功能断言挪进 checkVisual 换绿灯。
           E2E_SKIP_VISUAL: '1'
+
+      # T-25（三次审查 · 低）：定时任务失败时 hosted runner 也会销毁，只有一行临时目录路径没法诊断。
+      # 失败时把本次 E2E 的临时目录（userdata 日志 / 演练书库）传成 artifact；数据全是自造的。
+      - name: 失败现场（E2E 临时目录 / 日志）
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-weekly-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cw-e2e-*
+          if-no-files-found: warn
+          retention-days: 7

@@ -437,6 +437,12 @@ function checkDocs(options) {
     if (found !== version) problems.push(`验收清单.md 安装包名是 ${found}，package.json 是 ${version}`);
   }
 
+  // 计数口径（T-25 ③，写明而不是硬阻塞）：README / 验收清单里的「单测 N 项 / E2E N 项」是**机器实测
+  // 锚点**，只能由维护者在跑完 `npm test` / `pnpm run e2e` 后 `node scripts/version-sync.js --write
+  // --unit <实测> --e2e <实测>` 同步。--check 不带 --unit/--e2e 时只核对两处文档**互相对得上**
+  // （防止只改一处漂移）；带期望值时逐项核对实测值。本地日常改测试 / 加断言后计数必然变化，
+  // 若让默认 --check 直接红，每次正常开发都会被假红卡住——所以「实测 vs 文档」的强核对放在
+  // 显式传期望值的门禁调用里（每批门禁命令都带 --unit/--e2e），默认路径只做文档一致性告警/红灯。
   const readmeCounts = {
     unitCount: firstCount(readme, /node:test，(\d+) 项/),
     e2eCount: firstCount(readme, /真实启动 Electron 走 (\d+) 项主流程/)

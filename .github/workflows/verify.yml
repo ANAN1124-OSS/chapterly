@@ -6,8 +6,9 @@ name: verify
 # 审计修复 #29（O1）：运行镜像固定 windows-2022（不用浮动的 windows-latest），所有 actions 固定到
 # 提交 SHA（Dependabot 每周提更新）；E2E 不进本工作流（要起 Electron 真窗口，另有每周定时的
 # .github/workflows/e2e-weekly.yml），打包冒烟仍按发版门禁在发版前本地执行（D-4）。
-# 审计残留修复 R25（#29/O1）：下面三条 pin 的版本注释已按上游 tag 核对（2026-11-15）——checkout /
-# setup-node 的提交就是 v4.4.0；pnpm/action-setup 的同一提交上游也标了 v5.0.0，注释取较先发布的 v4.4.0。
+# T-25（三次审查 · 低）：清掉 R25 时代的陈旧注释——下面三条 `uses:` 的版本注释与实际 pin 一一对应
+# （checkout v7.0.1 / pnpm/action-setup v6.1.1 / setup-node v7.1.0），提交 SHA 本身没变；升级只走
+# Dependabot 每周的 PR，注释跟着 pin 一起改。旧的「就是 v4.4.0 / v5.0.0」是上一轮核对残留，已删除。
 on:
   push:
     branches: [main]

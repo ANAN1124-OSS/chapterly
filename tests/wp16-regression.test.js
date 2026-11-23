@@ -134,6 +134,28 @@ test('R2 PR 工作流：pull_request.paths 与事实源逐项一致，且真跑�
     scope.E2E_TRIGGER_PATHS.slice().sort(),
     'paths 声明必须与 scripts/e2e-scope.js 的唯一事实源逐项一致（改一处漏一处就是假拦截）'
   );
+  // T-27：push 到 main 的直推改动同样要跑 E2E（与 pull_request 同一份 paths 过滤）。
+  assert.match(yaml, /^ {2}push:\n {4}branches: \[main\]\n {4}paths:$/m, '必须有 push.branches [main] + paths 触发');
+  const pushBranches = /^ {4}branches: \[([^\]]+)\]$/m.exec(yaml);
+  assert.ok(pushBranches, 'push.branches 必须是行内数组（唯一事实源 E2E_PUSH_BRANCHES）');
+  assert.deepEqual(
+    pushBranches[1].split(',').map((item) => item.trim()).sort(),
+    scope.E2E_PUSH_BRANCHES.slice().sort(),
+    'push 分支必须与 scripts/e2e-scope.js 的 E2E_PUSH_BRANCHES 一致'
+  );
+  const pushStart = lines.findIndex((line, index) => /^ {4}paths:$/.test(line) && index > start);
+  assert.ok(pushStart > start, 'push 触发也要有 paths 列表');
+  const pushDeclared = [];
+  for (let i = pushStart + 1; i < lines.length; i += 1) {
+    const hit = /^\s{6}- ['"]([^'"]+)['"]\s*$/.exec(lines[i]);
+    if (!hit) break;
+    pushDeclared.push(hit[1]);
+  }
+  assert.deepEqual(
+    pushDeclared.slice().sort(),
+    scope.E2E_TRIGGER_PATHS.slice().sort(),
+    'push.paths 必须与 pull_request.paths 用同一份事实源（两条触发路径不许漂移）'
+  );
   // 真跑全量 E2E：安装二进制、锁文件安装、供应链校验、固定时区、全量命令
   const commands = commandsOf(yaml);
   assert.match(commands, /pnpm install --frozen-lockfile/);

@@ -19,6 +19,11 @@
 //   node scripts/e2e-scope.js --changed-file changed.txt --json
 const fs = require('node:fs');
 
+// push 到哪些分支也要跑 PR 级 E2E（T-27：此前直推 main 的产品改动只过 verify、不过任何 E2E）。
+// 与 E2E_TRIGGER_PATHS 一样是唯一事实源：`.github/workflows/e2e-pr.yml` 的 `push.branches` 必须与它逐项一致
+// （tests/wp16-regression.test.js 核对）；只放宽到 main，不铺全部分支（feature 分支的 PR 已由 pull_request 覆盖）。
+const E2E_PUSH_BRANCHES = ['main'];
+
 const E2E_TRIGGER_PATHS = [
   'renderer/**',
   'core/**',
@@ -189,6 +194,7 @@ if (require.main === module) {
 
 module.exports = {
   E2E_TRIGGER_PATHS,
+  E2E_PUSH_BRANCHES,
   normalizeChangedPath,
   patternToRegExp,
   matchPath,

@@ -1247,9 +1247,15 @@ module.exports = async function group44StatsGoal(t) {
     };
   })()`);
   const readWheelUp = await readWheel(-120);
+  // T-26：键盘 / 滚轮路由与档位是功能断言，留 check；「渲染成 25px」是测量值，留 checkVisual。
+  check(
+    '阅读模式：Ctrl+滚轮上滚放大一档字号，并拦掉整页缩放',
+    readWheelUp.prevented === true && readWheelUp.fontLevel === 3,
+    readWheelUp
+  );
   checkVisual(
-    '阅读模式：Ctrl+滚轮上滚放大一档字号（22 → 25px），并拦掉整页缩放',
-    readWheelUp.prevented === true && readWheelUp.fontLevel === 3 && parseFloat(readWheelUp.fontSize) === 25,
+    '阅读模式：Ctrl+滚轮上滚后正文渲染为 25px（特大档）',
+    parseFloat(readWheelUp.fontSize) === 25,
     readWheelUp
   );
   const readWheelDown = await readWheel(120);
@@ -1266,22 +1272,32 @@ module.exports = async function group44StatsGoal(t) {
   );
   const readZoomIn = await readKeydown('reading-scroll', '=', ', ctrlKey: true');
   const readZoomInMetrics = await exec('window.__cwTest.readingMetrics()');
-  checkVisual(
+  // T-26：Ctrl+= 的默认拦截与档位是功能断言（CI 必跑）；25px 是视觉测量，留 checkVisual。
+  check(
     '阅读模式：Ctrl+= 放大一档字号（与字号下拉同一条路径，拦掉默认）',
-    readZoomIn.prevented === true && readZoomIn.fontLevel === 3 && parseFloat(readZoomInMetrics.fontSize) === 25,
-    { key: readZoomIn, metrics: readZoomInMetrics }
+    readZoomIn.prevented === true && readZoomIn.fontLevel === 3,
+    readZoomIn
+  );
+  checkVisual(
+    '阅读模式：Ctrl+= 放大后正文渲染为 25px（特大档）',
+    parseFloat(readZoomInMetrics.fontSize) === 25,
+    readZoomInMetrics
   );
   await readKeydown('reading-scroll', '-', ', ctrlKey: true');
   const readZoomOut = await exec('window.__cwTest.readingState()');
   await readKeydown('reading-scroll', '-', ', ctrlKey: true');
   await readKeydown('reading-scroll', '-', ', ctrlKey: true');
   const readZoomMin = await exec('window.__cwTest.readingMetrics()');
+  const readZoomMinState = await exec('window.__cwTest.readingState()');
+  check(
+    '阅读模式：Ctrl+- 缩回 22px，连按到最小档停住（不越界）',
+    readZoomOut.fontLevel === 2 && readZoomMinState.fontLevel === 0,
+    { afterOne: readZoomOut, min: readZoomMinState }
+  );
   checkVisual(
-    '阅读模式：Ctrl+- 缩回 22px，连按到最小档 17px 停住（不越界）',
-    readZoomOut.fontLevel === 2 &&
-      (await exec('window.__cwTest.readingState()')).fontLevel === 0 &&
-      parseFloat(readZoomMin.fontSize) === 17,
-    { afterOne: readZoomOut, min: readZoomMin }
+    '阅读模式：最小档正文渲染为 17px',
+    parseFloat(readZoomMin.fontSize) === 17,
+    readZoomMin
   );
   await exec('window.__cwTest.readingSetFontLevel(2)');
 
