@@ -241,7 +241,7 @@ pnpm start          # 启动应用
 
 ```bash
 pnpm test            # 单测（node:test，3554 项）
-pnpm run e2e         # 全量 E2E：真实启动 Electron 走 1921 项主流程
+pnpm run e2e         # 全量 E2E：真实启动 Electron 走 1922 项主流程
 pnpm lint            # eslint 门禁（0 ERROR）
 ```
 
