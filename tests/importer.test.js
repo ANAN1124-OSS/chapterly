@@ -1102,6 +1102,40 @@ test('CIO-A-01：复制后章节全被剔光 → 按整源跳过，不抛 TypeEr
   assert.deepEqual(await fs.readdir(booksRoot).catch(() => []), [], '暂存已清，书架里不留空书');
 });
 
+// T-10（三审）：「按原文章节导入」以前把 splitChaptersRaw 归一后的 LF 直接写盘，而 split 分支和正常
+// 保存都走 toDiskNewlines → CRLF —— 同一书库里两种换行风格（外部 diff / 同步盘整章判差异、老记事本
+// 显示成一行）。这里从**磁盘字节**钉住两条自动切章路径的换行口径一致。
+test('T-10：按原文章节导入的写盘换行与 split 分支统一为 CRLF', async () => {
+  const base = await mkTmp();
+  const booksRoot = path.join(base, '书架');
+  const source = '第1章 开端\r\n\r\n正文一。\r\n\r\n第2章 继续\r\n\r\n正文二。';
+  const file = path.join(base, '换行.txt');
+  await fs.writeFile(file, source, 'utf8');
+
+  const chaptersMode = await importer.importNovelFile(booksRoot, file, { mode: 'chapters' });
+  const chaptersMeta = await storage.readBookMeta(chaptersMode.path);
+  assert.equal(chaptersMeta.chapters.length, 2);
+  for (const chapter of chaptersMeta.chapters) {
+    const disk = await fs.readFile(path.join(chaptersMode.path, chapter.file), 'utf8');
+    assert.equal(disk.includes('\r\n'), true, `chapters:${chapter.file} 写盘必须用 CRLF`);
+    assert.equal(/(^|[^\r])\n/.test(disk), false, `chapters:${chapter.file} 不许留裸 LF`);
+  }
+  // 字符内容一个不改：折回 LF 后与源文件里的同一段正文逐字相同
+  const firstDisk = await fs.readFile(
+    path.join(chaptersMode.path, chaptersMeta.chapters[0].file),
+    'utf8'
+  );
+  assert.equal(firstDisk.replace(/\r\n/g, '\n'), '\n正文一。\n', '字符一个不改（只换换行编码）');
+
+  // split 分支同一口径：两条「自动切章」路径写出的书换行风格必须一致（这正是 T-10 的不变量）
+  const splitFile = path.join(base, '换行-split.txt');
+  await fs.writeFile(splitFile, source, 'utf8');
+  const splitMode = await importer.importNovelFile(path.join(base, '书架-split'), splitFile, { mode: 'split' });
+  const splitMeta = await storage.readBookMeta(splitMode.path);
+  const splitDisk = await fs.readFile(path.join(splitMode.path, splitMeta.chapters[0].file), 'utf8');
+  assert.equal(/(^|[^\r])\n/.test(splitDisk), false, 'split 分支同样只写 CRLF');
+});
+
 // C1（一轮·低）：三种导入模式（chapters / split / raw）共用同一个章节记录构造器。
 // 以前三处各拼一份同样的字段，新增字段要改三处。这里从**行为面**钉住「形状与口径只有一份」：
 // 三种模式产出的记录字段集合完全相同、id 补零规则相同、chars 严格等于真正写盘的正文。

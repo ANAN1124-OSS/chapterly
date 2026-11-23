@@ -277,6 +277,23 @@ test('校对：连续标点——3 个及以上才报，「！？」「……」
   assert.equal(only(proofread.proofreadText('什么?!'), 'punct-run').length, 0);
 });
 
+test('T-09：连排「…」「—」每两个字符 1 单位（ceil(N/2)），6 个省略号要报', () => {
+  // 6 个 … = 3 个完整省略号 → 3 单位：作者连按省略号的笔误必须报（旧实现恒折 1 单位，永远漏报）
+  const six = only(proofread.proofreadText('他说完了………………'), 'punct-run');
+  assert.equal(six.length, 1);
+  assert.equal(six[0].match, '………………');
+  assert.match(six[0].message, /连续 3 个标点/);
+  // 4 个 … = 2 单位，不报（是「每两个字符 1 单位」，不是「每段连排 1 单位」）
+  assert.equal(only(proofread.proofreadText('他说完了…………他走了。'), 'punct-run').length, 0);
+  // 3 个 … = ceil(3/2) = 2 单位，仍不到 3
+  assert.equal(only(proofread.proofreadText('他说完了………他走了。'), 'punct-run').length, 0);
+  // 「—」连排同一口径：8 个 — = 4 单位（破折号规则⑧各管各的，互不吞并）
+  assert.equal(only(proofread.proofreadText('他走了————————他回来。'), 'punct-run').length, 1);
+  // 正常省略号 / 破折号（2 个字符 = 1 单位）不误报（旧行为不变）
+  assert.equal(only(proofread.proofreadText('他……没说完。'), 'punct-run').length, 0);
+  assert.equal(only(proofread.proofreadText('他——没说完。'), 'punct-run').length, 0);
+});
+
 test('校对：多余空行——2 个及以上连续空行才报，单个空行不报', () => {
   const single = proofread.proofreadText('第一段。\n\n第二段。');
   assert.equal(only(single, 'blank-lines').length, 0);

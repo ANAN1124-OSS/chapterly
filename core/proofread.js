@@ -222,7 +222,11 @@ function createCollector(maxIssues) {
   };
 }
 
-// 连续标点数：把连排的「……」/「——」各折叠成一个单位，其余每个标点算一个单位。
+// 连续标点数：把连排的「……」/「——」每**两个**字符折叠成 1 个单位，其余每个标点算一个单位。
+// T-09（三审）：旧实现「与前一字符相同就跳过」把 N 个相同字符恒折成 **1** 个单位，与这段注释的
+// 设计口径（每两个字符 1 单位）矛盾 —— 「………………」（6 个 … = 3 个完整省略号）只算 1 单位，
+// 永远够不到 punct-run 的 3 单位阈值，作者连按省略号的真笔误被静默漏报（「—」连排尚有规则⑧兜底，
+// 「…」没有任何兜底）。现在偶数位跳过：2 字符 1 单位、4 字符 2 单位、6 字符 3 单位（= ceil(N/2)）。
 // 审计修复 #49（E24）：全角 + 半角混排时按字符数算 —— 「-——」「。。.」这类 3 个标点
 // 如果仍按折叠单位数（2）就会被漏报。
 // 纯 ASCII 连排（「...」「---」「?!」）一律返回 0：它们分别由省略号 / 破折号规则负责，
@@ -235,11 +239,18 @@ function countPunctUnits(run, start = 0, end) {
   let units = 0;
   let hasAscii = false;
   let hasCjk = false;
+  let repeat = 0; // 与前一字符相同的连排次数（T-09：偶数位跳过 ⇒ 每两个字符 1 单位）
   for (let i = from; i < to; i += 1) {
     const ch = run[i];
     if (ASCII_RUN_PUNCT.has(ch)) hasAscii = true;
     else if (CJK_RUN_PUNCT.has(ch)) hasCjk = true;
-    if ((ch === '…' || ch === '—') && i > from && run[i - 1] === ch) continue;
+    if ((ch === '…' || ch === '—') && i > from && run[i - 1] === ch) {
+      repeat += 1;
+      if (repeat % 2 === 1) continue;
+      units += 1;
+      continue;
+    }
+    repeat = 0;
     units += 1;
   }
   if (!hasCjk) return 0;

@@ -4,7 +4,8 @@
 //   2) 一本书的章节目录（txt 文件名形如 001-xxx.txt / 001.txt / 第一章 xxx.txt）→ 复制后重建书目
 //   3) 一堆独立小说 txt（每个 txt 是一整本小说，来自同一个收藏夹文件夹）
 //      → 每个 txt 导入成一本书
-//        mode='chapters'（默认）：按原文的章节标题切开，章名和正文都保持原文，一字不改
+//        mode='chapters'（默认）：按原文的章节标题切开，章名和正文字符都保持原文，一字不改
+//        （换行统一按书库口径落盘成 CRLF，见 T-10 注释）
 //        mode='raw'：整本作为一章「全文」，UTF-8 源文件按字节原样复制
 //        mode='split'（旧版自动分章，保留兼容）：按标题行拆分并重新编号
 // 只复制、不移动源文件；文件夹重名自动加 -2/-3。
@@ -803,8 +804,12 @@ async function importNovelFile(booksRoot, filePath, { mode = 'chapters' } = {}) 
         const seq = i + 1;
         const title = parts[i].title || '';
         const file = chaptersLib.uniqueFileName(seq, title || '全文', usedFiles);
-        // 正文按原文写入（不 trim、不改换行内容），只切分
-        await fs.writeFile(path.join(staging, file), parts[i].body, 'utf8');
+        // 正文按原文写入（不 trim、不改字符），只切分。
+        // T-10（三审）：换行必须与书库其它写盘路径同口径 —— splitChaptersRaw 第一步 normalizeText 已经把
+        // 源文件的 CRLF 归一成 LF，旧实现直接把 LF 写盘，于是「按原文章节导入」的书和 split 导入 /
+        // 正常保存（都走 toDiskNewlines → CRLF）在同一书库里留下两种换行风格（外部 diff / 同步盘整章
+        // 判为差异、老记事本显示成一行）。写盘前同样过 toDiskNewlines，字符内容仍然一个不改。
+        await fs.writeFile(path.join(staging, file), chaptersLib.toDiskNewlines(parts[i].body), 'utf8');
         usedFiles.push(file);
         chapterList.push(
           importedChapterRecord({ seq, file, name: title, text: parts[i].body, now })
