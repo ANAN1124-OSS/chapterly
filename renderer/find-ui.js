@@ -428,18 +428,34 @@
       toast('这一章已经不存在了', 'warn');
       return;
     }
+    // T-22：从结果清单跳转同样是「一次查找落地」，发起前取号。在飞的 await 期间作者可能 Ctrl+F
+    // 换词回车（runFind 会正常落地新会话）；本路径的旧回包后到不许把新会话盖掉 —— 修前它不推进
+    // findSeq，isCurrent 拦不住，高亮 / 摘要会被旧查询顶回。
+    const token = findSeq.next();
     closeFindPanel();
     if (index !== state.index) {
       const switched = await switchChapter(index);
       if (!switched || switched.ok === false) return;
+      // 切章期间已经发起了新的查找：这次跳转的后续落地（高亮）让位给新查找。
+      if (!findSeq.isCurrent(token)) return;
     }
     // 跳过来以后把这一章的命中全部高亮（v0.8-11，提案 N11）：清单是全书搜出来的，
     // 这里按「编辑区里的最新正文」重新数一遍，未保存的修改也算。
     const query = $('find-query').value;
     const caseSensitive = $('find-case').checked;
     if (query.trim()) {
+      // T-22：与 runFind 同款三重复核（令牌 + 书 / 章身份 + 正文快照）。findAll 在飞期间换了章 /
+      // 换了书或在正文里改了字，旧命中下标就不能再画到眼前的编辑区上；作废时不退回首条命中位置
+      // （那也是旧正文里的下标）。
+      const expectedChapter = staleGuard.chapterIdentity(state);
+      const snapshot = editorEl.value;
+      const isStale = () =>
+        !findSeq.isCurrent(token) ||
+        !staleGuard.sameChapterIdentity(expectedChapter, staleGuard.chapterIdentity(state)) ||
+        editorEl.value !== snapshot;
       try {
-        const res = await call(api.findAll, editorEl.value, query, { caseSensitive });
+        const res = await call(api.findAll, snapshot, query, { caseSensitive });
+        if (isStale()) return { ok: false, stale: true };
         if (res.count) {
           state.find.fromBookmark = false;
           startFindSession(query, caseSensitive, res.matches, 0);
@@ -450,7 +466,8 @@
           return;
         }
       } catch {
-        /* 高亮失败不影响已经跳过来的位置 */
+        // 高亮失败不影响已经跳过来的位置 —— 但期间发起了新查找 / 换了章就不再做下面的旧下标定位。
+        if (isStale()) return { ok: false, stale: true };
       }
     }
     const match = result.matches && result.matches[0];

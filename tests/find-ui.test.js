@@ -607,6 +607,71 @@ test('jumpToFindResult：章节已不存在 toast；本章无命中时退回第�
   assert.deepEqual(ctx.calls.scrollCaretIntoView, [3]);
 });
 
+// T-22：从结果清单跳转后按最新正文重数命中是一次新的「查找落地」。它和 runFind 抢同一个查找会话：
+// findAll 在飞期间作者 Ctrl+F 换词回车，runFind 正常落地新会话；旧实现没有令牌，跳转的旧回包后到
+// 就把新会话（高亮 / 摘要 / total）整个盖掉。修法：发起前取号，落地核对（与 runFind 同款三重）。
+test('T-22：跳转的 findAll 在飞期间发起了新查找 → 旧回包不覆盖新会话，跳转自认 stale', async () => {
+  const ctx = build({ query: '张三', text: '张三说张三笑了' });
+  const gates = [];
+  ctx.host.api.findAll = (...args) => new Promise((resolve) => gates.push({ args, resolve }));
+  const jump = ctx.ui.jumpToFindResult({ chapterId: 'c1', name: '第一章', matches: [{ index: 0, length: 2 }] });
+  await flush();
+  assert.equal(gates.length, 1, '跳转先发起一次 findAll（按最新正文重数）');
+
+  // 作者在飞期间换了词回车：新一次 runFind 落地
+  ctx.dom.map.get('find-query').value = '李四';
+  const find = ctx.ui.runFind();
+  await flush();
+  assert.equal(gates.length, 2);
+  gates[1].resolve({ count: 1, matches: [{ index: 4, length: 2 }] });
+  await find;
+  assert.equal(ctx.state.find.query, '李四');
+  assert.equal(ctx.state.find.total, 1);
+
+  // 跳转的旧回包后到：不许把新会话盖回「张三 / 2 处」，也不许再弹跳转的「已高亮」提示
+  gates[0].resolve({ count: 2, matches: [{ index: 0, length: 2 }, { index: 3, length: 2 }] });
+  assert.deepEqual(await jump, { ok: false, stale: true });
+  assert.equal(ctx.state.find.query, '李四', '新查找会话不许被旧跳转回包覆盖');
+  assert.equal(ctx.state.find.total, 1);
+  assert.equal(ctx.calls.toast.some(([message]) => String(message).includes('已高亮')), false);
+});
+
+test('T-22：跳转的 findAll 在飞期间换了章 / 改了正文 → 不画旧命中下标，也不退回首条命中位置', async () => {
+  // 换章：旧章的命中下标不能画到新章编辑区上
+  const moved = build({ query: '张三', text: '张三说张三笑了' });
+  let releaseMoved;
+  moved.host.api.findAll = () => new Promise((resolve) => { releaseMoved = resolve; });
+  const jumpMoved = moved.ui.jumpToFindResult({ chapterId: 'c1', name: '第一章', matches: [{ index: 3, length: 2 }] });
+  await flush();
+  moved.state.index = 1; // 在飞期间切到第二章
+  releaseMoved({ count: 2, matches: [{ index: 0, length: 2 }, { index: 3, length: 2 }] });
+  assert.deepEqual(await jumpMoved, { ok: false, stale: true });
+  assert.equal(moved.state.find.total, 0, '不许开始新会话');
+  assert.equal(moved.editorEl.selectionStart, 0, '也不许按旧章下标定位');
+
+  // 改正文：命中下标按旧正文算的，不能画到新正文上（与 runFind 的正文快照同口径）
+  const typed = build({ query: '张三', text: '张三说张三笑了' });
+  let releaseTyped;
+  typed.host.api.findAll = () => new Promise((resolve) => { releaseTyped = resolve; });
+  const jumpTyped = typed.ui.jumpToFindResult({ chapterId: 'c1', name: '第一章', matches: [{ index: 3, length: 2 }] });
+  await flush();
+  typed.editorEl.value = '张三说张三笑了又笑'; // 在飞期间作者继续敲字
+  releaseTyped({ count: 2, matches: [{ index: 0, length: 2 }, { index: 3, length: 2 }] });
+  assert.deepEqual(await jumpTyped, { ok: false, stale: true });
+  assert.equal(typed.state.find.total, 0, '旧正文的命中不许开始会话');
+  assert.equal(typed.editorEl.selectionStart, 0, '也不许按旧下标定位');
+});
+
+test('T-22 静态清单：jumpToFindResult 发起前取号，落地核对令牌 / 章身份 / 正文快照', () => {
+  const at = moduleSrc.indexOf('async function jumpToFindResult(');
+  assert.notEqual(at, -1);
+  const body = moduleSrc.slice(at, moduleSrc.indexOf('async function runFind(', at));
+  assert.match(body, /const token = findSeq\.next\(\)/, '发起前取号');
+  assert.match(body, /findSeq\.isCurrent\(token\)/, '令牌核对');
+  assert.match(body, /staleGuard\.sameChapterIdentity\(expectedChapter, staleGuard\.chapterIdentity\(state\)\)/, '章身份核对');
+  assert.match(body, /editorEl\.value !== snapshot/, '正文快照核对');
+});
+
 // ---------- 查找 / 替换执行 ----------
 test('runFind：空查询 / 当前章成功 / 当前章无命中 / 失败 / 整本清单', async () => {
   const empty = build({ query: '  ' });
