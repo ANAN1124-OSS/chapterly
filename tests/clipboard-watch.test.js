@@ -410,3 +410,59 @@ test('S1 / T6 接线闸门：读剪贴板要一次性凭证；队列按窗口归
   assert.match(captureSrc, /panel\.gesture = null;/, '关面板即作废凭证');
 });
 
+// N-06（二次审查，中）：全局快捷键捕获是唯一没有长度闸门的捕获通道 ——
+// 剪贴板里几十 MB 的日志 / 网页全文会被 countChars 全扫、经 IPC 整串发给渲染层。
+// main.js 不可在 Node 里 require，所以这里用机器清单钉住「闸门在入队与回包之前、超限只发元数据」；
+// 限额判定本身的边界由 tests/capture-perf-wp11.test.js 的 checkCaptureLimits 用例覆盖，
+// 渲染层收到超限元数据后的行为由 tests/notify-events-ui.test.js 覆盖。
+test('N-06 接线闸门：capture:triggered 超限只发元数据，正文不出主进程', () => {
+  const fsMod = require('node:fs');
+  const pathMod = require('node:path');
+  const readSource = (rel) => fsMod.readFileSync(pathMod.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
+  const mainSrc = readSource('main.js');
+
+  const start = mainSrc.indexOf('async function triggerClipboardCapture()');
+  assert.notEqual(start, -1, 'triggerClipboardCapture 必须存在');
+  const end = mainSrc.indexOf('\nfunction registerCaptureShortcut()', start);
+  assert.ok(end > start, 'triggerClipboardCapture 的函数边界可定位');
+  const body = mainSrc.slice(start, end);
+
+  const gateAt = body.indexOf('captureLib.checkCaptureLimits(text)');
+  const addAt = body.indexOf('captureQueue.add(text');
+  const sendAt = body.indexOf("sendToSession(target, 'capture:triggered', { text,");
+  assert.ok(gateAt > 0, '快捷键捕获必须先过 checkCaptureLimits（与 capture:clipboard / 队列同一口径）');
+  assert.ok(addAt > gateAt, '长度闸门必须先于入队（超限不做全文 trim / countChars）');
+  assert.ok(sendAt > gateAt, '长度闸门必须先于回包（超限不把正文发进渲染层）');
+  assert.match(
+    body,
+    /tooLarge: true,[\s\S]{0,200}?reason: limits\.reason,[\s\S]{0,200}?chars: limits\.chars,[\s\S]{0,200}?rawLength: limits\.rawLength/,
+    '超限回包只带原因 / 字数 / 原文长度（不带 text）'
+  );
+  const tooLargeBlock = body.slice(gateAt, addAt);
+  assert.match(tooLargeBlock, /sendToSession\(target, 'capture:triggered'/, '超限也回一条（让渲染层提示原因）');
+  assert.equal(
+    /sendToSession\(target, 'capture:triggered', \{ text/.test(tooLargeBlock),
+    false,
+    '超限分支不许把剪贴板正文塞进回包'
+  );
+  assert.match(tooLargeBlock, /queued: false/, '超限时没有入队');
+  assert.ok(
+    tooLargeBlock.indexOf('return;') > tooLargeBlock.indexOf('tooLarge: true'),
+    '超限分支发完元数据立刻返回（不继续入队）'
+  );
+
+  // 渲染层：识别超限元数据 → 只提示，不打开捕获面板。
+  const notifySrc = readSource('renderer/notify-events-ui.js');
+  const notifyStart = notifySrc.indexOf('api.onCaptureTriggered(');
+  assert.notEqual(notifyStart, -1, '渲染层订阅 capture:triggered');
+  const notifyEnd = notifySrc.indexOf('\n      });', notifyStart);
+  const notifyBody = notifySrc.slice(notifyStart, notifyEnd > notifyStart ? notifyEnd : notifyStart + 1200);
+  assert.match(notifyBody, /payload\.tooLarge === true/, '渲染层识别超限元数据');
+  assert.ok(
+    notifyBody.indexOf('payload.tooLarge') < notifyBody.indexOf('openTriggered'),
+    '超限分支在 openTriggered 之前提前返回（不打开面板）'
+  );
+  assert.match(notifyBody, /没有打开捕获面板/, '提示原因：超限没有打开面板');
+  assert.equal(/tooLarge === true[\s\S]{0,400}?payload\.text/.test(notifyBody), false, '超限分支不读 payload.text');
+});
+

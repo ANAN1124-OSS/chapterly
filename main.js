@@ -201,6 +201,23 @@ async function triggerClipboardCapture() {
   } catch (err) {
     logError('capture-clipboard', err, { level: 'warn' });
   }
+  // N-06（二次审查）：与 capture:clipboard / 捕获队列同一条长度闸门。作者复制了几十 MB 的日志 /
+  // 网页全文后按 Ctrl+Alt+V，以前会先把整串入库（countChars 全扫）、再经 IPC 序列化整串发给渲染层，
+  // 主进程与渲染层各持一份，期间界面可能明显卡顿。超限时只发元数据（原因 / 字数 / 原文长度），
+  // 正文一个字符都不出主进程；渲染层据此提示「拆段 / 导入小说」，与 30 万字产品口径一致。
+  const limits = captureLib.checkCaptureLimits(text);
+  if (limits.tooLarge) {
+    focusSession(target);
+    sendToSession(target, 'capture:triggered', {
+      tooLarge: true,
+      reason: limits.reason,
+      chars: limits.chars,
+      rawLength: limits.rawLength,
+      accelerator: CAPTURE_ACCELERATOR,
+      queued: false
+    });
+    return;
+  }
   // 2026-11-06（捕获队列）：按快捷键前刚复制的那段也要立刻入队（不等 900ms 轮询），
   // 否则面板里会少掉「刚复制的这一条」。判定与轮询同一套规则，重复调用是幂等的。
   if (clipboardWatchEnabledNow()) {

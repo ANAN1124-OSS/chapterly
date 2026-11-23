@@ -228,6 +228,23 @@ test('捕获触发：先收顶栏菜单，再把原文 / 是否刚入队交给�
   ], '非字符串原文不往面板里塞');
 });
 
+// N-06（二次审查）：剪贴板原文超限时主进程只发元数据 → 渲染层只提示原因，不打开捕获面板。
+test('捕获触发：超限元数据只提示「拆段 / 导入小说」，不打开面板', () => {
+  const h = makeHost();
+  h.emit('onCaptureTriggered', { tooLarge: true, reason: 'chars', chars: 400000, rawLength: 420000, queued: false });
+  assert.deepEqual(namesOf(h.calls), ['hideHeaderMenus', 'toast'], '超限只提示，不开面板');
+  const message = h.calls[1][1];
+  assert.ok(String(message).includes('400000 字'), '按去空白字数报原因');
+  assert.ok(String(message).includes('没有打开捕获面板'), '明说面板没有打开');
+  assert.ok(String(message).includes('导入小说'), '给出可行出口');
+  assert.equal(h.calls[1][2], 'warn', '超限是 warn 提示');
+
+  const raw = makeHost();
+  raw.emit('onCaptureTriggered', { tooLarge: true, reason: 'raw', chars: null, rawLength: 3100000, queued: false });
+  assert.deepEqual(namesOf(raw.calls), ['hideHeaderMenus', 'toast'], '原文超长同样只提示');
+  assert.ok(String(raw.calls[1][1]).includes('3100000 个字符'), '原文超长按原文长度报原因');
+});
+
 // ------------------------------------------------------------------ 剪贴板变化
 test('剪贴板变化：字数无效直接忽略（不提示、不刷新）', () => {
   for (const payload of [null, {}, { chars: 0 }, { chars: -1 }, { chars: 'abc' }]) {

@@ -68,6 +68,20 @@
       // （queued=true 表示这一段刚入队；队列为空且这段没入队 → openTriggered 落成列表里的 pending 一条）
       api.onCaptureTriggered((payload) => {
         hideHeaderMenus();
+        // N-06（二次审查）：剪贴板原文超限时主进程只发元数据（正文一个字符都不发），
+        // 这里按同一口径提示「拆段 / 导入小说」，不打开捕获面板。
+        if (payload && payload.tooLarge === true) {
+          const tooLargeText =
+            payload.reason === 'raw'
+              ? `原文 ${formatCount(Number(payload.rawLength) || 0)} 个字符`
+              : `${formatCount(Number(payload.chars) || 0)} 字`;
+          toast(
+            `剪贴板这一段太长（${tooLargeText}，单条上限 30 万字正文 / 300 万字符原文），没有打开捕获面板；` +
+              '请先拆成多段，或用「导入小说…」按章节导入',
+            'warn'
+          );
+          return;
+        }
         void captureUi.openTriggered(
           payload && typeof payload.text === 'string' ? payload.text : undefined,
           Boolean(payload && payload.queued)
