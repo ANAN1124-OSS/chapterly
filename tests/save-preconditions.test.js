@@ -132,8 +132,12 @@ test('R2（E-N1）：stamp 一致 → 写盘成功，普通保存（rotateBak）
   assert.notEqual(await fs.readFile(metaPath, 'utf8'), before, '主文件已经是最新版');
 });
 
-// ---------- R3：连续两次普通保存 → .bak 始终是「上一次写盘的那一版」 ----------
-test('R3（E-N1）：连续两次普通保存 → 第二次后的 .bak 正好是第一次写盘后的主文件', async () => {
+// ---------- R3：普通保存的 .bak 轮换走「时间窗」策略（N-08） ----------
+// 旧口径：连续两次普通保存，第二次一定把第一次写盘后的主文件轮换成 .bak（每次 Ctrl+S 都多一次
+// 读旧书目 + 两次原子写）。N-08 改成时间窗：距上次轮换不足 5 分钟就跳过；窗口外的下一次保存再轮换；
+// 结构性变更不受影响（另有 book-meta-backup 用例钉住）。这里用「把 .bak 的 mtime 改到 6 分钟前」
+// 模拟窗口过去，不真等 5 分钟。
+test('R3（N-08）：普通保存的 .bak 走时间窗——窗口内不轮换，窗口外补一版；结构性变更仍每次轮换', async () => {
   const root = await mkTmp();
   const { bookPath, meta } = await makeBook(root, '连续保存 备份');
   const metaPath = path.join(bookPath, '书目.json');
@@ -149,7 +153,10 @@ test('R3（E-N1）：连续两次普通保存 → 第二次后的 .bak 正好是
     expectedStamp: first.metaStamp
   });
   const afterFirstSave = await fs.readFile(metaPath, 'utf8');
+  const bakAfterFirst = await fs.readFile(bakPath, 'utf8');
+  assert.notEqual(bakAfterFirst, afterFirstSave, '第一次普通保存要留出上一版（时间窗从这一刻开始算）');
 
+  // 窗口内再保存：主文件更新，.bak 保持（省掉一次读书目 + 一次原子写 / fsync）
   const second = await storage.prepareChapterSave(bookPath, chapterId);
   const secondSaved = await storage.saveChapterText(bookPath, second.chapter.file, '第二版，更长一点。', { ensureDir: false });
   second.chapter.chars = secondSaved.chars;
@@ -158,8 +165,31 @@ test('R3（E-N1）：连续两次普通保存 → 第二次后的 .bak 正好是
     rotateBak: true,
     expectedStamp: second.metaStamp
   });
+  const mainAfterSecond = await fs.readFile(metaPath, 'utf8');
+  assert.notEqual(mainAfterSecond, afterFirstSave, '窗口内主文件照常写盘（只有 .bak 不轮换）');
+  assert.equal(await fs.readFile(bakPath, 'utf8'), bakAfterFirst, '窗口内不轮换 .bak（N-08 时间窗）');
 
-  assert.equal(await fs.readFile(bakPath, 'utf8'), afterFirstSave, '.bak 必须滚动成「上一次写盘的那一版」');
+  // 把 .bak 的 mtime 拨到 6 分钟前 = 时间窗已经过去：下一次普通保存重新轮换成「这一次写盘前的上一版」
+  const sixMinutesAgo = new Date(Date.now() - 6 * 60 * 1000);
+  await fs.utimes(bakPath, sixMinutesAgo, sixMinutesAgo);
+  const third = await storage.prepareChapterSave(bookPath, chapterId);
+  const thirdSaved = await storage.saveChapterText(bookPath, third.chapter.file, '第三版。', { ensureDir: false });
+  third.chapter.chars = thirdSaved.chars;
+  await storage.writeBookMeta(bookPath, third.meta, {
+    ensureDir: false,
+    rotateBak: true,
+    expectedStamp: third.metaStamp
+  });
+  assert.equal(
+    await fs.readFile(bakPath, 'utf8'),
+    mainAfterSecond,
+    '时间窗过去后的普通保存要把「上一版」补回 .bak'
+  );
+
+  // 结构性变更不受时间窗限制：改名后 .bak 立刻变成改名前的这一版
+  const beforeStructural = await fs.readFile(metaPath, 'utf8');
+  await storage.renameChapter(bookPath, chapterId, '改名后的章');
+  assert.equal(await fs.readFile(bakPath, 'utf8'), beforeStructural, '结构性变更必须每次轮换 .bak（时间窗不适用）');
 });
 
 // ---------- R4：保留 size+mtime 的外部改写 → 内容指纹不一致 → EXTERNAL_CHANGE ----------

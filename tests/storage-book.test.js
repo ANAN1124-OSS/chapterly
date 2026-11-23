@@ -287,6 +287,60 @@ test('listBooks：扫描、统计、损坏标记', async () => {
 });
 
 
+// N-09（二次审查）：书架卡片不再整本下发章节名 —— 每本最多前 500 条 + 截断标记；
+// 需要省载荷的调用方可以 includeChapterNames:false（完全不读章节名）。
+test('N-09：readBookCard 章节名截到前 500 条并标记；includeChapterNames:false 不读章节名', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '大书架书');
+  await fs.mkdir(bookPath);
+  const chapters = Array.from({ length: 501 }, (_, i) => ({
+    id: `ch_${i + 1}`,
+    file: `${String(i + 1).padStart(3, '0')}-第${i + 1}章.txt`,
+    name: `第${i + 1}章`,
+    createdAt: new Date().toISOString(),
+    // 字数缓存齐全：书卡这条路径不再读任何章节正文（没有 txt 文件也照样出卡）
+    chars: 0
+  }));
+  await fs.writeFile(
+    path.join(bookPath, '书目.json'),
+    JSON.stringify(
+      {
+        version: 1,
+        schemaVersion: 1,
+        id: 'b_cap',
+        title: '大书架书',
+        titleTemplate: '第{num}章：{name}',
+        fileSeq: 501,
+        chapters,
+        lastOpenChapterId: 'ch_1',
+        createdAt: new Date().toISOString()
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+
+  const card = await storage.readBookCard(bookPath);
+  assert.equal(card.chapterCount, 501);
+  assert.equal(card.chapterNames.length, 500, '章节名最多带 500 条（100 本 × 3000 章的 IPC 载荷 / 按键扫描量）');
+  assert.equal(card.chapterNames[0], '第1章');
+  assert.equal(card.chapterNames[499], '第500章');
+  assert.equal(card.chapterNamesTruncated, true, '还有章节名没带来时要如实标记，别让界面把「搜不到」当成「没有」');
+
+  const light = await storage.readBookCard(bookPath, { includeChapterNames: false });
+  assert.deepEqual(light.chapterNames, [], 'includeChapterNames:false 时一个章节名都不带');
+  assert.equal(light.chapterNamesTruncated, true, '不带章节名的书卡同样要说明「有章节名没带」');
+  assert.equal(light.chapterCount, 501, '别的书卡字段照旧');
+
+  // 小书不受影响：全部章节名 + truncated=false（常见书架零变化）
+  const small = await storage.createBook(root, '小书');
+  await storage.createChapter(small.path, 1, '第二章');
+  const smallCard = await storage.readBookCard(small.path);
+  assert.equal(smallCard.chapterNames.length, 2);
+  assert.equal(smallCard.chapterNamesTruncated, false);
+});
+
 test('verifyBook 报告缺失的章节文件', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '缺失测试');
@@ -298,6 +352,58 @@ test('verifyBook 报告缺失的章节文件', async () => {
   assert.deepEqual(report.missing, [meta.chapters[1].file]);
 });
 
+
+// N-07（二次审查）：打开书不再在关键路径上全量回填字数 —— skipStats 只汇总已有缓存、不写盘；
+// 回填交给后台单飞（backfillBookStatsInBackground），补的是同一份 chars 缓存、不顶 updatedAt。
+test('N-07：openBook(skipStats) 不读正文也不写缓存；后台回填单飞补齐且不动 updatedAt', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '跳读字数');
+  await storage.createChapterWithText(bookPath, { insertIndex: 1, name: '雨夜', text: '窗外下着雨。' });
+  const metaFile = path.join(bookPath, '书目.json');
+  // 先抹掉两章的字数缓存（模拟老版本 / 外部重建 / 导入后没扫过书架的书）
+  const stripped = await stripCharsCache(bookPath);
+  const metaBefore = await fs.readFile(metaFile);
+  const opened = await storage.openBook(bookPath, { skipStats: true });
+  assert.equal(opened.meta.chapters.length, 2);
+  assert.equal(opened.statsPending, true, '有章节缺字数缓存时如实标记，界面 / 调用方可据此知道是「已知字数」');
+  assert.equal(opened.totalChars, 0, 'skipStats 只汇总已有缓存；缺缓存不读盘、不猜');
+  assert.deepEqual(opened.missing, [], '缺失章节检查仍留在关键路径（只 stat，不读正文）');
+  assert.deepEqual(await fs.readFile(metaFile), metaBefore, 'skipStats 打开书一个字节都不写盘');
+
+  // 后台回填：同一本书并发请求合并成一趟（返回同一个 Promise），补出真实字数、不顶 updatedAt
+  const first = storage.backfillBookStatsInBackground(bookPath);
+  const second = storage.backfillBookStatsInBackground(bookPath);
+  assert.equal(first, second, '同一本书的回填必须单飞（并发请求复用同一趟）');
+  assert.equal(await first, true, '回填成功');
+  const disk = JSON.parse(await fs.readFile(metaFile, 'utf8'));
+  assert.ok(disk.chapters.every((chapter) => Number.isFinite(chapter.chars)), '后台已把两章字数补进书目');
+  assert.equal(disk.chapters[0].chars, 0, '空章 = 0 字（旧版 bookStats 口径）');
+  assert.equal(disk.chapters[1].chars, 6, '「窗外下着雨。」= 6 字');
+  assert.equal(disk.updatedAt, stripped.updatedAt, '只补缓存不改 updatedAt（审计 E-06 口径不变）');
+  assert.equal(await storage.backfillBookStatsInBackground(''), false, '空路径直接回 false，不读盘');
+});
+
+test('N-07：book:open 走 skipStats + 后台回填；新窗口预检连缺失章 stat 都跳过（静态接线）', () => {
+  const fsSync = require('node:fs');
+  const read = (rel) => fsSync.readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
+  const bookIpc = read('ipc/book.js');
+  assert.match(
+    bookIpc,
+    /storage\.openBook\(bookPath, \{ skipStats: true \}\)/,
+    'book:open 必须跳过关键路径上的全量字数回填（N-07）'
+  );
+  assert.match(
+    bookIpc,
+    /void storage\.backfillBookStatsInBackground\(bookPath\)/,
+    'book:open 要把字数回填排到后台（同一本书单飞）'
+  );
+  const mainSrc = read('main.js');
+  assert.match(
+    mainSrc,
+    /await storage\.openBook\(target, \{ skipStats: true, skipMissing: true \}\)/,
+    'window:open-book 只是可读性预检：不读正文、不逐章 stat（缺失检查留给新窗口自己的 book:open）'
+  );
+});
 
 test('verifyBook 纯读：字数缓存缺失时只算不写，不偷偷改书目.json', async () => {
   const root = await mkTmp();

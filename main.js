@@ -1644,8 +1644,10 @@ function registerIpc() {
         message: openBooksLib.openInOtherWindowMessage(target)
       };
     }
-    // 先确认书能正常读，避免开出一个空窗口（读失败照常返回错误）
-    await storage.openBook(target);
+    // 先确认书能正常读，避免开出一个空窗口（读失败照常返回错误）。
+    // N-07：这里只是「能不能打开」的预检，不读章节正文、也不逐章 stat —— 新窗口自己的
+    // book:open 会做缺失章节检查并排后台回填字数缓存，预检不必替它再做一遍。
+    await storage.openBook(target, { skipStats: true, skipMissing: true });
     const created = await createWindow({ bookPath: target, cascade: true });
     return { focused: false, windowId: created.id };
   });

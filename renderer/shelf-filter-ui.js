@@ -378,10 +378,15 @@
           : '';
     const groupNote = state.shelfGroup ? '（已按分组筛选）' : '';
     const tagNote = state.shelfTag ? '（已按标签筛选）' : '';
+    // N-09：有书的章节名被截到前 500 条时，摘要里如实说明搜索范围 —— 免得作者把「搜不到」
+    // 误当成「整本都没有」。更靠后的章名进书用章节栏 / Ctrl+G 跳章，或直接搜正文（走索引）。
+    const truncatedNote = state.books.some((book) => book && book.chapterNamesTruncated === true)
+      ? ' · 较大的书只按前 500 个章节名匹配'
+      : '';
     summary.textContent =
       matchedCount > 0
-        ? `搜索「${query}」：${matchedCount} / ${state.books.length} 本书名 / 作者 / 分组 / 标签 / 章节名命中${groupNote}${tagNote}${contentNote}（回车打开第一本，Esc 清除）`
-        : `搜索「${query}」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名${groupNote}${tagNote}${contentNote || '，正文也没有找到'}（Esc 清除）`;
+        ? `搜索「${query}」：${matchedCount} / ${state.books.length} 本书名 / 作者 / 分组 / 标签 / 章节名命中${groupNote}${tagNote}${contentNote}${truncatedNote}（回车打开第一本，Esc 清除）`
+        : `搜索「${query}」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名${groupNote}${tagNote}${contentNote || '，正文也没有找到'}${truncatedNote}（Esc 清除）`;
   }
 
     return {

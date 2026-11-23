@@ -188,7 +188,7 @@ test('X8：启动清 userData、打开书清本书目录，删除判据只在 co
   );
 
   const storageSrc = read('core/storage.js');
-  const openAt = storageSrc.indexOf('async function openBook(bookPath) {');
+  const openAt = storageSrc.indexOf('async function openBook(bookPath, options = {}) {');
   assert.ok(openAt > 0, 'storage.openBook 必须在');
   const openBody = storageSrc.slice(openAt, openAt + 900);
   // CSTO-A06：打开书时不仅要清书目录，还要往下扫 _trash 的备份子目录（atomicCopyFile 的临时文件

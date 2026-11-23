@@ -546,6 +546,27 @@ function prepareBookMeta(meta, { touchUpdatedAt = true } = {}) {
   };
 }
 
+// N-08（二次审查）：普通保存的 .bak 轮换从「每次都转」改成「时间窗」策略。
+// 背景：一次 Ctrl+S 的额外 I/O ≈「读上一版书目 + 两次原子写（含 fsync）」，几千章的书目 0.5–4 MB，
+// 机械盘 / 同步盘 / 杀软环境下写放大明显；而普通保存只改 chars / lastOpenChapterId / updatedAt，
+// .bak 里的「上一版」主要是结构性变更前的章节表，短时间窗内再轮换一次几乎没有增益。
+// 策略（产品口径请作者拍板）：距上一次轮换不足 BAK_ROTATE_INTERVAL_MS 时跳过轮换；
+// 结构性变更（增删章 / 改名 / 分卷 / 导入 / 还原）照旧每次必轮换 —— 它是 .bak 真正保命的地方。
+// 「上次轮换时刻」直接取 .bak 的 mtime，不新增状态字段，多窗口 / 多实例也不打架。
+const BAK_ROTATE_INTERVAL_MS = 5 * 60 * 1000;
+async function shouldRotateBak(bakPath, now = Date.now()) {
+  let stat;
+  try {
+    stat = await fs.stat(bakPath);
+  } catch {
+    // 没有 .bak（第一次保存 / 被手工删掉 / 读不到）→ 照旧轮换，不当成「刚转过」。
+    return true;
+  }
+  const age = now - stat.mtimeMs;
+  // 未来时间戳（时钟回拨 / 同步盘改了 mtime）按病值处理：直接轮换，不让 .bak 永久冻结。
+  return !Number.isFinite(age) || age < 0 || age >= BAK_ROTATE_INTERVAL_MS;
+}
+
 // 审计修复 WP1（E-N1，项 3=A）：新增两个可选参数，默认值 = 旧行为（老调用方一个字节都不变）：
 //   · rotateBak：true 时即使 structural=false 也轮换 .bak —— chapter:save 的普通保存用。
 //     写放大约多「读一次主文件 + 写一次小文件」；本地书目通常几 KB～几 MB，换「每次 Ctrl+S 都有
@@ -590,9 +611,11 @@ async function writeBookMeta(
   }
   // B2（审计 P2）：.bak 默认只在「结构性变更」时轮换（增删章 / 改名 / 分卷 / 导入 / 改书名…）；
   // WP1 起保存链路可以显式传 rotateBak（普通保存也留上一版），不传 = 只写主文件（老调用方不变）。
+  // N-08：rotateBak 的普通保存再套一层时间窗（见 BAK_ROTATE_INTERVAL_MS）—— 结构性变更不受影响。
   // 「修复 / 从 .bak 恢复」流程会先把主文件改名归档，这里读不到主文件（ENOENT）就自然跳过，
   // 不会用坏文件覆盖掉唯一可用的 .bak。
-  const rotate = structural || rotateBak;
+  let rotate = structural || rotateBak;
+  if (rotate && !structural) rotate = await shouldRotateBak(bakPath);
   let currentStat = null;
   let previousBytes = null;
   if (rotate) {
@@ -866,6 +889,25 @@ async function scanConflictCopies(bookPath) {
 // 不再为一次 Ctrl+S 逐书 readBookMeta（几百本书 + 多窗口时是 O(全书架) 的盘）。
 // 返回字段 / 顺序 / 失败口径与 listBooks 完全一致；坏书目直接抛错（调用方决定是 corrupt 卡
 // 还是整表兜底），NO_BOOK 表示「这不是一本书」。
+// N-09（二次审查）：书架卡片不再为每本书下发**全部**章节名。旧实现 100 本 × 3000 章 ≈ 30 万个
+// 字符串进 IPC（数 MB），渲染层每次书架搜索按键还要逐本逐章 normalizeForMatch（几十万次比较）。
+// 每本只带前 CHAPTER_NAMES_MAX 条 —— 书架搜索的用途是「按章名找到这本书」，再多的命中没有信息增量；
+// 更靠后的章名请进书用章节栏 / Ctrl+G 跳章（正文另走搜索索引）。chapterNamesTruncated 让界面 /
+// 调用方知道「这本还有更多章名没带来」，不要把「没匹配」误当成「整本都没有」。
+// includeChapterNames:false 时完全不读章节名（给只需要书卡数字 / 标题的调用方按需省载荷）。
+const CHAPTER_NAMES_MAX = 500;
+function chapterNamesForCard(chapters, includeChapterNames) {
+  const list = Array.isArray(chapters) ? chapters : [];
+  if (includeChapterNames === false) return { chapterNames: [], chapterNamesTruncated: list.length > 0 };
+  const limit = Math.min(list.length, CHAPTER_NAMES_MAX);
+  const names = new Array(limit);
+  for (let index = 0; index < limit; index += 1) {
+    const chapter = list[index];
+    names[index] = chapter && chapter.name ? chapter.name : '';
+  }
+  return { chapterNames: names, chapterNamesTruncated: list.length > limit };
+}
+
 async function readBookCard(bookPath, options = {}) {
   const settings = options && typeof options === 'object' ? options : {};
   const folder = path.basename(bookPath);
@@ -890,8 +932,9 @@ async function readBookCard(bookPath, options = {}) {
     group: info.group,
     tags: info.tags,
     chapterCount: meta.chapters.length,
-    // 章节名给书架搜索用（书名 / 作者 / 分组 / 标签 / 章节名都是内存过滤，正文另走索引）
-    chapterNames: meta.chapters.map((chapter) => chapter.name || ''),
+    // 章节名给书架搜索用（书名 / 作者 / 分组 / 标签 / 章节名都是内存过滤，正文另走索引）。
+    // N-09：每本最多前 CHAPTER_NAMES_MAX 条 + 截断标记，不再整本下发（见 chapterNamesForCard）。
+    ...chapterNamesForCard(meta.chapters, settings.includeChapterNames),
     // 书卡上的「完稿 X/Y 章」（只统计 status === 'done' 的章）
     doneChapters: chaptersLib.countChapterStatuses(meta).done,
     // 同步盘冲突副本的文件名（只提示；不是章节，也不会被自动合并）
@@ -936,6 +979,7 @@ async function listBooks(booksRoot, options = {}) {
         tags: [],
         chapterCount: 0,
         chapterNames: [],
+        chapterNamesTruncated: false,
         doneChapters: 0,
         conflicts: await scanConflictCopies(bookPath),
         totalChars: 0,
@@ -1020,18 +1064,63 @@ async function createBook(booksRoot, title, options = {}) {
   }
 }
 
-async function openBook(bookPath) {
+// N-07（二次审查）：打开书不再无条件在关键路径上做全量字数回填 / 逐章 stat。
+// 默认（不传 options）保持旧行为 —— 单测 / 内部直调仍拿到「已补好字数缓存」的完整结果。
+// 传 skipStats: true 时只汇总书目里已有的 chars 缓存，**不读任何章节正文**；缺缓存的那几章由
+// 调用方排到后台（backfillBookStatsInBackground 单飞）补，窗口先可用。
+// 传 skipMissing: true 时再跳过逐章 stat（只给「先确认书能正常读」的入口用，如新窗口预检）；
+// 该书真正的打开入口（book:open）仍会做缺失检查，界面的「N 个章节文件缺失」提示不受影响。
+async function openBook(bookPath, options = {}) {
+  const settings = options && typeof options === 'object' ? options : {};
+  const skipStats = settings.skipStats === true;
+  const skipMissing = settings.skipMissing === true;
   // X8（v1.8.0 WP-40）：打开书时顺手回收上次崩溃留在本书目录的孤儿临时文件。
   // 只删「不是本进程 + 超过 1 小时」的 `.名.tmp-pid-时间-随机`（章节正文 / 书目 / 其它文件一个不碰）；
   // 清理失败不影响打开书（core/atomic 内部已吞掉所有 IO 失败）。
   // CSTO-A06：书内 _trash 的备份目录里也有 atomicCopyFile 的临时文件，往下扫两层一起回收。
   await cleanupOrphanTmpFiles(bookPath, { depth: 2 });
   const meta = await readBookMeta(bookPath);
+  if (skipStats || skipMissing) {
+    const missing = skipMissing ? [] : await findMissingChapters(bookPath, meta);
+    let totalChars = 0;
+    let statsPending = false;
+    for (const chapter of meta.chapters) {
+      if (Number.isFinite(chapter.chars)) totalChars += chapter.chars;
+      else statsPending = true;
+    }
+    // statsPending：还有章节的字数没缓存（后台会补）。旧调用方不传 skipStats，拿到的一直是 false。
+    return { meta, missing, totalChars, statsPending: skipStats ? statsPending : false };
+  }
   const [stats, missing] = await Promise.all([
     bookStats(bookPath, meta),
     findMissingChapters(bookPath, meta)
   ]);
   return { meta, missing, totalChars: stats.totalChars };
+}
+
+// N-07：打开书之后的「字数缓存回填」后台单飞。同一本书的并发请求合并成一趟（Map 只存内存，
+// 不做定时器）；只补 chapters[].chars（不碰 updatedAt，见 bookStats 的审计 E-06 口径），
+// 失败只返回 false —— 回填是显示增强，绝不影响已经打开的书。
+const statsBackfills = new Map();
+function backfillBookStatsInBackground(bookPath) {
+  // key 走 pathKey（与 readLeases / 打开登记同一口径：大小写 / 正反斜杠等价的书只跑一趟）。
+  const key = bookPath ? pathUtils.pathKey(bookPath) : '';
+  if (!key) return Promise.resolve(false);
+  const running = statsBackfills.get(key);
+  if (running) return running;
+  const run = (async () => {
+    try {
+      const meta = await readBookMeta(key);
+      await bookStats(key, meta); // writeCache 默认 true：缺缓存的章读盘算完后锁内落盘
+      return true;
+    } catch {
+      return false;
+    } finally {
+      statsBackfills.delete(key);
+    }
+  })();
+  statsBackfills.set(key, run);
+  return run;
 }
 
 // 保存后的全书校验（代码审计 F2：渲染层把它挪到了后台）：只读，不写字数缓存。
@@ -3029,6 +3118,8 @@ module.exports = {
   readBookCard,
   createBook: safeCreateBook,
   openBook,
+  // N-07：打开书之后的字数缓存后台回填（同一本书单飞；只补 chars，不碰 updatedAt）
+  backfillBookStatsInBackground,
   verifyBook,
   loadChapterText,
   statChapter,

@@ -109,7 +109,7 @@ function registerBookIpc(host) {
         openBooksLib.openInOtherWindowMessage(bookPath)
       );
     }
-    const data = await storage.openBook(bookPath);
+    const data = await storage.openBook(bookPath, { skipStats: true });
     if (session) {
       const registered = storage.registerOpenBook(session.id, bookPath);
       if (!registered.ok) {
@@ -117,6 +117,9 @@ function registerBookIpc(host) {
         throw new storage.StorageError(registered.code, registered.message);
       }
     }
+    // N-07：字数缓存回填挪到后台（同一本书单飞）—— 打开大书 / 老书时窗口先可用，
+    // 不再先读完所有缺缓存章节的正文才返回；回填只补书目里的 chars，不顶 updatedAt。
+    void storage.backfillBookStatsInBackground(bookPath);
     const meta = data && data.meta;
     if (meta && Array.isArray(meta.chapters) && meta.chapters.length) {
       let index = meta.chapters.findIndex((chapter) => chapter && chapter.id === meta.lastOpenChapterId);

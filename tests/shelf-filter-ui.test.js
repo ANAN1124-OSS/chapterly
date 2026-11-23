@@ -655,6 +655,42 @@ test('updateShelfSearchUi：有命中 / 没命中 / 带分组与正文命中提�
   assert.equal(loading.dom.$('shelf-search-summary').textContent, '搜索「王五」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名 · 正在搜正文…（Esc 清除）');
 });
 
+// N-09：章节名被截到前 500 条的书写进书架搜索摘要 —— 明确告诉作者「较大的书只核对前 500 个章节名」，
+// 免得把「没搜到」误当成「整本都没有」。没有截断的书架（常见情况）文案一字不变。
+test('updateShelfSearchUi（N-09）：有书的章节名被截断时，摘要里说明只按前 500 个章节名匹配', () => {
+  const hit = build({
+    shelfQuery: '张三',
+    books: [{ chapterNamesTruncated: true }, {}, {}, {}, {}],
+    results: [],
+    meta: { results: [] }
+  });
+  hit.ui.updateShelfSearchUi(3);
+  assert.equal(
+    hit.dom.$('shelf-search-summary').textContent,
+    '搜索「张三」：3 / 5 本书名 / 作者 / 分组 / 标签 / 章节名命中 · 较大的书只按前 500 个章节名匹配（回车打开第一本，Esc 清除）'
+  );
+
+  const none = build({
+    shelfQuery: '李四',
+    books: [{ chapterNamesTruncated: false }, { chapterNamesTruncated: true }],
+    results: [],
+    meta: { results: [] }
+  });
+  none.ui.updateShelfSearchUi(0);
+  assert.equal(
+    none.dom.$('shelf-search-summary').textContent,
+    '搜索「李四」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名，正文也没有找到 · 较大的书只按前 500 个章节名匹配（Esc 清除）'
+  );
+
+  // 没有截断的书（旧书卡 / 小书）：文案保持原样（与上一条逐字断言同一口径）
+  const plain = build({ shelfQuery: '李四', books: [{}, {}], results: [], meta: { results: [] } });
+  plain.ui.updateShelfSearchUi(0);
+  assert.equal(
+    plain.dom.$('shelf-search-summary').textContent,
+    '搜索「李四」：没有匹配的书名 / 作者 / 分组 / 标签 / 章节名，正文也没有找到（Esc 清除）'
+  );
+});
+
 // SS-09（五-L17）：索引首建期搜索（search:content 短路回 building + 空结果）—— 旧实现 contentNote
 // 只看 loading / results.length，书名也没命中时摘要写「正文也没有找到」，与同一屏正文区
 // 「正在为书架建正文索引…」自相矛盾；作者可能据此以为正文真的搜过了。
