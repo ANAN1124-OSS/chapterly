@@ -416,14 +416,35 @@ async function readProofreadWordlistForRequest(config, options) {
 // 去重规则 / RAW_MATCH_LIMIT / 建议箭头 / 位置排序全部由 wordscan 保持，这里只做字段映射。
 // options.sanitized === true（1.7.2 D2/V44）：调用方已按同一份 sanitizeEntries 清洗过
 // （主进程读取出口），这里跳过再洗一次；公开调用的默认语义不变（不传就是自己清洗）。
+// T-05（三次审查）：整本校对每章都调 findHits，entries 是循环外清洗一次的同一个数组，但旧实现
+// 每章 `entries.map(entry => entry.term)` 新建 terms 数组 —— wordscan 的「同引用直通」永远命中不了，
+// 1000 章要对 5000 词条白做约千次 O(Σ|词条|) 滚动指纹。这里按 entries 引用缓存 terms（WeakMap，
+// 不阻止回收），并在 sanitized 时透传 stableReference: true（与 core/sensitive.js 的 CTXT-B-01
+// 同款优化：调用方声明词表在整本循环里已清洗、只读，引用稳定）。
+// 公开默认语义不变：不声明 sanitized 时仍自己清洗、不缓存、不声明稳定引用（利润表每章现拼）。
+const termsByEntries = new WeakMap();
+function termsForEntries(entries, sanitized) {
+  if (!sanitized) return entries.map((entry) => entry.term);
+  let terms = termsByEntries.get(entries);
+  if (!terms) {
+    terms = entries.map((entry) => entry.term);
+    termsByEntries.set(entries, terms);
+  }
+  return terms;
+}
+
 function findHits(text, rawEntries, options) {
   const sanitized = Boolean(options && options.sanitized === true);
   const entries = sanitized ? (Array.isArray(rawEntries) ? rawEntries : []) : sanitizeEntries(rawEntries);
   const source = normalizeText(text);
   const scan = wordscan.scanTerms(
     source,
-    entries.map((entry) => entry.term),
-    { rawMatchLimit: RAW_MATCH_LIMIT }
+    termsForEntries(entries, sanitized),
+    {
+      rawMatchLimit: RAW_MATCH_LIMIT,
+      // T-05：sanitized = 调用方在循环外清洗过一次、循环内只读 —— 同一 entries 引用走自动机直通。
+      ...(sanitized ? { stableReference: true } : {})
+    }
   );
   return {
     hits: scan.hits.map((hit) => {

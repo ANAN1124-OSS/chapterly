@@ -82,6 +82,37 @@ test('校对词表：findHits 字面匹配、按位置排序，同一处只报�
   );
 });
 
+// T-05（三次审查）：findHits 的 sanitized 分支要复用词表引用 —— 整本校对循环外清洗一次 entries，
+// 循环内每章 findHits；旧实现每章 map 出新 terms 数组，wordscan 的同引用直通永远命中不了
+// （每章重算 O(词表) 滚动指纹）。这里按 3 章扫同一份 entries 钉住「只建 1 次图、后两章走直通」。
+test('T-05：findHits（sanitized）复用同一份词表引用，同一词表扫 3 章只建一次自动机', () => {
+  const wordscan = require('../core/wordscan');
+  wordscan.resetAutomatonCache();
+  const entries = glossary.sanitizeEntries([
+    { term: '做为', suggestion: '作为' },
+    { term: '禁词', suggestion: '' }
+  ]);
+  const chapters = ['第一章：做为见证人。', '第二章：出现禁词。', '第三章：没有命中。'];
+  const found = chapters.map((text) => glossary.findHits(text, entries, { sanitized: true }));
+  assert.deepEqual(
+    found.map((item) => item.hits.map((hit) => hit.term)),
+    [['做为'], ['禁词'], []],
+    'sanitized 分支的命中内容与非 sanitized 完全一致（只是不再重拼词表）'
+  );
+  assert.deepEqual(
+    glossary.findHits(chapters[0], [
+      { term: '做为', suggestion: '作为' },
+      { term: '禁词', suggestion: '' }
+    ]).hits.map((hit) => hit.term),
+    ['做为'],
+    '公开入口（不声明 sanitized）口径不变：自己清洗词表'
+  );
+  const stats = wordscan.automatonCacheStats();
+  assert.equal(stats.builds, 1, '同一词表 3 章只建 1 次图（旧实现每章 rebuild）');
+  assert.equal(stats.referenceHits, 2, '第 2、3 章走同引用直通（与 core/sensitive.js CTXT-B-01 同款）');
+  assert.equal(stats.size >= 1, true);
+});
+
 test('校对词表：字面匹配区分大小写、不做正则；CRLF / BOM 归一后位置可直接选中', () => {
   const hits = glossary.findHits('\uFEFF第一行 teh 和 Teh。\r\n第二行 teh。\r\n', [
     { term: 'teh', suggestion: 'the' },
