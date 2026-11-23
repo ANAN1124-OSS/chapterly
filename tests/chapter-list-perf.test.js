@@ -105,7 +105,9 @@ function cssRuleBody(source, selector) {
 
 const chapterItemRule = cssRuleBody(CSS_SOURCE, '.chapter-item');
 const renderChapterListSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'renderChapterList');
-const syncActiveSrc = functionSource(RENDERER_CODE, 'syncActiveChapterItem');
+// #2（P5）：切章快路径连同「分段挂载期间按行计划核对」一起搬进 chapter-directory-ui.js；
+// 源码闸门的读取路径跟着搬家（同一条断言，行为由 chapter-list-segment.test.js + E2E 63/76 组覆盖）。
+const syncActiveSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'syncActiveChapterItem');
 const makeChapterItemSrc = functionSource(CHAPTER_DIRECTORY_CODE, 'makeChapterItem');
 const loadChapterAtSrc = functionSource(SAVE_CHAIN_CODE, 'loadChapterAt');
 
@@ -235,8 +237,8 @@ test('输入热路径：当前章条目走缓存引用，不再每次击键 quer
   assert.match(helperSrc, /cachedActiveChapterItem|getCachedActiveChapterItem/, 'activeChapterItem 要有缓存引用');
   assert.match(helperSrc, /isConnected/, '缓存条目掉出文档（整表重建）时要能回退重查');
   assert.match(
-    functionSource(RENDERER_CODE, 'syncActiveChapterItem'),
-    /cachedActiveChapterItem = next/,
+    syncActiveSrc,
+    /setCachedActiveChapterItem\(next\)/,
     '切章快路径要更新缓存'
   );
   assert.match(

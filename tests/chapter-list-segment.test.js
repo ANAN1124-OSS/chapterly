@@ -12,9 +12,13 @@
 //   4. 新一代渲染开始时旧分段作废（不会把旧书的行追到新列表里），筛选结果同样分段。
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const directoryUi = require('../renderer/chapter-directory-ui');
 const chapterSelectionLib = require('../renderer/chapter-selection');
+
+const directorySrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'chapter-directory-ui.js'), 'utf8');
 
 function selectorMatches(el, selector) {
   for (const part of String(selector).split(',')) {
@@ -239,4 +243,44 @@ test('P5：筛选结果同样分段（命中行数超阈值也走分段）', asy
   assert.equal(ui.renderedChapterIds().length, matches.length, '筛选态的显示行按命中数算');
   assert.ok(await waitFor(() => list.children.length === matches.length), `筛选结果没有补齐（停在 ${list.children.length}）`);
   assert.ok(list.classList.contains('filtering'), '筛选态 class 照旧');
+});
+
+// #2（清单·P5）：分段挂载未完成时切章，快路径按「已挂 DOM 行数」核对必然不等 → 整表重建 →
+// 正在跑的分段从首段 400 行重来。这里钉模块侧两件事：① 挂载中标志真的在（快路径据此改道）；
+// ② 挂载窗口内切章后，早先挂上的段带的旧 active 由 finish() 收口成当前章一条。
+test('#2（P5）：分段挂载期间切章 —— 挂完只保留当前章一条 active / Tab 停留点', async () => {
+  const { ui, state, list } = build(makeChapters(20000));
+  ui.renderChapterList();
+  const firstMounted = list.children.length;
+  assert.ok(firstMounted > 0 && firstMounted < 20000, '首段只挂一部分（挂载窗口里 DOM 是不完整的）');
+  assert.equal(list.querySelectorAll('.chapter-item.active').length, 1, '首段：第一章 active');
+
+  // 挂载窗口内切到一条还没挂上的章（Ctrl+PgDn / 命令面板跳章的真实时序）
+  state.index = 15000;
+  assert.ok(await waitFor(() => list.children.length === 20000), `分段没有补齐（停在 ${list.children.length}）`);
+
+  const actives = list.querySelectorAll('.chapter-item.active');
+  assert.equal(actives.length, 1, '分段中途切章后只许一条 active（旧段的 active 要收口）');
+  assert.equal(actives[0].dataset.index, '15000', 'active 跟着当前章走');
+  assert.equal(actives[0].classList.contains('dirty'), false);
+  assert.equal(list.children[0].classList.contains('active'), false, '第一章的旧 active 必须摘掉');
+  const stops = list.children.filter((row) => row.tabIndex === 0);
+  assert.equal(stops.length, 1, 'roving tabindex 只能有一个停留点');
+  assert.equal(stops[0].dataset.index, '15000');
+  assert.equal(list.children[0].tabIndex, -1, '旧停留点要清掉');
+});
+
+test('#2 静态清单：切章快路径在分段挂载期间按行计划核对，不按已挂 DOM 行数', () => {
+  const at = directorySrc.indexOf('function syncActiveChapterItem() {');
+  assert.notEqual(at, -1);
+  const body = directorySrc.slice(at, directorySrc.indexOf('\n  // RSHE-B-03', at));
+  assert.match(body, /if \(chapterListSegmentPending\)/, '挂载中标志必须参与判定');
+  assert.match(body, /chapterListDisplayIds/, '挂载期间按行计划核对当前章（渲染层已迁入本模块）');
+  assert.match(body, /planned\.length !== visibleChapterCount\(\)/, '挂载期间计划条数 vs 应显示条数');
+  // 挂载中「当前章的行还没挂上」时不许走整表重建（那是分段从首段重来的入口）
+  assert.match(
+    body,
+    /if \(!next\) \{\s*\/\/ #2[\s\S]*?return;\s*\}\s*const previous/,
+    '行还没挂上时只更新浮标后返回，不重建'
+  );
 });

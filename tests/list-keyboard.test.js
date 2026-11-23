@@ -648,7 +648,8 @@ test('静态闸门：渲染层用模块接线，不许自己再抄一套键盘�
   );
   assert.ok(BOOKINFO_UI.includes('card.tabIndex = 0'), '书卡要可聚焦');
   assert.ok(BOOKINFO_UI.includes("card.setAttribute('aria-label', `打开《${book.title}》`)"));
-  assert.ok(RENDERER.includes('next.tabIndex = 0'), '切章快路径要把 Tab 停留点跟着挪');
+  // #2（P5）：切章快路径整段搬进 chapter-directory-ui.js，源码闸门读取位置跟着搬家
+  assert.ok(CHAPTER_DIRECTORY.includes('next.tabIndex = 0'), '切章快路径要把 Tab 停留点跟着挪');
   assert.ok(CHAPTER_DIRECTORY.includes("listKeyboard.ensureTabStop(list, '.chapter-item')"));
 });
 

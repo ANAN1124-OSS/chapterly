@@ -462,7 +462,7 @@ test('R9 M-N1：index.html 装配块由清单生成（--write 幂等；--check �
 // WP17（A3 第一刀，审计 #20，2026-11-18，HEAD d409c7d）：章节目录 / 卷章显示层整段迁出 renderer.js。
 //   R10 模块 / 装配 / 定义面：新模块存在且 UMD 双分支契约不变（Node 可 require、浏览器只挂
 //       CWChapterDirectoryUi）；index.html 装配块含且只含一次、排在 renderer.js 之前；renderer.js
-//       不再定义这 48 个被迁函数（逐函数名断言）、只留「常量 + 一次 create + 按原名取入口」；
+//       不再定义这 49 个被迁函数（逐函数名断言）、只留「常量 + 一次 create + 按原名取入口」；
 //       E2E 名字来源（组索引 0–83）未被本刀改动——逐行 PASS 名字由全量 E2E 门禁与基线日志对拍。
 const CD_FILE = 'chapter-directory-ui.js';
 const CD_GLOBAL = 'CWChapterDirectoryUi';
@@ -479,18 +479,20 @@ const CD_MOVED = [
   'chapterItemTip', 'chapterItemTitleText', 'chapterSelectionSnapshot', 'chapterIdAt',
   'currentChapterId', 'chapterIdsInBookOrder', 'renderedChapterIds', 'selectedChapterIndexes',
   'syncChapterBatchBar', 'syncChapterSelectionUi', 'setChapterSelection', 'clearChapterSelection',
-  'pruneChapterSelection', 'ensureChapterSelected', 'makeChapterItem', 'renderChapterList'
+  'pruneChapterSelection', 'ensureChapterSelected', 'makeChapterItem', 'renderChapterList',
+  // #2（清单·P5）：切章快路径连「分段挂载期间按行计划核对」一起搬进本模块
+  'syncActiveChapterItem'
 ];
-// renderer.js 里仍有人调用的 26 个入口：只有它们需要按原名接线；其余 22 个随调用点一起内聚到
+// renderer.js 里仍有人调用的 25 个入口：只有它们需要按原名接线；其余 24 个随调用点一起内聚到
 // 模块里（再解构出来既没人读，也会被 eslint no-unused-vars 判红）。
 const CD_WIRED = [
-  'chapterFilterActive', 'chapterIndexMatchesFilter', 'renderBookMeta', 'syncChapterFilterUi',
-  'renderVolumeToggle', 'activeChapterItem', 'syncCurrentVolumeMarker', 'updateCurrentChapterPill',
+  'chapterFilterActive', 'renderBookMeta', 'syncChapterFilterUi',
+  'renderVolumeToggle', 'activeChapterItem', 'updateCurrentChapterPill',
   'setupChapterDirectory', 'setupChapterListEvents', 'setupChapterBatchBar', 'volumeList',
   'volumeById', 'volumeDisplayName', 'chapterVolumeId', 'toggleVolumeCollapse',
   'chapterItemTitleText', 'chapterSelectionSnapshot', 'chapterIdAt', 'currentChapterId',
   'renderedChapterIds', 'selectedChapterIndexes', 'syncChapterBatchBar', 'setChapterSelection',
-  'clearChapterSelection', 'renderChapterList'
+  'clearChapterSelection', 'renderChapterList', 'syncActiveChapterItem'
 ];
 
 test('R10 A3：章节目录显示层整段迁出 renderer.js（模块 / 装配 / 定义面 / E2E 基线）', () => {
@@ -523,8 +525,8 @@ test('R10 A3：章节目录显示层整段迁出 renderer.js（模块 / 装配 /
     '缺成员文案逐字不变（再往下就 ReferenceError）'
   );
 
-  // ② create(host) 返回全部被迁入口（48 个，按原名薄调用）；host 清单逐成员都在。
-  assert.equal(CD_MOVED.length, 48, '被迁函数清单必须正好 48 个（R10 与 R9 口径）');
+  // ② create(host) 返回全部被迁入口（49 个，按原名薄调用）；host 清单逐成员都在。
+  assert.equal(CD_MOVED.length, 49, '被迁函数清单必须正好 49 个（R10 与 R9 口径 + #2 切章快路径）');
   const host = {};
   for (const key of mod.REQUIRED_HOST) host[key] = () => ({});
   host.state = {};
@@ -534,7 +536,7 @@ test('R10 A3：章节目录显示层整段迁出 renderer.js（模块 / 装配 /
   host.chapterFilterLogic = {};
   host.editorLogic = {};
   const ui = mod.create(host);
-  assert.deepEqual(Object.keys(ui).sort(), CD_MOVED.slice().sort(), 'create 返回面 = 迁出的 48 个入口');
+  assert.deepEqual(Object.keys(ui).sort(), CD_MOVED.slice().sort(), 'create 返回面 = 迁出的 49 个入口');
   for (const name of CD_MOVED) assert.equal(typeof ui[name], 'function', `${name} 必须是函数`);
 
   // ③ index.html 装配块：含且只含一次，排在 renderer.js 之前（块由清单生成，手改会被 R9 拦）。
@@ -557,7 +559,7 @@ test('R10 A3：章节目录显示层整段迁出 renderer.js（模块 / 装配 /
   assert.ok(files.indexOf(CD_FILE) > files.indexOf('../core/assert-host.js'), '必须排在校验器之后（先校验后建模块）');
   assert.ok(files.indexOf(CD_FILE) < files.length - 1, '清单条目不许压在末尾（后续仍要有独立模块）');
 
-  // ⑤ renderer.js 定义面：48 个函数一个都不许留；只留常量 + 一次 create + 按原名取入口。
+  // ⑤ renderer.js 定义面：49 个函数一个都不许留；只留常量 + 一次 create + 按原名取入口。
   const renderer = read('renderer/renderer.js');
   assert.ok(renderer.includes(`const ${CD_LOCAL} = window.${CD_GLOBAL};`), 'renderer.js 要按清单本地名取模块');
   assert.equal(
@@ -584,7 +586,7 @@ test('R10 A3：章节目录显示层整段迁出 renderer.js（模块 / 装配 /
       );
     }
   }
-  assert.equal(CD_WIRED.length, 26, 'renderer.js 的接线面必须正好 26 个入口（其余 22 个内聚在模块里）');
+  assert.equal(CD_WIRED.length, 25, 'renderer.js 的接线面必须正好 25 个入口（其余 24 个内聚在模块里）');
 
   // ⑥ E2E 名字基线：本刀不新增 / 删除 / 重排任何 E2E 组（名字逐行一致由全量 E2E 日志对拍）。
   const { groups } = require('../scripts/e2e/groups');

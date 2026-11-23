@@ -1263,10 +1263,11 @@
   }
 
   // ---------- 章节列表 / 卷章目录显示层（WP17 A3 第一刀：整段搬到 renderer/chapter-directory-ui.js） ----------
-  // 筛选 / 概览行 / 卷头 / 条目 / 事件委托 / 多选标记 / 整表重建 48 个入口整段搬走，行为一字未改。
+  // 筛选 / 概览行 / 卷头 / 条目 / 事件委托 / 多选标记 / 整表重建 48 个入口整段搬走，行为一字未改；
+  // #2（清单·P5）起切章快路径 syncActiveChapterItem 也搬进去了（它要和分段挂载进度共用一份状态），
+  // 现在共 49 个入口。
   // 这里只剩接线：模块常量 + 一次 create + 按原名取入口（事件绑定 / 测试钩子 / 各面板照旧按名字取）。
-  // 当前章条目缓存（1.6.0 A5/P-09）仍归渲染层：切章快路径 syncActiveChapterItem 直接写它，
-  // 模块经 get / set 两个宿主成员读写（不把切章快路径也拖进这一刀）。
+  // 当前章条目缓存（1.6.0 A5/P-09）仍归渲染层：模块经 get / set 两个宿主成员读写，渲染层变量是唯一引用。
   let cachedActiveChapterItem = null;
   const chapterDirectoryUi = chapterDirectoryUiModule.create({
     $, state, chapterTitle, chapterListLabel, chaptersLib, chapterFilterLogic,
@@ -1284,7 +1285,7 @@
     getCachedActiveChapterItem: () => cachedActiveChapterItem,
     setCachedActiveChapterItem: (item) => { cachedActiveChapterItem = item; }
   });
-  const { chapterFilterActive, chapterIndexMatchesFilter, renderBookMeta, syncChapterFilterUi, renderVolumeToggle, activeChapterItem, syncCurrentVolumeMarker, updateCurrentChapterPill, setupChapterDirectory, setupChapterListEvents, setupChapterBatchBar, volumeList, volumeById, volumeDisplayName, chapterVolumeId, toggleVolumeCollapse, chapterItemTitleText, chapterSelectionSnapshot, chapterIdAt, currentChapterId, renderedChapterIds, selectedChapterIndexes, syncChapterBatchBar, setChapterSelection, clearChapterSelection, renderChapterList } = chapterDirectoryUi;
+  const { chapterFilterActive, renderBookMeta, syncChapterFilterUi, renderVolumeToggle, activeChapterItem, updateCurrentChapterPill, setupChapterDirectory, setupChapterListEvents, setupChapterBatchBar, volumeList, volumeById, volumeDisplayName, chapterVolumeId, toggleVolumeCollapse, chapterItemTitleText, chapterSelectionSnapshot, chapterIdAt, currentChapterId, renderedChapterIds, selectedChapterIndexes, syncChapterBatchBar, setChapterSelection, clearChapterSelection, syncActiveChapterItem, renderChapterList } = chapterDirectoryUi;
 
   // ---------- 章节拖拽排序 ----------
   // pointer 拖拽（起手 / 跟手 / 落点 / 自动滚动）+ 两条写盘路径整段搬到了
@@ -1382,73 +1383,8 @@
   // 2026-11-10 卷章目录重设计的显示层整段已迁到 renderer/chapter-directory-ui.js（WP17 A3 第一刀，
   // 审计 #20）；装配 / 入口见「章节列表 / 卷章目录显示层」接线处，这里不再放实现。
 
-  // 章节栏当前应该显示多少条：折叠的卷不渲染；volumeId 指向不存在的卷按「未分卷」算
-  // （和下面 renderChapterList 的 bucketing 同一套规则，切章快路径用它判断列表是否过期）。
-  // 筛选时只数命中的章，且所有卷都展开（与 renderChapterList 里 filtering 分支一致）。
-  function visibleChapterCount() {
-    const volumes = volumeList();
-    const ids = new Set(volumes.map((volume) => volume.id));
-    const filtering = chapterFilterActive();
-    let count = 0;
-    state.chapters.forEach((chapter, index) => {
-      if (filtering) {
-        if (chapterIndexMatchesFilter(index)) count += 1;
-        return;
-      }
-      if (!volumes.length) {
-        count += 1;
-        return;
-      }
-      const volumeId = chapterVolumeId(chapter);
-      const key = volumeId && ids.has(volumeId) ? volumeId : '';
-      if (!state.collapsedVolumes.has(key)) count += 1;
-    });
-    return count;
-  }
-
-  // 切章只改「当前章」高亮，不重建整条列表（v0.9 A-2）：大书 1000 条整表重建十几毫秒，
-  // 而切章时章节没增删、顺序与折叠状态都没变，唯一要变的就是 active / dirty 两个 class。
-  // 正确性优先，两道核对都对得上才走快路径：① 条目数 == 当前应显示的条数（增删章会变）；
-  // ② 当前章的 chapter id == state.chapters[state.index].id（换书 / 重排会变）；
-  // 任一对不上、或当前章在折叠卷里（列表里没有这一条）就退回整表重建，和旧行为一致。
-  function syncActiveChapterItem() {
-    const list = $('chapter-list');
-    if (!list) return;
-    const current = state.chapters[state.index];
-    const next = current ? list.querySelector(`.chapter-item[data-index="${state.index}"]`) : null;
-    const rendered = list.querySelectorAll('.chapter-item').length;
-    const expectedId = current ? String(current.id == null ? '' : current.id) : '';
-    if (!next || rendered !== visibleChapterCount() || next.dataset.chapterId !== expectedId) {
-      // 筛选是「找章」的临时视图：切到的章不在筛选结果里时（Ctrl+PgDn / 命令面板 / 跳章），
-      // 收起筛选再重建，保证目录里始终有当前章可看。只在「本来就要整表重建」的兜底里清，
-      // 正常切章仍走下面的快路径（不重建 1000 条）。
-      if (state.chapterFilter && !chapterIndexMatchesFilter(state.index)) {
-        state.chapterFilter = '';
-        syncChapterFilterUi();
-      }
-      renderChapterList();
-      return;
-    }
-    const previous = list.querySelector('.chapter-item.active');
-    if (previous && previous !== next) {
-      previous.classList.remove('active', 'dirty');
-      previous.tabIndex = -1;
-    }
-    // 拍板 #16a：重开一本书到非第一章时，openBookByPath 先 renderChapterList()（那时还没有当前章，
-    // ensureTabStop 把第 1 条设成 tabIndex 0），随后才 loadChapterAt(startIndex) 走到这里。
-    // 第 1 条这时还没有 .active，上面的 previous 抓不到它 —— 不清掉就会留下两个 Tab 停留点。
-    // 按属性查一次即可（tabIndex 会反射到 tabindex 属性），比全表扫更省。
-    const staleStop = list.querySelector('.chapter-item[tabindex="0"]');
-    if (staleStop && staleStop !== next) staleStop.tabIndex = -1;
-    next.classList.add('active');
-    cachedActiveChapterItem = next; // 1.6.0 A5/P-09：切章快路径同步「当前章条目」缓存
-    next.classList.toggle('dirty', Boolean(state.dirty));
-    next.tabIndex = 0; // roving tabindex：Tab 停留点跟着当前章走（v0.9 A-5b）
-    next.scrollIntoView({ block: 'nearest' });
-    // 快路径同样要更新「回到当前章」浮标 / 折叠卷的当前卷标记（切章后旧状态会留在原地）
-    syncCurrentVolumeMarker();
-    updateCurrentChapterPill();
-  }
+  // 切章快路径（含 #2/P5 分段挂载期间的行计划核对）实现在 renderer/chapter-directory-ui.js；
+  // 入口由上面的按原名解构给出，调用方（save-chain-ui 的 host / testHooksScope）名字不变。
 
   // B5（审计 P5）：保存后只更新「当前章这一条」的字数节点 + tooltip，不再整表重建
   // （千章书每次 Ctrl+S 都重建 1000 条）。下一章的 tooltip 里有「比上章短」，本文字数变了也要跟着变，

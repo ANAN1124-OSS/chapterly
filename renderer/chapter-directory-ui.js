@@ -1,9 +1,11 @@
 /* 章节列表 / 卷章目录显示层（WP17 A3 第一刀：从 renderer.js 整段搬出来）。
  *
- * 搬走的一段：renderer.js「章节列表」分区 1516–2430 行（915 行），48 个入口：
+ * 搬走的一段：renderer.js「章节列表」分区 1516–2430 行（915 行），48 个入口（#2 起 49 个：切章快路径
+ * syncActiveChapterItem 也搬进来了 —— 它要按分段挂载的进度核对，和 renderChapterList 是同一份状态）：
  *   筛选（查询 / 命中 / 计数 / 防抖 / 回写输入框）、全书概览行、卷头（吸顶 / 折叠 / 全部折叠）、
  *   条目的 tooltip / 章号 / 字数 / 备注 / ⋯、事件委托（点击 / 双击 / 右键 / 键盘多选 / 拖拽起手）、
- *   多选选择态（高亮 / 批量条 / prune / ensure）、整表重建（平铺 / 按卷分组 / 筛选空态 / 真空态）。
+ *   多选选择态（高亮 / 批量条 / prune / ensure）、整表重建（平铺 / 按卷分组 / 筛选空态 / 真空态）、
+ *   切章快路径（只挪 active / dirty，失配才整表重建）。
  * **只碰显示层与 state 的既有显示字段**：不写盘、不改正文、不碰 IPC 白名单、不改数据格式；
  * 文案 / class / DOM 结构 / 返回值形状 / 事件入口全部照旧（行为零改动）。
  *
@@ -22,8 +24,8 @@
  *
  * 事件监听仍由渲染层 bindEvents 调 setupChapterDirectory / setupChapterListEvents / setupChapterBatchBar
  * 一次装上；Esc 动作表 / 测试钩子 / 各面板按原名取入口（renderer.js 里是同一批 const）。
- * 当前章条目缓存（1.6.0 A5/P-09）的变量仍归渲染层（切章快路径 syncActiveChapterItem 直接写它），
- * 模块通过 get / set 两个宿主成员读写，避免把切章快路径也拖进这一刀。
+ * 当前章条目缓存（1.6.0 A5/P-09）的变量仍归渲染层，模块通过 get / set 两个宿主成员读写；
+ * #2（清单·P5）起切章快路径也搬进本模块，缓存写入走 setCachedActiveChapterItem（渲染层变量仍是唯一引用）。
  *
  * 浏览器里挂成全局 CWChapterDirectoryUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
  */
@@ -878,6 +880,9 @@
   const CHAPTER_LIST_FIRST_SEGMENT = 400;
   const CHAPTER_LIST_SEGMENT = 2000;
   let chapterListSegmentToken = 0;
+  // #2（P5）：分段挂载是否还没挂完。切章快路径据此改按「行计划」核对，不再拿「已挂 DOM 行数」比对
+  // ——未挂完时后者必然不等，每切一次章就整表重建、把正在跑的分段从首段 400 行重来。
+  let chapterListSegmentPending = false;
   // 当前显示行的章节 id（按显示顺序）；null = 还没渲染过（renderedChapterIds 退回读 DOM）。
   let chapterListDisplayIds = null;
 
@@ -1004,6 +1009,119 @@
     setTimeout(step, 0);
   }
 
+  // #2（P5）：分段挂载期间切过章时，先挂上的段按「当时」的当前章带了 active / tabIndex 0，后挂的段
+  // 按新章又带一条 —— 挂完统一收口成一条（只保留当前章；当前章不在显示计划里就一条 active 都不留）。
+  // 只有分段路径会调它，小书 / 没切过章时这里一次 DOM 都不碰。
+  function normalizeActiveChapterRows(list) {
+    const active = list.querySelectorAll('.chapter-item.active');
+    if (active.length <= 1) return;
+    const id = currentChapterId();
+    let keeper = null;
+    for (const item of active) {
+      if (item.dataset && String(item.dataset.chapterId) === String(id)) {
+        keeper = item;
+        break;
+      }
+    }
+    for (const item of active) {
+      if (item === keeper) continue;
+      item.classList.remove('active', 'dirty');
+      item.tabIndex = -1;
+    }
+  }
+
+  // 章节栏当前应该显示多少条：折叠的卷不渲染；volumeId 指向不存在的卷按「未分卷」算
+  // （和 renderChapterList 的 bucketing 同一套规则，切章快路径用它判断列表是否过期）。
+  // 筛选时只数命中的章，且所有卷都展开（与 renderChapterList 里 filtering 分支一致）。
+  function visibleChapterCount() {
+    const volumes = volumeList();
+    const ids = new Set(volumes.map((volume) => volume.id));
+    const filtering = chapterFilterActive();
+    let count = 0;
+    state.chapters.forEach((chapter, index) => {
+      if (filtering) {
+        if (chapterIndexMatchesFilter(index)) count += 1;
+        return;
+      }
+      if (!volumes.length) {
+        count += 1;
+        return;
+      }
+      const volumeId = chapterVolumeId(chapter);
+      const key = volumeId && ids.has(volumeId) ? volumeId : '';
+      if (!state.collapsedVolumes.has(key)) count += 1;
+    });
+    return count;
+  }
+
+  // 切章只改「当前章」高亮，不重建整条列表（v0.9 A-2）：大书 1000 条整表重建十几毫秒，
+  // 而切章时章节没增删、顺序与折叠状态都没变，唯一要变的就是 active / dirty 两个 class。
+  // 正确性优先，两道核对都对得上才走快路径：① 条目数 == 当前应显示的条数（增删章会变）；
+  // ② 当前章的 chapter id == state.chapters[state.index].id（换书 / 重排会变）；
+  // 任一对不上、或当前章在折叠卷里（列表里没有这一条）就退回整表重建，和旧行为一致。
+  // #2（P5）：大书分段挂载没挂完时，DOM 里只有部分行 —— 拿「已挂行数」核对必然不等，旧实现于是
+  // 每切一次章就整表重建，把正在跑的分段从首段 400 行重来（连点切章 = 反复重启分段）。挂载期间
+  // 改按「行计划」核对（chapterListDisplayIds 已是完整计划）：计划里还有当前章、条数也对，就只挪
+  // 已挂行的高亮；当前章的行还没挂上时先不动，等分段挂完 finish() 统一收口（清掉旧的 active）。
+  function syncActiveChapterItem() {
+    const list = $('chapter-list');
+    if (!list) return;
+    const current = state.chapters[state.index];
+    const next = current ? list.querySelector(`.chapter-item[data-index="${state.index}"]`) : null;
+    const expectedId = current ? String(current.id == null ? '' : current.id) : '';
+    let needRebuild;
+    if (chapterListSegmentPending) {
+      const planned = chapterListDisplayIds || [];
+      needRebuild =
+        !expectedId ||
+        planned.length !== visibleChapterCount() ||
+        !planned.includes(expectedId) ||
+        Boolean(next && next.dataset.chapterId !== expectedId);
+    } else {
+      needRebuild =
+        !next ||
+        list.querySelectorAll('.chapter-item').length !== visibleChapterCount() ||
+        next.dataset.chapterId !== expectedId;
+    }
+    if (needRebuild) {
+      // 筛选是「找章」的临时视图：切到的章不在筛选结果里时（Ctrl+PgDn / 命令面板 / 跳章），
+      // 收起筛选再重建，保证目录里始终有当前章可看。只在「本来就要整表重建」的兜底里清，
+      // 正常切章仍走下面的快路径（不重建 1000 条）。
+      if (state.chapterFilter && !chapterIndexMatchesFilter(state.index)) {
+        state.chapterFilter = '';
+        syncChapterFilterUi();
+      }
+      renderChapterList();
+      return;
+    }
+    if (!next) {
+      // #2：当前章的行还在后面的分段里。分段每步都按「当时的 state.index」建行，那一行挂上时自带
+      // active；这里只把与 DOM 无关的浮标 / 胶囊先跟上，绝不重建（重建 = 分段从头来）。
+      syncCurrentVolumeMarker();
+      updateCurrentChapterPill();
+      return;
+    }
+    const previous = list.querySelector('.chapter-item.active');
+    if (previous && previous !== next) {
+      previous.classList.remove('active', 'dirty');
+      previous.tabIndex = -1;
+    }
+    // 拍板 #16a：重开一本书到非第一章时，openBookByPath 先 renderChapterList()（那时还没有当前章，
+    // ensureTabStop 把第 1 条设成 tabIndex 0），随后才 loadChapterAt(startIndex) 走到这里。
+    // 第 1 条这时还没有 .active，上面的 previous 抓不到它 —— 不清掉就会留下两个 Tab 停留点。
+    // 按属性查一次即可（tabIndex 会反射到 tabindex 属性），比全表扫更省。
+    const staleStop = list.querySelector('.chapter-item[tabindex="0"]');
+    if (staleStop && staleStop !== next) staleStop.tabIndex = -1;
+    next.classList.add('active');
+    setCachedActiveChapterItem(next); // 1.6.0 A5/P-09：切章快路径同步「当前章条目」缓存
+    next.classList.toggle('dirty', Boolean(state.dirty));
+    next.tabIndex = 0; // roving tabindex：Tab 停留点跟着当前章走（v0.9 A-5b）
+    next.scrollIntoView({ block: 'nearest' });
+    // 快路径同样要更新「回到当前章」浮标 / 折叠卷的当前卷标记（切章后旧状态会留在原地）
+    syncCurrentVolumeMarker();
+    updateCurrentChapterPill();
+  }
+
   // RSHE-B-03（第五轮审计）：可选 { keepScroll }。折叠 / 展开只影响显隐，不改变「当前章」，
   // 旧实现复用整表重建后又无条件 scrollIntoView(当前章) —— 用户滚到离当前章很远处折叠一卷，
   // 视口会被拉回当前章、浏览位置丢失。传 keepScroll 时重建后恢复原 scrollTop（夹到新范围）。
@@ -1028,11 +1146,15 @@
       updateCurrentChapterPill();
     };
     if (!list) {
+      chapterListSegmentPending = false;
       refreshChrome();
       return;
     }
+    const segmented = plan.rows.length > CHAPTER_LIST_SEGMENT_MIN;
     // 全部行挂完后的收尾：当前章条目缓存 / 卷标记 / Tab 停留点 / 滚动位置（旧口径不变）
     const finish = () => {
+      // #2（P5）：分段挂载期间切过章时，先把重复的 active / Tab 停留点收口成当前章这一条
+      if (segmented) normalizeActiveChapterRows(list);
       // 1.6.0 A5/P-09：整表重建后重算「当前章条目」缓存（旧条目已掉出文档，不能再给它挂 dirty）
       setCachedActiveChapterItem(list.querySelector('.chapter-item.active'));
       syncCurrentVolumeMarker();
@@ -1054,14 +1176,19 @@
       }
     };
     chapterListSegmentToken += 1; // 作废还在跑的旧分段（换书 / 筛选 / 折叠都会重新进来）
-    if (plan.rows.length <= CHAPTER_LIST_SEGMENT_MIN) {
+    chapterListSegmentPending = false;
+    if (!segmented) {
       mountChapterRows(list, plan.rows);
       refreshChrome();
       finish();
       return;
     }
     // 大书：第一段先挂上，与 DOM 行无关的刷新立刻做；当前章 / Tab 停留点 / 滚动等全部挂完再收尾。
-    mountChapterRowsSegmented(list, plan.rows, refreshChrome, finish);
+    chapterListSegmentPending = true;
+    mountChapterRowsSegmented(list, plan.rows, refreshChrome, () => {
+      chapterListSegmentPending = false;
+      finish();
+    });
   }
 
     return {
@@ -1112,6 +1239,8 @@
       pruneChapterSelection,
       ensureChapterSelected,
       makeChapterItem,
+      // #2（P5）：切章快路径（含分段挂载期间按行计划核对）实现在本模块，renderer.js 只留同名转发
+      syncActiveChapterItem,
       renderChapterList
     };
   }
