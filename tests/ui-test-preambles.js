@@ -86,12 +86,17 @@ const ASSERT_HOST_NODE_BRANCH = "module.exports = factory(require('../core/asser
 // shelf-search-ui 的 Node 分支多取一个 core/common.js（组键算法唯一一份，RSHE-C-03）。
 const ASSERT_HOST_COMMON_NODE_BRANCH =
   "module.exports = factory(require('../core/common'), require('../core/assert-host').assertHost);";
+// shelf-ui 的 Node 分支多取一个 renderer/long-op-logic.js（书路径等价判定唯一一份，N-02）。
+const ASSERT_HOST_LONGOP_NODE_BRANCH =
+  "module.exports = factory(require('../core/assert-host').assertHost, require('./long-op-logic'));";
 
 function stripAssertHostBranch(source) {
   return String(source)
     .split(ASSERT_HOST_NODE_BRANCH)
     .join('')
     .split(ASSERT_HOST_COMMON_NODE_BRANCH)
+    .join('')
+    .split(ASSERT_HOST_LONGOP_NODE_BRANCH)
     .join('');
 }
 

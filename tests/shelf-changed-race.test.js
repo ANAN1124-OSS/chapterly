@@ -128,6 +128,25 @@ test('handleShelfChanged：同书两次变更的读卡回执乱序到达 → 后
   assert.equal(host.calls.rendered, 1, '只有新回执画了一次，旧回执不重画');
 });
 
+test('handleShelfChanged：N-02 正反斜杠写法不同仍按同一本书处理（不重复插卡 / 删得掉）', async () => {
+  // 书架列表里的路径是主进程 resolve 过的反斜杠形式；广播若带正斜杠（或反之），
+  // 以前只做 toLowerCase 的比较会把同一本书判成两本：增量刷新 push 出重复卡，
+  // 删除广播则一张都删不掉。
+  const bookA = { path: 'C:\\书架\\甲书', title: '甲书（旧）', lastModified: 1000 };
+  const host = makeShelfHost({
+    state: shelfState([bookA]),
+    onRead: () => ({ path: 'C:\\书架\\甲书', title: '甲书（新）', lastModified: 2000 })
+  });
+  const updated = await host.shelfUi.handleShelfChanged({ reason: 'chapter:save', bookPath: 'C:/书架/甲书' });
+  assert.equal(updated.mode, 'card');
+  assert.deepEqual(host.state.books.map((book) => book.title), ['甲书（新）'], '同一本书要替换而不是新增一张卡');
+  assert.equal(host.state.books.length, 1);
+
+  // 删除广播用另一种斜杠写法也要删掉已存在的书卡
+  const removed = await host.shelfUi.handleShelfChanged({ reason: 'book:delete', bookPath: 'C:/书架/甲书' });
+  assert.deepEqual(removed, { mode: 'remove', removed: true });
+  assert.deepEqual(host.state.books, []);
+});
 test('handleShelfChanged：整表刷新之后到达的在途读卡回执作废（不再覆盖刷新结果）', async () => {
   const before = { path: 'C:\\书架\\甲书', title: '甲书（刷新前）', lastModified: 100 };
   const after = { path: 'C:\\书架\\甲书', title: '甲书（刷新后）', lastModified: 900 };

@@ -282,12 +282,9 @@
     return `${formatScaledCount(value / 100000000)} 亿字`;
   }
 
-  function formatBytes(n) {
-    const value = Math.max(0, Number(n) || 0);
-    if (value < 1024) return `${value} B`;
-    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-    return `${(value / 1024 / 1024).toFixed(1)} MB`;
-  }
+  // N-01：体量文案全仓只剩 core/common.js 的 formatByteSize 这一份。以前渲染层另有一份固定 1 位
+  // 小数的实现（10 MB 以上写成「10.0 MB」），与导入 / 导出 / 设置 / 历史提示的「10 MB」两种口径。
+  const formatBytes = commonLib.formatByteSize;
 
   // 写作时长显示（纯格式换算在 editor-logic.js，Node 单测覆盖；这里只做转发）
   function formatDuration(n) {

@@ -798,6 +798,8 @@ test('分卷：新建 / 改名 / 删除卷；删卷不删章、章节文件不�
   const filesBefore = (await fs.readdir(bookPath)).filter((f) => f.endsWith('.txt')).sort();
   const deleted = await storage.deleteVolume(bookPath, created1.volume.id);
   assert.equal(deleted.meta.volumes.length, 0);
+  // N-03：旧返回值的 movedChapters 统计的是「全书未分卷章节总数」而不是本次移出数，且无人消费 —— 已删除该死字段。
+  assert.equal('movedChapters' in deleted, false, '删卷结果不再返回语义错误的 movedChapters');
   assert.ok(deleted.meta.chapters.every((c) => !c.volumeId), '卷里的章应该回落到未分卷');
   assert.equal(deleted.meta.chapters.length, chapter2.meta.chapters.length, '删卷不能删章');
   const filesAfter = (await fs.readdir(bookPath)).filter((f) => f.endsWith('.txt')).sort();

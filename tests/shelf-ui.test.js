@@ -477,8 +477,15 @@ test('静态闸门：index.html 在 renderer.js 之前加载 shelf-ui.js，且�
   assert.notEqual(rendererAt, -1);
   assert.ok(at < rendererAt, 'shelf-ui.js 必须排在 renderer.js 之前');
   assert.equal(indexSrc.split('shelf-ui.js').length - 1, 1);
-  // 模块自己挂全局 CWShelfUi，渲染层按这个全局名字取
-  assert.match(moduleSrc, /root\.CWShelfUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost\);/);
+  // 模块自己挂全局 CWShelfUi，渲染层按这个全局名字取；N-02：书路径比较从 long-op-logic 取同一份
+  assert.match(
+    moduleSrc,
+    /root\.CWShelfUi = factory\(root\.CWAssertHost && root\.CWAssertHost\.assertHost, root\.CWLongOpLogic\);/
+  );
+  // 浏览器分支依赖的 long-op-logic.js 必须先加载（否则 window.CWLongOpLogic 是 undefined）
+  const longOpAt = indexSrc.indexOf('<script src="long-op-logic.js"></script>');
+  assert.notEqual(longOpAt, -1);
+  assert.ok(longOpAt < at, 'long-op-logic.js 必须排在 shelf-ui.js 之前');
   assert.match(rendererSrc, /const shelfUiModule = window\.CWShelfUi;/);
 });
 

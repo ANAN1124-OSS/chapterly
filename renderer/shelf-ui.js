@@ -48,12 +48,17 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../core/assert-host').assertHost);
+    module.exports = factory(require('../core/assert-host').assertHost, require('./long-op-logic'));
   } else if (root) {
-    root.CWShelfUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost);
+    root.CWShelfUi = factory(root.CWAssertHost && root.CWAssertHost.assertHost, root.CWLongOpLogic);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (assertHost, longOpLogic) {
   'use strict';
+
+  // N-02：书路径等价判定只认 long-op-logic 的同一份（Windows 大小写不敏感 + 正反斜杠归一 +
+  // 去首尾空白）。书架增量刷新以前自己内联一份只做 toLowerCase 的比较，斜杠形式不同就会把
+  // 同一本书判成两本（重复书卡 / 更新落空）。加载顺序：long-op-logic.js 在 shelf-ui.js 之前。
+  const { bookPathKey, sameBookPath } = longOpLogic;
 
   const REQUIRED_HOST = ['$', 'state', 'chapterTitle', 'formatRelativeTime', 'openBookByPath', 'askUnsaved', 'saveCurrent', 'loadChapterAt'];
 
@@ -76,8 +81,7 @@
   function continueTarget() {
     const recent = state.recentBook;
     if (!recent || !recent.path) return null;
-    const wanted = String(recent.path).toLowerCase();
-    const book = (state.books || []).find((item) => String(item.path || '').toLowerCase() === wanted);
+    const book = (state.books || []).find((item) => sameBookPath(item && item.path, recent.path));
     if (!book || book.status === 'corrupt') return null;
     return { book, recent };
   }
@@ -145,8 +149,6 @@
   //   · reason === 'book:delete' → 直接从书架删卡（目录已搬走，读盘必然失败，不白试一次）；
   //   · bookPath 为空（多本导入等结构性变更）→ 整表刷新，与改动前完全一致。
   // 任何一步不可用 / 读失败都退回整表刷新：宁可多读一遍，也不能把书卡从书架上弄丢。
-  const sameBookPath = (left, right) =>
-    String(left == null ? '' : left).toLowerCase() === String(right == null ? '' : right).toLowerCase();
 
   // 五-M6（SS-03）：增量读卡的世代复核。
   // shelf:changed 只说「哪本书变了」，读卡是异步的；广播一到就推进这本书的世代号（删书也算一次），
@@ -155,7 +157,7 @@
   // 整表刷新取代此前所有增量读卡，同样推进会话世代，让刷新前发出的回执一并作废。
   let shelfCardSeq = 0;
   let shelfFullEpoch = 0;
-  const shelfCardSeqByPath = new Map(); // 小写 path → 这本书最新一次广播的序号
+  const shelfCardSeqByPath = new Map(); // 归一后的 path 键 → 这本书最新一次广播的序号
 
   function applyShelfCard(card, bookPath) {
     const books = Array.isArray(state.books) ? state.books.slice() : [];
@@ -172,7 +174,7 @@
     // 五-M6（SS-03）：广播一到就推进这本书的世代（先于所有 await / 早退），
     // 之后到达的旧回执据此知道自己已被更新的一次广播（含删书）取代。
     const cardSeq = bookPath ? ++shelfCardSeq : 0;
-    if (bookPath) shelfCardSeqByPath.set(bookPath.toLowerCase(), cardSeq);
+    if (bookPath) shelfCardSeqByPath.set(bookPathKey(bookPath), cardSeq);
     const epochAtStart = shelfFullEpoch;
     // 写作页不打断作者（回书架时会整表刷新）；导入 / 整本整理期间的广播也不插手。
     if (state.view !== 'shelf' || state.importing || state.formatBookRunning) return { mode: 'skipped' };
@@ -207,7 +209,7 @@
     }
     // 五-M6（SS-03）：回执落地前复核世代 —— 期间这本书被删 / 又有更新的一次变更，
     // 或发生过整表刷新 → 丢弃，不插卡、不重画（否则已删书卡会被插回书架）。
-    if (epochAtStart !== shelfFullEpoch || shelfCardSeqByPath.get(bookPath.toLowerCase()) !== cardSeq) {
+    if (epochAtStart !== shelfFullEpoch || shelfCardSeqByPath.get(bookPathKey(bookPath)) !== cardSeq) {
       return { mode: 'stale' };
     }
     applyShelfCard(card, bookPath);

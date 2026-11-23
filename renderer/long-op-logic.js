@@ -19,9 +19,18 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  // 书路径比较沿用历史面板的口径：Windows 路径大小写不敏感；null / undefined 按空串，不炸。
+  // N-02：渲染层「是不是同一本书」的路径口径只留这一份（书架增量刷新 / 长操作收尾 / 保存链 /
+  // 救稿 / 历史还原共用）。Windows 大小写不敏感；null / undefined 按空串不炸。
+  // 以前各模块各写一套、部分只做 toLowerCase：主进程返回的路径一般是 resolve 过的，但只要某条
+  // 通道给了正斜杠形式（`D:/书库/甲`），同一本书就会被判成两本 → 重复书卡 / 更新落空 / 拒绝重载。
+  // 渲染层没有 node:path，这里不做 resolve（解析侧仍以 core/path-utils.js 的 pathKey 为准），
+  // 只做「去首尾空白 + 正斜杠归反斜杠 + 小写」这三步等价归一。
+  function bookPathKey(value) {
+    return String(value == null ? '' : value).trim().replace(/\//g, '\\').toLowerCase();
+  }
+
   function sameBookPath(a, b) {
-    return String(a == null ? '' : a).toLowerCase() === String(b == null ? '' : b).toLowerCase();
+    return bookPathKey(a) === bookPathKey(b);
   }
 
   // 长操作完成后的处置：'book-changed' | 'keep-edits' | 'reload'
@@ -39,5 +48,5 @@
     return opts.dirty !== true;
   }
 
-  return { sameBookPath, decideAfterLongOp, canReloadFromDisk };
+  return { bookPathKey, sameBookPath, decideAfterLongOp, canReloadFromDisk };
 });

@@ -64,6 +64,20 @@ test('书路径比较：Windows 大小写不敏感，空值按空串', () => {
   assert.equal(longOpLogic.sameBookPath(null, 'D:\\书库\\A'), false);
 });
 
+test('N-02：正反斜杠 / 首尾空白写法不同仍判同一本书（书架增量刷新、长操作收尾共用一份）', () => {
+  // 主进程回给渲染层的路径一般已经 resolve，但只要某条通道给了正斜杠形式，
+  // 以前只做 toLowerCase 的口径会把同一本书判成两本（重复书卡 / 更新落空）。
+  assert.equal(longOpLogic.sameBookPath('D:/书库/甲', 'D:\\书库\\甲'), true);
+  assert.equal(longOpLogic.sameBookPath('D:/书库/甲/', 'D:\\书库\\甲\\'), true);
+  assert.equal(longOpLogic.sameBookPath('  D:\\书库\\甲  ', 'd:/书库/甲'), true);
+  // 归一不吞掉「不同的书」：不同末级目录 / 空值仍不等
+  assert.equal(longOpLogic.sameBookPath('D:/书库/甲', 'D:\\书库\\乙'), false);
+  assert.equal(longOpLogic.sameBookPath('', 'D:\\书库\\甲'), false);
+  // 供书架增量刷新按同一归一结果做世代号 key（不能一处归一、另一处裸 toLowerCase）
+  assert.equal(longOpLogic.bookPathKey('D:/书库/甲'), longOpLogic.bookPathKey('d:\\书库\\甲'));
+  assert.equal(typeof longOpLogic.bookPathKey, 'function');
+});
+
 test('重载闸门：书换了或有未保存修改一律不许从磁盘重载', () => {
   const expectedBookPath = 'D:\\书库\\整理测试书';
   assert.equal(

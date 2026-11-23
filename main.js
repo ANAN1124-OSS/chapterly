@@ -115,21 +115,21 @@ const CHAPTER_READ_CONCURRENCY = 8;
 // 顺序 / 内容 / 统计口径与「一次读完整个数组」逐字一致，只是不再让整本书的正文同时常驻。
 const CHAPTER_BATCH_SIZE = 32;
 
-// V114（v1.8.0 WP-34 / D1）/ MAIN-03：registerIpc() 按域拆分 —— 导出 / 校对 / 书 CRUD /
-// 书域数据面 / 章节保存整段搬到 ipc/*.js，main.js 只做装配（依赖在 buildIpcHost() 里一次性注入）。
-// 模块自己不 require electron、不碰模块级状态；缺依赖在装配时直接 TypeError（与渲染层 createX(host)
-// 同一口径，A8）。mutation 常量表在各域模块内直接引用（审计修复 #38 / ▲V306）。
+// registerIpc() 按域拆分：导出 / 校对 / 书 CRUD / 书域数据面 / 章节保存整段搬到 ipc/*.js，
+// main.js 只做装配（依赖在 buildIpcHost() 里一次性注入）。模块自己不 require electron、不碰模块级
+// 状态；缺依赖在装配时直接 TypeError（与渲染层 createX(host) 同一口径）；mutation 常量表在各域模块内
+// 直接引用。（V114 / v1.8.0 WP-34 / D1 / MAIN-03 / A8 / 审计修复 #38 / ▲V306；编号索引见 tests/README.md）
 const ipcBook = require('./ipc/book');
 const ipcBookData = require('./ipc/book-data');
 const ipcProofread = require('./ipc/proofread');
 const ipcExport = require('./ipc/export');
 const ipcSave = require('./ipc/save');
-// I6（三审）：书域 mutation 的取值只有 ipc/book-mutations.js 一份常量表。capture:commit-record 以前
-// 是全仓唯一手写 mutation 字面量的注册点（口径分叉而不是漏标）—— 现在与各域模块同源，
-// 新增 / 改名词条时只改表，不会再出现「一处字面量对不上表」的静默漂移。
+// 书域 mutation 的取值只有 ipc/book-mutations.js 一份常量表。capture:commit-record 以前是全仓唯一
+// 手写 mutation 字面量的注册点（口径分叉而不是漏标）—— 现在与各域模块同源，新增 / 改名词条时只改表，
+// 不会再出现「一处字面量对不上表」的静默漂移。（I6·三审）
 const { MUTATION } = require('./ipc/book-mutations');
-// I7（三审）：软错误包络的唯一构造器 + 频道清单（成功回包里的「这次没做成」统一成
-// { ok:false, code, message }，既有 saved / draft / removed / added 判别字段作为附加字段保留）。
+// 软错误包络的唯一构造器 + 频道清单（成功回包里的「这次没做成」统一成
+// { ok:false, code, message }，既有 saved / draft / removed / added 判别字段作为附加字段保留）。（I7·三审）
 const { softFailure } = require('./ipc/soft-error');
 
 // ---------- 启动参数：隔离用的 --user-data ----------

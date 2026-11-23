@@ -1416,7 +1416,9 @@ async function deleteVolume(bookPath, volumeId) {
     volumes: meta.volumes.filter((v) => v.id !== volumeId)
   });
   const saved = await writeBookMetaChecked(bookPath, updated, { structural: true, stamp: stampOfMeta(meta) });
-  return { meta: saved, movedChapters: saved.chapters.filter((c) => !c.volumeId).length };
+  // N-03：不再返回 movedChapters —— 旧实现统计的是「全书未分卷章节总数」（不是本次从被删卷移出的
+  // 章节数），且全仓没有任何调用方读取，属于语义错误的死字段。删卷结果只需要新书目。
+  return { meta: saved };
 }
 
 // 把一章移到某卷（volumeId 传 null = 移回「未分卷」）；移完按卷重新归一顺序
@@ -3032,11 +3034,11 @@ function bookLockKey(bookPath) {
   return pathUtils.pathKey(bookPath);
 }
 
-// 审计修复 #55（M6）：书锁重入。三个底层写入口（writeBookMeta / saveChapterText /
-// prepareChapterSave）现在出口处内置 withBookLock；主进程 chapter:save 与既有单测又已经在
-// withBookLock 里按「读-改-写」整段调用它们 —— 队列不可重入，再排一次就会自己等自己（死锁）。
+// 书锁重入：三个底层写入口（writeBookMeta / saveChapterText / prepareChapterSave）现在出口处内置
+// withBookLock；主进程 chapter:save 与既有单测又已经在 withBookLock 里按「读-改-写」整段调用它们
+// —— 队列不可重入，再排一次就会自己等自己（死锁）。
 // 用 AsyncLocalStorage 记住当前异步上下文已经持有的书锁 key：同一本书在已持锁上下文里直接执行，
-// 不重新排队（语义等价于把内层调用并进外层那一把锁）；不同书仍各排各的链。
+// 不重新排队（语义等价于把内层调用并进外层那一把锁）；不同书仍各排各的链。（审计修复 #55 / M6）
 const heldBookLocks = new AsyncLocalStorage();
 
 function withBookLock(bookPath, task) {
@@ -3052,9 +3054,9 @@ function withBookLock(bookPath, task) {
   });
 }
 
-// 审计残留修复 #R11（#55/M6）：书锁包装器只留这一份。旧实现里 `lockedWriteEntry` 与 `locked`
-// 是两段逐字相同的函数（都只是 withBookLock(args[0], …) 的包装），导出面一半用这个名、一半用那个名；
-// 现在统一叫 lockedWriteEntry（它本来就是「写入口内置书锁」的意思），下面导出面全部走它。
+// 书锁包装器只留这一份。旧实现里 `lockedWriteEntry` 与 `locked` 是两段逐字相同的函数（都只是
+// withBookLock(args[0], …) 的包装），导出面一半用这个名、一半用那个名；现在统一叫 lockedWriteEntry
+// （它本来就是「写入口内置书锁」的意思），下面导出面全部走它。（审计残留修复 #R11 / #55·M6）
 function lockedWriteEntry(fn) {
   return (...args) => withBookLock(args[0], () => fn(...args));
 }
