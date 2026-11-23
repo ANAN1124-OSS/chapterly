@@ -32,15 +32,28 @@ const KIND_LABEL = {
 // 旧名字继续对外导出（main.js / 单测按这个名字取），实现就是 core/path-utils.js 那一份。
 const normalizeBookPath = normalizePath;
 
+// 书名在提示 / 诊断里的统一口径。T-20（三审）：文件夹名上限 40 字，超长书名整名内嵌错误文案时，
+// 会被 core/logs.js 的「≥24 连续汉字 = 疑似正文」遮罩整段换成 [正文已隐藏 N 字]，日志里的诊断
+// （哪本书、什么错误）直接报废。这里超长一律首尾截断（中间一个 '…'），任何一段都不到遮罩阈值；
+// 正常长度（≤24 字）的书名一字不改，界面提示也不受影响。
+const LABEL_MAX_CHARS = 24;
+const LABEL_HEAD_CHARS = 14;
+const LABEL_TAIL_CHARS = 8;
+
 function bookLabel(bookPath) {
   const raw = String(bookPath == null ? '' : bookPath).trim();
   if (!raw) return '这本书';
+  let base = '';
   try {
-    const base = path.basename(raw);
-    return base || raw;
+    base = path.basename(raw);
   } catch {
-    return raw;
+    base = raw;
   }
+  if (!base) base = raw;
+  // 按码点截断：扩展 B 的汉字在 UTF-16 里占两个码元，不能按 length 切。
+  const chars = Array.from(base);
+  if (chars.length <= LABEL_MAX_CHARS) return base;
+  return `${chars.slice(0, LABEL_HEAD_CHARS).join('')}…${chars.slice(-LABEL_TAIL_CHARS).join('')}`;
 }
 
 function crossWindowMessage(bookPath, action = 'write') {
@@ -309,6 +322,7 @@ module.exports = {
   CODE,
   createRegistry,
   normalizeBookPath,
+  bookLabel,
   openInOtherWindowMessage,
   checkOpenBook,
   checkMutation,

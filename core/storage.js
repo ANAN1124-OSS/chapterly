@@ -1173,7 +1173,8 @@ function assertBookNotBusy(bookPath, windowId, action = 'write') {
   const result = openBooksLib.checkMutation({ registry: openBookRegistry, windowId, bookPath, action });
   if (!result.ok) throw new StorageError(result.code, result.message);
   if (action === 'delete' && isBookReadLeased(bookPath)) {
-    const label = path.basename(String(bookPath == null ? '' : bookPath)) || '这本书';
+    // T-20：书名统一走 openBooksLib.bookLabel（超长首尾截断，见那里的注释）
+    const label = openBooksLib.bookLabel(bookPath);
     throw new StorageError(
       'READ_LEASE_BUSY',
       `「${label}」正在被只读长流程使用（导出 / 整本复制 / 整本检查），已阻止这次删除。请等它完成后再删。`
@@ -2882,7 +2883,8 @@ async function trashBook(booksRoot, bookPath) {
     throw new StorageError('BAD_PATH', '书架保留目录不能当书删除');
   }
   if (!(await exists(path.join(target, BOOK_FILE)))) {
-    throw new StorageError('NOT_A_BOOK', `「${folder}」不是一本书（文件夹里没有 ${BOOK_FILE}）`);
+    // T-20：提示里的书名走统一截断口径；folder 仍保留完整名字给下面的备份路径用。
+    throw new StorageError('NOT_A_BOOK', `「${openBooksLib.bookLabel(target)}」不是一本书（文件夹里没有 ${BOOK_FILE}）`);
   }
   return withBookLock(target, async () => {
     const trashDir = path.join(root, TRASH_DIR);

@@ -403,6 +403,27 @@ test('崩溃日志：写一条 → 建 logs 目录、按天命名、含错误信
   }
 });
 
+// T-19（三审）：info() 在日志目录还没建时不能提前置 dirReady —— 旧实现把 listLogFiles 对 ENOENT
+// 回的 [] 当成「目录就绪」，下一条 append 跳过 mkdir、fs.open 直接 ENOENT，首条日志丢失。
+test('T-19：目录未建时先查 info()，目录不被创建，紧接着的首条日志仍写进（并建出）目录', async () => {
+  const base = await mkTmp();
+  try {
+    const store = logsLib.createLogStore(base, { now: () => new Date(2026, 10, 1, 4, 0, 0) });
+    const before = await store.info();
+    assert.deepEqual(before.files, [], '目录还没建：清单为空');
+    assert.equal(before.latest, null);
+    const readdir = await fs.readdir(store.dir).then(() => 'ok', (err) => err.code);
+    assert.equal(readdir, 'ENOENT', 'info() 只读，不建目录');
+    const result = await store.write({ level: 'info', kind: 'app-start', message: '首条日志' });
+    assert.equal(result.ok, true, 'info() 之后的首条日志不许丢');
+    const text = await fs.readFile(path.join(store.dir, result.file), 'utf8');
+    assert.match(text, /首条日志/);
+    assert.equal(store.counters().written, 1);
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
 test('崩溃日志：串行写入不丢条目（并发写也一条不少）', async () => {
   const base = await mkTmp();
   try {

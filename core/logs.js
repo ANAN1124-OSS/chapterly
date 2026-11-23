@@ -430,11 +430,13 @@ function createLogStore(baseDir, options = {}) {
 
   // 设置弹层 / 自检用：日志目录、文件清单（新→旧）、总大小；读失败也不抛。
   // CTXT-B-04：这里仍以磁盘为准（外部可能删过文件），读回来的清单同时刷新缓存。
+  // T-19（三审）：**不在这里置 dirReady** —— 目录还没建时 listLogFiles 对 ENOENT 回 []，
+  // 旧实现照样置 dirReady = true，下一次 append 跳过 mkdir、fs.open 直接 ENOENT，首条日志丢失
+  // （只有「启动写日志失败 / 写队列还没跑」时先打开设置才会撞上）。目录是否就绪只由 ensureDir 决定。
   async function info() {
     try {
       const onDisk = await listLogFiles(dir);
       filesCache = onDisk;
-      dirReady = true;
       const files = onDisk.sort(compareLogFiles).reverse();
       return {
         dir,

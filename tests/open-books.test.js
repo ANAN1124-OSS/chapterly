@@ -269,6 +269,30 @@ test('错误提示：不同动作用不同动词，且都提示先关 / 先切�
   }
 });
 
+// T-20（三审）：文件夹名上限 40 字，超长书名整名内嵌错误文案时会被 core/logs.js 的
+// 「≥24 连续汉字 = 疑似正文」遮罩整段换成 [正文已隐藏 N 字]，日志里的诊断直接报废。
+// 修法：书名在提示里首尾截断（中间 '…'），任何一段都不到遮罩阈值；正常长度书名一字不改。
+test('T-20：超长书名首尾截断，日志遮罩不再把整条诊断吞掉', () => {
+  const logsLib = require('../core/logs');
+  const longName = '长'.repeat(30);
+  const longBook = path.join('D:\\书架', longName);
+
+  const message = openBooks.openInOtherWindowMessage(longBook);
+  const masked = logsLib.maskLongCjk(message);
+  assert.match(message, /…/, '超长书名要首尾截断');
+  assert.doesNotMatch(masked, /正文已隐藏/, '书名不许被日志遮罩当成正文');
+  assert.ok(masked.includes('长'.repeat(14)), '首段（14 字）保留');
+  assert.ok(masked.includes('长'.repeat(8)), '尾段（8 字）保留');
+  assert.strictEqual(Array.from(openBooks.bookLabel(longBook)).filter((c) => c === '长').length, 22);
+
+  // 正常长度（≤24 字）的书名一字不改：界面提示与旧行为一致
+  assert.strictEqual(openBooks.bookLabel(BOOK_A), '甲书');
+  assert.strictEqual(openBooks.bookLabel(path.join('D:\\书架', '长'.repeat(24))), '长'.repeat(24));
+  // 保存前校验 / 跨窗口拦截的文案同样可诊断（不被遮罩）
+  const denied = openBooks.verifySaveTarget({ bookPath: longBook, bookExists: false });
+  assert.doesNotMatch(logsLib.maskLongCjk(denied.message), /正文已隐藏/);
+});
+
 test('多窗口规模：登记 / 释放与最近窗口在多个窗口下保持一致', () => {
   const registry = openBooks.createRegistry();
   for (let i = 1; i <= 5; i += 1) registry.registerWindow(i, { now: i });
