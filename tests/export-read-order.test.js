@@ -27,6 +27,7 @@ const s2tLib = require('../core/s2t');
 const ipcLimits = require('../core/ipc-limits');
 const atomic = require('../core/atomic');
 const exportIpc = require('../ipc/export');
+const pathUtils = require('../core/path-utils');
 const tmpCleanup = require('./tmp-cleanup');
 
 // TB-02：临时目录统一经 tests/tmp-cleanup.js（不再本地复制 mkdtemp + track）。
@@ -43,6 +44,8 @@ function makeHost({ targetPath = '', canceled = false, readThrows = false } = {}
     handle: (name, fn) => channels.set(name, fn),
     handleBook: (name, fn) => channels.set(name, fn),
     storage: {
+      // N-16：落点拒绝用 storage.StorageError（与生产同一类），最小桩也要给。
+      StorageError: storage.StorageError,
       readBookMeta: (bookPath) => storage.readBookMeta(bookPath),
       loadChapterText: async (bookPath, file) => {
         if (readThrows) {
@@ -65,6 +68,7 @@ function makeHost({ targetPath = '', canceled = false, readThrows = false } = {}
     CHAPTER_READ_CONCURRENCY: 4,
     CHAPTER_BATCH_SIZE: 16,
     path,
+    pathUtils,
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
     fsSync: fs,
     getConfig: async () => ({ exportConversion: '', lastExportDir: '' }),

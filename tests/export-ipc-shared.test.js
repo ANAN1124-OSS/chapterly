@@ -11,6 +11,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const exportIpc = require('../ipc/export');
+const pathUtils = require('../core/path-utils');
 const storage = require('../core/storage');
 const exporter = require('../core/exporter');
 const chaptersLib = require('../core/chapters');
@@ -24,13 +25,15 @@ const tmpCleanup = require('./tmp-cleanup');
 // TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
 const mkTmp = (prefix = 'cw-export-shared-') => tmpCleanup.mkTmp(prefix);
 
-function makeHost({ targetPath, canceled = false, readHook = null, docxLib: docxLibOverride = null } = {}) {
+function makeHost({ targetPath, canceled = false, readHook = null, docxLib: docxLibOverride = null, booksRoot = '' } = {}) {
   const channels = new Map();
   const calls = { dialogs: [], exportDirs: [], reads: 0 };
   const host = {
     handle: (name, fn) => { channels.set(name, fn); },
     handleBook: (name, fn) => { channels.set(name, fn); },
     storage: {
+      // N-16：落点拒绝用 storage.StorageError（与生产同一类），最小桩也要给。
+      StorageError: storage.StorageError,
       readBookMeta: (bookPath) => storage.readBookMeta(bookPath),
       loadChapterText: async (bookPath, file) => {
         calls.reads += 1;
@@ -50,9 +53,10 @@ function makeHost({ targetPath, canceled = false, readHook = null, docxLib: docx
     CHAPTER_READ_CONCURRENCY: 4,
     CHAPTER_BATCH_SIZE: 16,
     path,
+    pathUtils,
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
     fsSync: require('node:fs'),
-    getConfig: async () => ({ exportConversion: '', lastExportDir: '' }),
+    getConfig: async () => ({ exportConversion: '', lastExportDir: '', booksRoot }),
     getClipboard: () => ({ writeText: async () => {} }),
     showSaveDialog: async (options) => {
       calls.dialogs.push(options);
@@ -152,6 +156,44 @@ test('#24 R2：默认文件名在对话框之前算好（EPUB / DOCX 各自复�
     '共享内核把 defaultName 传给对话框（不是写死书名）'
   );
 });
+// N-16（二次审查）：导出落点不许落在书库 / 本书目录里 —— 保存对话框可以一路导航到书文件夹并选中
+// 章节 txt，Windows 一次「替换」确认就会让整本导出内容覆盖那一章正文（章节没有自动备份）。
+test('N-16：导出落点落在书库内 / 等于章节 txt → 软错误拒绝且不读正文、不写盘', async () => {
+  const dir = await mkTmp();
+  const root = path.join(dir, '书库');
+  await fs.mkdir(root, { recursive: true });
+  const bookPath = await makeBook(root);
+  const meta = await storage.readBookMeta(bookPath);
+  const chapterPath = path.join(bookPath, meta.chapters[0].file);
+  const beforeChapter = await fs.readFile(chapterPath);
+  const beforeDir = (await fs.readdir(bookPath)).sort();
+
+  const cases = [
+    ['book:export', chapterPath], // 落点就是当前章节文件
+    ['book:export-epub', path.join(root, '导出.epub')], // 落在书库根下、但不在本书目录
+    ['book:export-docx', path.join(bookPath, '导出.docx')] // 落在本书目录里
+  ];
+  for (const [channel, target] of cases) {
+    const { channels, calls } = makeHost({ targetPath: target, booksRoot: root });
+    await assert.rejects(
+      () => channels.get(channel)(bookPath, null, null),
+      (err) => err && err.code === 'EXPORT_TARGET_IN_LIBRARY' && /书库/.test(err.message),
+      `${channel}：书库内落点必须拒绝`
+    );
+    assert.equal(calls.reads, 0, `${channel}：拒绝发生在读正文之前`);
+    assert.deepEqual(calls.exportDirs, [], `${channel}：拒绝不记导出目录`);
+  }
+  assert.deepEqual(await fs.readFile(chapterPath), beforeChapter, '章节正文一个字节不动');
+  assert.deepEqual((await fs.readdir(bookPath)).sort(), beforeDir, '书库里面没有多出导出产物');
+
+  // 书库外的正常落点不受影响（闸门不能把合法导出也拦住）
+  const outside = path.join(dir, '书库外.txt');
+  const okHost = makeHost({ targetPath: outside, booksRoot: root });
+  const ok = await okHost.channels.get('book:export')(bookPath, null, null);
+  assert.equal(ok.canceled, false, '书库外落点照常导出');
+  assert.equal(ok.filePath, outside);
+});
+
 // 五-M33（IE-02）：导出 / 整本复制是只读长流程 —— 不拿书写锁（会阻塞同书正常保存），但同窗口
 // 「回书架 → 删同书」在逐章读盘期间能把源文件夹整个搬进回收站，导出中途撞 CHAPTER_MISSING。
 // 现在主进程按 bookPath 登记在途租约：book:delete 的闸门据此拒绝（保存 / 整理等写操作照常），

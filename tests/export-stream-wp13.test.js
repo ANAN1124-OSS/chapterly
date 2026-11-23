@@ -31,6 +31,7 @@ const ipcLimits = require('../core/ipc-limits');
 const storage = require('../core/storage');
 const atomic = require('../core/atomic');
 const exportIpc = require('../ipc/export');
+const pathUtils = require('../core/path-utils');
 const { readZip } = require('../scripts/export-check');
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -477,6 +478,8 @@ function makeHost({ dir, targetPath, canceled = false, failingStreamAt = 0 } = {
     handle: (name, fn) => { channels.set(name, fn); },
     handleBook: (name, fn) => { channels.set(name, fn); },
     storage: {
+      // N-16：落点拒绝用 storage.StorageError（与生产同一类），最小桩也要给。
+      StorageError: storage.StorageError,
       readBookMeta: (bookPath) => storage.readBookMeta(bookPath),
       loadChapterText: async (bookPath, file) => {
         calls.reads.push(file);
@@ -494,6 +497,7 @@ function makeHost({ dir, targetPath, canceled = false, failingStreamAt = 0 } = {
     CHAPTER_READ_CONCURRENCY: 4,
     CHAPTER_BATCH_SIZE: 16,
     path,
+    pathUtils,
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
     fsSync: require('node:fs'),
     getConfig: async () => ({ exportConversion: 's2t', lastExportDir: '' }),

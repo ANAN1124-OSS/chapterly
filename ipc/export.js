@@ -30,6 +30,7 @@ const REQUIRED_HOST = [
   'CHAPTER_READ_CONCURRENCY',
   'CHAPTER_BATCH_SIZE',
   'path',
+  'pathUtils',
   'app',
   'fsSync',
   'getConfig',
@@ -46,7 +47,7 @@ function registerExportIpc(host) {
     handle, handleBook, storage, exporter,
     chaptersLib, epubLib, docxLib, s2tLib,
     ipcLimits, mapLimit, CHAPTER_READ_CONCURRENCY, CHAPTER_BATCH_SIZE,
-    path, app, fsSync, getConfig,
+    path, pathUtils, app, fsSync, getConfig,
     getClipboard, showSaveDialog, rememberExportDir, atomicWriteFile,
     atomicWriteFileStream
   } = host;
@@ -144,6 +145,32 @@ function registerExportIpc(host) {
       includedUnsaved: overrideIndex >= 0 && plan.indexes.includes(overrideIndex)
     };
   }, READ_ONLY);
+
+  // N-16（二次审查）：导出 / 救稿的落点不许落在书库（或当前书文件夹）内。保存对话框里可以一路
+  // 导航到书文件夹并选中 `001-第1章.txt`，Windows 只问一次「是否替换」，确认后整本导出的内容就把
+  // 那一章的正文覆盖掉（章节没有自动备份，除非开了每日快照）。判定只用字符串级 pathKey，不读盘：
+  // 落点等于 / 位于 booksRoot 或当前书目录下时抛软错误，让作者换一个书库外的目录。
+  function isPathInside(target, dir) {
+    const targetKey = pathUtils.pathKey(target);
+    const dirKey = pathUtils.pathKey(dir);
+    if (!targetKey || !dirKey) return false;
+    if (targetKey === dirKey) return true;
+    const prefix = dirKey.endsWith(path.sep) ? dirKey : dirKey + path.sep;
+    return targetKey.startsWith(prefix);
+  }
+
+  function assertExportTargetOutsideLibrary(filePath, cfg, bookPath) {
+    const roots = [];
+    if (cfg && cfg.booksRoot) roots.push(cfg.booksRoot);
+    if (bookPath) roots.push(bookPath);
+    for (const root of roots) {
+      if (!isPathInside(filePath, root)) continue;
+      throw new storage.StorageError(
+        'EXPORT_TARGET_IN_LIBRARY',
+        '这个位置在书库里，保存会覆盖章节正文；请换一个书库外的目录'
+      );
+    }
+  }
 
   // 目录是否存在（导出默认目录兜底用）：读不到就当不存在
   function isDirectory(dir) {
@@ -249,6 +276,8 @@ function registerExportIpc(host) {
       filters: options.filters
     });
     if (canceled || !filePath) return { canceled: true };
+    // N-16：落点落在书库 / 本书目录里会覆盖章节正文，直接软错误拒绝（不读正文、不写盘）。
+    assertExportTargetOutsideLibrary(filePath, prepared.cfg, bookPath);
     // 审计 #7：落点确认之后才读正文（取消 / 改主意都不会白读）。B1 起改成逐章读。
     // 简繁转换：书名 / 卷名 / 章名 / 模板 / 正文都换成导出用的副本，目录和正文才一致；
     // 书目与章节 txt 一概不动（chars 仍按原稿字数算）。
@@ -315,6 +344,8 @@ function registerExportIpc(host) {
       filters: [{ name: '文本文件', extensions: ['txt'] }]
     });
     if (canceled || !filePath) return { canceled: true };
+    // N-16：与 EPUB / DOCX 同一道闸门 —— 不许把导出的整本内容写回书库、覆盖章节 txt。
+    assertExportTargetOutsideLibrary(filePath, prepared.cfg, bookPath);
     // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）。
     // B5（v1.8.0 WP-28）：TXT 改流式写盘，边读边拼边写，不物化整本 texts / 整本串 / 整本 Buffer。
     const { chars, includedUnsaved, conversion } = await writeTxtExport(filePath, bookPath, prepared);
@@ -439,6 +470,9 @@ function registerExportIpc(host) {
       filters: [{ name: '文本文件', extensions: ['txt'] }]
     });
     if (canceled || !filePath) return { canceled: true };
+    // N-16：救稿本来就是「章节文件可能已经不在」时才用，更容易顺手存回书库；同样只许书库外。
+    // 这条频道不拿 bookPath（书可能已缺失），按 booksRoot 判定即可覆盖所有章节 txt。
+    assertExportTargetOutsideLibrary(filePath, cfg, '');
     await atomicWriteFile(filePath, chaptersLib.toDiskNewlines(body), 'utf8');
     // 记住这次落点，下次另存 / 导出默认还开在这里（记不住也不影响救稿结果）
     await rememberExportDir(path.dirname(filePath));

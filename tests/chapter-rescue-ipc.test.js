@@ -9,6 +9,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const exportIpc = require('../ipc/export');
+const pathUtils = require('../core/path-utils');
 const chaptersLib = require('../core/chapters');
 const ipcLimits = require('../core/ipc-limits');
 const exporter = require('../core/exporter');
@@ -26,7 +27,9 @@ function makeHost(options = {}) {
     handleBook: (name, fn) => { channels.set(name, fn); },
     // 书库一律拒绝：救稿通道不该读写书库（书 / 章可能已经不存在了，这正是它被需要的原因）
     storage: new Proxy({}, {
-      get() {
+      get(_target, key) {
+        // N-16：落点闸门用 storage.StorageError 报软错误 —— 这是错误类，不是书库读写。
+        if (key === 'StorageError') return require('../core/storage').StorageError;
         return () => {
           calls.storageReads += 1;
           throw new Error('chapter:rescue 不该碰 storage');
@@ -43,9 +46,10 @@ function makeHost(options = {}) {
     CHAPTER_READ_CONCURRENCY: 1,
     CHAPTER_BATCH_SIZE: 1,
     path,
+    pathUtils,
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
     fsSync: require('node:fs'),
-    getConfig: async () => ({ lastExportDir: '' }),
+    getConfig: async () => ({ lastExportDir: '', booksRoot: options.booksRoot || '' }),
     getClipboard: () => ({
       writeText: async (text) => { calls.clipboard.push(text); }
     }),
@@ -96,6 +100,21 @@ test('chapter:rescue（save）：另存对话框确认之后才写盘；txt 与�
   // 记住这次落点（下次另存 / 导出默认还开在这里）
   assert.deepEqual(calls.exportDirs, [path.dirname(target)]);
   assert.equal(calls.storageReads, 0, '救稿通道一个书库读写都不该有');
+});
+
+// N-16（二次审查）：救稿本来就是「章节文件可能已经不在」时才用，更容易顺手存回书库；
+// 落点在 booksRoot 下时必须在写盘前拒绝（软错误 + 提示换目录），不碰任何文件。
+test('N-16：救稿落点落在书库内 → 软错误拒绝，不写盘、不记导出目录', async () => {
+  const dir = await mkTmp();
+  const booksRoot = path.join(dir, '书库');
+  const target = path.join(booksRoot, '某书', '001-第1章.txt');
+  const { channels, calls } = makeHost({ filePath: target, booksRoot });
+  await assert.rejects(
+    () => channels.get('chapter:rescue')('还没落盘的正文', 'save', '第1章'),
+    (err) => err && err.code === 'EXPORT_TARGET_IN_LIBRARY' && /书库/.test(err.message)
+  );
+  assert.deepEqual(calls.exportDirs, [], '拒绝后不许记导出目录');
+  await assert.rejects(() => fs.stat(target), /ENOENT/, '拒绝时一个字节都不写');
 });
 
 test('chapter:rescue（save）：对话框取消 → 不写盘、不记目录', async () => {
