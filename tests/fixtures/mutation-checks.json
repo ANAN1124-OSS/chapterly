@@ -1,0 +1,50 @@
+[
+  {
+    "id": "M1",
+    "guard": "T-01：朗读切分的 rawLength 不再与 chars 同名不同义",
+    "file": "core/tts.js",
+    "anchor": "    rawLength: fullLength,",
+    "replacement": "    chars: fullLength,",
+    "test": "tests/tts.test.js",
+    "expected": "red",
+    "becameRed": true,
+    "detail": "ℹ pass 17 ℹ fail 5",
+    "verifiedAt": "2026-11-23T15:37:17.488Z"
+  },
+  {
+    "id": "M2",
+    "guard": "#8：导入章名统一走 limits.limitChapterName",
+    "file": "core/importer.js",
+    "anchor": "    name: limits.limitChapterName(name),",
+    "replacement": "    name,",
+    "test": "tests/importer.test.js",
+    "expected": "red",
+    "becameRed": true,
+    "detail": "ℹ pass 53 ℹ fail 1",
+    "verifiedAt": "2026-11-23T15:37:18.774Z"
+  },
+  {
+    "id": "M3",
+    "guard": "#11：孤儿正文只清「超过宽限期没人认领」的",
+    "file": "core/crash-draft.js",
+    "anchor": "      return nowMs - mtime >= ORPHAN_GRACE_MS;",
+    "replacement": "      return true;",
+    "test": "tests/crash-draft.test.js",
+    "expected": "red",
+    "becameRed": true,
+    "detail": "ℹ pass 19 ℹ fail 1",
+    "verifiedAt": "2026-11-23T15:37:19.433Z"
+  },
+  {
+    "id": "M4",
+    "guard": "T-09：连排「…」每两个字符 1 单位（旧行为恒折 1 单位）",
+    "file": "core/proofread.js",
+    "anchor": "      if (repeat % 2 === 1) continue;",
+    "replacement": "      continue;",
+    "test": "tests/proofread.test.js",
+    "expected": "red",
+    "becameRed": true,
+    "detail": "ℹ pass 51 ℹ fail 1",
+    "verifiedAt": "2026-11-23T15:37:19.656Z"
+  }
+]

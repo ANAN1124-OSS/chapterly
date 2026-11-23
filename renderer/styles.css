@@ -425,8 +425,8 @@ html, body {
   font-family: var(--folio-serif);
   color: var(--ink);}
 .version { transform: none; 
-  font-size: 10.5px;
-  letter-spacing: .06em;
+  /* D3 设计债：中文小标签去掉字距追踪（.06em 让「v2.1.0」这类拉丁串也散开），字号 10.5→11px */
+  font-size: 11px;
   color: var(--ink-faint);}
 .topbar-right { display: flex; align-items: center; gap: 18px; min-width: 0; }
 /* 书架顶栏：搜索框 / 书库路径 / 右侧按钮分三块。路径太长时省略，不把搜索框和按钮挤变形。 */
@@ -476,8 +476,8 @@ html, body {
   flex: 0 0 42px;
   height: 42px;
   border-bottom: 1px solid var(--line);}
-.shelf-group-label { font-size: 10px; color: var(--ink-faint); 
-  letter-spacing: .12em;}
+.shelf-group-label { /* D3 设计债：中文标签去字距追踪，10→11px */
+  font-size: 11px; color: var(--ink-faint);}
 .shelf-group-select {
   min-width: 130px;
   max-width: 260px;
@@ -639,8 +639,8 @@ html, body {
 }
 .continue-label {
   flex: 0 0 auto;
-  font-size: 10px;
-  letter-spacing: .16em;
+  /* D3 设计债：中文标签去字距追踪（.16em 在「继续写作」上过散），10→11px */
+  font-size: 11px;
   color: var(--ink-faint);
 }
 .continue-main {
@@ -714,6 +714,9 @@ html, body {
 }
 .goal-track > i {
   display: block;
+  /* D2（设计审查）建议改成 transform: scaleX 省 layout，但 tests/motion.test.js 的「动效克制：
+   * 不写位移类过渡」明确禁止 transform 过渡（会额外提升合成层、连带移动命中区域）——
+   * 按任务口径「与既有门禁冲突以门禁为准」，这里保持宽度动画，冲突记进修复总结留作者拍板。 */
   width: 0;
   height: 100%;
   border-radius: 0;
@@ -4123,7 +4126,9 @@ body:has(#tts-bar:not(.hidden)) #toast-area {
   bottom: 44px;
   transform: translateX(-50%);
   z-index: 40;
-  width: min(900px, calc(100vw - 44px));
+  /* D1 设计债：原来用 100vw —— 100vw 含滚动条宽度，宽屏有滚动条时朗读条会比可视区宽一点、
+     横向溢出。固定定位的 100% 相对视口（已扣滚动条），两边 22px 留白不变。 */
+  width: min(900px, calc(100% - 44px));
   padding: 10px 12px;
   background: var(--folio-raised);
   border: 1px solid var(--line);
