@@ -56,6 +56,14 @@ const README_VERSION_RULES = [
     expected: 1,
     build: (version) =>
       `[v${version}](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v${version})`
+  },
+  {
+    // 发版 2.1.0 时发现：「> 平台：… · 当前 v2.0.0」这处锚点以前没人管，
+    // 前三条规则全部命中后它仍停在旧版本。补成第四条，与标题 / 安装包名 / Release 链接同源。
+    id: '当前版本',
+    re: /当前 v\d+\.\d+\.\d+/g,
+    expected: 1,
+    build: (version) => `当前 v${version}`
   }
 ];
 
@@ -169,7 +177,7 @@ function readCountsOption(options, label) {
   };
 }
 
-// README：标题 / 安装包名（下载 + 本机产物两处）/ Release 链接 / 计数 / 发布日期。
+// README：标题 / 安装包名（下载 + 本机产物两处）/ Release 链接 / 当前版本 / 计数 / 发布日期。
 function syncReadme(text, options = {}) {
   let out = text;
   let touched = false;

@@ -26,14 +26,15 @@ const MAIN = readText('main.js');
 const CRLF = '\r\n';
 
 // 与真实 README 同形的样例：标题 + 版本沿革 + 下载行（两处安装包名 + Release 链接 + 发布日期）
-// + 自检命令里的两个计数。全部锚点都在，替换后历史版本（v1.0.0）必须原样保留。
+// + 平台行（当前版本）+ 自检命令里的两个计数。全部锚点都在，替换后历史版本（v1.0.0）必须原样保留。
 function readmeSample() {
   return [
     '# 章回 / Chapterly v1.7.2',
     '',
     '> **版本沿革**：本仓库从 **v1.0.0** 起。',
     '',
-    '**下载**：从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-1.7.2-win-x64-setup.exe`（已于 2026-11-14 发布，见 [v1.7.2](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.7.2)），或者直接用本机打包产物 `dist\\chapterly-1.7.2-win-x64-setup.exe`。',
+    '> 下载：`chapterly-1.7.2-win-x64-setup.exe`（[v1.7.2](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.7.2)，已于 2026-11-14 发布）；本机产物 `dist\\chapterly-1.7.2-win-x64-setup.exe`',
+    '> 平台：Windows 10 1809+ / Windows 11 · 安装版不需要 Node · 许可：Apache-2.0 · 当前 v1.7.2',
     '',
     'pnpm test          # 单元测试（node:test，2235 项，覆盖 书架与写作页）',
     'pnpm run e2e       # 端到端自检：真实启动 Electron 走 1828 项主流程（含菜单键盘可达）'
@@ -53,7 +54,7 @@ function checklistSample() {
   ].join(CRLF);
 }
 
-test('版本同步：README 标题 / 两处安装包名 / Release 链接一起换版本，历史版本与换行原样保留', () => {
+test('版本同步：README 标题 / 两处安装包名 / Release 链接 / 当前版本一起换，历史版本与换行原样保留', () => {
   const sample = readmeSample();
   const out = versionSync.syncReadme(sample, { version: '1.8.0' });
   assert.ok(out.startsWith(`# 章回 / Chapterly v1.8.0${CRLF}`), '标题要换成新版本并保留 CRLF');
@@ -63,6 +64,8 @@ test('版本同步：README 标题 / 两处安装包名 / Release 链接一起�
     '下载行与本机产物两处包名都要换'
   );
   assert.ok(out.includes('[v1.8.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v1.8.0)'));
+  // 发版 2.1.0 补的第四条锚点：平台行的「当前 vX.Y.Z」以前漏在规则外，改版本后会停在旧值。
+  assert.ok(out.includes('当前 v1.8.0'), '平台行的当前版本锚点也要一起换');
   assert.ok(!out.includes('1.7.2'), '样例里的版本锚点不应残留');
   assert.ok(out.includes('**v1.0.0**'), '版本沿革里的历史版本不是锚点，不许被改');
   assert.equal(out.split(CRLF).length, sample.split(CRLF).length, '行数与换行风格不变');

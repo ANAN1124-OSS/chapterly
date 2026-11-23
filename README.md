@@ -1,12 +1,12 @@
-# 章回 / Chapterly v2.0.0
+# 章回 / Chapterly v2.1.0
 
 **给写中文小说的 Windows 桌面写作工具**：纯文本、整本一键保存、绝不丢稿。
 一本书就是一个文件夹，正文是记事本能直接打开的 `.txt`——没有数据库、没有私有格式、不依赖云。
 
 ![书架](docs/images/shelf.png)
 
-> 下载：`chapterly-2.0.0-win-x64-setup.exe`（[v2.0.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v2.0.0)，已于 2026-11-22 发布）
-> 平台：Windows 10 1809+ / Windows 11 · 安装版不需要 Node · 许可：Apache-2.0 · 当前 v2.0.0
+> 下载：`chapterly-2.1.0-win-x64-setup.exe`（[v2.1.0](https://github.com/ANAN1124-OSS/chapterly/releases/tag/v2.1.0)，已于 2026-11-22 发布）
+> 平台：Windows 10 1809+ / Windows 11 · 安装版不需要 Node · 许可：Apache-2.0 · 当前 v2.1.0
 
 ## 这是什么
 
@@ -51,7 +51,7 @@
 
 ### 方式一：安装包（推荐，不用命令行）
 
-从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-2.0.0-win-x64-setup.exe`；也可以本地 `pnpm run dist` 自打包（产物在 `dist\`）。
+从 [GitHub Releases](https://github.com/ANAN1124-OSS/chapterly/releases) 下载 `chapterly-2.1.0-win-x64-setup.exe`；也可以本地 `pnpm run dist` 自打包（产物在 `dist\`）。
 
 1. 没有代码签名，Windows 可能弹「已保护你的电脑」→「更多信息」→「仍要运行」。
 2. 可以自选安装目录（默认当前用户目录，不需要管理员），装完有桌面快捷方式与开始菜单入口。
