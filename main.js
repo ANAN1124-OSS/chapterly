@@ -2105,6 +2105,9 @@ function registerIpc() {
   }, { mutation: MUTATION.WRITE });
 
   // 每本书的显示设置覆盖（写作页里改的字体/背景/间距/章节栏宽度只影响这本书）
+  // N-19：这是**通用只读接口**（按 bookId 返回该书的显示覆盖，不含正文 / 书目录路径），跨窗口读
+  // 别的书的字号 / 纸色 / 字体字段不构成新增泄露面；渲染层正常只在开书后带当前书 id 调用。
+  // 不在这里限制「只能读当前打开的书」：书架 / 多窗口 / 测试都按书的显示覆盖取值，限制会改变产品语义。
   handle('book:get-display', async (bookId) => {
     await getConfig();
     // 自绘标题栏（1.3.0 T6）：记下这个窗口开的是哪本书 —— 标题栏配色要跟这本书生效的纸色走
@@ -2311,6 +2314,9 @@ function registerIpc() {
     // 目录联接，真正读的必须是它指向的那个文件；realpath 后扩展名不像字体的直接拒绝。
     // 返回值不再带「配置里记的绝对路径」（只有渲染层自己刚选的那一趟才回 path，供渲染层核对
     // 「读回来的是不是我刚选的那份」，见 renderer/font-logic.js 的 shouldRetryFontRead）。
+    // N-19：这里的口径只是「font:read 不再额外扩散一份路径」，**不是**「渲染层拿不到本机路径」——
+    // config:get 本来就返回整份配置（含 booksRoot / 字体 / 词表路径），这是设置界面显示所需。
+    // 渲染层可见路径的完整清单见 docs/已知限制.md 的安全条目；路径防御靠「来源校验」而不是保密。
     const realPath = await fs.realpath(resolved);
     if (!fontPolicy.isFontFile(realPath)) {
       throw new storage.StorageError('BAD_FONT', '只支持 .ttf / .otf / .ttc 字体文件');

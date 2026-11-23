@@ -2544,6 +2544,15 @@ async function refreshChapterChars(bookPath, meta, files, options = {}) {
   }
 }
 
+// N-20：历史还原的源文件在读盘前先过 lstat / realpath 复核（与预览共用 historyLib.inspectBackupFile
+// 一份实现）：_trash 里放的如果是符号链接 / 目录联接，读盘会跟随到库外，还原就把库外内容抄进书里。
+// 目标不存在与旧实现同一口径报 HISTORY_FILE_MISSING（不把「被删了」说成「不安全」）。
+async function assertHistorySourceSafe(bookPath, source) {
+  const stat = await historyLib.inspectBackupFile(bookPath, source);
+  if (!stat) throw new StorageError('HISTORY_FILE_MISSING', '这个备份文件已经不存在了');
+  return stat;
+}
+
 async function restoreDeletedChapter(bookPath, group, entry) {
   if (!entry || !/\.txt$/i.test(entry.name)) {
     throw new StorageError('HISTORY_NOT_CHAPTER', '这个备份不是章节 txt，不能放回书里');
@@ -2554,6 +2563,8 @@ async function restoreDeletedChapter(bookPath, group, entry) {
     throw new StorageError('HISTORY_TARGET_EXISTS', `书文件夹里已经有 ${entry.name}，没有覆盖`);
   }
   const source = historyLib.resolveHistoryPath(bookPath, group.id, entry.name);
+  // N-20：链接 / 联接指向库外时一个字节都不读（见 assertHistorySourceSafe）
+  await assertHistorySourceSafe(bookPath, source);
   // C18（v1.8.0 WP-19）：删章散文件还原是 128 MB 闸门的漏网入口 —— 以前直读 _trash 里的备份。
   // 与 copyHistoryEntryToBook / 整组预检同一条口径：先 stat + 章节上限，超限明确报 HISTORY_TOO_LARGE，
   // 绝不整份读进内存（也不建任何还原前备份：此时一个字节都还没写）。
@@ -2617,6 +2628,8 @@ async function copyHistoryEntryToBook(bookPath, group, entry, restoreDir) {
   // 审计修复 #45（E19）：写回目标同样过 assertChapterFile（理由见 backupCurrentToRestoreDir）
   const target = assertChapterFile(bookPath, entry.name);
   const source = historyLib.resolveHistoryPath(bookPath, group.id, entry.name);
+  // N-20：链接 / 联接指向库外时一个字节都不读（见 assertHistorySourceSafe）
+  await assertHistorySourceSafe(bookPath, source);
   // P2-3：备份文件被外部换成超大文件时，先 stat 再读，绝不把整份读进内存
   const buffer = await loadChapterSource(source, {
     code: 'HISTORY_TOO_LARGE',
@@ -2642,8 +2655,11 @@ async function restoreHistoryFile(bookPath, groupId, fileName) {
     throw new StorageError('HISTORY_NOT_CURRENT', entry.reason || '这个文件不是当前章节，不能还原');
   }
   // P2-3：先验备份文件大小，超限时连「还原前备份」目录都不建（一个字节都不写）
+  const source = historyLib.resolveHistoryPath(bookPath, group.id, entry.name);
+  // N-20：源文件是链接 / 解析到库外时同样在「建还原前备份目录」之前就拒绝
+  await assertHistorySourceSafe(bookPath, source);
   await preflightRestoreSources(
-    [{ source: historyLib.resolveHistoryPath(bookPath, group.id, entry.name), label: `备份文件「${entry.name}」` }],
+    [{ source, label: `备份文件「${entry.name}」` }],
     { code: 'HISTORY_TOO_LARGE', tail: '没有覆盖书里的正文' }
   );
   const trashDir = path.join(bookPath, TRASH_DIR);
@@ -2667,15 +2683,15 @@ async function restoreHistoryGroup(bookPath, groupId) {
   const { meta, group } = await loadRestorableHistoryGroup(bookPath, groupId);
   if (group.kind === 'file') return restoreDeletedChapter(bookPath, group, group.files[0]);
   // P2-3：整组还原前先验所有要还原的源文件大小；任一超限就整批拒绝、一个字节都不写
-  await preflightRestoreSources(
-    group.files
-      .filter((file) => file.restorable)
-      .map((file) => ({
-        source: historyLib.resolveHistoryPath(bookPath, group.id, file.name),
-        label: `备份文件「${file.name}」`
-      })),
-    { code: 'HISTORY_TOO_LARGE', tail: '没有覆盖书里的正文' }
-  );
+  // N-20：同一趟先复核每个源文件（链接 / 库外 → 整批拒绝，也不建还原前备份目录）
+  const restorableSources = [];
+  for (const file of group.files) {
+    if (!file.restorable) continue;
+    const source = historyLib.resolveHistoryPath(bookPath, group.id, file.name);
+    await assertHistorySourceSafe(bookPath, source);
+    restorableSources.push({ source, label: `备份文件「${file.name}」` });
+  }
+  await preflightRestoreSources(restorableSources, { code: 'HISTORY_TOO_LARGE', tail: '没有覆盖书里的正文' });
   const trashDir = path.join(bookPath, TRASH_DIR);
   const restoreDir = await uniqueTrashDir(trashDir, RESTORE_BACKUP_PREFIX);
   let restored = 0;

@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { stripBom } = require('./atomic');
 const { pad2, mapLimit } = require('./common');
+const pathUtils = require('./path-utils');
 const { parseSnapshotDirName } = require('./snapshot');
 
 const TRASH_DIR = '_trash';
@@ -536,6 +537,8 @@ function resolveGroup(bookPath, groupId) {
 }
 
 // 把「组 + 文件名」解析成一个确定落在允许范围内的实际路径。
+// 注意：这里只做字符串级校验（basename / 点开头）；**真正的防跟随在 inspectBackupFile()**——
+// 预览 / 还原在读盘前必须再跑一次异步复核（N-20）。
 function resolveHistoryPath(bookPath, groupId, fileName) {
   const group = resolveGroup(bookPath, groupId);
   if (group.kind === 'file') return group.filePath;
@@ -544,6 +547,45 @@ function resolveHistoryPath(bookPath, groupId, fileName) {
     throw new HistoryError('BAD_FILE', '备份文件名不合法');
   }
   return path.join(group.dirPath, name);
+}
+
+// N-20：预览 / 还原的最终路径必须真的是「书内 _trash 下的普通文件」。
+// 路径字符串校验挡不住符号链接 / 目录联接：stat / open 会跟随链接读到库外文件（预览泄露），
+// 还原还会把库外内容抄进书（对照 ipc/book-data.js 的 book:clear-snapshot-day 已用 lstat 拒绝链接）。
+// 这里在真正读之前补两道异步复核：
+//   ① lstat 最终路径：是链接 → 拒绝（合法备份永远不是链接）；
+//   ② realpath 之后必须仍在「书文件夹的真实路径」下面 —— 防「父目录本身是链接 / 联接指向库外」。
+// 返回 lstat（含 size / mtimeMs）；目标不存在返回 null，调用方按各自的「文件已不存在」口径报错。
+async function inspectBackupFile(bookPath, target) {
+  let stat;
+  try {
+    stat = await fs.lstat(target);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  if (stat.isSymbolicLink()) {
+    throw new HistoryError(
+      'HISTORY_NOT_FILE',
+      '这个备份是一个链接（符号链接 / 目录联接），出于安全考虑不读取；请把真实文件放进书里的 _trash'
+    );
+  }
+  if (!stat.isFile()) throw new HistoryError('HISTORY_NOT_FILE', '这个备份不是一个文件');
+  let realTarget = '';
+  let realBook = '';
+  try {
+    realTarget = await fs.realpath(target);
+    realBook = await fs.realpath(bookPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  const bookKey = pathUtils.pathKey(realBook);
+  const targetKey = pathUtils.pathKey(realTarget);
+  if (targetKey !== bookKey && !targetKey.startsWith(bookKey + path.sep)) {
+    throw new HistoryError('HISTORY_NOT_FILE', '备份文件解析到的真实路径不在书文件夹里，出于安全考虑不读取');
+  }
+  return stat;
 }
 
 // CSTO-B-03（审计低批）：预览按字节截断，截断点可能落在 UTF-8 多字节序列中间。
@@ -575,14 +617,9 @@ function trimIncompleteUtf8(buffer) {
 async function readHistoryFile(bookPath, groupId, fileName) {
   const group = resolveGroup(bookPath, groupId);
   const filePath = resolveHistoryPath(bookPath, groupId, fileName);
-  let stat;
-  try {
-    stat = await fs.stat(filePath);
-  } catch (err) {
-    if (err.code === 'ENOENT') throw new HistoryError('HISTORY_FILE_MISSING', '这个备份文件已经不存在了');
-    throw err;
-  }
-  if (!stat.isFile()) throw new HistoryError('HISTORY_NOT_FILE', '这个备份不是一个文件');
+  // N-20：先 lstat（拒链接）+ realpath（必须仍在书内），不直接 stat / open 跟随链接。
+  const stat = await inspectBackupFile(bookPath, filePath);
+  if (!stat) throw new HistoryError('HISTORY_FILE_MISSING', '这个备份文件已经不存在了');
   const readBytes = Math.min(stat.size, PREVIEW_MAX_BYTES);
   let text = '';
   if (readBytes > 0) {
@@ -628,5 +665,6 @@ module.exports = {
   listHistory,
   resolveGroup,
   resolveHistoryPath,
+  inspectBackupFile,
   readHistoryFile
 };

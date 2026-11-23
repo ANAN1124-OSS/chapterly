@@ -237,6 +237,64 @@ test('历史：预览只读、去 BOM、拒绝目录穿越', async () => {
   );
 });
 
+test('N-20：_trash 里的备份目录是目录联接（指向库外）→ 预览与还原都拒绝，书里正文不动', async () => {
+  const root = await mkTmp();
+  const { path: bookPath, meta } = await storage.createBook(root, '链接备份书');
+  const chapterFile = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, chapterFile, '现稿正文\n');
+  // 库外目录里放一份同名的「备份」；威胁模型：本机有人往 _trash 里放链接指向库外。
+  const outsideDir = path.join(root, '库外备份');
+  await fs.mkdir(outsideDir, { recursive: true });
+  await fs.writeFile(path.join(outsideDir, chapterFile), '库外内容\n', 'utf8');
+  const linkDir = path.join(bookPath, '_trash', '替换备份-2026-11-02-000000');
+  await fs.mkdir(path.dirname(linkDir), { recursive: true });
+  // Windows 用目录联接（不需要管理员权限）；其它平台用目录符号链接。
+  const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
+  await fs.symlink(outsideDir, linkDir, LINK_TYPE);
+
+  // 预览：realpath 复核发现解析到书外 → HISTORY_NOT_FILE，不把库外内容读给渲染层
+  await assert.rejects(
+    history.readHistoryFile(bookPath, 'dir:替换备份-2026-11-02-000000', chapterFile),
+    (err) => err.code === 'HISTORY_NOT_FILE' && /不在书文件夹里|链接/.test(err.message)
+  );
+  // 发现层：链接目录在 readdir 的 Dirent 里 isDirectory() 为 false，不会被当成正常备份组 ——
+  // 还原在发现阶段就拒绝（HISTORY_GROUP_MISSING），这是第一层。
+  await assert.rejects(
+    storage.restoreHistoryFile(bookPath, 'dir:替换备份-2026-11-02-000000', chapterFile),
+    (err) => err.code === 'HISTORY_GROUP_MISSING'
+  );
+  // 防御纵深：万一清单/发现阶段被绕过（TOCTOU：列目录后被换成链接；或直达 IPC 构造组），
+  // 还原必须在「建还原前备份目录 / 读源文件」之前拒绝链接源。用 mock 的 listHistory 模拟这层。
+  const realListHistory = history.listHistory;
+  history.listHistory = async () => ({
+    groups: [
+      {
+        id: 'dir:替换备份-2026-11-02-000000',
+        kind: 'dir',
+        source: 'replace',
+        sourceLabel: '替换前备份',
+        dirName: '替换备份-2026-11-02-000000',
+        fileCount: 1,
+        restorableCount: 1,
+        files: [
+          { name: chapterFile, trashName: chapterFile, restorable: true, inBook: true, reason: '', source: 'replace' }
+        ]
+      }
+    ]
+  });
+  try {
+    await assert.rejects(
+      storage.restoreHistoryFile(bookPath, 'dir:替换备份-2026-11-02-000000', chapterFile),
+      (err) => err.code === 'HISTORY_NOT_FILE' && /链接|不在书文件夹里/.test(err.message)
+    );
+  } finally {
+    history.listHistory = realListHistory;
+  }
+  assert.equal((await storage.loadChapterText(bookPath, chapterFile)).text, '现稿正文\n', '库外内容一个字节都不许写进书里');
+  const trashEntries = await fs.readdir(path.join(bookPath, '_trash'));
+  assert.equal(trashEntries.some((name) => name.startsWith('还原前备份-')), false, '被拒的还原不建还原前备份目录');
+});
+
 test('历史：大文件预览只读开头并标记 truncated', async () => {
   const root = await mkTmp();
   const bookPath = path.join(root, '书');
