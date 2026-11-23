@@ -207,7 +207,9 @@ test('静态闸门：main.js 的切章走防抖，读书目前与退出前都 fl
     /configStore\.rememberLastBook\(payload, \{ auto: true, now \}\)/,
     '最近书交给 configStore 的写队列（比较与写盘不可分离）'
   );
-  assert.match(configSrc, /Number\(prev\.at\) > next\.at\)/, '迟到的切章记录守卫在 configStore 里');
+  // T-13（三审）：守卫本体不变，另加「prev.at 落在容差外的未来 = 时钟回拨病值不采信」的镜像防护。
+  assert.match(configSrc, /prevAtUsable && prevAt > next\.at/, '迟到的切章记录守卫在 configStore 里');
+  assert.match(configSrc, /prevAt <= now \+ LAST_BOOK_CLOCK_SKEW_MS/, 'T-13：时钟回拨的病值不参与 stale 判定');
   assert.match(
     configSrc,
     /function rememberLastBook\([\s\S]{0,600}?return enqueue\(/,

@@ -444,7 +444,8 @@ test('静态闸门（V402）：兜底整串赋值统一配一次性快照 + 提�
   assert.match(rendererCode, /function onEditorInput\(\) \{[\s\S]{0,300}bulkWriteUndo = null;\n    fallbackWriteUndo = null;/);
   assert.match(saveChainCode, /setBulkWriteUndo\(null\);\n      setFallbackWriteUndo\(null\); \/\/ 审计修复 #39（V402）：兜底写入快照同理/);
   // 两个模块的兜底路径都接到同一份记账（host 注入），装配点必须真的传进去
-  assert.match(rendererCode, /\$, state, api, call, toast, staleGuard, recordFallbackWrite,/);
+  // T-14：灵感箱装配同时注入 imeGuard（Ctrl+Enter 保存键的组字判定）
+  assert.match(rendererCode, /\$, state, api, call, toast, imeGuard, staleGuard, recordFallbackWrite,/);
   assert.match(rendererCode, /\$, state, api, call, toast, recordFallbackWrite,/);
 });
 
