@@ -315,3 +315,51 @@ test('S1 / T6：捕获队列按窗口归属——认领无主记录、非 owner 
   assert.ok(unowned, '非法归属按「还没有主」处理（下一次打开面板认领）');
 });
 
+// ---------- N-17（二次审查，中低）：队列的隐私时间上限 ----------
+// 后台监听开着一整天时，复制历史以前会一整天地驻留主进程内存（只有条数 / 总字数上限）。
+// 现在每条最多留 ttlMs（默认 30 分钟），过期在下次触碰队列时惰性清掉 —— 本模块不起定时器。
+test('N-17：超过 ttlMs 的条目在下次触碰时清掉（list / get / hasText / canAccess 都看不到）', () => {
+  let t = 0;
+  const queue = queueLib.createCaptureQueue({ ttlMs: 1000, now: () => t });
+  const text = '过期正文'.repeat(4);
+  const entry = queue.add(text).entry;
+  assert.equal(entry.at, 0, 'at 用 store 自己的时钟');
+  t = 999;
+  assert.equal(queue.size(), 1, '未到 TTL 仍在');
+  assert.equal(queue.get(entry.id).text, text);
+  t = 1000;
+  assert.equal(queue.size(), 0, '到 TTL 即过期（size() 会先清理）');
+  assert.equal(queue.list().length, 0, 'list 不再给出过期条目');
+  assert.equal(queue.get(entry.id), null, '过期后取不到正文');
+  assert.equal(queue.hasText(text), false, '过期后不算「已入队」');
+  assert.equal(queue.canAccess(entry.id, 11), false, '过期后不能被认领 / 读取');
+  assert.equal(queue.totalChars(), 0, '过期条目不占总量预算');
+});
+
+test('N-17：过期清理是惰性的且返回条数；总量预算同步回收，新记录照常入队', () => {
+  let t = 0;
+  const queue = queueLib.createCaptureQueue({ ttlMs: 100, maxTotalChars: 100, now: () => t });
+  queue.add('甲'.repeat(50));
+  queue.add('乙'.repeat(50));
+  assert.equal(queue.totalChars(), 100);
+  t = 100; // 两条都到达 TTL
+  assert.equal(queue.sweepExpired(), 2, '显式清理返回清掉的条数');
+  assert.equal(queue.totalChars(), 0, 'totalChars 跟着回收');
+  assert.equal(queue.sweepExpired(), 0, '重复清理幂等');
+  queue.add('丙'.repeat(80));
+  assert.equal(queue.size(), 1, '过期条目不再占总量预算，新记录能进');
+  assert.equal(queue.totalChars(), 80);
+});
+
+test('N-17：过期条目不挡新记录；默认 TTL 30 分钟、可按实例覆盖', () => {
+  assert.equal(queueLib.DEFAULT_TTL_MS, 30 * 60 * 1000, '默认 30 分钟');
+  assert.equal(queueLib.createCaptureQueue().ttlMs, queueLib.DEFAULT_TTL_MS, '实例暴露实际 TTL');
+  assert.equal(queueLib.createCaptureQueue({ ttlMs: 1234 }).ttlMs, 1234, '可按实例覆盖（单测 / 诊断口径）');
+  let t = 0;
+  const queue = queueLib.createCaptureQueue({ ttlMs: 500, now: () => t });
+  queue.add('旧'.repeat(10));
+  t = 600;
+  assert.equal(queue.add('新'.repeat(10)).added, true, '过期不清空整个队列，新记录照常入队');
+  assert.deepEqual(queue.list().map((entry) => entry.preview), ['新'.repeat(10)], '只留没过期的那条');
+});
+

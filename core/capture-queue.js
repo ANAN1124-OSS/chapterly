@@ -8,7 +8,9 @@
 //   · maxEntries     最多 50 条，超了淘汰最旧的；
 //   · maxEntryChars  单条最多 30 万字（=捕获正文上限 core/capture.js MAX_BODY_CHARS，直接引用，
 //                    超了不入队（仍可直接捕获 / 用「正文」插进当前章）；
-//   · maxTotalChars  总量最多 300 万字（=10 条满额），超了淘汰最旧的。
+//   · maxTotalChars  总量最多 300 万字（=10 条满额），超了淘汰最旧的；
+//   · ttlMs          单条最多留 30 分钟（N-17：隐私口径「复制历史只在最近这段工作里可见」）。
+//                    过期是惰性清理：add / list / get / 归属操作前顺手扫一遍，本模块不起定时器。
 // 两个 chars 上限口径不同（2026-11-15 放宽）：单条按 **chars（去空白字数）** 挡 —— 和界面上
 // 「N 字」、单章上限、导入口径是同一个数；总量仍按 **rawLength（含空白的原文长度）** 挡 ——
 // 它挡的是内存，不是显示字数。以前单条也按 rawLength 挡，一段 30 万字的稿子光是换行就超线、
@@ -33,6 +35,10 @@ const DEFAULT_MAX_ENTRY_CHARS = captureLib.MAX_BODY_CHARS;
 // （capture.MAX_RAW_CHARS）与它同值，commit-record 的原文闸也用那一份 —— 两处各写一个
 // 3000000 只会漂移，这里直接引用；maxTotalChars 仍可按实例覆盖（单测口径不变）。
 const DEFAULT_MAX_TOTAL_CHARS = captureLib.MAX_RAW_CHARS;
+// N-17（二次审查，中低）：队列原来只有条数 / 总字数上限，没有时间上限 —— 后台监听开一整天，
+// 复制历史就一整天地驻留主进程内存。隐私红线是「本次运行复制过的几段」，不是「这周的复制历史」。
+// 30 分钟覆盖「刚复制的几段接着逐条捕获」这个真实用法，超时的记录在下次触碰队列时惰性清掉。
+const DEFAULT_TTL_MS = 30 * 60 * 1000;
 // 队列列表只显示首行预览（不是全文）：够认出是哪一段，又不把正文多发一份到渲染层。
 const PREVIEW_LIMIT = 40;
 
@@ -122,11 +128,31 @@ function createCaptureQueue(options = {}) {
   const maxEntries = positiveInt(options.maxEntries, DEFAULT_MAX_ENTRIES);
   const maxEntryChars = positiveInt(options.maxEntryChars, DEFAULT_MAX_ENTRY_CHARS);
   const maxTotalChars = positiveInt(options.maxTotalChars, DEFAULT_MAX_TOTAL_CHARS);
+  const ttlMs = positiveInt(options.ttlMs, DEFAULT_TTL_MS);
   const now = typeof options.now === 'function' ? options.now : Date.now;
 
   let entries = []; // 旧 → 新：[{ id, text, chars, rawLength, at, ownerWindowId }]
   let nextId = 1;
   let totalChars = 0; // 各条 rawLength 之和（内存口径；上限按它淘汰）
+
+  // N-17：惰性过期清理。at 是入队时刻（store 自己的 now()，不采信外部时间戳），
+  // 超过 ttlMs 的条目直接丢弃；返回这次清掉的条数（测试 / 诊断可观察）。
+  function sweepExpired() {
+    if (!entries.length) return 0;
+    const cutoff = now() - ttlMs;
+    let removed = 0;
+    const keep = [];
+    for (const entry of entries) {
+      if (entry.at <= cutoff) {
+        totalChars -= entry.rawLength;
+        removed += 1;
+      } else {
+        keep.push(entry);
+      }
+    }
+    if (removed) entries = keep;
+    return removed;
+  }
 
   // S1（一轮·中）：每条记录记「哪扇窗口的捕获面板拥有它」。
   // 记录本身由后台剪贴板监听 / 全局快捷键写进来（那时还没有窗口上下文），所以入队时可以是 null；
@@ -147,6 +173,7 @@ function createCaptureQueue(options = {}) {
 
   // 某一扇窗口能不能操作这一条：无主（等待认领）或归属它自己。
   function canAccess(id, ownerWindowId) {
+    sweepExpired();
     const at = entries.findIndex((entry) => entry.id === Number(id));
     if (at < 0) return false;
     const owner = ownerIdOf(entries[at]);
@@ -157,6 +184,7 @@ function createCaptureQueue(options = {}) {
 
   // 无主记录归给打开面板的窗口；已经有主的记录不动（不许抢别的窗口的记录）。
   function claim(ownerWindowId) {
+    sweepExpired();
     const self = normalizeOwner(ownerWindowId);
     if (self == null) return 0;
     let claimed = 0;
@@ -171,11 +199,13 @@ function createCaptureQueue(options = {}) {
 
   // 本窗口可见的条目：自己的 + 还没有主的（旧版本 / 监听器刚写进来还没认领）。
   function listFor(ownerWindowId) {
+    sweepExpired();
     const self = normalizeOwner(ownerWindowId);
     return entries.filter((entry) => entry.ownerWindowId == null || ownerIdOf(entry) === self).map(metaOf);
   }
 
   function sizeFor(ownerWindowId) {
+    sweepExpired();
     const self = normalizeOwner(ownerWindowId);
     return entries.filter((entry) => entry.ownerWindowId == null || ownerIdOf(entry) === self).length;
   }
@@ -217,6 +247,7 @@ function createCaptureQueue(options = {}) {
   // chars 是去空白正文字数（V108：与插入后状态栏同一口径），maxEntryChars 按它挡（2026-11-15 放宽）；
   // maxTotalChars / 淘汰仍按 rawLength（内存口径）。
   function add(text, addOptions = {}) {
+    sweepExpired();
     const source = typeof text === 'string' ? text : '';
     const rawLength = source.length;
     if (!source.trim()) return { added: false, reason: 'empty' };
@@ -249,11 +280,13 @@ function createCaptureQueue(options = {}) {
 
   // 元数据列表（按复制顺序，旧 → 新）。不含正文全文；previewText 只是给列表看的截断预览。
   function list() {
+    sweepExpired();
     return entries.map(metaOf);
   }
 
-  // 取一条的正文（只在用户显式点开某一条时调用）；不存在返回 null。
+  // 取一条的正文（只在用户显式点开某一条时调用）；不存在 / 已过期返回 null。
   function get(id) {
+    sweepExpired();
     const at = entries.findIndex((entry) => entry.id === id);
     return at < 0
       ? null
@@ -268,11 +301,13 @@ function createCaptureQueue(options = {}) {
 
   // 队列里是否有这段原文（Ctrl+Alt+V 触发时判断「刚复制的这段是否已经入队」用）。
   function hasText(text) {
+    sweepExpired();
     const source = typeof text === 'string' ? text : '';
     return entries.some((entry) => entry.text === source);
   }
 
   function remove(id) {
+    sweepExpired();
     const at = entries.findIndex((entry) => entry.id === id);
     if (at < 0) return false;
     totalChars -= entries[at].rawLength;
@@ -295,6 +330,7 @@ function createCaptureQueue(options = {}) {
   }
 
   function clearFor(ownerWindowId) {
+    sweepExpired();
     const self = normalizeOwner(ownerWindowId);
     const keep = [];
     let removed = 0;
@@ -313,6 +349,7 @@ function createCaptureQueue(options = {}) {
 
   // 窗口关闭：这一扇窗口的记录全部丢弃（隐私口径），别的窗口的不动。
   function releaseOwner(ownerWindowId) {
+    sweepExpired();
     const self = normalizeOwner(ownerWindowId);
     if (self == null) return 0;
     const keep = [];
@@ -336,7 +373,10 @@ function createCaptureQueue(options = {}) {
     hasText,
     remove,
     clear,
-    size: () => entries.length,
+    size: () => {
+      sweepExpired();
+      return entries.length;
+    },
     // S1（一轮·中）：按窗口归属的视图与操作
     claim,
     listFor,
@@ -345,11 +385,17 @@ function createCaptureQueue(options = {}) {
     removeFor,
     clearFor,
     releaseOwner,
+    // N-17：惰性 TTL 清理（测试 / 诊断可显式调；日常由上面的读写操作顺手触发）。
+    sweepExpired,
     // 队列总原始长度（各条 rawLength 之和，含空白）：maxTotalChars 的淘汰口径，不是显示字数。
-    totalChars: () => totalChars,
+    totalChars: () => {
+      sweepExpired();
+      return totalChars;
+    },
     maxEntries,
     maxEntryChars,
-    maxTotalChars
+    maxTotalChars,
+    ttlMs
   };
 }
 
@@ -357,5 +403,6 @@ module.exports = {
   createCaptureQueue,
   previewOf,
   DEFAULT_MAX_ENTRY_CHARS,
+  DEFAULT_TTL_MS,
   PREVIEW_LIMIT
 };
