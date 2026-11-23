@@ -53,6 +53,41 @@ test('配置脏数据被兜底，不会让应用起不来', async () => {
   assert.equal(cleaned.windowBounds.width, 1200);
 });
 
+// T-16（三审）：数值字段清洗对 null 的处理分裂 —— Number(null)=0 会通过 isFinite 被夹成下限
+// （字号 12、窗口 (0,0)），而 undefined 回落默认值。同一个「没填 / 写坏」必须是同一种结果。
+test('T-16：数值字段的 null / 空串 / 布尔 / 数组回落默认值，数字字符串仍兼容', () => {
+  const defaults = sanitize({});
+  for (const bad of [null, '', '   ', false, true, [], {}]) {
+    const cleaned = sanitize({
+      editorFontSize: bad,
+      editorSidebarWidth: bad,
+      editorPaddingX: bad,
+      editorLineHeight: bad,
+      editorLetterSpacing: bad,
+      windowBounds: { x: bad, y: bad, width: bad, height: bad }
+    });
+    const label = JSON.stringify(bad);
+    assert.equal(cleaned.editorFontSize, defaults.editorFontSize, 'editorFontSize=' + label);
+    assert.equal(cleaned.editorSidebarWidth, defaults.editorSidebarWidth, 'editorSidebarWidth=' + label);
+    assert.equal(cleaned.editorPaddingX, defaults.editorPaddingX, 'editorPaddingX=' + label);
+    assert.equal(cleaned.editorLineHeight, defaults.editorLineHeight, 'editorLineHeight=' + label);
+    assert.equal(cleaned.editorLetterSpacing, defaults.editorLetterSpacing, 'editorLetterSpacing=' + label);
+    assert.deepEqual(cleaned.windowBounds, defaults.windowBounds, 'windowBounds=' + label);
+  }
+  // 手改配置里的数字字符串照旧生效（旧口径保留）
+  assert.equal(sanitize({ editorFontSize: '22' }).editorFontSize, 22);
+  assert.equal(sanitize({ editorLineHeight: '1.75' }).editorLineHeight, 1.75);
+  assert.equal(sanitize({ editorSidebarWidth: ' 360 ' }).editorSidebarWidth, 360);
+  assert.equal(sanitize({ windowBounds: { x: '10', y: '20', width: '1000', height: '700' } }).windowBounds.x, 10);
+  // 缺键 / undefined 与 null 同样回落默认（旧行为不变）；真正的数字仍按上下限夹紧
+  assert.equal(sanitize({ editorFontSize: undefined }).editorFontSize, defaults.editorFontSize);
+  assert.equal(sanitize({ editorFontSize: 999 }).editorFontSize, 30);
+  assert.equal(sanitize({ editorFontSize: 1 }).editorFontSize, 12);
+  // 按书显示设置同一条清洗：null 不再被夹成下限
+  const book = sanitize({ bookDisplay: { 'book-1': { editorFontSize: null } } });
+  assert.equal(book.bookDisplay['book-1'].editorFontSize, defaults.editorFontSize);
+});
+
 // V89（1.7.2 D6）：窗口位置记忆多了「上次是最大化」这一个布尔子键（windowBounds.maximized）。
 // 清洗函数必须放行它——否则每次 set 都被当脏字段删掉，重启出来就是「铺满但没最大化」的假最大化，
 // 而且不会报错（功能静默失效）。变更面只有这一个子键：不新增顶层字段、不写迁移代码。

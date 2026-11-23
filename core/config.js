@@ -129,17 +129,26 @@ const DEFAULTS = Object.freeze({
 const KNOWN_KEYS = Object.freeze(Object.keys(DEFAULTS));
 const KNOWN_KEY_SET = new Set(KNOWN_KEYS);
 
+// T-16（三审）：只认「真的数值」与「非空数字字符串」。Number(null) / Number('') / Number(false) /
+// Number([]) 都是 0，能通过 isFinite 被夹成下限（字号 12、窗口 (0,0)），而 undefined 回落默认值 ——
+// 同一个「没填 / 写坏」被清洗成两种结果。这里先把这些「零的伪装」判掉（手改配置里的 "18" 仍兼容）。
+function numericInput(value) {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '') return Number(value.trim());
+  return NaN;
+}
+
 // 四舍五入的整数夹紧（和 core/common.js 的 clampInt 不是一件事：那个是向下取整、
 // 参数是 [下限, 上限] 数组）。这里保留自己的参数顺序，因为 12 个调用点都是「常量下限 + 常量上限 + 默认值」；
 // v0.9 B-3 把名字改清楚，避免和公共 clampInt 混在一起。
 function clampRoundedInt(value, min, max, fallback) {
-  const n = Number(value);
+  const n = numericInput(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.round(n)));
 }
 
 function clampFloat(value, min, max, fallback) {
-  const n = Number(value);
+  const n = numericInput(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.round(Math.min(max, Math.max(min, n)) * 100) / 100;
 }
@@ -502,15 +511,21 @@ function sanitize(raw, options = {}) {
   // 是不是最大化。不清洗就会在每次 configStore.set 时被丢掉，重启出来是「铺满但没最大化」的
   // 假最大化，而且不报错（功能静默失效）。只认真正的 true，缺字段 / 旧配置 / 写坏的类型都是 false。
   const b = cfg.windowBounds;
-  if (b && typeof b === 'object' && Number.isFinite(Number(b.width)) && Number.isFinite(Number(b.height))) {
+  // T-16：宽 / 高 / x / y 都先过原始类型判 —— null / 空串 / 布尔 / 数组不再被 Number() 洗成 0
+  // （旧行为会把「没填」洗成窗口 (0,0) 或最小尺寸），坏值一律回落默认。
+  const boundsWidth = b && typeof b === 'object' ? numericInput(b.width) : NaN;
+  const boundsHeight = b && typeof b === 'object' ? numericInput(b.height) : NaN;
+  if (Number.isFinite(boundsWidth) && Number.isFinite(boundsHeight)) {
+    const boundsX = numericInput(b.x);
+    const boundsY = numericInput(b.y);
     cfg.windowBounds = {
-      x: Number.isFinite(Number(b.x)) ? Math.round(Number(b.x)) : DEFAULTS.windowBounds.x,
-      y: Number.isFinite(Number(b.y)) ? Math.round(Number(b.y)) : DEFAULTS.windowBounds.y,
+      x: Number.isFinite(boundsX) ? Math.round(boundsX) : DEFAULTS.windowBounds.x,
+      y: Number.isFinite(boundsY) ? Math.round(boundsY) : DEFAULTS.windowBounds.y,
       // V103（v1.8.0 WP-26）：窗口尺寸不再夹死 4000/3000 —— 5K 超宽屏的正常窗口会被这条截小，
       // 重启后永远小一圈。这里只挡明显离谱的值（防止坏配置开出巨窗），真正的「不超出当前
       // 显示器工作区」由 main.js 的 clampBounds(screen.workArea) 在恢复窗口时完成。
-      width: clampRoundedInt(b.width, 960, MAX_WINDOW_DIMENSION, DEFAULTS.windowBounds.width),
-      height: clampRoundedInt(b.height, 620, MAX_WINDOW_DIMENSION, DEFAULTS.windowBounds.height),
+      width: clampRoundedInt(boundsWidth, 960, MAX_WINDOW_DIMENSION, DEFAULTS.windowBounds.width),
+      height: clampRoundedInt(boundsHeight, 620, MAX_WINDOW_DIMENSION, DEFAULTS.windowBounds.height),
       maximized: b.maximized === true
     };
   } else {
