@@ -9,7 +9,7 @@ const crypto = require('node:crypto');
 module.exports = async function group50EditorWidgets(t) {
   const {
     exec,
-    check,
+    check, checkVisual,
     waitFor,
     sleep,
     win,
@@ -144,7 +144,7 @@ module.exports = async function group50EditorWidgets(t) {
     (await exec("window.__cwTest.marksText().split('␣').join('').split('·').join('')")) === marksText
   );
   const marksMetrics = await exec('window.__cwTest.marksMetrics()');
-  check(
+  checkVisual(
     '编辑器小件：标记层与编辑区同宽同高、字体/行高一致（标记位置对得上）',
     marksMetrics.visible &&
       Math.abs(marksMetrics.overlayWidth - marksMetrics.contentWidth) <= 0.5 &&
@@ -248,7 +248,7 @@ module.exports = async function group50EditorWidgets(t) {
   const marksScrolled = await exec('window.__cwTest.setEditorScroll(140)');
   const marksScrollMetrics = await exec('window.__cwTest.marksMetrics()');
   const marksTopsAfter = (await exec('window.__cwTest.longParaBarRects()')).map((rect) => rect.top);
-  check(
+  checkVisual(
     '编辑器小件：滚动时标记层跟随，超长段落黄线跟着正文走',
     marksScrolled > 0 &&
       marksScrollMetrics.scrollLocked === true &&
@@ -2525,7 +2525,7 @@ module.exports = async function group50EditorWidgets(t) {
     const r = menu.getBoundingClientRect();
     return { open: !menu.classList.contains('hidden'), left: r.left, top: r.top, right: r.right, bottom: r.bottom, w: window.innerWidth, h: window.innerHeight, items: menu.querySelectorAll('button').length };
   })()`);
-  check(
+  checkVisual(
     '代码精简：书卡右键菜单在右下角也收进可视区，菜单项一个不少',
     r3BookMenu.open &&
       r3BookMenu.left >= 0 &&

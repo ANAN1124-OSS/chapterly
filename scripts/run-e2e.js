@@ -28,6 +28,10 @@ const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.ELECTRON_NO_ATTACH_CONSOLE;
 
+// 视觉断言跳过（发版 2.1.0 的 CI 适配）：hosted runner 无交互式桌面会话，动效 / 主题 / 几何断言必然偏。
+// 本地与发版前默认全量（不带这个开关）；CI 设 E2E_SKIP_VISUAL=1，功能与供应链断言照常阻塞。
+const skipVisual = process.env.E2E_SKIP_VISUAL === '1' || process.argv.includes('--skip-visual');
+
 // 组数从索引里现读：加组 / 删组后预算自动跟着走，不写死 80。
 const { groups } = require('./e2e/groups/index.js');
 const groupCount = groups.length;
@@ -39,7 +43,8 @@ const child = spawn(
     path.join(root, 'scripts', 'start.js'),
     '--e2e',
     `--user-data=${userData}`,
-    `--books-root=${books}`
+    `--books-root=${books}`,
+    ...(skipVisual ? ['--e2e-skip-visual'] : [])
   ],
   { cwd: root, env }
 );
@@ -157,7 +162,9 @@ child.on('close', (code) => {
     }
   }
   if (result.ok) {
-    console.log(`端到端自检通过：${result.checks} 项全部通过。`);
+    const skipped = Number(result.skippedVisual) || 0;
+    const note = skipped > 0 ? `（其中 ${skipped} 项视觉断言按 E2E_SKIP_VISUAL 跳过）` : '';
+    console.log(`端到端自检通过：${result.checks} 项全部通过${note}。`);
     finish({ ok: true, code: 0 });
     return;
   }

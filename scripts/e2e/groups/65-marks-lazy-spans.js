@@ -15,7 +15,7 @@
 // 自己收尾删掉（走书架 _trash），不污染后面的多窗口组。
 
 module.exports = async function group65MarksLazySpans(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry } = t;
+  const { exec, check, checkVisual, waitFor, storage, booksRoot, deleteBookWithRetry } = t;
   const fs = require('node:fs/promises');
   const path = require('node:path');
 
@@ -98,7 +98,7 @@ module.exports = async function group65MarksLazySpans(t) {
 
   // 65e. 对齐没被节点结构影响：宽高 / 字体 / 行高与编辑区一致（E2E 50 系列同一套口径）
   const metrics = await exec('window.__cwTest.marksMetrics()');
-  check(
+  checkVisual(
     '标记层惰性渲染：影子层与编辑区同宽同高、同字体同行高（换行一致）',
     metrics.visible &&
       Math.abs(metrics.overlayWidth - metrics.contentWidth) <= 0.5 &&

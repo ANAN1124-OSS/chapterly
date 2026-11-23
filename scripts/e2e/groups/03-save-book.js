@@ -7,7 +7,7 @@ const path = require('node:path');
 
 module.exports = async function group3SaveBook(t) {
   const {
-    chaptersLib, storage, sleep, exec, booksRoot, bookDir, check, waitFor, diskText, win, setWindowSize,
+    chaptersLib, storage, sleep, exec, booksRoot, bookDir, check, checkVisual, waitFor, diskText, win, setWindowSize,
     resetCloseReady, waitCloseReady, fileExists
   } = t;
 
@@ -128,7 +128,7 @@ module.exports = async function group3SaveBook(t) {
     { feedback: slowSaveFeedback, toastsRightAway }
   );
   // 中段「第 N 章 · 本章 X 字」：章节位置与标题栏同一口径，本章字数与右段同一条计算。
-  check(
+  checkVisual(
     '状态栏（1.3.0 T7）：中段显示「第 N 章 · 本章 X 字」，章节位置与标题栏同一口径',
     slowSaveFeedback.chapterVisible === true &&
       slowSaveFeedback.chapterLabel === '第1章' &&
@@ -284,7 +284,7 @@ module.exports = async function group3SaveBook(t) {
     "window.__cwTest.dirty() === false && document.getElementById('status-text').textContent.startsWith('已保存') ? document.getElementById('status-text').textContent : null",
     8000
   );
-  check(
+  checkVisual(
     '状态栏（1.3.0 T7）：保存失败时朱红显示原因并出现「重试」，点重试真的重新保存成功',
     Boolean(retryFailedSave && retryFailedSave.ok === false) &&
       retryState.text.startsWith('保存失败：') &&

@@ -6,7 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 module.exports = async function group49Tts(t) {
-  const { exec, check, waitFor, storage, fileExists, state } = t;
+  const { exec, check, checkVisual, waitFor, storage, fileExists, state } = t;
   const { fragLegacyBookPath } = t.state;
 
   // 49. 朗读本章（v0.7-3，提案 5.3）：系统语音只读正文、不改字、不写盘。
@@ -81,7 +81,7 @@ module.exports = async function group49Tts(t) {
       areaBottom: getComputedStyle(area).bottom
     };
   })()`);
-  check(
+  checkVisual(
     '朗读（拍板 #6）：toast 抬起量 = 朗读条实际高度 + 52px（写进 --tts-toast-lift，不再是写死的 184px）',
     ttsToastLift.liftVar === `${ttsToastLift.barH + 52}px` &&
       Math.abs(parseFloat(ttsToastLift.areaBottom) - (ttsToastLift.barH + 52)) <= 1,

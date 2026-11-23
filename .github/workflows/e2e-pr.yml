@@ -108,7 +108,10 @@ jobs:
       - name: 固定时区（E2E 的日期 / 统计断言按 +08 口径）
         run: tzutil /s "China Standard Time"
 
-      - name: 全量 E2E（真实 Electron + 临时书库）
+      - name: 全量 E2E（真实 Electron + 临时书库；CI 跳过视觉 / 动效断言）
         run: pnpm run e2e
         env:
           TZ: Asia/Shanghai
+          # 与 e2e-weekly 同口径：hosted runner 无交互式桌面会话，43 处 checkVisual（动效 / 主题 / 几何
+          # 测量）在 CI 跳过；功能与供应链断言仍全部阻塞。
+          E2E_SKIP_VISUAL: '1'

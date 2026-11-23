@@ -8,7 +8,7 @@ const path = require('node:path');
 module.exports = async function group44StatsGoal(t) {
   const {
     exec,
-    check,
+    check, checkVisual,
     waitFor,
     sleep,
     storage,
@@ -1159,7 +1159,7 @@ module.exports = async function group44StatsGoal(t) {
   await exec('window.__cwTest.readingSetFontLevel(3)');
   await exec('window.__cwTest.readingSetLineLevel(0)');
   const readMetricsBig = await exec('window.__cwTest.readingMetrics()');
-  check(
+  checkVisual(
     '阅读模式：切「特大 + 紧凑」只改显示（25px / 1.7 倍行距）',
     parseFloat(readMetricsBig.fontSize) === 25 &&
       Math.abs(readMetricsBig.lineHeight / parseFloat(readMetricsBig.fontSize) - 1.7) < 0.02 &&
@@ -1247,7 +1247,7 @@ module.exports = async function group44StatsGoal(t) {
     };
   })()`);
   const readWheelUp = await readWheel(-120);
-  check(
+  checkVisual(
     '阅读模式：Ctrl+滚轮上滚放大一档字号（22 → 25px），并拦掉整页缩放',
     readWheelUp.prevented === true && readWheelUp.fontLevel === 3 && parseFloat(readWheelUp.fontSize) === 25,
     readWheelUp
@@ -1266,7 +1266,7 @@ module.exports = async function group44StatsGoal(t) {
   );
   const readZoomIn = await readKeydown('reading-scroll', '=', ', ctrlKey: true');
   const readZoomInMetrics = await exec('window.__cwTest.readingMetrics()');
-  check(
+  checkVisual(
     '阅读模式：Ctrl+= 放大一档字号（与字号下拉同一条路径，拦掉默认）',
     readZoomIn.prevented === true && readZoomIn.fontLevel === 3 && parseFloat(readZoomInMetrics.fontSize) === 25,
     { key: readZoomIn, metrics: readZoomInMetrics }
@@ -1276,7 +1276,7 @@ module.exports = async function group44StatsGoal(t) {
   await readKeydown('reading-scroll', '-', ', ctrlKey: true');
   await readKeydown('reading-scroll', '-', ', ctrlKey: true');
   const readZoomMin = await exec('window.__cwTest.readingMetrics()');
-  check(
+  checkVisual(
     '阅读模式：Ctrl+- 缩回 22px，连按到最小档 17px 停住（不越界）',
     readZoomOut.fontLevel === 2 &&
       (await exec('window.__cwTest.readingState()')).fontLevel === 0 &&

@@ -208,6 +208,10 @@ test('e2e-weekly.yml 每周定时整跑 E2E，且装 Electron 二进制', () => 
   );
   assert.match(text, /timeout-minutes: ([3-9]\d|[1-9]\d{2,})/, 'E2E 是长场景，超时要给足（≥ 30 分钟）');
   assert.match(text, /tzutil \/s "China Standard Time"/, 'E2E 要固定时区（统计 / 日期断言按 +08）');
+  // 发版 2.1.0 的 CI 适配：hosted runner 无交互式桌面会话，动效 / 主题 / 几何断言必然偏。
+  // CI 必须显式设 E2E_SKIP_VISUAL=1（跳过 43 处 checkVisual），功能与供应链断言仍阻塞；
+  // 本地 / 发版前的全量 E2E 不带这个开关（run-e2e 默认全跑）。
+  assert.match(text, /E2E_SKIP_VISUAL: '1'/, 'CI 必须显式跳过视觉断言（否则 hosted runner 必红）');
 });
 
 // C5=F3（审计 #24）：engines 声明 node >=22，每周 E2E 不能只测开发机的 24 —— 与 verify 同口径补矩阵。
@@ -281,6 +285,8 @@ test('e2e-pr.yml：PR 路径过滤触发全量 E2E，且装配真实 Electron + 
   assert.match(text, /timeout-minutes: ([3-9]\d|[1-9]\d{2,})/, 'E2E 长场景超时要给足（≥ 30 分钟）');
   // 每周全量不因新增 PR 工作流被替代
   assert.match(commandsOf(readE2e()), /run: pnpm run e2e/, 'e2e-weekly 仍保留每周全量');
+  // 与 e2e-weekly 同口径：PR 级 E2E 也显式跳过视觉断言（hosted runner 无桌面会话）
+  assert.match(text, /E2E_SKIP_VISUAL: '1'/, 'PR 级 E2E 也要显式跳过视觉断言');
 });
 
 test('README 如实描述三套 CI（verify + PR 级 E2E + 每周 E2E）与「打包冒烟仍在本地」', () => {

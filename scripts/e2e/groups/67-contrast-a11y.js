@@ -336,7 +336,7 @@ function compact(samples) {
 }
 
 module.exports = async function group67ContrastA11y(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry } = t;
+  const { exec, check, checkVisual, waitFor, storage, booksRoot, deleteBookWithRetry } = t;
 
   // 67a. 造演练书：分卷 / 章节备注 / 完稿 / 作者 / 简介 / 标签 + 一份同步冲突副本
   await exec('window.__cwTest.backToShelf()');
@@ -440,7 +440,7 @@ module.exports = async function group67ContrastA11y(t) {
   await waitFor('window.__cwTest.dirty() === true');
   const dirtyReport = await exec(`(${sampleThemes.toString()})('dirty', ${JSON.stringify(DIRTY_SPECS)})`);
   const dirtySamples = dirtyReport.samples;
-  check(
+  checkVisual(
     '对比度：主按钮「保存」启用态的文字在 6 套主题下都过 4.5:1（夜间改深色字）',
     offenders(dirtySamples).length === 0,
     { offenders: offenders(dirtySamples), ratios: compact(dirtySamples) }

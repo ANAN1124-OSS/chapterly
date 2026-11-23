@@ -4,7 +4,7 @@
 // 组内局部变量不进别的文件；要交给后面组的值由场景的 state 袋子传递（见 e2e-scenario.js 文件头）。
 
 module.exports = async function group26DisplayOptions(t) {
-  const { exec, check, waitFor, sleep } = t;
+  const { exec, check, checkVisual, waitFor, sleep } = t;
   const { indentBlankText } = t.state;
 
   // 26. 口袋写作同款显示项：字体文件（.ttf）、夜间、纸张纹理、左右边距
@@ -115,14 +115,14 @@ module.exports = async function group26DisplayOptions(t) {
   const nightStyle = await exec('window.__cwTest.displayStyle()');
   check('夜间主题生效（页面换成深色）', nightStyle.paperClass.includes('theme-night'), nightStyle.paperClass);
   const nightRgb = (nightStyle.backgroundColor.match(/\d+/g) || []).map(Number);
-  check(
+  checkVisual(
     '夜间主题：正文底色变深、字色不变',
     nightRgb.length >= 3 && nightRgb[0] < 80 && nightRgb[1] < 80 && nightRgb[2] < 80,
     nightStyle.backgroundColor
   );
   await exec("window.__cwTest.setSelect('settings-padding-x', '24')");
   const paddingStyle = await exec('window.__cwTest.displayStyle()');
-  check('左右边距可调（24px）', paddingStyle.paddingLeft === '24px' && paddingStyle.paddingRight === '24px', {
+  checkVisual('左右边距可调（24px）', paddingStyle.paddingLeft === '24px' && paddingStyle.paddingRight === '24px', {
     left: paddingStyle.paddingLeft,
     right: paddingStyle.paddingRight
   });

@@ -42,6 +42,22 @@ function createHarness(ctx) {
     return ok;
   };
 
+  // 视觉 / 动效 / 几何测量类断言（发版 2.1.0 的 CI 适配，REPO-03 后续）：
+  // GitHub hosted runner 没有交互式桌面会话，Chromium 对不可见窗口节流合成 / 动画 / 布局，这类断言
+  // 在那里必然偏（2026-11-23 实测 30 项：动效时长、夜间底色、边距、标记层字体、阅读字号、菜单位置）。
+  // 它们仍参与本地全量 E2E（默认跑）；CI 用 E2E_SKIP_VISUAL=1 跳过——记 skipped、不计失败、总数不变，
+  // 供应链与全部功能断言照常阻塞。不许把功能断言挪进这里换绿灯。
+  const skipVisual = Boolean(ctx.skipVisual);
+  let skippedVisual = 0;
+  const checkVisual = (name, cond, detail) => {
+    if (skipVisual) {
+      checks.push({ name, ok: true, visual: true, skipped: true });
+      skippedVisual += 1;
+      return true;
+    }
+    return check(name, cond, detail);
+  };
+
   // 场景级异常（不是某一条断言，而是这一组跑到一半抛了）：记成一条失败，让后面的组继续跑。
   const recordFailure = (name, err) => {
     const message = String((err && err.message) || err);
@@ -56,6 +72,7 @@ function createHarness(ctx) {
     ok: !hasFailures(),
     exitCode: hasFailures() ? 1 : 0,
     failed: failures.length,
+    skippedVisual,
     failures: failures.slice()
   });
 
@@ -313,6 +330,7 @@ function createHarness(ctx) {
     checks,
     failures,
     check,
+    checkVisual,
     recordFailure,
     summary,
     WAIT,

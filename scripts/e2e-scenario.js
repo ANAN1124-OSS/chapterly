@@ -46,8 +46,11 @@ module.exports = async function runScenario(ctx) {
   const appRoot = path.join(__dirname, '..');
   // E2E 公共工具（v0.9 B-7）：check / waitFor / 删书重试 / 读日志都收在 scripts/e2e/harness.js，
   // 拆到 scripts/e2e/groups/*.js 的各组也用同一份，不许各写一套。
-  const harness = createHarness(ctx);
-  const { checks, check, waitFor, logDir, logNamePattern, readLogs, waitForLog, deleteBookWithRetry, fileExists } =
+  // 视觉断言跳过开关（发版 2.1.0 的 CI 适配）：CI runner 无交互式桌面会话，动效 / 主题 / 几何断言
+  // 必然偏；run-e2e 在 E2E_SKIP_VISUAL=1 时带 --e2e-skip-visual。本地与发版前跑全量（不带这个参数）。
+  const skipVisual = process.argv.includes('--e2e-skip-visual');
+  const harness = createHarness({ ...ctx, skipVisual });
+  const { checks, check, checkVisual, waitFor, logDir, logNamePattern, readLogs, waitForLog, deleteBookWithRetry, fileExists } =
     harness;
   // 1.6.0 G2：失败累计（check 不再抛错；组内异常由 runGroups 记成「场景异常」继续下一组）+ 有名字的等待。
   const { recordFailure, waitForRender, waitForFocus, waitForDisk } = harness;
@@ -132,6 +135,7 @@ module.exports = async function runScenario(ctx) {
     // ---------- 场景上下文（主进程侧注入） ----------
     exec,
     check,
+    checkVisual,
     recordFailure,
     waitFor,
     waitForRender,
@@ -411,6 +415,7 @@ module.exports = async function runScenario(ctx) {
   return {
     ok: summary.ok,
     checks: checks.length,
+    skippedVisual: summary.skippedVisual,
     details: checks,
     failures: summary.failures,
     error: summary.ok

@@ -24,7 +24,8 @@ const INDEX_SOURCE = fs.readFileSync(path.join(GROUPS_DIR, 'index.js'), 'utf8');
 // T7（三审·低）：两个机器抽取器，取代「手抄注释串 / 手抄断言名」的静态锚点。
 //   · plannedGroupOrder：从场景源码抽出**实际会跑哪些组、按什么顺序**。
 //     runGroup([n,...]) 直接展开；runGroup(e2eGroups.idsFrom(n)) 交给注册表展开（语义只一处）。
-//   · checkLiterals：抽 check('…') 的字面断言名。组文件与场景共用同一抽取器 = 机器清单不手抄。
+//   · checkLiterals：抽 check('…') / checkVisual('…') 的字面断言名。组文件与场景共用同一抽取器
+//     = 机器清单不手抄。（发版 2.1.0 起视觉断言写成 checkVisual，抽取器一并覆盖，防整组被误判「搬空」。）
 function plannedGroupOrder(source, registry) {
   const re = /runGroup\(\s*(?:\[([^\]]*)\]|e2eGroups\.idsFrom\(\s*(\d+)\s*\))\s*\)/g;
   const plan = [];
@@ -40,7 +41,7 @@ function plannedGroupOrder(source, registry) {
 
 function checkLiterals(source) {
   const out = [];
-  const re = /\bcheck\(\s*(['"])((?:[^\\]|\\.)*?)\1/g;
+  const re = /\bcheck(?:Visual)?\(\s*(['"])((?:[^\\]|\\.)*?)\1/g;
   for (const match of source.matchAll(re)) out.push(match[2]);
   return out;
 }
@@ -60,6 +61,32 @@ function makeHarness(overrides = {}) {
 }
 
 const tmpCleanup = require('./tmp-cleanup');
+
+// 发版 2.1.0 的 CI 适配：视觉断言（动效 / 主题 / 几何测量）在本地照常判，CI 用 E2E_SKIP_VISUAL=1 跳过。
+// 这里锁三条：默认与 check 等价、跳过时记 skipped 且总数不变、跳过模式下功能断言仍然阻塞。
+test('harness.checkVisual：默认等价于 check；skipVisual 时记 skipped 不计失败；功能断言仍阻塞', () => {
+  const full = makeHarness().harness;
+  assert.equal(full.checkVisual('视觉通过', true), true);
+  assert.equal(full.checkVisual('视觉失败', false, { px: 1 }), false);
+  assert.equal(full.summary().failed, 1, '本地全量模式下视觉断言照常判失败');
+  assert.equal(full.summary().skippedVisual, 0);
+
+  const ci = makeHarness({ skipVisual: true }).harness;
+  const before = ci.checks.length;
+  assert.equal(ci.checkVisual('动效-书架：书卡时长 = --motion-quick', false, { got: '0s' }), true);
+  assert.equal(ci.checks.length, before + 1, '跳过的条目仍计入总数（E2E 计数锚点 1916 不变）');
+  assert.deepEqual(ci.checks[ci.checks.length - 1], {
+    name: '动效-书架：书卡时长 = --motion-quick',
+    ok: true,
+    visual: true,
+    skipped: true
+  });
+  assert.equal(ci.summary().ok, true, '视觉断言的失败在 CI 模式不计失败');
+  assert.equal(ci.summary().skippedVisual, 1);
+  // 红线：跳过模式只放过视觉断言，功能断言照样真实判失败
+  assert.equal(ci.check('功能断言', false), false);
+  assert.equal(ci.summary().ok, false, '功能断言在跳过模式下仍必须阻塞');
+});
 
 // TB-02：临时目录统一经 tests/tmp-cleanup.js（不再本地复制 mkdtemp + track）。
 const tempDir = (prefix = 'cw-e2e-harness-') => tmpCleanup.mkTmp(prefix);
@@ -89,7 +116,7 @@ test('harness.check：失败累计、不中断后一条；两条失败都记进 
   // 全绿时 summary 是零退出码，failures 为空
   const clean = makeHarness().harness;
   clean.check('唯一项', true);
-  assert.deepEqual(clean.summary(), { ok: true, exitCode: 0, failed: 0, failures: [] });
+  assert.deepEqual(clean.summary(), { ok: true, exitCode: 0, failed: 0, skippedVisual: 0, failures: [] });
 
   // 场景级异常（组里抛出来的 TypeError / 等待超时）也要进同一份失败清单，不能吞掉已跑结果
   const withCrash = makeHarness().harness;
@@ -359,14 +386,15 @@ test('harness.fileExists：文件 / 目录都算存在，不存在（含父目�
 });
 
 test('静态闸门：场景里不许再定义第二份 harness 工具，必须走 createHarness + 组索引', () => {
-  for (const name of ['checks', 'check', 'waitFor', 'readLogs', 'waitForLog', 'deleteBookWithRetry', 'fileExists']) {
+  for (const name of ['checks', 'check', 'checkVisual', 'waitFor', 'readLogs', 'waitForLog', 'deleteBookWithRetry', 'fileExists']) {
     const pattern = new RegExp(`^  const ${name} = `, 'm');
     assert.equal(pattern.test(SCENARIO_SOURCE), false, `${name} 不该再定义在 e2e-scenario.js 里`);
   }
-  assert.match(SCENARIO_SOURCE, /const harness = createHarness\(ctx\);/);
+  // 发版 2.1.0：createHarness 多接一个 skipVisual（CI 跳过视觉断言），解构清单同步加 checkVisual。
+  assert.match(SCENARIO_SOURCE, /const harness = createHarness\(\{ \.\.\.ctx, skipVisual \}\);/);
   assert.match(
     SCENARIO_SOURCE,
-    /const \{ checks, check, waitFor, logDir, logNamePattern, readLogs, waitForLog, deleteBookWithRetry, fileExists \} =\s*\n\s*harness;/
+    /const \{ checks, check, checkVisual, waitFor, logDir, logNamePattern, readLogs, waitForLog, deleteBookWithRetry, fileExists \} =\s*\n\s*harness;/
   );
   assert.match(SCENARIO_SOURCE, /const e2eGroups = require\('\.\/e2e\/groups'\);/);
   // T7（三审·低）：分组顺序不再用「源码注释串 / 调用点下标」钉——含日期与提案号的注释一改就假红。
@@ -394,7 +422,9 @@ test('静态闸门：搬走的断言只留在 groups 下（机器清单：场景
   const groupChecks = new Set();
   for (const name of groupFiles) {
     const source = fs.readFileSync(path.join(GROUPS_DIR, name), 'utf8');
-    assert.ok((source.match(/\bcheck\(/g) || []).length >= 1, `${name} 里一条 check(...) 都没有（组被搬空了？）`);
+    // check 或 checkVisual 都算「组里还有断言」：69-motion 整组是视觉断言（checkVisual），
+    // 只数 check( 会把它误判成「组被搬空」（发版 2.1.0 CI 适配时踩到）。
+    assert.ok((source.match(/\bcheck(?:Visual)?\(/g) || []).length >= 1, `${name} 里一条 check(...) / checkVisual(...) 都没有（组被搬空了？）`);
     for (const item of checkLiterals(source)) groupChecks.add(item);
   }
   // 兜底：断言名合计低于 1000 说明有一批组被删空（2026-11-22 实测 1738 条字面断言名）。

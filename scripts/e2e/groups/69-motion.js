@@ -119,21 +119,21 @@ const jsToast = `(() => {
 })()`;
 
 module.exports = async function group69Motion(t) {
-  const { exec, check, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep } = t;
+  const { exec, check, checkVisual, waitFor, storage, booksRoot, deleteBookWithRetry, win, sleep } = t;
 
   const scan = async (label) => {
     const data = JSON.parse(await exec(SCAN));
-    check(
+    checkVisual(
       `${label}：全界面过渡 / 动画时长只有两档（${QUICK} / ${OVERLAY}）`,
       JSON.stringify(data.durations) === JSON.stringify([QUICK, OVERLAY]),
       data.durations
     );
-    check(
+    checkVisual(
       `${label}：令牌就是这两档（--motion-quick / --motion-overlay）`,
       isDuration(data.tokens.quick, QUICK_SEC) && isDuration(data.tokens.overlay, OVERLAY_SEC),
       data.tokens
     );
-    check(`${label}：没有任何元素还在做位移类过渡`, data.transformMotion.length === 0, data.transformMotion);
+    checkVisual(`${label}：没有任何元素还在做位移类过渡`, data.transformMotion.length === 0, data.transformMotion);
     return data;
   };
   const spec = async (label, selector, pseudo) => JSON.parse(await exec(jsSpec(selector, pseudo)));
@@ -147,25 +147,25 @@ module.exports = async function group69Motion(t) {
   await storage.createChapter(bookPath, 1, '第二章');
   await exec('window.__cwTest.refreshShelf()');
   await sleep(300);
-  check('动效：演练书造好（2 章）', (await storage.readBookMeta(bookPath)).chapters.length === 2);
+  checkVisual('动效：演练书造好（2 章）', (await storage.readBookMeta(bookPath)).chapters.length === 2);
 
   // ---------- 书架 ----------
   const shelfScan = await scan('动效-书架');
-  check('动效-书架：确实有元素带动效（不是把动效全删了）', shelfScan.animated > 50, shelfScan.animated);
+  checkVisual('动效-书架：确实有元素带动效（不是把动效全删了）', shelfScan.animated > 50, shelfScan.animated);
 
   const card = await spec('动效-书架', '.book-card');
-  check(
+  checkVisual(
     '动效-书架：书卡只过渡底色与边框色（v1.0 不上浮、不加阴影，不是把动效删了）',
     JSON.stringify(card.props) === JSON.stringify(['background-color', 'border-color']),
     card.props
   );
-  check('动效-书架：书卡时长 = --motion-quick', JSON.stringify(card.durations) === JSON.stringify([QUICK]), card.durations);
+  checkVisual('动效-书架：书卡时长 = --motion-quick', JSON.stringify(card.durations) === JSON.stringify([QUICK]), card.durations);
 
   const more = await spec('动效-书架', '.book-card-more');
-  check('动效-书架：「⋯」按钮 = 淡入 + 悬停底色，都走 quick', JSON.stringify(more.durations) === JSON.stringify([QUICK]) && JSON.stringify(more.props) === JSON.stringify(['background', 'opacity']), more);
+  checkVisual('动效-书架：「⋯」按钮 = 淡入 + 悬停底色，都走 quick', JSON.stringify(more.durations) === JSON.stringify([QUICK]) && JSON.stringify(more.props) === JSON.stringify(['background', 'opacity']), more);
 
   const btn = await spec('动效-书架', '.btn');
-  check(
+  checkVisual(
     '动效-书架：按钮只过渡底色 / 边线 / 文字色三个属性，统一走 quick',
     JSON.stringify(btn.durations) === JSON.stringify([QUICK]) &&
       JSON.stringify(btn.props) === JSON.stringify(['background-color', 'border-color', 'color']),
@@ -173,13 +173,13 @@ module.exports = async function group69Motion(t) {
   );
 
   const track = await spec('动效-书架', '.goal-track > i');
-  check('动效-书架：进度条宽度动画从 .2s 收到 quick', JSON.stringify(track.durations) === JSON.stringify([QUICK]) && JSON.stringify(track.props) === JSON.stringify(['width']), track);
+  checkVisual('动效-书架：进度条宽度动画从 .2s 收到 quick', JSON.stringify(track.durations) === JSON.stringify([QUICK]) && JSON.stringify(track.props) === JSON.stringify(['width']), track);
 
   const menuBtn = await spec('动效-书架', '.dropdown-menu button');
-  check('动效-书架：顶栏下拉菜单从 .1s 提到 quick', JSON.stringify(menuBtn.durations) === JSON.stringify([QUICK]), menuBtn);
+  checkVisual('动效-书架：顶栏下拉菜单从 .1s 提到 quick', JSON.stringify(menuBtn.durations) === JSON.stringify([QUICK]), menuBtn);
 
   const focusBar = await spec('动效-书架', '.focus-bar');
-  check('动效-书架：专注模式悬浮条淡出走 overlay（面状进出那一档）', JSON.stringify(focusBar.durations) === JSON.stringify([OVERLAY]) && JSON.stringify(focusBar.props) === JSON.stringify(['opacity']), focusBar);
+  checkVisual('动效-书架：专注模式悬浮条淡出走 overlay（面状进出那一档）', JSON.stringify(focusBar.durations) === JSON.stringify([OVERLAY]) && JSON.stringify(focusBar.props) === JSON.stringify(['opacity']), focusBar);
 
   // ---------- 悬停：真实鼠标移到第一张书卡中心 ----------
   const rect = JSON.parse(
@@ -190,15 +190,15 @@ module.exports = async function group69Motion(t) {
   win.webContents.sendInputEvent({ type: 'mouseMove', x: rect.x, y: rect.y });
   await sleep(400);
   const hover = JSON.parse(await exec(JS_HOVER));
-  check('动效-悬停：真实鼠标命中 .book-card 的 :hover', hover.hovered === true, hover);
-  check('动效-悬停：悬停不再上浮 1px（transform 保持 none）', hover.transform === 'none', hover.transform);
-  check(
+  checkVisual('动效-悬停：真实鼠标命中 .book-card 的 :hover', hover.hovered === true, hover);
+  checkVisual('动效-悬停：悬停不再上浮 1px（transform 保持 none）', hover.transform === 'none', hover.transform);
+  checkVisual(
     '动效-悬停：悬停反馈还在（边框变成 --line-strong、底色变成 --folio-raised）',
     hover.borderColor === hover.lineStrong && hover.backgroundColor === hover.folioRaised,
     { gotBorder: hover.borderColor, wantBorder: hover.lineStrong, gotBg: hover.backgroundColor, wantBg: hover.folioRaised }
   );
-  check('动效-悬停：悬停不加阴影（v1.0 用底色 + 边线区分，不用投影）', hover.boxShadow === 'none', hover.boxShadow);
-  check('动效-悬停：过渡属性里没有 transform', !hover.props.includes('transform'), hover.props);
+  checkVisual('动效-悬停：悬停不加阴影（v1.0 用底色 + 边线区分，不用投影）', hover.boxShadow === 'none', hover.boxShadow);
+  checkVisual('动效-悬停：过渡属性里没有 transform', !hover.props.includes('transform'), hover.props);
   win.webContents.sendInputEvent({ type: 'mouseMove', x: 2, y: 2 });
   await sleep(200);
 
@@ -209,10 +209,10 @@ module.exports = async function group69Motion(t) {
   await scan('动效-写作页');
 
   const chapterItem = await spec('动效-写作页', '.chapter-item');
-  check('动效-写作页：章节条目 = 底色 + 当前章内描边，都走 quick', JSON.stringify(chapterItem.durations) === JSON.stringify([QUICK]) && JSON.stringify(chapterItem.props) === JSON.stringify(['background', 'box-shadow']), chapterItem);
+  checkVisual('动效-写作页：章节条目 = 底色 + 当前章内描边，都走 quick', JSON.stringify(chapterItem.durations) === JSON.stringify([QUICK]) && JSON.stringify(chapterItem.props) === JSON.stringify(['background', 'box-shadow']), chapterItem);
 
   const resizer = await spec('动效-写作页', '.sidebar-resizer', '::after');
-  check('动效-写作页：分隔条的悬停反馈（::after）走 quick', JSON.stringify(resizer.durations) === JSON.stringify([QUICK]), resizer);
+  checkVisual('动效-写作页：分隔条的悬停反馈（::after）走 quick', JSON.stringify(resizer.durations) === JSON.stringify([QUICK]), resizer);
 
   // ---------- toast：真实冒烟一条（弹出 0.16s → 3.6s 后淡出 0.16s → 消失） ----------
   // 先等干净：前面各组留下的 toast 会自己消失（3.6s + 300ms），不等它们会让下面数错。
@@ -220,8 +220,8 @@ module.exports = async function group69Motion(t) {
   await exec('window.__cwTest.saveVisible()'); // 当前章没有改动 → 只弹一条「当前章节没有改动」，不写盘
   await waitFor("document.querySelectorAll('#toast-area .toast').length > 0");
   const toastIn = JSON.parse(await exec(jsToast));
-  check('动效-toast：入场动画还是 toast-in', toastIn.animation === 'toast-in', toastIn.animation);
-  check('动效-toast：入场时长 = --motion-overlay', toastIn.animationDuration === OVERLAY, toastIn.animationDuration);
+  checkVisual('动效-toast：入场动画还是 toast-in', toastIn.animation === 'toast-in', toastIn.animation);
+  checkVisual('动效-toast：入场时长 = --motion-overlay', toastIn.animationDuration === OVERLAY, toastIn.animationDuration);
 
   // 3.6 秒后才开始淡出。这里**不能**等「opacity === 0」：toast 的入场动画第一帧
   // 就是从 opacity 0 开始（keyframe from），一创建就叫醒，量到的还是入场中的元素
@@ -293,24 +293,24 @@ module.exports = async function group69Motion(t) {
   }
   const fadeTransitionHooked = transitionHooked(fadeAnimations);
   const fadeMidFrame = fadeOpacity > 0 && fadeOpacity < 1;
-  check(
+  checkVisual(
     '动效-toast：3.6 秒后真的进入淡出（.leaving；透明度下降或 opacity 过渡已挂上或节点已移除）',
     fadeOpacity < 1 || fadeTransitionHooked || fadeGone,
     { ...fade, fadeOpacity, fadeAnimations, fadeGone, fadeWhy }
   );
-  check('动效-toast：淡出过渡 = --motion-overlay（以前 JS 里写死 .25s）', fade.transitionDuration === OVERLAY, fade);
-  check('动效-toast：淡出只过渡 opacity', fade.transitionProperty === 'opacity', fade.transitionProperty);
+  checkVisual('动效-toast：淡出过渡 = --motion-overlay（以前 JS 里写死 .25s）', fade.transitionDuration === OVERLAY, fade);
+  checkVisual('动效-toast：淡出只过渡 opacity', fade.transitionProperty === 'opacity', fade.transitionProperty);
   // 光看计算值只能证明「声明对了」，这里再要求真有一条 opacity 过渡在跑（160ms，不是瞬间跳没）：
   // 证据可以是 getAnimations() 里的那条 transition，也可以是一次 0 < opacity < 1 的中间帧
   // （过渡真在跑才会有这种帧——窗口被遮挡时首帧采样可能拿不到动画列表，轮询会补上）。
-  check(
+  checkVisual(
     '动效-toast：淡出真有一条 opacity 过渡在跑（160ms）',
     fadeTransitionHooked || fadeMidFrame,
     { animations: fadeAnimations, fadeOpacity, fadeMidFrame }
   );
   // 淡出后 300ms 里被移除
   const gone = await waitFor("document.querySelectorAll('#toast-area .toast').length === 0", 4000);
-  check('动效-toast：淡出结束后元素被移除（不留透明节点）', gone === true);
+  checkVisual('动效-toast：淡出结束后元素被移除（不留透明节点）', gone === true);
 
   // ---------- 设置弹层：弹层里也没有第三档时长 ----------
   await exec('window.__cwTest.openSettings()');
@@ -324,7 +324,7 @@ module.exports = async function group69Motion(t) {
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
   const removed = await deleteBookWithRetry(bookPath);
-  check('动效：演练书已删掉（走 _trash）', removed && removed.ok === true, removed);
+  checkVisual('动效：演练书已删掉（走 _trash）', removed && removed.ok === true, removed);
   const shelfAfter = (await storage.listBooks(booksRoot)).length;
-  check('动效：书架数量回到演练前', shelfAfter === shelfBefore, { before: shelfBefore, after: shelfAfter });
+  checkVisual('动效：书架数量回到演练前', shelfAfter === shelfBefore, { before: shelfBefore, after: shelfAfter });
 };
