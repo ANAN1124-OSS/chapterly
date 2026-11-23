@@ -107,6 +107,11 @@
   // 每次本地改写 state.sensitiveWordList 都推进这一代；落地时不是发起那一代就不采用回包的 wordList。
   let sensitiveWordListSeq = 0;
 
+  // T-15（仿校对 RPAN-A-03）：面板世代。关面板时推进；在途回执回来时世代对不上就整份丢弃。
+  // 否则「整本预检在飞 → Esc 关 → 立即重开」时，三重复核（章身份 / 范围 / 词表世代）全都成立，
+  // 旧回包会把旧快照画回重开的面板。
+  let sensitiveEpoch = 0;
+
   function renderSensitiveWordList() {
     const el = $('sensitive-wordlist-text');
     if (!el) return;
@@ -150,6 +155,8 @@
   }
 
   function closeSensitivePanel() {
+    // T-15：关面板 = 作废这一轮在途预检（主进程没有取消通道：整本只读、跑完就停，渲染层负责丢迟到回执）
+    sensitiveEpoch += 1;
     $('sensitive-backdrop').classList.add('hidden');
   }
 
@@ -313,6 +320,15 @@
     return { ok: false, stale: true, message: '预检范围已经切换' };
   }
 
+  // T-15：发起后关过面板 —— 迟到回执整份丢弃，不往（可能已重开的）面板上画旧快照。
+  // 面板可能还开着（关 → 又开、旧一轮还没跑完时的忙态早退），所以给一句明确下一步。
+  function discardClosedSensitiveRun() {
+    state.sensitive = null;
+    $('sensitive-summary').textContent = '预检期间关过面板，这次结果已丢弃；请重新预检';
+    $('sensitive-results').innerHTML = '';
+    return { ok: false, stale: true, message: '预检已取消' };
+  }
+
   // 审计修复 #43（E17）：主进程回包形状不对（没有命中列表数组）时不再让 .map / .length 抛一句
   // 「res.issues.map is not a function」顶在面板上 —— 按结构化失败处理，面板文案说清下一步。
   function failSensitivePayload() {
@@ -331,6 +347,8 @@
     const scope = sensitiveScope();
     // 五-M13（SE-01）：发起时的词表世代。回执回来时词表已经被换过 / 刷新过 → 不采用旧 wordList。
     const wordListSeqAtStart = sensitiveWordListSeq;
+    // T-15：发起时的面板世代。期间关过面板 → 这一轮回执整份丢弃，不往重开的面板上画旧结果。
+    const epochAtStart = sensitiveEpoch;
     state.sensitiveScope = scope;
     setSensitiveBusy(true);
     $('sensitive-summary').textContent =
@@ -391,6 +409,8 @@
       // 五-L19（SE-02）：回包的目标范围必须与当前下拉框一致，否则按 stale 丢弃（不画回旧范围结果；
       // 旧范围的失败 / 形状异常同样不写到已切范围的眼前面板上）
       if (sensitiveScope() !== scope) return discardSwitchedSensitiveScope();
+      // T-15：这期间面板被关过（世代已推进）——迟到的整本结果不许画回（重开的面板会是新一轮）。
+      if (epochAtStart !== sensitiveEpoch) return discardClosedSensitiveRun();
       // 审计修复 #43（E17）：整本回包同样先确认 matches 是数组，后面 .length / .slice 才安全。
       // 审计残留修复 #43（E17）：必须先排除 ok===false —— 词表读不了之类的失败回包本来就没有
       // matches，旧顺序把它也判成「预检结果格式不对」，吞掉真实错误（词表文件不存在）、
@@ -408,6 +428,8 @@
       renderSensitiveResults();
       return { ok: payload.ok !== false, total: payload.total, scope: payload.scope };
     } catch (err) {
+      // T-15：关过面板就不属于眼前这一轮 —— 连失败文案都不许写回（与成功路径同一句作废提示）。
+      if (epochAtStart !== sensitiveEpoch) return discardClosedSensitiveRun();
       // 审计修复 #43（E17）：失败也按发起时的身份结算。换了书（当前章范围再看换没换章）就不属于
       // 眼前这份结果 —— 走与成功路径同一句作废提示，不在这里写「预检失败：上一本书的错」。
       const moved = scope === 'book'
@@ -421,9 +443,12 @@
     } finally {
       setSensitiveBusy(false);
       // 五-M13（SE-01）：预检在途时换词表撞 busy 被静默吞掉——跑完按最新词表补跑一次。
+      // T-15：面板关过 / 又被关着，就不再补跑（补跑会绕过用户刚做的关闭）。
       if (sensitiveRerunPending) {
         sensitiveRerunPending = false;
-        if (!$('sensitive-backdrop').classList.contains('hidden')) void runSensitiveCheck();
+        if (epochAtStart === sensitiveEpoch && !$('sensitive-backdrop').classList.contains('hidden')) {
+          void runSensitiveCheck();
+        }
       }
     }
   }

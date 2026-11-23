@@ -433,6 +433,57 @@ test('SE-02（五-L19）：整本跑在途切范围，旧范围结果不再画�
   assert.equal(ok.state.sensitive.scope, 'book');
 });
 
+// T-15：整本预检在飞 → Esc 关面板 → 立即重开。旧回包落地时书 / 章 / 范围 / 词表四道复核全都成立，
+// 只有面板世代能拦住它 —— 修前旧快照会画回重开的面板（同场景 proofread 已由 RPAN-A-03 修过）。
+test('T-15：关过面板后旧预检回执整份丢弃，不画回重开的面板；新一轮照常落地', async () => {
+  const ctx = build({ scope: 'book' });
+  let release;
+  ctx.host.api.sensitiveCheckBook = () => new Promise((resolve) => { release = resolve; });
+  const pending = ctx.ui.runSensitiveCheck();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ctx.state.sensitiveBusy, true);
+  // 作者 Esc 关面板（closeSensitivePanel 推进面板世代），马上又点开（只把 backdrop 打开）
+  ctx.ui.closeSensitivePanel();
+  ctx.dom.map.get('sensitive-backdrop').classList.remove('hidden');
+  release({
+    total: 9, chapterCount: 2, chapterHitCount: 2, wordHitCount: 9, skippedChapters: 0,
+    byWord: [{ word: '血', count: 9 }], matches: []
+  });
+  assert.deepEqual(await pending, { ok: false, stale: true, message: '预检已取消' });
+  assert.equal(ctx.state.sensitive, null, '旧快照不许写回 state');
+  assert.equal(
+    ctx.dom.map.get('sensitive-summary').textContent,
+    '预检期间关过面板，这次结果已丢弃；请重新预检'
+  );
+  assert.equal(ctx.dom.map.get('sensitive-results').innerHTML, '', '结果列表保持清空');
+  assert.equal(ctx.state.sensitiveBusy, false);
+
+  // 关过面板后的新一轮（重开 → 重新点预检）不在旧世代里，必须照常落地
+  const reopened = build({ scope: 'book' });
+  reopened.ui.closeSensitivePanel();
+  reopened.dom.map.get('sensitive-backdrop').classList.remove('hidden');
+  const fresh = await reopened.ui.runSensitiveCheck();
+  assert.equal(fresh.stale, undefined);
+  assert.equal(reopened.state.sensitive.total, 2);
+});
+
+test('T-15：关过面板后失败回执同样不写回（不把旧书的「预检失败」顶到眼前面板）', async () => {
+  const ctx = build({ scope: 'book' });
+  let reject;
+  ctx.host.api.sensitiveCheckBook = () => new Promise((resolve, rejectFn) => { reject = rejectFn; });
+  const pending = ctx.ui.runSensitiveCheck();
+  await new Promise((resolve) => setImmediate(resolve));
+  ctx.ui.closeSensitivePanel();
+  ctx.dom.map.get('sensitive-backdrop').classList.remove('hidden');
+  reject(new Error('磁盘读不了'));
+  assert.deepEqual(await pending, { ok: false, stale: true, message: '预检已取消' });
+  assert.equal(
+    ctx.dom.map.get('sensitive-summary').textContent,
+    '预检期间关过面板，这次结果已丢弃；请重新预检'
+  );
+  assert.equal(ctx.dom.map.get('sensitive-results').innerHTML, '');
+});
+
 test('runSensitiveCheck：整本 0 命中（含跳过章节）/ 当前章 0 命中 的说明文案', async () => {
   const book = build({ scope: 'book', bookResult: { total: 0, chapterCount: 4, chapterHitCount: 0, wordHitCount: 0, skippedChapters: 3, byWord: [], matches: [] } });
   await book.ui.runSensitiveCheck();
@@ -637,6 +688,24 @@ test('静态闸门：index.html 在 renderer.js 之前加载 sensitive-ui.js，�
   assert.notEqual(at, -1);
   assert.ok(at < rendererAt);
   assert.equal(indexSrc.split('sensitive-ui.js').length - 1, 1);
+});
+
+// T-15：面板世代四件套（关面板推进 / 发起取号 / 成功路径核对 / 失败路径核对）缺一件，
+// 「关了重开」的旧回执就又能画回来 —— 行为用例可能因为某条分支没覆盖到而漏网。
+test('T-15 静态清单：关面板推进世代，成功 / 失败两条落地路径都核对', () => {
+  const closeAt = moduleSrc.indexOf('function closeSensitivePanel(');
+  const closeBody = moduleSrc.slice(closeAt, moduleSrc.indexOf('}', closeAt));
+  assert.match(closeBody, /sensitiveEpoch \+= 1/, '关面板必须推进面板世代');
+  assert.equal(moduleSrc.split('const epochAtStart = sensitiveEpoch;').length - 1, 1, '发起时取一次号');
+  assert.equal(
+    moduleSrc.split('if (epochAtStart !== sensitiveEpoch) return discardClosedSensitiveRun();').length - 1,
+    2,
+    '成功路径与 catch 各核对一次'
+  );
+  const finallyAt = moduleSrc.indexOf('if (sensitiveRerunPending) {');
+  assert.ok(finallyAt > 0);
+  const rerunBody = moduleSrc.slice(finallyAt, moduleSrc.indexOf('\n      }\n', finallyAt));
+  assert.match(rerunBody, /epochAtStart === sensitiveEpoch/, '关过面板不补跑');
 });
 
 test('静态闸门：模块不 require / 不摸 Electron·fs·网络，也不注册全局监听 / 不建定时器', () => {
