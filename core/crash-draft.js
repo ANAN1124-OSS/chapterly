@@ -97,6 +97,16 @@ function isoAt(value, clock) {
   return date.toISOString();
 }
 
+// N-14（二次审查）：渲染层给的 at 只用于排序 / 展示，绝不能被当成「现在」——未来的时间戳
+// 会让下一次 prune 把别的窗口 / 上次运行留下的草稿全判过期删掉（跨窗口的数据破坏面）。
+// 这里只夹未来侧：过去的时间戳是「这份草稿什么时候写的」，保留原值才不影响排序语义；
+// prune 的基准时间另有 store 自己的 clock()（见 writeDraft），不再读草稿自报的 at。
+function atNotAfterClock(value, clock) {
+  const base = normalizeDate(clock(), new Date());
+  const date = normalizeDate(value, base);
+  return new Date(Math.min(base.getTime(), date.getTime())).toISOString();
+}
+
 function draftIdFor(bookPath, chapterId) {
   // 「同一本书 / 同一章」的路径归一口径与 main.js / config-gate 同源（core/path-utils.js 的 pathKey），
   // 大小写 / 斜杠写法不同仍落到同一个草稿位；本模块不再手写第二份。
@@ -181,7 +191,7 @@ function sanitizeDraftInput(raw, options = {}) {
       chapterName: clipText(raw.chapterName, MAX_TITLE_CHARS),
       chapterIndex: normalizeChapterIndex(raw.chapterIndex),
       text: raw.text,
-      at: isoAt(raw.at, clock),
+      at: atNotAfterClock(raw.at, clock),
       // P2：字数只在这里算一次，写入 / 回包 / 元数据共用（旧实现 writeDraft 里算了三遍）。
       chars
     }
@@ -273,7 +283,11 @@ function createCrashDraftStore(baseDir, options = {}) {
     return path.join(dir, `${FILE_PREFIX}${draftId}${BODY_SUFFIX}`);
   }
 
-  // 原子写：临时文件 → rename；失败删临时文件并抛给调用方（调用方再转成 { ok:false }）。
+  // 原子写：临时文件 → fsync → rename；失败删临时文件并抛给调用方（调用方再转成 { ok:false }）。
+  // N-13（二次审查）：原实现是 writeFile → rename，没有 fsync；渲染进程崩溃时 OS 缓存还在、够用，
+  // 但整机断电 / 蓝屏时会出现「rename 已完成、数据块没落盘」，草稿变成空文件或半截——而草稿正是
+  // 未保存正文的唯一磁盘兜底。其它落盘（core/atomic.js、日志、配置、索引）都在 rename 前 fsync。
+  // io 是注入的（单测用假 fs）：没有 open/sync 的实现退回旧的 writeFile 路径，行为不变。
   async function writeAtomic(file, content) {
     await io.mkdir(path.dirname(file), { recursive: true });
     const tmp = path.join(
@@ -281,7 +295,17 @@ function createCrashDraftStore(baseDir, options = {}) {
       `.${path.basename(file)}.tmp-${pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     );
     try {
-      await io.writeFile(tmp, content, 'utf8');
+      if (typeof io.open === 'function') {
+        const handle = await io.open(tmp, 'w');
+        try {
+          await handle.writeFile(content, 'utf8');
+          if (typeof handle.sync === 'function') await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      } else {
+        await io.writeFile(tmp, content, 'utf8');
+      }
       await io.rename(tmp, file);
     } catch (err) {
       try {
@@ -542,7 +566,9 @@ function createCrashDraftStore(baseDir, options = {}) {
       // CGRD-01：写入前先登记元数据，prune 只需 readdir + 缓存，不再把所有草稿正文读回解析。
       metaCache.set(draftId, { at: entry.at });
       try {
-        await prune({ nowMs: Date.parse(entry.at), entries: await metaEntries() });
+        // N-14：prune 的「现在」用 store 自己的时钟，不再用这份草稿自报的 at
+        // （否则一个未来时间戳就会把其它窗口 / 上次运行的草稿全判过期删掉）。
+        await prune({ nowMs: normalizeDate(clock(), new Date()).getTime(), entries: await metaEntries() });
       } catch {
         /* 清理失败不影响这一份草稿 */
       }

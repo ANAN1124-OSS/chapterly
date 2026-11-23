@@ -568,3 +568,71 @@ test('P2：无元数据的孤儿正文在 prune 时回收；坏 JSON 的正文�
   assert.equal(names.includes('draft-cccccccccccccccc.txt'), true, '坏 JSON 的正文保留（坏文件一律不删）');
   await store.endSession();
 });
+
+// N-13（二次审查）：崩溃草稿的原子写必须「临时文件 → fsync → rename」。草稿是未保存正文的唯一
+// 磁盘兜底，整机断电时少了 fsync 的窗口里 rename 可能先落、数据块没落盘（空文件 / 半截）。
+test('N-13：writeDraft 的原子写在 rename 之前调用 fsync（正文与元数据各一次）', async () => {
+  const root = await newRoot();
+  const events = [];
+  const fsSpy = {
+    mkdir: (...args) => fsp.mkdir(...args),
+    open: async (file, flags) => {
+      const handle = await fsp.open(file, flags);
+      return {
+        writeFile: (...args) => handle.writeFile(...args),
+        sync: async () => {
+          events.push('sync');
+          return handle.sync();
+        },
+        close: async () => handle.close()
+      };
+    },
+    rename: async (...args) => {
+      events.push('rename');
+      return fsp.rename(...args);
+    },
+    readdir: (...args) => fsp.readdir(...args),
+    readFile: (...args) => fsp.readFile(...args),
+    stat: (...args) => fsp.stat(...args),
+    unlink: (...args) => fsp.unlink(...args)
+  };
+  const store = storeAt(root, { fs: fsSpy, now: () => new Date('2026-11-17T21:00:00.000Z') });
+  const result = await store.writeDraft(draft({ at: '2026-11-17T21:00:00.000Z' }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(events, ['sync', 'rename', 'sync', 'rename'], '正文与元数据都必须 sync 后再 rename');
+});
+
+test('N-13：注入的 io 没有 open/sync 时退回旧 writeFile 路径（最小桩不被新接口卡死）', async () => {
+  const root = await newRoot();
+  const store = storeAt(root, { fs: failingFs({}), now: () => new Date('2026-11-17T21:00:00.000Z') });
+  const result = await store.writeDraft(draft({ at: '2026-11-17T21:00:00.000Z' }));
+  assert.equal(result.ok, true, '没有 open 的假 fs 仍能写草稿');
+  assert.equal((await store.listDrafts()).length, 1);
+});
+
+// N-14（二次审查）：草稿自报的 at 只用于排序 / 展示，不能被当成「现在」：
+//   · at 晚于 store 时钟 → 夹到时钟（不允许写入未来时间）；
+//   · prune 的过期判定用 store 自己的 clock()，不用这份草稿的 at —— 否则一个未来时间戳就会把
+//     别的窗口 / 上次运行留下的未过期草稿整批删掉（跨窗口的数据破坏面）。
+test('N-14：未来的 at 被夹到当前时钟，不写进元数据', async () => {
+  const root = await newRoot();
+  const now = new Date('2026-11-17T21:00:00.000Z');
+  const store = storeAt(root, { now: () => now });
+  const result = await store.writeDraft(draft({ at: '2026-11-18T21:00:00.000Z' }));
+  assert.equal(result.ok, true);
+  const list = await store.listDrafts();
+  assert.equal(list[0].at, now.toISOString(), '未来时间被夹到当前时钟');
+});
+
+test('N-14：写草稿触发的 prune 用 store 时钟，未来 at 不会删掉未过期的旧草稿', async () => {
+  const root = await newRoot();
+  const now = new Date('2026-11-17T21:00:00.000Z');
+  const store = storeAt(root, { now: () => now });
+  // 一天前写的草稿（远没到 7 天过期线）
+  await store.writeDraft(draft({ chapterId: 'ch_yesterday', at: '2026-11-16T21:00:00.000Z' }));
+  // 注入一个「+8 天」的未来 at：旧实现会拿它当 now，把一天前的草稿判成过期删掉
+  const future = await store.writeDraft(draft({ chapterId: 'ch_future', at: '2026-11-25T21:00:00.000Z' }));
+  assert.equal(future.ok, true);
+  const ids = (await store.listDrafts()).map((item) => item.chapterId).sort();
+  assert.deepEqual(ids, ['ch_future', 'ch_yesterday'], '未过期的旧草稿必须还在（prune 用 store 时钟）');
+});
