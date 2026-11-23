@@ -269,6 +269,38 @@ test('打开：没打开书 / 别的弹层挡着 → 预检拦下；已开着再
     assert.equal((await uiNormal.open('正文')).code, 'ALREADY_OPEN');
   }));
 
+// T-21（三审，低）：连按两下「捕获」/ 提示条时，两次 open 会并发通过 preflight（panel.open 仍是 false），
+// 第二次补拍换到的新凭证会顶掉第一次的 → 两句 captureClipboard 都带后一张，主进程按「一次性已用」
+// 拒掉后到的那句，作者看到一条误导的「读取剪贴板失败」。opening 标志保证只补一拍、只读一次。
+test('T-21：并发打开（连按两下）只走一次补拍 / 读剪贴板，后到的回 OPENING', () =>
+  withFakeDocument(async () => {
+    const ctx = build({ clipboardText: PENDING_TEXT });
+    let releaseFlush;
+    const flushGate = new Promise((resolve) => {
+      releaseFlush = resolve;
+    });
+    let flushCalls = 0;
+    let seq = 0;
+    ctx.api.captureFlushWatch = async () => {
+      flushCalls += 1;
+      await flushGate;
+      seq += 1;
+      return { ok: true, data: { enabled: true, recorded: false, gesture: `g-${seq}` } };
+    };
+    const ui = captureUiModule.create(ctx.host);
+    const first = ui.open();
+    const second = ui.open();
+    releaseFlush();
+    const [opened, rejected] = await Promise.all([first, second]);
+    assert.equal(flushCalls, 1, '连按两下只补一拍（不会换第二张凭证顶掉第一张）');
+    assert.equal(rejected.ok, false, '后到的那次不开第二次');
+    assert.equal(rejected.code, 'OPENING');
+    assert.equal(opened.ok, true, '第一次照常打开');
+    assert.equal(ui.isOpen(), true);
+    assert.equal(ctx.log.filter((item) => item === 'api.captureClipboard').length, 1, '只读一次剪贴板');
+    assert.equal(ctx.log.filter((item) => item === 'api.captureQueueList').length, 1, '只拉一次队列');
+  }));
+
 test('WP-17（C35）：弹层清单走统一注册表——17 个 backdrop 里除自己外任一开着都拦下捕获面板', () =>
   withFakeDocument(async () => {
     const blockedLayers = backdropRegistry.LIST.filter((name) => name !== 'capture');

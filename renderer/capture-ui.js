@@ -128,6 +128,8 @@
     const refreshSeq = staleGuard.createSeq();
     const panel = {
       open: false,
+      // T-21：open() 正在进行（补拍 / 读剪贴板 / 拉队列）。挡连按重入，避免两次补拍互相顶掉凭证。
+      opening: false,
       busy: false, // 正文插入 / 新建章节 / 清空进行中：所有动作按钮 + 清空 + 取消全禁用
       position: 'end', // b11：'end'（全书末尾，默认）/ 'after-current'（当前章之后）
       queue: [], // [{ id, chars, at, previewText }] 主进程队列元数据，不含正文
@@ -402,6 +404,20 @@
     async function open(preloadedText, options = {}) {
       const blocked = preflight();
       if (blocked) return blocked;
+      // T-21（三审，低）：连按两下「捕获」按钮 / 提示条时，两次 open 会并发通过 preflight（panel.open 还是
+      // false）。第二次补拍会换到一张新凭证，把第一次的顶掉；两句 captureClipboard 都带后一张凭证，
+      // 主进程按「一次性已用」拒掉后到的那句 —— 作者看到一条误导的「读取剪贴板失败」。
+      // opening 标志挡住重入：只有第一次真正走补拍 / 读剪贴板，后到的直接回 OPENING（面板由第一次打开）。
+      if (panel.opening) return { ok: false, code: 'OPENING', message: '捕获面板正在打开' };
+      panel.opening = true;
+      try {
+        return await openPanel(preloadedText, options);
+      } finally {
+        panel.opening = false;
+      }
+    }
+
+    async function openPanel(preloadedText, options) {
       if (typeof options.beforeOpen === 'function') options.beforeOpen();
       if (typeof preloadedText === 'string') {
         if (!preloadedText.trim()) {
