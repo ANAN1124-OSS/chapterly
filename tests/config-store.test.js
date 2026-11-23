@@ -347,6 +347,28 @@ test('五-M28（CI-5）：bookDisplay 条目数有上限，超限配置按插入
   assert.equal(Object.keys(onDisk.bookDisplay).length, BOOK_DISPLAY_MAX);
 });
 
+// T-18（三次审查）：bookDisplay 满额时新书条目会被 sanitizeBookDisplay 按插入序截断在末尾，
+// 旧实现直接回 {}，调用方把空对象当「设置成功且无覆盖」。现在写盘后核对该 key 是否存活，
+// 被截断就显式抛 BOOK_DISPLAY_FULL（软错误），不再伪成功。
+test('T-18：bookDisplay 满额时 setBookDisplay 显式失败（不伪成功），已有条目照常可改', async () => {
+  const full = {};
+  for (let i = 0; i < BOOK_DISPLAY_MAX; i += 1) full[`b_${i}`] = { editorFontSize: 20 + (i % 5) };
+  const dir = await mkTmp();
+  await writeJsonAtomic(path.join(dir, 'config.json'), { bookDisplay: full });
+  const store = createConfigStore(dir);
+  await assert.rejects(
+    () => store.setBookDisplay('b_new', { editorPaper: 'night' }),
+    (err) => err && err.code === 'BOOK_DISPLAY_FULL' && /上限/.test(err.message)
+  );
+  const onDisk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.equal(onDisk.bookDisplay.b_new, undefined, '被截断的条目不能假装写进去了');
+  assert.equal(Object.keys(onDisk.bookDisplay).length, BOOK_DISPLAY_MAX, '条目数仍有界');
+  // 已有条目（不是新增、不触发截断）照常可改
+  const changed = await store.setBookDisplay('b_0', { editorPaper: 'night' });
+  assert.equal(changed.editorPaper, 'night');
+  assert.equal(JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8')).bookDisplay.b_0.editorPaper, 'night');
+});
+
 test('当前段落高亮（N10b）：默认关 + 跟随主题；旧配置缺字段照常启动', () => {
   const cfg = sanitize({});
   assert.equal(cfg.caretParagraph, false);

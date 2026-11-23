@@ -114,6 +114,35 @@ test('E25/#52：写前重试成功时，还没取走的损坏提示自动更正�
   assert.match(warning.message, /已归档为 config\.json\.corrupt-/);
 });
 
+// T-17（三次审查）：E25 的 healed 判定内部会再 load() 一次。那次 load 如果又撞上坏 JSON（外部
+// 修好 → 又变坏的三重竞态）且归档仍失败，旧实现在 ensureCorruptArchived 里无条件清 archiveFailure
+// → gateWrite 以为「已归档」，拿默认值把仍损坏的 config.json 覆盖掉。这里用计数版 readFile 精确
+// 复现「第 1 次坏 / 第 2 次好（healed 探测）/ 第 3 次又坏（复查 load）」。
+test('T-17：healed 复查又遇坏 JSON → 仍拒绝写入，损坏文件不被覆盖', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, 'config.json');
+  const corrupt = '{ 坏配置 ';
+  await fs.writeFile(file, corrupt, 'utf8');
+  let reads = 0;
+  const readFile = async () => {
+    reads += 1;
+    if (reads === 2) return JSON.stringify({ dailyGoal: 77 });
+    return corrupt;
+  };
+  const rename = async () => {
+    throw Object.assign(new Error('EPERM: 文件被占用（模拟）'), { code: 'EPERM' });
+  };
+  const store = createConfigStore(dir, { readFile, rename });
+  await store.get();
+  assert.equal(store.takeLoadWarning().archiveError, 'EPERM');
+  await assert.rejects(
+    () => store.set({ dailyGoal: 1234 }),
+    (err) => err && err.code === 'CONFIG_CORRUPT' && err.errorCode === 'EPERM'
+  );
+  assert.equal(reads, 3, '前置：healed 探测读到好文件、复查 load 又读到坏文件');
+  assert.equal(await fs.readFile(file, 'utf8'), corrupt, '仍损坏的原文件一个字节都不能被默认值覆盖');
+});
+
 // 审计残留修复 R28（#52/E25）：主进程启动时以前直接 takeLoadWarning 取走提示，store 里那份
 // 「写前重试成功 → 自动更正」的提示再没人读 —— 界面拿到的是启动那一刻的旧文案（归档失败已过期）。
 // 现在主进程用 peekLoadWarning 只记日志、提示留在 store 里，由 app:warning 取当前值。

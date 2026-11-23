@@ -693,18 +693,15 @@ function createConfigStore(userDataDir, deps = {}) {
     return copy;
   }
 
-  // 审计残留修复 #52（E25）：写前重试归档之前，先确认原处还是不是「那份损坏文件」。
-  // 返回 true = 原文件已经不在了、或已经被外部修成合法配置（两种情况都不该再归档、也不再拒绝写入）：
-  //   · 文件被删（ENOENT）：归档这件事已无意义，清标记放行（旧实现让本会话此后拒绝一切写入到重启）；
-  //   · 文件被修好（能解析）：不能改名成 .corrupt-*（旧实现会把用户刚修好的配置归档掉）——
-  //     重新 load 一次（成功路径会清 archiveFailure 与过期提示），写盘按磁盘上的真配置合并。
-  // 读失败（EACCES / EIO…）或仍解析不了 = false：继续走归档重试，仍失败就拒绝写盘。
+  // 返回值：'gone' = 文件已被删（归档无意义，清标记放行）；'healed' = 文件已被外部修成合法配置
+  // （不归档，写盘按磁盘上的真配置合并）；false = 读失败或仍是坏文件（继续归档重试）。
+  // T-17：'gone' 与 'healed' 必须分开 —— 前者不需要再 load，后者内部会再 load 一次（可能又失败）。
   async function archiveTargetGoneOrHealed() {
     let raw;
     try {
       raw = await readJson(file, 'utf8');
     } catch (err) {
-      if (err && err.code === 'ENOENT') return true;
+      if (err && err.code === 'ENOENT') return 'gone';
       return false;
     }
     try {
@@ -713,7 +710,7 @@ function createConfigStore(userDataDir, deps = {}) {
       return false; // 还是那份坏文件
     }
     await load();
-    return true;
+    return 'healed';
   }
 
   // 审计修复 #52（E25）：「损坏文件归档失败」的写前再试。成功就把失败标记清掉（损坏文件已改名，
@@ -722,9 +719,26 @@ function createConfigStore(userDataDir, deps = {}) {
   // 审计残留修复 #52（E25）：再试之前先看文件还在不在 / 有没有被外部修好（见 archiveTargetGoneOrHealed）。
   async function ensureCorruptArchived() {
     if (!archiveFailure) return;
-    if (await archiveTargetGoneOrHealed()) {
+    const archiveTarget = await archiveTargetGoneOrHealed();
+    if (archiveTarget === 'gone') {
+      // 文件被外部删除：归档这件事已无意义，清标记放行（旧实现让本会话此后拒绝一切写入到重启）。
       archiveFailure = null;
       return;
+    }
+    if (archiveTarget === 'healed') {
+      // T-17（三次审查）：healed 判定内部会再 `await load()` 一次。那次 load 如果又撞上坏 JSON
+      // （外部修好 → 又变坏的三重竞态），`archiveFailure` 会被重新置位；旧实现在这里**无条件**
+      // 清标记，控制流回到 gateWrite 就以为「已归档」，拿默认值把仍损坏的 config.json 覆盖掉——
+      // 正是 E25 承诺绝不发生的事。放行前复查现值：
+      //   · 两个失败标记都为空 = 真恢复了 → 清标记放行；
+      //   · readFailure 重新出现 = 那次 load 读失败，不能把可能健康的文件归档掉 → 交给 gateWrite
+      //     的读失败分支（自动写拒绝、显式写先重试读）；
+      //   · 只剩 archiveFailure = 刚又归档失败 → 继续走下面的归档重试（仍失败就拒绝写入）。
+      if (!readFailure && !archiveFailure) {
+        archiveFailure = null;
+        return;
+      }
+      if (readFailure) return;
     }
     const { archived, errorCode } = await archiveCorruptConfig();
     // 竞态：检查之后、rename 之前文件被删。源文件都不在了，归档已无意义 → 放行写入
@@ -843,6 +857,17 @@ function createConfigStore(userDataDir, deps = {}) {
       const next = sanitize({ ...cfg, bookDisplay });
       await writeJson(file, next);
       cache = next;
+      // T-18（三次审查）：bookDisplay 有 BOOK_DISPLAY_MAX 条上限（sanitizeBookDisplay 按插入序
+      // 截断）。满额时新书的条目被截断在末尾，旧实现直接回 {}，调用方把空对象当「设置成功且无
+      // 覆盖」。写盘后核对该 key 是否真的存活：被截断就显式返回失败（软错误），不再伪成功。
+      if (Object.keys(merged).length && !cache.bookDisplay[key]) {
+        const err = new Error(
+          `按书显示设置的条目已达上限（${BOOK_DISPLAY_MAX} 本），这本书的设置没有保存；` +
+            '可以先清理不再打开的书的显示覆盖后重试。'
+        );
+        err.code = 'BOOK_DISPLAY_FULL';
+        throw err;
+      }
       return { ...(cache.bookDisplay[key] || {}) };
     });
   }
