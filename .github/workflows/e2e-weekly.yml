@@ -57,27 +57,40 @@ jobs:
       - name: 安装依赖（含 Electron 二进制：E2E 要真实窗口）
         run: pnpm install --frozen-lockfile
 
-      # REPO-03（发版 2.1.0 发现）：setup-node 的 pnpm store 缓存命中时，pnpm install 直接从 store
-      # 解压 electron，**不会**把 electron-vX.zip 落到 %LOCALAPPDATA%\electron\Cache；而 supply-chain
-      # 闸门要求清单里能找到 zip，于是「pnpm 缓存命中 + electron 缓存未命中」这一组合下首次运行必红
-      # （2026-11-23 00:56 的 e2e-weekly 就是这条）。
-      # 为什么不用「删 dist 重跑 electron 安装脚本」：pnpm 的 node_modules\electron 是指向 store 的
-      # 符号链接，PowerShell 递归删除删不掉真实 dist，install.js 见 dist 在就直接返回、zip 永远不下载
-      # （2026-11-23 09:05 的手动验证就是这么红的）。所以这里直接从官方 Release 取 zip 放进缓存，
-      # 来源是否可信仍由下一步的 supply-chain-check 用内置 SHASUMS256 判定——闸门本身一字未放宽。
-      - name: 确保 Electron 压缩包在缓存里（pnpm store 命中时补下载）
+      # REPO-03（发版 2.1.0 发现）：CI 上 electron 的安装脚本没有真正产出二进制——
+      # `node_modules\electron\dist\electron.exe` 不存在，zip 也不会落到 %LOCALAPPDATA%\electron\Cache，
+      # 于是 supply-chain 闸门报「缓存里没有 zip」或「找不到 electron.exe」。
+      # 踩过的两条弯路（都实测红）：
+      #   ①「删 dist 重跑 node node_modules/electron/install.js」——pnpm 的 node_modules\electron 是符号
+      #     链接，PowerShell 删不掉真实 dist，install.js 见 dist 在就返回；
+      #   ②「只下载 zip 进缓存」——zip 有了但 dist 仍缺，闸门的 dist 比对照样红。
+      # 现在一次做全：zip 缺失则从官方 Release 取；dist 缺 electron.exe 则用该 zip 解压；补齐 path.txt。
+      # 来源可信与否仍由下一步 supply-chain-check 用内置官方 SHASUMS256 + zip↔dist 逐字节比对判定。
+      - name: 确保 Electron 二进制就位（zip 缓存 + dist 解压 + path.txt）
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).devDependencies.electron
-          $zip = Join-Path $env:LOCALAPPDATA "electron\Cache\electron-v$version-win32-x64.zip"
-          if (Test-Path $zip) { Write-Host "已在缓存：$zip"; exit 0 }
-          Write-Host "缓存里没有 zip（pnpm store 命中时不会下载），从官方 Release 取一份。"
-          $dir = Split-Path $zip
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $url = "https://github.com/electron/electron/releases/download/v$version/electron-v$version-win32-x64.zip"
-          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-          if (-not (Test-Path $zip)) { throw "Electron 压缩包下载失败：$url" }
-          Write-Host "已补下载：$zip（来源校验交给下一步 supply-chain-check）"
+          $cache = Join-Path $env:LOCALAPPDATA 'electron\Cache'
+          $zip = Join-Path $cache "electron-v$version-win32-x64.zip"
+          $pkg = 'node_modules\electron'
+          $dist = Join-Path $pkg 'dist'
+          $exe = Join-Path $dist 'electron.exe'
+          if (-not (Test-Path $zip)) {
+            Write-Host "缓存里没有 zip，从官方 Release 取一份。"
+            New-Item -ItemType Directory -Force -Path $cache | Out-Null
+            $url = "https://github.com/electron/electron/releases/download/v$version/electron-v$version-win32-x64.zip"
+            Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          }
+          if (-not (Test-Path $exe)) {
+            Write-Host "dist 里没有 electron.exe（安装脚本没产出），用已下载的 zip 解压。"
+            if (Test-Path $dist) { Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue }
+            New-Item -ItemType Directory -Force -Path $dist | Out-Null
+            Expand-Archive -Path $zip -DestinationPath $dist -Force
+          }
+          $pathTxt = Join-Path $pkg 'path.txt'
+          if (-not (Test-Path $pathTxt)) { Set-Content -Path $pathTxt -Value 'electron.exe' -NoNewline -Encoding ascii }
+          if (-not (Test-Path $exe)) { throw "electron.exe 仍缺失：$exe" }
+          Write-Host "Electron 就位：$exe"
 
       # WP15 / 审计 E1=O-N2：官方 SHASUMS256.txt 已随仓库入库，这里在跑 E2E 前先核对刚下载的
       # Electron 二进制。镜像被替换 / 构建机被投毒时这一步直接红，不给「坏二进制先跑半小时 E2E」。
