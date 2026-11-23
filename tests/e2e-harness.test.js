@@ -74,7 +74,7 @@ test('harness.checkVisual：默认等价于 check；skipVisual 时记 skipped �
   const ci = makeHarness({ skipVisual: true }).harness;
   const before = ci.checks.length;
   assert.equal(ci.checkVisual('动效-书架：书卡时长 = --motion-quick', false, { got: '0s' }), true);
-  assert.equal(ci.checks.length, before + 1, '跳过的条目仍计入总数（E2E 计数锚点 1916 不变）');
+  assert.equal(ci.checks.length, before + 1, '跳过的条目仍计入总数（E2E 计数锚点 1922 不变）');
   assert.deepEqual(ci.checks[ci.checks.length - 1], {
     name: '动效-书架：书卡时长 = --motion-quick',
     ok: true,
