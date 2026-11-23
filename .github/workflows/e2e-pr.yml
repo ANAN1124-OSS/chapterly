@@ -140,6 +140,11 @@ jobs:
           # 测量）在 CI 跳过（运行时展开 50 项）；功能与供应链断言仍全部阻塞。跳过面由
           # scripts/e2e/visual-assertions.js 的静态清单约束（wiring-check 的 e2e-visual-assertions 契约）。
           E2E_SKIP_VISUAL: '1'
+          # T-25 现场上传：artifact 的路径是 ${{ runner.temp }}/cw-e2e-*，而 Node 的 os.tmpdir() 在
+          # hosted Windows runner 上默认解析到 C:\Users\...\AppData\Local\Temp（≠ RUNNER_TEMP），
+          # 两处对不上时上传会「No files were found」。把 TEMP/TMP 指到 runner.temp，失败现场才传得上去。
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
 
       # T-25（三次审查 · 低）：hosted runner 用后即毁，E2E 失败时只留一行临时目录路径等于没法排查。
       # 失败时把本次 E2E 的临时目录（userdata 日志 / 演练书库）传成 artifact；数据全是自造的，无泄露面。

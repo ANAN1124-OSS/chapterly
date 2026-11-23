@@ -110,6 +110,10 @@ jobs:
           # 功能断言与供应链闸门仍全部阻塞。跳过面由 scripts/e2e/visual-assertions.js 的静态清单约束
           # （wiring-check 的 e2e-visual-assertions 契约）：不许把功能断言挪进 checkVisual 换绿灯。
           E2E_SKIP_VISUAL: '1'
+          # T-25 现场上传：artifact 路径是 ${{ runner.temp }}/cw-e2e-*，Node os.tmpdir() 默认却在
+          # C:\Users\...\AppData\Local\Temp（≠ RUNNER_TEMP）；指到 runner.temp 才能真的上传失败现场。
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
 
       # T-25（三次审查 · 低）：定时任务失败时 hosted runner 也会销毁，只有一行临时目录路径没法诊断。
       # 失败时把本次 E2E 的临时目录（userdata 日志 / 演练书库）传成 artifact；数据全是自造的。
