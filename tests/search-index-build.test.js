@@ -753,3 +753,49 @@ test('五-M27（CI-1）：ensure 在途时才标脏的书，ensure 结束后搜�
   assert.ok(found.results.length >= 1, '刚保存的内容不许在复用窗口里静默漏报');
   assert.equal(store.dirtyList().length, 0, '搜索前的那趟校验要消费掉脏标记');
 });
+
+// T-12（三次审查）：buildBookEntry 读书目瞬时失败（网络盘 / 同步盘 EBUSY）时，旧实现会无条件删掉
+// 旧 entry + 脏标记：这本书静默掉出索引、刚保存触发的脏标记被吞、变更不落盘（60 秒内完全搜不到）。
+// 现在要保留旧 entry（降级成无位图候选，只降速不漏报）、保留脏标记、计 changed 让降级落盘，恢复后自愈。
+test('正文索引（T-12）：读书目瞬时失败保留旧 entry（无位图候选）与脏标记，恢复后自愈', async () => {
+  const base = await mkTmp();
+  const { userData, booksRoot } = await makeWorld(base);
+  const { bookPath, meta } = await makeBook(booksRoot, '瞬时失败书', '瞬时失败书', [
+    { name: '章一', text: '旧车站的雨伞是灰色的。' }
+  ]);
+  const store = makeStore(userData);
+  await store.ensure({ booksRoot });
+  assert.equal((await store.status()).books, 1);
+
+  // 改正文 + 标脏（模拟保存），然后让「读书目」这一趟瞬时失败
+  await fs.writeFile(path.join(bookPath, meta.chapters[0].file), '旧车站的雨伞是青柠色的。', 'utf8');
+  store.markDirty(bookPath);
+  const storage = require('../core/storage');
+  const original = storage.readBookMeta;
+  storage.readBookMeta = async () => {
+    throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+  };
+  let failed;
+  try {
+    failed = await store.ensure({ booksRoot });
+  } finally {
+    storage.readBookMeta = original;
+  }
+
+  assert.equal(failed.books, 1, '瞬时失败不许把书从索引里删掉');
+  assert.equal(failed.lastRun.changed, true, '失败这一趟必须计 changed（降级要落盘）');
+  const onDisk = JSON.parse(await fs.readFile(path.join(userData, search.INDEX_FILE_NAME), 'utf8'));
+  const entry = onDisk.books.find((book) => book.folder === '瞬时失败书');
+  assert.ok(entry, '盘面索引里这本书仍要在');
+  assert.equal(entry.bloom, '', '瞬时失败后这本书降级成「无位图候选」（只降速不漏报）');
+  assert.equal(entry.bloomOmitted, false, '不是「主动放弃位图」的粘性结论（恢复后要能重建回来）');
+
+  // 恢复后下一次 ensure 自愈：位图回来，新内容立刻可搜到
+  const healed = await store.ensure({ booksRoot });
+  assert.ok(healed.lastRun.rebuiltBooks >= 1, '恢复后这本书要重建');
+  const healedIndex = JSON.parse(await fs.readFile(path.join(userData, search.INDEX_FILE_NAME), 'utf8'));
+  assert.ok(healedIndex.books.find((book) => book.folder === '瞬时失败书').bloom, '位图重建回来');
+  const hit = await store.search({ booksRoot, query: '青柠' });
+  assert.equal(hit.results.length, 1, '恢复后新内容立刻可搜（不漏报）');
+});
+

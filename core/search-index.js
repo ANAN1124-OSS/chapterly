@@ -1204,12 +1204,24 @@ function createSearchStore(options = {}) {
         built = null; // 单本书异常不能拖垮整个索引
       }
       doneBooks += 1;
-      previous.delete(key);
-      dirtyBooks.delete(key);
       if (!built) {
-        // 没有书目 / 读不出来：不索引这本书（书卡在书架上仍会显示损坏提示）
+        // T-12（三次审查）：读书目瞬时失败（网络盘 / 同步盘 EBUSY）时旧实现无条件 `previous.delete`
+        // + `dirtyBooks.delete`：这本书静默掉出索引、刚保存触发的脏标记被吞、变更也不落盘——
+        // 60 秒内该书完全搜不到，脏集清空还会重开复用窗口。现在：
+        //   · 旧 entry 留在索引里，但清掉位图 —— 没有位图的书搜索永远当候选、逐章核对，
+        //     只降速不漏报（本模块的核心不变量）；
+        //   · 脏标记保留 → 下一次 ensure 仍会重建这本书；
+        //   · 计 run.changed → 这次降级要落盘，内存与盘面不分叉。
+        if (old) {
+          // 与「章节读不了」同一口径（buildBookEntry 的 missingText 分支）：空位图、bloomOmitted 保持
+          // false（不是「主动放弃」的粘性结论），下一次能读书目时自然会重建位图。
+          nextBooks.push({ ...old, bloom: '', bloomBits: 0, bloomCrc: 0, bloomOmitted: false, bloomDropped: false });
+        }
+        run.changed = true;
         continue;
       }
+      previous.delete(key);
+      dirtyBooks.delete(key);
       // 只有真的整本复核过才记账；单章信封变化时只更新那一章，不算整本复核（下次到期仍复核）。
       if (recheckHashes) hashCheckedAt.set(key, nowMs());
       const entry = built.entry;
