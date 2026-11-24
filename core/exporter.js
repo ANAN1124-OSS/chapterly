@@ -489,7 +489,6 @@ module.exports = {
   buildTxtExport,
   streamTxtExport,
   // PERF-EXP-01：有界读预取（TXT 流式内部用；EPUB / DOCX 的 chunks 生成器由 ipc/export 包一层）
-  EXPORT_PREFETCH_CHAPTERS,
   createPrefetchReader,
   convertTextsInPlace,
   releaseTexts,
