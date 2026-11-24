@@ -344,6 +344,8 @@ test('R8 TOOL-A02：发版门禁（不带 --zip）核对 dist 与缓存 zip 的 
   await fs.mkdir(distDir, { recursive: true });
   const distFile = path.join(distDir, binaryName);
   await fs.writeFile(distFile, payload);
+  // CI-F1 之后发版路径还核对 dist 全目录清单：假 zip 里有 version，dist 也要有，否则条目数对不上。
+  await fs.writeFile(path.join(distDir, 'version'), installed);
   const manifest = path.join(dir, 'SHASUMS256.txt');
   await fs.writeFile(manifest, `${sha256(zipBytes)}  ${artifact}\n`);
 
@@ -360,6 +362,20 @@ test('R8 TOOL-A02：发版门禁（不带 --zip）核对 dist 与缓存 zip 的 
   const ok = await supply.run(['--shasums', manifest, '--version', installed], io);
   assert.equal(ok, 0, stderr.join('\n'));
   assert.ok(stdout.some((line) => line.includes('内容一致')), stdout.join('\n'));
+  assert.ok(stdout.some((line) => line.includes('全目录') || line.includes('逐条一致')), stdout.join('\n'));
+
+  // CI-F1 集成负控：只改 dist 里的非 electron.exe 文件（version）—— 单文件判据看不出来，
+  // dist 全目录判据必须拦住，且点名「全目录」不一致。
+  await fs.writeFile(path.join(distDir, 'version'), 'not-the-installed-version');
+  stdout.length = 0;
+  stderr.length = 0;
+  const treeBad = await supply.run(['--shasums', manifest, '--version', installed], io);
+  assert.equal(treeBad, 1, stderr.join('\n'));
+  assert.ok(
+    stderr.some((line) => line.includes('全目录') && line.includes('不一致')),
+    stderr.join('\n')
+  );
+  await fs.writeFile(path.join(distDir, 'version'), installed);
 
   // dist 被换（zip 仍是官方那份）：门禁必须拦住，且点名 dist 与 zip 不一致。
   await fs.writeFile(distFile, 'tampered-binary');
@@ -388,6 +404,67 @@ test('R8 TOOL-A02：发版门禁（不带 --zip）核对 dist 与缓存 zip 的 
     io2
   );
   assert.equal(explicit, 0, stderr2.join('\n'));
+});
+
+// CI-F1（2026-11-24 复核补审）：发版路径不只核 electron.exe —— dist 里每个文件都要与缓存 zip
+// 的同名条目对上（条目数相等 + size + CRC32）。多 / 少 / 被改三条负控，全部走真临时 zip 与目录。
+test('CI-F1：dist 全目录清单与 zip 逐条比对（全对通过，多 / 少 / 被改都红）', async () => {
+  const payloads = [
+    { name: 'electron.exe', data: 'fake-binary-for-tree' },
+    { name: 'locales/en-US.pak', data: 'fake-pak' },
+    { name: 'resources/default_app.asar', data: 'fake-asar' },
+    { name: 'version', data: '45.1.0' }
+  ];
+  const zipBytes = await buildZip(payloads);
+  const dir = await mkTmp('cw-supply-tree-');
+  const zipPath = path.join(dir, 'electron-v45.1.0-win32-x64.zip');
+  await fs.writeFile(zipPath, zipBytes);
+  const distDir = path.join(dir, 'dist');
+  for (const entry of payloads) {
+    const full = path.join(distDir, entry.name);
+    await fs.mkdir(path.dirname(full), { recursive: true });
+    await fs.writeFile(full, entry.data);
+  }
+
+  const ok = await logic.verifyDistTreeAgainstZip({ zipPath, distDir });
+  assert.equal(ok.ok, true, ok.message);
+  assert.equal(ok.files, 4, '四个文件全部核对');
+  assert.match(ok.message, /4 个文件/);
+
+  // 多：dist 里多一个 zip 没有的文件
+  await fs.writeFile(path.join(distDir, 'extra.dll'), 'extra');
+  const extra = await logic.verifyDistTreeAgainstZip({ zipPath, distDir });
+  assert.equal(extra.ok, false);
+  assert.equal(extra.code, 'DIST_TREE_MISMATCH');
+  assert.match(extra.message, /dist 多出/);
+  assert.match(extra.message, /extra\.dll/);
+  await fs.rm(path.join(distDir, 'extra.dll'));
+
+  // 少：dist 缺一个 zip 有的文件
+  await fs.rm(path.join(distDir, 'version'));
+  const missing = await logic.verifyDistTreeAgainstZip({ zipPath, distDir });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, 'DIST_TREE_MISMATCH');
+  assert.match(missing.message, /dist 缺少/);
+  assert.match(missing.message, /version/);
+  await fs.writeFile(path.join(distDir, 'version'), '45.1.0');
+
+  // 被改：大小不变、内容变了（CRC32 必须抓到）
+  await fs.writeFile(path.join(distDir, 'locales', 'en-US.pak'), 'fake-PAK');
+  const tampered = await logic.verifyDistTreeAgainstZip({ zipPath, distDir });
+  assert.equal(tampered.ok, false);
+  assert.equal(tampered.code, 'DIST_CRC_MISMATCH');
+  assert.match(tampered.message, /en-US\.pak/);
+  await fs.writeFile(path.join(distDir, 'locales', 'en-US.pak'), 'fake-pak');
+
+  // 修好 → 绿；不是 zip → ZIP_INVALID（不静默跳过）
+  const fixed = await logic.verifyDistTreeAgainstZip({ zipPath, distDir });
+  assert.equal(fixed.ok, true, fixed.message);
+  const badZip = path.join(dir, 'not-a-zip.zip');
+  await fs.writeFile(badZip, 'not a zip');
+  const invalid = await logic.verifyDistTreeAgainstZip({ zipPath: badZip, distDir });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, 'ZIP_INVALID');
 });
 
 // R7（M-N3 复核缺口）：发版门禁不能只活在文档里——npm 生命周期 pre 脚本把校验接成打包前置门禁。

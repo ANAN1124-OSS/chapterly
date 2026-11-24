@@ -203,8 +203,9 @@ function crc32OfBuffer(buffer) {
   return crc32Update(0, buffer);
 }
 
-// 从 zip 中央目录读一个条目的 { crc32, size }。找不到 / 不是 zip 都抛带 code 的错误。
-async function readZipEntryMeta(zipPath, entryName) {
+// 从 zip 中央目录读出全部条目：name → { crc32, size }（目录条目以 '/' 结尾，保留在结果里，
+// 由调用方决定是否忽略）。readZipEntryMeta 与 CI-F1 的 dist 全目录核对共用这一份解析。
+async function readCentralEntries(zipPath) {
   const handle = await fsp.open(zipPath, 'r');
   try {
     const stat = await handle.stat();
@@ -229,7 +230,7 @@ async function readZipEntryMeta(zipPath, entryName) {
     }
     const cd = Buffer.alloc(cdSize);
     await handle.read(cd, 0, cdSize, cdOffset);
-    const wanted = String(entryName).replace(/\\/g, '/');
+    const out = new Map();
     let at = 0;
     for (let index = 0; index < entries && at + 46 <= cd.length; index += 1) {
       if (cd.readUInt32LE(at) !== CENTRAL_SIGNATURE) {
@@ -241,13 +242,21 @@ async function readZipEntryMeta(zipPath, entryName) {
       const extraLen = cd.readUInt16LE(at + 30);
       const commentLen = cd.readUInt16LE(at + 32);
       const name = cd.slice(at + 46, at + 46 + nameLen).toString('utf8');
-      if (name === wanted) return { crc32: crc >>> 0, size: uncompressed };
+      if (!out.has(name)) out.set(name, { crc32: crc >>> 0, size: uncompressed });
       at += 46 + nameLen + extraLen + commentLen;
     }
-    return null;
+    return out;
   } finally {
     await handle.close();
   }
+}
+
+// 从 zip 中央目录读一个条目的 { crc32, size }。找不到返回 null；不是 zip / 条目损坏抛带 code 的错误。
+async function readZipEntryMeta(zipPath, entryName) {
+  const wanted = String(entryName).replace(/\\/g, '/');
+  const entries = await readCentralEntries(zipPath);
+  const found = entries.get(wanted);
+  return found ? { crc32: found.crc32, size: found.size } : null;
 }
 
 async function crc32OfFile(filePath) {
@@ -330,6 +339,124 @@ async function verifyDistAgainstZip({
   };
 }
 
+// CI-F1（2026-11-24 复核补审）：上面的单文件核对只保证 electron.exe 没被换 —— dist 里的
+// resources / locales / icudtl.dat 等其余文件（打包同样会带走）不在核对范围。发版路径再补一层
+// 「dist 全目录 == zip 全部文件条目」：条目数不齐即红；每个文件比 size + CRC32。仍然不解压、
+// 不联网，数据只来自已通过 SHA-256 校验的那份 zip。
+//
+// 列出 dist 下全部普通文件（相对路径统一用 '/'，排序后返回）。目录递归；符号链接等非普通文件
+// 跳过（zip 里不会有，防跟随链接读到库外）。
+async function listDistFiles(distDir, { readdir = (dir) => fsp.readdir(dir, { withFileTypes: true }) } = {}) {
+  const out = [];
+  const walk = async (dir, prefix) => {
+    const entries = await readdir(dir);
+    for (const entry of entries) {
+      const name = entry.name;
+      const rel = prefix ? `${prefix}/${name}` : name;
+      if (entry.isDirectory()) await walk(path.join(dir, name), rel);
+      else if (entry.isFile()) out.push(rel);
+    }
+  };
+  await walk(String(distDir), '');
+  out.sort();
+  return out;
+}
+
+async function verifyDistTreeAgainstZip({
+  zipPath,
+  distDir,
+  listFiles = listDistFiles,
+  statFile = (file) => fsp.stat(file),
+  crc32File = crc32OfFile,
+  readEntries = readCentralEntries
+} = {}) {
+  const zip = String(zipPath == null ? '' : zipPath).trim();
+  const dist = String(distDir == null ? '' : distDir).trim();
+  if (!zip) return { ok: false, code: 'NO_ARTIFACT', message: '没有给出缓存 zip 路径' };
+  if (!dist) return { ok: false, code: 'DIST_MISSING', message: '没有给出 dist 目录' };
+  let entries;
+  try {
+    entries = await readEntries(zip);
+  } catch (err) {
+    const reason = (err && (err.code || err.message)) || '未知错误';
+    return { ok: false, code: 'ZIP_INVALID', message: `读不了缓存 zip 的中央目录（${reason}）` };
+  }
+  const zipFiles = new Map();
+  for (const [name, meta] of entries) {
+    if (!name.endsWith('/')) zipFiles.set(name, meta); // 目录条目不算文件
+  }
+  let files;
+  try {
+    files = await listFiles(dist);
+  } catch (err) {
+    const reason = (err && (err.code || err.message)) || '未知错误';
+    return { ok: false, code: 'DIST_MISSING', message: `读不了打包要用的 dist 目录（${reason}）：先重新安装依赖` };
+  }
+  if (!files.length) {
+    return { ok: false, code: 'DIST_MISSING', message: 'dist 目录里一个文件都没有：解压失败，先重新安装依赖' };
+  }
+  const distFiles = new Set(files);
+  const onlyDist = files.filter((name) => !zipFiles.has(name));
+  const onlyZip = Array.from(zipFiles.keys()).filter((name) => !distFiles.has(name));
+  if (onlyDist.length || onlyZip.length) {
+    const sample = (list, label) =>
+      `${label}：${list.slice(0, 5).join('、')}${list.length > 5 ? ` 等 ${list.length} 个` : ''}`;
+    const parts = [];
+    if (onlyDist.length) parts.push(sample(onlyDist, 'dist 多出'));
+    if (onlyZip.length) parts.push(sample(onlyZip, 'dist 缺少'));
+    return {
+      ok: false,
+      code: 'DIST_TREE_MISMATCH',
+      message:
+        `dist 的 ${files.length} 个文件与缓存 zip 的 ${zipFiles.size} 个文件条目对不上（${parts.join('；')}）：` +
+        'dist 不是从这份已校验的 zip 完整解出来的',
+      onlyDist,
+      onlyZip
+    };
+  }
+  for (const name of files) {
+    const full = path.join(dist, name);
+    const entry = zipFiles.get(name);
+    let size = null;
+    try {
+      const stat = await statFile(full);
+      size = Number(stat && stat.size);
+    } catch (err) {
+      const reason = (err && (err.code || err.message)) || '未知错误';
+      return { ok: false, code: 'DIST_READ_FAILED', message: `读不了 dist 里的 ${name}（${reason}）` };
+    }
+    if (size !== entry.size) {
+      return {
+        ok: false,
+        code: 'DIST_SIZE_MISMATCH',
+        message: `dist 里的 ${name} 大小 ${size} 与 zip 条目的 ${entry.size} 不一致：dist 不是从这份已校验的 zip 解出来的`
+      };
+    }
+    let actual;
+    try {
+      actual = await crc32File(full);
+    } catch (err) {
+      const reason = (err && (err.code || err.message)) || '未知错误';
+      return { ok: false, code: 'DIST_READ_FAILED', message: `读不了 dist 里的 ${name}（${reason}）` };
+    }
+    if ((actual >>> 0) !== (entry.crc32 >>> 0)) {
+      return {
+        ok: false,
+        code: 'DIST_CRC_MISMATCH',
+        message:
+          `dist 里的 ${name} 的 CRC32 与 zip 条目不一致` +
+          `（期望 ${(entry.crc32 >>> 0).toString(16)}，实际 ${(actual >>> 0).toString(16)}）：文件被替换 / 解压不完整`
+      };
+    }
+  }
+  return {
+    ok: true,
+    code: 'OK',
+    files: files.length,
+    message: `dist 的 ${files.length} 个文件与缓存 zip 逐条一致（条目数相等，size + CRC32）`
+  };
+}
+
 // 把「镜像从哪来」如实列出来：镜像只是加速，不是来源证明（README 构建供应链一节同口径）。
 function mirrorSources({ npmrcText = '', packageJson = null } = {}) {
   const sources = [];
@@ -357,7 +484,10 @@ module.exports = {
   verifyArtifact,
   crc32OfBuffer,
   readZipEntryMeta,
+  readCentralEntries,
   crc32OfFile,
   verifyDistAgainstZip,
+  listDistFiles,
+  verifyDistTreeAgainstZip,
   mirrorSources
 };

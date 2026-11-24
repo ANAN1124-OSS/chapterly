@@ -127,6 +127,22 @@ async function run(argv, io = {}) {
       return 1;
     }
     out(`[供应链闸门] ${verdict.message}`);
+
+    // CI-F1（2026-11-24 复核补审）：单文件核对只覆盖 electron.exe；打包会把 dist 整个目录带走，
+    // resources / locales / *.pak / *.dll 被换掉时上面照样通过。发版路径再把「dist 全目录」与
+    // 已校验 zip 的全部文件条目逐条比对：条目数不齐即红，每个文件比 size + CRC32。
+    const verifyDistTree =
+      typeof io.verifyDistTreeAgainstZip === 'function' ? io.verifyDistTreeAgainstZip : logic.verifyDistTreeAgainstZip;
+    const treeVerdict = await verifyDistTree({
+      zipPath,
+      distDir: path.join(root, 'node_modules', 'electron', 'dist')
+    });
+    if (!treeVerdict || treeVerdict.ok !== true) {
+      fail(`[供应链闸门] dist 全目录清单与缓存 zip 不一致：${(treeVerdict && treeVerdict.message) || '未知原因'}`);
+      fail('[供应链闸门] 先清缓存重新 pnpm install（让 dist 从已校验的 zip 完整解压），再跑本命令。');
+      return 1;
+    }
+    out(`[供应链闸门] ${treeVerdict.message}`);
   }
   out('[供应链闸门] 通过：Electron 二进制与内置官方清单一致；本命令不发版、不打包。');
   return 0;
