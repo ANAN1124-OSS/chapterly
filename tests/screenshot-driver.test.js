@@ -517,3 +517,30 @@ test('静态闸门：打包配置不含 scripts/，所以驱动不会进安装�
   }
   // 驱动里没有任何顶层可执行逻辑：上面已经 require 过它，没有副作用（不会退出应用 / 建窗口）
 });
+
+// CI-F8（2026-11-24 复核补审）：--dialog 摆姿从 run() 的 500+ 行 if/else 链拆成独立函数表。
+// 这里钉：表可枚举且冻结、旧状态名都在、run() 不再长回链式判断、摆姿统一走 env.exec / env.sleep。
+test('CI-F8：--dialog 摆姿表独立成模块，run() 只留驱动主干', () => {
+  const poses = require('../scripts/screenshot-dialog-poses');
+  assert.equal(Object.isFrozen(poses.DIALOG_POSES), true, '摆姿表要冻结（防止运行期被改）');
+  assert.ok(
+    poses.DIALOG_POSE_NAMES.length >= 44,
+    `摆姿表至少 44 项（实际 ${poses.DIALOG_POSE_NAMES.length}）`
+  );
+  for (const name of [
+    'command', 'command-search', 'settings', 'settings-book', 'settings-snapshot', 'settings-ia-search',
+    'settings-ia-empty', 'bookmenu', 'history', 'marks', 'marks-menu', 'reading', 'shelf-search'
+  ]) {
+    assert.ok(poses.DIALOG_POSE_NAMES.includes(name), `缺少摆姿 ${name}`);
+  }
+  for (const name of poses.DIALOG_POSE_NAMES) {
+    assert.equal(typeof poses.DIALOG_POSES[name], 'function', `${name} 必须是函数`);
+  }
+  const driver = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'screenshot-driver.js'), 'utf8');
+  assert.match(driver, /require\('\.\/screenshot-dialog-poses'\)/, '驱动要消费拆出来的摆姿表');
+  assert.equal(/screenshotDialog ===/.test(driver), false, 'run() 不许再长回 if/else 链');
+  assert.ok(driver.split('\n').length < 500, `驱动主文件要明显变短（实测 ${driver.split('\n').length} 行）`);
+  const poseSource = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'screenshot-dialog-poses.js'), 'utf8');
+  assert.equal(/screenshotDialog/.test(poseSource), false, '摆姿表不依赖外部变量名（dialog 由 applyDialogPose 传入）');
+  assert.equal(/await (exec|sleep|argValue|waitForRenderer)\(/.test(poseSource), false, '摆姿统一走 env.*');
+});
