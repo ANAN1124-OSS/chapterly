@@ -237,10 +237,53 @@ test('R5 CI 接线：e2e-weekly 在安装后、E2E 前跑供应链检查，且�
     'e2e-weekly 要真实 Electron 窗口，不能跳过二进制下载'
   );
   assert.equal(
-    read('.github/workflows/verify.yml').includes('supply-chain-check'),
+    yml.includes('ELECTRON_SKIP_BINARY_DOWNLOAD'),
     false,
-    'verify.yml 跳过二进制下载，没有 zip 可校验，不该误挂'
+    'e2e-weekly 要真实 Electron 窗口，不能跳过二进制下载'
   );
+  // GATE-05：verify.yml 与供应链检查是条件契约（不是「verify 永远不挂」）——
+  // 带 Electron 二进制下载的 verify 必须跑校验；仍 ELECTRON_SKIP_BINARY_DOWNLOAD: 1 则不得挂。
+  const verify = read('.github/workflows/verify.yml');
+  assert.equal(verify.includes('ELECTRON_SKIP_BINARY_DOWNLOAD: 1'), true, '现状：verify.yml 仍跳过二进制下载');
+  assert.equal(supplyChainPolicyOf(verify).ok, true, 'verify.yml 必须满足条件契约（跳过下载 → 不挂检查）');
+});
+
+// GATE-05：verify.yml 的供应链接线是**条件契约**：真实下载 Electron 二进制时，没跑
+// supply-chain-check 就等于装了一份不校验的二进制；跳过下载时挂一个没有 zip 可校验的步骤只会
+// 制造假红。判定收成一个纯函数，合成文本与现实文件都走同一份口径。
+function supplyChainPolicyOf(text) {
+  const skipsBinary = /ELECTRON_SKIP_BINARY_DOWNLOAD:\s*['"]?1['"]?/.test(text);
+  const hasCheck = text.includes('supply-chain-check');
+  return { skipsBinary, hasCheck, ok: skipsBinary ? !hasCheck : hasCheck };
+}
+
+test('GATE-05：verify.yml 供应链接线是条件契约（两种合成文本 + 现实文件）', () => {
+  const skipOnly = 'env:\n  ELECTRON_SKIP_BINARY_DOWNLOAD: 1\nrun: npm test\n';
+  assert.deepEqual(
+    supplyChainPolicyOf(skipOnly),
+    { skipsBinary: true, hasCheck: false, ok: true },
+    '合成文本①：跳过下载且不挂检查 → 通过'
+  );
+  assert.equal(
+    supplyChainPolicyOf(`${skipOnly}run: node scripts/supply-chain-check.js\n`).ok,
+    false,
+    '合成文本②：跳过下载却挂检查（没有 zip 可校验）→ 不通过'
+  );
+  const downloads = 'env:\n  FOO: 2\nrun: npm test\n';
+  assert.deepEqual(
+    supplyChainPolicyOf(`${downloads}run: node scripts/supply-chain-check.js\n`),
+    { skipsBinary: false, hasCheck: true, ok: true },
+    '合成文本③：下载二进制且有检查 → 通过'
+  );
+  assert.equal(
+    supplyChainPolicyOf(downloads).ok,
+    false,
+    '合成文本④：下载二进制却漏了检查 → 不通过'
+  );
+  // 现实文件：与 R5 同一份判定
+  const real = supplyChainPolicyOf(read('.github/workflows/verify.yml'));
+  assert.equal(real.skipsBinary, true);
+  assert.equal(real.ok, true);
 });
 
 test('R6 发版门禁接线 + 闸门不打包：维护者文档 / package.json / 源码（政策类）', () => {
