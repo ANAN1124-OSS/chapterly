@@ -233,7 +233,7 @@ test('R5（X-N4）：.bak 章条缺 id / 重复 id → 恢复成功，落盘书�
   assert.equal(await fs.readFile(path.join(bookPath, storage.BOOK_BAK), 'utf8'), bakText);
 });
 
-test('R6（X-N5）：回退（归档→原名）也按 renameWithRetry 重试；重试成功不误报回退失败', async () => {
+test('R6 + RECOV-01：复制式归档下正向改名失败时旧书目一直在原位（不再需要回退改名）', async () => {
   const root = await mkTmp();
   const bookPath = await mkBook(root, '回退要重试');
   const metaPath = path.join(bookPath, storage.BOOK_FILE);
@@ -246,6 +246,7 @@ test('R6（X-N5）：回退（归档→原名）也按 renameWithRetry 重试；
   );
 
   const attempts = { forward: 0, rollback: 0 };
+  const existedDuringRename = [];
   const logged = [];
   const err = await repair
     .restoreFromBak(bookPath, {
@@ -254,18 +255,14 @@ test('R6（X-N5）：回退（归档→原名）也按 renameWithRetry 重试；
         const base = path.basename(from);
         if (to === metaPath && base === '.repair-meta.json') {
           attempts.forward += 1;
+          // RECOV-01 的核心安全属性：改名尝试期间旧书目一直原地可读（旧实现此时已被改名挪走）
+          existedDuringRename.push(await fs.access(metaPath).then(() => true, () => false));
           const e = new Error('操作被系统拒绝');
           e.code = 'EPERM';
           throw e;
         }
         if (to === metaPath && base.startsWith(`${storage.BOOK_FILE}.corrupt-`)) {
-          attempts.rollback += 1;
-          // 前两次模拟杀毒 / 同步盘占用，第三次放开
-          if (attempts.rollback < 3) {
-            const e = new Error('操作被系统拒绝');
-            e.code = 'EPERM';
-            throw e;
-          }
+          attempts.rollback += 1; // 复制式归档之后不该再出现「归档 → 原名」这次 rename
           return fs.rename(from, to);
         }
         return fs.rename(from, to);
@@ -279,11 +276,12 @@ test('R6（X-N5）：回退（归档→原名）也按 renameWithRetry 重试；
   assert.ok(err, '正向改名 3 次 EPERM 用尽后必须把原始错误抛给调用方');
   assert.equal(err.code, 'EPERM');
   assert.equal(attempts.forward, 3, '正向 temp → 书目 走 renameWithRetry（3 次）');
-  assert.equal(attempts.rollback, 3, '回退也要走 renameWithRetry（旧实现裸 rename：这里会是 0）');
-  assert.equal(logged.length, 0, '回退第 3 次成功，不许记「回退失败」日志');
-  assert.equal(await fs.readFile(metaPath, 'utf8'), metaText, '坏书目必须回到原名（书架还看得见这本书）');
+  assert.equal(attempts.rollback, 0, '复制式归档后不再有「归档改回原名」这一步');
+  assert.deepEqual(existedDuringRename, [true, true, true], '每次改名失败时 书目.json 都还在原位');
+  assert.equal(logged.length, 0, '没有回退改名，就不会有回退失败日志');
+  assert.equal(await fs.readFile(metaPath, 'utf8'), metaText, '坏书目始终在原位（书架一直看得见这本书）');
   const names = await fs.readdir(bookPath);
-  assert.equal(names.some((name) => name.startsWith(storage.CORRUPT_PREFIX)), false, '回退成功后不留归档');
+  assert.equal(names.some((name) => name.startsWith(storage.CORRUPT_PREFIX)), false, '失败时归档副本要删掉');
   assert.equal(names.some((name) => name.startsWith('.repair-meta')), false, '临时文件要清掉');
 });
 

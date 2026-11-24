@@ -15,9 +15,6 @@ const REPAIR_TEMP_NAME = '.repair-meta.json';
 // 从目录重建时序号的上限（V80）：文件名里的序号是作者手改的，六位数以上会让下一章的文件名
 // 长到 Windows 路径上限（260）附近，重建后一建章就 ENAMETOOLONG。9999 也够日常用了。
 const MAX_REBUILD_SEQ = 9999;
-// 回退（归档改回原名）失败时的日志类型（V78）：main.js 现有的 logError 按 kind 分类，
-// 在「设置 → 诊断日志」里一眼能看出是修复回退没成功，而不是普通保存失败。
-const ROLLBACK_LOG_KIND = 'repair-rollback';
 
 // 归档名带毫秒（V79）：秒精度下同一秒内修两次会重名，第二次 rename 会把第一份坏书目覆盖掉。
 function stampForBackup(date = new Date()) {
@@ -25,7 +22,10 @@ function stampForBackup(date = new Date()) {
   return `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}-${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}${ms}`;
 }
 
-async function archiveCorruptMeta(bookPath) {
+// RECOV-01（2026-11-24 复核补审）：归档改成「复制」（copy: true）—— 改名会在一段时间里让书目录
+// 没有 书目.json（归档成功后、新书目 rename 之前崩溃 = 书从书架消失，只能靠 .repair-meta.json
+// 手工救）。复制式归档下旧文件一直留在原位，直到 rename 原子替换成新版；换书目失败删掉副本即可。
+async function archiveCorruptMeta(bookPath, { copy = false } = {}) {
   const metaPath = path.join(bookPath, storage.BOOK_FILE);
   try {
     await fs.access(metaPath);
@@ -33,17 +33,18 @@ async function archiveCorruptMeta(bookPath) {
     return null;
   }
   const archived = path.join(bookPath, `${storage.CORRUPT_PREFIX}${stampForBackup()}`);
-  await fs.rename(metaPath, archived);
+  if (copy) await fs.copyFile(metaPath, archived);
+  else await fs.rename(metaPath, archived);
   return archived;
 }
 
-// 换书目的安全顺序（1.6.0 A3 / 审计 E-07）：① 新书目先写成临时文件（失败 → 旧文件一个字节没动，
-// 书还看得见、还能再修一次）；② 归档旧文件；③ 临时文件改名成 书目.json。②③ 任一步失败都回退：
-// 删临时文件，② 之后失败还把归档的旧文件改回原名——结果始终回到「坏书目还在原地」。
-// 注意：写盘顺序反了（旧代码先归档再写）时，写盘一旦失败（ENOSPC / 磁盘只读 / 权限），
-// 坏书目已经被改名挪走，书架上看不见这本书，只能靠用户自己在文件夹里翻。
-// io 只在单测里注入（模拟 ENOSPC / EPERM 的写盘失败）；产品调用由 main.js 传 { logError }，
-// 让「回退也失败」这一档至少能在诊断日志里看到（D5/V78）。
+// 换书目的安全顺序（1.6.0 A3 / 审计 E-07；RECOV-01 起归档改复制）：① 新书目先写成临时文件
+// （失败 → 旧文件一个字节没动，书还看得见、还能再修一次）；② 把旧书目**复制**成归档（原文件
+// 不动）；③ 临时文件原子 rename 成 书目.json。②③ 任一步失败都删掉临时文件与归档副本 —— 旧书目
+// 始终留在原位，结果始终回到「坏书目还在原地」。改名式归档（旧实现）在②之后、③之前崩溃会让
+// 书目录里没有 书目.json，书直接从书架消失，只能靠 .repair-meta.json 手工救。
+// io 只在单测里注入（模拟 ENOSPC / EPERM 的写盘失败）；logError 参数保留给旧调用方兼容，
+// 新流程不再有「回退改名」这一步，因此不再产生 repair-rollback 日志。
 async function swapMetaFile(bookPath, nextMeta, io = {}) {
   const metaPath = path.join(bookPath, storage.BOOK_FILE);
   const tempPath = path.join(bookPath, REPAIR_TEMP_NAME);
@@ -51,29 +52,18 @@ async function swapMetaFile(bookPath, nextMeta, io = {}) {
   // temp → 书目.json 走 atomic.renameWithRetry（EPERM / EBUSY / EACCES / ENOTEMPTY 重试 3 次），
   // 不再用裸 fs.rename：杀毒 / 同步盘短暂占着文件时，一次失败就把修复判死（V78）。
   const rename = typeof io.rename === 'function' ? io.rename : null;
-  const logError = typeof io.logError === 'function' ? io.logError : null;
   await writeJson(tempPath, nextMeta);
   let archived = null;
   try {
-    archived = await archiveCorruptMeta(bookPath);
+    // RECOV-01：先「复制」归档旧书目（不把它挪走），再原子 rename 新书目覆盖它 —— 任意时刻磁盘上
+    // 都至少有一份可读的 书目.json：要么旧文件还在原位，要么新文件已经改名就位。失败时原文件
+    // 一个字节没动，删掉临时文件与刚复制的归档副本即可 —— 不再需要「归档改回原名」那条回退。
+    archived = await archiveCorruptMeta(bookPath, { copy: true });
     await renameWithRetry(tempPath, metaPath, rename ? { rename } : undefined);
   } catch (err) {
     try { await fs.rm(tempPath, { force: true }); } catch { /* 清不掉也不影响旧文件 */ }
     if (archived) {
-      try {
-        // X-N5（WP8）：回退（归档 → 原名）也走 atomic.renameWithRetry，与正向 temp → 书目
-        // 同一重试口径 —— 旧实现是裸 fs.rename，同一类杀毒 / 同步盘占用挡回退，归档的坏书目
-        // 回不到原名、书架上看不见这本书。重试仍失败才留 logError（V78 口径不变）。
-        await renameWithRetry(archived, metaPath, rename ? { rename } : undefined);
-      } catch (rollbackErr) {
-        // 回退也失败 = 归档的坏书目没回到原名，书架上看不见这本书。绝不静默吞掉（V78）：
-        // 走 main.js 现有的 logError 留一条，原始错误照旧抛给调用方（界面提示口径不变）。
-        if (logError) {
-          try {
-            logError(ROLLBACK_LOG_KIND, rollbackErr, { code: 'META_ROLLBACK_FAILED', path: path.basename(archived) });
-          } catch { /* 日志本身失败不能盖住原始错误 */ }
-        }
-      }
+      try { await fs.rm(archived, { force: true }); } catch { /* 删不掉只是多一份副本，不影响可读性 */ }
     }
     throw err;
   }

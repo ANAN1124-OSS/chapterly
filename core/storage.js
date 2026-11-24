@@ -24,6 +24,9 @@ const { chapterContentHashOf } = require('./chapter-fingerprint');
 
 const BOOK_FILE = '书目.json';
 const BOOK_BAK = '书目.json.bak';
+// RECOV-01（B 面）：修复流程的临时书目名（与 core/repair.js 的 REPAIR_TEMP_NAME 同一字面量）。
+// 旧版本「先归档旧书目 → 再改名新书目」在两步之间崩溃过，会留下这个临时文件而 书目.json 缺失。
+const REPAIR_TEMP_FILE = '.repair-meta.json';
 const TRASH_DIR = '_trash';
 // DATA-01：书架根目录下的另一个保留目录（灵感箱速记，见 core/fragments.js 的 FRAGMENT_DIR_NAME）。
 // 删书闸门与 _trash 同等看待；这里只做目录名判定，不 require core/fragments（避免模块环）。
@@ -491,6 +494,41 @@ function validateRestorableMeta(meta) {
   return { meta: migrated, duplicateRepairs };
 }
 
+// RECOV-01（B 面）：读侧对账「旧版本修复中途崩溃」留下的现场 —— 书目.json 缺失、.repair-meta.json
+// 还在（完整的新书目）。临时文件能过读侧同一道形状闸门时，先原子写回 书目.json 再继续读；书重新
+// 出现在书架 / 能打开，不需要作者手工改名。坏临时文件 / 写不进去都只回 false（照旧按 NO_BOOK 处理，
+// 不在读路径里抛新错误、也不重建半个书目）。
+async function recoverInterruptedRepair(bookPath) {
+  const tempPath = path.join(bookPath, REPAIR_TEMP_FILE);
+  let raw;
+  try {
+    raw = await fs.readFile(tempPath, 'utf8');
+  } catch {
+    return false;
+  }
+  let meta;
+  try {
+    meta = JSON.parse(stripBom(raw));
+  } catch {
+    return false;
+  }
+  let checked;
+  try {
+    checked = validateRestorableMeta(meta);
+  } catch {
+    return false;
+  }
+  try {
+    const next = prepareBookMeta(checked.meta, { touchUpdatedAt: false });
+    await atomicWriteFile(path.join(bookPath, BOOK_FILE), `${JSON.stringify(next, null, 2)}\n`);
+    // 写回成功后旧临时文件已经没有用处；删不掉也不影响书已可读。
+    try { await fs.unlink(tempPath); } catch { /* 忽略 */ }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readBookMeta(bookPath) {
   const metaPath = path.join(bookPath, BOOK_FILE);
   // C17（v1.8.0 WP-19）：先过独立小上限再读 —— 这一份要 JSON.parse，被外部换成超大文件时
@@ -513,7 +551,11 @@ async function readBookMeta(bookPath) {
     raw = opened.buffer;
   } catch (err) {
     if (err instanceof StorageError) throw err;
-    if (err.code === 'ENOENT') throw new StorageError('NO_BOOK', `没有找到 ${BOOK_FILE}`);
+    if (err.code === 'ENOENT') {
+      // RECOV-01：旧版本修复崩溃留下的现场（书目.json 缺失 + .repair-meta.json 完整）先对账一次。
+      if (await recoverInterruptedRepair(bookPath)) return readBookMeta(bookPath);
+      throw new StorageError('NO_BOOK', `没有找到 ${BOOK_FILE}`);
+    }
     // E7（审计 WP-11）：EACCES / EPERM 这类读失败的 message 带完整本机路径（`EACCES: permission
     // denied, open 'C:\Users\…\书目.json'`），原样 throw 会经 listBooks 的 reason / 导入分析文案
     // 直接进 IPC 回包。统一按 core/error-text 的口径收成「一句中文 + 最后一节文件名」；

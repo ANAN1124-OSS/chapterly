@@ -326,7 +326,7 @@ test('修复重建：temp → meta 改名遇到 EPERM 按 renameWithRetry 重试
   assert.equal(meta.chapters.length, 1, '重试成功后书目真的换成了新的');
 });
 
-test('修复重建：回退（归档改回原名）也失败时，必须留一条 logError（V78）', async () => {
+test('RECOV-01：复制式归档下正向改名失败也绝不让书消失（不需要回退改名 / 回退日志）', async () => {
   const root = await mkTmp();
   const bookPath = path.join(root, '改不回原名的书');
   await fs.mkdir(bookPath);
@@ -335,15 +335,15 @@ test('修复重建：回退（归档改回原名）也失败时，必须留一�
   await fs.writeFile(metaPath, '{ 坏', 'utf8');
 
   const logged = [];
-  const logError = (kind, err, extra) => logged.push({ kind, err, extra });
+  const existedDuringRename = [];
   let thrown = null;
   try {
     await repair.rebuildFromFiles(bookPath, {
-      logError,
+      logError: (...args) => logged.push(args),
       rename: async (from, to) => {
         if (to === metaPath) {
-          // 第三步失败后，归档改回原名也会撞上这个同名目录（Windows 下 rename 文件到目录 → EPERM）
-          if (!(await fs.stat(metaPath).then(() => true, () => false))) await fs.mkdir(metaPath);
+          // 复制式归档：改名这一步失败时旧书目必须仍在原位（旧实现此时已把它改名挪走）
+          existedDuringRename.push(await fs.access(metaPath).then(() => true, () => false));
           const err = new Error('操作被系统拒绝');
           err.code = 'EPERM';
           throw err;
@@ -356,22 +356,13 @@ test('修复重建：回退（归档改回原名）也失败时，必须留一�
   }
 
   assert.equal(thrown && thrown.code, 'EPERM', '原始错误照旧抛给调用方（界面提示不变）');
-  assert.equal(logged.length, 1, '回退失败不许被 .catch(() => {}) 静默吞掉，至少留一条日志');
-  assert.equal(logged[0].kind, 'repair-rollback', '日志类型要能一眼看出是修复回退失败');
-  assert.equal(logged[0].extra && logged[0].extra.code, 'META_ROLLBACK_FAILED');
-  // 日志工具是 main.js 现有的 logError（removed: 不新造第二套 logger）：产品调用必须把它接进来
-  // v1.8.0 WP-34（V114）：book:repair 已搬进 ipc/book.js —— 两个来源一起扫。
-  const mainSource = [
-    require('node:fs').readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8'),
-    require('node:fs').readFileSync(path.join(__dirname, '..', 'ipc', 'book.js'), 'utf8')
-  ].join('\n');
-  for (const fn of ['restoreFromBak', 'rebuildFromFiles']) {
-    assert.match(
-      mainSource,
-      new RegExp(`repair\\.${fn}\\(bookPath, \\{ logError \\}\\)`),
-      `main.js 的 ${fn} 必须传 { logError }，否则回退失败在生产里仍然静默`
-    );
-  }
+  assert.ok(existedDuringRename.length >= 1, '至少尝试过一次 temp → 书目');
+  assert.ok(existedDuringRename.every(Boolean), '改名失败时 书目.json 一直在原位（书不会从书架消失）');
+  assert.equal(logged.length, 0, '不再有「回退改名」，也就没有回退失败日志');
+  assert.equal(await fs.readFile(metaPath, 'utf8'), '{ 坏', '坏书目原样留着，还能再修一次');
+  const names = await fs.readdir(bookPath);
+  assert.equal(names.some((name) => name.startsWith(storage.CORRUPT_PREFIX)), false, '失败时归档副本要删掉');
+  assert.equal(names.some((name) => name.startsWith('.repair-meta')), false, '临时文件要清掉');
 });
 
 test('修复重建：同一秒内两次归档不重名，两份坏书目都留着（V79）', async () => {
@@ -444,4 +435,44 @@ test('从目录重建：超大序号夹到 9999，fileSeq 不许放大成超长�
   assert.ok(res.meta.chapters.some((c) => c.file === '999999999999-巨大序号.txt'), '超限号的原文件照旧列进书目（不删不改名）');
   const meta = await storage.readBookMeta(bookPath);
   assert.equal(meta.fileSeq, 9999, '写盘后的书目里也是 9999');
+});
+
+// RECOV-01（B 面）：旧版本「先归档旧书目 → 再改名新书目」在两步之间崩溃过的现场 ——
+// 书目.json 缺失、.repair-meta.json 完整。读侧对账把新书目写回原名，书重新出现在书架，
+// 不需要作者手工改名；坏临时文件不硬救（照旧 NO_BOOK，绝不写半个书目）。
+test('RECOV-01：旧崩溃现场（.repair-meta.json 还在、书目.json 缺失）打开后书仍在书架', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '崩溃后的书');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '起风的正文', 'utf8');
+  const recoveredMeta = {
+    version: 1,
+    schemaVersion: 1,
+    id: 'b_recovered_01',
+    title: '崩溃后的书',
+    titleTemplate: '第{num}章：{name}',
+    fileSeq: 1,
+    chapters: [{ id: 'ch_001', file: '001-起风.txt', name: '起风', createdAt: new Date().toISOString() }],
+    lastOpenChapterId: 'ch_001',
+    createdAt: new Date().toISOString()
+  };
+  await fs.writeFile(path.join(bookPath, '.repair-meta.json'), JSON.stringify(recoveredMeta), 'utf8');
+  assert.equal(await storage.exists(path.join(bookPath, '书目.json')), false, '前置：主书目确实缺失');
+
+  const books = await storage.listBooks(root);
+  const found = books.find((book) => book.folder === '崩溃后的书');
+  assert.ok(found && found.status === 'ok', '对账写回后书要回到书架（旧实现：文件夹在、书看不见）');
+  assert.equal(found.id, 'b_recovered_01');
+  assert.equal(found.title, '崩溃后的书');
+  assert.equal(await storage.exists(path.join(bookPath, '.repair-meta.json')), false, '写回后临时文件清掉');
+  const meta = await storage.readBookMeta(bookPath);
+  assert.equal(meta.chapters.length, 1);
+  assert.equal((await storage.loadChapterText(bookPath, '001-起风.txt')).text, '起风的正文');
+
+  // 坏临时文件不硬救：不抛新错误、也不写出半个书目
+  const broken = path.join(root, '坏临时文件书');
+  await fs.mkdir(broken);
+  await fs.writeFile(path.join(broken, '.repair-meta.json'), '{ 不是合法 JSON', 'utf8');
+  await assert.rejects(() => storage.readBookMeta(broken), (err) => err.code === 'NO_BOOK');
+  assert.equal(await storage.exists(path.join(broken, '书目.json')), false, '坏临时文件不许被当成书目写出去');
 });
