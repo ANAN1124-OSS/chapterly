@@ -7,3 +7,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+  # CI-F2（2026-11-24 复核补审）：npm 依赖（Electron / devDependencies）同样每周提更新。
+  # 目录、频率、PR 上限与上面的 github-actions 保持一致，避免两条升级通道口径漂移；
+  # Electron 版本一旦被提上来，内置 SHASUMS256 与 tests/wp15-supply-chain.test.js 会先红。
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -111,6 +111,21 @@ test('全部 actions 固定到 40 位提交 SHA + 版本注释（审计 O1：不
   assert.match(dependabot, /^version: 2$/m, 'dependabot.yml 用 version 2');
   assert.match(dependabot, /package-ecosystem: github-actions/, '要覆盖 github-actions 生态');
   assert.match(dependabot, /schedule:\s*\n\s*interval: weekly/, '每周检查一次更新');
+  // CI-F2：npm 依赖（Electron / devDependencies）与 actions 同一口径 —— 目录 /、每周、PR 上限 5。
+  assert.match(
+    dependabot,
+    /- package-ecosystem: npm\n {4}directory: \/\n {4}schedule:\n {6}interval: weekly\n {4}open-pull-requests-limit: 5/,
+    'npm 依赖也要每周提更新，目录 / 频率 / PR 上限与 github-actions 一致'
+  );
+  // CI-F6：e2e-weekly 头部的版本注释必须与三条 pin 的实际版本一致（旧注释还写着 v4.4.0 / v5.0.0）。
+  const weekly = readE2e().replace(/\r\n/g, '\n');
+  assert.match(
+    weekly,
+    /checkout v7\.0\.1 \/ pnpm\/action-setup v6\.1\.1 \/ setup-node v7\.1\.0/,
+    'e2e-weekly 头部的版本注释要与 pin 实际版本一致'
+  );
+  assert.equal(weekly.includes('v4.4.0'), false, '不许残留旧版本注释（与 pin 矛盾）');
+  assert.equal(weekly.includes('v5.0.0'), false, '不许残留旧版本注释（与 pin 矛盾）');
 });
 
 test('runs-on 固定 windows-2022（Windows 桌面工具的路径 / GBK / UNC 语义不能靠 ubuntu 验）', () => {
