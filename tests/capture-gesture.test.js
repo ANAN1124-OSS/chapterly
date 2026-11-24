@@ -99,3 +99,22 @@ test('N-15 静态闸门：凭证模块是纯内存纯逻辑（不碰 fs / DOM / 
   }
   assert.ok(source.includes('module.exports'), '纯逻辑模块要能被 Node 单测 require');
 });
+
+// TOKEN-01（2026-11-24 复核补审）：令牌不可预测 —— 随机 UUID，不再是「g-<时间戳>-<序号>」。
+test('TOKEN-01：令牌是不可枚举的随机 UUID，不是时间戳 + 自增序号', () => {
+  const clock = makeClock(1_700_000_000_000);
+  const store = gestureLib.createCaptureGestures({ now: clock.now });
+  const tokens = new Set();
+  for (let i = 0; i < 20; i += 1) tokens.add(store.issue(11));
+  assert.equal(tokens.size, 20, '每次签发都得到新令牌');
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  for (const token of tokens) {
+    assert.match(token, uuidRe, `令牌必须是随机 UUID：${token}`);
+    assert.equal(token.includes(clock.now().toString(36)), false, '不能含可枚举的时间戳');
+    assert.equal(token.startsWith('g-'), false, '不再用 g- 前缀');
+  }
+  // 静态：签发点必须走 crypto.randomUUID（回退到时间戳 + 序号会让令牌重新变得可预测）
+  const source = fs.readFileSync(path.join(__dirname, '..', 'core', 'capture-gesture.js'), 'utf8');
+  assert.match(source, /crypto\.randomUUID\(\)/, '签发必须用 crypto.randomUUID');
+  assert.equal(source.includes('`g-${at.toString(36)}'), false, '旧的可枚举令牌实现不许回来');
+});

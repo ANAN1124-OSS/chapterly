@@ -12,6 +12,7 @@
 // 本模块是纯内存纯逻辑：不读剪贴板、不碰 fs / DOM / Electron / 定时器（过期是惰性判定 + 顺手清）。
 'use strict';
 
+const crypto = require('node:crypto');
 const { positiveInt } = require('./common');
 
 // 60 秒：够作者看完面板决定读不读，又不会在面板关掉后长期留下一张可用凭证。
@@ -22,7 +23,6 @@ function createCaptureGestures(options = {}) {
   const now = typeof options.now === 'function' ? options.now : Date.now;
 
   const gestures = new Map(); // windowId(String) -> { token, at, used }
-  let seq = 0;
 
   // 窗口 id 归一成字符串键（主进程的 session.id 是数字；非法值一律当作「没有窗口」）。
   function normalizeWindowId(value) {
@@ -52,8 +52,9 @@ function createCaptureGestures(options = {}) {
     const key = normalizeWindowId(windowId);
     if (key == null) return null;
     const at = now();
-    seq += 1;
-    const token = `g-${at.toString(36)}-${seq.toString(36)}`;
+    // TOKEN-01：凭证改成不可预测的随机 UUID。旧实现是 `g-<时间戳36进制>-<自增序号>`——同一进程里
+    // 谁都猜得到；凭证只存在主进程内存、按窗口查表，但没理由再留一个可枚举的令牌。
+    const token = crypto.randomUUID();
     gestures.set(key, { token, at, used: false });
     return token;
   }
