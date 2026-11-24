@@ -1032,6 +1032,32 @@ async function listBooks(booksRoot, options = {}) {
   return books;
 }
 
+// IMPORT-01：导入「现成的书」时冲突检测只需要每本书的 meta.id —— 用 listBooks 会顺带把每本书的
+// 章节字数 / 冲突副本全扫一遍（导入一本大书要白读整个书库的正文），这里只读 书目.json。
+// 「什么算书架上的书」与 listBooks 同一套口径（跳过 _ / . 开头的目录）；没有书目 / 坏书目的目录
+// 与书卡标 corrupt 时 id 为空一致，不参与冲突判定。
+async function listBookIds(booksRoot) {
+  let entries;
+  try {
+    entries = await fs.readdir(booksRoot, { withFileTypes: true });
+  } catch {
+    // 书架还没建 / 暂时读不了：没有已在用的 id。真正的建目录 / 读盘错误由导入流程自己报。
+    return [];
+  }
+  const candidates = entries
+    .filter((ent) => ent.isDirectory() && !ent.name.startsWith('_') && !ent.name.startsWith('.'))
+    .map((ent) => path.join(booksRoot, ent.name));
+  const scanned = await mapLimit(candidates, SCAN_BOOK_CONCURRENCY, async (bookPath) => {
+    try {
+      const meta = await readBookMeta(bookPath);
+      return typeof meta.id === 'string' ? meta.id.trim() : '';
+    } catch {
+      return '';
+    }
+  });
+  return scanned.filter(Boolean);
+}
+
 async function createBook(booksRoot, title, options = {}) {
   // N2（二轮·低）：书名与作者 / 分组 / 标签等书籍信息字段同一套限长口径（唯一常量在
   // core/limits.js，按码元截断但不切开代理对）。以前 title 只有 String().trim()，超长书名可以
@@ -3219,6 +3245,8 @@ module.exports = {
   // withBookLock 已支持同书重入（见 heldBookLocks），所以 chapter:save 在锁内调用这几个入口不会死锁。
   writeBookMeta: lockedWriteEntry(writeBookMeta),
   listBooks,
+  // IMPORT-01：只读每本书书目 id 的轻量扫描（导入冲突检测用，不统计章节字数）
+  listBookIds,
   // B2（WP18）：单本书卡片（与 listBooks 同一份实现）—— 书架增量刷新只读变更的那一本。
   readBookCard,
   createBook: safeCreateBook,

@@ -526,6 +526,19 @@ async function importBookFolder(booksRoot, sourceDir, analysis, options = {}) {
           );
         }
       }
+      // IMPORT-01：现成书会把来源书目的 meta.id 原样带进副本。同一来源导入两次、或把书从书库
+      // 复制出来再导入回去时，书库里就有两本同 id 的书：书级显示设置（config.bookDisplay）、
+      // 查找书签、统计分桶、删除时按 id 的清理全部以 meta.id 为 key —— 删一本会把另一本的覆盖 /
+      // 书签一起清掉，统计也合桶。发布前扫一次目标库：同 id 已在用就给副本换 newBookId() 并写回
+      // 暂存书目；无冲突保持原 id（旧行为不变）。来源书目没有 id 的旧书维持现状，不凭空造 id。
+      const takenId = typeof meta.id === 'string' ? meta.id.trim() : '';
+      if (takenId && (await storage.listBookIds(booksRoot)).includes(takenId)) {
+        meta = await storage.writeBookMeta(
+          staging,
+          { ...meta, id: newBookId() },
+          { structural: true }
+        );
+      }
       const committed = await commitStagedFolder(booksRoot, staging, desiredFolder);
       return withSkippedEntries(
         {

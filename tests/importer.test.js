@@ -6,6 +6,7 @@ const path = require('node:path');
 const storage = require('../core/storage');
 const chapters = require('../core/chapters');
 const importer = require('../core/importer');
+const { createConfigStore } = require('../core/config');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -33,6 +34,43 @@ test('导入现成的章回书：整本复制、内容一致、源文件夹保�
   assert.equal((await storage.loadChapterText(importedPath, meta.chapters[0].file)).text, '第一章内容');
   // 源文件夹仍然在（只复制不移动）
   await fs.access(path.join(created.path, '书目.json'));
+});
+
+test('IMPORT-01：同一本现成书导入两次，第二本换新书目 id，按 id 清理不再串到另一本', async () => {
+  const base = await mkTmp();
+  const externalRoot = path.join(base, '外部');
+  await fs.mkdir(externalRoot);
+  const created = await storage.createBook(externalRoot, '同源两次');
+  await storage.createChapter(created.path, 1, '第一章');
+  await storage.saveChapterText(created.path, created.meta.chapters[0].file, '正文');
+  const sourceMeta = await storage.readBookMeta(created.path);
+
+  const booksRoot = path.join(base, '书架');
+  const first = await importer.importFolders(booksRoot, [created.path]);
+  const firstId = (await storage.readBookMeta(first.imported[0].path)).id;
+  assert.equal(firstId, sourceMeta.id, '目标库没有同 id 时，导入副本保持来源书目的 id');
+
+  const second = await importer.importFolders(booksRoot, [created.path]);
+  const secondId = (await storage.readBookMeta(second.imported[0].path)).id;
+  assert.notEqual(secondId, firstId, '同 id 已在目标库时，副本必须换新 id');
+  assert.match(secondId, /^b_/, '新 id 仍走 common.newBookId 的形状');
+  const third = await importer.importFolders(booksRoot, [created.path]);
+  const thirdId = (await storage.readBookMeta(third.imported[0].path)).id;
+  assert.equal(new Set([firstId, secondId, thirdId]).size, 3, '再导入一次仍然拿到新的独立 id');
+
+  // 书级显示设置 / 查找书签都以 meta.id 为 key；删书收尾（ipc/book.js）按这个 key 清理。
+  // id 真的不同了，删一本才清不到另一本。
+  const configStore = createConfigStore(path.join(base, '配置'));
+  await configStore.setBookDisplay(firstId, { editorFontSize: 22 });
+  await configStore.setBookDisplay(secondId, { editorFontSize: 26 });
+  await configStore.upsertFindBookmark({ bookId: firstId, chapterId: 'ch_1', query: '青柠', caseSensitive: false });
+  await configStore.upsertFindBookmark({ bookId: secondId, chapterId: 'ch_1', query: '青梅', caseSensitive: false });
+  await configStore.resetBookDisplay(firstId);
+  await configStore.resetFindBookmarksForBook(firstId);
+  const cfg = await configStore.get();
+  assert.equal(cfg.bookDisplay[firstId], undefined, '删掉的那本按 id 清掉了');
+  assert.equal(cfg.bookDisplay[secondId].editorFontSize, 26, '另一本的显示设置仍在');
+  assert.deepEqual(cfg.findBookmarks.map((item) => item.bookId), [secondId], '另一本的书签仍在');
 });
 
 test('导入一堆 txt：按文件名重建书目、内容完整、书名取文件夹名', async () => {
