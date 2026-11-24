@@ -1480,3 +1480,55 @@ test('RND-04：展开剩余按页追加（每点一次 +20 行，文案递减，
   more()._fire('click');
   assert.equal(fileRowsOf(card()).length, afterAll, '收起后再点不会重复追加');
 });
+
+// PERF-HIST-01（2026-11-24 复核补审）：IPC 列表默认只回组摘要；渲染层展开某组时按需只拉这一组
+// （only + includeFiles），回来写回该组再重画 —— 不会一次把 50 组 × 1000 文件的明细搬进 DOM。
+test('PERF-HIST-01：摘要组按需展开（只拉该组文件，写回后按既有分页重画）', async () => {
+  const dom = makeDom(BASE_IDS);
+  const group = groupFixture({ id: 'dir:整理-20261110', files: [], fileCount: 30, restorableCount: 30 });
+  group.filesLoaded = false;
+  const ctx = build({ dom, listHistory: () => ({ title: '书甲', groups: [group], fileCount: 30, totalBytes: 4096 }) });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  const card = () => dom.map.get('history-list').children[0];
+  assert.equal(fileRowsOf(card()).length, 0, '摘要组不预渲染文件行');
+  const load = findButtonByClass(card(), 'history-load-files');
+  assert.ok(load, '要有按需展开入口');
+  assert.equal(load.textContent, '展开 30 个文件');
+
+  // 点击：必须只拉这一组（only + includeFiles），回来后只画这一组明细
+  const files = manyFiles(30);
+  ctx.host.api.listHistory = async (bookPath, options) => {
+    ctx.calls.listHistory.push([bookPath, options]);
+    return { title: '书甲', groups: [{ ...group, files, filesLoaded: true }], fileCount: 30, totalBytes: 4096 };
+  };
+  await load._fire('click');
+  const requested = ctx.calls.listHistory.find((args) => args[1] && args[1].only === group.id);
+  assert.deepEqual(
+    requested && requested[1],
+    { only: group.id, includeFiles: true },
+    '展开只拉这一组（不重拉整个历史清单）'
+  );
+  assert.equal(fileRowsOf(card()).length, 20, '展开后按既有分页只画第一页');
+  assert.equal(findButtonByClass(card(), 'history-more-files').textContent, '展开剩余 10 个文件');
+  assert.equal(findButtonByClass(card(), 'history-load-files'), null, '展开后不再显示按需入口');
+
+  // 面板已换书 / 关闭：迟到的展开回执不许写进新面板
+  const staleGroup = groupFixture({ id: 'dir:整理-20261110', files: [], fileCount: 30, restorableCount: 30 });
+  staleGroup.filesLoaded = false;
+  const switched = build({ dom: makeDom(BASE_IDS), listHistory: () => ({ title: '书甲', groups: [staleGroup], fileCount: 30, totalBytes: 0 }) });
+  switched.state.history = historyPanelState();
+  await switched.ui.refreshHistory();
+  const staleLoad = findButtonByClass(switched.dom.map.get('history-list').children[0], 'history-load-files');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  switched.host.api.listHistory = async () => {
+    await gate;
+    return { title: '书甲', groups: [{ ...group, files, filesLoaded: true }], fileCount: 30, totalBytes: 0 };
+  };
+  const pending = staleLoad._fire('click');
+  switched.state.history = historyPanelState({ path: '/另一本' }); // 期间换了书
+  release();
+  await pending;
+  assert.deepEqual(switched.state.history.groups, [], '换书后旧回执作废，不写进新面板');
+});

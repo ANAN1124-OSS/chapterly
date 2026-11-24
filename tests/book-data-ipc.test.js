@@ -622,3 +622,23 @@ test('O6：handleBook 的广播语义（有 mutation 才广播；book:set-last �
   await handlers.get('book:set-last')({}, 'D:\\书库\\书');
   assert.deepEqual(broadcasts, [], 'book:set-last 是唯一不广播的写频道（切章太频繁）');
 });
+// PERF-HIST-01（2026-11-24 复核补审）：book:list-history 默认只回组摘要；展开某组时
+// { only: groupId, includeFiles: true } 才要该组明细。only 只认字符串，includeFiles 只认 true。
+test('PERF-HIST-01：book:list-history 默认摘要，includeFiles 才要该组明细，坏形状不吃', async () => {
+  const seen = [];
+  const { channels } = makeBookDataHost({
+    storage: {
+      listBookHistory: async (bookPath, options) => {
+        seen.push({ bookPath, options });
+        return { title: '书甲', groups: [], fileCount: 0, totalBytes: 0 };
+      }
+    }
+  });
+  const list = channels.get('book:list-history').fn;
+  await list('/书库/书甲', undefined);
+  assert.deepEqual(seen[0], { bookPath: '/书库/书甲', options: { only: '', summary: true } }, '默认只要摘要');
+  await list('/书库/书甲', { only: 'dir:整理备份-1', includeFiles: true });
+  assert.deepEqual(seen[1].options, { only: 'dir:整理备份-1', summary: false }, '要明细时 summary=false，only 原样透传');
+  await list('/书库/书甲', { only: 123, includeFiles: 'yes' });
+  assert.deepEqual(seen[2].options, { only: '', summary: true }, '坏形状当没传（only 非字符串 / includeFiles 非 true）');
+});

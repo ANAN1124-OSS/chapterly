@@ -80,7 +80,12 @@ module.exports = async function group42BookHistory(t) {
     historyLabels
   );
   const replaceIndex = await exec("window.__cwTest.historyGroupIndexBySource('replace')");
-  const replaceGroup = historyGroupsNow[replaceIndex];
+  // PERF-HIST-01：列表默认只回组摘要 —— 文件级断言前先按需展开这一组。
+  check(
+    '本书历史：替换组文件明细按需展开（PERF-HIST-01）',
+    (await exec(`window.__cwTest.loadHistoryGroupFiles(${replaceIndex})`)) === true
+  );
+  const replaceGroup = (await exec('window.__cwTest.historyGroups()'))[replaceIndex];
   check(
     '本书历史：替换组 3 个文件，只有 2 个当前章节可还原',
     replaceGroup &&
@@ -274,6 +279,10 @@ module.exports = async function group42BookHistory(t) {
 
   // 42f. 找回删除的章节：只把 txt 放回书文件夹，不自动加回章节列表、不覆盖同名文件
   const deleteIndex = await exec("window.__cwTest.historyGroupIndexBySource('delete')");
+  check(
+    '本书历史：删章组文件明细按需展开（PERF-HIST-01）',
+    (await exec(`window.__cwTest.loadHistoryGroupFiles(${deleteIndex})`)) === true
+  );
   const deleteGroup = (await exec('window.__cwTest.historyGroups()'))[deleteIndex];
   check(
     '本书历史：删章备份标记为可从 _trash 放回',
@@ -323,6 +332,10 @@ module.exports = async function group42BookHistory(t) {
 
   // 42g. 书目备份：可预览，但不提供还原（避免旧书目覆盖当前章节列表）
   const bookmetaIndex = await exec("window.__cwTest.historyGroupIndexBySource('bookmeta')");
+  check(
+    '本书历史：书目备份组文件明细按需展开（PERF-HIST-01）',
+    (await exec(`window.__cwTest.loadHistoryGroupFiles(${bookmetaIndex})`)) === true
+  );
   const bookmetaPreview = await exec(`window.__cwTest.previewHistoryAt(${bookmetaIndex}, 0)`);
   check(
     '本书历史：书目备份可预览（只读）',

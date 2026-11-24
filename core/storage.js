@@ -2913,7 +2913,7 @@ async function restoreHistoryGroup(bookPath, groupId) {
 
 // 统一的历史列表：书目损坏也允许看备份（修书时可能正需要）。
 // 注意：只读扫描，不改任何文件；还原只发生在上面的显式调用里。
-async function listBookHistory(bookPath) {
+async function listBookHistory(bookPath, options = {}) {
   let chapterFiles = [];
   let title = '';
   try {
@@ -2921,7 +2921,13 @@ async function listBookHistory(bookPath) {
     chapterFiles = meta.chapters.map((chapter) => chapter.file);
     title = meta.title;
   } catch { /* 书目坏了就按「没有当前章节」扫描，预览照常 */ }
-  const data = await historyLib.listHistory(bookPath, { chapterFiles });
+  // PERF-HIST-01：把渲染层要的「只拉某组 / 只要摘要」原样透传给 core/history（不在这里二次扫描）。
+  const settings = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+  const data = await historyLib.listHistory(bookPath, {
+    chapterFiles,
+    only: settings.only,
+    summary: settings.summary === true
+  });
   // B6（v1.8.0 WP-28 / D-5）：三类备份的占用摘要（组数 / 字节 / 是否到软提醒阈值）。
   // 只算「替换 / 整理 / 还原前」；快照 / 删章散文件 / 书目备份不在这里清理。
   // 摘要只是提示数据，listBookHistory 绝不删除任何东西。

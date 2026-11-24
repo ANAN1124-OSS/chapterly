@@ -118,6 +118,12 @@ module.exports = async function group43DailySnapshot(t) {
   // 43b. 和「本书历史」联动：能看到、能预览、能还原
   await exec('window.__cwTest.openHistoryForCurrentBook()');
   const snapshotGroupIndex = await exec("window.__cwTest.historyGroupIndexBySource('snapshot')");
+  // PERF-HIST-01：列表默认只回组摘要 —— 文件级断言前按需展开快照组（折叠组由 helper 先点开）。
+  check(
+    '每日快照：快照组文件明细按需展开（PERF-HIST-01）',
+    snapshotGroupIndex >= 0 &&
+      (await exec(`window.__cwTest.loadHistoryGroupFiles(${snapshotGroupIndex})`)) === true
+  );
   const snapshotGroups = await exec('window.__cwTest.historyGroups()');
   const snapshotGroup = snapshotGroupIndex >= 0 ? snapshotGroups[snapshotGroupIndex] : null;
   const snapshotFileIndex = snapshotGroup
@@ -337,6 +343,12 @@ module.exports = async function group43DailySnapshot(t) {
   );
 
   const restoreIndexForFold = await exec("window.__cwTest.historyGroupIndexBySource('restore')");
+  // PERF-HIST-01：非折叠组默认也是摘要 —— 量「其它来源组行为不变」前先按需展开这一组。
+  check(
+    '每日快照（按天折叠）：还原前备份组文件明细按需展开（PERF-HIST-01）',
+    restoreIndexForFold >= 0 &&
+      (await exec(`window.__cwTest.loadHistoryGroupFiles(${restoreIndexForFold})`)) === true
+  );
   const restoreFoldExpanded =
     restoreIndexForFold >= 0 ? await exec(`window.__cwTest.historyGroupExpanded(${restoreIndexForFold})`) : 'x';
   const restoreFoldRows =
@@ -369,6 +381,11 @@ module.exports = async function group43DailySnapshot(t) {
     (await exec(`window.__cwTest.clickHistoryGroupToggle(${snapTodayIndex})`)) === true
   );
   const foldExpandedAfter = await exec(`window.__cwTest.historyGroupExpanded(${snapTodayIndex})`);
+  // PERF-HIST-01：展开后文件明细要按需拉一次（摘要组不会预先带 files）。
+  check(
+    '每日快照（按天折叠）：展开后文件明细按需加载（PERF-HIST-01）',
+    (await exec(`window.__cwTest.loadHistoryGroupFiles(${snapTodayIndex})`)) === true
+  );
   const foldRowsAfter = await exec(`window.__cwTest.historyGroupFileRowCount(${snapTodayIndex})`);
   const restoreButtonWhenExpanded = await exec(
     `document.querySelectorAll('#history-list .history-group')[${snapTodayIndex}].querySelectorAll('.history-restore-group').length`

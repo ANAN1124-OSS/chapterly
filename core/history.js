@@ -236,6 +236,11 @@ async function listHistory(bookPath, options = {}) {
   // （路径穿越 / 非法组名照旧拒绝），下面只收命中的那一个组；不传时行为与以前逐字一致。
   const only = options.only ? resolveGroup(root, String(options.only)) : null;
 
+  // PERF-HIST-01（2026-11-24 复核补审）：列表默认只回组摘要（组名 / 文件数 / 可还原数 / 大小）——
+  // 每个组的 files 明细由渲染层展开该组时带 `only` 再拉一次（复用下面已有的单组扫描）。
+  // summary=false（默认，保持旧调用方 / 还原 / 清理计划的形状不变）仍返回完整 files。
+  const summary = options.summary === true;
+
   // 1) 书文件夹根部的 书目.json.bak（不是 _trash 里，但也是可回看的「历史」）
   const bakPath = path.join(root, BOOK_BAK);
   const wantsBak = !only || (only.kind === 'file' && only.source === 'bookmeta');
@@ -473,6 +478,16 @@ async function listHistory(bookPath, options = {}) {
   }
 
   groups.sort(compareGroups);
+  // PERF-HIST-01：摘要模式不把每组的 files 数组发到渲染层（50 组 × 1000 文件的 JSON / DOM 都在
+  // 这一层被砍掉）；组的文件数 / 大小 / 可还原数等聚合字段照旧准确。展开某组时带 only 再来一次。
+  for (const group of groups) {
+    if (summary) {
+      delete group.files;
+      group.filesLoaded = false;
+    } else {
+      group.filesLoaded = true;
+    }
+  }
   return {
     trashPath,
     groupCount: groups.length,

@@ -1561,7 +1561,8 @@
           restorableCount: group.restorableCount,
           // 只有严格合法的每日快照组才非空（P22-5：折叠 / 清空只认这个字段）
           snapshotName: group.snapshotName || '',
-          files: group.files.map((file) => ({
+          filesLoaded: group.filesLoaded !== false,
+          files: (group.files || []).map((file) => ({
             name: file.name,
             inBook: file.inBook,
             restorable: file.restorable,
@@ -1615,7 +1616,7 @@
         textsOf('#history-list .history-file'),
       async previewHistoryAt(groupIndex, fileIndex) {
         const group = state.history && state.history.groups[groupIndex];
-        const file = group && group.files[fileIndex];
+        const file = group && Array.isArray(group.files) ? group.files[fileIndex] : null;
         if (!file) return null;
         return previewHistoryBackup(group.id, file.name);
       },
@@ -1625,7 +1626,7 @@
       closeHistoryPreview: () => closeHistoryPreview(),
       async restoreHistoryFileAt(groupIndex, fileIndex) {
         const group = state.history && state.history.groups[groupIndex];
-        const file = group && group.files[fileIndex];
+        const file = group && Array.isArray(group.files) ? group.files[fileIndex] : null;
         if (!file) return { ok: false, message: '没有这个备份文件' };
         return confirmHistoryRestore(group, file, false);
       },
@@ -1655,6 +1656,31 @@
         if (!button) return false;
         button.click();
         return true;
+      },
+      // PERF-HIST-01：列表默认只回组摘要。E2E 要文件级断言时先按需展开这一组（折叠组先点开组头，
+      // 再点「展开 N 个文件」），等 files 写回 state 后返回 true；超时返回 false。
+      async loadHistoryGroupFiles(groupIndex) {
+        const cards = () => document.querySelectorAll('#history-list .history-group');
+        let card = cards()[groupIndex];
+        if (!card) return false;
+        const toggle = card.querySelector('.history-group-toggle');
+        if (toggle && toggle.getAttribute('aria-expanded') === 'false') {
+          toggle.click();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          card = cards()[groupIndex];
+        }
+        const current = state.history && state.history.groups[groupIndex];
+        if (!current) return false;
+        if (current.filesLoaded) return true;
+        const load = card ? card.querySelector('.history-load-files') : null;
+        if (!load) return false;
+        load.click();
+        for (let i = 0; i < 400; i += 1) {
+          const group = state.history && state.history.groups[groupIndex];
+          if (group && group.filesLoaded) return true;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        return false;
       },
       async refreshHistory() {
         return refreshHistory();

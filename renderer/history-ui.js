@@ -488,11 +488,45 @@
     card.appendChild(note);
 
     if (collapsed) return card;
+    // PERF-HIST-01：列表默认只回组摘要（不带 files 明细）。展开时按需只拉这一组（only + includeFiles），
+    // 写回内存后整面重画 —— 一次只扫一组，不会把 50 组 × 1000 文件的明细都搬到渲染层。
+    const files = Array.isArray(group.files) ? group.files : [];
+    if (!files.length && group.filesLoaded === false && group.fileCount > 0) {
+      const load = document.createElement('button');
+      load.type = 'button';
+      load.className = 'btn ghost tiny history-load-files';
+      load.textContent = `展开 ${group.fileCount} 个文件`;
+      load.addEventListener('click', async () => {
+        if (load.disabled) return;
+        load.disabled = true;
+        const current = state.history;
+        if (!current || !current.path) return;
+        try {
+          const data = await call(api.listHistory, current.path, { only: group.id, includeFiles: true });
+          if (state.history !== current) return; // 面板已关 / 换了书：迟到的回执作废
+          const loaded = data && Array.isArray(data.groups)
+            ? data.groups.find((item) => item && item.id === group.id)
+            : null;
+          if (!loaded) {
+            toast('这一组备份已经不存在了，刷新看看', 'warn');
+            return;
+          }
+          const target = (current.groups || []).find((item) => item && item.id === group.id);
+          if (!target) return;
+          target.files = Array.isArray(loaded.files) ? loaded.files : [];
+          target.filesLoaded = true;
+          renderHistory();
+        } catch (err) {
+          if (state.history === current) toast(`展开备份文件失败：${err.message}`, 'error');
+        }
+      });
+      card.appendChild(load);
+      return card;
+    }
     // 审计修复 #21（P5）：非快照组（替换 / 整理 / 还原前备份）以前全量展开所有文件行，
     // 每个文件行 2–3 个监听器；整本整理备份动辄几百行，备份积累多了每次打开 / 刷新都要重建
     // 「组数 × 文件数」份 DOM。现在每组先只渲染前 HISTORY_FILE_PAGE 行，余下的攒成一枚
     // 「展开剩余 N 个文件」按钮，点开直接把剩余行补上（不整组重渲染，不重复建已有行）。
-    const files = Array.isArray(group.files) ? group.files : [];
     const firstPage = Math.min(files.length, HISTORY_FILE_PAGE);
     for (let i = 0; i < firstPage; i += 1) card.appendChild(buildHistoryFileRow(group, files[i]));
     if (files.length > firstPage) {

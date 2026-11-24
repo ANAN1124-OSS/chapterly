@@ -98,7 +98,14 @@ function registerBookDataIpc(host) {
   }, { mutation: MUTATION.REPLACE });
 
   // 本书历史：统一列出 / 预览 / 还原书内 _trash 的各种备份（替换/整理/还原前/快照/删章 + 书目.json.bak）
-  handleBook('book:list-history', async (bookPath) => storage.listBookHistory(bookPath), READ_ONLY);
+  // PERF-HIST-01：列表默认只回组摘要（不带每组的 files 明细）；渲染层展开某组时带
+  // { only: groupId, includeFiles: true } 再拉这一组。only 交给 core 的 resolveGroup 严格校验。
+  handleBook('book:list-history', async (bookPath, options) => {
+    const settings = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+    const only = typeof settings.only === 'string' ? settings.only : '';
+    const includeFiles = settings.includeFiles === true;
+    return storage.listBookHistory(bookPath, { only, summary: !includeFiles });
+  }, READ_ONLY);
   handleBook('book:preview-history-file', async (bookPath, groupId, fileName) =>
     storage.previewHistoryFile(bookPath, groupId, fileName), READ_ONLY
   );

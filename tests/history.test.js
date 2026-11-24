@@ -1144,3 +1144,45 @@ test('CSTO-B-03：字节截断落在多字节字符中间时回退到字符边�
   assert.equal(/^中+$/.test(preview.text), true, '预览只含完整汉字');
   assert.equal(preview.text.length, fullChars, '只去掉残尾（不足一个字符的那几个字节），不额外丢字');
 });
+
+// PERF-HIST-01（2026-11-24 复核补审）：列表默认只回组摘要（组名 / 文件数 / 可还原数 / 大小），
+// 每组的 files 明细由「展开这一组」时带 only 再拉一次；summary 的 JSON 必须小得多。
+test('PERF-HIST-01：summary 只回组摘要（无 files），only 展开只扫这一组', async () => {
+  const root = await mkTmp('cw-hist-summary-');
+  const bookPath = path.join(root, '历史书');
+  const trash = path.join(bookPath, '_trash');
+  const groupA = path.join(trash, '整理备份-20261110-100000');
+  const groupB = path.join(trash, '整理备份-20261111-100000');
+  await fs.mkdir(groupA, { recursive: true });
+  await fs.mkdir(groupB, { recursive: true });
+  for (let i = 1; i <= 30; i += 1) await fs.writeFile(path.join(groupA, `00${i}-a.txt`), 'a');
+  for (let i = 1; i <= 5; i += 1) await fs.writeFile(path.join(groupB, `00${i}-b.txt`), 'bb');
+
+  const statCalls = [];
+  const stat = async (target) => {
+    statCalls.push(target);
+    return fs.stat(target);
+  };
+  const summary = await history.listHistory(bookPath, { chapterFiles: [], summary: true, stat });
+  const dirGroups = summary.groups.filter((group) => group.kind === 'dir');
+  assert.equal(dirGroups.length, 2);
+  for (const group of dirGroups) {
+    assert.equal(Object.prototype.hasOwnProperty.call(group, 'files'), false, '摘要组不带 files 明细');
+    assert.equal(group.filesLoaded, false);
+    assert.ok(group.fileCount > 0 && group.totalBytes > 0, '聚合字段仍准确');
+  }
+  assert.equal(summary.totalBytes, 40, '摘要总大小 = 30 × 1B + 5 × 2B');
+  assert.ok(JSON.stringify(summary).length < 2000, `摘要 JSON 要小（实测 ${JSON.stringify(summary).length} 字节）`);
+
+  // only 展开：只 stat 这一组（30 个文件），不碰另一组
+  statCalls.length = 0;
+  const dirName = path.basename(groupA);
+  const expanded = await history.listHistory(bookPath, { chapterFiles: [], only: `dir:${dirName}`, stat });
+  assert.equal(expanded.groups.length, 1);
+  assert.equal(expanded.groups[0].files.length, 30);
+  assert.equal(expanded.groups[0].filesLoaded, true);
+  assert.equal(statCalls.length, 30, '展开一组只 stat 这一组的文件');
+  assert.ok(statCalls.every((target) => target.includes(dirName)), 'stat 没有波及别的组');
+});
+
+// PERF-HIST-01（2026-11-24 复核补审）：IPC 默认只回摘要；展开某组带 { only, includeFiles: true }。

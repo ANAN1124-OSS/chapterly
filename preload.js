@@ -134,7 +134,8 @@ const api = {
   listReplaceBackups: (bookPath) => invoke('book:list-replace-backups', bookPath),
   restoreReplaceBackup: (bookPath, backupName) =>
     invoke('book:restore-replace-backup', bookPath, backupName),
-  listHistory: (bookPath) => invoke('book:list-history', bookPath),
+  // PERF-HIST-01：默认只回组摘要；展开某组时传 { only: groupId, includeFiles: true } 拉该组文件。
+  listHistory: (bookPath, options) => invoke('book:list-history', bookPath, options),
   previewHistoryFile: (bookPath, groupId, fileName) =>
     invoke('book:preview-history-file', bookPath, groupId, fileName),
   restoreHistoryFile: (bookPath, groupId, fileName) =>
