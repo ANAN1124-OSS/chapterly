@@ -159,9 +159,15 @@
     }
     hideHeaderMenus();
     // 记下打开面板前的位置：弹层期间点列表/预览不会把光标位置弄丢
+    // FRAG-01：同时记下「哪本书的哪一章 + 打开时的正文长度」。面板开着时换章 / 外部改动触发
+    // loadChapterAt 重载后，旧位置就属于上一版正文；insertSelectedFragment 插入前核对，不一致就取消。
+    const chapter = Array.isArray(state.chapters) ? state.chapters[state.index] : null;
     state.insertFragmentRange = {
       start: editorEl.selectionStart || 0,
-      end: editorEl.selectionEnd || 0
+      end: editorEl.selectionEnd || 0,
+      bookPath: state.bookPath || '',
+      chapterId: chapter && chapter.id ? String(chapter.id) : '',
+      textLength: editorEl.value.length
     };
     state.fragmentSelected = null;
     $('fragment-preview').textContent = '';
@@ -379,6 +385,21 @@
     if (!fragment) return { ok: false, message: '先选一条碎片' };
     if (!state.bookPath) return { ok: false, message: '先打开一本书' };
     const range = state.insertFragmentRange || { start: editorEl.selectionStart || 0, end: editorEl.selectionEnd || 0 };
+    // FRAG-01：面板开着时换章 / 外部改动重载正文（loadChapterAt）后，快照里的下标属于上一版正文。
+    // 只有带身份字段的快照才核对（旧调用 / 单测直接构造的 { start, end } 保持原语义）。
+    if (range.chapterId !== undefined) {
+      const current = Array.isArray(state.chapters) ? state.chapters[state.index] : null;
+      const currentId = current && current.id ? String(current.id) : '';
+      const changed =
+        String(range.bookPath || '') !== String(state.bookPath || '') ||
+        String(range.chapterId) !== currentId ||
+        (Number.isFinite(range.textLength) && range.textLength !== editorEl.value.length);
+      if (changed) {
+        state.insertFragmentRange = null;
+        toast('打开碎片面板后已经换过章（或正文被重新载入），这次插入已取消；请重新打开面板再插', 'warn');
+        return { ok: false, code: 'CHAPTER_CHANGED', message: '章节已变化，插入已取消' };
+      }
+    }
     const result = insertFragmentAt(fragment, range.start, range.end);
     if (result.ok === false) {
       // 五-H4：只读锁 / 载章在途期间不插、不关对话框、不报成功——作者可以稍后重试。

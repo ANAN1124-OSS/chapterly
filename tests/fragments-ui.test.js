@@ -356,7 +356,13 @@ test('openInsertFragmentDialog：没书警告；有选区 / 无选区两种提�
 
   const caret = build({ selection: 3, selectionEnd: 3 });
   assert.equal(caret.ui.openInsertFragmentDialog(), true);
-  assert.deepEqual(caret.state.insertFragmentRange, { start: 3, end: 3 });
+  assert.deepEqual(caret.state.insertFragmentRange, {
+    start: 3,
+    end: 3,
+    bookPath: '/书库/书甲',
+    chapterId: '',
+    textLength: 4
+  }, 'FRAG-01：快照带上书 / 章身份与正文长度');
   assert.match(caret.dom.map.get('fragment-hint').textContent, /^将插在打开面板前的光标处（第 4 字）/);
   assert.equal(caret.dom.map.get('btn-fragment-insert').disabled, true);
   assert.equal(caret.dom.map.get('fragment-preview-name').textContent, '选一条碎片看内容');
@@ -364,7 +370,13 @@ test('openInsertFragmentDialog：没书警告；有选区 / 无选区两种提�
 
   const range = build({ selection: 2, selectionEnd: 6 });
   range.ui.openInsertFragmentDialog();
-  assert.deepEqual(range.state.insertFragmentRange, { start: 2, end: 6 });
+  assert.deepEqual(range.state.insertFragmentRange, {
+    start: 2,
+    end: 6,
+    bookPath: '/书库/书甲',
+    chapterId: '',
+    textLength: 4
+  });
   assert.match(range.dom.map.get('fragment-hint').textContent, /^将替换打开面板前选中的第 3–6 字/);
 });
 
@@ -601,6 +613,47 @@ test('insertSelectedFragment：没选碎片 / 没书早退；成功替换选区�
   clamp.state.insertFragmentRange = { start: 99, end: 120 };
   clamp.ui.insertSelectedFragment();
   assert.equal(clamp.editorEl.value, 'XYQ', '越界起点夹到正文末尾');
+});
+
+// FRAG-01（2026-11-24 复核补审）：面板开着时换章 / 外部改动触发 loadChapterAt 重载正文，
+// 打开面板时记下的下标就属于上一版正文。插入前核对快照里的章身份与正文长度，不一致取消并提示。
+test('FRAG-01：面板开着时换章 / 正文被重载 → 插入取消、编辑区不动；同章未变化照常插入', () => {
+  // ① 换章：旧下标不许落进新章正文
+  const switched = build({ editorText: 'ABCDEF' });
+  switched.state.chapters = [{ id: 'ch_1' }, { id: 'ch_2' }];
+  switched.state.index = 0;
+  switched.state.bookPath = '/书库/书甲';
+  assert.equal(switched.ui.openInsertFragmentDialog(), true);
+  switched.state.fragmentSelected = { name: 'a.txt', text: 'ZZ', chars: 2 };
+  switched.state.index = 1; // 弹层期间切到下一章
+  switched.state.insertFragmentRange.textLength = switched.editorEl.value.length;
+  const switchRes = switched.ui.insertSelectedFragment();
+  assert.equal(switchRes.ok, false);
+  assert.equal(switchRes.code, 'CHAPTER_CHANGED');
+  assert.equal(switched.editorEl.value, 'ABCDEF', '换章后一个字节都不许插');
+  assert.match(switched.calls.toast.at(-1)[0], /换过章/);
+  assert.equal(switched.state.insertFragmentRange, null, '失效快照要丢掉，不能留着下次误用');
+
+  // ② 同章被外部改动重载（loadChapterAt 换上新正文）：长度变了 → 取消
+  const reloaded = build({ editorText: 'ABCDEF' });
+  reloaded.state.chapters = [{ id: 'ch_1' }];
+  reloaded.state.index = 0;
+  assert.equal(reloaded.ui.openInsertFragmentDialog(), true);
+  reloaded.state.fragmentSelected = { name: 'b.txt', text: 'Q', chars: 1 };
+  reloaded.editorEl.value = 'ABCDEFGHIJ'; // 重载后的正文
+  const reloadRes = reloaded.ui.insertSelectedFragment();
+  assert.equal(reloadRes.ok, false);
+  assert.equal(reloaded.editorEl.value, 'ABCDEFGHIJ', '重载后不许按旧偏移插入');
+
+  // ③ 正常路径不变：同章、正文没变
+  const normal = build({ editorText: 'ABCDEF' });
+  normal.state.chapters = [{ id: 'ch_1' }];
+  normal.state.index = 0;
+  assert.equal(normal.ui.openInsertFragmentDialog(), true);
+  normal.state.fragmentSelected = { name: 'a.txt', text: 'ZZ', chars: 2 };
+  const okRes = normal.ui.insertSelectedFragment();
+  assert.equal(okRes.ok, true);
+  assert.equal(normal.editorEl.value, 'ABZZCDEF');
 });
 
 // 五-H4（L-F5）：编辑区只读锁期间碎片插入必须被拒——readOnly 挡得住键盘，挡不住兜底的整串赋值。
