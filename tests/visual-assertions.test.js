@@ -84,3 +84,29 @@ test('T-26 compareVisualAssertions：未登记 / 清单过期 / 重复 / 数量�
     'sources 缺 text 必须报出来'
   );
 });
+
+// GATE-02（2026-11-24 复核补审）：把 checkVisual 赋给变量 / 解构重命名之后，静态清单就追不到调用点 ——
+// 必须报「无法静态识别」（null），不许静默漏。标准解构（不重命名）与直接调用不受影响。
+test('GATE-02：checkVisual 别名 / 解构重命名 → null；标准解构 + 直接调用照旧', () => {
+  assert.deepEqual(va.extractVisualAssertions('const visualCheck = checkVisual;'), [null], '赋值别名');
+  assert.deepEqual(
+    va.extractVisualAssertions("const { checkVisual: visualCheck } = t;\n  visualCheck('重命名后调用', true);"),
+    [null],
+    '解构重命名'
+  );
+  // 现有真实写法：解构但不改名，只有直接调用进清单
+  assert.deepEqual(
+    va.extractVisualAssertions(
+      "const { exec, check, checkVisual, waitFor } = t;\n  checkVisual('正常调用', true);\n  check('功能断言', true);"
+    ),
+    ['正常调用']
+  );
+  // 注释里的别名说明不算（必须能区分「解释」与「代码」）
+  assert.deepEqual(va.extractVisualAssertions("// const v = checkVisual\n  checkVisual('甲的', true);"), ['甲的']);
+  // compare 层面：别名夹具必须被点名成「无法静态识别」
+  const problems = va.compareVisualAssertions(
+    [{ file: 'x.js', text: 'const visualCheck = checkVisual;' }],
+    []
+  );
+  assert.ok(problems.some((item) => /无法静态识别/.test(item)), JSON.stringify(problems));
+});

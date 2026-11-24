@@ -182,6 +182,15 @@ function extractVisualAssertions(source) {
     const literal = readFirstStringLiteral(code, openIndex);
     found.push(literal === null ? null : normalizeName(literal));
   }
+  // GATE-02：checkVisual 一旦被赋给变量 / 解构重命名，上面的调用点扫描就再也追不到它 —— 静态清单
+  // 会静默少掉这些断言（改了它们的断言名 / 删了调用，门禁照样绿）。下面两类写法统一按「无法静态
+  // 识别」报（null，由比对环节点名）：
+  //   ① 赋值别名：`const v = checkVisual`（`= checkVisual(` 是赋值后直接调用，不算）
+  //   ② 解构重命名：`{ checkVisual: visualCheck } = t`（现有 `const { checkVisual } = t` 不改名，允许）
+  // 注释已在上面剥掉；真实树里 11 处 `const { …, checkVisual, … } = t` 不命中。
+  const aliasRe = /=[ \t]*checkVisual\b(?!\s*\()/g;
+  while ((match = aliasRe.exec(code)) !== null) found.push(null);
+  if (/\bcheckVisual\s*:\s*[A-Za-z_$]/.test(code)) found.push(null);
   return found;
 }
 
