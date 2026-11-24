@@ -775,7 +775,9 @@ function crashConsumedByOtherWindow(draftId, windowId) {
 function getCrashDraftStore() {
   if (!crashDraftStore) {
     try {
-      crashDraftStore = crashDraftLib.createCrashDraftStore(app.getPath('userData'));
+      crashDraftStore = crashDraftLib.createCrashDraftStore(app.getPath('userData'), {
+        ownerToken: crashOwnerToken
+      });
     } catch {
       crashDraftStore = null; // 连 userData 都拿不到：静默降级，不影响写作
     }
@@ -807,7 +809,7 @@ async function syncCrashDraftSession() {
   return { enabled, started: crashSessionStarted, abnormal: crashPreviousAbnormal };
 }
 
-// 干净退出：删运行标记 + 全部草稿（尽力而为，不抛、不影响退出）。
+// 干净退出：删运行标记 + 本进程写的草稿（上次运行留下、作者选「先留着」的草稿保留）。尽力而为，不抛、不影响退出。
 async function endCrashDraftSession() {
   const store = getCrashDraftStore();
   if (!store) return { ok: true, cleared: 0 };
@@ -3137,7 +3139,7 @@ if (!gotLock) {
       /* 注销失败不影响退出 */
     }
     // B3：退出前把防抖中的「上次打开章节」落盘（不等就退出会丢掉最后一次切章）。
-    // v1.8.2 WP5：崩溃草稿会话也在同一处收尾（删运行标记 + 草稿），两件事都完成才真退出。
+    // v1.8.2 WP5：崩溃草稿会话也在同一处收尾（删运行标记 + 本进程草稿；上次运行留下、作者选「先留着」的保留），两件事都完成才真退出。
     // 拦一次退出、写完再 quit；flushAll / endSession 自己吞失败，不会卡住退出流程。
     // v1.8.3 WP9（审计 C1，中 #8）：便利数据不能当退出硬前置 —— 书在断开的网络盘 / 同步盘，或书锁
     // 被整本长操作持有时，这两个收尾可能永远不回来，退出就无限期挂住（关窗路径早有 8 秒看门狗，

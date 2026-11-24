@@ -89,9 +89,13 @@ test('R1 默认关不写盘：建仓库本身不落任何文件；main 只在 cr
   assert.match(config, /cfg\.crashDraftEnabled = cfg\.crashDraftEnabled === true/, '清洗只认真正的 true');
 });
 
-test('R2 异常退出标记：别的 pid 留下的标记 = 上次异常退出；干净退出清标记与草稿', async () => {
+test('R2 异常退出标记：别的 pid 留下的标记 = 上次异常退出；干净退出清标记、只清本进程草稿', async () => {
   const root = await newRoot();
-  const first = storeAt(root, { pid: 11111, now: () => new Date('2026-11-17T21:00:00.000Z') });
+  const first = storeAt(root, {
+    pid: 11111,
+    ownerToken: 'token-first',
+    now: () => new Date('2026-11-17T21:00:00.000Z')
+  });
   const began = await first.beginSession();
   assert.equal(began.ok, true);
   assert.equal(began.abnormal, false, '没有旧标记 = 上次干净退出');
@@ -103,26 +107,67 @@ test('R2 异常退出标记：别的 pid 留下的标记 = 上次异常退出；
   assert.equal(marker.version, 1);
   assert.equal(typeof marker.startedAt, 'string');
 
-  await first.writeDraft(draft({ at: '2026-11-17T21:01:00.000Z' }));
+  await first.writeDraft(draft({ at: '2026-11-17T21:01:00.000Z' }), { ownerToken: 'token-first' });
   assert.equal((await first.listDrafts()).length, 1);
 
-  const second = storeAt(root, { pid: 22222 });
+  const second = storeAt(root, {
+    pid: 22222,
+    ownerToken: 'token-second',
+    now: () => new Date('2026-11-17T21:02:00.000Z')
+  });
   const next = await second.beginSession();
   assert.equal(next.ok, true);
   assert.equal(next.abnormal, true, '另一个 pid 留下的标记 = 上次异常退出');
   assert.equal(next.previous && next.previous.pid, 11111);
   assert.equal(next.drafts.length, 1, '异常退出时把上次草稿一起交回');
 
+  // CRASH-02（方案 a）：上次运行留下的草稿不是本进程写的 → 干净退出保留（作者可能选了「先留着」）。
   const closed = await second.endSession();
   assert.equal(closed.ok, true);
-  assert.equal(closed.cleared, 1);
+  assert.equal(closed.cleared, 0, '别的进程 ownerToken 的草稿不许在干净退出时删');
   assert.equal(fsSync.existsSync(markerPath), false, '干净退出删标记');
-  assert.deepEqual(await second.listDrafts(), [], '干净退出清草稿');
+  const kept = await second.listDrafts();
+  assert.equal(kept.length, 1, '上次运行的草稿跨退出保留');
+  assert.equal(kept[0].ownerToken, 'token-first');
 
-  const third = storeAt(root, { pid: 33333 });
+  const third = storeAt(root, {
+    pid: 33333,
+    ownerToken: 'token-third',
+    now: () => new Date('2026-11-17T21:03:00.000Z')
+  });
   const after = await third.beginSession();
   assert.equal(after.abnormal, false, '干净退出后下次启动不报异常');
+  assert.equal(after.drafts.length, 1, '上次留下、作者选「先留着」的草稿下次启动仍在列表里');
   await third.endSession();
+});
+
+// CRASH-02（方案 a）：endSession 只清「本进程 ownerToken 写的草稿」，仍删标记。
+test('CRASH-02：干净退出只清本进程草稿，上次运行的草稿保留且仍可读', async () => {
+  const root = await newRoot();
+  const previous = storeAt(root, { pid: 1001, ownerToken: 'token-old' });
+  const oldDraft = await previous.writeDraft(
+    draft({ chapterId: 'ch_old', at: new Date().toISOString(), text: '上次运行、作者选先留着' }),
+    { ownerToken: 'token-old' }
+  );
+  assert.equal(oldDraft.ok, true);
+
+  const current = storeAt(root, { pid: 2002, ownerToken: 'token-new' });
+  const newDraft = await current.writeDraft(
+    draft({ chapterId: 'ch_new', at: new Date().toISOString(), text: '本进程写的' }),
+    { ownerToken: 'token-new' }
+  );
+  assert.equal(newDraft.ok, true);
+
+  const closed = await current.endSession();
+  assert.equal(closed.ok, true);
+  assert.equal(closed.cleared, 1, '只清本进程那一份');
+  assert.equal(fsSync.existsSync(path.join(current.dir, draftLib.SESSION_FILE_NAME)), false, '标记仍要删');
+  const left = await current.listDrafts();
+  assert.equal(left.length, 1, '上次运行的草稿保留');
+  assert.equal(left[0].draftId, oldDraft.draftId);
+  const read = await current.readDraft(oldDraft.draftId);
+  assert.equal(read.ok, true, '保留下来的草稿仍可读');
+  assert.equal(read.draft.text, '上次运行、作者选先留着');
 });
 
 test('CGRD-02：pid 复用的残留标记仍判异常退出（主判据 = 标记还在）', async () => {
@@ -564,18 +609,82 @@ test('P2：旧版本单文件草稿（text 在 JSON 里）仍能读；chars 按�
   assert.equal((await store.readDraft(rewritten.draftId)).draft.text, '新正文😀');
 });
 
-test('P2：无元数据的孤儿正文在 prune 时回收；坏 JSON 的正文保留（坏文件一律不删）', async () => {
+test('P2：无元数据的孤儿正文超过宽限期才回收；坏 JSON 的正文保留（坏文件一律不删）', async () => {
   const root = await newRoot();
   const store = storeAt(root);
-  await store.writeDraft(draft({ chapterId: 'ch_keep', at: '2026-11-17T20:00:00.000Z' }));
-  await fsp.writeFile(path.join(store.dir, 'draft-bbbbbbbbbbbbbbbb.txt'), '没有元数据的孤儿正文');
+  await store.writeDraft(draft({ chapterId: 'ch_keep', at: new Date().toISOString() }));
+  const orphanPath = path.join(store.dir, 'draft-bbbbbbbbbbbbbbbb.txt');
+  await fsp.writeFile(orphanPath, '没有元数据的孤儿正文');
   await fsp.writeFile(path.join(store.dir, 'draft-cccccccccccccccc.json'), '{bad');
   await fsp.writeFile(path.join(store.dir, 'draft-cccccccccccccccc.txt'), '坏元数据但正文还在');
   await store.beginSession();
-  const names = await fsp.readdir(store.dir);
-  assert.equal(names.includes('draft-bbbbbbbbbbbbbbbb.txt'), false, '无元数据的孤儿正文被回收');
+  let names = await fsp.readdir(store.dir);
+  // CRASH-01：刚写下的无元数据正文可能是另一窗口「正文已 rename、元数据还没写」的中间态，
+  // 宽限期内绝不能当孤儿删掉。
+  assert.equal(names.includes('draft-bbbbbbbbbbbbbbbb.txt'), true, '宽限期内的孤儿正文不许删');
+  // 超过宽限期仍无人认领 → 回收
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  await fsp.utimes(orphanPath, old, old);
+  await store.beginSession();
+  names = await fsp.readdir(store.dir);
+  assert.equal(names.includes('draft-bbbbbbbbbbbbbbbb.txt'), false, '超过宽限期的孤儿正文被回收');
   assert.equal(names.includes('draft-cccccccccccccccc.txt'), true, '坏 JSON 的正文保留（坏文件一律不删）');
   await store.endSession();
+});
+
+// CRASH-01：A 的正文 rename 与元数据 rename 之间，B 的 writeDraft（其 prune → sweepOrphanBodies）
+// 不能把 A 的正文当孤儿删掉。旧实现在「没有同 id 元数据」这一支没有宽限期，恰好把正在写盘的
+// 另一窗口正文吃掉——正文是未保存内容的唯一磁盘兜底，丢一次就找不回来。
+test('CRASH-01：正文已 rename、元数据还没写时另一窗口写入，不把在写的正文当孤儿删掉', async () => {
+  const root = await newRoot();
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let stalled = false;
+  const fsA = {
+    ...failingFs(),
+    rename: async (from, to) => {
+      if (!stalled && /draft-[a-f0-9]{16}\.json$/.test(String(to))) {
+        stalled = true;
+        await gate; // 停在「正文已 rename、元数据还没写」的中间态
+      }
+      return fsp.rename(from, to);
+    }
+  };
+  const a = storeAt(root, { fs: fsA, pid: 1001, ownerToken: 'token-a' });
+  const writingA = a.writeDraft(
+    draft({ chapterId: 'ch_a', at: new Date().toISOString(), text: 'A 窗口的正文' }),
+    { ownerToken: 'token-a' }
+  );
+  const deadline = Date.now() + 5000;
+  while (!stalled && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(stalled, true, 'A 必须停在元数据 rename 之前');
+  const namesBefore = await fsp.readdir(a.dir);
+  const bodyOfA = namesBefore.find((name) => /^draft-[a-f0-9]{16}\.txt$/.test(name));
+  assert.ok(bodyOfA, 'A 的正文已经 rename 到位、元数据还没写');
+
+  // B（另一个窗口）此时写草稿：writeDraft 末尾的 prune 会扫到 A 的孤儿正文
+  const b = storeAt(root, { pid: 2002, ownerToken: 'token-b' });
+  const wroteB = await b.writeDraft(
+    draft({ chapterId: 'ch_b', at: new Date().toISOString(), text: 'B 窗口的正文' }),
+    { ownerToken: 'token-b' }
+  );
+  assert.equal(wroteB.ok, true);
+  assert.equal(
+    (await fsp.readdir(b.dir)).includes(bodyOfA),
+    true,
+    '宽限期内 A 的正文不许被当孤儿删掉'
+  );
+
+  release();
+  const resultA = await writingA;
+  assert.equal(resultA.ok, true, 'A 的元数据写完后 writeDraft 仍成功');
+  const read = await b.readDraft(resultA.draftId);
+  assert.equal(read.ok, true, 'A 写完后草稿仍可读');
+  assert.equal(read.draft.text, 'A 窗口的正文');
+  await b.endSession();
+  await a.endSession();
 });
 
 // N-13（二次审查）：崩溃草稿的原子写必须「临时文件 → fsync → rename」。草稿是未保存正文的唯一

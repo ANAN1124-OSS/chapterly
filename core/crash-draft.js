@@ -269,6 +269,10 @@ function createCrashDraftStore(baseDir, options = {}) {
   const io = options.fs && typeof options.fs === 'object' ? options.fs : fs;
   const clock = typeof options.now === 'function' ? options.now : () => new Date();
   const pid = Number.isFinite(Number(options.pid)) ? Number(options.pid) : process.pid;
+  // CRASH-02：本进程的草稿归属令牌。endSession 只清这个令牌写下的草稿——上次运行留下、
+  // 作者在恢复提示里选「先留着」的草稿必须跨退出保留，否则干净退出会把那段未保存正文的唯一
+  // 磁盘兜底删掉。主进程 createCrashDraftStore 时注入（与 writeDraft 的 ownerToken 同源）。
+  const ownerToken = normalizeOwnerToken(options.ownerToken);
   const maxDrafts = Number.isFinite(Number(options.maxDrafts))
     ? Math.max(1, Math.min(64, Math.round(Number(options.maxDrafts))))
     : MAX_DRAFTS;
@@ -482,6 +486,12 @@ function createCrashDraftStore(baseDir, options = {}) {
         // 只有缓存明确记着「v1，不引用 .txt」才当孤儿候选，并且要过宽限期（另一窗口的升级写窗口）。
         if (!cached || cached.invalid || cached.claimsBody !== false) continue;
         if (!(await oldEnough(text))) continue;
+      } else if (!(await oldEnough(text))) {
+        // CRASH-01：没有同 id 元数据的正文同样是孤儿，但它也可能是另一扇窗口「正文已 rename、
+        // 元数据还没写」的中间态（两步之间只隔几毫秒）。以前这一支直接删，恰好把另一窗口刚写好的
+        // 正文吃掉（rename 已完成、json 还没落盘时执行 prune 的那一方会删掉它）。统一先过宽限期：
+        // 只有放了 ORPHAN_GRACE_MS 还没人认领的正文才当孤儿回收；.tmp-* 仍走上面的现逻辑。
+        continue;
       }
       await unlinkQuiet(text);
     }
@@ -572,11 +582,15 @@ function createCrashDraftStore(baseDir, options = {}) {
       return { ok: true, abnormal, previous, drafts };
     },
 
-    // 干净退出：删本进程标记 + 全部草稿（只删自己命名的文件）。尽力而为，不抛。
+    // 干净退出：删本进程标记 + **本进程 ownerToken 写的**草稿（只删自己命名的文件）。尽力而为，不抛。
+    // CRASH-02（方案 a）：上次运行留下的草稿（ownerToken 不是本进程）一律保留——它可能是作者在
+    // 恢复提示里选「先留着，下次再恢复」的那份，是那段未保存正文的唯一磁盘兜底。旧实现无条件
+    // 删全部草稿，等于把「先留着」变成「退出即丢」。标记照旧删除（干净退出的判据）。
     async endSession() {
       let cleared = 0;
       const entries = await scan();
       for (const entry of entries) {
+        if (entry.ownerToken !== ownerToken) continue;
         if (await unlinkDraft(entry.draftId)) cleared += 1;
       }
       let markerCleared = false;
