@@ -1361,8 +1361,15 @@
     const items = Array.from(list.querySelectorAll('.chapter-item'));
     let at;
     if (locator.mode === 'id') {
-      at = state.chapters.findIndex((c) => c.id === locator.id);
-      if (at < 0) return false;
+      // RND-02：先把「书内下标」换成「渲染行下标」——章节列表可能被筛选 / 分卷折叠，
+      // items 的长度与顺序不再等于 state.chapters；直接 items[at] 会把 tabIndex / 焦点写到
+      // 错误的那一行。优先按 data-chapter-id 找真正的渲染行，找不到再退回原来的下标记法。
+      const wanted = state.chapters.findIndex((c) => c.id === locator.id);
+      if (wanted < 0) return false;
+      const byId = items.findIndex(
+        (el) => el && el.dataset && String(el.dataset.chapterId) === String(locator.id)
+      );
+      at = byId >= 0 ? byId : wanted;
     } else {
       if (!items.length) return false;
       const want = Number.isFinite(locator.position) ? Math.floor(locator.position) : 0;

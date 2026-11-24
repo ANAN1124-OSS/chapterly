@@ -89,6 +89,52 @@ module.exports = async function group27DragSort(t) {
       (await exec('window.__cwTest.currentIndex()')) === 0
   );
 
+  // 27b-2（RND-02）：筛选态下 Alt+↓ 的焦点归位。列表只剩命中的那一行时，DOM 行序 ≠ 书内下标；
+  // 旧实现把书内下标直接当渲染行下标，会把 tabIndex / 焦点写到不存在的行（焦点掉回 body）。
+  await exec("window.__cwTest.setChapterFilter('第一')");
+  await waitFor(
+    "window.__cwTest.chapterDirectoryInfo().rendered === 1 && window.__cwTest.chapterDirectoryInfo().filter === '第一'",
+    8000
+  );
+  const filteredId = await exec(`(() => {
+    const item = document.querySelector('#chapter-list .chapter-item');
+    if (!item) return null;
+    item.focus();
+    return item.dataset.chapterId || null;
+  })()`);
+  const filteredDown = await stepKey(1, 'ArrowDown');
+  await waitFor(
+    `document.activeElement && document.activeElement.dataset &&
+     document.activeElement.dataset.chapterId === ${JSON.stringify(filteredId)} &&
+     document.activeElement.dataset.index === '2'`,
+    8000
+  );
+  check(
+    '章节列表：筛选态下 Alt+↓ 后焦点仍落在同一章（RND-02：书内下标 ≠ 渲染行下标）',
+    Boolean(filteredId) && filteredDown && filteredDown.ok === true && filteredDown.prevented === true &&
+      (await exec('window.__cwTest.chapterDirectoryInfo().rendered')) === 1 &&
+      (await exec('window.__cwTest.chapterNames()'))[2] === '第一' &&
+      (await exec('document.activeElement.dataset.chapterId')) === filteredId
+  );
+  // 挪回原位再清筛选 —— 27c 继续按 [第三, 第一, 第二] 的全量列表做真实指针拖拽
+  const filteredUp = await stepKey(2, 'ArrowUp');
+  await waitFor(
+    `document.activeElement && document.activeElement.dataset &&
+     document.activeElement.dataset.chapterId === ${JSON.stringify(filteredId)} &&
+     document.activeElement.dataset.index === '1'`,
+    8000
+  );
+  check(
+    '章节列表：筛选态下 Alt+↑ 挪回原位（顺序还原、焦点跟随）',
+    Boolean(filteredUp && filteredUp.ok === true) &&
+      JSON.stringify(await exec('window.__cwTest.chapterNames()')) === JSON.stringify(stepBefore)
+  );
+  await exec("window.__cwTest.setChapterFilter('')");
+  await waitFor(
+    "window.__cwTest.chapterDirectoryInfo().rendered === 3 && window.__cwTest.chapterDirectoryInfo().filter === ''",
+    8000
+  );
+
   // 27c. 真实指针拖拽（1.5.0 P0-2：条目事件改由 #chapter-list 容器委托）：
   // pointerdown 起手 → pointermove 越过 5px 阈值 → pointerup 落点，必须照旧能拖动并落盘。
   // 当前顺序是 [第三, 第一, 第二]：把第 1 条拖到末尾，正好还原成新书顺序，

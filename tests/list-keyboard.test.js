@@ -494,6 +494,13 @@ test('静态闸门：Ctrl+PageUp/PageDown 切章接线（复用 switchChapter，
     focusSeg.includes("closest('#chapter-list')"),
     '只有焦点本来就在章节列表里才挪焦点（不许从编辑区抢走）'
   );
+  // RND-02：'id' 落点必须先把书内下标换成渲染行下标（筛选 / 分卷折叠时 DOM 行序 ≠ 书内下标）。
+  // 旧实现直接 items[state.chapters.findIndex(id)]，筛选态下会把 tabIndex / 焦点写到别的行。
+  const idAt = focusSeg.indexOf("mode === 'id'");
+  assert.ok(idAt > 0, "'id' 落点还在（改名前请同步本断言）");
+  const idSeg = focusSeg.slice(idAt, idAt + 800);
+  assert.ok(idSeg.includes('dataset.chapterId'), "'id' 落点要按 data-chapter-id 找真正的渲染行");
+  assert.match(idSeg, /byId\s*>=\s*0\s*\?\s*byId\s*:\s*wanted/, '找不到该行再退回原来的下标记法（行为不回退）');
 });
 
 // ---------- 容器事件委托（假 DOM） ----------
