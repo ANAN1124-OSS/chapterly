@@ -1440,3 +1440,43 @@ test('清理备份（B6/WP4）：取消 / 单组清理 / 执行失败 / 计划�
   assert.deepEqual(guardCtx.calls.deleteHistoryBackups, []);
   assert.ok(guardCtx.calls.toast.some((item) => item[1] === 'error' && item[0].includes('暂时读不到撤销状态')));
 });
+
+// RND-04（2026-11-24 复核补审）：一组几百上千文件的备份，点一次「展开剩余」不再同步建完全部行 ——
+// 每次点击只补一页（20 行），按钮文案随剩余递减，补完最后一页才收起。
+test('RND-04：展开剩余按页追加（每点一次 +20 行，文案递减，补完才收起）', async () => {
+  const dom = makeDom(BASE_IDS);
+  const files = manyFiles(500);
+  const big = groupFixture({ id: 'dir:整理-20261110', files, fileCount: files.length, restorableCount: files.length });
+  const ctx = build({ dom, listHistory: () => ({ title: '书甲', groups: [big], fileCount: files.length, totalBytes: 4096 }) });
+  ctx.state.history = historyPanelState();
+  await ctx.ui.refreshHistory();
+  const card = () => dom.map.get('history-list').children[0];
+  const more = () => findButtonByClass(card(), 'history-more-files');
+  assert.equal(fileRowsOf(card()).length, 20, '首屏 20 行');
+  assert.equal(more().textContent, '展开剩余 480 个文件');
+
+  // 每次点击同步新增行数有界：恰好 20 行
+  const firstClick = more();
+  firstClick._fire('click');
+  assert.equal(fileRowsOf(card()).length, 40, '点一次只补一页');
+  assert.equal(more().textContent, '展开剩余 460 个文件', '文案随剩余递减');
+  assert.equal(more().disabled, false, '还有剩余，按钮仍可用');
+
+  // 连点到最后：每次 +20，最后一页补完收起
+  let guard = 0;
+  while (more() && !more().disabled) {
+    const before = fileRowsOf(card()).length;
+    more()._fire('click');
+    const after = fileRowsOf(card()).length;
+    assert.ok(after - before <= 20, `一次点击最多补一页（${before} → ${after}）`);
+    assert.equal(more() ? more().disabled : true, after >= 500, '没补完前不收起');
+    guard += 1;
+    assert.ok(guard < 40, '有限次点击内必须补完');
+  }
+  assert.equal(fileRowsOf(card()).length, 500, '最终全部补上');
+  assert.equal(more().classList.contains('hidden'), true, '补完后按钮收起');
+  assert.equal(more().disabled, true, '补完后按钮禁用（再点无动作）');
+  const afterAll = fileRowsOf(card()).length;
+  more()._fire('click');
+  assert.equal(fileRowsOf(card()).length, afterAll, '收起后再点不会重复追加');
+});

@@ -52,7 +52,7 @@
  * 其它来源的组仍然是「默认展开 + 只有还原整组」，折叠开关一个字节没加。
  *
  * 审计修复 #21（P5）：非快照组（替换 / 整理 / 还原前备份）的文件行改成分页 —— 每组先渲染
- * 前 HISTORY_FILE_PAGE（20）行，余下的用一枚「展开剩余 N 个文件」按钮一次补全。以前整本整理
+ * 前 HISTORY_FILE_PAGE（20）行，余下的用一枚「展开剩余 N 个文件」按钮逐页补全（RND-04）。以前整本整理
  * 备份几百行 × 每行 2-3 个监听器全量重建，备份积累多时打开 / 刷新面板明显变慢。
  *
  * 浏览器里挂成全局 CWHistoryUi（index.html 排在 renderer.js 之前），Node 里可以直接 require。
@@ -499,14 +499,25 @@
       const more = document.createElement('button');
       more.type = 'button';
       more.className = 'btn ghost tiny history-more-files';
-      more.textContent = `展开剩余 ${files.length - firstPage} 个文件`;
+      let shown = firstPage;
+      const updateMoreLabel = () => {
+        more.textContent = `展开剩余 ${files.length - shown} 个文件`;
+      };
+      updateMoreLabel();
       more.addEventListener('click', () => {
         if (more.disabled) return;
-        // 点开一次就把剩下的补全，按钮自己收起（.hidden 与面板其它隐藏元素同一套规则）：
-        // 不再整组重渲染、不重复挂已有行的监听器，也不会留下一个「下一页」的错觉。
-        more.disabled = true;
-        more.classList.add('hidden');
-        for (let i = firstPage; i < files.length; i += 1) card.appendChild(buildHistoryFileRow(group, files[i]));
+        // RND-04：一次只补一页（HISTORY_FILE_PAGE 行）。旧实现点一次同步建完所有剩余行 —— 一组
+        // 5000 文件的备份点开就是 5000 份 DOM + 上万监听器，主线程要卡好几秒；现在每次点击的
+        // 同步新增行数有界，按钮文案随剩余递减，补完最后一页自己收起。
+        const next = Math.min(files.length, shown + HISTORY_FILE_PAGE);
+        for (let i = shown; i < next; i += 1) card.appendChild(buildHistoryFileRow(group, files[i]));
+        shown = next;
+        if (shown >= files.length) {
+          more.disabled = true;
+          more.classList.add('hidden');
+        } else {
+          updateMoreLabel();
+        }
       });
       card.appendChild(more);
     }
