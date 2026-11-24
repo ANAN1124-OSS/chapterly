@@ -92,9 +92,60 @@ async function cleanupOrphanTmpFiles(dir, { olderThanMs = ORPHAN_TMP_MIN_AGE_MS,
   return { removed, kept };
 }
 
+// ATOMIC-01：rename 只保证「路径这一条目」原子替换 —— 新目录项本身可能还在页缓存里，只 fsync 了
+// 文件内容、不 fsync 父目录时，忽然断电可能回到旧文件（取决于文件系统）。所以 rename 成功后尽力
+// 补一次目录 fsync。Windows 上目录 fsync 普遍不被支持（EPERM / EISDIR / EINVAL），这不是错误：
+// 失败只留一条诊断日志，绝不把已经成功的写盘改判失败；同一进程里第一次失败后记下「本平台不支持」，
+// 不再每次都重试 / 刷日志。
+let diagnosticLogError = null;
+let dirSyncUnsupported = false;
+
+// 启动时由 main 注入现成的 logError（与 core/storage 的 setDiagnostics 同一口径）；没注入 / 写失败都静默。
+function setDiagnostics(io = {}) {
+  diagnosticLogError = io && typeof io.logError === 'function' ? io.logError : null;
+}
+
+function reportDirSyncFailure(filePath, err) {
+  if (!diagnosticLogError) return;
+  try {
+    diagnosticLogError('atomic-dir-sync', err, {
+      level: 'info',
+      code: 'DIR_SYNC_FAILED',
+      file: path.basename(String(filePath == null ? '' : filePath))
+    });
+  } catch {
+    /* 日志失败不影响写盘 */
+  }
+}
+
+// 只给单测注入：{ fsImpl } 换成记录调用的假 fs（与 renameWithRetry 的 rename 注入同一套做法）。
+// 返回 true = 目录 fsync 成功；false = 本平台不支持 / 目录被移走（已经尽力，不影响写盘结果）。
+async function syncParentDir(filePath, { fsImpl = fs } = {}) {
+  // 注入的 fsImpl 是单测替换（与真实平台能力无关），不受「本平台不支持」的记忆影响。
+  if (dirSyncUnsupported && fsImpl === fs) return false;
+  let handle = null;
+  try {
+    handle = await fsImpl.open(path.dirname(filePath), 'r');
+    await handle.sync();
+    return true;
+  } catch (err) {
+    // EPERM / EISDIR / EINVAL / EBADF / ENOTSUP：Windows 等平台不支持对目录 fsync，之后不再尝试。
+    // 其它错误（目录被移走 / 权限变化）也只是一次尽力而为的持久化，不阻断写入。
+    if (err && ['EPERM', 'EISDIR', 'EINVAL', 'EBADF', 'ENOTSUP', 'EACCES'].includes(err.code)) {
+      dirSyncUnsupported = true;
+    }
+    reportDirSyncFailure(filePath, err);
+    return false;
+  } finally {
+    if (handle) {
+      try { await handle.close(); } catch { /* 忽略 */ }
+    }
+  }
+}
+
 // ensureDir=false：只写「已经存在的目录」（保存章节用），目录被删时直接报错，
 // 绝不 mkdir 重建出一个只有一章 txt 的影子书文件夹。
-async function atomicWriteFile(filePath, data, encoding = 'utf8', { ensureDir = true } = {}) {
+async function atomicWriteFile(filePath, data, encoding = 'utf8', { ensureDir = true, syncDir = syncParentDir } = {}) {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
   const tmp = path.join(
@@ -112,6 +163,12 @@ async function atomicWriteFile(filePath, data, encoding = 'utf8', { ensureDir = 
     await handle.close();
     handle = null;
     await renameWithRetry(tmp, filePath);
+    // ATOMIC-01：目录 fsync 在 rename 之后做；失败只记日志（syncParentDir 内部吞掉），不阻断。
+    try {
+      await syncDir(filePath);
+    } catch (err) {
+      reportDirSyncFailure(filePath, err);
+    }
   } catch (err) {
     if (handle) {
       try { await handle.close(); } catch { /* 忽略 */ }
@@ -124,7 +181,7 @@ async function atomicWriteFile(filePath, data, encoding = 'utf8', { ensureDir = 
 // B5（v1.8.0 WP-28）：流式原子写。produce(write) 里按块顺序写，整段成功后才 fsync + rename；
 // 任一块失败：关句柄、删临时文件、目标文件一个字节不动（与 atomicWriteFile 同一条红线）。
 // TXT 导出这种「边读边拼、不物化整本字符串」的路径用它；小文件仍走 atomicWriteFile。
-async function atomicWriteFileStream(filePath, produce, { ensureDir = true } = {}) {
+async function atomicWriteFileStream(filePath, produce, { ensureDir = true, syncDir = syncParentDir } = {}) {
   if (typeof produce !== 'function') throw new TypeError('atomicWriteFileStream 需要写入回调');
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
@@ -149,6 +206,12 @@ async function atomicWriteFileStream(filePath, produce, { ensureDir = true } = {
     await handle.close();
     handle = null;
     await renameWithRetry(tmp, filePath);
+    // ATOMIC-01：与 atomicWriteFile 同一条纪律（atomicCopyFile 也走这里），失败不阻断。
+    try {
+      await syncDir(filePath);
+    } catch (err) {
+      reportDirSyncFailure(filePath, err);
+    }
   } catch (err) {
     if (handle) {
       try { await handle.close(); } catch { /* 忽略 */ }
@@ -197,6 +260,9 @@ module.exports = {
   atomicCopyFile,
   renameWithRetry,
   writeJsonAtomic,
+  // ATOMIC-01：rename 之后的父目录 fsync（失败只记日志），以及启动时注入日志钩子 / 单测用的注入点
+  syncParentDir,
+  setDiagnostics,
   // X8（WP-40）：孤儿临时文件回收（启动 / 打开书时），以及给单测用的命名解析
   ORPHAN_TMP_MIN_AGE_MS,
   parseTmpName,

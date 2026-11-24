@@ -49,7 +49,7 @@ const screenshotDialog = argValue('dialog');
 const automation = isE2E || isBench || isContrast || Boolean(screenshotPath);
 
 const { createConfigStore, sanitize: sanitizeConfig, withBooksRootOverride, WORDLIST_MAX, sameWindowBounds } = require('./core/config');
-const { atomicWriteFile, atomicWriteFileStream, cleanupOrphanTmpFiles } = require('./core/atomic');
+const { atomicWriteFile, atomicWriteFileStream, cleanupOrphanTmpFiles, setDiagnostics: setAtomicDiagnostics } = require('./core/atomic');
 // F1（三审）：导出目录清单 —— 回收中断导出留下的孤儿临时文件时，不再只认一个 lastExportDir
 const exportDirsLib = require('./core/export-dirs');
 const storage = require('./core/storage');
@@ -742,6 +742,9 @@ function logError(kind, err, extra = {}) {
 // 审计修复 #32（▲V305）：core/storage 的「书目重复章节 id 已按位置重新分配」要留一条诊断日志，
 // 但 core 模块不持有日志 store —— 启动时把现成的 logError 注入一次（写不进去只吞掉，绝不影响读书目）。
 storage.setDiagnostics({ logError });
+// ATOMIC-01：rename 之后的父目录 fsync 失败（Windows 不支持 / 目录被移走）只留一条 debug 诊断，
+// 不影响已经成功的写盘；同一进程里第一次「平台不支持」后不再重复尝试。
+setAtomicDiagnostics({ logError });
 
 // ---------- 渲染崩溃恢复（v1.8.2 WP5 / 审计 N1，中 #6；作者拍板项 1=B） ----------
 // 三件事：① render-process-gone 自动 reload（重载环用 60 秒保护窗 + 对话框出口）；

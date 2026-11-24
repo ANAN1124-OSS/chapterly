@@ -156,17 +156,23 @@ test('atomicWriteFile：临时文件与目标同目录、以「.」开头带 .tm
 
 test('静态闸门：临时文件 → fsync → rename 的顺序不许调换，失败路径要清理临时文件', async () => {
   const src = await fs.readFile(path.join(__dirname, '..', 'core', 'atomic.js'), 'utf8');
+  // ATOMIC-01 之后 atomic.js 里还有目录 fsync 的 handle.sync()，这里的顺序断言必须限定在
+  // atomicWriteFile 函数体里（不然后加的同步点会把静态闸门误判成调换顺序）。
+  const fnStart = src.indexOf('async function atomicWriteFile(filePath');
+  const fnEnd = src.indexOf('async function atomicWriteFileStream', fnStart);
+  assert.ok(fnStart > 0 && fnEnd > fnStart, 'atomicWriteFile 还在（改名前请同步本断言）');
+  const body = src.slice(fnStart, fnEnd);
   // C6（审计 S8）：临时文件改用 'wx'（撞名 / 残留临时文件直接失败，绝不覆盖）
-  const openAt = src.indexOf("fs.open(tmp, 'wx')");
-  const writeAt = src.indexOf('handle.writeFile(data, encoding)');
-  const syncAt = src.indexOf('await handle.sync()');
-  const closeAt = src.indexOf('await handle.close()', syncAt);
-  const renameAt = src.indexOf('await renameWithRetry(tmp, filePath)');
+  const openAt = body.indexOf("fs.open(tmp, 'wx')");
+  const writeAt = body.indexOf('handle.writeFile(data, encoding)');
+  const syncAt = body.indexOf('await handle.sync()');
+  const closeAt = body.indexOf('await handle.close()', syncAt);
+  const renameAt = body.indexOf('await renameWithRetry(tmp, filePath)');
   assert.ok(openAt > 0 && writeAt > openAt, '先 open 再 writeFile');
   assert.ok(syncAt > writeAt, '写完之后必须 fsync');
   assert.ok(closeAt > syncAt, 'fsync 之后才 close');
   assert.ok(renameAt > closeAt, 'fsync + close 之后才 rename');
-  assert.match(src, /catch \(err\) \{[\s\S]*?fs\.unlink\(tmp\)/, '失败路径必须删掉临时文件');
+  assert.match(body, /catch \(err\) \{[\s\S]*?fs\.unlink\(tmp\)/, '失败路径必须删掉临时文件');
   for (const name of ['atomicWriteFile', 'renameWithRetry', 'writeJsonAtomic', 'stripBom', 'sleep']) {
     assert.equal(typeof atomic[name], 'function', `导出 ${name} 不许被删`);
   }
@@ -321,17 +327,88 @@ test('readJson 已删（CSTO-A05）：坏输入不会再被一个无人使用的
   assert.equal(typeof atomic.readJson, 'undefined');
 });
 
+// ATOMIC-01：rename 之后的父目录 fsync。顺序必须是 rename → open(dir,'r') → sync → close；
+// 目录 fsync 失败（Windows 普遍不支持 / 目录被移走）只记一条诊断，绝不把成功的写盘改判失败。
+test('ATOMIC-01：rename 成功后补父目录 fsync，顺序 rename → dir open(r) → sync → close', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, '目录同步.txt');
+  const calls = [];
+  const real = fs.rename;
+  const restore = patchRename(async (from, to) => {
+    calls.push('rename');
+    return real(from, to);
+  });
+  try {
+    await atomic.atomicWriteFile(file, '正文', 'utf8', {
+      syncDir: async (target) => {
+        const fakeFs = {
+          open: async (dirPath, flag) => {
+            calls.push(`open:${path.basename(dirPath)}:${flag}`);
+            return {
+              sync: async () => { calls.push('sync'); },
+              close: async () => { calls.push('close'); }
+            };
+          }
+        };
+        assert.equal(await atomic.syncParentDir(target, { fsImpl: fakeFs }), true);
+      }
+    });
+  } finally {
+    restore();
+  }
+  assert.deepEqual(calls, ['rename', `open:${path.basename(dir)}:r`, 'sync', 'close'], '目录 fsync 必须排在 rename 之后');
+  assert.equal(await fs.readFile(file, 'utf8'), '正文');
+});
+
+test('ATOMIC-01：目录 fsync 失败不改变写盘结果，只留诊断日志', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, '失败不影响.txt');
+  const logs = [];
+  atomic.setDiagnostics({ logError: (...args) => logs.push(args) });
+  try {
+    // 两种原子写都覆盖：抛错也照常返回，目标文件是新版、临时文件不残留
+    await atomic.atomicWriteFile(file, '第一版', 'utf8', { syncDir: async () => { throw fsError('EXDEV'); } });
+    await atomic.atomicWriteFileStream(file, (write) => write('第二版'), {
+      syncDir: async () => { throw fsError('EXDEV'); }
+    });
+    assert.equal(await fs.readFile(file, 'utf8'), '第二版');
+    assert.deepEqual(await tmpEntries(dir), [], '目录 fsync 失败不许留下临时文件');
+    assert.ok(logs.length >= 2, '每次目录 fsync 失败都要留一条可诊断的日志');
+    assert.equal(logs[0][0], 'atomic-dir-sync');
+    assert.equal(logs[0][2].code, 'DIR_SYNC_FAILED');
+
+    // syncParentDir 自己打开目录就失败：返回 false，不抛（注入的 fs 用非平台错误码，不触发禁用记忆）
+    const failingFs = { open: async () => { throw fsError('EXDEV'); } };
+    assert.equal(await atomic.syncParentDir(path.join(dir, 'x.txt'), { fsImpl: failingFs }), false);
+  } finally {
+    atomic.setDiagnostics({});
+  }
+});
+
 test('反回退：core/storage.js 与 main.js 不许绕过原子写（不直接 writeFile / writeFileSync / createWriteStream）', async () => {
   const root = path.join(__dirname, '..');
+  // GATE-03：按标识符边界扫，而不是子串 includes('fs.writeFile(')。旧写法会漏掉
+  // `fs.promises.writeFile(` 与解构出来的 `writeFile(`；边界 (?<!\w) 也不会误伤
+  // atomicWriteFile / writeJsonAtomic 这类自家入口。
+  const BYPASS_WRITE_RE = /(?<!\w)(?:writeFile|writeFileSync|createWriteStream|appendFile|appendFileSync)\s*\(/g;
+  const scanBypass = (src) => src.match(BYPASS_WRITE_RE) || [];
+  // 负控：绕过写法必须被认出来（三种：带 fs 前缀 / fs.promises / 解构裸调用）
+  assert.ok(scanBypass('await fs.writeFile(p, x)').length, 'fs.writeFile 必须命中');
+  assert.ok(scanBypass('await fs.promises.writeFile(p, x)').length, 'fs.promises.writeFile 必须命中');
+  assert.ok(scanBypass('const { writeFile } = require("node:fs/promises");\nawait writeFile(p, x)').length, '解构 writeFile 必须命中');
+  assert.ok(scanBypass('fs.writeFileSync(p, x)').length, 'writeFileSync 必须命中');
+  assert.ok(scanBypass('await fsp.appendFile(p, x)').length, 'appendFile 必须命中');
+  // 反例：自家原子写入口不许误伤
+  assert.equal(scanBypass('await atomicWriteFile(p, x)').length, 0);
+  assert.equal(scanBypass('await writeJsonAtomic(p, x)').length, 0);
+
   for (const rel of ['core/storage.js', 'main.js']) {
     const src = await fs.readFile(path.join(root, rel), 'utf8');
-    for (const bad of ['fs.writeFile(', 'writeFileSync(', 'createWriteStream(', 'fs.appendFile(', 'appendFileSync(']) {
-      assert.equal(src.includes(bad), false, `${rel} 不许出现 ${bad}（落盘必须经过 core/atomic.js）`);
-    }
+    assert.deepEqual(scanBypass(src), [], `${rel} 不许绕过原子写（落盘必须经过 core/atomic.js）`);
     assert.match(src, /require\('\.\/atomic'\)|require\('\.\/core\/atomic'\)/, `${rel} 必须用 core/atomic.js`);
   }
   // 唯一允许直接写文件的是导入暂存目录（core/importer.js）：那里写的是「还没成为书」的临时目录，
   // 写坏了直接丢掉整个暂存目录，不会污染任何已有书 / 章节。
   const importer = await fs.readFile(path.join(root, 'core', 'importer.js'), 'utf8');
-  assert.equal(importer.includes('fs.writeFile('), true, 'importer 的暂存写入是有意的（不改就不该动它）');
+  assert.ok(scanBypass(importer).length > 0, 'importer 的暂存写入是有意的（不改就不该动它）');
 });
