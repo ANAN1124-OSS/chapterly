@@ -171,6 +171,32 @@ test('REPO-01：三个工作流都缓存 pnpm store，E2E 两个再按版本缓�
   assert.equal(verify.includes('electron-45.1.0-win32-x64'), false);
 });
 
+// CI-F3（2026-11-24 复核补审）：Electron zip 缓存必须与「确保二进制就位」看同一个目录。
+// 旧实现缓存 path 用 ${{ env.LOCALAPPDATA }}\electron\Cache，pwsh 里也用 $env:LOCALAPPDATA；
+// 两处都取 runner 的环境值，job 内任一处被改写就分叉成「缓存命中但解压看不到」。统一落到
+// 工作区 .electron-cache，pwsh 用 $env:GITHUB_WORKSPACE 拼同一个目录；缓存目录进 .gitignore。
+test('CI-F3：E2E 两个工作流的 Electron 缓存 path 与 pwsh 引用同一 workspace 目录', () => {
+  for (const [name, raw] of [['e2e-weekly.yml', readE2e()], ['e2e-pr.yml', readE2ePr()]]) {
+    const text = raw.replace(/\r\n/g, '\n');
+    assert.match(
+      text,
+      /path: \$\{\{ github\.workspace \}\}\/\.electron-cache\n/,
+      name + ' 的 actions/cache path 必须落在 ${{ github.workspace }}/.electron-cache'
+    );
+    assert.match(
+      text,
+      /\$cache = Join-Path \$env:GITHUB_WORKSPACE '\.electron-cache'/,
+      name + ' 的 pwsh 缓存变量必须用 $env:GITHUB_WORKSPACE 拼同一个目录'
+    );
+    assert.equal(
+      commandsOf(text).includes('LOCALAPPDATA'),
+      false,
+      name + ' 的真命令里不能再出现 LOCALAPPDATA（缓存与解压各看一处会分叉）'
+    );
+  }
+  assert.match(readUtf8(path.join(ROOT, '.gitignore')), /^\.electron-cache\/?$/m, '工作区缓存目录要进 .gitignore');
+});
+
 // 审计修复 #56（O4）：engines 声明 node >=22，CI 必须真跑 22（不能只测开发机的 24）。
 test('verify.yml 用 Node 22 / 24 两档矩阵，fail-fast: false', () => {
   const text = readVerify().replace(/\r\n/g, '\n');

@@ -19,3 +19,4 @@ coverage/
 *.tgz
 .eslintcache
 .cache/
+.electron-cache/
