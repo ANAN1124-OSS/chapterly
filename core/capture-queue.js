@@ -48,6 +48,9 @@ const PREVIEW_LIMIT = 40;
 
 // C3（一轮·低）：positiveInt 收进 core/common.js 唯一实现（原先三个模块各写一份逐字相同的）。
 const { positiveInt } = require('./common');
+// CLOCK-01：TTL 用单调时钟量，墙钟（Date.now）只做展示 / 兼容注入 —— 系统时间被校准 / 用户
+// 手动改表时，墙钟回拨会让过期的记录一直滞留、前跳会把刚复制的记录立刻判过期。
+const { performance } = require('node:perf_hooks');
 
 // JS 的 \s（String#trim / /\s/ 正则）判定的空白码位：逐码位判定，比整行 replace 少一次分配，
 // 也不会漏掉全角空格 / 不换行空格 / 行分隔符这些「看着不是空格、trim 却算空白」的码位。
@@ -134,20 +137,26 @@ function createCaptureQueue(options = {}) {
   const maxTotalChars = positiveInt(options.maxTotalChars, DEFAULT_MAX_TOTAL_CHARS);
   const ttlMs = positiveInt(options.ttlMs, DEFAULT_TTL_MS);
   const now = typeof options.now === 'function' ? options.now : Date.now;
+  // CLOCK-01：过期判定只看单调时钟（performance.now），at 字段仍是墙钟时刻（只用于展示 / 兼容）。
+  // 老单测只注入假墙钟 now 时，把单调时钟接到同一个假时钟上 —— 「t 走到 TTL 就过期」的既有语义
+  // 不变；要分别验证墙钟回拨 / 前跳，显式注入 monoNow。
+  const monoNow = typeof options.monoNow === 'function'
+    ? options.monoNow
+    : (typeof options.now === 'function' ? now : () => performance.now());
 
-  let entries = []; // 旧 → 新：[{ id, text, chars, rawLength, at, ownerWindowId }]
+  let entries = []; // 旧 → 新：[{ id, text, chars, rawLength, at, monoAt, ownerWindowId }]
   let nextId = 1;
   let totalChars = 0; // 各条 rawLength 之和（内存口径；上限按它淘汰）
 
-  // N-17：惰性过期清理。at 是入队时刻（store 自己的 now()，不采信外部时间戳），
-  // 超过 ttlMs 的条目直接丢弃；返回这次清掉的条数（测试 / 诊断可观察）。
+  // N-17：惰性过期清理。CLOCK-01：消耗的时长用「入队单调时刻 → 现在」的差，墙钟回拨 / 前跳都
+  // 不会让记录滞留或提前淘汰；at（墙钟）只用于显示。返回这次清掉的条数（测试 / 诊断可观察）。
   function sweepExpired() {
     if (!entries.length) return 0;
-    const cutoff = now() - ttlMs;
+    const cutoff = monoNow() - ttlMs;
     let removed = 0;
     const keep = [];
     for (const entry of entries) {
-      if (entry.at <= cutoff) {
+      if (entry.monoAt <= cutoff) {
         totalChars -= entry.rawLength;
         removed += 1;
       } else {
@@ -286,6 +295,8 @@ function createCaptureQueue(options = {}) {
       chars,
       rawLength,
       at: now(),
+      // CLOCK-01：TTL 只认这个单调时刻（不采信外部时间戳，也不受墙钟校准影响）。
+      monoAt: monoNow(),
       // S1：全局快捷键触发时知道是哪扇窗口要弹面板；后台监听拍记进来的先留空，等面板打开时 claim。
       ownerWindowId: normalizeOwner(addOptions && addOptions.ownerWindowId),
       // #3：这段复制发生在哪扇窗口（后台监听拍取当时的聚焦窗口；拿不到就是 null = 没有来源上下文）。

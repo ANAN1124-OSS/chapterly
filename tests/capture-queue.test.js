@@ -422,3 +422,44 @@ test('N-17：过期条目不挡新记录；默认 TTL 30 分钟、可按实例�
   assert.deepEqual(queue.list().map((entry) => entry.preview), ['新'.repeat(10)], '只留没过期的那条');
 });
 
+// ---------- CLOCK-01（2026-11-24 复核补审）：TTL 改单调时钟 ----------
+// 旧实现用墙钟差判过期：系统时间被校准回拨后 cutoff = now - ttl 反而是「未来」，过期记录会
+// 一直滞留；时间前跳则会把刚复制几分钟的记录立刻判过期。现在过期只看入队后的单调时长，
+// 墙钟只保留在 at 字段做展示 / 兼容。
+test('CLOCK-01：墙钟回拨 1 小时不让记录滞留，前跳也不提前淘汰', () => {
+  let wall = 1_000_000;
+  let mono = 5_000;
+  const queue = queueLib.createCaptureQueue({ ttlMs: 1000, now: () => wall, monoNow: () => mono });
+  const entry = queue.add('校准正文'.repeat(3)).entry;
+  assert.equal(entry.at, wall, 'at 仍是墙钟（展示口径不变）');
+
+  // 墙钟回拨 1 小时 + 单调时间恰好走到 TTL：必须过期
+  wall -= 60 * 60 * 1000;
+  mono += 1000;
+  assert.equal(queue.size(), 0, '墙钟回拨不能让过期记录滞留');
+  assert.equal(queue.get(entry.id), null);
+
+  // 墙钟前跳 1 小时，但单调时间几乎没走：不许提前淘汰
+  wall += 60 * 60 * 1000;
+  const fresh = queue.add('前跳正文'.repeat(3)).entry;
+  wall += 60 * 60 * 1000;
+  mono += 999;
+  assert.equal(queue.size(), 1, '墙钟前跳不能把刚复制的记录提前判过期');
+  assert.equal(queue.get(fresh.id).text, '前跳正文'.repeat(3));
+
+  // 真正的过期只按单调差走
+  mono += 1;
+  assert.equal(queue.size(), 0, '单调时间到 TTL 才过期');
+});
+
+test('CLOCK-01：默认路径用单调时钟（只注入墙钟的老用法语义不变）', () => {
+  // 默认实例：TTL 判定走 performance.now，不读墙钟；这里只钉「默认实例能正常过期」。
+  const queue = queueLib.createCaptureQueue({ ttlMs: 5 });
+  const entry = queue.add('默认时钟'.repeat(3)).entry;
+  return new Promise((resolve) => setTimeout(resolve, 25))
+    .then(() => {
+      assert.equal(queue.size(), 0, '默认实例 5ms TTL 在 25ms 后应过期');
+      assert.equal(queue.get(entry.id), null);
+    });
+});
+
