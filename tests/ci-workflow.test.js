@@ -395,3 +395,35 @@ test('REPO-02：PR 级 E2E 的单 Node 版本取舍有声明，且与 weekly / v
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
   assert.match(readme, /E2E 档\*\*只跑 Node 24\*\*/, 'README 的 CI 一节要带同一句声明');
 });
+
+// GATE-04（2026-11-24 复核补审）：视觉断言跳过面是机器事实 —— README 与两个 workflow 的
+// 「N 处 checkVisual / 运行时展开 M 项」必须与 scripts/e2e/visual-assertions.js 的静态清单一致。
+// 改 MANIFEST（增删视觉断言）却忘了同步文档 → 这条红；运行时项数三方必须互相一致。
+test('GATE-04：README / 两个 workflow 的视觉断言计数与 MANIFEST 一致', () => {
+  const visual = require('../scripts/e2e/visual-assertions.js');
+  const manifestCount = visual.MANIFEST.length;
+  assert.ok(manifestCount > 0, '视觉断言清单不能为空');
+
+  const readme = readSource('README.md');
+  const readmeCalls = /源码里 (\d+) 处 `checkVisual`/.exec(readme);
+  assert.ok(readmeCalls, 'README 必须写明「源码里 N 处 checkVisual」');
+  assert.equal(Number(readmeCalls[1]), manifestCount, `README 写 ${readmeCalls[1]} 处，清单实际 ${manifestCount} 条`);
+  const readmeRuntime = /运行时按用例展开 (\d+) 项/.exec(readme);
+  assert.ok(readmeRuntime, 'README 必须写明运行时展开项数');
+  const runtimeCount = Number(readmeRuntime[1]);
+
+  for (const [name, file] of [
+    ['e2e-weekly.yml', '.github/workflows/e2e-weekly.yml'],
+    ['e2e-pr.yml', '.github/workflows/e2e-pr.yml']
+  ]) {
+    const text = readSource(file);
+    const calls = /(\d+) 处 checkVisual/.exec(text);
+    assert.ok(calls, `${name} 要写明 checkVisual 处数`);
+    assert.equal(Number(calls[1]), manifestCount, `${name} 写 ${calls[1]} 处，清单实际 ${manifestCount} 条`);
+    const runtime = /运行时展开 (\d+) 项/.exec(text);
+    assert.ok(runtime, `${name} 要写明运行时展开项数（与 README 同口径）`);
+    assert.equal(Number(runtime[1]), runtimeCount, `${name} 的运行时项数与 README 不一致`);
+  }
+  // 清单本身就是 wiring-check 的 e2e-visual-assertions 事实源：数量变了上面必须一起改。
+  assert.ok(readme.includes('visual-assertions.js'), 'README 要指向跳过面的唯一事实源');
+});

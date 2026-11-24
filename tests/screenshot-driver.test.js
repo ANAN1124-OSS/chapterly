@@ -4,7 +4,7 @@
 //   1. 驱动能脱离 Electron 单独 require（不 require electron / main.js），纯逻辑部分直接跑；
 //   2. 注入脚本（--dialog 截图用的 JS 片段）语法有效、行为可预期；
 //   3. 静态闸门：main.js 里不能再长出截图 / 自检代码、驱动必须懒加载、打包配置不含 scripts/。
-// 真实 Electron 侧（截图 / 1150 项 E2E）仍由 scripts/e2e-scenario.js 与截图命令覆盖。
+// 真实 Electron 侧（截图 / 全量 E2E，项数以 README 与 docs/验收清单.md 的机器锚点为准）仍由 scripts/e2e-scenario.js 与截图命令覆盖。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

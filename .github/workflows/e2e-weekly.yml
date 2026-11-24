@@ -108,7 +108,7 @@ jobs:
         env:
           TZ: Asia/Shanghai
           # 发版 2.1.0 的 CI 适配（REPO-03 后续）：hosted runner 没有交互式桌面会话，Chromium 对不可见
-          # 窗口节流合成 / 动画 / 布局，动效 / 主题 / 几何测量类断言在那里必然偏（2026-11-23 实测 30 项）。
+          # 窗口节流合成 / 动画 / 布局，动效 / 主题 / 几何测量类断言在那里必然偏。
           # 这些断言（44 处 checkVisual，运行时展开 50 项）在本地与发版前的全量 E2E 里照常跑；CI 只跳过它们，
           # 功能断言与供应链闸门仍全部阻塞。跳过面由 scripts/e2e/visual-assertions.js 的静态清单约束
           # （wiring-check 的 e2e-visual-assertions 契约）：不许把功能断言挪进 checkVisual 换绿灯。
