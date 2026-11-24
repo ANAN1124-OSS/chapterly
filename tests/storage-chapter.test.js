@@ -849,7 +849,9 @@ test('分卷：书目里章节乱序或指向不存在的卷，读取时会归�
   raw.volumes = [{ id: 'v_001', name: '卷A' }];
   raw.chapters = [
     { id: 'c1', file: raw.chapters[0].file, name: '卷一', volumeId: 'v_001' },
-    { id: 'c2', file: raw.chapters[0].file, name: '孤儿', volumeId: 'v_404' }
+    // META-01 起「两章共用一个 file」按 INVALID_META 拒绝；这条用例只验分卷归一，
+    // 给第二条一个不同的合法文件名即可（不要求文件真的存在，readBookMeta 不 stat 章节）。
+    { id: 'c2', file: '002-孤儿.txt', name: '孤儿', volumeId: 'v_404' }
   ];
   await fs.writeFile(metaPath, JSON.stringify(raw), 'utf8');
   const meta = await storage.readBookMeta(bookPath);
