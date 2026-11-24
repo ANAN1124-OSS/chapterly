@@ -3219,7 +3219,16 @@
     crashRecoveryUi.start();
 
     document.addEventListener('click', (event) => {
-      if (!event.target.closest('#context-menu') && !event.target.closest('.chapter-item')) hideContextMenu();
+      // RND-01：批量条的「改状态 / 移卷」在 click 里同步打开同一张右键菜单；批量条按钮不在
+      // #context-menu 里，旧收敛会在同一个 click 冒泡到 document 时立刻把刚打开的菜单收掉
+      //（菜单在 DOM 里但在 .hidden 下，看起来就是「点了没反应」）。把批量条与菜单同等排除。
+      if (
+        !event.target.closest('#context-menu') &&
+        !event.target.closest('#chapter-batch-bar') &&
+        !event.target.closest('.chapter-item')
+      ) {
+        hideContextMenu();
+      }
       if (!event.target.closest('#volume-menu') && !event.target.closest('.volume-item')) hideVolumeMenu();
       if (!event.target.closest('#btn-export') && !event.target.closest('#export-menu')) hideExportMenu();
       if (!event.target.closest('#format-dropdown')) hideFormatMenu();

@@ -11,6 +11,7 @@
 //   ⑧ 复制选中章：按目录顺序（不是点击顺序）拼「标题 + 空行 + 正文」一次写剪贴板；当前章未保存用编辑区文本；
 //   ⑨ 右键落在已选章上：菜单只留能作用到全部已选章的动作（单章动作收起），执行时作用于全部；
 //   ⑩ 全程只读校验：多选 / 复制不写章节文件、不改书目（批量删除只进 _trash，撤销放回）。
+//   ⑪ RND-01：批量条按钮同步打开的右键菜单必须真的可见（脚本 .click() 与真实鼠标两条路径）。
 //
 // 自足：自己造一本 5 章的书、收尾走书架 _trash 删掉；不写配置、不碰真实书架。
 const fs = require('node:fs/promises');
@@ -26,7 +27,7 @@ const CLICK = (index, extra = '') => `(() => {
 const selection = async (exec) => JSON.parse(await exec('JSON.stringify(window.__cwTest.chapterSelection())'));
 
 module.exports = async function group78ChapterSelection(t) {
-  const { exec, check, waitFor, sleep, storage, booksRoot, deleteBookWithRetry, clipboard, waitForClipboard, exporter } = t;
+  const { exec, check, waitFor, sleep, win, storage, booksRoot, deleteBookWithRetry, clipboard, waitForClipboard, exporter } = t;
 
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
@@ -218,6 +219,49 @@ module.exports = async function group78ChapterSelection(t) {
       barA11y.barVisible === true && barA11y.tabs.length === 6 && barA11y.tabs.every((n) => n >= 0),
     barA11y
   );
+  await exec('window.__cwTest.clearChapterSelection()');
+
+  // ---------- ④c RND-01：批量条按钮同步打开的右键菜单不能被全局 click 收敛立刻收掉 ----------
+  // 批量条「改状态 / 移卷」复用 #context-menu；旧实现里按钮 click 冒泡到 document 时，
+  // 全局收敛只排除 #context-menu / .chapter-item，于是刚打开的菜单在同一个事件里被 hideContextMenu()
+  // 收进 .hidden —— DOM 里有菜单、界面上看不见，后续直接 .click() 菜单项仍能过，所以必须有
+  // 「菜单真的可见」的断言。
+  await exec(CLICK(1, 'ctrlKey: true'));
+  await exec(CLICK(3, 'ctrlKey: true'));
+  await exec("document.getElementById('btn-batch-status').click()");
+  await sleep(80);
+  const menuVisibleAfterScriptClick = await exec(
+    "document.getElementById('context-menu').classList.contains('hidden') === false"
+  );
+  check(
+    '章节多选：点批量条按钮后右键菜单保持展开（RND-01 脚本点击路径）',
+    menuVisibleAfterScriptClick === true,
+    { menuVisibleAfterScriptClick }
+  );
+  // 先收起菜单，确保下一条真实鼠标路径不是「点到已展开的菜单」而空过。
+  await exec("document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))");
+  await waitFor("document.getElementById('context-menu').classList.contains('hidden') === true", 3000);
+  // 真实鼠标路径：sendInputEvent 的 mouseDown/mouseUp 由 Chromium 合成 click，走的是同一条
+  // document 冒泡链（脚本 .click() 走不到的窗口级命中 / 定位也一并覆盖）。
+  const batchStatusRect = JSON.parse(
+    await exec(`(() => {
+  const rect = document.getElementById('btn-batch-status').getBoundingClientRect();
+  return JSON.stringify({ x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) });
+})()`)
+  );
+  win.webContents.sendInputEvent({ type: 'mouseDown', x: batchStatusRect.x, y: batchStatusRect.y, button: 'left', clickCount: 1 });
+  win.webContents.sendInputEvent({ type: 'mouseUp', x: batchStatusRect.x, y: batchStatusRect.y, button: 'left', clickCount: 1 });
+  await waitFor("document.getElementById('context-menu').classList.contains('hidden') === false", 3000);
+  const menuVisibleAfterRealMouse = await exec(
+    "document.getElementById('context-menu').classList.contains('hidden') === false"
+  );
+  check(
+    '章节多选：真实鼠标点批量条按钮后右键菜单展开（RND-01 sendInputEvent 路径）',
+    menuVisibleAfterRealMouse === true,
+    { menuVisibleAfterRealMouse }
+  );
+  await exec("document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))");
+  await sleep(80);
   await exec('window.__cwTest.clearChapterSelection()');
 
   // ---------- ⑤ 普通单击：清空多选 + 照旧切章 ----------
