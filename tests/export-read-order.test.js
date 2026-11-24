@@ -35,10 +35,10 @@ const makeTmpDir = (prefix = 'cw-export-order-') => tmpCleanup.mkTmp(prefix);
 
 // 真实 ipc/export.js 的 host：只替换「可观察的边界」（对话框、时钟、剪贴板、原子写），
 // 存储 / 格式 / 范围解析全部走真实 core（与 WP13 R7/R8 同一套装配口径）。
-function makeHost({ targetPath = '', canceled = false, readThrows = false, lastExportDir = '' } = {}) {
+function makeHost({ targetPath = '', canceled = false, readThrows = false, lastExportDir = '', readDelayMs = 0 } = {}) {
   const channels = new Map();
   const events = [];
-  const calls = { dialogs: 0, reads: [], writes: 0, dialogOptions: [] };
+  const calls = { dialogs: 0, reads: [], writes: 0, dialogOptions: [], inFlight: 0, peak: 0 };
   const clipboard = [];
   const host = {
     handle: (name, fn) => channels.set(name, fn),
@@ -55,7 +55,15 @@ function makeHost({ targetPath = '', canceled = false, readThrows = false, lastE
         }
         calls.reads.push(file);
         events.push(`read:${file}`);
-        return storage.loadChapterText(bookPath, file);
+        // PERF-EXP-01：并发读峰值探针（有界预取的验证口径）
+        calls.inFlight += 1;
+        calls.peak = Math.max(calls.peak, calls.inFlight);
+        try {
+          if (readDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, readDelayMs));
+          return await storage.loadChapterText(bookPath, file);
+        } finally {
+          calls.inFlight -= 1;
+        }
       }
     },
     exporter,
@@ -139,7 +147,7 @@ test('R7-1 取消保存：三格式 0 次读正文 / 0 次写盘 / 目标文件�
   }
 });
 
-test('R7-2 确认保存：事件顺序严格 dialog → read:*，三格式各读 3 章一次（不预读、不重复读）', async () => {
+test('R7-2 确认保存：事件顺序严格 dialog → read:*，三格式各读 3 章一次（有界预取窗口内、不重复读）', async () => {
   const dir = await makeTmpDir('cw-read-order-confirm-');
   const root = path.join(dir, '书库');
   await fsp.mkdir(root, { recursive: true });
@@ -348,4 +356,60 @@ test('N-12：book:copy 逐块拼装的输出与 composeBook / composeSelected �
   assert.match(src, /exporter\.copyEntries\(meta, indexes\)/);
   assert.match(src, /exporter\.copyBlock\(meta, entries\[batch\[offset\]\]\.index, text\)/);
   assert.match(src, /exporter\.joinCopyBlocks\(blocks\)/);
+});
+
+// PERF-EXP-01（2026-11-24 复核补审）：TXT / EPUB / DOCX 的流式导出加有界读预取 —— 逐章消费顺序
+// 与产物不变，读盘之间重叠（慢盘上整本导出不再 ≈ 章数 × 单章延迟），同时在飞的读 ≤ 窗口 + 当前章。
+test('PERF-EXP-01：三格式逐章读有界预取（峰值 ≥2 且 ≤4），TXT 产物与整本构建逐字节一致', async () => {
+  const dir = await makeTmpDir('cw-prefetch-');
+  const root = path.join(dir, '书库');
+  await fsp.mkdir(root, { recursive: true });
+  const names = Array.from({ length: 12 }, (_, i) => `第${i + 1}章`);
+  const bookPath = await makeBook(root, names);
+  const meta = await storage.readBookMeta(bookPath);
+  const texts = [];
+  for (const chapter of meta.chapters) {
+    texts.push((await storage.loadChapterText(bookPath, chapter.file)).text);
+  }
+  const oracle = exporter.buildTxtExport(meta, texts.slice(), null, '', null);
+
+  const txtTarget = path.join(dir, '预取.txt');
+  const txtHost = makeHost({ targetPath: txtTarget, readDelayMs: 10 });
+  const txtResult = await txtHost.channels.get('book:export')(bookPath, null, null);
+  assert.equal(txtResult.canceled, false);
+  assert.ok(txtHost.calls.peak >= 2, `TXT 读盘要有重叠（实测峰值 ${txtHost.calls.peak}）`);
+  assert.ok(txtHost.calls.peak <= 4, `TXT 预取窗口有界（实测峰值 ${txtHost.calls.peak}）`);
+  assert.equal(txtHost.calls.reads.length, 12, '每章仍然只读一次');
+  assert.deepEqual(await fsp.readFile(txtTarget), oracle, 'TXT 产物必须与整本构建逐字节一致');
+
+  for (const [channel, ext] of [['book:export-epub', 'epub'], ['book:export-docx', 'docx']]) {
+    const target = path.join(dir, `预取.${ext}`);
+    const host = makeHost({ targetPath: target, readDelayMs: 10 });
+    const result = await host.channels.get(channel)(bookPath, null, null);
+    assert.equal(result.canceled, false, `${channel} 正常导出`);
+    assert.ok(
+      host.calls.peak >= 2 && host.calls.peak <= 4,
+      `${channel} 读盘峰值 ${host.calls.peak} 必须 ≥2（有重叠）且 ≤4（窗口有界）`
+    );
+    assert.ok(result.bytes > 0);
+    assert.equal(fs.existsSync(target), true, `${channel} 产物已写出`);
+  }
+
+  // 40 章对拍：窗口不随章数增长，产物与整本构建逐字节一致
+  const bigRoot = path.join(dir, '书库40');
+  await fsp.mkdir(bigRoot, { recursive: true });
+  const bigPath = await makeBook(bigRoot, Array.from({ length: 40 }, (_, i) => `第${i + 1}章`));
+  const bigMeta = await storage.readBookMeta(bigPath);
+  const bigTexts = [];
+  for (const chapter of bigMeta.chapters) {
+    bigTexts.push((await storage.loadChapterText(bigPath, chapter.file)).text);
+  }
+  const bigOracle = exporter.buildTxtExport(bigMeta, bigTexts.slice(), null, '', null);
+  const bigTarget = path.join(dir, '预取40.txt');
+  const bigHost = makeHost({ targetPath: bigTarget, readDelayMs: 5 });
+  const bigResult = await bigHost.channels.get('book:export')(bigPath, null, null);
+  assert.equal(bigResult.canceled, false);
+  assert.equal(bigHost.calls.reads.length, 40, '40 章各读一次');
+  assert.ok(bigHost.calls.peak <= 4, `40 章峰值仍是 ≤4（实测 ${bigHost.calls.peak}）`);
+  assert.deepEqual(await fsp.readFile(bigTarget), bigOracle, '40 章产物逐字节一致');
 });

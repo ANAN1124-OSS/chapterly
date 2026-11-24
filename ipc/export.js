@@ -355,6 +355,24 @@ function registerExportIpc(host) {
     // 按章 index 记账：同一章无论工厂被调用几遍，只计一次原稿字数。
     const countedChapters = new Set();
     let built = null;
+    // PERF-EXP-01：chunks 生成器逐章 await readText（慢盘上读盘之间没有重叠）。这里包一层有界预读
+    // （窗口 3 章，峰值 = 窗口 + 当前章）；生成器仍按原顺序消费，产物逐字节不变，readText 次数不变。
+    const readChapterText = async (index, chapter) => {
+      const text =
+        index === overrideIndex
+          ? prepared.override.text
+          : (await storage.loadChapterText(bookPath, chapter.file)).text;
+      if (!countedChapters.has(index)) {
+        countedChapters.add(index);
+        chars += chaptersLib.countChars(text);
+      }
+      return conversion ? s2tLib.convertText(text, conversion) : text;
+    };
+    const prefetch = exporter.createPrefetchReader({
+      indexes: prepared.plan.indexes,
+      chapters: meta.chapters,
+      readText: readChapterText
+    });
     // 五-M33（IE-02）：EPUB / DOCX 同样在逐章读盘期间登记在途租约，finally 释放
     const releaseLease = beginReadLease(bookPath);
     try {
@@ -365,17 +383,7 @@ function registerExportIpc(host) {
             range: safeRange,
             labels,
             // 每章只读一次：override 章用编辑区最新内容（不写盘），其余读磁盘；chars 按原始正文计。
-            readText: async (index, chapter) => {
-              const text =
-                index === overrideIndex
-                  ? prepared.override.text
-                  : (await storage.loadChapterText(bookPath, chapter.file)).text;
-              if (!countedChapters.has(index)) {
-                countedChapters.add(index);
-                chars += chaptersLib.countChars(text);
-              }
-              return conversion ? s2tLib.convertText(text, conversion) : text;
-            }
+            readText: async (index, chapter) => prefetch.read(index, chapter)
           },
           write
         );

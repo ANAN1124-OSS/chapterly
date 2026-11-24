@@ -307,6 +307,49 @@ function buildTxtExport(meta, texts, range, conversion, convertText) {
   return exportBufferFromText(converted); // ③ BOM + 串 → Buffer
 }
 
+// PERF-EXP-01（2026-11-24 复核补审）：有界读预取。TXT / EPUB / DOCX 的流式导出都是「逐章 await
+// readText」——慢盘 / 网络盘上整本导出的时间 ≈ 章数 × 单章读延迟，读盘之间没有重叠。这里在消费第 p
+// 章的同时启动后面 PREFETCH 章的读盘：消费顺序 / readText 调用次数 / 错误语义都不变，持续内存只多
+// 「预读窗口」这几章的正文（峰值 = 窗口 + 当前章，不随书变大）。
+// 预读到的 Promise 先吞成 { ok, text | err }，没人消费就结算，绝不留 unhandledRejection。
+const EXPORT_PREFETCH_CHAPTERS = 3;
+
+// indexes：本趟导出的书内章下标顺序；chapters：书目章节数组；readText(index, chapter) 与旧口径一致。
+function createPrefetchReader({ indexes, chapters, readText, maxAhead = EXPORT_PREFETCH_CHAPTERS } = {}) {
+  const plan = Array.isArray(indexes) ? indexes : [];
+  const list = Array.isArray(chapters) ? chapters : [];
+  const window = new Map(); // plan 位置 -> Promise<{ ok, text } | { ok: false, err }>
+  const ahead = Number.isFinite(maxAhead) && maxAhead >= 0 ? Math.floor(maxAhead) : EXPORT_PREFETCH_CHAPTERS;
+  const positionOf = new Map();
+  for (let i = 0; i < plan.length; i += 1) {
+    if (!positionOf.has(plan[i])) positionOf.set(plan[i], i);
+  }
+  const start = (position) => {
+    if (window.has(position)) return;
+    const index = plan[position];
+    window.set(
+      position,
+      Promise.resolve()
+        .then(() => readText(index, list[index]))
+        .then((text) => ({ ok: true, text }), (err) => ({ ok: false, err }))
+    );
+  };
+  async function read(index, chapter) {
+    const position = positionOf.get(index);
+    // 计划外的章（不该发生；防调用方传错）：按原样直读，不预取、不缓存。
+    if (position === undefined) return readText(index, chapter);
+    const limit = Math.min(plan.length, position + 1 + ahead);
+    for (let i = position; i < limit; i += 1) start(i);
+    const pending = window.get(position);
+    window.delete(position);
+    if (!pending) return readText(index, chapter);
+    const outcome = await pending;
+    if (!outcome.ok) throw outcome.err;
+    return outcome.text;
+  }
+  return { read, windowSize: () => window.size, maxAhead: ahead };
+}
+
 // B5（v1.8.0 WP-28）：TXT 导出流式拼接。按「卷 → 章」逐块交给 onChunk（已经过简繁转换），
 // 不在内存里拼整本串、也不建 blocks 数组；readText(index, chapter) 每次只让调用方读一章，
 // 整本导出期间常驻的正文从「全书 texts 数组 + 整本串 + 整本 Buffer」降到「一章 + 它的导出块」。
@@ -322,6 +365,8 @@ async function streamTxtExport(meta, range, options) {
   const convertText = typeof opts.convertText === 'function' ? opts.convertText : null;
   const chapters = chapterList(meta);
   const plan = resolveExportRange(meta, range);
+  // PERF-EXP-01：逐章消费的顺序不变，读盘按窗口预取（峰值 = 窗口 + 当前章）。
+  const prefetch = createPrefetchReader({ indexes: plan.indexes, chapters, readText });
   let chars = 0;
   let first = true;
   const emit = async (piece) => {
@@ -337,7 +382,7 @@ async function streamTxtExport(meta, range, options) {
     if (group.name) await emit(group.name);
     for (const index of group.indexes) {
       const chapter = chapters[index];
-      const text = await readText(index, chapter);
+      const text = await prefetch.read(index, chapter);
       chars += chaptersLib.countChars(text);
       const title = chaptersLib.formatTitle(meta, index, chapter && chapter.name);
       await emit(blockFor(title, text));
@@ -443,6 +488,9 @@ module.exports = {
   exportBufferFromText,
   buildTxtExport,
   streamTxtExport,
+  // PERF-EXP-01：有界读预取（TXT 流式内部用；EPUB / DOCX 的 chunks 生成器由 ipc/export 包一层）
+  EXPORT_PREFETCH_CHAPTERS,
+  createPrefetchReader,
   convertTextsInPlace,
   releaseTexts,
   cachedCharsOf,
