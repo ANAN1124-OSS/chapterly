@@ -66,6 +66,25 @@ async function isDirectory(p) {
   }
 }
 
+// EXPORT-01（2026-11-24 复核补审）：把「来源目录的真实路径」也纳入归属判定 —— 来源若是目录联接，
+// 字面路径在书库外、真实路径却在书库里时，旧实现会把它当外部书再导入一份（与库里那本同内容，
+// 白占空间、还可能同 id）。有界（2 秒）：网络盘 / 断开的盘上 realpath 可能长时间不返回，
+// 到点按「解析不到」处理、保持原来的字面判定，绝不把正常导入卡死。失败返回 ''。
+const REALPATH_PROBE_MS = 2000;
+async function realpathBounded(target) {
+  let timer = null;
+  try {
+    const probe = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(''), REALPATH_PROBE_MS);
+      if (timer.unref) timer.unref();
+    });
+    const result = await Promise.race([fs.realpath(target).catch(() => ''), probe]);
+    return typeof result === 'string' ? result : '';
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // V106（v1.8.0 WP-21）：导入文件夹撞名后缀的硬上限，与 core/chapters.js 的 MAX_NAME_SUFFIX 同口径。
 // 以前是 `for (;;)` 线性探测：同名书极多时要做 O(n²) 次 stat，理论上不可终止（exists 永远为真）。
 // 现在 `-2` … `-999` 用完仍撞名就抛 BAD_PATH（错误码与章节撞名一致，文案由 error-text 脱敏后给界面）。
@@ -1047,6 +1066,16 @@ async function importFolders(booksRoot, sources, options = {}) {
     if (isInside(root, sourceDir)) {
       skipped.push({ source: relativeSourceLabel(sourceDir), reason: '已经在书架目录里了' });
       continue;
+    }
+    // EXPORT-01：来源是目录联接时，字面路径可能不在书库、真实路径却在 —— 按真实路径再判一次，
+    // 已在库里的来源按同一条「已经在书架目录里了」跳过（不生成重复书）。
+    const realSource = await realpathBounded(sourceDir);
+    if (realSource) {
+      const realRoot = await realpathBounded(root);
+      if (realRoot && isInside(realRoot, realSource)) {
+        skipped.push({ source: relativeSourceLabel(sourceDir), reason: '已经在书架目录里了' });
+        continue;
+      }
     }
     if (isInside(sourceDir, root)) {
       skipped.push({ source: relativeSourceLabel(sourceDir), reason: '不能导入包含书架目录的上级文件夹' });

@@ -281,3 +281,41 @@ test('五-L6（TC-4）：streamDocx 压缩兜底二次调用工厂，chars 仍�
   );
   assert.equal(await fs.readFile(result.filePath, 'utf8'), 'PK-fake', '兜底包装照样写盘');
 });
+
+// EXPORT-01（2026-11-24 复核补审）：落点父目录是目录联接、真实路径在书库里 → 按真实路径拒绝。
+// 字面判定（N-16）只看字符串，联接会把整本导出送进章节文件；拒绝发生在读正文 / 写盘之前。
+test('EXPORT-01：落点经联接指进书库 → 按真实路径拒绝，章节字节不变；普通外部目录照常放行', async () => {
+  const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
+  const base = await mkTmp('cw-export-junction-');
+  const realRoot = path.join(base, '真实书库');
+  await fs.mkdir(realRoot, { recursive: true });
+  const bookPath = await makeBook(realRoot);
+  const meta = await storage.readBookMeta(bookPath);
+  const chapterFile = meta.chapters[0].file;
+  const chapterPath = path.join(bookPath, chapterFile);
+  const before = await fs.readFile(chapterPath);
+  const shelfLink = path.join(base, '书架联接');
+  const dropLink = path.join(base, '导出落点联接');
+  await fs.symlink(realRoot, shelfLink, LINK_TYPE);
+  await fs.symlink(bookPath, dropLink, LINK_TYPE);
+  // 字面路径：base/导出落点联接/001-…txt（不在 shelfLink 下）；真实路径：书里那一章
+  const targetPath = path.join(dropLink, chapterFile);
+  const host = makeHost({ targetPath, booksRoot: shelfLink });
+  await assert.rejects(
+    () => host.channels.get('book:export')(bookPath, null, null),
+    (err) => err && err.code === 'EXPORT_TARGET_IN_LIBRARY' &&
+      /真实路径/.test(err.message),
+    '联接落点必须被真实路径复核拦下'
+  );
+  assert.equal(host.calls.reads, 0, '拒绝发生在读正文之前');
+  assert.deepEqual(await fs.readFile(chapterPath), before, '章节正文一个字节都不许变');
+
+  // 普通外部目录（真实路径也在库外）照常放行
+  const outside = path.join(base, '普通外部');
+  await fs.mkdir(outside, { recursive: true });
+  const okHost = makeHost({ targetPath: path.join(outside, '导出.txt'), booksRoot: shelfLink });
+  const result = await okHost.channels.get('book:export')(bookPath, null, null);
+  assert.equal(result.canceled, false, '库外普通目录要照常导出');
+  assert.equal((await fs.readFile(path.join(outside, '导出.txt'), 'utf8')).includes('第一段正文'), true);
+  assert.deepEqual(await fs.readFile(chapterPath), before, '导出外部目录不影响章节');
+});

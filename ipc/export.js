@@ -173,6 +173,43 @@ function registerExportIpc(host) {
     }
   }
 
+  // EXPORT-01（2026-11-24 复核补审）：上面的字面判定只看字符串 —— 导出落点的父目录若是目录联接
+  // （junction / 目录符号链接），真实路径会落进书库 / 当前书目录里，整本导出照样能覆盖章节正文。
+  // 保存对话框确认后对「父目录 realpath」做一次有界复核（2 秒；与 N-10 的目录探测共用
+  // closeGuard.withDeadline）：字面路径与真实路径任一落在「书库字面 / 书库真实 / 本书字面 /
+  // 本书真实」里都拒绝。realpath 失败（目录还没建 / 断开的网络盘 / 权限）就保持字面判定，
+  // 不误拦普通外部目录；判定仍只读、不写盘。
+  const EXPORT_REALPATH_MS = 2000;
+  async function realpathWithinDeadline(target) {
+    const outcome = await closeGuard.withDeadline(() => fs.realpath(target), { ms: EXPORT_REALPATH_MS });
+    if (outcome.timedOut || outcome.error) return '';
+    return typeof outcome.value === 'string' ? outcome.value : '';
+  }
+
+  async function assertExportTargetOutsideLibraryBounded(filePath, cfg, bookPath) {
+    // 字面判定先挡（旧行为与文案一字不变），再做真实路径复核。
+    assertExportTargetOutsideLibrary(filePath, cfg, bookPath);
+    const parent = path.dirname(filePath);
+    const realParent = await realpathWithinDeadline(parent);
+    if (!realParent) return; // 父目录解析不出来：保持字面判定，绝不误拦
+    const realTarget = path.join(realParent, path.basename(filePath));
+    const literalRoots = [];
+    if (cfg && cfg.booksRoot) literalRoots.push(cfg.booksRoot);
+    if (bookPath) literalRoots.push(bookPath);
+    const roots = [...literalRoots];
+    for (const root of literalRoots) {
+      const realRoot = await realpathWithinDeadline(root);
+      if (realRoot) roots.push(realRoot);
+    }
+    for (const root of roots) {
+      if (!isPathInside(realTarget, root)) continue;
+      throw new storage.StorageError(
+        'EXPORT_TARGET_IN_LIBRARY',
+        '这个位置（按真实路径解析后）在书库里，保存会覆盖章节正文；请换一个书库外的目录'
+      );
+    }
+  }
+
   // 目录是否存在（导出默认目录兜底用）。N-10（二次审查）：这里原来用 fsSync.statSync 在主线程同步
   // 探测 lastExportDir —— 它可能是已断开的映射网络盘 / 休眠 USB / 被策略限制的共享目录，SMB 超时
   // 能让主进程（连同所有窗口）卡住几十秒。现在改异步 stat + 有界等待：到点按「目录不存在」处理，
@@ -294,7 +331,7 @@ function registerExportIpc(host) {
     });
     if (canceled || !filePath) return { canceled: true };
     // N-16：落点落在书库 / 本书目录里会覆盖章节正文，直接软错误拒绝（不读正文、不写盘）。
-    assertExportTargetOutsideLibrary(filePath, prepared.cfg, bookPath);
+    await assertExportTargetOutsideLibraryBounded(filePath, prepared.cfg, bookPath);
     // 审计 #7：落点确认之后才读正文（取消 / 改主意都不会白读）。B1 起改成逐章读。
     // 简繁转换：书名 / 卷名 / 章名 / 模板 / 正文都换成导出用的副本，目录和正文才一致；
     // 书目与章节 txt 一概不动（chars 仍按原稿字数算）。
@@ -362,7 +399,7 @@ function registerExportIpc(host) {
     });
     if (canceled || !filePath) return { canceled: true };
     // N-16：与 EPUB / DOCX 同一道闸门 —— 不许把导出的整本内容写回书库、覆盖章节 txt。
-    assertExportTargetOutsideLibrary(filePath, prepared.cfg, bookPath);
+    await assertExportTargetOutsideLibraryBounded(filePath, prepared.cfg, bookPath);
     // 审计 #7：落点确认之后才读整本正文（取消 / 改主意都不会白读）。
     // B5（v1.8.0 WP-28）：TXT 改流式写盘，边读边拼边写，不物化整本 texts / 整本串 / 整本 Buffer。
     const { chars, includedUnsaved, conversion } = await writeTxtExport(filePath, bookPath, prepared);
@@ -486,7 +523,7 @@ function registerExportIpc(host) {
     if (canceled || !filePath) return { canceled: true };
     // N-16：救稿本来就是「章节文件可能已经不在」时才用，更容易顺手存回书库；同样只许书库外。
     // 这条频道不拿 bookPath（书可能已缺失），按 booksRoot 判定即可覆盖所有章节 txt。
-    assertExportTargetOutsideLibrary(filePath, cfg, '');
+    await assertExportTargetOutsideLibraryBounded(filePath, cfg, '');
     await atomicWriteFile(filePath, chaptersLib.toDiskNewlines(body), 'utf8');
     // 记住这次落点，下次另存 / 导出默认还开在这里（记不住也不影响救稿结果）
     await rememberExportDir(path.dirname(filePath));

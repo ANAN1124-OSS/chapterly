@@ -15,6 +15,7 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const storage = require('../core/storage');
+const importer = require('../core/importer');
 const ipcPaths = require('../core/ipc-paths');
 const pathUtils = require('../core/path-utils');
 const openBooks = require('../core/open-books');
@@ -123,4 +124,29 @@ test('书文件夹本身是联接：已知路径下照常读章 / 保存（书�
   } finally {
     await cleanup(base, [bookLink]);
   }
+});
+
+// EXPORT-01（2026-11-24 复核补审）：来源目录是联接、真实路径就在书库内 → 按真实路径识别并跳过，
+// 不再导入一份同内容的重复书；普通外部目录照常导入。
+test('EXPORT-01：导入来源经联接指回书库 → 按真实路径跳过，不生成重复书', async () => {
+  const base = await mkTmp('cw-import-junction-');
+  const realRoot = path.join(base, '真实书库');
+  await fsp.mkdir(realRoot, { recursive: true });
+  const created = await storage.createBook(realRoot, '库里的书');
+  const link = path.join(base, '书库别名');
+  await fsp.symlink(realRoot, link, LINK_TYPE);
+  const res = await importer.importFolders(realRoot, [path.join(link, '库里的书')]);
+  assert.equal(res.imported.length, 0, '真实路径在库内：不许再导入一份');
+  assert.equal(res.skipped.length, 1);
+  assert.match(res.skipped[0].reason, /已经在书架目录里了/);
+  assert.equal((await storage.listBooks(realRoot)).length, 1, '书架数量不变');
+
+  // 普通外部目录照常导入（真实路径也在库外）
+  const external = path.join(base, '外部');
+  await fsp.mkdir(external);
+  await fsp.writeFile(path.join(external, '001-甲.txt'), '甲的正文', 'utf8');
+  const ok = await importer.importFolders(realRoot, [external]);
+  assert.equal(ok.imported.length, 1);
+  assert.equal((await storage.listBooks(realRoot)).length, 2);
+  assert.equal(created.path && (await storage.exists(created.path)), true);
 });
