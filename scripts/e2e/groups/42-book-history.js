@@ -318,6 +318,11 @@ module.exports = async function group42BookHistory(t) {
   // 同一份删章备份再放一次：书里已有同名文件，拒绝覆盖
   const deleteIndexAgain = await exec("window.__cwTest.historyGroupIndexBySource('delete')");
   // 1.4.0 P0-2：放回删除的章节不再弹确认框，直接调；「书里已有同名文件」的错误照样返回
+  // PERF-HIST-01：上一步的界面动作会刷新历史面板（回到组摘要），文件级调用前先按需展开这一组。
+  check(
+    '本书历史：删章组文件明细可再次按需展开（PERF-HIST-01）',
+    (await exec(`window.__cwTest.loadHistoryGroupFiles(${deleteIndexAgain})`)) === true
+  );
   const repeatDelete = await exec(`window.__cwTest.restoreHistoryFileAt(${deleteIndexAgain}, 0)`);
   check(
     '本书历史：书里已有同名文件时不覆盖（会报错）',

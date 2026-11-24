@@ -91,9 +91,10 @@ module.exports = async function group27DragSort(t) {
 
   // 27b-2（RND-02）：筛选态下 Alt+↓ 的焦点归位。列表只剩命中的那一行时，DOM 行序 ≠ 书内下标；
   // 旧实现把书内下标直接当渲染行下标，会把 tabIndex / 焦点写到不存在的行（焦点掉回 body）。
-  await exec("window.__cwTest.setChapterFilter('第一')");
+  // 这里筛「第三」（此时书序 [第三, 第一(未命名), 第二]）：唯一命中行在列表第 0 条、书内下标 0。
+  await exec("window.__cwTest.setChapterFilter('第三')");
   await waitFor(
-    "window.__cwTest.chapterDirectoryInfo().rendered === 1 && window.__cwTest.chapterDirectoryInfo().filter === '第一'",
+    "window.__cwTest.chapterDirectoryInfo().rendered === 1 && window.__cwTest.chapterDirectoryInfo().filter === '第三'",
     8000
   );
   const filteredId = await exec(`(() => {
@@ -102,26 +103,26 @@ module.exports = async function group27DragSort(t) {
     item.focus();
     return item.dataset.chapterId || null;
   })()`);
-  const filteredDown = await stepKey(1, 'ArrowDown');
+  const filteredDown = await stepKey(0, 'ArrowDown');
   await waitFor(
     `document.activeElement && document.activeElement.dataset &&
      document.activeElement.dataset.chapterId === ${JSON.stringify(filteredId)} &&
-     document.activeElement.dataset.index === '2'`,
+     document.activeElement.dataset.index === '1'`,
     8000
   );
   check(
     '章节列表：筛选态下 Alt+↓ 后焦点仍落在同一章（RND-02：书内下标 ≠ 渲染行下标）',
     Boolean(filteredId) && filteredDown && filteredDown.ok === true && filteredDown.prevented === true &&
       (await exec('window.__cwTest.chapterDirectoryInfo().rendered')) === 1 &&
-      (await exec('window.__cwTest.chapterNames()'))[2] === '第一' &&
+      (await exec('window.__cwTest.chapterNames()'))[1] === '第三' &&
       (await exec('document.activeElement.dataset.chapterId')) === filteredId
   );
   // 挪回原位再清筛选 —— 27c 继续按 [第三, 第一, 第二] 的全量列表做真实指针拖拽
-  const filteredUp = await stepKey(2, 'ArrowUp');
+  const filteredUp = await stepKey(1, 'ArrowUp');
   await waitFor(
     `document.activeElement && document.activeElement.dataset &&
      document.activeElement.dataset.chapterId === ${JSON.stringify(filteredId)} &&
-     document.activeElement.dataset.index === '1'`,
+     document.activeElement.dataset.index === '0'`,
     8000
   );
   check(

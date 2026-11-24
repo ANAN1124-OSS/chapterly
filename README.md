@@ -79,7 +79,7 @@ pnpm start          # 启动应用
 <details>
 <summary>CI 与自动化（维护者）</summary>
 
-> **CI**：GitHub Actions 三套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；**Node 用 22 / 24 两档矩阵**（`fail-fast: false`，与 engines 的 ≥22 对齐，v1.8.0 审计 O4 / #56）；② `.github/workflows/e2e-pr.yml` 在 **PR 改动 `renderer/**` / `core/**` / `ipc/**` / `main.js` / `preload.js`（以及 E2E 基建与依赖清单）时整跑一次全量 E2E**，**直推 `main` 命中同一份路径时也整跑**——把 UI 时序 / 真实 DOM 的回归窗口从「每周」缩到「每个 PR / 每次直推」（WP16 / 审计中 #19 / F1；直推触发是 2.1.0 三次审查 T-27 补的）；触发路径的唯一事实源是 `scripts/e2e-scope.js`（工作流的 `paths:` 与它逐项一致，本地可用 `node scripts/e2e-scope.js --changed <文件…>` 自查）（E2E 档**只跑 Node 24**：全量 E2E 约 60 分钟，PR 上双档会把预算翻倍；Node 22 的 E2E 由 ③ 的 22/24 矩阵兜底，静态 / 单测的 22 档由 ① 兜底）；③ `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29）。②③ 都在装完依赖后先跑 `node scripts/supply-chain-check.js` 核对 Electron 二进制（WP15 / 审计 E1=O-N2）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
+> **CI**：GitHub Actions 三套工作流，所有 actions **固定到提交 SHA**（Dependabot 每周提更新，不跟 `@v4` 浮动标签），运行镜像固定 `windows-2022`（不用浮动的 `windows-latest`）：① `.github/workflows/verify.yml` 在每次 push / PR 上跑四步——全量 `node --check`、`npm test`、`npx eslint .`（no-undef / no-unused-vars 均为 error）、`node scripts/a11y-gate.js --static`；**Node 用 22 / 24 两档矩阵**（`fail-fast: false`，与 engines 的 ≥22 对齐，v1.8.0 审计 O4 / #56）；② `.github/workflows/e2e-pr.yml` 在 **PR 改动 `renderer/**` / `core/**` / `ipc/**` / `main.js` / `preload.js`（以及 E2E 基建与依赖清单）时整跑一次全量 E2E**，**直推 `main` 命中同一份路径时也整跑**——把 UI 时序 / 真实 DOM 的回归窗口从「每周」缩到「每个 PR / 每次直推」（WP16 / 审计中 #19 / F1；直推触发是 2.1.0 三次审查 T-27 补的）；触发路径的唯一事实源是 `scripts/e2e-scope.js`（工作流的 `paths:` 与它逐项一致，本地可用 `node scripts/e2e-scope.js --changed <文件…>` 自查）（E2E 档**只跑 Node 24**：全量 E2E 约 3 分钟（2026-11-25 本机实测；CI 以工作流日志为准），PR 上双档会把预算翻倍；Node 22 的 E2E 由 ③ 的 22/24 矩阵兜底，静态 / 单测的 22 档由 ① 兜底）；③ `.github/workflows/e2e-weekly.yml` **每周定时整跑一次全量 E2E**（真实 Electron 窗口 + 临时书库），补上集成回归的自动拦截（v1.8.0 审计 O1 / #29）。②③ 都在装完依赖后先跑 `node scripts/supply-chain-check.js` 核对 Electron 二进制（WP15 / 审计 E1=O-N2）。**打包冒烟（`dist:dir` / NSIS 安装）仍按发版门禁在发版前本地执行**。提交前本地仍按 `pnpm lint` + `npm test` 自查。
 
 </details>
 
@@ -240,13 +240,13 @@ pnpm start          # 启动应用
 ## 开发与自检
 
 ```bash
-pnpm test            # 单测（node:test，3554 项）
-pnpm run e2e         # 全量 E2E：真实启动 Electron 走 1922 项主流程
+pnpm test            # 单测（node:test，3596 项）
+pnpm run e2e         # 全量 E2E：真实启动 Electron 走 1933 项主流程
 pnpm lint            # eslint 门禁（0 ERROR）
 ```
 
 - E2E 场景与 84 个组文件共用一份 harness；**84 个组文件（00–83）** 按组号派发。PR 改动 `renderer/` / `core/` / `ipc/` / 主进程时会跑受影响的组（`scripts/e2e-scope.js`）。
-- **CI 上的 E2E 会跳过视觉断言**（2.1.0 起）：GitHub 托管 runner 没有交互式桌面会话，Chromium 对不可见窗口节流合成 / 动画 / 布局，动效 / 主题 / 几何测量这类断言（源码里 44 处 `checkVisual`，运行时按用例展开 50 项；跳过面由 `scripts/e2e/visual-assertions.js` 的静态清单约束，`scripts/wiring-check.js` 逐项核对）在那边必然偏，所以 CI 设 `E2E_SKIP_VISUAL=1` 跳过它们；功能断言与供应链闸门照常阻塞。**本地与发版前的 `pnpm run e2e` 不带该开关，跑全量 1922 项。**
+- **CI 上的 E2E 会跳过视觉断言**（2.1.0 起）：GitHub 托管 runner 没有交互式桌面会话，Chromium 对不可见窗口节流合成 / 动画 / 布局，动效 / 主题 / 几何测量这类断言（源码里 44 处 `checkVisual`，运行时按用例展开 50 项；跳过面由 `scripts/e2e/visual-assertions.js` 的静态清单约束，`scripts/wiring-check.js` 逐项核对）在那边必然偏，所以 CI 设 `E2E_SKIP_VISUAL=1` 跳过它们；功能断言与供应链闸门照常阻塞。**本地与发版前的 `pnpm run e2e` 不带该开关，跑全量 1933 项。**
 - 版本 / 计数锚点：`node scripts/version-sync.js --check`（只核对 README 与验收清单互相对得上；带上 `--unit <N> --e2e <M>` 才与实测值强核对；发版用 `--write --unit <N> --e2e <M>` 同步）。
 - 打包、构建供应链、静态闸门策略与验收纪律见 [docs/维护与自检.md](docs/维护与自检.md)；完整目录与模块地图见 [项目结构](docs/项目结构.md)。
 - 历史分册（版本沿革、防丢稿逐轮记录、开发自检细节）已归档到内部文档：`内部文档/归档-2026-11-15/沿革.md`、`内部文档/归档-2026-11-15/README-开发自检细节.md`，不进公开仓库。
