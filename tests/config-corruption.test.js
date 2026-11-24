@@ -255,3 +255,32 @@ test('配置并发写入：两个 set 的 patch 都不会被吞掉', async () =>
   assert.equal(cfg.editorPaper, 'night');
   assert.equal(cfg.editorFontSize, 22);
 });
+
+// CONFIG-01（2026-11-24 复核补审）：并发首次 get() 共享同一趟 load —— 坏配置只读一次、只归档一次。
+// 旧实现两个窗口各读一遍、各归档一次：同秒归档名相同，第二个 rename 失败，界面误报「无法归档」。
+test('CONFIG-01：并发 get() 只读一次盘、只归档一次，不误报归档失败', async () => {
+  const dir = await mkTmp();
+  await fs.writeFile(path.join(dir, 'config.json'), '{ 坏配置 ', 'utf8');
+  let reads = 0;
+  let renames = 0;
+  const readFile = async () => {
+    reads += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20)); // 让两个 get() 都进到读盘里
+    return '{ 坏配置 ';
+  };
+  const rename = async (from, to) => {
+    renames += 1;
+    await fs.rename(from, to);
+  };
+  const store = createConfigStore(dir, { readFile, rename });
+  const [first, second] = await Promise.all([store.get(), store.get()]);
+  assert.equal(reads, 1, '并发首次 get() 只读一次盘');
+  assert.equal(renames, 1, '同一份坏配置只归档一次');
+  assert.equal(first.booksRoot, DEFAULTS.booksRoot);
+  assert.equal(second.booksRoot, DEFAULTS.booksRoot);
+  const warning = store.peekLoadWarning();
+  assert.equal(warning.code, 'CONFIG_CORRUPT');
+  assert.equal(warning.archiveError, undefined, '不误报「无法归档」');
+  const files = await fs.readdir(dir);
+  assert.equal(files.filter((name) => name.startsWith('config.json.corrupt-')).length, 1, '只多一份归档');
+});

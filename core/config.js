@@ -585,7 +585,20 @@ function createConfigStore(userDataDir, deps = {}) {
     return `配置文件损坏，已归档为 ${path.basename(archived)} 并恢复默认设置；书架目录请在「设置」里重新指定。`;
   }
 
-  async function load() {
+  // CONFIG-01：首次读盘的并发去重。两个窗口同时 get() 会各读一遍，并各自尝试把同一份坏 config
+  // 归档 —— 同一秒的归档名相同，后一个 rename 失败，界面误报「无法归档」。这里让并发 load 共享
+  // 同一趟。没塞进写队列是因为写队列串行且**不可重入**：队列里的写任务自己会调 get()，队列内再
+  // enqueue 会等自己跑完 → 死锁；并发去重已经覆盖「双读双归档」这个真实风险。
+  let loading = null;
+  function load() {
+    if (loading) return loading;
+    loading = loadOnce().finally(() => {
+      loading = null;
+    });
+    return loading;
+  }
+
+  async function loadOnce() {
     let raw;
     try {
       raw = await readJson(file, 'utf8');
