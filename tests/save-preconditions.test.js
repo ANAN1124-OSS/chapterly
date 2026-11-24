@@ -18,6 +18,7 @@ const vm = require('node:vm');
 const storage = require('../core/storage');
 const openBooks = require('../core/open-books');
 const errorText = require('../core/error-text');
+const saveIpc = require('../ipc/save');
 const tmpCleanup = require('./tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
@@ -505,4 +506,117 @@ test('F6（静态闸门）：writeBookMeta 的 stamp 核对走 open → handle.s
   assert.equal(body.includes('fs.stat(metaPath)'), false, '不许按路径 stat 主文件（闸门与核对会脱节）');
   assert.match(body, /META_CHANGED/, '写前身份不符要报 META_CHANGED');
   assert.match(body, /structural \|\| rotateBak/, '普通保存轮换 .bak 走显式选项，不改变默认语义');
+});
+
+// ---------- SAVE-01：prepareChapterSave 与 saveChapterText 之间的读盘窗口 ----------
+// prepare 之后还要读一遍旧字数 / 可能复制每日快照；外部程序恰好在这段里改写章节（保留 mtime），
+// 旧链路会拿旧基线静默覆盖外部那一版。写盘前的第二次 mtime + 指纹复核必须拒绝，磁盘一个字节都不动。
+function makeRealSaveHost({ snapshotEnabled = false, takeDailySnapshot = null } = {}) {
+  const channels = new Map();
+  const calls = { save: 0, writeMeta: 0 };
+  const baseStorage = {
+    ...storage,
+    takeDailySnapshot: takeDailySnapshot || ((...args) => storage.takeDailySnapshot(...args)),
+    saveChapterText: async (...args) => {
+      calls.save += 1;
+      return storage.saveChapterText(...args);
+    },
+    writeBookMeta: async (...args) => {
+      calls.writeMeta += 1;
+      return storage.writeBookMeta(...args);
+    }
+  };
+  saveIpc.register({
+    handleBook: (channel, fn, options) => channels.set(channel, { fn, options }),
+    assertText: (text) => text,
+    flowSession: () => ({ id: 7 }),
+    storage: baseStorage,
+    getConfig: async () => ({
+      snapshotEnabled,
+      snapshotKeepDays: 7,
+      dailyGoal: 2000,
+      writeDurationEnabled: false
+    }),
+    chaptersLib: require('../core/chapters'),
+    statsLib: require('../core/stats'),
+    errorText,
+    logError: () => {},
+    getStatsStore: () => ({ record: async () => ({ stats: { version: 1, days: {} }, added: 0 }) }),
+    getSearchIndexStore: () => ({ markDirty: () => {} }),
+    statsSummaryPayload: () => null,
+    rememberRecentBook: async () => {}
+  });
+  return { channels, calls };
+}
+
+test('SAVE-01：快照窗口内外部改写章节（保留 mtime）→ EXTERNAL_CHANGE，磁盘保持外部那一版', async () => {
+  const root = await mkTmp();
+  const { bookPath, meta } = await makeBook(root, '保存 窗口 复核');
+  const chapter = meta.chapters[0];
+  const chapterPath = path.join(bookPath, chapter.file);
+  // 把 mtime 钉死成整数毫秒（Windows 上 utimes 精度足够），这样「保留时间戳」是确定可复现的；
+  // 只有内容指纹能发现这次改写（回归时 prepareChapterSave 的旧守卫看不到窗口内的变化）。
+  const pinned = new Date('2026-11-20T10:00:00.000Z');
+  await fs.utimes(chapterPath, pinned, pinned);
+  const loaded = await storage.loadChapterText(bookPath, chapter.file, { track: true });
+  assert.equal(loaded.mtimeMs, pinned.getTime(), '用例前提：载入 mtime 与钉死值一致');
+
+  const externalText = '外部程序在保存窗口内改写的正文';
+  let injected = false;
+  const { channels, calls } = makeRealSaveHost({
+    snapshotEnabled: true,
+    takeDailySnapshot: async () => {
+      // 模拟：快照复制（这里直接替换为注入点）之后、saveChapterText 之前，同步盘 / 记事本改写正文
+      // 并保留了时间戳 —— rsync -t / robocopy /COPY:DAT 的典型现场。
+      await fs.writeFile(chapterPath, externalText, 'utf8');
+      await fs.utimes(chapterPath, pinned, pinned);
+      injected = true;
+      return { taken: true, reason: 'OK', dir: null, file: chapter.file, bytes: 1, cleanup: null };
+    }
+  });
+  assert.equal(channels.has('chapter:save'), true);
+  await assert.rejects(
+    () => channels.get('chapter:save').fn(bookPath, chapter.id, '编辑器里还没保存的新正文', loaded.mtimeMs),
+    (err) => {
+      assert.equal(err.code, 'EXTERNAL_CHANGE', '窗口内的外部改动必须报 EXTERNAL_CHANGE');
+      return true;
+    }
+  );
+  assert.equal(injected, true, '用例前提：注入点在保存链里被执行到');
+  assert.equal(calls.save, 0, '复核失败后绝不能再调用 saveChapterText');
+  const disk = await fs.readFile(chapterPath, 'utf8');
+  assert.equal(disk, externalText, '磁盘必须保持外部那一版，一个字节都不许被这次保存覆盖');
+});
+
+test('SAVE-01：窗口内 mtime 变化同样拒绝；无外部改动则正常写盘', async () => {
+  const root = await mkTmp();
+  const { bookPath, meta } = await makeBook(root, '保存 窗口 mtime');
+  const chapter = meta.chapters[0];
+  const chapterPath = path.join(bookPath, chapter.file);
+  const pinned = new Date('2026-11-20T11:00:00.000Z');
+  await fs.utimes(chapterPath, pinned, pinned);
+  const loaded = await storage.loadChapterText(bookPath, chapter.file, { track: true });
+
+  // ① 窗口内 mtime 变了（内容也变）→ EXTERNAL_CHANGE，saveChapterText 不执行
+  const changedMtime = makeRealSaveHost({
+    snapshotEnabled: true,
+    takeDailySnapshot: async () => {
+      await fs.writeFile(chapterPath, '窗口内被外部删改', 'utf8');
+      return { taken: true, reason: 'OK', dir: null, file: chapter.file, bytes: 1, cleanup: null };
+    }
+  });
+  await assert.rejects(
+    () => changedMtime.channels.get('chapter:save').fn(bookPath, chapter.id, '新正文', loaded.mtimeMs),
+    (err) => err.code === 'EXTERNAL_CHANGE'
+  );
+  assert.equal(changedMtime.calls.save, 0);
+
+  // ② 无外部改动：复核通过，正文正常写盘
+  await fs.writeFile(chapterPath, '阿明走进屋里。', 'utf8');
+  await fs.utimes(chapterPath, pinned, pinned);
+  const clean = makeRealSaveHost({ snapshotEnabled: true });
+  const result = await clean.channels.get('chapter:save').fn(bookPath, chapter.id, '阿明又走了出去。', loaded.mtimeMs);
+  assert.equal(clean.calls.save, 1, '没有外部改动时保存必须照常执行');
+  assert.equal(result.chars, '阿明又走了出去。'.length);
+  assert.equal(await fs.readFile(chapterPath, 'utf8'), '阿明又走了出去。', '正常保存写入新正文');
 });

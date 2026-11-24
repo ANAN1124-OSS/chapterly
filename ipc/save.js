@@ -97,6 +97,12 @@ function registerSaveIpc(host) {
           };
         }
       }
+      // SAVE-01（审计补修）：prepareChapterSave 之后还读了一遍旧字数 / 可能复制了每日快照，
+      // 应用外程序若在这段时间里改写章节，下面这次写盘会静默覆盖外部那一版。写盘前再核一次
+      // mtime + 内容指纹（约 1 次 stat + 8 KB 采样读），不一致抛 EXTERNAL_CHANGE。
+      // 只收窄窗口、不是闭环：stat 与 rename 之间仍有极小窗口（接管路径仍是下一次保存的
+      // expectedMtimeMs 校验 + 书目 stamp，见 core/open-books.js 与 writeBookMeta）。
+      await storage.recheckChapterSaveTarget(bookPath, chapter, expectedMtimeMs);
       const result = await storage.saveChapterText(bookPath, chapter.file, body, {
         ensureDir: false
       });

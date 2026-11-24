@@ -1349,6 +1349,56 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
   return { meta, chapter: checked.chapter, index: checked.index, metaStamp: stampOfMeta(meta) };
 }
 
+// SAVE-01（审计补修）：prepareChapterSave 与 saveChapterText 之间还夹着「每日快照（把上一版整章复制
+// 一份）/ 旧字数基线读取」两段读盘，慢盘 / 大书上可能是几十毫秒到几秒。应用外程序恰好在这个窗口里
+// 改写章节时，本进程会拿旧基线静默覆盖外部那一版——正是 prepareChapterSave 想挡的丢稿路径，只是
+// 窗口被前置读盘拉长了。这里在**真正写盘前**再核一次 mtime + 内容指纹（约 1 次 stat + 8 KB 采样读），
+// 不一致就抛 EXTERNAL_CHANGE，交给渲染层的覆盖 / 另存 / 重载三选。
+// 边界：只「收窄窗口」，不是闭环——stat 与 atomicWriteFile 的 rename 之间仍有极小窗口；覆盖保存
+// （expectedMtimeMs 为 0 / 非法）不校验，保持作者已明确选择覆盖的语义。复核口径复用
+// openBooks 的 verifySaveTarget（与 prepareChapterSave 同一份错误码 / 文案），不另写第二套判定。
+async function recheckChapterSaveTarget(bookPath, chapter, expectedMtimeMs) {
+  const expected = Number(expectedMtimeMs);
+  if (!chapter || typeof chapter.file !== 'string' || !chapter.file) return true;
+  if (!Number.isFinite(expected) || expected <= 0) return true;
+  const chapterPath = assertChapterFile(bookPath, chapter.file);
+  let chapterExists = false;
+  let chapterMtimeMs = null;
+  let chapterSize = 0;
+  try {
+    const stat = await fs.stat(chapterPath);
+    chapterExists = stat.isFile();
+    chapterMtimeMs = stat.mtimeMs;
+    chapterSize = stat.size;
+  } catch {
+    chapterExists = false;
+  }
+  let chapterFingerprint = '';
+  let expectedFingerprint = '';
+  if (chapterExists && Number.isFinite(chapterMtimeMs) && chapterMtimeMs === expected) {
+    const tracked = trackedChapterFingerprint(bookPath, chapter.file);
+    if (tracked && tracked.mtimeMs === chapterMtimeMs) {
+      expectedFingerprint = tracked.hash;
+      chapterFingerprint = await chapterContentHashOf(chapterPath, chapterSize);
+    }
+  }
+  const checked = openBooksLib.verifySaveTarget({
+    bookPath,
+    bookExists: true,
+    meta: { chapters: [chapter] },
+    metaCode: null,
+    chapterId: chapter.id,
+    file: chapter.file,
+    chapterExists,
+    chapterMtimeMs,
+    expectedMtimeMs: expected,
+    chapterFingerprint,
+    expectedFingerprint
+  });
+  if (!checked.ok) throw new StorageError(checked.code, checked.message);
+  return true;
+}
+
 // 新建章节并一次性写入正文（剪贴板捕获用）：先把正文写进新章节文件，再写书目；
 // 书目写失败就删掉刚建的文件，书目里绝不会留下「有记录、没正文」的空章。
 async function createChapterWithText(bookPath, { insertIndex = 0, name = '', text = '', volumeId = null } = {}) {
@@ -3149,6 +3199,8 @@ module.exports = {
   statChapter,
   saveChapterText: lockedWriteEntry(saveChapterText),
   prepareChapterSave: lockedWriteEntry(prepareChapterSave),
+  // SAVE-01：写盘前的最后一次 mtime + 内容指纹复核（只读，不进写队列；调用方已在书锁内）。
+  recheckChapterSaveTarget,
   openBookRegistry,
   registerOpenBook,
   releaseOpenBook,

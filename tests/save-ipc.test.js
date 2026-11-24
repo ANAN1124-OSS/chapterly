@@ -27,12 +27,14 @@ function makeHost(overrides = {}) {
   const channels = new Map();
   const calls = {
     prepare: [],
+    recheck: [],
     save: [],
     writeMeta: [],
     dirty: [],
     recent: [],
     stats: [],
-    touched: []
+    touched: [],
+    order: []
   };
   const session = { id: 7 };
   const meta = {
@@ -56,8 +58,13 @@ function makeHost(overrides = {}) {
       },
       loadChapterText: async () => ({ text: '旧文' }),
       takeDailySnapshot: async () => ({ taken: true, reason: 'OK', dir: 'snap', file: chapter.file, bytes: 1, cleanup: null }),
+      recheckChapterSaveTarget: async (bookPath, checkedChapter, expectedMtimeMs) => {
+        calls.recheck.push({ bookPath, chapter: checkedChapter, expectedMtimeMs });
+        calls.order.push('recheck');
+      },
       saveChapterText: async (bookPath, file, body, options) => {
         calls.save.push({ bookPath, file, body, options });
+        calls.order.push('save');
         return { mtimeMs: 1234, chars: 6, bytes: 6 };
       },
       writeBookMeta: async (bookPath, written, options) => {
@@ -109,7 +116,7 @@ test('MAIN-03：host 缺成员在 register() 装配期直接 TypeError（A8 口�
 });
 
 test('MAIN-03：保存链路（stamp / rotateBak / 索引标脏 / 统计 / recentBook / lastSaveAt）', async () => {
-  const { channels, calls, meta, session } = makeHost();
+  const { channels, calls, meta, chapter, session } = makeHost();
   const result = await channels.get('chapter:save').fn('D:\\书库\\书', 'c1', '新正文', 555);
 
   assert.equal(result.file, '001.md');
@@ -127,6 +134,12 @@ test('MAIN-03：保存链路（stamp / rotateBak / 索引标脏 / 统计 / recen
     cleanup: null
   });
   assert.deepEqual(calls.prepare[0].options, { windowId: 7, expectedMtimeMs: 555 }, 'prepareChapterSave 要带窗口与 expectedMtimeMs');
+  assert.deepEqual(
+    calls.recheck[0],
+    { bookPath: 'D:\\书库\\书', chapter, expectedMtimeMs: 555 },
+    'SAVE-01：写盘前必须用同一份章节记录 / expectedMtimeMs 再核一次窗口'
+  );
+  assert.deepEqual(calls.order, ['recheck', 'save'], 'SAVE-01：复核必须在 saveChapterText 之前');
   assert.deepEqual(calls.save[0], {
     bookPath: 'D:\\书库\\书',
     file: '001.md',
@@ -161,6 +174,7 @@ test('MAIN-03：META_CHANGED 抛错带 mtimeMs（正文已落盘，书目不覆�
         metaStamp: 'stamp-1'
       }),
       loadChapterText: async () => ({ text: '旧文' }),
+      recheckChapterSaveTarget: async () => {},
       takeDailySnapshot: async () => ({ taken: true }),
       saveChapterText: async () => ({ mtimeMs: 1234, chars: 6, bytes: 6 }),
       writeBookMeta: async () => {
@@ -190,6 +204,7 @@ test('MAIN-03：META_SAVE_FAILED 部分成功带 bodySaved / chars / file / mtim
         metaStamp: 'stamp-1'
       }),
       loadChapterText: async () => ({ text: '旧文' }),
+      recheckChapterSaveTarget: async () => {},
       takeDailySnapshot: async () => ({ taken: true }),
       saveChapterText: async () => ({ mtimeMs: 1234, chars: 6, bytes: 6 }),
       writeBookMeta: async () => {
