@@ -461,6 +461,26 @@ function validateRestorableMeta(meta) {
       `${BOOK_FILE} 的章节记录有 ${meta.chapters.length} 条，超过单本上限 ${MAX_META_CHAPTERS}，按损坏处理`
     );
   }
+  // META-01：两条章节记录指向同一个正文文件 —— 外部工具（同步盘冲突合并 / 脚本批量改 / 手改 JSON）
+  // 写出的坏形状，且没有安全的自动修法（不知道哪条记录是真身）。继续放行的话：findChapterIndex 按
+  // id 只认一条，删除 / 改名会把另一条正在用的文件移走 / 改掉（那一章变空）；保存又写同一份文件
+  // （两章正文互相覆盖）。readBookMeta 与「从 .bak 恢复」共用本闸门，统一按 INVALID_META 拒绝：
+  // 书卡标 corrupt、引导修复，任何写入口都拿不到坏书目继续跑。
+  // 文件名按 Windows 口径折叠大小写（同一文件夹里 A.TXT 与 a.txt 是同一个文件）。
+  const fileOwners = new Map();
+  for (let i = 0; i < meta.chapters.length; i += 1) {
+    const file = meta.chapters[i].file.trim();
+    const key = file.toLowerCase();
+    const first = fileOwners.get(key);
+    if (first != null) {
+      throw new StorageError(
+        'INVALID_META',
+        `${BOOK_FILE} 里第 ${first + 1} 条与第 ${i + 1} 条章节记录指向同一个正文文件「${file}」；` +
+          '为避免删 / 改一章连带动到另一章，按损坏处理（请先修复这本书）'
+      );
+    }
+    fileOwners.set(key, i);
+  }
   // 版本迁移：v0.4.x 的书没有 schemaVersion，按版本 0 走一遍迁移（目前是空迁移），
   // 只在内存里补成 1；下次正常写盘才会落进 书目.json。未来版本号原样保留。
   const migrated = schemaLib.migrateMeta(meta);

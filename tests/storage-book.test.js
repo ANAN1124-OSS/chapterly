@@ -1398,3 +1398,77 @@ test('#10：bookStats 的字数缓存写盘走「读时拍身份、写前核对�
     '缓存写入不许退回不核对身份的 writeBookMeta'
   );
 });
+
+// ---------- META-01：两条章节记录指向同一个正文文件 ----------
+// 外部工具（同步盘冲突合并 / 脚本批量改 / 手改 JSON）可能写出「两章共用一个 file」的书目。
+// 这不是可自动修复的形状：findChapterIndex 只认 id，删 / 改名其中一条会把另一条正在用的文件
+// 移走 / 改掉，保存又写同一份文件（两章内容互相覆盖）。读侧必须按损坏拒绝（书卡标 corrupt、
+// 引导修复），绝不能让写入口带着它继续跑。
+async function writeDuplicateFileMeta(bookPath, mutate) {
+  const metaPath = path.join(bookPath, '书目.json');
+  const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+  mutate(meta);
+  await fs.writeFile(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+}
+
+test('META-01：两章同 file 的书目按 INVALID_META 拒绝，书卡 corrupt，deleteChapter 不误移另一章', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '同文件两章');
+  const metaPath = path.join(bookPath, '书目.json');
+  const chapterFile = '001-未命名.txt';
+  await storage.saveChapterText(bookPath, chapterFile, '两个章节记录指着同一份正文。');
+  const chapterPath = path.join(bookPath, chapterFile);
+  await writeDuplicateFileMeta(bookPath, (meta) => {
+    meta.chapters = [
+      { ...meta.chapters[0], id: 'ch_700', file: chapterFile },
+      { ...meta.chapters[0], id: 'ch_701', file: chapterFile }
+    ];
+  });
+
+  // ① 读侧：名字 / 位置都要点名，方便作者照着手改恢复
+  await assert.rejects(
+    () => storage.readBookMeta(bookPath),
+    (err) => {
+      assert.equal(err.code, 'INVALID_META');
+      assert.match(err.message, /同一个正文文件/);
+      assert.match(err.message, /001-未命名\.txt/);
+      assert.match(err.message, /第 1 条与第 2 条/);
+      assert.equal(err.message.includes(bookPath), false, '错误文案不带本机完整路径');
+      return true;
+    }
+  );
+
+  // ② 书架：书卡照常列出并标 corrupt，字数不把同一份正文算两遍
+  const books = await storage.listBooks(root);
+  assert.equal(books.length, 1);
+  assert.equal(books[0].status, 'corrupt');
+  assert.match(books[0].reason, /同一个正文文件/);
+  assert.equal(books[0].totalChars, 0);
+
+  // ③ 删章：坏书目必须在任何副作用（建 _trash / rename / 写书目）之前被拒，另一章的文件原地不动
+  await assert.rejects(() => storage.deleteChapter(bookPath, 'ch_700'), (err) => err.code === 'INVALID_META');
+  assert.equal(await fs.readFile(chapterPath, 'utf8'), '两个章节记录指着同一份正文。', '正文一个字节都不许动');
+  assert.equal(
+    require('node:fs').existsSync(path.join(bookPath, '_trash')),
+    false,
+    '拒绝必须发生在建 _trash 之前（不给坏书目留半成品）'
+  );
+
+  // ④ 大小写写法不同也算同一个文件（Windows 文件系统大小写不敏感），同样按损坏处理
+  await writeDuplicateFileMeta(bookPath, (meta) => {
+    meta.chapters = [
+      { ...meta.chapters[0], id: 'ch_700', file: chapterFile },
+      { ...meta.chapters[0], id: 'ch_701', file: '001-未命名.TXT' }
+    ];
+  });
+  await assert.rejects(() => storage.readBookMeta(bookPath), (err) => err.code === 'INVALID_META');
+
+  // ⑤ 修回唯一 file：读侧恢复正常（判据只看 file 集合，不误伤正常书目）
+  await writeDuplicateFileMeta(bookPath, (meta) => {
+    meta.chapters = [{ ...meta.chapters[0], id: 'ch_700', file: chapterFile }];
+    meta.fileSeq = 1;
+  });
+  const fixed = await storage.readBookMeta(bookPath);
+  assert.equal(fixed.chapters.length, 1);
+  assert.equal((await storage.listBooks(root))[0].status, 'ok');
+});
