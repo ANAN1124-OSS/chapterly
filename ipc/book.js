@@ -97,42 +97,54 @@ function registerBookIpc(host) {
   });
 
   handleBook('book:open', async (bookPath) => {
-    const session = flowSession();
-    // B3：读书目之前先把防抖中的「上次打开章节」落盘，保证重开书回到的是最后一次切到的章
-    await flushLastOpenBeforeRead(bookPath);
-    // 同一本书只允许一个窗口：已开在别处就聚焦那个窗口并拒绝
-    const owner = storage.findOpenBookWindow(bookPath);
-    if (owner && session && String(owner) !== String(session.id)) {
-      focusSession(sessionById(owner));
-      throw new storage.StorageError(
-        openBooksLib.CODE.BOOK_OPEN_IN_OTHER_WINDOW,
-        openBooksLib.openInOtherWindowMessage(bookPath)
-      );
-    }
-    const data = await storage.openBook(bookPath, { skipStats: true });
-    if (session) {
-      const registered = storage.registerOpenBook(session.id, bookPath);
-      if (!registered.ok) {
-        focusSession(sessionById(registered.ownerWindowId));
-        throw new storage.StorageError(registered.code, registered.message);
+    // RACE-01：打开流程从「落盘上次章节 → 读书目 → 登记打开」走完之前，删除闸门（main.js 的
+    // handleBook 包装 → storage.assertBookNotBusy(action='delete')）只看见「没被任何窗口打开」，
+    // 同窗口「回书架 → 删同书」撞进来会把正读着的书目录搬走；随后的 chapter:load 按文件名
+    // 就会落到同名新建的书上。全程持只读租约：删除被拒 READ_LEASE_BUSY；finally 释放，
+    // 成功 / 失败都不漏（登记成功的书此后由打开登记挡删除，租约只补这一段窗口）。
+    const beginReadLease =
+      typeof storage.beginReadLease === 'function' ? storage.beginReadLease : () => () => {};
+    const releaseLease = beginReadLease(bookPath);
+    try {
+      const session = flowSession();
+      // B3：读书目之前先把防抖中的「上次打开章节」落盘，保证重开书回到的是最后一次切到的章
+      await flushLastOpenBeforeRead(bookPath);
+      // 同一本书只允许一个窗口：已开在别处就聚焦那个窗口并拒绝
+      const owner = storage.findOpenBookWindow(bookPath);
+      if (owner && session && String(owner) !== String(session.id)) {
+        focusSession(sessionById(owner));
+        throw new storage.StorageError(
+          openBooksLib.CODE.BOOK_OPEN_IN_OTHER_WINDOW,
+          openBooksLib.openInOtherWindowMessage(bookPath)
+        );
       }
+      const data = await storage.openBook(bookPath, { skipStats: true });
+      if (session) {
+        const registered = storage.registerOpenBook(session.id, bookPath);
+        if (!registered.ok) {
+          focusSession(sessionById(registered.ownerWindowId));
+          throw new storage.StorageError(registered.code, registered.message);
+        }
+      }
+      // N-07：字数缓存回填挪到后台（同一本书单飞）—— 打开大书 / 老书时窗口先可用，
+      // 不再先读完所有缺缓存章节的正文才返回；回填只补书目里的 chars，不顶 updatedAt。
+      void storage.backfillBookStatsInBackground(bookPath);
+      const meta = data && data.meta;
+      if (meta && Array.isArray(meta.chapters) && meta.chapters.length) {
+        let index = meta.chapters.findIndex((chapter) => chapter && chapter.id === meta.lastOpenChapterId);
+        if (index < 0) index = 0;
+        const chapter = meta.chapters[index];
+        await rememberRecentBook(bookPath, {
+          title: meta.title,
+          chapterId: chapter.id,
+          chapterIndex: index,
+          chapterName: chapter.name
+        });
+      }
+      return data;
+    } finally {
+      releaseLease();
     }
-    // N-07：字数缓存回填挪到后台（同一本书单飞）—— 打开大书 / 老书时窗口先可用，
-    // 不再先读完所有缺缓存章节的正文才返回；回填只补书目里的 chars，不顶 updatedAt。
-    void storage.backfillBookStatsInBackground(bookPath);
-    const meta = data && data.meta;
-    if (meta && Array.isArray(meta.chapters) && meta.chapters.length) {
-      let index = meta.chapters.findIndex((chapter) => chapter && chapter.id === meta.lastOpenChapterId);
-      if (index < 0) index = 0;
-      const chapter = meta.chapters[index];
-      await rememberRecentBook(bookPath, {
-        title: meta.title,
-        chapterId: chapter.id,
-        chapterIndex: index,
-        chapterName: chapter.name
-      });
-    }
-    return data;
   }, READ_ONLY);
   handleBook('book:verify', async (bookPath) => storage.verifyBook(bookPath), READ_ONLY);
   handleBook('book:rename', async (bookPath, title) => {
