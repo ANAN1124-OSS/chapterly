@@ -1414,7 +1414,6 @@ async function writeDuplicateFileMeta(bookPath, mutate) {
 test('META-01：两章同 file 的书目按 INVALID_META 拒绝，书卡 corrupt，deleteChapter 不误移另一章', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '同文件两章');
-  const metaPath = path.join(bookPath, '书目.json');
   const chapterFile = '001-未命名.txt';
   await storage.saveChapterText(bookPath, chapterFile, '两个章节记录指着同一份正文。');
   const chapterPath = path.join(bookPath, chapterFile);
