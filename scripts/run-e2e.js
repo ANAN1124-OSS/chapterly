@@ -7,11 +7,13 @@
 //     （只 kill 直接子进程会把 Electron 孙进程留在后台，下一轮抢焦点 / 拿旧窗口）；
 //   · 成功才删临时目录；失败 / 超时 / 拿不到结果都保留现场并打印路径，供人排查。
 // 判定口径都在 scripts/e2e-runner-logic.js 里（纯函数、tests/e2e-runner.test.js 覆盖）。
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const logic = require('./e2e-runner-logic');
+// CI-F4/F5：杀进程树与 electron-run 共用 scripts/kill-tree.js（taskkill 失败后的 child.kill 兜底可达）。
+const { killProcessTree: killTreeShared } = require('./kill-tree');
 
 const root = path.join(__dirname, '..');
 const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -57,20 +59,9 @@ child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
 let settled = false;
 
 function killProcessTree() {
-  const plan = logic.killPlan({ platform: process.platform, pid: child.pid });
-  if (plan.useTreeKill) {
-    try {
-      spawnSync(plan.command, plan.args, { stdio: 'ignore' });
-    } catch {
-      /* taskkill 不在 PATH 之类：下面的 child.kill 兜底 */
-    }
-    return;
-  }
-  try {
-    child.kill();
-  } catch {
-    /* 已经退出 */
-  }
+  // 决策（是否 tree kill / 参数）仍由 e2e-runner-logic 的纯函数给，执行交给共享 helper：
+  // Windows 上 taskkill 非 0 时会再补 child.kill（旧实现那条兜底不可达），POSIX 杀进程组。
+  killTreeShared(child, { plan: logic.killPlan({ platform: process.platform, pid: child.pid }) });
 }
 
 // 统一收尾：成功删临时目录；失败 / 超时 / 拿不到结果留在现场并打印路径（不要删掉失败证据）。

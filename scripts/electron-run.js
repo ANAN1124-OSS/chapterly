@@ -19,11 +19,12 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const startLogic = require('./start-logic');
+// CI-F4/F5：杀进程树 + force-settle 与 run-e2e 共用 scripts/kill-tree.js（唯一实现）。
+const { FORCE_SETTLE_MS, killProcessTree } = require('./kill-tree');
 
 const ROOT = path.join(__dirname, '..');
 // 超时后即使 close 迟迟不来（任务管理器拒绝 / 权限异常），也不让外壳永久挂起：
-// 再等这么久就按超时失败结算，把控制权交回调用方。
-const FORCE_SETTLE_MS = 15000;
+// 再等这么久就按超时失败结算，把控制权交回调用方（FORCE_SETTLE_MS 由 kill-tree 统一提供）。
 
 // root 可注入（默认仓库根）：单测用临时夹具钉「依赖未装 / 二进制未下载」两种提示契约——
 // CI 以 ELECTRON_SKIP_BINARY_DOWNLOAD=1 安装，node_modules/electron 里可能既没有 path.txt
@@ -48,37 +49,8 @@ function electronBinary(root = ROOT) {
   return binary;
 }
 
-// 杀掉整棵进程树（含 Electron 的 renderer / GPU 子进程）。
-// Windows 用 taskkill /T /F；POSIX 用进程组（runProcess 在 POSIX 上以 detached 启动，
-// 子进程即组长）。任何一步失败都退回 child.kill()，绝不因此抛错打断外壳收尾。
-function killProcessTree(child) {
-  if (!child || typeof child.pid !== 'number') return;
-  if (process.platform === 'win32') {
-    let killer = null;
-    try {
-      killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
-        stdio: 'ignore',
-        windowsHide: true
-      });
-      killer.on('error', () => {});
-    } catch {
-      killer = null;
-    }
-    if (killer) return;
-  } else {
-    try {
-      process.kill(-child.pid, 'SIGKILL');
-      return;
-    } catch {
-      /* 退回单进程 kill */
-    }
-  }
-  try {
-    child.kill('SIGKILL');
-  } catch {
-    /* 忽略：进程可能已经退出 */
-  }
-}
+// 杀掉整棵进程树（含 Electron 的 renderer / GPU 子进程）—— 实现见 scripts/kill-tree.js：
+// Windows taskkill /T /F 失败后仍会 child.kill 兜底，POSIX 杀 detached 进程组。
 
 // 跑一个子进程并收集输出；超时杀整棵进程树。
 // 返回 { code, signal, stdout, stderr, timedOut, spawnError, settledBy }。

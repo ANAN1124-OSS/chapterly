@@ -89,3 +89,61 @@ test('源码闸门：run-e2e.js 用这套决策 + 进程树 kill + 成功才回�
   // 组数来源必须真的是索引文件，不能写死 80
   assert.equal(/timeoutBudgetMs\(\s*80\s*\)/.test(source), false, '不要写死组数');
 });
+// CI-F4/F5（2026-11-24 复核补审）：杀进程树收成 scripts/kill-tree.js 一份。
+// 旧实现两份外壳都「taskkill 起得来就直接 return」—— 退出码非 0（进程已退 / 权限不足 / pid 失效）
+// 时 child.kill 兜底永远走不到。这里逐条钉住兜底真的可达。
+test('CI-F4/F5：kill-tree 的 taskkill 失败兜底可达，POSIX 走进程组，两处外壳共用', () => {
+  const { EventEmitter } = require('node:events');
+  const killTree = require('../scripts/kill-tree');
+  const makeChild = () => {
+    const calls = [];
+    return { pid: 4242, calls, kill(signal) { calls.push(signal); return true; } };
+  };
+
+  // ① taskkill 根本起不来 → child.kill 兜底
+  const spawnThrows = makeChild();
+  const r1 = killTree.killProcessTree(spawnThrows, {
+    platform: 'win32',
+    spawnImpl: () => { throw new Error('taskkill 不在 PATH'); }
+  });
+  assert.equal(r1.method, 'child.kill');
+  assert.equal(r1.fallback, 'taskkill-spawn-threw');
+  assert.deepEqual(spawnThrows.calls, ['SIGKILL']);
+
+  // ② taskkill 起得来但退出码非 0 → 旧实现不可达的 child.kill 必须执行
+  const emitter = new EventEmitter();
+  const exitNonZero = makeChild();
+  const r2 = killTree.killProcessTree(exitNonZero, { platform: 'win32', spawnImpl: () => emitter });
+  assert.equal(r2.method, 'taskkill', '同步返回时先派 taskkill');
+  emitter.emit('exit', 1);
+  assert.equal(r2.fallback, 'taskkill-exit-1', 'taskkill 非 0 要记下兜底原因');
+  assert.deepEqual(exitNonZero.calls, ['SIGKILL']);
+
+  // ③ taskkill 成功（0）→ 不补刀
+  const okEmitter = new EventEmitter();
+  const okChild = makeChild();
+  killTree.killProcessTree(okChild, { platform: 'win32', spawnImpl: () => okEmitter });
+  okEmitter.emit('exit', 0);
+  assert.deepEqual(okChild.calls, [], 'taskkill 成功时不该再补 kill');
+
+  // ④ POSIX：先杀 detached 进程组；组杀失败退回 child.kill
+  const groupCalls = [];
+  const posix = makeChild();
+  const r4 = killTree.killProcessTree(posix, { platform: 'linux', groupKill: (pid) => groupCalls.push(pid) });
+  assert.equal(r4.method, 'process-group');
+  assert.deepEqual(groupCalls, [4242]);
+  const posixFail = makeChild();
+  const r5 = killTree.killProcessTree(posixFail, { platform: 'linux', groupKill: () => { throw new Error('ESRCH'); } });
+  assert.equal(r5.method, 'child.kill');
+  assert.deepEqual(posixFail.calls, ['SIGKILL']);
+
+  // ⑤ 两处外壳共用同一份实现，且不再自己拼 taskkill
+  for (const rel of ['scripts/run-e2e.js', 'scripts/electron-run.js']) {
+    const src = read(rel);
+    assert.match(src, /require\('\.\/kill-tree'\)/, rel + ' 必须用共享 kill-tree');
+    assert.match(src, /killProcessTree\(/, rel + ' 仍要真的杀进程树');
+    assert.equal(/spawn(Sync)?\(\s*'taskkill'/.test(src), false, rel + ' 不许再自己起 taskkill');
+    assert.equal(/spawnSync\(plan\.command/.test(src), false, rel + ' 不许再自己 spawnSync kill 计划');
+  }
+  assert.equal((read('scripts/kill-tree.js').match(/taskkill/g) || []).length >= 1, true);
+});
