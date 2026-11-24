@@ -19,6 +19,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const path = require('node:path');
 const storage = require('../core/storage');
 const chaptersLib = require('../core/chapters');
@@ -586,4 +587,84 @@ test('本文件只读约束：不出现真实书架路径、不删文件', () =>
   assert.ok(!/D:\\\\我的小说/.test(source));
   assert.ok(!/fs\.(rm|unlink)\(/.test(source), '测试里不许删文件（清理只走临时目录）');
   assert.ok(source.includes('mkdtemp'), '一律用系统临时目录');
+});
+
+// ---------- RECOV-02：失败路径不重建书目 / 书文件夹 ----------
+// 整本替换 / 整理中途失败后 CSTO-A03 会补写字数缓存。若此刻书文件夹或 书目.json 已被外部
+// 删掉，旧实现会带 ensureDir（默认 true）把影子书目 / 空书文件夹重新建出来——作者看到的
+// 失败现场被盖掉，还会留下一个指向不存在章节的「空壳书」。失败路径只许补写「本来就在」的书目。
+test('RECOV-02：整本替换中途 书目.json 被外部删掉并写失败 → 不重建书目（无影子书）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '失败不重建书目');
+  await storage.createChapter(bookPath, 1, '第二章');
+  const meta = await storage.readBookMeta(bookPath);
+  const firstFile = meta.chapters[0].file;
+  const secondFile = meta.chapters[1].file;
+  await storage.saveChapterText(bookPath, firstFile, '阿明第一章。');
+  await storage.saveChapterText(bookPath, secondFile, '阿明第二章。');
+  const metaPath = path.join(bookPath, '书目.json');
+  assert.equal(fsSync.existsSync(metaPath), true);
+
+  // 写完第一章、轮到第二章时：外部（同步盘 / 另一个窗口）删掉 书目.json，并让这次写盘失败。
+  const restore = patchRename((from, to) => {
+    if (to.endsWith(`${path.sep}${secondFile}`) && !to.includes(`${path.sep}_trash${path.sep}`)) {
+      fsSync.rmSync(metaPath, { force: true });
+      return 'EACCES';
+    }
+    return '';
+  });
+  let failed = null;
+  try {
+    failed = await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' }).then(() => null, (err) => err);
+  } finally {
+    restore();
+  }
+  assert.ok(failed && /REPLACE_FAILED/.test(String(failed.code)), '保存失败必须走 REPLACE_FAILED');
+  assert.equal(fsSync.existsSync(metaPath), false, '失败路径不许用 ensureDir 重建 书目.json（影子书目）');
+  assert.ok(failed.message.includes('替换中途停下'), '原始失败原因仍要如实回包');
+});
+
+test('RECOV-02：整本整理中途书文件夹被外部删掉并写失败 → 不重建书文件夹', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '失败不重建目录');
+  await storage.createChapter(bookPath, 1, '第二章');
+  const meta = await storage.readBookMeta(bookPath);
+  const secondFile = meta.chapters[1].file;
+  await storage.saveChapterText(bookPath, meta.chapters[0].file, '  第一段。  ');
+  await storage.saveChapterText(bookPath, secondFile, '  第二段。  ');
+
+  // 写完第一章、轮到第二章时：整本书文件夹被外部移走（回收站 / 同步盘），写盘再失败。
+  const restore = patchRename((from, to) => {
+    if (to.endsWith(`${path.sep}${secondFile}`) && !to.includes(`${path.sep}_trash${path.sep}`)) {
+      fsSync.rmSync(bookPath, { recursive: true, force: true });
+      return 'EPERM';
+    }
+    return '';
+  });
+  let failed = null;
+  try {
+    failed = await storage.formatBook(bookPath, { trimTrailing: true }).then(() => null, (err) => err);
+  } finally {
+    restore();
+  }
+  assert.ok(failed && /FORMAT_FAILED/.test(String(failed.code)), '保存失败必须走 FORMAT_FAILED');
+  assert.equal(fsSync.existsSync(bookPath), false, '失败路径不许用 ensureDir 重建书文件夹');
+});
+
+test('RECOV-02（静态闸门）：失败补写先确认书目存在 + ensureDir:false；两处 saveChapterText 同口径', () => {
+  const persistBody = functionBody(STORAGE_SOURCE, 'async function persistCharsAfterFailure(', '');
+  assert.match(persistBody, /fs\.stat\(path\.join\(bookPath, BOOK_FILE\)\)/, '写前必须确认 书目.json 还在');
+  assert.match(persistBody, /ensureDir: false/, '失败补写不许 ensureDir 重建书文件夹');
+  const replaceBody = functionBody(STORAGE_SOURCE, 'async function replaceInBook(', '');
+  assert.match(
+    replaceBody,
+    /saveChapterText\(bookPath, chapter\.file, res\.text, \{ ensureDir: false \}\)/,
+    '整本替换的章节写盘必须带 ensureDir:false'
+  );
+  const formatBody = functionBody(STORAGE_SOURCE, 'async function formatBook(', '');
+  assert.match(
+    formatBody,
+    /saveChapterText\(bookPath, chapter\.file, res\.text, \{ ensureDir: false \}\)/,
+    '整本整理的章节写盘必须带 ensureDir:false'
+  );
 });

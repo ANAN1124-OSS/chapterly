@@ -130,8 +130,17 @@ function batchFailure(err, { code, action, notes = [] }) {
 // 书卡总字数会长期偏离正文，且没有自愈出口。这里仍持书锁，把这份「如实记录」补写一次；
 // 补写本身失败（磁盘满 / 书目被外部改）不掩盖原始错误，也不改变错误文案。
 async function persistCharsAfterFailure(bookPath, meta) {
+  // RECOV-02：失败路径上只补写「本来就在」的书目。整本操作中途失败时书文件夹 / 书目.json 很可能
+  // 已被外部（同步盘 / 另一个窗口）删掉；此时用 ensureDir 重建书文件夹等于留下一个指向不存在章节的
+  // 影子书目，还会把作者已经看到的失败现场盖掉。先确认 书目.json 还在，再带 ensureDir:false 写。
   try {
-    await writeBookMetaChecked(bookPath, meta, { touchUpdatedAt: false });
+    const stat = await fs.stat(path.join(bookPath, BOOK_FILE));
+    if (!stat.isFile()) return;
+  } catch {
+    return; // 书目已不在：不重建（原始错误更重要，作者要能看到真实的失败现场）
+  }
+  try {
+    await writeBookMetaChecked(bookPath, meta, { ensureDir: false, touchUpdatedAt: false });
   } catch {
     /* 失败路径上尽力而为：原始错误（含已经动了几章、备份在哪）更重要 */
   }
@@ -2092,7 +2101,8 @@ async function replaceInBook(bookPath, options = {}) {
           }
           // 审计修复 #3（E3）：备份也走原子复制 + 复制后尺寸校验（半截备份不得留在 _trash）
           await copyReadableChapterToBackup(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
-          await saveChapterText(bookPath, chapter.file, res.text);
+          // RECOV-02：与章节保存同一口径 —— 书文件夹中途被外部删掉时绝不 mkdir 重建影子目录。
+          await saveChapterText(bookPath, chapter.file, res.text, { ensureDir: false });
           chapter.chars = chaptersLib.countChars(res.text);
           chaptersChanged += 1;
           occurrences += res.count;
@@ -2222,7 +2232,8 @@ async function formatBook(bookPath, options = {}, onProgress) {
           // 先备份原文再写盘：整理也是「改正文」的显式动作，必须留退路
           // 审计修复 #3（E3）：备份走原子复制 + 复制后尺寸校验（与整本替换同一份实现）
           await copyReadableChapterToBackup(assertChapterFile(bookPath, chapter.file), path.join(backupDir, chapter.file));
-          await saveChapterText(bookPath, chapter.file, res.text);
+          // RECOV-02：与章节保存同一口径 —— 书文件夹中途被外部删掉时绝不 mkdir 重建影子目录。
+          await saveChapterText(bookPath, chapter.file, res.text, { ensureDir: false });
           chapter.chars = chaptersLib.countChars(res.text);
           addFormatStats(stats, res.stats);
           changed.push({ index, file: chapter.file, name: chapter.name || '' });
