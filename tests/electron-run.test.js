@@ -76,9 +76,13 @@ test('TOOL-BX-04：子进程退出码原样带出（外壳才有机会按退出�
 });
 
 test('TOOL-BX-01 静态闸门：外壳直接跑 Electron 二进制，不再经 scripts/start.js 包装层', () => {
-  assert.match(ELECTRON_RUN_SRC, /taskkill/, 'Windows 上必须用 taskkill 杀整棵树');
-  assert.match(ELECTRON_RUN_SRC, /'\/t', '\/f'/, 'taskkill 必须带 /T /F（树 + 强杀）');
-  assert.match(ELECTRON_RUN_SRC, /process\.kill\(-child\.pid/, 'POSIX 必须杀进程组');
+  // CI-F4/F5：杀进程树搬进 scripts/kill-tree.js（run-e2e 与 electron-run 共用），断言跟到新落点。
+  const killTreeSrc = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'kill-tree.js'), 'utf8');
+  assert.match(ELECTRON_RUN_SRC, /require\('\.\/kill-tree'\)/, '外壳必须用共享 kill-tree');
+  assert.match(killTreeSrc, /taskkill/, 'Windows 上必须用 taskkill 杀整棵树');
+  assert.match(killTreeSrc, /'\/t', '\/f'/, 'taskkill 必须带 /T /F（树 + 强杀）');
+  assert.match(killTreeSrc, /process\.kill\(-pid/, 'POSIX 必须杀进程组');
+  assert.equal(/spawn\(\s*'taskkill'/.test(ELECTRON_RUN_SRC), false, 'taskkill 实现只许在 kill-tree 一份');
   // TOOL-B04：bench / contrast 的启动外壳归一到了 scripts/spawn-app.js；两工具都必须走它，
   // 而 spawn-app 必须走共享的 electron-run（超时 / 退出码纪律只有一条链）。
   assert.match(SPAWN_APP_SRC, /electronRun\.runElectron\(/, 'spawn-app 必须走共享的 electron-run');
