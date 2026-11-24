@@ -473,22 +473,31 @@
     async function openTriggered(preloadedText, queued) {
       const blocked = preflight();
       if (blocked) return blocked;
-      const wasQueued = queued === true;
-      const text = typeof preloadedText === 'string' && preloadedText.trim() ? preloadedText : null;
-      let entries = [];
-      let queueReadFailed = false;
+      // CAPTURE-01：与 open() 同一把 panel.opening 重入闸门。这里也要 await fetchQueue（连按两下会
+      // 各拉一遍队列 / 各重画一次）；后到的直接回 OPENING，由第一次打开面板。
+      if (panel.opening) return { ok: false, code: 'OPENING', message: '捕获面板正在打开' };
+      panel.opening = true;
       try {
-        entries = await fetchQueue();
-      } catch (err) {
-        queueReadFailed = true;
-      }
-      if (!queueReadFailed && entries.length > 0) {
-        showList(entries, wasQueued ? null : text);
-        return { ok: true, view: 'list', queued: wasQueued, count: entries.length };
-      }
-      if (text) {
-        showList([], text);
-        return { ok: true, view: 'list', queued: false, count: 0, pending: true };
+        const wasQueued = queued === true;
+        const text = typeof preloadedText === 'string' && preloadedText.trim() ? preloadedText : null;
+        let entries = [];
+        let queueReadFailed = false;
+        try {
+          entries = await fetchQueue();
+        } catch (err) {
+          queueReadFailed = true;
+        }
+        if (!queueReadFailed && entries.length > 0) {
+          showList(entries, wasQueued ? null : text);
+          return { ok: true, view: 'list', queued: wasQueued, count: entries.length };
+        }
+        if (text) {
+          showList([], text);
+          return { ok: true, view: 'list', queued: false, count: 0, pending: true };
+        }
+      } finally {
+        // 先释放再退回 open()：open() 自己也查这把闸门，不能带着自己的锁调它。
+        panel.opening = false;
       }
       return open();
     }

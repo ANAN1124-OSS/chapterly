@@ -301,6 +301,36 @@ test('T-21：并发打开（连按两下）只走一次补拍 / 读剪贴板，�
     assert.equal(ctx.log.filter((item) => item === 'api.captureQueueList').length, 1, '只拉一次队列');
   }));
 
+// CAPTURE-01（2026-11-24 复核补审）：openTriggered 也要复用 open() 的 panel.opening 闸门。
+// 连按两下提示条 / 快捷键时，两次都会先 await fetchQueue，旧实现各拉一遍队列、各重画一次。
+test('CAPTURE-01：并发 openTriggered 只拉一次队列，后到的回 OPENING', () =>
+  withFakeDocument(async () => {
+    const ctx = build({ queue: [{ text: QUEUE_A }] });
+    let releaseQueue;
+    const gate = new Promise((resolve) => {
+      releaseQueue = resolve;
+    });
+    let queueCalls = 0;
+    const queueList = ctx.api.captureQueueList;
+    ctx.api.captureQueueList = async (...args) => {
+      queueCalls += 1;
+      await gate;
+      return queueList(...args);
+    };
+    const ui = captureUiModule.create(ctx.host);
+    const first = ui.openTriggered(null, false);
+    const second = ui.openTriggered(null, false);
+    releaseQueue();
+    const [opened, rejected] = await Promise.all([first, second]);
+    assert.equal(queueCalls, 1, '连按两下只拉一次队列');
+    assert.equal(rejected.ok, false, '后到的那次不再开第二次');
+    assert.equal(rejected.code, 'OPENING');
+    assert.equal(opened.ok, true, '第一次照常打开（队列非空，直接出列表）');
+    assert.equal(opened.count, 1);
+    assert.equal(ui.isOpen(), true);
+    assert.equal(ctx.log.filter((item) => item === 'api.captureClipboard').length, 0, '队列非空不该再读剪贴板');
+  }));
+
 test('WP-17（C35）：弹层清单走统一注册表——17 个 backdrop 里除自己外任一开着都拦下捕获面板', () =>
   withFakeDocument(async () => {
     const blockedLayers = backdropRegistry.LIST.filter((name) => name !== 'capture');
