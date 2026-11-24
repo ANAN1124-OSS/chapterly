@@ -370,9 +370,11 @@ function registerBookIpc(host) {
     // 生产分支的 shell.trashItem 在锁外：保存写盘途中目录可能被搬走。
     // 审计修复 #4（S1）：是书架目录的直接子目录还不够，必须确认「目标是一本书」——
     // `_trash`（全部删书备份）/ `_碎片`（灵感箱）也是书架根的直接子目录，注入脚本以前能把它们
-    // 整个丢进回收站。保留目录（_ / . 开头）与没有 书目.json 的普通文件夹一律拒绝。
+    // 整个丢进回收站。DATA-01：只拒真正的保留目录（_trash / _碎片 / . 开头的隐藏目录），
+    // 不再一棍子拒掉所有 `_` 开头目录 —— 旧版本没有写侧闸门，_x 可能是作者的真书；下面
+    // 「有 书目.json」的校验才是「是不是书」的判据。没有书目的普通文件夹一律拒绝。
     const folder = path.basename(target);
-    if (folder.startsWith('_') || folder.startsWith('.')) {
+    if (storage.isReservedBookFolderName(folder)) {
       throw new storage.StorageError('BAD_PATH', '书架保留目录不能当书删除');
     }
     return storage.withBookLock(target, async () => {

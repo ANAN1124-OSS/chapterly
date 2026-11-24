@@ -93,6 +93,19 @@ test('book:delete：_trash / _碎片 / 无书目的文件夹不许当书删，�
   assert.equal(result.folder, path.basename(bookPath));
   assert.equal(await storage.exists(bookPath), false);
   assert.ok(result.trashPath.startsWith(path.join(root, '_trash')));
+
+  // DATA-01：删侧不再一棍子拒掉所有 `_` 开头目录。旧版本没有写侧闸门，_x 可能是作者的真书
+  // （书架扫描不列它，界面上没有任何别的入口能清）；只要带 书目.json 就允许删。
+  const ghost = await storage.createBook(root, '幽灵旧稿');
+  const ghostPath = path.join(root, '_幽灵旧稿');
+  await fs.mkdir(path.join(root, '_没有书目'), { recursive: true });
+  await fs.rename(ghost.path, ghostPath);
+  await assert.rejects(() => deleteBook(path.join(root, '_没有书目')), (err) => err.code === 'NOT_A_BOOK');
+  const ghostResult = await deleteBook(ghostPath);
+  assert.equal(ghostResult.method, 'move');
+  assert.equal(ghostResult.folder, '_幽灵旧稿');
+  assert.equal(await storage.exists(ghostPath), false);
+  assert.ok(ghostResult.trashPath.startsWith(path.join(root, '_trash')));
 });
 // CI-2（五-L1）：每本书的显示覆盖（bookDisplay[meta.id]）过去只有「渲染层主动重置显示设置」一个
 // 删除入口 —— 删书后该 id 永久留在 config.json，条目随「曾经调过显示设置的书数」单调增长，

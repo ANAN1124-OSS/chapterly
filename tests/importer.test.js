@@ -1448,3 +1448,38 @@ test('#8：导入章名与书目其它入口同一口径（limitChapterName）',
   const block = source.slice(start, source.indexOf('\n}', start));
   assert.match(block, /name: limits\.limitChapterName\(name\)/, '章名必须走 limits.limitChapterName');
 });
+
+test('DATA-01：导入来源以 _ / . 开头的文件夹或书名 → 明确拒绝，不建书、不留暂存', async () => {
+  const base = await mkTmp();
+  const src = path.join(base, '_旧稿');
+  await fs.mkdir(src);
+  await fs.writeFile(path.join(src, '001-甲.txt'), '甲的正文', 'utf8');
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [src]);
+  assert.equal(res.imported.length, 0);
+  assert.equal(res.failed.length, 1, JSON.stringify(res));
+  assert.match(res.failed[0].message, /以 _ 或 \. 开头/);
+  assert.match(res.failed[0].message, /不会出现在书架上/);
+  assert.deepEqual(
+    (await fs.readdir(booksRoot).catch(() => [])).filter((name) => !name.startsWith('.import-')),
+    [],
+    '被拒的来源不建书；暂存目录由 finally 清掉'
+  );
+
+  // 现成书形态走同一份 safeFolderName：来源书目书名以 _ 开头同样拒
+  const externalRoot = path.join(base, '外部');
+  await fs.mkdir(externalRoot);
+  const created = await storage.createBook(externalRoot, '现成书');
+  const meta = await storage.readBookMeta(created.path);
+  await storage.writeBookMeta(created.path, { ...meta, title: '_现成书' }, { structural: true });
+  const res2 = await importer.importFolders(path.join(base, '书架二'), [created.path]);
+  assert.equal(res2.imported.length, 0);
+  assert.equal(res2.failed.length, 1);
+  assert.match(res2.failed[0].message, /以 _ 或 \. 开头/);
+
+  assert.throws(
+    () => importer.safeFolderName('_x'),
+    (err) => err.code === 'RESERVED_NAME' && /保留/.test(err.message)
+  );
+  assert.equal(importer.safeFolderName('正常书名'), '正常书名');
+});

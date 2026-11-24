@@ -452,6 +452,50 @@ test('整本书兜底删除：移入书架 _trash，扫描时不再出现', asyn
 // 审计修复 #4（S1、E20）：trashBook 不再只信调用方路径 —— 自己校验「目标是书架根下的真书目录」。
 
 
+test('DATA-01：写侧拒 _ / . 开头书名；删侧放行历史遗留的 _x 真书，保留目录仍拒', async () => {
+  const root = await mkTmp();
+  const before = (await fs.readdir(root)).sort();
+  await assert.rejects(
+    () => storage.createBook(root, '_废稿'),
+    (err) => {
+      assert.equal(err.code, 'RESERVED_NAME', '建书要给可分辨的错误码');
+      assert.match(err.message, /以 _ 或 \. 开头/);
+      assert.match(err.message, /不在书架上/);
+      return true;
+    }
+  );
+  assert.deepEqual((await fs.readdir(root)).sort(), before, '被拒的建书零副作用（不多出目录 / 书目）');
+
+  // 旧版本没有写侧闸门：模拟一本真实存在、但叫 _x 的旧书（书架扫描不列它）
+  const legacy = await storage.createBook(root, '旧稿');
+  const ghostPath = path.join(root, '_旧稿');
+  await fs.rename(legacy.path, ghostPath);
+  const dest = await storage.trashBook(root, ghostPath);
+  assert.ok(dest.startsWith(path.join(root, '_trash')), '带 书目.json 的 _x 目录可以当书删');
+  assert.equal(await storage.exists(ghostPath), false);
+  assert.equal((await storage.readBookMeta(dest)).title, '旧稿');
+
+  // 真正的保留目录仍然一律拒绝，且一个都没动
+  await fs.mkdir(path.join(root, '_碎片'), { recursive: true });
+  await fs.mkdir(path.join(root, '.hidden'), { recursive: true });
+  await fs.mkdir(path.join(root, '_没有书目'), { recursive: true });
+  for (const [label, target, code] of [
+    ['删除备份 _trash', path.join(root, '_trash'), 'BAD_PATH'],
+    ['灵感箱 _碎片', path.join(root, '_碎片'), 'BAD_PATH'],
+    ['隐藏目录 .hidden', path.join(root, '.hidden'), 'BAD_PATH'],
+    ['_x 普通文件夹（无书目）', path.join(root, '_没有书目'), 'NOT_A_BOOK']
+  ]) {
+    await assert.rejects(() => storage.trashBook(root, target), (err) => err.code === code, `${label} 应报 ${code}`);
+    assert.equal(await storage.exists(target), true, `${label} 被拒后不许动`);
+  }
+  assert.equal(storage.isReservedBookFolderName('_trash'), true);
+  assert.equal(storage.isReservedBookFolderName('_碎片'), true);
+  assert.equal(storage.isReservedBookFolderName('.hidden'), true);
+  assert.equal(storage.isReservedBookFolderName('_旧稿'), false, '其它 _x 不是保留目录');
+  assert.equal(storage.isReservedBookFolderName('普通书'), false);
+});
+
+
 test('审计修复 #4（S1）：trashBook 拒绝保留目录 / 无书目的文件夹 / 书架根 / 孙目录 / 书库外路径', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '合法的书');

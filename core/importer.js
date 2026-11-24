@@ -73,8 +73,19 @@ const MAX_FOLDER_SUFFIX = 999;
 
 // 目标文件夹名（安全名）的唯一实现：uniqueFolderName 用它做 base，导入暂存层也用它建「书目录」
 // （repair.rebuildFromFiles 的 title 取 basename(bookPath)，暂存层目录名必须是书名，不能是 .import-…）。
+// DATA-01：与 storage.createBook 同一口径拒 `_` / `.` 开头 —— 否则导入一本叫《_废稿》的现成书会
+// 建出书架不列、删书闸门也当保留目录的书。这里抛 StorageError（中文说明），由 importFolders 记进
+// failed；不静默改名，作者能看出是哪一本、为什么没导入。
 function safeFolderName(desired) {
-  return chaptersLib.safeName(desired) || '导入的书';
+  const name = chaptersLib.safeName(desired) || '导入的书';
+  if (name.startsWith('_') || name.startsWith('.')) {
+    throw new storage.StorageError(
+      'RESERVED_NAME',
+      `《${String(desired == null ? '' : desired).trim()}》的书名 / 文件夹名以 _ 或 . 开头，` +
+        '会生成书架保留 / 隐藏目录，导入后不会出现在书架上；请先改名成不以 _ 或 . 开头的名字再导入'
+    );
+  }
+  return name;
 }
 
 // 「这次导入最终会叫什么」：现成书形态用书目标题（缺省来源文件夹名），其余形态用来源文件夹名。

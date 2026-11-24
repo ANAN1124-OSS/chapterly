@@ -25,6 +25,9 @@ const { chapterContentHashOf } = require('./chapter-fingerprint');
 const BOOK_FILE = '书目.json';
 const BOOK_BAK = '书目.json.bak';
 const TRASH_DIR = '_trash';
+// DATA-01：书架根目录下的另一个保留目录（灵感箱速记，见 core/fragments.js 的 FRAGMENT_DIR_NAME）。
+// 删书闸门与 _trash 同等看待；这里只做目录名判定，不 require core/fragments（避免模块环）。
+const FRAGMENT_DIR = '_碎片';
 const CORRUPT_PREFIX = '书目.json.corrupt-';
 // 整本替换的备份目录（写盘前把原章节复制到这里）与「还原前」的反向备份目录
 const REPLACE_BACKUP_PREFIX = '替换备份-';
@@ -1069,6 +1072,16 @@ async function createBook(booksRoot, title, options = {}) {
   const titleTruncated = Boolean(rawTitle) && displayTitle !== rawTitle;
   await ensureDir(booksRoot);
   const base = chaptersLib.safeName(displayTitle);
+  // DATA-01：书目录名以 _ / . 开头会落进书架保留 / 隐藏目录的语义（listBooks 跳过、删书闸门拒绝、
+  // _trash 还是删除备份区）。旧实现照样建 —— 作者会得到一本“建出来就不在书架上”的书。写侧直接
+  // 拒并给可操作文案；删侧另外放宽，历史遗留的 _x 书仍可通过删除入口清掉。章节名不受影响
+  // （章节文件名里的 _ 合法，走的还是 chapters.safeName）。
+  if (hasReservedFolderPrefix(base)) {
+    throw new StorageError(
+      'RESERVED_NAME',
+      `书名「${displayTitle}」以 _ 或 . 开头，会生成书架保留 / 隐藏目录，建出来不在书架上；请换一个不以 _ 或 . 开头的书名`
+    );
+  }
   let folder = base;
   let i = 2;
   for (;;) {
@@ -3081,12 +3094,31 @@ async function renameBook(bookPath, title) {
   return saved;
 }
 
+// DATA-01：删书闸门只拒真正的保留目录（_trash / _碎片 / . 开头的隐藏目录）。旧实现拒一切 `_`
+// 开头目录 —— 旧版本没有写侧闸门，可能留下 `_x` 这种真书（listBooks 不列它，作者在界面上没有
+// 任何入口能清掉）。其它 `_x` 目录只要通过「有 书目.json」校验就允许删。
+function isReservedBookFolderName(folderName) {
+  const name = String(folderName == null ? '' : folderName);
+  if (!name) return false;
+  if (name.startsWith('.')) return true;
+  return name === TRASH_DIR || name === FRAGMENT_DIR;
+}
+
+// 写侧（createBook / 导入）用的禁用前缀：书目录名以 _ / . 开头会落进保留 / 隐藏目录的语义里
+// （书架不列、删书闸门拒绝），不能建出「建完就不在书架上」的书。与上面的删侧判定分开：删侧
+// 放宽是为了清历史遗留，写侧不放宽是不再新增。
+function hasReservedFolderPrefix(folderName) {
+  const name = String(folderName == null ? '' : folderName);
+  return name.startsWith('_') || name.startsWith('.');
+}
+
 // 整本书的兜底删除：移动到书架根目录下的 _trash（回收站不可用时使用）
 // 审计修复 #4（S1、E20）：以前只信调用方给的路径、裸 fs.rename —— 拿到的只要「父目录==书架根」
 // 就搬，注入脚本能把 `_trash`（全部删书备份）/ `_碎片`（灵感箱）当「书」整个移走；同一秒删两本
 // 同名书还会覆盖已有备份。这里自己重做完整校验（不把安全托付给 IPC 层）：
 //   · 必须是书架根的直接子目录（不是根自己 / 孙目录 / 书库外路径）；
-//   · 目录名不能以 _ / . 开头（书架保留目录，listBooks 本来也跳过它们）；
+//   · 目录名不能是 _trash / _碎片 / . 开头的隐藏目录（书架保留目录）；其它 _x 目录可能是旧版本
+//     留下的书（DATA-01），只要通过下面的「有 书目.json」校验就允许删；
 //   · 目录里必须有 书目.json —— 普通文件夹 / 被挪空的壳子不是书，不能当书删；
 //   · 写操作排进这本书的写队列（与改章 / 改书目互斥，绝不在别人写盘时把目录搬走）；
 //   · 目标名同秒撞名时改用 -2 / -3，绝不覆盖 _trash 里已有的备份。
@@ -3099,7 +3131,7 @@ async function trashBook(booksRoot, bookPath) {
   if (pathUtils.pathKey(path.dirname(target)) !== pathUtils.pathKey(root)) {
     throw new StorageError('BAD_PATH', '只能删除书架目录下的书');
   }
-  if (!folder || folder.startsWith('_') || folder.startsWith('.')) {
+  if (!folder || isReservedBookFolderName(folder)) {
     throw new StorageError('BAD_PATH', '书架保留目录不能当书删除');
   }
   if (!(await exists(path.join(target, BOOK_FILE)))) {
@@ -3247,6 +3279,8 @@ module.exports = {
   listBooks,
   // IMPORT-01：只读每本书书目 id 的轻量扫描（导入冲突检测用，不统计章节字数）
   listBookIds,
+  // DATA-01：删书闸门的保留目录判定（_trash / _碎片 / . 开头）；ipc/book.js 与 trashBook 共用
+  isReservedBookFolderName,
   // B2（WP18）：单本书卡片（与 listBooks 同一份实现）—— 书架增量刷新只读变更的那一本。
   readBookCard,
   createBook: safeCreateBook,
