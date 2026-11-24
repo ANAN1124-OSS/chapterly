@@ -378,6 +378,35 @@ test('外部修改检测：mtime 没变 → 不弹框不重载', async () => {
   assert.deepEqual(calls.load, []);
 });
 
+// RND-03（2026-11-24 复核补审）：外部改动 warn 按 `书|章|mtime` 去重 —— 连续回焦只提醒一次；
+// mtime 恢复（作者改回去 / 重新载入）后复位；换章或又一次新的外部改动可以再提醒。
+test('RND-03：外部改动 warn 同一外部版本只弹一次，mtime 恢复 / 换章后可再弹', async () => {
+  let mtime = 222;
+  const listeners = installWindow();
+  const ctx = makeHost({ loadedMtimeMs: 111, mtimeMs: 111, dirty: true });
+  ctx.host.api.statChapter = async () => ({ mtimeMs: mtime });
+  statusbarUi.create(ctx.host).setupExternalChangeWatch();
+
+  await listeners.focus[0]();
+  assert.equal(ctx.calls.toast.length, 1, '第一次发现外部改动要提醒');
+  await listeners.focus[0]();
+  await listeners.focus[0]();
+  assert.equal(ctx.calls.toast.length, 1, '同一个外部版本连续回焦不重复打扰');
+
+  mtime = 111; // 作者把文件改回去了（与 loadedMtimeMs 一致）
+  await listeners.focus[0]();
+  assert.equal(ctx.calls.toast.length, 1, 'mtime 恢复时不提醒');
+  mtime = 333; // 恢复之后又一次新的外部改动
+  await listeners.focus[0]();
+  assert.equal(ctx.calls.toast.length, 2, '恢复后再变要重新提醒');
+
+  ctx.state.index = 1; // 换章：key 里的章 id 变了
+  mtime = 444;
+  await listeners.focus[0]();
+  assert.equal(ctx.calls.toast.length, 3, '换章后新的外部改动可再提醒');
+});
+
+
 // ---------- 五-M18（SS-10）：长操作锁 / 整本整理 / 导入在途时不许查外部修改 ----------
 // 整本整理逐章写盘（当前章 mtime 已变，loadedMtimeMs 要到收尾重载才更新），编辑区只是被长操作锁
 // 设成只读，state.loading / saving 都是 false。旧守卫（没书 / 载章 / 保存 / 弹层 / 阅读）全过 →

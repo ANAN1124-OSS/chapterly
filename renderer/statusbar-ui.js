@@ -141,6 +141,11 @@
   // 窗口重新获得焦点就查一次（state 守卫仍在：没书 / 载章中 / 保存中 / 弹层开着 / 阅读模式都不查），
   // 单次检查只是一个 chapter:stat IPC，频率跟作者切窗口一致。改了磁盘内容之后真正拦下保存的是
   // chapter:save 的 expectedMtimeMs（见 core/storage.js prepareChapterSave）。
+  // RND-03：外部改动 warn 的去重键（`书|章|mtime`）。旧实现每次窗口回焦都弹一次 warn —作者
+  // 频繁 Alt+Tab 时会反复被打断，而同一个外部版本只值得提醒一次。mtime 恢复（改回去 / 重新载入
+  // 后 loadedMtimeMs 与磁盘一致）时清空；换章 / 换书时 key 自然不同，可再弹一次。
+  let externalWarnKey = '';
+
   function setupExternalChangeWatch() {
     window.addEventListener('focus', async () => {
       // 五-M18（SS-10）：守卫与 applyEditorEditable 的锁口径对齐——长操作锁 / 整本整理 / 导入在途都不查。
@@ -166,8 +171,15 @@
         const stat = await call(api.statChapter, expected.bookPath, chapter.file);
         if (!staleGuard.sameChapterIdentity(expected, staleGuard.chapterIdentity(state))) return;
         if (state.loadedMtimeMs !== expectedMtimeMs) return;
-        if (stat.mtimeMs === expectedMtimeMs) return;
+        if (stat.mtimeMs === expectedMtimeMs) {
+          // RND-03：磁盘又和载入时一致（改回去了 / 重新载入过）→ 去重状态复位，下次变化再提醒。
+          externalWarnKey = '';
+          return;
+        }
         if (state.dirty) {
+          const warnKey = `${expected.bookPath}|${expected.chapterId}|${stat.mtimeMs}`;
+          if (warnKey === externalWarnKey) return;
+          externalWarnKey = warnKey;
           toast('本章在应用外被修改过；你还有未保存的修改，保存会覆盖外部内容', 'warn');
           return;
         }
