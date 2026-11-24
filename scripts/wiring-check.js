@@ -16,6 +16,8 @@
 //                                （T-24：新建模块忘进清单时 index.html 不会加载它，静态门禁必须红）；
 //   e2e-visual-assertions        scripts/e2e/groups 的每个 checkVisual 调用都在视觉断言静态清单里、清单无过期项、
 //                                数量一致（T-26：E2E_SKIP_VISUAL=1 只许跳过清单内的纯视觉断言）；
+//   e2e-group-registry           scripts/e2e/groups 的组文件集合 == groups/index.js 的 require 集合（GATE-01 反向契约：
+//                                新组文件忘登记 / 索引指向不存在的文件时，场景根本不会跑到那一组，必须点名）；
 //   preload-api-exposed          renderer 用到的每个 api.<键> 都在 preload 暴露；
 //   ipc-invoke-registered        preload 的每个 invoke('频道') 都有主进程 handle / handleBook；
 //   ipc-send-registered          preload 的每个 ipcRenderer.send('频道') 都有主进程 ipcMain.on；
@@ -38,6 +40,7 @@ const CHECK_IDS = [
   'renderer-module-refs',
   'renderer-module-orphans',
   'e2e-visual-assertions',
+  'e2e-group-registry',
   'preload-api-exposed',
   'ipc-invoke-registered',
   'ipc-send-registered',
@@ -379,6 +382,39 @@ function auditWiring(root) {
       .filter((item) => item.text !== null);
     for (const problem of visualAssertions.compareVisualAssertions(groupSources)) {
       violations.push({ id: 'e2e-visual-assertions', detail: problem });
+    }
+  }
+
+  // ---- E2E 组文件 ↔ 组索引（GATE-01，反向契约）----
+  // 「组文件在磁盘上」不等于「场景会跑到它」：执行入口只认 groups/index.js 的登记数组。
+  // 只加文件不登记、或改名后 index.js 还指向旧名时，那一组的断言从头到尾不执行；而
+  // README 计数（version-sync）与视觉断言清单都按磁盘文件算，会一起绿掉——这道反向契约
+  // 必须把两边不一致点名（未登记 / 索引里登记但文件不在）。
+  const groupsIndexRel = 'scripts/e2e/groups/index.js';
+  const groupsIndexSource = read(groupsIndexRel);
+  if (groupsIndexSource === null) {
+    violations.push({ id: 'e2e-group-registry', detail: `读不到 ${groupsIndexRel}：无法核对组文件登记（门禁不许静默通过）` });
+  } else {
+    const diskGroups = fs
+      .readdirSync(groupsDir)
+      .filter((file) => /^\d+-.+\.js$/.test(file))
+      .map((file) => file.replace(/\.js$/, ''))
+      .sort();
+    const registered = new Set(
+      [...groupsIndexSource.matchAll(/require\('\.\/([\w.-]+)'\)/g)].map((match) => match[1])
+    );
+    const unregistered = diskGroups.filter((name) => !registered.has(name));
+    const missingFiles = [...registered].filter((name) => !diskGroups.includes(name)).sort();
+    if (unregistered.length || missingFiles.length) {
+      const parts = [];
+      if (unregistered.length) parts.push(`磁盘上有组文件但 index.js 没登记：${unregistered.join(', ')}`);
+      if (missingFiles.length) parts.push(`index.js 登记了但组文件不在：${missingFiles.join(', ')}`);
+      violations.push({
+        id: 'e2e-group-registry',
+        detail:
+          `scripts/e2e/groups 的组文件与 index.js 的 require 集合不一致（${parts.join('；')}）；` +
+          '修法：在 scripts/e2e/groups/index.js 的 groups 数组里登记该组（或删掉多余组文件）'
+      });
     }
   }
   const rendererSource = read('renderer/renderer.js');

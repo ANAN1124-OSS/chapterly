@@ -272,6 +272,57 @@ test('R4i 视觉断言静态清单：未登记 / 清单过期要红，注释里�
   );
 });
 
+// GATE-01（反向契约）：磁盘上有组文件 ≠ 场景会跑到它 —— 组文件集合必须与 groups/index.js 的
+// require 集合双向一致。只加文件不登记 / 索引指向不存在的文件，都必须点名报红；登记后转绿。
+test('GATE-01：组文件与 groups/index.js 的 require 集合双向一致（未登记要红并点名）', () => {
+  const dir = makeFixture();
+  // 初始夹具（真实组文件全登记）零违规
+  assert.equal(
+    violation(wiring.auditWiring(dir), 'e2e-group-registry'),
+    undefined,
+    '真实组文件全登记时不该报 e2e-group-registry'
+  );
+
+  // ① 放一个没登记的 84 组文件 → 门禁红并点名
+  fs.writeFileSync(
+    path.join(dir, 'scripts', 'e2e', 'groups', '84-unregistered.js'),
+    "'use strict';\nmodule.exports = async () => {};\n",
+    'utf8'
+  );
+  const unregisteredResult = wiring.auditWiring(dir);
+  const unregisteredHit = violation(unregisteredResult, 'e2e-group-registry');
+  assert.ok(
+    unregisteredHit,
+    '未登记的组文件必须命中 e2e-group-registry，实际：' + ids(unregisteredResult).join(',')
+  );
+  assert.match(unregisteredHit.detail, /84-unregistered/, '违规详情要点名未登记的组文件');
+
+  // ② 在 index.js 里登记后转绿（夹具按原样复制 CRLF，这里用 \r?\n 容错）
+  mutate(dir, 'scripts/e2e/groups/index.js', (text) => {
+    const next = text.replace(
+      /(\{ id: 83, run: require\('\.\/83-crash-recovery'\) \})\r?\n\];/,
+      "$1,\r\n  { id: 84, run: require('./84-unregistered') }\r\n];"
+    );
+    assert.notEqual(next, text, '登记变异必须真的写进 index.js');
+    return next;
+  });
+  assert.equal(
+    violation(wiring.auditWiring(dir), 'e2e-group-registry'),
+    undefined,
+    '登记后必须转绿：' + JSON.stringify(violation(wiring.auditWiring(dir), 'e2e-group-registry'))
+  );
+
+  // ③ 反向：索引里的 require 指向不存在的文件 → 同样点名（改名后漏改索引的现场）
+  const missingDir = makeFixture();
+  mutate(missingDir, 'scripts/e2e/groups/index.js', (text) =>
+    text.replace("require('./83-crash-recovery')", "require('./83-crash-recovered')")
+  );
+  const missingResult = wiring.auditWiring(missingDir);
+  const missingHit = violation(missingResult, 'e2e-group-registry');
+  assert.ok(missingHit, '索引指向不存在的组文件必须命中 e2e-group-registry，实际：' + ids(missingResult).join(','));
+  assert.match(missingHit.detail, /83-crash-recovered/, '违规详情要点名索引里的坏登记');
+});
+
 test('TOOL-A04：同一进程对同一 root 改清单后再审计，读到的是新清单（不接受 require 缓存）', () => {
   const dir = makeFixture();
   assert.deepEqual(wiring.auditWiring(dir).violations, [], '夹具初始应零违规');
