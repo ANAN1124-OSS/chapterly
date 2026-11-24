@@ -18,14 +18,20 @@ const { sleep } = require('../core/common');
 //   timeout  毫秒，默认 12000
 //   interval 两次试探之间的等待，默认 120
 //   label    超时文案里的条件描述（默认「条件」）
-//   timeoutMessage 完整的超时文案（给了就用它，不再拼「等待超时：…」）
+//   timeoutMessage 完整的超时文案（字符串，或返回字符串的函数 —— 供「超时现场」现取）
+//   beforeProbe 每轮试探前调用；可以抛错（例如「窗口已销毁」这类必须立刻中止的等待）。
 async function pollUntil(probe, options = {}) {
   const settings = options && typeof options === 'object' ? options : {};
   const timeout = Number.isFinite(Number(settings.timeout)) ? Number(settings.timeout) : 12000;
   const interval = Number.isFinite(Number(settings.interval)) ? Math.max(0, Number(settings.interval)) : 120;
   const label = settings.label == null ? '条件' : String(settings.label);
+  // sleep 可注入（E2E harness 的等待在单测里是假的，不能换成真睡眠）。
+  const sleepImpl = typeof settings.sleep === 'function' ? settings.sleep : sleep;
   const deadline = Date.now() + Math.max(0, timeout);
   for (;;) {
+    // CI-F7：有的等待必须能立刻中止（E2E 窗口已销毁时继续轮询只是白等满 timeout）。
+    // beforeProbe 的异常不当作「页面还没好」吞掉，直接穿出去。
+    if (typeof settings.beforeProbe === 'function') await settings.beforeProbe();
     try {
       const value = await probe();
       if (value) return value;
@@ -33,10 +39,13 @@ async function pollUntil(probe, options = {}) {
       /* 页面还没加载完 / 正在切换：继续等 */
     }
     if (Date.now() > deadline) {
+      if (typeof settings.timeoutMessage === 'function') {
+        throw new Error(String(await settings.timeoutMessage()));
+      }
       if (settings.timeoutMessage) throw new Error(String(settings.timeoutMessage));
       throw new Error(`等待超时：${label}`);
     }
-    await sleep(interval);
+    await sleepImpl(interval);
   }
 }
 

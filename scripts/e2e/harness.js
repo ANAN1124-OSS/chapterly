@@ -9,6 +9,9 @@
 // 这里不 require 任何产品代码；等待 / 重试的次数与拆分前逐字相同——拆分不改断言。
 const fs = require('node:fs/promises');
 const path = require('node:path');
+// CI-F7：等待工具统一走 scripts/driver-poll.js 的 pollUntil（超时文案 / 轮询间隔 / 中止口径一份实现）；
+// 本文件只保留 harness 专属的 probe / 文案。
+const { pollUntil } = require('../driver-poll');
 
 // 等待时长常量表（1.6.0 G2）：E2E 里「等一拍」的时长只在这里写数字，组文件用有名字的
 // waitForRender / waitForFocus / waitForDisk；能在条件上等的继续用 waitFor，不要拿它们当断言。
@@ -101,30 +104,27 @@ function createHarness(ctx) {
     }
   };
 
-  const waitFor = async (expr, timeout = 10000) => {
-    const startedAt = Date.now();
-    for (;;) {
+  const waitFor = (expr, timeout = 10000) =>
+    pollUntil(() => exec(expr), {
+      timeout,
+      interval: WAIT.POLL,
+      sleep,
       // 窗口已销毁：立即以可识别的错误结束本次等待（场景层据此跳过剩余组）。
-      if (windowGone()) throw new Error(`窗口已销毁，停止等待：${expr}`);
-      let value;
-      try {
-        value = await exec(expr);
-      } catch { /* 页面切换间隙可能短暂失败 */ }
-      if (value) return value;
-      if (Date.now() - startedAt > timeout) {
-        // 超时带上一点现场（2026-11-01 v0.9 R0）：键盘 / 焦点类断言偶尔受窗口系统焦点影响，
-        // 只记 activeElement 与 document.hasFocus()，方便下次偶发失败时定位，不做任何补救动作。
+      beforeProbe: () => {
+        if (windowGone()) throw new Error(`窗口已销毁，停止等待：${expr}`);
+      },
+      // 超时带上一点现场（2026-11-01 v0.9 R0）：键盘 / 焦点类断言偶尔受窗口系统焦点影响，
+      // 只记 activeElement 与 document.hasFocus()，方便下次偶发失败时定位，不做任何补救动作。
+      timeoutMessage: async () => {
         let diag = '';
         try {
           diag = await exec(
             'JSON.stringify({ activeId: document.activeElement && document.activeElement.id, hasFocus: document.hasFocus() })'
           );
         } catch { /* 页面刚好在切换，忽略 */ }
-        throw new Error(`等待超时：${expr}${diag ? `（现场：${diag}）` : ''}`);
+        return `等待超时：${expr}${diag ? `（现场：${diag}）` : ''}`;
       }
-      await sleep(WAIT.POLL);
-    }
-  };
+    });
 
   const logDir = path.join(userData, 'logs');
   const logNamePattern = /^chapter-writer-\d{4}-\d{2}-\d{2}(\.\d{1,3})?\.log$/;
@@ -146,17 +146,22 @@ function createHarness(ctx) {
     }
     return { names, text };
   };
-  const waitForLog = async (needle, timeout = 10000) => {
-    const startedAt = Date.now();
-    for (;;) {
-      const { text } = await readLogs();
-      if (text.includes(needle)) return text;
-      if (Date.now() - startedAt > timeout) {
-        throw new Error(`等待日志超时：${needle} :: ${text.slice(-800)}`);
+  const waitForLog = (needle, timeout = 10000) =>
+    pollUntil(
+      async () => {
+        const { text } = await readLogs();
+        return text.includes(needle) ? text : false;
+      },
+      {
+        timeout,
+        interval: WAIT.POLL,
+      sleep,
+        timeoutMessage: async () => {
+          const { text } = await readLogs();
+          return `等待日志超时：${needle} :: ${text.slice(-800)}`;
+        }
       }
-      await sleep(WAIT.POLL);
-    }
-  };
+    );
 
   // 文件 / 目录存在与否（第 52 组「日志只写 userData\logs」这条断言要用；以前是场景里的局部函数）。
   const fileExists = async (file) => {
@@ -268,65 +273,64 @@ function createHarness(ctx) {
   };
 
   // 等主进程真的把文件写出来（范围导出确认后是异步写盘）
-  const waitForFile = async (file, timeout = 10000) => {
-    const startedAt = Date.now();
-    for (;;) {
-      try {
-        const stat = await fs.stat(file);
-        if (stat.isFile() && stat.size > 0) return;
-      } catch {
-        /* 还没写出来 */
-      }
-      if (Date.now() - startedAt > timeout) throw new Error(`等待文件超时：${file}`);
-      await sleep(WAIT.POLL);
-    }
-  };
+  const waitForFile = (file, timeout = 10000) =>
+    pollUntil(
+      async () => {
+        try {
+          const stat = await fs.stat(file);
+          return Boolean(stat.isFile() && stat.size > 0);
+        } catch {
+          return false; // 还没写出来
+        }
+      },
+      { timeout, interval: WAIT.POLL, sleep, timeoutMessage: `等待文件超时：${file}` }
+    );
 
   // 导出范围对话框的摘要要等主进程算完（book:export-plan 是异步的）
-  const waitForSummary = async (needle, timeout = 8000) => {
-    const startedAt = Date.now();
+  const waitForSummary = (needle, timeout = 8000) => {
     let text = '';
-    for (;;) {
-      try {
-        text = await exec('window.__cwTest.exportSummary()');
-      } catch {
-        /* 对话框可能刚开 */
-      }
-      if (typeof text === 'string' && text.includes(needle)) return text;
-      if (Date.now() - startedAt > timeout) {
-        throw new Error(`等待导出摘要超时：${needle} :: ${text}`);
-      }
-      await sleep(WAIT.POLL);
-    }
+    return pollUntil(
+      async () => {
+        try {
+          text = await exec('window.__cwTest.exportSummary()');
+        } catch {
+          /* 对话框可能刚开 */
+        }
+        return typeof text === 'string' && text.includes(needle) ? text : false;
+      },
+      { timeout, interval: WAIT.POLL, sleep, timeoutMessage: () => `等待导出摘要超时：${needle} :: ${text}` }
+    );
   };
 
   // 等主进程侧真正收到「可以关闭 / 不许关闭」的回执
-  const waitCloseReady = async (timeout = 15000) => {
-    const startedAt = Date.now();
-    for (;;) {
-      const value = getCloseReady();
-      if (value !== undefined) return value;
-      if (Date.now() - startedAt > timeout) throw new Error('等待 close-ready 超时');
-      await sleep(WAIT.POLL);
-    }
-  };
+  const waitCloseReady = (timeout = 15000) =>
+    pollUntil(
+      async () => {
+        const value = getCloseReady();
+        return value === undefined ? false : { value };
+      },
+      { timeout, interval: WAIT.POLL, sleep, timeoutMessage: '等待 close-ready 超时' }
+    ).then((box) => box.value);
 
   // 剪贴板是主进程能力：E2E 在这里直接读写，验证「复制本章」真的进了系统剪贴板
   const readClipboard = async () => {
     const value = await clipboard.readText();
     return typeof value === 'string' ? value : String(value == null ? '' : value);
   };
-  const waitForClipboard = async (predicate, timeout = 8000) => {
-    const startedAt = Date.now();
+  const waitForClipboard = (predicate, timeout = 8000) => {
     let value = '';
-    for (;;) {
-      value = await readClipboard();
-      if (predicate(value)) return value;
-      if (Date.now() - startedAt > timeout) {
-        throw new Error(`等待剪贴板超时：${JSON.stringify(value.slice(0, 80))}`);
+    return pollUntil(
+      async () => {
+        value = await readClipboard();
+        return predicate(value) ? { value } : false;
+      },
+      {
+        timeout,
+        interval: WAIT.POLL,
+      sleep,
+        timeoutMessage: () => `等待剪贴板超时：${JSON.stringify(value.slice(0, 80))}`
       }
-      await sleep(WAIT.POLL);
-    }
+    ).then((box) => box.value);
   };
 
   return {

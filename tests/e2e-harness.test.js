@@ -582,10 +582,16 @@ test('静态闸门：harness 与组文件只 require node 内建，不牵出产�
   for (const [label, source] of sources) {
     const requests = [...source.matchAll(/require\('([^']+)'\)/g)].map((m) => m[1]);
     for (const request of requests) {
+      // CI-F7：harness 的等待工具统一走 scripts/driver-poll.js（E2E 基建，不是产品代码）。
+      if (label === 'scripts/e2e/harness.js' && request === '../driver-poll') continue;
       assert.match(request, /^node:/, `${label} 不该 require ${request}（只许 node 内建）`);
     }
     assert.equal(/require\('electron'\)|\.\.\/main|\.\.\/core\//.test(source), false, `${label} 牵出了产品代码`);
   }
+  // 公共轮询层自己也只许 node 内建 + core/common（纯逻辑工具），不牵主进程 / electron。
+  const pollSource = fs.readFileSync(path.join(ROOT, 'scripts', 'driver-poll.js'), 'utf8');
+  const pollRequests = [...pollSource.matchAll(/require\('([^']+)'\)/g)].map((match) => match[1]);
+  assert.deepEqual(pollRequests, ['../core/common'], 'scripts/driver-poll.js 只许依赖 core/common');
   // harness 对外只交一个工厂 + 明确的工具名，别长成第二个大杂烩
   assert.match(HARNESS_SOURCE, /module\.exports = \{ createHarness \};/);
 });
