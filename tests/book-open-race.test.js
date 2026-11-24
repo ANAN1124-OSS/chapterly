@@ -15,6 +15,7 @@ const storage = require('../core/storage');
 const openBooksLib = require('../core/open-books');
 const pathUtils = require('../core/path-utils');
 const bookIpc = require('../ipc/book');
+const bookDataIpc = require('../ipc/book-data');
 
 const tmpCleanup = require('./tmp-cleanup');
 
@@ -133,4 +134,63 @@ test('RACE-01：租约按路径记——删除后同名重建，在途打开仍�
     release();
   }
   assert.doesNotThrow(() => storage.assertBookNotBusy(first.path, 'win-b', 'delete'), '释放后恢复可删');
+});
+
+// LEASE-01（2026-11-24 复核补审）：book:search / book:format-preview 读取期间也登记只读租约
+// （与导出 / 校对 / 整本复制同口径）——同窗口「回书架 → 删同书」会被 READ_LEASE_BUSY 拒绝，
+// 不会读到一半把书目录搬走（loadTextOrSkip 会把缺章静默跳过，结果失真）。
+test('LEASE-01：book:search / book:format-preview 读取期间持租约，完成 / 失败都释放', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '读取中的书');
+  const channels = new Map();
+  const gates = [];
+  const fakeStorage = Object.create(storage);
+  const gated = (impl) => async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    gates.push({ gate, release });
+    await gate;
+    return impl();
+  };
+  fakeStorage.searchBook = gated(async () => ({ results: [] }));
+  fakeStorage.previewFormatBook = gated(async () => ({ chaptersChanged: 0 }));
+  bookDataIpc.register({
+    handleBook: (channel, fn) => channels.set(channel, fn),
+    storage: fakeStorage,
+    ipcLimits: { sanitizeSearchOptions: (value) => value || {} },
+    fs,
+    path,
+    shell: { openPath: async () => '' },
+    errorText: {
+      describeForUi: (err) => ({ message: String((err && err.message) || err) }),
+      cleanText: (text) => String(text == null ? '' : text),
+      redactPaths: (text) => String(text == null ? '' : text)
+    },
+    sendToFlow: () => {},
+    getSearchIndexStore: () => ({ markDirty: () => {} }),
+    logError: () => {}
+  });
+  for (const channel of ['book:search', 'book:format-preview']) {
+    const pending = channels.get(channel)(bookPath, {});
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(storage.isBookReadLeased(bookPath), true, `${channel} 读取期间必须持租约`);
+    assert.throws(
+      () => storage.assertBookNotBusy(bookPath, 'win-b', 'delete'),
+      (err) => err && err.code === 'READ_LEASE_BUSY',
+      `${channel} 在途时删除必须被拒`
+    );
+    gates.at(-1).release();
+    await pending;
+    assert.equal(storage.isBookReadLeased(bookPath), false, `${channel} 完成后释放租约`);
+  }
+  // 抛错也要释放：不能因为一次搜索失败把这本书永久锁成「不能删」
+  fakeStorage.searchBook = gated(async () => {
+    throw Object.assign(new Error('search failed'), { code: 'SEARCH_FAILED' });
+  });
+  const failing = channels.get('book:search')(bookPath, {});
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(storage.isBookReadLeased(bookPath), true);
+  gates.at(-1).release();
+  await assert.rejects(failing, (err) => err.code === 'SEARCH_FAILED');
+  assert.equal(storage.isBookReadLeased(bookPath), false, '搜索失败后租约也要释放');
 });

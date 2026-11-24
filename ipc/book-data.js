@@ -55,6 +55,11 @@ function registerBookDataIpc(host) {
     handleBook, storage, ipcLimits, fs, path, shell, errorText, sendToFlow, getSearchIndexStore, logError
   } = host;
   const markDirty = (bookPath) => markSearchDirty(getSearchIndexStore, logError, bookPath);
+  // LEASE-01：整本搜索 / 排版预览逐章读正文期间登记在途租约（与导出 / 校对 / 整本复制同口径）。
+  // 同窗口「回书架 → 删同书」撞进读取窗口会被 READ_LEASE_BUSY 拒绝 —— 否则 loadTextOrSkip 会把
+  // 缺章静默跳过，本次结果失真。host 没注入（老单测 / 假存储）时退化成空实现。
+  const beginReadLease =
+    typeof storage.beginReadLease === 'function' ? storage.beginReadLease : () => () => {};
   // WP4（审计 S-N1）：清理备份的一次性计划令牌（进程内、只在主进程）。每次 register 一份 ——
   // 模块本身不缓存全局状态（单测各自装配，互不串令牌）。
   const deletePlanTokens = deletePlanToken.createStore();
@@ -65,9 +70,14 @@ function registerBookDataIpc(host) {
   // 不让一个超长替换词把整本书的 txt 撑爆（替换最多 5000 处 / 章）。
   // R4b（V9）/ 1.7.2 D4（V40）：整本操作遇到超过 128 MB 的章会跳过，core 在结果里直接带
   // skippedTooLarge；这里原样返回 core 的结果，不再包一层恒等复制（渲染层照旧读这个字段）。
-  handleBook('book:search', async (bookPath, options) =>
-    storage.searchBook(bookPath, ipcLimits.sanitizeSearchOptions(options)), READ_ONLY
-  );
+  handleBook('book:search', async (bookPath, options) => {
+    const releaseLease = beginReadLease(bookPath);
+    try {
+      return await storage.searchBook(bookPath, ipcLimits.sanitizeSearchOptions(options));
+    } finally {
+      releaseLease();
+    }
+  }, READ_ONLY);
   handleBook('book:replace', async (bookPath, options) => {
     const result = await storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options));
     // T-08：整本替换逐章重写 txt，成功后标脏索引（否则 60 秒内搜索仍拿旧位图）。
@@ -185,9 +195,14 @@ function registerBookDataIpc(host) {
 
   // 整本智能排版：预检查只算不写；正式整理逐章写盘（写前把原章节备份到 _trash/整理备份-*）
   // 1.7.2 D4（V40）：同 book:search / book:replace，core 结果里的 skippedTooLarge 原样透传。
-  handleBook('book:format-preview', async (bookPath, options) =>
-    storage.previewFormatBook(bookPath, options), READ_ONLY
-  );
+  handleBook('book:format-preview', async (bookPath, options) => {
+    const releaseLease = beginReadLease(bookPath);
+    try {
+      return await storage.previewFormatBook(bookPath, options);
+    } finally {
+      releaseLease();
+    }
+  }, READ_ONLY);
   handleBook('book:format', async (bookPath, options) => {
     const result = await storage.formatBook(bookPath, options, (progress) => {
       sendToFlow('format:progress', progress);
