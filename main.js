@@ -730,6 +730,9 @@ function logError(kind, err, extra = {}) {
       channel: extra.channel,
       path: extra.path,
       message: extra.message != null ? extra.message : described.message,
+      // LOG-01：代码里写死的固定中文文案传 literal: true —— 不把 ≥24 连续汉字当正文遮掉；
+      // 外部输入一律不传（默认仍遮罩 + 路径脱敏）。
+      literal: extra.literal === true,
       stack: described.stack,
       pid: process.pid,
       app: version

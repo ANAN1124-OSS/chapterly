@@ -94,8 +94,37 @@ test('崩溃日志：sanitizeMessage 压成单行、去控制字符、隐去正�
   assert.match(many, /\[已截断 \d+ 字\]$/);
 });
 
-test('崩溃日志：sanitizeMessage 里的本机绝对路径只留最后一节（v0.9 C-4）', () => {
-  // 真实形状：Node 的 fs 错误把完整路径写进 message，日志里不能再带本机目录 / 用户名
+// LOG-01（2026-11-24 复核补审）：literal=true 只跳过「连续汉字当正文隐去」这一步，
+// 路径脱敏 / 单行化 / 控制字符清理 / 截断一个都不跳。产品里只有写死的固定中文文案会传它。
+test('LOG-01：literal 长中文固定文案保留，默认仍遮罩，路径脱敏不跳过', () => {
+  const banner = '渲染层未捕获异常：界面出现了一个异常已写进日志写作和保存不受影响请稍后重启应用';
+  assert.ok(Array.from(banner).length >= 24);
+  assert.match(logsLib.sanitizeMessage(banner), /\[正文已隐藏 \d+ 字\]/, '默认口径不变');
+  assert.equal(logsLib.sanitizeMessage(banner, { literal: true }), banner, '固定文案不再被遮成「正文已隐藏」');
+  assert.equal(logsLib.sanitizeMessage('第一行\r\n第二行', { literal: true }), '第一行 第二行', 'literal 仍压成单行');
+
+  // 路径脱敏绝不跳过：literal 只管「汉字是不是正文」
+  const withPath = "读取失败：D:\\小说\\星海旅人\\001-第1章.txt";
+  const literalPath = logsLib.sanitizeMessage(withPath, { literal: true });
+  assert.equal(literalPath.includes('D:\\'), false);
+  assert.match(literalPath, /…\\001-第1章\.txt$/);
+
+  // path 字段同一口径
+  const longBookName = '这是一本名字特别特别长的书用了很多很多汉字来命名它';
+  assert.match(logsLib.sanitizePath(longBookName), /正文已隐藏/);
+  assert.equal(logsLib.sanitizePath(longBookName, { literal: true }), longBookName);
+
+  // sanitizeEntry 把 literal 传下去：message / path 两个字段都生效
+  const entry = logsLib.sanitizeEntry({ kind: 'x', message: banner, path: longBookName, literal: true });
+  assert.equal(entry.message, banner);
+  assert.equal(entry.path, longBookName);
+  // 不传 literal 时 sanitizeEntry 仍按默认遮罩
+  const maskedEntry = logsLib.sanitizeEntry({ kind: 'x', message: banner, path: longBookName });
+  assert.match(maskedEntry.message, /正文已隐藏/);
+  assert.match(maskedEntry.path, /正文已隐藏/);
+});
+
+test('崩溃日志：sanitizeMessage 里的本机绝对路径只留最后一节（v0.9 C-4）', () => {  // 真实形状：Node 的 fs 错误把完整路径写进 message，日志里不能再带本机目录 / 用户名
   const masked = logsLib.sanitizeMessage(
     "EPERM: operation not permitted, open 'C:\\Users\\uid72\\AppData\\Local\\Programs\\chapter-writer\\书\\001-第1章.txt'"
   );

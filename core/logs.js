@@ -119,12 +119,14 @@ function sanitizePid(value) {
 
 // message：单行、去控制字符、隐去长串汉字、隐去本机绝对路径、限制长度。
 // 正文不会出现在这里（调用方只传错误信息）。
-function sanitizeMessage(value) {
+// LOG-01：literal=true 时跳过「连续汉字当正文隐去」这一步（固定中文文案不该被遮成「正文已隐藏」），
+// 路径脱敏 / 单行化 / 截断照旧 —— literal 只由代码里写死的文案使用，不接收外部输入。
+function sanitizeMessage(value, { literal = false } = {}) {
   let text = typeof value === 'string' ? value : safeString(value);
   text = text.replace(/\r\n?/g, '\n').replace(/\t/g, ' ');
   text = text.replace(CONTROL_RE, '');
   text = text.replace(/\n+/g, ' ');
-  text = maskLongCjk(text);
+  if (!literal) text = maskLongCjk(text);
   text = errorText.redactPaths(text);
   text = text.replace(/\s{2,}/g, ' ').trim();
   if (text.length > MAX_MESSAGE_CHARS) {
@@ -134,14 +136,16 @@ function sanitizeMessage(value) {
   return text;
 }
 
-function sanitizePath(value) {
+function sanitizePath(value, { literal = false } = {}) {
   let text = safeString(value).replace(/[\r\n\t]+/g, ' ');
   text = text.replace(CONTROL_RE, '').trim();
   if (!text) return '';
   // 审计修复 #23（S3）：path 字段也过 message 同一套脱敏 —— 先收本机绝对路径（只留最后一节），
   // 再把≥24 个连续汉字当正文隐去。以前这里只去控制字符 + 截断，完全靠「调用方只传书相对信息」
   // 这一层自律；调用方手滑填了本机目录 / 长书名就会原样落进日志。
-  text = maskLongCjk(errorText.redactPaths(text));
+  // LOG-01：literal=true 时只跳过汉字遮罩（固定文案），路径脱敏不跳。
+  text = errorText.redactPaths(text);
+  if (!literal) text = maskLongCjk(text);
   if (!text) return '';
   return text.length > MAX_PATH_CHARS ? `${text.slice(0, MAX_PATH_CHARS)}…` : text;
 }
@@ -192,6 +196,8 @@ function sanitizeEntry(raw, now = new Date()) {
   const fallback = toDate(now);
   const time = toDate(src.time, fallback);
   const levelRaw = safeString(src.level).trim().toLowerCase();
+  // LOG-01：literal 只影响汉字遮罩（固定中文文案不该被当正文隐去），路径脱敏 / 单行化照旧。
+  const literal = src.literal === true;
   return {
     time,
     day: localDayKey(time),
@@ -199,8 +205,8 @@ function sanitizeEntry(raw, now = new Date()) {
     kind: sanitizeToken(src.kind, KIND_RE, 'unknown'),
     code: sanitizeToken(src.code, CODE_RE, ''),
     channel: sanitizeToken(src.channel, CHANNEL_RE, ''),
-    path: sanitizePath(src.path),
-    message: sanitizeMessage(src.message),
+    path: sanitizePath(src.path, { literal }),
+    message: sanitizeMessage(src.message, { literal }),
     stack: sanitizeStack(src.stack),
     pid: sanitizePid(src.pid),
     app: sanitizeToken(src.app, VERSION_RE, '')
