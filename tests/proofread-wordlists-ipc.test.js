@@ -307,7 +307,7 @@ const ADD_ANCHOR = "  handle('proofread:wordlists-add', async () => {";
 
 // 把 add 处理器装进假作用域：dialog / 配置 / 词表信息都是替身，fs 与 path 用真的。
 // 返回 { handler, calls }；calls 记录 stat / info 的调用顺序——就是 V53 要钉的「先校验、后读词表」。
-function loadAddWordlistHandler({ picked, config }) {
+function loadAddWordlistHandler({ picked, config, info }) {
   const calls = [];
   const arrow = extractAsyncArrow(proofreadIpcSource, ADD_ANCHOR);
   const handler = new Function(
@@ -332,7 +332,7 @@ function loadAddWordlistHandler({ picked, config }) {
     () => {},
     async () => {
       calls.push('info');
-      return { lists: [], total: 0, multi: true };
+      return info ? info() : { lists: [], total: 0, multi: true };
     },
     { stat: (target) => { calls.push('stat'); return fsPromises.stat(target).catch(() => null); } },
     pathUtils,
@@ -393,7 +393,7 @@ test('行为：添加词表先 stat / 判重 / 判上限，再读词表；被拒
 const REMOVE_ANCHOR = "  handle('proofread:wordlists-remove', async (index, expectedCount) => {";
 
 // 把 remove 处理器装进假作用域：配置读写与公开信息都是替身，断言的是「改没改配置」。
-function loadRemoveWordlistHandler({ config }) {
+function loadRemoveWordlistHandler({ config, info }) {
   const writes = [];
   const arrow = extractAsyncArrow(proofreadIpcSource, REMOVE_ANCHOR);
   const handler = new Function(
@@ -408,7 +408,7 @@ function loadRemoveWordlistHandler({ config }) {
     async () => config,
     () => ({ set: async (patch) => { writes.push(patch); return { ...config, ...patch }; } }),
     () => {},
-    async () => ({ lists: [], total: 0 }),
+    async () => (info ? info() : { lists: [], total: 0 }),
     softFailure
   );
   return { handler, writes };
@@ -460,4 +460,80 @@ test('行为：wordlists-remove 带点击时的份数——错位索引不删错
   // 旧调用不带份数：保持既有行为（E8 判型 + 边界），不因新参数把老路径打断
   const legacy = loadRemoveWordlistHandler({ config: { proofreadWordlists: ['乙.txt'] } });
   assert.equal((await legacy.handler(0)).removed, true);
+});
+
+// IPC-01（2026-11-26 审计）：失败回包写成 {...softFailure(), ...info}，而 info 是 proofread:words-info
+// 的公开信息 —— 里面自带 ok / message / code。只要配置里有一份可读词表，info.ok 就是 true，
+// 失败会被盖成成功；配置里那一份读不了时，info.message / code 又会盖掉本频道更具体的文案。
+// 修法是「info 先展开、softFailure 最后」（包络三字段只能由 softFailure 给）。
+test('行为：失败回包的 ok / code / message 不被最新词表信息覆盖（IPC-01）', async () => {
+  const dir = await mkTmp();
+  try {
+    const existing = path.join(dir, '已有词表.txt');
+    await fsPromises.writeFile(existing, '做为 => 作为\n', 'utf8');
+    const missing = path.join(dir, '没有这份词表.txt');
+    // 用真实 glossary 出口生成公开信息（与 proofreadWordlistInfoNow 同源），不手搓形状
+    const realInfo = (paths) => async () => {
+      const bundle = await glossary.readGlossaryFiles(paths);
+      return { ...glossary.proofreadWordListInfo(bundle, paths), multi: true };
+    };
+
+    // ① 重复添加一份可读词表：info.ok === true，旧实现会把失败回包盖成 ok:true
+    {
+      const info = realInfo([existing]);
+      assert.equal((await info()).ok, true, '夹具前提：可读词表的公开信息 ok:true');
+      const { handler } = loadAddWordlistHandler({
+        picked: existing,
+        config: { proofreadWordlists: [existing] },
+        info
+      });
+      const res = await handler();
+      assert.equal(res.code, 'WORDLIST_DUPLICATE');
+      assert.equal(res.ok, false, '重复添加必须仍是软错误包络 ok:false');
+      assert.match(res.message, /已经在列表里/, '更具体的失败文案不能被公开信息的 message 盖掉');
+      assert.equal(res.added, false);
+      // 拒绝分支仍要回最新列表（渲染层据此重画），不能因为重排包络把 info 丢了
+      assert.equal(res.lists.length, 1);
+      assert.equal(res.total, 1);
+    }
+
+    // ② 配置里那份词表读不了、又添加一个不存在的文件：info 带自己的 code/message，旧实现会盖掉
+    {
+      const brokenPath = path.join(dir, '不存在的旧词表.txt');
+      const info = realInfo([brokenPath]);
+      const brokenInfo = await info();
+      assert.equal(brokenInfo.ok, false, '夹具前提：读不了的词表公开信息 ok:false');
+      assert.ok(brokenInfo.message, '夹具前提：公开信息自带 message');
+      const { handler } = loadAddWordlistHandler({
+        picked: missing,
+        config: { proofreadWordlists: [brokenPath] },
+        info
+      });
+      const res = await handler();
+      assert.equal(res.code, 'WORDLIST_MISSING', '本频道的错误码不能被词表信息的 code 盖掉');
+      assert.equal(res.ok, false);
+      assert.match(res.message, /这个词表文件不存在/, '文案说的是刚选的文件，不能换成旧词表的读取错误');
+    }
+
+    // ③ 移除：info.ok === true 时旧实现会把「列表已变」的拒绝盖成 ok:true
+    {
+      const second = path.join(dir, '第二份.txt');
+      await fsPromises.writeFile(second, '禁词\n', 'utf8');
+      const info = realInfo([existing, second]);
+      assert.equal((await info()).ok, true);
+      const { handler, writes } = loadRemoveWordlistHandler({
+        config: { proofreadWordlists: [existing, second] },
+        info
+      });
+      const res = await handler(0, 99);
+      assert.equal(res.code, 'WORDLIST_CHANGED');
+      assert.equal(res.ok, false, '拒绝移除必须仍是软错误包络 ok:false');
+      assert.equal(res.removed, false);
+      assert.match(res.message, /列表已经变了/);
+      assert.deepEqual(writes, [], '拒绝分支不写配置');
+      assert.equal(res.lists.length, 2);
+    }
+  } finally {
+    await fsPromises.rm(dir, { recursive: true, force: true });
+  }
 });

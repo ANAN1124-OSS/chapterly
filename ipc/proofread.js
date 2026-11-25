@@ -150,13 +150,15 @@ function registerProofreadIpc(host) {
     const current = Array.isArray(cfg.proofreadWordlists) ? cfg.proofreadWordlists.slice() : [];
     const stat = await fs.stat(picked).catch(() => null);
     if (!stat || !stat.isFile()) {
-      return { ...softFailure('WORDLIST_MISSING', '这个词表文件不存在（可能被移动或删除了）'), canceled: false, added: false, ...(await proofreadWordlistInfoNow()) };
+      // IPC-01：info 自带 ok / message（配置里只要有一份可读词表，info.ok 就是 true），必须放在
+      // softFailure 之前 —— 包络的 ok / code / message 只能由 softFailure 给，否则失败会被盖成成功。
+      return { ...(await proofreadWordlistInfoNow()), canceled: false, added: false, ...softFailure('WORDLIST_MISSING', '这个词表文件不存在（可能被移动或删除了）') };
     }
     if (current.some((item) => pathUtils.pathKey(item) === pathUtils.pathKey(picked))) {
-      return { ...softFailure('WORDLIST_DUPLICATE', '这份词表已经在列表里了'), canceled: false, added: false, ...(await proofreadWordlistInfoNow()) };
+      return { ...(await proofreadWordlistInfoNow()), canceled: false, added: false, ...softFailure('WORDLIST_DUPLICATE', '这份词表已经在列表里了') };
     }
     if (current.length >= WORDLIST_MAX) {
-      return { ...softFailure('WORDLIST_LIMIT', `最多 ${WORDLIST_MAX} 份校对词表`), canceled: false, added: false, ...(await proofreadWordlistInfoNow()) };
+      return { ...(await proofreadWordlistInfoNow()), canceled: false, added: false, ...softFailure('WORDLIST_LIMIT', `最多 ${WORDLIST_MAX} 份校对词表`) };
     }
     const next = await getConfigStore().set({ proofreadWordlists: [...current, picked] });
     applyConfig(next);
@@ -171,13 +173,14 @@ function registerProofreadIpc(host) {
     // 非 number 一律记 -1（走同一条 WORDLIST_NOT_FOUND，不新增错误码，界面文案不变）。
     const at = typeof index === 'number' && Number.isInteger(index) ? index : -1;
     if (at < 0 || at >= current.length) {
-      return { ...softFailure('WORDLIST_NOT_FOUND', '这一份词表不在列表里，可能已经被移除了'), canceled: false, removed: false, ...(await proofreadWordlistInfoNow()) };
+      // IPC-01：同上，info 先展开、softFailure 最后，包络三字段不被词表信息覆盖。
+      return { ...(await proofreadWordlistInfoNow()), canceled: false, removed: false, ...softFailure('WORDLIST_NOT_FOUND', '这一份词表不在列表里，可能已经被移除了') };
     }
     // 五-M12（PR-02）：索引只是渲染时看到的列表位置。两次移除交叠（快速连点 / 双窗口）时配置已经
     // 前移，仅判边界会删到下一份。渲染层把「点击时看到的份数」一起发来；对不上就明确拒绝并回最新
     // 列表（渲染层据此重画），绝不再按错位索引 splice。旧调用不带份数时保持既有行为。
     if (Number.isInteger(expectedCount) && expectedCount >= 0 && expectedCount !== current.length) {
-      return { ...softFailure('WORDLIST_CHANGED', '词表列表已经变了（可能在另一个窗口改过），请确认后再移除'), canceled: false, removed: false, ...(await proofreadWordlistInfoNow()) };
+      return { ...(await proofreadWordlistInfoNow()), canceled: false, removed: false, ...softFailure('WORDLIST_CHANGED', '词表列表已经变了（可能在另一个窗口改过），请确认后再移除') };
     }
     current.splice(at, 1);
     const next = await getConfigStore().set({ proofreadWordlists: current });
