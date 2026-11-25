@@ -524,6 +524,24 @@
     }
   }
 
+  // RNDC-01（第 5 轮）：删空收尾只留这一份 —— 单章删除与批量删除删到 0 章时必须走同一条路。
+  // 旧实现里批量删除仍按「回落下标 + loadChapterAt(0)」收尾：真 loadChapterAt 在 0 章直接回
+  // NO_BOOK（不碰编辑区、不改 state），调用方只 toast 一句「载入失败」—— 下标停在 0（指向不存在
+  // 的章）、编辑区留着刚删掉那一章的正文、也没切只读空态，之后的保存 / 新建都落在一个空处。
+  function enterEmptyBookState() {
+    state.index = -1;
+    state.loadedChapterId = null;
+    state.loadedMtimeMs = 0;
+    state.baseText = '';
+    state.dirty = false;
+    state.saveError = null;
+    editorEl.value = '';
+    setChapterMask(true, '这本书还没有章节。点左下「＋ 新建章节」或按 Ctrl+N 开始写第一章。');
+    renderChapterList();
+    renderEditorHeader();
+    updateStatus();
+  }
+
   // 返回 true = 真的删了（写盘成功）；false = 没删（取消未保存拦截 / 保存失败 / 出错）。
   // 1.4.0 P0-2（撤销优先）：删除改为「直接执行 + 10 秒撤销」——不再弹「确定删除？」确认框。
   // 只有「删的是当前章且还有没保存的字」仍走未保存拦截（两处保留确认之一）：撤销找得回磁盘上
@@ -599,18 +617,8 @@
         });
       }
       if (!state.chapters.length) {
-        // 空章节收尾：清掉上一章的编辑区状态，编辑区只读 + 可读提示，章节栏显示「还没有章节」。
-        state.index = -1;
-        state.loadedChapterId = null;
-        state.loadedMtimeMs = 0;
-        state.baseText = '';
-        state.dirty = false;
-        state.saveError = null;
-        editorEl.value = '';
-        setChapterMask(true, '这本书还没有章节。点左下「＋ 新建章节」或按 Ctrl+N 开始写第一章。');
-        renderChapterList();
-        renderEditorHeader();
-        updateStatus();
+        // 空章节收尾（RNDC-01）：与批量删除共用同一份空态收尾，编辑区只读 + 可读提示。
+        enterEmptyBookState();
         toast('已删除最后一章；这本书现在没有章节，点「＋ 新建章节」再写');
       }
       return true;
@@ -772,7 +780,11 @@
     // 选中集合是一次性动作的上下文：执行完就收起（失败也收起，避免重试时重复删已删的章）
     state.selectedIds = new Set();
     state.selectAnchorId = null;
-    if (currentSelected) {
+    if (!state.chapters.length) {
+      // RNDC-01：删空要走与单章删除同一份空态收尾 —— 不能再拿 0 号章去 loadChapterAt
+      // （真实现回 NO_BOOK，只 toast「载入失败」，编辑区留着旧正文、下标指向不存在的章）。
+      enterEmptyBookState();
+    } else if (currentSelected) {
       state.index = Math.min(firstIndex, Math.max(0, state.chapters.length - 1));
       // 旧M2（一轮·中）：与单章删除同一口径 —— 载章成功才清脏（loadChapterAt 成功分支自己清），
       // 失败保持脏并提示，不进「正文在、状态栏已保存」的矛盾态。

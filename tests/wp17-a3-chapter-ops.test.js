@@ -760,7 +760,7 @@ test('A3-Cβ / B5：批量删除——从后往前删、部分失败仍登记已
   assert.equal(rt.state.selectedIds.size, 0, '一次性动作上下文执行完收起');
   assert.equal(rt.state.selectAnchorId, null);
   assert.equal(rt.state.dirty, false);
-  assert.deepEqual(rt.counts.load, [0], '当前章被删 → 回落到第一个原下标重新载章');
+  assert.deepEqual(rt.counts.load, [], 'RNDC-01：删空后不再拿 0 号章硬载，改走与单章删除同一份空态收尾');
   assert.equal(rt.counts.undo.length, 1);
   assert.equal(rt.counts.undo[0].title, '已删除 3 章');
   assert.match(rt.counts.toast.at(-1)[0], /^已把 3 章移到本书 _trash，10 秒内可撤销/);
@@ -814,6 +814,57 @@ test('A3-Cβ / B5：批量删除——从后往前删、部分失败仍登记已
   };
   assert.equal(await rtHuge.ui.deleteSelectedChapters(), true);
   assert.equal(rtHuge.counts.undo[0].title, '已删除 500 章');
+});
+
+// RNDC-01（第 5 轮）：批量删除把最后一批章删空时，旧实现仍按「回落下标 → loadChapterAt(0)」收尾。
+// 真 loadChapterAt 在 0 章直接回 { ok:false, code:'NO_BOOK' }（不碰编辑区、不改 state），调用方只
+// toast 一句「载入失败」：index 停在 0（指向不存在的章）、编辑区还留着刚删掉那一章的正文、也没有
+// 切只读空态 —— 之后保存 / 新建都落在一个不存在的章上。修法：删空与单章删除走同一份空态收尾
+// （index=-1、清空并遮罩编辑区、提示「这本书还没有章节」、重画目录），仍登记一次撤销。
+test('RNDC-01：批量删除删空后切空态（index=-1 / 编辑区清空 + 只读遮罩），不许拿 0 号章硬载', async () => {
+  const loads = [];
+  const rt = makeHost({
+    state: { selectedIds: new Set([0, 1, 2]), index: 1, dirty: false },
+    host: {
+      // 与真 loadChapterAt 同口径：0 章直接 NO_BOOK，不清编辑区 / 不改 state（失败只由调用方处理）
+      loadChapterAt: async (index) => {
+        loads.push(index);
+        return { ok: false, code: 'NO_BOOK' };
+      }
+    }
+  });
+  rt.editorEl.value = '第二章的正文：删完不该留在编辑区';
+  rt.host.api.deleteChapter = async (bookPath, chapterId) => {
+    rt.state.chapters = rt.state.chapters.filter((chapter) => chapter.id !== chapterId);
+    rt.state.meta.chapters = rt.state.chapters;
+    return {
+      ok: true,
+      data: {
+        index: 0,
+        chapters: rt.state.chapters,
+        meta: { chapters: rt.state.chapters, volumes: rt.state.meta.volumes },
+        trashPath: `C:\\书\\_trash\\${chapterId}.md`,
+        undoToken: `tok-${chapterId}`
+      }
+    };
+  };
+  assert.equal(await rt.ui.deleteSelectedChapters(), true);
+  assert.equal(rt.state.chapters.length, 0);
+  assert.equal(rt.state.index, -1, '0 章时下标必须回 -1（0 号章已经不存在，保存 / 新建会落空）');
+  assert.deepEqual(loads, [], '删空不许再走 loadChapterAt（真实现只回 NO_BOOK，什么都不会修）');
+  assert.equal(rt.state.dirty, false);
+  assert.equal(rt.state.loadedChapterId, null);
+  assert.equal(rt.editorEl.value, '', '编辑区要清掉上一章的正文');
+  assert.equal(rt.counts.lastMask[0], true, '编辑区切只读空态遮罩');
+  assert.match(rt.counts.lastMask[1], /还没有章节/);
+  assert.ok(rt.counts.renderList >= 1, '目录要重画成「还没有章节」');
+  assert.equal(rt.counts.undo.length, 1, '删空仍要能一键撤销');
+  assert.equal(rt.counts.undo[0].title, '已删除 3 章');
+  assert.equal(
+    rt.counts.toast.some(([message]) => /载入失败/.test(message)),
+    false,
+    '删空不是载章失败，不许把「章节载入失败」的 toast 打给作者'
+  );
 });
 
 test('A3-Cβ / B6：批量移到卷 / 批量改状态——已在该卷跳过、部分失败不许静默、单章走单章流程', async () => {
@@ -1271,11 +1322,12 @@ test('旧M2：删除后载章失败 → 保持脏 + 提示，不进「正文在�
   assert.equal(del.state.dirty, true, '载章失败必须保持脏（关窗要照常拦截）');
   assert.match(del.counts.toast.at(-1)[0], /载入失败/);
 
-  // 批量删除的当前章分支同一口径。
+  // 批量删除的当前章分支同一口径（只删 2 章、留 c3：0 章收尾现在是「空态」，不算载章失败 ——
+  // 这里要钉的是「批量尾部真的去载章、载失败保持脏」）。
   const batch = makeHost({ loadResult: { ok: false, code: 'LOAD_FAILED', message: '读取章节失败' }, askQueue: ['discard'] });
   batch.state.index = 1;
   batch.state.dirty = true;
-  batch.state.selectedIds = new Set([0, 1, 2]);
+  batch.state.selectedIds = new Set([0, 1]);
   batch.editorEl.value = '第二章正文（没落盘）';
   batch.host.api.deleteChapter = async (bookPath, chapterId) => {
     const chapters = batch.state.chapters.filter((chapter) => chapter.id !== chapterId);
