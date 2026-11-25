@@ -1483,3 +1483,47 @@ test('DATA-01：导入来源以 _ / . 开头的文件夹或书名 → 明确拒�
   );
   assert.equal(importer.safeFolderName('正常书名'), '正常书名');
 });
+
+// IO-02（低）：导入崩溃留下的 `.import-*` 隐藏暂存目录以前只在「下一次导入」时才清 ——
+// 不导入就一直占盘。这里钉两半：① 回收函数要从模块导出、判龄 / pid 规则不变；
+// ② 主进程启动链在建窗之前对当前书架根真的跑一次，且书架根可能断开时要有截止时间。
+test('IO-02：清理过期导入暂存（判龄 / pid 规则不变）', async () => {
+  assert.equal(typeof importer.cleanupStaleStaging, 'function', '启动回收要复用同一个回收函数（必须导出）');
+  const base = await mkTmp('cw-io02-');
+  const booksRoot = path.join(base, '书架');
+  await fs.mkdir(booksRoot, { recursive: true });
+  const old = new Date(Date.now() - 2 * 3600 * 1000);
+  const stale = path.join(booksRoot, '.import-99999999-stale');
+  const fresh = path.join(booksRoot, `.import-${process.pid}-fresh`);
+  const samePidOld = path.join(booksRoot, `.import-${process.pid}-old`);
+  const unrelated = path.join(booksRoot, '.keepme');
+  for (const dir of [stale, fresh, samePidOld, unrelated]) {
+    await fs.mkdir(dir);
+    await fs.writeFile(path.join(dir, '正文.txt'), 'x');
+  }
+  // 两个「旧的」目录：目录本身与里面文件都拨到 2 小时前（判龄取暂存树内最新 mtime）。
+  for (const dir of [stale, samePidOld]) {
+    await fs.utimes(path.join(dir, '正文.txt'), old, old);
+    await fs.utimes(dir, old, old);
+  }
+
+  await importer.cleanupStaleStaging(booksRoot);
+  assert.deepEqual(
+    (await fs.readdir(booksRoot)).sort(),
+    ['.keepme', `.import-${process.pid}-fresh`, `.import-${process.pid}-old`].sort(),
+    '只删「没有任何写入超过 1 小时且 pid 不复用」的暂存；1 小时内的新目录、当前进程（24 小时宽限）与普通目录都不动'
+  );
+});
+
+test('IO-02：启动链在建窗之前对书架根跑一次暂存回收', async () => {
+  const main = await fs.readFile(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const whenReady = main.slice(main.indexOf('app.whenReady()'));
+  assert.ok(whenReady.indexOf('importer.cleanupStaleStaging(') > 0, '启动链（whenReady）必须调用暂存回收');
+  assert.ok(
+    whenReady.indexOf('importer.cleanupStaleStaging(') < whenReady.indexOf('createWindow({ runAutomationFlow: true })'),
+    '回收排在建窗之前（与导出目录回收、userData 孤儿回收同一段启动链）'
+  );
+  assert.match(main, /const STAGING_SWEEP_DEADLINE_MS = 2000;/, '书架根可能在断开的网络盘上，要与其他启动回收同口径给 2 秒截止');
+  assert.match(whenReady, /stagingRoot = config[^\r\n]*booksRoot/, '扫的是当前生效的书架根（含 --books-root 覆盖后的配置）');
+  assert.match(whenReady, /closeGuard\.withDeadline\([\s\S]{0,160}?cleanupStaleStaging/, '回收整段要有截止时间，到点照常建窗');
+});

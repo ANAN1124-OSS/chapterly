@@ -1179,6 +1179,9 @@ module.exports = {
   safeFolderName,
   createStagingRoot,
   commitStagedFolder,
+  // IO-02（低）：启动时也要对书架根跑一次同一套残留回收（判龄 / pid 规则不变），所以导出给 main.js；
+  // 生产调用点仍只有 importFolders 与启动链这一处。
+  cleanupStaleStaging,
   // C30（v1.8.0 WP-26）：目录包含判定（大小写归一）导出给单测钉口径
   isInside,
   formatImportSize,

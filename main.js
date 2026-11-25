@@ -117,6 +117,8 @@ const CHAPTER_BATCH_SIZE = 32;
 // MAIN-01（中）：启动回收导出目录的总截止时间。这些目录可能在断开的网络盘 / 睡眠的移动硬盘上，
 // readdir 会挂几十秒；回收是尽力而为 —— 到点照常建窗，没扫到的目录下次启动再收。
 const EXPORT_SWEEP_DEADLINE_MS = 2000;
+// IO-02（低）：启动回收 `.import-*` 导入暂存的总截止时间（书架根同样可能在断开的网络盘 / 移动硬盘上）。
+const STAGING_SWEEP_DEADLINE_MS = 2000;
 
 // registerIpc() 按域拆分：导出 / 校对 / 书 CRUD / 书域数据面 / 章节保存整段搬到 ipc/*.js，
 // main.js 只做装配（依赖在 buildIpcHost() 里一次性注入）。模块自己不 require electron、不碰模块级
@@ -3159,6 +3161,27 @@ if (!gotLock) {
         literal: true
       });
     }
+
+    // IO-02（低）：导入崩溃 / 断电留下的 `.import-*` 隐藏暂存目录以前只在「下一次导入」时才清 ——
+    // 不导入就一直占盘。启动时对当前生效的书架根顺手跑一遍同一套回收（判龄 / pid 规则与导入前
+    // 那次完全一样：1 小时没写入、且 pid 不在 24 小时宽限内才删）。书架根可能在断开的网络盘 /
+    // 移动硬盘上，所以与导出目录回收同口径给 2 秒总截止，到点照常建窗，没扫到的下次启动再收。
+    const stagingRoot = config && typeof config.booksRoot === 'string' ? config.booksRoot : '';
+    if (stagingRoot) {
+      const stagingSweep = await closeGuard.withDeadline(() => importer.cleanupStaleStaging(stagingRoot), {
+        ms: STAGING_SWEEP_DEADLINE_MS
+      });
+      if (stagingSweep.timedOut) {
+        // 与导出回收同口径：只记一条不带路径的 info 诊断（书库路径不进日志）。
+        logError('startup-staging-sweep', { code: 'STAGING_SWEEP_TIMEOUT' }, {
+          level: 'info',
+          code: 'STAGING_SWEEP_TIMEOUT',
+          message: `导入暂存回收超过 ${STAGING_SWEEP_DEADLINE_MS / 1000} 秒（书架目录可能已断开），已跳过，下次启动再收`,
+          literal: true
+        });
+      }
+    }
+
     // b8：按配置决定要不要开始后台监听剪贴板（默认关）
     syncClipboardWatch();
     // 五-M32（PM-3）：睡眠 / 唤醒通知（写作计时排除睡眠时段）
