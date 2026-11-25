@@ -897,6 +897,11 @@ function createSearchStore(options = {}) {
   let rootSignature = '';
   let lastSignatureCheckAt = 0;
   const dirtyBooks = new Set();
+  // SEARCH-01：每本书的脏版本（归一化书路径 → 自增序号）。doEnsure 在 buildBookEntry 之前取一次版本，
+  // 成功后才按「版本没变」清脏 —— 旧实现在循环尾部无条件 delete，把「这本书正在建位图的途中，另一窗口
+  // 保存又标脏」的标记吞掉；这一趟再按空脏集重开 60 s 复用窗口，下一次搜索就拿保存前的位图把新正文
+  // 当「不匹配」滤掉（违反「位图只会误报、不会漏报」）。版本号只增不减，删书时随脏集合一起清。
+  const dirtyVersions = new Map();
   // WP10（审计 P-N1）：进程内的「这本书上次整本复核内容指纹」时刻（归一化书路径 → nowMs）。
   // 只做节流、**不落盘**：写进索引会让每次复核都整份重写 22 MB（写放大），而下次启动对每本书
   // 再复核一次本来就和改前行为一致。删书 / 换根时清掉对应 key（不随会话泄漏）。
@@ -1164,6 +1169,9 @@ function createSearchStore(options = {}) {
       const key = normalizePath(bookPath);
       const old = previous.get(key) || null;
       const dirty = dirtyBooks.has(key);
+      // SEARCH-01：构建开始前取一次脏版本。构建期间再被标脏（同书另一窗口保存）时版本会变，
+      // 尾部就不能清标记 —— 这一趟读到的正文可能是保存前的。
+      const dirtyMark = dirtyVersions.get(key) || 0;
       let reuse = false;
       if (old && !force && !dirty) {
         // 先看 书目.json 的 mtime（每本一次 stat，很便宜；改名 / 排序都靠它发现）。
@@ -1233,7 +1241,10 @@ function createSearchStore(options = {}) {
         continue;
       }
       previous.delete(key);
-      dirtyBooks.delete(key);
+      // SEARCH-01：只有「这一趟开始建之前就脏」或「建的过程中没再被标脏」才清。版本变了说明作者在
+      // 构建期间保存过，这一趟的位图/字数可能来自保存前 —— 脏标记留到下一趟 ensure 重建（尾部
+      // lastEnsureAt 也会因为脏集非空保持 0，搜索不会落在复用窗口里）。
+      if ((dirtyVersions.get(key) || 0) === dirtyMark) dirtyBooks.delete(key);
       // 只有真的整本复核过才记账；单章信封变化时只更新那一章，不算整本复核（下次到期仍复核）。
       if (recheckHashes) hashCheckedAt.set(key, nowMs());
       const entry = built.entry;
@@ -1252,6 +1263,10 @@ function createSearchStore(options = {}) {
     const folderKeys = new Set(folders.map((folder) => normalizePath(folder.bookPath)));
     for (const key of Array.from(dirtyBooks)) {
       if (!folderKeys.has(key)) dirtyBooks.delete(key);
+    }
+    // SEARCH-01：书已经不在了的脏版本号也一起清，别让 Map 随会话无限长（版本号从 0 重新起算不影响判据）。
+    for (const key of Array.from(dirtyVersions)) {
+      if (!folderKeys.has(key)) dirtyVersions.delete(key);
     }
     // WP10（P-N1）：删掉 / 移走的书不再占节流账（换根时 rootChanged 已清索引，这里兜底）。
     for (const key of Array.from(hashCheckedAt)) {
@@ -1777,6 +1792,8 @@ function createSearchStore(options = {}) {
     const key = normalizePath(bookPath);
     if (key) {
       dirtyBooks.add(key);
+      // SEARCH-01：脏版本自增 —— 在途的 ensure 靠它判断「构建期间这本书又被保存过」，不清脏标记。
+      dirtyVersions.set(key, (dirtyVersions.get(key) || 0) + 1);
       // P-01：刚保存过书就把搜索窗口关掉，下一次 search 立刻校验这本（不必等 60 s）。
       lastEnsureAt = 0;
     }
