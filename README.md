@@ -26,8 +26,8 @@
 ## 三步开始
 
 1. **下载**上面的安装包，双击安装（安装包没有代码签名，SmartScreen 点「更多信息 → 仍要运行」）。
-2. 从桌面快捷方式打开，点书架上的「＋ 新建一本书」，输入书名。
-3. 在「第1章」里写正文，**按 `Ctrl+S` 保存**。就这样。
+2. 从桌面快捷方式打开，点书架顶部的「新建作品」，输入书名。新书是 **0 章**，章节由你自己建。
+3. 点左下「＋ 新建章节」（或 `Ctrl+N`）写第一章，写完**按 `Ctrl+S` 保存**。就这样。
 
 ![写作页](docs/images/editor.png)
 
@@ -240,8 +240,8 @@ pnpm start          # 启动应用
 ## 开发与自检
 
 ```bash
-pnpm test            # 单测（node:test，3596 项）
-pnpm run e2e         # 全量 E2E：真实启动 Electron 走 1933 项主流程
+pnpm test            # 单测（node:test，3605 项）
+pnpm run e2e         # 全量 E2E：真实启动 Electron 走 1944 项主流程
 pnpm lint            # eslint 门禁（0 ERROR）
 ```
 
