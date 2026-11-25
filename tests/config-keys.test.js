@@ -30,6 +30,16 @@ test('每日快照配置：脏值清洗（只认 true、天数夹到 1–90）',
   assert.equal(sanitize({ snapshotKeepDays: 999 }).snapshotKeepDays, 90);
   assert.equal(sanitize({ snapshotKeepDays: 'abc' }).snapshotKeepDays, 7);
   assert.equal(sanitize({ snapshotKeepDays: 14.6 }).snapshotKeepDays, 15);
+  // SNAP-01：null / '' / false / [] 是「零的伪装」（Number 之后都是 0），不是「设成 1 天」——
+  // 按坏值回落 7 天，否则下一次保存会按 1 天把昨天的快照清掉。真的 0 / '0' 仍夹到 1。
+  for (const bad of [null, '', false, []]) {
+    assert.equal(
+      sanitize({ snapshotKeepDays: bad }).snapshotKeepDays,
+      7,
+      `坏值回落 7 天：${JSON.stringify(bad)}`
+    );
+  }
+  assert.equal(sanitize({ snapshotKeepDays: '0' }).snapshotKeepDays, 1);
 });
 
 test('每日快照配置：写盘 / 读回，不影响其它配置', async () => {

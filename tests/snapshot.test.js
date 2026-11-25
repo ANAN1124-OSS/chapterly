@@ -50,6 +50,35 @@ test('保留天数清洗：非法回落 7，范围 1–90 天', () => {
   assert.equal(snapshot.normalizeKeepDays(3.6), 4);
 });
 
+// SNAP-01（2026-11-25 审计）：null / '' / false / [] 这些「零的伪装」曾被 Number() 洗成 0 → 夹到 1 天，
+// 下一次保存就按 1 天清理，把作者昨天的快照删掉；配置注释与文档承诺的是「坏值回落 7 天」。
+test('SNAP-01：坏保留天数回落 7 天，不再被当成 1 天清掉昨天的快照', async () => {
+  for (const bad of [null, '', false, [], true, {}, '   ']) {
+    assert.equal(snapshot.normalizeKeepDays(bad), 7, `坏值必须回落 7 天：${JSON.stringify(bad)}`);
+  }
+  // 真的 0（数字 / 数字字符串）仍夹到下限 1 天；合法数字照常四舍五入 / 夹紧
+  assert.equal(snapshot.normalizeKeepDays(0), 1);
+  assert.equal(snapshot.normalizeKeepDays('0'), 1);
+  assert.equal(snapshot.normalizeKeepDays(' 4 '), 4);
+  assert.equal(snapshot.normalizeKeepDays(999), 90);
+
+  // 端到端：坏配置（null）→ 保留 7 天 → 昨天的快照目录在保存后仍然在
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '快照坏配置');
+  const meta = await storage.readBookMeta(bookPath);
+  const file = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file, '今天的正文\n');
+  const yesterday = path.join(bookPath, '_trash', '快照-20261030');
+  await fs.mkdir(yesterday, { recursive: true });
+  await fs.writeFile(path.join(yesterday, 'old.txt'), '昨天的快照\n', 'utf8');
+  const result = await storage.takeDailySnapshot(bookPath, file, {
+    keepDays: null,
+    now: DAY(2026, 10, 31)
+  });
+  assert.deepEqual(result.cleanup.removed, [], '坏配置不能被当成「只留今天」');
+  assert.equal(await storage.exists(path.join(yesterday, 'old.txt')), true, '昨天的快照必须还在');
+});
+
 test('保留窗口：keepDays=7 保今天 + 前 6 天，未来日期与乱写目录都不动', () => {
   const now = DAY(2026, 10, 31);
   // 10-25 是窗口第一天（含），10-24 及更早都该清理

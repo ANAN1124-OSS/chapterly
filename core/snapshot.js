@@ -55,8 +55,18 @@ function parseSnapshotDirName(name) {
 }
 
 // 保留天数清洗：非法值回落默认 7；范围 1–90 天（1 = 只留今天）。
+// SNAP-01（2026-11-25 审计）：只认「真的数值」与「非空数字字符串」。Number(null) / Number('') /
+// Number(false) / Number([]) 都是 0，能通过 isFinite 被夹成下限 1 天 —— 下一次保存就按 1 天清理，
+// 把作者昨天的快照删掉，而配置注释与文档承诺的是「坏值回落 7 天」。手改配置里的 "18" 仍兼容；
+// 真的 0 / '0' 仍然夹到 1 天（那一档是作者主动选的「只留今天」）。
+function numericInput(value) {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '') return Number(value.trim());
+  return NaN;
+}
+
 function normalizeKeepDays(value, fallback = DEFAULT_KEEP_DAYS) {
-  const n = Number(value);
+  const n = numericInput(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(MAX_KEEP_DAYS, Math.max(MIN_KEEP_DAYS, Math.round(n)));
 }
