@@ -946,6 +946,45 @@ test('runReplaceAll（整本）：未保存三选一 / 不再二次确认（登�
   assert.equal(fail.calls.reloadAfterPartialFailure, 1);
 });
 
+// ---------- RNDP-01（高）：整本替换的 10 秒撤销不能被「撤销前新写的字」穿透 ----------
+test('RNDP-01：整本替换撤销带未保存守卫 + sameBookPath（脏 / 换书拒绝，同一本书照常还原）', async () => {
+  // 替换完成时编辑区干净（state.dirty=false），撤销条已登记；之后作者又写了字 / 换了书。
+  const ctx = build({ query: '张三', replace: '李四', scope: 'book', bookPath: 'D:/书库/书甲' });
+  await ctx.ui.runReplaceAll();
+  assert.equal(ctx.calls.registerUndo.length, 1, '整本替换要先登记一条撤销');
+  const undo = ctx.calls.registerUndo[0];
+  const apiCount = () => ctx.calls.api.length;
+
+  // ① 撤销前又敲了字（dirty）：还原会用备份整组覆盖磁盘并从磁盘重载，等于把这几行连磁盘带编辑区
+  //    一起盖掉；必须发 IPC 之前就拒绝，不能只靠重载时的脏闸（写盘已经发生了）。
+  ctx.state.dirty = true;
+  const beforeDirty = apiCount();
+  const loadsBeforeDirtyCheck = ctx.calls.loadChapterAt.length;
+  await assert.rejects(() => undo.run(), /编辑区有未保存的修改，请先保存后再撤销/);
+  assert.equal(apiCount(), beforeDirty, '脏状态下不许发 restoreReplaceBackup');
+  assert.equal(
+    ctx.calls.api.some((c) => c[0] === 'restoreReplaceBackup'),
+    false,
+    '脏状态下备份还原一次都不能发'
+  );
+  assert.equal(ctx.calls.loadChapterAt.length, loadsBeforeDirtyCheck, '脏状态下不许从磁盘重载');
+
+  // ② 换书：按 longOpLogic.sameBookPath 口径判（Windows 大小写不敏感 / 正斜杠归一），不再裸字符串比较。
+  ctx.state.dirty = false;
+  ctx.state.bookPath = 'D:\\书库\\书乙';
+  await assert.rejects(() => undo.run(), /已经换了书，不能撤销/);
+  assert.equal(apiCount(), beforeDirty, '换了书不许拿原书备份还原现在这本');
+
+  // ③ 同一本书的另一种写法（盘符大小写 + 正反斜杠差异）不算换书：照常还原。
+  ctx.state.bookPath = 'd:\\书库\\书甲';
+  await undo.run();
+  assert.equal(
+    ctx.calls.api.some((c) => c[0] === 'restoreReplaceBackup' && c[2] === '替换备份-1'),
+    true,
+    '同一本书要放行撤销'
+  );
+});
+
 // ---------- WP-13：整本替换防重入（C12）+ 回执按捕获的书判定（C2 口径） ----------
 
 test('runReplaceAll 防重入：替换在途再按一次，只跑一条整本替换链（C12）', async () => {
@@ -1252,7 +1291,8 @@ test('静态闸门：renderer.js 不再内嵌查找 / 替换实现，只剩装�
   assert.match(moduleSrc, /let replaceAllBusy = false;/);
   assert.match(moduleSrc, /if \(replaceAllBusy\) return;/);
   assert.match(moduleSrc, /const bookPath = state\.bookPath;[\s\S]{0,160}readFindOptions\(\)/, 'C2：发起时先捕获书');
-  assert.equal(moduleSrc.split('longOpLogic.sameBookPath(state.bookPath, bookPath)').length - 1, 2, '询问 / 预览两次 await 后都要核对');
+  // RNDP-01：撤销前也要核对书身份（询问 / 预览 / 撤销三处，不是两处）——事实源随实现同步，仍是精确计数。
+  assert.equal(moduleSrc.split('longOpLogic.sameBookPath(state.bookPath, bookPath)').length - 1, 3, '询问 / 预览 / 撤销三次 await 前后都要核对');
   assert.match(moduleSrc, /longOpLogic\.decideAfterLongOp\(\{/);
   assert.match(moduleSrc, /await reloadAfterPartialFailure\(bookPath\)/, '失败兜底也只重载发起时那本');
   assert.equal(rendererSrc.split('findUi.setupFindUi();').length - 1, 1, 'setup 只调一次');

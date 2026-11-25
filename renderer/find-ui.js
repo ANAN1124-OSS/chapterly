@@ -710,7 +710,13 @@
         registerUndo(
           `已整本替换 ${result.chaptersChanged} 章 / ${result.occurrences} 处${result.truncated ? '（部分章截断）' : ''}`,
           async () => {
-            if (state.bookPath !== bookPath) throw new Error('已经换了书，不能撤销');
+            // RNDP-01（高）：撤销会拿替换备份整组覆盖磁盘 + 从磁盘重载，发 IPC 之前先过两道闸。
+            // ① 书身份走 longOpLogic.sameBookPath（与历史还原 / 整本整理 / 还原前备份三条撤销同口径，
+            //    Windows 大小写不敏感、正反斜杠归一），不再裸比较字符串。
+            // ② 编辑区有未保存的字时执行，等于把作者刚写的正文连磁盘带编辑区一起盖掉；
+            //    loadChapterAt 的脏闸拦不住已经发生的写盘，必须在发 IPC 之前就拒绝。
+            if (!longOpLogic.sameBookPath(state.bookPath, bookPath)) throw new Error('已经换了书，不能撤销');
+            if (state.dirty) throw new Error('编辑区有未保存的修改，请先保存后再撤销');
             const back = await call(api.restoreReplaceBackup, bookPath, backupName);
             if (!back || !Number(back.restored)) throw new Error('替换备份里没有可还原的章节');
             await loadChapterAt(state.index);
