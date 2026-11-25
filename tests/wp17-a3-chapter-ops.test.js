@@ -84,7 +84,7 @@ const HOST_KEYS = [
   'currentChapterId', 'currentChapterLabel',
   'renderChapterList', 'renderEditorHeader', 'syncChapterFilterUi', 'syncVolumeHeaderName',
   'syncChapterItemInfo', 'syncChapterBatchBar', 'markCommandsDirty',
-  'updateStatus', 'loadChapterAt', 'saveCurrent', 'refreshShelf', 'flushWriteTimer',
+  'updateStatus', 'setChapterMask', 'loadChapterAt', 'saveCurrent', 'refreshShelf', 'flushWriteTimer',
   'undoUi', 'moveChapterByDrop', 'openExportDialog',
   'replaceEditorTextNative', 'onEditorInput', 'recordFallbackWrite', 'scrollCaretIntoView',
   'placeMenuAt'
@@ -376,6 +376,11 @@ function makeHost(overrides = {}) {
     syncChapterBatchBar: () => { counts.status += 1; },
     markCommandsDirty: () => { counts.commandsDirty += 1; },
     updateStatus: () => { counts.status += 1; },
+    // 2026-11-25：删到 0 章时切空态（编辑区只读 + 提示）；假 host 记一笔即可。
+    setChapterMask: (masked, placeholder) => {
+      counts.mask = (counts.mask || 0) + 1;
+      counts.lastMask = [masked, placeholder];
+    },
     // H1（三审）：假 loadChapterAt 与真实现同口径 —— 成功才回 { ok:true } 并清脏（失败时返回
     // { ok:false } 且不动 dirty）；「载章失败后保持脏」的用例在同文件 T1 里显式覆盖。
     loadChapterAt: async (index) => {
@@ -692,11 +697,25 @@ test('A3-Cβ / B4：deleteChapterAt——非当前章不问未保存；当前脏
   assert.equal(rtSaveOk.state.dirty, false);
   assert.deepEqual(rtSaveOk.counts.load, [1]);
 
-  // 删最后一章：主进程补了空章，给一条提示。
+  // 删最后一章（2026-11-25 新语义）：不再自动补章 —— 书目变 0 章，编辑区切空态、提示可撤销。
   const rtLast = makeHost();
-  rtLast.host.api.deleteChapter = async () => ({ ok: true, data: { index: 0, newChapter: { file: 'new.md' }, meta: { chapters: rtLast.state.chapters, volumes: rtLast.state.meta.volumes }, trashPath: 'x/' } });
-  await rtLast.ui.deleteChapterAt(0);
-  assert.ok(rtLast.counts.toast.some(([message]) => message === '最后一章被删除，已自动补一个空章'));
+  rtLast.host.api.deleteChapter = async () => ({
+    ok: true,
+    data: {
+      index: -1,
+      chapters: [],
+      meta: { chapters: [], volumes: rtLast.state.meta.volumes },
+      trashPath: 'x/001.md',
+      undoToken: 'tok-last'
+    }
+  });
+  assert.equal(await rtLast.ui.deleteChapterAt(0), true);
+  assert.equal(rtLast.state.chapters.length, 0);
+  assert.equal(rtLast.state.index, -1);
+  assert.equal(rtLast.state.dirty, false);
+  assert.ok(rtLast.counts.toast.some(([message]) => /已删除最后一章/.test(message)), '提示「这本书现在没有章节」');
+  assert.equal(rtLast.counts.lastMask[0], true, '编辑区切只读空态');
+  assert.equal(rtLast.counts.undo.length, 1, '仍登记撤销（10 秒内能放回）');
   // 极值 × IO 失败：ENOSPC 只一条 error toast，返回 false，不登记撤销。
   const rtErr = makeHost();
   rtErr.host.api.deleteChapter = async () => ({ ok: false, code: 'ENOSPC', message: '磁盘满了' });

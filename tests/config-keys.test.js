@@ -431,3 +431,14 @@ test('E2：resetFindBookmarksForBook 只按 bookId 清这本书的书签，其�
   // 重启后仍然是清的（写盘成功，不是只在内存里删）
   assert.deepEqual(await createConfigStore(dir).listFindBookmarks(), []);
 });
+
+// 2026-11-25（新建分组）：配置里的空分组清单清洗。
+test('bookGroups：空分组清单按分组字段同口径清洗（trim / 去控制字符 / 40 字 / 大小写去重 / 上限 200）', () => {
+  const cfg = sanitize({
+    bookGroups: [' 短篇 ', '短篇', 'A', 'a', 42, '', '   ', 'x'.repeat(100)]
+  });
+  assert.deepEqual(cfg.bookGroups, ['短篇', 'A', 'x'.repeat(40)], 'trim / 去重 / 40 字截断');
+  assert.deepEqual(sanitize({}).bookGroups || [], [], '旧配置没有这个键 = 空清单（空清单不落盘）');
+  const many = Array.from({ length: 250 }, (_, i) => `组${i}`);
+  assert.equal(sanitize({ bookGroups: many }).bookGroups.length, 200, '最多 200 个');
+});

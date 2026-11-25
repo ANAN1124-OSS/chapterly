@@ -131,6 +131,13 @@ function makeHost(options = {}) {
     renderChapterList: () => {
       calls.renderList += 1;
     },
+    // 2026-11-25 空章节：开 0 章书时编辑区给空态提示（不载章、不报错）。
+    renderEditorHeader: () => {
+      calls.renderHeader = (calls.renderHeader || 0) + 1;
+    },
+    updateStatus: () => {
+      calls.updateStatus = (calls.updateStatus || 0) + 1;
+    },
     applyBookDisplay: async (bookId) => {
       calls.bookDisplay.push(bookId);
       if (options.duringDisplay) options.duringDisplay();
@@ -140,13 +147,13 @@ function makeHost(options = {}) {
   return { host, state, titleEl, calls, bumpSeq: () => (seq += 1), seqOf: () => seq };
 }
 
-test('host 契约：26 个必填成员缺一个就抛 TypeError，模块头声明的成员数与之相等', () => {
+test('host 契约：28 个必填成员缺一个就抛 TypeError，模块头声明的成员数与之相等', () => {
   assert.deepEqual([...openBookFlowUi.REQUIRED_HOST].sort(), [
     '$', 'applyBookDisplay', 'applyEditorEditable', 'askUnsaved', 'clearEditorUndoSnapshots', 'clearFindSession',
     'currentChapterLabel', 'currentOpenSeq', 'editorEl', 'loadChapterAt', 'nextOpenSeq', 'openBookGuard',
-    'openBookOp', 'openRepair', 'renderChapterList', 'resetWriteTimer', 'saveCurrent', 'selectEditorRange',
-    'setChapterMask', 'setOpeningBook', 'showView', 'state', 'stopTtsForChapterChange', 'toast', 'undoUi',
-    'waitForSavingIdle'
+    'openBookOp', 'openRepair', 'renderChapterList', 'renderEditorHeader', 'resetWriteTimer', 'saveCurrent',
+    'selectEditorRange', 'setChapterMask', 'setOpeningBook', 'showView', 'state', 'stopTtsForChapterChange',
+    'toast', 'undoUi', 'updateStatus', 'waitForSavingIdle'
   ]);
   const { host } = makeHost();
   assert.throws(() => openBookFlowUi.create(null), /createOpenBookFlowUi 需要 host 对象/);
@@ -200,6 +207,22 @@ test('干净换书：不打扰作者，直接开 → 提交新书 → 载上次�
   assert.deepEqual(calls.loadChapter, [1], '没有命中信息 → 回到上次阅读章（c2）');
   assert.deepEqual(result, { ok: true, meta: BOOK_META, missing: [] });
   assert.equal(result.ok, true);
+});
+
+// 2026-11-25 作者要求：新书 / 删空的书打开后是 0 章，编辑区给空态提示，绝不停在「正在载入章节…」。
+test('空章节：开 0 章书 → 不载章、编辑区给空态提示、章节栏与状态栏刷新、解锁', async () => {
+  const emptyMeta = { ...BOOK_META, chapters: [], lastOpenChapterId: null };
+  const { host, state, calls } = makeHost({ openData: { meta: emptyMeta, missing: [] } });
+  const result = await openBookFlowUi.create(host).openBookByPath('/书库/空书');
+  assert.equal(result.ok, true);
+  assert.equal(state.index, -1);
+  assert.deepEqual(calls.loadChapter, [], '0 章不调 loadChapterAt');
+  const lastMask = calls.mask[calls.mask.length - 1];
+  assert.equal(lastMask[0], true, '编辑区只读遮罩');
+  assert.match(lastMask[1], /还没有章节/, '提示点「＋ 新建章节」');
+  assert.equal(calls.renderList, 1, '章节栏刷新（显示「还没有章节」空态）');
+  assert.equal(calls.openingBook[calls.openingBook.length - 1], false, '开书锁要解开');
+  assert.deepEqual(calls.toast, [], '0 章不是错误，不弹 toast');
 });
 
 test('编辑区脏：取消 / 保存失败都停在原地；丢弃 / 保存成功才继续', async () => {

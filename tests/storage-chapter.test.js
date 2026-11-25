@@ -177,7 +177,7 @@ test('章节状态/备注：写进书目、txt 一个字节不动、可清空、
 });
 
 
-test('删除章节：文件移入 _trash，json 移除，删空后自动补一章', async () => {
+test('删除章节：文件移入 _trash，json 移除，删空后保持 0 章（不再自动补章）', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '删除测试');
   await storage.createChapter(bookPath, 1, '甲');
@@ -188,11 +188,12 @@ test('删除章节：文件移入 _trash，json 移除，删空后自动补一�
   await fs.access(res.trashPath);
   meta = await storage.readBookMeta(bookPath);
   assert.equal(meta.chapters.length, 1);
-  // 删到空
-  await storage.deleteChapter(bookPath, meta.chapters[0].id);
+  // 删到空（2026-11-25 作者要求：0 章合法，章节由作者自己建）
+  const last = await storage.deleteChapter(bookPath, meta.chapters[0].id);
   meta = await storage.readBookMeta(bookPath);
-  assert.equal(meta.chapters.length, 1, '空书自动补一章');
-  assert.equal(meta.chapters[0].name, '');
+  assert.equal(meta.chapters.length, 0, '删空后保持 0 章，不再自动补一章');
+  assert.equal(last.index, -1, '回包 index = -1，渲染层据此进空态');
+  assert.equal(meta.lastOpenChapterId, null, '0 章书没有「上次打开的章」');
 });
 
 

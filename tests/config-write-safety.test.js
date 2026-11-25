@@ -141,7 +141,13 @@ test('配置白名单（S4）：未知键丢弃、只留已知键、旧配置缺
   assert.equal(cfg.clipboardWatchEnabled, false, '旧配置缺新键 = 默认关');
   assert.equal('未知键' in cfg, false, '加载时未知键要丢弃');
   assert.equal('evil' in cfg, false);
-  assert.deepEqual(Object.keys(cfg).sort(), Object.keys(DEFAULTS).sort(), '回给界面的配置只含已知键');
+  // 2026-11-25：bookGroups 是「有分组才写」的可选键 —— 空清单在 sanitize 里被去掉，
+  // 所以旧配置 / 没建过分组的配置回给界面时不含这个键（其余已知键一个不少）。
+  assert.deepEqual(
+    Object.keys(cfg).sort(),
+    Object.keys(DEFAULTS).filter((key) => key !== 'bookGroups').sort(),
+    '回给界面的配置只含已知键（空 bookGroups 不落盘也不回传）'
+  );
   assert.ok(
     Object.prototype.hasOwnProperty.call(DEFAULTS, 'clipboardWatchEnabled'),
     'D 批要用的开关必须登记在 DEFAULTS（否则会被白名单丢掉）'

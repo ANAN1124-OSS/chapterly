@@ -413,3 +413,18 @@ test('PERF-EXP-01：三格式逐章读有界预取（峰值 ≥2 且 ≤4），T
   assert.ok(bigHost.calls.peak <= 4, `40 章峰值仍是 ≤4（实测 ${bigHost.calls.peak}）`);
   assert.deepEqual(await fsp.readFile(bigTarget), bigOracle, '40 章产物逐字节一致');
 });
+
+// 2026-11-25：0 章书复制整本 → 明确 NO_CHAPTERS，不把空串写进剪贴板（不清空作者剪贴板）。
+test('R7-6 book:copy：0 章书拒绝复制（NO_CHAPTERS），剪贴板一个字节不动', async () => {
+  const dir = await makeTmpDir('cw-read-order-empty-');
+  const root = path.join(dir, '书库');
+  await fsp.mkdir(root, { recursive: true });
+  const created = await storage.createBook(root, '空章节书', { createFirstChapter: false });
+  const { channels, calls, clipboard } = makeHost();
+  await assert.rejects(
+    () => channels.get('book:copy')(created.path, null, null),
+    (err) => err && err.code === 'NO_CHAPTERS'
+  );
+  assert.equal(calls.reads.length, 0, '0 章书不读正文');
+  assert.equal(clipboard.length, 0, '不许把空串写进剪贴板');
+});

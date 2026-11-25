@@ -153,7 +153,8 @@ test('I-06 空状态三件套：书架 / 章节栏 / 剪贴板 / 查找四处都
   assert.match(BOOKINFO, /empty\.dataset\.emptyKind = 'filtered';/);
   assert.match(BOOKINFO, /empty\.dataset\.emptyKind = 'loading';/);
   assert.match(BOOKINFO, /这里还没有书。一本书 = 一个文件夹/);
-  assert.match(BOOKINFO, /点右上「导入小说」/);
+  // 2026-11-25：新建入口从「导入小说」旁的网格卡片改成书架顶部「新建作品」按钮；空态路径跟着改。
+  assert.match(BOOKINFO, /点右上「新建作品」/);
   assert.match(BOOKINFO, /正在正文里继续找，找到后会出现在上方「正文命中」/);
   assert.match(BOOKINFO, /搜索会看书名 \/ 作者 \/ 分组 \/ 标签 \/ 章节名，也会在正文里找/);
 

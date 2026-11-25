@@ -91,11 +91,17 @@ test('从目录重建：只有冲突副本时给出可读错误，不产生书�
   assert.equal(await fs.access(path.join(bookPath, '书目.json')).then(() => true, () => false), false);
 });
 
-test('无 txt 时重建报错，不产生书目', async () => {
+test('无 txt 时重建出 0 章书（不产生章节记录，书目可读）', async () => {
+  // 2026-11-25 作者要求：新书 / 删空的书是 0 章合法状态，从目录重建也允许 0 章。
   const root = await mkTmp();
   const bookPath = path.join(root, '空目录');
   await fs.mkdir(bookPath);
-  await assert.rejects(() => repair.rebuildFromFiles(bookPath), (err) => err.code === 'NO_FILES');
+  const res = await repair.rebuildFromFiles(bookPath);
+  assert.equal(res.count, 0);
+  const meta = await storage.readBookMeta(bookPath);
+  assert.deepEqual(meta.chapters, []);
+  assert.equal(meta.lastOpenChapterId, null);
+  assert.equal(await fs.access(bookPath).then(() => true, () => false), true);
 });
 
 test('从 .bak 恢复：坏掉的书目换成上一版，坏文件被保留', async () => {

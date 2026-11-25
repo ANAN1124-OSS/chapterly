@@ -48,7 +48,9 @@ const SPECS = {
       selector: '.book-conflict-badge',
       optional: true
     },
-    { key: 'shelf.newBook', label: '书架：「新建一本书」卡', selector: '.book-card.new-book' },
+    // 2026-11-25：网格里的「新建一本书」卡片已移除，新建入口改成书架顶部两个按钮。
+    { key: 'shelf.newBook', label: '书架：顶部「新建作品」按钮', selector: '#btn-new-book' },
+    { key: 'shelf.newGroup', label: '书架：顶部「新建分组」按钮', selector: '#btn-new-group' },
     { key: 'shelf.rootLabel', label: '书架：书库路径', selector: '#books-root-label' },
     {
       key: 'shelf.searchPlaceholder',

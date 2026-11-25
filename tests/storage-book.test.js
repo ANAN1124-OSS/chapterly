@@ -1515,3 +1515,28 @@ test('META-01：两章同 file 的书目按 INVALID_META 拒绝，书卡 corrupt
   assert.equal(fixed.chapters.length, 1);
   assert.equal((await storage.listBooks(root))[0].status, 'ok');
 });
+
+// 2026-11-25（作者要求）：新建作品默认 0 章，章节由作者自己建；第一次建章拿 001。
+test('createBook({createFirstChapter:false})：0 章新书可读，第一次建章拿 001，fileSeq 从 0 起', async () => {
+  const root = await mkTmp();
+  const created = await storage.createBook(root, '空章节新书', { createFirstChapter: false });
+  assert.equal(created.empty, true);
+  assert.deepEqual(created.meta.chapters, [], '新书不再自动建第一章');
+  assert.equal(created.meta.fileSeq, 0);
+  assert.equal(created.meta.lastOpenChapterId, null);
+  const txt = (await fs.readdir(created.path)).filter((name) => name.endsWith('.txt'));
+  assert.deepEqual(txt, [], '书文件夹里没有自动写入的章节 txt');
+
+  // 打开 0 章书：openBook 正常返回，不补章、不崩
+  const opened = await storage.openBook(created.path);
+  assert.deepEqual(opened.meta.chapters, []);
+  assert.deepEqual(opened.missing, []);
+
+  const chapter = await storage.createChapter(created.path, 0, '第一章');
+  assert.equal(chapter.chapter.file, '001-第一章.txt');
+  assert.equal(chapter.index, 0);
+  const meta = await storage.readBookMeta(created.path);
+  assert.equal(meta.chapters.length, 1);
+  assert.equal(meta.fileSeq, 1);
+  assert.equal(meta.lastOpenChapterId, chapter.chapter.id, '0 章书的第一章直接落成「上次打开的章」');
+});

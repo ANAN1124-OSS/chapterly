@@ -25,7 +25,7 @@ const INDEX = read('renderer/index.html');
 // 字段：id / 标题 / 分组 / 键帽（'' = 没有）/ 关键词（逗号串）/ 视图条件 / 动作名
 const GOLDEN = [
   ['cmd:shelf', '回到书架', 'command', '', 'shelf,书架', 'always', 'backToShelf'],
-  ['cmd:new-book', '新建一本书', 'command', '', 'new book,新建', 'shelf', 'newBook'],
+  ['cmd:new-book', '新建作品', 'command', '', 'new book,新建', 'shelf', 'newBook'],
   ['cmd:import', '导入小说…', 'command', '', 'import,导入', 'shelf', 'importBook'],
   ['cmd:settings', '打开设置（全局）', 'command', '', 'settings,设置', 'always', 'openSettings'],
   ['cmd:book-display', '正文显示设置（这本书）', 'command', '', 'display,显示,按书', 'editor', 'openBookDisplaySettings'],

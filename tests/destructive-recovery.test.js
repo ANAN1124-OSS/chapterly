@@ -154,7 +154,7 @@ test('删章：连「放回原处」都失败时报错指明文件在 _trash，�
   assert.deepEqual(await tmpEntries(bookPath), []);
 });
 
-test('删章：删最后一章且书目写盘失败，自动补的空章不会留在书里', async () => {
+test('删章：删最后一章且书目写盘失败 → 原章放回、书目原样、不产生空章', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '删最后一张');
   const meta = await storage.readBookMeta(bookPath);
@@ -175,20 +175,30 @@ test('删章：删最后一章且书目写盘失败，自动补的空章不会�
   }
 
   assert.ok(failed && failed.code === 'DELETE_FAILED');
-  const txtAfter = (await fs.readdir(bookPath)).filter((name) => name.endsWith('.txt'));
-  assert.deepEqual(txtAfter, txtBefore, '「自动补的空章」不许留在书文件夹里当孤儿 txt');
+  assert.deepEqual(
+    (await fs.readdir(bookPath)).filter((name) => name.endsWith('.txt')),
+    txtBefore,
+    '2026-11-25 起删空不再自动补章：失败回滚不许留下任何空章 / 孤儿 txt'
+  );
   assert.equal(await fs.readFile(path.join(bookPath, file0), 'utf8'), '唯一的一章。');
   assert.equal(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'), metaBefore);
   assert.deepEqual(await tmpEntries(bookPath), []);
-  // 空章被挪进 _trash（不是真删），书还能照常删一次
+
+  // 重试删除成功：书变成 0 章（不再自动补一章），章节文件照旧进 _trash。
   const after = await storage.deleteChapter(bookPath, meta.chapters[0].id);
-  assert.ok(after.newChapter, '删空后照旧自动补一章');
-  assert.equal((await storage.readBookMeta(bookPath)).chapters.length, 1);
+  assert.equal(after.newChapter, null, '不再自动补章');
+  assert.equal(after.index, -1, '0 章时回包 index = -1');
+  assert.equal((await storage.readBookMeta(bookPath)).chapters.length, 0);
+  assert.equal(
+    await fs.access(path.join(bookPath, file0)).then(() => true, () => false),
+    false,
+    '章节文件已进 _trash'
+  );
 });
 
-// C34（v1.8.0 WP-26）：回滚挪「自动补的空章」也走 moveToTrash（同一套撞名循环）。
-// 旧实现直接 rename 成 `<时间戳>-<文件名>`：同秒两次回滚会撞同一个名字，把上一次的备份覆盖掉。
-test('C34/WP-26：删最后一章回滚时自动补章走 moveToTrash，撞名不覆盖旧备份', async () => {
+// C34 的历史前提（「回滚时把自动补的空章挪进 _trash」）已随「删空不补章」消失；
+// 保留一条同场景回归：删最后一章失败回滚时，预置的 _trash 同秒备份一个都不许被覆盖。
+test('删最后一章失败回滚：预置 _trash 备份不被覆盖，也不产生空章', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '回滚撞名');
   const meta = await storage.readBookMeta(bookPath);
@@ -199,14 +209,12 @@ test('C34/WP-26：删最后一章回滚时自动补章走 moveToTrash，撞名�
   const stampOf = (date) =>
     `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}-` +
     `${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}`;
-  // 自动补章的可预测文件名：fileSeq=1 → 下一个序号 2 → 002-未命名.txt
-  const autoFile = '002-未命名.txt';
   const now = Date.now();
   const planted = new Map();
   await fs.mkdir(path.join(bookPath, '_trash'), { recursive: true });
   for (let delta = -1; delta <= 2; delta += 1) {
     const stamp = stampOf(new Date(now + delta * 1000));
-    const name = `${stamp}-${autoFile}`;
+    const name = `${stamp}-${file0}`;
     planted.set(name, `预置旧备份 ${stamp}`);
     await fs.writeFile(path.join(bookPath, '_trash', name), planted.get(name), 'utf8');
   }
@@ -223,23 +231,18 @@ test('C34/WP-26：删最后一章回滚时自动补章走 moveToTrash，撞名�
   }
   assert.ok(failed && failed.code === 'DELETE_FAILED');
 
-  // 预置的旧备份一个都没被覆盖（旧实现会把同秒那一个直接 rename 盖掉）
+  // 预置的旧备份一个都没被覆盖（moveToTrash 撞名会顺延序号，不许盖别人的备份）
   for (const [name, content] of planted) {
     assert.equal(await fs.readFile(path.join(bookPath, '_trash', name), 'utf8'), content, `${name} 被覆盖了`);
   }
-  // 自动补章进了 _trash，并且因为撞名拿到了 moveToTrash 的 `-2-` 序号
-  const entries = await fs.readdir(path.join(bookPath, '_trash'));
-  const autoEntries = entries.filter((name) => name.endsWith(`-${autoFile}`) && !planted.has(name));
-  assert.equal(autoEntries.length, 1, '自动补章要进 _trash（不是真删）');
-  assert.match(autoEntries[0], /^\d{4}-\d{2}-\d{2}-\d{6}-2-002-未命名\.txt$/, '撞名后要用 -2- 序号避让');
-  // 书文件夹里不留孤儿 txt，原章照常放回
+  // 回归期间删除产生的那一份备份名字也要在预置之外、且不与任何预置名撞车；
+  // 书文件夹里不留孤儿 txt，原章照常放回。
   assert.deepEqual(
     (await fs.readdir(bookPath)).filter((name) => name.endsWith('.txt')),
     [file0]
   );
   assert.equal(await fs.readFile(path.join(bookPath, file0), 'utf8'), '唯一的一章。');
 });
-
 // ---------- 2. 批次操作：中途失败要留下「现场」 ----------
 
 const FORMAT_OPTIONS = { indent: '2', blankLines: 'keep', trimTrailing: true, normalizePunct: true };

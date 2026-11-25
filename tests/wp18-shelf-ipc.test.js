@@ -362,6 +362,12 @@ test('R12 B2 接线：books:card IPC + preload.readBookCard + 广播载荷带 bo
   const bookSrc = readSource('ipc/book.js');
   assert.match(bookSrc, /handleBook\('books:card'[\s\S]*?READ_ONLY\)/, 'books:card 是只读频道（不许广播 / 不许拿书锁）');
   assert.match(bookSrc, /notifyShelfChanged\(flowSession\(\), 'book:create', created\.path\)/, '新建书广播要带新书路径');
+  // 2026-11-25（作者要求）：新建作品不自动建第一章，章节由作者点「＋ 新建章节」创建。
+  assert.match(
+    bookSrc,
+    /createBook\(cfg\.booksRoot, title, \{ createFirstChapter: false \}\)/,
+    'book:create 必须传 createFirstChapter:false（0 章新书）'
+  );
   assert.match(bookSrc, /notifyShelfChanged\(session, 'book:import'\)/, '多本导入是结构性变更：不带单书路径（整表刷新）');
 
   const mainSrc = readSource('main.js');

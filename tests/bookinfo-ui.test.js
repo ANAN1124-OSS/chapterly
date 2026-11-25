@@ -63,7 +63,9 @@ const BASE_IDS = [
   'shelf-footer-default', 'shelf-first-run-tip',
   // 1.6.0b：书卡右键「移到分组…」在菜单里内联展开的分组列表
   'book-menu-groups',
-  'btn-bookinfo-cancel', 'btn-bookinfo-save'
+  'btn-bookinfo-cancel', 'btn-bookinfo-save',
+  // 2026-11-25：新建作品 / 新建分组固定在书架顶部工具条（网格里的新书卡片已移除）
+  'btn-new-book', 'btn-new-group'
 ];
 
 // 与 renderer.js 的 formatChars 逐字一致（拍板 #1：千分位；万 / 亿缩写的整数部分同样分组）
@@ -214,12 +216,13 @@ test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个�
   }
 });
 
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 18 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 20 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0, 'create() 一次 $ 都不该调');
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
     'closeBookGroupChooser', 'closeBookInfoDialog', 'closeGroupManageDialog', 'createBookWithTitle',
+    'createShelfGroup', 'deleteEmptyShelfGroup',
     'maybeShowFirstRunTip', 'mergeShelfGroup', 'moveBookToGroup', 'newGroupForBook',
     'onNewBookClick', 'openBookGroupChooser', 'openBookInfoDialog', 'openGroupManageDialog',
     'readBookInfoForm', 'renameShelfGroup', 'renderShelf', 'renderShelfCard', 'saveBookInfoDialog', 'setupBookinfoUi'
@@ -332,7 +335,7 @@ test('renderShelf：空书库 / 分组里没书 / 搜索没命中（三种文案
   assert.equal(
     empty.dom.map.get('book-grid').children[0].textContent,
     '这里还没有书。一本书 = 一个文件夹，正文就是里面的普通 txt 文件，用记事本也能打开。' +
-      '点右上「导入小说」把现有稿子导进来，或点右侧（或下面）的「新建一本书」从零开始；' +
+      '点右上「新建作品」从零开始，或点「导入小说」把现有稿子导进来；' +
       '也可以直接把书文件夹放进书架目录。'
   );
 
@@ -385,14 +388,16 @@ test('renderShelf 缓存（B6）：书卡内容没变就复用同一批节点，
   ctx.ui.renderShelf();
   const grid = ctx.dom.map.get('book-grid');
   const firstCard = grid.children.find((el) => el.className === 'book-card');
-  const firstAdd = grid.children.find((el) => el.className.includes('new-book'));
   assert.ok(firstCard, '第一次渲染要有书卡');
-  assert.ok(firstAdd, '没有搜索词时要显示「新建一本书」');
+  assert.equal(
+    grid.children.some((el) => el.className.includes('new-book')),
+    false,
+    '2026-11-25：网格里不再放「新建一本书」卡片（新建入口固定在书架顶部工具条）'
+  );
 
-  // 同一份数据再渲染：DOM 不清空、书卡 / 新建卡都还是同一批节点（焦点 / 滚动位置不会丢）
+  // 同一份数据再渲染：DOM 不清空、书卡还是同一批节点（焦点 / 滚动位置不会丢）
   ctx.ui.renderShelf();
   assert.equal(grid.children.find((el) => el.className === 'book-card'), firstCard, '内容没变时书卡要复用');
-  assert.equal(grid.children.find((el) => el.className.includes('new-book')), firstAdd, '新建卡也要复用');
   assert.equal(ctx.calls.renderShelfContent, 2, '正文命中区每次仍要刷新（缓存只管书卡）');
 
   // 书名变了 → 重建（签名变化）
@@ -669,18 +674,15 @@ test('renderShelf 书卡：点卡片打开书、右键弹菜单；搜索时不�
   assert.equal(searched.dom.map.get('book-grid').children.some((c) => c.className.includes('new-book')), false);
 });
 
-// ---------- 新建书 ----------
-test('renderShelf：没有搜索词时显示「＋ 新建一本书」卡；点击 → promptText 书名 → createBookWithTitle', async () => {
-  const ctx = build({ promptValue: '我的新书' });
-  ctx.ui.renderShelf();
-  const newCard = ctx.dom.map.get('book-grid').children.find((c) => c.className.includes('new-book'));
-  assert.ok(newCard);
-  assert.equal(newCard.children[0].textContent, '＋');
-  assert.equal(newCard.children[1].textContent, '新建一本书');
-  await newCard._fire('click');
+// ---------- 新建作品（2026-11-25：入口从网格卡片改为书架顶部按钮） ----------
+test('新建作品：顶部按钮 → promptText 书名 → createBookWithTitle；取消什么都不建', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, promptValue: '我的新书' });
+  ctx.ui.setupBookinfoUi();
+  await dom.map.get('btn-new-book')._fire('click', {});
   assert.deepEqual(ctx.calls.promptText, [{
-    title: '新建一本书',
-    message: '给这本书起个名字；直接点确定就叫「我的新书」。',
+    title: '新建作品',
+    message: '给这本书起个名字；直接点确定就叫「我的新书」。建好后是 0 章，自己点「＋ 新建章节」开始写第一章。',
     placeholder: '书名'
   }]);
   assert.deepEqual(ctx.calls.createBook, ['我的新书']);
@@ -689,9 +691,10 @@ test('renderShelf：没有搜索词时显示「＋ 新建一本书」卡；点�
   assert.deepEqual(ctx.calls.openBookByPath, ['/书库/新书']);
 
   // 取消：什么都不建
-  const cancel = build({ promptValue: null });
-  cancel.ui.renderShelf();
-  await cancel.dom.map.get('book-grid').children.find((c) => c.className.includes('new-book'))._fire('click');
+  const cancelDom = makeDocument();
+  const cancel = build({ dom: cancelDom, promptValue: null });
+  cancel.ui.setupBookinfoUi();
+  await cancelDom.map.get('btn-new-book')._fire('click', {});
   assert.deepEqual(cancel.calls.createBook, []);
 });
 
@@ -921,7 +924,7 @@ test('首次运行提示：书架真空且没提示过才显示 4s，显示后�
   const tip = ctx.dom.map.get('shelf-first-run-tip');
   const base = ctx.dom.map.get('shelf-footer-default');
   assert.equal(await ctx.ui.maybeShowFirstRunTip(), true, '真空 + 没提示过 = 显示');
-  assert.equal(tip.textContent.includes('新建一本书') && tip.textContent.includes('导入小说'), true, '文案指向现有入口');
+  assert.equal(tip.textContent.includes('新建作品') && tip.textContent.includes('导入小说'), true, '文案指向现有入口');
   assert.equal(tip.textContent.includes('Ctrl+K'), false, '提示不得提命令面板（已推 1.4.0）');
   assert.equal(base.classList.contains('hidden'), true, '显示提示时默认说明让位');
   assert.deepEqual(ctx.calls.setConfig, [{ firstRunTipShown: true }], '显示即记为已提示（只写这一个键）');
@@ -951,7 +954,7 @@ test('首次运行提示：有书 / 已经提示过都不打扰；写盘失败�
   // 写盘失败（磁盘满 / 只读）：这一轮仍然显示，下一次启动还能再提示一次；不抛错
   const failing = build({ books: [], globalConfig: { booksRoot: '/书库' }, setConfigError: '磁盘满' });
   assert.equal(await failing.ui.maybeShowFirstRunTip(), true);
-  assert.equal(failing.dom.map.get('shelf-first-run-tip').textContent.includes('新建一本书'), true);
+  assert.equal(failing.dom.map.get('shelf-first-run-tip').textContent.includes('新建作品'), true);
   assert.deepEqual(failing.calls.setConfig, [{ firstRunTipShown: true }]);
 });
 
@@ -1408,4 +1411,69 @@ test('B14：renderShelf 重复渲染时下拉内容没变就不重建（签名 +
   ctx.ui.renderShelf();
   assert.notEqual(select.children[0], firstOptions[0], '计数变化要重建');
   assert.ok(select.children.some((option) => option.textContent === '甲组（2）'));
+});
+
+// 2026-11-25（作者要求）：书架顶部「新建分组」= 空分组，写进 config.bookGroups。
+test('新建分组：写入 config.bookGroups，空分组立即进入分组清单；重名 / 空名拒绝', async () => {
+  const ctx = build({ promptValue: '短篇', globalConfig: { booksRoot: '/书库' } });
+  const result = await ctx.ui.createShelfGroup();
+  assert.equal(result.ok, true);
+  assert.equal(result.name, '短篇');
+  assert.deepEqual(ctx.calls.setConfig, [{ bookGroups: ['短篇'] }], '只写 bookGroups 一个键');
+  assert.deepEqual(ctx.state.globalConfig.bookGroups, ['短篇']);
+  assert.match(ctx.calls.toast.at(-1)[0], /已新建分组「短篇」/);
+
+  // 重名（大小写不敏感）拒绝，不再写配置
+  const dup = build({ promptValue: 'DUP', globalConfig: { booksRoot: '/书库', bookGroups: ['dup'] } });
+  const dupRes = await dup.ui.createShelfGroup();
+  assert.equal(dupRes.ok, false);
+  assert.deepEqual(dup.calls.setConfig, []);
+  assert.match(dup.calls.toast.at(-1)[0], /已经存在/);
+
+  // 空名拒绝
+  const empty = build({ promptValue: '   ', globalConfig: { booksRoot: '/书库' } });
+  assert.equal((await empty.ui.createShelfGroup()).ok, false);
+  assert.deepEqual(empty.calls.setConfig, []);
+});
+
+test('删除空分组：只删配置清单；有书的分组拒绝', async () => {
+  const emptyGroup = build({ books: [], globalConfig: { booksRoot: '/书库', bookGroups: ['短篇', '旧组'] } });
+  assert.equal((await emptyGroup.ui.deleteEmptyShelfGroup('旧组')).ok, true);
+  assert.deepEqual(emptyGroup.calls.setConfig, [{ bookGroups: ['短篇'] }]);
+
+  const withBook = build({
+    books: [{ path: '/库/甲', title: '甲', group: '书友' }],
+    globalConfig: { booksRoot: '/书库', bookGroups: ['书友'] }
+  });
+  assert.equal((await withBook.ui.deleteEmptyShelfGroup('书友')).ok, false);
+  assert.deepEqual(withBook.calls.setConfig, []);
+  assert.match(withBook.calls.toast.at(-1)[0], /还有书/);
+});
+
+test('分组条 / 移到分组菜单 / 管理分组：配置里的空分组也出现，且没有书的组带「删除」', () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, books: [], globalConfig: { booksRoot: '/书库', bookGroups: ['空组'] } });
+  ctx.ui.renderShelf();
+  const select = dom.map.get('shelf-group-filter');
+  assert.equal(select.children.some((option) => option.textContent.includes('空组（0）')), true, '筛选条要列空分组');
+
+  // 书卡「移到分组…」：空分组带 0 本
+  const book = makeBook();
+  const menu = build({ books: [book], globalConfig: { booksRoot: '/书库', bookGroups: ['空组'] } });
+  assert.equal(menu.ui.openBookGroupChooser(book), true);
+  const options = menu.dom.map.get('book-menu-groups').children.filter((el) => el.dataset && el.dataset.action === 'move-group-pick');
+  assert.equal(options.some((el) => el.dataset.group === '空组' && el.textContent.includes('0 本')), true, '空分组也能选');
+
+  // 管理分组：空分组一行带「删除」，有书的分组没有
+  const manage = build({
+    books: [{ path: '/库/甲', title: '甲', group: '有书组' }],
+    globalConfig: { booksRoot: '/书库', bookGroups: ['空组', '有书组'] }
+  });
+  manage.ui.openGroupManageDialog();
+  const rows = manage.dom.map.get('group-manage-list').children.filter((el) => el.className === 'group-manage-row');
+  const emptyRow = rows.find((row) => row.dataset.group === '空组');
+  const usedRow = rows.find((row) => row.dataset.group === '有书组');
+  assert.ok(emptyRow, '空分组要出现在管理列表');
+  assert.equal(emptyRow.children.some((el) => el.dataset && el.dataset.action === 'delete'), true, '空分组能给删除');
+  assert.equal(usedRow.children.some((el) => el.dataset && el.dataset.action === 'delete'), false, '有书的分组不给删除');
 });

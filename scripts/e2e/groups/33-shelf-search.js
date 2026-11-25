@@ -46,8 +46,8 @@ module.exports = async function group33ShelfSearch(t) {
     await exec('window.__cwTest.shelfSearchSummary()')
   );
   check(
-    '书架搜索：没有匹配时不显示「新建一本书」',
-    (await exec("document.querySelectorAll('.book-card.new-book').length")) === 0
+    '书架搜索：网格里没有新书卡片（新建作品入口固定在顶部工具条）',
+    (await exec("document.querySelectorAll('.book-card.new-book').length")) === 0 && (await exec("!!document.getElementById('btn-new-book')")) === true
   );
 
   await exec("window.__cwTest.setShelfQuery('')");
@@ -57,8 +57,8 @@ module.exports = async function group33ShelfSearch(t) {
     (await exec('window.__cwTest.shelfFilteredTitles()')).length === allShelfTitles.length
   );
   check(
-    '书架搜索：清空后「新建一本书」回来',
-    (await exec("document.querySelectorAll('.book-card.new-book').length")) === 1
+    '书架搜索：清空后网格仍没有新书卡片（入口在顶部）',
+    (await exec("document.querySelectorAll('.book-card.new-book').length")) === 0
   );
 
   // 视觉拍板 #2（2026-11-04）：超宽屏（≥1600）书架内容列封顶 1520px 居中。
@@ -190,7 +190,7 @@ module.exports = async function group33ShelfSearch(t) {
     { title: blankOpenTitle, index: blankOpenIndex, lastIndex }
   );
 
-  // 搜索清空后恢复普通书卡：命中行 / 可点章名都不见，「新建一本书」回来
+  // 搜索清空后恢复普通书卡：命中行 / 可点章名都不见，网格里仍没有新书卡片（入口在顶部）
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
   await exec("window.__cwTest.setShelfQuery('')");
@@ -199,7 +199,7 @@ module.exports = async function group33ShelfSearch(t) {
     '书架搜索：清空后恢复普通书卡（没有命中行 / 可点章名）',
     (await exec("document.querySelectorAll('.book-card-match').length")) === 0 &&
       (await exec("document.querySelectorAll('.book-card-match-chapter').length")) === 0 &&
-      (await exec("document.querySelectorAll('.book-card.new-book').length")) === 1
+      (await exec("document.querySelectorAll('.book-card.new-book').length")) === 0
   );
 
   // 点命中章：直接打开这本书并定位到命中章（不是上次章节）
@@ -230,3 +230,5 @@ module.exports = async function group33ShelfSearch(t) {
     { hitIndex, lastIndex, title: hitOpenTitle, index: hitOpenIndex }
   );
 };
+
+

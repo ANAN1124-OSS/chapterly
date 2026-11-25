@@ -5,12 +5,26 @@
 module.exports = async function group1NewBook(t) {
   const { exec, check, waitFor } = t;
 
-  // 1. 新建书 → 自动打开、自动带一个空章
-  await exec("window.__cwTest.newBook('测试书')");
+  // 1. 新建作品（2026-11-25 作者要求：新书 0 章，不自动建第一章）→ 自动打开、显示空态
+  await exec("window.__cwTest.newEmptyBook('测试书')");
   await waitFor("window.__cwTest.view() === 'editor'");
-  check('新建书后进入编辑视图', (await exec('window.__cwTest.view()')) === 'editor');
+  check('新建作品后进入编辑视图', (await exec('window.__cwTest.view()')) === 'editor');
   check(
-    '初始一个空章且标题为「第1章」',
+    '新建作品是 0 章（不再自动建第一章）',
+    JSON.stringify(await exec('window.__cwTest.chapterTitles()')) === JSON.stringify([])
+  );
+  const emptyHint = await exec(
+    "document.querySelector('.chapter-list-empty') ? document.querySelector('.chapter-list-empty').textContent : ''"
+  );
+  check('0 章章节栏提示点「＋ 新建章节」', emptyHint.includes('还没有章节') && emptyHint.includes('新建章节'));
+  const editorHint = await exec("document.getElementById('editor').placeholder");
+  check('0 章编辑区给空态提示（不接收输入）', editorHint.includes('还没有章节'));
+
+  // 作者自己建第一章 → 后续第 2–15 组继续在这本书上写。
+  await exec("window.__cwTest.newChapter('')");
+  await waitFor("window.__cwTest.chapterTitles().length === 1");
+  check(
+    '作者建第一章后标题为「第1章」',
     JSON.stringify(await exec('window.__cwTest.chapterTitles()')) === JSON.stringify(['第1章'])
   );
 };

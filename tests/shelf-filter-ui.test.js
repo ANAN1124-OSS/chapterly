@@ -96,6 +96,8 @@ function makeHost(options = {}) {
     shelfGroup: options.shelfGroup === undefined ? '' : options.shelfGroup,
     shelfTag: options.shelfTag === undefined ? '' : options.shelfTag,
     books: options.books === undefined ? [] : options.books,
+    // 2026-11-25（新建分组）：配置里的空分组清单（分组筛选条要合并进来）。
+    globalConfig: options.globalConfig === undefined ? { booksRoot: '/书库' } : options.globalConfig,
     shelfContent: {
       loading: Boolean(options.loading),
       results: options.results || [],
@@ -825,4 +827,17 @@ test('搜索摘要（F5）：只有分组 / 只有标签 / 两者都有时分别
     both.dom.$('shelf-search-summary').textContent,
     '搜索「张三」：1 / 3 本书名 / 作者 / 分组 / 标签 / 章节名命中（已按分组筛选）（已按标签筛选）（回车打开第一本，Esc 清除）'
   );
+});
+
+// 2026-11-25（新建分组）：筛选条的分组清单 = 配置里的空分组 + 书目里的分组（大小写不敏感去重）。
+test('shelfGroupList：空分组（配置）与书分组合并、大小写去重、按中文排序', () => {
+  const withEmpty = build({ books: [], globalConfig: { bookGroups: ['短篇', '随笔'] } });
+  assert.deepEqual(withEmpty.ui.shelfGroupList(), ['短篇', '随笔']);
+
+  const merged = build({
+    books: [{ path: '/库/甲', title: '甲', group: '书友' }, { path: '/库/乙', title: '乙', group: 'short' }],
+    globalConfig: { bookGroups: ['Short', '空组'] }
+  });
+  const groups = merged.ui.shelfGroupList();
+  assert.deepEqual(groups.sort(), ['Short', '书友', '空组'].sort(), '配置里的 Short 与书里的 short 只留一个（用配置写法）');
 });

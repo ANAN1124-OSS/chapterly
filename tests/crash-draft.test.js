@@ -197,7 +197,7 @@ test('CGRD-01：写草稿只读元数据缓存，不再把全部草稿正文读�
       return fsp.readFile(file, ...rest);
     }
   };
-  const store = storeAt(root, { fs: countingFs });
+  const store = storeAt(root, { fs: countingFs, now: () => new Date('2026-11-17T20:20:00.000Z') });
   // 每份正文 1000 字；旧实现第二次起每次写都会把所有草稿正文读回并 JSON.parse。
   for (let i = 1; i <= 3; i += 1) {
     const written = await store.writeDraft(
@@ -223,7 +223,8 @@ test('CGRD-01：写草稿只读元数据缓存，不再把全部草稿正文读�
 });
 
 test('R3 写入 / 列表 / 读取 / 删除：同书同章只留最新一条，列表不回正文', async () => {  const root = await newRoot();
-  const store = storeAt(root);
+  // 固定 now 与写入时间同一天：这批用例的日期是固定的，别让真实时钟跨过 7 天过期窗把草稿清掉。
+  const store = storeAt(root, { now: () => new Date('2026-11-17T20:20:00.000Z') });
   const one = await store.writeDraft(draft({ at: '2026-11-17T20:00:00.000Z', text: '第一次正文' }));
   assert.equal(one.ok, true);
   assert.match(one.draftId, /^[a-f0-9]{16}$/);
@@ -276,7 +277,7 @@ test('R3 写入 / 列表 / 读取 / 删除：同书同章只留最新一条，�
 
 test('R4 坏草稿 / 外来文件 / 上限：跳过坏 JSON 不删外来文件，超过 8 份只留最近 8 份', async () => {
   const root = await newRoot();
-  const store = storeAt(root);
+  const store = storeAt(root, { now: () => new Date('2026-11-17T20:20:00.000Z') });
   await store.writeDraft(draft({ at: '2026-11-17T20:00:00.000Z' }));
   const dir = store.dir;
   await fsp.writeFile(path.join(dir, 'notes.txt'), '作者自己的文件');
@@ -312,11 +313,11 @@ test('R4 坏草稿 / 外来文件 / 上限：跳过坏 JSON 不删外来文件�
 
 test('R5 IO 失败注入：ENOSPC / EPERM / mkdir 失败不抛、不留临时文件、旧版本不被破坏', async () => {
   const root = await newRoot();
-  const real = storeAt(root);
+  const real = storeAt(root, { now: () => new Date('2026-11-17T20:20:00.000Z') });
   const seeded = await real.writeDraft(draft({ at: '2026-11-17T20:00:00.000Z', text: '旧版本' }));
   assert.equal(seeded.ok, true);
 
-  const enospc = storeAt(root, { fs: failingFs({ writeFile: 'ENOSPC' }) });
+  const enospc = storeAt(root, { fs: failingFs({ writeFile: 'ENOSPC' }), now: () => new Date('2026-11-17T20:20:00.000Z') });
   const failed = await enospc.writeDraft(draft({ at: '2026-11-17T20:05:00.000Z', text: '新版本' }));
   assert.equal(failed.ok, false);
   assert.equal(failed.code, 'ENOSPC');
@@ -325,7 +326,7 @@ test('R5 IO 失败注入：ENOSPC / EPERM / mkdir 失败不抛、不留临时文
   const names = await fsp.readdir(real.dir);
   assert.equal(names.some((name) => name.includes('.tmp-')), false, '失败后不留临时文件');
 
-  const eperm = storeAt(root, { fs: failingFs({ rename: 'EPERM' }) });
+  const eperm = storeAt(root, { fs: failingFs({ rename: 'EPERM' }), now: () => new Date('2026-11-17T20:20:00.000Z') });
   const renameFailed = await eperm.writeDraft(draft({ at: '2026-11-17T20:06:00.000Z', text: '再新版本' }));
   assert.equal(renameFailed.ok, false);
   assert.equal(renameFailed.code, 'EPERM');
@@ -339,7 +340,7 @@ test('R5 IO 失败注入：ENOSPC / EPERM / mkdir 失败不抛、不留临时文
   assert.equal(fsSync.existsSync(path.join(mkdirRoot, draftLib.DRAFT_DIR_NAME)), false);
 
   // 标记写失败：beginSession 回错误码但不抛；已有草稿仍能列出
-  const brokenStart = storeAt(root, { fs: failingFs({ writeFile: 'ENOSPC' }) });
+  const brokenStart = storeAt(root, { fs: failingFs({ writeFile: 'ENOSPC' }), now: () => new Date('2026-11-17T20:20:00.000Z') });
   const began = await brokenStart.beginSession();
   assert.equal(began.ok, false);
   assert.equal(began.code, 'ENOSPC');
@@ -379,7 +380,7 @@ test('I1（三审）：安全错误文案走 error-text 脱敏，本机绝对路
 
 test('R6 极值：2 万字正文 / 含空格中文路径往返；500 万字上限；坏形状拒绝', async () => {
   const root = await newRoot();
-  const store = storeAt(root);
+  const store = storeAt(root, { now: () => new Date('2026-11-17T20:20:00.000Z') });
   assert.equal(draftLib.MAX_TEXT_CHARS, 5000000, '与 core/ipc-limits 的正文上限同口径');
   // I8（三审）：草稿正文上限不再自带第二份字面量 —— 直接引用 core/limits.js 的唯一常量，
   // 现场比较两边（与保存上限同源），改一处不会漏另一处。
@@ -825,3 +826,4 @@ test('#11：v1 旁残留的正文与 writeAtomic 的 .tmp- 临时文件按宽限
     '元数据还在（v1 兼容读仍要能恢复）'
   );
 });
+

@@ -80,6 +80,36 @@ module.exports = async function group80ShelfGroups(t) {
     tagOptions
   );
 
+  // ---------- ①b 新建分组（2026-11-25）：空分组落 config.bookGroups，可删 ----------
+  await exec("document.getElementById('btn-new-group').click()");
+  await waitFor('window.__cwTest.modalOpen() === true', 4000);
+  check('新建分组：点书架顶部按钮弹出询问框', (await exec('window.__cwTest.dialog()')) === '新建分组');
+  await exec("document.getElementById('modal-input').value = 'F5空组'");
+  await exec("window.__cwTest.answerModal('ok')");
+  await waitFor("window.__cwTest.shelfGroupOptions().some((item) => item.value === 'F5空组')", 4000);
+  const emptyGroupOption = (await exec('window.__cwTest.shelfGroupOptions()')).find((item) => item.value === 'F5空组');
+  check('新建分组：空分组出现在筛选条且计数为 0', emptyGroupOption && emptyGroupOption.label === 'F5空组（0）', emptyGroupOption);
+  const cfgAfterGroup = await readConfig();
+  check(
+    '新建分组：组名写进 config.bookGroups（不动其它键）',
+    Array.isArray(cfgAfterGroup.bookGroups) && cfgAfterGroup.bookGroups.includes('F5空组'),
+    cfgAfterGroup.bookGroups
+  );
+  await exec('window.__cwTest.openGroupManageDialog()');
+  await waitFor('window.__cwTest.groupManageOpen() === true', 4000);
+  const emptyGroupRow = (await exec('window.__cwTest.groupManageRows()')).find((row) => row.group === 'F5空组');
+  check('管理分组：空分组显示 0 本，可删除', Boolean(emptyGroupRow && emptyGroupRow.text.includes('0 本')), emptyGroupRow);
+  check('管理分组：点空分组的「删除」真能删掉', await exec("window.__cwTest.clickGroupManageAction('F5空组', 'delete')"));
+  await waitFor("window.__cwTest.shelfGroupOptions().every((item) => item.value !== 'F5空组')", 4000);
+  const cfgAfterGroupDelete = await readConfig();
+  check(
+    '删除空分组：从 config.bookGroups 移除',
+    !Array.isArray(cfgAfterGroupDelete.bookGroups) || !cfgAfterGroupDelete.bookGroups.includes('F5空组'),
+    cfgAfterGroupDelete.bookGroups
+  );
+  await exec('window.__cwTest.closeGroupManageDialog()');
+
+
   // a11y 门禁的种子书库没有分组 / 标签，筛选条在那轮里是收起的；这里补量新控件的可聚焦性与目标尺寸
   // （WCAG 2.2 SC 2.5.8 最小 24×24；下拉 / 按钮都用现有造型，不新增颜色）。
   const filterTargets = await exec(`(() => {

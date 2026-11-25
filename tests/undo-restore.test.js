@@ -64,57 +64,73 @@ test('撤销删除：放回 _trash 那一份、按原 index 插回书目（顺�
   assert.equal(after.chapters.length, 3);
 });
 
-test('撤销删除：删空自动补的空章一并撤掉（书里只剩原章、没有多余空章）', async () => {
+test('撤销删除：删到 0 章后撤销，原章按原位置放回、书恢复 1 章', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '只剩一章');
   const meta = await storage.readBookMeta(bookPath);
   const chapter = snapshot(meta, 0);
   await storage.saveChapterText(bookPath, chapter.file, '唯一的一章');
   const deleted = await storage.deleteChapter(bookPath, chapter.id);
-  assert.ok(deleted.newChapter && deleted.newChapter.file, '删除唯一一章应自动补空章');
-  const autoFile = deleted.newChapter.file;
+  assert.equal(deleted.newChapter, null, '2026-11-25 起删到 0 章不再自动补章');
+  assert.equal(deleted.index, -1);
+  assert.equal((await storage.readBookMeta(bookPath)).chapters.length, 0);
+  assert.equal((await storage.readBookMeta(bookPath)).lastOpenChapterId, null);
 
   const restored = await storage.restoreDeletedChapterFromTrash(bookPath, {
     trashName: path.basename(deleted.trashPath),
     index: 0,
-    chapter,
-    autoChapterFile: autoFile
+    chapter
   });
 
-  assert.equal(restored.autoChapterRemoved, true);
+  assert.equal(restored.autoChapterRemoved, false);
   const after = await storage.readBookMeta(bookPath);
   assert.equal(after.chapters.length, 1);
   assert.equal(after.chapters[0].id, chapter.id);
   assert.equal((await storage.loadChapterText(bookPath, chapter.file)).text, '唯一的一章');
   const inBook = (await fs.readdir(bookPath)).filter((name) => name.endsWith('.txt'));
-  assert.deepEqual(inBook, [chapter.file], '书文件夹里不该留下自动补的空章');
-  const trash = await fs.readdir(path.join(bookPath, '_trash'));
-  assert.ok(trash.some((name) => name.endsWith(autoFile)), '被撤掉的空章进 _trash，不是真删');
+  assert.deepEqual(inBook, [chapter.file], '书文件夹里只有这一章，没有空章');
 });
 
-test('撤销删除：补章里已经写过字 → 保留补章（宁可多一章，不静默丢字）', async () => {
+test('撤销删除：0 章后先建新章再撤销 → 按原位置插回，两章都在（不覆盖新章）', async () => {
   const root = await mkTmp();
-  const { path: bookPath } = await storage.createBook(root, '补章有字');
+  const { path: bookPath } = await storage.createBook(root, '删后新建');
   const meta = await storage.readBookMeta(bookPath);
   const chapter = snapshot(meta, 0);
+  await storage.saveChapterText(bookPath, chapter.file, '原来的第一章');
   const deleted = await storage.deleteChapter(bookPath, chapter.id);
-  const autoFile = deleted.newChapter.file;
-  // 模拟「作者在这 10 秒里往补章里写了字并保存」
-  await storage.saveChapterText(bookPath, autoFile, '刚写的一句');
+  // 0 章空态下作者先建了一章（作者自己建的章，不能再被撤销当成「自动补的空章」清掉）
+  const created = await storage.createChapter(bookPath, 0, '新写的一章');
+  await storage.saveChapterText(bookPath, created.chapter.file, '新章正文');
 
   const restored = await storage.restoreDeletedChapterFromTrash(bookPath, {
     trashName: path.basename(deleted.trashPath),
     index: 0,
-    chapter,
-    autoChapterFile: autoFile
+    chapter
   });
 
   assert.equal(restored.autoChapterRemoved, false);
   const after = await storage.readBookMeta(bookPath);
-  assert.deepEqual(after.chapters.map((c) => c.file), [chapter.file, autoFile]);
-  assert.equal((await storage.loadChapterText(bookPath, autoFile)).text, '刚写的一句');
+  assert.equal(after.chapters.length, 2, '原章插回，新章保留');
+  assert.equal(after.chapters[0].id, chapter.id, '原章回到删除时的位置（第 1 章）');
+  assert.equal(after.chapters[1].id, created.chapter.id, '新章排在原章后面');
+  assert.equal((await storage.loadChapterText(bookPath, chapter.file)).text, '原来的第一章');
+  assert.equal((await storage.loadChapterText(bookPath, created.chapter.file)).text, '新章正文');
 });
 
+test('撤销删除：0 章书没有自动补章，payload 不带 autoChapterFile 也能放回', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '无补章');
+  const meta = await storage.readBookMeta(bookPath);
+  const chapter = snapshot(meta, 0);
+  const deleted = await storage.deleteChapter(bookPath, chapter.id);
+  const restored = await storage.restoreDeletedChapterFromTrash(bookPath, {
+    trashName: path.basename(deleted.trashPath),
+    index: 0,
+    chapter
+  });
+  assert.equal(restored.autoChapterRemoved, false);
+  assert.equal((await storage.readBookMeta(bookPath)).chapters.length, 1);
+});
 test('撤销删除：路径安全——绝对路径 / 目录穿越 / 非 txt / 与章节文件名对不上一律拒绝', async () => {
   const root = await mkTmp();
   const { bookPath, meta } = await makeBook(root);
@@ -525,21 +541,30 @@ test('撤销删除：撤销凭证——storage 失败时凭证放回去，修好
   assert.equal((await storage.readBookMeta(bookPath)).chapters.length, meta.chapters.length);
 });
 
-// ---------- V104（v1.8.0 WP-19）：撤销删除读「自动补章」的 128 MB 闸门 ----------
-// 撤销删除要判断「删空自动补的空章是不是还空着」：以前整份 readFile 再 trim。补章被外部换成
-// 超大文件（误放的视频 / 坏同步盘）时同样会顶爆主进程。现在先 stat + 章节同一条上限：
+// ---------- V104（v1.8.0 WP-19）：撤销删除读「旧版自动补章」的 128 MB 闸门 ----------
+// 撤销删除要判断「删空时旧版本自动补的空章是不是还空着」：以前整份 readFile 再 trim。补章被外部
+// 换成超大文件（误放的视频 / 坏同步盘）时同样会顶爆主进程。现在先 stat + 章节同一条上限：
 // 超限 = 量不出「空」→ 按非空处理（保留补章，宁可多一章，也不静默丢字），一个字节都不读。
-test('撤销删除：自动补章被换成超大文件 → 不读内容、按非空保留补章（宁可多一章）', async () => {
+// 2026-11-25 起产品不再自动补章（删到 0 章合法），但旧版本留下的「补章 + autoChapterFile」
+// 现场仍可能被撤销逻辑遇到，这条兼容路径继续保留并受本用例保护。
+test('撤销删除：旧版自动补章被换成超大文件 → 不读内容、按非空保留补章（宁可多一章）', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '超限补章');
   const meta = await storage.readBookMeta(bookPath);
   const chapter = snapshot(meta, 0);
   await storage.saveChapterText(bookPath, chapter.file, '唯一的一章');
   const deleted = await storage.deleteChapter(bookPath, chapter.id);
-  const autoFile = deleted.newChapter.file;
+  assert.equal(deleted.newChapter, null, '新版本删空不再自动补章');
+
+  // 手工还原「旧版本删空自动补章」的磁盘现场：书目里多一条补章 + 补章文件被换成超大文件。
+  const autoFile = '002-未命名.txt';
   const autoPath = path.join(bookPath, autoFile);
-  // 稀疏文件：只把长度改到上限 +1，不真写 128 MB
+  await fs.writeFile(autoPath, '', 'utf8');
   await fs.truncate(autoPath, storage.MAX_CHAPTER_READ_BYTES + 1);
+  const metaPath = path.join(bookPath, '书目.json');
+  const rawMeta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+  rawMeta.chapters.push({ id: 'ch_auto_legacy', file: autoFile, name: '', createdAt: new Date().toISOString() });
+  await fs.writeFile(metaPath, JSON.stringify(rawMeta, null, 2), 'utf8');
 
   const realReadFile = fs.readFile;
   let autoReads = 0;
@@ -565,10 +590,11 @@ test('撤销删除：自动补章被换成超大文件 → 不读内容、按非
   assert.equal(autoReads, 0, '超限补章一次都不许 readFile（不许进内存）');
   assert.equal(restored.autoChapterRemoved, false, '量不出空 → 按非空处理，不撤补章');
   const after = await storage.readBookMeta(bookPath);
-  assert.deepEqual(after.chapters.map((c) => c.file), [chapter.file, autoFile], '原章放回、补章保留');
+  assert.deepEqual(after.chapters.map((c) => c.file), [chapter.file, autoFile], '原章放回、旧补章保留');
   assert.equal((await storage.loadChapterText(bookPath, chapter.file)).text, '唯一的一章');
   await fs.truncate(autoPath, 0).catch(() => {});
 });
+
 
 // 五-M31（IPC-01）：撤销删除的双重失败分支（书目写盘失败 → 回滚 rename 也失败）——
 // :1544 是 move 不是 copy，此刻 _trash 里已经没有这一份，唯一副本是书文件夹里「未登记进书目」的

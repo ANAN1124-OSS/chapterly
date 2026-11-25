@@ -171,7 +171,7 @@ module.exports = async function group74Undo(t) {
     { files: metaAfterSecondUndo.chapters.map((chapter) => chapter.file), visible: afterSecondUndo.visible }
   );
 
-  // ---------- ⑥ 删到只剩一章，再删空：自动补的空章撤销后不留下 ----------
+  // ---------- ⑥ 删到 0 章：不再自动补章；撤销后原章按原位置放回 ----------
   await exec('window.__cwTest.deleteChapterAt(2)');
   await waitFor('window.__cwTest.chapterTitles().length === 2', 8000);
   await exec('window.__cwTest.deleteChapterAt(1)');
@@ -179,21 +179,19 @@ module.exports = async function group74Undo(t) {
   await exec('window.__cwTest.save()');
   await waitFor('window.__cwTest.dirty() === false', 4000).catch(() => false);
   await exec('window.__cwTest.deleteChapterAt(0)');
-  await waitFor('window.__cwTest.chapterTitles().length === 1', 8000);
-  const autoMeta = await storage.readBookMeta(bookPath);
+  await waitFor('window.__cwTest.chapterTitles().length === 0', 8000);
+  const emptyMeta = await storage.readBookMeta(bookPath);
   check(
-    '撤销删除：删唯一一章会自动补一个空章（撤销前书里仍有一章）',
-    autoMeta.chapters.length === 1 && autoMeta.chapters[0].file !== file0,
-    autoMeta.chapters.map((chapter) => chapter.file)
+    '撤销删除：删到 0 章不再自动补章（书里 0 章）',
+    emptyMeta.chapters.length === 0,
+    emptyMeta.chapters.map((chapter) => chapter.file)
   );
+  const emptyHint = await exec("document.getElementById('editor').placeholder");
+  check('撤销删除：0 章编辑区给空态提示', emptyHint.includes('还没有章节'), emptyHint);
   const autoBar = await readUndo(exec);
-  check('撤销删除：删唯一一章后撤销条可见', autoBar.visible === true, autoBar);
+  check('撤销删除：删到 0 章后撤销条可见', autoBar.visible === true, autoBar);
   await exec("document.getElementById('btn-undo').click()");
   // 撤销是异步的（点一下只发起 IPC），必须等它真落地再读书目。
-  // 这里**不能**像以前那样等 dirty === false 当信号：删完本来就不脏，那个条件立刻成立，等于没等，
-  // 读到的是撤销前的书目（2026-11-09 首跑就是这样误判成产品缺陷的）。
-  // 1.5.0 P0-4 起撤销是小栈：撤销这一条后条子会换成更早那条（第二章 / 第三章），**不能再等 hidden**；
-  // 改成轮询书目，直到书里真的只剩「第一章」。
   for (let i = 0; i < 80; i += 1) {
     const metaNow = await storage.readBookMeta(bookPath);
     if (metaNow.chapters.length === 1 && metaNow.chapters[0].file === file0) break;
@@ -202,7 +200,7 @@ module.exports = async function group74Undo(t) {
   const afterAutoUndo = await storage.readBookMeta(bookPath);
   const txtFiles = (await fs.readdir(bookPath)).filter((name) => name.endsWith('.txt'));
   check(
-    '撤销删除：删空自动补的章被一并撤掉（书里只剩原章、没有多余空章）',
+    '撤销删除：0 章撤销后原章回到原位、没有多余空章',
     afterAutoUndo.chapters.length === 1 &&
       afterAutoUndo.chapters[0].file === file0 &&
       JSON.stringify(txtFiles) === JSON.stringify([file0]) &&
@@ -210,17 +208,23 @@ module.exports = async function group74Undo(t) {
     { chapters: afterAutoUndo.chapters.map((chapter) => chapter.file), txtFiles }
   );
 
-  // ---------- ⑥b 手动关闭：× 与 Esc（1.5.0 P0-4 / H-5；Esc 只在没有弹层开着时生效） ----------
-  // 上一段的撤销把小栈换成了更早的第二章 / 第三章，这里再删一次当前这章，栈里就是三条。
+  // ---------- ⑥b 手动关闭：× 与 Esc（每次先建一章再删到 0 章，让撤销条有内容） ----------
+  async function deleteSoleChapter(label) {
+    // 当前可能是 0 章（上一次删空）或 1 章（撤销后）：0 章先建一章，保证这次删的是唯一一章。
+    if ((await exec('window.__cwTest.chapterTitles().length')) === 0) {
+      await exec("window.__cwTest.newChapter('临时章')");
+      await waitFor('window.__cwTest.chapterTitles().length === 1', 8000);
+    }
+    await exec('window.__cwTest.deleteChapterAt(0)');
+    await waitFor('window.__cwTest.chapterTitles().length === 0', 8000);
+    await waitForRender();
+    const bar = await readUndo(exec);
+    check(`撤销删除：${label}撤销条可见`, bar.visible === true && bar.modal === false, bar);
+    return bar;
+  }
+
   await exec("document.getElementById('editor').focus()");
-  await exec('window.__cwTest.deleteChapterAt(0)');
-  await waitFor('window.__cwTest.chapterTitles().length === 1', 8000);
-  const closeBar = await readUndo(exec);
-  check(
-    '撤销删除：手动关闭前撤销条可见',
-    closeBar.visible === true && closeBar.modal === false,
-    closeBar
-  );
+  await deleteSoleChapter('手动关闭前');
   await exec("document.getElementById('btn-undo-close').focus()");
   await exec("document.getElementById('btn-undo-close').click()");
   await sleep(200);
@@ -237,11 +241,7 @@ module.exports = async function group74Undo(t) {
 
   // Esc：没有弹层时也能关（esc-registry 的 undo-bar 层排在兜底之前、所有弹层之后）
   await exec("document.getElementById('editor').focus()");
-  await exec('window.__cwTest.deleteChapterAt(0)');
-  await waitFor('window.__cwTest.chapterTitles().length === 1', 8000);
-  await waitForRender();
-  const escBar = await readUndo(exec);
-  check('撤销删除：Esc 关条子之前条子是可见的', escBar.visible === true, escBar.visible);
+  await deleteSoleChapter('Esc 关闭前');
   await exec("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
   await sleep(200);
   const afterEsc = JSON.parse(
@@ -256,8 +256,7 @@ module.exports = async function group74Undo(t) {
   );
 
   // ---------- ⑦ 回书架收起撤销条：10 秒窗口不跨书 ----------
-  await exec('window.__cwTest.deleteChapterAt(0)');
-  await waitFor('window.__cwTest.chapterTitles().length === 1', 8000);
+  await deleteSoleChapter('回书架前');
   const beforeShelf = await readUndo(exec);
   check('撤销删除：回书架前撤销条是可见的', beforeShelf.visible === true, beforeShelf.visible);
   await exec('window.__cwTest.backToShelf()');
