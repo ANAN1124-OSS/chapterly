@@ -50,7 +50,7 @@ function makeHost(root, options = {}) {
     fs,
     path,
     shell: { trashItem: async () => {} },
-    getConfig: async () => ({ booksRoot: root }),
+    getConfig: options.getConfig || (async () => ({ booksRoot: root })),
     getConfigStore: () => ({ resetBookDisplay: async () => true }),
     flowSession: () => ({ id: windowId }),
     sessionById: () => null,
@@ -193,4 +193,103 @@ test('LEASE-01：book:search / book:format-preview 读取期间持租约，完�
   gates.at(-1).release();
   await assert.rejects(failing, (err) => err.code === 'SEARCH_FAILED');
   assert.equal(storage.isBookReadLeased(bookPath), false, '搜索失败后租约也要释放');
+});
+
+// IPC-02（第 5 轮）：book:delete 的跨窗口闸门在 handleBook 包装层（取书锁之前）就跑完了；
+// book:open 在频道体内才取租约 / 完成登记，也不拿书锁。中间这段间隙里另一窗口把这本书打开，
+// 旧实现照样把书目录搬走 —— 锁内没有二次 assertBookNotBusy。修法两条：
+//   ① book:delete 在书锁内用同一个窗口身份再查一次（别的窗口开着 / 正在打开都要拒）；
+//   ② book:open 的「查归属 → 读书目 → 登记」整段进书锁：先拿到锁的登记完，后来者看见登记；
+//      先拿到锁的是删除，打开排在后面、书已不在 → 如实报 NO_BOOK，绝不会打开一本刚搬走的书。
+test('IPC-02：删除过包装层之后另一窗口打开这本书，锁内二次闸门必须拒绝', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '交错删除的书');
+  let releaseDelete = () => {};
+  const deleteGate = new Promise((resolve) => { releaseDelete = resolve; });
+  let signalEntered = () => {};
+  const entered = new Promise((resolve) => { signalEntered = resolve; });
+  // win-a 的 getConfig 是频道体的第一处 await：此刻包装层的删除闸门已经放行、书锁还没取。
+  const channelsA = makeHost(root, {
+    windowId: 'win-a',
+    getConfig: async () => {
+      signalEntered();
+      await deleteGate;
+      return { booksRoot: root };
+    }
+  });
+  const channelsB = makeHost(root, { windowId: 'win-b' });
+  try {
+    const deleting = channelsA.get('book:delete')(bookPath);
+    await entered;
+    assert.equal(storage.findOpenBookWindow(bookPath), null, '删除过闸门那一刻还没有窗口登记这本书');
+
+    // 另一窗口在这个间隙里把书完整打开（取租约 → 读书目 → 登记 → 释放租约）
+    const opened = await channelsB.get('book:open')(bookPath);
+    assert.equal(opened.meta.title, '交错删除的书');
+    assert.equal(storage.findOpenBookWindow(bookPath), 'win-b', '打开完成后这本书登记在 win-b');
+
+    releaseDelete();
+    await assert.rejects(
+      deleting,
+      (err) => err && err.code === 'CROSS_WINDOW_BUSY',
+      '包装层闸门之后才被打开的书，锁内二次闸门必须拒绝删除'
+    );
+    assert.equal(await storage.exists(bookPath), true, '别的窗口开着的书一个字节都不许动');
+    assert.equal(await storage.exists(path.join(root, '_trash')), false, '被拒绝的删除不该建 _trash');
+  } finally {
+    releaseDelete();
+    storage.releaseOpenBookPath(bookPath);
+  }
+});
+
+test('IPC-02：删除持锁在途时另一窗口的 book:open 必须排队，不能打开一本正被搬走的书', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '删除中的书');
+  let releaseTrash = () => {};
+  const trashGate = new Promise((resolve) => { releaseTrash = resolve; });
+  let signalAtTrash = () => {};
+  const atTrash = new Promise((resolve) => { signalAtTrash = resolve; });
+  // 删除已经拿到书锁、停在搬目录（E2E 分支的 trashBook）之前。
+  const deleteStorage = Object.create(storage);
+  deleteStorage.trashBook = async (...args) => {
+    signalAtTrash();
+    await trashGate;
+    return storage.trashBook(...args);
+  };
+  const channelsA = makeHost(root, { windowId: 'win-a', storage: deleteStorage });
+  let signalOpenBook = () => {};
+  const openBookCalled = new Promise((resolve) => { signalOpenBook = resolve; });
+  const openStorage = Object.create(storage);
+  openStorage.openBook = async (...args) => {
+    signalOpenBook();
+    return storage.openBook(...args);
+  };
+  const channelsB = makeHost(root, { windowId: 'win-b', storage: openStorage });
+  try {
+    const deleting = channelsA.get('book:delete')(bookPath);
+    await atTrash;
+    const opening = channelsB.get('book:open')(bookPath);
+    assert.equal(storage.isBookReadLeased(bookPath), true, '打开一开始就同步取租约（锁外，立即生效）');
+    // 删除持锁期间打开不许进 openBook：修前打开不排队，几百毫秒内就跑完并登记。
+    const raced = await Promise.race([
+      openBookCalled.then(() => 'open-started'),
+      new Promise((resolve) => setTimeout(() => resolve('delete-lock-held'), 300))
+    ]);
+    assert.equal(raced, 'delete-lock-held', '删除持锁在途时，打开必须排在书锁后面');
+    assert.equal(storage.findOpenBookWindow(bookPath), null, '排队中的打开不许登记');
+
+    releaseTrash();
+    const deleted = await deleting;
+    assert.equal(deleted.method, 'move', '没有别的窗口开着时删除照常成功');
+    await assert.rejects(
+      opening,
+      (err) => err && err.code === 'NO_BOOK',
+      '排在删除后面的打开要如实报「书已经不在了」，不能打开一本刚搬走的书'
+    );
+    assert.equal(await storage.exists(bookPath), false);
+    assert.equal(storage.findOpenBookWindow(bookPath), null, '失败的打开不许留下登记');
+  } finally {
+    releaseTrash();
+    storage.releaseOpenBookPath(bookPath);
+  }
 });

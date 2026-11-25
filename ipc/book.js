@@ -110,25 +110,33 @@ function registerBookIpc(host) {
       const session = flowSession();
       // B3：读书目之前先把防抖中的「上次打开章节」落盘，保证重开书回到的是最后一次切到的章
       await flushLastOpenBeforeRead(bookPath);
-      // 同一本书只允许一个窗口：已开在别处就聚焦那个窗口并拒绝
-      const owner = storage.findOpenBookWindow(bookPath);
-      if (owner && session && String(owner) !== String(session.id)) {
-        focusSession(sessionById(owner));
-        throw new storage.StorageError(
-          openBooksLib.CODE.BOOK_OPEN_IN_OTHER_WINDOW,
-          openBooksLib.openInOtherWindowMessage(bookPath)
-        );
-      }
-      const data = await storage.openBook(bookPath, { skipStats: true });
-      if (session) {
-        const registered = storage.registerOpenBook(session.id, bookPath);
-        if (!registered.ok) {
-          focusSession(sessionById(registered.ownerWindowId));
-          throw new storage.StorageError(registered.code, registered.message);
+      // IPC-02：查归属 → 读书目 → 登记 整段进书锁，与 book:delete 锁内的二次闸门串行：
+      // 打开先拿到锁，登记就先落地，删除随后看见「别的窗口开着」→ 拒绝；
+      // 删除先拿到锁，打开排在它后面，书已经不在 → 如实报 NO_BOOK。
+      // 旧实现两边都不排队，交错时会打开一本刚被搬走的书，并在删除后留下登记。
+      const data = await storage.withBookLock(bookPath, async () => {
+        // 同一本书只允许一个窗口：已开在别处就聚焦那个窗口并拒绝
+        const owner = storage.findOpenBookWindow(bookPath);
+        if (owner && session && String(owner) !== String(session.id)) {
+          focusSession(sessionById(owner));
+          throw new storage.StorageError(
+            openBooksLib.CODE.BOOK_OPEN_IN_OTHER_WINDOW,
+            openBooksLib.openInOtherWindowMessage(bookPath)
+          );
         }
-      }
+        const opened = await storage.openBook(bookPath, { skipStats: true });
+        if (session) {
+          const registered = storage.registerOpenBook(session.id, bookPath);
+          if (!registered.ok) {
+            focusSession(sessionById(registered.ownerWindowId));
+            throw new storage.StorageError(registered.code, registered.message);
+          }
+        }
+        return opened;
+      });
       // N-07：字数缓存回填挪到后台（同一本书单飞）—— 打开大书 / 老书时窗口先可用，
       // 不再先读完所有缺缓存章节的正文才返回；回填只补书目里的 chars，不顶 updatedAt。
+      // 放在书锁外面：后台任务不该继承「已持锁」的异步上下文（否则以后的写入会绕过队列）。
       void storage.backfillBookStatsInBackground(bookPath);
       const meta = data && data.meta;
       if (meta && Array.isArray(meta.chapters) && meta.chapters.length) {
@@ -378,7 +386,13 @@ function registerBookIpc(host) {
     if (storage.isReservedBookFolderName(folder)) {
       throw new storage.StorageError('BAD_PATH', '书架保留目录不能当书删除');
     }
+    // IPC-02：包装层的 assertBookNotBusy 在取书锁之前就跑完了；这段间隙里 book:open 仍可能取
+    // 租约 / 完成登记。锁内用同一个窗口身份再查一次，才能把「另一窗口刚打开、或正在打开」真的
+    // 挡在搬目录之前（打开这一侧本轮也进了书锁，两边串行；这里仍保留二次闸门：包装层到锁之间
+    // 的间隙只能靠它兜住）。
+    const flow = flowSession();
     return storage.withBookLock(target, async () => {
+      storage.assertBookNotBusy(target, flow && flow.id, MUTATION.DELETE);
       if (!(await storage.exists(target))) {
         throw new storage.StorageError('NOT_FOUND', '这本书的文件夹已经不存在了');
       }
