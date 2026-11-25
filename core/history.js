@@ -148,19 +148,30 @@ function isValidBaseName(name) {
 // 解析删除章节时留下的散文件：{时间戳}-{原文件名}.txt
 // 同一次删除撞名会生成 {时间戳}-{序号}-{原文件名}.txt（序号从 2 开始、不补零），
 // 而原文件名本身是 3 位序号开头（001-xxx.txt），所以要避免把「001」误当撞名序号。
+//
+// HIS-01：前导数字既可能是撞名序号，也可能是章号本身 —— `123-003-夜雨.txt` 是「第 123 章、
+// 章名 003-夜雨」的真实文件名，旧实现把 123 当撞名序号剥成 `003-夜雨.txt`，历史还原写错名。
+// 撞名序号只出现在「同一秒内同名文件被删多次」（moveToTrash 从 2 开始试）：1–2 位（2–99 次）
+// 才当序号剥；3 位（≥100 次）现实中不会发生，按章号算。两个候选都返回，调用方还能按书目再选：
+//   originalName：默认采用的名字；altName：另一个候选（空串 = 没有别的候选）。
 function parseDeletedName(raw) {
   const name = typeof raw === 'string' ? raw.trim() : '';
   if (!name) return null;
   const match = /^(\d{4}-\d{2}-\d{2}-\d{6})-(.+)$/.exec(name);
   if (!match) return null;
-  let rest = match[2];
-  // C34（v1.8.0 WP-26）：撞名序号只可能是 1–3 位（moveToTrash 从 2 开始试，同秒撞上千次不现实）；
-  // 4 位及以上的数字串是章号序号本身（pad3 之后 1000+ 的章号）。旧正则 `[1-9]\d*` 会把
-  // `1000-2024-回顾.txt` 的章号当序号剥掉，历史列表里显示成 `2024-回顾.txt`。
-  const ordinal = /^([1-9]\d{0,2})-(.+)$/.exec(rest);
-  if (ordinal && /^\d{3,}-.*\.txt$/i.test(ordinal[2])) rest = ordinal[2];
+  const rest = match[2];
   if (!/\.txt$/i.test(rest)) return null;
-  return { stamp: match[1], originalName: rest };
+  // C34（v1.8.0 WP-26）：4 位及以上的数字串是章号序号本身（pad3 之后 1000+ 的章号）。旧正则
+  // `[1-9]\d*` 会把 `1000-2024-回顾.txt` 的章号当序号剥掉，历史列表里显示成 `2024-回顾.txt`。
+  const ordinal = /^([1-9]\d{0,2})-(.+)$/.exec(rest);
+  // 剥掉序号后仍要以 3+ 位数字开头：否则「2-起风.txt」更像是章名本身带数字的普通名字
+  const stripped = ordinal && /^\d{3,}-.*\.txt$/i.test(ordinal[2]) ? ordinal[2] : '';
+  const useStripped = Boolean(stripped) && ordinal[1].length <= 2;
+  return {
+    stamp: match[1],
+    originalName: useStripped ? stripped : rest,
+    altName: useStripped ? rest : stripped
+  };
 }
 
 function classifyDirName(raw) {
@@ -175,7 +186,26 @@ function classifyDirName(raw) {
   return { name, kind: 'dir', source: 'other', stamp: '', time: 0 };
 }
 
-function classifyLooseName(raw) {
+// HIS-01：删章散文件的两个候选（剥 / 不剥撞名序号）里，书目现有的章节名能对上的那个更可信 ——
+// 例如 `12-003-夜雨.txt` 这种非常规文件名若还在书里，说明它就是原文件名，而不是 `003-夜雨.txt`。
+function chapterFileSet(options) {
+  const files = options && options.chapterFiles;
+  if (files instanceof Set) return files;
+  if (Array.isArray(files)) return new Set(files);
+  return null;
+}
+
+function pickDeletedOriginalName(parsed, chapterFiles) {
+  const main = parsed.originalName;
+  const alt = parsed.altName || '';
+  if (!alt || !chapterFiles) return main;
+  const mainInBook = chapterFiles.has(main);
+  const altInBook = chapterFiles.has(alt);
+  if (altInBook && !mainInBook) return alt;
+  return main;
+}
+
+function classifyLooseName(raw, options) {
   const name = typeof raw === 'string' ? raw.trim() : '';
   if (!isValidBaseName(name) || name.startsWith('.')) return null;
   if (name === BOOK_BAK) {
@@ -189,7 +219,7 @@ function classifyLooseName(raw) {
       source: 'delete',
       stamp: deleted.stamp,
       time: parseStampTime(deleted.stamp),
-      originalName: deleted.originalName
+      originalName: pickDeletedOriginalName(deleted, chapterFileSet(options))
     };
   }
   return { name, kind: 'file', source: 'other', stamp: '', time: 0, originalName: name };
@@ -314,7 +344,7 @@ async function listHistory(bookPath, options = {}) {
       continue;
     }
     if (!entry.isFile()) continue;
-    const info = classifyLooseName(entry.name);
+    const info = classifyLooseName(entry.name, { chapterFiles });
     if (!info) continue;
     if (only && (only.kind !== 'file' || only.fileName !== entry.name)) continue;
     looseEntries.push({ name: entry.name, info });

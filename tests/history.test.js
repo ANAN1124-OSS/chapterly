@@ -57,17 +57,22 @@ test('历史：时间显示为本地时间（YYYY-MM-DD HH:mm）', () => {
 });
 
 test('历史：删除章节的散文件（含撞名序号）不会把 3 位原文件名误当序号', () => {
+  // HIS-01：解析结果带两个候选 —— originalName 是默认采用的名字，altName 是「剥 / 不剥」的另一个
+  // （空串 = 没有第二个候选）；书目现状能对上哪个由调用方再选一次。
   assert.deepEqual(history.parseDeletedName('2026-10-31-213000-001-起风.txt'), {
     stamp: '2026-10-31-213000',
-    originalName: '001-起风.txt'
+    originalName: '001-起风.txt',
+    altName: ''
   });
   assert.deepEqual(history.parseDeletedName('2026-10-31-213000-2-001-起风.txt'), {
     stamp: '2026-10-31-213000',
-    originalName: '001-起风.txt'
+    originalName: '001-起风.txt',
+    altName: '2-001-起风.txt'
   });
   assert.deepEqual(history.parseDeletedName('2026-10-31-213000-12-003-夜雨.txt'), {
     stamp: '2026-10-31-213000',
-    originalName: '003-夜雨.txt'
+    originalName: '003-夜雨.txt',
+    altName: '12-003-夜雨.txt'
   });
   for (const bad of ['001-起风.txt', '2026-10-31-213000-书目.json', '', null, 42]) {
     assert.equal(history.parseDeletedName(bad), null, String(bad));
@@ -80,22 +85,77 @@ test('C34/WP-26：删除散文件解析——4 位章号不是撞名序号，1�
   // 4 位章号 + 章名本身以 3 位数字开头：整段都是原文件名
   assert.deepEqual(history.parseDeletedName('2026-10-31-213000-1000-2024-回顾.txt'), {
     stamp: '2026-10-31-213000',
-    originalName: '1000-2024-回顾.txt'
+    originalName: '1000-2024-回顾.txt',
+    altName: ''
   });
   // 4 位章号单独出现
   assert.deepEqual(history.parseDeletedName('2026-10-31-213000-1000-起风.txt'), {
     stamp: '2026-10-31-213000',
-    originalName: '1000-起风.txt'
+    originalName: '1000-起风.txt',
+    altName: ''
   });
-  // 真正的撞名序号（1–3 位）仍要剥掉，后面接 3 位或 4 位章号都行
+  // 真正的撞名序号（1–2 位）仍要剥掉，后面接 3 位或 4 位章号都行
   assert.deepEqual(history.parseDeletedName('2026-10-31-213000-2-1000-起风.txt'), {
     stamp: '2026-10-31-213000',
-    originalName: '1000-起风.txt'
+    originalName: '1000-起风.txt',
+    altName: '2-1000-起风.txt'
   });
+  // HIS-01：3 位前导数字按章号算（`123-003-夜雨.txt` 是第 123 章、章名「003-夜雨」），
+  // 不再当成撞名序号剥成 `003-夜雨.txt`（见下面的 HIS-01 用例）。
   assert.deepEqual(history.parseDeletedName('2026-10-31-213000-123-003-夜雨.txt'), {
     stamp: '2026-10-31-213000',
-    originalName: '003-夜雨.txt'
+    originalName: '123-003-夜雨.txt',
+    altName: '003-夜雨.txt'
   });
+});
+
+// HIS-01（审计低危）：3 位前导数字既可能是撞名序号，也可能是章号本身 —— 旧实现一律剥掉，
+// 而撞名序号只出现在「同一秒内同名文件被删多次」的场景：要走到 3 位（≥100 次）现实中不可能，
+// 但 100–999 章的章名以 3 位数字开头（`123-003-夜雨.txt`）完全可能。
+// 现在 1–2 位才当撞名序号剥；两个候选都留着，书目里现有的章节名能对上哪个就用哪个，
+// 历史列表与还原目标不再写错名字。
+test('HIS-01：3 位章号不被当成撞名序号，历史还原写回原文件名', async () => {
+  assert.deepEqual(history.parseDeletedName('2026-11-25-120000-123-003-夜雨.txt'), {
+    stamp: '2026-11-25-120000',
+    originalName: '123-003-夜雨.txt',
+    altName: '003-夜雨.txt'
+  });
+  // 真撞名序号（1–2 位）照旧剥掉，剥完仍是合法章名
+  assert.deepEqual(history.parseDeletedName('2026-11-25-120000-2-123-003-夜雨.txt'), {
+    stamp: '2026-11-25-120000',
+    originalName: '123-003-夜雨.txt',
+    altName: '2-123-003-夜雨.txt'
+  });
+
+  // 书目里现有的章节名能对上哪个候选，就用哪个（导入留下非常规文件名时以书目为准）
+  const loose = '2026-11-25-120000-12-003-夜雨.txt';
+  assert.equal(history.classifyLooseName(loose).originalName, '003-夜雨.txt');
+  assert.equal(
+    history.classifyLooseName(loose, { chapterFiles: new Set(['12-003-夜雨.txt']) }).originalName,
+    '12-003-夜雨.txt'
+  );
+  assert.equal(
+    history.classifyLooseName('2026-11-25-120000-123-003-夜雨.txt', { chapterFiles: new Set(['003-夜雨.txt']) })
+      .originalName,
+    '003-夜雨.txt'
+  );
+
+  // 端到端：_trash 里躺着 `stamp-123-003-夜雨.txt`，历史列表与还原都认 `123-003-夜雨.txt`
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '三位章号书');
+  await fs.mkdir(path.join(bookPath, '_trash'), { recursive: true });
+  const trashName = '2026-11-25-120000-123-003-夜雨.txt';
+  await fs.writeFile(path.join(bookPath, '_trash', trashName), '夜雨正文\n', 'utf8');
+  const listed = await storage.listBookHistory(bookPath);
+  const group = listed.groups.find((item) => item.id === `file:${trashName}`);
+  assert.ok(group, '历史列表里必须有这份删章散文件');
+  assert.equal(group.originalName, '123-003-夜雨.txt');
+  assert.equal(group.files[0].name, '123-003-夜雨.txt');
+
+  const restored = await storage.restoreHistoryFile(bookPath, group.id, group.files[0].name);
+  assert.equal(restored.file, '123-003-夜雨.txt');
+  assert.equal(await fs.readFile(path.join(bookPath, '123-003-夜雨.txt'), 'utf8'), '夜雨正文\n');
+  await assert.rejects(fs.access(path.join(bookPath, '003-夜雨.txt')), (err) => err.code === 'ENOENT');
 });
 
 test('历史：备份目录 / 散文件归类', () => {
