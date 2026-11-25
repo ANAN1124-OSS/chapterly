@@ -104,6 +104,36 @@ test('无 txt 时重建出 0 章书（不产生章节记录，书目可读）', 
   assert.equal(await fs.access(bookPath).then(() => true, () => false), true);
 });
 
+// REPAIR-01（2026-11-26 审计）：书文件夹被外部删掉（同步盘移走 / 资源管理器删除 / 挂载点掉线）后
+// 「从目录重建」必须如实失败。旧实现：listTxtFiles 把 ENOENT 吞成「0 章」（0 章是 2026-11-25 起的
+// 合法状态），换书目的写盘又默认 ensureDir —— 结果是 mkdir 把整个书文件夹重建出来、写一份只有
+// 书目.json 的影子书，界面还报「已重建书目：0 章」。作者以为修好了，实际正文早已跟着目录一起不在了。
+test('REPAIR-01：书文件夹已被外部删掉时拒绝重建，不凭空造影子书', async () => {
+  const root = await mkTmp();
+  const bookPath = path.join(root, '被外部删掉的书');
+  await fs.mkdir(bookPath);
+  await fs.writeFile(path.join(bookPath, '001-起风.txt'), '起风正文', 'utf8');
+  await fs.writeFile(path.join(bookPath, '书目.json'), '{ 坏掉的书目', 'utf8');
+  await fs.rm(bookPath, { recursive: true, force: true });
+
+  await assert.rejects(
+    () => repair.rebuildFromFiles(bookPath),
+    (err) => {
+      assert.ok(err instanceof storage.StorageError, '要给作者看得懂的 StorageError，不是裸 ENOENT');
+      assert.equal(err.code, 'BOOK_DIR_MISSING');
+      assert.match(err.message, /文件夹已经不在了/);
+      return true;
+    },
+    '书文件夹已经不在时不许报「重建成功」'
+  );
+  // 一个字节都不写：目录不许被 mkdir 回来（否则书架会多出一本 0 章的影子书，正文却还在别处）
+  assert.equal(
+    await fs.access(bookPath).then(() => true, () => false),
+    false,
+    '书文件夹不许被重建出来'
+  );
+});
+
 test('从 .bak 恢复：坏掉的书目换成上一版，坏文件被保留', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '恢复测试');

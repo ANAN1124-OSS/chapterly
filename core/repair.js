@@ -38,6 +38,27 @@ async function archiveCorruptMeta(bookPath, { copy = false } = {}) {
   return archived;
 }
 
+// REPAIR-01（2026-11-26 审计）：书文件夹被外部删掉（同步盘移走 / 资源管理器删除 / 盘符掉线）之后，
+// 「从目录重建」不能报成功。旧实现里 listTxtFiles 把 ENOENT 吞成「0 章」（0 章是 2026-11-25 起的
+// 合法状态），换书目的写盘又默认 ensureDir —— mkdir 把整个书文件夹重建出来、写一份只有 书目.json
+// 的影子书，界面还报「已重建书目：0 章」，作者以为修好了，实际正文早已跟着目录一起不在了。
+// 换书目之前确认目标目录仍是目录：不在了就如实报错，一个字节都不写（也不 mkdir 把它造回来）。
+async function assertBookFolderPresent(bookPath) {
+  let stat = null;
+  try {
+    stat = await fs.stat(bookPath);
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') throw err;
+  }
+  if (stat && stat.isDirectory()) return;
+  throw new storage.StorageError(
+    'BOOK_DIR_MISSING',
+    stat
+      ? `「${path.basename(bookPath)}」已经不是文件夹了，没有写书目；请检查书架里这一项`
+      : `「${path.basename(bookPath)}」的文件夹已经不在了（可能被移走或删除），没有重建书目；请先在文件管理器里把它放回书架再修复`
+  );
+}
+
 // 换书目的安全顺序（1.6.0 A3 / 审计 E-07；RECOV-01 起归档改复制）：① 新书目先写成临时文件
 // （失败 → 旧文件一个字节没动，书还看得见、还能再修一次）；② 把旧书目**复制**成归档（原文件
 // 不动）；③ 临时文件原子 rename 成 书目.json。②③ 任一步失败都删掉临时文件与归档副本 —— 旧书目
@@ -52,7 +73,10 @@ async function swapMetaFile(bookPath, nextMeta, io = {}) {
   // temp → 书目.json 走 atomic.renameWithRetry（EPERM / EBUSY / EACCES / ENOTEMPTY 重试 3 次），
   // 不再用裸 fs.rename：杀毒 / 同步盘短暂占着文件时，一次失败就把修复判死（V78）。
   const rename = typeof io.rename === 'function' ? io.rename : null;
-  await writeJson(tempPath, nextMeta);
+  // REPAIR-01：写临时文件前确认书文件夹还在；ensureDir 必须关掉 —— 默认的 mkdir 会在目录
+  // 已经被外部删掉时把它重新建出来，于是「重建成功」的其实是一本 0 章的影子书。
+  await assertBookFolderPresent(bookPath);
+  await writeJson(tempPath, nextMeta, { ensureDir: false });
   let archived = null;
   try {
     // RECOV-01：先「复制」归档旧书目（不把它挪走），再原子 rename 新书目覆盖它 —— 任意时刻磁盘上
