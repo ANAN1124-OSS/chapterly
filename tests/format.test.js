@@ -34,7 +34,7 @@ test('整理：半角标点只在中文旁边转全角', () => {
   assert.equal(F('他说,"你好."', { indent: false, blankLines: 'keep' }), '他说，"你好。"');
   assert.equal(F('什么?!', { indent: false, blankLines: 'keep' }), '什么？！');
   // 数字、时间、网址、英文缩写里的半角标点一律不动
-  const numeric = '圆周率3.14，时间12:30，网址www.a.com，版本A.开端';
+  const numeric = '圆周率3.14，时间12:30，网址www.a.com，版本A.';
   assert.equal(F(numeric, { indent: false, blankLines: 'keep' }), numeric);
 });
 
@@ -229,7 +229,7 @@ test('校对用：convertPunct 可选回调只报告位置，不改变转换结�
 });
 
 test('校对用：回调不会改变清理规则（数字 / 网址 / 英文里的标点仍不报）', () => {
-  const line = '版本 3.14，时间 12:30，网址 www.a.com，缩写 A.开头。';
+  const line = '版本 3.14，时间 12:30，网址 www.a.com，缩写 A. 然后结束。';
   let count = 0;
   const res = convertPunct(line, () => {
     count += 1;
@@ -247,7 +247,7 @@ test('E16/#51：闭引号后紧挨的半角句点转全角（二次整理稳定�
   assert.equal(convertPunct('他说：「你好」.').text, '他说：「你好」。');
   assert.equal(convertPunct('他说：『你好』.').text, '他说：『你好』。');
   assert.equal(convertPunct('He said "hi".').text, 'He said "hi".', '英文直引号后面不转');
-  assert.equal(convertPunct('版本A.开端').count, 0, '英文缩写里的句点不受影响');
+  assert.equal(convertPunct('版本 A. Ready').count, 0, '英文缩写里的句点不受影响（两侧都不是中文）');
 
   const once = formatText('他说：“你好”.通', { indent: 'none', blankLines: 'keep' });
   assert.equal(once.text, '他说：“你好”。通');
@@ -293,11 +293,20 @@ test('C42/WP-26：扩展 B 汉字（代理对）参与标点 / 空格判定，BM
 // 改成数组 push + join。行为必须逐字等价：这里把 1.5.0 的旧算法原样抄一份当参照实现，
 // 用大语料（含省略号连排 / 小数 / 时间 / 网址 / 英文缩写 / 中文标点 / 代理对）做差分对账。
 // 审计修复 #51（E16）：上面那条句点规则本身改了 —— 闭引号（” ’ 」 』）后面的半角句点也转全角。
-// 参照实现同步这条新规则，差分仍用来证明「数组拼接重构」与参照实现逐字一致（不再代表 1.5.0 的旧口径）。
+// 审计 TEXT-02（TEXT-02）：句点与另外五种半角标点改成同一套邻居判定（中文标点 / 闭引号 / 下一侧汉字），
+// 参照实现同步新规则，差分仍用来证明「数组拼接重构」与参照实现逐字一致（不再代表 1.5.0 的旧口径）。
 const REF_PUNCT_MAP = { ',': '，', '.': '。', ';': '；', ':': '：', '!': '！', '?': '？' };
 const REF_HAN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
 const REF_FULL_PUNCT = new Set(['，', '。', '；', '：', '！', '？']);
 const REF_CLOSE_QUOTE = new Set(['”', '’', '」', '』']);
+// TEXT-02：参照实现同步「六种标点共用中文标点邻居 / 下一侧汉字」的新规则。
+const REF_CJK_PUNCT = new Set([
+  ...REF_FULL_PUNCT,
+  ...REF_CLOSE_QUOTE,
+  '、', '…', '—', '～',
+  '（', '）', '《', '》', '〈', '〉', '【', '】',
+  '「', '」', '『', '』', '“', '”', '‘', '’'
+]);
 const REF_PUNCT_ALPHABET = [
   '中', '文', '字', '号', '，', '。', '！', '？', '；', '：', '、', '「', '」', '…', '—', '《', '》',
   ',', '.', ';', ':', '!', '?', ' ', '\n', 'A', 'z', '0', '9', '-', '"', '“', '”', '\u{1F600}'
@@ -320,24 +329,12 @@ function referenceConvertPunct(text, onConvert) {
       out += ch;
       continue;
     }
-    if (ch === '.') {
-      if (!(REF_HAN_RE.test(prev) || REF_FULL_PUNCT.has(prev) || REF_CLOSE_QUOTE.has(prev))) {
-        out += ch;
-        continue;
-      }
-      out += full;
-      count += 1;
-      if (report) report(i, ch, full);
-      continue;
-    }
-    // CIO-B01：引用实现同步「闭引号后 / 前的 ! ? , ; : 也转全角」——与 core/format.js 一致。
+    // TEXT-02：六种标点共用同一套「中文语境」邻居判定（参照实现同步，与 core/format.js 一致）。
     const nearHan =
       REF_HAN_RE.test(prev) ||
       REF_HAN_RE.test(next) ||
-      REF_FULL_PUNCT.has(prev) ||
-      REF_FULL_PUNCT.has(next) ||
-      REF_CLOSE_QUOTE.has(prev) ||
-      REF_CLOSE_QUOTE.has(next);
+      REF_CJK_PUNCT.has(prev) ||
+      REF_CJK_PUNCT.has(next);
     if (!nearHan) {
       out += ch;
       continue;
@@ -403,4 +400,27 @@ test('P-07 结构闸门：convertPunct 用数组 push + join，不再逐字 out 
   assert.equal(/out\s*\+=\s*ch/.test(body), false, 'convertPunct 不许再逐字 out += 造串（长段落是 O(n²) 中间串）');
   assert.equal(/out\s*=\s*out\s*\+/.test(body), false, 'convertPunct 不许用 out = out + … 拼串');
   assert.ok(body.includes('.join('), 'convertPunct 应该最后把数组 join 成一个字符串');
+});
+
+// TEXT-02（低）：句点以前只认 prev、中文标点邻居也只有 FULL_PUNCT 六个 ——
+// 「他说…….」「他走了——.」「（完）.」既不转也不报，与另外五种半角标点（prev/next 任一
+// 中文侧就转）口径不一致。这里钉六种标点共用同一套邻居判定：中文标点 / 闭引号 / 下一侧
+// 是汉字都算；数字 / 时间 / 网址 / 英文缩写（两侧都不是中文）仍不动。
+test('TEXT-02：省略号 / 破折号 / 全角括号后的半角句点转全角，六种标点同一套邻居判定', () => {
+  assert.deepEqual(convertPunct('他说…….'), { text: '他说……。', count: 1 });
+  assert.deepEqual(convertPunct('他走了——.'), { text: '他走了——。', count: 1 });
+  assert.equal(convertPunct('（完）.').text, '（完）。');
+  assert.equal(convertPunct('《序》.').text, '《序》。');
+  assert.equal(convertPunct('“完了”）.').text, '“完了”）。');
+  // 下一侧是中文也转（与另外五种同口径）
+  assert.equal(convertPunct('OK.我们走吧').text, 'OK。我们走吧');
+  assert.equal(convertPunct('.他说').text, '。他说');
+  // 两侧都不是中文的仍不动
+  assert.equal(convertPunct('3.14').count, 0);
+  assert.equal(convertPunct('www.a.com').count, 0);
+  assert.equal(convertPunct('Version A. Ready').count, 0);
+  // 校对回调与转换共用同一份判定：省略号后的句点也要报出来
+  const reported = [];
+  convertPunct('他说…….', (index, from, to) => reported.push([index, from, to]));
+  assert.deepEqual(reported, [[4, '.', '。']]);
 });

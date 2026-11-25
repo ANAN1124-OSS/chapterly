@@ -17,6 +17,16 @@ const FULL_PUNCT = new Set(['，', '。', '；', '：', '！', '？']);
 // 也会被当成「闭引号后的句点」转全角（`‘hi’.`→`‘hi’。`、`dogs’.`→`dogs’。`；撇号夹在词中的
 // `don’t.` 不受影响）。属审计指定字符集的固有边界，不做引号配对，口径同 README「已知限制」。
 const CLOSE_QUOTE = new Set(['”', '’', '」', '』']);
+
+// TEXT-02（低）：中文标点邻居要比 FULL_PUNCT 全 —— 句号紧跟在这些标点之后同样是「中文语境」。
+// 审计实测「他说…….」「他走了——.」「（完）.」旧实现既不转也不报；六种半角标点从此共用这一份邻居表。
+const CJK_PUNCT_NEIGHBOR = new Set([
+  ...FULL_PUNCT,
+  ...CLOSE_QUOTE,
+  '、', '…', '—', '～',
+  '（', '）', '《', '》', '〈', '〉', '【', '】',
+  '「', '」', '『', '』', '“', '”', '‘', '’'
+]);
 const PUNCT_MAP = { ',': '，', '.': '。', ';': '；', ':': '：', '!': '！', '?': '？' };
 const BLANK_MODES = ['keep', 'single', 'singleIndent', 'none'];
 const INDENT_MODES = ['none', '0', '2'];
@@ -108,29 +118,15 @@ function convertPunct(text, onConvert, rawOptions) {
       prev = ch;
       continue;
     }
-    // 句点单独收紧：只认「中文 + .」（或全角标点 / 闭引号之后），避免把 A. / 3.14 / www.a.com 里的点转成句号
-    if (ch === '.') {
-      if (!(HAN_RE.test(prev) || FULL_PUNCT.has(prev) || CLOSE_QUOTE.has(prev))) {
-        if (parts) parts.push(ch);
-        prev = ch;
-        continue;
-      }
-      if (parts) parts.push(full);
-      prev = full;
-      count += 1;
-      if (report) report(i, ch, full);
-      continue;
-    }
-    // CIO-B01（2026-11-21）：闭引号后紧随的 ! ? , ; : 与句点同一口径 —— 旧实现只有句点分支认
-    // CLOSE_QUOTE，`他说：“你好”！` 的 `！` 永远漏转（同位置 `.` 却会转）。闭引号两侧都放宽，
-    // 覆盖句尾（`“完了”？`）与行首（`！“你好”`）两种排布。
+    // TEXT-02（低）：六种半角标点共用同一套「中文语境」判定 —— 任意一侧是汉字 / 中文标点 /
+    // 闭引号就转。句点以前只认 prev、邻居表只有 FULL_PUNCT 六个，于是「他说…….」「他走了——.」
+    // 「（完）.」既不转也不报，与另外五种口径不一致；A. / 3.14 / www.a.com 这类两侧都不是
+    // 中文的仍然不动（排除靠邻居，不靠写死的英文白名单）。
     const nearHan =
       HAN_RE.test(prev) ||
       HAN_RE.test(next) ||
-      FULL_PUNCT.has(prev) ||
-      FULL_PUNCT.has(next) ||
-      CLOSE_QUOTE.has(prev) ||
-      CLOSE_QUOTE.has(next);
+      CJK_PUNCT_NEIGHBOR.has(prev) ||
+      CJK_PUNCT_NEIGHBOR.has(next);
     if (!nearHan) {
       if (parts) parts.push(ch);
       prev = ch;

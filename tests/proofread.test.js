@@ -60,7 +60,7 @@ test('校对：半角标点残留只报告、给出原字符和建议字符', ()
 });
 
 test('校对：数字 / 时间 / 网址 / 英文缩写里的半角标点不误报', () => {
-  const text = '版本 3.14，时间 12:30，网址 www.a.com，缩写 A.开头，价格 1,000 元。';
+  const text = '版本 3.14，时间 12:30，网址 www.a.com，缩写 A. 然后结束，价格 1,000 元。';
   const result = proofread.proofreadText(text);
   assert.equal(only(result, 'halfwidth-punct').length, 0);
 });
