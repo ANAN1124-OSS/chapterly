@@ -21,6 +21,13 @@ const HARNESS_SOURCE = fs.readFileSync(path.join(ROOT, 'scripts', 'e2e', 'harnes
 const GROUPS_DIR = path.join(ROOT, 'scripts', 'e2e', 'groups');
 const INDEX_SOURCE = fs.readFileSync(path.join(GROUPS_DIR, 'index.js'), 'utf8');
 
+// TEST-03（中，2026-11-26 审计）：断言名总量门槛原来只有 1000，而实际已有 1765 条唯一断言名
+// （84 个组文件，2026-11-26 实测）——批量删 / 改名约 700 条仍然绿。门槛改为「实测基线 × 95%」的
+// 固定值：不能按当前源码现算，否则删掉一批断言后门槛跟着降，等于永远绿。基线写死在这里，
+// 只有真要让断言名少掉 5% 以上时才需要连同基线一起更新（diff 里看得见）。
+const GROUP_CHECK_BASELINE = Object.freeze({ measuredAt: '2026-11-26', files: 84, uniqueNames: 1765 });
+const MIN_GROUP_CHECK_NAMES = 1676; // = Math.floor(1765 × 0.95)：删 100 条（→1665）就破线
+
 // T7（三审·低）：两个机器抽取器，取代「手抄注释串 / 手抄断言名」的静态锚点。
 //   · plannedGroupOrder：从场景源码抽出**实际会跑哪些组、按什么顺序**。
 //     runGroup([n,...]) 直接展开；runGroup(e2eGroups.idsFrom(n)) 交给注册表展开（语义只一处）。
@@ -427,10 +434,32 @@ test('静态闸门：搬走的断言只留在 groups 下（机器清单：场景
     assert.ok((source.match(/\bcheck(?:Visual)?\(/g) || []).length >= 1, `${name} 里一条 check(...) / checkVisual(...) 都没有（组被搬空了？）`);
     for (const item of checkLiterals(source)) groupChecks.add(item);
   }
-  // 兜底：断言名合计低于 1000 说明有一批组被删空（2026-11-22 实测 1738 条字面断言名）。
-  assert.ok(groupChecks.size >= 1000, `groups 下的断言名合计 ${groupChecks.size} 条，低于 1000 说明有一批被删了`);
+  // 兜底：断言名合计低于门槛说明有一批组被删空。门槛 = 2026-11-26 实测基线（1765 条，84 个组文件）
+  // 的 95%：只删 100 条就破线，不再允许批量删 / 改名后静默通过（TEST-03）。
+  assert.ok(
+    groupChecks.size >= MIN_GROUP_CHECK_NAMES,
+    `groups 下的断言名合计 ${groupChecks.size} 条，低于门槛 ${MIN_GROUP_CHECK_NAMES}（基线 ${GROUP_CHECK_BASELINE.uniqueNames} × 95%，${GROUP_CHECK_BASELINE.measuredAt} 实测）说明有一批被删了`
+  );
   const backflow = [...groupChecks].filter((name) => SCENARIO_SOURCE.includes(name));
   assert.deepEqual(backflow, [], `场景里还留着这些断言：${backflow.join(' / ')}`);
+});
+
+// TEST-03 锚点：门槛必须跟着固定基线走（实测 × 95%），不能停在旧水位 1000。
+// 修前红：1000 < floor(1765 × 95%) = 1676；修后绿。基线更新时这条会强制把阈值一起抬上去。
+test('TEST-03：断言名总量门槛 = 实测基线 95%，停在 1000 挡不住批量删除（政策类）', () => {
+  const floor95 = Math.floor(GROUP_CHECK_BASELINE.uniqueNames * 0.95);
+  assert.equal(
+    MIN_GROUP_CHECK_NAMES >= floor95,
+    true,
+    `门槛 ${MIN_GROUP_CHECK_NAMES} 必须 ≥ 基线 ${GROUP_CHECK_BASELINE.uniqueNames} 的 95%（${floor95}）`
+  );
+  // 审计验证口径：临时删掉某组 100 条断言名（1765 → 1665），修后必须破线。
+  assert.ok(
+    GROUP_CHECK_BASELINE.uniqueNames - 100 < MIN_GROUP_CHECK_NAMES,
+    `删 100 条（${GROUP_CHECK_BASELINE.uniqueNames - 100}）仍 ≥ 门槛 ${MIN_GROUP_CHECK_NAMES}：门槛没起作用`
+  );
+  // 门槛不能高于基线本身（否则永远红、只能靠删断言来「修」）。
+  assert.ok(MIN_GROUP_CHECK_NAMES <= GROUP_CHECK_BASELINE.uniqueNames, '门槛不许高于实测基线');
 });
 
 test('静态闸门：组索引能单独 require（不依赖 Electron），组号唯一有序，runGroups 按参数顺序跑', async () => {
