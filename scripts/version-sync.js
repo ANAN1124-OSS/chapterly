@@ -77,6 +77,14 @@ const README_COUNT_RULES = {
   }
 };
 
+// DOC-01（低）：README 只允许一处 E2E 总数表述 —— 总数是实测锚点，--write 只同步上面那一条
+// 句式；其它写法（旧 README 的「跑全量 1933 项」）不会被同步，留着必然与验收清单漂移。
+// 这里把「全量 + 数字 + 项」这类第二句式统一收口成 0 处（唯一锚点句式不含这段临近关系）。
+const README_E2E_TOTAL_RE = /全量[^\r\n\d]{0,6}\d+\s*项/g;
+function extraE2eTotals(text) {
+  return text.match(README_E2E_TOTAL_RE) || [];
+}
+
 const README_DATE_RULE = {
   id: '发布日期',
   re: /已于 \d{4}-\d{2}-\d{2} 发布/g,
@@ -196,6 +204,15 @@ function syncReadme(text, options = {}) {
     touched = true;
   }
   if (!touched) throw new Error('README.md：没有要同步的内容（至少给 version / 计数 / date 之一）');
+  // DOC-01（低）：写盘前先确认没有第二个 E2E 总数说法 —— 否则这次 --write 成功、下一次 --check 红，
+  // 数字还停在旧实测值。
+  const extras = extraE2eTotals(out);
+  if (extras.length) {
+    throw new Error(
+      `README.md 只允许一处 E2E 总数表述（「真实启动 Electron 走 N 项主流程」），还找到 ${extras.length} 处：` +
+        `${extras.join('、')}；请删掉其它总数说法（DOC-01）`
+    );
+  }
   return out;
 }
 
@@ -471,6 +488,13 @@ function checkDocs(options) {
     }
   }
 
+  // DOC-01（低）：README 只允许一处 E2E 总数表述（第二句式不会被 --write 同步，必然漂移）。
+  const extraTotals = extraE2eTotals(readme);
+  if (extraTotals.length) {
+    problems.push(
+      `README.md 只允许一处 E2E 总数表述（「真实启动 Electron 走 N 项主流程」），还找到：${extraTotals.join('、')}`
+    );
+  }
   for (const problem of checkIndexHtml(indexHtml)) problems.push(problem);
   // 审计修复 #26（M1 / M5 / ▲V309）：结构描述也进门禁 —— 保证清单代码锚点 + E2E 组数 + fuse 说明。
   const root = options.root || ROOT;

@@ -242,11 +242,11 @@ pnpm start          # 启动应用
 ```bash
 pnpm test            # 单测（node:test，3628 项）
 pnpm run e2e         # 全量 E2E：真实启动 Electron 走 1946 项主流程
-pnpm lint            # eslint 门禁（0 ERROR）
+pnpm lint            # 静态闸门 lint-gate（0 ERROR）；eslint 单独跑 npx eslint .
 ```
 
-- E2E 场景与 84 个组文件共用一份 harness；**84 个组文件（00–83）** 按组号派发。PR 改动 `renderer/` / `core/` / `ipc/` / 主进程时会跑受影响的组（`scripts/e2e-scope.js`）。
-- **CI 上的 E2E 会跳过视觉断言**（2.1.0 起）：GitHub 托管 runner 没有交互式桌面会话，Chromium 对不可见窗口节流合成 / 动画 / 布局，动效 / 主题 / 几何测量这类断言（源码里 44 处 `checkVisual`，运行时按用例展开 50 项；跳过面由 `scripts/e2e/visual-assertions.js` 的静态清单约束，`scripts/wiring-check.js` 逐项核对）在那边必然偏，所以 CI 设 `E2E_SKIP_VISUAL=1` 跳过它们；功能断言与供应链闸门照常阻塞。**本地与发版前的 `pnpm run e2e` 不带该开关，跑全量 1933 项。**
+- E2E 场景与 84 个组文件共用一份 harness；**84 个组文件（00–83）** 按组号派发。PR / push 到 main 改动 `renderer/` / `core/` / `ipc/` / 主进程时，按 `scripts/e2e-scope.js` 的路径清单判断是否触发，触发就**整跑一次全量 E2E**（`.github/workflows/e2e-pr.yml`，不按组筛选）。
+- **CI 上的 E2E 会跳过视觉断言**（2.1.0 起）：GitHub 托管 runner 没有交互式桌面会话，Chromium 对不可见窗口节流合成 / 动画 / 布局，动效 / 主题 / 几何测量这类断言（源码里 44 处 `checkVisual`，运行时按用例展开 50 项；跳过面由 `scripts/e2e/visual-assertions.js` 的静态清单约束，`scripts/wiring-check.js` 逐项核对）在那边必然偏，所以 CI 设 `E2E_SKIP_VISUAL=1` 跳过它们；功能断言与供应链闸门照常阻塞。**本地与发版前的 `pnpm run e2e` 不带该开关，跑全量（计数见上面的命令块，含视觉断言）。**
 - 版本 / 计数锚点：`node scripts/version-sync.js --check`（只核对 README 与验收清单互相对得上；带上 `--unit <N> --e2e <M>` 才与实测值强核对；发版用 `--write --unit <N> --e2e <M>` 同步）。
 - 打包、构建供应链、静态闸门策略与验收纪律见 [docs/维护与自检.md](docs/维护与自检.md)；完整目录与模块地图见 [项目结构](docs/项目结构.md)。
 - 历史分册（版本沿革、防丢稿逐轮记录、开发自检细节）已归档到内部文档：`内部文档/归档-2026-11-15/沿革.md`、`内部文档/归档-2026-11-15/README-开发自检细节.md`，不进公开仓库。

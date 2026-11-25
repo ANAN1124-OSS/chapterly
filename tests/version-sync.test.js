@@ -286,3 +286,22 @@ test('版本同步 CLI：--check 在干净仓库上退出 0', () => {
   assert.equal(res.status, 0, `--check 应退出 0：stdout=${res.stdout}\nstderr=${res.stderr}`);
   assert.match(res.stdout, /版本单一事实来源校验通过/);
 });
+// DOC-01（低）：README 只允许一处 E2E 总数表述。E2E 总数是实测锚点，只能由 --write 同步那一处；
+// 第二个句式（旧 README 的「跑全量 1933 项」）不会被同步，留着必然与验收清单漂移 —— 出现即报错。
+test('DOC-01：README 只允许一处 E2E 总数表述，第二个句式出现即报错', () => {
+  const second = readmeSample() + CRLF + '- 本地与发版前的 `pnpm run e2e` 不带该开关，跑全量 1933 项。';
+  assert.throws(
+    () => versionSync.syncReadme(second, { unitCount: 2500, e2eCount: 1881 }),
+    /只允许一处 E2E 总数表述/,
+    '--write 遇到第二个总数句式必须拒绝，不能留下不同步的数字'
+  );
+  const problems = versionSync.checkDocs({
+    readme: second,
+    checklist: checklistSample(),
+    indexHtml: '',
+    version: '1.7.2'
+  });
+  assert.match(problems.join('\n'), /只允许一处 E2E 总数表述/, '--check 同样要报出来');
+  // 干净样例（只有唯一锚点句式）不误报
+  assert.doesNotThrow(() => versionSync.syncReadme(readmeSample(), { unitCount: 2500, e2eCount: 1881 }));
+});
