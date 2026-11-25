@@ -428,6 +428,11 @@
       toast('这一章已经不存在了', 'warn');
       return;
     }
+    // RNDP-03：进入跳转时先快照查询 / 大小写。切章会在 loadChapterAt 末尾调
+    // restoreFindBookmarkForCurrentChapter —— 目标章有查找书签时，那里会把书签的词 / 大小写
+    // 写回查找框；等 await 回来再读就会拿书签词去 findAll（高亮 / 计数 / 提示与作者点结果时
+    // 的查询对不上）。这次落地只认发起跳转时的条件。
+    const { query, caseSensitive } = readFindOptions();
     // T-22：从结果清单跳转同样是「一次查找落地」，发起前取号。在飞的 await 期间作者可能 Ctrl+F
     // 换词回车（runFind 会正常落地新会话）；本路径的旧回包后到不许把新会话盖掉 —— 修前它不推进
     // findSeq，isCurrent 拦不住，高亮 / 摘要会被旧查询顶回。
@@ -438,11 +443,13 @@
       if (!switched || switched.ok === false) return;
       // 切章期间已经发起了新的查找：这次跳转的后续落地（高亮）让位给新查找。
       if (!findSeq.isCurrent(token)) return;
+      // RNDP-03：书签恢复改写过的查找框 / 大小写，落地时改回发起时的条件 —— 框、高亮、计数、
+      // 状态栏由此说的是同一件事。作者在切章期间真的提交了新查询的话，上面的 isCurrent 已经让位。
+      if ($('find-query').value !== query) $('find-query').value = query;
+      if ($('find-case').checked !== caseSensitive) $('find-case').checked = caseSensitive;
     }
     // 跳过来以后把这一章的命中全部高亮（v0.8-11，提案 N11）：清单是全书搜出来的，
     // 这里按「编辑区里的最新正文」重新数一遍，未保存的修改也算。
-    const query = $('find-query').value;
-    const caseSensitive = $('find-case').checked;
     if (query.trim()) {
       // T-22：与 runFind 同款三重复核（令牌 + 书 / 章身份 + 正文快照）。findAll 在飞期间换了章 /
       // 换了书或在正文里改了字，旧命中下标就不能再画到眼前的编辑区上；作废时不退回首条命中位置

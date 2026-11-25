@@ -191,6 +191,9 @@ function build(options = {}) {
         calls.switchChapter.push(index);
         if (options.switchCancel) return { ok: false, canceled: true };
         state.index = index;
+        // RNDP-03：切章落地前，loadChapterAt 末尾会调 restoreFindBookmarkForCurrentChapter
+        // （命中书签时把书签词 / 大小写写回查找框）。假 switchChapter 用这个钩子复现那一幕。
+        if (options.switchChapterHook) options.switchChapterHook(state, dom);
         return { ok: true };
       },
       async loadChapterAt(index) { calls.loadChapterAt.push(index); },
@@ -670,6 +673,40 @@ test('T-22 静态清单：jumpToFindResult 发起前取号，落地核对令牌 
   assert.match(body, /findSeq\.isCurrent\(token\)/, '令牌核对');
   assert.match(body, /staleGuard\.sameChapterIdentity\(expectedChapter, staleGuard\.chapterIdentity\(state\)\)/, '章身份核对');
   assert.match(body, /editorEl\.value !== snapshot/, '正文快照核对');
+});
+
+// RNDP-03：从结果清单跳到另一章时，switchChapter → loadChapterAt 末尾会调
+// restoreFindBookmarkForCurrentChapter；目标章有查找书签时，那里会把书签词 / 大小写写回查找框。
+// 旧实现在 await 之后才读查找框，于是拿书签词去 findAll：高亮 / 计数 / 提示全变成书签词，
+// 与作者点结果时的查询不是一回事。修法：进入跳转时先快照查询与大小写，落地用快照（并把框改回快照）。
+test('RNDP-03：切章途中书签恢复写回书签词，跳转仍按发起时的查询高亮', async () => {
+  const ctx = build({
+    query: '张三',
+    index: 0,
+    text: '书签词说书签词笑了',
+    findAll: (text, query) => ({
+      count: query === '张三' ? 1 : 1,
+      matches: [{ index: 0, length: query.length }]
+    }),
+    switchChapterHook: (state, dom) => {
+      // 目标章命中书签「书签词」：restoreFindBookmarkForCurrentChapter 改写查找框与大小写
+      dom.map.get('find-query').value = '书签词';
+      dom.map.get('find-case').checked = true;
+    }
+  });
+  await ctx.ui.jumpToFindResult({
+    chapterId: 'c2',
+    name: '第二章',
+    matches: [{ index: 0, length: 3, before: '', match: '书签词', after: '说' }]
+  });
+  const findAll = ctx.calls.api.find((item) => item[0] === 'findAll');
+  assert.ok(findAll, '跳转要按最新正文做一次 findAll');
+  assert.equal(findAll[2], '张三', '落地只认发起跳转时的查询，不认切章途中写进查找框的书签词');
+  assert.equal(findAll[3].caseSensitive, false, '大小写也按发起跳转时的选项，不跟书签');
+  assert.equal(ctx.state.find.query, '张三');
+  assert.equal(ctx.state.find.fromBookmark, false, '这是查找跳转，不是书签会话');
+  assert.equal(ctx.dom.map.get('find-query').value, '张三', '查找框改回发起时的查询，框与高亮才是同一件事');
+  assert.match(ctx.calls.toast[ctx.calls.toast.length - 1][0], /^「张三」在本章 1 处，已高亮/);
 });
 
 // ---------- 查找 / 替换执行 ----------
