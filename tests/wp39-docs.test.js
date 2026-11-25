@@ -249,3 +249,32 @@ test('R24 M-N3：维护者内容迁出 README（打包 / 供应链 / 静态闸�
   assert.ok(readme.split('\n').length < 620, `README 行数要降到 620 以内（现在 ${readme.split('\n').length}）`);
   assert.match(readme, /公开文档[^\n]*README\.md[^\n]*LICENSE[^\n]*docs\/[^\n]*验收清单/, '公开文档清单要包含 docs/ 与 docs/ 下的验收清单');
 });
+
+// IO-04（低）：文档口径跟实际行为对齐 —— ① T-10 之后「按原文章节导入」写盘也是 CRLF
+// （core/importer.js 两处都过 chapters.toDiskNewlines）；② WP7 之后无 BOM UTF-16 只在
+// 16 位启发式命中（≥98% 码元落在正文码位）时接受，不再一律当「不是纯文本」拒绝。
+test('IO-04：导入写盘换行与无 BOM UTF-16 口径跟实际行为一致', () => {
+  const safety = read('docs/数据安全.md');
+  assert.equal(
+    safety.includes('拆出来的章文件从导入那一刻起是 LF 的 UTF-8'),
+    false,
+    'T-10 后「按原文章节导入」写盘统一 CRLF，不许再写「导入那一刻是 LF、第一次保存后才是 CRLF」'
+  );
+  assert.match(
+    safety,
+    /按原文章节导入[^\r\n]*写盘[^\r\n]*CRLF/,
+    '要如实写「按原文章节导入」写盘为 CRLF（与正常保存 / 自动分章导入同一口径）'
+  );
+
+  const limits = read('docs/已知限制.md');
+  assert.equal(
+    limits.includes('没有 BOM 的 UTF-16 会被当成「不是纯文本」拒绝'),
+    false,
+    'WP7 起无 BOM UTF-16 命中启发式即可导入，不许再写「一律拒绝」'
+  );
+  assert.match(
+    limits,
+    /没有 BOM 的 UTF-16[^\r\n]{0,80}启发式[^\r\n]{0,80}接受/,
+    '要如实写「无 BOM UTF-16 只在启发式命中时接受」'
+  );
+});
