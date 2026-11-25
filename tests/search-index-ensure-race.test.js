@@ -95,3 +95,87 @@ test('SEARCH-01：建索引途中被保存标脏的书不能被清脏（60 秒�
   );
   assert.deepEqual(store.dirtyList(), [], '下一趟校验把脏标记消费掉');
 });
+
+// SEARCH-02：done 进度原来只在 run.changed / rootChanged 时发。搜索侧 T-06 超时先回 building 快照，
+// 渲染层靠 notify-events-ui.js 的 done 分支把 building 放下、并按原查询自动重搜 —— 后台校验若没有变化，
+// 界面就永远收不到结束信号（卡在「正在建索引」，也不会自动更新结果）。
+// 修法：doEnsure 每一条出口都无条件 report done（含书架根读不了时的提前返回）。
+test('SEARCH-02：ensure 的每一条出口都要发 done（无变化的后台校验 / 书架根读不了）', async () => {
+  // 场景 A：搜索侧超时（校验卡在书架根签名探测上）→ 放行后后台校验「没有变化」→ 仍要发 done。
+  const base = await mkTmp();
+  const { userData, booksRoot } = await makeWorld(base);
+  await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
+  const realStat = fs.stat;
+  let armed = false;
+  let releaseSignature;
+  const signatureGate = new Promise((resolve) => {
+    releaseSignature = resolve;
+  });
+  let signatureEntered;
+  const signatureReached = new Promise((resolve) => {
+    signatureEntered = resolve;
+  });
+  const progress = [];
+  const store = search.createSearchStore({
+    userDataDir: userData,
+    validateIntervalMs: 0,
+    searchEnsureTimeoutMs: 40,
+    stat: async (target) => {
+      // 只按住书架根签名探测这一次 stat（模拟 SMB / 网络盘超时，与 T-06 用例同一手法）
+      if (armed && String(target) === booksRoot) {
+        signatureEntered();
+        await signatureGate;
+      }
+      return realStat(target);
+    }
+  });
+  await store.ensure({ booksRoot }); // 先把索引建好：这一趟有变化，不作为断言对象
+  armed = true;
+  const pending = store.search({
+    booksRoot,
+    query: '青柠色',
+    onEnsureProgress: (info) => progress.push(info)
+  });
+  const stalled = await settleWithin(signatureReached, 5000);
+  const quick = await pending;
+  releaseSignature();
+  const idle = await settleWithin(
+    (async () => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (!(await store.status()).building) return true;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      }
+      return false;
+    })(),
+    6000
+  );
+
+  assert.equal(stalled, true, '前提：校验已经卡在书架根签名探测上（否则 40ms 超时来不及触发）');
+  assert.equal(quick.index.building, true, '前提：搜索先回「正在建索引」快照（T-06 超时）');
+  assert.equal(idle, true, '后台校验要在用例预算内结束');
+  assert.equal(
+    progress.some((info) => info && info.phase === 'done'),
+    true,
+    '没有变化的后台校验结束也要发 done —— 否则界面永远停在 building、不会按原查询自动重搜'
+  );
+  assert.equal((await store.status()).building, false, 'done 之后 building 要落下');
+
+  // 场景 B：书架根读不了时 ensure 提前返回 —— 超时快照之后同样只能靠 done 收尾。
+  const baseB = await mkTmp();
+  const worldB = await makeWorld(baseB);
+  const missingRoot = path.join(baseB, '不存在的书架');
+  const progressB = [];
+  const storeB = search.createSearchStore({ userDataDir: worldB.userData, validateIntervalMs: 0 });
+  const missing = await storeB.search({
+    booksRoot: missingRoot,
+    query: '青柠色',
+    onEnsureProgress: (info) => progressB.push(info)
+  });
+  assert.equal(missing.error, 'ENOENT', '前提：书架根读不了要如实透传错误码');
+  assert.equal(
+    progressB.some((info) => info && info.phase === 'done'),
+    true,
+    '书架根读不了也要发 done（这是超时快照之后唯一的结束信号，界面不会永远停在 building）'
+  );
+});

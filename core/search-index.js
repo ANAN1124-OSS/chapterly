@@ -1111,6 +1111,23 @@ function createSearchStore(options = {}) {
     const root = normalizePath(booksRoot);
     const rootChanged = index.root !== root;
 
+    // SEARCH-02：进度上报函数提前到这里 —— 每一条出口（含「书架根读不了」的提前返回）都要能发 done。
+    // 渲染层（renderer/notify-events-ui.js）只把 done 当作「这一趟校验结束了」的信号：搜索侧 T-06
+    // 超时 / P1 首建短路先回 building 快照后，靠 done 把 building 放下并按原查询自动重搜。
+    let progressAt = 0;
+    const report = (info, forceReport) => {
+      const now = Date.now();
+      if (!onProgress) return;
+      if (!forceReport && now - progressAt < PROGRESS_INTERVAL_MS) return;
+      progressAt = now;
+      lastProgress = { ...info, at: now };
+      try {
+        onProgress(lastProgress);
+      } catch {
+        /* 进度回调不能影响建索引 */
+      }
+    };
+
     let folders;
     try {
       folders = await listBookFolders(booksRoot);
@@ -1121,6 +1138,18 @@ function createSearchStore(options = {}) {
       rootProblem = (err && err.code) || 'ROOT_UNREADABLE';
       const result = status();
       result.error = rootProblem;
+      // SEARCH-02：读不了根也是「这一趟结束了」，必须发 done —— 否则超时快照之后界面永远停在 building。
+      report(
+        {
+          phase: 'done',
+          done: 0,
+          total: 0,
+          books: result.books,
+          chapters: result.chapters,
+          error: rootProblem
+        },
+        true
+      );
       return result;
     }
     if (rootChanged) {
@@ -1149,19 +1178,6 @@ function createSearchStore(options = {}) {
       changed: rootChanged,
       books: folders.length,
       chapters: 0
-    };
-    let progressAt = 0;
-    const report = (info, forceReport) => {
-      const now = Date.now();
-      if (!onProgress) return;
-      if (!forceReport && now - progressAt < PROGRESS_INTERVAL_MS) return;
-      progressAt = now;
-      lastProgress = { ...info, at: now };
-      try {
-        onProgress(lastProgress);
-      } catch {
-        /* 进度回调不能影响建索引 */
-      }
     };
 
     let doneBooks = 0;
@@ -1291,20 +1307,21 @@ function createSearchStore(options = {}) {
     if (run.changed || rootChanged) await saveThrough(); // 审计修复 #46（E21）：排进 flush 的串行链
     lastRun = run;
     const result = status();
-    if (run.changed || rootChanged) {
-      report(
-        {
-          phase: 'done',
-          done: folders.length,
-          total: folders.length,
-          books: run.books,
-          chapters: run.chapters,
-          rebuilt: run.rebuiltBooks,
-          bytes: indexBytes
-        },
-        true
-      );
-    }
+    // SEARCH-02：不管这一趟有没有变化，结束都发 done。搜索侧 T-06 超时 / P1 首建短路先回 building
+    // 快照，渲染层只认 done 这一个结束信号：以前只在 changed 时发，无变化的后台校验永远收不到，
+    // 界面卡在「正在建索引」也不会按原查询自动重搜。
+    report(
+      {
+        phase: 'done',
+        done: folders.length,
+        total: folders.length,
+        books: run.books,
+        chapters: run.chapters,
+        rebuilt: run.rebuiltBooks,
+        bytes: indexBytes
+      },
+      true
+    );
     return result;
   }
 
