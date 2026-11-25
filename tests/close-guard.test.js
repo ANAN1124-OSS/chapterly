@@ -56,6 +56,23 @@ test('静态闸门：主进程用 session.dirty + 最近保存回执交叉判定
   assert.match(closeSrc, /e2eLastCloseReady = okToClose;/);
 });
 
+// ---------- CLOSE-02（高）：崩溃自动重载后主进程脏状态必须归零 ----------
+// 现场：渲染进程崩溃 / 无响应 → 主进程自动 reload → 新文档停在书架，init 不会再上报 app:dirty
+//（reportedDirty 初值 null，只有用户动作才会 updateStatus）。主进程保留 reload 前的 session.dirty=true，
+// 关窗时渲染层回 closeReady(true)，主进程却按 CLOSE_DIRTY 静默拦下——窗口再也关不掉，只能强杀进程。
+// 修法：会话脏状态跟着「当前文档」走——文档加载完成（did-finish-load：首次加载 / 崩溃重载 / 无响应重载
+// 都会走）时把 dirty / dirtyAt 归零，新文档从书架起步，本来就没有未保存正文。
+// 真实行为由 E2E 第 83 组末尾「关闭回归（CLOSE-02）」覆盖（崩溃 → 自动重载 → 断言主进程放行关窗），
+// 这里只钉接线：不许把重置漏掉 / 只改 dirty 不改 dirtyAt / 只修主窗口。
+test('CLOSE-02：文档重新加载完成后重置主进程会话脏状态（否则崩溃重载后关窗被 CLOSE_DIRTY 永久拦下）', () => {
+  const reloadHandler = extractBlock(MAIN, "webContents.on('did-finish-load'");
+  assert.match(reloadHandler, /session\.dirty = false;/, '重载后要清脏状态');
+  assert.match(reloadHandler, /session\.dirtyAt = 0;/, '重载后要清「这次变脏」的时间（否则旧的 dirtyAt 仍参与关窗判定）');
+  // 每窗口一份会话：监听器必须按窗口注册在 createWindow 里，不能写全局变量 / 只修主窗口
+  const createWindowSrc = extractFunctionSource(MAIN, 'createWindow');
+  assert.ok(createWindowSrc.includes("webContents.on('did-finish-load'"), '监听器要在 createWindow 里按窗口注册');
+});
+
 test('静态闸门 + 时序：同毫秒的保存回执不放行关窗（N3：宁可多拦一次）', () => {
   // T7：不再从源码抓比较运算符复算（那是实现形状）。语义直接用纯函数算三种时序——
   // 「必须严格晚于」这条纪律由这里的 > 边界钉住，规则本体仍然只有 core/close-guard.js 一份。

@@ -2784,6 +2784,17 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
       browserWin.webContents.toggleDevTools();
     }
   });
+  // CLOSE-02（高）：会话脏状态跟着「当前文档」走。渲染进程崩溃 / 无响应时主进程会自动 reload，
+  // 新文档从书架起步，init 不会再上报 app:dirty（reportedDirty 初值 null，只有用户动作才会
+  // updateStatus）——reload 前上报的 session.dirty=true 会一直留着；关窗时渲染层回 closeReady(true)，
+  // 主进程却按 CLOSE_DIRTY 静默拦下，窗口再也关不掉（作者只能强杀进程）。
+  // 文档加载完成（首次加载 / 崩溃重载 / 无响应重载都会走）就把脏状态归零：旧文档内存里那点未保存
+  // 内容此刻已经不存在了；崩溃草稿另有恢复入口，恢复会走真实输入链重新标脏并重新上报。
+  browserWin.webContents.on('did-finish-load', () => {
+    session.dirty = false;
+    session.dirtyAt = 0;
+  });
+
   browserWin.on('closed', () => {
     // B3：窗口关了，这扇窗口最后切到的章还可能在防抖里，先落盘（失败了也不影响关窗）
     void lastOpenWrites.flushAll().catch(() => {});

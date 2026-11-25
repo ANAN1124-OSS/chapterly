@@ -15,7 +15,11 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 module.exports = async function group83CrashRecovery(t) {
-  const { exec, check, waitFor, sleep, win, userData, storage, deleteBookWithRetry } = t;
+  const {
+    exec, check, waitFor, sleep, win, userData, storage, deleteBookWithRetry,
+    // CLOSE-02：不真的销毁窗口（后面第 55 组多窗口还要用），用主进程判定断言「这次关窗会被放行」。
+    resetCloseReady, waitCloseReady
+  } = t;
 
   const TITLE = '崩溃恢复测试书';
   const DRAFT_TEXT = '崩溃草稿正文：这段还没按 Ctrl+S，只在编辑区里。\n第二行也要逐字回来。';
@@ -266,6 +270,36 @@ module.exports = async function group83CrashRecovery(t) {
         tickAfterOff.code === 'DISABLED' &&
         configAfterOff.crashDraftEnabled === false,
       { draftsGoneAfterSave, disabled, filesAfterOff, tickAfterOff, crashDraftEnabled: configAfterOff.crashDraftEnabled }
+    );
+
+    // ---------- CLOSE-02：崩溃自动重载后主进程脏状态必须归零 ----------
+    // 复现路径：编辑区有未保存正文 → 渲染进程崩溃 → 主进程自动 reload → 新文档停在书架，init
+    // 不会再上报 app:dirty。旧实现下主进程 session.dirty 残留为 true，关窗时渲染层回 closeReady(true)，
+    // 主进程仍按 CLOSE_DIRTY 静默拦下——窗口再也关不掉（作者只能强杀进程）。
+    // 这里用主进程侧的 getCloseReady() 断言「这次关窗会被放行」，口径与第 10 / 12 组一致：
+    // 默认不真关窗（e2eRealClose=false），所以窗口还在，后面的多窗口组不受影响。
+    await exec("window.__cwTest.setText('崩溃重载后仍未保存的一段字')");
+    await waitFor('window.__cwTest.dirty() === true', 5000);
+    win.webContents.forcefullyCrashRenderer();
+    await waitFor('Boolean(window.__cwTest && window.__cwTest.ready)', 30000);
+    const freshAfterReload = await exec(`(() => ({
+      view: window.__cwTest.view(),
+      dirty: window.__cwTest.dirty(),
+      status: window.__cwTest.crashRecoveryStatus()
+    }))()`);
+    resetCloseReady();
+    win.webContents.send('app:close-requested');
+    const closeAllowedAfterReload = await waitCloseReady();
+    check(
+      '关闭回归（CLOSE-02）：崩溃自动重载后主进程脏状态已重置，关窗不再被 CLOSE_DIRTY 永久拦下（判定放行且窗口仍在）',
+      freshAfterReload &&
+        freshAfterReload.view === 'shelf' &&
+        freshAfterReload.dirty === false &&
+        freshAfterReload.status &&
+        freshAfterReload.status.enabled === false &&
+        closeAllowedAfterReload === true &&
+        win.isDestroyed() === false,
+      { freshAfterReload, closeAllowedAfterReload }
     );
 
     // ---------- 收尾：删临时书 ----------
