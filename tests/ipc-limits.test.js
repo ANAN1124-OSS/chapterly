@@ -387,6 +387,17 @@ test('撤销删除的 payload：坏参数一律 BAD_RESTORE（文件名 / index 
   assert.equal(ipcLimits.sanitizeRestorePayload({ ...good, autoChapterFile: '' }).autoChapterFile, null);
   // 正常 payload 仍然过
   assert.equal(ipcLimits.sanitizeRestorePayload(good).chapter.file, chapter.file);
+  // UNDO-01：章名里的点合法（`001-上..下.txt` 是 buildFileName 的真实产物，storage 也接受），
+  // 不能再用 includes('..') 一刀切；带分隔符的目录穿越与「整个名字就是 ..」仍然拒绝。
+  const dotted = '001-上..下.txt';
+  assert.equal(ipcLimits.sanitizeRestorePayload({ ...good, chapter: { ...chapter, file: dotted } }).chapter.file, dotted);
+  assert.equal(
+    ipcLimits.sanitizeRestorePayload({ ...good, trashName: `2026-11-10-${dotted}` }).trashName,
+    `2026-11-10-${dotted}`
+  );
+  badRestore({ ...good, chapter: { ...chapter, file: '..' } });
+  badRestore({ ...good, trashName: '..' });
+  badRestore({ ...good, trashName: `..\\2026-11-10-${dotted}` });
 });
 
 test('全书查找 / 替换的 options：非对象按默认，坏字段类型拒绝', () => {

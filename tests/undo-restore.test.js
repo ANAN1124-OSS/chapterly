@@ -438,6 +438,49 @@ test('撤销删除：坏 payload 在 IPC 校验层被拒，书文件夹与书目
   assert.equal((await storage.loadChapterText(bookPath, chapter.file)).text, '');
 });
 
+// UNDO-01（审计低危）：章名里的点本身合法 —— chapters.buildFileName 只挡首尾的点 / 空格，
+// 章名「上..下」会落成 `002-上..下.txt`（storage.assertChapterFile 本来就接受）。
+// 旧实现在 IPC 白名单与 storage 的 trashName 两处都用 includes('..') 一刀切：
+// 这种章删掉再撤销必然 BAD_RESTORE —— 书里明明有这一章、_trash 里也有备份，就是放不回去。
+test('撤销删除：章名中间带两个点也照常撤销（…-上..下.txt）（UNDO-01）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '点章名');
+  const created = await storage.createChapter(bookPath, 0, '上..下');
+  assert.match(created.chapter.file, /^\d{3}-上\.\.下\.txt$/, '章名里的点会原样进文件名');
+  await storage.saveChapterText(bookPath, created.chapter.file, '点在章名里\n');
+  const chapter = snapshot(await storage.readBookMeta(bookPath), 0);
+  assert.equal(chapter.file, created.chapter.file);
+
+  const deleted = await deleteThroughIpc(bookPath, chapter.id);
+  const trashName = path.basename(deleted.trashPath);
+  assert.match(trashName, /^\d{4}-\d{2}-\d{2}-\d{6}-/);
+  assert.ok(trashName.endsWith(`-${created.chapter.file}`), '删章备份按「时间戳-文件名」命名');
+
+  const restored = await restoreThroughIpc(bookPath, {
+    trashName,
+    undoToken: deleted.undoToken,
+    index: 0,
+    chapter
+  });
+  assert.equal(restored.chapter.file, created.chapter.file);
+  const after = await storage.readBookMeta(bookPath);
+  assert.equal(after.chapters.length, 2, '原章插回，书里原本那章还在');
+  assert.equal(after.chapters[0].file, created.chapter.file, '按原位置插回第 1 章');
+  assert.equal((await storage.loadChapterText(bookPath, created.chapter.file)).text, '点在章名里\n');
+
+  // 目录穿越照样拒绝：放宽的只是「名字里的点」，带分隔符的路径一个字都不许过
+  await assert.rejects(
+    () =>
+      restoreThroughIpc(bookPath, {
+        trashName: `..\\${trashName}`,
+        undoToken: deleted.undoToken,
+        index: 0,
+        chapter
+      }),
+    (err) => err.code === 'BAD_RESTORE'
+  );
+});
+
 // ---------- 1.5.0 P0-5（审计 V-1）：撤销凭证 ----------
 //
 // 主进程里 chapter:delete 发一张一次性凭证，chapter:restore-deleted 先验凭证再下传 storage；

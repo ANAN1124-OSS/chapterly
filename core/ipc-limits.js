@@ -279,7 +279,11 @@ function restoreFileName(value) {
   if (typeof value !== 'string') return '';
   const name = value.trim();
   if (!name || name.length > MAX_FILE_NAME_CHARS) return '';
-  if (name.includes('/') || name.includes('\\') || name.includes('..')) return '';
+  if (name.includes('/') || name.includes('\\')) return '';
+  // UNDO-01：章名里的点本身合法 —— chapters.buildFileName 只挡首尾的点 / 空格，章名「上..下」
+  // 会落成 `001-上..下.txt`（storage.assertChapterFile 也接受）。旧实现用 includes('..') 一刀切，
+  // 这种章删掉再撤销必然 BAD_RESTORE。分隔符已在上一行拒绝，这里只挡「整个名字就是 . / ..」。
+  if (name === '.' || name === '..') return '';
   if (/[\u0000-\u001f\u007f]/.test(name)) return '';
   // 审计修复 #47（E22）：Windows 的「:」是备用数据流分隔符（`第1章.txt:secret`），保留设备名
   // （`CON.txt` / `COM1.txt`）也会让壳层工具无法处理。storage.assertChapterFile 本来就会兜底，

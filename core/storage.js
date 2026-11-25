@@ -1874,7 +1874,11 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     !trashName ||
     path.basename(trashName) !== trashName ||
     !/\.txt$/i.test(trashName) ||
-    trashName.includes('..') ||
+    // UNDO-01：章名里的点合法（`2026-…-001-上..下.txt` 是这种章的真实备份名），
+    // 旧实现用 includes('..') 一刀切把合法备份挡在外面。basename 检查已挡住带父目录的名字，
+    // 这里只保留「整个名字就是 . / ..」这一道，剩下的交给 isMoveToTrashName 逐字比对。
+    trashName === '.' ||
+    trashName === '..' ||
     trashName.includes('/') ||
     trashName.includes('\\')
   ) {
