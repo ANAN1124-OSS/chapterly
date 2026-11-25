@@ -261,3 +261,30 @@ test('书目显示字段：书名 / 作者 / 章名 / 卷名跟着转，id / 文
   const oldMeta = { id: 'x', title: '旧书' };
   assert.deepEqual(s2t.convertMeta(oldMeta, 't2s'), { id: 'x', title: '旧书' });
 });
+
+// IO-01（2026-11-26 审计）：繁→简的反推只来自 S2T 字表 + T2S_EXTRA，而 S2T 按政策不收
+// 干 / 冲 / 布 / 卜（一简对多繁）—— 补充表又漏了对应的 幹 / 衝 / 佈 / 蔔，导致「幹部衝動佈置」
+// 这种正常繁体句子转不回简体。「萝卜」的「卜」同理（单字转必然是「蘿卜」，占卜 的 卜 不能动），
+// 只能走短语表。这里双向钉住，并守住「宁可不转，也不转错」。
+test('繁 → 简补充表 + 萝卜短语（IO-01）', () => {
+  // 繁 → 简：一个成句的繁体句子逐字回到简体
+  assert.equal(s2t.convertText('幹部衝動佈置', 't2s'), '干部冲动布置');
+  // 四个补充字单独也都能回（蔔 只可能出现在萝卜这类词里，不应改变其它用法）
+  assert.equal(s2t.convertText('幹 衝 佈 蔔', 't2s'), '干 冲 布 卜');
+  // 简 → 繁：萝卜 的 卜 走短语（占卜 仍是 占卜，字表不收 卜）
+  assert.equal(s2t.convertText('萝卜', 's2t'), '蘿蔔');
+  assert.equal(s2t.convertText('胡萝卜', 's2t'), '胡蘿蔔');
+  assert.equal(s2t.convertText('占卜', 's2t'), '占卜', '占卜 不能被萝卜的短语带偏');
+  // 来回复原：短语与补充表要能对上（不然导出的繁体稿再导回简体会残留）
+  const simplified = '萝卜和胡萝卜';
+  assert.equal(s2t.convertText(s2t.convertText(simplified, 's2t'), 't2s'), simplified);
+  // 补充条目必须是这次明确加的四对，不能被反推 / 别的条目顶掉
+  for (const pair of ['幹干', '衝冲', '佈布', '蔔卜']) {
+    assert.ok(s2t.T2S_EXTRA_PAIRS.includes(pair), `繁→简补充表缺少 ${pair}`);
+  }
+  // 短语表里真有萝卜的保持词条（单字表永远转不对，删掉就回退）
+  assert.ok(
+    s2t.S2T_PHRASES.some(([from, to]) => from === '萝卜' && to === '蘿蔔'),
+    '短语表缺少 萝卜=蘿蔔'
+  );
+});
