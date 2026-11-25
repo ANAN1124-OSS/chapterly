@@ -46,7 +46,7 @@ function checklistSample() {
   return [
     '# 章回 / Chapterly v1.7.2 · 手工验收清单',
     '',
-    '> 自动化部分可先跑：`pnpm test`（2235 项）、`pnpm run e2e`（1828 项）、`node scripts/contrast.js`（504 条扩展态 + 12 条禁用态豁免）。',
+    '> 自动化部分可先跑：`pnpm test`（2235 项）、`pnpm run e2e`（1828 项）、`node scripts/contrast.js`（510 条扩展态 + 12 条禁用态豁免）。',
     '',
     '- **v1.7.1 + v1.7.2（2026-11-14，合并发布为 v1.7.2）** 是 1.7.1 六项用户路径修复 + 1.7.2 债务批。',
     '',
@@ -97,7 +97,7 @@ test('版本同步：验收清单标题 / 安装包名 / 两个计数一起换�
   assert.ok(out.startsWith(`# 章回 / Chapterly v1.8.0 · 手工验收清单${CRLF}`));
   assert.ok(out.includes('`dist\\chapterly-1.8.0-win-x64-setup.exe`'), '安装验收行的包名要换');
   assert.ok(out.includes('`pnpm test`（2500 项）、`pnpm run e2e`（1881 项）'));
-  assert.ok(out.includes('504 条扩展态 + 12 条禁用态豁免'), '对比度计数不是版本锚点，不许被改');
+  assert.ok(out.includes('510 条扩展态 + 12 条禁用态豁免'), '对比度计数不是版本锚点，不许被改');
   assert.ok(
     out.includes('- **v1.7.1 + v1.7.2（2026-11-14，合并发布为 v1.7.2）**'),
     '历史沿革整句原样保留'

@@ -485,7 +485,7 @@ function contrastScenario(cfg) {
     if (specs.history && specs.history.length) {
       await T.openHistoryForCurrentBook();
       // PERF-HIST-01：列表默认只回组摘要（不带 files 明细），先展开第一组再采样文件名 / 状态小签；
-      // 否则这两行在六个主题里全部缺采样，对比度门禁会因 missing 记红（基线 504/504）。
+      // 否则这两行在六个主题里全部缺采样，对比度门禁会因 missing 记红（基线 510/510）。
       if (typeof T.loadHistoryGroupFiles === 'function') {
         await T.loadHistoryGroupFiles(0);
       }

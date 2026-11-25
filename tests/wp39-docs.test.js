@@ -278,3 +278,20 @@ test('IO-04：导入写盘换行与无 BOM UTF-16 口径跟实际行为一致', 
     '要如实写「无 BOM UTF-16 只在启发式命中时接受」'
   );
 });
+
+// DOC-02（低）：无障碍 / 对比度门禁的采样数必须写当前实测值。2026-11-26 实测（HEAD 364a 之前
+// 的 25 日 19:37 产物 + 本轮重跑一致）：a11y 目标 639 条 / 焦点 190 条；contrast 6 主题 85 条
+// 规格 = 510 条通过 + 12 条禁用态豁免（shelf.newGroup 等新增采样）。旧的 635 / 504 必须改掉。
+test('DOC-02：无障碍 / 对比度文档写当前门禁实测值，不再留 635 / 504', () => {
+  const a11y = read('docs/无障碍.md');
+  assert.equal(a11y.includes('635 条'), false, 'a11y 目标尺寸实测已是 639 条，旧值必须改掉');
+  assert.match(a11y, /当前实测 \*\*639 条全部达标\*\*/, '要写当前实测 639 条');
+  assert.equal(a11y.includes('504 条规格'), false, '对比度实测已是 510 条规格');
+  assert.match(a11y, /510 条规格全过 WCAG 2\.1 AA/, '要写当前实测 510 条规格');
+  assert.match(a11y, /6 主题 × 87 条采样（85 条规格 \+ 2 条禁用态豁免 = 510 通过 \+ 12 豁免）/, '采样范围与通过数要对得上');
+  const checklist = read('docs/验收清单.md');
+  assert.equal(checklist.includes('504 条扩展态'), false, '验收清单也同步 510');
+  assert.match(checklist, /510 条扩展态 \+ 12 条禁用态豁免/);
+  const manual = read('docs/使用手册.md');
+  assert.match(manual, /6 主题 510 条规格全过 \+ 12 条禁用态豁免/, '使用手册的同一口径也要同步');
+});
