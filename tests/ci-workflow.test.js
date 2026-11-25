@@ -107,7 +107,7 @@ test('全部 actions 固定到 40 位提交 SHA + 版本注释（审计 O1：不
     }
   }
   // pin 死后要有升级通道：Dependabot 每周提 github-actions 更新。
-  const dependabot = readDependabot();
+  const dependabot = readDependabot().replace(/\r\n/g, '\n');
   assert.match(dependabot, /^version: 2$/m, 'dependabot.yml 用 version 2');
   assert.match(dependabot, /package-ecosystem: github-actions/, '要覆盖 github-actions 生态');
   assert.match(dependabot, /schedule:\s*\n\s*interval: weekly/, '每周检查一次更新');
@@ -117,6 +117,15 @@ test('全部 actions 固定到 40 位提交 SHA + 版本注释（审计 O1：不
     /- package-ecosystem: npm\n {4}directory: \/\n {4}schedule:\n {6}interval: weekly\n {4}open-pull-requests-limit: 5/,
     'npm 依赖也要每周提更新，目录 / 频率 / PR 上限与 github-actions 一致'
   );
+  // CI 回归（2026-11-25 v2.2.0 首次 push 红）：CI-F3 把 Electron zip 挪到工作区 .electron-cache 后，
+  // 供应链闸门必须显式 --cache 指向同一个目录，否则它只找 %LOCALAPPDATA% / ~/.cache，永远拿不到 zip。
+  for (const [name, text] of [['e2e-pr.yml', readE2ePr()], ['e2e-weekly.yml', readE2e()]]) {
+    assert.match(
+      text,
+      /supply-chain-check\.js --cache "\$env:GITHUB_WORKSPACE\/\.electron-cache"/,
+      name + ' 的供应链校验必须 --cache 指向工作区 .electron-cache（与缓存 / 解压同目录）'
+    );
+  }
   // CI-F6：e2e-weekly 头部的版本注释必须与三条 pin 的实际版本一致（旧注释还写着 v4.4.0 / v5.0.0）。
   const weekly = readE2e().replace(/\r\n/g, '\n');
   assert.match(

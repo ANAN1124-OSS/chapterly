@@ -129,7 +129,8 @@ jobs:
 
       # WP15 / 审计 E1=O-N2：与 weekly 同口径，先核对刚下载的 Electron 二进制再跑 E2E。
       - name: 供应链校验（内置官方 SHASUMS256.txt 核对刚下载的 Electron 二进制）
-        run: node scripts/supply-chain-check.js
+        shell: pwsh
+        run: node scripts/supply-chain-check.js --cache "$env:GITHUB_WORKSPACE/.electron-cache"
 
       - name: 固定时区（E2E 的日期 / 统计断言按 +08 口径）
         run: tzutil /s "China Standard Time"
