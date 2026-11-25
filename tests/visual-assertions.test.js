@@ -110,3 +110,33 @@ test('GATE-02：checkVisual 别名 / 解构重命名 → null；标准解构 + �
   );
   assert.ok(problems.some((item) => /无法静态识别/.test(item)), JSON.stringify(problems));
 });
+
+// GATE-09（低）：属性取值 / 计算属性 / 带引号解构键这些「先取出 checkVisual 再调用」的形态，
+// 旧实现一个都追不到 —— 调用点既不进 codeMap 也不报 null，功能断言可以借道偷渡进视觉跳过面
+// 且门禁全绿。这里钉住：除「直接调用」与「不改名的解构简写」外，其余引用一律按无法静态识别报。
+test('GATE-09：取出 checkVisual 的其它引用形态一律按「无法静态识别」报 null', () => {
+  for (const source of [
+    "const vc = t.checkVisual;\n  vc('属性取值后调用', true);",
+    "const vc = t['checkVisual'];\n  vc('计算属性后调用', true);",
+    "const { 'checkVisual': vc } = t;\n  vc('带引号解构键后调用', true);",
+    'const vc = checkVisual.bind(t);',
+    'run(t.checkVisual);'
+  ]) {
+    assert.ok(
+      va.extractVisualAssertions(source).includes(null),
+      `必须报不可静态识别：${source}\n实际 ${JSON.stringify(va.extractVisualAssertions(source))}`
+    );
+  }
+  // 标准解构 / 直接调用 / 注释仍不误报
+  assert.deepEqual(
+    va.extractVisualAssertions("const { exec, checkVisual, waitFor } = t;\n  checkVisual('正常调用', true);"),
+    ['正常调用']
+  );
+  assert.deepEqual(va.extractVisualAssertions("// t.checkVisual 的说明\n  checkVisual('甲的', true);"), ['甲的']);
+  // compare 层面：偷渡写法必须被 wiring 契约点名，不能「清单外多出来的调用」也照样绿
+  const problems = va.compareVisualAssertions(
+    [{ file: 'x.js', text: "const vc = t.checkVisual;\n  vc('探针', true);" }],
+    []
+  );
+  assert.ok(problems.some((item) => /无法静态识别/.test(item)), JSON.stringify(problems));
+});

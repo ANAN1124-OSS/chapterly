@@ -114,6 +114,39 @@ function stripJsComments(source) {
   return out;
 }
 
+// GATE-09：引用扫描要在「代码」上做 —— 字符串 / 模板字面量里出现的 checkVisual（断言名、
+// 说明文字）不是引用。这里把字符串内容替换成空格（长度与换行不变，引号本身保留），让引用
+// 扫描拿到的下标仍与原源码一一对应；两种「字符串键」引用（t['checkVisual']、{ 'checkVisual': vc }）
+// 会被掩码盖住，由 extractVisualAssertions 单独在原文里点名。
+function maskStringLiterals(code) {
+  let out = '';
+  let quote = '';
+  for (let i = 0; i < code.length; i += 1) {
+    const ch = code[i];
+    if (quote) {
+      if (ch === '\\') {
+        out += '  ';
+        i += 1;
+        continue;
+      }
+      if (ch === quote) {
+        quote = '';
+        out += ch;
+        continue;
+      }
+      out += ch === '\n' ? '\n' : ' ';
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
 // 断言名比对口径：换行 / 连续空白归一成一个空格，去首尾空白。
 function normalizeName(raw) {
   return String(raw).replace(/\s+/g, ' ').trim();
@@ -182,15 +215,24 @@ function extractVisualAssertions(source) {
     const literal = readFirstStringLiteral(code, openIndex);
     found.push(literal === null ? null : normalizeName(literal));
   }
-  // GATE-02：checkVisual 一旦被赋给变量 / 解构重命名，上面的调用点扫描就再也追不到它 —— 静态清单
-  // 会静默少掉这些断言（改了它们的断言名 / 删了调用，门禁照样绿）。下面两类写法统一按「无法静态
-  // 识别」报（null，由比对环节点名）：
-  //   ① 赋值别名：`const v = checkVisual`（`= checkVisual(` 是赋值后直接调用，不算）
-  //   ② 解构重命名：`{ checkVisual: visualCheck } = t`（现有 `const { checkVisual } = t` 不改名，允许）
-  // 注释已在上面剥掉；真实树里 11 处 `const { …, checkVisual, … } = t` 不命中。
-  const aliasRe = /=[ \t]*checkVisual\b(?!\s*\()/g;
-  while ((match = aliasRe.exec(code)) !== null) found.push(null);
-  if (/\bcheckVisual\s*:\s*[A-Za-z_$]/.test(code)) found.push(null);
+  // GATE-02 / GATE-09：checkVisual 一旦被取出引用（赋值别名 `const v = checkVisual`、属性取值
+  // `t.checkVisual`、计算属性 `t['checkVisual']`、带引号解构键 `{ 'checkVisual': v }`、`.bind`…），
+  // 上面的调用点扫描就再也追不到它 —— 静态清单会静默少掉这些断言（改了断言名 / 删了调用，
+  // 门禁照样绿）。除「直接调用」与「不改名的解构简写」（`const { …, checkVisual, … } = t`，
+  // 真实树里 11 处）外，其余每一处引用都按「无法静态识别」报 null，由比对环节点名。
+  // 注释已在上面剥掉；字符串值里的同名文字不算引用（掩码后再扫），字符串键引用单独点名。
+  const codeOnly = maskStringLiterals(code);
+  const refRe = /\bcheckVisual\b/g;
+  while ((match = refRe.exec(codeOnly)) !== null) {
+    const after = codeOnly.slice(match.index + 'checkVisual'.length);
+    if (/^\s*\(/.test(after)) continue; // 直接调用：上面已按调用口径处理（含 t.checkVisual( → 已判 null）
+    const before = codeOnly.slice(0, match.index);
+    if (/[{,]\s*$/.test(before) && /^\s*[,}]/.test(after)) continue; // { checkVisual } / { a, checkVisual }
+    found.push(null);
+  }
+  // 字符串键的两种引用形态（掩码会把键名盖住，单独在原文里找）：`t['checkVisual']` /
+  // `{ 'checkVisual': vc }`。字符串值（断言名 / 说明）不含「键 + 冒号/右括号」这个形状，不误报。
+  if (/\[\s*(['\"])checkVisual\1\s*\]/.test(code) || /(['\"])checkVisual\1\s*:/.test(code)) found.push(null);
   return found;
 }
 
