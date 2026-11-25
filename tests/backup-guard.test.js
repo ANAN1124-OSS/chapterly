@@ -117,7 +117,7 @@ test('create.fingerprint：正常读清单记指纹；listHistory 抛错回 null
     fileCount: 1,
     mtimeMs: 500
   });
-  assert.deepEqual(seen, [['好书']]);
+  assert.deepEqual(seen, [['好书', { only: 'dir:整理备份-20261110-090000', includeFiles: true }]]);
   assert.equal(await guard.fingerprint('坏书', '整理备份-20261110-090000'), null);
   assert.equal(await guard.fingerprint('', '整理备份-20261110-090000'), null);
   assert.equal(await guard.fingerprint('好书', ''), null);
@@ -155,6 +155,57 @@ test('create.assertUnchanged：一致放行、变了抛「备份已变化，撤�
 
   // 没有指纹（登记时清单就读不到）→ 不核对，直接放行
   assert.equal(await guard.assertUnchanged('书', null), true);
+});
+
+// RNDP-02（2026-11-25 审计）：PERF-HIST-01 之后 listHistory 默认只回组摘要（files 被删掉、也没有
+// 组级 maxMtime），指纹里的 mtimeMs 恒为 0，只剩 fileCount —— 备份内容被原地改写（文件数不变）
+// 仍会被拿去覆盖正文。指纹 / 核对必须显式按「这一组 + 带 files」单组拉取。
+test('RNDP-02：摘要回包下指纹必须拿到 mtime，备份原地改写要取消撤销', async () => {
+  let backups = {
+    '还原前备份-20261109-120000': [['第一章.txt', 1000.4], ['第二章.txt', 1200.6]]
+  };
+  const calls = [];
+  const api = {
+    async listHistory(bookPath, options) {
+      const opts = options && typeof options === 'object' ? options : {};
+      calls.push([bookPath, opts]);
+      const only = typeof opts.only === 'string' ? opts.only : '';
+      const groups = [];
+      for (const [dirName, files] of Object.entries(backups)) {
+        if (only && only !== `dir:${dirName}`) continue;
+        const built = group(dirName, files);
+        // 模拟主进程 book:list-history 的摘要口径：不带 includeFiles 就把 files 删掉
+        if (opts.includeFiles !== true) {
+          delete built.files;
+          built.filesLoaded = false;
+        }
+        groups.push(built);
+      }
+      return { groups };
+    }
+  };
+  const guard = guardLib.create({ call: async (fn, ...args) => fn(...args), api });
+  const expected = await guard.fingerprint('书', '还原前备份-20261109-120000');
+  assert.deepEqual(
+    expected,
+    { dirName: '还原前备份-20261109-120000', fileCount: 2, mtimeMs: 1201 },
+    '摘要回包不能让指纹的 mtime 恒为 0'
+  );
+  assert.equal(await guard.assertUnchanged('书', expected), true);
+
+  // 备份内容被原地改写：文件数不变、只有 mtime 变 → 必须报「备份已变化，撤销取消」
+  backups = {
+    '还原前备份-20261109-120000': [['第一章.txt', 1000.4], ['第二章.txt', 9999]]
+  };
+  await assert.rejects(() => guard.assertUnchanged('书', expected), /备份已变化，撤销取消/);
+
+  // 两次读都必须显式要这一组的 files；只拿摘要会回到「mtime 恒 0」的旧缺陷
+  assert.equal(calls.length, 3, '登记一次 + 核对两次');
+  for (const [bookPath, opts] of calls) {
+    assert.equal(bookPath, '书');
+    assert.equal(opts.only, 'dir:还原前备份-20261109-120000');
+    assert.equal(opts.includeFiles, true);
+  }
 });
 // ---------- 静态闸门：三条备份撤销都真的接上了核对 ----------
 const fs = require('node:fs');

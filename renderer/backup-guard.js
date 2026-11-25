@@ -12,6 +12,9 @@
  * 指纹只用清单里已有的字段（fileCount / files[].mtimeMs），不额外 stat：
  *   - 文件数变了 = 备份被增删；
  *   - 最大 mtime 变了 = 有文件被改写（restore 只往外 copy，不会改备份目录本身）。
+ * RNDP-02（2026-11-25 审计）：PERF-HIST-01 之后，不带 includeFiles 的清单只回组摘要（files 被删掉，
+ * 也没有组级 maxMtime），指纹里的 mtimeMs 会恒为 0 —— 备份被原地改写（文件数不变）就白核对了。
+ * 所以指纹 / 核对一律按「这一组 + 带 files」单组拉取（only 仍由主进程 core 侧严格校验）。
  * 登记时清单读不到（目录刚被移走等）就返回 null，撤销时不拦 —— 宁可少一道核对，
  * 也不让一个正常的撤销变砖；撤销时清单读不到则**取消**（这时没法证明备份没变）。
  *
@@ -41,6 +44,11 @@
     if (Array.isArray(list)) return list;
     if (list && typeof list === 'object' && Array.isArray(list.groups)) return list.groups;
     return [];
+  }
+
+  // RNDP-02：单组清单要带 files 才能拿到真实的 mtime（摘要回包的 files 被主进程删掉了）。
+  function groupListOptions(dirName) {
+    return { only: `dir:${dirName}`, includeFiles: true };
   }
 
   function fingerprintOf(groups, dirName) {
@@ -90,7 +98,7 @@
     async function fingerprint(bookPath, dirName) {
       if (!bookPath || !dirName) return null;
       try {
-        return fingerprintOf(await call(api.listHistory, bookPath), dirName);
+        return fingerprintOf(await call(api.listHistory, bookPath, groupListOptions(dirName)), dirName);
       } catch {
         return null;
       }
@@ -99,9 +107,10 @@
     // 撤销执行前用：清单读不到也取消 —— 这一步是「证明备份没变」，证明不了就不覆盖正文。
     async function assertUnchanged(bookPath, expected) {
       if (!expected) return true;
+      const dirName = typeof expected.dirName === 'string' ? expected.dirName : '';
       let list;
       try {
-        list = await call(api.listHistory, bookPath);
+        list = await call(api.listHistory, bookPath, dirName ? groupListOptions(dirName) : undefined);
       } catch {
         throw new Error(LIST_FAILED_MESSAGE);
       }
