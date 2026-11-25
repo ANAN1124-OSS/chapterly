@@ -407,7 +407,8 @@ test('R8 TOOL-A02：发版门禁（不带 --zip）核对 dist 与缓存 zip 的 
 });
 
 // CI-F1（2026-11-24 复核补审）：发版路径不只核 electron.exe —— dist 里每个文件都要与缓存 zip
-// 的同名条目对上（条目数相等 + size + CRC32）。多 / 少 / 被改三条负控，全部走真临时 zip 与目录。
+// 的同名条目对上（条目数相等 + size + CRC32 + SHA-256）。多 / 少 / 被改三条负控，全部走真临时 zip
+// 与目录（被改那条的 size / CRC32 就已经不同，命中 CRC32 预筛；同 CRC32 的伪造见 GATE-10）。
 test('CI-F1：dist 全目录清单与 zip 逐条比对（全对通过，多 / 少 / 被改都红）', async () => {
   const payloads = [
     { name: 'electron.exe', data: 'fake-binary-for-tree' },
@@ -465,6 +466,80 @@ test('CI-F1：dist 全目录清单与 zip 逐条比对（全对通过，多 / �
   const invalid = await logic.verifyDistTreeAgainstZip({ zipPath: badZip, distDir });
   assert.equal(invalid.ok, false);
   assert.equal(invalid.code, 'ZIP_INVALID');
+});
+
+// GATE-10（2026-11-25 审计·低）：dist 与缓存 zip 只比 size + CRC32，而 CRC32 不抗伪造 —— 构造两条
+// 同大小、同 CRC32、不同内容的字节串（测试里先自证碰撞前提），一份进 zip、一份放进 dist 当前判据
+// 照样通过，发版路径会接受被替换的二进制。修法：CRC32 留作快速预筛，逐文件再比 SHA-256 ——
+// zip 侧按中央目录（压缩方法 / 压缩大小 / 本地头偏移）只 inflate 那一个条目，不把整包解压到磁盘。
+test('GATE-10：dist 与 zip 逐文件比对升级为 SHA-256（同大小同 CRC32 的替换必须红）', async () => {
+  // 64 字节、同大小、CRC32 都是 0x0eaab849、内容不同（SHA-256 不同）：由两段 4 字节自由变量
+  // 抵消 CRC 增量构造出来的碰撞（CRC32 只能发现 ≤32 位的突发错误，不抗蓄意伪造）。
+  const zipPayload = Buffer.from(
+    '5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a',
+    'hex'
+  );
+  const distPayload = Buffer.from(
+    '5a5a5a5a5a5a5a5a220c6e485a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a03a8ad145a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a',
+    'hex'
+  );
+  assert.equal(zipPayload.length, distPayload.length, '前提：两条内容同大小');
+  assert.equal(
+    logic.crc32OfBuffer(zipPayload),
+    logic.crc32OfBuffer(distPayload),
+    '前提：两条内容同 CRC32（构造的碰撞）'
+  );
+  assert.notEqual(sha256(zipPayload), sha256(distPayload), '前提：SHA-256 必须不同（CRC32 不抗伪造）');
+
+  const dir = await mkTmp('cw-supply-gate10-');
+  // 'Z' 串可压（走 deflate）+ 随机字节不可压（走 store 分支）：两条 inflate 路径都要覆盖到
+  const random = crypto.randomBytes(256);
+  const zipBytes = await buildZip([
+    { name: 'electron.exe', data: zipPayload },
+    { name: 'resources/app.asar', data: zipPayload },
+    { name: 'icudtl.dat', data: random },
+    { name: 'version', data: '45.1.0' }
+  ]);
+  const zipPath = path.join(dir, 'electron-v45.1.0-win32-x64.zip');
+  await fs.writeFile(zipPath, zipBytes);
+  const distDir = path.join(dir, 'dist');
+  const writeDist = async (name, data) => {
+    const full = path.join(distDir, name);
+    await fs.mkdir(path.dirname(full), { recursive: true });
+    await fs.writeFile(full, data);
+  };
+  await writeDist('electron.exe', zipPayload);
+  await writeDist('resources/app.asar', zipPayload);
+  await writeDist('icudtl.dat', random);
+  await writeDist('version', '45.1.0');
+
+  // 内容对得上的 dist 先通过，且回包说明判据已升级到 SHA-256
+  const goodTree = await logic.verifyDistTreeAgainstZip({ zipPath, distDir });
+  assert.equal(goodTree.ok, true, goodTree.message);
+  assert.match(goodTree.message, /SHA-256/, '全目录核对应说明按 SHA-256 比对');
+  const goodUnit = await logic.verifyDistAgainstZip({ zipPath, distFile: path.join(distDir, 'electron.exe') });
+  assert.equal(goodUnit.ok, true, goodUnit.message);
+  assert.match(goodUnit.message, /SHA-256/, '单文件核对应说明按 SHA-256 比对');
+
+  // 只把 dist 换成「同大小同 CRC32」的另一份内容：CRC32 预筛必拦不住，必须靠 SHA-256 红
+  await writeDist('resources/app.asar', distPayload);
+  const tree = await logic.verifyDistTreeAgainstZip({ zipPath, distDir });
+  assert.equal(tree.ok, false, '同大小同 CRC32 的替换不许通过（CRC32 不抗伪造）');
+  assert.equal(tree.code, 'DIST_HASH_MISMATCH', '全目录核对的失败码要能区分「哈希不同」');
+  assert.match(tree.message, /app\.asar/);
+  await writeDist('resources/app.asar', zipPayload);
+
+  await writeDist('electron.exe', distPayload);
+  const unit = await logic.verifyDistAgainstZip({ zipPath, distFile: path.join(distDir, 'electron.exe') });
+  assert.equal(unit.ok, false, '单文件对照样要能发现同 CRC32 的替换');
+  assert.equal(unit.code, 'DIST_HASH_MISMATCH');
+  assert.match(unit.message, /SHA-256/);
+
+  // 修好后绿（不是靠新判据把正常 dist 也判红）
+  await writeDist('electron.exe', zipPayload);
+  const fixed = await logic.verifyDistTreeAgainstZip({ zipPath, distDir });
+  assert.equal(fixed.ok, true, fixed.message);
+  assert.equal(fixed.files, 4);
 });
 
 // R7（M-N3 复核缺口）：发版门禁不能只活在文档里——npm 生命周期 pre 脚本把校验接成打包前置门禁。

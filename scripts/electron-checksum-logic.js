@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 // 官方 SHASUMS256.txt 每行 `<64 位十六进制><空白><*?><文件名>`；`*` 是 sha256sum 的二进制标记。
@@ -176,8 +177,12 @@ async function verifyArtifact({ zipPath, shasumsText, hashFile = sha256OfFile } 
 // 工具改写，zip 校验照样通过，打包却用了另一份 electron.exe。这里从 zip 的**中央目录**读出
 // electron.exe 条目的 CRC32 与未压缩大小（不解压整包），再对 dist 里的文件流式算 CRC32 比对。
 // 不解压的代价是没法逐字节内容比对，但 CRC32 + 大小足以发现「不是从这份 zip 解出来的」。
+// GATE-10（2026-11-25 审计·低）：CRC32 **不抗伪造** —— 蓄意构造同大小同 CRC32 的另一份内容可以
+// 骗过上面这条。现在 CRC32 + 大小只当快速预筛：通过后，zip 侧按中央目录的压缩方法 / 压缩大小 /
+// 本地头偏移只 inflate 那一个条目算 SHA-256，dist 侧流式算 SHA-256，逐文件比内容哈希。
 const EOCD_SIGNATURE = 0x06054b50;
 const CENTRAL_SIGNATURE = 0x02014b50;
+const LOCAL_SIGNATURE = 0x04034b50;
 const ZIP_MAX_COMMENT = 0xffff;
 const CRC_TABLE = (() => {
   const table = new Int32Array(256);
@@ -203,8 +208,10 @@ function crc32OfBuffer(buffer) {
   return crc32Update(0, buffer);
 }
 
-// 从 zip 中央目录读出全部条目：name → { crc32, size }（目录条目以 '/' 结尾，保留在结果里，
-// 由调用方决定是否忽略）。readZipEntryMeta 与 CI-F1 的 dist 全目录核对共用这一份解析。
+// 从 zip 中央目录读出全部条目：name → { crc32, size, compressedSize, method, localOffset }
+// （目录条目以 '/' 结尾，保留在结果里，由调用方决定是否忽略）。readZipEntryMeta 与 CI-F1 的
+// dist 全目录核对共用这一份解析；GATE-10 的逐文件 SHA-256 也只用这里读到的元数据 + 本地头，
+// 不整包解压。
 async function readCentralEntries(zipPath) {
   const handle = await fsp.open(zipPath, 'r');
   try {
@@ -236,13 +243,24 @@ async function readCentralEntries(zipPath) {
       if (cd.readUInt32LE(at) !== CENTRAL_SIGNATURE) {
         throw Object.assign(new Error('zip 中央目录条目损坏'), { code: 'ZIP_INVALID' });
       }
+      const method = cd.readUInt16LE(at + 10);
       const crc = cd.readUInt32LE(at + 16);
+      const compressedSize = cd.readUInt32LE(at + 20);
       const uncompressed = cd.readUInt32LE(at + 24);
       const nameLen = cd.readUInt16LE(at + 28);
       const extraLen = cd.readUInt16LE(at + 30);
       const commentLen = cd.readUInt16LE(at + 32);
+      const localOffset = cd.readUInt32LE(at + 42);
       const name = cd.slice(at + 46, at + 46 + nameLen).toString('utf8');
-      if (!out.has(name)) out.set(name, { crc32: crc >>> 0, size: uncompressed });
+      if (!out.has(name)) {
+        out.set(name, {
+          crc32: crc >>> 0,
+          size: uncompressed,
+          compressedSize,
+          method,
+          localOffset
+        });
+      }
       at += 46 + nameLen + extraLen + commentLen;
     }
     return out;
@@ -251,12 +269,12 @@ async function readCentralEntries(zipPath) {
   }
 }
 
-// 从 zip 中央目录读一个条目的 { crc32, size }。找不到返回 null；不是 zip / 条目损坏抛带 code 的错误。
+// 从 zip 中央目录读一个条目的元数据（含 GATE-10 算内容哈希需要的压缩方法 / 压缩大小 / 本地头偏移）。
+// 找不到返回 null；不是 zip / 条目损坏抛带 code 的错误。
 async function readZipEntryMeta(zipPath, entryName) {
   const wanted = String(entryName).replace(/\\/g, '/');
   const entries = await readCentralEntries(zipPath);
-  const found = entries.get(wanted);
-  return found ? { crc32: found.crc32, size: found.size } : null;
+  return entries.get(wanted) || null;
 }
 
 async function crc32OfFile(filePath) {
@@ -273,15 +291,64 @@ async function crc32OfFile(filePath) {
   });
 }
 
+// GATE-10：zip 条目「解压后内容」的 SHA-256。只用中央目录里的压缩方法 / 压缩大小 / 本地头偏移：
+// 读 30 字节本地头拿到文件名 / extra 长度，跳过它们，再按压缩大小流式 inflate 这一段（方法 0 直接
+// 流式读），不把整包解压到磁盘、也不整份读进内存。找不到条目返回 null；坏 zip / 不支持的压缩方法
+// 抛带 code 的错误（调用方如实报 ZIP_INVALID / ZIP_UNSUPPORTED）。
+const SUPPORTED_ZIP_METHODS = new Set([0, 8]);
+
+async function zipEntryDataStart(zipPath, entry) {
+  const handle = await fsp.open(zipPath, 'r');
+  try {
+    const header = Buffer.alloc(30);
+    const { bytesRead } = await handle.read(header, 0, 30, entry.localOffset);
+    if (bytesRead < 30 || header.readUInt32LE(0) !== LOCAL_SIGNATURE) {
+      throw Object.assign(new Error('zip 本地文件头损坏或越界'), { code: 'ZIP_INVALID' });
+    }
+    return entry.localOffset + 30 + header.readUInt16LE(26) + header.readUInt16LE(28);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function sha256OfZipEntryMeta(zipPath, entry) {
+  if (!entry) return null;
+  if (!SUPPORTED_ZIP_METHODS.has(Number(entry.method))) {
+    throw Object.assign(new Error(`不支持的 zip 压缩方法 ${entry.method}`), { code: 'ZIP_UNSUPPORTED' });
+  }
+  const compressed = Number(entry.compressedSize) || 0;
+  if (compressed === 0) {
+    // 空条目：不建读流（createReadStream 的 end 会是 start - 1）。
+    return crypto.createHash('sha256').digest('hex');
+  }
+  const start = await zipEntryDataStart(zipPath, entry);
+  const end = start + compressed - 1;
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stored = fs.createReadStream(zipPath, { start, end });
+    const source = Number(entry.method) === 0 ? stored : stored.pipe(zlib.createInflateRaw());
+    source.on('error', reject);
+    source.on('data', (chunk) => {
+      hash.update(chunk);
+    });
+    source.on('end', () => {
+      resolve(hash.digest('hex'));
+    });
+  });
+}
+
 // 核对「打包实际消费的 dist 二进制」与缓存 zip 里的同名条目是否同一份内容。
-// 注入点（单测用）：statFile / crc32File / readEntryMeta。
+// GATE-10：size + CRC32 只是快速预筛；通过后逐文件比 SHA-256（CRC32 不抗蓄意伪造）。
+// 注入点（单测用）：statFile / crc32File / readEntryMeta / hashEntry / hashFile。
 async function verifyDistAgainstZip({
   zipPath,
   distFile,
   entryName = 'electron.exe',
   statFile = (file) => fsp.stat(file),
   crc32File = crc32OfFile,
-  readEntryMeta = readZipEntryMeta
+  readEntryMeta = readZipEntryMeta,
+  hashEntry = sha256OfZipEntryMeta,
+  hashFile = sha256OfFile
 } = {}) {
   const zip = String(zipPath == null ? '' : zipPath).trim();
   const dist = String(distFile == null ? '' : distFile).trim();
@@ -330,19 +397,51 @@ async function verifyDistAgainstZip({
         `（期望 ${(entry.crc32 >>> 0).toString(16)}，实际 ${(actual >>> 0).toString(16)}）：dist 可能被替换 / 解压不完整`
     };
   }
+  // GATE-10：CRC32 相同不足以证明内容相同（同大小同 CRC32 的碰撞可以构造出来）→ 再比 SHA-256。
+  let expectedHash;
+  try {
+    expectedHash = await hashEntry(zip, entry);
+  } catch (err) {
+    const reason = (err && (err.code || err.message)) || '未知错误';
+    return { ok: false, code: 'ZIP_INVALID', message: `算不了缓存 zip 里 ${entryName} 的内容哈希（${reason}）` };
+  }
+  if (!expectedHash) {
+    return { ok: false, code: 'ZIP_ENTRY_MISSING', message: `缓存 zip 里没有 ${entryName} 的内容` };
+  }
+  let actualHash;
+  try {
+    actualHash = String(await hashFile(dist)).toLowerCase();
+  } catch (err) {
+    const reason = (err && (err.code || err.message)) || '未知错误';
+    return { ok: false, code: 'DIST_READ_FAILED', message: `算不了 ${path.basename(dist)} 的内容哈希（${reason}）` };
+  }
+  if (actualHash !== String(expectedHash).toLowerCase()) {
+    return {
+      ok: false,
+      code: 'DIST_HASH_MISMATCH',
+      expected: expectedHash,
+      actual: actualHash,
+      message:
+        `${path.basename(dist)} 的 SHA-256 与 zip 条目 ${entryName} 不一致` +
+        `（期望 ${String(expectedHash).slice(0, 12)}…，实际 ${actualHash.slice(0, 12)}…）：` +
+        'dist 被替换 / 解压不完整（大小与 CRC32 相同也不足为凭）'
+    };
+  }
   return {
     ok: true,
     code: 'OK',
     size,
     crc32: actual >>> 0,
-    message: `${path.basename(dist)} 与缓存 zip 的 ${entryName} 内容一致（CRC32 + 大小）`
+    sha256: actualHash,
+    message: `${path.basename(dist)} 与缓存 zip 的 ${entryName} 内容一致（SHA-256 相同；size + CRC32 预筛）`
   };
 }
 
 // CI-F1（2026-11-24 复核补审）：上面的单文件核对只保证 electron.exe 没被换 —— dist 里的
 // resources / locales / icudtl.dat 等其余文件（打包同样会带走）不在核对范围。发版路径再补一层
-// 「dist 全目录 == zip 全部文件条目」：条目数不齐即红；每个文件比 size + CRC32。仍然不解压、
-// 不联网，数据只来自已通过 SHA-256 校验的那份 zip。
+// 「dist 全目录 == zip 全部文件条目」：条目数不齐即红；每个文件比 size + CRC32 + SHA-256。
+// GATE-10 起 CRC32 只当快速预筛，内容同一性由「zip 条目解压后内容的 SHA-256 vs dist 文件
+// 的 SHA-256」兜底（仍然不整包解压到磁盘、不联网，数据只来自已通过 SHA-256 校验的那份 zip）。
 //
 // 列出 dist 下全部普通文件（相对路径统一用 '/'，排序后返回）。目录递归；符号链接等非普通文件
 // 跳过（zip 里不会有，防跟随链接读到库外）。
@@ -368,7 +467,9 @@ async function verifyDistTreeAgainstZip({
   listFiles = listDistFiles,
   statFile = (file) => fsp.stat(file),
   crc32File = crc32OfFile,
-  readEntries = readCentralEntries
+  readEntries = readCentralEntries,
+  hashEntry = sha256OfZipEntryMeta,
+  hashFile = sha256OfFile
 } = {}) {
   const zip = String(zipPath == null ? '' : zipPath).trim();
   const dist = String(distDir == null ? '' : distDir).trim();
@@ -448,12 +549,42 @@ async function verifyDistTreeAgainstZip({
           `（期望 ${(entry.crc32 >>> 0).toString(16)}，实际 ${(actual >>> 0).toString(16)}）：文件被替换 / 解压不完整`
       };
     }
+    // GATE-10：CRC32 + 大小相同也可能是伪造的碰撞 → 逐文件比 SHA-256（zip 侧只 inflate 这一个条目）。
+    let expectedHash;
+    try {
+      expectedHash = await hashEntry(zip, entry);
+    } catch (err) {
+      const reason = (err && (err.code || err.message)) || '未知错误';
+      return { ok: false, code: 'ZIP_INVALID', message: `算不了缓存 zip 里 ${name} 的内容哈希（${reason}）` };
+    }
+    if (!expectedHash) {
+      return { ok: false, code: 'ZIP_ENTRY_MISSING', message: `缓存 zip 里没有 ${name} 的内容` };
+    }
+    let actualHash;
+    try {
+      actualHash = String(await hashFile(full)).toLowerCase();
+    } catch (err) {
+      const reason = (err && (err.code || err.message)) || '未知错误';
+      return { ok: false, code: 'DIST_READ_FAILED', message: `算不了 dist 里的 ${name} 的内容哈希（${reason}）` };
+    }
+    if (actualHash !== String(expectedHash).toLowerCase()) {
+      return {
+        ok: false,
+        code: 'DIST_HASH_MISMATCH',
+        expected: expectedHash,
+        actual: actualHash,
+        message:
+          `dist 里的 ${name} 的 SHA-256 与 zip 条目不一致` +
+          `（期望 ${String(expectedHash).slice(0, 12)}…，实际 ${actualHash.slice(0, 12)}…）：` +
+          '文件被替换 / 解压不完整（大小与 CRC32 相同也不足为凭）'
+      };
+    }
   }
   return {
     ok: true,
     code: 'OK',
     files: files.length,
-    message: `dist 的 ${files.length} 个文件与缓存 zip 逐条一致（条目数相等，size + CRC32）`
+    message: `dist 的 ${files.length} 个文件与缓存 zip 逐条一致（SHA-256 逐文件相同；size + CRC32 预筛）`
   };
 }
 

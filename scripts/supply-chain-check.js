@@ -130,7 +130,8 @@ async function run(argv, io = {}) {
 
     // CI-F1（2026-11-24 复核补审）：单文件核对只覆盖 electron.exe；打包会把 dist 整个目录带走，
     // resources / locales / *.pak / *.dll 被换掉时上面照样通过。发版路径再把「dist 全目录」与
-    // 已校验 zip 的全部文件条目逐条比对：条目数不齐即红，每个文件比 size + CRC32。
+    // 已校验 zip 的全部文件条目逐条比对：条目数不齐即红；每个文件比 size + CRC32 + SHA-256
+    //（GATE-10：CRC32 不抗伪造，只当快速预筛，内容同一性由逐文件 SHA-256 兜底）。
     const verifyDistTree =
       typeof io.verifyDistTreeAgainstZip === 'function' ? io.verifyDistTreeAgainstZip : logic.verifyDistTreeAgainstZip;
     const treeVerdict = await verifyDistTree({
