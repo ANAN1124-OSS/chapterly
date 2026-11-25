@@ -129,3 +129,25 @@ test('F1：main.js 接线（启动逐个目录回收 + 导出成功记录并回�
   assert.match(body, /await cleanupOrphanTmpFiles\(previous\)/, '导出成功顺手回收上一个目录的孤儿');
   assert.match(body, /await cleanupOrphanTmpFiles\(dir\)/, '本次目录里上次中断的孤儿也要回收');
 });
+
+// MAIN-01（中）：启动链里的导出目录回收是「尽力而为」—— 桌面盘 / 网络盘 / 睡眠的移动硬盘断开时
+// readdir 会挂几十秒。以前整段串行 await、没有截止时间，createWindow 迟迟不执行（作者看到的是
+// 双击图标后几十秒没窗口）。这里钉住：回收整段有 ≤3 秒的总截止时间（到点照常建窗），
+// 没扫到的目录下次启动再收。
+test('MAIN-01：启动回收导出目录整段有 ≤3 秒截止时间，不会把建窗拖住', () => {
+  const MAIN = require('node:fs').readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const declared = /const EXPORT_SWEEP_DEADLINE_MS = (\d+);/.exec(MAIN);
+  assert.ok(declared, '导出目录回收要有自己的总截止时间常量（MAIN-01：无截止时间 = 建窗被网络盘拖住）');
+  const budgetMs = Number(declared[1]);
+  assert.ok(Number.isFinite(budgetMs) && budgetMs > 0 && budgetMs <= 3000, `截止时间必须 >0 且 ≤3 秒（现在 ${budgetMs}ms）`);
+
+  const loopAt = MAIN.indexOf('for (const dir of exportCleanupDirs)');
+  assert.notEqual(loopAt, -1, '启动回收循环仍在（F1 的覆盖面不许丢）');
+  const around = MAIN.slice(Math.max(0, loopAt - 800), loopAt + 600);
+  assert.match(around, /closeGuard\.withDeadline\(/, '回收整段必须包在 withDeadline 里（MAIN-01）');
+  assert.match(around, /EXPORT_SWEEP_DEADLINE_MS/, '截止时间要用 EXPORT_SWEEP_DEADLINE_MS');
+
+  // 有界等待仍排在建窗之前：到点就继续建窗（不是取消回收，也不是把窗口排到回收后面无限等）。
+  const createAt = MAIN.indexOf('createWindow({ runAutomationFlow: true })');
+  assert.ok(createAt > 0 && loopAt < createAt, '有界回收仍在建窗之前，到点照常建窗');
+});

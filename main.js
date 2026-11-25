@@ -114,6 +114,9 @@ const CHAPTER_READ_CONCURRENCY = 8;
 // 批内仍限并发 CHAPTER_READ_CONCURRENCY，批间严格串行 —— 只改「什么时候读」：
 // 顺序 / 内容 / 统计口径与「一次读完整个数组」逐字一致，只是不再让整本书的正文同时常驻。
 const CHAPTER_BATCH_SIZE = 32;
+// MAIN-01（中）：启动回收导出目录的总截止时间。这些目录可能在断开的网络盘 / 睡眠的移动硬盘上，
+// readdir 会挂几十秒；回收是尽力而为 —— 到点照常建窗，没扫到的目录下次启动再收。
+const EXPORT_SWEEP_DEADLINE_MS = 2000;
 
 // registerIpc() 按域拆分：导出 / 校对 / 书 CRUD / 书域数据面 / 章节保存整段搬到 ipc/*.js，
 // main.js 只做装配（依赖在 buildIpcHost() 里一次性注入）。模块自己不 require electron、不碰模块级
@@ -3139,8 +3142,22 @@ if (!gotLock) {
       recent: recentExportDirs,
       lastExportDir: exportDir
     });
-    for (const dir of exportCleanupDirs) {
-      await cleanupOrphanTmpFiles(dir).catch(() => {});
+    // MAIN-01（中）：以前这里是整段串行 await、没有截止时间 —— 一张断开的网络盘就能让 createWindow
+    // 拖到几十秒后（作者看到的是双击没反应）。回收是尽力而为：整段给 2 秒总截止时间，到点照常建窗，
+    // 没扫到的目录下次启动再收。
+    const exportSweep = await closeGuard.withDeadline(async () => {
+      for (const dir of exportCleanupDirs) {
+        await cleanupOrphanTmpFiles(dir).catch(() => {});
+      }
+    }, { ms: EXPORT_SWEEP_DEADLINE_MS });
+    if (exportSweep.timedOut) {
+      // 只记一处「跳过」诊断：日志不带目录值（作者本机路径不进日志）。
+      logError('startup-export-sweep', { code: 'EXPORT_SWEEP_TIMEOUT' }, {
+        level: 'info',
+        code: 'EXPORT_SWEEP_TIMEOUT',
+        message: `导出目录回收超过 ${EXPORT_SWEEP_DEADLINE_MS / 1000} 秒（磁盘可能已断开），已跳过，下次启动再收`,
+        literal: true
+      });
     }
     // b8：按配置决定要不要开始后台监听剪贴板（默认关）
     syncClipboardWatch();
