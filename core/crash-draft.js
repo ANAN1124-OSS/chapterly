@@ -292,6 +292,29 @@ function createCrashDraftStore(baseDir, options = {}) {
   // JSON 里，同名 .txt 是「升级写了一半」的残留。sweepOrphanBodies 只按缓存判断，不再为清理读一遍
   // 元数据（否则每次写草稿都会把全部元数据读回，CGRD-01 的写放大又回来了）。
   const metaCache = new Map(); // draftId -> { at, claimsBody } | { invalid: true }
+  // CRASH-04（2026-11-25 审计·低）：per-draft 串行队列。writeDraft 是「正文 rename → 元数据 rename」
+  // 两次原子写，两步之间没有任何互斥：删除方（discard / prune / endSession / removeAll）插在中间时，
+  // 看到的只是「元数据还没写」的中间态 —— 元数据文件不存在、正文还没 rename 到位（或反过来：正文
+  // 已落地、元数据还在临时文件里），于是这次删除什么都没删到；放行后写入把正文 + 元数据一起落地，
+  // 作者刚点过「丢弃」的草稿却「复活」，下次启动还会拿它提示恢复。反过来的交错会留下「元数据在、
+  // 正文已删」的孤儿（readDraft 只能如实报 DRAFT_MISSING，列表里却一直显示一条读不出来的草稿）。
+  // 现在同一份草稿的写入 / 删除 / 保留标记排同一条队列：删除排在写入之后 → 整份删；写入排在删除
+  // 之后 → 整份留，中间态永远不会被另一方看见。删除顺序保持「先元数据（列表立刻看不到）、再正文」。
+  // 队列只按 draftId 分（同一 store 实例 = 同一主进程，多窗口共用，见 main.js 的单例）。
+  const draftQueues = new Map(); // draftId -> 队尾 Promise（永远 resolve，失败由调用方 await 的那一步抛）
+
+  // 前一位无论成败都放行下一位：一次写入 / 删除失败不能把同一份草稿的后续操作堵死。
+  function withDraftLock(draftId, task) {
+    const previous = draftQueues.get(draftId) || Promise.resolve();
+    const run = previous.then(() => task(), () => task());
+    const tail = run.then(() => undefined, () => undefined);
+    draftQueues.set(draftId, tail);
+    const cleanup = () => {
+      if (draftQueues.get(draftId) === tail) draftQueues.delete(draftId);
+    };
+    tail.then(cleanup, cleanup);
+    return run;
+  }
 
   function claimsBodyOf(raw) {
     return Boolean(
@@ -416,21 +439,25 @@ function createCrashDraftStore(baseDir, options = {}) {
   }
 
   // 删一份草稿：元数据 + 正文一起删（哪一份删不掉都不抛；以元数据是否删掉作为 removed 判定）。
+  // CRASH-04：与同一份草稿的写入 / 保留标记串行（见 draftQueues）——写盘两次原子写之间的中间态
+  // 不会被删除方看见，删除也不会被正在落地的正文覆盖。顺序仍是「先元数据、后正文」。
   async function unlinkDraft(draftId) {
-    metaCache.delete(draftId);
-    let removed = false;
-    try {
-      await io.unlink(draftPath(draftId));
-      removed = true;
-    } catch {
-      removed = false;
-    }
-    try {
-      await io.unlink(draftBodyPath(draftId));
-    } catch {
-      /* 正文已经不在了 / 删不掉：下一次 prune 的孤儿清理会再试 */
-    }
-    return removed;
+    return withDraftLock(draftId, async () => {
+      metaCache.delete(draftId);
+      let removed = false;
+      try {
+        await io.unlink(draftPath(draftId));
+        removed = true;
+      } catch {
+        removed = false;
+      }
+      try {
+        await io.unlink(draftBodyPath(draftId));
+      } catch {
+        /* 正文已经不在了 / 删不掉：下一次 prune 的孤儿清理会再试 */
+      }
+      return removed;
+    });
   }
 
   // P2：删元数据失败时留下的「孤儿正文」清理。只删**同 id 的元数据文件都不存在**的 .txt ——
@@ -620,43 +647,50 @@ function createCrashDraftStore(baseDir, options = {}) {
       const ownerWindowId = normalizeOwnerWindowId(options && options.ownerWindowId);
       // P2：正文进 .txt、元数据进 .json，两步都是「临时文件 → rename」的原子写；字数在 sanitize 里
       // 只算一次（旧实现 writeDraft 里算了三遍：拒稿判定 / 元数据 / 回包）。
-      try {
-        await writeAtomic(draftBodyPath(draftId), entry.text);
-      } catch (err) {
-        return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err) };
-      }
-      try {
-        await writeJsonAtomic(draftPath(draftId), {
-          version: DRAFT_VERSION,
-          draftId,
-          bookPath: entry.bookPath,
-          bookTitle: entry.bookTitle,
-          chapterId: entry.chapterId,
-          chapterTitle: entry.chapterTitle,
-          chapterName: entry.chapterName,
-          chapterIndex: entry.chapterIndex,
-          at: entry.at,
-          chars: entry.chars,
-          ownerToken,
-          ownerWindowId,
-          body: `${FILE_PREFIX}${draftId}${BODY_SUFFIX}`
-        });
-      } catch (err) {
-        // 元数据写失败：正文可能是刚写进去的新版本（同名覆盖），旧元数据仍指向它 —— 列表会显示旧
-        // 字数 / 旧时间戳，但 readDraft 以正文实际内容为准，不丢字。若是全新草稿，顺手把这份孤儿正文删掉。
+      // CRASH-04：这两步在 per-draft 队列里一次做完 —— 中间的「元数据还没写」不会再被删除方看见
+      //（否则删除删空一次、放行后草稿就「复活」了）。
+      const failure = await withDraftLock(draftId, async () => {
         try {
-          const hadMeta = await io.stat(draftPath(draftId));
-          if (!hadMeta) await io.unlink(draftBodyPath(draftId));
-        } catch {
-          /* 清理失败不影响回包；下一次 prune 的孤儿清理会再试 */
+          await writeAtomic(draftBodyPath(draftId), entry.text);
+        } catch (err) {
+          return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err) };
         }
-        return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err) };
-      }
-      // CGRD-01：写入前先登记元数据，prune 只需 readdir + 缓存，不再把所有草稿正文读回解析。
-      metaCache.set(draftId, { at: entry.at, claimsBody: true });
+        try {
+          await writeJsonAtomic(draftPath(draftId), {
+            version: DRAFT_VERSION,
+            draftId,
+            bookPath: entry.bookPath,
+            bookTitle: entry.bookTitle,
+            chapterId: entry.chapterId,
+            chapterTitle: entry.chapterTitle,
+            chapterName: entry.chapterName,
+            chapterIndex: entry.chapterIndex,
+            at: entry.at,
+            chars: entry.chars,
+            ownerToken,
+            ownerWindowId,
+            body: `${FILE_PREFIX}${draftId}${BODY_SUFFIX}`
+          });
+        } catch (err) {
+          // 元数据写失败：正文可能是刚写进去的新版本（同名覆盖），旧元数据仍指向它 —— 列表会显示旧
+          // 字数 / 旧时间戳，但 readDraft 以正文实际内容为准，不丢字。若是全新草稿，顺手把这份孤儿正文删掉。
+          try {
+            const hadMeta = await io.stat(draftPath(draftId));
+            if (!hadMeta) await io.unlink(draftBodyPath(draftId));
+          } catch {
+            /* 清理失败不影响回包；下一次 prune 的孤儿清理会再试 */
+          }
+          return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err) };
+        }
+        // CGRD-01：写入前先登记元数据，prune 只需 readdir + 缓存，不再把所有草稿正文读回解析。
+        metaCache.set(draftId, { at: entry.at, claimsBody: true });
+        return null;
+      });
+      if (failure) return failure;
       try {
         // N-14：prune 的「现在」用 store 自己的时钟，不再用这份草稿自报的 at
         // （否则一个未来时间戳就会把其它窗口 / 上次运行的草稿全判过期删掉）。
+        // CRASH-04：prune 放在队列外（它逐份走 unlinkDraft 自己的队列，避免自己等自己）。
         await prune({ nowMs: normalizeDate(clock(), new Date()).getTime(), entries: await metaEntries() });
       } catch {
         /* 清理失败不影响这一份草稿 */
@@ -736,27 +770,32 @@ function createCrashDraftStore(baseDir, options = {}) {
       if (!id || id !== String(draftId == null ? '' : draftId)) {
         return { ok: false, code: 'DRAFT_MISSING', message: '草稿不在了（可能已被恢复或丢弃）', kept: 0 };
       }
-      let raw;
-      try {
-        raw = JSON.parse(await io.readFile(draftPath(id), 'utf8'));
-      } catch (err) {
-        if (err && err.code === 'ENOENT') {
-          return { ok: false, code: 'DRAFT_MISSING', message: '草稿不在了（可能已被恢复或丢弃）', kept: 0 };
+      // CRASH-04：「读元数据 → 改 keep → 写回」三步与同一份草稿的写入 / 删除串行 —— 否则删除插在
+      // 三步中间时，写回会把刚被删掉的元数据重新落盘（只留元数据、正文已删的幽灵位，见第 7 节
+      // CRASH-03 记下的残留）。
+      return withDraftLock(id, async () => {
+        let raw;
+        try {
+          raw = JSON.parse(await io.readFile(draftPath(id), 'utf8'));
+        } catch (err) {
+          if (err && err.code === 'ENOENT') {
+            return { ok: false, code: 'DRAFT_MISSING', message: '草稿不在了（可能已被恢复或丢弃）', kept: 0 };
+          }
+          return { ok: false, code: 'DRAFT_UNREADABLE', message: '草稿读不出来（可能正被占用）', kept: 0 };
         }
-        return { ok: false, code: 'DRAFT_UNREADABLE', message: '草稿读不出来（可能正被占用）', kept: 0 };
-      }
-      const entry = storedEntryFrom(raw, id, maxTextChars);
-      if (!entry) return { ok: false, code: 'DRAFT_MISSING', message: '草稿内容不完整（已跳过）', kept: 0 };
-      if (entry.keep === true) return { ok: true, kept: 1 };
-      raw.keep = true;
-      try {
-        await writeJsonAtomic(draftPath(id), raw);
-      } catch (err) {
-        return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err), kept: 0 };
-      }
-      // 缓存只记 at / claimsBody（prune / 孤儿清理用）；保留标记只被 endSession 的全量 scan 读取。
-      metaCache.set(id, { at: entry.at, claimsBody: claimsBodyOf(raw) });
-      return { ok: true, kept: 1 };
+        const entry = storedEntryFrom(raw, id, maxTextChars);
+        if (!entry) return { ok: false, code: 'DRAFT_MISSING', message: '草稿内容不完整（已跳过）', kept: 0 };
+        if (entry.keep === true) return { ok: true, kept: 1 };
+        raw.keep = true;
+        try {
+          await writeJsonAtomic(draftPath(id), raw);
+        } catch (err) {
+          return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err), kept: 0 };
+        }
+        // 缓存只记 at / claimsBody（prune / 孤儿清理用）；保留标记只被 endSession 的全量 scan 读取。
+        metaCache.set(id, { at: entry.at, claimsBody: claimsBodyOf(raw) });
+        return { ok: true, kept: 1 };
+      });
     },
 
     async removeFor(target) {

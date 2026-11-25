@@ -737,6 +737,102 @@ test('CRASH-01：正文已 rename、元数据还没写时另一窗口写入，�
   await a.endSession();
 });
 
+// CRASH-04（2026-11-25 审计·低）：writeDraft 是「正文 rename → 元数据 rename」两次原子写，两步
+// 之间没有任何互斥。删除方（discard / prune / endSession / removeAll）在这个窗口里插入时，看到的
+// 只是「元数据还没写」的中间态：元数据文件不存在、正文还没 rename 到位（或正好反过来：正文已落地、
+// 元数据还在临时文件里）—— 于是这次删除什么都没删到，放行后写入把元数据和正文一起落地：
+//   · 作者刚点了「丢弃」，草稿却「复活」，下次启动还会拿它提示恢复；
+//   · 或者反过来留下「元数据在、正文已删」的幽灵位（readDraft 如实报 DRAFT_MISSING）。
+// 修法：同一份草稿的写入 / 删除 / 保留标记排同一条 per-draft 队列（删除顺序仍是先元数据、后正文），
+// 任何交错都只能收敛到「整份删」或「整份留」，不存在只有一半的中间态。
+// 锚点用注入 fs 分别卡住两次 rename 的中间态，在 await 期间点「丢弃」。
+test('CRASH-04：正文 / 元数据 rename 之间被丢弃，草稿只能整份删或整份留（不许复活、不许留孤儿元数据）', async () => {
+  // 场景 A：writeDraft 卡在正文 rename（元数据还没写）。作者此刻丢弃 →
+  //   修前：删除删了个空（正文还没 rename、元数据还不存在），放行后草稿整份复活。
+  const rootA = await newRoot();
+  let releaseA = () => {};
+  const gateA = new Promise((resolve) => {
+    releaseA = resolve;
+  });
+  let stalledA = false;
+  const fsA = {
+    ...failingFs(),
+    rename: async (from, to) => {
+      if (!stalledA && /draft-[a-f0-9]{16}\.txt$/.test(String(to))) {
+        stalledA = true;
+        await gateA; // 停在「正文还没 rename、元数据还没写」的中间态
+      }
+      return fsp.rename(from, to);
+    }
+  };
+  const storeA = storeAt(rootA, { fs: fsA, pid: 7001, ownerToken: 'token-c4' });
+  const writingA = storeA.writeDraft(
+    draft({ chapterId: 'ch_c4a', at: '2026-11-26T09:00:00.000Z', text: '作者已经决定丢弃的正文' }),
+    { ownerToken: 'token-c4' }
+  );
+  const deadlineA = Date.now() + 5000;
+  while (!stalledA && Date.now() < deadlineA) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(stalledA, true, '前提：writeDraft 卡在正文 rename');
+  // 作者选「丢弃」：删除排在这次写入之后（修前它是立刻跑、删了个空）
+  const removingA = storeA.removeFor({ bookPath: BOOK, chapterId: 'ch_c4a' });
+  releaseA();
+  const [wroteA, removedA] = await Promise.all([writingA, removingA]);
+  assert.equal(wroteA.ok, true, '写入本身成功（只是随后被删除）');
+  assert.equal(removedA.removed, 1, '丢弃必须真的删掉这份草稿（修前：删除跑在落地之前，removed 0、草稿复活）');
+  const leftA = (await fsp.readdir(storeA.dir)).filter((name) => /^draft-/.test(name));
+  assert.deepEqual(leftA, [], '整份删：元数据与正文都不许留下');
+  assert.deepEqual(await storeA.listDrafts(), [], '列表里不许再出现这份被丢弃的草稿');
+  // 再写一次同一份草稿：队列排空后照常整份留（正文与元数据都在、可读回）
+  const againA = await storeA.writeDraft(
+    draft({ chapterId: 'ch_c4a', at: '2026-11-26T09:01:00.000Z', text: '丢弃之后重新写下的正文' }),
+    { ownerToken: 'token-c4' }
+  );
+  assert.equal(againA.ok, true);
+  assert.ok(fsSync.existsSync(path.join(storeA.dir, `draft-${againA.draftId}.json`)), '整份留：元数据在');
+  assert.ok(fsSync.existsSync(path.join(storeA.dir, `draft-${againA.draftId}.txt`)), '整份留：正文在');
+  const readA = await storeA.readDraft(againA.draftId);
+  assert.equal(readA.ok, true);
+  assert.equal(readA.draft.text, '丢弃之后重新写下的正文');
+  await storeA.endSession();
+
+  // 场景 B：writeDraft 卡在元数据 rename（正文已落地、元数据还没写）。作者此刻丢弃 →
+  //   修前：删除把正文删掉、元数据 rename 放行后落地 → 留下一份指向已删正文的孤儿元数据。
+  const rootB = await newRoot();
+  let releaseB = () => {};
+  const gateB = new Promise((resolve) => {
+    releaseB = resolve;
+  });
+  let stalledB = false;
+  const fsB = {
+    ...failingFs(),
+    rename: async (from, to) => {
+      if (!stalledB && /draft-[a-f0-9]{16}\.json$/.test(String(to))) {
+        stalledB = true;
+        await gateB; // 停在「正文已 rename、元数据还没写」的中间态
+      }
+      return fsp.rename(from, to);
+    }
+  };
+  const storeB = storeAt(rootB, { fs: fsB, pid: 7002, ownerToken: 'token-c4b' });
+  const writingB = storeB.writeDraft(
+    draft({ chapterId: 'ch_c4b', at: '2026-11-26T09:00:00.000Z', text: '元数据落地前被丢弃的正文' }),
+    { ownerToken: 'token-c4b' }
+  );
+  const deadlineB = Date.now() + 5000;
+  while (!stalledB && Date.now() < deadlineB) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(stalledB, true, '前提：writeDraft 卡在元数据 rename（正文已落地）');
+  const removingB = storeB.removeFor({ bookPath: BOOK, chapterId: 'ch_c4b' });
+  releaseB();
+  const [wroteB, removedB] = await Promise.all([writingB, removingB]);
+  assert.equal(wroteB.ok, true);
+  assert.equal(removedB.removed, 1, '丢弃必须排在写入之后整份删（修前：删掉正文、removed 0，元数据随后落地成孤儿）');
+  const leftB = (await fsp.readdir(storeB.dir)).filter((name) => /^draft-/.test(name));
+  assert.deepEqual(leftB, [], '不许留下孤儿元数据 / 无主正文');
+  assert.equal(fsSync.existsSync(path.join(storeB.dir, `draft-${wroteB.draftId}.json`)), false);
+  assert.deepEqual(await storeB.listDrafts(), [], '孤儿元数据不许出现在列表里（修前会显示一条读不出来的草稿）');
+  await storeB.endSession();
+});
+
 // N-13（二次审查）：崩溃草稿的原子写必须「临时文件 → fsync → rename」。草稿是未保存正文的唯一
 // 磁盘兜底，整机断电时少了 fsync 的窗口里 rename 可能先落、数据块没落盘（空文件 / 半截）。
 test('N-13：writeDraft 的原子写在 rename 之前调用 fsync（正文与元数据各一次）', async () => {
