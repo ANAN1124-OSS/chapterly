@@ -179,3 +179,82 @@ test('SEARCH-02：ensure 的每一条出口都要发 done（无变化的后台�
     '书架根读不了也要发 done（这是超时快照之后唯一的结束信号，界面不会永远停在 building）'
   );
 });
+
+// SEARCH-03②（2026-11-25 审计·低）：ensure 的串行链只排队、不合并 —— 一趟慢校验（大书架 / 网络盘）
+// 期间每打一次搜索都往队尾追加一整趟完整校验。5 次搜索 = 5 趟全架 stat + 5 份索引写。
+// 修法：同根同 deep 的请求合并到正在飞 / 排队的那一趟（force 例外：它要求真的重新校验）。
+// 锚点：按住第一趟校验的书架根签名 stat，连发 5 次搜索（各自 30ms 超时先回 building 快照），
+// 放行后数 stat 次数：合并后只应有一趟（根签名 1 次 + 复用那本书的 书目.json 1 次 = 2 次）。
+test('SEARCH-03（合并）：ensure 在飞时连发 5 次搜索只执行一趟校验', async () => {
+  const base = await mkTmp();
+  const { userData, booksRoot } = await makeWorld(base);
+  await makeBook(booksRoot, '书甲', '书甲', [{ name: '第一章', text: '青柠色的雨伞挂在门口。' }]);
+  const realStat = fs.stat;
+  let armed = false;
+  let held = false;
+  let statCalls = 0;
+  let releaseSignature = () => {};
+  const signatureGate = new Promise((resolve) => {
+    releaseSignature = resolve;
+  });
+  let signatureEntered;
+  const signatureReached = new Promise((resolve) => {
+    signatureEntered = resolve;
+  });
+  const store = search.createSearchStore({
+    userDataDir: userData,
+    // 0 = 每次搜索都会自己发起一趟校验（旧实现下 5 次搜索 = 5 趟）
+    validateIntervalMs: 0,
+    searchEnsureTimeoutMs: 30,
+    stat: async (target) => {
+      if (armed) {
+        statCalls += 1;
+        // 只按住第一趟校验的书架根签名探测（模拟 SMB / 网络盘的慢 stat，与 T-06 / SEARCH-02 同一手法）
+        if (!held && String(target) === booksRoot) {
+          held = true;
+          signatureEntered();
+          await signatureGate;
+        }
+      }
+      return realStat(target);
+    }
+  });
+  await store.ensure({ booksRoot }); // 预热：先把索引建好（这一趟不受闸门影响）
+  armed = true;
+  let stalled = false;
+  let idle = false;
+  let quick = [];
+  try {
+    const searches = [];
+    for (let i = 0; i < 5; i += 1) searches.push(store.search({ booksRoot, query: '青柠色' }));
+    stalled = await settleWithin(signatureReached, 5000);
+    quick = await Promise.all(searches);
+    releaseSignature();
+    idle = await settleWithin(
+      (async () => {
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          if (!(await store.status()).building) return true;
+          await new Promise((resolve) => setTimeout(resolve, 15));
+        }
+        return false;
+      })(),
+      6000
+    );
+  } finally {
+    releaseSignature();
+    armed = false;
+  }
+  assert.equal(stalled, true, '前提：第一趟校验卡在书架根签名探测上（30ms 超时来不及）');
+  assert.equal(
+    quick.filter((found) => found.index.building === true).length,
+    5,
+    '5 次搜索都要先回「正在建索引」快照（超时路径不变）'
+  );
+  assert.equal(idle, true, '后台校验要在用例预算内结束');
+  assert.equal(
+    statCalls,
+    2,
+    '5 次搜索只执行一趟校验（根签名 1 次 + 复用那本书的 书目.json 1 次）；旧实现排 5 趟 = 10 次'
+  );
+});

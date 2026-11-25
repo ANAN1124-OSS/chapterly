@@ -117,6 +117,12 @@ const SEARCH_DEEP_INTERVAL_MS = 60000;
 // 搜索侧改成「索引就绪 + 同一个书架根 + 版本一致」时直接复用内存索引，60 s 内不再校验；
 // 更快的失效靠根目录签名（书架目录一次 stat，见下）发现新书 / 删书。
 const SEARCH_ENSURE_INTERVAL_MS = 60000;
+// SEARCH-03①（2026-11-25 审计·低）：书目持续读失败（网络盘 / 同步盘 EBUSY）时，这本书的脏标记
+// 会一直留着。以前「脏集非空」就等于「复用窗口必须关着」，于是每一次搜索都重跑一整趟校验
+//（整架 书目.json stat）并整份重写索引；而重建本来就失败，纯属白付。现在连续失败的书按这个
+// 退避期退出「必须立刻重建」的判定：它已经降级成无位图候选（搜索逐章核对，只降速不漏报），
+// 重试交给既有的全量校验节流（10 s / 60 s），不再由每一次搜索轮询触发。force 不受退避限制。
+const BUILD_RETRY_BACKOFF_MS = 30000;
 // T-06（三次审查）：搜索侧隐式 ensure 的独立短超时。空闲 60 秒后首搜会内联 await 一整趟校验
 // （deep：逐章 stat + 到期书整本指纹复核），大书架 / 网络盘上数秒无结果也无进度说明。
 // 到点先回「正在建索引」快照（与 P1 首建期在飞分支同一形状），校验继续在后台跑；
@@ -854,6 +860,10 @@ function createSearchStore(options = {}) {
   const hashOf = typeof options.contentHashOf === 'function' ? options.contentHashOf : chapterContentHashOf;
   // 搜索侧窗口：validateIntervalMs=0（单测里「每次都要看到外部改动」的口径）时退回旧行为。
   const searchEnsureIntervalMs = validateIntervalMs === 0 ? 0 : SEARCH_ENSURE_INTERVAL_MS;
+  // SEARCH-03①：建位图失败后的退避期（见 BUILD_RETRY_BACKOFF_MS）。单测注入 0 可立刻重试。
+  const buildRetryBackoffMs = Number.isFinite(options.buildRetryBackoffMs)
+    ? Math.max(0, Number(options.buildRetryBackoffMs))
+    : BUILD_RETRY_BACKOFF_MS;
   // T-06：搜索侧隐式 ensure 的短超时（见 SEARCH_ENSURE_TIMEOUT_MS）；0 = 不设超时（老行为）。
   const searchEnsureTimeoutMs =
     options.searchEnsureTimeoutMs === undefined || options.searchEnsureTimeoutMs === null
@@ -883,6 +893,8 @@ function createSearchStore(options = {}) {
   // P1（审计修复 #9）：当前在途 / 排队校验对应的书架根（归一化后）。搜索靠它判断
   // 「同一个根已经有校验在飞」，避免首建期再排到它后面等一遍完整校验。
   let ensureRoot = '';
+  // SEARCH-03②：在途 / 排队那一趟的「根 + deep」标识。同键请求直接复用这一趟（见 ensure）。
+  let ensureKey = '';
   let lastFullValidateAt = 0;
   let lastProgress = null;
   let lastRun = null;
@@ -902,6 +914,9 @@ function createSearchStore(options = {}) {
   // 保存又标脏」的标记吞掉；这一趟再按空脏集重开 60 s 复用窗口，下一次搜索就拿保存前的位图把新正文
   // 当「不匹配」滤掉（违反「位图只会误报、不会漏报」）。版本号只增不减，删书时随脏集合一起清。
   const dirtyVersions = new Map();
+  // SEARCH-03①：每本书「上一次建位图失败」的时刻（归一化书路径 → nowMs）。只服务失败退避
+  //（见 BUILD_RETRY_BACKOFF_MS 与 hasPendingDirty），不落盘；换根 / 删书时清掉，不随会话泄漏。
+  const buildFailAt = new Map();
   // WP10（审计 P-N1）：进程内的「这本书上次整本复核内容指纹」时刻（归一化书路径 → nowMs）。
   // 只做节流、**不落盘**：写进索引会让每次复核都整份重写 22 MB（写放大），而下次启动对每本书
   // 再复核一次本来就和改前行为一致。删书 / 换根时清掉对应 key（不随会话泄漏）。
@@ -1159,6 +1174,8 @@ function createSearchStore(options = {}) {
       lastFullValidateAt = 0;
       // WP10（P-N1）：新书架根的每本书都要从「建索引」口径复核一次（旧根的节流账作废）。
       hashCheckedAt.clear();
+      // SEARCH-03①：旧根的失败退避账同样作废（换根后这本书要重新试一次）。
+      buildFailAt.clear();
     }
     rootProblem = '';
 
@@ -1247,16 +1264,21 @@ function createSearchStore(options = {}) {
         //   · 旧 entry 留在索引里，但清掉位图 —— 没有位图的书搜索永远当候选、逐章核对，
         //     只降速不漏报（本模块的核心不变量）；
         //   · 脏标记保留 → 下一次 ensure 仍会重建这本书；
-        //   · 计 run.changed → 这次降级要落盘，内存与盘面不分叉。
+        //   · 只有降级后的 entry 与旧 entry 真的不同才计 run.changed（SEARCH-03①：旧实现无条件
+        //     changed，书目持续读失败时每次搜索都整份重写索引文件）。
         if (old) {
           // 与「章节读不了」同一口径（buildBookEntry 的 missingText 分支）：空位图、bloomOmitted 保持
           // false（不是「主动放弃」的粘性结论），下一次能读书目时自然会重建位图。
-          nextBooks.push({ ...old, bloom: '', bloomBits: 0, bloomCrc: 0, bloomOmitted: false, bloomDropped: false });
+          const degraded = { ...old, bloom: '', bloomBits: 0, bloomCrc: 0, bloomOmitted: false, bloomDropped: false };
+          if (!sameBook(old, degraded)) run.changed = true;
+          nextBooks.push(degraded);
+          previous.delete(key);
         }
-        run.changed = true;
+        buildFailAt.set(key, nowMs()); // SEARCH-03①：进入失败退避（不阻塞复用窗口）
         continue;
       }
       previous.delete(key);
+      buildFailAt.delete(key); // SEARCH-03①：这本书恢复了，清掉失败退避账
       // SEARCH-01：只有「这一趟开始建之前就脏」或「建的过程中没再被标脏」才清。版本变了说明作者在
       // 构建期间保存过，这一趟的位图/字数可能来自保存前 —— 脏标记留到下一趟 ensure 重建（尾部
       // lastEnsureAt 也会因为脏集非空保持 0，搜索不会落在复用窗口里）。
@@ -1288,6 +1310,10 @@ function createSearchStore(options = {}) {
     for (const key of Array.from(hashCheckedAt)) {
       if (!folderKeys.has(key)) hashCheckedAt.delete(key);
     }
+    // SEARCH-03①：书已经不在了的失败退避账也一起清。
+    for (const key of Array.from(buildFailAt)) {
+      if (!folderKeys.has(key)) buildFailAt.delete(key);
+    }
     index = {
       version: INDEX_VERSION,
       root,
@@ -1301,7 +1327,10 @@ function createSearchStore(options = {}) {
     // 脏集非空就不能重开复用窗口 —— 否则搜索在 60 s 内直接复用旧索引、用旧位图把刚保存的内容
     // 当「不匹配」滤掉（违反「位图只会误报、不会漏报」的不变量）。保持 lastEnsureAt=0，
     // 下一次 search 立刻再校验一趟，把这批脏书消费掉。
-    lastEnsureAt = dirtyBooks.size === 0 ? nowMs() : 0;
+    // SEARCH-03①：例外是「刚建位图失败、还在退避期」的脏书（hasPendingDirty）—— 它已经降级成
+    // 无位图候选，搜索逐章核对、不会漏报；再让它把窗口钉死就等于每次搜索都白跑一趟注定失败的
+    // 校验 + 整份写盘。退避到点后它照旧算待重建，下一次校验会重试。
+    lastEnsureAt = hasPendingDirty() ? 0 : nowMs();
     rootSignature = signature;
     lastSignatureCheckAt = lastEnsureAt;
     if (run.changed || rootChanged) await saveThrough(); // 审计修复 #46（E21）：排进 flush 的串行链
@@ -1326,19 +1355,26 @@ function createSearchStore(options = {}) {
   }
 
   // 同一时间只跑一次校验 / 建索引；后来的调用排在后面（force 仍会执行）。
+  // SEARCH-03②：同根同 deep 的请求合并到正在飞 / 排队的那一趟 —— 以前串行链只排队不合并，一趟
+  // 慢校验（大书架 / 网络盘）期间每打一次搜索都往队尾追加一整趟完整校验（5 次搜索 = 5 趟全架
+  // stat + 5 份索引写）。合并只改「重复的那几趟」：deep 不同（搜索轻量校验 vs 回书架深度校验）
+  // 仍各排一趟；force 例外 —— 它要求这一趟真的重新校验，既不合并别人、也不被别人合并。
   function ensure(opts = {}) {
-    ensureRoot = normalizePath(String(opts.booksRoot == null ? '' : opts.booksRoot));
+    const root = normalizePath(String(opts.booksRoot == null ? '' : opts.booksRoot));
+    ensureRoot = root;
+    const force = Boolean(opts.force);
+    const key = `${root}\u0000${opts.deep === false ? 'shallow' : 'deep'}`;
+    if (!force && ensurePromise && ensureKey === key) return ensurePromise;
     const previous = ensurePromise || Promise.resolve();
     const run = previous.catch(() => {}).then(() => doEnsure(opts));
     ensurePromise = run;
-    run.then(
-      () => {
-        if (ensurePromise === run) ensurePromise = null;
-      },
-      () => {
-        if (ensurePromise === run) ensurePromise = null;
-      }
-    );
+    ensureKey = force ? '' : key;
+    const settle = () => {
+      if (ensurePromise !== run) return;
+      ensurePromise = null;
+      if (!force) ensureKey = '';
+    };
+    run.then(settle, settle);
     return run;
   }
 
@@ -1438,7 +1474,9 @@ function createSearchStore(options = {}) {
       index.version === INDEX_VERSION &&
       lastEnsureAt > 0 &&
       // 五-M27（CI-1）：脏集非空 = 有书保存过但还没重建位图，复用旧索引会漏报，必须先校验。
-      dirtyBooks.size === 0 &&
+      // SEARCH-03①：还在「建位图失败」退避期里的脏书不算 —— 它已经降级成无位图候选（搜索逐章
+      // 核对、不漏报），不能因为书目持续读失败就让每一次搜索都重跑一整趟校验。
+      hasPendingDirty() === false &&
       now - lastEnsureAt < searchEnsureIntervalMs &&
       !forceEnsure;
     let signatureChanged = false;
@@ -1819,6 +1857,21 @@ function createSearchStore(options = {}) {
 
   function dirtyList() {
     return Array.from(dirtyBooks);
+  }
+
+  // SEARCH-03①：现在还有「必须立刻重建」的脏书吗？
+  // 脏书 + 位图待重建会关掉 60 s 复用窗口（五-M27 / SEARCH-01：不能拿保存前的位图漏搜）。
+  // 但连续失败的脏书是另一回事：它已经降级成无位图候选（搜索永远当候选、逐章核对，只降速不
+  // 漏报），退避期内再让它把窗口钉死，只会让每一次搜索都白跑一整趟校验 + 整份写盘。所以
+  // 「失败在退避期内」的脏书不阻塞复用窗口；退避到点后照旧要求重建（下一次保证会重试）。
+  function hasPendingDirty() {
+    if (dirtyBooks.size === 0) return false;
+    const now = nowMs();
+    for (const key of dirtyBooks) {
+      const failedAt = buildFailAt.get(key) || 0;
+      if (!failedAt || now - failedAt >= buildRetryBackoffMs) return true;
+    }
+    return false;
   }
 
   return {

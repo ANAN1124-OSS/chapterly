@@ -799,3 +799,88 @@ test('正文索引（T-12）：读书目瞬时失败保留旧 entry（无位图�
   assert.equal(hit.results.length, 1, '恢复后新内容立刻可搜（不漏报）');
 });
 
+// SEARCH-03①（2026-11-25 审计·低）：T-12 降级分支无条件 run.changed = true。书目持续读失败
+// （网络盘 / 同步盘 EBUSY）时，这本书一直挂在脏集里 → lastEnsureAt 永远是 0 → 之后每一次搜索都
+// 重跑一整趟校验（整架 书目.json stat）并整份重写索引文件。降级只在「和旧 entry 真的不同」时
+// 才计 changed；连续失败的书按退避时间不再把复用窗口钉死（重试交给既有的全量校验节流）。
+// 降级后的书没有位图，搜索照样逐章核对 —— 只降速不漏报。
+test('SEARCH-03（降级）：书目持续读失败时，第二次搜索不再整架 stat + 整份写盘（仍不漏报）', async () => {
+  const base = await mkTmp();
+  // TESTC-06：双目录统一走 makeWorld
+  const { userData, booksRoot } = await makeWorld(base);
+  // 一本健康的书（每趟校验只需一次 书目.json stat 就能复用）+ 一本书目读不了的书
+  await makeBook(booksRoot, '健康书', '健康书', [{ name: '章一', text: '窗外的雨下了一夜。' }]);
+  const { bookPath: sickPath } = await makeBook(booksRoot, '病书', '病书', [
+    { name: '章一', text: '旧车站的雨伞是青柠色的。' }
+  ]);
+  const statCalls = [];
+  const store = makeStore(userData, {
+    // 非 0 的校验间隔 = 生产口径：搜索侧 60 秒复用窗口生效（0 时每次搜索本来就要自己校验一趟）
+    validateIntervalMs: 60000,
+    // 失败退避期压到 500ms：用例里等得起，能验证「退避到点后会重试」
+    buildRetryBackoffMs: 500,
+    stat: (target) => {
+      statCalls.push(String(target));
+      return fs.stat(target);
+    }
+  });
+  await store.ensure({ booksRoot }); // 首建：两本书都有位图
+  statCalls.length = 0;
+  const storage = require('../core/storage');
+  const originalReadMeta = storage.readBookMeta;
+  const realRename = fs.rename;
+  let indexWrites = 0;
+  storage.readBookMeta = async (target) => {
+    if (String(target) === String(sickPath)) {
+      throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+    }
+    return originalReadMeta(target);
+  };
+  // 数「整份写盘」：索引落盘走 core/atomic 的 rename（同一个 fs/promises 模块对象）
+  fs.rename = async (from, to) => {
+    if (path.basename(String(to)) === search.INDEX_FILE_NAME) indexWrites += 1;
+    return realRename(from, to);
+  };
+  let first;
+  let second;
+  let retried;
+  let statsAfterFirst = 0;
+  let writesAfterFirst = 0;
+  let statsAfterSecond = 0;
+  let writesAfterSecond = 0;
+  try {
+    store.markDirty(sickPath); // 这本书刚保存过一章：正常情况下这一趟要重建位图
+    first = await store.search({ booksRoot, query: '青柠' });
+    statsAfterFirst = statCalls.length;
+    writesAfterFirst = indexWrites;
+    second = await store.search({ booksRoot, query: '青柠' });
+    statsAfterSecond = statCalls.length;
+    writesAfterSecond = indexWrites;
+    // 退避到点后必须重试（不能因为「退避」就永远不再重建这本书）：仍是同一次失败 → 不再写盘
+    await new Promise((resolve) => setTimeout(resolve, 550)); // > buildRetryBackoffMs
+    retried = await store.search({ booksRoot, query: '青柠' });
+  } finally {
+    fs.rename = realRename;
+    storage.readBookMeta = originalReadMeta;
+  }
+  assert.equal(writesAfterFirst, 1, '降级与旧 entry（有位图）真的不同 → 第一趟必须落盘一次');
+  assert.equal(
+    statsAfterSecond - statsAfterFirst,
+    0,
+    '第二次搜索不许再整架 stat：失败退避把复用窗口重新打开（旧实现每趟都重跑一次校验）'
+  );
+  assert.equal(writesAfterSecond - writesAfterFirst, 0, '第二次搜索不许整份重写索引文件（旧实现每趟都写）');
+  assert.equal(first.results.length, 1, '降级后的书没有位图 → 永远当候选逐章核对，第一趟就能搜到');
+  assert.equal(second.results.length, 1, '只降速不漏报：第二次搜索仍要能搜到');
+  assert.ok(
+    statCalls.length - statsAfterSecond > 0,
+    '退避到点后要重新尝试校验（不能因为避开失败就永远不重建）'
+  );
+  assert.equal(indexWrites - writesAfterSecond, 0, '重试仍失败 → 降级与旧 entry 相同，不再整份写盘');
+  assert.equal(retried.results.length, 1, '重试那一趟仍不漏报');
+  const onDisk = JSON.parse(await fs.readFile(path.join(userData, search.INDEX_FILE_NAME), 'utf8'));
+  const sickEntry = onDisk.books.find((book) => book.folder === '病书');
+  assert.ok(sickEntry, '盘面索引里这本书仍在（不许静默掉出索引）');
+  assert.equal(sickEntry.bloom, '', '降级成无位图候选要落盘（否则重启后旧位图会把新正文滤掉）');
+});
+
