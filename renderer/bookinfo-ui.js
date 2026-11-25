@@ -222,19 +222,31 @@
     return out;
   }
 
-  async function saveConfigGroups(names) {
-    const list = [];
+  // RNDS-03（低）：只提交增量（add / remove），不再把本窗口读到的整表写回 —— 两个窗口各自
+  // 「读快照 → 追加 → 整表写回」时，后写者会把先写者刚加的空分组静默盖掉。主进程在配置写
+  // 队列里用最新 current 重算，改名 / 合并 = remove 旧名 + add 新名。
+  async function saveConfigGroups(patch) {
+    const add = [];
     const seen = new Set();
-    for (const item of Array.isArray(names) ? names : []) {
+    for (const item of Array.isArray(patch && patch.add) ? patch.add : []) {
       const name = bookInfoLib.sanitizeGroup(item);
       if (!name) continue;
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      list.push(name);
+      add.push(name);
     }
+    const remove = [];
+    for (const item of Array.isArray(patch && patch.remove) ? patch.remove : []) {
+      const name = bookInfoLib.sanitizeGroup(item);
+      if (name) remove.push(name);
+    }
+    if (!add.length && !remove.length) return { ok: true };
+    const request = {};
+    if (add.length) request.bookGroupsAdd = add;
+    if (remove.length) request.bookGroupsRemove = remove;
     try {
-      const cfg = await call(api.setConfig, { bookGroups: list });
+      const cfg = await call(api.setConfig, request);
       if (cfg && typeof cfg === 'object') state.globalConfig = cfg;
       return { ok: true };
     } catch (err) {
@@ -280,7 +292,7 @@
       toast(`分组「${canonical}」已经存在`);
       return { ok: false, exists: true };
     }
-    const saved = await saveConfigGroups(configuredGroups().concat(canonical));
+    const saved = await saveConfigGroups({ add: [canonical] });
     if (!saved.ok) return saved;
     renderShelfGroupBar();
     renderShelf();
@@ -295,8 +307,7 @@
       toast('这个分组里还有书，先把书移到别的分组或「未分组」再删');
       return { ok: false };
     }
-    const next = configuredGroups().filter((item) => item.toLowerCase() !== group.toLowerCase());
-    const saved = await saveConfigGroups(next);
+    const saved = await saveConfigGroups({ remove: [group] });
     if (!saved.ok) return saved;
     if (state.shelfGroup === group) state.shelfGroup = '';
     renderShelfGroupBar();
@@ -445,9 +456,7 @@
       toast('分组名没有变化');
       return { ok: true, changed: 0, failed: [] };
     }
-    const next = configuredGroups().filter((item) => item.toLowerCase() !== group.toLowerCase());
-    if (canonical && !next.some((item) => item.toLowerCase() === canonical.toLowerCase())) next.push(canonical);
-    const saved = await saveConfigGroups(next);
+    const saved = await saveConfigGroups({ remove: [group], add: canonical ? [canonical] : [] });
     if (!saved.ok) return saved;
     const changes = bookInfoLib.planGroupChange(state.books, group, canonical);
     const result = changes.length ? await applyGroupChanges(changes) : { changed: 0, failed: [] };
@@ -481,9 +490,7 @@
       toast('分组名没有变化');
       return { ok: true, changed: 0, failed: [] };
     }
-    const next = configuredGroups().filter((item) => item.toLowerCase() !== group.toLowerCase());
-    if (canonical && !next.some((item) => item.toLowerCase() === canonical.toLowerCase())) next.push(canonical);
-    const saved = await saveConfigGroups(next);
+    const saved = await saveConfigGroups({ remove: [group], add: canonical ? [canonical] : [] });
     if (!saved.ok) return saved;
     const changes = bookInfoLib.planGroupChange(state.books, group, canonical);
     const result = changes.length ? await applyGroupChanges(changes) : { changed: 0, failed: [] };

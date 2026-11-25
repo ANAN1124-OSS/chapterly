@@ -1805,8 +1805,13 @@ function registerIpc() {
       // 回包，用 except 跳过它，免得本窗口把自己的保存当成「别的窗口改过设置」再重填一遍表单。
       // 五-L2（CI-4）：bookDisplay 的合并已经挪进写队列，patch 里不再有它 —— 摘要补上这个顶层键，
       // 别的窗口才会把按书显示覆盖也刷新一遍。
-      const changed = Object.keys(gated.patch || {});
+      const changed = Object.keys(gated.patch || {}).filter(
+        (key) => key !== 'bookGroupsAdd' && key !== 'bookGroupsRemove'
+      );
       if (displayPatch) changed.push('bookDisplay');
+      // RNDS-03（低）：分组增量写的两个操作字段不是配置键 —— 摘要里归一成 bookGroups，
+      // 别的窗口才会按「全局配置变了」刷新（真正的合并由 configStore.set 在写队列内做）。
+      if (gated.patch && (gated.patch.bookGroupsAdd || gated.patch.bookGroupsRemove)) changed.push('bookGroups');
       broadcast(
         'config:changed',
         { reason: 'config', changed },

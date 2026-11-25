@@ -140,7 +140,27 @@ function build(options = {}) {
     async setConfig(patch) {
       calls.setConfig.push(patch);
       if (options.setConfigError) throw new Error(options.setConfigError);
-      return { ...(state.globalConfig || {}), ...patch };
+      // RNDS-03：主进程的 config:set 现在接 bookGroupsAdd / bookGroupsRemove 增量操作，
+      // 在写队列内基于最新值重算整份清单；测试桩按同一契约合并，state 形状才不会失真。
+      const next = { ...(state.globalConfig || {}), ...patch };
+      const adding = Array.isArray(patch && patch.bookGroupsAdd);
+      const removing = Array.isArray(patch && patch.bookGroupsRemove);
+      if (adding || removing) {
+        const remove = new Set((patch.bookGroupsRemove || []).map((name) => String(name).toLowerCase()));
+        const groups = (Array.isArray(next.bookGroups) ? next.bookGroups : []).filter(
+          (name) => !remove.has(String(name).toLowerCase())
+        );
+        for (const name of patch.bookGroupsAdd || []) {
+          const value = String(name == null ? '' : name).trim();
+          if (value && !groups.some((item) => item.toLowerCase() === value.toLowerCase())) groups.push(value);
+        }
+        delete next.bookGroupsAdd;
+        delete next.bookGroupsRemove;
+        if (groups.length) next.bookGroups = groups;
+        else delete next.bookGroups;
+      }
+      state.globalConfig = next;
+      return next;
     }
   };
   const host = {
@@ -1419,7 +1439,7 @@ test('新建分组：写入 config.bookGroups，空分组立即进入分组清�
   const result = await ctx.ui.createShelfGroup();
   assert.equal(result.ok, true);
   assert.equal(result.name, '短篇');
-  assert.deepEqual(ctx.calls.setConfig, [{ bookGroups: ['短篇'] }], '只写 bookGroups 一个键');
+  assert.deepEqual(ctx.calls.setConfig, [{ bookGroupsAdd: ['短篇'] }], '只提交新增操作（不再把整表写回）');
   assert.deepEqual(ctx.state.globalConfig.bookGroups, ['短篇']);
   assert.match(ctx.calls.toast.at(-1)[0], /已新建分组「短篇」/);
 
@@ -1439,7 +1459,7 @@ test('新建分组：写入 config.bookGroups，空分组立即进入分组清�
 test('删除空分组：只删配置清单；有书的分组拒绝', async () => {
   const emptyGroup = build({ books: [], globalConfig: { booksRoot: '/书库', bookGroups: ['短篇', '旧组'] } });
   assert.equal((await emptyGroup.ui.deleteEmptyShelfGroup('旧组')).ok, true);
-  assert.deepEqual(emptyGroup.calls.setConfig, [{ bookGroups: ['短篇'] }]);
+  assert.deepEqual(emptyGroup.calls.setConfig, [{ bookGroupsRemove: ['旧组'] }], '删除也只提交 remove 操作');
 
   const withBook = build({
     books: [{ path: '/库/甲', title: '甲', group: '书友' }],

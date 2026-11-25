@@ -431,6 +431,46 @@ function sanitizeBookGroups(raw) {
   return out;
 }
 
+// RNDS-03（低）：bookGroups 的增量写。两个窗口各自「读整表 → 追加 → 整表写回」时，后写者
+// 会用自己那份旧快照把先写者刚加的空分组静默盖掉。add / remove 两个操作放进 configStore
+// 的写队列，用队列内刚读到的 current 重算（与五-L2 的 bookDisplayPatch 同一套做法）；
+// 改名 / 合并由「remove 旧名 + add 新名」组合表达，不需要单列 rename 操作。
+function takeBookGroupsPatch(patch) {
+  if (!patch || typeof patch !== 'object') return null;
+  const hasAdd = Object.prototype.hasOwnProperty.call(patch, 'bookGroupsAdd');
+  const hasRemove = Object.prototype.hasOwnProperty.call(patch, 'bookGroupsRemove');
+  if (!hasAdd && !hasRemove) return null;
+  const rest = { ...patch };
+  const add = Array.isArray(rest.bookGroupsAdd) ? rest.bookGroupsAdd : [];
+  const remove = Array.isArray(rest.bookGroupsRemove) ? rest.bookGroupsRemove : [];
+  delete rest.bookGroupsAdd;
+  delete rest.bookGroupsRemove;
+  return { add, remove, rest };
+}
+
+function mergeBookGroups(currentRaw, patch) {
+  const remove = new Set();
+  for (const item of patch.remove) {
+    const name = sanitizeBookGroups([item])[0];
+    if (name) remove.add(name.toLowerCase());
+  }
+  const out = [];
+  const seen = new Set();
+  const push = (item) => {
+    const name = sanitizeBookGroups([item])[0];
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(name);
+  };
+  for (const name of sanitizeBookGroups(currentRaw)) {
+    if (!remove.has(name.toLowerCase())) push(name);
+  }
+  for (const item of patch.add) push(item);
+  return out;
+}
+
 // CSTO-B-01（2026-11-21 第五轮审计）：sanitize 可选 { unknownKeysFrom }。
 // 默认（读盘归一）保留「这份配置里」的未知键；config:set 这种不可信输入通道必须传 current ——
 // 只保留磁盘上本来就有、且版本本来就更高的未知键，patch 新带进来的未知键一律丢弃。
@@ -879,9 +919,13 @@ function createConfigStore(userDataDir, deps = {}) {
       options && options.bookDisplayPatch && typeof options.bookDisplayPatch === 'object'
         ? options.bookDisplayPatch
         : null;
+    // RNDS-03（低）：bookGroupsAdd / bookGroupsRemove 不是配置键（sanitize 会当未知键丢掉），
+    // 必须先在这里剥出来，进写队列后用队列内 current 重算整份清单。
+    const groupsPatch = takeBookGroupsPatch(patch);
     return enqueue(async () => {
       await gateWrite(auto);
       const current = await get();
+      const basePatch = groupsPatch ? groupsPatch.rest : patch;
       // CSTO-B-01（中）：config:set 的 patch 来自渲染层（威胁模型见 S4），两条不可信入口都要封：
       //   ① configVersion 只允许由 load() 读盘归一产生（或磁盘上本来就更高的版本）——
       //      patch 带 999999 不能把本版配置「升」到 D-7 的前向兼容通道；
@@ -890,7 +934,8 @@ function createConfigStore(userDataDir, deps = {}) {
       const next = sanitize(
         {
           ...current,
-          ...(patch || {}),
+          ...(basePatch || {}),
+          ...(groupsPatch ? { bookGroups: mergeBookGroups(current.bookGroups, groupsPatch) } : {}),
           configVersion: current.configVersion,
           ...(bookDisplayPatch
             ? { bookDisplay: { ...(current.bookDisplay || {}), ...bookDisplayPatch } }

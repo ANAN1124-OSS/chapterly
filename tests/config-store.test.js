@@ -834,3 +834,34 @@ test('C29/WP-26：bookDisplay 的 __proto__ 键写成自有属性（不丢覆盖
   assert.equal(await store.resetBookDisplay('__proto__'), true);
   assert.deepEqual(await store.getBookDisplay('__proto__'), {});
 });
+
+// RNDS-03（低）：bookGroups 的增量写。旧接口只接整表 —— 两个窗口各自「读快照 → 追加 → 整表写回」
+// 时，后写者会用自己那份旧快照把先写者刚加的空分组静默盖掉。现在 add / remove 进配置写队列，
+// 用队列内刚读到的 current 重算（改名 / 合并 = remove 旧名 + add 新名）。
+test('RNDS-03：两个窗口并发建空分组不丢，remove / rename 同样在写队列内生效', async () => {
+  const dir = await mkTmp();
+  const store = createConfigStore(dir);
+  await store.load();
+  await store.set({ bookGroups: ['已有组'] });
+
+  // 两个窗口同时提交各自的「新增」——旧实现若各自整表写回，后写者只剩自己那份。
+  const [first, second] = await Promise.all([
+    store.set({ bookGroupsAdd: ['甲组'] }),
+    store.set({ bookGroupsAdd: ['乙组'] })
+  ]);
+  assert.deepEqual(first.bookGroups, ['已有组', '甲组'], '先入队的那次只看到自己这一步的结果');
+  assert.deepEqual(second.bookGroups, ['已有组', '甲组', '乙组'], '后入队的基于队列内最新值重算');
+  const onDisk = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+  assert.deepEqual(onDisk.bookGroups, ['已有组', '甲组', '乙组'], '落盘两份都在');
+
+  // 大小写不敏感去重 + 改名（remove 旧名 + add 新名）+ 删除
+  await store.set({ bookGroupsAdd: ['甲组', '丙组'] });
+  await store.set({ bookGroupsRemove: ['乙组'], bookGroupsAdd: ['乙组改'] });
+  assert.deepEqual((await createConfigStore(dir).get()).bookGroups, ['已有组', '甲组', '丙组', '乙组改']);
+  await store.set({ bookGroupsRemove: ['已有组', '甲组', '丙组'] });
+  assert.deepEqual((await store.get()).bookGroups, ['乙组改']);
+  // 删空后不落 bookGroups 键（与整表写的旧口径一致）
+  await store.set({ bookGroupsRemove: ['乙组改'] });
+  assert.equal('bookGroups' in JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8')), false);
+  assert.deepEqual((await store.get()).bookGroups || [], []);
+});
