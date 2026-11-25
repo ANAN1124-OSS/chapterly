@@ -98,6 +98,14 @@
       ready: false,
       state,
       async newBook(title) {
+        // 2026-11-25 产品语义：新建作品 = 0 章新书（章节由作者自己建）。
+        // 既有 E2E 组（2–83 的大多数）默认拿「书 + 第一章」做后续断言，这里作为测试便利补建第一章；
+        // 「新建作品 = 0 章」的真实产品路径由 newEmptyBook() 覆盖（E2E 第 1 组）。
+        await createBookWithTitle(title);
+        if (!state.chapters.length) await createChapterAt(0, '');
+      },
+      // 真实产品路径：只建书（0 章），不补第一章。
+      async newEmptyBook(title) {
         await createBookWithTitle(title);
       },
       async openBookPath(bookPath) {

@@ -59,6 +59,7 @@
     'syncChapterBatchBar',
     'markCommandsDirty',
     'updateStatus',
+    'setChapterMask',
     'loadChapterAt',
     'saveCurrent',
     'refreshShelf',
@@ -108,6 +109,7 @@
       syncChapterBatchBar,
       markCommandsDirty,
       updateStatus,
+      setChapterMask,
       loadChapterAt,
       saveCurrent,
       refreshShelf,
@@ -557,8 +559,11 @@
       const trashName = String(data.trashPath || '').split(/[\\/]/).pop();
       // 1.5.0 P0-5（审计 V-1）：主进程给这次删除发了一张一次性凭证，撤销时必须原样交回。
       const undoToken = typeof data.undoToken === 'string' ? data.undoToken : '';
-      if (data.newChapter) toast('最后一章被删除，已自动补一个空章');
-      if (wasCurrent) {
+      // 空章节（2026-11-25 作者要求）：删到 0 章不再自动补章，也不走「载入新章」——
+      // 直接在下面的收尾里切到空态；撤销删除照旧把这一章放回去。
+      if (!state.chapters.length) {
+        // 空态收尾在激活撤销条之后统一做（见下）。
+      } else if (wasCurrent) {
         // 旧M2（一轮·中）：删除成功后**不要**先清脏 —— 只有新章真的载入成功才清（loadChapterAt
         // 成功分支自己会清）。载章失败时编辑区还留着被删那一章的正文，先清脏会让界面进入
         // 「正文在、状态栏已保存」的矛盾态：关窗不再提醒，这段没写盘的字就真没了。
@@ -592,6 +597,21 @@
           neighborBeforeId,
           neighborAfterId
         });
+      }
+      if (!state.chapters.length) {
+        // 空章节收尾：清掉上一章的编辑区状态，编辑区只读 + 可读提示，章节栏显示「还没有章节」。
+        state.index = -1;
+        state.loadedChapterId = null;
+        state.loadedMtimeMs = 0;
+        state.baseText = '';
+        state.dirty = false;
+        state.saveError = null;
+        editorEl.value = '';
+        setChapterMask(true, '这本书还没有章节。点左下「＋ 新建章节」或按 Ctrl+N 开始写第一章。');
+        renderChapterList();
+        renderEditorHeader();
+        updateStatus();
+        toast('已删除最后一章；这本书现在没有章节，点「＋ 新建章节」再写');
       }
       return true;
     } catch (err) {

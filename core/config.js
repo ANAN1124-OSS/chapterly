@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { writeJsonAtomic, stripBom } = require('./atomic');
-const { createWriteQueue } = require('./common');
+const { createWriteQueue, truncateSafe } = require('./common');
 const formatLib = require('./format');
 const snapshotLib = require('./snapshot');
 const statsLib = require('./stats');
@@ -69,6 +69,10 @@ const DEFAULTS = Object.freeze({
   // 编辑器小件两个开关（marksInvisibles / marksLongParagraphs）也存这里：全局默认固定 false，
   // 只有在这里记过 true / false 的书才有「本书覆盖」；longParagraphThreshold 同样可以按书覆盖。
   bookDisplay: {},
+  // 书架分组清单（2026-11-25 作者要求，支持「空分组」）：分组原先只存在每本书的 书目.json 里，
+  // 没有书的组等于不存在；「新建分组」把组名单独记在这里，空分组也能出现在筛选条 / 书籍信息 /
+  // 移到分组菜单里，直到作者在「管理分组」里删掉它。写入侧只接受数组，读取侧清洗见 sanitizeBookGroups。
+  bookGroups: [],
   // 「整理本章」上一次用过的规则，下次打开对话框沿用（不改正文，只是记住勾选）
   formatOptions: { ...formatLib.DEFAULT_OPTIONS },
   // 上次「导出 TXT」保存到的目录，下次导出默认还开在这里（目录没了会自动退回「文档」）
@@ -401,6 +405,32 @@ function sanitizeUnknownTopKeys(source) {
   return Object.fromEntries(entries);
 }
 
+// 2026-11-25（新建分组）：配置里的书架分组清单。与书籍信息的分组字段同一口径：
+// 单行、≤40 字（按码点截断，不切开代理对）、去控制字符；大小写不敏感去重；最多 200 个。
+// 「未分组」不是分组名（筛选里用 __none__ 表示），这里不特殊处理 —— 作者真叫这个名字也照存，
+// 与书籍信息字段的行为一致，避免同一个词在配置 / 书目两处口径分叉。
+const MAX_BOOK_GROUPS = 200;
+const BOOK_GROUP_MAX_LENGTH = 40;
+function sanitizeBookGroups(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const cleaned = truncateSafe(
+      item.replace(/[\u0000-\u001f\u007f]/g, '').trim(),
+      BOOK_GROUP_MAX_LENGTH
+    ).trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+    if (out.length >= MAX_BOOK_GROUPS) break;
+  }
+  return out;
+}
+
 // CSTO-B-01（2026-11-21 第五轮审计）：sanitize 可选 { unknownKeysFrom }。
 // 默认（读盘归一）保留「这份配置里」的未知键；config:set 这种不可信输入通道必须传 current ——
 // 只保留磁盘上本来就有、且版本本来就更高的未知键，patch 新带进来的未知键一律丢弃。
@@ -461,6 +491,12 @@ function sanitize(raw, options = {}) {
   // 超长段落阈值（1.1.0）：默认 500、夹紧 50–20000，坏值 / 旧配置缺字段都回落 500。
   cfg.longParagraphThreshold = normalizeLongParagraphThreshold(cfg.longParagraphThreshold);
   cfg.bookDisplay = sanitizeBookDisplay(cfg.bookDisplay);
+  // 2026-11-25：空分组清单（旧配置没有这个键 = []，行为与以前完全一致）。
+  cfg.bookGroups = sanitizeBookGroups(cfg.bookGroups);
+  // 空清单不落盘：bookGroups 只在作者真的建过分组时写进 config.json。这样「书籍信息 / 按书显示」
+  // 这些既有契约（只写书目、不改配置字段）在该功能未使用时一字不差；删掉最后一个分组后，
+  // 配置也回到没有这个键的形态（不会留一个空的 bookGroups 让旧契约测试 / 旧版本看着像多了字段）。
+  if (!cfg.bookGroups.length) delete cfg.bookGroups;
   cfg.formatOptions = formatLib.sanitizeOptions(cfg.formatOptions);
   // 上次导出的目录：只做基本清洗，路径不存在时由主进程退回「文档」目录
   const lastExportDir = typeof cfg.lastExportDir === 'string' ? cfg.lastExportDir.trim() : '';

@@ -44,7 +44,7 @@
   //   kbd    = 命令面板行尾键帽 / `?` 页行尾键帽（键位文案只有这一份）。
   const COMMAND_SPECS = [
     { id: 'cmd:shelf', title: '回到书架', group: 'command', keywords: ['shelf', '书架'], run: 'backToShelf' },
-    { id: 'cmd:new-book', title: '新建一本书', group: 'command', keywords: ['new book', '新建'], when: 'shelf', run: 'newBook' },
+    { id: 'cmd:new-book', title: '新建作品', group: 'command', keywords: ['new book', '新建'], when: 'shelf', run: 'newBook' },
     { id: 'cmd:import', title: '导入小说…', group: 'command', keywords: ['import', '导入'], when: 'shelf', run: 'importBook' },
     { id: 'cmd:settings', title: '打开设置（全局）', group: 'command', keywords: ['settings', '设置'], run: 'openSettings' },
     { id: 'cmd:book-display', title: '正文显示设置（这本书）', group: 'command', keywords: ['display', '显示', '按书'], when: 'editor', run: 'openBookDisplaySettings' },

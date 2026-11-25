@@ -202,8 +202,111 @@
   // 只改每本书 书目.json 的 group 字段（清空 = 删字段）：书文件夹 / 章节文件 / 书签 /
   // 「继续上次写作」都不动，所以改名后旧书签与最近打开照旧有效。
   // 每本一次 updateBookInfo（沿用现有 IPC，不加新频道）：单本失败不影响其他书，失败清单报给作者。
+  // ---------- 分组清单（2026-11-25 作者要求：支持空分组） ----------
+  // 分组原先只存在每本书的 书目.json 里；「新建分组」把组名同时记进配置 bookGroups，
+  // 这样没有书的组也能出现在筛选条 / 书籍信息 / 移到分组菜单里，直到作者在「管理分组」里删掉。
+  function configuredGroups() {
+    const raw = state.globalConfig && Array.isArray(state.globalConfig.bookGroups)
+      ? state.globalConfig.bookGroups
+      : [];
+    const out = [];
+    const seen = new Set();
+    for (const item of raw) {
+      const name = bookInfoLib.sanitizeGroup(item);
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(name);
+    }
+    return out;
+  }
+
+  async function saveConfigGroups(names) {
+    const list = [];
+    const seen = new Set();
+    for (const item of Array.isArray(names) ? names : []) {
+      const name = bookInfoLib.sanitizeGroup(item);
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.push(name);
+    }
+    try {
+      const cfg = await call(api.setConfig, { bookGroups: list });
+      if (cfg && typeof cfg === 'object') state.globalConfig = cfg;
+      return { ok: true };
+    } catch (err) {
+      toast(`分组清单保存失败：${err.message}`, 'error');
+      return { ok: false, message: err.message };
+    }
+  }
+
+  // 组名清单 = 书目里的真实分组 + 配置里的空分组（大小写不敏感去重；有书的写法优先）。
+  function groupStatsWithConfig() {
+    const stats = bookInfoLib.collectGroupStats(state.books);
+    const known = new Set(stats.groups.map((item) => item.name.toLowerCase()));
+    const extras = [];
+    for (const name of configuredGroups()) {
+      if (known.has(name.toLowerCase())) continue;
+      extras.push({ name, count: 0 });
+    }
+    const groups = stats.groups.concat(extras).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+    return { groups, ungrouped: stats.ungrouped, total: stats.total };
+  }
+
+  // 书架顶部「新建分组」：只建组名，不要求先有书；空分组立即出现在筛选条 / 书籍信息建议里。
+  // 注意：只有这个显式入口（与「管理分组」里的改名 / 合并 / 删除）会写 config.bookGroups；
+  // 书籍信息里自由填写的分组仍只写 书目.json —— 与既有契约「书籍信息只改书目」一致，
+  // 也不会因为某本书用过一次分组，就在书移走后留下一个永久空分组。
+  async function createShelfGroup() {
+    const answer = await promptText({
+      title: '新建分组',
+      message:
+        '输入分组名（最多 40 字）。建好后在书卡「⋯」→「移到分组…」里把书放进去；' +
+        '空分组会一直保留，直到在「管理分组」里删掉它。',
+      placeholder: '例如：短篇'
+    });
+    if (answer === null) return { ok: false, canceled: true };
+    const name = bookInfoLib.sanitizeGroup(answer);
+    if (!name) {
+      toast('分组名不能为空');
+      return { ok: false };
+    }
+    const stats = groupStatsWithConfig();
+    const canonical = bookInfoLib.canonicalGroupName(stats.groups.map((item) => item.name), name);
+    if (stats.groups.some((item) => item.name.toLowerCase() === canonical.toLowerCase())) {
+      toast(`分组「${canonical}」已经存在`);
+      return { ok: false, exists: true };
+    }
+    const saved = await saveConfigGroups(configuredGroups().concat(canonical));
+    if (!saved.ok) return saved;
+    renderShelfGroupBar();
+    renderShelf();
+    toast(`已新建分组「${canonical}」`);
+    return { ok: true, name: canonical };
+  }
+
+  // 删除空分组（还有书的分组必须先移走书）：只删配置清单，不动任何书目 / 正文。
+  async function deleteEmptyShelfGroup(group) {
+    const stat = findGroupStat(group);
+    if (stat && stat.count > 0) {
+      toast('这个分组里还有书，先把书移到别的分组或「未分组」再删');
+      return { ok: false };
+    }
+    const next = configuredGroups().filter((item) => item.toLowerCase() !== group.toLowerCase());
+    const saved = await saveConfigGroups(next);
+    if (!saved.ok) return saved;
+    if (state.shelfGroup === group) state.shelfGroup = '';
+    renderShelfGroupBar();
+    renderShelf();
+    toast(`已删除分组「${group}」`);
+    return { ok: true };
+  }
+
   function findGroupStat(group) {
-    return bookInfoLib.collectGroupStats(state.books).groups.find((item) => item.name === group) || null;
+    return groupStatsWithConfig().groups.find((item) => item.name === group) || null;
   }
 
   function appendGroupManageRow(list, group) {
@@ -241,6 +344,21 @@
     row.appendChild(count);
     row.appendChild(rename);
     row.appendChild(merge);
+    // 2026-11-25：空分组给一个「删除」（只删配置清单）。有书的分组要先合并 / 把书移走，
+    // 避免一键把书的分组字段也清掉却没有任何提示。
+    if (!group.count) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'btn ghost tiny';
+      del.dataset.action = 'delete';
+      del.textContent = '删除';
+      del.title = '删除这个空分组（只删分组清单，不动任何书目与正文）';
+      del.addEventListener('click', async () => {
+        const result = await deleteEmptyShelfGroup(group.name);
+        if (result.ok) renderGroupManageList();
+      });
+      row.appendChild(del);
+    }
     list.appendChild(row);
   }
 
@@ -248,11 +366,12 @@
     const list = $('group-manage-list');
     if (!list) return;
     list.innerHTML = '';
-    const stats = bookInfoLib.collectGroupStats(state.books);
+    const stats = groupStatsWithConfig();
     if (!stats.groups.length) {
       const empty = document.createElement('div');
       empty.className = 'group-manage-empty muted small';
-      empty.textContent = '还没有分组。先在书卡「⋯」→「书籍信息」里给书填一个分组，再回来改名 / 合并。';
+      empty.textContent =
+        '还没有分组。可以在书架顶部点「新建分组」直接建一个空分组，或在书卡「⋯」→「书籍信息」里给书填一个分组，再回来改名 / 合并。';
       list.appendChild(empty);
       return;
     }
@@ -307,7 +426,8 @@
     toast(`已${verb} ${result.changed} 本到${label}（只改书目，正文与文件名没动）`);
   }
 
-  // 改名：把 from 组的书改成作者输入的新名字（留空 = 移到未分组）。
+  // 改名：把 from 组的书改成作者输入的新名字（留空 = 移到未分组）。2026-11-25：空分组也支持
+  // 改名 —— 先改配置清单，有书时再逐本改 书目.json；两处口径用同一个规范名（大小写归一）。
   async function renameShelfGroup(from) {
     const group = bookInfoLib.sanitizeGroup(from);
     if (!group) return { ok: false };
@@ -319,13 +439,24 @@
       placeholder: '分组名'
     });
     if (answer === null) return { ok: false, canceled: true };
-    const changes = bookInfoLib.planGroupChange(state.books, group, answer);
-    if (!changes.length) {
+    const stats = groupStatsWithConfig();
+    const canonical = bookInfoLib.canonicalGroupName(stats.groups.map((item) => item.name), answer);
+    if (group.toLowerCase() === canonical.toLowerCase()) {
       toast('分组名没有变化');
       return { ok: true, changed: 0, failed: [] };
     }
-    const result = await applyGroupChanges(changes);
-    reportGroupChange('改名', changes[0].to, result);
+    const next = configuredGroups().filter((item) => item.toLowerCase() !== group.toLowerCase());
+    if (canonical && !next.some((item) => item.toLowerCase() === canonical.toLowerCase())) next.push(canonical);
+    const saved = await saveConfigGroups(next);
+    if (!saved.ok) return saved;
+    const changes = bookInfoLib.planGroupChange(state.books, group, canonical);
+    const result = changes.length ? await applyGroupChanges(changes) : { changed: 0, failed: [] };
+    if (changes.length) reportGroupChange('改名', canonical, result);
+    else {
+      renderShelfGroupBar();
+      renderShelf();
+      toast(canonical ? `已改名：「${group}」→「${canonical}」` : `已删除空分组「${group}」`);
+    }
     return { ok: true, ...result };
   }
 
@@ -333,7 +464,7 @@
   async function mergeShelfGroup(from) {
     const group = bookInfoLib.sanitizeGroup(from);
     if (!group) return { ok: false };
-    const stats = bookInfoLib.collectGroupStats(state.books);
+    const stats = groupStatsWithConfig();
     const stat = stats.groups.find((item) => item.name === group) || null;
     const others = stats.groups.map((item) => item.name).filter((name) => name !== group);
     const answer = await promptText({
@@ -345,13 +476,23 @@
       placeholder: '目标分组名'
     });
     if (answer === null) return { ok: false, canceled: true };
-    const changes = bookInfoLib.planGroupChange(state.books, group, answer);
-    if (!changes.length) {
+    const canonical = bookInfoLib.canonicalGroupName(stats.groups.map((item) => item.name), answer);
+    if (group.toLowerCase() === canonical.toLowerCase()) {
       toast('分组名没有变化');
       return { ok: true, changed: 0, failed: [] };
     }
-    const result = await applyGroupChanges(changes);
-    reportGroupChange('合并', changes[0].to, result);
+    const next = configuredGroups().filter((item) => item.toLowerCase() !== group.toLowerCase());
+    if (canonical && !next.some((item) => item.toLowerCase() === canonical.toLowerCase())) next.push(canonical);
+    const saved = await saveConfigGroups(next);
+    if (!saved.ok) return saved;
+    const changes = bookInfoLib.planGroupChange(state.books, group, canonical);
+    const result = changes.length ? await applyGroupChanges(changes) : { changed: 0, failed: [] };
+    if (changes.length) reportGroupChange('合并', canonical, result);
+    else {
+      renderShelfGroupBar();
+      renderShelf();
+      toast(`已把空分组「${group}」并入${canonical ? `「${canonical}」` : '未分组'}`);
+    }
     return { ok: true, ...result };
   }
 
@@ -375,7 +516,7 @@
       return false;
     }
     const info = bookInfoLib.readBookInfo(book);
-    const stats = bookInfoLib.collectGroupStats(state.books);
+    const stats = groupStatsWithConfig();
     holder.textContent = '';
     const title = document.createElement('div');
     title.className = 'context-menu-label';
@@ -454,7 +595,7 @@
     const tagLabel = $('shelf-tag-label');
     const manage = $('btn-shelf-group-manage');
     if (!bar || !select) return;
-    const stats = bookInfoLib.collectGroupStats(state.books);
+    const stats = groupStatsWithConfig();
     const groupNames = stats.groups.map((item) => item.name);
     const tagStats = bookInfoLib.collectTagStats(state.books);
     if (!groupNames.length && !tagStats.length) {
@@ -585,7 +726,7 @@
   // 不改正文 / 书目 / 数据格式：只读 config 的 firstRunTipShown，显示过才把标记写回 config.json。
   const FIRST_RUN_TIP_MS = 4000;
   const FIRST_RUN_TIP_TEXT =
-    '开始写吧：点「＋ 新建一本书」从零开始；已有稿子就点「导入小说」把 txt 文件夹导进来。';
+    '开始写吧：点顶部「新建作品」从零开始；已有稿子就点「导入小说」把 txt 文件夹导进来。';
   let firstRunTipTimer = null;
   let firstRunTipChecked = false;
 
@@ -641,7 +782,7 @@
       empty.dataset.emptyKind = 'vacuum';
       empty.textContent =
         '这里还没有书。一本书 = 一个文件夹，正文就是里面的普通 txt 文件，用记事本也能打开。' +
-        '点右上「导入小说」把现有稿子导进来，或点右侧（或下面）的「新建一本书」从零开始；' +
+        '点右上「新建作品」从零开始，或点「导入小说」把现有稿子导进来；' +
         '也可以直接把书文件夹放进书架目录。';
       grid.appendChild(empty);
     } else if (!rows.length) {
@@ -840,23 +981,6 @@
       });
       grid.appendChild(card);
     }
-
-    // 搜索时不再显示「新建一本书」，避免挡结果
-    if (!query) {
-      const add = document.createElement('button');
-      add.type = 'button';
-      add.className = 'book-card new-book';
-      const plus = document.createElement('span');
-      plus.className = 'plus';
-      plus.textContent = '＋';
-      const addLabel = document.createElement('span');
-      addLabel.textContent = '新建一本书';
-      add.appendChild(plus);
-      add.appendChild(addLabel);
-      add.addEventListener('click', onNewBookClick);
-      grid.appendChild(add);
-    }
-
   }
 
   // B6：书架 grid 的渲染签名 —— 只包含会改变卡片 DOM 的内容：书名 / 状态 / 冲突数 / 章数字数 /
@@ -935,8 +1059,8 @@
 
   async function onNewBookClick() {
     const title = await promptText({
-      title: '新建一本书',
-      message: '给这本书起个名字；直接点确定就叫「我的新书」。',
+      title: '新建作品',
+      message: '给这本书起个名字；直接点确定就叫「我的新书」。建好后是 0 章，自己点「＋ 新建章节」开始写第一章。',
       placeholder: '书名'
     });
     if (title === null) return;
@@ -998,6 +1122,9 @@
       openGroupManageDialog();
     });
     $('btn-group-manage-close').addEventListener('click', closeGroupManageDialog);
+    // 2026-11-25 作者要求：新建作品 / 新建分组固定放在书架顶部工具条（网格里的新书卡片已移除）。
+    $('btn-new-book').addEventListener('click', onNewBookClick);
+    $('btn-new-group').addEventListener('click', () => void createShelfGroup());
   }
 
 
@@ -1011,6 +1138,9 @@
       closeGroupManageDialog,
       renameShelfGroup,
       mergeShelfGroup,
+      // 2026-11-25：书架顶部「新建分组」（空分组）/ 管理分组里的「删除空分组」
+      createShelfGroup,
+      deleteEmptyShelfGroup,
       // 1.6.0b：书卡右键「移到分组…」的菜单内联分组列表（不再弹询问框）
       openBookGroupChooser,
       closeBookGroupChooser,

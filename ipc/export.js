@@ -450,6 +450,14 @@ function registerExportIpc(host) {
 
   handleBook('book:copy', async (bookPath, override, indexes) => {
     const meta = await storage.readBookMeta(bookPath);
+    // 空章节（2026-11-25）：整本复制没有可复制的正文 —— 不写空串进剪贴板（那会把作者
+    // 剪贴板里原有内容清掉），明确告知先建章。
+    if (!meta.chapters.length) {
+      throw new storage.StorageError(
+        'NO_CHAPTERS',
+        '这本书还没有章节：先点「＋ 新建章节」写第一章，再复制 / 导出'
+      );
+    }
     const safeOverride = ipcLimits.sanitizeOverride(override);
     // 1.5.0 功能-1：可选第三参数 = 只复制这些章（章节多选「复制选中章」）。
     // 没传 = 整本复制，行为与 1.4.0 逐字节一致；传了空数组 = 什么都不写（不拿空数组当整本）。

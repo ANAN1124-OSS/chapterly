@@ -90,7 +90,8 @@ function registerBookIpc(host) {
   handle('book:create', async (title) => {
     const cfg = await getConfig();
     await fs.mkdir(cfg.booksRoot, { recursive: true });
-    const created = await storage.createBook(cfg.booksRoot, title);
+    // 2026-11-25 作者要求：新建作品不自动建第一章，章节由作者点「＋ 新建章节」创建。
+    const created = await storage.createBook(cfg.booksRoot, title, { createFirstChapter: false });
     // B2（WP18）：带上新书路径 —— 其它窗口的书架只插这一张卡（多本导入才走整表）
     notifyShelfChanged(flowSession(), 'book:create', created.path);
     return created;

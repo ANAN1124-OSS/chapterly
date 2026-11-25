@@ -1147,12 +1147,18 @@ async function createBook(booksRoot, title, options = {}) {
     }
   }
   const bookPath = path.join(booksRoot, folder);
-  const seq = 1;
-  const file = chaptersLib.buildFileName(seq, '');
+  // 空章节建书（2026-11-25 作者要求）：产品入口（ipc/book.js 的 book:create）传 createFirstChapter:false，
+  // 新书不再自动写第一章 —— 章节由作者自己点「＋ 新建章节」创建；书目 chapters 为空、
+  // lastOpenChapterId 为 null、fileSeq 从 0 起，第一次建章拿 001-未命名.txt。
+  // 默认仍是「带第一章」：storage.createBook 的直接调用方（既有测试 / 内部夹具）行为不变，
+  // 避免一次产品行为变更把整套存储夹具一起改写；是否建首章由调用方显式决定。
+  const createFirstChapter = !(options && options.createFirstChapter === false);
+  const seq = createFirstChapter ? 1 : 0;
+  const file = createFirstChapter ? chaptersLib.buildFileName(1, '') : '';
   // 单测注入写盘失败用（ENOSPC / EPERM），产品调用不传
   const saveMeta = options && typeof options.writeBookMeta === 'function' ? options.writeBookMeta : writeBookMeta;
   try {
-    await atomicWriteFile(path.join(bookPath, file), '');
+    if (createFirstChapter) await atomicWriteFile(path.join(bookPath, file), '');
     const meta = {
       version: 1,
       schemaVersion: schemaLib.CURRENT_SCHEMA_VERSION,
@@ -1162,18 +1168,22 @@ async function createBook(booksRoot, title, options = {}) {
       title: displayTitle,
       titleTemplate: chaptersLib.TITLE_TEMPLATE,
       fileSeq: seq,
-      chapters: [{ id: 'ch_001', file, name: '', createdAt: nowIso() }],
-      lastOpenChapterId: 'ch_001',
+      chapters: createFirstChapter
+        ? [{ id: 'ch_001', file, name: '', createdAt: nowIso() }]
+        : [],
+      lastOpenChapterId: createFirstChapter ? 'ch_001' : null,
       createdAt: nowIso()
     };
     const saved = await saveMeta(bookPath, meta, { structural: true });
-    return { path: bookPath, meta: saved, titleTruncated };
+    return { path: bookPath, meta: saved, titleTruncated, empty: !createFirstChapter };
   } catch (err) {
-    // 1.6.0 A3（审计 E-07）：三步（建目录 / 写空章 / 写书目）任一步失败，把这次刚建的东西收掉，
+    // 1.6.0 A3（审计 E-07）：建目录 / 写空章 / 写书目任一步失败，把这次刚建的东西收掉，
     // 书架里不留「有文件夹、没书目」的空壳。只删我们自己建的空章 txt 与空目录：
     // 目录里若已经有别的文件（外部同时放进去的），rmdir 会失败 → 原样保留，绝不递归删。
     // 幂等：什么都没建 / 已经被外部删掉时，这些删除都是空操作。
-    try { await fs.rm(path.join(bookPath, file), { force: true }); } catch { /* 忽略 */ }
+    if (createFirstChapter) {
+      try { await fs.rm(path.join(bookPath, file), { force: true }); } catch { /* 忽略 */ }
+    }
     try { await fs.rm(path.join(bookPath, BOOK_FILE), { force: true }); } catch { /* 忽略 */ }
     try { await fs.rmdir(bookPath); } catch { /* 目录非空 / 已不存在：留着 */ }
     throw err;
@@ -1532,7 +1542,14 @@ async function createChapterWithText(bookPath, { insertIndex = 0, name = '', tex
   try {
     // 指定了卷：插到那一卷的末尾（不按调用方传的下标，避免新章跑到别的卷中间）
     const at = wantedVolume ? chaptersLib.insertIndexForVolume(meta, wantedVolume) : insertIndex;
-    const updated = chaptersLib.insertChapter({ ...meta, fileSeq: seq }, at, chapter);
+    // 空书（0 章）的第一章：顺手把它记成 lastOpenChapterId。否则书目里仍是 null，
+    // 要等渲染层载入后经 1.5 秒防抖的 setLastOpenChapter 才补上——这中间的保存会把 null 写进
+    // 书目，随后的防抖再写一次（对旧书就是「打开后被补了一次字段」）。0 章书的唯一一章
+    // 显然就是「上次打开的章」，这里直接落定语义最直白。
+    const baseMeta = !meta.chapters.length && meta.lastOpenChapterId == null
+      ? { ...meta, lastOpenChapterId: chapter.id }
+      : meta;
+    const updated = chaptersLib.insertChapter({ ...baseMeta, fileSeq: seq }, at, chapter);
     const saved = await writeBookMetaChecked(bookPath, chaptersLib.normalizeChapterOrder(updated), { structural: true, stamp: stampOfMeta(meta) });
     return {
       meta: saved,
@@ -1787,31 +1804,16 @@ async function deleteChapter(bookPath, chapterId) {
   } catch (err) {
     throw new StorageError('TRASH_FAILED', `无法把章节移到回收目录：${errorText.describeForUi(err).message}`);
   }
-  let updated = chaptersLib.removeChapter(meta, chapterId);
-  let newChapter = null;
-  if (updated.chapters.length === 0) {
-    const seq = chaptersLib.nextFileSeq(updated);
-    const file = chaptersLib.uniqueFileName(seq, '', await listTxtFiles(bookPath));
-    await atomicWriteFile(path.join(bookPath, file), '');
-    newChapter = {
-      id: `ch_${Date.now().toString(36)}_${seq}`,
-      file,
-      name: '',
-      createdAt: nowIso()
-    };
-    updated = { ...updated, fileSeq: seq, chapters: [newChapter] };
-  }
+  // 空章节（2026-11-25 作者要求）：删最后一章不再自动补一个空章 —— 允许 0 章，
+  // 界面回到「还没有章节，点＋新建章节」的空态；撤销删除照旧把这一章放回去。
+  const updated = chaptersLib.removeChapter(meta, chapterId);
+  // 删到 0 章时顺手清掉「上次打开的章」——0 章书没有可指的章，留着旧 id 会让打开书 / 继续写作
+  // 解析到一个不存在的章节（渲染层虽有 0 章兜底，但书目不该继续撒这个谎）。
+  if (!updated.chapters.length && updated.lastOpenChapterId != null) updated.lastOpenChapterId = null;
+  const newChapter = null;
   const saved = await writeBookMetaChecked(bookPath, updated, { structural: true, stamp: stampOfMeta(meta) }).catch(async (err) => {
     // 书目没写成功 = 这次删除没有发生。把刚移走的章节文件放回原处（「不留半成品」）：
     // 不然书目里还有这一章、书文件夹里却没有它，点开就是缺章，作者只能去修书。
-    // 「删到空自动补一章」时刚建的那张空章也要先挪走，否则它会占着与原章节同名的位置。
-    if (newChapter) {
-      try {
-        // C34（v1.8.0 WP-26）：回滚挪空章也走 moveToTrash —— 与删章同一套路径校验与撞名循环。
-        // 旧实现直接 rename 成 `<时间戳>-<文件名>`：同秒两次回滚会撞同一个名字，把上一次的备份覆盖掉。
-        await moveToTrash(bookPath, newChapter.file);
-      } catch { /* 挪不走就算了：它是本书目写完才会登记的空章，不会覆盖正文 */ }
-    }
     let rolledBack = false;
     try {
       await renameWithRetry(trashPath, targetPath);
@@ -1832,7 +1834,8 @@ async function deleteChapter(bookPath, chapterId) {
     meta: saved,
     trashPath,
     newChapter,
-    index: Math.min(index, saved.chapters.length - 1)
+    // 删到 0 章时没有「下一章」可回落：回 -1，渲染层据此进空态（点＋新建章节再写）。
+    index: saved.chapters.length ? Math.min(index, saved.chapters.length - 1) : -1
   };
 }
 

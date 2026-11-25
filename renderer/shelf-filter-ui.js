@@ -62,13 +62,35 @@
   }
 
   // 书架分组筛选（v0.8-3）：只影响书架视图，不改书文件夹、不写配置。
+  // 2026-11-25（新建分组）：分组清单 = 配置里的 bookGroups（支持空分组）+ 各本书目里的 group；
+  // 大小写不敏感去重（与书籍信息「Group A / group a 算同一个」同口径），显示名优先用配置里的写法。
+  function configuredGroups() {
+    const raw = state.globalConfig && Array.isArray(state.globalConfig.bookGroups)
+      ? state.globalConfig.bookGroups
+      : [];
+    const out = [];
+    const seen = new Set();
+    for (const item of raw) {
+      const group = bookInfoLib.sanitizeGroup(item);
+      if (!group) continue;
+      const key = normalizeForMatch(group);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(group);
+    }
+    return out;
+  }
+
   function shelfGroupList() {
-    const groups = new Set();
+    const groups = new Map(); // 归一 key -> 显示名
+    for (const group of configuredGroups()) groups.set(normalizeForMatch(group), group);
     for (const book of state.books) {
       const group = bookGroupOf(book);
-      if (group) groups.add(group);
+      if (!group) continue;
+      const key = normalizeForMatch(group);
+      if (!groups.has(key)) groups.set(key, group);
     }
-    return Array.from(groups).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+    return Array.from(groups.values()).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
   }
 
   function shelfGroupMatches(book) {

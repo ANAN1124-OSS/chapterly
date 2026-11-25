@@ -8,13 +8,13 @@
  *      绝不把旧章命中下标套到回落章正文上。
  * 搬出来以后这些分流可以用假 state + 桩 IPC 在 Node 里逐条钉住，不必真开两本书制造乱序。
  *
- * 契约：createOpenBookFlowUi(host) 只调用一次；host 正好 26 个成员：
+ * 契约：createOpenBookFlowUi(host) 只调用一次；host 正好 28 个成员：
  *   state, editorEl, $, openBookGuard, askUnsaved, saveCurrent, currentChapterLabel,
  *   applyEditorEditable, waitForSavingIdle, openBookOp, toast, openRepair, selectEditorRange,
  *   nextOpenSeq, currentOpenSeq, setOpeningBook,
  *   stopTtsForChapterChange, undoUi, clearEditorUndoSnapshots,
  *   resetWriteTimer, clearFindSession, setChapterMask, showView, renderChapterList,
- *   applyBookDisplay, loadChapterAt
+ *   applyBookDisplay, loadChapterAt, renderEditorHeader, updateStatus
  *   · openBookOp 由渲染层注入：开书那一步必须走 testOpenBook || call（E2E 用 setTestOpenBookDelay
  *     在 IPC 外包一层延迟，create 时传值会让延迟注入失效）；
  *   · nextOpenSeq / currentOpenSeq / setOpeningBook 是编排器里 let 的活绑定：世代令牌与「正在开书」
@@ -59,6 +59,8 @@
     'setChapterMask',
     'showView',
     'renderChapterList',
+    'renderEditorHeader',
+    'updateStatus',
     'applyBookDisplay',
     'loadChapterAt'
   ];
@@ -71,7 +73,7 @@
       nextOpenSeq, currentOpenSeq, setOpeningBook,
       stopTtsForChapterChange, undoUi, clearEditorUndoSnapshots,
       resetWriteTimer, clearFindSession, setChapterMask, showView, renderChapterList,
-      applyBookDisplay, loadChapterAt
+      renderEditorHeader, updateStatus, applyBookDisplay, loadChapterAt
     } = host;
 
     async function openBookByPath(bookPath, target = null) {
@@ -212,6 +214,16 @@
       if (!isStale()) {
         setOpeningBook(false);
         applyEditorEditable();
+      }
+      // 空章节（2026-11-25 作者要求）：新书 / 删空的书打开后不自动建章，也不许停在
+      // 「正在载入章节…」的遮罩上 —— 编辑区给一条可读的空态提示，章节栏显示「还没有章节」，
+      // 作者点「＋ 新建章节」（或 Ctrl+N）开始写第一章。保存 / 导出等入口由调用方按 0 章拦。
+      if (!state.chapters.length) {
+        setChapterMask(true, '这本书还没有章节。点左下「＋ 新建章节」或按 Ctrl+N 开始写第一章。');
+        // 章节栏已在上面 renderChapterList() 渲染过「还没有章节」空态；这里只补标题与状态栏。
+        renderEditorHeader();
+        updateStatus();
+        return { ok: true, targetMissing: false, empty: true };
       }
       // 五-M3（SS-07）：起点章与「目标章是否命中」收进 open-book-guard 纯逻辑——目标章被删时
       // 回落上次阅读章并标记 targetMissing，调用方据此提示 + 不套旧命中下标。

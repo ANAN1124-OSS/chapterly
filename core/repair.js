@@ -76,12 +76,13 @@ async function rebuildFromFiles(bookPath, io = {}) {
   const allFiles = await storage.listTxtFiles(bookPath);
   const files = allFiles.filter((file) => !conflictLib.isConflictCopyName(file));
   const conflictCopies = conflictLib.findConflictCopies(allFiles);
-  if (!files.length) {
+  // 空章节（2026-11-25 作者要求）：文件夹里真的一章 txt 都没有时允许重建出 0 章书
+  // （典型：新书 0 章 + 从目录重建，或作者把章节都删了）；只有「全是同步冲突副本」仍拒绝 ——
+  // 那种情况强行重建会让作者以为正文丢了，提示他先处理副本更重要。
+  if (!files.length && allFiles.length) {
     throw new storage.StorageError(
       'NO_FILES',
-      allFiles.length
-        ? '这个文件夹里只有同步冲突副本，没有可用的章节 txt，无法重建'
-        : '这个文件夹里没有找到章节 txt，无法重建'
+      '这个文件夹里只有同步冲突副本，没有可用的章节 txt，无法重建'
     );
   }
   // TC-3（五-L5）：重建前先过与读侧 / IPC 写入侧同一道章节条数闸门（MAX_META_CHAPTERS）。
@@ -137,7 +138,8 @@ async function rebuildFromFiles(bookPath, io = {}) {
       name: p.name,
       createdAt: now
     })),
-    lastOpenChapterId: `ch_${chaptersLib.pad3(1)}`,
+    // 0 章重建（空目录）时没有「第 1 章」可指，lastOpenChapterId 记 null。
+    lastOpenChapterId: parsed.length ? `ch_${chaptersLib.pad3(1)}` : null,
     createdAt: now
   };
   // 先写新书目（临时文件）→ 成功后才归档旧文件（1.6.0 A3 / 审计 E-07）

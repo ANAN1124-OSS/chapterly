@@ -2857,6 +2857,7 @@
     stopTtsForChapterChange, undoUi,
     clearEditorUndoSnapshots: () => { bulkWriteUndo = null; fallbackWriteUndo = null; },
     resetWriteTimer, clearFindSession, setChapterMask, showView, renderChapterList,
+    renderEditorHeader, updateStatus,
     applyBookDisplay, loadChapterAt
   });
 
@@ -2907,7 +2908,7 @@
     currentChapterId, currentChapterLabel,
     renderChapterList, renderEditorHeader, syncChapterFilterUi, syncVolumeHeaderName,
     syncChapterItemInfo, syncChapterBatchBar, markCommandsDirty,
-    updateStatus, loadChapterAt, saveCurrent, refreshShelf, flushWriteTimer,
+    updateStatus, setChapterMask, loadChapterAt, saveCurrent, refreshShelf, flushWriteTimer,
     undoUi, moveChapterByDrop, openExportDialog,
     replaceEditorTextNative, onEditorInput, recordFallbackWrite, scrollCaretIntoView,
     placeMenuAt,
@@ -3595,8 +3596,7 @@
     });
     listKeyboard.install({
       container: $('book-grid'),
-      // 只认真正的书卡：同一张网格里还有「＋ 新建一本书」，那是原生 <button>，
-      // 它自己的 Enter / 空格照旧走 click（不能让卡片拦掉）。
+      // 只认真正的书卡（2026-11-25：网格里的「新建一本书」卡片已移除，新建入口在顶部工具条）。
       itemSelector: '.book-card[data-path]',
       // 拍板 #16b：书架是多列网格，方向键按网格走（←/→ 只在行内、↑/↓ 跨行）。
       // 列数每次按键现算（getComputedStyle 的 gridTemplateColumns），窗口 resize / 响应式换列自动跟随。
