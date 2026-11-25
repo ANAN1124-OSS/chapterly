@@ -834,14 +834,22 @@ const CHAPTER_BACKFILL_CONCURRENCY = 8;
 // 让调用方跳过 —— chars 保持未缓存、不写缓存、不抛错（bookStats 因此不把整本书标 corrupt）。
 async function readChapterTextForCount(bookPath, chapter) {
   const p = assertChapterFile(bookPath, chapter.file);
-  const stat = await fs.stat(p);
-  const tooLarge = readSizeProblem(stat.size, {
-    code: 'CHAPTER_TOO_LARGE',
-    label: `章节文件「${chapter.file}」`,
-    tail: '扫描回填没有读进内存，跳过该章'
-  });
-  if (tooLarge) return null;
-  return fs.readFile(p, 'utf8');
+  // STORAGE-01（2026-11-26 审计）：闸门与读盘绑在同一个句柄上（open → handle.stat → 同一句柄
+  // readFile）。旧实现按路径 stat 判上限、再按路径 readFile：两步之间被外部换成超大文件时
+  // 上限按旧尺寸放行，超限内容整份读进主进程。超限章返回 null 让调用方跳过 —— chars 保持
+  // 未缓存、不写缓存、不抛错（bookStats 因此不把整本书标 corrupt）。
+  try {
+    const { buffer } = await readFileWithSizeGate(p, {
+      code: 'CHAPTER_TOO_LARGE',
+      label: `章节文件「${chapter.file}」`,
+      tail: '扫描回填没有读进内存，跳过该章',
+      encoding: 'utf8'
+    });
+    return buffer;
+  } catch (err) {
+    if (err instanceof StorageError && err.code === 'CHAPTER_TOO_LARGE') return null;
+    throw err;
+  }
 }
 
 // 审计修复 #25（R4）：字数回填 / 刷新共用的「逐章读盘算字数」内核。
@@ -1906,20 +1914,17 @@ async function restoreDeletedChapterFromTrash(bookPath, payload) {
     if (autoChapter) {
       try {
         const autoPath = assertChapterFile(bookPath, autoFile);
-        // V104（v1.8.0 WP-19）：这里的读取只是为了判断补章是不是还空着，以前整份 readFile 再 trim
-        // —— 补章被外部换成超大文件时同样会顶爆主进程。先 stat + 章节同一条上限；超限 = 量不出空，
-        // 按「非空」处理（保留补章：宁可多一章，也不静默丢字），一个字节都不读。
-        const autoStat = await fs.stat(autoPath);
-        const tooLarge = readSizeProblem(autoStat.size, {
+        // STORAGE-01（2026-11-26 审计）：与章节正文同一道「同句柄」闸门（CSTO-A02 / V104）——
+        // 旧实现先按路径 stat 判上限、再按路径 readFile，两步之间补章被换成超大文件时上限按
+        // 旧尺寸放行。超限报 CHAPTER_TOO_LARGE，下面的 catch 按「非空」处理（保留补章：宁可
+        // 多一章，也不静默丢字），一个字节都不读。
+        const { buffer: text } = await readFileWithSizeGate(autoPath, {
           code: 'CHAPTER_TOO_LARGE',
           label: `自动补章「${autoFile}」`,
-          tail: '按非空处理（保留补章）'
+          tail: '按非空处理（保留补章）',
+          encoding: 'utf8'
         });
-        if (tooLarge) autoChapter = null;
-        else {
-          const text = await fs.readFile(autoPath, 'utf8');
-          if (stripBom(text).trim() !== '') autoChapter = null;
-        }
+        if (stripBom(String(text)).trim() !== '') autoChapter = null;
       } catch {
         autoChapter = null;
       }
@@ -3304,6 +3309,9 @@ module.exports = {
   // V107（WP-21）：书目 chapters 条数硬上限（与 core/ipc-limits.js 的 MAX_CHAPTER_ITEMS 同数）
   MAX_META_CHAPTERS,
   readSizeProblem,
+  // STORAGE-01：带尺寸闸门的「同句柄读」（open → handle.stat → 同一句柄 readFile）。
+  // 修复流程读 .bak 与回填 / 补章两处共用这一份，不再各抄一遍「按路径 stat 再按路径读」。
+  readFileWithSizeGate,
   nowIso,
   exists,
   assertInside,

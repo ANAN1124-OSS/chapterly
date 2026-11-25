@@ -101,21 +101,40 @@ async function withFsPatch(target, key, impl, fn) {
   }
 }
 
-// 读盘计数器：记录每一次真 readFile；超限章一旦被读就直接失败（不真分配 129 MB）。
-// TB-04：本文件所有「拦截 fs 读」的用例都走这一份（以前失败路径上还有一份只计数、不拦截的简版，
-// 断言一旦回归就会真的把 129 MB 读进内存）。
-function countReadFileFor(hugePath) {  const realReadFile = fs.readFile;
+// 读盘计数器：记录每一次真实的「按路径 readFile」与「句柄 readFile」；超限章一旦被读就直接失败
+// （不真分配 129 MB）。TB-04：本文件所有「拦截 fs 读」的用例都走这一份（以前失败路径上还有一份
+// 只计数、不拦截的简版，断言一旦回归就会真的把 129 MB 读进内存）。
+// STORAGE-01 起章节 / 补章 / .bak 改成「同句柄读」（open → fstat → 同一句柄 readFile），只拦
+// fs.readFile 会漏掉真正的读盘路径、让「一章一次」的断言变成永远空数组 —— 这里把 open 出来的
+// 句柄的 readFile 也记进同一份 paths（超限章在句柄上被读照样立刻抛错）。
+function countReadFileFor(hugePath) {
+  const realReadFile = fs.readFile;
+  const realOpen = fs.open;
   const paths = [];
-  fs.readFile = async (...args) => {
-    const target = String(args[0]);
+  const note = (target) => {
     paths.push(target);
     if (target === hugePath) throw new Error('超限章节不许走进 readFile');
+  };
+  fs.readFile = async (...args) => {
+    const target = String(args[0]);
+    note(target);
     return realReadFile(...args);
+  };
+  fs.open = async (target, ...rest) => {
+    const handle = await realOpen(target, ...rest);
+    const targetPath = String(target);
+    const realHandleReadFile = handle.readFile.bind(handle);
+    handle.readFile = async (...args) => {
+      note(targetPath);
+      return realHandleReadFile(...args);
+    };
+    return handle;
   };
   return {
     paths,
     restore() {
       fs.readFile = realReadFile;
+      fs.open = realOpen;
     },
     hugeReads: () => paths.filter((target) => target === hugePath).length
   };

@@ -184,17 +184,18 @@ async function restoreFromBak(bookPath, io = {}) {
   let raw;
   try {
     // V104（v1.8.0 WP-19）：.bak 也是「整份读进内存 → JSON.parse」的小文件，与 readBookMeta 同一条
-    // 独立上限。坏同步盘把 .bak 换成超大文件时先 stat 拒绝，绝不整份读进主进程；超限报
+    // 独立上限。坏同步盘把 .bak 换成超大文件时先拒绝，绝不整份读进主进程；超限报
     // BAK_TOO_LARGE（与「没有 .bak」的 NO_BAK / 「解析不了」的 BAK_INVALID 区分开）。
-    const stat = await fs.stat(bakPath);
-    const tooLarge = storage.readSizeProblem(stat.size, {
+    // STORAGE-01（2026-11-26 审计）：闸门与读盘改在同一个句柄上（open → handle.stat → 同一句柄
+    // readFile）。旧实现按路径 stat 再按路径读，两步之间被换成超大文件时上限按旧尺寸放行。
+    const { buffer } = await storage.readFileWithSizeGate(bakPath, {
       code: 'BAK_TOO_LARGE',
       label: storage.BOOK_BAK,
+      tail: '没有读进内存',
       limit: storage.MAX_META_READ_BYTES,
-      tail: '没有读进内存'
+      encoding: 'utf8'
     });
-    if (tooLarge) throw new storage.StorageError(tooLarge.code, tooLarge.message);
-    raw = await fs.readFile(bakPath, 'utf8');
+    raw = buffer;
   } catch (err) {
     // 闸门报错原样上抛（界面按 code 分支）。
     if (err instanceof storage.StorageError) throw err;

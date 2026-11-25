@@ -371,3 +371,87 @@ test('CSTO-A03：整本整理中途失败后，已整理章的新字数补写进
   assert.equal(after.chapters[0].chars, chaptersLib.countChars('未完……'), '已整理章的新字数必须落盘（不许留旧缓存）');
   assert.equal(after.chapters[1].chars, before.chapters[1].chars, '没进内存的那一章不冒充已更新');
 });
+
+// STORAGE-01（2026-11-26 审计）：CSTO-A02 只把「书目光 / 章节正文 / 还原来源」三条主路径改成了同句柄读，
+// 另有三处漏在外面，仍是「按路径 stat 判上限 → 按同一路径 readFile」：
+//   ① 书架扫描的字数回填（readChapterTextForCount，1.6.1 R3a 的 128 MB 闸门）；
+//   ② 撤销删除时读旧版本「删空自动补章」，判断它是不是还空着（C17/V104 的补章闸门）；
+//   ③ 从 .bak 恢复时读 书目.json.bak（V104 的 32 MB 闸门）。
+// stat 与 readFile 之间文件被换成超大文件（同步盘正在落盘 / 外部程序改写）时，上限按旧尺寸放行，
+// 超限内容整份读进主进程内存 —— 正是 C17 / V104 注释声称要防的「顶爆主进程」。
+// 这里沿用 CSTO-A02 的假句柄写法：fstat 报超限、readFile 一旦被调用就记一次；
+// 只有三处都改成同句柄读，才会在读盘前拒绝。
+test('STORAGE-01：扫描回填 / 撤销删除补章 / .bak 恢复的尺寸闸门都绑在同一句柄上', async () => {
+  const repair = require('../core/repair');
+  const root = await mkTmp();
+
+  // ① 回填的现场：章节正文直接落盘（不经 saveChapterText），所以书目里这一章没有 chars 缓存
+  const { path: scanBook } = await storage.createBook(root, '回填同句柄');
+  const scanFile = (await storage.readBookMeta(scanBook)).chapters[0].file;
+  const scanPath = path.join(scanBook, scanFile);
+  await fs.writeFile(scanPath, '起风正文', 'utf8');
+
+  // ② 撤销删除的现场：删掉唯一一章（进 _trash），再手工还原旧版本「删空自动补章」的磁盘现场
+  const { path: undoBook } = await storage.createBook(root, '撤销同句柄');
+  const undoChapter = { ...(await storage.readBookMeta(undoBook)).chapters[0] };
+  await storage.saveChapterText(undoBook, undoChapter.file, '唯一的一章');
+  const deleted = await storage.deleteChapter(undoBook, undoChapter.id);
+  const autoFile = '002-未命名.txt';
+  const autoPath = path.join(undoBook, autoFile);
+  await fs.writeFile(autoPath, '', 'utf8');
+  const undoMetaPath = path.join(undoBook, storage.BOOK_FILE);
+  const rawUndoMeta = JSON.parse(await fs.readFile(undoMetaPath, 'utf8'));
+  rawUndoMeta.chapters.push({ id: 'ch_auto_legacy', file: autoFile, name: '', createdAt: new Date().toISOString() });
+  await fs.writeFile(undoMetaPath, JSON.stringify(rawUndoMeta, null, 2), 'utf8');
+
+  // ③ .bak 恢复的现场：路径先算出来（真实现场在假句柄生效后再造，否则 ② 读到的就是坏书目）
+  const bakPath = path.join(undoBook, storage.BOOK_BAK);
+
+  const hugeTargets = new Map([
+    [path.resolve(scanPath).toLowerCase(), storage.MAX_CHAPTER_READ_BYTES + 1],
+    [path.resolve(autoPath).toLowerCase(), storage.MAX_CHAPTER_READ_BYTES + 1],
+    [path.resolve(bakPath).toLowerCase(), storage.MAX_META_READ_BYTES + 1]
+  ]);
+  const hugeReads = [];
+  const realOpen = fs.open;
+  fs.open = async (target, ...rest) => {
+    const key = path.resolve(String(target)).toLowerCase();
+    if (!hugeTargets.has(key)) return realOpen(target, ...rest);
+    return {
+      stat: async () => ({ size: hugeTargets.get(key), mtimeMs: 1, isFile: () => true }),
+      readFile: async () => {
+        hugeReads.push(key);
+        return '';
+      },
+      close: async () => {}
+    };
+  };
+  let charsChanged;
+  let undoResult;
+  let bakError;
+  try {
+    // ① 回填：闸门看句柄 → 超限 → 这一章按「跳过」处理（不读、不算、不写缓存）
+    const pending = (await storage.readBookMeta(scanBook)).chapters.filter((c) => !Number.isFinite(c.chars));
+    charsChanged = await storage.backfillChapterChars(scanBook, pending);
+    // ② 撤销删除：补章报超限 → 量不出「空」→ 按非空处理（保留补章，宁可多一章）
+    undoResult = await storage.restoreDeletedChapterFromTrash(undoBook, {
+      trashName: path.basename(deleted.trashPath),
+      index: 0,
+      chapter: undoChapter,
+      autoChapterFile: autoFile
+    });
+    // ③ .bak 恢复：改名一次让上一版成为 书目.json.bak，再把主文件写坏
+    await storage.renameBook(undoBook, '撤销同句柄-第二版');
+    await fs.writeFile(undoMetaPath, '彻底坏掉', 'utf8');
+    // ③ .bak 恢复：.bak 过不了尺寸闸门 → BAK_TOO_LARGE，一个字节都不读
+    bakError = await repair.restoreFromBak(undoBook).then(() => null, (err) => err);
+  } finally {
+    fs.open = realOpen;
+  }
+
+  assert.equal(charsChanged, false, '超限章的字数回填必须跳过，不许读进内存');
+  assert.equal(undoResult.autoChapterRemoved, false, '量不出空的补章按非空保留（宁可多一章也不静默丢字）');
+  assert.equal(bakError && bakError.code, 'BAK_TOO_LARGE', '.bak 超限要如实报 BAK_TOO_LARGE');
+  assert.equal(bakError && String(bakError.message).includes(undoBook), false, '错误文案不带本机完整路径');
+  assert.deepEqual(hugeReads, [], '三处超限文件都一个字节不许读（不许走进 readFile）');
+});

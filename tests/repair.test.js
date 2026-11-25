@@ -164,18 +164,20 @@ test('CSTO-B-02：.bak 存在但读不了 → BAK_READ_FAILED，不误报「没�
   await storage.renameBook(bookPath, '读不了的备份-第二版'); // 结构性写盘生成 .bak
   const bakPath = path.join(bookPath, '书目.json.bak');
   await fs.access(bakPath); // 用例前提：备份确实在
-  const realReadFile = fs.readFile;
-  fs.readFile = async (file, ...rest) => {
-    if (String(file) === bakPath) {
-      throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${file}'`), { code: 'EBUSY' });
+  const realOpen = fs.open;
+  // STORAGE-01 起 .bak 走「同句柄读」（open → fstat → 同一句柄 readFile），注入点随实现挪到 open：
+  // 模拟的还是同一件事 —— 备份文件在、只是被杀软 / 同步盘占着，打开就 EBUSY。
+  fs.open = async (target, ...rest) => {
+    if (String(target) === bakPath) {
+      throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${target}'`), { code: 'EBUSY' });
     }
-    return realReadFile(file, ...rest);
+    return realOpen(target, ...rest);
   };
   let failed = null;
   try {
     failed = await repair.restoreFromBak(bookPath).then(() => null, (err) => err);
   } finally {
-    fs.readFile = realReadFile;
+    fs.open = realOpen;
   }
   assert.ok(failed, '读不了 .bak 必须明确报错');
   assert.equal(failed.code, 'BAK_READ_FAILED', '不许冒充 NO_BAK');
