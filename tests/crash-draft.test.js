@@ -170,6 +170,55 @@ test('CRASH-02：干净退出只清本进程草稿，上次运行的草稿保留
   assert.equal(read.draft.text, '上次运行、作者选先留着');
 });
 
+// CRASH-03（中）：作者在恢复提示里选「先留着，下次再恢复」= 明确要求这份草稿跨干净退出保留。
+// 以前 endSession 只按 ownerToken 过滤：本次运行（渲染进程崩溃重载后）写进草稿位的那份带的正是
+// 本进程令牌，干净退出时照样删掉 —— 作者选了「先留着」，退出即丢，那段未保存正文只剩编辑区
+// （重载后已是空白），唯一的磁盘兜底没了。
+test('CRASH-03：「先留着」的草稿带保留标记，干净退出不删、下次运行仍可恢复', async () => {
+  const root = await newRoot();
+  const store = storeAt(root, { pid: 4004, ownerToken: 'token-run' });
+  assert.equal((await store.beginSession()).ok, true);
+  const keptDraft = await store.writeDraft(draft({ text: '作者说先留着的那段' }), { ownerToken: 'token-run' });
+  assert.equal(keptDraft.ok, true);
+  const otherDraft = await store.writeDraft(
+    draft({ chapterId: 'ch_other', chapterName: '另一章', text: '没被选择、正常清理的' }),
+    { ownerToken: 'token-run' }
+  );
+  assert.equal(otherDraft.ok, true);
+
+  // ① 行为面（不依赖新接口）：盘上带保留标记 = 作者选过「先留着」。直接按存储格式打标记，
+  //    钉住「endSession 必须尊重保留标记」这条产品承诺。
+  const keptMetaPath = path.join(store.dir, `draft-${keptDraft.draftId}.json`);
+  const keptMeta = JSON.parse(await fsp.readFile(keptMetaPath, 'utf8'));
+  keptMeta.keep = true;
+  await fsp.writeFile(keptMetaPath, `${JSON.stringify(keptMeta)}\n`, 'utf8');
+
+  const closed = await store.endSession();
+  assert.equal(closed.ok, true);
+  assert.equal(closed.cleared, 1, '只清没有保留标记的那一份');
+  const keptRead = await store.readDraft(keptDraft.draftId);
+  assert.equal(keptRead.ok, true, '带保留标记的草稿不许在干净退出时删掉');
+  assert.equal(keptRead.draft.text, '作者说先留着的那段');
+  assert.equal((await store.readDraft(otherDraft.draftId)).ok, false, '没标记的草稿照旧在干净退出时清掉');
+
+  // ② 下次运行（新进程 / 新令牌）：保留的那份仍在列表里，作者还能选「恢复」。
+  const next = storeAt(root, { pid: 5005, ownerToken: 'token-next' });
+  const after = await next.beginSession();
+  assert.equal(after.abnormal, false, '干净退出后不报异常（运行标记已删）');
+  assert.equal(after.drafts.length, 1, '保留的草稿下次启动仍在列表里');
+  assert.equal(after.drafts[0].draftId, keptDraft.draftId);
+  assert.equal(after.drafts[0].ownerToken, 'token-run', '保留的原草稿归属不变');
+
+  // ③ 接口面：渲染层点「先留着」时由主进程调 markKeep 写标记。
+  const marked = await next.markKeep(keptDraft.draftId);
+  assert.equal(marked.ok, true);
+  assert.equal(marked.kept, 1);
+  const stamped = JSON.parse(await fsp.readFile(path.join(next.dir, `draft-${keptDraft.draftId}.json`), 'utf8'));
+  assert.equal(stamped.keep, true, '保留标记要落盘（下一次崩溃 / 退出仍然有效）');
+  assert.equal((await next.markKeep('../../etc/passwd')).ok, false, '非法 draftId 不给标记');
+  await next.endSession();
+});
+
 test('CGRD-02：pid 复用的残留标记仍判异常退出（主判据 = 标记还在）', async () => {
   const root = await newRoot();
   // 第一次启动后不 endSession = 模拟崩溃，标记留在盘上

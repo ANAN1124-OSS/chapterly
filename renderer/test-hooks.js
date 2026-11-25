@@ -230,6 +230,8 @@
       // setCrashDraftEnabled 走与设置保存同一条 config:set，开 / 关后 state.config 立即生效。
       crashDraftTick: () => crashRecoveryUi.snapshotNow(),
       crashRecoveryStatus: () => crashRecoveryUi.snapshotState(),
+      // CRASH-03：重跑一次恢复检查（E2E 83 验证「先留着」之后草稿仍在、下次启动还会再问）。
+      crashRecoveryCheck: () => crashRecoveryUi.checkRecovery(),
       setCrashDraftEnabled: async (enabled) => {
         state.globalConfig = await call(api.setConfig, { crashDraftEnabled: enabled === true });
         state.config = effectiveConfig();

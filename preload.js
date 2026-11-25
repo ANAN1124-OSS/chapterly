@@ -211,6 +211,8 @@ const api = {
   crashRecovery: () => invoke('crash:recovery'),
   readCrashDraft: (draftId) => invoke('crash:read-draft', draftId),
   discardCrashDraft: (target) => invoke('crash:discard-draft', target),
+  // CRASH-03：「先留着，下次再恢复」= 给这份草稿写保留标记（独立频道，与 discard 语义分开）。
+  keepCrashDraft: (draftId) => invoke('crash:keep-draft', draftId),
   // 正文全文搜索（提案 7.3）：索引在 userData，渲染层只拿状态和搜索结果（拿不到正文文件）
   // searchIndexStatus 只被自检取用（renderer/test-hooks.js 的测试钩子），产品界面用
   // ensureSearchIndex / searchContent；留着是为了自检能单独问「索引现在什么状态」。

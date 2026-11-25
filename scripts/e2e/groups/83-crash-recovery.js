@@ -218,6 +218,47 @@ module.exports = async function group83CrashRecovery(t) {
       dialog
     );
 
+    // ---------- 83e-2. 「先留着，下次再恢复」→ 写保留标记（CRASH-03） ----------
+    // 这份草稿是**本次运行**（刚崩溃重载前）写的，ownerToken 就是本进程；主进程干净退出
+    // endSession 默认清本进程草稿。「先留着」以前只是关掉对话框、什么都不写 = 作者选了保留，
+    // 退出即丢。这里点「先留着」核对三件事：草稿文件仍在、元数据有 keep:true（跨退出有效）、
+    // 正文没有进编辑区（不是恢复）。随后重跑一次恢复检查，确认它仍会被再问（下次启动同 Path）。
+    await exec("window.__cwTest.answerModal('later')");
+    let keptDraft = null;
+    let keptNames = [];
+    for (let i = 0; i < 50; i += 1) {
+      keptNames = await listDraftFiles();
+      keptDraft = null;
+      if (keptNames.length === 1) {
+        try {
+          keptDraft = JSON.parse(await fs.readFile(path.join(crashDraftsDir, keptNames[0]), 'utf8'));
+        } catch {
+          keptDraft = null;
+        }
+      }
+      if (keptDraft && keptDraft.keep === true) break;
+      await sleep(120);
+    }
+    const afterLater = await exec(`(() => ({
+      text: window.__cwTest.text(),
+      dirty: window.__cwTest.dirty(),
+      view: window.__cwTest.view()
+    }))()`);
+    check(
+      '崩溃恢复（CRASH-03）：点「先留着」写入保留标记（keep=true），草稿仍在、正文未进编辑区；重跑恢复检查仍会再问',
+      keptDraft &&
+        keptDraft.keep === true &&
+        keptDraft.draftId === draft.draftId &&
+        afterLater &&
+        afterLater.text !== DRAFT_TEXT &&
+        afterLater.dirty === false,
+      { keptNames, keep: keptDraft && keptDraft.keep, afterLater }
+    );
+
+    // 重跑恢复检查（不 await：它在等作者回答对话框）；草稿仍在 → 同一个恢复提示会再出现。
+    await exec('(() => { void window.__cwTest.crashRecoveryCheck(); return true; })()');
+    await waitFor('window.__cwTest.modalOpen() === true', 20000);
+
     // ---------- 83f. 点「恢复」→ 正文回来且 dirty=true → 草稿**保留**（旧M4） ----------
     await exec("window.__cwTest.answerModal('restore')");
     await waitFor(`window.__cwTest.text() === ${JSON.stringify(DRAFT_TEXT)}`, 20000);

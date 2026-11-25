@@ -149,6 +149,19 @@
       }
     }
 
+    // CRASH-03（中）：选「先留着，下次再恢复」= 让主进程把这份草稿标成保留（元数据 keep=true），
+    // 干净退出时 endSession 不再删它。返回是否真的标记上（标记失败要如实提示，别让作者以为留好了）。
+    async function keepOne(draftId) {
+      try {
+        const result = await api.keepCrashDraft(draftId);
+        if (!result || result.ok === false) return false;
+        const data = softData(result);
+        return Boolean(data && data.ok !== false && Number(data.kept) > 0);
+      } catch {
+        return false;
+      }
+    }
+
     // 旧M4（一轮·中）/ S2（三审）：恢复草稿后**不删**草稿文件——恢复出来的正文只在编辑区里
     // （仍是未保存状态）。以前这里立刻 discardOne：恢复后编辑区再崩一次 / 作者没保存就退出，
     // 这段字就只剩编辑区那一份、彻底没了。现在先把草稿标记成「本窗口已恢复」（主进程只对它
@@ -298,6 +311,12 @@
         await restoreOne(meta);
         return 'continue';
       }
+      // CRASH-03（中）：「先留着，下次再恢复」不是「什么都不做」——本次运行（渲染进程崩溃重载后）
+      // 写进草稿位的那份带的是本进程 ownerToken，主进程干净退出时默认清本进程草稿。以前这里直接
+      // return 'stop'，作者刚选的「先留着」在退出时被静默删掉。现在写显式保留标记；标记失败要如实
+      // 提示（那份正文只剩编辑区一份，退出就真没了）。
+      const kept = await keepOne(meta.draftId);
+      if (!kept) toast('这份草稿没能标记保留，退出时可能被清掉；请先恢复或另存一份', 'warn');
       return 'stop';
     }
 

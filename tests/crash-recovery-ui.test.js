@@ -33,7 +33,7 @@ function draftMeta(overrides = {}) {
 }
 
 function makeHost(options = {}) {
-  const calls = { save: [], recovery: 0, read: [], discard: [], open: [], load: [], toasts: [], modals: [] };
+  const calls = { save: [], recovery: 0, read: [], discard: [], keep: [], open: [], load: [], toasts: [], modals: [] };
   const answers = (options.answers || []).slice();
   const state = {
     view: options.view || 'editor',
@@ -76,6 +76,12 @@ function makeHost(options = {}) {
           data: { draft: { ...draftMeta(), text: options.recoveredText == null ? '上次崩溃前的正文' : options.recoveredText } }
         }
       );
+    },
+    // CRASH-03：作者点「先留着，下次再恢复」→ 主进程把这份草稿标成「保留」。
+    // 回包与真实 IPC 同形（{ ok:true, data }；软错误在 data 里）。
+    async keepCrashDraft(draftId) {
+      calls.keep.push(draftId);
+      return options.keepResult || { ok: true, data: { ok: true, kept: 1 } };
     },
     async discardCrashDraft(target) {
       calls.discard.push(target);
@@ -303,6 +309,33 @@ test('U4 丢弃 / 先留着：只删草稿或什么都不删，绝不碰编辑�
   assert.deepEqual(later.calls.read, []);
 });
 
+// CRASH-03（中）：「先留着，下次再恢复」是作者明确要求这份草稿跨干净退出保留。
+// 本次运行（渲染进程崩溃重载后）写进草稿位的那份带的是本进程 ownerToken，主进程干净退出时
+// 默认清本进程草稿 —— 不写保留标记就等于「作者选了先留着，退出即丢」。标记写失败要如实提示：
+// 不许让作者以为已经留好了，下次启动却再也看不到。
+test('CRASH-03：先留着要写保留标记；标记失败要如实提示', async () => {
+  const kept = makeHost({ enabled: true, dirty: false, drafts: [draftMeta()], answers: ['later'] });
+  const ui = crashRecoveryUi.create(kept.host);
+  await ui.checkRecovery();
+  assert.deepEqual(kept.calls.keep, ['d1'], '先留着 = 给这份草稿写保留标记');
+  assert.deepEqual(kept.calls.discard, [], '先留着不许删草稿');
+  assert.deepEqual(kept.calls.read, [], '先留着不读正文');
+  assert.equal(kept.calls.toasts.filter((toast) => toast.kind === 'warn').length, 0, '标记成功不打扰作者');
+
+  const failed = makeHost({
+    enabled: true,
+    dirty: false,
+    drafts: [draftMeta()],
+    answers: ['later'],
+    keepResult: { ok: true, data: { ok: false, code: 'EPERM', message: '草稿被占用' } }
+  });
+  const uiFailed = crashRecoveryUi.create(failed.host);
+  await uiFailed.checkRecovery();
+  const warn = failed.calls.toasts.find((toast) => toast.kind === 'warn');
+  assert.ok(warn, '标记失败必须有一条 warn（不能静默按「已经留好了」退出）');
+  assert.match(warn.message, /保留/);
+});
+
 test('REDT-A-04：写入闸拒绝（开书在途 / 载章中）时保留草稿并提示稍后再试', async () => {
   const { host, calls } = makeHost({
     enabled: true,
@@ -446,12 +479,18 @@ test('接线：renderer.js / index.html / 装配清单 / preload / main / E2E �
   assert.equal(entry[2], 'crashRecoveryUiModule');
 
   const preload = read('preload.js');
-  for (const channel of ['crash:draft', 'crash:recovery', 'crash:read-draft', 'crash:discard-draft']) {
+  for (const channel of ['crash:draft', 'crash:recovery', 'crash:read-draft', 'crash:discard-draft', 'crash:keep-draft']) {
     assert.ok(preload.includes(`invoke('${channel}'`), `preload 要暴露 ${channel}`);
   }
+  // CRASH-03：「先留着」要能把保留标记写到盘上（独立频道；一个频道对应一个 preload 方法）。
+  assert.match(
+    preload,
+    /keepCrashDraft: \(draftId\) => invoke\('crash:keep-draft', draftId\)/,
+    'preload 要暴露 keepCrashDraft → crash:keep-draft'
+  );
 
   const main = read('main.js');
-  for (const channel of ['crash:draft', 'crash:recovery', 'crash:read-draft', 'crash:discard-draft']) {
+  for (const channel of ['crash:draft', 'crash:recovery', 'crash:read-draft', 'crash:discard-draft', 'crash:keep-draft']) {
     assert.ok(main.includes(`handle('${channel}'`), `main.js 要注册 ${channel}`);
   }
   assert.match(main, /render-process-gone/, '崩溃处置入口还在');
@@ -617,6 +656,12 @@ test('S2 / T6 接线闸门：归属由主进程注入、crash:* 只对本窗口�
     mainSrc,
     /if \(typeof target\.bookPath === 'string' && typeof target\.chapterId === 'string'\)[\s\S]{0,600}?store\.ownerFor\(target\)[\s\S]{0,400}?DRAFT_FOREIGN_WINDOW/,
     '{bookPath, chapterId} 分支删除前校验归属，非 owner 回 DRAFT_FOREIGN_WINDOW'
+  );
+  // CRASH-03：「先留着」写保留标记同样只看本窗口的草稿（跨窗口不许把别人的未保存正文标成保留）。
+  assert.match(
+    mainSrc,
+    /handle\('crash:keep-draft'[\s\S]{0,900}?crashDraftVisibleTo\(owner, windowId\)/,
+    'keep-draft 写标记前校验归属'
   );
 
   // ③ 关窗：这扇窗口的「已恢复」标记一起清（草稿文件保留，别的窗口还能看到）。

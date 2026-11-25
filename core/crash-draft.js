@@ -6,7 +6,8 @@
 // - 打开后**只写 userData**：目录是 `%APPDATA%\chapter-writer\crash-drafts\`（baseDir = app.getPath('userData')），
 //   绝不写书库 / 书目.json / 章节 txt / config.json。
 // - **只用于崩溃恢复，不是自动保存**：草稿只在异常退出（或渲染进程崩溃重载）后提示一次；
-//   恢复后正文只进编辑区、仍是未保存状态（Ctrl+S 才写盘）。干净退出清掉标记与草稿。
+//   恢复后正文只进编辑区、仍是未保存状态（Ctrl+S 才写盘）。干净退出清掉标记与草稿；唯一例外是
+//   作者在恢复提示里选过「先留着，下次再恢复」的那份（CRASH-03：元数据带 keep 标记，跨干净退出保留）。
 // - 任何 IO 失败（ENOSPC / EPERM / 被占用 / 坏 JSON）都只回错误码，不抛错、不影响正文保存。
 //
 // 文件布局（只认自己命名的文件，作者手动放进目录的东西一个都不碰）：
@@ -234,6 +235,8 @@ function storedEntryFrom(raw, draftId, maxTextChars) {
     chars,
     ownerToken: normalizeOwnerToken(raw.ownerToken),
     ownerWindowId: normalizeOwnerWindowId(raw.ownerWindowId),
+    // CRASH-03：作者在恢复提示里选过「先留着，下次再恢复」= 显式保留标记（endSession 据此放行）。
+    keep: raw.keep === true,
     body,
     text: legacyText
   };
@@ -586,11 +589,15 @@ function createCrashDraftStore(baseDir, options = {}) {
     // CRASH-02（方案 a）：上次运行留下的草稿（ownerToken 不是本进程）一律保留——它可能是作者在
     // 恢复提示里选「先留着，下次再恢复」的那份，是那段未保存正文的唯一磁盘兜底。旧实现无条件
     // 删全部草稿，等于把「先留着」变成「退出即丢」。标记照旧删除（干净退出的判据）。
+    // CRASH-03（中）：本次运行（渲染进程崩溃重载后）写的草稿带的是**本进程**令牌，作者同样可能选
+    // 「先留着」——那条路径以前没有留任何标记，干净退出照删。现在 markKeep 会在元数据上写显式
+    // keep 标记，这里放行：选了「先留着」的草稿，跨干净退出保留，下次启动继续提示。
     async endSession() {
       let cleared = 0;
       const entries = await scan();
       for (const entry of entries) {
         if (entry.ownerToken !== ownerToken) continue;
+        if (entry.keep === true) continue;
         if (await unlinkDraft(entry.draftId)) cleared += 1;
       }
       let markerCleared = false;
@@ -719,6 +726,37 @@ function createCrashDraftStore(baseDir, options = {}) {
       const id = parseDraftFileName(`${FILE_PREFIX}${draftId}.json`);
       if (!id || id !== String(draftId == null ? '' : draftId)) return { ok: true, removed: 0 };
       return { ok: true, removed: (await unlinkDraft(id)) ? 1 : 0 };
+    },
+
+    // CRASH-03（中）：作者在恢复提示里选「先留着，下次再恢复」→ 写显式保留标记（落在元数据 JSON 上，
+    // 下一次崩溃 / 退出仍然有效）。只改这一份元数据，不碰正文；已标记过再点一次是幂等空操作。
+    // 归属校验由主进程在 IPC 层做（与 discard / consumed 同一口径），这里只认 draftId 形状。
+    async markKeep(draftId) {
+      const id = parseDraftFileName(`${FILE_PREFIX}${draftId}.json`);
+      if (!id || id !== String(draftId == null ? '' : draftId)) {
+        return { ok: false, code: 'DRAFT_MISSING', message: '草稿不在了（可能已被恢复或丢弃）', kept: 0 };
+      }
+      let raw;
+      try {
+        raw = JSON.parse(await io.readFile(draftPath(id), 'utf8'));
+      } catch (err) {
+        if (err && err.code === 'ENOENT') {
+          return { ok: false, code: 'DRAFT_MISSING', message: '草稿不在了（可能已被恢复或丢弃）', kept: 0 };
+        }
+        return { ok: false, code: 'DRAFT_UNREADABLE', message: '草稿读不出来（可能正被占用）', kept: 0 };
+      }
+      const entry = storedEntryFrom(raw, id, maxTextChars);
+      if (!entry) return { ok: false, code: 'DRAFT_MISSING', message: '草稿内容不完整（已跳过）', kept: 0 };
+      if (entry.keep === true) return { ok: true, kept: 1 };
+      raw.keep = true;
+      try {
+        await writeJsonAtomic(draftPath(id), raw);
+      } catch (err) {
+        return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err), kept: 0 };
+      }
+      // 缓存只记 at / claimsBody（prune / 孤儿清理用）；保留标记只被 endSession 的全量 scan 读取。
+      metaCache.set(id, { at: entry.at, claimsBody: claimsBodyOf(raw) });
+      return { ok: true, kept: 1 };
     },
 
     async removeFor(target) {

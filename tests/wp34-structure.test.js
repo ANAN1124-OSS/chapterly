@@ -241,13 +241,13 @@ test('WP-34：模块自己不 require electron；依赖由 main.js 的 buildIpcH
   assert.equal(IPC_SOURCE.includes('activeClipboard.writeText('), false, 'ipc 模块里不许直呼 activeClipboard');
 });
 
-test('WP-34：频道总数不丢（main + ipc = 111），preload 的 invoke 全在注册点里', () => {
+test('WP-34：频道总数不丢（main + ipc = 112），preload 的 invoke 全在注册点里', () => {
   const registered = registrationsOf(MAIN + '\n' + IPC_SOURCE);
-  // 111 = 搬前 104 + 审计修复 #6（V302）新增的 chapter:rescue（导出域尾部）+ WP4 清理计划频道
+  // 112 = 搬前 104 + 审计修复 #6（V302）新增的 chapter:rescue（导出域尾部）+ WP4 清理计划频道
   //       + WP5 崩溃草稿的 crash:draft / crash:recovery / crash:read-draft / crash:discard-draft
-  //       + WP18（B2）的 books:card（书架增量刷新，只读）
-  assert.equal(registered.length, 111, '主进程 IPC 注册点数量与「搬前 104 + V302 的 chapter:rescue + WP4 计划频道 + WP5 崩溃草稿 4 频道 + WP18 的 books:card」不一致');
-  assert.equal(new Set(registered.map((item) => item.channel)).size, 111, '有频道被重复注册');
+  //       + WP18（B2）的 books:card（书架增量刷新，只读）+ CRASH-03 的 crash:keep-draft（先留着写保留标记）
+  assert.equal(registered.length, 112, '主进程 IPC 注册点数量与「搬前 104 + V302 的 chapter:rescue + WP4 计划频道 + WP5 崩溃草稿 4 频道 + WP18 的 books:card + CRASH-03 的 crash:keep-draft」不一致');
+  assert.equal(new Set(registered.map((item) => item.channel)).size, 112, '有频道被重复注册');
   const all = new Set(registered.map((item) => item.channel));
   for (const channel of ALL_DOMAIN_CHANNELS) assert.ok(all.has(channel), `频道总数里找不到 ${channel}`);
   const preload = read('preload.js');

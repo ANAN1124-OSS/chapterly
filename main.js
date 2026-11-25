@@ -2520,6 +2520,31 @@ function registerIpc() {
     return softFailure('BAD_TARGET', '没有可删除的草稿目标，没有删草稿', { removed: 0 });
   });
 
+  // CRASH-03（中）：作者在恢复提示里选「先留着，下次再恢复」→ 给草稿写显式保留标记。
+  // 以前的「先留着」只是把对话框关掉、什么都不写：本次运行（渲染进程崩溃重载后）写的草稿带的是
+  // 本进程 ownerToken，干净退出 endSession 会照删——作者刚说「先留着」，退出即丢。标记落在草稿
+  // 元数据（keep=true）上，与其它 crash:* 频道同一套开关 / 归属校验；独立频道保持「一个频道一个
+  // preload 方法」的接线不变量。
+  handle('crash:keep-draft', async (draftId) => {
+    const cfg = await getConfig();
+    if (!cfg || cfg.crashDraftEnabled !== true) {
+      return softFailure('DISABLED', '崩溃草稿是关着的（可以在设置里打开），没有标记保留', { kept: 0 });
+    }
+    const store = getCrashDraftStore();
+    if (!store || typeof draftId !== 'string' || !draftId) {
+      return softFailure('DRAFT_UNAVAILABLE', '草稿目录暂时不可用，没有标记保留', { kept: 0 });
+    }
+    const session = flowSession();
+    const windowId = session ? session.id : null;
+    const owner = await store.draftOwner(draftId);
+    if (owner && !crashDraftVisibleTo(owner, windowId)) {
+      return softFailure('DRAFT_FOREIGN_WINDOW', '这份草稿属于另一个窗口，没有标记保留', { kept: 0 });
+    }
+    const kept = await store.markKeep(draftId);
+    if (!kept.ok) return softFailure(kept.code || 'DRAFT_KEEP_FAILED', kept.message, { kept: 0 });
+    return { ok: true, kept: kept.kept };
+  });
+
   // 正文全文搜索（提案 7.3）：书架搜索升级成能搜正文。
   // 索引存 userData/search-index.json，只含「双字哈希位图 + 每章 mtime/size」，不含正文；
   // 书 / 章一动（保存、改名、删除、外部改 txt）由下一次校验自动增量更新，作者不需要手动操作。
