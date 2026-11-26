@@ -79,12 +79,13 @@ test('顺序闸门：Esc 链的层顺序 = 优先级（通用询问框 → 弹�
       'shortcuts',
       'find',
       'menus',
-      'find-highlight',
       'fragment',
       'fragments',
       'capture',
       'proofread',
       'sensitive',
+      // A2-ESC-01：查找高亮排在不锁键弹层之后 —— 面板开着时 Esc 先关面板，不许只清高亮
+      'find-highlight',
       'tts',
       'reading',
       'focus',
@@ -225,6 +226,12 @@ test('查找面板：Esc 关面板；面板关着时 Esc 先清高亮，再按�
   assert.equal(esc.resolve({ reading: true, focus: true }, 'Escape').action, 'exit-reading');
   // 查找面板不锁键：回车是面板自己的事，不许被 Esc 链拦
   assert.equal(esc.resolve(probeOpen('find'), 'Enter'), null);
+  // A2-ESC-01（低）：高亮留着时打开校对 / 敏感词 / 灵感箱面板，第一下 Esc 必须先关面板 ——
+  // 旧层序（高亮在面板之前）只清高亮、面板不关，还弹一句无关提示。
+  assert.equal(esc.resolve({ proofread: true, findTotal: 1 }, 'Escape').layer, 'proofread');
+  assert.equal(esc.resolve({ sensitive: true, findTotal: 1 }, 'Escape').layer, 'sensitive');
+  assert.equal(esc.resolve({ fragment: true, findTotal: 1 }, 'Escape').layer, 'fragment');
+  assert.equal(esc.resolve({ capture: true, findTotal: 1 }, 'Escape').layer, 'capture');
 });
 
 test('菜单层：整理卡 / 显示菜单收起并归还焦点；菜单层在「后来的弹层」之前', () => {

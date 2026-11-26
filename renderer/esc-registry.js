@@ -97,8 +97,9 @@
     // ④ 顶栏「整理」卡 / 「显示」菜单：Esc 先收起它们，并把焦点还给按钮
     //    （焦点已经在菜单里时由 renderer/menu-keyboard.js 的元素级监听接走，那条路不经过这里）
     { id: 'menus', open: (p) => Boolean(p.formatCard) || Boolean(p.displayMenu), esc: 'close-header-menus' },
-    // ⑤ 查找高亮：面板关着时 Esc 先清高亮，再按才轮到朗读 / 阅读 / 专注
-    { id: 'find-highlight', open: (p) => !p.find && Number(p.findTotal) > 0, esc: 'clear-find-session' },
+    // ⑤ 查找高亮：面板关着时 Esc 先清高亮，再按才轮到朗读 / 阅读 / 专注。
+    // A2-ESC-01（低）：这一层排在**不锁键的弹层之后** —— 查找高亮留着时打开校对 / 敏感词 / 灵感箱
+    // 面板，旧顺序会让第一下 Esc 只清高亮（面板不关、还弹一句无关提示）。层序就是优先级。
     // ⑥ 不锁键的弹层：Esc 关，其它键继续往下走（Ctrl+S 仍可保存）
     { id: 'fragment', open: (p) => Boolean(p.fragment), esc: 'close-fragment' },
     { id: 'fragments', open: (p) => Boolean(p.fragments), esc: 'close-insert-fragment' },
@@ -107,6 +108,7 @@
     { id: 'capture', open: (p) => Boolean(p.capture), esc: 'close-capture' },
     { id: 'proofread', open: (p) => Boolean(p.proofread), esc: 'close-proofread' },
     { id: 'sensitive', open: (p) => Boolean(p.sensitive), esc: 'close-sensitive' },
+    { id: 'find-highlight', open: (p) => !p.find && Number(p.findTotal) > 0, esc: 'clear-find-session' },
     // ⑦ 朗读条（不是弹层，排在所有弹层之后，不抢弹层的 Esc）
     { id: 'tts', open: (p) => Boolean(p.tts), esc: 'close-tts' },
     // ⑧ 阅读模式：Esc 退出，回到写作页（排在所有弹层 / 朗读之后）
