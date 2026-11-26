@@ -474,3 +474,21 @@ test('静态闸门：实现只在 renderer/open-book-flow-ui.js，renderer.js �
   assert.match(moduleSrc, /assertHost\('createOpenBookFlowUi', host, REQUIRED_HOST\);/, '只许调用一次共享 assertHost');
   assert.equal(/require\(/.test(stripAssertHostBranch(moduleCode)), false, '运行时代码（剥掉 Node 分支后）不许 require');
 });
+
+// A2-WINDOW-01（2026-11-26 审计）：主进程建窗时预登记了书；新窗口自动开书拿到 !ok（书被删 /
+// STALE / 打开失败）必须回滚预登记，否则登记悬空 —— 别的窗口打开同一本会被聚焦到空窗口、
+// 写操作被 CROSS_WINDOW_BUSY 误拦，直到关窗。回滚只能发生在这一个入口。
+test('A2-WINDOW-01：新窗口自动开书失败/过期时回滚预登记（只在该入口）', () => {
+  assert.equal(typeof openBookFlowUi.startupOpenNeedsRelease, 'function');
+  assert.equal(openBookFlowUi.startupOpenNeedsRelease({ ok: true }), false, '开书成功不许释放');
+  for (const failed of [null, undefined, {}, { ok: false }, { ok: false, code: 'NO_BOOK' }, { ok: false, code: 'STALE' }]) {
+    assert.equal(openBookFlowUi.startupOpenNeedsRelease(failed), true, JSON.stringify(failed));
+  }
+  const { rendererSrc } = loadSourceGate('open-book-flow-ui.js');
+  const start = rendererSrc.indexOf("new URLSearchParams(location.search).get('open')");
+  assert.ok(start > 0, '找不到新窗口自动开书入口');
+  const block = rendererSrc.slice(start, start + 900);
+  assert.match(block, /startupOpenNeedsRelease\(started\)/, '启动入口要按回执决定是否回滚');
+  assert.match(block, /call\(api\.releaseBook\)/, '回执不是 ok 时必须调 window:release-book');
+  assert.equal(rendererSrc.split('api.releaseBook').length - 1, 1, 'releaseBook 只在新窗口自动开书这一个入口使用');
+});

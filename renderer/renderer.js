@@ -3680,7 +3680,19 @@
     await maybeShowFirstRunTip();
     // 从「在新窗口打开」进来的窗口：启动后直接打开指定的书（由主进程在 URL 里传路径）
     const openAtStart = new URLSearchParams(location.search).get('open');
-    if (openAtStart) await openBookByPath(openAtStart);
+    if (openAtStart) {
+      const started = await openBookByPath(openAtStart);
+      // A2-WINDOW-01（2026-11-26 审计）：主进程建窗时已把这本书预登记给本窗口；自动开书失败 /
+      // 被新开书顶掉 / 书已被删时必须回滚这次预登记 —— 否则登记悬空，别的窗口打开同一本书会被
+      // 聚焦到这个空窗口，写操作被 CROSS_WINDOW_BUSY 误拦。只在这个入口回滚。
+      if (openBookFlowUiModule.startupOpenNeedsRelease(started)) {
+        try {
+          await call(api.releaseBook);
+        } catch {
+          /* 释放失败只影响跨窗口保护，不影响本窗口继续使用 */
+        }
+      }
+    }
     if (state.testMode) {
       // 测试钩子单独一个文件，只有测试模式才加载；加载失败就明说（E2E 会立刻红）
       try {

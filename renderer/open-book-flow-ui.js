@@ -252,5 +252,13 @@
     return { openBookByPath };
   }
 
-  return { create: createOpenBookFlowUi, REQUIRED_HOST };
+  // A2-WINDOW-01（2026-11-26 审计）：主进程建窗时已经把书预登记给这个窗口；渲染层启动后
+  // `?open=<书路径>` 的开书回执如果不是 ok:true（书被外部删了 / 提交被新的开书顶掉 / 打开失败），
+  // 必须回滚这次**预登记** —— 否则登记悬空：别的窗口再打开同一本书会被聚焦到这个空窗口，
+  // 写操作被 CROSS_WINDOW_BUSY 误拦，直到关窗才释放。只用于「新窗口自动开书」这一个入口。
+  function startupOpenNeedsRelease(result) {
+    return !result || result.ok !== true;
+  }
+
+  return { create: createOpenBookFlowUi, REQUIRED_HOST, startupOpenNeedsRelease };
 });
