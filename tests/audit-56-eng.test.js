@@ -88,7 +88,13 @@ test('S7 静态闸门：复制前先扫链接；SOURCE_LINK 按「跳过」记�
   const copyAt = source.indexOf('await copyAsBook(sourceDir, staging, oversized, keepFiles)');
   assert.ok(gateAt > 0, 'importBookFolder 必须先扫符号链接');
   assert.ok(copyAt > gateAt, '链接闸门要排在 fs.cp 整目录复制之前');
-  assert.match(source, /code === 'FILE_TOO_LARGE' \|\| err\.code === 'SOURCE_LINK'/, 'importFolders 要把 SOURCE_LINK 记进 skipped');
+  // 2026-11-26：来源书目形态问题（IMPORT_INVALID）与重建闸门（INVALID_META）也按「跳过」记 ——
+  // 这段是同一个 catch 分支的四码清单，改任何一个都要在这里同步（A2-IMPORT-01 / V221-IMPORT-01）。
+  assert.match(
+    source,
+    /err\.code === 'FILE_TOO_LARGE' \|\|\s*err\.code === 'SOURCE_LINK' \|\|\s*err\.code === 'IMPORT_INVALID' \|\|\s*err\.code === 'INVALID_META'/,
+    'importFolders 要把 SOURCE_LINK / IMPORT_INVALID / INVALID_META 记进 skipped'
+  );
   assert.match(source, /tooLarge: err\.code === 'FILE_TOO_LARGE'/, 'SOURCE_LINK 不能算「体量超限」');
 });
 

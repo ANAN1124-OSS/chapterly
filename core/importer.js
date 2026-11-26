@@ -576,7 +576,7 @@ async function importBookFolder(booksRoot, sourceDir, analysis, options = {}) {
         if (err instanceof storage.StorageError) {
           throw new storage.StorageError(
             'IMPORT_INVALID',
-            `《${path.basename(sourceDir)}》的书目里有读侧会拒绝的章节文件名（${err.message}），` +
+            `《${path.basename(sourceDir)}》的书目里有读侧会拒绝的章节文件名（${errorText.describeForUi(err).message}），` +
               '导入后会立刻显示为损坏，已跳过；请先在来源里修正章节文件名后再导入'
           );
         }

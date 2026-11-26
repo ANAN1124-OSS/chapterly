@@ -201,7 +201,7 @@ function assertRepairChapterFiles(bookPath, chapters, mode) {
         : '目录里有读侧会拒绝的章节文件名，没有重建；请重命名该文件后再修复';
       throw new storage.StorageError(
         mode === 'bak' ? 'BAK_INVALID' : 'INVALID_META',
-        `第 ${i + 1} 条章节记录的文件名不能用作章节文件（${err.message}）：${tail}`
+        `第 ${i + 1} 条章节记录的文件名不能用作章节文件（${errorText.describeForUi(err).message}）：${tail}`
       );
     }
   }
