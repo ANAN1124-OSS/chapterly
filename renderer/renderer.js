@@ -813,6 +813,19 @@
   // 自定义字体：主进程读文件 → 这里用 FontFace 注册（渲染层仍然没有文件系统权限）
   // 代码审计 F1：不再把路径传给主进程——它只读「刚选的 / 当前书 / 全局配置」里的字体文件。
   // 代码审计 F11：解码走 renderer/font-logic.js（优先 fetch data: URL → arrayBuffer，失败回退 atob）。
+  // A2U-04（2026-11-26 复核）：document.fonts.add 只增不删 —— 换字体后读盘失败时 CSS 仍可能命中
+  // 上一份 'cw-custom-font'，重启才回宋体。记下本进程注册过的那一份，换 / 失败时先 delete。
+  let registeredCustomFontFace = null;
+  function dropRegisteredCustomFontFace() {
+    const face = registeredCustomFontFace;
+    registeredCustomFontFace = null;
+    if (!face || !document.fonts || typeof document.fonts.delete !== 'function') return;
+    try {
+      document.fonts.delete(face);
+    } catch {
+      /* 删不掉只能等重启；界面是否用内置字体仍由 loadedCustomFont.ok / 配置决定 */
+    }
+  }
   async function loadCustomFont(fontPath, { silent = false } = {}) {
     const wanted = String(fontPath || '');
     if (!wanted) return false;
@@ -827,13 +840,18 @@
       lastFontDecodeMode = decoded.mode;
       const face = new FontFace('cw-custom-font', decoded.bytes.buffer);
       await face.load();
+      // 注册新 face 前先摘掉旧 face：同名 face 只增不删时浏览器仍可能命中旧字体。
+      dropRegisteredCustomFontFace();
       document.fonts.add(face);
+      registeredCustomFontFace = face;
       loadedCustomFont.path = wanted;
       loadedCustomFont.name = res.name;
       loadedCustomFont.ok = true;
       return true;
     } catch (err) {
       loadedCustomFont.path = wanted;
+      // 失败回退要彻底：把旧 face 也摘掉，CSS 回落到内置字体（不再显示上一份自定义字体）。
+      dropRegisteredCustomFontFace();
       loadedCustomFont.name = '';
       loadedCustomFont.ok = false;
       if (!silent) toast(`字体加载失败：${err.message}`, 'error');
