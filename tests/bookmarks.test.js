@@ -94,8 +94,7 @@ test('查找书签：缺书 / 缺章 / 空查询词的坏条目直接丢弃（�
   assert.equal(normalizeBookmark(sample({ chapterId: '   ' })), null);
   assert.equal(normalizeBookmark(sample({ query: '' })), null);
   assert.equal(normalizeBookmark(sample({ query: '   ' })), null);
-  assert.equal(normalizeBookmark(sample({ query: 123 })), null);
-  // 时间戳坏值 / 越界下标都有确定兜底
+  assert.equal(normalizeBookmark(sample({ query: 123 })), null);  // 时间戳坏值 / 越界下标都有确定兜底
   const repaired = normalizeBookmark(
     sample({ chapterIndex: -5, createdAt: 'x', updatedAt: null }),
     { now: 7777 }
@@ -105,6 +104,20 @@ test('查找书签：缺书 / 缺章 / 空查询词的坏条目直接丢弃（�
   assert.equal(repaired.updatedAt, 7777);
   const capped = normalizeBookmark(sample({ chapterIndex: 99999999 }), { now: 1 });
   assert.equal(capped.chapterIndex, 1000000);
+});
+
+// A2-BOOKMARKS-01（低）：query 为保留首尾空白绕开了 cleanText，C0 / bidi 控制字符原样进 config.json
+//（U+202E 会把书签行的排版倒过来，NUL 在 JSON 里是坏字符）。现在只剔控制字符、不 trim。
+test('A2-BOOKMARKS-01：查询词剔除 C0 / bidi 控制字符，但保留首尾空白', () => {
+  const stripped = normalizeBookmark(sample({ query: '  a\u202Eb\u0000c  ' }), { now: 1 });
+  assert.equal(stripped.query, '  abc  ', '控制字符剔除、首尾空白保留（查找口径不变）');
+  assert.equal(
+    /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]|[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/.test(stripped.query),
+    false,
+    '配置里不许出现控制字符'
+  );
+  // 只有控制字符的查询词 = 空查询，直接丢弃（否则会存一条点开也搜不到的书签）
+  assert.equal(normalizeBookmark(sample({ query: '\u202E\u0000' }), { now: 1 }), null);
 });
 
 // C4（一轮·低）：字段限长改走 core/common.js 的 truncateSafe —— 截断点落在高位代理上时回退一个

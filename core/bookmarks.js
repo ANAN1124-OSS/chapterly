@@ -53,6 +53,14 @@
     return truncateSafe(trimmed, max);
   }
 
+  // A2-BOOKMARKS-01：与 cleanText 同一套控制字符过滤，但**不去首尾空白** —— 查询词要按作者输入的
+  // 原文保存（查找口径不去空白）；旧实现为了保留空白整体绕开 cleanText，U+202E / NUL 原样进
+  // config.json（书签行排版被倒过来）。只含控制字符的查询词清完为空，调用方按坏条目丢弃。
+  function cleanKeepSpaces(value, max) {
+    if (typeof value !== 'string') return '';
+    return truncateSafe(value.replace(CONTROL_CHARS_RE, '').replace(BIDI_CONTROL_RE, ''), max);
+  }
+
   // 「书 + 章」才是书签的唯一键：同一章重复保存 = 更新那一条，不是新增。
   // 用 \u0000 拼键只是内部去重用；书籍 / 章节 id 本身不会含这个字符。
   function keyOf(bookId, chapterId) {
@@ -78,6 +86,9 @@
     if (typeof raw.query !== 'string') return null;
     const queryRaw = raw.query;
     if (!queryRaw.trim()) return null;
+    // A2-BOOKMARKS-01：剔控制字符、保留首尾空白；清完为空（原来只有控制字符）= 坏条目。
+    const query = cleanKeepSpaces(queryRaw, MAX_QUERY_LENGTH);
+    if (!query) return null;
     const now = Number.isFinite(Number(options.now)) ? Math.round(Number(options.now)) : Date.now();
     const created = normalizeTimestamp(raw.createdAt, 0);
     const createdFallback = created || now;
@@ -92,8 +103,8 @@
         Number.isFinite(chapterIndex) && chapterIndex > 0
           ? Math.min(Math.round(chapterIndex), MAX_CHAPTER_INDEX)
           : 0,
-      // 查询词按作者输入的原文保存（不去空白，和查找口径一致），只限长
-      query: truncateSafe(queryRaw, MAX_QUERY_LENGTH),
+      // 查询词按作者输入的原文保存（不去空白，和查找口径一致），只限长、只剔控制字符
+      query,
       caseSensitive: raw.caseSensitive === true,
       createdAt: createdFallback,
       updatedAt: normalizeTimestamp(raw.updatedAt, createdFallback)
