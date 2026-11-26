@@ -192,7 +192,8 @@ test('R8（E-N4）：runReplaceOne 必须在两个 await 之后复核身份 / �
   // A2-REPLACEON-01：兜底从「只判 execCommand 返回值」改成「先拼 expected、再按实际内容复核」，
   // 静态闸门同步到新写法（边界检查仍在拼接之前）。
   const expectedAt = body.indexOf('const expected =');
-  assert.ok(expectedAt > replaceAt, '兜底拼接必须还在（renderer-dedupe 闸门）');
+  assert.ok(expectedAt > checkAt, '兜底拼接必须还在（renderer-dedupe 闸门）');
+  assert.ok(replaceAt > expectedAt, '先按命中区间拼 expected，再尝试原生替换');
   const fallbackSrc = body.slice(expectedAt, expectedAt + 400);
   assert.match(
     fallbackSrc,
