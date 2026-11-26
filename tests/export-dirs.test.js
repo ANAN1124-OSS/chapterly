@@ -151,3 +151,25 @@ test('MAIN-01：启动回收导出目录整段有 ≤3 秒截止时间，不会�
   const createAt = MAIN.indexOf('createWindow({ runAutomationFlow: true })');
   assert.ok(createAt > 0 && loopAt < createAt, '有界回收仍在建窗之前，到点照常建窗');
 });
+
+// V221-EXPORT-01（中）：导出 / 救稿成功后都 await rememberExportDir，其中两次孤儿回收是
+// 「尽力而为」的 readdir —— 上一个导出目录在断开的网络盘 / 拔掉的移动硬盘上时会挂几十秒
+//（Windows SMB 超时），作者看到的是「正在导出…」永远不结束。两次回收必须包在同一段有截止
+// 时间的等待里（与启动回收同口径），到点先返回导出结果，没扫到的目录下次导出 / 启动再收。
+test('V221-EXPORT-01：rememberExportDir 的两次孤儿回收有总截止时间，断盘压不住导出回执', () => {
+  const MAIN = require('node:fs').readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const rememberAt = MAIN.indexOf('async function rememberExportDir(');
+  assert.notEqual(rememberAt, -1, 'main.js 里仍要有 rememberExportDir');
+  const body = MAIN.slice(rememberAt, rememberAt + 2600);
+  const deadlineAt = body.indexOf('closeGuard.withDeadline(');
+  const firstClean = body.indexOf('await cleanupOrphanTmpFiles(dir)');
+  const secondClean = body.indexOf('await cleanupOrphanTmpFiles(previous)');
+  assert.ok(deadlineAt > 0, '两次孤儿回收要包在 closeGuard.withDeadline 里（V221-EXPORT-01）');
+  assert.ok(firstClean > deadlineAt, '本次目录的回收要在截止时间覆盖段内');
+  assert.ok(secondClean > firstClean, '上一个导出目录的回收也在同一段里（顺序不敏感，但都要有界）');
+  assert.match(
+    body.slice(deadlineAt, deadlineAt + 600),
+    /EXPORT_SWEEP_DEADLINE_MS/,
+    '截止时间复用启动回收的常量（同一口径，别各写一个数）'
+  );
+});

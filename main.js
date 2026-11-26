@@ -1269,8 +1269,22 @@ async function rememberExportDir(dir) {
     recentExportDirs = merged;
     void exportDirsLib.writeRecentDirs(exportDirsFilePath(), recentExportDirs).catch(() => {});
   }
-  await cleanupOrphanTmpFiles(dir).catch(() => {});
-  if (previous && previous !== dir) await cleanupOrphanTmpFiles(previous).catch(() => {});
+  // V221-EXPORT-01（中）：两次回收是「尽力而为」的 readdir，不能压住导出回执 —— 上一个导出目录在
+  // 断开的网络盘 / 拔掉的移动硬盘上时会挂几十秒（Windows SMB 超时），作者看到「正在导出…」永远
+  // 不结束。整段给一个总截止时间（与启动回收同口径），到点先回执，没扫到的下次导出 / 启动再收。
+  const orphanSweep = await closeGuard.withDeadline(async () => {
+    await cleanupOrphanTmpFiles(dir).catch(() => {});
+    if (previous && previous !== dir) await cleanupOrphanTmpFiles(previous).catch(() => {});
+  }, { ms: EXPORT_SWEEP_DEADLINE_MS });
+  if (orphanSweep.timedOut) {
+    // 只记一条不带目录值的 info 诊断（作者本机路径不进日志），与启动回收同口径。
+    logError('export-dir-sweep', { code: 'EXPORT_DIR_SWEEP_TIMEOUT' }, {
+      level: 'info',
+      code: 'EXPORT_DIR_SWEEP_TIMEOUT',
+      message: `导出目录回收超过 ${EXPORT_SWEEP_DEADLINE_MS / 1000} 秒（磁盘可能已断开），已先返回导出结果，下次导出 / 启动再收`,
+      literal: true
+    });
+  }
   if (dir === previous) return;
   try {
     const updated = await configStore.set({ lastExportDir: dir }, { auto: true });
