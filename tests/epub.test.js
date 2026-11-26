@@ -92,6 +92,16 @@ test('OPF：书名 / 语言 / 唯一标识 / 修改时间都写对了', async ()
   assert.match(opf, /<dc:identifier id="pub-id">urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}<\/dc:identifier>/);
 });
 
+// A2-EPUB-01（低）：dc:language 以前恒为 zh-CN —— language 入参有实现但没有调用方，简体→繁体档
+// 导出后正文是繁体、元数据还写 zh-CN（阅读器按简体规则选字形 / 断行 / 朗读）。导出层现在按档位传。
+test('A2-EPUB-01：dc:language 随 language 入参（繁体档 zh-TW），缺省仍 zh-CN', async () => {
+  const zhTw = textOf((await build({ language: 'zh-TW' })).byName, 'OEBPS/content.opf');
+  assert.ok(zhTw.includes('<dc:language>zh-TW</dc:language>'), '繁体档元数据要写 zh-TW');
+  assert.equal(zhTw.includes('<dc:language>zh-CN</dc:language>'), false);
+  const fallback = textOf((await build({ language: '  ' })).byName, 'OEBPS/content.opf');
+  assert.ok(fallback.includes('<dc:language>zh-CN</dc:language>'), '空 / 坏值回落 zh-CN');
+});
+
 test('OPF：manifest 与 spine 一致（idref 都有 item、href 都有文件、id/href 不重复）', async () => {
   const { byName, zip } = await build();
   const opf = textOf(byName, 'OEBPS/content.opf');

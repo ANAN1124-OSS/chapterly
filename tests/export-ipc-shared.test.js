@@ -25,7 +25,7 @@ const tmpCleanup = require('./tmp-cleanup');
 // TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
 const mkTmp = (prefix = 'cw-export-shared-') => tmpCleanup.mkTmp(prefix);
 
-function makeHost({ targetPath, canceled = false, readHook = null, docxLib: docxLibOverride = null, booksRoot = '' } = {}) {
+function makeHost({ targetPath, canceled = false, readHook = null, docxLib: docxLibOverride = null, epubLib: epubLibOverride = null, booksRoot = '', config = {} } = {}) {
   const channels = new Map();
   const calls = { dialogs: [], exportDirs: [], reads: 0 };
   const host = {
@@ -45,10 +45,9 @@ function makeHost({ targetPath, canceled = false, readHook = null, docxLib: docx
     },
     exporter,
     chaptersLib,
-    epubLib,
+    epubLib: epubLibOverride || epubLib,
     docxLib: docxLibOverride || docxLib,
-    s2tLib,
-    ipcLimits,
+    s2tLib,    ipcLimits,
     mapLimit: async (items, _limit, fn) => Promise.all(items.map(fn)),
     CHAPTER_READ_CONCURRENCY: 4,
     CHAPTER_BATCH_SIZE: 16,
@@ -57,7 +56,7 @@ function makeHost({ targetPath, canceled = false, readHook = null, docxLib: docx
     app: { getPath: () => path.join(os.tmpdir(), 'cw-documents') },
     fs,
     fsSync: require('node:fs'),
-    getConfig: async () => ({ exportConversion: '', lastExportDir: '', booksRoot }),
+    getConfig: async () => ({ exportConversion: '', lastExportDir: '', booksRoot, ...config }),
     getClipboard: () => ({ writeText: async () => {} }),
     showSaveDialog: async (options) => {
       calls.dialogs.push(options);
@@ -118,6 +117,36 @@ test('#24 R2：book:export-epub / book:export-docx 共用 exportStructured，返
   }
   // 两个格式的返回键集合完全一致（#24 R2：形状差异只来自 built，不来自两套流程）
   assert.deepEqual(Object.keys(epub).sort(), Object.keys(docx).sort());
+});
+
+// A2-EPUB-01（低）：EPUB 的 dc:language 以前恒为 zh-CN —— core/epub 认 language 入参，但导出层两个
+// 入口都不传（简体→繁体档导出后正文是繁体、元数据仍写 zh-CN）。现在共享内核按转换档位传：
+// s2t → zh-TW，其余 → zh-CN。
+test('A2-EPUB-01：导出层按转换档位把 language 传给 EPUB 构建（s2t → zh-TW）', async () => {
+  const dir = await mkTmp();
+  const root = path.join(dir, '书库');
+  await fs.mkdir(root, { recursive: true });
+  const bookPath = await makeBook(root);
+  const capture = (seen) => ({
+    ...epubLib,
+    streamEpub: async (input, write) => {
+      seen.push(input.language);
+      return epubLib.streamEpub(input, write);
+    }
+  });
+  const plainSeen = [];
+  const plainHost = makeHost({ targetPath: path.join(dir, '简体.epub'), epubLib: capture(plainSeen) });
+  await plainHost.channels.get('book:export-epub')(bookPath, null, null);
+  assert.deepEqual(plainSeen, ['zh-CN'], '不转换时语言标记 zh-CN');
+
+  const s2tSeen = [];
+  const s2tHost = makeHost({
+    targetPath: path.join(dir, '繁体.epub'),
+    config: { exportConversion: 's2t' },
+    epubLib: capture(s2tSeen)
+  });
+  await s2tHost.channels.get('book:export-epub')(bookPath, null, null);
+  assert.deepEqual(s2tSeen, ['zh-TW'], '简体→繁体档要写 zh-TW（与正文语言一致）');
 });
 
 test('#24 R2：取消导出时两个格式都不读正文、不写盘（共享内核的时序）', async () => {

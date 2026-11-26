@@ -382,6 +382,11 @@ function registerExportIpc(host) {
             meta: exportMeta,
             range: safeRange,
             labels,
+            // A2-EPUB-01（低）：EPUB 的 dc:language 以前恒为 zh-CN —— core/epub 认 language 入参，
+            // 但这里一直没传。简体→繁体档导出后正文是繁体、元数据还写 zh-CN，阅读器会按简体规则
+            // 选字形 / 断行 / 朗读。现在按转换档位给（s2t → zh-TW，其余 zh-CN）；DOCX 的 w:lang
+            // 仍是固定模板（见 core/docx.js 的 V115 说明），这个字段它不读。
+            language: conversion === 's2t' ? 'zh-TW' : 'zh-CN',
             // 每章只读一次：override 章用编辑区最新内容（不写盘），其余读磁盘；chars 按原始正文计。
             readText: async (index, chapter) => prefetch.read(index, chapter)
           },
