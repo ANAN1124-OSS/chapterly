@@ -17,7 +17,8 @@ module.exports = async function group44StatsGoal(t) {
     fileExists,
     chaptersLib,
     statsLib,
-    statsSeedLib
+    statsSeedLib,
+    statsSeedNow
   } = t;
   const { historyBookPath } = t.state;
 
@@ -423,7 +424,9 @@ module.exports = async function group44StatsGoal(t) {
   // 44h. 码字日历 + 连续写作天数 + 月度汇总（v0.8-1，提案 N1）
   // 跨天数据来自 scripts/e2e-stats-seed.js：启动前已写进临时 userData/stats.json，
   // 种子月 = 两个月前（3 天：120 / 80 / 200 字），昨天 150 字；今天的字数由前面 44 组保存产生。
-  const calendarSeed = statsSeedLib.buildSeed();
+  // A2-GATE-06：时间戳用 run-e2e 写盘时的那一个（种子时间戳只有一个来源）；拿不到（手工只启应用）
+  // 才退回「现在」，与本轮以前的写法一致。
+  const calendarSeed = statsSeedLib.buildSeed(statsSeedNow || new Date());
   await exec('window.__cwTest.backToShelf()');
   await waitFor("window.__cwTest.view() === 'shelf'");
   await waitFor("window.__cwTest.shelfStreakText().includes('连续')");
@@ -442,7 +445,10 @@ module.exports = async function group44StatsGoal(t) {
   const calendarStats = await exec('window.__cwTest.statsSummary()');
   const calendarNow = await exec('window.__cwTest.statsCalendar()');
   const streakNow = await exec('window.__cwTest.statsStreak()');
-  const todayParts = statsLib.parseDayKey(calendarSeed.todayKey);
+  // A2-GATE-06：日历的「今天 / 本月」是产品此刻的本地日期 —— 跑一轮跨过本地午夜时，它可以和种子
+  // 写盘那天不是同一天（种子只解释「两个月前那 3 天」和「种子写盘时的昨天 150 字」）。
+  const todayKeyNow = statsLib.localDayKey(new Date());
+  const todayParts = statsLib.parseDayKey(todayKeyNow);
   const currentPrefix = `${todayParts.year}-${String(todayParts.month).padStart(2, '0')}-`;
   const sumOfDays = (prefix) =>
     Object.entries(statsDiskNow.days || {})
@@ -460,14 +466,14 @@ module.exports = async function group44StatsGoal(t) {
     ).length;
   const expectedMonthTotal = sumOfDays(currentPrefix);
   const expectedMonthWrittenDays = countWrittenDays(currentPrefix);
-  const calendarTodayCell = calendarNow && calendarNow.days.find((item) => item.day === calendarSeed.todayKey);
+  const calendarTodayCell = calendarNow && calendarNow.days.find((item) => item.day === todayKeyNow);
   check(
     '码字日历：默认显示本月，今天格子就是今天保存的字数',
     calendarNow &&
       calendarNow.year === todayParts.year &&
       calendarNow.month === todayParts.month &&
       calendarNow.isCurrentMonth === true &&
-      calendarNow.today === calendarSeed.todayKey &&
+      calendarNow.today === todayKeyNow &&
       calendarNow.days.length === statsLib.daysInMonth(todayParts.year, todayParts.month) &&
       calendarTodayCell &&
       calendarTodayCell.chars === calendarStats.todayChars &&
@@ -480,14 +486,17 @@ module.exports = async function group44StatsGoal(t) {
     calendarNow.total === expectedMonthTotal && calendarNow.writtenDays === expectedMonthWrittenDays,
     { view: { total: calendarNow.total, writtenDays: calendarNow.writtenDays }, expectedMonthTotal, expectedMonthWrittenDays }
   );
+  // A2-GATE-06：跨过本地午夜后「种子写盘时的昨天 + 今天」不再是 2 天（种子的昨天已变成前天）；
+  // 只有没跨天时才钉死 2。无论跨没跨天，产品回执都要等于「按 stats.json + 此刻时钟」算出来的值。
+  const sameLocalDayAsSeed = todayKeyNow === calendarSeed.todayKey;
   check(
     '码字日历：连续写作天数来自 stats.json（昨天 + 今天 = 2 天，最长 3 天）',
     streakNow &&
       streakNow.current === expectedStreak.current &&
       streakNow.best === expectedStreak.best &&
-      expectedStreak.current === 2 &&
+      (!sameLocalDayAsSeed || expectedStreak.current === 2) &&
       expectedStreak.best === 3,
-    { streakNow, expectedStreak }
+    { streakNow, expectedStreak, sameLocalDayAsSeed }
   );
   check(
     '码字日历：设置里显示月份标题、当月格子和「今天 / 本月」按钮状态',
@@ -1773,7 +1782,8 @@ module.exports = async function group44StatsGoal(t) {
   const filterSeedBookId = statsSeedLib.SEED_BOOK_ID;
   const seedFilterDays = filterDiskDays.filter((day) => bookCharsOf(filterDisk.days[day], filterSeedBookId) > 0);
   const seedFilterChars = filterDiskDays.reduce((sum, day) => sum + bookCharsOf(filterDisk.days[day], filterSeedBookId), 0);
-  const filterThisYear = statsLib.parseDayKey(calendarSeed.todayKey).year;
+  // A2-GATE-06：「今年」用产品此刻的本地年份（跨年后种子的 todayKey 属于上一年，不能冒充今年）。
+  const filterThisYear = statsLib.parseDayKey(todayKeyNow).year;
   // 种子月是「两个月前」，跨年时它落在上一年：挑一个在数据里存在的年份来筛。
   const filterPickYear = calendarSeed.seedYear < filterThisYear ? calendarSeed.seedYear : filterThisYear;
   const pickYearDays = filterDiskDays.filter((day) => day.startsWith(`${filterPickYear}-`) && dayCharsOf(filterDisk.days[day]) > 0);

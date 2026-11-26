@@ -147,3 +147,37 @@ test('CI-F4/F5：kill-tree 的 taskkill 失败兜底可达，POSIX 走进程组�
   }
   assert.equal((read('scripts/kill-tree.js').match(/taskkill/g) || []).length >= 1, true);
 });
+
+// A2-GATE-06（测试闸门）：码字日历 / 连续天数的统计种子在应用启动前按「写盘那一刻」的本地日期写盘，
+// 而第 44 组断言时以前又用 new Date() 重建一份种子 —— 跑一轮跨过本地午夜（概率 ≈ 运行时长 / 86400）
+// 后「昨天 / 种子月」整体位移，streak 与日历断言必然假红，与产品行为无关。
+// 现在时间戳只取一次：run-e2e 写盘时取，经环境变量交给应用进程，组内断言用同一个时刻重建种子；
+// 「今天 / 本月」这类产品侧断言改用产品此刻的本地日期（跨天后可以和种子写盘那天不是同一天）。
+test('A2-GATE-06：统计种子时间戳只有一个来源，跨午夜不再两边各取「现在」', () => {
+  const runner = read('scripts/run-e2e.js');
+  assert.match(runner, /const statsSeedNow = new Date\(\);/, 'run-e2e 写盘前先取一次种子时间');
+  assert.match(runner, /buildSeed\(statsSeedNow\)/, '写盘必须用这个时间戳');
+  assert.match(
+    runner,
+    /env\.CW_E2E_STATS_SEED_TS = String\(statsSeedNow\.getTime\(\)\)/,
+    '同一时间戳要交给应用进程（组内断言用）'
+  );
+
+  const scenario = read('scripts/e2e-scenario.js');
+  assert.match(scenario, /process\.env\.CW_E2E_STATS_SEED_TS/, 'harness 要读回种子时间戳');
+  assert.match(scenario, /\bstatsSeedNow,/, 'groupContext 要把种子时间戳交给组');
+
+  const group = read('scripts/e2e/groups/44-stats-goal.js');
+  assert.match(group, /statsSeedLib\.buildSeed\(statsSeedNow/, '组内用种子时间戳重建种子');
+  assert.equal(/buildSeed\(\)/.test(group), false, '组内不许再出现无参数（= 现在）的 buildSeed');
+  assert.match(group, /const todayKeyNow = statsLib\.localDayKey\(new Date\(\)\)/, '「今天」用产品此刻的本地日期');
+  assert.match(group, /calendarNow\.today === todayKeyNow/, '产品今天 = 当前本地日期');
+  assert.equal(/calendarNow\.today === calendarSeed\.todayKey/.test(group), false, '种子写盘那天不许冒充产品今天');
+
+  // 行为面：同一个时间戳重建的种子必须逐字段相同（写盘那份与断言那份是同一份）。
+  const seedLib = require('../scripts/e2e-stats-seed');
+  const at = new Date(2026, 0, 1, 23, 59, 30);
+  assert.deepEqual(seedLib.buildSeed(at), seedLib.buildSeed(at), '同一时刻重建 = 同一份种子');
+  const nextDay = seedLib.buildSeed(new Date(2026, 0, 2, 0, 0, 30));
+  assert.notEqual(nextDay.todayKey, seedLib.buildSeed(at).todayKey, '跨午夜后「现在」已是另一天（旧实现的假红来源）');
+});

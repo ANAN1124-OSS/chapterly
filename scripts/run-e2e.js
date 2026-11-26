@@ -23,10 +23,14 @@ const books = path.join(base, 'books');
 fs.mkdirSync(userData, { recursive: true });
 fs.mkdirSync(books, { recursive: true });
 // 码字日历 / 连续天数需要跨天数据：只往临时 userData 的 stats.json 写种子（不碰书库与真实配置）。
+// A2-GATE-06：种子的「今天 / 昨天 / 种子月」都按这一只时钟算；时间戳记下来经环境变量传给应用进程，
+// 组内断言用同一个时刻重建种子 —— 跨本地午夜 / 跨月时不再两边各取一次「现在」而假红。
+const statsSeedNow = new Date();
 const { buildSeed } = require('./e2e-stats-seed');
-fs.writeFileSync(path.join(userData, 'stats.json'), JSON.stringify(buildSeed().stats), 'utf8');
+fs.writeFileSync(path.join(userData, 'stats.json'), JSON.stringify(buildSeed(statsSeedNow).stats), 'utf8');
 
 const env = { ...process.env };
+env.CW_E2E_STATS_SEED_TS = String(statsSeedNow.getTime());
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.ELECTRON_NO_ATTACH_CONSOLE;
 

@@ -11,6 +11,10 @@ const securityPolicyLib = require('../core/security-policy');
 const exporter = require('../core/exporter');
 const statsLib = require('../core/stats');
 const statsSeedLib = require('./e2e-stats-seed');
+// A2-GATE-06：统计种子的时间戳由 scripts/run-e2e.js 写盘时给出（同一进程树的环境变量），组内断言
+// 用它重建种子。拿不到（例如手工只启应用）退回 null，组内仍按旧行为用「现在」。
+const statsSeedNowMs = Number(process.env.CW_E2E_STATS_SEED_TS);
+const statsSeedNow = Number.isFinite(statsSeedNowMs) && statsSeedNowMs > 0 ? new Date(statsSeedNowMs) : null;
 const fragmentsLib = require('../core/fragments');
 const importerLib = require('../core/importer');
 const { entryNameProblem } = require('../core/zip');
@@ -174,6 +178,7 @@ module.exports = async function runScenario(ctx) {
     exporter,
     statsLib,
     statsSeedLib,
+    statsSeedNow,
     fragmentsLib,
     readZip,
     assertWellFormedXml,
