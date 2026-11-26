@@ -327,16 +327,49 @@ function pruneDays(stats, key) {
   }
 }
 
+// A2-STATS-01（低）：读取期规则（未来键不进任何聚合）不能复用成写盘清洗。旧实现 sanitizeStats
+// 会把「晚于今天」的键直接丢掉，而 recordChars / recordDuration 又把清洗结果交给 store 写盘 ——
+// 系统时间回拨（CMOS 电池失效 / 手动对时 / 向西跨时区）后任意一次正增量保存，就把回拨点之后的
+// 真实历史日物理删除（最多 400 天），改回时间也找不回。
+// 这里在清洗前把「合法但晚于今天」的键原样保留下来，写盘时合并回磁盘结果；聚合一律按锚过滤，
+// 它们不参与任何统计，但文件里不丢（时间改回来后还能读回）。
+function collectFutureDays(rawStats) {
+  const raw =
+    rawStats && typeof rawStats === 'object' && !Array.isArray(rawStats) && rawStats.days && typeof rawStats.days === 'object' && !Array.isArray(rawStats.days)
+      ? rawStats.days
+      : {};
+  const today = localDayKey();
+  const future = {};
+  let kept = 0;
+  for (const key of Object.keys(raw)) {
+    if (key !== key.trim() || !isValidDayKey(key) || key <= today) continue;
+    // 用同一把清洗（锚放到最远）把条目洗成规范形状，坏条目直接不要
+    const cleaned = sanitizeStats({ days: { [key]: raw[key] } }, { anchor: '9999-12-31' });
+    if (!cleaned.days[key]) continue;
+    future[key] = cleaned.days[key];
+    kept += 1;
+    if (kept >= MAX_DAYS) break;
+  }
+  return future;
+}
+
+function withFutureDays(stats, future) {
+  const keys = Object.keys(future);
+  if (!keys.length) return stats;
+  return { ...stats, days: { ...stats.days, ...future } };
+}
+
 // 把一次保存的正字数增量记进某本书的某一天；delta <= 0 不计数（删字/没变都不该扣今天的进度）。
 // 返回新 stats 与真正记下的 added（调用方据此决定要不要写盘）。
 function recordChars(rawStats, { day, bookId, delta } = {}) {
+  const future = collectFutureDays(rawStats);
   const stats = sanitizeStats(rawStats);
   // CTXT-B-03：不写「晚于今天」的键（时钟回拨期间的调用 / 坏参数）。未来键下一次读取会被丢弃，
   // 写进去只会白丢一次增量；归到本机今天，与 streak / aggregate 的口径一致。
   const today = localDayKey();
   const key = isValidDayKey(day) && day <= today ? day : today;
   const amount = Math.round(Number(delta));
-  if (!Number.isFinite(amount) || amount <= 0) return { stats, added: 0, day: key };
+  if (!Number.isFinite(amount) || amount <= 0) return { stats: withFutureDays(stats, future), added: 0, day: key };
   const id = sanitizeBookId(bookId);
   // 保留这一天已有的写作时长（v0.8-2）；旧数据没有 seconds 时就是空的。
   const existing = stats.days[key];
@@ -346,7 +379,7 @@ function recordChars(rawStats, { day, bookId, delta } = {}) {
   const actualAdded = entry.books[id] - before;
   stats.days[key] = entry;
   pruneDays(stats, key);
-  return { stats, added: actualAdded, day: key };
+  return { stats: withFutureDays(stats, future), added: actualAdded, day: key };
 }
 
 // 保存时「今日字数增量」的口径（审计 #3 / E1）：正文已经原子落盘，旧章字数基线读不到时
@@ -380,21 +413,22 @@ async function recordSaveChars(store, payload) {
 // 只加时长、不记任何正文或按键；单日上限 MAX_DAY_SECONDS（24 小时）。
 // 时长和字数是同一天的两种记录：这里也保留当天已有的按书字数。
 function recordDuration(rawStats, { day, seconds } = {}) {
+  const future = collectFutureDays(rawStats);
   const stats = sanitizeStats(rawStats);
   // 与 recordChars 同一条时钟回拨保护：未来键不落盘。
   const today = localDayKey();
   const key = isValidDayKey(day) && day <= today ? day : today;
   const amount = Math.round(Number(seconds));
-  if (!Number.isFinite(amount) || amount <= 0) return { stats, added: 0, day: key };
+  if (!Number.isFinite(amount) || amount <= 0) return { stats: withFutureDays(stats, future), added: 0, day: key };
   const existing = stats.days[key];
   const entry = existing && typeof existing === 'object' ? { ...existing } : { books: {} };
   const before = secondsOfEntry(entry);
   entry.seconds = Math.min(MAX_DAY_SECONDS, before + amount);
   const added = entry.seconds - before;
-  if (added <= 0) return { stats, added: 0, day: key };
+  if (added <= 0) return { stats: withFutureDays(stats, future), added: 0, day: key };
   stats.days[key] = entry;
   pruneDays(stats, key);
-  return { stats, added, day: key };
+  return { stats: withFutureDays(stats, future), added, day: key };
 }
 
 // 近 N 天：从最早到今天，缺的天补 0，方便渲染层直接画柱子。
@@ -521,9 +555,16 @@ function createStatsStore(userDataDir) {
   const file = path.join(userDataDir, 'stats.json');
   let cache = null;
   let loadPromise = null;
+  // A2-STATS-01：读盘时把「合法但晚于今天」的日期先单独留一份（不是缓存的一部分，也不进任何
+  // 聚合），写盘时再合并回去 —— 系统时间回拨后保存一次不会把回拨点之后的真历史日删掉。
+  let futureDays = {};
   // 统计写入串行化（保存正文时的字数增量不能并发合并丢失）——实现见 core/common.js 的 createWriteQueue。
   const writeQueue = createWriteQueue();
   const enqueue = writeQueue.enqueue;
+
+  function statsForDisk(stats) {
+    return withFutureDays(stats, futureDays);
+  }
 
   async function readFromDisk() {
     let raw;
@@ -533,10 +574,19 @@ function createStatsStore(userDataDir) {
       if (err.code === 'ENOENT') return emptyStats();
       throw err;
     }
+    let parsed;
     try {
-      return sanitizeStats(JSON.parse(stripBom(raw)));
+      parsed = JSON.parse(stripBom(raw));
+    } catch {
+      parsed = null;
+    }
+    if (parsed) futureDays = collectFutureDays(parsed);
+    try {
+      if (!parsed) throw new Error('BAD_JSON');
+      return sanitizeStats(parsed);
     } catch {
       // 统计文件坏了：归档坏文件（不直接删），然后从空统计继续，不能影响保存正文。
+      futureDays = {};
       const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
       try {
         await fs.rename(file, `${file}.corrupt-${stamp}`);
@@ -577,7 +627,7 @@ function createStatsStore(userDataDir) {
       // 先把新统计写盘，成功了才更新内存缓存：写盘失败时缓存保持旧值——
       // 这次增量直接丢弃（不补记，下次成功保存也不会重带）：正文已经原子落盘，
       // 章字数基线已经前移，没有可靠的旧值可以回填；失败向上抛，由调用方记 warn 日志。
-      if (result.added > 0) await writeJsonAtomic(file, result.stats);
+      if (result.added > 0) await writeJsonAtomic(file, statsForDisk(result.stats));
       cache = result.stats;
       return { added: result.added, day: result.day, stats: cloneStats(cache) };
     });
@@ -589,7 +639,7 @@ function createStatsStore(userDataDir) {
     return enqueue(async () => {
       const current = await load();
       const result = recordDuration(current, { day, seconds });
-      if (result.added > 0) await writeJsonAtomic(file, result.stats);
+      if (result.added > 0) await writeJsonAtomic(file, statsForDisk(result.stats));
       cache = result.stats;
       return { added: result.added, day: result.day, stats: cloneStats(cache) };
     });

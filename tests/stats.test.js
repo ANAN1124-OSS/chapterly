@@ -386,6 +386,27 @@ test('每日统计：统计写盘失败时抛错且内存不前进（主进程�
   assert.equal(statsLib.dayTotal(await store.get(), '2026-10-31'), 15);
 });
 
+// A2-STATS-01（低）：store 读盘时 sanitize 会丢掉「晚于今天」的键，record 再把清洗结果写盘 ——
+// 这与上面的纯函数用例合起来才是完整路径：系统时间回拨后保存一次，未来日期的历史必须还在磁盘上。
+test('A2-STATS-01：store 保存不删除未来日期（读盘清洗只影响聚合，不改写历史）', async () => {
+  const dir = await mkTmp();
+  const today = statsLib.localDayKey();
+  const future = statsLib.shiftDayKey(today, 40);
+  await fs.writeFile(
+    path.join(dir, 'stats.json'),
+    JSON.stringify({ version: 1, days: { [today]: { books: { a: 10 } }, [future]: { books: { a: 500 } } } }),
+    'utf8'
+  );
+  const store = statsLib.createStatsStore(dir);
+  const rec = await store.record({ day: today, bookId: 'a', delta: 5 });
+  assert.equal(rec.added, 5);
+  const disk = JSON.parse(await fs.readFile(store.file, 'utf8'));
+  assert.equal(disk.days[today].books.a, 15);
+  assert.equal(disk.days[future].books.a, 500, '未来日期必须留在磁盘上（时间改回来还找得到）');
+  const summary = await store.summary({ now: new Date() });
+  assert.equal(summary.todayChars, 15, '聚合仍只按今天算');
+});
+
 test('每日统计：文件里已有的脏数据读取时清洗，不抛错', async () => {
   const dir = await mkTmp();
   await fs.writeFile(
@@ -501,6 +522,28 @@ test('A2-STATS-04：带前后空白的日期键不许入库（三个聚合出口
   const agg = statsLib.aggregate(cleaned, {}, { now: new Date(2026, 10, 20, 12) });
   assert.equal(agg.totals.totalChars, 1, '汇总只算规范键那一天');
   assert.deepEqual(agg.options.years, [{ year: 2026, chars: 1 }], '年份只认 4 位规范键，不会出现 202');
+});
+
+// A2-STATS-01（低）：读取期规则（未来键不进聚合）不能复用成写盘清洗 —— 系统时间回拨（CMOS 电池
+// 失效 / 手动对时 / 向西跨时区）后任意一次正增量保存都会把回拨点之后的真历史日物理删除，
+// 改回时间也找不回。写盘结果保留未来键，聚合仍按锚过滤。
+test('A2-STATS-01：系统时间回拨后的保存不删除未来日期（聚合仍不计入）', () => {
+  const today = statsLib.localDayKey();
+  const future = statsLib.shiftDayKey(today, 40);
+  const raw = { version: 1, days: { [today]: { books: { a: 10 } }, [future]: { books: { a: 500 } } } };
+  const recorded = statsLib.recordChars(raw, { day: today, bookId: 'a', delta: 5 });
+  assert.equal(recorded.added, 5);
+  assert.equal(recorded.stats.days[today].books.a, 15);
+  assert.equal(recorded.stats.days[future].books.a, 500, '未来日期必须在写盘结果里保留（时间改回来还找得到）');
+  const agg = statsLib.aggregate(recorded.stats, {}, { now: new Date() });
+  assert.equal(agg.totals.totalChars, 15, '未来日不参与聚合');
+  assert.equal(agg.options.years.some((item) => item.chars >= 500), false);
+
+  // 时长同理：只加今天，未来日期不丢
+  const duration = statsLib.recordDuration(raw, { day: today, seconds: 30 });
+  assert.equal(duration.added, 30);
+  assert.equal(duration.stats.days[future].books.a, 500, '时长写入也不许顺手删未来日');
+  assert.equal(duration.stats.days[today].seconds, 30);
 });
 
 test('码字日历：没设目标时色阶按当月最高一天分 1–4 级', () => {
