@@ -96,14 +96,15 @@ test('O5：启动章回.cmd 真读 Node 主版本号；<22 给出可执行提示
   const cmd = read('启动章回.cmd');
   assert.ok(cmd.includes('process.versions.node'), 'cmd 要在启动前真读 Node 主版本号（只查 where node 不够）');
   assert.match(cmd, />=\s*22/, '下限与 engines / README 的 ≥22 对齐');
-  assert.ok(
-    cmd.indexOf('process.versions.node') > cmd.indexOf('where node'),
-    '版本检查要排在「有没有 node」之后'
-  );
-  assert.ok(
-    cmd.indexOf('process.versions.node') < cmd.indexOf('node scripts\\start.js'),
-    '版本检查必须排在真正启动之前'
-  );
+  // A2-GATE-05：indexOf 找不到是 -1，-1 > 任何位置都会让「顺序」断言恒真 —— 先断言两份锚点都真的存在。
+  const whereAt = cmd.indexOf('where node');
+  const versionAt = cmd.indexOf('process.versions.node');
+  const startAt = cmd.indexOf('node scripts\\start.js');
+  assert.ok(whereAt > -1, 'cmd 里找不到「where node」');
+  assert.ok(versionAt > -1, 'cmd 里找不到版本读取');
+  assert.ok(startAt > -1, 'cmd 里找不到真正启动');
+  assert.ok(versionAt > whereAt, '版本检查要排在「有没有 node」之后');
+  assert.ok(versionAt < startAt, '版本检查必须排在真正启动之前');
   assert.match(cmd, /Node\.js 版本过低/, '低版本要给中文提示（不是后面甩语法错误）');
   assert.match(cmd, /node -v/, '提示里要能显示当前版本，作者才知道差多少');
 });
@@ -114,10 +115,12 @@ test('O5：启动章回.cmd 真读 Node 主版本号；<22 给出可执行提示
 test('R26：cmd 分开「node 执行失败」与「版本过低」，版本号与提示同行', () => {
   const cmd = read('启动章回.cmd');
   assert.match(cmd, /Node\.js 执行失败/, 'node 跑不起来要给「执行失败」提示，不能一律说版本过低');
-  assert.ok(
-    cmd.indexOf('Node.js 执行失败') < cmd.indexOf('Node.js 版本过低'),
-    '先判「读不到版本」再判「版本过低」'
-  );
+  // A2-GATE-05：两处 indexOf 找不到时都是 -1，-1 < … 恒真 —— 先断言两句提示都真的存在。
+  const failedAt = cmd.indexOf('Node.js 执行失败');
+  const lowAt = cmd.indexOf('Node.js 版本过低');
+  assert.ok(failedAt > -1, 'cmd 里找不到「Node.js 执行失败」');
+  assert.ok(lowAt > -1, 'cmd 里找不到「Node.js 版本过低」');
+  assert.ok(failedAt < lowAt, '先判「读不到版本」再判「版本过低」');
   assert.match(
     cmd,
     /for \/f "delims=" %%v in \('node -v 2\^>nul'\) do set "NODE_VER=%%v"/,

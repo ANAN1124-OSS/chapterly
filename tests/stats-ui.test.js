@@ -737,7 +737,10 @@ test('静态闸门：index.html 在 renderer.js 之前加载 stats-ui.js，模�
   const rendererIdx = indexSrc.indexOf('src="renderer.js"');
   assert.ok(moduleIdx > 0, 'index.html 没有加载 stats-ui.js');
   assert.ok(moduleIdx < rendererIdx, 'stats-ui.js 必须排在 renderer.js 之前');
-  assert.ok(indexSrc.indexOf('src="stats-logic.js"') < moduleIdx, '排在 stats-logic.js 之后');
+  // A2-GATE-05：indexOf 找不到时返回 -1，-1 < moduleIdx 恒真 —— 先断言真找到了再比顺序。
+  const logicIdx = indexSrc.indexOf('src="stats-logic.js"');
+  assert.ok(logicIdx > 0, 'index.html 没有加载 stats-logic.js');
+  assert.ok(logicIdx < moduleIdx, '排在 stats-logic.js 之后');
   // A8（WP-32）：唯一允许的 require 是 UMD 的 Node 分支取 core/assert-host.js；
   // 运行时代码仍不许 require 任何东西。
   // T8（三审·低）：UMD 分支闸门只留 tests/assert-host.test.js 一处（那里逐个模块核对 require / 全局名 / 工厂签名）。
