@@ -1447,3 +1447,42 @@ test('五-M1（RF-01）：当前章查找在途正文被改 → 旧命中作废�
   assert.equal(ctx.state.find.total, 0, '旧正文的命中不许进查找会话');
   assert.equal(ctx.dom.map.get('find-results').children.length, 0);
 });
+
+// A2-FIND-02：整本查找是同步全书读盘 + 扫描，连按回车会并发多趟。发起前单飞：
+// 同一条件在途期间不再发第二趟（在途那趟落地会渲染），旧条件的一趟用令牌作废。
+test('A2-FIND-02：整本查找在途连按回车 → 只发一趟全书扫描', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ query: '张三', scope: 'book', searchBookGate: gate });
+  const scans = () => ctx.calls.api.filter((c) => c[0] === 'searchBook').length;
+  const first = ctx.ui.runFind();
+  const second = ctx.ui.runFind();
+  const inFlight = scans();
+  const summaryInFlight = ctx.dom.map.get('find-summary').textContent;
+  release();
+  await Promise.all([first, second]);
+  await flush();
+  assert.equal(inFlight, 1, '整本扫描只许一趟在途');
+  assert.equal(summaryInFlight, '查找中…', '重复回车不许改写摘要');
+  assert.equal(scans(), 1, '在途那趟落地后也不再补扫');
+  assert.match(ctx.dom.map.get('find-summary').textContent, /^整本命中 1 处/);
+});
+
+// A2-FIND-02：在途期间换了词再回车 → 旧趟落地后排最新一趟（最多两趟，不叠并发）。
+test('A2-FIND-02：整本查找在途换词回车 → 旧趟落地后只补扫最新一趟', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ query: '张三', scope: 'book', searchBookGate: gate });
+  const scans = () => ctx.calls.api.filter((c) => c[0] === 'searchBook').length;
+  const first = ctx.ui.runFind();
+  ctx.dom.map.get('find-query').value = '李四';
+  const second = ctx.ui.runFind();
+  const inFlight = scans();
+  release();
+  await Promise.all([first, second]);
+  await flush();
+  await flush();
+  assert.equal(inFlight, 1, '换词那次不许与在途那趟并发');
+  assert.equal(scans(), 2, '在途落地后补扫最新一次，且只补一次');
+  assert.equal(ctx.calls.api.filter((c) => c[0] === 'searchBook')[1][2].query, '李四');
+});

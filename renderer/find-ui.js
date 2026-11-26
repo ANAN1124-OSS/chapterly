@@ -485,6 +485,19 @@
     scrollCaretIntoView(start);
   }
 
+  // A2-FIND-02：整本查找单飞。每次回车都会起一趟全书读盘 + 扫描，而只有最后一趟会渲染；
+  // 等不到结果连按几次就是几趟并发的全量 I/O。发起前按「条件 + 书」去重：
+  //   - 在途期间同一条件再回车：让位给在途那趟（它落地时渲染的就是同一份结果）；
+  //   - 在途期间换了条件：只记最新一条，等在途落地后再补一趟（不再叠并发）。
+  // 当前章查找走内存里的 findAll（先发后到由 WP-15 的令牌兜底），不进单飞。
+  let bookFindBusy = false;
+  let bookFindBusyKey = '';
+  let bookFindPending = null;
+
+  function findRequestKey(options) {
+    return [options.scope, options.caseSensitive ? '1' : '0', options.query, String(state.bookPath || '')].join('\u0000');
+  }
+
   async function runFind() {
     const options = readFindOptions();
     if (!options.query.trim()) {
@@ -493,6 +506,34 @@
       clearFindSession();
       return;
     }
+    if (options.scope !== 'book') return runFindOnce(options);
+    const key = findRequestKey(options);
+    if (bookFindBusy) {
+      if (key !== bookFindBusyKey) bookFindPending = { key, bookPath: String(state.bookPath || '') };
+      return { ok: false, deduped: true };
+    }
+    bookFindBusy = true;
+    bookFindBusyKey = key;
+    try {
+      return await runFindOnce(options);
+    } finally {
+      bookFindBusy = false;
+      bookFindBusyKey = '';
+      const pending = bookFindPending;
+      bookFindPending = null;
+      if (pending) {
+        // 在途落地后补最新一次；期间条件又回到刚跑过那趟、或已经换了书，就不再补扫。
+        queueMicrotask(() => {
+          if (String(state.bookPath || '') !== pending.bookPath) return;
+          const now = readFindOptions();
+          if (!now.query.trim() || findRequestKey(now) === key) return;
+          void runFind();
+        });
+      }
+    }
+  }
+
+  async function runFindOnce(options) {
     // WP-15（C36）：发起时取号 + 记下书 / 章身份。查找在飞期间连按回车、切章、换书时，
     // 旧回执既不能盖掉新结果，也不能拿旧正文的命中位置去标现在的编辑区。
     const token = findSeq.next();
