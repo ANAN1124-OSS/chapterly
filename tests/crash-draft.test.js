@@ -659,6 +659,53 @@ test('P2：旧版本单文件草稿（text 在 JSON 里）仍能读；chars 按�
   assert.equal((await store.readDraft(rewritten.draftId)).draft.text, '新正文😀');
 });
 
+// A2-CRASH-01（2026-11-26 审计）：1MB 元数据闸门把 v1「正文内嵌 JSON」大草稿判成非草稿 ——
+// 升级前（≤2.0.0）的大草稿会既列不出来、又在 7 天后被 prune 静默删掉。现在元数据闸门与正文同
+// 一条线（32MB）：v1 大草稿照常列出 / 读回；>32MB 的记 oversized 并在 info() 上报（不读进内存）。
+test('A2-CRASH-01：v1 正文内嵌 JSON 的大草稿（>1MB）照常列出/读回，>32MB 记 oversized', async () => {
+  const root = await newRoot();
+  const store = storeAt(root);
+  const legacyId = 'dddd000000000001';
+  const bigText = '字'.repeat(400000); // JSON 体积约 1.2MB（> 旧 1MB 闸门）
+  await fsp.mkdir(store.dir, { recursive: true });
+  const legacyPath = path.join(store.dir, `draft-${legacyId}.json`);
+  await fsp.writeFile(
+    legacyPath,
+    JSON.stringify({
+      version: 1,
+      draftId: legacyId,
+      bookPath: BOOK,
+      chapterId: 'ch_big_legacy',
+      chapterTitle: '旧大草稿',
+      at: '2026-11-17T20:00:00.000Z',
+      text: bigText
+    })
+  );
+  const size = (await fsp.stat(legacyPath)).size;
+  assert.ok(size > 1024 * 1024, `用例前提：v1 草稿元数据要超过旧的 1MB 闸门（实际 ${size}）`);
+
+  const list = await store.listDrafts();
+  assert.equal(list.length, 1, 'v1 大草稿必须出现在恢复列表里（不许被 1MB 闸门挡掉）');
+  assert.equal(list[0].draftId, legacyId);
+  assert.equal(list[0].chars, 400000);
+  const full = await store.readDraft(legacyId);
+  assert.equal(full.ok, true);
+  assert.equal(full.draft.text.length, 400000);
+  const info = await store.info();
+  assert.equal(info.count, 1);
+  assert.equal(info.oversized, 0);
+
+  // >32MB 的元数据不读进内存：跳过 + info().oversized 计数（不静默）
+  const oversizedId = 'dddd000000000002';
+  const oversizedPath = path.join(store.dir, `draft-${oversizedId}.json`);
+  await fsp.writeFile(oversizedPath, '{}');
+  await fsp.truncate(oversizedPath, 32 * 1024 * 1024 + 1);
+  const list2 = await store.listDrafts();
+  assert.equal(list2.length, 1, '>32MB 的文件不解析，也不影响其它草稿');
+  const info2 = await store.info();
+  assert.equal(info2.oversized, 1, '超限文件必须在 info() 上报（不静默）');
+});
+
 test('P2：无元数据的孤儿正文超过宽限期才回收；坏 JSON 的正文保留（坏文件一律不删）', async () => {
   const root = await newRoot();
   const store = storeAt(root);

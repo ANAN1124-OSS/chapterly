@@ -53,8 +53,8 @@ const MAX_PATH_CHARS = 1024;
 const MAX_CHAPTER_ID_CHARS = 200;
 // 草稿最多 5M 字，正文文件约 15MB；超过 32MB 的正文文件不读（别让目录里的大文件把启动拖炸）。
 const MAX_STORED_BYTES = 32 * 1024 * 1024;
-// 元数据 JSON 只是几十个短字段；超过 1MB 的一定不是我们写的（防手工塞大文件把列表拖炸）。
-const MAX_META_BYTES = 1024 * 1024;
+// A2-CRASH-01：元数据尺寸闸门不再单独按 1MB 假设 —— v1 把整篇正文写在 JSON.text 里，
+// 大草稿的元数据可到十几 MB。统一按正文文件的上限（MAX_STORED_BYTES）收口，见 scan()。
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 
 // I1（三审·中）：这里曾经是「裸 err.message 截 200 码点」—— fs 错误的 message 形如
@@ -292,6 +292,10 @@ function createCrashDraftStore(baseDir, options = {}) {
   // JSON 里，同名 .txt 是「升级写了一半」的残留。sweepOrphanBodies 只按缓存判断，不再为清理读一遍
   // 元数据（否则每次写草稿都会把全部元数据读回，CGRD-01 的写放大又回来了）。
   const metaCache = new Map(); // draftId -> { at, claimsBody } | { invalid: true }
+  // A2-CRASH-01（2026-11-26 审计）：被尺寸闸门挡下的元数据条数（info() 上报）。
+  // 旧闸门 1MB 假设「元数据一定很小」，但 v1 把整篇正文写在 JSON.text 里（5M 字上限），
+  // 大草稿的元数据可以到 15MB 以上 —— 它们既列不出来，又会被 prune 当过期删掉。
+  let oversizedDrafts = 0;
   // CRASH-04（2026-11-25 审计·低）：per-draft 串行队列。writeDraft 是「正文 rename → 元数据 rename」
   // 两次原子写，两步之间没有任何互斥：删除方（discard / prune / endSession / removeAll）插在中间时，
   // 看到的只是「元数据还没写」的中间态 —— 元数据文件不存在、正文还没 rename 到位（或反过来：正文
@@ -368,10 +372,19 @@ function createCrashDraftStore(baseDir, options = {}) {
     return writeAtomic(file, `${JSON.stringify(payload)}\n`);
   }
 
+  // A2-CRASH-01：元数据的尺寸闸门与正文同一条线（32MB），不再单独用 1MB 假设。
+  // v1 草稿的正文就嵌在元数据 JSON 里（5M 字上限 → 十几 MB），按 1MB 拦会把可恢复的旧草稿
+  // 整个挡在列表外。超过 32MB 的才跳过并计数（info().oversized 上报），NEVER 读进内存。
+  function oversizedMeta(stat) {
+    const size = Number(stat && stat.size);
+    return Number.isFinite(size) && size > MAX_STORED_BYTES;
+  }
+
   // P2：扫目录里的草稿元数据（只认 draft-<16位hash>.json；坏 JSON / 缺字段 / 超大文件跳过，不删）。
   // 正文在独立的 .txt 里，这里一个字节都不读 —— 启动恢复 / 列表 / 清理的峰值内存与正文大小脱钩。
   async function scan() {
     let names = [];
+    oversizedDrafts = 0;
     try {
       names = await io.readdir(dir);
     } catch {
@@ -385,7 +398,11 @@ function createCrashDraftStore(baseDir, options = {}) {
         const file = path.join(dir, name);
         const stat = await io.stat(file);
         if (!stat || (typeof stat.isFile === 'function' && !stat.isFile())) continue;
-        if (Number.isFinite(Number(stat.size)) && Number(stat.size) > MAX_META_BYTES) continue;
+        // A2-CRASH-01：只拦真的读不进内存的（>32MB），1MB 以上的 v1 大草稿照常解析。
+        if (oversizedMeta(stat)) {
+          oversizedDrafts += 1;
+          continue;
+        }
         const raw = JSON.parse(await io.readFile(file, 'utf8'));
         const entry = storedEntryFrom(raw, draftId, maxTextChars);
         if (entry) {
@@ -420,7 +437,14 @@ function createCrashDraftStore(baseDir, options = {}) {
       let meta = metaCache.get(draftId);
       if (!meta) {
         try {
-          const raw = JSON.parse(await io.readFile(path.join(dir, name), 'utf8'));
+          const file = path.join(dir, name);
+          // A2-CRASH-01：>32MB 的文件不读进内存；记成 invalid（prune 不拿它算过期，孤儿清理也不删）。
+          const stat = await io.stat(file);
+          if (oversizedMeta(stat)) {
+            metaCache.set(draftId, { invalid: true, claimsBody: false });
+            continue;
+          }
+          const raw = JSON.parse(await io.readFile(file, 'utf8'));
           const entry = storedEntryFrom(raw, draftId, maxTextChars);
           meta = entry ? { at: entry.at, claimsBody: claimsBodyOf(raw) } : { invalid: true, claimsBody: false };
         } catch {
@@ -821,7 +845,9 @@ function createCrashDraftStore(baseDir, options = {}) {
         ok: true,
         dir,
         count: entries.length,
-        chars: entries.reduce((sum, entry) => sum + entry.chars, 0)
+        chars: entries.reduce((sum, entry) => sum + entry.chars, 0),
+        // A2-CRASH-01：超过 32MB、读不进内存的元数据条数（可诊断；不静默）。
+        oversized: oversizedDrafts
       };
     }
   };
