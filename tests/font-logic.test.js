@@ -145,3 +145,29 @@ test('UMD：Node require 与浏览器 window.CWFontLogic 是同一套 API', asyn
   assert.equal(decoded.mode, 'fetch');
   assert.deepEqual(Buffer.from(decoded.bytes), SAMPLE);
 });
+
+// A2U-04：字体面登记器 —— 注册新 face 前摘掉旧的、失败回退时清空；没有 fonts API 也不抛。
+test('A2U-04：字体面登记器换新时摘旧、清空时全摘', () => {
+  const removed = [];
+  const added = [];
+  const registry = fontLogic.createFontFaceRegistry({
+    add: (face) => added.push(face),
+    delete: (face) => removed.push(face)
+  });
+  const a = { id: 'a' };
+  const b = { id: 'b' };
+  assert.equal(registry.add(a), a);
+  assert.deepEqual(added, [a]);
+  assert.equal(registry.size(), 1);
+  registry.add(b);
+  assert.deepEqual(removed, [a], '注册新 face 前先摘旧 face');
+  assert.deepEqual(added, [a, b]);
+  assert.equal(registry.size(), 1, '同一时刻只保留当前这一份');
+  registry.clear();
+  assert.deepEqual(removed, [a, b], '失败回退 / 清空时全部摘掉');
+  assert.equal(registry.size(), 0);
+  // 没有 document.fonts 的最小环境：只记账、不抛
+  const bare = fontLogic.createFontFaceRegistry(null);
+  assert.doesNotThrow(() => bare.add({}));
+  assert.doesNotThrow(() => bare.clear());
+});

@@ -588,9 +588,27 @@
     }
   }
 
+    // V221-RENDER-02：删空 = 一次换章 —— 挂在旧章上的界面副作用按切章同一份清单收干净
+    // （查找高亮 / 朗读 / 一次性撤销快照 / 标记层 / 专注还原点）。只改界面状态，不碰正文 / 不写盘。
+    function resetChapterScopedUi() {
+      // undoUi 是可选成员（旧宿主 / 单测没给；给不给都不影响保存链本体），有就按切章口径清掉撤销条。
+      if (host.undoUi && typeof host.undoUi.clear === 'function') host.undoUi.clear();
+      setBulkWriteUndo(null);
+      setFallbackWriteUndo(null);
+      if (state.find.total) clearFindSession();
+      if (state.focus.on) {
+        state.focus.savedScrollTop = 0;
+        state.focus.savedCaret = 0;
+        state.focus.savedCaretOffset = 0;
+      }
+      stopTtsForChapterChange();
+      scheduleMarksRender(0);
+      if (state.focus.typewriter) scheduleTypewriterAlign(0);
+    }
+
     return {
       loadChapterAt, saveCurrent, saveForTransition, updateStatus, discardUnsavedForClose,
-      setChapterMask, applyEditorEditable,
+      setChapterMask, applyEditorEditable, resetChapterScopedUi,
       waitForLoadingIdle, notifyLoadingIdle, waitForSavingIdle, notifySavingIdle,
       verifyBookInBackground, handleCloseRequest
     };

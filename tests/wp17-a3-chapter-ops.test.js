@@ -729,17 +729,24 @@ test('A3-Cβ / B4：deleteChapterAt——非当前章不问未保存；当前脏
   assert.equal(rtErr.counts.undo.length, 0);
 });
 
-test('V221-RENDER-02：渲染层注入的删空清理清单与切章副作用同源（朗读 / 高亮 / 快照 / 标记层）', () => {
-  const rendererSrc = require('node:fs').readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
-  const at = rendererSrc.indexOf('onBookEmptied:');
-  assert.ok(at > 0, 'renderer 装配 chapterOpsUi 时要注入 onBookEmptied');
-  const block = rendererSrc.slice(at, at + 800);
+test('V221-RENDER-02：删空清理清单与切章副作用同源（渲染层委托 save-chain 的统一入口）', () => {
+  const read = (rel) => require('node:fs').readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  const rendererSrc = read('renderer/renderer.js');
+  assert.match(
+    rendererSrc,
+    /onBookEmptied: \(\) => saveChainUi\.resetChapterScopedUi\(\)/,
+    'renderer 装配 chapterOpsUi 时把删空清理委托给 save-chain'
+  );
+  const chainSrc = read('renderer/save-chain-ui.js');
+  const at = chainSrc.indexOf('function resetChapterScopedUi()');
+  assert.ok(at > 0, 'save-chain-ui 要提供 resetChapterScopedUi');
+  const block = chainSrc.slice(at, at + 900);
   for (const marker of [
     'clearFindSession()',
     'stopTtsForChapterChange()',
-    'bulkWriteUndo = null',
-    'fallbackWriteUndo = null',
-    'undoUi.clear()',
+    'setBulkWriteUndo(null)',
+    'setFallbackWriteUndo(null)',
+    'host.undoUi.clear()',
     'scheduleMarksRender(0)'
   ]) {
     assert.ok(block.includes(marker), `删空清理清单缺 ${marker}`);

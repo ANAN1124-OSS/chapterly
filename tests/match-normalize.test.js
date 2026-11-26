@@ -185,8 +185,8 @@ test('书籍信息（core/bookinfo.js，V205）：作者 / 分组 / 标签匹配
 
 test('静态闸门：五个消费方都引用 core/common.js 的共享实现，没有本地副本', () => {
   const wired = {
-    'core/find.js': /const \{ caseFoldForMatch \} = require\('\.\/common'\);/,
-    'core/search-index.js': /const \{ nowIso, mapLimit, normalizeForMatch \} = require\('\.\/common'\);/,
+    'core/find.js': /const \{ caseFoldForMatch, snapGrapheme \} = require\('\.\/common'\);/,
+    'core/search-index.js': /const \{ nowIso, mapLimit, normalizeForMatch, snapGrapheme \} = require\('\.\/common'\);/,
     'core/bookinfo.js': /const \{ truncateSafe, normalizeForMatch \} = common;/,
     'renderer/shelf-filter-ui.js': /module\.exports = factory\(require\('\.\.\/core\/common'\), require\('\.\.\/core\/assert-host'\)\.assertHost\);/,
     'renderer/command-registry.js': /module\.exports = factory\(require\('\.\.\/core\/common'\)\);/

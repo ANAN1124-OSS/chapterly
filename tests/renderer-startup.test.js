@@ -53,18 +53,13 @@ test('静态闸门：启动期与分隔条事件回调都不漏 unhandledrejecti
 });
 
 // A2U-04（2026-11-26 复核）：document.fonts.add 只增不删 —— 换字体 / 加载失败时要先摘掉旧的
-// 'cw-custom-font' face，否则 CSS 仍命中上一份自定义字体（重启才回宋体）。真实 CSS 解析需真机
-// 验证，这里钉住「注册前/失败时都 delete、只保留当前一份」的接线事实。
-test('A2U-04：换字体或加载失败时摘掉旧自定义字体 face（不再只增不删）', () => {
-  const helperAt = SOURCE.indexOf('function dropRegisteredCustomFontFace()');
-  const loadAt = SOURCE.indexOf('async function loadCustomFont(');
-  assert.ok(helperAt > 0, '要有摘除旧 face 的辅助函数');
-  assert.ok(loadAt > helperAt, '辅助函数要定义在 loadCustomFont 之前');
-  assert.match(SOURCE, /document\.fonts\.delete\(face\)/, '摘除要真的调 document.fonts.delete');
-  assert.match(SOURCE, /registeredCustomFontFace = face;/, '成功注册后要记下当前这一份');
-  assert.equal(
-    SOURCE.split('dropRegisteredCustomFontFace();').length - 1 >= 2,
-    true,
-    '成功注册前与失败回退时各摘一次旧 face'
-  );
+// 'cw-custom-font' face，否则 CSS 仍命中上一份自定义字体（重启才回宋体）。登记逻辑收在
+// renderer/font-logic.js（可单测），渲染层只调 add / clear。真实 CSS 解析需真机复核。
+test('A2U-04：字体面登记器换新时摘旧、失败清空，渲染层只调登记器', () => {
+  const fontLogic = require('../renderer/font-logic');
+  assert.equal(typeof fontLogic.createFontFaceRegistry, 'function');
+  assert.match(SOURCE, /fontLogic\.createFontFaceRegistry\(/, '渲染层要接 font-logic 的登记器');
+  assert.match(SOURCE, /customFontFaceRegistry\.add\(face\)/, '成功注册走登记器（自动摘旧 face）');
+  assert.match(SOURCE, /customFontFaceRegistry\.clear\(\)/, '失败回退摘掉旧 face');
+  assert.equal(/registeredCustomFontFace/.test(SOURCE), false, 'renderer 不再自己维护 face 列表');
 });

@@ -62,5 +62,34 @@
     return { bytes, mode: 'atob' };
   }
 
-  return { FONT_DATA_URL_PREFIX, sameFontPath, shouldRetryFontRead, decodeFontBase64 };
+  // A2U-04：自定义 FontFace 的注册登记 —— document.fonts.add 只增不删，换字体 / 加载失败时要先摘掉
+  // 上一份同名 face。fonts 只需 { add(face), delete(face) }（浏览器传 document.fonts，单测传假对象）。
+  function createFontFaceRegistry(fonts) {
+    const faces = new Set();
+    function clear(keep) {
+      for (const face of Array.from(faces)) {
+        if (face === keep) continue;
+        faces.delete(face);
+        try {
+          if (fonts && typeof fonts.delete === 'function') fonts.delete(face);
+        } catch {
+          /* 删不掉只能等重启 */
+        }
+      }
+    }
+    function add(face) {
+      if (!face) return null;
+      clear(face);
+      try {
+        if (fonts && typeof fonts.add === 'function') fonts.add(face);
+      } catch {
+        return null;
+      }
+      faces.add(face);
+      return face;
+    }
+    return { add, clear, size: () => faces.size };
+  }
+
+  return { FONT_DATA_URL_PREFIX, sameFontPath, shouldRetryFontRead, decodeFontBase64, createFontFaceRegistry };
 });
