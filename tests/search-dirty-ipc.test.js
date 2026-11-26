@@ -70,14 +70,17 @@ for (const [channel, args] of BOOK_DATA_CASES) {
   });
 }
 
-test('T-08：book:replace 存储层失败时不标脏、错误如实抛出（不许吞成成功）', async () => {
+test('T-08：book:replace 存储层失败时错误如实抛出，且半截失败也要标脏（A2-REPLACE-01）', async () => {
   const { channels, dirty } = makeBookDataHost({
     replaceInBook: async () => {
       throw Object.assign(new Error('磁盘忙'), { code: 'EBUSY' });
     }
   });
   await assert.rejects(() => channels.get('book:replace').fn(BOOK, { query: '甲' }), /磁盘忙/);
-  assert.deepEqual(dirty, [], '失败的替换不该标脏（否则会把没写成的书当新内容索引）');
+  // A2-REPLACE-01（低）：整本替换逐章写盘 —— 抛错时可能已经改写了前面几章，旧实现只挂成功回包后
+  // 标脏，半截失败路径不标，新词在约 60 秒复用窗口内被旧位图筛掉。markDirty 幂等，多标一次只多
+  // 一次索引重建；真正「一章都没写」的失败也多付一次重建，这个代价远小于静默漏报。
+  assert.deepEqual(dirty, [BOOK], '半截失败路径同样要标脏搜索索引');
 });
 
 test('T-08：标脏自身失败不把已完成的替换报成失败，只留 INDEX_DIRTY_FAILED 痕', async () => {

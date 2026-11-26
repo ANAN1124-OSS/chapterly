@@ -114,7 +114,9 @@ test('静态闸门：书架 grid 按渲染签名复用，签名覆盖会改卡�
 // RSHE-C-01（审计）：shelf:changed 的单卡增量不许再落到「整块重建 grid」——DOM 只换那一张卡。
 test('RSHE-C-01：单卡 DOM 增量（renderShelfCard）存在且整表渲染只在顺序 / 筛选集变了时兜底', () => {
   assert.match(BOOKINFO, /function renderShelfCard\(bookPath\)/);
-  assert.match(BOOKINFO, /domCards\[at\]\.replaceWith\(fresh\)/, '只替换目标书卡，不重建整个 grid');
+  // A2-FOCUS-01：换卡前先记旧卡引用（记焦点用），替换那一行改成 oldCard.replaceWith(fresh)
+  assert.match(BOOKINFO, /const oldCard = domCards\[at\];/);
+  assert.match(BOOKINFO, /oldCard\.replaceWith\(fresh\)/, '只替换目标书卡，不重建整个 grid');
   assert.match(BOOKINFO, /function buildSingleCard\(book, info\)/, '单卡复用同一条建卡代码');
   assert.match(BOOKINFO, /buildShelfGrid\(holder, shelfQueryText\(\), \[\{ book, info \}\]/, '单卡也走 buildShelfGrid，避免第二份建卡逻辑');
   const SHELF_UI = read('renderer/shelf-ui.js');
