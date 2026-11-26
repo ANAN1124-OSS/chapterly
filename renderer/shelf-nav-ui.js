@@ -59,6 +59,9 @@
     const saveForTransition = typeof host.saveForTransition === 'function' ? host.saveForTransition : null;
     // 五-M19（SS-12）：阅读模式里回书架要先复位阅读态（可选成员：旧宿主不传就维持原行为）。
     const leaveReadingMode = typeof host.leaveReadingMode === 'function' ? host.leaveReadingMode : null;
+    // V221-OPEN-02（中）：回书架要作废任何在途开书（可选成员：推进开书世代 + 释放 openingBook）。
+    // 渲染层注入的入口还会重算编辑区只读态；旧宿主不传时退回原行为（最多少一次保护）。
+    const invalidateOpen = typeof host.invalidateOpen === 'function' ? host.invalidateOpen : null;
   // ---------- 返回书架 ----------
   async function backToShelf() {
     // 五-M9（SS-02）：保存在途时先等它按快照章身份落定，再按「剩下真正没保存的字」询问——
@@ -90,6 +93,11 @@
         }
       }
     }
+    // V221-OPEN-02（中）：作者已经决定离开这本书 —— 先作废任何在途开书。否则开书回执返回时
+    // 世代号仍是最新的（stale() 为假），commitOpenBook 会把书架重新切回写作页并改写 state，
+    // 而 releaseBook 已经发出 → 跨窗口「同一本书只开一个窗口」的保护被破坏；213 早退不解
+    // openingBook 还会让编辑区长期只读。作废后回执在 stale 检查处原样返回 STALE。
+    if (invalidateOpen) invalidateOpen();
     // 释放「打开中的书」登记：关掉这个窗口 / 回书架后，别的窗口就能打开这本书
     try {
       // B1（审计 E6）：走统一 call() —— preload 在 IPC 异常时回 {ok:false} 而不抛，

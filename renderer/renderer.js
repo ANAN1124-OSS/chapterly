@@ -1171,6 +1171,14 @@
   // 令牌与书路径，过期一律丢弃；保存回执只认发起时捕获的 (bookPath, chapterId)。
   let openSeq = 0;
   let openingBook = false;
+  // V221-OPEN-02（中）：回书架 = 任何在途开书都过期。推进开书世代号让旧回执在 stale 检查处作废，
+  // 同时释放 openingBook 并重算编辑区只读态 —— 否则开书回执会把书架重新切回写作页、解除别人的锁；
+  // commitOpenBook 的「书已换」早退分支还会因为 committed 为真而不解锁，编辑区长期只读。
+  function invalidatePendingOpenBook() {
+    openSeq += 1;
+    openingBook = false;
+    applyEditorEditable();
+  }
   // WP20（R-N2）的保存深度守卫、载章令牌、等待者队列与编辑区遮罩态都随保存链模块走；
   // 编排器不再留第二份，避免两处状态漂移。
   // ?test=1 时 E2E 用 setTestOpenBookDelay / setTestLoadChapterDelay 给这两条 IPC 外面包延迟，
@@ -2070,7 +2078,9 @@
     // 保存走统一原语（保存回执后复核 dirty，仍脏就重新询问）。
     waitForSavingIdle, waitForLoadingIdle, saveForTransition,
     // 五-M19（SS-12）：回书架前先复位阅读模式（必须在清空书身份之前，阅读位置才记到原书）
-    leaveReadingMode
+    leaveReadingMode,
+    // V221-OPEN-02：回书架 / 离开这本书时作废在途开书（推进世代 + 释放 openingBook + 重算只读态）
+    invalidateOpen: () => invalidatePendingOpenBook()
   });
   const { backToShelf, renameBookFlow } = shelfNavUi;
 

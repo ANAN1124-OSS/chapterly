@@ -352,6 +352,12 @@ test('静态闸门：renderer.js 不许长回实现，装配只有一处，18 �
   assert.ok(rendererSrc.includes('    effectiveConfig, applyEditorStyle, syncCaretParagraphFromConfig, applySidebarWidth,'), 'host 第 2 行');
   assert.ok(rendererSrc.includes('    showView, refreshShelf, promptText, call, updateWindowTitle, toast'), 'host 第 3 行');
   assert.ok(rendererSrc.includes('const { backToShelf, renameBookFlow } = shelfNavUi;'), '两个入口按原名取');
+  // V221-OPEN-02：回书架要作废在途开书（推进开书世代 + 释放 openingBook + 重算只读态）
+  assert.ok(rendererSrc.includes('invalidateOpen: () => invalidatePendingOpenBook()'), '回书架要作废在途开书');
+  assert.match(
+    rendererSrc,
+    /function invalidatePendingOpenBook\(\) \{\r?\n\s*openSeq \+= 1;\r?\n\s*openingBook = false;\r?\n\s*applyEditorEditable\(\);/
+  );
   // 事件绑定段与测试钩子宿主契约段没搬：两行 click 绑定 + 钩子键仍按原名取
   assert.ok(rendererSrc.includes("$('btn-back').addEventListener('click', backToShelf);"), '返回按钮绑定原样留在事件绑定段');
   assert.ok(rendererSrc.includes("$('btn-rename-book').addEventListener('click', renameBookFlow);"), '改名按钮绑定原样留在事件绑定段');
@@ -492,4 +498,33 @@ test('M19（SS-12）：回书架在清空书身份之前复位阅读模式（位
   old.state.reading = { open: true };
   await old.ui.backToShelf();
   assert.equal(old.state.view, 'shelf');
+});
+
+// V221-OPEN-02（中）：开书 IPC 在途时点「返回书架」—— releaseBook 已经发出，但开书回执返回时
+// 世代号没被推进，commitOpenBook 会把书架重新切回写作页并改写 state（跨窗口保护被破坏）；
+// 书已换的早退分支又因为 committed 为真不解 openingBook（编辑区长期只读）。
+// 修法：作者离开这本书时作废在途开书（推进世代 + 释放 openingBook + 重算只读态）。
+test('V221-OPEN-02：回书架先作废在途开书，再释放登记；取消回书架则不作废', async () => {
+  const order = [];
+  const ctx = build({
+    extraHost: {
+      invalidateOpen: () => {
+        order.push(['invalidate', ctx.state.bookPath]);
+      }
+    }
+  });
+  await ctx.ui.backToShelf();
+  assert.deepEqual(order, [['invalidate', '/books/书甲']], '作废的是离开时那本书的在途开书');
+  assert.equal(ctx.calls.releaseBook, 1);
+  assert.equal(ctx.state.bookPath, null);
+  // 取消「返回书架前保存」→ 作者留在原地，之前点的开书仍应正常完成，不许提前作废
+  const keep = [];
+  const canceled = build({
+    dirty: true,
+    action: 'cancel',
+    extraHost: { invalidateOpen: () => keep.push(1) }
+  });
+  await canceled.ui.backToShelf();
+  assert.deepEqual(keep, [], '取消回书架不许作废在途开书');
+  assert.equal(canceled.state.bookPath, '/books/书甲');
 });
