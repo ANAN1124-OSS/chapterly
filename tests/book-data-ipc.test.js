@@ -301,6 +301,27 @@ test('行为：整本整理的进度仍走 format:progress、预检查只读原�
   ]);
 });
 
+// A2-REPLACE-01（低）：整本替换逐章写盘，中途失败时前面几章已经改好；标脏以前挂在成功回包之后，
+// 半截失败路径不标脏 → 新词在约 60 秒复用窗口内被旧位图筛掉（漏报）。markDirty 幂等，放 finally。
+test('A2-REPLACE-01：整本替换 / 整理半截失败也要标脏搜索索引', async () => {
+  const { channels, dirty } = makeBookDataHost({
+    storage: {
+      replaceInBook: async () => {
+        // 模拟「已经改写了第 1 章，第 2 章写失败」：正文变了，调用方必须知道索引要重建
+        throw Object.assign(new Error('第 2 章写入失败'), { code: 'REPLACE_FAILED' });
+      },
+      formatBook: async () => {
+        throw Object.assign(new Error('第 2 章写入失败'), { code: 'FORMAT_FAILED' });
+      },
+      StorageError: class StorageError extends Error {}
+    }
+  });
+  await assert.rejects(() => channels.get('book:replace').fn('D:\\书库\\书', { query: '甲', replacement: '乙' }));
+  assert.deepEqual(dirty, ['D:\\书库\\书'], '替换失败路径也要标脏一次');
+  await assert.rejects(() => channels.get('book:format').fn('D:\\书库\\书', {}));
+  assert.deepEqual(dirty, ['D:\\书库\\书', 'D:\\书库\\书'], '整理失败路径同样标脏');
+});
+
 test('行为：打开书文件夹先 stat 确认目录（C6 原语义随频道搬走不丢）', async () => {
   const opened = [];
   const { channels } = makeBookDataHost({

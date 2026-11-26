@@ -79,10 +79,14 @@ function registerBookDataIpc(host) {
     }
   }, READ_ONLY);
   handleBook('book:replace', async (bookPath, options) => {
-    const result = await storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options));
-    // T-08：整本替换逐章重写 txt，成功后标脏索引（否则 60 秒内搜索仍拿旧位图）。
-    markDirty(bookPath);
-    return result;
+    try {
+      return await storage.replaceInBook(bookPath, ipcLimits.sanitizeReplaceOptions(options));
+    } finally {
+      // T-08：整本替换逐章重写 txt，成功后标脏索引（否则 60 秒内搜索仍拿旧位图）。
+      // A2-REPLACE-01（低）：中途失败时前面几章已经改好，旧实现把标脏挂在成功回包之后 —— 半截失败
+      // 路径不标脏，新词在约 60 秒内漏报。markDirty 幂等，放 finally 里两种路径都覆盖。
+      markDirty(bookPath);
+    }
   }, {
     mutation: MUTATION.REPLACE
   });
@@ -211,12 +215,15 @@ function registerBookDataIpc(host) {
     }
   }, READ_ONLY);
   handleBook('book:format', async (bookPath, options) => {
-    const result = await storage.formatBook(bookPath, options, (progress) => {
-      sendToFlow('format:progress', progress);
-    });
-    // T-08：整理会逐章重写正文，成功后标脏索引。
-    markDirty(bookPath);
-    return result;
+    try {
+      return await storage.formatBook(bookPath, options, (progress) => {
+        sendToFlow('format:progress', progress);
+      });
+    } finally {
+      // T-08：整理会逐章重写正文，成功后标脏索引。
+      // A2-REPLACE-01（低）：与整本替换同一根因 —— 半截失败时已写盘的章也要标脏（markDirty 幂等）。
+      markDirty(bookPath);
+    }
   }, { mutation: MUTATION.FORMAT });
 
   handleBook('shell:open-book-folder', async (bookPath) => {
