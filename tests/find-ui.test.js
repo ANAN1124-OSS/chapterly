@@ -1486,3 +1486,34 @@ test('A2-FIND-02：整本查找在途换词回车 → 旧趟落地后只补扫�
   assert.equal(scans(), 2, '在途落地后补扫最新一次，且只补一次');
   assert.equal(ctx.calls.api.filter((c) => c[0] === 'searchBook')[1][2].query, '李四');
 });
+
+// V221-FIND-01（2026-11-26 复核）：整本查找每条命中都是一个 <button>，5000 章就是 5000 个 Tab
+// 停靠点。改成 roving tabindex：列表只占一个 Tab 停靠点，↑/↓/Home/End 在结果里移焦点。
+test('V221-FIND-01：整本结果清单只占一个 Tab 停靠点（roving tabindex + 方向键）', () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, query: '张三' });
+  ctx.ui.setupFindUi();
+  ctx.ui.renderFindResults({
+    query: '张三',
+    results: ['c1', 'c2', 'c3'].map((id, i) => ({
+      chapterId: id,
+      name: `第${i + 1}章`,
+      count: 1,
+      matches: [{ index: 0, length: 2, before: '', match: '张三', after: '' }]
+    }))
+  });
+  const list = dom.map.get('find-results');
+  const rows = list.children.filter((el) => el.className === 'find-result');
+  assert.equal(rows.length, 3, '命中结果不许被截断');
+  assert.deepEqual(rows.map((row) => row.tabIndex), [0, -1, -1], '只有第一行留在 Tab 序列里');
+  dom.doc.activeElement = rows[0];
+  let prevented = 0;
+  list._fire('keydown', { key: 'ArrowDown', preventDefault: () => (prevented += 1) });
+  assert.equal(prevented, 1, '方向键要接管，避免滚动页面');
+  assert.deepEqual(rows.map((row) => row.tabIndex), [-1, 0, -1], '焦点下移后 roving 跟着走');
+  assert.equal(rows[1]._focus, 1, '第二行真的拿到焦点');
+  list._fire('keydown', { key: 'End', preventDefault: () => {} });
+  assert.deepEqual(rows.map((row) => row.tabIndex), [-1, -1, 0]);
+  list._fire('keydown', { key: 'Home', preventDefault: () => {} });
+  assert.deepEqual(rows.map((row) => row.tabIndex), [0, -1, -1]);
+});

@@ -420,6 +420,40 @@
       row.addEventListener('click', () => jumpToFindResult(result));
       box.appendChild(row);
     }
+    // V221-FIND-01（2026-11-26 复核）：每行都是 <button> —— 整本命中 5000 章就是 5000 个 Tab 停靠点。
+    // 改成 roving tabindex：只有当前行留在 Tab 序列里，↑ / ↓ / Home / End 在结果里移动焦点，
+    // Enter / 空格仍由原生 button 激活。命中清单本身一个不少（不截断结果）。
+    applyFindResultRoving(0);
+  }
+
+  function findResultRows() {
+    const box = $('find-results');
+    return Array.from(box.children || []).filter((el) => el && el.classList && el.classList.contains('find-result'));
+  }
+
+  function applyFindResultRoving(activeIndex = 0) {
+    const rows = findResultRows();
+    rows.forEach((row, index) => {
+      row.tabIndex = index === activeIndex ? 0 : -1;
+    });
+    return rows;
+  }
+
+  function onFindResultsKeyDown(event) {
+    const key = event && event.key;
+    if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'Home' && key !== 'End') return;
+    const rows = findResultRows();
+    if (!rows.length) return;
+    if (event.preventDefault) event.preventDefault();
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    const at = rows.indexOf(active);
+    let next = at;
+    if (key === 'Home') next = 0;
+    else if (key === 'End') next = rows.length - 1;
+    else if (key === 'ArrowDown') next = at < 0 ? 0 : Math.min(rows.length - 1, at + 1);
+    else next = at <= 0 ? 0 : at - 1;
+    applyFindResultRoving(next);
+    if (rows[next] && typeof rows[next].focus === 'function') rows[next].focus();
   }
 
   async function jumpToFindResult(result) {
@@ -832,6 +866,8 @@
     $('btn-find-replace-one').addEventListener('click', runReplaceOne);
     $('btn-find-replace').addEventListener('click', runReplaceAll);
     $('btn-find-close').addEventListener('click', closeFindPanel);
+    // V221-FIND-01：结果清单的 roving tabindex 键盘导航（列表只占一个 Tab 停靠点）。
+    $('find-results').addEventListener('keydown', onFindResultsKeyDown);
     // 查找框回车：还没查过（或换了词）就查一遍并选中第一处；已经查过就走「下一处」。
     // Shift+回车 = 上一处。stopPropagation 避免 document 上的 Enter 处理再跑一遍（那样会连跳两处）。
     const onFindQueryEnter = (event) => {
