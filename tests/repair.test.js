@@ -514,3 +514,51 @@ test('RECOV-01：旧崩溃现场（.repair-meta.json 还在、书目.json 缺失
   await assert.rejects(() => storage.readBookMeta(broken), (err) => err.code === 'NO_BOOK');
   assert.equal(await storage.exists(path.join(broken, '书目.json')), false, '坏临时文件不许被当成书目写出去');
 });
+
+// A2-REPAIR-02（低 / 中置信）：读路径的 RECOV-01 对账会在 readBookMeta 里直接写书目、不核身份：
+// 写之前书目已经被另一路修复补回来时，旧临时文件会把刚完成的新结果静默替换掉；临时文件也没有
+// 32 MB 闸门（被外部换成超大文件会整份读进主进程内存）。
+test('A2-REPAIR-02：恢复写盘前书目已出现 → 放弃恢复并重读（旧残留不覆盖新结果）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '旧标题');
+  const metaPath = path.join(bookPath, '书目.json');
+  const tempPath = path.join(bookPath, '.repair-meta.json');
+  const oldRaw = await fs.readFile(metaPath, 'utf8');
+  await fs.writeFile(tempPath, oldRaw, 'utf8');
+  await fs.rm(metaPath);
+  // 「另一路修复刚好完成」：读路径在写回旧临时文件之前，书目重新出现（改标题的新版）
+  const fresh = JSON.parse(oldRaw);
+  fresh.title = '新标题';
+  const realStat = fs.stat;
+  let planted = false;
+  fs.stat = async (target, ...rest) => {
+    if (!planted && path.resolve(String(target)) === path.resolve(metaPath)) {
+      planted = true;
+      await fs.writeFile(metaPath, `${JSON.stringify(fresh, null, 2)}\n`, 'utf8');
+      return realStat(metaPath, ...rest);
+    }
+    return realStat(target, ...rest);
+  };
+  try {
+    const read = await storage.readBookMeta(bookPath);
+    assert.equal(planted, true, '前提：恢复流程真的走到了「写前再看一眼书目」');
+    assert.equal(read.title, '新标题', '不许拿旧临时文件覆盖已经出现的新书目');
+  } finally {
+    fs.stat = realStat;
+  }
+  assert.equal(await storage.exists(tempPath), true, '放弃恢复时旧临时文件保留（留给人工排查）');
+});
+
+test('A2-REPAIR-02：修复临时文件超过 32 MB 不整份读进内存（按 NO_BOOK 处理）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath, meta } = await storage.createBook(root, '超大临时文件');
+  const metaPath = path.join(bookPath, '书目.json');
+  const tempPath = path.join(bookPath, '.repair-meta.json');
+  // 形状合法但超限：旧实现会整份读 + parse 成功 → 把 33 MB 的书目写出去
+  const pad = 'x'.repeat(33 * 1024 * 1024);
+  await fs.writeFile(tempPath, JSON.stringify({ ...meta, pad }), 'utf8');
+  await fs.rm(metaPath);
+  await assert.rejects(() => storage.readBookMeta(bookPath), (err) => err.code === 'NO_BOOK');
+  assert.equal(await storage.exists(metaPath), false, '超限临时文件不许被写成书目');
+  assert.equal(await storage.exists(tempPath), true, '现场保留');
+});

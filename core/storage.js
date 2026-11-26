@@ -515,9 +515,19 @@ function validateRestorableMeta(meta) {
 // 不在读路径里抛新错误、也不重建半个书目）。
 async function recoverInterruptedRepair(bookPath) {
   const tempPath = path.join(bookPath, REPAIR_TEMP_FILE);
+  const metaPath = path.join(bookPath, BOOK_FILE);
   let raw;
   try {
-    raw = await fs.readFile(tempPath, 'utf8');
+    // A2-REPAIR-02：临时文件也要过读侧同一道 32 MB 闸门 —— 被外部换成超大文件时旧实现整份读进
+    // 主进程内存。超限 / 读不到都只回 false（照旧按 NO_BOOK 处理，不在读路径里抛新错误）。
+    const opened = await readFileWithSizeGate(tempPath, {
+      code: 'META_TOO_LARGE',
+      label: REPAIR_TEMP_FILE,
+      limit: MAX_META_READ_BYTES,
+      tail: '没有读进内存',
+      encoding: 'utf8'
+    });
+    raw = opened.buffer;
   } catch {
     return false;
   }
@@ -534,8 +544,16 @@ async function recoverInterruptedRepair(bookPath) {
     return false;
   }
   try {
+    // A2-REPAIR-02：写回之前再看一眼主书目 —— 读临时文件这段时间里，书目可能已经被另一路修复 /
+    // 同步盘补回来了（刚完成的重建结果比这份更旧的崩溃残留可信），这时不许拿残留静默覆盖它。
+    try {
+      await fs.stat(metaPath);
+      return true; // 目标已出现：让调用方重读书目，而不是写旧残留
+    } catch (statErr) {
+      if (statErr.code !== 'ENOENT') return false;
+    }
     const next = prepareBookMeta(checked.meta, { touchUpdatedAt: false });
-    await atomicWriteFile(path.join(bookPath, BOOK_FILE), `${JSON.stringify(next, null, 2)}\n`);
+    await atomicWriteFile(metaPath, `${JSON.stringify(next, null, 2)}\n`);
     // 写回成功后旧临时文件已经没有用处；删不掉也不影响书已可读。
     try { await fs.unlink(tempPath); } catch { /* 忽略 */ }
     return true;
@@ -544,7 +562,7 @@ async function recoverInterruptedRepair(bookPath) {
   }
 }
 
-async function readBookMeta(bookPath) {
+async function readBookMeta(bookPath, options = {}) {
   const metaPath = path.join(bookPath, BOOK_FILE);
   // C17（v1.8.0 WP-19）：先过独立小上限再读 —— 这一份要 JSON.parse，被外部换成超大文件时
   // 以前会整份读进内存（2 GB 的书目直接顶爆主进程）。超限明确报 META_TOO_LARGE，与「内容坏」
@@ -568,7 +586,10 @@ async function readBookMeta(bookPath) {
     if (err instanceof StorageError) throw err;
     if (err.code === 'ENOENT') {
       // RECOV-01：旧版本修复崩溃留下的现场（书目.json 缺失 + .repair-meta.json 完整）先对账一次。
-      if (await recoverInterruptedRepair(bookPath)) return readBookMeta(bookPath);
+      // A2-REPAIR-02：对账只在第一次进入时尝试；恢复写回 / 目标已出现都只会重读一次，避免递归。
+      if (!options.noRecover && (await recoverInterruptedRepair(bookPath))) {
+        return readBookMeta(bookPath, { noRecover: true });
+      }
       throw new StorageError('NO_BOOK', `没有找到 ${BOOK_FILE}`);
     }
     // E7（审计 WP-11）：EACCES / EPERM 这类读失败的 message 带完整本机路径（`EACCES: permission
