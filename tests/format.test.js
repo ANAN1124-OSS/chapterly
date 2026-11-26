@@ -424,3 +424,14 @@ test('TEXT-02：省略号 / 破折号 / 全角括号后的半角句点转全角�
   convertPunct('他说…….', (index, from, to) => reported.push([index, from, to]));
   assert.deepEqual(reported, [[4, '.', '。']]);
 });
+
+// KNOWN-FORMAT（2026-11-26 复核）：keep 模式不重构段间空行，但文末连续空行仍会被「只留一个换行」
+// 收掉；这一处以前不进 blankCollapsed，整理摘要报「0 处」与真实改动不符。
+test('KNOWN-FORMAT：keep 模式文末多余空行计入 blankCollapsed', () => {
+  const format = require('../core/format');
+  const keep = format.formatText('第一段。\n\n\n第二段。\n\n\n', { indent: 'none', blankLines: 'keep' });
+  assert.equal(keep.text, '第一段。\n\n\n第二段。\n');
+  assert.equal(keep.stats.blankCollapsed, 2, '文末多余的 2 个空行要计入');
+  const single = format.formatText('第一段。\n\n第二段。\n', { indent: 'none', blankLines: 'keep' });
+  assert.equal(single.stats.blankCollapsed, 0, '正常收尾不虚报');
+});

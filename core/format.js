@@ -315,6 +315,10 @@ function formatText(text, rawOptions) {
     for (let i = 1; i < paragraphs.length; i += 1) {
       result += '\n'.repeat(paragraphs[i].gap + 1) + paragraphs[i].text;
     }
+    // KNOWN-FORMAT（2026-11-26 复核）：keep 模式不在段间收空行，但文末的连续空行仍会被下面
+    // 「结尾只留一个换行」收掉 —— 以前这一处不进 blankCollapsed，摘要报「0 处」与真实改动不符。
+    const tail = /\n((?:[ \t\u3000]*\n)+)$/.exec(source);
+    if (tail) stats.blankCollapsed += tail[1].split('\n').length - 1;
   } else {
     let separator = '\n';
     let wanted = 0;
