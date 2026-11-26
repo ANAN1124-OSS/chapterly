@@ -87,6 +87,24 @@
     return text.slice(0, end);
   }
 
+  // V221-SEARCH-01（2026-11-26 复核）：查找结果的上下文按 UTF-16 下标截取，截断点还可能落在
+  // 组合字符序列中间（`e` + U+0301 这类）：片段以孤立的组合符开头 / 结尾时，界面会显示成「◌́」
+  // 或让前一个字变形。这里把下标吸附到字素边界：side='start' 退回所在字素的起点（含基字符），
+  // side='end' 吞掉紧随的组合符。只退回 / 吞掉相邻的组合符，不整篇切字素（长章里结果很多）。
+  const COMBINING_MARK_RE = /\p{M}/u;
+  function snapGrapheme(text, index, side = 'start') {
+    const source = String(text == null ? '' : text);
+    const at = Math.max(0, Math.min(source.length, Math.floor(Number(index) || 0)));
+    if (side === 'end') {
+      let end = at;
+      while (end < source.length && COMBINING_MARK_RE.test(source[end])) end += 1;
+      return end;
+    }
+    let start = at;
+    while (start > 0 && COMBINING_MARK_RE.test(source[start])) start -= 1;
+    return start;
+  }
+
   // 等一会儿（毫秒）：原子写失败重试的间隔、截图驱动等界面稳定用。永远 resolve，不 reject。
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -369,6 +387,7 @@
     clampInt,
     positiveInt,
     truncateSafe,
+    snapGrapheme,
     sleep,
     formatCount,
     formatByteSize,

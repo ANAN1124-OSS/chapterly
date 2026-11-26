@@ -27,7 +27,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { atomicWriteFile } = require('./atomic');
-const { nowIso, mapLimit, normalizeForMatch } = require('./common');
+const { nowIso, mapLimit, normalizeForMatch, snapGrapheme } = require('./common');
 // 路径归一只有一份实现（core/path-utils.js）：和 open-books 判「同一本书」用同一个口径
 const { normalizePath } = require('./path-utils');
 const storage = require('./storage');
@@ -356,8 +356,8 @@ function snippetAround(text, index, length, radius = SNIPPET_RADIUS) {
   const source = String(text == null ? '' : text);
   const at = Math.max(0, Math.min(Math.floor(Number(index) || 0), source.length));
   const len = Math.max(1, Math.min(Math.floor(Number(length) || 1), source.length - at));
-  const beforeStart = Math.max(0, at - radius);
-  const afterEnd = Math.min(source.length, at + len + radius);
+  const beforeStart = snapGrapheme(source, Math.max(0, at - radius), 'start');
+  const afterEnd = snapGrapheme(source, Math.min(source.length, at + len + radius), 'end');
   const clean = (value) =>
     String(value)
       .replace(/[\r\n\t]+/g, ' ')

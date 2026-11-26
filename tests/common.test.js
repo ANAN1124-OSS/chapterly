@@ -422,6 +422,8 @@ test('core/common.js 是纯逻辑：不 require 任何模块，也不碰 process
     'positionOf',
     'positiveInt',
     'sleep',
+    // V221-SEARCH-01：查找结果的上下文截断吸附到字素边界（组合字符不切开）
+    'snapGrapheme',
     'stripBom',
     'toHalfWidth',
     'truncateSafe'

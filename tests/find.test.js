@@ -250,3 +250,17 @@ test('CTXT-B-10：countMatches 在 MAX_MATCHES 上限如实回报 truncated', ()
   assert.deepEqual(countMatches(text, 'x'), { count: 5000, truncated: true, limit: 5000 });
   assert.deepEqual(countMatches('xxx', 'x'), { count: 3, truncated: false, limit: 5000 });
 });
+
+// V221-SEARCH-01（2026-11-26 复核）：上下文截断除代理对外还要避开组合字符序列（`e` + U+0301）：
+// 起点落在组合符上会以孤立组合符开头，终点落在基字符与组合符之间会把后一个字吃掉一半。
+test('V221-SEARCH-01：makeSnippet 的截断点吸附到字素边界（组合字符不被切开）', () => {
+  const mark = '\u0301';
+  const startText = `ab\u0065${mark}cd目标`; // 目 在 UTF-16 下标 6
+  const startCut = makeSnippet(startText, 6, 2, 3); // 原起点 3 正好是组合符
+  assert.equal(startCut.before, `e${mark}cd`, '起点退回基字符 e，不许以孤立组合符开头');
+  assert.equal(startCut.before.startsWith(mark), false);
+  const endText = `目标e${mark}zz`; // 命中 0..2，半径 1 的终点 3 正好是组合符
+  const endCut = makeSnippet(endText, 0, 2, 1);
+  assert.equal(endCut.after, `e${mark}`, '终点吞掉剩余组合符，含完整字素');
+  assert.equal(endCut.after.endsWith(mark), true);
+});

@@ -4,7 +4,7 @@
 
 // X7 / V205（v1.8.0 WP-25）：「小写化变长就退回原文」的长度防御收进 core/common.js 的
 // caseFoldForMatch（全仓唯一的口径），这里只负责「两边同源」这条查找语义。
-const { caseFoldForMatch } = require('./common');
+const { caseFoldForMatch, snapGrapheme } = require('./common');
 
 // 单章命中数上限：极端情况（搜一个「的」）兜底，别把内存 / IPC 打爆。
 // C4（v1.8.0 WP-05）：这是**显示与单次替换共用的处理上限**，不是精确命中数——
@@ -99,6 +99,8 @@ function makeSnippet(text, index, length, radius = 18) {
     const high = source.charCodeAt(start - 1);
     if (low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff) start += 1;
   }
+  // V221-SEARCH-01：起点落在组合字符序列（基字符 + U+0301 之类）中间时退回基字符起点。
+  start = snapGrapheme(source, start, 'start');
   const rawEnd = Math.min(source.length, index + length + radius);
   let end = rawEnd;
   if (end > index + length && end < source.length) {
@@ -106,6 +108,8 @@ function makeSnippet(text, index, length, radius = 18) {
     const low = source.charCodeAt(end);
     if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) end -= 1;
   }
+  // V221-SEARCH-01：终点落在组合字符序列中间时吞掉剩余的组合符（与起点同一口径）。
+  end = snapGrapheme(source, end, 'end');
   const clean = (part) => part.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ');
   return {
     before: clean(source.slice(start, index)),

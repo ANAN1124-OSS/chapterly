@@ -205,3 +205,16 @@ test('E21（#46）：解析索引时不静默截断章节文件名 —— 真实
   assert.deepEqual(files, [longName], '旧实现会把长度 300 的名字切成 260，永远匹配不到真实章节');
   assert.equal(files[0].length, longName.length);
 });
+
+// V221-SEARCH-01：snippetAround 与 find.makeSnippet 同一口径（组合字符不切开）。
+test('V221-SEARCH-01：snippetAround 的截断点吸附到字素边界', () => {
+  const mark = '\u0301';
+  const startText = `ab\u0065${mark}cd目标`;
+  const startCut = search.snippetAround(startText, 6, 2, 3);
+  assert.equal(startCut.before, `e${mark}cd`);
+  assert.equal(startCut.before.startsWith(mark), false);
+  const endText = `目标e${mark}zz`;
+  const endCut = search.snippetAround(endText, 0, 2, 1);
+  assert.equal(endCut.after, `e${mark}`);
+  assert.equal(endCut.after.endsWith(mark), true);
+});
