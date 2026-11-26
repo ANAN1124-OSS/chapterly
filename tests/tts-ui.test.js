@@ -693,6 +693,41 @@ test('R4：收到「窗口最小化」通知就停朗读（朗读条保留、不
   assert.equal(engine.log.spoken.length, spokenAfterOpen, '恢复窗口后不自动续读（要不要接着念由作者再点一次）');
 });
 
+test('A2-TTS-02：切分在途时最小化 → 回执到达后不开播（分段仍保留）', async () => {
+  const { host, state } = makeHost();
+  let onMinimized = null;
+  host.api.onWindowMinimized = (cb) => {
+    onMinimized = cb;
+  };
+  let release = null;
+  // 切分往返挂起：模拟大章 tts:chunks 还在主进程算
+  host.call = () =>
+    new Promise((resolve) => {
+      release = resolve;
+    });
+  const engine = makeEngine();
+  const tts = ttsUi.create(host);
+  tts.setSpeechEngine(engine);
+  const pending = tts.openTtsBar();
+  assert.equal(state.tts.loading, true, '用例前提：切分确实在途');
+  onMinimized();
+  release({
+    chunks: [
+      { start: 0, end: 4, text: '第一段。', paragraph: 0, line: 0 },
+      { start: 4, end: 8, text: '第二段。', paragraph: 1, line: 1 },
+      { start: 8, end: 12, text: '第三段。', paragraph: 2, line: 2 }
+    ],
+    startIndex: 0
+  });
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(result.minimized, true, '回执要如实说明这次被最小化作废');
+  assert.equal(engine.log.spoken.length, 0, '最小化之后回执到达绝不许出声');
+  assert.equal(state.tts.status, 'idle', '停在「已停止」，不自动续读');
+  assert.equal(tts.ttsSummaryText().text, '已停止 · 第 1/3 段');
+  assert.equal(state.tts.chunks.length, 3, '分段照常保留：作者恢复窗口点播放就能接着念');
+});
+
 test('R4：旧宿主 / 假 api 没有 onWindowMinimized 时照常创建（可选注入口径）', () => {
   const { host } = makeHost();
   assert.equal(typeof host.api.onWindowMinimized, 'undefined');

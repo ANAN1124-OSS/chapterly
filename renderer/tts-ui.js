@@ -339,8 +339,16 @@
       return { ok: false, message: '没有正文' };
     }
     renderTtsBar();
-    if (autoplay) speakTtsChunk();
-    return { ok: true, chunks: state.tts.chunks.length, index: state.tts.index };
+    // A2-TTS-02：切分期间被最小化 → 分段照常落地（恢复窗口可接着念），但这次绝不开播。
+    const abortedByMinimize = state.tts.abortedByMinimize === true;
+    state.tts.abortedByMinimize = false;
+    if (autoplay && !abortedByMinimize) speakTtsChunk();
+    return {
+      ok: true,
+      chunks: state.tts.chunks.length,
+      index: state.tts.index,
+      minimized: abortedByMinimize
+    };
   }
 
   function speakTtsChunk() {
@@ -478,6 +486,13 @@
   // resetFindBookmarksForBook 同风格）。
   if (api && typeof api.onWindowMinimized === 'function') {
     api.onWindowMinimized(() => {
+      // A2-TTS-02（2026-11-26 审计）：切分在途（loading）也算「在途」——旧实现只看 playing /
+      // paused，最小化后回执到达仍会自动开播，违反「最小化即停」的承诺（大章切分往返可达数百毫秒）。
+      // 这里记一个作废标记：回执照常落地分段（恢复窗口后作者点播放可接着念），但绝不自动出声。
+      if (state.tts.loading) {
+        state.tts.abortedByMinimize = true;
+        return;
+      }
       // 只有真的在出声（playing / paused）才需要停：个别系统会连发两次 minimize，
       // 已经在停的状态再 cancel 一次是白做；朗读条收着 / 本来没念时这条通知完全是 no-op。
       if (state.tts.status === 'playing' || state.tts.status === 'paused') stopTts({ keepOpen: true });
