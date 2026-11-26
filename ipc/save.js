@@ -134,6 +134,13 @@ function registerSaveIpc(host) {
             { code: 'META_CHANGED', mtimeMs: result.mtimeMs }
           );
         }
+        // A2-STORAGE-03（低）：正文已落盘、书目没写成功 —— 内存 meta 里本章 chars 已是新正文的字数，
+        // 磁盘书目还是旧值；而扫描回填只补「缺失」的章、永不重算有限值，书卡总字数会长期偏离正文。
+        // 这里复用批量失败后的同一套「定点 chars 补写」（仍持书锁、尽力而为）：短暂占用 / 杀软锁
+        // 过一会儿能写成功的，字数当场自愈；写不成也不掩盖下面的原始错误。
+        // META_CHANGED 不走这里（上面已单独回包）：外部那一版书目不许用同一个旧 stamp 二次覆盖，
+        // 作者再按一次保存会读入最新书目重试，那时 chars 自然按最新正文补上。
+        await storage.persistCharsAfterFailure(bookPath, meta);
         // A7（审计 E4）：正文已经写进磁盘、书目没更新成功。不能把这次保存整体当失败——
         // 渲染层会以为正文没保存（关窗时可能让作者重写 / 丢弃刚写的内容）。回可判别的部分成功：
         // code=META_SAVE_FAILED + bodySaved:true + chars/file（见 fail() 的白名单透传），

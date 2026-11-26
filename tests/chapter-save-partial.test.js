@@ -183,3 +183,37 @@ test('E-N6：部分成功回包带 mtimeMs，渲染层同步 loadedMtimeMs（重
     '经 retryMtimeMs 只接受 > 0 的有限 mtime（0 是 force 哨兵，不采用）'
   );
 });
+
+// A2-STORAGE-03（低）：部分成功时正文已落盘、磁盘书目还留着上一版 chars；扫描回填只补「缺失」的章、
+// 永不重算有限值 → 书卡总字数会长期偏离正文，没有自愈出口。chapter:save 的 META_SAVE_FAILED 分支
+// 复用批量失败后的同一套「定点 chars 补写」：短暂占用现在能当场写成功，写不成也不掩盖原始错误。
+test('A2-STORAGE-03：部分成功后定点补写章节 chars（短暂占用能自愈，书目没了不留影子）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath, meta } = await storage.createBook(root, 'chars 补写演练');
+  const file = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file, '第一版正文。');
+  const fresh = await storage.readBookMeta(bookPath);
+  fresh.chapters[0].chars = 987654;
+  await storage.persistCharsAfterFailure(bookPath, fresh);
+  const onDisk = JSON.parse(await fs.readFile(path.join(bookPath, '书目.json'), 'utf8'));
+  assert.equal(onDisk.chapters[0].chars, 987654, '磁盘书目要补上这次正文的字数');
+
+  // RECOV-02 口径：书目已不在时不重建影子书目（原始错误现场更重要）
+  const brokenRoot = await mkTmp();
+  const broken = await storage.createBook(brokenRoot, '书目没了');
+  await fs.rm(path.join(broken.path, '书目.json'), { force: true });
+  broken.meta.chapters[0].chars = 123;
+  await storage.persistCharsAfterFailure(broken.path, broken.meta);
+  await assert.rejects(fs.stat(path.join(broken.path, '书目.json')), '书目不在就不许重建');
+  await fs.rm(root, { recursive: true, force: true });
+  await fs.rm(brokenRoot, { recursive: true, force: true });
+
+  // 接线：META_SAVE_FAILED 分支（不是 META_CHANGED）在 throw 之前补写
+  const body = channelBody(SAVE_SOURCE, 'chapter:save');
+  const changedAt = body.indexOf("if (metaErr.code === 'META_CHANGED')");
+  const persistAt = body.indexOf('await storage.persistCharsAfterFailure(bookPath, meta);');
+  const failedAt = body.indexOf("code: 'META_SAVE_FAILED'");
+  assert.ok(changedAt > 0 && persistAt > 0 && failedAt > 0, 'chapter:save 要有 META_CHANGED / 补写 / META_SAVE_FAILED 三段');
+  assert.ok(persistAt > changedAt, 'META_CHANGED 走救稿出口（外部那一版不许被同 stamp 二次写覆盖），不做补写');
+  assert.ok(failedAt > persistAt, '补写要在抛 META_SAVE_FAILED 之前（尽力而为，不掩盖原始错误）');
+});

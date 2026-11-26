@@ -3328,6 +3328,8 @@ module.exports = {
   // 1.6.0 A2：书架扫描回填字数缓存（8 路并发；readText 可注入给单测数并发峰值）。
   // 并发上限常量不进导出（sweep ⑤b 会判「白拿的导出面」），单测按峰值 8 钉住。
   backfillChapterChars,
+  // A2-STORAGE-03：部分成功后定点补写章节 chars（batchFailure 路径与 chapter:save 部分成功共用）。
+  persistCharsAfterFailure,
   listTxtFiles,
   readBookMeta,
   // 审计修复 #22（P6）：缺 id 回填的编号规则（单调游标 O(n)），单测直接对着它做新旧等价性核对
