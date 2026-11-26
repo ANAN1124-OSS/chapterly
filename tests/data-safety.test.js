@@ -463,3 +463,32 @@ test('V221-SAVE-01：保存前 stat 的权限/占用错误如实报出，不伪�
   const gone = await storage.prepareChapterSave(bookPath, chapter.id, {}).then(() => null, (err) => err);
   assert.equal(gone && gone.code, 'BOOK_MISSING');
 });
+
+// V221-STORAGE-02（2026-11-26 复核）：整本替换 / 整理在「备份已建、但一章都没改成」时，旧提示同时说
+// 「替换前的原文都在备份」和「书里的正文一个字节都没改」——两句并列自相矛盾。现在 0 章改动时改用
+// 「本轮开始前的原文副本在…（没有任何正文被改）」。
+test('V221-STORAGE-02：整本替换 0 章改动就失败 → 提示不再自相矛盾', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '替换零章失败');
+  const meta = await storage.readBookMeta(bookPath);
+  await storage.saveChapterText(bookPath, meta.chapters[0].file, '阿明来了。');
+  const realRename = fs.rename;
+  const restore = patchRename(async (from, to) => {
+    if (/\.txt$/i.test(String(to))) {
+      throw fsError('EPERM');
+    }
+    return realRename(from, to);
+  });
+  let error = null;
+  try {
+    await storage.replaceInBook(bookPath, { query: '阿明', replacement: '小明' });
+  } catch (err) {
+    error = err;
+  } finally {
+    restore();
+  }
+  assert.equal(error && error.code, 'REPLACE_FAILED', '中途失败要保留 REPLACE_FAILED');
+  assert.match(error.message, /一个字节都没改/);
+  assert.match(error.message, /本轮开始前的原文副本在/, '备份目录存在时如实说明它只是开始前的副本');
+  assert.doesNotMatch(error.message, /替换前的原文都在/, '0 章改动时不许说「替换前的原文都在」');
+});

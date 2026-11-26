@@ -2314,7 +2314,16 @@ async function replaceInBook(bookPath, options = {}) {
       action: '整本替换',
       notes: [
         chaptersChanged ? `已经替换 ${chaptersChanged} 章` : '',
-        trashDirLabel(backupDir) ? `替换前的原文都在 ${trashDirLabel(backupDir)}` : '',
+        // V221-STORAGE-02（2026-11-26 复核）：一章都没改到时不能说「替换前的原文都在备份」——
+        // 那会和下一句「书里的正文一个字节都没改」并列成自相矛盾的两句话。备份目录确实建过时，
+        // 改成如实说明「只是开始前的副本，没有任何正文被改」。
+        chaptersChanged
+          ? trashDirLabel(backupDir)
+            ? `替换前的原文都在 ${trashDirLabel(backupDir)}`
+            : ''
+          : trashDirLabel(backupDir)
+            ? `本轮开始前的原文副本在 ${trashDirLabel(backupDir)}（没有任何正文被改）`
+            : '',
         chaptersChanged ? '可以先从那里把原文拷回来，再重试' : '书里的正文一个字节都没改'
       ]
     });
@@ -2443,7 +2452,14 @@ async function formatBook(bookPath, options = {}, onProgress) {
       action: '整本整理',
       notes: [
         changed.length ? `已经整理好 ${changed.length} 章` : '',
-        trashDirLabel(backupDir) ? `整理前的原文都在 ${trashDirLabel(backupDir)}` : '',
+        // V221-STORAGE-02：与整本替换同口径 —— 0 章改动时不许说「整理前的原文都在备份」。
+        changed.length
+          ? trashDirLabel(backupDir)
+            ? `整理前的原文都在 ${trashDirLabel(backupDir)}`
+            : ''
+          : trashDirLabel(backupDir)
+            ? `本轮开始前的原文副本在 ${trashDirLabel(backupDir)}（没有任何正文被改）`
+            : '',
         changed.length ? '可以先从那里把原文拷回来，再重试' : '书里的正文一个字节都没改'
       ]
     });
