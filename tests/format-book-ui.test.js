@@ -52,12 +52,15 @@ function makeHost(options = {}) {
       { id: 'ch_1', name: '第一章' },
       { id: 'ch_2', name: '第二章' }
     ],
-    index: options.index === undefined ? 1 : options.index
+    index: options.index === undefined ? 1 : options.index,
+    // A2-TIDY-01：载入时那一版磁盘 mtime（保存链拿它做外部修改比对）；keep-edits 收尾必须同步它。
+    loadedMtimeMs: options.loadedMtimeMs === undefined ? 1000 : options.loadedMtimeMs
   };
   const editorEl = { value: options.editorValue === undefined ? '磁盘上的正文' : options.editorValue };
   const api = {
     formatPreviewBook: 'format:preview-book',
-    restoreHistoryDir: 'history:restore-dir'
+    restoreHistoryDir: 'history:restore-dir',
+    statChapter: 'chapter:stat'
   };
   const ipc = options.ipc || {};
   const host = {
@@ -361,6 +364,39 @@ test('收尾分流：整理期间编辑区又有字 → 磁盘已整理但保留
   assert.ok(messages.includes('warn'), '要明确告诉作者「修改还在编辑区、未保存」');
   assert.match(calls.toast.at(-1)[0], /还留在编辑区/);
   assert.equal(calls.activate.length, 1, '保留编辑区也要照常登记撤销（备份确实写盘了）');
+});
+
+// A2-TIDY-01（keep-edits 面）：整本整理把磁盘上的这一章换掉了，编辑区保留的是「整理前正文 + 整理期间输入」。
+// 载入时的 loadedMtimeMs 已过期；不同步的话作者整理完照常 Ctrl+S 会被误判成外部修改（EXTERNAL_CHANGE）。
+test('A2-TIDY-01：keep-edits 收尾按本次写盘 mtime 同步 loadedMtimeMs，下一次保存不误报外部修改', async () => {
+  const opened = {
+    meta: {
+      title: '书甲',
+      chapters: [
+        { id: 'ch_1', name: '第一章', file: 'c1.txt' },
+        { id: 'ch_2', name: '第二章', file: 'c2.txt' }
+      ]
+    }
+  };
+  const { host, state, editorEl, calls } = makeHost({
+    ipc: {
+      'format:preview-book': () => PREVIEW_TWO_CHAPTERS,
+      'chapter:stat': () => ({ mtimeMs: 2222, size: 10 })
+    },
+    decideQueue: ['keep-edits', 'keep-edits'],
+    opened
+  });
+  host.runBookOp = async (bookPath, opts) => {
+    calls.runBookOp.push([bookPath, opts]);
+    editorEl.value = '整理在途敲进去的字';
+    return { chaptersChanged: 2, backupDir: '/书库/书甲/_trash/整理备份-9' };
+  };
+  const result = await formatBookUi.create(host).runFormatBook();
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.loadChapterAt, [], '编辑区有字时不重载');
+  assert.deepEqual(calls.call.at(-1), ['chapter:stat', '/书库/书甲', 'c2.txt'], 'stat 的必须是当前章（索引 1）');
+  assert.equal(state.loadedMtimeMs, 2222, '同步到本次写盘 mtime');
+  assert.equal(state.dirty, true, '正文仍以编辑区为准：保持未保存态');
 });
 
 test('撤销回调：换书 / 有未保存修改都拒绝；正常路径核对指纹后才还原并重载', async () => {

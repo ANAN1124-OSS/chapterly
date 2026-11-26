@@ -229,11 +229,25 @@
     }
   }
 
+  // A2-TIDY-01（中）：程序化写正文的唯一只读闸。readOnly 只挡键盘输入，execCommand 与 .value 赋值
+  // 都拦不住，所以「整理本章 / 套用排版 / 撤销整理」三条入口在发起前与真正写回前都要核一次：
+  // 载章 / 开书 / 整本整理在途时编辑区只读，这时写进去的字随后会被新章正文覆盖（假成功），
+  // 或让整本整理的 keep-edits 分支带着过期 mtime 进入下一次保存。
+  function editorWriteLocked() {
+    return editorEl.readOnly === true;
+  }
+
+  function refuseEditorWriteLocked() {
+    toast('编辑区正在载入或整理中（暂时只读），等它完成后再整理', 'warn');
+  }
+
   // 把整理结果写进编辑区：用 execCommand 走原生输入，保住 Ctrl+Z 的原生撤销链；
   // 失败再退回直接赋值。两条路都会触发 input → 标记未保存。
   // hint = { text: 整理前的正文, pos: 整理前光标位置 }，用来把光标映射回原来的位置。
   function insertFormattedText(text, hint, options) {
     const opts = options && typeof options === 'object' ? options : {};
+    // A2-TIDY-01：只读态一条也不许写（调用方已提前拦过一轮；弹层 / await 窗口里锁又落下的情况在这里兜底）。
+    if (editorWriteLocked()) return false;
     // 五-H7（TC-01）：整串替换前的最后一道身份闸。hint 是调用方「这次替换所依据的编辑区快照」：
     //   · apply / 一键整理 = 整理前的 (bookPath, chapterId, 正文)；
     //   · 撤销整理 = 撤销后应回的 (bookPath, chapterId, 正文)。
@@ -332,6 +346,11 @@
 
   function undoFormat() {
     if (!canUndoFormat()) return false;
+    // A2-TIDY-01：只读态不写正文（下面 insertFormattedText 还有一道兜底，这里提前给出准确的提示）。
+    if (editorWriteLocked()) {
+      refuseEditorWriteLocked();
+      return false;
+    }
     const top = state.formatUndo[state.formatUndo.length - 1];
     const caret = editorEl.selectionStart || 0;
     // 五-H7（TC-01）：写回前再核一次书 / 章 / 正文快照（insertFormattedText 的身份闸）；
@@ -360,6 +379,11 @@
     if (!state.bookPath || state.index < 0) {
       toast('先打开一本书的章节再整理', 'warn');
       return { ok: false, reason: 'no-book' };
+    }
+    // A2-TIDY-01：只读态（载章 / 开书 / 整本整理在途）连 IPC 都不发，别做一轮注定被覆盖的整理。
+    if (editorWriteLocked()) {
+      refuseEditorWriteLocked();
+      return { ok: false, reason: 'locked' };
     }
     if (formatChapterRunning) return { ok: false, reason: 'busy' };
     const before = editorEl.value;
@@ -408,6 +432,11 @@
 
   async function applyFormatToEditor() {
     if (!state.bookPath || state.index < 0) return;
+    // A2-TIDY-01：只读态（套用按钮点得动，但载章 / 开书 / 整本整理在途）不写正文、不报成功。
+    if (editorWriteLocked()) {
+      refuseEditorWriteLocked();
+      return { ok: false, reason: 'locked' };
+    }
     const before = editorEl.value;
     const beforeCaret = editorEl.selectionStart || 0;
     if (!String(before == null ? '' : before).trim()) {

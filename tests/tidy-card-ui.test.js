@@ -331,6 +331,34 @@ test('undoFormat：没有可撤销返回 false；有则把 before 写回编辑�
   assert.deepEqual(ctx.calls.fallbackWrites, [], '撤销整理的回退不该记兜底快照');
 });
 
+// A2-TIDY-01（中）：readOnly 只挡键盘输入，execCommand / .value 赋值都拦不住。载章 / 开书 / 整本整理
+// 在途时编辑区只读，旧实现只核书 / 章 / 正文快照就写回 —— 整理结果随后被新章正文覆盖（假成功），
+// keep-edits 分支还会带着过期 mtime 进入下一次保存。三条入口都必须自己过只读闸。
+test('A2-TIDY-01：编辑区只读时整理本章 / 套用排版 / 撤销整理都不写正文、不报成功', async () => {
+  const ctx = build({ text: 'B' });
+  ctx.editorEl.readOnly = true;
+
+  const current = await ctx.ui.formatCurrentChapterFromConfig();
+  assert.deepEqual(current, { ok: false, reason: 'locked' });
+  const applied = await ctx.ui.applyFormatToEditor();
+  assert.deepEqual(applied, { ok: false, reason: 'locked' });
+  assert.deepEqual(ctx.calls.formatText, [], '只读时连格式化 IPC 都不发');
+  assert.equal(ctx.editorEl.value, 'B', '正文一个字都不许动');
+  assert.equal(ctx.calls.onEditorInput, 0, '没有写入就不该触发输入处理');
+  assert.ok(
+    ctx.calls.toast.some(([message, kind]) => kind === 'warn' && /只读/.test(message)),
+    '要明确告诉作者「暂时只读」，不能报成功'
+  );
+  assert.equal(ctx.state.formatUndo.length, 0, '被拒的入口不许压撤销栈');
+
+  // 撤销整理：栈里本来有可回退的一步，但只读态同样不许写正文
+  ctx.state.formatUndo = [{ bookPath: '/书库/书甲', chapterId: 'c1', before: 'A', after: 'B' }];
+  assert.equal(ctx.ui.canUndoFormat(), true);
+  assert.equal(ctx.ui.undoFormat(), false);
+  assert.equal(ctx.editorEl.value, 'B');
+  assert.equal(ctx.state.formatUndo.length, 1, '没写成就不能弹掉撤销步骤');
+});
+
 // ---------- R1（三审）：整理本章的整章级大段写入走渲染层统一 bulk 通道 ----------
 test('R1（三审）：整理本章 >2 万字走统一 bulk 通道（不再 execCommand）；撤销整理的回退传 record:false', async () => {
   const before = '字'.repeat(20001);

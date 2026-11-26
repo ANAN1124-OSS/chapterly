@@ -181,6 +181,26 @@
           updateStatus();
           toast(doneText);
           toast('整理已完成写盘；你在整理期间输入的修改还留在编辑区（未保存，Ctrl+S 保存后生效）', 'warn');
+          // A2-TIDY-01：整本整理已经把磁盘上的这一章换成了整理后的版本，而编辑区保留的是
+          // 「整理前正文 + 整理期间输入」。载入时的 loadedMtimeMs 已经过期 —— 不同步的话，作者整理完
+          // 照常按 Ctrl+S 会拿旧 mtime 比对，被误判成外部修改（EXTERNAL_CHANGE + 救稿弹窗）。
+          // 这里只把「应用自己这次写盘」的 mtime 同步回来，正文仍以编辑区为准（dirty 不变）。
+          const liveChapter = state.chapters[state.index];
+          if (liveChapter && liveChapter.file) {
+            try {
+              const stat = await call(api.statChapter, bookPath, liveChapter.file);
+              if (
+                stat &&
+                Number.isFinite(Number(stat.mtimeMs)) &&
+                longOpLogic.sameBookPath(state.bookPath, bookPath) &&
+                state.chapters[state.index] === liveChapter
+              ) {
+                state.loadedMtimeMs = Number(stat.mtimeMs);
+              }
+            } catch {
+              // stat 失败保持旧 mtime：下一次保存仍会走冲突救稿出口（不静默覆盖磁盘），只是多问一次。
+            }
+          }
         } else {
           // 整理后重新载入当前章（章节 id 保持不变；期间切过章就按现在这一章重载）
           const index = liveId
