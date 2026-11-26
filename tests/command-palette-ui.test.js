@@ -399,3 +399,21 @@ test('条目快照：打开取一次，输入不重建；invalidateItems 后重�
   ui.open(null);
   assert.equal(calls, 3, '每次打开都取一份新快照');
 });
+
+// A2-CMD-01（低）：焦点在 body 时打开命令面板，关闭后旧实现会把 body 当 opener 交回去 —— body.focus() 空转，
+// 正文再敲字无效、Tab 从页首开始。opener 归一成 null，让调用方兜底到编辑区。
+test('A2-CMD-01：打开时焦点在 body → onClose 拿到的 opener 为 null', () => {
+  const { ui, doc, closed } = build();
+  const body = makeEl('body', doc);
+  doc.body = body;
+  doc.documentElement = makeEl('html', doc);
+  doc.activeElement = body;
+  ui.open();
+  ui.close();
+  assert.deepEqual(closed, [null], 'body / documentElement 不许当 opener 交回去');
+  const second = build();
+  const opener = makeEl('button', second.doc);
+  second.ui.open(opener);
+  second.ui.close();
+  assert.equal(second.closed[0], opener, '正常元素仍原样交回（行为不变）');
+});

@@ -323,21 +323,29 @@
     while (state.formatUndo.length > MAX_FORMAT_UNDO) state.formatUndo.shift();
   }
 
-  // 当前章还能连续撤销几步：从栈顶往下，只有当第 N 步的 after 正好等于第 N-1 步的 before
-  // 时才真正连得上（中间如果手动改过字，链条就断了）。
-  function formatUndoSteps() {
+  // 当前章还能连续撤销几步：从栈顶往下扫描，别的书 / 别的章直接跳过（全书共享一条栈），
+  // 当前章的那些快照必须首尾相接（第 N 步的 after 等于第 N-1 步的 before，手改过字链条就断）。
+  // A2-TIDY-02（低）：旧实现「遇到别的书 / 章就 break」，于是 A 章整理 → 切 B 章整理 → 回 A 章时，
+  // A 的那一步既看不到也撤不了（大章的原生撤销栈可能已被清空，只剩手改）。现在跳过而不中断。
+  function scanFormatUndo() {
     const chapter = state.chapters[state.index];
-    if (!chapter) return 0;
+    if (!chapter) return { steps: 0, index: -1 };
     let steps = 0;
+    let topIndex = -1;
     let expected = editorEl.value;
     for (let i = state.formatUndo.length - 1; i >= 0; i -= 1) {
       const snap = state.formatUndo[i];
-      if (snap.bookPath !== state.bookPath || snap.chapterId !== chapter.id) break;
+      if (snap.bookPath !== state.bookPath || snap.chapterId !== chapter.id) continue;
       if (snap.after !== expected) break;
+      if (topIndex < 0) topIndex = i;
       steps += 1;
       expected = snap.before;
     }
-    return steps;
+    return { steps, index: topIndex };
+  }
+
+  function formatUndoSteps() {
+    return scanFormatUndo().steps;
   }
 
   function canUndoFormat() {
@@ -345,13 +353,16 @@
   }
 
   function undoFormat() {
-    if (!canUndoFormat()) return false;
+    // A2-TIDY-02：撤销的是「当前章连得上的那一步」，可能不在栈顶（中间夹着别的章）——
+    // 判定与移除都按下标，不再无脑 pop 栈顶。
+    const scan = scanFormatUndo();
+    if (scan.index < 0) return false;
     // A2-TIDY-01：只读态不写正文（下面 insertFormattedText 还有一道兜底，这里提前给出准确的提示）。
     if (editorWriteLocked()) {
       refuseEditorWriteLocked();
       return false;
     }
-    const top = state.formatUndo[state.formatUndo.length - 1];
+    const top = state.formatUndo[scan.index];
     const caret = editorEl.selectionStart || 0;
     // 五-H7（TC-01）：写回前再核一次书 / 章 / 正文快照（insertFormattedText 的身份闸）；
     // 通过后才弹出快照——被拒绝时这一步仍可重试，不会白丢撤销退路。
@@ -365,7 +376,7 @@
       toast('正文刚改过，这次撤销没有套用', 'warn');
       return false;
     }
-    state.formatUndo.pop();
+    state.formatUndo.splice(scan.index, 1);
     toast('已撤销整理（仍在编辑区，未写盘）');
     return true;
   }

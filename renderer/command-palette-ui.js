@@ -195,6 +195,10 @@
       const bd = backdrop();
       if (!bd) return false;
       opener = fromElement && fromElement.focus ? fromElement : (doc && doc.activeElement) || null;
+      // A2-CMD-01（低）：document.body / documentElement 的 focus() 是空转（没有 tabindex），
+      // 记成 opener 会让关闭后焦点「还给」body：正文再敲字无效、Tab 从页首开始。统一当没有 opener，
+      // 调用方的兜底（写作页交回编辑区）才会生效。
+      if (opener && doc && (opener === doc.body || opener === doc.documentElement)) opener = null;
       open = true;
       active = 0;
       // 每次打开都取一份新快照：上次看面板之后书架 / 书目可能变过。

@@ -1576,7 +1576,9 @@
         editorEl.focus();
         return;
       }
-      const main = document.querySelector('main, .shelf-main, body');
+      // A2-CMD-01（低）：body 没有 tabindex，body.focus() 是空转（焦点仍留在 body，正文敲字无效）——
+      // 兜底容器不再包含 body；书架上没有 main / .shelf-main 时宁可什么都不做。
+      const main = document.querySelector('main, .shelf-main');
       if (main && typeof main.focus === 'function') main.focus();
     }
   });

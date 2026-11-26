@@ -906,3 +906,19 @@ test('applyFormatToEditor：记规则失败也不污染 state.config（全局写
   assert.deepEqual(ctx.state.config, before, '写全局失败时生效值不许动');
   assert.equal(ctx.state.globalConfig, globalConfig, '全局配置也不许假写');
 });
+
+// A2-TIDY-02（低）：「撤销上次整理」是全书共享栈，可用性以前只认栈顶连续段 —— A 章整理 → 切 B 章整理
+// → 回 A 章，A 的那一步既看不到也撤不了。现在跳过别的书 / 章找当前章连得上的那一步，按下标移除。
+test('A2-TIDY-02：A→B→A 之后 A 章的整理步骤仍可见、可撤销（不动 B 的快照）', () => {
+  const ctx = build({ text: 'B' });
+  ctx.state.formatUndo = [
+    { bookPath: '/书库/书甲', chapterId: 'c1', before: 'A', after: 'B' },
+    { bookPath: '/书库/书甲', chapterId: 'c2', before: 'X', after: 'Y' }
+  ];
+  assert.equal(ctx.ui.formatUndoSteps(), 1, 'A 章的 1 步仍算得出来（旧实现被 B 章截断成 0）');
+  assert.equal(ctx.ui.canUndoFormat(), true);
+  assert.equal(ctx.ui.undoFormat(), true);
+  assert.equal(ctx.editorEl.value, 'A', '写回 A 章自己的 before');
+  assert.deepEqual(ctx.state.formatUndo, [{ bookPath: '/书库/书甲', chapterId: 'c2', before: 'X', after: 'Y' }], 'B 的快照原样保留');
+  assert.equal(ctx.ui.formatUndoSteps(), 0, '撤完 A 后再看 A：没有可撤的了');
+});
