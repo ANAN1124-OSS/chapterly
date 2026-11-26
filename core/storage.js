@@ -1466,7 +1466,16 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
   let bookStat = null;
   try {
     bookStat = await fs.stat(bookPath);
-  } catch {
+  } catch (err) {
+    // V221-SAVE-01（2026-11-26 复核）：只有 ENOENT 才是「书文件夹已经不在了」；EACCES / EPERM /
+    // EBUSY 等是「暂时读不到」——旧实现一律吞成 BOOK_MISSING，把权限 / 占用问题伪装成「书被删了」，
+    // 诱导作者去「修复」。其它错误如实带错误码抛出，由界面显示可解释的失败。
+    if (!err || err.code !== 'ENOENT') {
+      throw new StorageError(
+        (err && err.code) || 'STAT_FAILED',
+        `书文件夹读不出来（${(err && err.code) || '未知错误'}），已阻止这次保存；请检查磁盘 / 权限后重试。`
+      );
+    }
     bookStat = null;
   }
   const bookExists = Boolean(bookStat && bookStat.isDirectory());
@@ -1505,7 +1514,16 @@ async function prepareChapterSave(bookPath, chapterId, { windowId = null, file =
           chapterFingerprint = await chapterContentHashOf(chapterPath, stat.size);
         }
       }
-    } catch {
+    } catch (err) {
+      // V221-SAVE-01：assertChapterFile 的 BAD_PATH 与磁盘 EACCES / EBUSY 不能降级成「文件已经不在了」
+      // （那会误导作者以为章节被删）；只有 ENOENT 才走 CHAPTER_MISSING，其余如实抛出。
+      if (err instanceof StorageError) throw err;
+      if (!err || err.code !== 'ENOENT') {
+        throw new StorageError(
+          (err && err.code) || 'STAT_FAILED',
+          `章节文件读不出来（${(err && err.code) || '未知错误'}），已阻止这次保存；请检查磁盘 / 权限后重试。`
+        );
+      }
       chapterExists = false;
     }
   }
@@ -1547,7 +1565,14 @@ async function recheckChapterSaveTarget(bookPath, chapter, expectedMtimeMs) {
     chapterExists = stat.isFile();
     chapterMtimeMs = stat.mtimeMs;
     chapterSize = stat.size;
-  } catch {
+  } catch (err) {
+    // V221-SAVE-01：与 prepareChapterSave 同一口径 —— 只有 ENOENT 当「文件没了」，权限 / 占用如实抛。
+    if (!err || err.code !== 'ENOENT') {
+      throw new StorageError(
+        (err && err.code) || 'STAT_FAILED',
+        `章节文件读不出来（${(err && err.code) || '未知错误'}），已阻止这次保存；请检查磁盘 / 权限后重试。`
+      );
+    }
     chapterExists = false;
   }
   let chapterFingerprint = '';

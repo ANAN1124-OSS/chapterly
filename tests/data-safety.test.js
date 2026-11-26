@@ -394,3 +394,72 @@ test('章节保存失败：磁盘上还是完整的旧正文、书目不动、�
   await storage.saveChapterText(bookPath, file, '恢复后的新正文。');
   assert.equal((await storage.loadChapterText(bookPath, file)).text, '恢复后的新正文。');
 });
+
+// V221-SAVE-01（2026-11-26 复核）：保存前的两次 stat 以前一律 catch 成「文件已经不在了」——
+// EACCES / EBUSY / BAD_PATH 被伪装成 BOOK_MISSING / CHAPTER_MISSING，作者会被引去「修复」。
+// 现在只有 ENOENT 走「没了」，其余错误如实带错误码抛出；ENOENT 语义不变。
+test('V221-SAVE-01：保存前 stat 的权限/占用错误如实报出，不伪装成书或章节没了', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '权限错误');
+  const meta = await storage.readBookMeta(bookPath);
+  const chapter = meta.chapters[0];
+  const chapterPath = path.join(bookPath, chapter.file);
+  const realStat = fs.stat;
+  const patchStat = (shouldFail) => {
+    Object.defineProperty(fs, 'stat', {
+      value: async (target, ...rest) => {
+        if (shouldFail(target)) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        return realStat(target, ...rest);
+      },
+      configurable: true,
+      writable: true
+    });
+  };
+  const restore = () => Object.defineProperty(fs, 'stat', { value: realStat, configurable: true, writable: true });
+
+  // ① 书文件夹 stat 失败
+  patchStat((target) => path.resolve(String(target)) === path.resolve(bookPath));
+  let bookErr = null;
+  try {
+    await storage.prepareChapterSave(bookPath, chapter.id, {});
+  } catch (err) {
+    bookErr = err;
+  } finally {
+    restore();
+  }
+  assert.equal(bookErr && bookErr.code, 'EACCES', '书文件夹读不出来要保留真实错误码');
+  assert.doesNotMatch(String(bookErr && bookErr.message), /已经不在了/);
+
+  // ② 章节文件 stat 失败
+  patchStat((target) => path.resolve(String(target)) === path.resolve(chapterPath));
+  let chapterErr = null;
+  try {
+    await storage.prepareChapterSave(bookPath, chapter.id, {});
+  } catch (err) {
+    chapterErr = err;
+  } finally {
+    restore();
+  }
+  assert.equal(chapterErr && chapterErr.code, 'EACCES');
+  assert.doesNotMatch(String(chapterErr && chapterErr.message), /已经不在了/);
+
+  // ③ 写盘前复核同口径（recheckChapterSaveTarget）
+  await storage.saveChapterText(bookPath, chapter.file, '正文。');
+  const after = await storage.readBookMeta(bookPath);
+  const statAfter = await fs.stat(chapterPath);
+  patchStat((target) => path.resolve(String(target)) === path.resolve(chapterPath));
+  let recheckErr = null;
+  try {
+    await storage.recheckChapterSaveTarget(bookPath, after.chapters[0], statAfter.mtimeMs);
+  } catch (err) {
+    recheckErr = err;
+  } finally {
+    restore();
+  }
+  assert.equal(recheckErr && recheckErr.code, 'EACCES');
+
+  // ④ 真没了仍是 BOOK_MISSING（语义不变）
+  await fs.rm(bookPath, { recursive: true, force: true });
+  const gone = await storage.prepareChapterSave(bookPath, chapter.id, {}).then(() => null, (err) => err);
+  assert.equal(gone && gone.code, 'BOOK_MISSING');
+});
