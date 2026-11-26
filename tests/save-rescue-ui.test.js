@@ -313,9 +313,11 @@ test('V301：选「放弃我的修改并重载」→ 重载成功后才清脏，
   const result = await create(host).handleSaveFailure(externalErr());
   assert.deepEqual(calls.load, [1]);
   assert.equal(state.dirty, false);
-  assert.deepEqual(result, { ok: false, code: 'EXTERNAL_CHANGE', message: externalErr().message });
+  // A2-SAVE-01（2026-11-26 审计）：重载成功 = 作者已明确处理完这次保存，回执必须是 ok:true
+  //（带 discarded/reloaded），否则 saveForTransition 会当月「保存失败」中止原本要做的动作。
+  // 旧断言锁的正是缺陷行为（ok:false），随审计结论改判。
+  assert.deepEqual(result, { ok: true, discarded: true, reloaded: true });
 });
-
 // ---------- E-N3（审计中 #3）红-绿锚点：重载必须先成功、后清脏；目标按冲突章 id ----------
 // 真实场景：主进程比对 expectedMtimeMs 不符 → saveCurrent catch 带着 (conflictBookPath, conflictChapterId)
 // 进救稿出口。冲突对话框开着的这段时间，state.index 可能已经被切章 / 换书推着走；磁盘那一章也可能

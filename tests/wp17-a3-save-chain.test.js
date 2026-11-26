@@ -20,6 +20,7 @@ const saveLogic = require('../renderer/save-logic');
 const saveStatusUi = require('../renderer/save-status-ui');
 const chaptersLib = require('../core/chapters');
 const longOpLogic = require('../renderer/long-op-logic');
+const saveRescueUi = require('../renderer/save-rescue-ui');
 
 const RENDERER_SRC = read('renderer/renderer.js');
 const MODULE_REL = 'renderer/save-chain-ui.js';
@@ -320,6 +321,9 @@ function makeHost(overrides = {}) {
     setTestLoadChapter: (value) => { testLoadChapter = value; },
     setTestSaveChapter: (value) => { testSaveChapter = value; }
   };
+  // A2-SAVE-01：宿主可以在 create 之前换掉救稿出口（用真模块做集成测试）。
+  if (overrides.saveRescueUi) host.saveRescueUi = overrides.saveRescueUi;
+  if (typeof overrides.decorateHost === 'function') overrides.decorateHost(host);
   const ui = moduleApi.create(host);
   return {
     ui,
@@ -790,6 +794,40 @@ test('五-H2/H3：saveForTransition —— 保存回执后复核 dirty；仍脏�
   assert.deepEqual(silentGuard, { ok: true });
   assert.equal(silent.counts.saveCalls.length, 1);
   assert.equal(silent.counts.askUnsaved, 0, '没人在保存期间输入 → 不需要再问');
+});
+
+test('A2-SAVE-01：EXTERNAL_CHANGE 选「放弃并重载」成功后，saveForTransition 继续而不是中止', async () => {
+  // 真救稿模块 + save-chain 的保存链：保存撞 EXTERNAL_CHANGE → 救稿出口 → 作者选重载 →
+  // 重载成功（磁盘版进编辑区、清脏）→ saveForTransition 必须继续过渡，不再回 ok:false 把动作吞掉。
+  const wired = makeHost({
+    modalAction: 'reload',
+    decorateHost: (host) => {
+      host.saveRescueUi = saveRescueUi.create({
+        state: host.state,
+        api: { rescueChapterText: async () => ({ canceled: true }) },
+        call: host.call,
+        openModal: host.openModal,
+        toast: host.toast,
+        editorEl: host.editorEl,
+        // 覆盖保存路径才用 saveCurrent；本用例只走重载，给一个不会被调用的桩。
+        saveCurrent: async () => ({ ok: true }),
+        loadChapterAt: async () => {
+          host.state.dirty = false; // 磁盘那一版真的进了编辑区（真实 loadChapterAt 的成功语义）
+          return { ok: true };
+        },
+        chapterTitle: (index, name) => name
+      });
+    }
+  });
+  wired.state.dirty = true;
+  wired.host.api.saveChapter = async () => ({
+    ok: false,
+    code: 'EXTERNAL_CHANGE',
+    message: '这一章在应用外被改过，已阻止这次保存。'
+  });
+  const result = await wired.ui.saveForTransition({ silentFirst: true, title: '删除章节前保存' });
+  assert.deepEqual(result, { ok: true }, '重载成功 = 这次保存已按作者选择处理完，过渡必须继续');
+  assert.equal(wired.state.dirty, false, '重载成功后脏标记必须清掉');
 });
 
 test('五-M9（ES-2）：关窗撞上保存在途 → 先等它落定再判定，不把 BUSY 当「保存失败」弹误导框', async () => {

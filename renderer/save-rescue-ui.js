@@ -183,10 +183,16 @@
         const result = await loadChapterAt(targetIndex);
         if (result && result.ok) {
           state.dirty = false;
-        } else {
-          state.dirty = true;
-          toast('重载失败，正文仍未保存；可先另存一份或重试', 'warn');
+          // A2-SAVE-01（2026-11-26 审计）：作者已经明确「放弃我的修改并重载」，磁盘那一版也真的
+          // 进了编辑区 —— 这次保存已经被处理完（不是失败）。以前这里 return null，上游
+          // handleSaveFailure 把它包成 ok:false，saveForTransition 见 ok:false 直接中止，
+          // 作者刚选完重载，原本要做的动作（删章 / 切章 / 关窗…）却静默不执行。
+          // 回一个 ok:true 的「已按作者选择处理」回执：上游继续过渡，但带 discarded/reloaded
+          // 让调用方能区分「写盘成功」与「本地修改已丢弃、磁盘版已重载」。
+          return { ok: true, discarded: true, reloaded: true };
         }
+        state.dirty = true;
+        toast('重载失败，正文仍未保存；可先另存一份或重试', 'warn');
         return null;
       }
       return null;
