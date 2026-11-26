@@ -1655,3 +1655,42 @@ test('V221-IMPORT-01：现成书书目带读侧会拒绝的章节文件名 → �
     '书库里不许出现这本书'
   );
 });
+
+// V221-IMPORT-02（2026-11-26 复核）：导入闸门的尺寸统计以前逐文件串行 stat（2 万章的书要等
+// 2 万次 RTT）；现在固定 8 路并发（保序），与 listTxtFilesDeep / copyAsTexts 同一量级。
+test('V221-IMPORT-02：闸门尺寸统计按有界并发（不再逐文件串行 stat）', async () => {
+  const base = await mkTmp('cw-a2import02-');
+  const booksRoot = path.join(base, '书架');
+  const src = path.join(base, '章节目录');
+  await fs.mkdir(src, { recursive: true });
+  for (let i = 1; i <= 12; i += 1) {
+    await fs.writeFile(path.join(src, `${String(i).padStart(3, '0')}-第${i}章.txt`), `第${i}章正文`, 'utf8');
+  }
+  const realStat = fs.stat;
+  const srcPrefix = path.resolve(src) + path.sep;
+  let active = 0;
+  let peak = 0;
+  let calls = 0;
+  fs.stat = async (target, ...rest) => {
+    if (path.resolve(String(target)).startsWith(srcPrefix)) {
+      calls += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      try {
+        return await realStat(target, ...rest);
+      } finally {
+        active -= 1;
+      }
+    }
+    return realStat(target, ...rest);
+  };
+  let res;
+  try {
+    res = await importer.importFolders(booksRoot, [src]);
+  } finally {
+    fs.stat = realStat;
+  }
+  assert.equal(res.imported.length, 1);
+  assert.ok(calls >= 12, `用例前提：每个来源文件都要 stat 一次（实际 ${calls}）`);
+  assert.ok(peak > 1 && peak <= 8, `闸门统计应 >1 且 <=8 路并发，实际 ${peak}`);
+});

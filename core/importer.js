@@ -48,6 +48,10 @@ function isInside(parent, child) {
 // V57（1.7.2 D3）：章节文件与超限文件都按「相对书目录的路径」比较 —— 用 basename 会把
 // 同名不同目录的另一个文件一起判成丢失（子目录里的章被删掉 / 整源被误判成「全部超限」）。
 // Windows 上大小写与正反斜杠都归一，其余平台保持逐字比较。
+// V221-IMPORT-02（2026-11-26 复核）：闸门统计以前逐文件串行 stat（两形态 × 两趟，2 万章的书
+// 要等 2 万次 RTT）；改成固定 8 路并发（保序），与 listTxtFilesDeep / copyAsTexts 同一量级。
+const IMPORT_STAT_CONCURRENCY = 8;
+
 function relativeKey(relativePath) {
   const normalized = path.normalize(String(relativePath || ''));
   return path.sep === '\\' ? normalized.toLowerCase() : normalized;
@@ -253,15 +257,16 @@ async function analyzeSource(sourceDir) {
 // V57（1.7.2 D3）：清单由调用方给 —— 现成书形态传 listTxtFilesDeep() 的递归清单（fs.cp 递归复制），
 // 章节目录形态仍只传顶层清单（copyAsTexts 也只复制顶层）。
 async function collectOversizedTxt(sourceDir, txtFiles) {
-  const oversized = [];
-  for (const file of txtFiles || []) {
+  const files = Array.isArray(txtFiles) ? txtFiles : [];
+  // V221-IMPORT-02：逐文件 stat 改固定 8 路并发（mapLimit 保序，结果数组顺序与串行逐项相同）。
+  const entries = await mapLimit(files, IMPORT_STAT_CONCURRENCY, async (file) => {
     // 拿不到大小（符号链接断开等）不在这里拦，交给后面的复制 / 重建如实报错
     const stat = await fs.stat(path.join(sourceDir, file)).catch(() => null);
-    if (!stat) continue;
+    if (!stat) return null;
     const problem = importSizeProblem(stat.size, path.basename(file, path.extname(file)));
-    if (problem) oversized.push({ file, code: problem.code, message: problem.message });
-  }
-  return oversized;
+    return problem ? { file, code: problem.code, message: problem.message } : null;
+  });
+  return entries.filter(Boolean);
 }
 
 // X-N6（WP18）：导入复制过滤与重建侧对齐 —— 同步盘冲突副本（`*conflicted*` / `*-冲突副本*`）
