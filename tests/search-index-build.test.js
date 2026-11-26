@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const search = require('../core/search-index');
+const storage = require('../core/storage');
 const { mkTmp, makeBook, readMeta, writeMeta, makeStore, makeWorld, exists } = require('./search-index-fixtures');
 
 // E4（审计修复 #8）：旧指纹只有 mtime / size，robocopy /COPY:DAT、rsync -t、部分同步盘
@@ -423,6 +424,45 @@ test('正文索引：章节文件被删 / 章被删，索引跟着剔除，不�
   const afterMissing = await store.ensure({ booksRoot });
   assert.equal(afterMissing.chapters, 0);
   assert.equal((await store.search({ booksRoot, query: '青柠色' })).results.length, 0);
+});
+
+// A2-SEARCH-01：缺章书（外部删掉某章的 txt）在第一趟把该章剔出去之后，索引与书目就稳定了；
+// 之后每趟深度校验都必须复用位图。旧实现把「文件不存在」一律当内容变化，textChanged 永远为真，
+// 每趟都把剩下的章整本重读重组一遍，永不收敛。
+test('A2-SEARCH-01：缺章书第二趟起深度校验复用位图，不再整本重读正文', async () => {
+  const base = await mkTmp();
+  const { userData, booksRoot } = await makeWorld(base);
+  const { bookPath, meta } = await makeBook(booksRoot, '缺章书', '缺章书', [
+    { name: '一', text: '青柠色的雨伞。' },
+    { name: '二', text: '灰蓝色的雨伞。' },
+    { name: '三', text: '米白色的雨伞。' }
+  ]);
+  const store = makeStore(userData);
+  await store.ensure({ booksRoot });
+  await fs.unlink(path.join(bookPath, meta.chapters[1].file));
+
+  const originalLoad = storage.loadChapterText;
+  const loads = [];
+  storage.loadChapterText = async (book, file) => {
+    loads.push(file);
+    return originalLoad(book, file);
+  };
+  try {
+    // 第一趟：文件没了 = 真变化，允许重建一次（读剩下 2 章）
+    await store.ensure({ booksRoot });
+    assert.ok(loads.length > 0, '缺失是第一趟的真变化，允许重建一次');
+    loads.length = 0;
+    // 第二趟、第三趟：缺章集合没再变 → 复用位图，正文一次都不读
+    await store.ensure({ booksRoot });
+    assert.equal(loads.length, 0, `缺章书第二趟起不许再整本重读正文：实际 ${loads.length} 次`);
+    await store.ensure({ booksRoot });
+    assert.equal(loads.length, 0, '持续深度校验也不许再重读（要收敛）');
+  } finally {
+    storage.loadChapterText = originalLoad;
+  }
+  // 只降速不漏报：剩下的章照常能搜到
+  assert.equal((await store.search({ booksRoot, query: '青柠色' })).results.length, 1);
+  assert.equal((await store.search({ booksRoot, query: '灰蓝色' })).results.length, 0, '缺章不参与搜索');
 });
 
 test('正文索引：整本书被删掉后从索引消失', async () => {

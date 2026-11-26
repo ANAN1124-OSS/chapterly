@@ -693,7 +693,10 @@ async function buildBookEntry(bookPath, folder, old, options, onProgress) {
     const chapter = rawChapters[i];
     const stat = stats[i];
     if (!stat) {
-      textChanged = true; // 上一版里有的章现在没了：要剔除，也算内容变化
+      // A2-SEARCH-01：只有「上一版索引里本来有、这一版没了」才算内容变化。缺章书里被外部删掉的
+      // 章在上一版就已经不在索引里了，再把它记成变化会让 textChanged 永远为真 —— 每趟深度校验
+      // 都把剩下的章整本重读、重建位图，永不收敛。本章照旧从索引里剔除（缺章不参与搜索）。
+      if (oldChapters.has(chapter.file)) textChanged = true;
       continue;
     }
     const previous = oldChapters.get(chapter.file);
