@@ -23,6 +23,9 @@ module.exports = async function group83CrashRecovery(t) {
 
   const TITLE = '崩溃恢复测试书';
   const DRAFT_TEXT = '崩溃草稿正文：这段还没按 Ctrl+S，只在编辑区里。\n第二行也要逐字回来。';
+  // V221-LIMIT-01：草稿字数自 2026-11-26 起与保存链 / 状态栏同口径（UTF-16 码元、去空白），
+  // 恢复提示里的「N 字」不再等于 DRAFT_TEXT.length；lastSnapshotChars 仍是编辑区原文长度（诊断口径）。
+  const DRAFT_CHARS = DRAFT_TEXT.split('').filter((ch) => !/\s/.test(ch)).length;
   const crashDraftsDir = path.join(userData, 'crash-drafts');
   const draftFileRe = /^draft-[a-f0-9]{16}\.json$/;
   let bookPath = null;
@@ -211,7 +214,7 @@ module.exports = async function group83CrashRecovery(t) {
       dialog &&
         dialog.title === '发现上次崩溃时未保存的稿子' &&
         dialog.message.includes(TITLE) &&
-        dialog.message.includes(`${DRAFT_TEXT.length} 字`) &&
+        dialog.message.includes(`${DRAFT_CHARS} 字`) &&
         dialog.message.includes('不是自动保存') &&
         buttonValues.join(',') === 'later,discard,restore' &&
         dialog.cancelValue === 'later',
