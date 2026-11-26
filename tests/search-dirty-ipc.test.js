@@ -128,6 +128,8 @@ function makeBookCrudHost(storageOverrides = {}) {
     shell: {},
     getConfig: async () => ({ booksRoot: 'D:\\书库' }),
     getConfigStore: () => ({}),
+    // A2-CONFIG-01：删书收尾刷新主进程配置缓存（本文件不测删书，给空实现即可）
+    applyConfig: () => {},
     flowSession: () => null,
     sessionById: () => null,
     focusSession: () => {},

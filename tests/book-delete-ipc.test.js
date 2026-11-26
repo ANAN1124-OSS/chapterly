@@ -19,7 +19,7 @@ const mkTmp = (prefix = 'cw-book-delete-') => tmpCleanup.mkTmp(prefix);
 function makeHost(root, options = {}) {
   const channels = new Map();
   const logs = [];
-  const defaultStore = { resetBookDisplay: async () => true };
+  const defaultStore = { resetBookDisplay: async () => true, get: async () => ({ booksRoot: root }) };
   const host = {
     handle: (name, fn) => { channels.set(name, fn); },
     handleBook: (name, fn) => { channels.set(name, fn); },
@@ -43,6 +43,8 @@ function makeHost(root, options = {}) {
     getConfig: async () => ({ booksRoot: root }),
     // 五-L1（CI-2）：删书成功后按 meta.id 清掉这本书的显示覆盖（configStore 由 main.js 注入）
     getConfigStore: () => options.configStore || defaultStore,
+    // A2-CONFIG-01：两处 reset 后刷新主进程配置缓存（main.js 的 applyConfig 是唯一写入口）
+    applyConfig: options.applyConfig || (() => {}),
     flowSession: () => null,
     sessionById: () => null,
     focusSession: () => {},
@@ -115,7 +117,8 @@ test('五-L1（CI-2）：删书成功后按书目 id 清掉这本书的显示覆
   const resets = [];
   const channels = makeHost(root, {
     configStore: {
-      resetBookDisplay: async (id) => { resets.push(id); return true; }
+      resetBookDisplay: async (id) => { resets.push(id); return true; },
+      get: async () => ({ booksRoot: root })
     }
   });
   const created = await storage.createBook(root, '调过字体的书');
@@ -135,7 +138,8 @@ test('E2：删书成功后按书目 id 清掉这本书的查找书签（与显�
       resetFindBookmarksForBook: async (id) => {
         cleared.push(id);
         return 3;
-      }
+      },
+      get: async () => ({ booksRoot: root })
     }
   });
   const created = await storage.createBook(root, '带书签的书');
@@ -150,7 +154,8 @@ test('E2：删书成功后按书目 id 清掉这本书的查找书签（与显�
       resetBookDisplay: async () => true,
       resetFindBookmarksForBook: async () => {
         throw new Error('EACCES: 配置只读');
-      }
+      },
+      get: async () => ({ booksRoot: failingRoot })
     }
   });
   const failingBook = await storage.createBook(failingRoot, '书签清不掉的书');
@@ -168,7 +173,8 @@ test('五-L1（CI-2）：清理失败 / 书目已坏都不影响删书本身（�
   const root = await mkTmp();
   const channels = makeHost(root, {
     configStore: {
-      resetBookDisplay: async () => { throw new Error('EACCES: 配置只读'); }
+      resetBookDisplay: async () => { throw new Error('EACCES: 配置只读'); },
+      get: async () => ({ booksRoot: root })
     }
   });
   const created = await storage.createBook(root, '配置只读时的书');
@@ -191,4 +197,43 @@ test('五-L1（CI-2）：清理失败 / 书目已坏都不影响删书本身（�
   await fs.writeFile(path.join(brokenPath, storage.BOOK_FILE), '{ 坏掉了', 'utf8');
   const brokenResult = await brokenChannels.get('book:delete')(brokenPath);
   assert.equal(brokenResult.method, 'move');
+});
+
+// A2-CONFIG-01（低）：两处 reset 只改配置仓库的缓存，主进程模块级 config 仍是删书前的快照 ——
+// 随后任意窗口 config:get 还会带回已删书的 bookDisplay / 书签死条目（含自定义字体本机路径）。
+// 收尾要用 applyConfig（唯一写入口）刷新一次；刷新失败只 warn，不许把删除结果改判成失败。
+test('A2-CONFIG-01：删书清掉显示覆盖 / 书签后刷新主进程配置缓存', async () => {
+  const root = await mkTmp();
+  const applied = [];
+  const fresh = { booksRoot: root, bookDisplay: {}, findBookmarks: [] };
+  const channels = makeHost(root, {
+    configStore: {
+      resetBookDisplay: async () => true,
+      resetFindBookmarksForBook: async () => 1,
+      get: async () => fresh
+    },
+    applyConfig: (cfg) => { applied.push(cfg); return cfg; }
+  });
+  const created = await storage.createBook(root, '配置缓存刷新');
+  const result = await channels.get('book:delete')(created.path);
+  assert.equal(result.method, 'move');
+  assert.deepEqual(applied, [fresh], '删书收尾要刷新一次主进程配置缓存（回包不再带死条目）');
+
+  // 刷新失败只留 warn，删除结果不变
+  const failRoot = await mkTmp();
+  const failing = makeHost(failRoot, {
+    configStore: {
+      resetBookDisplay: async () => true,
+      get: async () => { throw new Error('EACCES: 配置只读'); }
+    }
+  });
+  const failingBook = await storage.createBook(failRoot, '缓存刷不新的书');
+  const failingResult = await failing.get('book:delete')(failingBook.path);
+  assert.equal(failingResult.method, 'move', '配置缓存没刷新也不许把删除报成失败');
+  assert.deepEqual(
+    failing.logs.map((item) => item[2]),
+    ['CONFIG_CACHE_REFRESH_FAILED'],
+    '刷新失败要留一条可诊断的 warn'
+  );
+  assert.equal(failing.logs[0][3], 'warn');
 });

@@ -57,7 +57,9 @@ function makeDeleteHost(root, { isE2E = false, trashItem } = {}) {
     shell: { trashItem: trashItem || (async () => {}) },
     getConfig: async () => ({ booksRoot: root }),
     // 五-L1（CI-2）：删书成功后按 meta.id 清显示覆盖（真实实现由 main.js 注入 configStore）
-    getConfigStore: () => ({ resetBookDisplay: async () => true }),
+    getConfigStore: () => ({ resetBookDisplay: async () => true, get: async () => ({ booksRoot: root }) }),
+    // A2-CONFIG-01：删书收尾刷新主进程配置缓存
+    applyConfig: () => {},
     flowSession: () => null,
     sessionById: () => null,
     focusSession: () => {},

@@ -45,6 +45,8 @@ const REQUIRED_HOST = [
   'getConfig',
   // 五-L1（CI-2）：删书成功后按书目 id 清掉这本书的显示覆盖（config.json 的 bookDisplay）
   'getConfigStore',
+  // A2-CONFIG-01：配置收尾后刷新主进程模块级缓存（main.js 的 applyConfig 是唯一写入口）
+  'applyConfig',
   'flowSession',
   'sessionById',
   'focusSession',
@@ -69,6 +71,9 @@ function registerBookIpc(host) {
     importer, openBooksLib, ipcLimits, ipcPaths,
     ipcRestoreToken, restoreTokens, errorText, pathUtils,
     fs, path, shell, getConfig, getConfigStore,
+  // A2-CONFIG-01：两处配置收尾（resetBookDisplay / resetFindBookmarksForBook）只改配置仓库缓存，
+  // 主进程的模块级 config 要经 main.js 的唯一写入口 applyConfig 才刷新。
+  applyConfig,
     flowSession, sessionById, focusSession, flushLastOpenBeforeRead,
     lastOpenWrites, bookKeyOf, rememberRecentBook, notifyShelfChanged,
     sendToFlow, logError, showOpenDialog, automation,
@@ -450,6 +455,14 @@ function registerBookIpc(host) {
           } catch (err) {
             logError('book-delete', err, { level: 'warn', code: 'BOOK_BOOKMARKS_RESET_FAILED' });
           }
+        }
+        // A2-CONFIG-01（低）：上面两处 reset 只改配置仓库的缓存，主进程的模块级 config 仍是删书前的
+        // 快照 —— 随后任意窗口 config:get 还会带回已删书的 bookDisplay / 书签死条目（含自定义字体
+        // 本机路径），与「配置不随曾调过显示设置的书数增长」只对磁盘成立。收尾刷新一次；失败只 warn。
+        try {
+          applyConfig(await configStore.get());
+        } catch (err) {
+          logError('book-delete', err, { level: 'warn', code: 'CONFIG_CACHE_REFRESH_FAILED' });
         }
       }
       return result;

@@ -51,7 +51,9 @@ function makeHost(root, options = {}) {
     path,
     shell: { trashItem: async () => {} },
     getConfig: options.getConfig || (async () => ({ booksRoot: root })),
-    getConfigStore: () => ({ resetBookDisplay: async () => true }),
+    getConfigStore: () => ({ resetBookDisplay: async () => true, get: async () => ({ booksRoot: root }) }),
+    // A2-CONFIG-01：删书收尾刷新主进程配置缓存
+    applyConfig: () => {},
     flowSession: () => ({ id: windowId }),
     sessionById: () => null,
     focusSession: () => {},
