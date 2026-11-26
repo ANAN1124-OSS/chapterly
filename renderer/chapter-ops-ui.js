@@ -621,7 +621,6 @@
           trashName,
           undoToken,
           wasCurrent,
-          newChapter: data.newChapter,
           neighborBeforeId,
           neighborAfterId
         });
@@ -647,10 +646,9 @@
       await flushWriteTimer();
       const dirtyNow = Boolean(state.dirty);
       const current = state.chapters[state.index];
-      const autoFile = info.newChapter && info.newChapter.file ? info.newChapter.file : '';
-      // 删空自动补的空章：只在「它仍空着、编辑区也没动过它」时一并撤掉。
-      // 作者在这 10 秒里已经往补章里写了字，就保留它（宁可多一章，也不静默丢字）。
-      const canRemoveAuto = Boolean(autoFile) && !(dirtyNow && current && current.file === autoFile);
+      // V221-RENDER-03（2026-11-26 复核）：2026-11-25 起删空不再自动补章（storage.deleteChapter
+      // 固定回 newChapter=null），这里原来「自动补的空章若仍空着就一并收走」的 autoFile / canRemoveAuto
+      // 分支已是死代码，删除；撤销只按下面的邻居 / 原下标把这一章放回去。
       // 1.5.0 P0-4（审计 H-2）：撤销时按 id 重查书目，优先用「现在」的字段与落点；
       // 这一章已经不在列表里（正常情况）就用删除时的左右邻居重算落点，最后才退回删除那一刻的下标。
       // 目标：10 秒内改名 / 调序 / 又删了别的章，撤销仍落回原来的上下文，而不是把旧下标硬塞进去。
@@ -684,8 +682,7 @@
           volumeId: source.volumeId,
           status: source.status,
           note: source.note
-        },
-        autoChapterFile: canRemoveAuto ? autoFile : null
+        }
       });
       // 有未保存的字就不切章（切章会把它丢掉），只把书目换回来；
       // 其它情况按「当前章 id」重定位，免得撤销把一章插到当前章前面后下标错位。
@@ -697,8 +694,7 @@
       renderEditorHeader();
       if (willLoad) await loadChapterAt(data.index);
       else updateStatus();
-      const note = autoFile && !data.autoChapterRemoved ? '（自动补的空章里已经有内容，保留）' : '';
-      toast(`已撤销删除：${chapterTitle(data.index, data.chapter.name)}${note}`);
+      toast(`已撤销删除：${chapterTitle(data.index, data.chapter.name)}`);
     });
   }
 
@@ -785,8 +781,7 @@
           trashName: String(data.trashPath || '').split(/[\\/]/).pop(),
           undoToken: typeof data.undoToken === 'string' ? data.undoToken : '',
           neighborBeforeId,
-          neighborAfterId,
-          newChapter: data.newChapter || null
+          neighborAfterId
         });
         applyMetaAndRelocate(data, currentSelected ? null : keepCurrentId);
       } catch (err) {
@@ -852,10 +847,7 @@
       const keepId = currentChapterId();
       let lastData = null;
       for (const entry of ordered) {
-        const autoFile = entry.newChapter && entry.newChapter.file ? entry.newChapter.file : '';
-        const current = state.chapters[state.index];
-        // 删空自动补的空章：只在它还空着、编辑区也没动过它时一起收走（与单章撤销同一口径）
-        const canRemoveAuto = Boolean(autoFile) && !(state.dirty && current && current.file === autoFile);
+        // V221-RENDER-03：删空不再自动补章，批量撤销不再有「收走自动补的空章」这一支。
         lastData = await call(api.restoreDeletedChapter, bookPath, {
           trashName: entry.trashName,
           undoToken: entry.undoToken || '',
@@ -868,8 +860,7 @@
             volumeId: entry.chapter.volumeId,
             status: entry.chapter.status,
             note: entry.chapter.note
-          },
-          autoChapterFile: canRemoveAuto ? autoFile : null
+          }
         });
         applyMetaAndRelocate(lastData, keepId || undefined);
       }
@@ -880,7 +871,7 @@
         state.index = at;
         updateStatus();
       } else {
-        // 当前停在「删除整本后自动补的空章」上，它已经被收走：回第一处原下标重新读一章
+        // 当前章 id 找不到了（可能被别的窗口删了 / 换过书）：按第一处原下标重新读一章
         state.index = Math.min(ordered[0] ? ordered[0].index : 0, Math.max(0, state.chapters.length - 1));
         await loadChapterAt(state.index);
       }

@@ -215,10 +215,12 @@ test('A3-Cβ / C3：机械保真——搬走的实现保留原有行为注释与
   }
   assert.match(MODULE_SRC, /\n  async function deleteChapterAt\(index, skipConfirm = false\) \{/, 'deleteChapterAt 形参默认值保留');
   assert.match(MODULE_SRC, /\n  async function deleteVolumeFlow\(volumeId, skipConfirm = false\) \{/, 'deleteVolumeFlow 形参默认值保留');
-  // 红线语义原样：一次性撤销凭证 / 原下标插回 / 自动补空章只在仍空着时收走。
+  // 红线语义原样：一次性撤销凭证 / 原下标插回；V221-RENDER-03 起删空不再自动补章，
+  // 渲染层不再有 autoChapterFile / newChapter 死分支（storage 侧仍保留旧客户端的兼容参数）。
   assert.match(MODULE_SRC, /undoToken: typeof data\.undoToken === 'string' \? data\.undoToken : ''/);
   assert.match(MODULE_SRC, /undoToken: info\.undoToken \|\| ''/);
-  assert.match(MODULE_SRC, /autoChapterFile: canRemoveAuto \? autoFile : null/);
+  assert.equal(/autoChapterFile/.test(MODULE_SRC), false, '删除撤销的死分支要清理（不再发送 autoChapterFile）');
+  assert.equal(/newChapter: data\.newChapter/.test(MODULE_SRC), false, 'deleteChapter 固定回 newChapter=null，不许再存死字段');
   assert.match(MODULE_SRC, /neighborBeforeId/, '删除撤销要保留左右邻居 id 重算落点');
 });
 
