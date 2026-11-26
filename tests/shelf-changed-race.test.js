@@ -29,9 +29,14 @@ function shelfState(books) {
 }
 
 function makeShelfHost(options = {}) {
-  const calls = { read: [], rendered: 0, refreshed: 0, marked: 0, stats: 0 };
+  const calls = { read: [], rendered: 0, refreshed: 0, marked: 0, stats: 0, recent: 0 };
   const state = options.state || shelfState([]);
   const api = {
+    // A2-SHELF-01：「继续上次写作」的来源（增量刷新落地后要补取一次）
+    getRecentBook: async () => {
+      calls.recent += 1;
+      return options.recent === undefined ? null : options.recent;
+    },
     readBookCard: async (bookPath) => {
       calls.read.push(bookPath);
       if (options.onRead) return options.onRead(bookPath);
@@ -167,4 +172,22 @@ test('handleShelfChanged：整表刷新之后到达的在途读卡回执作废�
   assert.equal(stale.mode, 'stale', '刷新前发出的读卡回执作废');
   assert.deepEqual(host.state.books.map((book) => book.title), ['甲书（刷新后）'], '刷新结果不许被旧卡覆盖');
   assert.equal(host.calls.rendered, 0, '整表刷新由宿主自己重画，过期增量回执不许再画');
+});
+
+// A2-SHELF-01（低）：书架增量只换书卡时 state.recentBook 保持旧值 —— 另一个窗口刚保存的书在
+// 「继续上次写作」卡上仍不是最近那一本（同屏口径矛盾）。增量落地后要补取一次。
+test('A2-SHELF-01：增量刷新落地后补取「继续上次写作」并写回 state', async () => {
+  const bookA = { path: 'C:\\书架\\甲书', title: '甲书', lastModified: 1000 };
+  const recent = { path: bookA.path, chapterId: 'c1', chapterIndex: 0, chapterName: '第一章' };
+  const host = makeShelfHost({
+    state: shelfState([bookA]),
+    recent,
+    onRead: () => ({ path: bookA.path, title: '甲书', lastModified: 3000 })
+  });
+  const result = await host.shelfUi.handleShelfChanged({ reason: 'chapter:save', bookPath: bookA.path });
+  assert.equal(result.mode, 'card');
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(host.calls.recent, 1, '增量路径也要重取一次最近写作');
+  assert.deepEqual(host.state.recentBook, recent, '新 recent 要写回 state');
 });

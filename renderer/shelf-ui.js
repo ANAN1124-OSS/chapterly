@@ -168,6 +168,23 @@
     state.books = books;
   }
 
+  // A2-SHELF-01（低）：书架增量只更新书卡 / 排序，state.recentBook 保持旧值 —— 另一个窗口刚保存的
+  // 书在「继续上次写作」卡上仍不是最近那一本（同屏口径矛盾，点进去也不是刚保存那本）。
+  // 增量落地后补取一次并只重画继续卡；读不到保持旧值（纯展示增强，不影响书卡结果）。
+  async function refreshRecentBookQuietly(epochAtStart) {
+    if (!api || typeof api.getRecentBook !== 'function' || !callApi) return false;
+    let recent;
+    try {
+      recent = await callApi(api.getRecentBook);
+    } catch {
+      return false;
+    }
+    if (epochAtStart !== undefined && epochAtStart !== shelfFullEpoch) return false; // 期间整表刷新过：以它为准
+    state.recentBook = recent;
+    renderContinueWriting();
+    return true;
+  }
+
   async function handleShelfChanged(payload) {
     const reason = payload && typeof payload.reason === 'string' ? payload.reason : '';
     const bookPath = payload && typeof payload.bookPath === 'string' ? payload.bookPath : '';
@@ -194,6 +211,7 @@
       if (state.books.length === before) return { mode: 'remove', removed: false };
       renderShelfNow();
       if (typeof refreshShelfStats === 'function') Promise.resolve(refreshShelfStats()).catch(() => {});
+      void refreshRecentBookQuietly(epochAtStart); // A2-SHELF-01：删书也可能改「继续上次写作」
       return { mode: 'remove', removed: true };
     }
     let card = null;
@@ -219,6 +237,8 @@
     if (!patched) renderShelfNow();
     // 字数 / 今日统计：只读 stats.json，不重扫全书架（与 refreshShelf 的统计刷新同口径）
     if (typeof refreshShelfStats === 'function') Promise.resolve(refreshShelfStats()).catch(() => {});
+    // A2-SHELF-01：增量落地后补取「继续上次写作」（另一个窗口刚保存的书要顶上来）
+    void refreshRecentBookQuietly(epochAtStart);
     return { mode: 'card' };
   }
 
