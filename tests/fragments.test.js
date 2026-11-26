@@ -145,6 +145,29 @@ test('灵感箱：目录不存在时列表为空，而且列表动作不会创�
   assert.deepEqual(await readRoot(root), []);
 });
 
+// A2-FRAG-01（低）：碎片写走 atomicWriteFile，临时文件（`.名.tmp-pid-ts-rand`）落在 _碎片 里；
+// 断电 / 强杀会在 rename 前留下隐藏半成品，而 X8 的孤儿回收只覆盖 userData / 导出目录 / 书架根
+// .import-* / 书目录 —— _碎片 一个回收点都没有。现在首次 list() 顺手按同一口径回收一次。
+test('A2-FRAG-01：_碎片 里的原子写孤儿在 list() 时回收（本进程 / 新鲜的不动）', async () => {
+  const root = await mkTmp();
+  const store = frag.createFragmentStore(root);
+  const dir = path.join(root, '_碎片');
+  await fs.mkdir(dir, { recursive: true });
+  const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const orphan = path.join(dir, '.旧碎片.txt.tmp-999999-1700000000000-abcd12');
+  const freshOrphan = path.join(dir, '.新碎片.txt.tmp-999999-1700000000000-abcd12');
+  const ownPid = path.join(dir, `.本进程.txt.tmp-${process.pid}-1700000000000-abcd12`);
+  for (const target of [orphan, freshOrphan, ownPid]) await fs.writeFile(target, '半成品', 'utf8');
+  // 只把「旧」的 mtime 拨老：另两个要么 pid 是本进程，要么在 1 小时阈值内（都该保留）
+  await fs.utimes(orphan, old, old);
+  await fs.utimes(ownPid, old, old);
+  await store.list();
+  const names = await fs.readdir(dir);
+  assert.equal(names.includes(path.basename(orphan)), false, '异 pid + 超过 1 小时的孤儿要删掉');
+  assert.equal(names.includes(path.basename(freshOrphan)), true, '新鲜临时文件可能是别的进程正在写，保留');
+  assert.equal(names.includes(path.basename(ownPid)), true, '本进程 pid 的临时文件可能正在写，保留');
+});
+
 test('灵感箱：新建碎片写进 _碎片、UTF-8 无 BOM + CRLF、内容与字数正确', async () => {
   const root = await mkTmp();
   const store = frag.createFragmentStore(root);

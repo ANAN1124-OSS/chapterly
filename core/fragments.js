@@ -8,7 +8,7 @@
 // - 读取只认 _碎片 顶层的 .txt 文件名，拒绝路径穿越；超长文件/碎片明确报错，不硬塞进编辑区。
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { atomicWriteFile, stripBom } = require('./atomic');
+const { atomicWriteFile, cleanupOrphanTmpFiles, stripBom } = require('./atomic');
 const { pad2, formatCount, createWriteQueue, mapLimit } = require('./common');
 // 字数口径唯一实现（core/chapters.js 的 countChars）；这里不再自己抄一份（v0.9 B-2 / 审计 F1）。
 const chaptersLib = require('./chapters');
@@ -217,11 +217,29 @@ function createFragmentStore(booksRoot, options = {}) {
     return run;
   }
 
+  // A2-FRAG-01（低）：碎片写走 atomicWriteFile，临时文件（`.名.tmp-pid-ts-rand`）落在 _碎片 里；
+  // 断电 / 强杀会在 rename 前留下隐藏半成品，而 X8 的孤儿回收只覆盖 userData / 导出目录 / 书架根
+  // .import-* / 书目录 —— _碎片 一个回收点都没有（列表只认 .txt，作者也看不见）。首次 list() 时
+  // 顺手按同一口径（非本进程 pid + 超过 1 小时 + 本应用命名）回收一次；每个 store 实例只跑一次，
+  // 失败静默 —— 列表动作绝不因为清理失败而报错。
+  let orphanSweepDone = false;
+  async function sweepOrphanTmpOnce() {
+    if (orphanSweepDone) return;
+    orphanSweepDone = true;
+    const cleanup = typeof settings.cleanupOrphans === 'function' ? settings.cleanupOrphans : cleanupOrphanTmpFiles;
+    try {
+      await cleanup(dir);
+    } catch {
+      /* 回收失败不影响列碎片 */
+    }
+  }
+
   // 列表：_碎片 顶层所有 .txt（含用户自己放进去的 txt），最新在前，最多 LIST_LIMIT 条。
   // 目录不存在 = 空列表，绝不因为列表动作创建文件夹。
   // B7（v1.8.0 WP-28）：先并发 stat 全部候选 → 按 mtime 粗排 → 只给前 LIST_LIMIT 条读 8KB 预览。
   // 以前逐条「stat → 读预览」做完才排序截断，为被截掉的条目白读；返回字段 / 顺序 / total/truncated 口径不变。
   async function list() {
+    await sweepOrphanTmpOnce();
     const names = await listTxtNames(dir);
     const stats = await mapLimit(names, concurrency, async (name) => {
       try {
