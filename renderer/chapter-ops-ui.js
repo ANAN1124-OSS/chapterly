@@ -142,6 +142,12 @@
     : (a, b) => String(a == null ? '' : a).trim().replace(/\//g, '\\').toLowerCase()
       === String(b == null ? '' : b).trim().replace(/\//g, '\\').toLowerCase();
 
+  // V221-RENDER-01（2026-11-26 复核）：单章 / 分卷动作的 IPC 往返里作者可能已经换书。回包只说明
+  // 「旧书上那个动作成功了」——绝不能把旧书 meta 写进新书 state、也不能把结果 toast 到新书界面。
+  function bookChangedSince(bookPath) {
+    return !sameBookPath(state.bookPath, bookPath);
+  }
+
   // H1（三审）：建章 / 删章 / 批量删都是「保存成功后立刻重载编辑区」的过渡入口。
   // 旧实现只看 saveCurrent 的 saved.ok 就继续——保存 IPC 往返（fsync / 书目 / 统计写盘，
   // 冷盘 / 杀软下可达数百 ms）期间敲入的字不在磁盘上，dirty 会重新为真，随后的 loadChapterAt
@@ -252,6 +258,7 @@
       });
       if (!guard.ok) return guard.saved ? guard.saved : guard;
     }
+    const bookPath = state.bookPath;
     const appending = insertIndex >= state.chapters.length;
     // 新章默认落在「当前章所在的卷」；从卷菜单进来时用指定的卷
     const currentChapter = state.chapters[state.index];
@@ -269,7 +276,8 @@
       if (name === null) return { ok: false, canceled: true };
     }
     try {
-      const data = await call(api.createChapter, state.bookPath, insertIndex, name, volumeId || null);
+      const data = await call(api.createChapter, bookPath, insertIndex, name, volumeId || null);
+      if (bookChangedSince(bookPath)) return { ok: true, stale: true };
       applyMetaAndRelocate(data);
       // 新章名不一定命中当前筛选：清掉筛选，保证刚建好的章在目录里看得见（输入框同步清空）
       if (state.chapterFilter) {
@@ -303,6 +311,7 @@
   // ---------- 分卷操作 ----------
   async function createVolumeFlow(nameOverride) {
     if (!state.bookPath) return { ok: false };
+    const bookPath = state.bookPath;
     let name = nameOverride;
     if (name === undefined) {
       name = await promptText({
@@ -313,7 +322,8 @@
       if (name === null) return { ok: false, canceled: true };
     }
     try {
-      const data = await call(api.createVolume, state.bookPath, name);
+      const data = await call(api.createVolume, bookPath, name);
+      if (bookChangedSince(bookPath)) return { ok: true, stale: true };
       // 分卷操作不改变章节顺序，当前章还是同一张卡片；按 id 找回来即可（找不到就不动下标）
       const currentId = (state.chapters[state.index] || {}).id;
       applyMetaAndRelocate(data, currentId);
@@ -329,6 +339,7 @@
 
   async function renameVolumeFlow(volumeId, nameOverride) {
     if (!state.bookPath || !volumeId) return { ok: false };
+    const bookPath = state.bookPath;
     let name = nameOverride;
     if (name === undefined) {
       name = await promptText({
@@ -340,7 +351,8 @@
       if (name === null) return { ok: false, canceled: true };
     }
     try {
-      const data = await call(api.renameVolume, state.bookPath, volumeId, name);
+      const data = await call(api.renameVolume, bookPath, volumeId, name);
+      if (bookChangedSince(bookPath)) return { ok: true, stale: true };
       applyMetaAndRelocate(data);
       // B17：卷改名只改卷头文字；找不到卷头 / 筛选生效时退回整表重建
       if (!syncVolumeHeaderName(volumeId)) renderChapterList();
@@ -355,12 +367,14 @@
   // 卷上下移动（只改卷序，章节跟着卷走）
   async function moveVolumeFlow(volumeId, delta) {
     if (!state.bookPath || !volumeId) return { ok: false };
+    const bookPath = state.bookPath;
     const volumes = volumeList();
     const from = volumes.findIndex((v) => v.id === volumeId);
     const to = from + delta;
     if (from < 0 || to < 0 || to >= volumes.length) return { ok: false };
     try {
-      const data = await call(api.moveVolume, state.bookPath, volumeId, to);
+      const data = await call(api.moveVolume, bookPath, volumeId, to);
+      if (bookChangedSince(bookPath)) return { ok: true, stale: true };
       // 卷序变了但章节数组顺序没变：当前章按 id 找回原卡片
       const currentId = (state.chapters[state.index] || {}).id;
       applyMetaAndRelocate(data, currentId);
@@ -387,7 +401,8 @@
     // skipConfirm 只给自动化钩子用（1.4.0 P0-2 起不再有确认框，保留参数是为了钩子签名不变）
     void skipConfirm;
     try {
-      const data = await call(api.deleteVolume, state.bookPath, volumeId);
+      const data = await call(api.deleteVolume, bookPath, volumeId);
+      if (bookChangedSince(bookPath)) return { ok: true, stale: true };
       // 卷里的章回到「未分卷」，顺序不变：当前章按 id 找回；万一找不到（书目被外部改坏）回第 1 章
       const currentId = (state.chapters[state.index] || {}).id;
       const at = applyMetaAndRelocate(data, currentId);
@@ -494,7 +509,8 @@
     const beforeId = state.chapters[index + 1] ? state.chapters[index + 1].id : null;
     const currentId = (state.chapters[state.index] || {}).id;
     try {
-      const data = await call(api.moveChapterToVolume, state.bookPath, chapter.id, volumeId || null);
+      const data = await call(api.moveChapterToVolume, bookPath, chapter.id, volumeId || null);
+      if (bookChangedSince(bookPath)) return { ok: true, stale: true };
       applyMetaAndRelocate(data, currentId);
       renderChapterList();
       renderEditorHeader();
@@ -521,6 +537,7 @@
   async function renameChapterAt(index, nameOverride) {
     const chapter = state.chapters[index];
     if (!chapter) return;
+    const bookPath = state.bookPath;
     if (state.dirty && index === state.index) {
       toast('当前章节还有未保存的修改，先保存再改名（或切换前选择保存）', 'warn');
       return;
@@ -536,7 +553,8 @@
       if (name === null) return;
     }
     try {
-      const data = await call(api.renameChapter, state.bookPath, chapter.id, name);
+      const data = await call(api.renameChapter, bookPath, chapter.id, name);
+      if (bookChangedSince(bookPath)) return;
       applyMetaAndRelocate(data);
       // B17：只改这一条的章名 / tooltip；筛选 / 条目对不上时退回整表重建
       if (!syncChapterItemInfo(index)) renderChapterList();
@@ -605,6 +623,8 @@
     try {
       const data = await call(api.deleteChapter, bookPath, chapter.id);
       const at = applyMetaAndRelocate(data, currentId);
+      // V221-RENDER-01：换书后旧书的删除回执不许落地到新书界面（旧书那边已经删掉了，不必重试）。
+      if (bookChangedSince(bookPath)) return false;
       // 主进程回传的是绝对路径：只取文件名（撤销只传 basename，绝不把本机路径再递回去）。
       const trashName = String(data.trashPath || '').split(/[\\/]/).pop();
       // 1.5.0 P0-5（审计 V-1）：主进程给这次删除发了一张一次性凭证，撤销时必须原样交回。
@@ -724,8 +744,10 @@
   async function updateChapterInfo(index, patch) {
     const chapter = state.chapters[index];
     if (!chapter || !state.bookPath) return { ok: false, message: '没有打开的章节' };
+    const bookPath = state.bookPath;
     try {
-      const data = await call(api.updateChapterMeta, state.bookPath, chapter.id, patch);
+      const data = await call(api.updateChapterMeta, bookPath, chapter.id, patch);
+      if (bookChangedSince(bookPath)) return { ok: true, changed: false, stale: true };
       applyMetaAndRelocate(data);
       // B17：状态 / 备注只改这一条（备注标记要增删时 syncChapterItemInfo 返回 false → 整表重建）
       if (!syncChapterItemInfo(index)) renderChapterList();

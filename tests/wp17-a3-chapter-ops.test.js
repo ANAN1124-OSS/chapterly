@@ -1451,3 +1451,41 @@ test('KNOWN-CHAPTER：保存撞 BUSY 时过渡入口给弱提示，不再静默'
   assert.equal(await moduleApi.create(del.host).deleteChapterAt(0), false);
   assert.deepEqual(del.counts.toast.at(-1), ['正在保存中，请稍候再试', 'warn']);
 });
+
+// V221-RENDER-01（2026-11-26 复核）：单章 / 分卷动作的 IPC 往返里换书时，旧回包只说明旧书动作
+// 成功 —— 不许把旧书 meta 写进新书 state，也不许 toast 到新书界面。
+test('V221-RENDER-01：单章/分卷动作在途换书 → 旧回包不落地到新书界面', async () => {
+  const NEW_BOOK = 'C:/书架/另一本';
+  const newChapters = [{ id: 'n1', name: '新书章' }];
+  const staleReturn = (chapterId, extra = {}) => ({
+    ok: true,
+    data: {
+      index: 0,
+      chapter: { id: chapterId || 'c1', name: '旧章' },
+      changed: true,
+      volume: { id: 'v9', name: '旧卷' },
+      meta: { title: '旧书', chapters: [{ id: 'c1', name: '旧章' }], updatedAt: 'OLD' },
+      ...extra
+    }
+  });
+  const cases = [
+    ['renameChapter', (rt) => rt.ui.renameChapterAt(0, '新名')],
+    ['updateChapterMeta', (rt) => rt.ui.updateChapterInfo(0, { status: 'done' })],
+    ['createVolume', (rt) => rt.ui.createVolumeFlow('新卷')]
+  ];
+  for (const [channel, run] of cases) {
+    const rt = makeHost();
+    rt.state.index = 0;
+    rt.host.api[channel] = async () => {
+      // 回执落地前换书（模拟 Ctrl+K / 回书架）
+      rt.state.bookPath = NEW_BOOK;
+      rt.state.chapters = newChapters;
+      rt.state.meta = { title: '另一本', chapters: newChapters, updatedAt: 'NEW' };
+      return staleReturn();
+    };
+    await run(rt);
+    assert.equal(rt.state.bookPath, NEW_BOOK, `${channel}：书身份不许被旧回包改回`);
+    assert.deepEqual(rt.state.chapters, newChapters, `${channel}：新书章节数组不许被旧回执覆盖`);
+    assert.equal(rt.state.meta.updatedAt, 'NEW', `${channel}：新书书目不许被旧回执覆盖`);
+  }
+});
