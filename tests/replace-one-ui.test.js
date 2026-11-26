@@ -76,6 +76,8 @@ function makeHost(options = {}) {
     replaceEditorTextNative: (text) => {
       calls.replaceNative.push(text);
       if (options.fallback) return false;
+      // A2-REPLACEON-01：模拟「execCommand 报 true 却没生效」（焦点被抢 / 输入法把插入吞掉）
+      if (options.nativeLie) return true;
       const [start, end] = editorEl.selection || [0, 0];
       editorEl.value = editorEl.value.slice(0, start) + text + editorEl.value.slice(end);
       return true;
@@ -235,6 +237,20 @@ test('兜底拼接：execCommand 不可用时手动拼 + 记一次性快照（�
     label: '替换这一处'
   });
   assert.equal(calls.input, 1, '快照要在输入处理之后记（先标脏再记）');
+});
+
+test('A2-REPLACEON-01：execCommand 报 true 但没改值 → 复核内容走兜底并记账，摘要仍报已替换', async () => {
+  const { host, editorEl, summaryEl, calls } = makeHost({
+    findNextResults: [HIT_FIRST, HIT_NEXT],
+    nativeLie: true
+  });
+  const result = await replaceOneUi.create(host).runReplaceOne();
+  assert.equal(result.ok, true);
+  assert.equal(editorEl.value, '小明一。阿明二。阿明三。', '报 true 没生效时必须按预期兜底，正文不能停在原样');
+  assert.equal(calls.fallback.length, 1, '兜底写入要记一次性快照（原生撤销链已丢）');
+  assert.equal(calls.fallback[0].start, 0);
+  assert.match(summaryEl.textContent, /已替换第 1\/3 处/);
+  assert.doesNotMatch(summaryEl.textContent, /没有生效/);
 });
 
 test('第二个回执迟到：只放弃「选中下一处」，正文与替换结果照旧', async () => {

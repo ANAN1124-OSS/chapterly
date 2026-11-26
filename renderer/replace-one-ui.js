@@ -111,13 +111,16 @@
       }
       editorEl.focus();
       editorEl.setSelectionRange(match.index, match.index + match.length);
+      // A2-REPLACEON-01（2026-11-26 审计）：execCommand 的返回值不可信 —— 焦点被抢 / 输入法异常时
+      // 会报 true 但编辑区没变。以「编辑区实际内容 === 预期结果」为准：不一致就按预期兜底写入并
+      // 记一次性快照；摘要也只按真实内容报「已替换」。
+      const expected =
+        text.slice(0, match.index) + replacement + text.slice(match.index + match.length);
       const inserted = replaceEditorTextNative(replacement);
       let fallbackUsed = false;
-      if (!inserted) {
-        // 极端兜底：execCommand 不可用时手动拼接（会丢原生撤销链，但不会丢内容）
-        const current = editorEl.value;
-        editorEl.value =
-          current.slice(0, match.index) + replacement + current.slice(match.index + match.length);
+      if (!inserted || editorEl.value !== expected) {
+        // 极端兜底：execCommand 不可用 / 报 true 却没生效时手动拼接（会丢原生撤销链，但不会丢内容）
+        editorEl.value = expected;
         fallbackUsed = true;
       }
       onEditorInput();
@@ -125,6 +128,8 @@
       if (fallbackUsed) {
         recordFallbackWrite({ before: text, after: editorEl.value, start: match.index, label: '替换这一处' });
       }
+      // 替换是否真的生效只认编辑区内容（不再依赖 execCommand 的返回值）。
+      const replaced = editorEl.value === expected;
 
       // 选中下一处，方便连续替换
       let next = null;
@@ -157,9 +162,11 @@
       const truncated = Boolean(picked.truncated);
       const totalLabel = truncated ? `${picked.total}+` : String(picked.total);
       const truncatedHint = truncated ? '（本章命中超过单章上限 5000 处，只统计 / 处理前 5000 处）' : '';
-      $('find-summary').textContent =
-        `已替换第 ${picked.index + 1}/${totalLabel} 处（未保存：Ctrl+S 写盘，Ctrl+Z 可撤销）${nextHint}${truncatedHint}`;
-      return { ok: true, index: picked.index, total: picked.total, truncated, hasNext: locate.index != null };
+      const doneText = replaced
+        ? `已替换第 ${picked.index + 1}/${totalLabel} 处（未保存：Ctrl+S 写盘，Ctrl+Z 可撤销）`
+        : '这次替换没有生效（编辑区内容没有变化），请再试一次';
+      $('find-summary').textContent = `${doneText}${nextHint}${truncatedHint}`;
+      return { ok: replaced, index: picked.index, total: picked.total, truncated, hasNext: locate.index != null };
     }
 
     // 只暴露入口（与搬前等价：编排器里同名转发）。不要在渲染层再长第二份（tests/replace-one-ui.test.js 的机器清单会红）。
