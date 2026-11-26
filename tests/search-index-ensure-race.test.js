@@ -27,6 +27,23 @@ function settleWithin(promise, timeoutMs) {
   });
 }
 
+// Node 22 的 node:test 在事件循环先清空时，会把仍挂起的用例判成 cancelledByParent
+// （「Promise resolution is still pending but the event loop has already resolved」）。
+// store 的「隐式 ensure 超时」定时器是 unref 的（生产里不该拖住进程），所以只等它的 promise
+// 时没有任何 ref'd handle —— Node 22 上会直接收工，Node 24 的测试运行器恰好替我们撑住了循环。
+// 这里加一个会自清理的 ref'd 看门狗：计时期间循环不空转；真超时按失败抛错（不是放宽断言）。
+const LOOP_GUARD_TIMEOUT = Symbol('loop-guard-timeout');
+async function awaitWithLoopGuard(promise, timeoutMs, label) {
+  let timer = null;
+  const guard = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(LOOP_GUARD_TIMEOUT), timeoutMs);
+  });
+  const result = await Promise.race([promise, guard]);
+  if (timer) clearTimeout(timer);
+  if (result === LOOP_GUARD_TIMEOUT) throw new Error(`${label || '等待'}超过 ${timeoutMs}ms 仍未结束`);
+  return result;
+}
+
 // SEARCH-01：33 章 = 建位图批大小（32）+ 1。第 2 批开始读正文时，第 1 批（含第 1 章）的正文已经全部
 // 读完 —— 只有这时候落盘的保存才是「这一趟索引没读到的正文」，才谈得上漏报。夹具沿用
 // tests/search-index-fixtures.js（临时目录 / 书目 / 双目录统一构造器）。
@@ -137,7 +154,9 @@ test('SEARCH-02：ensure 的每一条出口都要发 done（无变化的后台�
     onEnsureProgress: (info) => progress.push(info)
   });
   const stalled = await settleWithin(signatureReached, 5000);
-  const quick = await pending;
+  // SEARCH-02：这里等的是 store 里 unref 的「隐式 ensure 超时」定时器，必须用 ref'd 看门狗撑住循环
+  // （否则 Node 22 会因事件循环先清空取消用例；Node 24 本地不复现）。
+  const quick = await awaitWithLoopGuard(pending, 5000, '搜索超时快照');
   releaseSignature();
   const idle = await settleWithin(
     (async () => {
@@ -228,7 +247,8 @@ test('SEARCH-03（合并）：ensure 在飞时连发 5 次搜索只执行一趟�
     const searches = [];
     for (let i = 0; i < 5; i += 1) searches.push(store.search({ booksRoot, query: '青柠色' }));
     stalled = await settleWithin(signatureReached, 5000);
-    quick = await Promise.all(searches);
+    // SEARCH-03：同 SEARCH-02 —— 5 次搜索各自等 store 里 unref 的超时定时器，用 ref'd 看门狗撑住循环。
+    quick = await awaitWithLoopGuard(Promise.all(searches), 5000, '5 次搜索的超时快照');
     releaseSignature();
     idle = await settleWithin(
       (async () => {
