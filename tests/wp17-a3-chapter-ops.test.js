@@ -231,7 +231,7 @@ function makeHost(overrides = {}) {
     toast: [], renderList: 0, renderHeader: 0, status: 0, commandsDirty: 0,
     save: [], load: [], refreshShelf: 0, flush: 0, undo: [], drop: [], exportDialog: [],
     input: 0, fallback: [], scroll: [], placeMenuAt: 0, syncFilter: 0, syncItem: [],
-    createChapter: [], prompt: [], askUnsaved: []
+    createChapter: [], prompt: [], askUnsaved: [], emptied: 0
   };
   const state = {
     bookPath: 'C:/书架/书 名 带 空格',
@@ -420,7 +420,9 @@ function makeHost(overrides = {}) {
     onEditorInput: () => { counts.input += 1; },
     recordFallbackWrite: (info) => { counts.fallback.push(info); },
     scrollCaretIntoView: (pos) => { counts.scroll.push(pos); },
-    placeMenuAt: () => { counts.placeMenuAt += 1; }
+    placeMenuAt: () => { counts.placeMenuAt += 1; },
+    // V221-RENDER-02：删空后由渲染层注入的统一清理（朗读 / 高亮 / 快照 / 标记层）
+    onBookEmptied: () => { counts.emptied += 1; }
   };
   Object.assign(host, overrides.host || {});
 
@@ -715,6 +717,7 @@ test('A3-Cβ / B4：deleteChapterAt——非当前章不问未保存；当前脏
   assert.equal(rtLast.state.chapters.length, 0);
   assert.equal(rtLast.state.index, -1);
   assert.equal(rtLast.state.dirty, false);
+  assert.equal(rtLast.counts.emptied, 1, 'V221-RENDER-02：删空要跑一次旧章副作用清理');
   assert.ok(rtLast.counts.toast.some(([message]) => /已删除最后一章/.test(message)), '提示「这本书现在没有章节」');
   assert.equal(rtLast.counts.lastMask[0], true, '编辑区切只读空态');
   assert.equal(rtLast.counts.undo.length, 1, '仍登记撤销（10 秒内能放回）');
@@ -724,6 +727,23 @@ test('A3-Cβ / B4：deleteChapterAt——非当前章不问未保存；当前脏
   assert.equal(await rtErr.ui.deleteChapterAt(0), false);
   assert.match(rtErr.counts.toast[0][0], /^删除失败：磁盘满了/);
   assert.equal(rtErr.counts.undo.length, 0);
+});
+
+test('V221-RENDER-02：渲染层注入的删空清理清单与切章副作用同源（朗读 / 高亮 / 快照 / 标记层）', () => {
+  const rendererSrc = require('node:fs').readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  const at = rendererSrc.indexOf('onBookEmptied:');
+  assert.ok(at > 0, 'renderer 装配 chapterOpsUi 时要注入 onBookEmptied');
+  const block = rendererSrc.slice(at, at + 800);
+  for (const marker of [
+    'clearFindSession()',
+    'stopTtsForChapterChange()',
+    'bulkWriteUndo = null',
+    'fallbackWriteUndo = null',
+    'undoUi.clear()',
+    'scheduleMarksRender(0)'
+  ]) {
+    assert.ok(block.includes(marker), `删空清理清单缺 ${marker}`);
+  }
 });
 
 test('REDT-C-04：删非当前章后当前章从回包书目消失 → 重载编辑区并清脏（不许跨章覆盖）', async () => {

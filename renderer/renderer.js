@@ -2927,7 +2927,23 @@
     replaceEditorTextNative, onEditorInput, recordFallbackWrite, scrollCaretIntoView,
     placeMenuAt,
     saveForTransition, // H1（三审）：建章 / 删当前章 / 批量删统一走「过渡前保存」原语（可选成员）
-    sameBookPath: longOpLogic.sameBookPath // A2-CHAPTER-01：批量动作回执落地前核发起时那本书（可选成员）
+    sameBookPath: longOpLogic.sameBookPath, // A2-CHAPTER-01：批量动作回执落地前核发起时那本书（可选成员）
+    // V221-RENDER-02：删空 = 一次换章 —— 把旧章还挂着的朗读 / 查找高亮 / 一次性撤销快照 / 标记层
+    // 按 loadChapterAt 成功路径的同一组副作用清一遍（旧宿主没这项时只做空态）。
+    onBookEmptied: () => {
+      if (state.find.total) clearFindSession();
+      stopTtsForChapterChange();
+      bulkWriteUndo = null;
+      fallbackWriteUndo = null;
+      undoUi.clear();
+      if (state.focus.on) {
+        state.focus.savedScrollTop = 0;
+        state.focus.savedCaret = 0;
+        state.focus.savedCaretOffset = 0;
+      }
+      scheduleMarksRender(0);
+      if (state.focus.typewriter) scheduleTypewriterAlign(0);
+    }
   });
 
   // 全局键盘接线（M1 第一轮·低 第七刀）：host 里全是已经初始化的 const / 提升函数——

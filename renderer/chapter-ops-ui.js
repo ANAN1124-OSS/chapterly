@@ -127,6 +127,10 @@
   // H1（三审 / 一轮·高）：统一「过渡前保存」原语（可选 host 成员，与捕获 / 回书架 / 切章同口径）。
   // 宿主没给（旧宿主 / 单测）时退回「一问一存」，行为不更差。
   const saveForTransition = typeof host.saveForTransition === 'function' ? host.saveForTransition : null;
+  // V221-RENDER-02（2026-11-26 复核）：删空 = 一次换章。旧实现只清 state + 遮罩 + 三次渲染，
+  // 朗读 / 查找高亮 / 一次性撤销快照 / 编辑区标记层都还挂在已不存在的那一章上。统一清理清单
+  // 由渲染层注入（与 loadChapterAt 成功路径同一组副作用），旧宿主没有就只做空态。
+  const onBookEmptied = typeof host.onBookEmptied === 'function' ? host.onBookEmptied : null;
 
   // A2-CHAPTER-01（中）：批量动作的「书身份」判定。批量删除 / 移卷 / 改状态是逐条 await 的秒级窗口，
   // 期间 Ctrl+K 换书很常见；旧实现每条回执都 applyMetaAndRelocate，循环后的收尾还读活 state.chapters，
@@ -539,6 +543,14 @@
   // NO_BOOK（不碰编辑区、不改 state），调用方只 toast 一句「载入失败」—— 下标停在 0（指向不存在
   // 的章）、编辑区留着刚删掉那一章的正文、也没切只读空态，之后的保存 / 新建都落在一个空处。
   function enterEmptyBookState() {
+    // V221-RENDER-02：先把挂在旧章上的副作用收干净，再进入 0 章空态。
+    if (onBookEmptied) {
+      try {
+        onBookEmptied();
+      } catch {
+        /* 清理失败不挡空态：这些副作用最坏只是残留在看不见的图层上 */
+      }
+    }
     state.index = -1;
     state.loadedChapterId = null;
     state.loadedMtimeMs = 0;
