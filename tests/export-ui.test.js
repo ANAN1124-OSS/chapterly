@@ -41,7 +41,14 @@ function makeEl(id) {
     },
     appendChild(child) {
       this.options.push(child);
+      if (child && typeof child === 'object') child.parentNode = this;
       return child;
+    },
+    // A2-EXPORT-UI-01：常驻进度提示要在 finally 收掉；假 DOM 提供同一套 remove 语义。
+    remove() {
+      const parent = this.parentNode;
+      if (parent && Array.isArray(parent.options)) parent.options = parent.options.filter((item) => item !== this);
+      this.parentNode = null;
     },
     // M1 第十刀：bindDialogEvents 的接线测试要记录「哪个元素挂了哪些监听」
     listeners: {},
@@ -155,7 +162,7 @@ function installDom() {
     querySelectorAll(selector) {
       return selector === 'input[name="export-scope"]' ? scopeRadios : [];
     },
-    createElement: (tag) => ({ tag, value: '', textContent: '' })
+    createElement: (tag) => makeEl(tag)
   };
   globalThis.document = installedDoc;
 }
@@ -570,6 +577,50 @@ test('confirmExportDialog：先关弹层，再按当前格式走三种导出之�
     assert.ok(toasts[0].message.startsWith(prefix), format + ' 的提示语变了：' + toasts[0].message);
     assert.match(toasts[0].message, /^已导出.*C:\/tmp\/out\/测试书\./);
   }
+});
+
+test('A2-EXPORT-UI-01：导出在途有常驻进度提示，重复确认不再发 IPC，结束收掉', async () => {
+  const pending = [];
+  const { host, state, els, toasts, calls } = makeHost({
+    onCall: (channel) => {
+      if (channel !== 'book:export') return undefined;
+      let release;
+      const promise = new Promise((resolve) => {
+        release = resolve;
+      });
+      pending.push({ promise, release });
+      return promise;
+    }
+  });
+  const ui = exportUi.create(host);
+  await ui.openExportDialog('txt');
+  await new Promise((resolve) => setImmediate(resolve));
+  const first = ui.confirmExportDialog();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(state.exporting, true, '导出开始后要有在途状态');
+  const area = els.get('toast-area');
+  assert.equal(
+    area.options.some((el) => /正在导出/.test(String(el.textContent))),
+    true,
+    '在途要有常驻进度提示（不随 toast 计时消失）'
+  );
+  // 重开弹层再点确认：闸门在最前面，重复导出必须被挡住
+  await ui.openExportDialog('txt');
+  await ui.confirmExportDialog();
+  assert.equal(
+    calls.filter((call) => call.channel === 'book:export').length,
+    1,
+    '在途第二次不许再发导出 IPC'
+  );
+  assert.deepEqual(toasts.at(-1), { message: '正在导出，请稍候（完成前请勿重复导出）', kind: 'warn' });
+  pending[0].release({ canceled: true });
+  await first;
+  assert.equal(state.exporting, false);
+  assert.equal(
+    area.options.some((el) => /正在导出/.test(String(el.textContent))),
+    false,
+    '导出结束后进度提示要收掉'
+  );
 });
 
 test('confirmExportDialog：取消另存（canceled）时不弹成功提示', async () => {

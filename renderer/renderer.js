@@ -454,6 +454,7 @@
     selectAnchorId: null,
     batchMenu: false, // 批量条打开的那张右键菜单（只显示能作用到全部已选章的动作）
     importing: false,
+    exporting: false, // A2-EXPORT-UI-01：导出在途（重复点确认时挡住第二次写盘）
     sidebarWidth: 250,
     sidebarDragging: false,
     formatUndo: [], // 「整理本章」的快照栈（只存在内存里，关掉应用就没了；最多 50 步）

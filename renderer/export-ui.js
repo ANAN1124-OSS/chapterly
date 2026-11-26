@@ -329,7 +329,44 @@
     lastExportPlanRange = null;
   }
 
+  // A2-EXPORT-UI-01（2026-11-26 审计）：导出执行阶段没有在途状态 / 进度 / 去重 —— 确认后弹层先关，
+  // 数秒~数十秒里界面上没有任何「正在导出」的痕迹，作者容易再点一次（重复覆盖 / 重复写盘）。
+  // 这里补最小可用的进度横幅：复用 toast 区域的常驻元素（与导入进度同一做法，不依赖 toast 的
+  // 自动消失计时），上限只有 state.exporting 一把闸；结束 / 失败都在 finally 收掉。
+  let exportProgressEl = null;
+
+  function showExportProgress() {
+    if (exportProgressEl) return;
+    const area = $('toast-area');
+    if (!area || typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+    try {
+      exportProgressEl = document.createElement('div');
+      exportProgressEl.className = 'toast';
+      exportProgressEl.textContent = '正在导出…（完成前请勿重复导出）';
+      area.appendChild(exportProgressEl);
+    } catch {
+      exportProgressEl = null; // 量不到 toast 区域只影响可见性，不影响导出本身
+    }
+  }
+
+  function hideExportProgress() {
+    const el = exportProgressEl;
+    exportProgressEl = null;
+    if (!el) return;
+    try {
+      if (typeof el.remove === 'function') el.remove();
+      else if (el.parentNode && typeof el.parentNode.removeChild === 'function') el.parentNode.removeChild(el);
+    } catch {
+      /* 收不掉不影响导出结果 */
+    }
+  }
+
   async function confirmExportDialog() {
+    // 在途闸门放在最前面：重复点确认 / 重开弹层再点，一律不发第二次导出 IPC。
+    if (state.exporting) {
+      toast('正在导出，请稍候（完成前请勿重复导出）', 'warn');
+      return;
+    }
     const range = readExportRange();
     const error = validateExportRange(range);
     if (error) {
@@ -349,9 +386,16 @@
     }
     const format = host.exportFormat;
     closeExportDialog();
-    if (format === 'epub') await exportEpubFlow(range);
-    else if (format === 'docx') await exportDocxFlow(range);
-    else await exportBookFlow(range);
+    state.exporting = true;
+    showExportProgress();
+    try {
+      if (format === 'epub') await exportEpubFlow(range);
+      else if (format === 'docx') await exportDocxFlow(range);
+      else await exportBookFlow(range);
+    } finally {
+      state.exporting = false;
+      hideExportProgress();
+    }
   }
 
   async function copyBookFlow() {
