@@ -441,3 +441,39 @@ test('静态闸门：焦点模块不碰定时器 / 文件 / Electron，也不许
   // 只处理 Tab；其它按键（Esc / Ctrl+S 等）归业务逻辑
   assert.equal(/event\.key\s*!==\s*'Tab'/.test(code), true, 'keydown 只该处理 Tab');
 });
+
+// A2-DIALOG-01（低）：嵌套弹层（历史面板 → 删除确认框）关闭上层后，焦点要还给「刚才点的那一下」，
+// 不许跳到下层弹层的第一个可 Tab 元素（旧行为会把焦点丢到「刷新」上）。
+test('A2-DIALOG-01：关闭嵌套弹层后焦点还给下层触发控件，而不是下层第一个可 Tab 元素', () => {
+  const { doc, win } = makeFakeDom();
+  const refresh = makeEl(doc, { id: 'refresh' });
+  const removeBtn = makeEl(doc, { id: 'remove-btn' });
+  const lowerState = { id: 'history-backdrop', open: false, z: '100' };
+  const lower = makeDialog(doc, lowerState, [refresh, removeBtn]);
+  const modalCancel = makeEl(doc, { id: 'modal-cancel' });
+  const modalOk = makeEl(doc, { id: 'modal-ok' });
+  const upperState = { id: 'modal-backdrop', open: false, z: '300' };
+  const upper = makeDialog(doc, upperState, [modalCancel, modalOk]);
+  doc.querySelectorAll = (selector) => (selector === '.backdrop' ? [lower, upper] : []);
+  const instance = dialogFocus.install({ document: doc, window: win });
+
+  // 1) 打开历史面板：焦点进下层第一个控件（refresh）
+  lowerState.open = true;
+  instance.sync();
+  assert.equal(doc.activeElement, refresh);
+
+  // 2) 作者点「删除这组备份」→ 上层确认框打开：焦点进上层，触发控件被记住
+  doc.activeElement = removeBtn;
+  upperState.open = true;
+  instance.sync();
+  assert.equal(doc.activeElement, modalCancel, '上层打开仍按原行为带焦点进第一个控件');
+
+  // 3) 取消上层：真实 DOM 里焦点会掉回 body；关掉上层后 sync 要还给 removeBtn
+  upperState.open = false;
+  doc.activeElement = doc.body;
+  instance.sync();
+  assert.equal(doc.activeElement, removeBtn, '焦点要还给刚才打开确认框的按钮，不是下层第一个可 Tab 元素');
+  assert.notEqual(doc.activeElement, refresh);
+
+  instance.destroy();
+});

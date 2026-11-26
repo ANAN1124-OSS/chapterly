@@ -119,6 +119,17 @@
 
     const backdrops = Array.from(doc.querySelectorAll('.backdrop'));
     let outsideFocus = null; // 打开弹层前焦点在背景的哪个元素上（关闭时归还给它）
+    // A2-DIALOG-01（低）：按弹层栈记住「这一层是被哪个控件打开的」。只在没有 backdrop 时记
+    // outsideFocus，会让嵌套弹层关闭上层后只能 focusFirst(下层) —— 焦点跳到「刷新」而不是刚才的
+    // 删除 / 还原按钮。layerTriggers 记 层 id → 打开它的元素（可能在下层弹层里）。
+    const layerTriggers = new Map();
+    // 归还焦点前统一过一遍可见性 / 可用性（与 restoreOutsideFocus 同一口径）。
+    const canRestoreTo = (el) => {
+      if (!el || el.isConnected === false) return false;
+      if (el.disabled) return false;
+      if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) return false;
+      return true;
+    };
 
     const states = () =>
       backdrops.map((el) => {
@@ -163,6 +174,7 @@
       if (index < 0) {
         if (!openId) return;
         openId = null;
+        layerTriggers.clear();
         const tag = active && active.tagName ? active.tagName.toLowerCase() : '';
         const lost = shouldRestoreFocus({
           isBody: tag === '' || tag === 'body' || tag === 'html',
@@ -174,7 +186,26 @@
       }
       const box = boxAt(index);
       const inside = Boolean(box && active && box.contains(active));
-      openId = backdrops[index].id || `backdrop-${index}`;
+      const id = backdrops[index].id || `backdrop-${index}`;
+      if (id !== openId) {
+        const previous = openId;
+        // 新的一层成为最上层：如果焦点此刻在下层弹层 / 背景的某个控件上，它就是这一层的「打开者」。
+        if (active && active !== doc.body && active !== doc.documentElement && !(box && box.contains(active))) {
+          layerTriggers.set(id, active);
+        }
+        openId = id;
+        // 上层的关闭让下层重新成为最上层：优先把焦点还给「刚才打开上层的那一下」，
+        // 找不到（控件已隐藏 / 被移除）再退回焦点进弹层的旧行为。
+        if (previous && previous !== id) {
+          const trigger = layerTriggers.get(previous);
+          if (canRestoreTo(trigger) && (!box || box.contains(trigger))) {
+            doFocus(trigger);
+            return;
+          }
+        }
+      } else {
+        openId = id;
+      }
       if (!inside) focusFirst(box);
     }
 
