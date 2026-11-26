@@ -295,3 +295,38 @@ test('DOC-02：无障碍 / 对比度文档写当前门禁实测值，不再留 6
   const manual = read('docs/使用手册.md');
   assert.match(manual, /6 主题 510 条规格全过 \+ 12 条禁用态豁免/, '使用手册的同一口径也要同步');
 });
+
+// A2-DOC-01..05（第二轮审计 5 条 docs 类）：文档口径与实现对齐 ——
+// ① README 的 .bak 承诺（结构性每次 / 普通保存 5 分钟窗口）；② 弹层数量（17 个静态 .backdrop）；
+// ③ 无障碍允许清单（目标尺寸只剩章节栏分隔条一条、焦点清单为空）；④ 备份清理入口写进公开文档；
+// ⑤ 字数口径（UTF-16 码元且去空白，不是 String.length）。
+test('A2-DOC-01..05：文档口径与实现一致（.bak 时间窗 / 弹层 17 / 允许清单 / 清理入口 / 字数口径）', () => {
+  const readme = read('README.md');
+  assert.equal(
+    readme.includes('每次写入前保留上一版 `.bak`'),
+    false,
+    'README 不许再承诺「每次写入前都有上一版」（普通保存是 5 分钟时间窗）'
+  );
+  assert.match(readme, /结构性变更[^\n]{0,60}每次[^\n]{0,120}普通保存[^\n]{0,60}5 分钟/, '.bak 口径要写清两种轮换节奏');
+  assert.equal(readme.includes('与 `String.length` 一致'), false, '字数不是 String.length（会去掉空白字符）');
+  assert.match(readme, /UTF-16 码元[^\n]{0,80}去掉空白/, '字数口径要写明按码元计且去空白');
+
+  const limits = read('docs/已知限制.md');
+  assert.equal(limits.includes('让 13 个 `.backdrop` 弹层里的 11 个'), false, '弹层接管范围不许再低报成 13/11');
+  assert.match(limits, /全部 17 个静态 `\.backdrop` 弹层/, '要写「页面里全部 17 个静态 .backdrop」（dialog-focus 全量接管）');
+
+  const a11y = read('docs/无障碍.md');
+  assert.equal(a11y.includes('门禁在 16 个弹层 / 面板状态里逐个聚焦'), false, '弹层数量写死 16 会随新增弹层失真');
+  assert.match(a11y, /门禁在逐个界面状态里逐个聚焦|门禁在[^\n]{0,20}全部[^\n]{0,20}弹层/, '焦点遮挡门禁要写「全部弹层 / 面板」而不写死数量');
+  assert.equal(a11y.includes('目标尺寸已全部达标，允许清单为空'), false, '目标尺寸允许清单里还有章节栏分隔条一条');
+  assert.match(a11y, /目标尺寸允许清单只剩章节栏分隔条一条[^\n]{0,30}焦点允许清单为空/, '允许清单口径要分目标尺寸 / 焦点两份写');
+
+  const manual = read('docs/使用手册.md');
+  assert.match(manual, /清理本书全部备份/, '本书历史的清理入口要进使用手册');
+  assert.match(manual, /删除这组备份/, '分组的清理入口也要写');
+  assert.match(manual, /移入[^\n]{0,10}回收站/, '清理只进回收站、可恢复，要如实写');
+  assert.equal(limits.includes('按文件夹名手动删'), false, '已知限制不许再把「手删 _trash」当唯一腾空间办法');
+  const faq = read('docs/常见问题.md');
+  assert.equal(faq.includes('嫌多可以自己按文件夹名删'), false, '常见问题同样要指向面板里的清理入口');
+  assert.match(faq, /清理本书全部备份|删除这组备份/, '常见问题要写现成的清理入口');
+});
