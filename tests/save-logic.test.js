@@ -106,3 +106,38 @@ test('保存提示是纯函数：不依赖 DOM / 全局状态，重复调用结�
   assert.equal(typeof saveLogic.isDirtyAgainstSnapshot, 'function');
   assert.equal(saveLogic.isDirtyAgainstSnapshot('同一段', '同一段'), false);
 });
+
+// A2-SAVE-02（低）：部分成功（META_SAVE_FAILED）回执写字数缓存前要核「还是发起时那本书」——
+// 保存 A 书期间换了书，B 书里同 id 的章不许被 A 书的字数覆盖，也不许重画 B 书的目录。
+test('A2-SAVE-02：部分成功的字数缓存只写回发起时那本书（跨书回 -1）', () => {
+  const chapters = [{ id: 'ch_1', chars: 10 }, { id: 'ch_2', chars: 20 }];
+  assert.equal(
+    saveLogic.charsCacheIndexAfterPartialSave({ chapters, chapterId: 'ch_2', sameBook: true }),
+    1,
+    '同书同 id 章照常定位'
+  );
+  assert.equal(
+    saveLogic.charsCacheIndexAfterPartialSave({ chapters, chapterId: 'ch_2', sameBook: false }),
+    -1,
+    '换书后不许写（B 书同 id 章会被 A 书的字数覆盖）'
+  );
+  assert.equal(
+    saveLogic.charsCacheIndexAfterPartialSave({ chapters, chapterId: 'missing', sameBook: true }),
+    -1,
+    '章不在列表里 —— 不写'
+  );
+  assert.equal(saveLogic.charsCacheIndexAfterPartialSave({ chapters: null, chapterId: 'ch_1', sameBook: true }), -1);
+  assert.equal(saveLogic.charsCacheIndexAfterPartialSave(), -1);
+});
+
+// A2-SAVE-03（低）：保存后的全书校验回执只在「还是发起时那本书 + 仍在写作页」时才弹提示 ——
+// 千章书保存成功后立刻回书架 / 换书时，A 书的缺章警告不许弹到书架（或另一本书）上。
+test('A2-SAVE-03：全书校验提示只在原书 + 写作页落地（其它现场返回空串）', () => {
+  const warn = '已保存当前章，但全书有 1 个章节文件缺失';
+  assert.equal(saveLogic.verifyWarnForView({ warn, sameBook: true, view: 'editor' }), warn, '原书 + 写作页照常提示');
+  assert.equal(saveLogic.verifyWarnForView({ warn, sameBook: false, view: 'editor' }), '', '换书后不提示');
+  assert.equal(saveLogic.verifyWarnForView({ warn, sameBook: true, view: 'shelf' }), '', '回书架后不提示');
+  assert.equal(saveLogic.verifyWarnForView({ warn: '', sameBook: true, view: 'editor' }), '', '没有警告时不提示');
+  assert.equal(saveLogic.verifyWarnForView({ warn: null, sameBook: false, view: 'shelf' }), '');
+  assert.equal(saveLogic.verifyWarnForView(), '');
+});

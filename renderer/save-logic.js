@@ -136,5 +136,34 @@
     return Object.keys(extra).length ? extra : null;
   }
 
-  return { savedToastText, verifyWarnText, isDirtyAgainstSnapshot, createVerifySingleFlight, saveFailureExtra, retryMtimeMs };
+  // A2-SAVE-02（低）：部分成功（META_SAVE_FAILED）回执写字数缓存前的目标章节下标。
+  // 只有「还是发起时那本书」才许写：保存在途作者换了书，B 书里同 id 的章绝不能被 A 书的字数覆盖，
+  // 也不许顺手重画 B 书的目录。跨书 / 章已不在列表 / 坏输入一律 -1（调用方跳过）。
+  function charsCacheIndexAfterPartialSave({ chapters, chapterId, sameBook } = {}) {
+    if (sameBook !== true) return -1;
+    if (!Array.isArray(chapters)) return -1;
+    const id = chapterId == null ? '' : String(chapterId);
+    if (!id) return -1;
+    return chapters.findIndex((item) => item && item.id === chapterId);
+  }
+
+  // A2-SAVE-03（低）：保存后全书校验回执的可见性。只有「还是发起时那本书 + 仍在写作页」才让提示
+  // 落地；其它现场（千章书保存成功后立刻回书架 / 打开另一本书）只写诊断日志，不弹指向不明的警告。
+  function verifyWarnForView({ warn, sameBook, view } = {}) {
+    if (!warn) return '';
+    if (view !== 'editor') return '';
+    if (sameBook !== true) return '';
+    return String(warn);
+  }
+
+  return {
+    savedToastText,
+    verifyWarnText,
+    isDirtyAgainstSnapshot,
+    createVerifySingleFlight,
+    saveFailureExtra,
+    retryMtimeMs,
+    charsCacheIndexAfterPartialSave,
+    verifyWarnForView
+  };
 });

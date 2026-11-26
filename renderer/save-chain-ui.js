@@ -262,7 +262,19 @@
       const verify = getTestVerifyBook() || ((target) => call(api.verifyBook, target));
       const report = await verify(bookPath);
       const warn = saveLogic.verifyWarnText(report);
-      if (warn) toast(warn, 'warn');
+      // A2-SAVE-03（低）：单飞只做「同一本书合并」，落地前还要核现场 —— 千章书保存成功后立刻回
+      // 书架 / 打开另一本书时，A 书的缺章警告会弹在书架（或 B 书上），作者不知道该修哪本。
+      // 只在「还是发起时那本书 + 仍在写作页」时提示；其它现场只留一条诊断日志。
+      const notice = saveLogic.verifyWarnForView({
+        warn,
+        sameBook: sameBookPath(bookPath, state.bookPath),
+        view: state.view
+      });
+      if (!notice) {
+        if (warn) console.warn('保存后的全书校验结果不属于当前现场（已换书 / 不在写作页），提示已忽略');
+        return;
+      }
+      toast(notice, 'warn');
     } catch (err) {
       console.warn('保存后的全书校验失败（已忽略，不影响保存结果）', err);
     }
@@ -405,12 +417,17 @@
       // A7（审计 E4）：部分成功——正文已落盘、只有书目更新失败。不能按「保存失败」提示：
       // 正文不会丢，dirty 保持（再按一次保存会重写正文并重试书目），字数缓存先用主进程回的值更新。
       if (err.code === 'META_SAVE_FAILED' && err.bodySaved === true) {
-        if (Number.isFinite(Number(err.chars))) {
-          const at = state.chapters.findIndex((item) => item && item.id === chapterId);
-          if (at >= 0) {
-            state.chapters[at].chars = Number(err.chars);
-            if (!syncChapterCharsAfterSave(at)) renderChapterList();
-          }
+        // A2-SAVE-02（低）：字数缓存只写回「发起时那本书」。成功路径早就先算 sameBook 再写
+        //（326-334 行），这条补丁分支以前只按 id findIndex 就写 —— 保存在途换书时，B 书里同 id
+        // 的章会被 A 书的字数覆盖并连带重画 B 书目录。跨书一律跳过（回执随后照旧只报错）。
+        const at = saveLogic.charsCacheIndexAfterPartialSave({
+          chapters: state.chapters,
+          chapterId,
+          sameBook: sameBookPath(bookPath, state.bookPath)
+        });
+        if (Number.isFinite(Number(err.chars)) && at >= 0) {
+          state.chapters[at].chars = Number(err.chars);
+          if (!syncChapterCharsAfterSave(at)) renderChapterList();
         }
         if (!sameChapter) return { ok: false, code: err.code, message: err.message, bodySaved: true };
         // WP14 E-N6（审计低批）：正文已经落盘，mtime 跟着变了；把主进程带回的落盘 mtime 同步到

@@ -217,3 +217,31 @@ test('A2-STORAGE-03：部分成功后定点补写章节 chars（短暂占用能�
   assert.ok(persistAt > changedAt, 'META_CHANGED 走救稿出口（外部那一版不许被同 stamp 二次写覆盖），不做补写');
   assert.ok(failedAt > persistAt, '补写要在抛 META_SAVE_FAILED 之前（尽力而为，不掩盖原始错误）');
 });
+
+// A2-SAVE-02 / A2-SAVE-03（低）：部分成功分支写字数缓存前必须核书身份；后台全书校验回执落地前必须
+// 核「还是当前书 + 还在写作页」。两条判定都收进 save-logic 的纯函数（本文件上方已有行为用例），
+// 这里钉住 save-chain-ui 真的走它们 —— 只要回退成裸 findIndex / 裸 toast 就红。
+test('A2-SAVE-02/03 接线：部分成功与全书校验提示都过身份复核', () => {
+  const partialAt = SAVE_CHAIN_SOURCE.indexOf("err.code === 'META_SAVE_FAILED' && err.bodySaved === true");
+  assert.ok(partialAt > 0, 'save-chain-ui.js 里找不到部分成功分支');
+  const partialBody = SAVE_CHAIN_SOURCE.slice(partialAt, partialAt + 1200);
+  assert.ok(
+    partialBody.includes('saveLogic.charsCacheIndexAfterPartialSave({'),
+    '部分成功的字数缓存要过 save-logic 的身份判定'
+  );
+  assert.match(partialBody, /sameBook: sameBookPath\(bookPath, state\.bookPath\)/, '判定要用发起时那本书比');
+  assert.equal(
+    /state\.chapters\.findIndex\(\(item\) => item && item\.id === chapterId\)/.test(partialBody),
+    false,
+    '不许再裸 findIndex 就写（跨书覆盖的根因）'
+  );
+
+  const verifyAt = SAVE_CHAIN_SOURCE.indexOf('saveLogic.createVerifySingleFlight(');
+  assert.ok(verifyAt > 0, '找不到后台全书校验的单飞');
+  const verifyBody = SAVE_CHAIN_SOURCE.slice(verifyAt, verifyAt + 1200);
+  assert.ok(verifyBody.includes('saveLogic.verifyWarnForView({'), '提示可见性要过 save-logic 判定');
+  assert.match(verifyBody, /sameBook: sameBookPath\(bookPath, state\.bookPath\)/, '要核还是不是发起时那本书');
+  assert.match(verifyBody, /view: state\.view/, '要核还在不在写作页');
+  assert.match(verifyBody, /toast\(notice, 'warn'\)/, '只弹判定通过后的提示');
+  assert.equal(/toast\(warn, 'warn'\)/.test(verifyBody), false, '不许再无条件弹 warn');
+});
