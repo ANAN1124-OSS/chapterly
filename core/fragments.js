@@ -331,6 +331,11 @@ function createFragmentStore(booksRoot, options = {}) {
     if (stat.size > MAX_READ_BYTES) {
       throw new FragmentError('TOO_LARGE', '碎片文件太大（超过 4MB），请先在记事本里拆分');
     }
+    // V221-FRAG-01（2026-11-26 复核）：4MB 只是资源上限；再按「UTF-8 每字符最多 4 字节」反推
+    // 20 万字上限 —— 超过 800KB 的文件必然超字数，不必先整份解码出几十万字再拒绝。
+    if (stat.size > MAX_READ_CHARS * 4) {
+      throw new FragmentError('TOO_LARGE', '碎片太长（超过 20 万字），请先拆分再插入');
+    }
     const raw = await fs.readFile(filePath, 'utf8');
     const text = stripBom(raw).replace(/\r\n?/g, '\n');
     if (text.length > MAX_READ_CHARS) {
@@ -403,6 +408,8 @@ function fragmentStoreCacheKeys() {
 module.exports = {
   MAX_TEXT_CHARS,
   MAX_READ_BYTES,
+  // V221-FRAG-01：读侧字数上限（单测拿它算「必然超限」的字节数）
+  MAX_READ_CHARS,
   LIST_LIMIT,
   STORE_CACHE_MAX,
   formatDateStamp,

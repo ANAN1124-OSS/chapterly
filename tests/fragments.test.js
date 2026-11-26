@@ -531,3 +531,33 @@ test('V221-MAIN-01：fragments:create 入口先按碎片 10 万字上限挡，�
   );
   assert.doesNotThrow(() => ipcLimits.assertText('字'.repeat(frag.MAX_TEXT_CHARS), { max: frag.MAX_TEXT_CHARS }));
 });
+
+// V221-FRAG-01（2026-11-26 复核）：超过 4×MAX_READ_CHARS 字节的文件必然超 20 万字上限，
+// 在整份读进内存 / 解码之前就拒绝 —— 4MB 只是资源上限，不该先分配大字符串再报错。
+test('V221-FRAG-01：超大碎片在读盘/解码前按字节先拒绝', async () => {
+  const root = await mkTmp();
+  const booksRoot = path.join(root, '书架');
+  const dir = path.join(booksRoot, '_碎片');
+  await fs.mkdir(dir, { recursive: true });
+  const name = '2026-11-26-1.txt';
+  await fs.writeFile(path.join(dir, name), 'a'.repeat(frag.MAX_READ_CHARS * 4 + 1000), 'utf8');
+  const store = frag.createFragmentStore(booksRoot);
+  const fsMod = require('node:fs/promises');
+  const realReadFile = fsMod.readFile;
+  let reads = 0;
+  fsMod.readFile = async (...args) => {
+    reads += 1;
+    return realReadFile(...args);
+  };
+  let error = null;
+  try {
+    await store.read(name);
+  } catch (err) {
+    error = err;
+  } finally {
+    fsMod.readFile = realReadFile;
+  }
+  assert.equal(error && error.code, 'TOO_LARGE');
+  assert.match(String(error && error.message), /太长|太大/);
+  assert.equal(reads, 0, '超限文件不许先整份读进内存');
+});
