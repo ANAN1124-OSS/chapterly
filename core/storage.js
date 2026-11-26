@@ -238,6 +238,23 @@ async function preflightRestoreSources(entries, options) {
 }
 
 // 备份目录 → 界面上可以显示的相对位置（形如 `_trash/整理备份-2026-11-01-223000`）
+// V221-STORAGE-01（2026-11-26 复核）：在书文件夹里建 _trash 备份目录前先确认书还在 ——
+// ensureDir 的递归 mkdir 会在书文件夹被外部删掉后把它整个重建回来（影子目录 / 假的「修复成功」）。
+// stat 与 mkdir 之间仍有毫秒级窗口（代码事实如此），但「整本书没了还能建出备份目录」不再成立。
+async function ensureBookTrashDir(bookPath, dir) {
+  let stat = null;
+  try {
+    stat = await fs.stat(bookPath);
+  } catch {
+    stat = null;
+  }
+  if (!stat || !stat.isDirectory()) {
+    throw new StorageError('BOOK_MISSING', '书文件夹已经不在了（可能已被删除或移走），已阻止这次操作');
+  }
+  await ensureDir(dir);
+  return dir;
+}
+
 function trashDirLabel(dir) {
   return dir ? `${TRASH_DIR}/${path.basename(dir)}` : '';
 }
@@ -1622,7 +1639,19 @@ async function createChapterWithText(bookPath, { insertIndex = 0, name = '', tex
     createdAt: nowIso()
   };
   if (body) chapter.chars = chaptersLib.countChars(body);
-  await atomicWriteFile(path.join(bookPath, file), chaptersLib.toDiskNewlines(body));
+  // V221-STORAGE-01（2026-11-26 复核）：atomicWriteFile 默认 ensureDir 会在书文件夹被外部删掉后
+  // 把它整个重建回来（影子目录）。写新章前先确认书还在，并关掉 ensureDir；stat 与 rename 之间仍有
+  // 毫秒级窗口，但「整本书没了还能建出章节文件」不再成立。
+  let bookStat = null;
+  try {
+    bookStat = await fs.stat(bookPath);
+  } catch {
+    bookStat = null;
+  }
+  if (!bookStat || !bookStat.isDirectory()) {
+    throw new StorageError('BOOK_MISSING', '书文件夹已经不在了（可能已被删除或移走），没有新建章节');
+  }
+  await atomicWriteFile(path.join(bookPath, file), chaptersLib.toDiskNewlines(body), 'utf8', { ensureDir: false });
   try {
     // 指定了卷：插到那一卷的末尾（不按调用方传的下标，避免新章跑到别的卷中间）
     const at = wantedVolume ? chaptersLib.insertIndexForVolume(meta, wantedVolume) : insertIndex;
@@ -1643,6 +1672,11 @@ async function createChapterWithText(bookPath, { insertIndex = 0, name = '', tex
     };
   } catch (err) {
     try { await fs.unlink(path.join(bookPath, file)); } catch { /* 忽略 */ }
+    // V221-STORAGE-01：stat 之后、rename 之前书文件夹被删的极小窗口里，atomicWriteFile 会报 ENOENT。
+    // 统一翻成 BOOK_MISSING（IPC 上可解释的失败），而不是把裸 ENOENT 抛给界面。
+    if (err && err.code === 'ENOENT' && !(err instanceof StorageError)) {
+      throw new StorageError('BOOK_MISSING', '书文件夹已经不在了（可能已被删除或移走），没有新建章节');
+    }
     throw err;
   }
 }
@@ -2303,7 +2337,7 @@ async function replaceInBook(bookPath, options = {}) {
           }
           if (!backupCreated) {
             backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), REPLACE_BACKUP_PREFIX);
-            await ensureDir(backupDir);
+            await ensureBookTrashDir(bookPath, backupDir);
             backupCreated = true;
           }
           // 审计修复 #3（E3）：备份也走原子复制 + 复制后尺寸校验（半截备份不得留在 _trash）
@@ -2442,7 +2476,7 @@ async function formatBook(bookPath, options = {}, onProgress) {
           if (!res.changed) continue;
           if (!backupCreated) {
             backupDir = await uniqueTrashDir(path.join(bookPath, TRASH_DIR), FORMAT_BACKUP_PREFIX);
-            await ensureDir(backupDir);
+            await ensureBookTrashDir(bookPath, backupDir);
             backupCreated = true;
           }
           // 先备份原文再写盘：整理也是「改正文」的显式动作，必须留退路

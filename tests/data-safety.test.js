@@ -538,3 +538,47 @@ test('KNOWN-FINGERPRINT：chapter:load 记指纹不再二次 open 同一个文�
   assert.ok(loaded && loaded.text.includes('正文内容'), '正文照常读出');
   assert.equal(opens, 1, '正文与指纹共用同一次 open（修复前是 2 次）');
 });
+
+// V221-STORAGE-01（2026-11-26 复核）：readBookMeta 之后、建章写盘之前书文件夹被外部删掉时，
+// 旧实现 atomicWriteFile 默认 ensureDir 会把整个书文件夹重建回来（影子目录）。现在写前核书、
+// 关掉 ensureDir，并把极小窗口里的 ENOENT 翻成 BOOK_MISSING。
+test('V221-STORAGE-01：书文件夹被外部删掉后建章不再重建影子目录', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '整本没了');
+  // 模拟「readBookMeta 已读到、文件夹随后才被删」的窗口：书目刚读完就把书文件夹整个删掉
+  const fsMod = require('node:fs/promises');
+  const realOpen = fsMod.open;
+  const metaPath = path.join(bookPath, '书目.json');
+  let removed = false;
+  fsMod.open = async (target, ...rest) => {
+    const handle = await realOpen(target, ...rest);
+    if (!removed && path.resolve(String(target)) === path.resolve(metaPath)) {
+      const realHandleRead = handle.readFile.bind(handle);
+      handle.readFile = async (...args) => {
+        const value = await realHandleRead(...args);
+        if (!removed) {
+          removed = true;
+          await fs.rm(bookPath, { recursive: true, force: true });
+        }
+        return value;
+      };
+    }
+    return handle;
+  };
+  let error = null;
+  try {
+    await storage.createChapter(bookPath, 0, '新章');
+  } catch (err) {
+    error = err;
+  } finally {
+    fsMod.open = realOpen;
+  }
+  assert.ok(error, '书没了就不许报成功');
+  assert.equal(error.code, 'BOOK_MISSING');
+  assert.equal(await storage.exists(bookPath), false, '不许重建影子书文件夹');
+  // 静态闸：两处备份目录的 ensureDir 都必须先确认书还在
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'core', 'storage.js'), 'utf8');
+  assert.match(src, /async function ensureBookTrashDir\(/, '要有「书还在才建 _trash」的唯一入口');
+  assert.equal(src.split('await ensureBookTrashDir(bookPath, backupDir);').length - 1, 2, '整本替换 / 整理两处都要走它');
+  assert.equal(/await ensureDir\(backupDir\);/.test(src), false, '备份目录不许再直接 ensureDir');
+});
