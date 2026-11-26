@@ -153,9 +153,19 @@
   // 改 readOnly 会吞字。拦的是动作（先保存 / 问清是否丢弃），不是文本框；真正的只读只由
   // save-chain-ui 的 applyEditorEditable 在「内容即将被换掉」时打开（见那处注释）。
   async function guardUnsavedForTransition(options) {
-    if (saveForTransition) return saveForTransition(options);
-    // 旧宿主兜底：silentFirst 保持 createChapterAt 原来的「脏章先静默保存、不弹窗」体验；
-    // 其余入口照旧先问。两种情况都用「保存回执后复核 dirty」收口。
+    const result = saveForTransition ? await saveForTransition(options) : await legacyGuardUnsaved(options);
+    // KNOWN-CHAPTER（2026-11-26 复核）：保存 IPC 正在跑时 saveCurrent 回 BUSY —— 这是「稍后再试」的
+    // 状态提示，不是按钮坏了。各入口拿到 ok:false 会静默 return，作者点建章 / 删章像没反应；
+    // 统一在这里补一句弱提示（与回书架的五-M9 同一口径）。
+    if (result && result.ok === false && result.saved && result.saved.code === 'BUSY') {
+      toast('正在保存中，请稍候再试', 'warn');
+    }
+    return result;
+  }
+
+  // 旧宿主 / 单测没有 saveForTransition 时的兜底：silentFirst 保持原来的「脏章先静默保存」体验，
+  // 其余入口照旧先问；两种情况都用「保存回执后复核 dirty」收口。
+  async function legacyGuardUnsaved(options) {
     if (options && options.silentFirst === true) {
       const saved = await saveCurrent();
       if (!saved || saved.ok === false) return { ok: false, saved };

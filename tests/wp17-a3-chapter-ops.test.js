@@ -1432,3 +1432,22 @@ test('旧M2：删除后载章失败 → 保持脏 + 提示，不进「正文在�
   assert.ok(batch.counts.toast.some(([message]) => /载入失败/.test(message)));
 });
 
+
+// KNOWN-CHAPTER（2026-11-26 复核）：保存 IPC 正在跑时 saveCurrent 回 BUSY；建章 / 删章入口
+// 拿到 ok:false 会静默 return，作者点了像按钮没反应。统一补一句「正在保存中，请稍候再试」。
+test('KNOWN-CHAPTER：保存撞 BUSY 时过渡入口给弱提示，不再静默', async () => {
+  const rt = makeHost();
+  rt.state.dirty = true;
+  rt.host.saveForTransition = async () => ({ ok: false, saved: { ok: false, code: 'BUSY', message: '正在保存中' } });
+  const res = await moduleApi.create(rt.host).createChapterAt(0);
+  assert.equal(res.ok, false);
+  assert.deepEqual(rt.counts.createChapter, [], '保存途中不发起建章');
+  assert.deepEqual(rt.counts.toast.at(-1), ['正在保存中，请稍候再试', 'warn']);
+
+  const del = makeHost();
+  del.state.index = 0; // 删的是当前章才会触发未保存拦截
+  del.state.dirty = true;
+  del.host.saveForTransition = async () => ({ ok: false, saved: { ok: false, code: 'BUSY', message: '正在保存中' } });
+  assert.equal(await moduleApi.create(del.host).deleteChapterAt(0), false);
+  assert.deepEqual(del.counts.toast.at(-1), ['正在保存中，请稍候再试', 'warn']);
+});
