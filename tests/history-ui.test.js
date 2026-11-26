@@ -314,8 +314,50 @@ test('openHistoryForPath：先收顶栏菜单、建 state.history、拉清单并
   // state.history 字段齐全（P22-5 增加 collapsed：每日快照组的折叠状态，只活在面板里；
   // B6/WP-28 增加 cleanup：三类备份的占用摘要，主进程算好给界面做软提醒）
   assert.deepEqual(Object.keys(ctx.state.history).sort(), [
-    'cleanup', 'collapsed', 'error', 'fileCount', 'groups', 'loading', 'path', 'preview', 'title', 'token', 'totalBytes'
+    // A2-HISTORY-01：+bookMetaUnreadable / bookMetaError（书目读不出来时「不知道」是第三种状态）
+    'bookMetaError', 'bookMetaUnreadable', 'cleanup', 'collapsed', 'error', 'fileCount', 'groups', 'loading',
+    'path', 'preview', 'title', 'token', 'totalBytes'
   ]);
+});
+
+// A2-HISTORY-01（低）：书目读不出来时读 meta 失败被吞成 chapterFiles=[]，所有备份 inBook=false →
+// 历史面板把每条都标「已不在书里」、还原入口全消失。作者在最需要备份时被告知章节都不在书里，
+// 可能改走「从目录重建」（换 id、丢状态/备注/卷）。现在回包区分「不知道」并换文案。
+test('A2-HISTORY-01：书目读不出来时文件行写「无法判断」，面板顶部提示先修书目、保留预览', async () => {
+  const dom = makeDom(BASE_IDS);
+  const group = groupFixture({
+    kind: 'file',
+    restorableCount: 0,
+    fileCount: 1,
+    totalBytes: 10,
+    source: 'replace',
+    files: [{ name: '旧章.txt', inBook: false, restorable: false, previewable: true, reason: '' }]
+  });
+  const ctx = build({
+    dom,
+    listHistory: () => ({
+      title: '',
+      groups: [group],
+      fileCount: 1,
+      totalBytes: 10,
+      bookMetaUnreadable: true,
+      bookMetaError: 'PARSE_ERROR'
+    })
+  });
+  await ctx.ui.openHistoryForPath('/书库/书甲', '书甲');
+  assert.equal(ctx.state.history.bookMetaUnreadable, true, '状态里要记下「书目读不出来」');
+  const list = dom.map.get('history-list');
+  const notice = list.children[0];
+  assert.equal(notice.className, 'history-empty warn');
+  assert.match(notice.textContent, /书目/, '提示要说明是书目读不出来');
+  assert.match(notice.textContent, /无法判断|先.*修复/, '要告诉作者先去修复书目，而不是备份都不在书里');
+  const card = list.children[1];
+  const row = card.children.find((c) => c.className === 'history-file');
+  const tag = row.children.find((c) => c.className.startsWith('history-file-tag'));
+  assert.equal(tag.textContent, '无法判断（书目读不出来）', '不许再把「不知道」说成「已不在书里」');
+  // 预览入口照常保留（修书时正是要看备份的时候）
+  const actions = row.children.find((c) => c.className === 'history-file-actions');
+  assert.ok(actions.children.some((button) => button.textContent === '预览'), '预览按钮保留');
 });
 
 test('openHistoryForPath：没有书路径直接返回 false，什么都不动', async () => {

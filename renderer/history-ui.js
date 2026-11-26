@@ -121,6 +121,9 @@
       loading: true,
       error: '',
       preview: null,
+      // A2-HISTORY-01：书目读不出来时「不知道备份里的章还在不在」，与「已不在书里」分开表达
+      bookMetaUnreadable: false,
+      bookMetaError: null,
       // 每日快照组的折叠状态（按组 id）：只活在本面板里，关掉即失效，不写盘、不进 config
       collapsed: {},
       token: 0
@@ -165,6 +168,9 @@
     current.totalBytes = Number(data && data.totalBytes) || 0;
     // B6（v1.8.0 WP-28）：三类备份的占用摘要（主进程算好，界面只用来提示 / 决定清理按钮）
     current.cleanup = data && data.cleanup && typeof data.cleanup === 'object' ? data.cleanup : null;
+    // A2-HISTORY-01：书目读不出来时，「备份里的章还在不在」是不知道 —— 不能当成「已不在书里」
+    current.bookMetaUnreadable = Boolean(data && data.bookMetaUnreadable === true);
+    current.bookMetaError = data && typeof data.bookMetaError === 'string' ? data.bookMetaError : null;
     renderHistory();
     return data;
   }
@@ -200,6 +206,10 @@
     if (group.source === 'bookmeta') return { text: '只供查看', className: '' };
     if (file.inBook && file.restorable) return { text: '当前章节', className: 'current' };
     if (group.source === 'other') return { text: '未识别备份', className: '' };
+    // A2-HISTORY-01：书目读不出来时「不在书里」是不知道，不是已删除 —— 别把作者吓去重建书目。
+    if (!file.inBook && state.history && state.history.bookMetaUnreadable) {
+      return { text: '无法判断（书目读不出来）', className: '' };
+    }
     if (!file.inBook) return { text: '已不在书里', className: '' };
     return { text: '只供查看', className: '' };
   }
@@ -594,6 +604,15 @@
           `${current.cleanup.groupCount} 组，可清理`;
       }
       summary.textContent = summaryText;
+      // A2-HISTORY-01：书目读不出来时先说清「无法判断」+ 先去修书目，别让作者以为备份都没用了。
+      if (current.bookMetaUnreadable) {
+        const notice = document.createElement('div');
+        notice.className = 'history-empty warn';
+        notice.textContent =
+          '书目.json 读不出来，无法判断备份里的章节还在不在书里（这不是「已删除」）。' +
+          '预览照常可用；要还原请先回书架用书卡的「修复」把书目修好。';
+        list.appendChild(notice);
+      }
       const cleanable = current.groups.filter((group) => group && group.cleanable === true);
       if (cleanable.length) list.appendChild(buildCleanupBar(cleanable));
       for (const group of current.groups) list.appendChild(buildHistoryGroup(group));

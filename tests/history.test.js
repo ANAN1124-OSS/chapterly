@@ -393,6 +393,11 @@ test('历史：storage.listBookHistory 读取当前章节，书目损坏时也�
   await fs.writeFile(path.join(bookPath, '书目.json'), '{坏掉的', 'utf8');
   const broken = await storage.listBookHistory(bookPath);
   assert.equal(broken.title, '');
+  // A2-HISTORY-01（低）：书目读不出来 ≠ 备份里的章已经不在书里 —— 回包要能区分「不知道」。
+  assert.equal(broken.bookMetaUnreadable, true, '书目读不出来要如实标注（渲染层据此换文案）');
+  assert.equal(broken.bookMetaError, 'PARSE_ERROR', '带上错误码，便于按码分支');
+  assert.equal(listed.bookMetaUnreadable, false, '正常书目不能标「读不出来」');
+  assert.equal(listed.bookMetaError, null);
   const brokenReplace = broken.groups.find((group) => group.source === 'replace');
   assert.equal(brokenReplace.files[0].inBook, false);
   assert.equal(brokenReplace.files[0].restorable, false);

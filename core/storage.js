@@ -2960,11 +2960,18 @@ async function restoreHistoryGroup(bookPath, groupId) {
 async function listBookHistory(bookPath, options = {}) {
   let chapterFiles = [];
   let title = '';
+  let bookMetaError = null;
   try {
     const meta = await readBookMeta(bookPath);
     chapterFiles = meta.chapters.map((chapter) => chapter.file);
     title = meta.title;
-  } catch { /* 书目坏了就按「没有当前章节」扫描，预览照常 */ }
+  } catch (err) {
+    // A2-HISTORY-01（低）：书目读不出来 ≠ 备份里的章已经不在书里。旧实现把异常吞成
+    // chapterFiles=[]，历史面板就把每条备份标成「已不在书里」、还原入口全消失 —— 作者在最需要
+    // 备份时被告知章节都不在书里，可能改走「从目录重建」（换 id、丢状态/备注/卷）。这里记下错误码，
+    // 回包单独标注「不知道」让渲染层换文案（预览照常可用）。
+    bookMetaError = (err && typeof err.code === 'string' && err.code) || 'META_UNREADABLE';
+  }
   // PERF-HIST-01：把渲染层要的「只拉某组 / 只要摘要」原样透传给 core/history（不在这里二次扫描）。
   const settings = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
   const data = await historyLib.listHistory(bookPath, {
@@ -2975,7 +2982,13 @@ async function listBookHistory(bookPath, options = {}) {
   // B6（v1.8.0 WP-28 / D-5）：三类备份的占用摘要（组数 / 字节 / 是否到软提醒阈值）。
   // 只算「替换 / 整理 / 还原前」；快照 / 删章散文件 / 书目备份不在这里清理。
   // 摘要只是提示数据，listBookHistory 绝不删除任何东西。
-  return { ...data, title, cleanup: historyLib.backupCleanupSummary(data.groups) };
+  return {
+    ...data,
+    title,
+    cleanup: historyLib.backupCleanupSummary(data.groups),
+    bookMetaUnreadable: Boolean(bookMetaError),
+    bookMetaError
+  };
 }
 
 // B6（v1.8.0 WP-28）：统计一个备份目录的章节副本（fileCount / 字节），读不到返回 null。
