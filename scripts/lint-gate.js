@@ -26,9 +26,10 @@ const SCAN_DIRS = ['core', 'renderer', 'ipc', 'scripts', 'tests'];
 const SCAN_FILES = ['main.js', 'preload.js'];
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'shots', 'build', 'tests-fixture', '.github', 'trial']);
 const MAX_PRINTED_WARN = 30;
-// TOOL-A01（第五轮审计）：扫描面下限。仓库现在约 480 个 js；低于 200 只可能是目录被改名 /
-// 被删 / 读不了 —— 这时必须报红，绝不许输出「0 个 js / 0 ERROR（通过）」的假绿。
-const MIN_SCAN_FILES = 200;
+// TOOL-A01（第五轮审计）：扫描面下限。仓库现在 548 个 js；A2-GATE-02（2026-11-26 审计）把下限
+// 从 200 提到 500（与 CI 的 node --check 下限同口径）：低于 500 只可能是目录被改名 / 被删 /
+// 读不了 —— 这时必须报红，绝不许输出「0 个 js / 0 ERROR（通过）」的假绿。
+const MIN_SCAN_FILES = 500;
 
 function listFiles(dir, out) {
   let entries;

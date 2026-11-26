@@ -14,6 +14,8 @@ const path = require('node:path');
 const logic = require('./e2e-runner-logic');
 // CI-F4/F5：杀进程树与 electron-run 共用 scripts/kill-tree.js（taskkill 失败后的 child.kill 兜底可达）。
 const { killProcessTree: killTreeShared } = require('./kill-tree');
+// A2-GATE-02：把本轮实测 E2E 条数落进临时计数文件，`version-sync --check` 默认与文档比对。
+const gateCounts = require('./gate-counts');
 
 const root = path.join(__dirname, '..');
 const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -140,13 +142,11 @@ child.on('close', (code) => {
     );
   }
   // REPO-03：把实测 E2E 项数与文档锚点对一次（以前只剩「README 与验收清单互相对得上」，
-  // 没有任何东西证明这个数字是实测值）。只告警、不改文件：同步仍由维护者跑 version-sync --write。
-  // 计数口径（T-25 ③）：README / 验收清单里的项数是**机器实测锚点**，只由维护者在完整跑完后用
-  // `node scripts/version-sync.js --write --unit <单测实测> --e2e <本处实测>` 同步；这里刻意不自动改
-  // 文档、也不在 E2E 里判红——E2E 的职责是跑功能，文档计数失真由每批门禁的 `version-sync --check
-  // --unit … --e2e …`（显式传期望值）阻塞。告警保留是为了让「改了断言数量但忘了同步」当场可见。
+  // 没有任何东西证明这个数字是实测值）。A2-GATE-02 起：实测值先落临时计数文件（gate-counts），
+  // `version-sync --check` 默认读它逐项核对；这里仍不改文档 —— 同步只能由维护者跑 --write。
   const measured = Number(result.checks) || details.length;
   if (measured > 0) {
+    gateCounts.record('e2e', measured);
     try {
       const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
       const anchor = /真实启动 Electron 走 (\d+) 项主流程/.exec(readme);

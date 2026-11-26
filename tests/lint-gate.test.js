@@ -109,7 +109,9 @@ test('已纳入门禁：package.json 登记 npm run lint，脚本对当前仓库
   assert.equal(res.status, 0, `lint-gate 退出码应为 0：stdout=${res.stdout}\nstderr=${res.stderr}`);
   const report = JSON.parse(res.stdout);
   assert.equal(report.errorCount, 0, `当前仓库不许有 lint ERROR：${JSON.stringify(report.findings)}`);
-  assert.ok(report.fileCount > 250, `扫描面太小（只扫了 ${report.fileCount} 个文件），门禁等于没开`);
+  // A2-GATE-02（2026-11-26 审计）：扫描面下限从「>250」提到「>=500」（当前 548），
+  // 删目录 / 改清单导致缩水 10% 以内也要当场红，不能只挡住「几乎全没了」。
+  assert.ok(report.fileCount >= 500, `扫描面太小（只扫了 ${report.fileCount} 个文件），门禁等于没开`);
   assert.ok(Array.isArray(report.findings));
   assert.equal(report.findings.length, report.errorCount + report.warnCount);
   assert.ok(report.findings.every((f) => f.rule === 'floating-promise'), '门禁只剩 floating-promise 一条规则');

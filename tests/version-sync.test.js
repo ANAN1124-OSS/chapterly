@@ -261,6 +261,47 @@ test('版本单一事实来源：仓库现状无漂移（锚点 = package.json�
   );
 });
 
+// A2-GATE-02（2026-11-26 审计）：计数锚必须有机器真值来源 —— npm test / npm run e2e 跑完把
+// 实测条数写进临时计数文件，默认 --check 直接与文档比对；不再依赖人记得传 --unit / --e2e。
+test('A2-GATE-02：计数锚默认读门禁实测记录（unit/e2e），不一致即红；显式值优先', () => {
+  const sample = { readme: readmeSample(), checklist: checklistSample(), indexHtml: '', version: '1.7.2' };
+  const countProblems = (options) =>
+    versionSync.checkDocs({ ...sample, ...options }).filter((problem) => /计数/.test(problem));
+  assert.deepEqual(countProblems({ recordedCounts: { unitCount: 2235, e2eCount: 1828 } }), []);
+  assert.match(
+    countProblems({ recordedCounts: { unitCount: 2300, e2eCount: 1828 } }).join('\n'),
+    /单测计数.*2235.*2300/,
+    '实测单测数与文档不一致必须报红'
+  );
+  assert.match(
+    countProblems({ recordedCounts: { unitCount: 2235, e2eCount: 1888 } }).join('\n'),
+    /E2E 计数.*1828.*1888/,
+    '实测 E2E 数与文档不一致必须报红'
+  );
+  // 显式 --unit / --e2e 优先于记录文件（门禁命令仍可显式钉本次期望）
+  assert.deepEqual(
+    countProblems({ unitCount: 2235, e2eCount: 1828, recordedCounts: { unitCount: 9999, e2eCount: 9999 } }),
+    []
+  );
+  // 没有记录文件（CI 未在本地跑过）时跳过实测核对，不能因为「没跑过」判红
+  assert.deepEqual(countProblems({ recordedCounts: null }), []);
+});
+
+test('A2-GATE-02：门禁命令把实测计数落盘（npm test / e2e / lint-gate 扫描面 >= 500）', () => {
+  assert.match(PKG.scripts.test, /scripts\/run-tests\.js/, 'npm test 要经 run-tests.js 记录实测单测数');
+  assert.match(PKG.scripts.test, /tests\/\*\*/, 'npm test 仍只扫 tests/ 目录');
+  const runTests = readText('scripts/run-tests.js');
+  assert.match(runTests, /--test-reporter=spec/);
+  assert.match(runTests, /gateCounts\.record\('unit'/, '单测跑完要落 unit 计数');
+  const runE2e = readText('scripts/run-e2e.js');
+  assert.match(runE2e, /gateCounts\.record\('e2e'/, 'E2E 跑完要落 e2e 计数');
+  const lintGate = readText('scripts/lint-gate.js');
+  assert.match(lintGate, /MIN_SCAN_FILES = 500/, '扫描面下限从 200 提到 500');
+  const { parseUnitCount } = require('../scripts/run-tests.js');
+  assert.equal(parseUnitCount('ok 1\r\nℹ tests 3689\r\nℹ pass 3689\r\n'), 3689);
+  assert.equal(parseUnitCount('没有摘要'), null);
+});
+
 test('版本单一事实来源：界面只走运行时注入，package.json 是唯一权威（静态闸门）', () => {
   // index.html：注释之外不许再出现 x.y.z 版本串（两个元素都是空占位，由启动时注入）。
   const htmlNoComments = INDEX_HTML.replace(/<!--[\s\S]*?-->/g, '');

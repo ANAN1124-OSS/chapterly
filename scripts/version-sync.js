@@ -25,6 +25,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 // 零填充只有 core/common.js 一份实现（仓库静态闸门禁止内联 padStart(2,'0')）。
 const { pad2 } = require('../core/common');
+// A2-GATE-02：单测 / E2E 实测条数由门禁命令写进临时计数文件（scripts/gate-counts.js）。
+const gateCounts = require('./gate-counts');
 
 const ROOT = path.join(__dirname, '..');
 const PACKAGE_JSON = path.join(ROOT, 'package.json');
@@ -454,12 +456,12 @@ function checkDocs(options) {
     if (found !== version) problems.push(`验收清单.md 安装包名是 ${found}，package.json 是 ${version}`);
   }
 
-  // 计数口径（T-25 ③，写明而不是硬阻塞）：README / 验收清单里的「单测 N 项 / E2E N 项」是**机器实测
-  // 锚点**，只能由维护者在跑完 `npm test` / `pnpm run e2e` 后 `node scripts/version-sync.js --write
-  // --unit <实测> --e2e <实测>` 同步。--check 不带 --unit/--e2e 时只核对两处文档**互相对得上**
-  // （防止只改一处漂移）；带期望值时逐项核对实测值。本地日常改测试 / 加断言后计数必然变化，
-  // 若让默认 --check 直接红，每次正常开发都会被假红卡住——所以「实测 vs 文档」的强核对放在
-  // 显式传期望值的门禁调用里（每批门禁命令都带 --unit/--e2e），默认路径只做文档一致性告警/红灯。
+  // 计数口径（T-25 ③，写明而不是硬阻塞）：README / 验收清单里的「单测 N 项 / E2E N 项」
+  // 是**机器实测锚点**，由维护者在跑完 `npm test` / `pnpm run e2e` 后
+  // `node scripts/version-sync.js --write --unit <实测> --e2e <实测>` 同步。
+  // A2-GATE-02 起默认 --check 也会读门禁命令落下的实测记录（scripts/gate-counts.js）并逐项核对；
+  // 没有记录文件时退回「只核对两处文档互相对得上」。显式传 --unit / --e2e 仍以显式值为准。
+  // 本地日常改测试 / 加断言后计数必然变化 —— 那正是要跑 --write 同步的时刻，不再静默放过。
   const readmeCounts = {
     unitCount: firstCount(readme, /node:test，(\d+) 项/),
     e2eCount: firstCount(readme, /真实启动 Electron 走 (\d+) 项主流程/)
@@ -468,6 +470,11 @@ function checkDocs(options) {
     unitCount: firstCount(checklist, /`pnpm test`（(\d+) 项）/),
     e2eCount: firstCount(checklist, /`pnpm run e2e`（(\d+) 项）/)
   };
+  // A2-GATE-02（2026-11-26 审计）：机器真值来源。npm test / npm run e2e 跑完会把实测条数写进
+  // 临时计数文件（scripts/gate-counts.js）；默认 --check 与它比对 —— 不再只靠人记得传 --unit /
+  // --e2e。显式传值时以显式值为准；没有记录文件（例如 CI 还没在本地跑过）时跳过，不能因为
+  // 「没跑过」判红。
+  const recordedCounts = options.recordedCounts === undefined ? gateCounts.readAll() : options.recordedCounts;
   for (const key of Object.keys(COUNT_LABELS)) {
     const label = COUNT_LABELS[key];
     const inReadme = readmeCounts[key];
@@ -484,6 +491,17 @@ function checkDocs(options) {
       }
       if (inChecklist != null && inChecklist !== expected) {
         problems.push(`验收清单.md 的${label}是 ${inChecklist}，本次期望 ${expected}`);
+      }
+    } else if (recordedCounts && recordedCounts[key] != null) {
+      const recorded = Math.round(Number(recordedCounts[key]));
+      if (Number.isFinite(recorded)) {
+        const hint = `（实测值来自 npm test / npm run e2e 的计数文件，用 --write 同步）`;
+        if (inReadme != null && inReadme !== recorded) {
+          problems.push(`README.md 的${label}是 ${inReadme}，本次实测 ${recorded}${hint}`);
+        }
+        if (inChecklist != null && inChecklist !== recorded) {
+          problems.push(`验收清单.md 的${label}是 ${inChecklist}，本次实测 ${recorded}${hint}`);
+        }
       }
     }
   }
