@@ -167,6 +167,59 @@ test('R4（X-N4）：坏 .bak（[null] / 缺 file / chapters 非数组 / 超 200
   }
 });
 
+// A2-REPAIR-01 / V221-REPAIR-01（2026-11-26 审计）：形状闸门只要求 file 是非空串 —— 子目录路径 /
+// 非 .txt / 系统保留名（CON.txt）能通过 validateRestorableMeta，写盘后却被读侧的 assertChapterFile
+// 判整本损坏：回执「已从备份恢复：N 章」，书还是点不开，再点同结果（.bak 不动，形成修复循环）。
+// 修法：两个修复出口在写入前统一过章节文件形态闸，整次拒绝（BAK_INVALID / INVALID_META）并指出第 N 条。
+test('A2-REPAIR-01：.bak 里带 CON.txt / 子目录路径 / 非 .txt → BAK_INVALID，一个字节都不写', async () => {
+  const root = await mkTmp();
+  const cases = [
+    { label: '系统保留名', file: 'CON.txt' },
+    { label: '子目录路径', file: '第一卷/001.txt' },
+    { label: '非 txt', file: '001.md' }
+  ];
+  for (const item of cases) {
+    const bookPath = await mkBook(root, `形态-${item.label}`);
+    const metaText = '{ 主文件也坏';
+    await fs.writeFile(path.join(bookPath, storage.BOOK_FILE), metaText, 'utf8');
+    const bakText = JSON.stringify({
+      title: '坏备份',
+      chapters: [{ id: 'ch_001', file: item.file, name: '第一章' }]
+    });
+    await fs.writeFile(path.join(bookPath, storage.BOOK_BAK), bakText, 'utf8');
+    await assert.rejects(
+      () => repair.restoreFromBak(bookPath),
+      (err) => {
+        assert.equal(err.code, 'BAK_INVALID', `${item.label}：错误码按界面分支口径`);
+        assert.match(err.message, /第 1 条/, `${item.label}：要点出是第几条`);
+        assert.match(err.message, /先修正|从目录重建/, `${item.label}：要给下一步`);
+        return true;
+      }
+    );
+    await assertUntouched(bookPath, metaText, bakText);
+  }
+});
+
+test('V221-REPAIR-01：从目录重建遇到读侧会拒绝的章节文件名 → INVALID_META，不产出书目', async () => {
+  const root = await mkTmp();
+  const bookPath = await mkBook(root, '重建-形态');
+  const realList = storage.listTxtFiles;
+  // 保留名在普通 Windows 路径下建不出来，这里直接把 listTxtFiles 的返回值钉成外部工具
+  // / 同步盘可能留下的名字（重建只消费这份清单）。
+  storage.listTxtFiles = async () => ['CON.txt', '001-起风.txt'];
+  try {
+    await assert.rejects(
+      () => repair.rebuildFromFiles(bookPath),
+      (err) => err.code === 'INVALID_META' && /第 \d+ 条/.test(err.message) && /重命名/.test(err.message)
+    );
+  } finally {
+    storage.listTxtFiles = realList;
+  }
+  const names = await fs.readdir(bookPath);
+  assert.equal(names.some((name) => name.startsWith('书目')), false, '拒绝时不许产出任何书目文件');
+  assert.equal(names.some((name) => name.startsWith('.repair-meta')), false, '不许留临时文件');
+});
+
 test('R8（复核缺口 / WP8 补漏）：BAK_INVALID 保留具体原因（形状 / 章数上限 / 解析），错误码不变', async () => {
   const root = await mkTmp();
   const cases = [

@@ -166,6 +166,9 @@ async function rebuildFromFiles(bookPath, io = {}) {
     lastOpenChapterId: parsed.length ? `ch_${chaptersLib.pad3(1)}` : null,
     createdAt: now
   };
+  // A2-REPAIR-01 / V221-REPAIR-01：写盘前过修复出口共用的章节文件形态闸（CON.txt / 子目录路径 /
+  // 非 .txt 一律拒绝 —— 这类名字来自外部工具 / 同步盘，读侧会判整本损坏）。
+  assertRepairChapterFiles(bookPath, meta.chapters, 'rebuild');
   // 先写新书目（临时文件）→ 成功后才归档旧文件（1.6.0 A3 / 审计 E-07）
   const saved = await swapMetaFile(bookPath, storage.prepareBookMeta(meta), io);
   return {
@@ -176,6 +179,32 @@ async function rebuildFromFiles(bookPath, io = {}) {
     skippedConflicts: conflictCopies.length,
     conflictCopies
   };
+}
+
+// 从 书目.json.bak 恢复（.bak 是上一次成功写入前的版本）
+// A2-REPAIR-01 / V221-REPAIR-01（2026-11-26 审计）：修复出口的章节文件形态闸门。
+// 读侧 readBookMeta / bookStats 会用 storage.assertChapterFile 逐条拒绝（子目录路径、非 .txt、
+// 系统保留名如 CON.txt、空名）。而 validateRestorableMeta 只要求 file 是非空字符串、从目录重建
+// 直接拿 readdir 的名字 —— 这类条目能通过修复的前置校验、被写进 书目.json；书卡随即 corrupt、
+// 书依旧点不开，回执却报「已从备份恢复：N 章」/「已重建书目：N 章」，再点同结果，形成修复循环。
+// 所以两个出口在 swapMetaFile 之前统一过同一道形态闸：整次拒绝并指出第 N 条，绝不静默剔章
+// （剔掉会让章节数悄悄变少、正文与书目错位）。
+function assertRepairChapterFiles(bookPath, chapters, mode) {
+  for (let i = 0; i < chapters.length; i += 1) {
+    const file = chapters[i] && chapters[i].file;
+    try {
+      storage.assertChapterFile(bookPath, file);
+    } catch (err) {
+      if (!(err instanceof storage.StorageError)) throw err;
+      const tail = mode === 'bak'
+        ? '备份里带着读侧会拒绝的章节文件名，没有恢复；请先修正后再修复（或从目录重建）'
+        : '目录里有读侧会拒绝的章节文件名，没有重建；请重命名该文件后再修复';
+      throw new storage.StorageError(
+        mode === 'bak' ? 'BAK_INVALID' : 'INVALID_META',
+        `第 ${i + 1} 条章节记录的文件名不能用作章节文件（${err.message}）：${tail}`
+      );
+    }
+  }
 }
 
 // 从 书目.json.bak 恢复（.bak 是上一次成功写入前的版本）
@@ -237,6 +266,9 @@ async function restoreFromBak(bookPath, io = {}) {
     }
     throw err;
   }
+  // A2-REPAIR-01：形状闸门之后再过章节文件形态闸 —— validateRestorableMeta 只要求 file 是非空串，
+  // 子目录路径 / CON.txt / 非 .txt 这类条目写盘后会立刻被读侧判整本损坏（回执却报「恢复成功」）。
+  assertRepairChapterFiles(bookPath, checked.meta.chapters, 'bak');
   // 与重建同一顺序：先写新书目（临时文件）→ 成功后才归档旧文件；.bak 一个字节都不动
   const saved = await swapMetaFile(
     bookPath,
