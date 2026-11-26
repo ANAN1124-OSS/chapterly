@@ -117,6 +117,15 @@ const RUN_PUNCT = new Set([...CJK_RUN_PUNCT, ...ASCII_RUN_PUNCT]);
 const SNIPPET_RADIUS = 18;
 const PARAGRAPH_PREFIX = 24;
 
+// KNOWN-PROOF（中）：单条 issue 的体积上限。省略号 / 破折号 / 全角数字与「连续标点」同口径：
+// match / message / suggestion 只带前 PARAGRAPH_PREFIX 个字，length 仍是整段真实长度（选中整段、
+// 计数不错）。以前把整段 run 原样塞进三处 —— 病态输入（几十万连排的点 / 全角数字）单条 issue
+// 就携带整段原文的多份副本，跨 IPC 进面板时撑爆内存。
+function showRun(run) {
+  const text = String(run == null ? '' : run);
+  return text.length > PARAGRAPH_PREFIX ? text.slice(0, PARAGRAPH_PREFIX) : text;
+}
+
 // 旧调用方 / 渲染层传脏值都兜底成默认值，越界自动夹紧
 function sanitizeOptions(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -518,7 +527,7 @@ function proofreadText(text, rawOptions, rawGlossary) {
           // match / message 与超长段落同口径截到 PARAGRAPH_PREFIX：单条 issue 体积有硬上限，
           // 百万字连排标点也不会整段跨 IPC 进面板。
           const run = source.slice(i, j);
-          const shown = run.length > PARAGRAPH_PREFIX ? run.slice(0, PARAGRAPH_PREFIX) : run;
+          const shown = showRun(run);
           addIssue('punct-run', i, run.length, shown, `连续 ${units} 个标点「${shown}」`);
         }
       }
@@ -598,8 +607,8 @@ function proofreadText(text, rawOptions, rawGlossary) {
         while (j < source.length && source[j] === ch) j += 1;
         if (rules.ellipsis && j - i >= 3) {
           if (collector.wants('ellipsis')) {
-            const run = source.slice(i, j);
-            addIssue('ellipsis', i, j - i, run, `省略号「${run}」建议改成「……」`, {
+            const shown = showRun(source.slice(i, j));
+            addIssue('ellipsis', i, j - i, shown, `省略号「${shown}」建议改成「……」`, {
               suggestion: '……'
             });
           } else {
@@ -622,8 +631,8 @@ function proofreadText(text, rawOptions, rawGlossary) {
           const bad = ch === '-' ? count >= 2 : count !== 2;
           if (bad && (isCjkNeighbor(prev) || isCjkNeighbor(next))) {
             if (collector.wants('dash')) {
-              const run = source.slice(i, j);
-              addIssue('dash', i, count, run, `破折号「${run}」建议用两个「——」`, {
+              const shown = showRun(source.slice(i, j));
+              addIssue('dash', i, count, shown, `破折号「${shown}」建议用两个「——」`, {
                 suggestion: '——'
               });
             } else {
@@ -641,13 +650,14 @@ function proofreadText(text, rawOptions, rawGlossary) {
         if (rules['fullwidth-digit']) {
           if (collector.wants('fullwidth-digit')) {
             const run = source.slice(i, j);
-            const ascii = toHalfWidth(run, { digitsOnly: true });
+            const shown = showRun(run);
+            const ascii = showRun(toHalfWidth(run, { digitsOnly: true }));
             addIssue(
               'fullwidth-digit',
               i,
               run.length,
-              run,
-              `全角数字「${run}」建议改成半角「${ascii}」`,
+              shown,
+              `全角数字「${shown}」建议改成半角「${ascii}」`,
               { suggestion: ascii }
             );
           } else {

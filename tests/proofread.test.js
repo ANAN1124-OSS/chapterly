@@ -195,6 +195,40 @@ test('C42/WP-26：扩展 B 汉字参与重复用词 / 中英间距 / 破折号�
   assert.equal(only(proofread.proofreadText('A--', { rules: { dash: true } }), 'dash').length, 0);
 });
 
+// KNOWN-PROOF（中）：省略号 / 破折号 / 全角数字三条规则以前把整段 run 原样写进 match / message /
+// suggestion —— 病态输入（几十万连排的点 / 全角数字）单条 issue 就携带整段原文的多份副本，跨 IPC
+// 进面板时撑爆内存。现在与「连续标点」同口径截到 PARAGRAPH_PREFIX（24）个字：match / message /
+// suggestion 都只带前 24 个字，length 仍是整段真实长度（选中整段、计数不错）。
+test('KNOWN-PROOF：省略号 / 破折号 / 全角数字的单条 issue 有体积上限（截到 24 字）', () => {
+  const cap = 24;
+  const runSize = 50000;
+
+  const dots = '.'.repeat(runSize);
+  const ellipsis = only(proofread.proofreadText(`中文${dots}`, { rules: { ellipsis: true } }), 'ellipsis')[0];
+  assert.ok(ellipsis, '省略号命中仍要报出来');
+  assert.equal(ellipsis.length, runSize, 'length 是整段真实长度');
+  assert.equal(ellipsis.match.length, cap, `match 截到 ${cap} 字（实际 ${ellipsis.match.length}）`);
+  assert.ok(ellipsis.message.length < cap + 40, `message 不许携带整段：${ellipsis.message.length}`);
+
+  const emDashes = '—'.repeat(runSize);
+  const dash = only(proofread.proofreadText(`中文${emDashes}`, { rules: { dash: true } }), 'dash')[0];
+  assert.ok(dash, '破折号命中仍要报出来');
+  assert.equal(dash.length, runSize);
+  assert.equal(dash.match.length, cap);
+  assert.ok(dash.message.length < cap + 40, `message 不许携带整段：${dash.message.length}`);
+
+  const wide = '１'.repeat(runSize);
+  const digits = only(
+    proofread.proofreadText(`中文${wide}`, { rules: { 'fullwidth-digit': true } }),
+    'fullwidth-digit'
+  )[0];
+  assert.ok(digits, '全角数字命中仍要报出来');
+  assert.equal(digits.length, runSize);
+  assert.equal(digits.match.length, cap);
+  assert.ok(digits.suggestion.length <= cap, `suggestion 不许携带整段：${digits.suggestion.length}`);
+  assert.ok(digits.message.length < cap + 40, `message 不许携带整段：${digits.message.length}`);
+});
+
 // E14（审计修复 #17）：repeat-word 的重叠去重距离与 repeatWindow 都按「字（码点）」算。
 // 旧实现拿 UTF-16 长度当字数，代理对文本上：①「起点只差 1–2 字」的门槛被放大成 6 个码元
 // （同一短语的第 3 个二字词漏去重，一条短语报两条）②300 字窗口实际只装得下 150 字。
