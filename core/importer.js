@@ -215,22 +215,32 @@ async function analyzeSource(sourceDir) {
     const meta = await storage.readBookMeta(sourceDir);
     return { kind: 'book', meta, txtFiles };
   } catch {
+    // A2-IMPORT-01（2026-11-26 审计）：章节目录形态只读顶层 txt（copyAsTexts / 闸门 / 重建都只认
+    // 这份清单），按卷分文件夹的来源（`我的书/第一卷/001-起风.txt`）会被静默丢掉子目录里的章；
+    // 整源只有子目录 txt 时还会报「既没有书目也没有 txt 文件」。这里补一份递归清单：子目录里的
+    // txt 不参与导入，但必须如实进 skipped / 整源跳过时说明原因，绝不静默消失。
+    const deepTxt = await listTxtFilesDeep(sourceDir).catch(() => []);
+    const topLevel = new Set(txtFiles);
+    const nestedTxt = deepTxt.filter((file) => !topLevel.has(file));
     // CIO-A-05（审计低批）：这里以前给每个返回值挂 `reason: err.message`，但全模块无人读取
     // （调用方各分支用固定文案），属只写不读的死数据 —— 删掉，返回形状与实际消费一致。
     // 读不到书目就是「不是现成书」，形态由下面的 txt 清单决定。
-    if (!txtFiles.length) return { kind: 'nothing' };
+    if (!txtFiles.length) {
+      if (nestedTxt.length) return { kind: 'nested-only', nestedTxt };
+      return { kind: 'nothing' };
+    }
     // 只有冲突副本：沿用「整源复制后 rebuild 报 NO_FILES」的既有路径与「只有同步冲突副本」提示
-    if (!importable.length) return { kind: 'chapter-folder', txtFiles };
+    if (!importable.length) return { kind: 'chapter-folder', txtFiles, nestedTxt };
     if (importable.length === 1) {
       // 只有一个可导入 txt：文件名像章节（001-xxx.txt）就当「一本书的章节目录」，
       // 否则当成一本完整的独立小说（例如「书名 - 作者.txt」）
       return looksLikeChapterFile(importable[0])
-        ? { kind: 'chapter-folder', txtFiles }
+        ? { kind: 'chapter-folder', txtFiles, nestedTxt }
         : { kind: 'novels', files: importable, excludedConflicts };
     }
     const chapterLike = importable.filter(looksLikeChapterFile).length;
     if (chapterLike >= Math.ceil(importable.length * 0.6)) {
-      return { kind: 'chapter-folder', txtFiles };
+      return { kind: 'chapter-folder', txtFiles, nestedTxt };
     }
     return { kind: 'novels', files: importable, excludedConflicts };
   }
@@ -556,6 +566,22 @@ async function importBookFolder(booksRoot, sourceDir, analysis, options = {}) {
           );
         }
       }
+      // V221-IMPORT-01（2026-11-26 审计）：来源书目里的章节文件名若过不了读侧形态闸
+      // （CON.txt / 子目录路径 / 非 .txt），复制进来的书会在书架上立刻显示损坏
+      //（bookStats → assertChapterFile 抛 BAD_PATH，书卡 chapterCount:0），导入回执却报成功。
+      // 与修复出口同一道闸：整源跳过并说明原因（不静默剔章，也不产出一本打不开的书）。
+      try {
+        for (const chapter of meta.chapters) storage.assertChapterFile(staging, chapter.file);
+      } catch (err) {
+        if (err instanceof storage.StorageError) {
+          throw new storage.StorageError(
+            'IMPORT_INVALID',
+            `《${path.basename(sourceDir)}》的书目里有读侧会拒绝的章节文件名（${err.message}），` +
+              '导入后会立刻显示为损坏，已跳过；请先在来源里修正章节文件名后再导入'
+          );
+        }
+        throw err;
+      }
       // IMPORT-01：现成书会把来源书目的 meta.id 原样带进副本。同一来源导入两次、或把书从书库
       // 复制出来再导入回去时，书库里就有两本同 id 的书：书级显示设置（config.bookDisplay）、
       // 查找书签、统计分桶、删除时按 id 的清理全部以 meta.id 为 key —— 删一本会把另一本的覆盖 /
@@ -587,6 +613,15 @@ async function importBookFolder(booksRoot, sourceDir, analysis, options = {}) {
     // 五-M25（TC-7）：fs.copyFile 之后按暂存副本的实际字节复核，间隙里被换大的文件删掉并记 skipped
     const copiedOversized = await removeOversizedCopies(staging, copyFiles);
     const skippedEntries = oversized.concat(copiedOversized);
+    // A2-IMPORT-01：子目录里的 txt 不在顶层清单里，copyAsTexts 不复制也不回包 —— 逐条记进
+    // skipped，回包与磁盘一致（作者能看到「哪几个文件因为位置被跳过」）。注意不能混进上面
+    // 「全部被跳过」的判定：它们是「位置不对」，不是体量超限，也不参与顶层复制完整性。
+    const nestedSkipped = (analysis.nestedTxt || []).map((file) => ({
+      file,
+      code: 'NESTED_TXT',
+      message: '在子目录里：章节目录导入只复制顶层 txt，这个文件没有导入（源文件原样保留）',
+      tooLarge: false
+    }));
     if (copyFiles.length && skippedEntries.length >= copyFiles.length) {
       // 复制后复核发现一个能导入的文件都不剩：与「全部超限」同语义，整源跳过、不留空书
       throw new storage.StorageError(
@@ -614,7 +649,7 @@ async function importBookFolder(booksRoot, sourceDir, analysis, options = {}) {
         title,
         chapters: rebuilt.meta.chapters.length
       },
-      skippedEntries
+      skippedEntries.concat(nestedSkipped)
     );
   } catch (err) {
     // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 包成 IMPORT_FAILED 会把界面文案
@@ -626,6 +661,7 @@ async function importBookFolder(booksRoot, sourceDir, analysis, options = {}) {
       err &&
       (err.code === 'FILE_TOO_LARGE' ||
         err.code === 'SOURCE_LINK' ||
+        err.code === 'IMPORT_INVALID' ||
         err.code === 'IMPORT_FAILED' ||
         err.code === 'BAD_PATH')
     ) {
@@ -1082,6 +1118,15 @@ async function importFolders(booksRoot, sources, options = {}) {
       continue;
     }
     const analysis = await analyzeSource(sourceDir);
+    if (analysis.kind === 'nested-only') {
+      // A2-IMPORT-01：章节目录形态只导顶层；整源 txt 全在子目录里时明确跳过 ——
+      // 既不产出一本 0 章的空书，也不再误报「没有 txt 文件」。
+      skipped.push({
+        source: relativeSourceLabel(sourceDir),
+        reason: `txt 全部在子目录里（${analysis.nestedTxt.length} 个），章节目录导入只复制顶层，未导入；请把章节文件移到文件夹顶层再试`
+      });
+      continue;
+    }
     if (analysis.kind === 'nothing') {
       skipped.push({
         source: relativeSourceLabel(sourceDir),
@@ -1144,10 +1189,18 @@ async function importFolders(booksRoot, sources, options = {}) {
       } catch (err) {
         const source = relativeSourceLabel(plan.sourceDir);
         const described = errorText.describeForUi(err);
-        if (err && (err.code === 'FILE_TOO_LARGE' || err.code === 'SOURCE_LINK')) {
+        if (
+          err &&
+          (err.code === 'FILE_TOO_LARGE' ||
+            err.code === 'SOURCE_LINK' ||
+            err.code === 'IMPORT_INVALID' ||
+            err.code === 'INVALID_META')
+        ) {
           // V50：「一个能导入的文件都不剩」是跳过，不是复制失败 —— 错误码保留、文案留在「已跳过」，
           // 界面汇总显示「跳过 N 个（…）」而不是红色「N 个失败（复制失败：…）」。
           // 审计修复 #56（S7）：含符号链接的来源也按「跳过」记录（tooLarge 只给体量超限的 txt）。
+          // 2026-11-26：来源书目 / 章节文件名过不了读侧形态闸（IMPORT_INVALID / INVALID_META）同样
+          // 是「这份来源不能这样导入」，不是复制环节失败 —— 归 skipped 并给出可照做的原因。
           skipped.push({ source, reason: described.message, code: err.code, tooLarge: err.code === 'FILE_TOO_LARGE' });
         } else {
           failed.push({ source, message: described.message });

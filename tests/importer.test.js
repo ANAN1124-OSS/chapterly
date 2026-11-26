@@ -1527,3 +1527,78 @@ test('IO-02：启动链在建窗之前对书架根跑一次暂存回收', async 
   assert.match(whenReady, /stagingRoot = config[^\r\n]*booksRoot/, '扫的是当前生效的书架根（含 --books-root 覆盖后的配置）');
   assert.match(whenReady, /closeGuard\.withDeadline\([\s\S]{0,160}?cleanupStaleStaging/, '回收整段要有截止时间，到点照常建窗');
 });
+
+// A2-IMPORT-01（2026-11-26 审计）：章节目录形态只看顶层 txt —— 按卷分文件夹的来源
+//（我的书/第一卷/001-起风.txt）子目录里的章既不被导入、也不进回包；整源只有子目录 txt 时
+// 还误报「既没有书目也没有 txt 文件」。修法：子目录 txt 不参与导入，但必须如实进 skipped /
+// 整源跳过时说明原因（绝不静默消失，也不产出一本 0 章空书）。
+test('A2-IMPORT-01：章节目录导入不再静默吞掉子目录 txt（整源只有子目录 → 跳过说明；混合 → 逐条进 skipped）', async () => {
+  const base = await mkTmp();
+  const booksRoot = path.join(base, '书架');
+
+  // ① 整源只有子目录 txt：整源跳过 + 说明，不产出 0 章空书
+  const onlyNested = path.join(base, '只有子目录');
+  await fs.mkdir(path.join(onlyNested, '第一卷'), { recursive: true });
+  await fs.writeFile(path.join(onlyNested, '第一卷', '001-起风.txt'), '起风正文', 'utf8');
+  const res1 = await importer.importFolders(booksRoot, [onlyNested]);
+  assert.equal(res1.imported.length, 0, '子目录 txt 不许被静默忽略后报导入成功');
+  assert.equal(res1.failed.length, 0);
+  assert.equal(res1.skipped.length, 1);
+  assert.match(res1.skipped[0].reason, /子目录/);
+  assert.equal(
+    (await fs.readdir(booksRoot).catch(() => [])).some((name) => name.includes('只有子目录')),
+    false,
+    '不许产出一本 0 章空书'
+  );
+
+  // ② 顶层一章 + 子目录其余：顶层照常导入，子目录文件逐条进 skipped（回包与磁盘一致）
+  const mixed = path.join(base, '混合');
+  await fs.mkdir(path.join(mixed, '第二卷'), { recursive: true });
+  await fs.writeFile(path.join(mixed, '001-楔子.txt'), '楔子正文', 'utf8');
+  await fs.writeFile(path.join(mixed, '第二卷', '002-夜雨.txt'), '夜雨正文', 'utf8');
+  const res2 = await importer.importFolders(booksRoot, [mixed]);
+  assert.equal(res2.imported.length, 1);
+  assert.equal(res2.imported[0].kind, 'chapter-folder');
+  assert.equal(res2.imported[0].chapters, 1, '只导顶层那一章（章数与磁盘一致）');
+  const nestedSkip = res2.skipped.find((entry) => entry.code === 'NESTED_TXT');
+  assert.ok(nestedSkip, '子目录 txt 必须进 skipped');
+  assert.match(nestedSkip.source, /第二卷/);
+  assert.match(nestedSkip.reason, /子目录/);
+  assert.equal(nestedSkip.tooLarge, false);
+  // 源文件原样保留
+  await fs.access(path.join(mixed, '第二卷', '002-夜雨.txt'));
+});
+
+// V221-IMPORT-01（上一轮 verdicts，partial）：现成书来源的书目里带着读侧会拒绝的章节文件名
+//（子目录路径 / CON.txt / 非 .txt）时，旧实现照常复制并报导入成功 —— 书架卡立刻 corrupt
+//（bookStats → assertChapterFile 抛 BAD_PATH，chapterCount:0）。修法：复制后在暂存里过同一道
+// 章节文件形态闸，整源按「跳过」记录并说明原因，绝不产出一本打不开的书。
+test('V221-IMPORT-01：现成书书目带读侧会拒绝的章节文件名 → 整源跳过，不产出立刻损坏的书', async () => {
+  const base = await mkTmp();
+  const externalRoot = path.join(base, '外部坏书');
+  await fs.mkdir(externalRoot);
+  const created = await storage.createBook(externalRoot, '坏书');
+  await storage.createChapter(created.path, 1, '第一章');
+  // 造一个子目录章节文件，并把书目改成指向它（读侧只认 basename；书架上这本书会显示损坏）
+  await fs.mkdir(path.join(created.path, '第一卷'), { recursive: true });
+  await fs.writeFile(path.join(created.path, '第一卷', '001-起风.txt'), '起风正文', 'utf8');
+  const meta = await storage.readBookMeta(created.path);
+  const badMeta = {
+    ...meta,
+    chapters: [{ ...meta.chapters[0], file: path.join('第一卷', '001-起风.txt') }]
+  };
+  await fs.writeFile(path.join(created.path, '书目.json'), `${JSON.stringify(badMeta, null, 2)}\n`, 'utf8');
+
+  const booksRoot = path.join(base, '书架');
+  const res = await importer.importFolders(booksRoot, [created.path]);
+  assert.equal(res.imported.length, 0, '不许再导入一本立刻损坏的书');
+  assert.equal(res.failed.length, 0, '来源形态问题按「跳过」记，不是复制失败');
+  const skip = res.skipped.find((entry) => entry.code === 'IMPORT_INVALID');
+  assert.ok(skip, '要指出是来源书目形态问题');
+  assert.match(skip.reason, /读侧会拒绝|损坏/);
+  assert.equal(
+    (await fs.readdir(booksRoot).catch(() => [])).some((name) => name.includes('坏书')),
+    false,
+    '书库里不许出现这本书'
+  );
+});
