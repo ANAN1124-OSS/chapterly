@@ -141,6 +141,11 @@ function assertFragmentName(raw) {
   ) {
     throw new FragmentError('BAD_NAME', '碎片文件名不合法');
   }
+  // A2U-03（2026-11-26 复核）：CON / NUL / COM1 这类 Windows 设备名当文件名会在不同 API 上
+  // 表现不一致（有的报错、有的重定向到设备），必须和章节文件同一道保留名闸门。
+  if (chaptersLib.reservedStem(name)) {
+    throw new FragmentError('BAD_NAME', '碎片文件名不能使用系统保留名');
+  }
   return name;
 }
 

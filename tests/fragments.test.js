@@ -133,6 +133,11 @@ test('灵感箱：文件名校验拒绝路径穿越 / 隐藏文件 / 非 txt', (
   for (const bad of ['', '   ', '../x.txt', 'sub/x.txt', '..\\x.txt', '.secret.txt', 'x.md', 'a:b.txt']) {
     assert.throws(() => frag.assertFragmentName(bad), /不合法/, bad);
   }
+  // A2U-03（2026-11-26 复核）：Windows 设备名不能当碎片文件名。
+  for (const reserved of ['CON.txt', 'nul.txt', 'COM1.txt', 'LPT9.txt', ' CON .txt']) {
+    assert.throws(() => frag.assertFragmentName(reserved), /保留名/, reserved);
+  }
+  assert.equal(frag.assertFragmentName('CON 笔记.txt'), 'CON 笔记.txt', '主干不是纯保留名就放行');
 });
 
 test('灵感箱：目录不存在时列表为空，而且列表动作不会创建文件夹', async () => {
