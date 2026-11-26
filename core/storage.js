@@ -1756,14 +1756,17 @@ async function claimTrashTarget(dest) {
   return true;
 }
 
-async function moveToTrash(bookPath, file) {
+// V221-GATE-01（测试闸门）：时间戳可注入一只固定的时钟。_trash 备份名 = 时间戳 + 原文件名，
+// 单测要预置「同一秒」的旧备份来验证撞名顺延；以前预置名用测试进程的 new Date()、这里再取一次，
+// 跨整秒时两个时间戳不同 → 预置的备份不撞名 → 断言随机假红（约 1%/轮）。产品调用方不传。
+async function moveToTrash(bookPath, file, options = {}) {
   // WP-06（审计 C5）：本函数是「删章 / 撤销删空补章」唯一的移文件入口，必须自己再校验一次 ——
   // 坏书目（file 含 ..\ / 绝对路径 / 非 txt / 保留名）在这里就 BAD_PATH，绝不 rename 书外文件；
   // 校验放在 ensureDir 之前：被拒时连 _trash 目录都不会建（零副作用）。
   const source = assertChapterFile(bookPath, file);
   const trashDir = path.join(bookPath, TRASH_DIR);
   await ensureDir(trashDir);
-  const stamp = timestampForFile();
+  const stamp = timestampForFile(options && options.now instanceof Date ? options.now : new Date());
   let destName = `${stamp}-${file}`;
   let i = 2;
   let dest = path.join(trashDir, destName);
@@ -1797,7 +1800,7 @@ function isMoveToTrashName(trashName, file) {
   return Boolean(ordinal) && ordinal[2] === file;
 }
 
-async function deleteChapter(bookPath, chapterId) {
+async function deleteChapter(bookPath, chapterId, options = {}) {
   const meta = await readBookMeta(bookPath);
   const index = chapterIndexOrThrow(meta, chapterId);
   const target = meta.chapters[index];
@@ -1808,7 +1811,8 @@ async function deleteChapter(bookPath, chapterId) {
   const targetPath = assertChapterFile(bookPath, target.file);
   let trashPath = null;
   try {
-    trashPath = await moveToTrash(bookPath, target.file);
+    // V221-GATE-01：options.now 只给单测注入固定时钟（见 moveToTrash 的注释）。
+    trashPath = await moveToTrash(bookPath, target.file, options);
   } catch (err) {
     throw new StorageError('TRASH_FAILED', `无法把章节移到回收目录：${errorText.describeForUi(err).message}`);
   }

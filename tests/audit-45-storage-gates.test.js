@@ -160,8 +160,10 @@ test('E20（#45）：_trash 里已有同秒同名备份时，moveToTrash 顺延�
   const target = (await storage.readBookMeta(bookPath)).chapters[0];
 
   // 按「现在这一秒」预置一份同名备份（模拟外部 / 上一次操作留下的同秒文件）
+  // V221-GATE-01：以前预置名用测试进程的 new Date()、deleteChapter 内部再取一次 —— 跨整秒时两个
+  // 时间戳不同，预置的备份不撞名，断言随机假红（约 1%/轮）。现在把同一只时钟注入进去。
   const pad2 = (n) => String(n).padStart(2, '0');
-  const date = new Date();
+  const date = new Date(2001, 1, 3, 4, 5, 6);
   const stamp =
     `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}-` +
     `${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}`;
@@ -170,7 +172,7 @@ test('E20（#45）：_trash 里已有同秒同名备份时，moveToTrash 顺延�
   const planted = path.join(trash, `${stamp}-${target.file}`);
   await fs.writeFile(planted, '预置的旧备份', 'utf8');
 
-  const deleted = await storage.deleteChapter(bookPath, target.id);
+  const deleted = await storage.deleteChapter(bookPath, target.id, { now: date });
   assert.ok(path.basename(deleted.trashPath).startsWith(`${stamp}-2-`), `撞名要顺延：${path.basename(deleted.trashPath)}`);
   assert.equal(await fs.readFile(planted, 'utf8'), '预置的旧备份', '先备份的字节一个都没被覆盖');
   assert.equal(await fs.readFile(deleted.trashPath, 'utf8'), '要被删掉的正文\r\n', '这次删章的内容完整落在新名字上');
