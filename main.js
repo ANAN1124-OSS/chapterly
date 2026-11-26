@@ -1397,6 +1397,21 @@ function setupCloseFlow(session) {
   const browserWin = session.win;
   browserWin.on('close', (event) => {
     if (session.forceClose) return;
+    // V221-CRASH-01/02（2026-11-26 复核）：渲染进程已经崩溃时不可能再有 close-ready 回来 ——
+    // 优雅关闭只会让「关闭这个窗口」/ Esc 变成死按钮、或让作者空等 8 秒看门狗。直接销毁。
+    let rendererCrashed = false;
+    try {
+      rendererCrashed = typeof browserWin.webContents.isCrashed === 'function' && browserWin.webContents.isCrashed();
+    } catch {
+      rendererCrashed = false;
+    }
+    if (closeGuard.crashedCloseDecision({ crashed: rendererCrashed }).destroyNow) {
+      event.preventDefault();
+      session.forceClose = true;
+      clearTimeout(session.closeTimer);
+      if (!browserWin.isDestroyed()) browserWin.destroy();
+      return;
+    }
     event.preventDefault();
     if (session.closePending) return;
     session.closePending = true;
@@ -2915,7 +2930,13 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
         const plan = crashRecovery.reloadFailureDialog({ message: (err && err.message) || String(err) });
         void showMessageBox(plan, browserWin)
           .then((response) => {
-            if (plan.actions[response.response] === 'logs') void openLogFolderForRecovery();
+            const action = plan.actions[response.response];
+            if (action === 'logs') void openLogFolderForRecovery();
+            // V221-CRASH-01：重载失败的窗口渲染进程不会再来 close-ready，关闭必须直接销毁。
+            else if (action === 'close' && !browserWin.isDestroyed()) {
+              session.forceClose = true;
+              browserWin.destroy();
+            }
           })
           .catch(() => {});
       }
@@ -2955,7 +2976,10 @@ async function createWindow({ bookPath = null, cascade = false, runAutomationFlo
         } else if (action === 'logs') {
           void openLogFolderForRecovery();
         } else if (action === 'close' && !browserWin.isDestroyed()) {
-          browserWin.close();
+          // V221-CRASH-01：崩溃窗口的 close() 会再进 setupCloseFlow 等一个永远不来的回执；
+          // 「关闭这个窗口」/ Esc（cancelId=1 → close）必须直接销毁。
+          session.forceClose = true;
+          browserWin.destroy();
         }
       })
       .catch(() => {});

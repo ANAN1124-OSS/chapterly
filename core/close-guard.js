@@ -132,6 +132,15 @@ async function withDeadline(task, options = {}) {
   }
 }
 
+// V221-CRASH-01 / V221-CRASH-02（2026-11-26 复核）：渲染进程已经崩溃（render-process-gone）时，
+// 优雅关闭流程会先发 app:close-requested 再等回执 —— 坐在死掉的渲染进程上永远不会有回执：
+//   · webContents.send 抛错 → 旧实现只把 closePending 复位后 return，窗口关不掉（死按钮）；
+//   · send 不抛 → 8 秒看门狗到点才判「无响应」，作者点了「关闭这个窗口」/ 按 Esc 都要干等。
+// 这种窗口没有任何还在跑的保存可以等（回执不可能来），直接销毁是唯一正确动作。
+function crashedCloseDecision(state) {
+  return { destroyNow: Boolean(state && state.crashed) };
+}
+
 module.exports = {
   CLOSE_TIMEOUT_MS,
   BOUNDS_WRITE_TIMEOUT_MS,
@@ -140,6 +149,7 @@ module.exports = {
   forceClosePlan,
   runForceCloseSteps,
   closeReleaseDecision,
+  crashedCloseDecision,
   withDeadline,
   timeoutPrompt
 };

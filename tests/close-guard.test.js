@@ -414,3 +414,26 @@ test('旧M3：withDeadline——到点如实回 timedOut，先完成则用结果
 });
 
 
+
+// V221-CRASH-01 / V221-CRASH-02（2026-11-26 复核）：渲染进程 gone 之后优雅关闭永远等不到
+// close-ready ——「关闭这个窗口」/ Esc 变成死按钮、或让作者空等 8 秒看门狗。判据与接线都在这里钉住。
+test('V221-CRASH-01/02：渲染进程崩溃时关窗直接销毁，不再等永不回来的 close-ready', () => {
+  assert.deepEqual(closeGuardLib.crashedCloseDecision({ crashed: true }), { destroyNow: true });
+  assert.deepEqual(closeGuardLib.crashedCloseDecision({ crashed: false }), { destroyNow: false });
+  assert.deepEqual(closeGuardLib.crashedCloseDecision(null), { destroyNow: false });
+
+  const closeSrc = extractFunctionSource(MAIN, 'setupCloseFlow');
+  assert.match(closeSrc, /webContents\.isCrashed\(\)/, '关窗流程要识别渲染进程已崩溃');
+  assert.match(
+    closeSrc,
+    /closeGuard\.crashedCloseDecision\(\{ crashed: rendererCrashed \}\)/,
+    '崩溃判定走 core/close-guard.js 的唯一纯函数'
+  );
+  assert.match(closeSrc, /session\.forceClose = true;[\s\S]{0,160}?browserWin\.destroy\(\);/, '崩溃窗口直接销毁');
+
+  // 崩溃对话框与「重载失败」对话框的关闭动作（含 Esc → cancelId=1 → close）都必须销毁窗口。
+  const destroyCloseBranch = MAIN.match(
+    /action === 'close' && !browserWin\.isDestroyed\(\)\) \{[\s\S]{0,220}?browserWin\.destroy\(\);/g
+  ) || [];
+  assert.ok(destroyCloseBranch.length >= 2, `两处恢复对话框的关闭动作都要直接销毁（实际 ${destroyCloseBranch.length} 处）`);
+});
