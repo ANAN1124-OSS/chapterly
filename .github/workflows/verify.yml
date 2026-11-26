@@ -66,6 +66,13 @@ jobs:
             count=$((count + 1))
           done < <(git ls-files '*.js')
           echo "node --check 通过：$count 个文件"
+          # A2-GATE-01（低）：扫描面无下限时，git 不在 PATH / 不在 git 仓库 / 全改后缀都会让
+          # count=0 却退出 0（语法层零覆盖仍绿）。548 的 90% 余量作为下限，与 lint-gate 的
+          # MIN_SCAN_FILES=200 同口径：扫描面缩水必须判红，而不是安静地「通过」。
+          if [ "$count" -lt 500 ]; then
+            echo "::error::语法检查扫描面异常：只找到 $count 个 js（下限 500）。请检查 git / 工作区是否完整。"
+            exit 1
+          fi
 
       - name: 固定时区（ZIP 的 DOS 时间戳按本地时区编码；两处逐字节黄金值要与开发机 +08 同口径）
         run: tzutil /s "China Standard Time"

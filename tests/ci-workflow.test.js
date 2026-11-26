@@ -235,6 +235,13 @@ test('全量 node --check 跑在 bash 里，且任一文件失败就让步骤失
   assert.match(text, /node --check "\$f"/, '要逐个文件跑 node --check "$f"');
   assert.match(text, /git ls-files '\*\.js'/, '要用 git ls-files 列出全量 js');
   assert.match(text, /\|\| exit 1|exit \$fail|set -e/, '任一文件失败必须让步骤非零退出');
+  // A2-GATE-01：进程替换里的 git ls-files 失败不会让 set -e 生效；扫描面必须有下限，
+  // 空列表 / 大幅缩水（改后缀、不在 git 仓库）要判红，不能 0 个文件也绿。
+  assert.match(
+    text,
+    /if \[ "\$count" -lt 500 \]; then/, // 548 的 90% 余量
+    '扫描面缩水必须判红（下限 500）'
+  );
 });
 
 test('verify.yml 仍不跑 E2E（E2E 挪到每周定时的 e2e-weekly.yml）', () => {
@@ -401,6 +408,10 @@ test('REPO-02：PR 级 E2E 的单 Node 版本取舍有声明，且与 weekly / v
   const pr = readE2ePr();
   assert.match(pr, /只跑 Node 24/, 'e2e-pr.yml 必须写明 PR 档只跑 Node 24 的取舍');
   assert.match(pr, /e2e-weekly\.yml 的 22\/24 矩阵兜底/, '写明 Node 22 的 E2E 由 weekly 矩阵兜底');
+  // A2-GATE-03（低）：注释只声明不管用 —— 真加了 matrix 后注释仍可保留、门禁仍绿，预算静默翻倍。
+  // 真配置必须单档：不许出现 strategy.matrix，且 setup-node 写死 24。
+  assert.equal(/matrix:/.test(pr), false, 'e2e-pr 不许加 Node 矩阵（PR 预算会翻倍，22 档由 weekly 兜底）');
+  assert.match(pr, /\n\s+node-version: 24\r?\n/, 'setup-node 必须写死单档 24');
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
   assert.match(readme, /E2E 档\*\*只跑 Node 24\*\*/, 'README 的 CI 一节要带同一句声明');
 });
