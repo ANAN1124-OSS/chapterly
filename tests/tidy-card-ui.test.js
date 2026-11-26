@@ -442,6 +442,30 @@ test('formatCurrentChapterFromConfig：成功 → 写编辑区、压撤销栈、
   ]);
 });
 
+test('A2-TIDY-03：省略号转换后光标映射到省略号之后（不再右移到下一个字之后）', async () => {
+  const format = require('../core/format');
+  const ctx = build({
+    text: '他说...好',
+    caret: 5, // 光标在「他说...」之后
+    config: { formatOptions: { indent: 'none', ellipsis: true } },
+    formatText: (text, options) => {
+      const res = format.formatText(text, options);
+      return { changed: res.text !== text, text: res.text, stats: res.stats };
+    }
+  });
+  const res = await ctx.ui.formatCurrentChapterFromConfig();
+  assert.equal(res.ok, true);
+  assert.equal(ctx.editorEl.value, '他说……好', '用例前提：省略号真的被转换');
+  // 「他」「说」各 1 个码点，省略号「……」2 个码点 → 光标应落在 4。
+  // 修复前按非空白计数（源 5 个、目标 4 个）会落到 6（「好」之后）。
+  assert.equal(ctx.editorEl.selectionStart, 4);
+  assert.deepEqual(ctx.calls.scrollCaretIntoView, [4]);
+  // 撤销整理（目标回到带 3 个点的原稿）同样要落在省略号之后，而不是停在中间两个点上。
+  assert.equal(ctx.ui.undoFormat(), true);
+  assert.equal(ctx.editorEl.value, '他说...好');
+  assert.equal(ctx.editorEl.selectionStart, 5, '撤销后光标落在原省略号之后');
+});
+
 test('formatCurrentChapterFromConfig：整理期间正文被改 / 换书换章 → 结果作废，不给编辑区写入', async () => {
   const stale = build({ text: '待整理正文' });
   stale.host.api.formatText = async () => {

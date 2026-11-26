@@ -299,20 +299,62 @@
     return true;
   }
 
-  // 整理只动空白/标点，正文有效字符的顺序不变：按「第 N 个非空白字符」把光标映射回去，
-  // 避免整理/撤销后光标被拉回章首（长章里接着打字会插到全章最前面）。
-  function mapCaretPosition(sourceText, targetText, sourcePos) {
-    const contentBefore = String(sourceText).slice(0, Math.max(0, sourcePos));
-    const wanted = chaptersLib.countChars(contentBefore);
-    if (!wanted) return 0;
-    let count = 0;
-    for (let i = 0; i < targetText.length; i += 1) {
-      if (!/\s/.test(targetText[i])) {
-        count += 1;
-        if (count >= wanted) return i + 1;
+  // 整理只动空白 / 标点，正文有效字符的顺序不变：把光标按「第 N 个有效字符」映射回去，
+  // 避免整理 / 撤销后光标被拉回章首（长章里接着打字会插到全章最前面）。
+  // A2-TIDY-03（2026-11-26 审计）：以前按「非空白字符个数」计数 —— 省略号转换把 3 个以上的
+  // 英文句点压成 1 个「……」（两个码点），计数少了 1+，光标会右移到后面那个字之后
+  //（"他说...好" 整理成 "他说……好" 后落点从 4 变成 6）。现在先把正文切成「有效单元」：
+  // 一个普通字符算一个单元，连续的句点 / 省略号（"..." / "……"）整组算一个单元，
+  // 再按单元序号映射 —— 省略号无论 3 个点还是 2 个「…」，单元数一致，落点就一致。
+  function caretUnits(text) {
+    const units = [];
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+      if (/\s/.test(ch)) { i += 1; continue; }
+      if (ch === '.' || ch === '…') {
+        let end = i;
+        while (end < text.length && text[end] === ch) end += 1;
+        // 只有 3+ 个英文句点或 2+ 个省略号才并成一个单元；单个 "." / "…" 仍按普通字符算
+        if ((ch === '.' && end - i >= 3) || (ch === '…' && end - i >= 2)) {
+          units.push({ end });
+          i = end;
+          continue;
+        }
       }
+      units.push({ end: i + 1 });
+      i += 1;
     }
-    return targetText.length;
+    return units;
+  }
+
+  function mapCaretPosition(sourceText, targetText, sourcePos) {
+    const source = String(sourceText == null ? '' : sourceText);
+    const target = String(targetText == null ? '' : targetText);
+    const pos = Math.max(0, Math.min(source.length, Number(sourcePos) || 0));
+    const sourceUnits = caretUnits(source);
+    let count = 0;
+    for (const unit of sourceUnits) {
+      if (unit.end <= pos) count += 1;
+      else break;
+    }
+    if (!count) return 0;
+    const targetUnits = caretUnits(target);
+    // 预期内的整理（空白 / 标点 / 省略号）不改变单元数；真的变了（未知改写）退回旧的
+    // 「第 N 个非空白字符」夹取，至少不会把光标丢到章首或越界。
+    if (sourceUnits.length !== targetUnits.length || count > targetUnits.length) {
+      const wanted = chaptersLib.countChars(source.slice(0, pos));
+      if (!wanted) return 0;
+      let seen = 0;
+      for (let i = 0; i < target.length; i += 1) {
+        if (!/\s/.test(target[i])) {
+          seen += 1;
+          if (seen >= wanted) return i + 1;
+        }
+      }
+      return target.length;
+    }
+    return targetUnits[count - 1].end;
   }
 
 
