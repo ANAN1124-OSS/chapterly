@@ -84,29 +84,66 @@ test('书目备份：只有结构性变更才轮换 .bak，普通保存不碰上
   }
 });
 
-test('书目备份：结构性写盘时 .bak 写失败 → 抛错且主文件一个字不动（备份语义保守）', async () => {
+test('书目备份：结构性写盘时 .bak 写失败 → 主文件照写，备份保持原样（退路不连坐主路）', async () => {
   const root = await mkTmp();
   const { path: bookPath } = await storage.createBook(root, '备份失败演练');
   try {
   const metaPath = path.join(bookPath, '书目.json');
   const bakPath = path.join(bookPath, '书目.json.bak');
-  const beforeMain = await fs.readFile(metaPath, 'utf8');
 
-  // 用目录占住 .bak 路径，让 atomicWriteFile 备份失败（Windows 下是 EPERM / EISDIR）
-  await fs.mkdir(bakPath);
-  let failure = null;
+  // A2-STORAGE-01（低）：旧行为是 .bak 写失败直接抛、主文件一次都不写 —— 退路（备份）出错把主路
+  //（书目）也堵死：正文已落盘可书目永远停在旧版，书架字数 / 继续写作全是旧值，每次 Ctrl+S 都报
+  //「书目更新失败」。现在 .bak 轮换失败只记一条诊断，主文件照写（宁可这轮没有备份）。
+  const logs = [];
+  storage.setDiagnostics({
+    logError(scope, err, meta) {
+      logs.push({ scope, code: meta && meta.code, message: meta && meta.message });
+    }
+  });
   try {
-    await storage.writeBookMeta(bookPath, await storage.readBookMeta(bookPath), { structural: true });
-  } catch (err) {
-    failure = err;
+    // 用目录占住 .bak 路径，让 atomicWriteFile 备份失败（Windows 下是 EPERM / EISDIR）
+    await fs.mkdir(bakPath);
+    const next = await storage.readBookMeta(bookPath);
+    next.title = '备份失败也要写主文件';
+    await storage.writeBookMeta(bookPath, next, { structural: true });
+    const afterMain = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+    assert.equal(afterMain.title, '备份失败也要写主文件', '备份写不进去，主文件也要写成功');
+    assert.equal((await fs.stat(bakPath)).isDirectory(), true, '.bak 位置保持原样（失败不破坏退路本身）');
+    assert.equal(logs.length, 1, '轮换失败要留一条诊断（不是静默吞掉）');
+    assert.equal(logs[0].code, 'BAK_ROTATE_FAILED', '诊断码固定，便于事后查');
+  } finally {
+    storage.setDiagnostics({ logError: null });
   }
-  assert.ok(failure, '备份写失败必须抛错（不能悄悄跳过）');
-  assert.equal(await fs.readFile(metaPath, 'utf8'), beforeMain, '备份失败时主文件不能被改掉');
 
   await fs.rm(bakPath, { recursive: true, force: true });
   // 恢复后照常能写（失败不留下坏状态）
   const after = await storage.readBookMeta(bookPath);
   await storage.writeBookMeta(bookPath, after, { structural: true });
+  assert.equal((await fs.stat(bakPath)).isFile(), true, '退路恢复后照常轮换');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+// A2-STORAGE-02（低）：writeBookMeta 的 ensureDir 排在章数 / 大小 / expectedStamp 闸门之前 ——
+// 读-改-写间隙里书文件夹被同步盘 / 资源管理器删掉时，先 mkdir 再抛 META_CHANGED：书库根留下一个
+// 同名空目录（界面上无痕迹，之后同名建书变「书名-2」）。现在建目录挪到身份核对通过之后。
+test('A2-STORAGE-02：身份核对不通过时不许重建书文件夹（不留影子目录）', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '影子目录演练');
+  try {
+    const metaPath = path.join(bookPath, '书目.json');
+    const stat = await fs.stat(metaPath);
+    // 与 readBookMeta 挂上的身份同形状（size + mtimeMs），不必摸内部 Symbol
+    const expectedStamp = { size: stat.size, mtimeMs: stat.mtimeMs };
+    const meta = await storage.readBookMeta(bookPath);
+    await fs.rm(bookPath, { recursive: true, force: true });
+    await assert.rejects(
+      storage.writeBookMeta(bookPath, meta, { ensureDir: true, expectedStamp }),
+      (err) => err.code === 'META_CHANGED',
+      '书目不在 = META_CHANGED'
+    );
+    assert.equal(await exists(bookPath), false, '核对失败时不许把书文件夹建回来（影子目录）');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

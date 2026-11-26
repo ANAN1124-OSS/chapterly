@@ -385,6 +385,21 @@ function reportDuplicateChapterIds(bookPath, repairs) {
   }
 }
 
+// A2-STORAGE-01（低）：.bak 轮换失败的诊断（不让退路连坐主路，但也不能静默吞掉）。
+// 与 reportDuplicateChapterIds 同一口径：没注入 / 写失败都只跳过，绝不影响写盘。
+function reportBakRotateFailure(bookPath, err) {
+  if (!diagnosticLogError) return;
+  try {
+    diagnosticLogError('meta-bak-rotate', err, {
+      level: 'warn',
+      code: 'BAK_ROTATE_FAILED',
+      message: `${BOOK_BAK} 轮换失败（已继续写主文件）：${errorText.describeForUi(err).message}；书：${path.basename(bookPath)}`
+    });
+  } catch {
+    /* 日志失败不影响写盘 */
+  }
+}
+
 function backfillMissingChapterIds(chapters) {
   const used = new Set();
   for (const chapter of chapters) {
@@ -659,10 +674,12 @@ async function writeBookMeta(
     expectedStamp = null
   } = {}
 ) {
-  if (ensureDirectory) await ensureDir(bookPath);
   const metaPath = path.join(bookPath, BOOK_FILE);
   const bakPath = path.join(bookPath, BOOK_BAK);
   const next = prepareBookMeta(meta, { touchUpdatedAt });
+  // A2-STORAGE-02（低）：建目录挪到「是否允许写盘」的判定之后（见下面 expectedStamp 核对通过的
+  // 位置）。ensureDir 排在闸门之前时，读-改-写间隙里书文件夹被同步盘 / 资源管理器删掉会先 mkdir
+  // 再抛 META_CHANGED —— 书库根留下同名空目录（界面无痕迹，之后同名建书变「书名-2」）。
   // E1（三审）：写侧也过和读侧同一条章数闸门。旧实现只校验 32 MB 文件大小，内存里的 chapters
   // 超过 20000 条照样写出去，下一次 readBookMeta 直接判 META_TOO_MANY_CHAPTERS —— 应用自己写出
   // 一本打不开的书（导入 20,001 章 / 从目录重建都踩过）。超限一个字节都不写（.bak 也不轮换），
@@ -751,7 +768,18 @@ async function writeBookMeta(
       );
     }
   }
-  if (previousBytes) await atomicWriteFile(bakPath, previousBytes, 'utf8', { ensureDir: ensureDirectory });
+  // A2-STORAGE-02：身份核对通过（或没有身份可核）之后才允许建目录 —— 拒绝路径一个副作用都不留。
+  if (ensureDirectory) await ensureDir(bookPath);
+  if (previousBytes) {
+    // A2-STORAGE-01（低）：.bak 只是退路，轮换失败不许连坐主文件。旧实现 .bak 只读 / 被同步盘占用
+    // 时抛在这里，主文件一次都不写：正文已落盘可书目永远停在旧版（书架字数 / 继续写作全是旧值），
+    // 每次 Ctrl+S 都报「书目更新失败」。现在失败只记一条诊断，主文件照写（宁可这轮没有备份）。
+    try {
+      await atomicWriteFile(bakPath, previousBytes, 'utf8', { ensureDir: ensureDirectory });
+    } catch (err) {
+      reportBakRotateFailure(bookPath, err);
+    }
+  }
   await atomicWriteFile(metaPath, serialized, 'utf8', { ensureDir: ensureDirectory });
   return next;
 }

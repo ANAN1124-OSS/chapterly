@@ -210,6 +210,8 @@ test('MAIN-03：META_SAVE_FAILED 部分成功带 bodySaved / chars / file / mtim
       writeBookMeta: async () => {
         throw Object.assign(new Error('EACCES: 书目.json 写不进去'), { code: 'EACCES' });
       },
+      // A2-STORAGE-03：书目失败后的定点 chars 补写（真实存储层的尽力而为；这里同样失败也不影响回包）
+      persistCharsAfterFailure: async () => {},
       openBookRegistry: { touch: () => {} }
     }
   });
