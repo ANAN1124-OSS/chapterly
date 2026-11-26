@@ -128,6 +128,16 @@
   // 宿主没给（旧宿主 / 单测）时退回「一问一存」，行为不更差。
   const saveForTransition = typeof host.saveForTransition === 'function' ? host.saveForTransition : null;
 
+  // A2-CHAPTER-01（中）：批量动作的「书身份」判定。批量删除 / 移卷 / 改状态是逐条 await 的秒级窗口，
+  // 期间 Ctrl+K 换书很常见；旧实现每条回执都 applyMetaAndRelocate，循环后的收尾还读活 state.chapters，
+  // 于是新书界面被旧书目录接管，收尾再拿新书路径读旧书下标（同名 txt 时正文与 id 错配）。
+  // 路径口径全仓只有一份（renderer/long-op-logic.js），由渲染层注入；旧宿主 / 单测没给时退回同样的
+  // 三步归一（去首尾空白 + 正斜杠归反斜杠 + 小写），判不出「同一本书」只会更保守地停手。
+  const sameBookPath = typeof host.sameBookPath === 'function'
+    ? host.sameBookPath
+    : (a, b) => String(a == null ? '' : a).trim().replace(/\//g, '\\').toLowerCase()
+      === String(b == null ? '' : b).trim().replace(/\//g, '\\').toLowerCase();
+
   // H1（三审）：建章 / 删章 / 批量删都是「保存成功后立刻重载编辑区」的过渡入口。
   // 旧实现只看 saveCurrent 的 saved.ok 就继续——保存 IPC 往返（fsync / 书目 / 统计写盘，
   // 冷盘 / 杀软下可达数百 ms）期间敲入的字不在磁盘上，dirty 会重新为真，随后的 loadChapterAt
@@ -754,6 +764,7 @@
     // 撤销时反过来从前往后按原下标插回，章序才和删除前一致。
     const deleted = [];
     let failed = null;
+    let bookSwitched = false;
     for (let n = indexes.length - 1; n >= 0; n -= 1) {
       const index = indexes[n];
       const chapter = state.chapters[index];
@@ -762,6 +773,12 @@
       const neighborAfterId = state.chapters[index + 1] ? state.chapters[index + 1].id : '';
       try {
         const data = await call(api.deleteChapter, bookPath, chapter.id);
+        // A2-CHAPTER-01：回执只属于发起时那本书。换了书就立刻停手 —— 不许把旧书书目写进新书界面，
+        // 也不许继续拿旧下标去删（新书的同下标章）。
+        if (!sameBookPath(state.bookPath, bookPath)) {
+          bookSwitched = true;
+          break;
+        }
         deleted.push({
           chapter,
           index,
@@ -773,9 +790,19 @@
         });
         applyMetaAndRelocate(data, currentSelected ? null : keepCurrentId);
       } catch (err) {
+        // 失败回执同样先核书：换了书时这不是「删除失败」，而是这次动作已经不属于当前界面。
+        if (!sameBookPath(state.bookPath, bookPath)) {
+          bookSwitched = true;
+          break;
+        }
         failed = err;
         break;
       }
+    }
+    // 换了书：这次动作的回执与剩余章都属于旧书，当前界面（新书的多选 / 目录 / 编辑区）一个字都不许动。
+    if (bookSwitched) {
+      toast('批量删除期间换了书，本次结果没有套到当前书上', 'warn');
+      return deleted.length > 0;
     }
     // 选中集合是一次性动作的上下文：执行完就收起（失败也收起，避免重试时重复删已删的章）
     state.selectedIds = new Set();
@@ -890,15 +917,28 @@
     }
     const done = [];
     let failed = null;
+    let bookSwitched = false;
     for (const move of moves) {
       try {
         const data = await call(api.moveChapterToVolume, bookPath, move.chapter.id, volumeId || null);
+        if (!sameBookPath(state.bookPath, bookPath)) {
+          bookSwitched = true;
+          break;
+        }
         applyMetaAndRelocate(data, keepCurrentId);
         done.push(move);
       } catch (err) {
+        if (!sameBookPath(state.bookPath, bookPath)) {
+          bookSwitched = true;
+          break;
+        }
         failed = err;
         break;
       }
+    }
+    if (bookSwitched) {
+      toast('批量移动期间换了书，本次结果没有套到当前书上', 'warn');
+      return { ok: done.length > 0, code: 'BOOK_CHANGED' };
     }
     state.selectedIds = new Set();
     state.selectAnchorId = null;
@@ -946,16 +986,29 @@
     const bookPath = state.bookPath;
     let changed = 0;
     let failed = 0;
+    let bookSwitched = false;
     for (const index of indexes) {
       const chapter = state.chapters[index];
       if (!chapter) continue;
       try {
         const data = await call(api.updateChapterMeta, bookPath, chapter.id, { status });
+        if (!sameBookPath(state.bookPath, bookPath)) {
+          bookSwitched = true;
+          break;
+        }
         applyMetaAndRelocate(data);
         if (data.changed) changed += 1;
       } catch {
+        if (!sameBookPath(state.bookPath, bookPath)) {
+          bookSwitched = true;
+          break;
+        }
         failed += 1;
       }
+    }
+    if (bookSwitched) {
+      toast('批量改状态期间换了书，本次结果没有套到当前书上', 'warn');
+      return { ok: changed > 0, changed, failed, code: 'BOOK_CHANGED' };
     }
     state.selectedIds = new Set();
     state.selectAnchorId = null;

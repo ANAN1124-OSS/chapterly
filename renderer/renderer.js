@@ -2912,7 +2912,8 @@
     undoUi, moveChapterByDrop, openExportDialog,
     replaceEditorTextNative, onEditorInput, recordFallbackWrite, scrollCaretIntoView,
     placeMenuAt,
-    saveForTransition // H1（三审）：建章 / 删当前章 / 批量删统一走「过渡前保存」原语（可选成员）
+    saveForTransition, // H1（三审）：建章 / 删当前章 / 批量删统一走「过渡前保存」原语（可选成员）
+    sameBookPath: longOpLogic.sameBookPath // A2-CHAPTER-01：批量动作回执落地前核发起时那本书（可选成员）
   });
 
   // 全局键盘接线（M1 第一轮·低 第七刀）：host 里全是已经初始化的 const / 提升函数——

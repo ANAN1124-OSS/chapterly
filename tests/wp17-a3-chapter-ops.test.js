@@ -816,6 +816,76 @@ test('A3-Cβ / B5：批量删除——从后往前删、部分失败仍登记已
   assert.equal(rtHuge.counts.undo[0].title, '已删除 500 章');
 });
 
+// A2-CHAPTER-01（中）：批量删除 / 移卷 / 改状态是逐条 await 的秒级窗口，期间 Ctrl+K 换书很常见。
+// 旧实现每条回执都 applyMetaAndRelocate（拿旧书 meta 覆盖新书 state），循环后的收尾还读活 state.chapters，
+// 于是新书界面被旧书目录接管，收尾再拿新书路径读旧书下标（同名 txt 时正文与 id 错配）。
+// 锚点：任一回执落地前核「发起时那本书」，换了书立刻停手，当前界面一个字都不许动。
+test('A2-CHAPTER-01：批量删除 / 移卷 / 改状态执行中换书 → 立刻停手，不用旧书回执覆盖新书界面', async () => {
+  const NEW_BOOK = 'C:/书架/另一本书';
+  const newChapters = [{ id: 'n1', name: '新书第一章', file: 'n1.md', volumeId: null }];
+  const switchBook = (rt, oldChapters, oldVolumes) => {
+    const oldMeta = { chapters: oldChapters, volumes: oldVolumes };
+    rt.state.bookPath = NEW_BOOK;
+    rt.state.chapters = newChapters;
+    rt.state.meta = { title: '另一本书', chapters: newChapters, volumes: [] };
+    rt.state.selectedIds = new Set([0]);
+    return oldMeta;
+  };
+
+  // ① 批量删除：第一条回执返回前换书
+  const del = makeHost({ state: { selectedIds: new Set([0, 1, 2]) } });
+  const delCalls = [];
+  const delChapters = del.state.chapters;
+  const delVolumes = del.state.meta.volumes;
+  del.host.api.deleteChapter = async (bookPath, chapterId) => {
+    delCalls.push(chapterId);
+    const oldMeta = switchBook(del, delChapters, delVolumes);
+    return { ok: true, data: { index: 0, meta: oldMeta, trashPath: `x/${chapterId}.md`, undoToken: `tok-${chapterId}` } };
+  };
+  assert.equal(await del.ui.deleteSelectedChapters(), false, '第一条回执就发现换书：不落地');
+  assert.deepEqual(delCalls, ['c3'], '发现换书立即停手，不再继续删后面的章');
+  assert.equal(del.state.bookPath, NEW_BOOK, '换书是作者的动作：不许被批量流程改回去');
+  assert.equal(del.state.chapters, newChapters, '新书章节数组不许被旧书回执覆盖');
+  assert.equal(del.state.selectedIds.size, 1, '新书的多选上下文不许被旧动作清掉');
+  assert.equal(del.counts.undo.length, 0, '没有落地任何删除，不许登记撤销');
+  assert.ok(del.counts.toast.some(([message, kind]) => kind === 'warn' && /换了书/.test(message)), '要明确提示这次结果没套到当前书');
+
+  // ② 批量移卷：第一条回执返回前换书
+  const mv = makeHost({ state: { selectedIds: new Set([0, 1]) } });
+  const mvCalls = [];
+  const mvChapters = mv.state.chapters;
+  const mvVolumes = mv.state.meta.volumes;
+  mv.host.api.moveChapterToVolume = async (bookPath, chapterId) => {
+    mvCalls.push(chapterId);
+    const oldMeta = switchBook(mv, mvChapters, mvVolumes);
+    return { ok: true, data: { index: 0, meta: oldMeta } };
+  };
+  const mvResult = await mv.ui.moveSelectedChaptersToVolume('v2');
+  assert.equal(mvResult.ok, false);
+  assert.equal(mvResult.code, 'BOOK_CHANGED');
+  assert.deepEqual(mvCalls, ['c1'], '发现换书立即停手，不再移动后面的章');
+  assert.equal(mv.state.chapters, newChapters);
+  assert.equal(mv.state.selectedIds.size, 1);
+  assert.equal(mv.counts.undo.length, 0, '没有落地任何移动，不许登记撤销');
+
+  // ③ 批量改状态：第一条回执返回前换书
+  const st = makeHost({ state: { selectedIds: new Set([0, 1]) } });
+  const stCalls = [];
+  const stChapters = st.state.chapters;
+  const stVolumes = st.state.meta.volumes;
+  st.host.api.updateChapterMeta = async (bookPath, chapterId) => {
+    stCalls.push(chapterId);
+    const oldMeta = switchBook(st, stChapters, stVolumes);
+    return { ok: true, data: { changed: true, chapter: { status: 'done' }, meta: oldMeta } };
+  };
+  const stResult = await st.ui.setSelectedChaptersStatus('done');
+  assert.equal(stResult.code, 'BOOK_CHANGED');
+  assert.deepEqual(stCalls, ['c1'], '发现换书立即停手，不再改后面的章');
+  assert.equal(st.state.chapters, newChapters);
+  assert.equal(st.state.selectedIds.size, 1);
+  assert.deepEqual(st.counts.syncItem, [], '不许拿旧书下标去刷新新书的章节条目');
+});
+
 // RNDC-01（第 5 轮）：批量删除把最后一批章删空时，旧实现仍按「回落下标 → loadChapterAt(0)」收尾。
 // 真 loadChapterAt 在 0 章直接回 { ok:false, code:'NO_BOOK' }（不碰编辑区、不改 state），调用方只
 // toast 一句「载入失败」：index 停在 0（指向不存在的章）、编辑区还留着刚删掉那一章的正文、也没有
