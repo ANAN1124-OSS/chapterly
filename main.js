@@ -1954,6 +1954,9 @@ function registerIpc() {
   });
   handle('fragments:create', async (text) => {
     const cfg = await getConfig();
+    // V221-MAIN-01（2026-11-26 复核）：碎片自己的上限是 10 万字，通用 assertText 放行到 500 万字 ——
+    // 10 万–500 万的输入会先进 store 做一遍去 BOM / 换行归一的 O(n) 清洗再被拒。入口先按碎片上限挡。
+    assertText(text, { max: fragmentsLib.MAX_TEXT_CHARS, label: '碎片' });
     return fragmentsLib.getFragmentStore(cfg.booksRoot).create(text);
   });
   handle('fragments:read', async (name) => {

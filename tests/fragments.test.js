@@ -503,3 +503,26 @@ test('碎片列表（B7/WP-28）：stat 并发（峰值受并发度限制）、�
   assert.equal(brokenListed.total, 7);
   assert.equal(brokenListed.fragments.some((item) => item.name === '某天-3.txt'), false);
 });
+
+// V221-MAIN-01（2026-11-26 复核）：碎片 IPC 只用 500 万字通用闸门 —— 10 万–500 万字的输入会先进
+// 主进程做一遍去 BOM / 换行归一的 O(n) 清洗，再被碎片自己的 10 万字上限拒绝。入口先按碎片上限挡。
+test('V221-MAIN-01：fragments:create 入口先按碎片 10 万字上限挡，不把超大输入送进 O(n) 清洗', () => {
+  const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
+  const start = main.indexOf("handle('fragments:create'");
+  assert.ok(start > 0, '找不到 fragments:create 处理器');
+  const block = main.slice(start, start + 500);
+  assert.match(
+    block,
+    /assertText\(text, \{ max: fragmentsLib\.MAX_TEXT_CHARS, label: '碎片' \}\)/,
+    '入口要用碎片自己的上限先挡一次'
+  );
+  const createAt = block.indexOf('getFragmentStore(');
+  assert.ok(block.indexOf('assertText(') < createAt, '上限校验必须排在 store.create 之前');
+  // 行为：同一口径的 assertText 在 10 万字 + 1 时按 TEXT_TOO_LARGE 拒绝（文案指明是碎片）。
+  const ipcLimits = require('../core/ipc-limits');
+  assert.throws(
+    () => ipcLimits.assertText('字'.repeat(frag.MAX_TEXT_CHARS + 1), { max: frag.MAX_TEXT_CHARS, label: '碎片' }),
+    (err) => err.code === 'TEXT_TOO_LARGE' && /碎片太长/.test(err.message)
+  );
+  assert.doesNotThrow(() => ipcLimits.assertText('字'.repeat(frag.MAX_TEXT_CHARS), { max: frag.MAX_TEXT_CHARS }));
+});
