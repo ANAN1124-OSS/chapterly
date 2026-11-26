@@ -87,12 +87,19 @@
       // 里的纯函数（Node 单测覆盖），这里只负责弹窗与保存。四个换书入口都走这一个函数。
       // C10 同族：保存在途时先等它按快照章身份完成，再按「剩下真正没保存的字」询问——
       // 否则作者刚选的「不保存」会被在途写入违背。
-      if (state.saving && state.dirty) {
-        await waitForSavingIdle();
-        if (stale()) return { ok: false, code: 'STALE' };
-      }
-      const dirtyBeforeSwitch = state.dirty === true;
-      if (openBookGuard.decideOpenBook({ dirty: dirtyBeforeSwitch }).action === 'prompt') {
+      //
+      // V221-OPEN-01（高，丢稿）：保存 IPC 往返（fsync / 书目 / 统计写盘，冷盘 / 杀软下可达数百 ms）
+      // 期间作者可能继续敲字，saveCurrent 的回执按正文快照重算 dirty → 又变脏。旧实现把**发起换书前**
+      // 的脏值快照当作守卫输入，保存成功就继续换书，紧接着 commitOpenBook 的
+      // editorEl.value='' / 清撤销栈把这几个字静默覆盖。现在与 saveForTransition 同口径：
+      // 每一轮都按**活值** state.dirty 判定；保存成功但仍脏就回到三选一重新问，绝不带着未保存输入继续。
+      for (;;) {
+        if (state.saving && state.dirty) {
+          await waitForSavingIdle();
+          if (stale()) return { ok: false, code: 'STALE' };
+        }
+        const dirtyNow = state.dirty === true;
+        if (openBookGuard.decideOpenBook({ dirty: dirtyNow }).action !== 'prompt') break;
         const choice = await askUnsaved({
           title: '换书前先处理未保存的修改',
           message: `「${currentChapterLabel()}」还有未保存的修改。换到另一本书后，编辑区里这些字不会跟着过去。`
@@ -101,10 +108,15 @@
         let saveResult = null;
         if (choice === 'save') saveResult = await saveCurrent();
         if (stale()) return { ok: false, code: 'STALE' };
-        const guard = openBookGuard.decideOpenBook({ dirty: dirtyBeforeSwitch, choice, saveResult });
+        const guard = openBookGuard.decideOpenBook({ dirty: dirtyNow, choice, saveResult });
         // 失败提示 saveCurrent 已经弹过（与还原 / 删除前拦截同口径），这里只负责别继续换。
         // REDT-A-05：取消也是可判定的形状（以前裸 return → undefined，调用方按 result.ok 判定会分叉）。
-        if (guard.action !== 'proceed') return { ok: false, canceled: true };
+        if (guard.action === 'abort') return { ok: false, canceled: true };
+        // 无法判定的选择（正常 UI 不会出现）：留在原地重新问，绝不猜。
+        if (guard.action === 'prompt') continue;
+        // 'save' 成功也要回顶部按活值复核 dirty（保存期间又敲字 → 再问一次）；
+        // 'discard' 是作者明确放弃这些字，直接放行。
+        if (choice === 'discard') break;
       }
       // 从「决定换书」这一刻起锁住编辑区：开书 IPC 往返期间作者可能还在上一本里敲字。
       // 开成功就整块换成新书（这些字不能静默消失），开失败 / 取消则原样留在上一本（编辑区没动过）。

@@ -77,11 +77,19 @@ function makeHost(options = {}) {
     askUnsaved: async (payload) => {
       calls.askUnsaved.push(payload);
       if (options.duringAsk) options.duringAsk();
+      if (Array.isArray(options.choices)) {
+        return options.choices.length ? options.choices.shift() : (options.choice === undefined ? 'discard' : options.choice);
+      }
       return options.choice === undefined ? 'discard' : options.choice;
     },
     saveCurrent: async () => {
       calls.saveCurrent += 1;
-      return options.saveResult === undefined ? { ok: true } : options.saveResult;
+      const result = options.saveResult === undefined ? { ok: true } : options.saveResult;
+      // 真实 saveCurrent 成功时会按正文快照重算 dirty（保存期间又敲字 → 仍脏）；
+      // 桩默认模拟「保存期间没敲字 → 干净」，options.duringSave 可在回执后把 dirty 翻回 true。
+      if (result.ok === true) state.dirty = false;
+      if (options.duringSave) options.duringSave(state, calls.saveCurrent);
+      return result;
     },
     currentChapterLabel: () => '第二章',
     applyEditorEditable: () => {
@@ -250,6 +258,47 @@ test('编辑区脏：取消 / 保存失败都停在原地；丢弃 / 保存成�
 
   const discarded = makeHost({ dirty: true, choice: 'discard' });
   assert.equal((await openBookFlowUi.create(discarded.host).openBookByPath(BOOK_B)).ok, true);
+});
+
+// V221-OPEN-01（高，丢稿）：保存 IPC 往返期间敲入的字会让 dirty 重新为 true。旧实现拿「发起换书前」
+// 的脏值去问守卫，保存成功就继续换书，紧接着 commitOpenBook 的 editorEl.value='' 把这些字静默覆盖。
+// 锚点：保存回执后必须按**活值**复核 —— 仍脏就重新问，选了丢弃才放行。
+test('保存并继续期间又敲字：回执后仍脏 → 重新询问，不许静默换书覆盖（V221-OPEN-01）', async () => {
+  let saveCount = 0;
+  const ctx = makeHost({
+    dirty: true,
+    choices: ['save', 'discard'],
+    duringSave: (state) => {
+      saveCount += 1;
+      // 第一次保存往返期间作者继续敲字：真实 saveCurrent 会用 isDirtyAgainstSnapshot 把 dirty 翻回 true。
+      if (saveCount === 1) state.dirty = true;
+    }
+  });
+  const result = await openBookFlowUi.create(ctx.host).openBookByPath(BOOK_B);
+  assert.equal(result.ok, true);
+  assert.equal(ctx.calls.saveCurrent, 1, '只保存一次');
+  assert.equal(ctx.calls.askUnsaved.length, 2, '保存后仍脏 → 必须再问一次，不能拿发起前的脏值放行');
+  assert.deepEqual(ctx.calls.openBookOp, [BOOK_B], '两次询问都完成后才开书');
+  assert.equal(ctx.state.bookPath, BOOK_B);
+  assert.equal(ctx.host.editorEl.value, '', '最终仍换书（作者已选择丢弃）');
+});
+
+test('保存并继续后仍脏且作者取消：停在原地，一个字都不许清（V221-OPEN-01）', async () => {
+  const ctx = makeHost({
+    dirty: true,
+    choices: ['save', 'cancel'],
+    duringSave: (state) => {
+      state.dirty = true;
+    }
+  });
+  const result = await openBookFlowUi.create(ctx.host).openBookByPath(BOOK_B);
+  assert.deepEqual(result, { ok: false, canceled: true });
+  assert.equal(ctx.calls.saveCurrent, 1);
+  assert.equal(ctx.calls.askUnsaved.length, 2);
+  assert.deepEqual(ctx.calls.openBookOp, [], '取消后绝不发开书 IPC');
+  assert.equal(ctx.state.bookPath, BOOK_A, '书目停在原书');
+  assert.equal(ctx.host.editorEl.value, '上一本的正文', '编辑区原样留着（这些字还没保存）');
+  assert.deepEqual(ctx.calls.openingBook, [], '还没开始开书，不锁编辑区');
 });
 
 test('保存在途 + 脏：先等保存落定再问（C10：否则作者刚选的「不保存」会被在途写入违背）', async () => {

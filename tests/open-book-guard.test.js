@@ -112,8 +112,14 @@ test('换书入口闸门：openBookByPath 先过守卫、再 api.openBook', () =
   // 守卫复用现成的三选一与保存：取消 / 保存失败都 return，不许落到 api.openBook
   assert.match(body, /askUnsaved\(/, '守卫要复用 askUnsaved 三选一');
   assert.match(body, /saveCurrent\(/, '选「保存并继续」要走 saveCurrent');
+  // V221-OPEN-01（高，丢稿）：守卫输入必须是**活值** state.dirty —— 保存 IPC 往返期间敲入的字会让
+  // dirty 重新为 true，拿发起换书前的快照值（旧 dirtyBeforeSwitch）放行就会在 commitOpenBook 里被清掉。
+  assert.match(body, /const dirtyNow = state\.dirty === true;/, '守卫输入必须是活值 dirty');
+  assert.equal(/dirtyBeforeSwitch/.test(body), false, '不许再拿发起换书前的脏值当决策输入');
+  // 保存成功也要回循环顶部复核：只有作者明确「丢弃」才直接放行，否则仍脏必须重新问。
+  assert.match(body, /if \(choice === 'discard'\) break;/, 'save 成功回顶部复核活值 dirty');
   // 守卫不通过必须原地返回（REDT-A-05 起是可判定的 { ok:false, canceled:true }，不再是裸 return）
-  assert.match(body, /if \(guard\.action !== 'proceed'\) return \{ ok: false, canceled: true \};/, '守卫不通过必须原地返回');
+  assert.match(body, /if \(guard\.action === 'abort'\) return \{ ok: false, canceled: true \};/, '守卫不通过必须原地返回');
 });
 
 test('换书入口闸门：四个入口（命令面板 / 书签跨书 / 章节命中 / 书架点书）都走 openBookByPath', () => {
