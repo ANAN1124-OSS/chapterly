@@ -192,8 +192,15 @@ test('跨实现一致性闸门：两端拿到的是同一个函数引用，不�
   assert.equal(logic.paragraphRanges, paragraphs.paragraphRanges);
   assert.equal(logic.lineRanges, paragraphs.lineRanges);
   assert.equal(tts.paragraphRanges, paragraphs.paragraphRanges);
-  // 对外形状固定：三个函数，多一个少一个都要在评审里看到
-  assert.deepEqual(Object.keys(paragraphs).sort(), ['lineRanges', 'paragraphRanges', 'trimmedRange']);
+  // 对外形状固定：A2-TTS-03 起多两个「不物化整表」的出口（scanParagraphs / countParagraphs），
+  // 既有三个函数的语义不变；多一个少一个都要在评审里看到。
+  assert.deepEqual(Object.keys(paragraphs).sort(), [
+    'countParagraphs',
+    'lineRanges',
+    'paragraphRanges',
+    'scanParagraphs',
+    'trimmedRange'
+  ]);
 });
 
 test('静态闸门：三个函数只剩 core/paragraphs.js 一处实现', () => {
@@ -228,7 +235,11 @@ test('静态闸门：三个函数只剩 core/paragraphs.js 一处实现', () => 
 test('静态闸门：两个消费方都接上 core/paragraphs.js，index.html 顺序正确', () => {
   const ttsSource = read('core/tts.js');
   assert.match(ttsSource, /const paragraphsLib = require\('\.\/paragraphs'\);/, 'core/tts.js 要 require ./paragraphs');
-  assert.match(ttsSource, /const \{ trimmedRange, paragraphRanges \} = paragraphsLib;/, 'core/tts.js 要从共享实现取这两个函数');
+  assert.match(
+    ttsSource,
+    /const \{ trimmedRange, paragraphRanges, scanParagraphs, countParagraphs \} = paragraphsLib;/,
+    'core/tts.js 要从共享实现取裁切 + 段落扫描 / 计数（A2-TTS-03）'
+  );
 
   const logicSource = read('renderer/editor-logic.js');
   assert.match(
@@ -260,10 +271,46 @@ test('静态闸门：两个消费方都接上 core/paragraphs.js，index.html �
   assert.ok(paragraphsAt < logicAt, 'core/paragraphs.js 必须排在 editor-logic.js 之前（否则启动即报错）');
 });
 
+test('A2-TTS-03：paragraphRanges 支持 limit / scanParagraphs 可提前终止（与原表逐字一致）', () => {
+  const text = `${FW}第一段。\n\n第二段！\n  \n${FW}第三段？\n第四段。\n`;
+  const full = paragraphs.paragraphRanges(text);
+  assert.ok(full.length >= 3, '用例前提：至少有 3 段');
+  assert.deepEqual(paragraphs.paragraphRanges(text, 2), full.slice(0, 2), 'limit 只截断、不改每段口径');
+  assert.deepEqual(paragraphs.paragraphRanges(text, 0), []);
+  assert.deepEqual(paragraphs.paragraphRanges(text, 999), full, 'limit 大于总段数时与全量一致');
+  assert.equal(paragraphs.countParagraphs(text), full.length, '只数段落的出口与整表长度一致');
+
+  // 提前终止：访问器返回 true 之后不再为后面的行造对象（limit 的真实收益）
+  let visited = 0;
+  const reached = paragraphs.scanParagraphs(text, () => {
+    visited += 1;
+    return visited >= 2;
+  });
+  assert.equal(visited, 2, '命中 limit 后必须立即停止');
+  assert.equal(reached, 2);
+
+  // core/tts.js 的 buildChunks 不再整篇物化：它走 scanParagraphs + countParagraphs，
+  // 不用 paragraphRanges（后者会把全部段落一次性放进数组）。
+  const ttsSource = read('core/tts.js');
+  const buildAt = ttsSource.indexOf('function buildChunks');
+  assert.ok(buildAt > 0, '找不到 buildChunks');
+  const body = ttsSource.slice(buildAt, ttsSource.indexOf('module.exports'));
+  const bodyCode = body.replace(/^\s*\/\/.*$/gm, '');
+  assert.match(bodyCode, /countParagraphs\(body\)/, '段落总数用不建对象的计数出口');
+  assert.match(bodyCode, /scanParagraphs\(body,/, '段落按需扫描，凑满 maxChunks 提前终止');
+  assert.equal(/paragraphRanges\(body\)/.test(bodyCode), false, 'buildChunks 不许再整篇物化段落表');
+});
+
 test('UMD 浏览器分支：没有 module 的沙箱里挂到 window.CWParagraphs，结果与 Node 侧一致', () => {
   const { win } = loadInBrowserSandbox(['core/paragraphs.js']);
   assert.equal(typeof win.CWParagraphs, 'object');
-  assert.deepEqual(Object.keys(win.CWParagraphs).sort(), ['lineRanges', 'paragraphRanges', 'trimmedRange']);
+  assert.deepEqual(Object.keys(win.CWParagraphs).sort(), [
+    'countParagraphs',
+    'lineRanges',
+    'paragraphRanges',
+    'scanParagraphs',
+    'trimmedRange'
+  ]);
   const text = `${FW}${FW}第一段。\n\n第二段！\n`;
   assert.deepEqual(
     JSON.parse(JSON.stringify(win.CWParagraphs.paragraphRanges(text))),

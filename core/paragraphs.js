@@ -70,20 +70,50 @@
     return ranges;
   }
 
+  // A2-TTS-03（2026-11-26 审计）：段落表以前先整篇物化（lineRanges 的 split + 每行对象），
+  // 再交给调用方按 maxChunks 截断 —— 100 万字符 × 每行 1 字会瞬时造出约 2e6 个区间对象。
+  // 这里改成逐行推进的回调：每行只保留当前区间，visit 返回 true 立即停止（不再为后续行造对象）。
+  // 行号 / 段号 / 裁切口径与 lineRanges + trimmedRange 完全一致（单测逐字对齐）。
+  function scanParagraphs(text, visit) {
+    const source = toText(text);
+    if (typeof visit !== 'function') return 0;
+    let paragraph = 0;
+    let line = 1;
+    let start = 0;
+    while (start <= source.length) {
+      let end = source.indexOf('\n', start);
+      if (end < 0) end = source.length;
+      const range = trimmedRange(source, start, end);
+      if (range) {
+        paragraph += 1;
+        if (visit({ start: range.start, end: range.end, paragraph, line })) return paragraph;
+      }
+      if (end === source.length) break;
+      start = end + 1;
+      line += 1;
+    }
+    return paragraph;
+  }
+
   // 每个非空行算一个自然段；返回 { start, end, paragraph, line }（start / end 已去掉首尾空白）。
   // 段号只数非空行（空行跳过不占号），行号跟着物理行走。
-  function paragraphRanges(text) {
-    const source = toText(text);
+  // limit 可省略（= 全部段落，保持旧行为）；给了就最多返回前 limit 个，后续行不再构造对象。
+  function paragraphRanges(text, limit) {
+    const rawMax = Number(limit);
+    const max = Number.isFinite(rawMax) && rawMax >= 0 ? Math.floor(rawMax) : Infinity;
     const ranges = [];
-    let paragraph = 0;
-    for (const line of lineRanges(source)) {
-      const range = trimmedRange(source, line.start, line.end);
-      if (!range) continue;
-      paragraph += 1;
-      ranges.push({ start: range.start, end: range.end, paragraph, line: line.line });
-    }
+    if (!max) return ranges;
+    scanParagraphs(text, (range) => {
+      ranges.push(range);
+      return ranges.length >= max;
+    });
     return ranges;
   }
 
-  return { trimmedRange, lineRanges, paragraphRanges };
+  // 只数段落（不建任何区间对象）：给「结果里要报段落总数、但正文按需截断」的调用方用。
+  function countParagraphs(text) {
+    return scanParagraphs(text, () => false);
+  }
+
+  return { trimmedRange, lineRanges, paragraphRanges, scanParagraphs, countParagraphs };
 });

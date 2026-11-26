@@ -17,7 +17,7 @@
 const chaptersLib = require('./chapters');
 const { clampInt } = require('./common');
 const paragraphsLib = require('./paragraphs');
-const { trimmedRange, paragraphRanges } = paragraphsLib;
+const { trimmedRange, paragraphRanges, scanParagraphs, countParagraphs } = paragraphsLib;
 
 const DEFAULT_OPTIONS = Object.freeze({
   maxChunkChars: 160, // 单个 chunk 最多多少字（太长系统语音会吞字 / 卡顿，进度也看不见）
@@ -235,11 +235,14 @@ function buildChunks(text, rawOptions) {
 
   const chunks = [];
   let truncated = truncatedBySize;
-  const paragraphs = paragraphRanges(body);
-  for (const para of paragraphs) {
+  // A2-TTS-03（2026-11-26 审计）：不再先 paragraphRanges(body) 把整篇段落表物化 ——
+  // 逐行推进，凑满 maxChunks 就停止（后面还有段落才标记 truncated）；段落总数另用不建对象的
+  // 计数扫一遍，回包里的 paragraphs 语义与改前一致。
+  const paragraphsTotal = countParagraphs(body);
+  scanParagraphs(body, (para) => {
     if (chunks.length >= options.maxChunks) {
       truncated = true;
-      break;
+      return true; // 提前终止：不再为后续行构造区间
     }
     paragraphChunks(body, para, options.maxChunkChars, (range) => {
       if (!range) return;
@@ -251,7 +254,8 @@ function buildChunks(text, rawOptions) {
         line: para.line
       });
     });
-  }
+    return false;
+  });
   if (chunks.length > options.maxChunks) {
     chunks.length = options.maxChunks;
     truncated = true;
@@ -260,7 +264,7 @@ function buildChunks(text, rawOptions) {
   return {
     chunks,
     startIndex: chunkIndexAt(chunks, options.caret),
-    paragraphs: paragraphs.length,
+    paragraphs: paragraphsTotal,
     rawLength: fullLength,
     totalChars: chaptersLib.countChars(source),
     truncated,
