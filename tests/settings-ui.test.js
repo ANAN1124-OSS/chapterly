@@ -53,12 +53,13 @@ test('host 契约：9 个成员 + 分组内每个真实依赖；缺任何一个�
   }
 });
 
-test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 15 个入口', () => {
+test('create() 只建表：不碰 DOM / 不注册事件 / 不建定时器，交出 16 个入口', () => {
   const dom = makeDocument();
   const ctx = build({ dom });
   assert.equal(dom.lookups, 0);
   assert.deepEqual(Object.keys(ctx.ui).sort(), [
-    'checkUpdate', 'closeSettings', 'handleExternalConfigChange', 'openSettings', 'openStatsCalendar',
+    // KNOWN-SETTINGS：+cancelSettings（Esc 与「取消」/「×」共用同一在途守卫）
+    'cancelSettings', 'checkUpdate', 'closeSettings', 'handleExternalConfigChange', 'openSettings', 'openStatsCalendar',
     'openUpdateDownload', 'previewSettings', 'renderChapterTemplatePreview', 'renderProofreadSettings',
     'renderSensitiveSettings', 'renderSettingsCaretColors', 'resetBookDisplay', 'saveSettings', 'setSelectValue',
     'setupSettingsUi'
@@ -443,4 +444,32 @@ test('multi=true → 状态行报 N 份 / 合计 M 词、选择按钮隐藏（V5
   assert.equal(ctx.dom.map.get('settings-proofread-path').classList.contains('hidden'), true, '只读路径框收起（不删 DOM）');
   assert.equal(ctx.dom.map.get('btn-pick-proofread').classList.contains('hidden'), true, '「选择…」收起（不删 DOM）');
   assert.equal(ctx.dom.map.get('btn-clear-proofread').classList.contains('hidden'), true, '「清除」收起（不删 DOM）');
+});
+
+// KNOWN-SETTINGS（中 · 上一轮已登记）：设置在途按 Esc 以前直接 closeSettings() —— 底栏「取消」与右上
+// 「×」都有 savingSettings || resettingSettings 守卫，Esc 没有：面板回滚了（配置预览还原），可 setConfig
+// 回执仍会落盘并弹「设置已保存」，界面说的和磁盘发生的相反。
+// 现在 Esc 与按钮 / × 走同一个 cancelSettings()：在途时一律不关（回执落地后由保存链自己关层）。
+test('KNOWN-SETTINGS：设置在途时 Esc 不再绕过保存闸门（与取消 / × 同一守卫）', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库' }, setConfigGate: gate });
+  await ctx.ui.openSettings({ scope: 'global' });
+  const saving = ctx.ui.saveSettings();
+  await flush();
+  assert.equal(ctx.ui.cancelSettings(), false, '保存链在途：Esc / 取消 / × 都不许关层');
+  assert.equal(
+    ctx.dom.map.get('settings-backdrop').classList.contains('hidden'),
+    false,
+    '在途期间弹层仍在（回执落地前不许回滚成「没保存」的样子）'
+  );
+  release();
+  await saving;
+  assert.equal(ctx.calls.setConfig.length, 1, '保存只跑一趟');
+  assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), true, '保存成功后由回执关层');
+
+  // 没有写操作在途时照常关（别的入口不受影响）
+  await ctx.ui.openSettings({ scope: 'global' });
+  assert.equal(ctx.ui.cancelSettings(), true);
+  assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), true);
 });

@@ -119,7 +119,9 @@ test('静态闸门：设置弹层右上只有一个 ×，标签与 aria 到位�
   assert.equal(indexSrc.split('id="btn-settings-close"').length - 1, 1, '只加一个');
   assert.equal(rendererSrc.includes("$('btn-settings-close').addEventListener"), false, '绑定只在模块里');
   // 五-L18（SS-13）：× / 取消统一走带「写操作在途」守卫的 cancelSettings（两按钮仍同义）
-  assert.equal(moduleSrc.includes("const cancelSettings = () => {"), true);
+  // KNOWN-SETTINGS：守卫从 setupSettingsUi 里的局部箭头提升成模块级命名函数，Esc 也复用它。
+  assert.equal(moduleSrc.includes('function cancelSettings() {'), true);
+  assert.equal(moduleSrc.includes('const cancelSettings = () => {'), false, '守卫不许再留第二份局部实现');
   assert.equal(moduleSrc.includes("$('btn-settings-close').addEventListener('click', cancelSettings);"), true);
 });
 
@@ -159,16 +161,18 @@ test('静态闸门：renderer.js 不再内嵌设置实现，只剩装配与转�
   }
   // 五-M14（SS-11）：解构表从 14 个入口变 15 个——新增 handleExternalConfigChange（跨窗口设置
   // 变更后给开着的设置表单重定基）。入口仍按原名解构，一个都不许在 renderer 里另写一份实现。
+  // KNOWN-SETTINGS：+cancelSettings（Esc 与「取消」/「×」共用同一在途守卫）。
   assert.ok(rendererSrc.includes(
-    'const { setSelectValue, renderSettingsCaretColors, renderChapterTemplatePreview, renderSensitiveSettings, renderProofreadSettings, checkUpdate, openUpdateDownload, previewSettings, openSettings, openStatsCalendar, closeSettings, handleExternalConfigChange, resetBookDisplay, saveSettings, setupSettingsUi } = settingsUi;'
-  ), '15 个入口按原名解构');
+    'const { setSelectValue, renderSettingsCaretColors, renderChapterTemplatePreview, renderSensitiveSettings, renderProofreadSettings, checkUpdate, openUpdateDownload, previewSettings, openSettings, openStatsCalendar, closeSettings, cancelSettings, handleExternalConfigChange, resetBookDisplay, saveSettings, setupSettingsUi } = settingsUi;'
+  ), '入口按原名解构（含 KNOWN-SETTINGS 的 cancelSettings）');
   // 6 个绑定块里的设置 id 不再出现在 renderer 的事件绑定里（写作计时 / 日历绑定仍留）
   for (const id of ['btn-settings', 'btn-settings-cancel', 'btn-settings-save', 'btn-reset-book-display', 'btn-pick-folder',
     'btn-pick-font', 'btn-reset-font', 'settings-font', 'settings-caret-paragraph', 'settings-caret-color']) {
     assert.equal(rendererSrc.includes(`$('${id}').addEventListener`), false, '绑定应该只在模块里：' + id);
   }
   assert.equal(rendererSrc.split('setupSettingsUi();').length - 1, 1, 'setup 只调一次');
-  assert.match(rendererSrc, /'close-settings': \(\) => closeSettings\(\),/);
+  // KNOWN-SETTINGS：Esc 动作不直接 closeSettings，而是同一个带在途守卫的 cancelSettings。
+  assert.match(rendererSrc, /'close-settings': \(\) => cancelSettings\(\),/);
   // 校对 / 敏感词装配里的 render*Settings 现在是惰性转发（TDZ）
   assert.ok(rendererSrc.includes('renderProofreadSettings: () => renderProofreadSettings()'));
   assert.ok(rendererSrc.includes('renderSensitiveSettings: () => renderSensitiveSettings()'));
@@ -274,4 +278,32 @@ test('RSHE-A-02：按书作用域隐藏清单与 settings-ia 同源，settings-u
   const scopeBody = moduleSrc.slice(scopeStart, moduleSrc.indexOf('\n  }', scopeStart));
   assert.equal((scopeBody.match(/for \(const id of /g) || []).length, 1, '按作用域隐藏只留一条单循环');
   assert.match(scopeBody, /for \(const id of globalOnlyFields\)/);
+});
+
+// KNOWN-SETTINGS（中）：Esc 的 close-settings 动作以前直接 closeSettings()，绕过 savingSettings /
+// resettingSettings 闸门 —— 面板回滚成「没保存」的样子，可 setConfig 回执仍落盘并弹「设置已保存」。
+// 现在 Esc 与底栏「取消」/ 右上「×」共用同一个 cancelSettings()：模块导出它，渲染层只用它。
+test('KNOWN-SETTINGS 静态闸门：Esc 关设置走 cancelSettings，与取消 / × 同一守卫', () => {
+  const settingsText = fs.readFileSync(path.join(ROOT, 'renderer', 'settings-ui.js'), 'utf8').replace(/\r\n/g, '\n');
+  const rendererText = rendererSrc.replace(/\r\n/g, '\n');
+  assert.match(rendererText, /'close-settings': \(\) => cancelSettings\(\)/, 'Esc 的 close-settings 动作要调 cancelSettings');
+  assert.equal(
+    /'close-settings': \(\) => closeSettings\(\)/.test(rendererText),
+    false,
+    'Esc 不许再直接 closeSettings（绕过在途闸门）'
+  );
+  assert.match(settingsText, /^\s*cancelSettings,\s*$/m, '模块要导出 cancelSettings');
+  const guardAt = settingsText.indexOf('function cancelSettings(');
+  assert.ok(guardAt > 0, '要有唯一的 cancelSettings 守卫');
+  const guardBody = settingsText.slice(guardAt, settingsText.indexOf('\n  }', guardAt));
+  assert.match(guardBody, /savingSettings \|\| resettingSettings/, '守卫必须看在途写操作');
+  assert.match(guardBody, /return false/, '被挡下要回 false');
+  // 三条用户入口（取消按钮 / × / Esc 动作）用的都是同一个守卫：模块里不再有第二份在途判定
+  assert.equal(
+    /const cancelSettings = \(\) => \{\s*if \(savingSettings \|\| resettingSettings\) return;/.test(settingsText),
+    false,
+    'setupSettingsUi 里不许再手写第二份取消守卫'
+  );
+  assert.match(settingsText, /\$\('btn-settings-cancel'\)\.addEventListener\('click', cancelSettings\)/, '底栏取消走共享守卫');
+  assert.match(settingsText, /\$\('btn-settings-close'\)\.addEventListener\('click', cancelSettings\)/, '右上 × 走共享守卫');
 });

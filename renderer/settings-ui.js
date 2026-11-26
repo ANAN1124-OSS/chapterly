@@ -899,6 +899,16 @@
     state.settingsBackup = null;
   }
 
+  // KNOWN-SETTINGS（中）：关设置的唯一用户入口 —— 底栏「取消」、右上「×」、Esc 都走这里。
+  // 保存设置 / 恢复全局默认在途时一律不关：旧实现只给前两条入口加了闸，Esc 直接 closeSettings()，
+  // 弹层回滚成「没保存」的样子，可 setConfig 回执仍会落盘并弹「设置已保存」，界面说的和磁盘发生的相反。
+  // 回 false = 被挡下（调用方可以据此不平移焦点），true = 真的关掉了。
+  function cancelSettings() {
+    if (savingSettings || resettingSettings) return false;
+    closeSettings();
+    return true;
+  }
+
   // 五-M14（SS-11）：别的窗口改了全局设置 → 本窗口开着的设置表单按最新配置重定基。
   // 为什么必须做：openSettings 回填的是打开那一刻的全局配置，而保存把表单里**全部**全局字段整份
   // 写回 config:set（booksRoot / 统计 / 快照 / 模板 / 词表路径…）。别的窗口刚改过某项后，这边按旧
@@ -1098,10 +1108,7 @@
     // 五-L18（SS-13）：写操作在途时取消 / 关闭都不执行 —— 否则保存回执落地会违背「取消」，
     // 或在按书作用域里把刚保存的显示设置从界面清空（磁盘上仍在）。按钮本身也已 disabled，
     // 这里再挡一层，键盘 / 程序化触发同样挡住。
-    const cancelSettings = () => {
-      if (savingSettings || resettingSettings) return;
-      closeSettings();
-    };
+    // KNOWN-SETTINGS：闸门只有 cancelSettings() 一份，Esc 动作表（renderer.js）也调它。
     $('btn-settings-cancel').addEventListener('click', cancelSettings);
     // 右上「×」与底栏「取消」完全同义（含关闭前的预览还原，拍板 #3）
     $('btn-settings-close').addEventListener('click', cancelSettings);
@@ -1292,6 +1299,7 @@
       openSettings,
       openStatsCalendar,
       closeSettings,
+      cancelSettings,
       handleExternalConfigChange,
       resetBookDisplay,
       saveSettings,

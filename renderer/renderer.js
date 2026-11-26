@@ -2134,7 +2134,8 @@
     'close-history': () => closeHistoryDialog(),
     'close-format': () => closeFormatDialog(),
     'close-export': () => closeExportDialog(),
-    'close-settings': () => closeSettings(),
+    // KNOWN-SETTINGS：Esc 与「取消」/「×」同一闸门 —— 设置在途时不关层（回执落地后由保存链关）。
+    'close-settings': () => cancelSettings(),
     'close-command': () => commandPalette.close(),
     // 快捷键一览（1.5.0 功能-4）：锁键层，Esc 收起并把焦点还给打开前的元素。
     'close-shortcuts': () => closeShortcutsPage(),
@@ -2848,7 +2849,7 @@
     },
     texts: { commonLib, formatBytes }
   });
-  const { setSelectValue, renderSettingsCaretColors, renderChapterTemplatePreview, renderSensitiveSettings, renderProofreadSettings, checkUpdate, openUpdateDownload, previewSettings, openSettings, openStatsCalendar, closeSettings, handleExternalConfigChange, resetBookDisplay, saveSettings, setupSettingsUi } = settingsUi;
+  const { setSelectValue, renderSettingsCaretColors, renderChapterTemplatePreview, renderSensitiveSettings, renderProofreadSettings, checkUpdate, openUpdateDownload, previewSettings, openSettings, openStatsCalendar, closeSettings, cancelSettings, handleExternalConfigChange, resetBookDisplay, saveSettings, setupSettingsUi } = settingsUi;
 
   // ---------- M1 第六刀：换书入口装配 ----------
   // 为什么放这里：host 依赖 renderChapterList / clearFindSession / currentChapterLabel / resetWriteTimer /
