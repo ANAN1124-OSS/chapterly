@@ -481,6 +481,28 @@ test('码字日历：非法年月回落当前月；闰年 / 平年天数与未�
   assert.equal(past.total, 7);
 });
 
+// A2-STATS-04（低）：日期键只按 trim 校验、却按原字符串入库 —— 带前后空白的键在 dayTotal / monthView
+// 查不到、streak 却算进、aggregate 用 slice(0,4) 把年归成「202」，三个聚合出口口径分裂。
+test('A2-STATS-04：带前后空白的日期键不许入库（三个聚合出口同口径）', () => {
+  const anchor = '2026-11-20';
+  const cleaned = statsLib.sanitizeStats(
+    {
+      days: {
+        ' 2026-11-01': { books: { a: 10 } },
+        '2026-11-02 ': { books: { a: 5 } },
+        '2026-11-03': { books: { a: 1 } }
+      }
+    },
+    { anchor }
+  );
+  assert.deepEqual(Object.keys(cleaned.days), ['2026-11-03'], '脏键直接丢弃，只留规范键（不按原字符串入库）');
+  assert.equal(statsLib.dayTotal(cleaned, ' 2026-11-01'), 0, 'dayTotal 查不到脏键');
+  assert.equal(statsLib.dayTotal(cleaned, '2026-11-01'), 0, 'trim 后也不该冒出一天');
+  const agg = statsLib.aggregate(cleaned, {}, { now: new Date(2026, 10, 20, 12) });
+  assert.equal(agg.totals.totalChars, 1, '汇总只算规范键那一天');
+  assert.deepEqual(agg.options.years, [{ year: 2026, chars: 1 }], '年份只认 4 位规范键，不会出现 202');
+});
+
 test('码字日历：没设目标时色阶按当月最高一天分 1–4 级', () => {
   assert.equal(statsLib.calendarLevel(0, { goal: 0, maxChars: 100 }), 0);
   assert.equal(statsLib.calendarLevel(1, { goal: 0, maxChars: 200 }), 1);

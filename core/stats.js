@@ -93,8 +93,11 @@ function sanitizeStats(raw, options) {
       ? raw.days
       : {};
   // ISO 日期键按字符串排序就是时间顺序；未来键丢弃，只留最近的 MAX_DAYS 天，避免超大文件。
+  // A2-STATS-04：键必须与 trim 后逐字相同 —— isValidDayKey 内部会 trim，旧实现拿原字符串入库，
+  // 带前后空白的键在 dayTotal / monthView 查不到、aggregate 的 slice(0,4) 却把年归成「202」。
+  // 这类脏键直接丢弃（统计是派生数据，宁可少一天也不让三个聚合出口口径分裂）。
   const keys = Object.keys(rawDays)
-    .filter((key) => isValidDayKey(key) && key <= anchor)
+    .filter((key) => key === key.trim() && isValidDayKey(key) && key <= anchor)
     .sort();
   const keep = keys.slice(-MAX_DAYS);
   for (const key of keep) {
