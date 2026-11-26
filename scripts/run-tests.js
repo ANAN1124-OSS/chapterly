@@ -11,6 +11,8 @@
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const gateCounts = require('./gate-counts');
+// A2-GATE-04：被 kill / 超时的上一轮测试不会走 process 'exit'，启动时清一次超龄 cw-* 残留。
+const tmpCleanup = require('../tests/tmp-cleanup');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -22,6 +24,12 @@ function parseUnitCount(output) {
 }
 
 function main(argv) {
+  // A2-GATE-04：只删 os.tmpdir() 直接子目录里 cw-* 且超 24 小时的；失败静默，绝不阻塞本次测试。
+  try {
+    tmpCleanup.sweepStale();
+  } catch {
+    /* 清理失败不影响测试 */
+  }
   const patterns = argv.length ? argv : ['tests/**/*.test.js'];
   const result = spawnSync(process.execPath, ['--test', '--test-reporter=spec', ...patterns], {
     cwd: ROOT,

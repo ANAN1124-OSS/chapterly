@@ -218,7 +218,12 @@ test('R19 F2（TB-02/TB-06）：mkdtemp 只许在 tests/tmp-cleanup.js 出现，
   assert.equal((shared.match(/\.mkdtemp(Sync)?\s*\(/g) || []).length, 2, 'tmp-cleanup.js 里应只有 mkTmp / mkTmpSync 两处 mkdtemp');
   assert.match(shared, /async function mkTmp\(/, 'tmp-cleanup.js 要导出共享的 mkTmp');
   assert.match(shared, /function mkTmpSync\(/, 'tmp-cleanup.js 要导出共享的 mkTmpSync');
-  assert.match(shared, /module\.exports = \{ track, mkTmp, mkTmpSync \}/, '两个 helper 都要导出');
+  // A2-GATE-04：新增 sweepStale（超龄残留清理入口），导出面随之扩展；两个 helper 仍必须导出。
+  assert.match(
+    shared,
+    /module\.exports = \{ track, mkTmp, mkTmpSync, sweepStale/,
+    '两个 helper 与超龄清理入口都要导出'
+  );
   // 用武之地：仓库里确实有大量文件走共享 helper（不是把调用点全删光的假绿）。
   let using = 0;
   for (const full of files) {

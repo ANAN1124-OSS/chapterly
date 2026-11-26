@@ -16,6 +16,13 @@ const logic = require('./e2e-runner-logic');
 const { killProcessTree: killTreeShared } = require('./kill-tree');
 // A2-GATE-02：把本轮实测 E2E 条数落进临时计数文件，`version-sync --check` 默认与文档比对。
 const gateCounts = require('./gate-counts');
+// A2-GATE-04：E2E 现场在失败 / 超时后会保留；启动时清一次超龄（>24h）的 cw-* 残留，
+// 只删系统临时目录的直接子目录，绝不递归找、不跟随符号链接。
+try {
+  require('../tests/tmp-cleanup').sweepStale();
+} catch {
+  /* 清理失败不影响自检 */
+}
 
 const root = path.join(__dirname, '..');
 const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
