@@ -108,8 +108,13 @@
     return true;
   }
 
-  function closeFragmentDialog() {
+  function closeFragmentDialog(options) {
+    // A2-FRAG-02（2026-11-26 审计）：保存在途时 Esc / 取消 / 遮罩都不许关 —— 否则写盘失败的错误
+    // 与作者刚敲的草稿会写进一个已经隐藏的弹层（作者看不到「没保存成功」，以为关掉就是放弃了）。
+    // 保存成功由模块自己带 force 关闭；失败则让弹层继续开着、错误文案就落在看得见的输入框下面。
+    if (state.fragmentBusy && !(options && options.force === true)) return false;
     $('fragment-backdrop').classList.add('hidden');
+    return true;
   }
 
   async function saveFragment() {
@@ -125,7 +130,7 @@
     setFragmentSaveState('正在保存…');
     try {
       const data = await call(api.createFragment, text);
-      closeFragmentDialog();
+      closeFragmentDialog({ force: true });
       toast(`碎片已保存：_碎片\\${data.name}（${formatCount(data.chars)} 字）`);
       // 插入面板如果正开着（理论上不会，但别让列表和磁盘对不上）
       if (!$('fragments-backdrop').classList.contains('hidden')) await refreshFragments();

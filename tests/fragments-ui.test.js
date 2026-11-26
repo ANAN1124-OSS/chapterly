@@ -302,6 +302,38 @@ test('openFragmentDialog / closeFragmentDialog：清空输入、收起顶栏菜�
   assert.equal(ctx.dom.map.get('fragment-backdrop').classList.contains('hidden'), true);
 });
 
+test('A2-FRAG-02：保存在途时 Esc/取消不关弹层（失败文案留在看得见的输入框下）', async () => {
+  const ctx = build({ text: '在途碎片' });
+  ctx.dom.map.get('fragment-backdrop').classList.remove('hidden');
+  let release = null;
+  ctx.host.api.createFragment = () =>
+    new Promise((resolve, reject) => {
+      release = { resolve, reject };
+    });
+  const pending = ctx.ui.saveFragment();
+  assert.equal(ctx.state.fragmentBusy, true);
+  // Esc / 「取消」/ 遮罩点击都走同一个 closeFragmentDialog：在途时必须拒绝关闭
+  assert.equal(ctx.ui.closeFragmentDialog(), false);
+  assert.equal(
+    ctx.dom.map.get('fragment-backdrop').classList.contains('hidden'),
+    false,
+    '保存在途不许把弹层关掉（草稿与失败态会写进隐藏层）'
+  );
+  release.reject(new Error('磁盘满'));
+  const res = await pending;
+  assert.equal(res.ok, false);
+  assert.equal(ctx.state.fragmentBusy, false);
+  assert.equal(
+    ctx.dom.map.get('fragment-backdrop').classList.contains('hidden'),
+    false,
+    '写盘失败后弹层要保持可见，作者才能看到「没保存成功」'
+  );
+  assert.equal(ctx.dom.map.get('fragment-save-state').textContent, '保存失败：磁盘满');
+  // 失败后（不在途了）取消照常可关
+  assert.equal(ctx.ui.closeFragmentDialog(), true);
+  assert.equal(ctx.dom.map.get('fragment-backdrop').classList.contains('hidden'), true);
+});
+
 test('openFragmentDialog（C39）：30ms 内弹层被关掉 → 定时器不把焦点抢进隐藏输入框', async () => {
   const ctx = build({ text: '旧内容' });
   assert.equal(ctx.ui.openFragmentDialog(), true);
