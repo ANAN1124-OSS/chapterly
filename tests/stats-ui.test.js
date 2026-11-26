@@ -887,6 +887,24 @@ test('统计 CSV：按当前汇总生成文本（BOM / 表头 / 合计），空�
   assert.ok(second.host.$('stats-csv-hint').textContent.includes('还没有'));
 });
 
+// A2-STATS-UI-01（低）：aggregate 被合法覆盖（保存回执 / 时长 flush / 采集建章只给摘要）后，
+// buildStatsCsv 把「字段缺失」当「没有记录」→ 清掉作者刚生成的 CSV 并谎报无记录。
+test('A2-STATS-UI-01：摘要型 payload（没有 aggregate）不清已生成的 CSV，也不谎报没有记录', async () => {
+  installDocument();
+  const payload = { todayChars: 0, goal: 0, goalPercent: 0, goalMet: false, days: [], recentTotal: 0, todaySeconds: 0 };
+  payload.aggregate = aggregateFixture();
+  const { host, state } = makeHost({ onCall: (channel) => (channel === 'stats:get' ? payload : undefined) });
+  const ui = statsUi.create(host);
+  await ui.refreshStats();
+  const generated = ui.buildStatsCsv();
+  assert.ok(generated.length > 0, '前提：先生成一份 CSV');
+  // 合法覆盖：保存回执 / 时长 flush / 采集建章只给摘要，不带 aggregate
+  state.stats = { todayChars: 12, goal: 0, goalPercent: 0, goalMet: false, days: [], totalChars: 0 };
+  assert.equal(ui.buildStatsCsv(), '');
+  assert.equal(host.$('stats-csv-text').value, generated, '字段缺失不许清掉已生成的 CSV');
+  assert.match(host.$('stats-csv-hint').textContent, /还在读取/, '提示要说「汇总还在读取」，不是「没有记录」');
+});
+
 test('统计筛选：筛选值不在选项里（书被删 / 年份没记录）时仍显示它，汇总行和下拉不打架', async () => {
   installDocument();
   const payload = { todayChars: 0, goal: 0, goalPercent: 0, goalMet: false, days: [], recentTotal: 0, todaySeconds: 0 };

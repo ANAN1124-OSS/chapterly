@@ -27,8 +27,10 @@
     const snapshotNote = opts.snapshotTaken ? ' · 今日快照已留' : '';
     // C0（审计 #3 / E1）：旧章字数基线读不到时，这一次的增量没进今日统计——在「已保存」旁
     // 补一句弱提示（不拦保存、不改其它文案）。正常路径这个字段不存在，提示与以前逐字一致。
-    const baselineNote = opts.charsBaselineMissing ? ' · 本次字数未计入' : '';
-    return `已保存：${count} 章 · 本章 ${chars}${snapshotNote}${baselineNote}`;
+    // A2-STATS-02（低）：stats.json 写盘失败（磁盘满 / EPERM）时同样没进统计，同口径补同一句；
+    // 两个原因同时成立也只说一次。
+    const statsNote = opts.charsBaselineMissing || opts.statsFailed ? ' · 本次字数未计入' : '';
+    return `已保存：${count} 章 · 本章 ${chars}${snapshotNote}${statsNote}`;
   }
 
   // 后台全书校验的结论：只有确实缺章才需要提醒；报告不完整 / 校验失败（调用方 catch 掉）

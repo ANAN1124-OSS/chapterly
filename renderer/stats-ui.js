@@ -253,9 +253,16 @@
   // 只读 textarea 里供全选复制。写盘通道本窗口没有（执行卡 §9 待拍板），绝不自己加 IPC。
   function buildStatsCsv() {
     const view = state.stats && state.stats.aggregate ? state.stats.aggregate : null;
-    const rows = view && Array.isArray(view.days) ? view.days : [];
     const area = $('stats-csv-text');
     const hintEl = $('stats-csv-hint');
+    if (!view) {
+      // A2-STATS-UI-01（低）：state.stats 的三个合法写入方（保存回执 / 写作时长 flush / 采集建章）
+      // 只给摘要、不带 aggregate —— 字段缺失 ≠「这段时间没有记录」。旧实现按空结果处理：清掉作者
+      // 刚生成的 CSV 并按「没有记录」给提示，与汇总行「没有 aggregate 就整块不动」的口径自相矛盾。
+      if (hintEl) hintEl.textContent = '统计汇总还在读取，稍后再生成。';
+      return '';
+    }
+    const rows = Array.isArray(view.days) ? view.days : [];
     if (!rows.length) {
       if (area) {
         area.value = '';

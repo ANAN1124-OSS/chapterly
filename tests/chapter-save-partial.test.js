@@ -245,3 +245,13 @@ test('A2-SAVE-02/03 接线：部分成功与全书校验提示都过身份复核
   assert.match(verifyBody, /toast\(notice, 'warn'\)/, '只弹判定通过后的提示');
   assert.equal(/toast\(warn, 'warn'\)/.test(verifyBody), false, '不许再无条件弹 warn');
 });
+
+// A2-STATS-02（低）：statsError 进回执后无人读 → 统计写盘失败时界面一切正常、今日数字静默少记。
+// 保存摘要要把 statsError 交给 save-logic 的弱提示（纯函数行为见 tests/save-logic.test.js）。
+test('A2-STATS-02 接线：保存摘要读 statsError 并给弱提示', () => {
+  const saveAt = SAVE_CHAIN_SOURCE.indexOf('saveLogic.savedToastText(');
+  assert.ok(saveAt > 0, 'save-chain-ui.js 里找不到保存摘要组装');
+  const block = SAVE_CHAIN_SOURCE.slice(saveAt, saveAt + 700);
+  assert.match(block, /statsFailed: Boolean\(data\.statsError\)/, '要把 statsError 如实交给摘要');
+  assert.match(SAVE_CHAIN_SOURCE, /statsFailed: Boolean\(data\.statsError\)/, '只此一处来源');
+});

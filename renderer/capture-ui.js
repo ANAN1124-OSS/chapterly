@@ -802,7 +802,10 @@
         const chapterName = data.chapter && data.chapter.name ? data.chapter.name : '';
         const displayTitle = chaptersLib.formatTitle(state.meta, data.index, chapterName);
         const detail = data.titleOnly ? '仅章名' : `${formatCount(written)} 字`;
-        toast(`已从剪贴板新建：${displayTitle}（${detail}）`);
+        // A2-STATS-02（低）：统计写盘失败时这次正文字数没进今日统计（主进程止血后带回原因）——
+        // 与保存摘要同一句弱提示，不弹模态、不改变建章结果。
+        const statsNote = data.statsError ? ' · 本次字数未计入统计' : '';
+        toast(`已从剪贴板新建：${displayTitle}（${detail}）${statsNote}`);
         return {
           ok: true,
           index: data.index,

@@ -677,6 +677,27 @@ test('章节：titleOnly（整条当章名、没有正文）→ toast 标「仅�
     assert.equal(/\d+ 字/.test(toastLine), false, '不能把章名字数当正文字数报出去');
   }));
 
+// A2-STATS-02（低）：捕获建章回执的 statsError 以前没有消费方 —— 统计写不进时界面一切正常，
+// 今天 / 目标 / 连续天数静默少记这次正文字数。成功 toast 要补一句弱提示（不弹模态）。
+test('章节：统计写盘失败时成功 toast 补一句「本次字数未计入统计」', () =>
+  withFakeDocument(async () => {
+    const ctx = build({ clipboardText: PENDING_TEXT, commitStatsError: 'EACCES: 统计文件写不进去' });
+    const ui = captureUiModule.create(ctx.host);
+    await ui.open();
+    const result = await ui.createChapter({ pending: true });
+    assert.equal(result.ok, true, '统计失败不影响建章结果');
+    const toastLine = ctx.log.find((item) => item.startsWith('toast:info:已从剪贴板新建：'));
+    assert.ok(toastLine, '成功 toast 照常');
+    assert.match(toastLine, /本次字数未计入统计/, '要如实说明这次字数没进统计');
+    // 统计正常时不出现这句（文案不无端变长）
+    const okCtx = build({ clipboardText: PENDING_TEXT });
+    const okUi = captureUiModule.create(okCtx.host);
+    await okUi.open();
+    await okUi.createChapter({ pending: true });
+    const okToast = okCtx.log.find((item) => item.startsWith('toast:info:已从剪贴板新建：'));
+    assert.equal(okToast.includes('未计入'), false);
+  }));
+
 test('章节：队列条目成功 → payload 带 queueId、被消费的记录消失、其余记录保留、面板不关', () =>
   withFakeDocument(async () => {
     const ctx = build({ queue: [{ text: QUEUE_A }, { text: QUEUE_B }] });

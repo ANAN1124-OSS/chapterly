@@ -107,6 +107,26 @@ test('保存提示是纯函数：不依赖 DOM / 全局状态，重复调用结�
   assert.equal(saveLogic.isDirtyAgainstSnapshot('同一段', '同一段'), false);
 });
 
+// A2-STATS-02（低）：stats.json 写不进时主进程回 statsError，但渲染层全仓没有消费方 ——
+// 正文保存成功、界面一切正常，今天 / 目标 / 连续天数静默少记。与「基线读不到」同口径给一句弱提示。
+test('A2-STATS-02：统计写盘失败时保存摘要补一句「本次字数未计入」', () => {
+  assert.equal(
+    saveLogic.savedToastText({ chapterCount: 3, charsText: '18 字', statsFailed: true }),
+    '已保存：3 章 · 本章 18 字 · 本次字数未计入'
+  );
+  assert.equal(
+    saveLogic.savedToastText({ chapterCount: 3, charsText: '18 字', statsFailed: false }),
+    '已保存：3 章 · 本章 18 字',
+    '统计正常时文案逐字不变'
+  );
+  // 与「基线读不到」可以同时出现（两个原因都让这次增量没进统计）
+  assert.equal(
+    saveLogic.savedToastText({ chapterCount: 1, charsText: '2 字', charsBaselineMissing: true, statsFailed: true }),
+    '已保存：1 章 · 本章 2 字 · 本次字数未计入',
+    '同一句提示不重复'
+  );
+});
+
 // A2-SAVE-02（低）：部分成功（META_SAVE_FAILED）回执写字数缓存前要核「还是发起时那本书」——
 // 保存 A 书期间换了书，B 书里同 id 的章不许被 A 书的字数覆盖，也不许重画 B 书的目录。
 test('A2-SAVE-02：部分成功的字数缓存只写回发起时那本书（跨书回 -1）', () => {

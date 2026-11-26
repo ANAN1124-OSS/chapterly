@@ -382,7 +382,8 @@ function build(options = {}) {
           titleOnly: Boolean(options.titleOnly),
           bodyChars,
           stats: options.noStats ? null : { today: 100, streak: 3 },
-          statsError: null,
+          // A2-STATS-02：统计写盘失败时主进程带脱敏后的原因（渲染层要消费它给弱提示）
+          statsError: options.commitStatsError || null,
           queueRemoved
         }
       };
