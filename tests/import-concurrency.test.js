@@ -271,6 +271,50 @@ test('X-N2 C8：静态接线（暂存 + rename / 失败只清暂存 / ipc 预检
   assert.match(bookSrc, /findOpenBookWindow/, '预检要查跨窗口打开登记');
 });
 
+// C10（A2-IMPORT-02）：现成书「同 id 换新 id」是 read-then-act —— 两个窗口同时导入同一本书时，
+// 双方都在对方提交之前读到「id 空闲」，最终书库里出现两本同 id 的书（按书显示覆盖 / 书签 /
+// 统计分桶 / 删书清理全部以 meta.id 为 key，会互相命中）。判重、换 id、提交必须在同一把
+// 书库级互斥里；后到者一定看到先到者已提交的 id 再决定换不换。
+test('A2-IMPORT-02：同一本现成书并发导入 → 两本书的 meta.id 不同（判重与提交同一临界区）', async () => {
+  const base = await mkTmp();
+  const booksRoot = path.join(base, '书架');
+  const src = await makeChapterSource(path.join(base, '来源'), '来源书', chapterFiles('甲', 8));
+  const chapters = [];
+  for (let i = 1; i <= 8; i += 1) {
+    const file = `${String(i).padStart(3, '0')}-甲${i}.txt`;
+    chapters.push({ id: `ch_${i}`, name: `甲${i}`, file });
+  }
+  await fs.writeFile(
+    path.join(src, '书目.json'),
+    JSON.stringify({ version: 1, id: 'b_same_id', title: '来源书', chapters, lastOpenChapterId: 'ch_1' }),
+    'utf8'
+  );
+
+  const [resA, resB] = await Promise.all([
+    importer.importFolders(booksRoot, [src]),
+    importer.importFolders(booksRoot, [src])
+  ]);
+  for (const result of [resA, resB]) {
+    assert.equal(result.failed.length, 0, `并发导入不该失败：${JSON.stringify(result.failed)}`);
+    assert.equal(result.imported.length, 1);
+  }
+  const ids = [];
+  for (const result of [resA, resB]) {
+    const meta = await storage.readBookMeta(result.imported[0].path);
+    ids.push(meta.id);
+    assert.equal(meta.chapters.length, 8, '每本都必须是完整的一份副本');
+  }
+  assert.equal(new Set(ids).size, 2, `并发导入同一本现成书必须产出两个不同 id，实际：${ids.join(' / ')}`);
+
+  // 静态接线闸：判重 + 提交必须在同一段 withBookLock(booksRoot, …) 里，不能拆回 read-then-act。
+  const importerSrc = read(path.join('core', 'importer.js'));
+  const lockAt = importerSrc.indexOf('withBookLock(booksRoot');
+  assert.ok(lockAt > 0, '现成书 id 判重 / 提交必须包进书库级 withBookLock(booksRoot)');
+  const lockBody = importerSrc.slice(lockAt, lockAt + 600);
+  assert.match(lockBody, /listBookIds\(booksRoot\)/, 'id 判重必须在临界区里重新读一次');
+  assert.match(lockBody, /commitStagedFolder\(booksRoot/, '提交必须在同一临界区里');
+});
+
 // C9（复核缺口 / WP7 补漏）：暂存书目录 mkdir 失败 → 只清自己刚建的暂存根，不留 .import- 残留。
 // 旧写法 createStagingRoot / mkdir(staging) 在 try 外，mkdir 一失败暂存根就没人清（崩溃残留要等 1 小时）。
 test('C9（WP7 补漏）：暂存书目录 mkdir 失败 → finally 清掉暂存根（不留 .import- 残留）', async () => {

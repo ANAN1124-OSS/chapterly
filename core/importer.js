@@ -588,14 +588,21 @@ async function importBookFolder(booksRoot, sourceDir, analysis, options = {}) {
       // 书签一起清掉，统计也合桶。发布前扫一次目标库：同 id 已在用就给副本换 newBookId() 并写回
       // 暂存书目；无冲突保持原 id（旧行为不变）。来源书目没有 id 的旧书维持现状，不凭空造 id。
       const takenId = typeof meta.id === 'string' ? meta.id.trim() : '';
-      if (takenId && (await storage.listBookIds(booksRoot)).includes(takenId)) {
-        meta = await storage.writeBookMeta(
-          staging,
-          { ...meta, id: newBookId() },
-          { structural: true }
-        );
-      }
-      const committed = await commitStagedFolder(booksRoot, staging, desiredFolder);
+      // A2-IMPORT-02（2026-11-26 审计）：判重与提交分两步是 read-then-act —— 两个窗口同时导入
+      // 同一本书时，双方都可能在对方提交之前读到「id 空闲」，最终书库里出现两本同 id 的书。
+      // meta.id 是书级显示覆盖 / 查找书签 / 统计分桶 / 删书清理的 key，同 id 会互相命中。
+      // 现在「重新判重 → 换 id → 提交」在同一把书库级互斥里（跨窗口共用同一个主进程）：
+      // 后到者一定看到先到者已提交的 id，再决定换不换。
+      const committed = await storage.withBookLock(booksRoot, async () => {
+        if (takenId && (await storage.listBookIds(booksRoot)).includes(takenId)) {
+          meta = await storage.writeBookMeta(
+            staging,
+            { ...meta, id: newBookId() },
+            { structural: true }
+          );
+        }
+        return commitStagedFolder(booksRoot, staging, desiredFolder);
+      });
       return withSkippedEntries(
         {
           imported: true,
