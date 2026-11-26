@@ -1884,11 +1884,19 @@ async function deleteChapter(bookPath, chapterId, options = {}) {
   // 校验过的绝对路径，不再按原始字段现拼 bookPath（否则回滚能把文件写出书外）。
   const targetPath = assertChapterFile(bookPath, target.file);
   let trashPath = null;
+  // V221-STORAGE-03（2026-11-26 复核）：章节文件在应用外被删 / 改名时，rename 报 ENOENT —— 旧实现
+  // 整次删除失败（TRASH_FAILED），书目里永远留着一条点开就缺章的死记录，应用内没有出口。
+  // ENOENT = 文件已经不在：跳过备份、继续从书目移除（如实回 sourceMissing，界面不提供撤销）；
+  // 其它错误（权限 / 占用）仍照旧失败。
+  let sourceMissing = false;
   try {
-    // V221-GATE-01：options.now 只给单测注入固定时钟（见 moveToTrash 的注释）。
     trashPath = await moveToTrash(bookPath, target.file, options);
   } catch (err) {
-    throw new StorageError('TRASH_FAILED', `无法把章节移到回收目录：${errorText.describeForUi(err).message}`);
+    if (err && err.code === 'ENOENT') {
+      sourceMissing = true;
+    } else {
+      throw new StorageError('TRASH_FAILED', `无法把章节移到回收目录：${errorText.describeForUi(err).message}`);
+    }
   }
   // 空章节（2026-11-25 作者要求）：删最后一章不再自动补一个空章 —— 允许 0 章，
   // 界面回到「还没有章节，点＋新建章节」的空态；撤销删除照旧把这一章放回去。
@@ -1908,17 +1916,23 @@ async function deleteChapter(bookPath, chapterId, options = {}) {
     throw batchFailure(err, {
       code: 'DELETE_FAILED',
       action: '删除本章',
-      notes: rolledBack
-        ? [`「${target.file}」已经放回原处`, '书还是删除前的样子']
-        : [
-            `「${target.file}」现在在 ${trashDirLabel(path.dirname(trashPath))} 里`,
-            '可以用本书历史的「删除章节」那条把它放回书文件夹'
+      notes: sourceMissing
+        ? [
+            `「${target.file}」在应用外已经不在了（可能被删或改名），这次只从书目移除这条记录`,
+            '书还是删除前的样子'
           ]
+        : rolledBack
+          ? [`「${target.file}」已经放回原处`, '书还是删除前的样子']
+          : [
+              `「${target.file}」现在在 ${trashDirLabel(path.dirname(trashPath))} 里`,
+              '可以用本书历史的「删除章节」那条把它放回书文件夹'
+            ]
     });
   });
   return {
     meta: saved,
     trashPath,
+    sourceMissing,
     newChapter,
     // 删到 0 章时没有「下一章」可回落：回 -1，渲染层据此进空态（点＋新建章节再写）。
     index: saved.chapters.length ? Math.min(index, saved.chapters.length - 1) : -1

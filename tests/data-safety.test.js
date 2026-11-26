@@ -492,3 +492,24 @@ test('V221-STORAGE-02：整本替换 0 章改动就失败 → 提示不再自相
   assert.match(error.message, /本轮开始前的原文副本在/, '备份目录存在时如实说明它只是开始前的副本');
   assert.doesNotMatch(error.message, /替换前的原文都在/, '0 章改动时不许说「替换前的原文都在」');
 });
+
+// V221-STORAGE-03（2026-11-26 复核）：章节 txt 在应用外被删 / 改名时，删除动作旧实现整次失败
+// （TRASH_FAILED），书目里留下一条点开就缺章、应用内无出口的死记录。ENOENT = 文件已经不在：
+// 跳过备份、继续从书目移除；正常删章仍进 _trash 并可撤销。
+test('V221-STORAGE-03：章节文件在应用外没了 → 仍能从书目删除，不再 TRASH_FAILED 卡死', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '外部删章');
+  const meta0 = await storage.readBookMeta(bookPath);
+  const chapter = meta0.chapters[0];
+  await fs.rm(path.join(bookPath, chapter.file), { force: true });
+  const result = await storage.deleteChapter(bookPath, chapter.id);
+  assert.equal(result.sourceMissing, true, '回执要如实说明章节文件已经不在了');
+  assert.equal(result.trashPath, null, '没有文件可备份');
+  const after = await storage.readBookMeta(bookPath);
+  assert.equal(after.chapters.length, 0, '书目里不能留下点开就缺章的死记录');
+  // 正常删章不受影响：文件移进 _trash、回传备份路径
+  const created = await storage.createChapter(bookPath, 0, '第二章');
+  const normal = await storage.deleteChapter(bookPath, created.chapter.id);
+  assert.equal(normal.sourceMissing, false);
+  assert.ok(normal.trashPath && normal.trashPath.includes('_trash'), '正常删除仍要留备份供撤销');
+});
