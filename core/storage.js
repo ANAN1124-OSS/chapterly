@@ -20,7 +20,7 @@ const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
 const previewCacheLib = require('./preview-cache');
 // E-N2（审计中 #2）：章节内容指纹（字节数 + 首尾 4 KB 哈希）与搜索索引共用同一份实现。
-const { chapterContentHashOf } = require('./chapter-fingerprint');
+const { chapterContentHashOf, fingerprintFromBuffer } = require('./chapter-fingerprint');
 
 const BOOK_FILE = '书目.json';
 const BOOK_BAK = '书目.json.bak';
@@ -1332,8 +1332,7 @@ async function loadChapterText(bookPath, file, { track = false, maxChars = limit
     opened = await readFileWithSizeGate(p, {
       code: 'CHAPTER_TOO_LARGE',
       label: `章节文件「${file}」`,
-      tail: '没有读进内存',
-      encoding: 'utf8'
+      tail: '没有读进内存'
     });
   } catch (err) {
     if (err instanceof StorageError) throw err;
@@ -1341,8 +1340,10 @@ async function loadChapterText(bookPath, file, { track = false, maxChars = limit
     throw err;
   }
   const stat = opened.stat;
+  // KNOWN-FINGERPRINT：读到的就是原始字节 —— 同一份字节既解码成正文，也给指纹采样；
+  // 不再为指纹二次 open 同一个文件（Buffer.toString('utf8') 与 readFile({encoding:'utf8'}) 等价）。
   const raw = opened.buffer;
-  const text = chaptersLib.normalizeNewlines(stripBom(raw));
+  const text = chaptersLib.normalizeNewlines(stripBom(raw.toString('utf8')));
   // P1（三审）：128 MB 字节闸门拦不住字符数 —— 纯 ASCII 的 128 MB 文件解码后是 1.28 亿字符，
   // 整份经 IPC 塞进编辑区会把渲染层拖到假死。这里补一道与保存 / 救稿同源的字数硬上限
   // （core/limits.js 的 MAX_CHAPTER_READ_CHARS，比保存上限宽 6 倍：能打开才能救稿）。
@@ -1354,8 +1355,9 @@ async function loadChapterText(bookPath, file, { track = false, maxChars = limit
   });
   if (tooManyChars) throw new StorageError(tooManyChars.code, tooManyChars.message);
   if (track) {
-    // 读不到（被占用 / 权限）时 chapterContentHashOf 返回空串 → 不记基线，保存守卫回落 mtime 口径。
-    rememberChapterFingerprint(bookPath, file, await chapterContentHashOf(p, stat.size), stat.mtimeMs);
+    // KNOWN-FINGERPRINT（2026-11-26 复核）：正文已经在 opened.buffer 里，指纹直接用同一份字节算 ——
+    // 旧实现再 chapterContentHashOf(p) 会二次 open 同一个文件、多两次 read；口径逐字相同。
+    rememberChapterFingerprint(bookPath, file, fingerprintFromBuffer(raw, stat.size), stat.mtimeMs);
   }
   return {
     text,

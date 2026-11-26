@@ -40,6 +40,20 @@ async function readSampleAt(handle, length, position) {
   return done === length ? buffer : buffer.subarray(0, done);
 }
 
+// KNOWN-FINGERPRINT（2026-11-26 复核）：正文刚被整份读进内存时（chapter:load 的 track=true），
+// 直接拿同一份字节算首尾指纹，省掉对同一文件的第二次 open + 两次 read。口径与
+// chapterContentHashOf 逐字相同（字节数 + 首 4 KB + 尾 4 KB）。
+function fingerprintFromBuffer(buffer, size) {
+  const raw = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+  const total = Number.isFinite(Number(size)) ? Math.max(0, Math.floor(Number(size))) : raw.length;
+  const head = raw.subarray(0, Math.min(FINGERPRINT_SAMPLE_BYTES, total));
+  const tailLength = Math.min(FINGERPRINT_SAMPLE_BYTES, Math.max(0, total - head.length));
+  const tail = tailLength > 0 ? raw.subarray(Math.max(0, total - tailLength), total) : Buffer.alloc(0);
+  const headHash = sampleHashOf(head, 0x811c9dc5).toString(16).padStart(8, '0');
+  const tailHash = sampleHashOf(tail, 0x7f4a7c15).toString(16).padStart(8, '0');
+  return `${total}:${headHash}:${tailHash}`;
+}
+
 // 一章文件的内容指纹 = 字节数 + 首 4 KB 哈希 + 尾 4 KB 哈希。
 // 读不到（被占用 / 权限）时返回空串：调用方按「没有这一版指纹」处理，不据此误拦。
 async function chapterContentHashOf(filePath, size) {
@@ -67,5 +81,6 @@ async function chapterContentHashOf(filePath, size) {
 }
 
 module.exports = {
-  chapterContentHashOf
+  chapterContentHashOf,
+  fingerprintFromBuffer
 };

@@ -513,3 +513,28 @@ test('V221-STORAGE-03：章节文件在应用外没了 → 仍能从书目删除
   assert.equal(normal.sourceMissing, false);
   assert.ok(normal.trashPath && normal.trashPath.includes('_trash'), '正常删除仍要留备份供撤销');
 });
+
+// KNOWN-FINGERPRINT（2026-11-26 复核）：chapter:load 记内容指纹时旧实现再 open 同一个文件读首尾
+// 4 KB；正文刚整份读过，直接用同一份字节算，省掉一次 open + 两次 read。
+test('KNOWN-FINGERPRINT：chapter:load 记指纹不再二次 open 同一个文件', async () => {
+  const root = await mkTmp();
+  const { path: bookPath } = await storage.createBook(root, '指纹一次读');
+  const meta = await storage.readBookMeta(bookPath);
+  const file = meta.chapters[0].file;
+  await storage.saveChapterText(bookPath, file, '正文内容。');
+  const fsMod = require('node:fs/promises');
+  const realOpen = fsMod.open;
+  let opens = 0;
+  fsMod.open = async (...args) => {
+    opens += 1;
+    return realOpen(...args);
+  };
+  let loaded = null;
+  try {
+    loaded = await storage.loadChapterText(bookPath, file, { track: true });
+  } finally {
+    fsMod.open = realOpen;
+  }
+  assert.ok(loaded && loaded.text.includes('正文内容'), '正文照常读出');
+  assert.equal(opens, 1, '正文与指纹共用同一次 open（修复前是 2 次）');
+});
