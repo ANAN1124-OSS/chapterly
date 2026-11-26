@@ -627,7 +627,7 @@ test('P2：草稿拆元数据 + 正文文件；列表 / info 不读正文，read
   assert.equal(reads.filter((file) => file.endsWith('.txt')).length, 1, 'readDraft 只读这一份正文');
 });
 
-test('P2：旧版本单文件草稿（text 在 JSON 里）仍能读；chars 按码点算（不把代理对当两个字）', async () => {
+test('P2：旧版本单文件草稿（text 在 JSON 里）仍能读；chars 与保存链同口径（码元、去空白）', async () => {
   const root = await newRoot();
   const store = storeAt(root);
   const legacyId = 'aaaaaaaaaaaaaaaa';
@@ -646,7 +646,7 @@ test('P2：旧版本单文件草稿（text 在 JSON 里）仍能读；chars 按�
   );
   const list = await store.listDrafts();
   assert.equal(list.length, 1);
-  assert.equal(list[0].chars, 5, '😀 只算一个字');
+  assert.equal(list[0].chars, 6, '旧版正文😀 = 4 + 代理对 2（与状态栏 / 保存链同一口径）');
   const full = await store.readDraft(legacyId);
   assert.equal(full.ok, true);
   assert.equal(full.draft.text, '旧版正文😀');
@@ -655,7 +655,7 @@ test('P2：旧版本单文件草稿（text 在 JSON 里）仍能读；chars 按�
   assert.equal(rewritten.ok, true);
   const meta = JSON.parse(await fsp.readFile(path.join(store.dir, `draft-${rewritten.draftId}.json`), 'utf8'));
   assert.equal(meta.text, undefined);
-  assert.equal(meta.chars, 4, '新正文😀 = 4 个字');
+  assert.equal(meta.chars, 5, '新正文😀 = 3 + 代理对 2（码元口径）');
   assert.equal((await store.readDraft(rewritten.draftId)).draft.text, '新正文😀');
 });
 
@@ -704,6 +704,42 @@ test('A2-CRASH-01：v1 正文内嵌 JSON 的大草稿（>1MB）照常列出/读�
   assert.equal(list2.length, 1, '>32MB 的文件不解析，也不影响其它草稿');
   const info2 = await store.info();
   assert.equal(info2.oversized, 1, '超限文件必须在 info() 上报（不静默）');
+});
+
+test('V221-LIMIT-01：草稿字数和保存 / 状态栏同口径（UTF-16 码元、去空白）', async () => {
+  const root = await newRoot();
+  const store = storeAt(root);
+  const text = '第一段\n\n第二段  第三段😀'; // 含换行 / 空格 / 代理对
+  const expected = require('../core/chapters').countChars(text);
+  assert.equal(expected, 11, '用例前提：码元去空白 = 11（9 个汉字 + 😀 算 2）');
+  const written = await store.writeDraft(draft({ text }));
+  assert.equal(written.ok, true);
+  assert.equal(written.chars, expected, 'writeDraft 回包与状态栏同口径');
+  const meta = JSON.parse(await fsp.readFile(path.join(store.dir, `draft-${written.draftId}.json`), 'utf8'));
+  assert.equal(meta.chars, expected, '元数据里的字数同口径');
+  assert.equal((await store.listDrafts())[0].chars, expected);
+  assert.equal((await store.info()).chars, expected);
+  assert.equal((await store.readDraft(written.draftId)).draft.chars, expected);
+});
+
+test('V221-CRASH-03：元数据写失败且没有旧元数据 → 孤儿正文被删掉（stat ENOENT 不再是死代码）', async () => {
+  const root = await newRoot();
+  // 只让「元数据（.json）rename」失败，正文 rename 照常成功 —— 复现「正文已落地、元数据没写成」
+  const io = {
+    ...failingFs(),
+    rename: (from, to) =>
+      /\.json$/.test(String(to)) ? Promise.reject(fileErr('EPERM')) : fsp.rename(from, to)
+  };
+  const store = storeAt(root, { fs: io });
+  const res = await store.writeDraft(draft({ text: '一份全新的草稿正文' }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'EPERM');
+  const names = await fsp.readdir(store.dir).catch(() => []);
+  assert.deepEqual(
+    names.filter((name) => name.endsWith('.txt')),
+    [],
+    '没有旧元数据时，写失败的草稿正文必须删掉（旧实现在 stat reject 时把清理整个跳过了）'
+  );
 });
 
 test('P2：无元数据的孤儿正文超过宽限期才回收；坏 JSON 的正文保留（坏文件一律不删）', async () => {

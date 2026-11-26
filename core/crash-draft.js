@@ -22,6 +22,10 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const pathUtils = require('./path-utils');
+// V221-LIMIT-01（2026-11-26 复核）：草稿的字数 / 上限改与保存链同一口径（core/chapters 的 countChars：
+// UTF-16 码元、去掉空白字符）。旧实现用 codePointLength（含空白、emoji 算 1），同一段多行正文在
+// 恢复提示里显示的字数与状态栏对不上。
+const chaptersLib = require('./chapters');
 // I8（三审）：正文上限的唯一事实源（与 chapter:save 同一条口径）。
 const limits = require('./limits');
 // I1（三审）：错误文案脱敏的唯一出口（与 main.js 的 fail() 同一份 core/error-text.js）。
@@ -64,22 +68,6 @@ const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 // 常见文件系统错误码换成中文、路径只留最后一节（`…\draft-x.json`），与 fail() 完全同源。
 function safeMessage(err) {
   return errorText.describeForUi(err).message;
-}
-
-// P2（一轮·中）：码点计数改成增量扫描 —— 旧实现 `Array.from(text)` 会为一份 500 万字草稿
-// 一次性物化 500 万个元素的数组（启动扫描 8 份 = 峰值数百 MB），这里只走一遍码元、不建数组。
-function codePointLength(text) {
-  if (typeof text !== 'string') return 0;
-  let count = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
-      if (next >= 0xdc00 && next <= 0xdfff) i += 1;
-    }
-    count += 1;
-  }
-  return count;
 }
 
 function clipText(value, max) {
@@ -179,17 +167,20 @@ function sanitizeDraftInput(raw, options = {}) {
   if (typeof raw.text !== 'string') {
     return { ok: false, code: 'BAD_TEXT', message: '草稿正文必须是文本' };
   }
-  const chars = codePointLength(raw.text);
-  if (!raw.text.length) {
+  // V221-LIMIT-01：正文上限与 chapter:save 同口径（UTF-16 码元个数，与 limits.textProblem 的
+  // text.length 一致）；展示 / 元数据的「字数」用 countChars（去空白），与状态栏一致。
+  const codeUnits = raw.text.length;
+  if (!codeUnits) {
     return { ok: false, code: 'EMPTY_DRAFT', message: '草稿正文是空的，没有可恢复内容' };
   }
-  if (chars > maxTextChars) {
+  if (codeUnits > maxTextChars) {
     return {
       ok: false,
       code: 'DRAFT_TOO_LARGE',
-      message: `草稿正文太长（${chars} 字，最多 ${maxTextChars} 字），这次没有写入`
+      message: `草稿正文太长（${codeUnits} 字，最多 ${maxTextChars} 字），这次没有写入`
     };
   }
+  const chars = chaptersLib.countChars(raw.text);
   return {
     ok: true,
     entry: {
@@ -218,11 +209,12 @@ function storedEntryFrom(raw, draftId, maxTextChars) {
   const expectedBody = `${FILE_PREFIX}${draftId}${BODY_SUFFIX}`;
   const body = typeof raw.body === 'string' && raw.body === expectedBody ? raw.body : '';
   if (!legacyText && !body) return null;
-  if (legacyText && codePointLength(legacyText) > maxTextChars) return null;
+  // V221-LIMIT-01：读侧上限与 sanitation / chapter:save 同口径（码元数）。
+  if (legacyText && legacyText.length > maxTextChars) return null;
   const declaredChars = Math.round(Number(raw.chars));
   const chars = Number.isFinite(declaredChars) && declaredChars >= 0
     ? declaredChars
-    : codePointLength(legacyText);
+    : chaptersLib.countChars(legacyText);
   return {
     draftId,
     bookPath: raw.bookPath,
@@ -697,12 +689,21 @@ function createCrashDraftStore(baseDir, options = {}) {
           });
         } catch (err) {
           // 元数据写失败：正文可能是刚写进去的新版本（同名覆盖），旧元数据仍指向它 —— 列表会显示旧
-          // 字数 / 旧时间戳，但 readDraft 以正文实际内容为准，不丢字。若是全新草稿，顺手把这份孤儿正文删掉。
+          // 字数 / 旧时间戳，但 readDraft 以正文实际内容为准，不丢字。若是全新草稿，顺手把这份孤儿
+          // 正文删掉。
+          // V221-CRASH-03（2026-11-26 复核）：fs.stat 对不存在的文件是 **reject(ENOENT)**，旧写法
+          // `const hadMeta = await io.stat(...)` 恒在 catch 里跳过删正文 —— 清理成了死代码。
+          // 现在只在 ENOENT（确认没有旧元数据）时删；其它错误（EACCES / EBUSY）保守保留正文。
           try {
-            const hadMeta = await io.stat(draftPath(draftId));
-            if (!hadMeta) await io.unlink(draftBodyPath(draftId));
-          } catch {
-            /* 清理失败不影响回包；下一次 prune 的孤儿清理会再试 */
+            await io.stat(draftPath(draftId));
+          } catch (statErr) {
+            if (statErr && statErr.code === 'ENOENT') {
+              try {
+                await io.unlink(draftBodyPath(draftId));
+              } catch {
+                /* 下一次 prune 的孤儿清理会再试 */
+              }
+            }
           }
           return { ok: false, code: (err && err.code) || 'DRAFT_WRITE_FAILED', message: safeMessage(err) };
         }
@@ -765,13 +766,14 @@ function createCrashDraftStore(baseDir, options = {}) {
             return { ok: false, code: 'DRAFT_UNREADABLE', message: '草稿正文太大，读不出来' };
           }
           text = await io.readFile(bodyPath, 'utf8');
-          if (!text || codePointLength(text) > maxTextChars) {
+          // V221-LIMIT-01：正文上限与保存链同口径（码元数），展示字数用 countChars。
+          if (!text || text.length > maxTextChars) {
             return { ok: false, code: 'DRAFT_UNREADABLE', message: '草稿正文不完整（已跳过）' };
           }
         }
         if (!text) return { ok: false, code: 'DRAFT_MISSING', message: '草稿内容不完整（已跳过）' };
-        // 字数以正文实际码点为准（元数据只是扫描用的缓存，极端情况下可能慢一个快照）。
-        return { ok: true, draft: { ...publicDraft(entry), chars: codePointLength(text), text } };
+        // 字数以正文实际内容为准（与状态栏 / 保存链同一口径：码元数、去空白）。
+        return { ok: true, draft: { ...publicDraft(entry), chars: chaptersLib.countChars(text), text } };
       } catch (err) {
         if (err && err.code === 'ENOENT') {
           return { ok: false, code: 'DRAFT_MISSING', message: '草稿不在了（可能已被恢复或丢弃）' };
