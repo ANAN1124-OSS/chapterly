@@ -1528,6 +1528,59 @@ test('IO-02：启动链在建窗之前对书架根跑一次暂存回收', async 
   assert.match(whenReady, /closeGuard\.withDeadline\([\s\S]{0,160}?cleanupStaleStaging/, '回收整段要有截止时间，到点照常建窗');
 });
 
+// A2-IMPORT-03（2026-11-26 审计）：导入开头的暂存回收先全量串行 stat 且无截止时间 ——
+// 慢盘 / 网络盘 / 上次崩溃留下的大暂存树会让导入停在「正在分析」20-100 秒。
+// 修法：回收整段包 2 秒截止（到点照常进入分析）；判龄扫描改有界并发 + 先 stat 根做快速判活。
+test('A2-IMPORT-03：暂存判龄卡在断盘时，导入入口 2 秒截止后照常分析', async () => {
+  const closeGuard = require('../core/close-guard');
+  const base = await mkTmp('cw-a2import03-');
+  const booksRoot = path.join(base, '书架');
+  await fs.mkdir(booksRoot, { recursive: true });
+  const old = new Date(Date.now() - 2 * 3600 * 1000);
+  const stale = path.join(booksRoot, '.import-99009900-stuck');
+  await fs.mkdir(stale);
+  const hung = path.join(stale, '大文件.txt');
+  await fs.writeFile(hung, 'x');
+  await fs.utimes(hung, old, old);
+  await fs.utimes(stale, old, old);
+
+  const src = path.join(base, '来源');
+  await fs.mkdir(src, { recursive: true });
+  await fs.writeFile(path.join(src, '小说.txt'), '第1章 起风\n\n正文。\n', 'utf8');
+
+  const originalStat = fs.stat;
+  let hungStatCalled = 0;
+  fs.stat = async (target, ...rest) => {
+    if (path.resolve(String(target)) === path.resolve(hung)) {
+      hungStatCalled += 1;
+      return new Promise(() => {}); // 永不返回：模拟断网盘 / 被占用的 stat
+    }
+    return originalStat(target, ...rest);
+  };
+  let outcome = null;
+  const startedAt = Date.now();
+  try {
+    outcome = await closeGuard.withDeadline(() => importer.importFolders(booksRoot, [src]), { ms: 5000 });
+  } finally {
+    fs.stat = originalStat;
+  }
+  const elapsed = Date.now() - startedAt;
+  assert.equal(outcome.timedOut, false, '导入入口不许被暂存回收无限拖住（2 秒截止后必须继续）');
+  assert.equal(outcome.error, undefined, `导入不该抛错：${outcome.error && outcome.error.message}`);
+  assert.equal(hungStatCalled, 1, '用例前提：判龄扫描真的卡在注入的 stat 上');
+  assert.equal(outcome.value.imported.length, 1, '截止到点后照常分析并导入来源');
+  assert.ok(elapsed < 4500, `2 秒截止 + 正常导入不应超过 4.5 秒，实际 ${elapsed}ms`);
+
+  // 静态闸：回收整段要有截止时间；判龄扫描要有界并发（不再逐层串行）。
+  const importerSrc = await fs.readFile(path.join(__dirname, '..', 'core', 'importer.js'), 'utf8');
+  assert.match(
+    importerSrc,
+    /withDeadline\(\(\) => cleanupStaleStaging\(root\), \{ ms: STAGING_SWEEP_DEADLINE_MS \}\)/,
+    '导入入口的暂存回收必须有 2 秒截止'
+  );
+  assert.match(importerSrc, /mapLimit\(level, MTIME_SCAN_CONCURRENCY/, '判龄扫描必须按层有界并发');
+});
+
 // A2-IMPORT-01（2026-11-26 审计）：章节目录形态只看顶层 txt —— 按卷分文件夹的来源
 //（我的书/第一卷/001-起风.txt）子目录里的章既不被导入、也不进回包；整源只有子目录 txt 时
 // 还误报「既没有书目也没有 txt 文件」。修法：子目录 txt 不参与导入，但必须如实进 skipped /

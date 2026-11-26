@@ -24,11 +24,12 @@ const {
   splitLongUntitled,
   LONG_UNTITLED_THRESHOLD
 } = require('./txt');
-const { normalizeText, formatByteSize, formatCount, newBookId } = require('./common');
+const { normalizeText, formatByteSize, formatCount, newBookId, mapLimit } = require('./common');
 // M2（三审）：导入的体量上限统一从 core/limits.js 取（与保存 / 载入 / 书目章数同源）。
 const limits = require('./limits');
 const pathUtils = require('./path-utils');
 const errorText = require('./error-text');
+const closeGuard = require('./close-guard');
 
 // 审计修复 #13（E9）：章节目录的「文件名像章节」判定不再手抄词表 —— 形态（纯数字名 /
 // 序号+分隔符 / heading import 标题词表）收进 core/chapter-filename.js 一份，
@@ -1018,29 +1019,32 @@ function pidAlive(pid) {
 }
 
 async function latestMtimeMs(target) {
+  // A2-IMPORT-03（2026-11-26 审计）：原实现逐层串行 stat，2 万文件的暂存树在慢盘 / 网络盘上
+  // 会停在导入入口几十秒。改成按层 mapLimit(8) 并发：并发有界（每层最多 8 个在飞），
+  // 口径不变 —— 仍然返回整棵树内最新的 mtime。
   let latest = 0;
-  try {
-    const info = await fs.stat(target);
-    latest = Number(info.mtimeMs) || 0;
-  } catch {
-    return 0;
-  }
-  let entries = [];
-  try {
-    entries = await fs.readdir(target, { withFileTypes: true });
-  } catch {
-    return latest;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
+  let level = [target];
+  while (level.length) {
+    const results = await mapLimit(level, MTIME_SCAN_CONCURRENCY, async (current) => {
       try {
-        const info = await fs.stat(path.join(target, entry.name));
-        if (Number(info.mtimeMs) > latest) latest = Number(info.mtimeMs);
-      } catch { /* 抢不到就跳过：只影响这一个文件的判龄 */ }
-      continue;
+        return { current, info: await fs.stat(current) };
+      } catch {
+        return null; // 抢不到就跳过：只影响这一个路径的判龄
+      }
+    });
+    const next = [];
+    for (const result of results) {
+      if (!result) continue;
+      const info = result.info;
+      const mtime = Number(info.mtimeMs) || 0;
+      if (mtime > latest) latest = mtime;
+      if (typeof info.isDirectory === 'function' && !info.isDirectory()) continue;
+      try {
+        const entries = await fs.readdir(result.current, { withFileTypes: true });
+        for (const entry of entries) next.push(path.join(result.current, entry.name));
+      } catch { /* 读不出子树：只影响判龄，按已知 mtime 判 */ }
     }
-    const nested = await latestMtimeMs(path.join(target, entry.name));
-    if (nested > latest) latest = nested;
+    level = next;
   }
   return latest;
 }
@@ -1053,6 +1057,10 @@ async function latestMtimeMs(target) {
 //      mtime 一直在动；24 小时一个字都没写的暂存树不可能是活的导入）。
 const STALE_STAGING_MS = 3600 * 1000;
 const STALE_STAGING_PID_GRACE_MS = 24 * 3600 * 1000;
+// A2-IMPORT-03：导入入口的暂存回收截止时间（到点照常进入分析，回收在后台跑完）。
+const STAGING_SWEEP_DEADLINE_MS = 2000;
+// A2-IMPORT-03：判龄扫描每层并发上限（与 listTxtFilesDeep 的盘面并发同量级）。
+const MTIME_SCAN_CONCURRENCY = 8;
 
 async function cleanupStaleStaging(booksRoot) {
   let entries = [];
@@ -1065,6 +1073,13 @@ async function cleanupStaleStaging(booksRoot) {
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith('.import-')) continue;
     const full = path.join(booksRoot, entry.name);
+    // A2-IMPORT-03：先 stat 暂存根自身做快速判活 —— 根目录最近一小时内被创建 / 改名过就是活的
+    // 导入（判龄的「最新写入」一定不早于根自己的 mtime），连 readdir 都不必做。
+    let rootMtime = 0;
+    try {
+      rootMtime = Number((await fs.stat(full)).mtimeMs) || 0;
+    } catch { continue; }
+    if (now - rootMtime <= STALE_STAGING_MS) continue;
     let activeAt = 0;
     try {
       activeAt = await latestMtimeMs(full);
@@ -1094,7 +1109,10 @@ async function importFolders(booksRoot, sources, options = {}) {
   const failed = [];
   const root = path.resolve(booksRoot);
   await fs.mkdir(root, { recursive: true });
-  await cleanupStaleStaging(root);
+  // A2-IMPORT-03（2026-11-26 审计）：历史暂存回收是纯尽力而为的事，不能把导入入口压死 ——
+  // 慢盘 / 网络盘上对 2 万文件的暂存树逐个 stat 会让界面停在「正在分析」20-100 秒。
+  // 2 秒截止：到点照常进入分析，回收在后台继续跑完（只删 1 小时无写入的目录，不碰正在写的暂存）。
+  await closeGuard.withDeadline(() => cleanupStaleStaging(root), { ms: STAGING_SWEEP_DEADLINE_MS });
 
   // 第一遍：分析来源并算总进度
   const plans = [];
