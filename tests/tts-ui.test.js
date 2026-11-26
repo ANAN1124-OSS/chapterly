@@ -300,6 +300,28 @@ test('打开成功：状态 playing、按钮变「暂停」、念的是当前段
   assert.equal(get('tts-status').textContent, '已读完（共 3 段）');
 });
 
+test('A2-TTS-01：正文超过朗读上限 → 状态栏与 toast 都说明只念前一部分', async () => {
+  const chunks = [
+    { start: 0, end: 4, text: '第一段。', paragraph: 0, line: 0 },
+    { start: 4, end: 8, text: '第二段。', paragraph: 1, line: 1 },
+    { start: 8, end: 12, text: '第三段。', paragraph: 2, line: 2 }
+  ];
+  const { host, state, toasts } = makeHost({ callResult: { chunks, startIndex: 0, truncated: true } });
+  const engine = makeEngine();
+  const { tts } = await openWith(host, engine);
+  assert.equal(state.tts.truncated, true, '主进程返回的 truncated 必须落到状态里');
+  assert.ok(
+    toasts.some(({ message }) => /超过朗读上限/.test(message) && /前 3 段/.test(message)),
+    '打开朗读时要用一条 warn toast 说明只念前一部分'
+  );
+  // 念完最后一段：状态栏不能只说「已读完（共 N 段）」——作者会以为整章都念过了
+  for (let i = 0; i < 3; i += 1) engine.log.handlers.end();
+  assert.equal(state.tts.status, 'done');
+  const summary = tts.ttsSummaryText().text;
+  assert.match(summary, /前 3 段/);
+  assert.match(summary, /超过朗读上限/);
+});
+
 test('暂停 / 继续：调引擎 pause / resume，状态与按钮跟着变', async () => {
   const { host, state, get } = makeHost();
   const engine = makeEngine();

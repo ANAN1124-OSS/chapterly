@@ -117,7 +117,16 @@
       return { text: `正在朗读 ${position} · ${percent}%`, error: false };
     }
     if (tts.status === 'paused') return { text: `已暂停 · ${position}`, error: false };
-    if (tts.status === 'done') return { text: `已读完（共 ${total} 段）`, error: false };
+    if (tts.status === 'done') {
+      // A2-TTS-01（2026-11-26 审计）：主进程已把「超长正文只切前 MAX_SOURCE_CHARS」「命中 maxChunks
+      // 截断」标成 truncated，这里必须让作者看得见 —— 否则会误以为整章都念完了。
+      return {
+        text: tts.truncated
+          ? `已读完（前 ${total} 段；正文超过朗读上限，后面没有朗读）`
+          : `已读完（共 ${total} 段）`,
+        error: false
+      };
+    }
     return { text: `已停止 · ${position}`, error: false };
   }
 
@@ -297,6 +306,9 @@
     state.tts.error = '';
     state.tts.chunks = [];
     state.tts.index = 0;
+    // A2-TTS-01：每次打开都重新判定；上限命中时状态栏与 toast 都要如实说明「只念前一部分」。
+    state.tts.truncated = false;
+    state.tts.abortedByMinimize = false;
     renderTtsBar();
     renderTtsVoices();
     let result;
@@ -315,6 +327,10 @@
     state.tts.loading = false;
     state.tts.chunks = result.chunks || [];
     state.tts.index = result.startIndex >= 0 ? result.startIndex : 0;
+    state.tts.truncated = Boolean(result.truncated);
+    if (state.tts.truncated) {
+      toast(`正文超过朗读上限，只准备朗读前 ${state.tts.chunks.length} 段`, 'warn');
+    }
     if (!state.tts.chunks.length) {
       state.tts.status = 'error';
       state.tts.error = '本章没有可朗读的正文';
