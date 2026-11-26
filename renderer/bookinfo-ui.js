@@ -1027,6 +1027,40 @@
     return holder.querySelector('.book-card[data-path]');
   }
 
+  // A2-FOCUS-01（低）：书架在后台收到 shelf:changed 时，键盘焦点可能正停在这张卡的某个按钮上；
+  // replaceWith 会把旧子树整个摘掉 → activeElement 掉回 body，之后 Tab 从页首开始。
+  // 用「子节点索引路径」在结构相同的新卡里找回同一控件（两卡由同一段建卡代码产出，路径一一对应；
+  // 只记索引，不把书名 / 路径拼进选择器）。
+  function isInsideSubtree(root, node) {
+    let cursor = node;
+    while (cursor) {
+      if (cursor === root) return true;
+      cursor = cursor.parentNode || null;
+    }
+    return false;
+  }
+
+  function childIndexPath(root, node) {
+    const path = [];
+    let cursor = node;
+    while (cursor && cursor !== root) {
+      const parent = cursor.parentNode;
+      if (!parent || !parent.children) return null;
+      path.unshift(Array.prototype.indexOf.call(parent.children, cursor));
+      cursor = parent;
+    }
+    return cursor === root ? path : null;
+  }
+
+  function nodeAtChildPath(root, path) {
+    let cursor = root;
+    for (const index of path) {
+      if (!cursor || !cursor.children) return null;
+      cursor = cursor.children[index];
+    }
+    return cursor || null;
+  }
+
   // RSHE-C-01：shelf:changed 的单卡增量以前只更新数据层，书卡 DOM 仍由 renderShelf 整块重建
   // （书多时白建 N 张卡，焦点 / 滚动位置也会丢）。这里只换那一张卡：筛选集与顺序都没变时
   // 返回 true；书被筛掉 / 排序改变 / 当前是空态时返回 false，调用方退回整表渲染。
@@ -1052,7 +1086,16 @@
     const row = rows[at];
     const fresh = buildSingleCard(row.book, row.info || infoOf(row.book));
     if (!fresh) return false;
-    domCards[at].replaceWith(fresh);
+    const oldCard = domCards[at];
+    // A2-FOCUS-01：换卡前记下卡内焦点（如果有），换完在新卡的同一位置恢复。
+    const docRef = typeof document !== 'undefined' && document ? document : null;
+    const active = docRef && docRef.activeElement ? docRef.activeElement : null;
+    const focusPath = active && isInsideSubtree(oldCard, active) ? childIndexPath(oldCard, active) : null;
+    oldCard.replaceWith(fresh);
+    if (focusPath) {
+      const restored = nodeAtChildPath(fresh, focusPath);
+      if (restored && typeof restored.focus === 'function') restored.focus();
+    }
     grid.dataset.renderSignature = shelfRenderSignature(shelfQueryText(), rows, infoOf);
     // 继续写作卡 / 分组条 / 搜索命中数 / 窗口标题都跟这一本书有关，单卡路径也要刷新
     // （它们不是书卡网格，刷新成本与书数无关）。

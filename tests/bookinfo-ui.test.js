@@ -33,7 +33,40 @@ const openBookGuardSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'open-book-
 const moduleCode = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 // 假 DOM 本体：共享基线（TEST-D-02），本域只注入书卡菜单定位用的固定 getBoundingClientRect。
-const BOOKINFO_EL_SPEC = { extra: () => ({ getBoundingClientRect: () => ({ right: 400, bottom: 300, top: 0, left: 0 }) }) };
+const BOOKINFO_EL_SPEC = {
+  // A2-FOCUS-01：单卡路径要按选择器建卡 / 取卡（`holder.querySelector('.book-card[data-path]')`）；
+  // 共享假 DOM 只在 spec.query 给实现时才有 querySelector，这里补一个最小深搜。
+  query: (selector, el) => {
+    const out = [];
+    const visit = (node) => {
+      for (const child of node.children || []) {
+        if (
+          selector === '.book-card[data-path]' &&
+          String(child.className).split(/\s+/).includes('book-card') &&
+          child.dataset &&
+          child.dataset.path
+        ) {
+          out.push(child);
+        }
+        visit(child);
+      }
+    };
+    visit(el);
+    return out;
+  },
+  extra: (el) => ({
+    getBoundingClientRect: () => ({ right: 400, bottom: 300, top: 0, left: 0 }),
+    // A2-FOCUS-01：单卡增量会用 replaceWith 换卡（真实 DOM 有，共享基线刻意不实现）
+    replaceWith(node) {
+      const parent = el.parentNode;
+      const at = parent && parent.children ? parent.children.indexOf(el) : -1;
+      if (at < 0) return;
+      parent.children.splice(at, 1, node);
+      node.parentNode = parent;
+      el.parentNode = null;
+    }
+  })
+};
 const makeEl = (tag = 'div', id = '') => preambles.makeEl(tag, id, BOOKINFO_EL_SPEC);
 
 function makeDocument() {
@@ -440,6 +473,46 @@ test('renderShelf 缓存（B6）：书卡内容没变就复用同一批节点，
   info.chapterHits = [{ index: 1, name: '第二章' }];
   ctx.ui.renderShelf();
   assert.notEqual(grid.children.find((el) => el.className === 'book-card'), hitCard, '章节命中变了要重建');
+});
+
+// A2-FOCUS-01（低）：shelf:changed 单卡替换书卡时，后台刷新会把焦点连旧卡一起摘掉 → activeElement
+// 掉回 body。替换前记下卡内焦点位置，换完在新卡的同一位置恢复。
+test('A2-FOCUS-01：renderShelfCard 单卡替换时卡内焦点不丢（换到新卡同一控件）', () => {
+  const book = makeBook();
+  const info = bookInfoLib.readBookInfo(book);
+  const ctx = build({ books: [book], rows: [{ book, info }] });
+  ctx.ui.renderShelf();
+  const grid = ctx.dom.map.get('book-grid');
+  const firstCard = grid.children.find((el) => el.className === 'book-card');
+  // 在卡里找一个真实按钮（卡内 ⋯ 菜单 / 修复按钮等），把它当成当前焦点
+  const findButton = (root) => {
+    for (const child of root.children || []) {
+      if (child.tagName === 'button') return child;
+      const deep = findButton(child);
+      if (deep) return deep;
+    }
+    return null;
+  };
+  const focused = findButton(firstCard);
+  assert.ok(focused, '前提：卡里要有可聚焦按钮');
+  const pathOf = (root, target) => {
+    const path = [];
+    let cursor = target;
+    while (cursor && cursor !== root) {
+      const parent = cursor.parentNode;
+      path.unshift(parent.children.indexOf(cursor));
+      cursor = parent;
+    }
+    return path;
+  };
+  const focusPath = pathOf(firstCard, focused);
+  ctx.dom.doc.activeElement = focused;
+  assert.equal(ctx.ui.renderShelfCard(book.path), true, '前提：单卡路径命中（顺序 / 筛选都没变）');
+  const freshCard = grid.children.find((el) => el.className === 'book-card');
+  assert.notEqual(freshCard, firstCard);
+  let restored = freshCard;
+  for (const index of focusPath) restored = restored.children[index];
+  assert.ok(restored && restored._focus > 0, '新卡同一位置的控件要重新拿到焦点（不许掉回 body）');
 });
 
 test('renderShelfGroupBar：没有分组 / 标签 → 收起并清空；有分组 → 全部分组（N）+ 未分组（N）+ 各分组（N），非法选中值回落到全部', () => {
