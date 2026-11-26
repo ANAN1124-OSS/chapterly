@@ -735,6 +735,16 @@
       return { ok: false, message: err.message };
     } finally {
       setProofreadBusy(false);
+      // V221-PANEL-01（2026-11-26 复核）：重开面板撞上在途校对时，摘要先被写成「正在通读…」；
+      // 这一轮结束（回执常因关过面板被作废）后必须重新结算一次，否则会永久停在忙碌文案、按钮却已可点。
+      if (epochAtStart !== proofreadEpoch && !$('proofread-backdrop').classList.contains('hidden')) {
+        if (!state.proofread) {
+          $('proofread-summary').textContent = '上一轮校对已作废（面板重开过），请重新校对';
+        } else {
+          renderProofreadSummary();
+        }
+        renderProofreadResults();
+      }
       // 跑的过程中被点过开关（面板还开着、也没被关掉重开）：立刻按最新开关再跑一次
       if (proofreadRerunPending) {
         proofreadRerunPending = false;

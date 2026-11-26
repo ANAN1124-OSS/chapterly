@@ -549,6 +549,11 @@ test('RPAN-A-03：busy 期间重开面板 → 显示忙碌态，不停在旧结�
   await pending;
   assert.equal(ctx.state.proofread, null, '旧一轮结果被作废');
   assert.equal(ctx.state.proofreadBusy, false);
+  // V221-PANEL-01：回执作废后摘要也要从「正在通读…」结算掉，按钮恢复可点（不许永久忙碌文案）
+  assert.doesNotMatch(ctx.dom.map.get('proofread-summary').textContent, /正在通读全书|正在检查当前章/);
+  assert.equal(ctx.dom.map.get('proofread-summary').textContent, '上一轮校对已作废（面板重开过），请重新校对');
+  assert.equal(ctx.dom.map.get('btn-proofread-run').disabled, false, '这一轮结束后按钮要可点');
+  assert.equal(ctx.dom.map.get('proofread-results').innerHTML, '', '作废结果不许画回列表');
 });
 
 test('runProofread：整本 0 处 / 跳过缺文件章节 的摘要文案', async () => {
