@@ -202,6 +202,7 @@
     if (gutter) {
       gutter.classList.add('hidden');
       gutter.textContent = '';
+      longBarWindow = null;
     }
     // P3：整层收起后旧的「计划 → 节点」镜像立刻作废（下一次可见时整层重建）
     state.marks.rendered = null;
@@ -262,15 +263,34 @@
 
   // 超长段落的左侧黄线：画在正文左边距里（不压字），逐行按 .long-para 的实测行框定位；
   // 滚动时只改 top（行位置本身不变），所以不用每帧重新量。
+  //
+  // A2-MARK-01：以前这里「边量边写」——每个 .long-para 节点先 getClientRects（读），紧接着
+  // createElement / appendChild（写）；每多一行就多一次强制布局，而且不管滚到哪里都把整章每一行
+  // 做成 div。现在拆两阶段：先一次量完所有行框（只读），再用 DocumentFragment 一次换掉整栏（只写）；
+  // 量的时候就按视口裁剪，只保留当前视口上下各一屏内的行。滚出已落 DOM 的覆盖区间后
+  // syncLongParaBars 才重新量 / 重建（普通滚动仍只改 top，不读布局）。
+  const LONG_BAR_VIEWPORT_SCREENS = 1;
+  let longBarWindow = null; // 已落 DOM 的黄线覆盖的 baseTop 区间（含基准滚动位置与视口高度）
+
+  function clearLongBarLayer(gutter) {
+    longBarWindow = null;
+    if (gutter && gutter.childNodes.length) gutter.replaceChildren();
+  }
+
   function renderLongParagraphBars() {
     const gutter = $('editor-marks-gutter');
     const overlay = $('editor-marks');
     if (!gutter) return;
-    gutter.textContent = '';
-    gutter.classList.add('hidden');
-    if (!overlay || overlay.classList.contains('hidden') || !state.marks.longParagraphs) return;
-    const nodes = overlay.querySelectorAll('.long-para');
-    if (!nodes.length) return;
+    const overlayHidden = !overlay || overlay.classList.contains('hidden');
+    const nodes = overlayHidden ? null : overlay.querySelectorAll('.long-para');
+    if (overlayHidden || !state.marks.longParagraphs || !nodes || !nodes.length) {
+      clearLongBarLayer(gutter);
+      gutter.classList.add('hidden');
+      return;
+    }
+    // 量之前先让栏可见：display:none 时 clientHeight 恒为 0，视口裁剪会算错
+    gutter.classList.remove('hidden');
+    // ---- 读阶段：布局只量一次，期间不碰 DOM ----
     const styles = getComputedStyle(editorEl);
     const px = (value) => {
       const n = parseFloat(value);
@@ -285,19 +305,33 @@
       editorRect.left - mainRect.left + padLeft - 9
     );
     const baseScrollTop = editorEl.scrollTop || 0;
+    const viewportHeight = Math.max(0, Number(gutter.clientHeight) || mainRect.height || 0);
+    const margin = viewportHeight * LONG_BAR_VIEWPORT_SCREENS;
+    const plan = [];
     for (const node of nodes) {
       const rects = node.getClientRects();
       for (const rect of rects) {
         if (rect.width < 1 || rect.height < 1) continue;
-        const bar = document.createElement('div');
-        bar.className = 'long-para-bar';
-        bar.style.left = `${Math.round(barLeft * 100) / 100}px`;
-        bar.style.top = `${Math.round((rect.top - mainRect.top) * 100) / 100}px`;
-        bar.style.height = `${Math.round(rect.height * 100) / 100}px`;
-        bar.dataset.baseTop = String(rect.top - mainRect.top);
-        gutter.appendChild(bar);
+        const top = rect.top - mainRect.top;
+        // 视口上下各留一屏：滚出这个区间后 syncLongParaBars 会重新量
+        if (top + rect.height < -margin || top > viewportHeight + margin) continue;
+        plan.push({ top, height: rect.height });
       }
     }
+    // ---- 写阶段：一次建好，一次换栏 ----
+    const fragment = document.createDocumentFragment();
+    for (const item of plan) {
+      const bar = document.createElement('div');
+      bar.className = 'long-para-bar';
+      bar.style.left = `${Math.round(barLeft * 100) / 100}px`;
+      bar.style.top = `${Math.round(item.top * 100) / 100}px`;
+      bar.style.height = `${Math.round(item.height * 100) / 100}px`;
+      bar.dataset.baseTop = String(item.top);
+      fragment.appendChild(bar);
+    }
+    if (plan.length) gutter.replaceChildren(fragment);
+    else clearLongBarLayer(gutter);
+    longBarWindow = { lo: -margin, hi: viewportHeight + margin, height: viewportHeight, baseScrollTop };
     state.marks.barBaseScrollTop = baseScrollTop;
     gutter.classList.remove('hidden');
     syncLongParaBars();
@@ -307,6 +341,13 @@
     const gutter = $('editor-marks-gutter');
     if (!gutter || gutter.classList.contains('hidden')) return;
     const delta = (editorEl.scrollTop || 0) - (state.marks.barBaseScrollTop || 0);
+    // A2-MARK-01：已落 DOM 的黄线只覆盖量的时候「视口上下各一屏」。滚出这个区间才重新量 / 重建
+    //（这是裁剪的代价）；区间内仍只改 top，不读布局。
+    const win = longBarWindow;
+    if (win && (delta < win.lo || delta + win.height > win.hi)) {
+      renderLongParagraphBars();
+      return;
+    }
     for (const bar of gutter.children) {
       const base = Number(bar.dataset.baseTop);
       if (!Number.isFinite(base)) continue;

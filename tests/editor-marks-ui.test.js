@@ -568,6 +568,56 @@ test('renderEditorMarks：超长段落左侧黄线按实测行框建 bar，并�
   assert.ok(Number.isFinite(Number(gutter.children[0].style.height.replace('px', ''))));
 });
 
+// A2-MARK-01：黄线栏以前一边 getClientRects（读）一边 createElement/appendChild（写），
+// 每多一行多一次强制布局；而且不管滚到哪都把整章每一行做成 div。现在先量后写 + 视口裁剪。
+test('A2-MARK-01：黄线栏先量后写并按视口裁剪，滚动超出一屏才重新量', () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, longParagraphs: true, text: 'a'.repeat(600) });
+  const gutter = dom.map.get('editor-marks-gutter');
+  gutter.parentElement = makeEl('div'); // 高 400（makeEl 默认），与 gutter.clientHeight 同尺寸
+  const overlay = dom.map.get('editor-marks');
+  const measuring = [];
+  const nodes = [];
+  // 40 段长段落 × 每段 5 行 × 20px：行框从 y=0 铺到 y≈4000，远超一屏。
+  for (let i = 0; i < 40; i += 1) {
+    const rects = [];
+    for (let line = 0; line < 5; line += 1) rects.push({ top: i * 100 + line * 20, height: 20, width: 500 });
+    nodes.push({
+      getClientRects() {
+        // 读的那一刻已经写进 gutter 的 bar 数：先读后写时全程必须是 0
+        measuring.push(gutter.children.length);
+        return rects;
+      }
+    });
+  }
+  overlay.querySelectorAll = (selector) => (selector === '.long-para' ? nodes : []);
+  ctx.ui.renderEditorMarks();
+  for (const seen of measuring) {
+    assert.equal(seen, 0, `量行框时不许已有写好的 bar（先读后写）：实际看到 ${measuring.join(',')}`);
+  }
+  assert.ok(gutter.children.length > 0, '视口内的长段落仍要画出黄线');
+  assert.ok(
+    gutter.children.length < 60,
+    `只建视口上下各一屏内的行（40 段 × 5 行 = 200 行；实际 ${gutter.children.length}）`
+  );
+
+  // 一屏内的滚动：只改 top，不重画（节点身份不变）
+  const firstBar = gutter.children[0];
+  const baseTop = Number(firstBar.dataset.baseTop);
+  ctx.editorEl.scrollTop = 300;
+  ctx.ui.syncMarksScroll();
+  assert.equal(gutter.children[0], firstBar, '一屏内滚动不重画');
+  assert.equal(Number(firstBar.style.top.replace('px', '')), baseTop - 300, '滚动只挪 top');
+
+  // 滚出已落 DOM 的覆盖区间：重新量一次，仍只保留视口附近的行
+  const before = measuring.length;
+  ctx.editorEl.scrollTop = 2000;
+  ctx.ui.syncMarksScroll();
+  assert.ok(measuring.length > before, '滚出一屏后才重新量行框');
+  assert.equal(ctx.state.marks.barBaseScrollTop, 2000);
+  assert.ok(gutter.children.length < 60, '重画后仍按视口裁剪');
+});
+
 test('hideEditorMarks：清两层 DOM 与 state.marks 统计，并收起状态栏超长提示', () => {
   const ctx = build({ invisibles: true, text: '　x' });
   ctx.ui.renderEditorMarks();
