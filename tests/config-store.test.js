@@ -233,6 +233,9 @@ test('显示排版配置：脏数据被夹到合理范围', () => {
 
   assert.equal(sanitize({ editorPageWidth: 99999 }).editorPageWidth, 1600);
   assert.equal(sanitize({ editorPageWidth: 900 }).editorPageWidth, 900);
+  // KNOWN-CONFIG：布尔 / 数组不是宽度，不许被 Number() 悄悄夹成 600 / 900
+  assert.equal(sanitize({ editorPageWidth: true }).editorPageWidth, 0, 'true 不是宽度');
+  assert.equal(sanitize({ editorPageWidth: [900] }).editorPageWidth, 0, '数组不是宽度');
   assert.equal(sanitize({ editorPaddingX: 8 }).editorPaddingX, 16);
   assert.equal(sanitize({ editorPaper: 'night' }).editorPaper, 'night');
   assert.equal(sanitize({ editorPaper: 'kraft' }).editorPaper, 'kraft');

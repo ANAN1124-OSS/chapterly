@@ -516,8 +516,10 @@ function sanitize(raw, options = {}) {
   // 显示排版：行距 / 字距 / 正文宽度 / 左右边距 / 背景主题
   cfg.editorLineHeight = clampFloat(cfg.editorLineHeight, 1.2, 3, DEFAULTS.editorLineHeight);
   cfg.editorLetterSpacing = clampFloat(cfg.editorLetterSpacing, 0, 0.2, DEFAULTS.editorLetterSpacing);
-  const pageWidth = Number(cfg.editorPageWidth);
-  cfg.editorPageWidth = Number.isFinite(pageWidth) && pageWidth > 0
+  // KNOWN-CONFIG（2026-11-26 复核）：只认真正的数字 —— Number(true) = 1、Number([900]) = 900
+  // 会把「布尔 / 数组」这类坏值悄悄夹成一个可用宽度；这类值一律当「没设置」（0 = 通栏）。
+  const pageWidth = cfg.editorPageWidth;
+  cfg.editorPageWidth = typeof pageWidth === 'number' && Number.isFinite(pageWidth) && pageWidth > 0
     ? clampRoundedInt(pageWidth, 600, 1600, DEFAULTS.editorPageWidth)
     : 0;
   cfg.editorPaddingX = clampRoundedInt(cfg.editorPaddingX, 16, 200, DEFAULTS.editorPaddingX);
