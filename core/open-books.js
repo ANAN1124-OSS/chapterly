@@ -318,6 +318,17 @@ function verifySaveTarget({
   return { ok: true, chapter, index };
 }
 
+// KNOWN-SINGLE（2026-11-26 复核）：第二个实例到达时，第一个窗口可能还在启动链里建（main.js 的
+// whenReady 已开始、createWindow 尚未完成）。旧实现只看 mostRecentSession()，为 null 就再
+// createWindow 一次 —— 一次双击开成两个窗口。这里给出唯一判据：有窗口就聚焦；启动建窗还在途就
+// 忽略（那扇窗马上出来）；两者都没有才新建。
+function secondInstanceAction(state) {
+  const { hasSession = false, startupPending = false } = state || {};
+  if (hasSession) return 'focus';
+  if (startupPending) return 'ignore';
+  return 'create';
+}
+
 module.exports = {
   CODE,
   createRegistry,
@@ -326,5 +337,6 @@ module.exports = {
   openInOtherWindowMessage,
   checkOpenBook,
   checkMutation,
-  verifySaveTarget
+  verifySaveTarget,
+  secondInstanceAction
 };

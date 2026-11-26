@@ -3122,6 +3122,9 @@ async function runAutomation() {
 }
 
 // ---------- 应用生命周期 ----------
+// KNOWN-SINGLE（2026-11-26 复核）：启动链建窗是否在途（app ready 之后、第一扇窗创建完成之前）。
+// second-instance 早到时要据此忽略，而不是再开一扇窗口。
+let startupWindowPending = false;
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -3151,9 +3154,15 @@ if (!gotLock) {
       );
     }
     const session = mostRecentSession();
-    if (session) {
+    // KNOWN-SINGLE（2026-11-26 复核）：启动链建窗在途（whenReady 已开始、createWindow 未完成）
+    // 时再开一扇窗会把一次双击变成两个窗口；判据收进 core/open-books.js。
+    const action = openBooksLib.secondInstanceAction({
+      hasSession: Boolean(session),
+      startupPending: startupWindowPending
+    });
+    if (action === 'focus') {
       focusSession(session);
-    } else {
+    } else if (action === 'create') {
       createWindow({ runAutomationFlow: false }).catch((err) => {
         // C6（审计 E14）：同样走统一日志（脱敏），不打原始堆栈
         logError('window-create', err);
@@ -3235,8 +3244,11 @@ if (!gotLock) {
     // 每次启动记一条 info（版本 / 平台 / Electron 版本），排查反馈时先看这里
     logStartup();
     try {
+      startupWindowPending = true;
       await createWindow({ runAutomationFlow: true });
+      startupWindowPending = false;
     } catch (err) {
+      startupWindowPending = false;
       // C6（审计 E14）：启动建窗失败走统一日志（脱敏后的错误码 / 消息 / 栈），不把原始堆栈
       // 直接丢到控制台。
       logError('startup-window', err);

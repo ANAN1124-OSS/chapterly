@@ -348,3 +348,25 @@ test('保存前校验（V301）：mtime 一致 / 没带 expectedMtimeMs / 传 0 
     openBooks.CODE.CHAPTER_MISSING
   );
 });
+
+// KNOWN-SINGLE（2026-11-26 复核）：第二个实例早到（第一个窗口还在启动链里建）时不再开第二扇窗。
+test('KNOWN-SINGLE：第二个实例的处置（有窗口聚焦 / 启动建窗在途忽略 / 否则新建）', () => {
+  assert.equal(openBooks.secondInstanceAction({ hasSession: true }), 'focus');
+  assert.equal(openBooks.secondInstanceAction({ hasSession: true, startupPending: true }), 'focus');
+  assert.equal(openBooks.secondInstanceAction({ hasSession: false, startupPending: true }), 'ignore');
+  assert.equal(openBooks.secondInstanceAction({ hasSession: false, startupPending: false }), 'create');
+  assert.equal(openBooks.secondInstanceAction(), 'create');
+  const fs = require('node:fs');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const at = main.indexOf("app.on('second-instance'");
+  assert.ok(at > 0, '找不到 second-instance 处理器');
+  const block = main.slice(at, at + 1400);
+  assert.match(block, /openBooksLib\.secondInstanceAction\(\{/, 'second-instance 要走唯一判据');
+  assert.match(block, /startupPending: startupWindowPending/, '判据要读启动建窗在途标记');
+  assert.match(main, /let startupWindowPending = false;/, '要声明启动建窗标记');
+  assert.match(
+    main,
+    /startupWindowPending = true;[\s\S]{0,120}?await createWindow\(\{ runAutomationFlow: true \}\)/,
+    '建窗前把标记置位'
+  );
+});
