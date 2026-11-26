@@ -366,7 +366,19 @@
       del.title = '删除这个空分组（只删分组清单，不动任何书目与正文）';
       del.addEventListener('click', async () => {
         const result = await deleteEmptyShelfGroup(group.name);
-        if (result.ok) renderGroupManageList();
+        if (result.ok) {
+          renderGroupManageList();
+          // KNOWN-FOCUS（2026-11-26 复核）：这一行是刚才的焦点所在，重建后焦点会掉回 body。
+          // 把焦点交给新列表第一行的操作；列表空了（删掉最后一个分组）就交给「关闭」按钮 ——
+          // 键盘用户不会突然失去上下文，也不用从头 Tab 一遍。
+          const rowsNow = Array.from($('group-manage-list').children || []).filter(
+            (row) => row && row.className === 'group-manage-row'
+          );
+          const firstAction =
+            rowsNow.length && Array.from(rowsNow[0].children || []).find((el) => el.dataset && el.dataset.action);
+          const target = firstAction || $('btn-group-manage-close');
+          if (target && typeof target.focus === 'function') target.focus();
+        }
       });
       row.appendChild(del);
     }

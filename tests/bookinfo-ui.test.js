@@ -1570,3 +1570,25 @@ test('分组条 / 移到分组菜单 / 管理分组：配置里的空分组也�
   assert.equal(emptyRow.children.some((el) => el.dataset && el.dataset.action === 'delete'), true, '空分组能给删除');
   assert.equal(usedRow.children.some((el) => el.dataset && el.dataset.action === 'delete'), false, '有书的分组不给删除');
 });
+
+// KNOWN-FOCUS（2026-11-26 复核）：删除空分组会整表重建，刚才的焦点按钮被摘掉后焦点掉回 body。
+// 重建后把焦点交给新列表第一行的操作（列表空了交给「关闭」），键盘上下文不断。
+test('KNOWN-FOCUS：删除空分组重建列表后焦点留在管理弹层（不掉回 body）', async () => {
+  const manage = build({
+    books: [{ path: '/库/甲', title: '甲', group: '有书组' }],
+    globalConfig: { booksRoot: '/书库', bookGroups: ['空组', '有书组'] }
+  });
+  manage.ui.openGroupManageDialog();
+  const list = manage.dom.map.get('group-manage-list');
+  const row = list.children.find((el) => el.className === 'group-manage-row' && el.dataset.group === '空组');
+  const del = row.children.find((el) => el.dataset && el.dataset.action === 'delete');
+  assert.ok(del, '前提：空组带删除按钮');
+  manage.dom.doc.activeElement = del;
+  del._fire('click');
+  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  const rowsNow = list.children.filter((el) => el.className === 'group-manage-row');
+  const firstAction = rowsNow.length ? (rowsNow[0].children || []).find((el) => el.dataset && el.dataset.action) : null;
+  const expected = firstAction || manage.dom.map.get('btn-group-manage-close');
+  assert.ok(expected, '删除后应有一个接住焦点的控件');
+  assert.ok(expected._focus > 0, '重建后焦点要落到新列表第一行的操作（列表空了则回「关闭」），不许掉回 body');
+});
