@@ -188,9 +188,18 @@ test('R8（E-N4）：runReplaceOne 必须在两个 await 之后复核身份 / �
     '回执下标还要过 matchInBounds（越界不拼接）'
   );
 
-  // ④ 兜底拼接前复核边界：原文的 slice 兜底仍在，但必须先过边界
-  const fallbackAt = body.indexOf('current.slice(0, match.index)');
-  assert.ok(fallbackAt > replaceAt, '兜底拼接必须还在（renderer-dedupe 闸门）');
+  // ④ 兜底拼接前复核边界：原文的 slice 兜底仍在，但必须先过边界。
+  // A2-REPLACEON-01：兜底从「只判 execCommand 返回值」改成「先拼 expected、再按实际内容复核」，
+  // 静态闸门同步到新写法（边界检查仍在拼接之前）。
+  const expectedAt = body.indexOf('const expected =');
+  assert.ok(expectedAt > replaceAt, '兜底拼接必须还在（renderer-dedupe 闸门）');
+  const fallbackSrc = body.slice(expectedAt, expectedAt + 400);
+  assert.match(
+    fallbackSrc,
+    /text\.slice\(0, match\.index\) \+ replacement \+ text\.slice\(match\.index \+ match\.length\)/,
+    '兜底拼接仍按原文命中区间拼 expected'
+  );
+  assert.match(fallbackSrc, /editorEl\.value = expected;/, '未生效时按 expected 写回编辑区');
 
   // ⑤ 第二个 await 之后按 locateNext 定位，旧章下标不许直接 setSelectionRange
   const secondAwaitAt = body.indexOf('await (testFindNext || call)(api.findNext', firstAwaitAt + 1);
