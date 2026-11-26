@@ -407,6 +407,23 @@ test('A2-STATS-01：store 保存不删除未来日期（读盘清洗只影响聚
   assert.equal(summary.todayChars, 15, '聚合仍只按今天算');
 });
 
+// A2-STATS-03（低）：stats.json 读侧没有尺寸闸门 —— 被外部工具 / 同步盘放大后，保存热路径会
+// 整份读 + 同步 parse，卡顿甚至 OOM。现在先看尺寸，超限归档 + 按空统计继续。
+test('A2-STATS-03：超大 stats.json 在 parse 前归档并按空统计继续', async () => {
+  const dir = await mkTmp();
+  const file = path.join(dir, 'stats.json');
+  const big = 'x'.repeat(statsLib.MAX_STATS_FILE_BYTES + 1024);
+  await fs.writeFile(file, `{"version":1,"days":{},"pad":"${big}"}`, 'utf8');
+  const store = statsLib.createStatsStore(dir);
+  const summary = await store.summary({ now: new Date(2026, 9, 31, 12) });
+  assert.equal(summary.todayChars, 0, '超限文件不被读进内存');
+  const files = await fs.readdir(dir);
+  assert.ok(files.some((name) => name.startsWith('stats.json.too-large-')), '超限文件要被归档，不是静默留着反复重试');
+  // 归档后还能正常记录
+  await store.record({ day: '2026-10-31', bookId: 'a', delta: 5 });
+  assert.equal((await store.summary({ now: new Date(2026, 9, 31, 12) })).todayChars, 5);
+});
+
 test('每日统计：文件里已有的脏数据读取时清洗，不抛错', async () => {
   const dir = await mkTmp();
   await fs.writeFile(

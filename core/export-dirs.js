@@ -74,10 +74,29 @@ function dirsToClean({ recent, lastExportDir } = {}) {
   return out.slice(0, MAX_RECENT_DIRS + 1);
 }
 
+// A2-STATS-03（低）：export-dirs.json 与 stats.json 同一族「整份读进内存 → JSON.parse」的小文件，
+// 也要有读前尺寸闸门。正常上限 10 条绝对路径 ≈ 几 KB；给 1 MB，超限按空列表处理并归档。
+const MAX_RECENT_DIRS_FILE_BYTES = 1024 * 1024;
+
 // 读清单（坏文件 / 不存在 / 形状不对一律 []，绝不影响启动）。
 async function readRecentDirs(filePath) {
   const target = String(filePath == null ? '' : filePath).trim();
   if (!target) return [];
+  let size = null;
+  try {
+    size = (await fsp.stat(target)).size;
+  } catch {
+    return [];
+  }
+  if (Number.isFinite(size) && size > MAX_RECENT_DIRS_FILE_BYTES) {
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    try {
+      await fsp.rename(target, `${target}.too-large-${stamp}`);
+    } catch {
+      /* 归档失败也不影响启动（下次仍按空列表） */
+    }
+    return [];
+  }
   let raw;
   try {
     raw = await fsp.readFile(target, 'utf8');
@@ -130,6 +149,7 @@ async function writeRecentDirs(filePath, list) {
 
 module.exports = {
   MAX_RECENT_DIRS,
+  MAX_RECENT_DIRS_FILE_BYTES,
   cleanDir,
   mergeRecentDirs,
   dirsToClean,

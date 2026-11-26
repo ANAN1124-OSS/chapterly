@@ -93,6 +93,19 @@ test('F1：清单文件读写往返；坏文件 / 不存在一律空列表（不
   await fs.rm(base, { recursive: true, force: true });
 });
 
+// A2-STATS-03（低）：export-dirs.json 读侧也没有尺寸闸门 —— 与 stats.json 同一族「整份读进内存
+// → JSON.parse」的小文件。超限要按空列表处理并归档，绝不整份读。
+test('A2-STATS-03：超大 export-dirs.json 在读取前归档并按空列表继续', async () => {
+  const base = await mkTmp();
+  const file = path.join(base, 'export-dirs.json');
+  const big = 'x'.repeat(exportDirs.MAX_RECENT_DIRS_FILE_BYTES + 1024);
+  await fs.writeFile(file, JSON.stringify({ version: 1, dirs: [], pad: big }), 'utf8');
+  assert.deepEqual(await exportDirs.readRecentDirs(file), []);
+  const names = await fs.readdir(base);
+  assert.ok(names.some((name) => name.startsWith('export-dirs.json.too-large-')), '超限文件归档，不反复重试');
+  await fs.rm(base, { recursive: true, force: true });
+});
+
 test('F1：cleanDir 只收绝对路径 + 长度上限', () => {
   assert.equal(exportDirs.cleanDir('  ' + abs('A') + '  '), abs('A'));
   assert.equal(exportDirs.cleanDir('relative'), '');

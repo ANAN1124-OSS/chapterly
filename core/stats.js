@@ -19,6 +19,10 @@ const MAX_RECENT_DAYS = 400;
 const KEEP_DAYS = 400;
 const MAX_DAYS = 500;
 const MAX_DAY_CHARS = 100000000;
+// A2-STATS-03：stats.json 是「整份读进内存 → JSON.parse」的小文件；正常规模远小于 1 MB
+// （500 天 × 单日上限条目），给 8 MB 上限。被外部工具 / 同步盘 / 杀软放大成超大文件时在 parse
+// 之前就归档并按空统计继续 —— 保存热路径不能被它拖住（同一道闸门照 core/atomic 的孤儿回收口径）。
+const MAX_STATS_FILE_BYTES = 8 * 1024 * 1024;
 // 写作时长（v0.8-2）：一天最多记 24 小时，坏数据 / 手改文件都夹住。
 // 只记秒数，不记正文、不记按键；单位是秒，按天汇总（不按书分桶）。
 const MAX_DAY_SECONDS = 86400;
@@ -567,6 +571,24 @@ function createStatsStore(userDataDir) {
   }
 
   async function readFromDisk() {
+    // A2-STATS-03：先 stat 判尺寸再读 —— 超大 stats.json 不许整份进内存 / 同步 parse。
+    let size = null;
+    try {
+      size = (await fs.stat(file)).size;
+    } catch (err) {
+      if (err.code === 'ENOENT') return emptyStats();
+      throw err;
+    }
+    if (Number.isFinite(size) && size > MAX_STATS_FILE_BYTES) {
+      futureDays = {};
+      const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+      try {
+        await fs.rename(file, `${file}.too-large-${stamp}`);
+      } catch {
+        /* 归档失败也不阻塞（下次仍按空统计继续） */
+      }
+      return emptyStats();
+    }
     let raw;
     try {
       raw = await fs.readFile(file, 'utf8');
@@ -657,6 +679,7 @@ module.exports = {
   DEFAULT_GOAL,
   MAX_GOAL,
   MAX_DAY_SECONDS,
+  MAX_STATS_FILE_BYTES,
   localDayKey,
   parseDayKey,
   shiftDayKey,
