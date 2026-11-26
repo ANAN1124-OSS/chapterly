@@ -1,7 +1,7 @@
 /* 渲染层装配清单（审计修复 #55 / M4）
  *
  * 背景：渲染层是 index.html 里一串手工排序的 <script>（数量以本文件的 MODULES 条目为准：
- * 当前 76 个模块 + 装配清单自身 + renderer.js = 78 个），模块之间靠 window.CW 全局名串起来。
+ * 当前 84 个模块 + 装配清单自身 + renderer.js = 86 个），模块之间靠 window.CW 全局名串起来。
  * 「加一个模块」要同时改 index.html 的 <script>、renderer.js 的 `const x = window.CW…`、
  * 测试里的静态闸门；漏一处时 Electron 里表现是「某个弹层点不开 / 一片按钮没反应」，只有
  * tests/load-order.test.js 会在 Node 里全链跑一遍才能发现。

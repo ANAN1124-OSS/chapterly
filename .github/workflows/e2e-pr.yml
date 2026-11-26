@@ -75,7 +75,8 @@ jobs:
           version: 12.11.2
           run_install: false
 
-      # REPO-02（审计）：这一档**只跑 Node 24** —— 全量 E2E 约 60 分钟，PR 上铺 22/24 双档会把预算翻倍。
+      # REPO-02（审计）：这一档**只跑 Node 24** —— 全量 E2E 本机约 3 分钟、超时上限 6.5 分钟
+      # （180 秒打底 + 84 组 × 2.5 秒），PR 上铺 22/24 双档会把预算翻倍。
       # engines >=22 的 22 档由 e2e-weekly.yml 的 22/24 矩阵兜底（回归窗口最长 7 天），
       # 静态 / 单测口径的 22 档由 verify.yml 的矩阵兜底。改这里请同步 README 的 CI 一节。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

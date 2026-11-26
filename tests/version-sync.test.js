@@ -302,6 +302,24 @@ test('A2-GATE-02：门禁命令把实测计数落盘（npm test / e2e / lint-gat
   assert.equal(parseUnitCount('没有摘要'), null);
 });
 
+// V221-DOC-03（2026-11-26 复核）：README 平台行的「· 当前 vX.Y.Z」是第四条版本锚点 —— 旧 --check
+// 只在 --write 时同步它，漂移不会被门禁发现。现在缺失 / 与 package.json 不一致都报红。
+test('V221-DOC-03：README 平台行的「当前 vX.Y.Z」进 --check（第四条版本锚点）', () => {
+  const base = { checklist: checklistSample(), indexHtml: '', version: '1.7.2', recordedCounts: null };
+  const drifted = readmeSample().replace('当前 v1.7.2', '当前 v1.6.0');
+  assert.match(
+    versionSync.checkDocs({ ...base, readme: drifted }).join('\n'),
+    /平台行的当前版本是 1\.6\.0/,
+    '平台行版本漂移必须报红'
+  );
+  const missing = readmeSample().replace(' · 当前 v1.7.2', '');
+  assert.match(
+    versionSync.checkDocs({ ...base, readme: missing }).join('\n'),
+    /找不到平台行的「· 当前 vX\.Y\.Z」版本锚点/,
+    '锚点缺失也要报红（不许静默通过）'
+  );
+});
+
 test('版本单一事实来源：界面只走运行时注入，package.json 是唯一权威（静态闸门）', () => {
   // index.html：注释之外不许再出现 x.y.z 版本串（两个元素都是空占位，由启动时注入）。
   const htmlNoComments = INDEX_HTML.replace(/<!--[\s\S]*?-->/g, '');

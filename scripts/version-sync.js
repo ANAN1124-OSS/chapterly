@@ -425,8 +425,15 @@ function checkDocs(options) {
     problems.push(`README.md 标题版本是 ${readmeTitle[1]}，package.json 是 ${version}`);
   }
 
-  const readmeExes = collectVersions(readme, /chapterly-(\d+\.\d+\.\d+)-win-x64-setup\.exe/g);
-  if (readmeExes.length !== 2) {
+  const readmeCurrent = readme.match(/· 当前 v(\d+\.\d+\.\d+)/);
+  if (!readmeCurrent) {
+    // V221-DOC-03（2026-11-26 复核）：平台行的「当前 vX.Y.Z」是第四条版本锚点，旧 --check 只同步不校验。
+    problems.push('README.md 找不到平台行的「· 当前 vX.Y.Z」版本锚点');
+  } else if (readmeCurrent[1] !== version) {
+    problems.push(`README.md 平台行的当前版本是 ${readmeCurrent[1]}，package.json 是 ${version}`);
+  }
+
+  const readmeExes = collectVersions(readme, /chapterly-(\d+\.\d+\.\d+)-win-x64-setup\.exe/g);  if (readmeExes.length !== 2) {
     problems.push(`README.md 的安装包名应有 2 处（下载 + 本机产物），实际 ${readmeExes.length} 处`);
   }
   for (const found of readmeExes) {

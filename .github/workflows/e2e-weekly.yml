@@ -96,7 +96,8 @@ jobs:
           Write-Host "Electron 就位：$exe"
 
       # WP15 / 审计 E1=O-N2：官方 SHASUMS256.txt 已随仓库入库，这里在跑 E2E 前先核对刚下载的
-      # Electron 二进制。镜像被替换 / 构建机被投毒时这一步直接红，不给「坏二进制先跑半小时 E2E」。
+      # Electron 二进制。镜像被替换 / 构建机被投毒时这一步直接红，不给「坏二进制先跑一轮 E2E
+      # （超时上限 6.5 分钟）」。
       - name: 供应链校验（内置官方 SHASUMS256.txt 核对刚下载的 Electron 二进制）
         shell: pwsh
         run: node scripts/supply-chain-check.js --cache "$env:GITHUB_WORKSPACE/.electron-cache"
