@@ -112,6 +112,10 @@
   // 否则会把旧书的阅读进度记到新书上（或把章号记成 −1）。
   let readingOwnerBookPath = '';
   let readingOwnerEditorIndex = -1;
+  // A2-READING-01：章身份快照也必须跟着捕获。commitOpenBook 先换 state.chapters / state.bookPath，
+  // 再 showView('editor') 触发 leaveReadingMode；旧实现只保住了书路径，章 id 与章数仍从活的
+  // state.chapters 取 → 旧书的阅读位置被写成新书的章身份（按 id 找不回，或按新书章数把下标夹到别的章）。
+  let readingOwnerChapterIds = null;
 
   function readingScrollEl() {
     return $('reading-scroll');
@@ -211,11 +215,6 @@
   // 退出阅读时把位置记进内存（v0.13 / U-D10）：只记本次运行，不写盘。
   // 正在读盘时不记（DOM 里可能只有半截），让上一次的位置留着。
   // 五-L14（RF-02）：除了下标还记章 id —— 删章 / 插入 / 重排后下标会漂，重进时按 id 认回同一章。
-  function chapterIdAt(index) {
-    const chapter = state.chapters[index];
-    return chapter && chapter.id != null ? chapter.id : null;
-  }
-
   function rememberReadingPosition() {
     // 五-M19（SS-12）：优先用「进阅读模式时那本书」——换书 / 回书架触发的收口可能已经改写了
     // state.bookPath；没有捕获过（老入口 / 单测直接置 open）才退回当前 state。
@@ -223,7 +222,16 @@
     if (!bookPath || state.reading.loading) return;
     const position = readingPositionNow();
     if (!position) return;
-    const editorIndex = Number.isFinite(state.index) && state.index >= 0 ? state.index : readingOwnerEditorIndex;
+    // A2-READING-01：章 id 表与总章数同样按「进阅读模式时」的快照算。阅读区块本来就是按那一份
+    // 章列表渲染的，判位置 / 恢复位置都该用同一份身份；跨书收口后活的 state.chapters 已属于新书。
+    const ownerIds = Array.isArray(readingOwnerChapterIds) ? readingOwnerChapterIds : null;
+    const chapterIds = ownerIds || state.chapters.map((chapter) => (chapter && chapter.id != null ? chapter.id : null));
+    const total = chapterIds.length;
+    const chapterIdAtOwner = (index) => (chapterIds[index] == null ? null : chapterIds[index]);
+    // 编辑区当前章只在「还是这本书」时才可信：换书后 state.index 已属于新书，用进阅读时捕获的下标。
+    const sameBook = !readingOwnerBookPath || readingOwnerBookPath === state.bookPath;
+    const liveIndex = Number.isFinite(state.index) && state.index >= 0 ? state.index : -1;
+    const editorIndex = sameBook && liveIndex >= 0 ? liveIndex : readingOwnerEditorIndex;
     readingPositionsByBook = readingLogic.withReadingPosition(
       readingPositionsByBook,
       bookPath,
@@ -231,10 +239,10 @@
         index: position.index,
         ratio: position.ratio,
         editorIndex,
-        chapterId: chapterIdAt(position.index),
-        editorChapterId: chapterIdAt(editorIndex)
+        chapterId: chapterIdAtOwner(position.index),
+        editorChapterId: chapterIdAtOwner(editorIndex)
       },
-      state.chapters.length
+      total
     );
   }
 
@@ -597,6 +605,8 @@
     // 五-M19（SS-12）：捕获这次阅读的身份（退出时可能已经在别的书 / 别的章上）
     readingOwnerBookPath = state.bookPath;
     readingOwnerEditorIndex = state.index;
+    // A2-READING-01：章 id 表一起捕获 —— 退出阅读可能由换书触发，那时 state.chapters 已是新书的。
+    readingOwnerChapterIds = state.chapters.map((chapter) => (chapter && chapter.id != null ? chapter.id : null));
     state.reading.open = true;
     const total = state.chapters.length;
     const editorIndex = Math.max(0, Math.min(state.index < 0 ? 0 : state.index, total - 1));
@@ -667,6 +677,7 @@
     $('reading-toc').innerHTML = '';
     readingOwnerBookPath = '';
     readingOwnerEditorIndex = -1;
+    readingOwnerChapterIds = null;
     return true;
   }
 

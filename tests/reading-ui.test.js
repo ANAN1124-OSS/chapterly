@@ -900,6 +900,39 @@ test('五-L14（RF-02）：阅读位置按章 id 恢复——插章后仍回到�
   stopReading(ctx);
 });
 
+// A2-READING-01（中）：阅读视图里 Ctrl+K 换书。commitOpenBook 先换 state（bookPath / chapters / index）
+// 再 showView('editor')，由 showView 的统一兜底触发 leaveReadingMode —— 旧实现用**新书**的 state.chapters
+// 取章 id 与章数，把旧书的阅读位置写成了新书的章身份：回旧书时按 id 找不回（或按新书章数夹到别的章）。
+test('A2-READING-01：阅读中换书触发离开时，阅读位置仍记在旧书的章身份与章数上', async () => {
+  const dom = makeDoc();
+  const bookA = makeChapters(3);
+  bookA.forEach((chapter, index) => { chapter.id = `a-${index + 1}`; });
+  const ctx = build({ dom, chapters: bookA, index: 0, bookPath: '/书库/书甲' });
+  assert.deepEqual(await ctx.ui.openReadingMode(), { ok: true, startIndex: 0 }, '进阅读时捕获身份');
+  // 摆出「已读到第 3 章一半」的现场（假 DOM 的 _top 是视口内 top，内容坐标 = _top + scrollTop）
+  dom.map.get('reading-content').children.length = 0;
+  dom.newBlock(0, -2500, 1000);
+  dom.newBlock(2, -500, 1000);
+  const scroll = dom.map.get('reading-scroll');
+  scroll.clientHeight = 400;
+  scroll.scrollHeight = 3000;
+  scroll.scrollTop = 1500;
+  // 命令面板换到只剩 1 章的书乙：先换 state，再由 showView('editor') 触发 leaveReadingMode
+  ctx.state.bookPath = '/书库/书乙';
+  ctx.state.chapters = [{ id: 'b-1', name: '乙一', file: 'b1.txt' }];
+  ctx.state.index = -1;
+  assert.equal(ctx.ui.leaveReadingMode(), true);
+  // 回到书甲（编辑区仍停在第 1 章 a-1）：应回到上次读到的第 3 章 a-3，而不是被书乙的 1 章夹到第 1 章
+  ctx.state.bookPath = '/书库/书甲';
+  ctx.state.chapters = bookA;
+  ctx.state.index = 0;
+  fakeBlockHeight(dom, 1000);
+  const resumed = await ctx.ui.openReadingMode();
+  assert.equal(resumed.startIndex, 2, '按旧书章 id 认回第 3 章（不被新书章数夹取）');
+  assert.equal(ctx.state.reading.index, 2);
+  stopReading(ctx);
+});
+
 // ---------- 键盘翻章（Phase D / D3） ----------
 function fireReadingKey(dom, key, extra = {}) {
   let prevented = 0;
