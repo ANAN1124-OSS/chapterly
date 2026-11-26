@@ -63,12 +63,14 @@
 
   // 一次按键的处置：{ type: 'close' } 收起并把焦点还回去；{ type: 'move', index } 在菜单里挪。
   // Esc 一律收起；Tab / Shift+Tab 只在右键菜单里算收起（顶栏下拉保持原生 Tab）。
-  // 带 Ctrl / Alt / Meta / Shift 的一律不接管（那些组合有自己的含义，例如 Shift+F10 开菜单）。
+  // V221-MENU-01（2026-11-26 复核）：Shift 只对 Tab 网开一面（Shift+Tab 是往回走，同样要收起右键
+  // 菜单）；其它带 Ctrl / Alt / Meta / Shift 的组合仍不接管（例如 Shift+F10 开菜单）。
   function menuKeyAction(event, kind, position, count) {
     if (!event || typeof event.key !== 'string') return null;
-    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return null;
+    if (event.ctrlKey || event.altKey || event.metaKey) return null;
     if (event.key === 'Escape') return { type: 'close', reason: 'escape' };
     if (event.key === 'Tab' && kind === 'context') return { type: 'close', reason: 'tab' };
+    if (event.shiftKey) return null;
     const index = stepIndex(position, event.key, count);
     return index === null ? null : { type: 'move', index };
   }

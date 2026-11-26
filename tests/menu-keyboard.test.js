@@ -44,6 +44,13 @@ test('菜单键盘：Esc 一律收起；Tab 只在右键菜单里算收起（顶
   assert.deepEqual(menuKeyboard.menuKeyAction(key('Escape'), 'context', 0, 5), { type: 'close', reason: 'escape' });
   assert.deepEqual(menuKeyboard.menuKeyAction(key('Escape'), 'dropdown', 0, 5), { type: 'close', reason: 'escape' });
   assert.deepEqual(menuKeyboard.menuKeyAction(key('Tab'), 'context', 0, 5), { type: 'close', reason: 'tab' });
+  // V221-MENU-01：Shift+Tab（往回走）同样要收起右键菜单；顶栏下拉仍交给浏览器。
+  assert.deepEqual(
+    menuKeyboard.menuKeyAction(key('Tab', { shiftKey: true }), 'context', 0, 5),
+    { type: 'close', reason: 'tab' },
+    'Shift+Tab 也要收起右键菜单'
+  );
+  assert.equal(menuKeyboard.menuKeyAction(key('Tab', { shiftKey: true }), 'dropdown', 0, 5), null);
   assert.equal(menuKeyboard.menuKeyAction(key('Tab'), 'dropdown', 0, 5), null, '顶栏下拉的 Tab 交给浏览器');
   assert.deepEqual(menuKeyboard.menuKeyAction(key('ArrowDown'), 'context', 0, 3), { type: 'move', index: 1 });
   assert.deepEqual(menuKeyboard.menuKeyAction(key('ArrowUp'), 'dropdown', 0, 3), { type: 'move', index: 2 });
