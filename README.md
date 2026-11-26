@@ -240,7 +240,7 @@ pnpm start          # 启动应用
 ## 开发与自检
 
 ```bash
-pnpm test            # 单测（node:test，3648 项）
+pnpm test            # 单测（node:test，3689 项）
 pnpm run e2e         # 全量 E2E：真实启动 Electron 走 1946 项主流程
 pnpm lint            # 静态闸门 lint-gate（0 ERROR）；eslint 单独跑 npx eslint .
 ```
