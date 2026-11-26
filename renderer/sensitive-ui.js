@@ -111,6 +111,8 @@
   // 否则「整本预检在飞 → Esc 关 → 立即重开」时，三重复核（章身份 / 范围 / 词表世代）全都成立，
   // 旧回包会把旧快照画回重开的面板。
   let sensitiveEpoch = 0;
+  // A2-PANEL-01：这一轮预检结果属于哪本书（打开面板时按归属丢弃上一本的旧结果）
+  let sensitiveOwnerPath = '';
 
   function renderSensitiveWordList() {
     const el = $('sensitive-wordlist-text');
@@ -140,6 +142,13 @@
     hideHeaderMenus();
     if (!$('find-backdrop').classList.contains('hidden')) closeFindPanel();
     if (!$('proofread-backdrop').classList.contains('hidden')) closeProofreadPanel();
+    // A2-PANEL-01（低）：与校对面板同一口径 —— 上一轮结果属于另一本书时先按归属丢弃（0 章书 /
+    // 忙碌时 runSensitiveCheck 会早退，清空逻辑在其后，旧结果会顶在面板上冒充当前书的问题）。
+    if (state.sensitive && sensitiveOwnerPath !== state.bookPath) {
+      state.sensitive = null;
+      $('sensitive-results').innerHTML = '';
+      $('sensitive-summary').textContent = '';
+    }
     $('sensitive-scope').value = state.sensitiveScope === 'book' ? 'book' : 'current';
     $('sensitive-backdrop').classList.remove('hidden');
     await refreshSensitiveWordList();
@@ -359,6 +368,8 @@
     // 预检在飞期间换书后，上一本书的异常会被写到眼前这本书的面板上、还会清掉现在的结果。
     const expectedIdentity = staleGuard.chapterIdentity(state);
     const expectedBookPath = expectedIdentity.bookPath;
+    // A2-PANEL-01：结果归属这本书（下一次打开面板按它判断要不要清旧结果）。
+    sensitiveOwnerPath = expectedBookPath;
     try {
       let payload;
       if (scope === 'book') {

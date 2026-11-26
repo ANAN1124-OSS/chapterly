@@ -170,6 +170,8 @@
   // 五-M16（SS-05）：打开链是否在途（连点「设置」防重入）。在途期间表单已经回填完，
   // 只有弹层可见性 / 台账读取这些展示性动作还在跑。
   let openingSettings = false;
+  // A2-SETTINGS-01：打开链世代。在途链被关掉后重开时旧链的后半段（台账 / 更新区块 / finally）作废。
+  let settingsOpenSeq = 0;
 
   function settingsTabNodes() {
     const nav = $('settings-nav');
@@ -822,7 +824,12 @@
   async function openSettings(options = {}) {
     // 五-M16（SS-05）：打开链防重入。连点「设置」/「今日字数」会并行跑两条打开链（各自回填 / 读台账），
     // 后到的那次回填会把作者刚改的表单值覆盖掉。在途时再点一次直接忽略（弹层已经在开着）。
-    if (openingSettings) return state.settingsScope;
+    // A2-SETTINGS-01（低）：守卫只看「在途」会把「在途链被 Esc 关掉后立刻重开」静默吞掉（弹层不出现、
+    // 无提示）。改成「在途且弹层仍开着」才忽略；重新打开时推进世代 —— 旧链后半段（台账 / 更新区块 /
+    // finally）按世代作废，不影响新一轮。
+    if (openingSettings && settingsOpen) return state.settingsScope;
+    const seq = settingsOpenSeq + 1;
+    settingsOpenSeq = seq;
     openingSettings = true;
     try {
       state.settingsScope = resolveSettingsScope(options);
@@ -851,8 +858,9 @@
       if (options && options.section) revealSettingsSection(options.section);
       // 打开时刷新一次今天 / 近 30 天，避免跨过午夜后还显示昨天的数字
       await refreshStats();
-      // 打开链在途时被「保存设置」/「取消」关掉了：不再往已关的弹层里写台账 / 更新区块
-      if (!settingsOpen) return state.settingsScope;
+      // 打开链在途时被「保存设置」/「取消」关掉了：不再往已关的弹层里写台账 / 更新区块。
+      // A2-SETTINGS-01：期间被关掉又重开（新世代）时，旧链也不许再往新一轮的弹层里写。
+      if (seq !== settingsOpenSeq || !settingsOpen) return state.settingsScope;
       // 全局设置里顺手读一次三份台账（词表 / 校对词表 / 日志目录，都只读；按书设置里不显示这几组）。
       // 三者互不依赖，一次并发发起，省掉两趟串行 IPC；各自的返回值、状态字段与分区渲染都不变。
       if (state.settingsScope === 'global') {
@@ -861,11 +869,13 @@
           refreshProofreadSettingsInfo(),
           refreshLogInfo()
         ]);
+        if (seq !== settingsOpenSeq) return state.settingsScope;
       }
       // 检查更新：只显示当前版本和上次检查结果（不自动联网；点按钮才检查）
       if (state.settingsScope === 'global') renderUpdateSettings();
     } finally {
-      openingSettings = false;
+      // A2-SETTINGS-01：只由最新一代收尾 —— 旧链晚到不许把新一轮的 openingSettings 清掉。
+      if (seq === settingsOpenSeq) openingSettings = false;
     }
   }
 

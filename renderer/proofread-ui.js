@@ -172,6 +172,14 @@
     }
     hideHeaderMenus();
     if (!$('find-backdrop').classList.contains('hidden')) closeFindPanel();
+    // A2-PANEL-01（低）：上一轮结果属于另一本书时，先按归属丢弃 —— 换书后 state.proofread 还留着
+    // 上一本的命中与规则计数，而 0 章书 / 忙碌的 runProofread 会早退（清空逻辑在早退之后），
+    // 旧结果就顶在面板上冒充「这本书的问题」，作者可能据此误判。
+    if (state.proofread && proofreadOwnerPath !== state.bookPath) {
+      state.proofread = null;
+      $('proofread-results').innerHTML = '';
+      $('proofread-summary').textContent = '';
+    }
     $('proofread-scope').value = state.proofreadScope === 'book' ? 'book' : 'current';
     $('proofread-backdrop').classList.remove('hidden');
     renderProofreadRules();
@@ -224,6 +232,8 @@
   let proofreadRerunPending = false;
   // RPAN-A-03：面板世代。关面板 / 重开面板各推进一次；在途回执回来时世代对不上就整份丢弃。
   let proofreadEpoch = 0;
+  // A2-PANEL-01：这一轮结果属于哪本书（换书后 state.proofread 还留着上一本的命中，打开面板要按归属丢弃）
+  let proofreadOwnerPath = '';
   // 每条规则一行「名字 + 本次命中数」，点一下临时关掉。开关只存在 state.proofreadRules
   // （本次会话内存）：不写配置、不新增字段，重开应用回默认（中英间距默认关）。
   function proofreadRuleState() {
@@ -655,6 +665,8 @@
       let payload;
       // WP-15（V202）：发起时的书 / 章身份先记下；回执回来只对这份身份结算。
       const expectedBookPath = staleGuard.chapterIdentity(state).bookPath;
+      // A2-PANEL-01：结果归属这本书（回执丢弃时也照记，下一次打开面板按它判断要不要清旧结果）。
+      proofreadOwnerPath = expectedBookPath;
       if (scope === 'book') {
         const override = currentChapterRef();
         payload = await call(api.proofreadBook, expectedBookPath, runOptions, override);

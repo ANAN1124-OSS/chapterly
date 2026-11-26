@@ -390,8 +390,7 @@ test('M16（SS-05）：连点「设置」只跑一条打开链；打开链在途
   // 打开链停在 stats 往返、作者点了取消：剩下的台账读取 / 更新区块不再执行
   let release2;
   const gate2 = new Promise((resolve) => { release2 = resolve; });
-  const closed = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库' }, statsGate: gate2 });
-  const opening = closed.ui.openSettings();
+  const closed = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库' }, statsGate: gate2 });  const opening = closed.ui.openSettings();
   closed.ui.closeSettings();
   release2();
   await opening;
@@ -472,4 +471,26 @@ test('KNOWN-SETTINGS：设置在途时 Esc 不再绕过保存闸门（与取消 
   await ctx.ui.openSettings({ scope: 'global' });
   assert.equal(ctx.ui.cancelSettings(), true);
   assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), true);
+});
+
+// A2-SETTINGS-01（低）：打开链防重入只按「在途」挡会把「在途时被 Esc 关掉后又点设置」静默吞掉
+//（弹层不出现、无提示）。守卫改成「在途且仍开着」，重开推进世代、旧链后半段作废。
+test('A2-SETTINGS-01：打开链在途被关掉后立刻重开，第二次点击不被吞掉', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = build({ view: 'shelf', bookId: null, config: { booksRoot: '/书库' }, statsGate: gate });
+  const first = ctx.ui.openSettings({ scope: 'global' });
+  assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), false, '第一次已打开');
+  assert.equal(ctx.ui.cancelSettings(), true, '在途期间没有写操作：Esc 可以关');
+  assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), true);
+  const second = ctx.ui.openSettings({ scope: 'global' });
+  assert.equal(
+    ctx.dom.map.get('settings-backdrop').classList.contains('hidden'),
+    false,
+    '关掉后立刻再点设置：弹层必须重新出现（不许被在途守卫吞掉）'
+  );
+  release();
+  await Promise.all([first, second]);
+  assert.equal(ctx.dom.map.get('settings-backdrop').classList.contains('hidden'), false, '新一轮保持可见');
+  assert.ok(ctx.calls.refreshStats >= 2, '重开真的跑了一条新的打开链');
 });

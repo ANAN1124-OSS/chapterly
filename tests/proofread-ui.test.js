@@ -1261,3 +1261,20 @@ test('五-M12：主进程拒绝错位移除（WORDLIST_CHANGED）→ 按回包�
   assert.equal(dom.map.get('proofread-wordlists').children.length, 2, '按回包的最新列表重画');
   assert.deepEqual(ctx.calls.toast.at(-1), [changed.message, 'warn']);
 });
+
+// A2-PANEL-01（低）：书 A 跑过校对 → 换到 0 章书 B → 打开校对面板沿用 A 的结果与规则计数
+// （打开面板与「没有章节」早退两条路径都没把上一轮 payload 当书切换处理）。
+test('A2-PANEL-01：换书后打开校对面板不许沿用上一本书的结果', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, bookPath: '/书库/书甲' });
+  const first = await ctx.ui.runProofread();
+  assert.equal(first.ok, true);
+  assert.ok(ctx.state.proofread, '前提：书甲有一轮结果');
+  // 换到 0 章书乙（开书流程会改 state；这里直接模拟）
+  ctx.state.bookPath = '/书库/书乙';
+  ctx.state.chapters = [];
+  assert.equal(await ctx.ui.openProofreadPanel(), true);
+  assert.equal(ctx.state.proofread, null, '上一本书的结果不许留在面板上');
+  assert.equal(dom.map.get('proofread-results').children.length, 0, '结果列表要清空');
+  assert.equal(dom.map.get('proofread-summary').textContent, '这本书里还没有章节');
+});

@@ -889,3 +889,18 @@ test('五-M13：整本预检在途换词表——旧回执 wordList 不许盖回
   assert.equal(calls, 2, '预检在途换了词表：跑完要按新词表补跑一次');
   assert.equal(ctx.state.sensitiveWordList.name, '新词表.txt', '补跑回执同样按最新词表落地');
 });
+
+// A2-PANEL-01（低）：与校对面板同一根因 —— 换到 0 章书后打开敏感词面板沿用上一本书的结果。
+test('A2-PANEL-01：换书后打开敏感词面板不许沿用上一本书的结果', async () => {
+  const dom = makeDocument();
+  const ctx = build({ dom, bookPath: '/书库/书甲' });
+  const first = await ctx.ui.runSensitiveCheck();
+  assert.equal(first.ok, true);
+  assert.ok(ctx.state.sensitive, '前提：书甲有一轮预检结果');
+  ctx.state.bookPath = '/书库/书乙';
+  ctx.state.chapters = [];
+  assert.equal(await ctx.ui.openSensitivePanel(), true);
+  assert.equal(ctx.state.sensitive, null, '上一本书的结果不许留在面板上');
+  assert.equal(dom.map.get('sensitive-results').children.length, 0, '结果列表要清空');
+  assert.equal(dom.map.get('sensitive-summary').textContent, '这本书里还没有章节');
+});
