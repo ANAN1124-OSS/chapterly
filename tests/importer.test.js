@@ -13,6 +13,24 @@ const tmpCleanup = require('./tmp-cleanup');
 // TB-02：临时目录统一经 tests/tmp-cleanup.js 的 mkTmp（mkdtemp + 登记回收）。
 const mkTmp = (prefix = 'cw-import-') => tmpCleanup.mkTmp(prefix);
 
+// Node 22 的 node:test 在事件循环先清空时，会把仍挂起的用例判成 cancelledByParent
+//（「Promise resolution is still pending but the event loop has already resolved」）。
+// close-guard 的截止计时器是 unref 的（生产主进程始终有事件循环，不受影响），所以当用例
+// 只等「注入的永不返回 stat + unref 截止」时没有任何 ref'd handle —— Node 24 的测试运行器
+// 恰好替我们撑住循环，Node 22 会直接收工。这里加一个会自清理的 ref'd 看门狗（与 8c71b39
+// 修 SEARCH-02/03 同款）：真超时按失败抛错，不是放宽断言。
+const LOOP_GUARD_TIMEOUT = Symbol('importer-loop-guard-timeout');
+async function awaitWithLoopGuard(promise, timeoutMs, label) {
+  let timer = null;
+  const guard = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(LOOP_GUARD_TIMEOUT), timeoutMs);
+  });
+  const result = await Promise.race([promise, guard]);
+  if (timer) clearTimeout(timer);
+  if (result === LOOP_GUARD_TIMEOUT) throw new Error(`${label || '等待'}超过 ${timeoutMs}ms 仍未结束`);
+  return result;
+}
+
 test('导入现成的章回书：整本复制、内容一致、源文件夹保留', async () => {
   const base = await mkTmp();
   const externalRoot = path.join(base, '外部');
@@ -1560,7 +1578,13 @@ test('A2-IMPORT-03：暂存判龄卡在断盘时，导入入口 2 秒截止后�
   let outcome = null;
   const startedAt = Date.now();
   try {
-    outcome = await closeGuard.withDeadline(() => importer.importFolders(booksRoot, [src]), { ms: 5000 });
+    // Node 22：导入入口内部的截止计时器是 unref 的，注入的 stat 永不返回时循环里没有
+    // ref'd handle —— 用看门狗撑住循环，让 2 秒截止真的触发（真超时则按失败抛错）。
+    outcome = await awaitWithLoopGuard(
+      closeGuard.withDeadline(() => importer.importFolders(booksRoot, [src]), { ms: 5000 }),
+      15000,
+      '导入入口的暂存回收截止'
+    );
   } finally {
     fs.stat = originalStat;
   }
