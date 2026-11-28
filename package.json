@@ -29,7 +29,7 @@
   },
   "homepage": "https://github.com/ANAN1124-OSS/chapterly",
   "devDependencies": {
-    "electron": "45.1.0",
+    "electron": "45.4.1",
     "electron-builder": "26.18.0",
     "eslint": "10.14.0"
   },
